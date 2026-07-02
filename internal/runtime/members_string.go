@@ -20,8 +20,8 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var stringMemberNames = []string{
-	"size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "prepend", "insert", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice",
-	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
+	"size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "prepend", "insert", "replace", "start_with?", "end_with?", "include?", "count", "casecmp", "casecmp?", "between?", "match", "match?", "scan", "index", "rindex", "slice",
+	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete", "delete!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "tr", "tr!", "squeeze", "squeeze!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "codepoints", "each_char", "each_line", "each_byte", "each_codepoint", "template",
 	"center", "ljust", "rjust", "clamp",
 	"inspect",
@@ -39,9 +39,9 @@ func stringMember(str Value, property string) (Value, error) {
 
 func stringMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "prepend", "insert", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice":
+	case "size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "prepend", "insert", "replace", "start_with?", "end_with?", "include?", "count", "casecmp", "casecmp?", "between?", "match", "match?", "scan", "index", "rindex", "slice":
 		return stringMemberQuery(property)
-	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
+	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete", "delete!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "tr", "tr!", "squeeze", "squeeze!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
 	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "codepoints", "each_char", "each_line", "each_byte", "each_codepoint", "template":
 		return stringMemberTextOps(property)
@@ -1798,6 +1798,297 @@ func stringBangResult(original, updated string) Value {
 	return NewString(updated)
 }
 
+type stringCharSetSpan struct {
+	low  rune
+	high rune
+}
+
+type stringCharSetSpec struct {
+	negated bool
+	spans   []stringCharSetSpan
+	length  int
+}
+
+func parseStringCharSetArgs(method string, args []Value, allowComplement bool) ([]stringCharSetSpec, error) {
+	specs := make([]stringCharSetSpec, len(args))
+	for i, arg := range args {
+		if arg.Kind() != KindString {
+			return nil, fmt.Errorf("%s character set must be string", method)
+		}
+		spec, err := parseStringCharSet(method, arg.String(), allowComplement)
+		if err != nil {
+			return nil, err
+		}
+		specs[i] = spec
+	}
+	return specs, nil
+}
+
+func parseStringCharSet(method, text string, allowComplement bool) (stringCharSetSpec, error) {
+	runes := []rune(text)
+	var spec stringCharSetSpec
+	pos := 0
+	if allowComplement && len(runes) > 0 && runes[0] == '^' {
+		spec.negated = true
+		pos = 1
+	}
+	for pos < len(runes) {
+		start, next := nextStringCharSetToken(runes, pos)
+		if next < len(runes) && runes[next] == '-' && next+1 < len(runes) {
+			end, after := nextStringCharSetToken(runes, next+1)
+			if start > end {
+				return stringCharSetSpec{}, fmt.Errorf("%s invalid character range %c-%c", method, start, end)
+			}
+			spec.addSpan(start, end)
+			pos = after
+			continue
+		}
+		spec.addSpan(start, start)
+		pos = next
+	}
+	return spec, nil
+}
+
+func nextStringCharSetToken(runes []rune, pos int) (rune, int) {
+	if runes[pos] == '\\' {
+		if pos+1 < len(runes) {
+			return runes[pos+1], pos + 2
+		}
+		return '\\', pos + 1
+	}
+	return runes[pos], pos + 1
+}
+
+func (s *stringCharSetSpec) addSpan(low, high rune) {
+	s.spans = append(s.spans, stringCharSetSpan{low: low, high: high})
+	s.length = saturatingAdd(s.length, int(high-low)+1)
+}
+
+func (s stringCharSetSpec) contains(r rune) bool {
+	for _, span := range s.spans {
+		if r >= span.low && r <= span.high {
+			return true
+		}
+	}
+	return false
+}
+
+func (s stringCharSetSpec) matches(r rune) bool {
+	matched := s.contains(r)
+	if s.negated {
+		return !matched
+	}
+	return matched
+}
+
+func (s stringCharSetSpec) orderedIndex(r rune) (int, bool) {
+	if s.negated {
+		return 0, !s.contains(r)
+	}
+	index := 0
+	for _, span := range s.spans {
+		if r >= span.low && r <= span.high {
+			return index + int(r-span.low), true
+		}
+		index = saturatingAdd(index, int(span.high-span.low)+1)
+	}
+	return 0, false
+}
+
+func (s stringCharSetSpec) runeAt(index int) rune {
+	if index < 0 {
+		index = 0
+	}
+	if index >= s.length {
+		index = s.length - 1
+	}
+	for _, span := range s.spans {
+		count := int(span.high-span.low) + 1
+		if index < count {
+			return span.low + rune(index)
+		}
+		index -= count
+	}
+	return 0
+}
+
+func stringCharSetsMatch(specs []stringCharSetSpec, r rune) bool {
+	for _, spec := range specs {
+		if !spec.matches(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func stringRuneBytes(r rune) int {
+	if n := utf8.RuneLen(r); n > 0 {
+		return n
+	}
+	return len(string(r))
+}
+
+func stringCountChars(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, error) {
+	const method = "string.count"
+	if len(args) == 0 {
+		return 0, fmt.Errorf("%s expects at least one character set", method)
+	}
+	if len(kwargs) > 0 {
+		return 0, fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	if valueBlock(block) != nil {
+		return 0, fmt.Errorf("%s does not accept a block", method)
+	}
+	specs, err := parseStringCharSetArgs(method, args, true)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, r := range receiver.String() {
+		if err := exec.step(); err != nil {
+			return 0, err
+		}
+		if stringCharSetsMatch(specs, r) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func stringDeleteChars(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("%s expects at least one character set", method)
+	}
+	if len(kwargs) > 0 {
+		return "", fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	if valueBlock(block) != nil {
+		return "", fmt.Errorf("%s does not accept a block", method)
+	}
+	specs, err := parseStringCharSetArgs(method, args, true)
+	if err != nil {
+		return "", err
+	}
+	text := receiver.String()
+	projectedBytes := 0
+	for _, r := range text {
+		if err := exec.step(); err != nil {
+			return "", err
+		}
+		if !stringCharSetsMatch(specs, r) {
+			projectedBytes = saturatingAdd(projectedBytes, stringRuneBytes(r))
+		}
+	}
+	if err := exec.checkProjectedStringBytesWithCallRoots(projectedBytes, receiver, args, kwargs, block); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.Grow(projectedBytes)
+	for _, r := range text {
+		if !stringCharSetsMatch(specs, r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String(), nil
+}
+
+func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (string, error) {
+	if len(args) != 2 {
+		return "", fmt.Errorf("%s expects source and replacement character sets", method)
+	}
+	if len(kwargs) > 0 {
+		return "", fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	if valueBlock(block) != nil {
+		return "", fmt.Errorf("%s does not accept a block", method)
+	}
+	if args[0].Kind() != KindString || args[1].Kind() != KindString {
+		return "", fmt.Errorf("%s character sets must be strings", method)
+	}
+	source, err := parseStringCharSet(method, args[0].String(), true)
+	if err != nil {
+		return "", err
+	}
+	replacement, err := parseStringCharSet(method, args[1].String(), false)
+	if err != nil {
+		return "", err
+	}
+	text := receiver.String()
+	projectedBytes := 0
+	for _, r := range text {
+		if err := exec.step(); err != nil {
+			return "", err
+		}
+		index, matched := source.orderedIndex(r)
+		if !matched {
+			projectedBytes = saturatingAdd(projectedBytes, stringRuneBytes(r))
+			continue
+		}
+		if replacement.length == 0 {
+			continue
+		}
+		projectedBytes = saturatingAdd(projectedBytes, stringRuneBytes(replacement.runeAt(index)))
+	}
+	if err := exec.checkProjectedStringBytesWithCallRoots(projectedBytes, receiver, args, kwargs, block); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.Grow(projectedBytes)
+	for _, r := range text {
+		index, matched := source.orderedIndex(r)
+		switch {
+		case !matched:
+			b.WriteRune(r)
+		case replacement.length > 0:
+			b.WriteRune(replacement.runeAt(index))
+		}
+	}
+	return b.String(), nil
+}
+
+func stringSqueezeChars(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (string, error) {
+	if len(kwargs) > 0 {
+		return "", fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	if valueBlock(block) != nil {
+		return "", fmt.Errorf("%s does not accept a block", method)
+	}
+	specs, err := parseStringCharSetArgs(method, args, true)
+	if err != nil {
+		return "", err
+	}
+	text := receiver.String()
+	projectedBytes := 0
+	var previous rune
+	hasPrevious := false
+	for _, r := range text {
+		if err := exec.step(); err != nil {
+			return "", err
+		}
+		squeezed := hasPrevious && r == previous && (len(specs) == 0 || stringCharSetsMatch(specs, r))
+		if !squeezed {
+			projectedBytes = saturatingAdd(projectedBytes, stringRuneBytes(r))
+		}
+		previous = r
+		hasPrevious = true
+	}
+	if err := exec.checkProjectedStringBytesWithCallRoots(projectedBytes, receiver, args, kwargs, block); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.Grow(projectedBytes)
+	hasPrevious = false
+	for _, r := range text {
+		squeezed := hasPrevious && r == previous && (len(specs) == 0 || stringCharSetsMatch(specs, r))
+		if !squeezed {
+			b.WriteRune(r)
+		}
+		previous = r
+		hasPrevious = true
+	}
+	return b.String(), nil
+}
+
 // isRubyStripSpace reports whether b is one of the ASCII whitespace bytes that
 // Ruby's strip family removes from either edge: the NUL byte, horizontal tab,
 // newline, vertical tab, form feed, carriage return, and space. Ruby's String
@@ -2419,6 +2710,14 @@ func stringMemberQuery(property string) (Value, error) {
 			}
 			return NewBool(strings.Contains(receiver.String(), args[0].String())), nil
 		}), nil
+	case "count":
+		return NewAutoBuiltin("string.count", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			count, err := stringCountChars(exec, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewInt(int64(count)), nil
+		}), nil
 	case "casecmp":
 		return NewAutoBuiltin("string.casecmp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 {
@@ -2438,6 +2737,10 @@ func stringMemberQuery(property string) (Value, error) {
 				return NewNil(), nil
 			}
 			return NewBool(caseInsensitiveEqual(receiver.String(), args[0].String())), nil
+		}), nil
+	case "between?":
+		return NewAutoBuiltin("string.between?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return comparableBetween("string.between?", receiver, args, kwargs, block)
 		}), nil
 	case "match":
 		return NewAutoBuiltin("string.match", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -3565,6 +3868,23 @@ func stringMemberTransforms(property string) (Value, error) {
 			original := receiver.String()
 			return stringBangResult(original, chopDefault(original)), nil
 		}), nil
+	case "delete":
+		return NewAutoBuiltin("string.delete", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			updated, err := stringDeleteChars(exec, receiver, args, kwargs, block, "string.delete")
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewString(updated), nil
+		}), nil
+	case "delete!":
+		return NewAutoBuiltin("string.delete!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			original := receiver.String()
+			updated, err := stringDeleteChars(exec, receiver, args, kwargs, block, "string.delete!")
+			if err != nil {
+				return NewNil(), err
+			}
+			return stringBangResult(original, updated), nil
+		}), nil
 	case "delete_prefix":
 		return NewAutoBuiltin("string.delete_prefix", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 {
@@ -3606,6 +3926,40 @@ func stringMemberTransforms(property string) (Value, error) {
 			}
 			updated := strings.TrimSuffix(receiver.String(), args[0].String())
 			return stringBangResult(receiver.String(), updated), nil
+		}), nil
+	case "tr":
+		return NewAutoBuiltin("string.tr", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			updated, err := stringTrChars(exec, receiver, args, kwargs, block, "string.tr")
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewString(updated), nil
+		}), nil
+	case "tr!":
+		return NewAutoBuiltin("string.tr!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			original := receiver.String()
+			updated, err := stringTrChars(exec, receiver, args, kwargs, block, "string.tr!")
+			if err != nil {
+				return NewNil(), err
+			}
+			return stringBangResult(original, updated), nil
+		}), nil
+	case "squeeze":
+		return NewAutoBuiltin("string.squeeze", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			updated, err := stringSqueezeChars(exec, receiver, args, kwargs, block, "string.squeeze")
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewString(updated), nil
+		}), nil
+	case "squeeze!":
+		return NewAutoBuiltin("string.squeeze!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			original := receiver.String()
+			updated, err := stringSqueezeChars(exec, receiver, args, kwargs, block, "string.squeeze!")
+			if err != nil {
+				return NewNil(), err
+			}
+			return stringBangResult(original, updated), nil
 		}), nil
 	case "upcase":
 		return NewAutoBuiltin("string.upcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

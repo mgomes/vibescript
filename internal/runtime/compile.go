@@ -218,7 +218,11 @@ func compileClassDef(stmt *ClassStmt) *ClassDef {
 		}
 	}
 	for _, fn := range stmt.Methods {
-		classDef.Methods[fn.Name] = compileFunctionDef(fn)
+		compiled := compileFunctionDef(fn)
+		if fn.Name == "initialize" {
+			compiled.Private = true
+		}
+		classDef.Methods[fn.Name] = compiled
 	}
 	for _, fn := range stmt.ClassMethods {
 		classDef.ClassMethods[fn.Name] = compileFunctionDef(fn)

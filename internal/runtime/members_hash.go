@@ -12,7 +12,7 @@ import (
 // listed name resolves.
 var hashMemberNames = []string{
 	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a", "default", "default_proc",
-	"merge", "update", "merge!", "replace", "store", "delete", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
+	"merge", "update", "merge!", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 	"inspect",
 }
 
@@ -50,7 +50,7 @@ func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a", "default", "default_proc":
 		return hashMemberQuery(property)
-	case "merge", "update", "merge!", "replace", "store", "delete", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
+	case "merge", "update", "merge!", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	case "inspect":
 		return newInspectBuiltin("hash"), nil
@@ -930,6 +930,46 @@ func mergedKeyCount(exec *Execution, base map[string]Value, args []Value, limit 
 	return count, nil
 }
 
+func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string, keepTruthy bool) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take arguments", method)
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	entries := receiver.Hash()
+	delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), sortedKeyBufferBytes(len(entries))))
+	defer exec.releaseLoopScratch(delta)
+	runner, err := newBlockCallRunner(exec, block, method, receiver, nil, kwargs)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
+		return NewNil(), err
+	}
+	out := make(map[string]Value, len(entries))
+	var blockArgs [2]Value
+	var keyBuf [smallHashKeyBufferSize]string
+	for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		blockArgs[0] = NewSymbol(key)
+		blockArgs[1] = entries[key]
+		include, err := runner.call(blockArgs[:])
+		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkContext(); err != nil {
+			return NewNil(), err
+		}
+		if include.Truthy() == keepTruthy {
+			out[key] = entries[key]
+		}
+	}
+	return NewHash(out), nil
+}
+
 func hashMemberTransforms(property string) (Value, error) {
 	switch property {
 	case "merge", "update", "merge!":
@@ -1346,6 +1386,25 @@ func hashMemberTransforms(property string) (Value, error) {
 				"hash":    NewHash(out),
 				"deleted": deleted,
 			}), nil
+		}), nil
+	case "clear":
+		return NewAutoBuiltin("hash.clear", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("hash.clear does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.clear does not take keyword arguments")
+			}
+			if valueBlock(block) != nil {
+				return NewNil(), fmt.Errorf("hash.clear does not accept a block")
+			}
+			return NewHash(map[string]Value{}), nil
+		}), nil
+	case "delete_if", "keep_if":
+		name := "hash." + property
+		keepTruthy := property == "keep_if"
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return hashFilterByBlock(exec, receiver, args, kwargs, block, name, keepTruthy)
 		}), nil
 	case "slice":
 		// AutoBuiltin so a parenless `hash.slice` invokes with zero arguments

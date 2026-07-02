@@ -983,6 +983,27 @@ func compareValues(left, right Value, cmp func(int) bool) (Value, error) {
 	return NewBool(cmp(order)), nil
 }
 
+func comparableBetween(method string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	if valueBlock(block) != nil {
+		return NewNil(), fmt.Errorf("%s does not accept a block", method)
+	}
+	if len(args) != 2 {
+		return NewNil(), fmt.Errorf("%s expects min and max", method)
+	}
+	lowerOrder, lowerOrdered, err := compareValueOrder(args[0], receiver)
+	if err != nil {
+		return NewNil(), err
+	}
+	upperOrder, upperOrdered, err := compareValueOrder(receiver, args[1])
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewBool(lowerOrdered && upperOrdered && lowerOrder <= 0 && upperOrder <= 0), nil
+}
+
 // compareValueOrder reports the relative order of two values as -1, 0, or 1.
 // The ordered result is false when the operands are numeric but unordered (a
 // NaN on either side); callers translate that into false comparisons and a nil
