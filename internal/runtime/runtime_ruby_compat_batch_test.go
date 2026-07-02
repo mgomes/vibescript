@@ -204,7 +204,7 @@ func TestRubyBatchArrayUniqBlockChargesRetainedKeys(t *testing.T) {
 	oneKey := newMemoryEstimator().value(NewString("v0000" + strings.Repeat("x", retainedKeyBytes)))
 	exec.memoryQuota = base + resultSlots + valueSetScratchBytesForCounts(8, 0) + oneKey*8
 
-	_, err := arrayUniq(exec, receiver, nil, nil, block, "array.uniq")
+	_, _, err := arrayUniq(exec, receiver, nil, nil, block, "array.uniq")
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 	if exec.steps >= receiverSize {
 		t.Fatalf("steps = %d, want retained uniq keys to trip memory quota before traversing %d elements", exec.steps, receiverSize)
@@ -219,8 +219,10 @@ def run()
   [
     [1, nil, 2].compact!,
     [1, 2].compact!,
+    [0.0 / 0.0].compact!,
     [1, 1, 2].uniq!,
     [1, 2].uniq!,
+    [0.0 / 0.0].uniq!,
     [3, 1, 2].sort!,
     [1, 2].map! do |n|
       n * 3
@@ -246,7 +248,9 @@ end
 	requireRubyBatchValue(t, got, rubyBatchArray(
 		rubyBatchArray(NewInt(1), NewInt(2)),
 		NewNil(),
+		NewNil(),
 		rubyBatchArray(NewInt(1), NewInt(2)),
+		NewNil(),
 		NewNil(),
 		rubyBatchArray(NewInt(1), NewInt(2), NewInt(3)),
 		rubyBatchArray(NewInt(3), NewInt(6)),
@@ -256,6 +260,40 @@ end
 		NewNil(),
 		rubyBatchArray(NewInt(3), NewInt(2), NewInt(1)),
 	))
+}
+
+func TestRubyBatchStringCharSetTransformsPreserveInvalidBytes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		receiver Value
+		method   string
+		args     []Value
+		want     string
+	}{
+		{name: "delete no match", receiver: NewString("\xc3"), method: "delete", args: []Value{NewString("x")}, want: "\xc3"},
+		{name: "tr no match", receiver: NewString("\xc3"), method: "tr", args: []Value{NewString("x"), NewString("y")}, want: "\xc3"},
+		{name: "squeeze filtered no match", receiver: NewString("\xc3"), method: "squeeze", args: []Value{NewString("x")}, want: "\xc3"},
+		{name: "squeeze repeated invalid byte", receiver: NewString("\xc3\xc3"), method: "squeeze", want: "\xc3"},
+		{name: "squeeze distinct invalid bytes", receiver: NewString("\xff\xfe"), method: "squeeze", want: "\xff\xfe"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30}
+			got, err := callStringMemberForTest(t, exec, tc.receiver, tc.method, tc.args)
+			if err != nil {
+				t.Fatalf("%s error: %v", tc.method, err)
+			}
+			if got.Kind() != KindString {
+				t.Fatalf("%s returned %v, want string", tc.method, got.Kind())
+			}
+			if got.String() != tc.want {
+				t.Fatalf("%s = %q, want %q", tc.method, got.String(), tc.want)
+			}
+		})
+	}
 }
 
 func TestRubyBatchArraySampleAndShuffle(t *testing.T) {

@@ -2081,24 +2081,24 @@ func arrayMemberGrep(property string) (Value, error) {
 	}), nil
 }
 
-func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, error) {
+func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, bool, error) {
 	if len(args) > 0 {
-		return NewNil(), fmt.Errorf("%s does not take arguments", method)
+		return NewNil(), false, fmt.Errorf("%s does not take arguments", method)
 	}
 	if len(kwargs) > 0 {
-		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
+		return NewNil(), false, fmt.Errorf("%s does not take keyword arguments", method)
 	}
 	arr := receiver.Array()
 	if valueBlock(block) == nil {
 		unique, err := uniqueValuesChecked(arr, exec.checkContext)
 		if err != nil {
-			return NewNil(), err
+			return NewNil(), false, err
 		}
-		return NewArray(unique), nil
+		return NewArray(unique), len(unique) != len(arr), nil
 	}
 	runner, err := newBlockCallRunner(exec, block, method, receiver, nil, kwargs)
 	if err != nil {
-		return NewNil(), err
+		return NewNil(), false, err
 	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	keyAcc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
@@ -2106,35 +2106,37 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	out := make([]Value, 0, boundedSetCap(len(arr)))
 	var seen valueSet
 	var blockArg [1]Value
+	changed := false
 	for _, item := range arr {
 		if err := exec.step(); err != nil {
-			return NewNil(), err
+			return NewNil(), false, err
 		}
 		blockArg[0] = item
 		key, err := runner.call(blockArg[:])
 		if err != nil {
-			return NewNil(), err
+			return NewNil(), false, err
 		}
 		if seen.contains(key) {
+			changed = true
 			continue
 		}
 		projectedKeyScratch := valueSetScratchBytesForNext(seen, key, len(arr))
 		if projectedKeyScratch > keyScratchReserved {
 			if err := keyAcc.reserveScratch(projectedKeyScratch - keyScratchReserved); err != nil {
-				return NewNil(), err
+				return NewNil(), false, err
 			}
 			keyScratchReserved = projectedKeyScratch
 		}
 		if err := keyAcc.addToReservedBacking(key); err != nil {
-			return NewNil(), err
+			return NewNil(), false, err
 		}
 		seen.add(key, len(arr))
 		out = append(out, item)
 		if err := acc.add(item, cap(out)); err != nil {
-			return NewNil(), err
+			return NewNil(), false, err
 		}
 	}
-	return NewArray(out), nil
+	return NewArray(out), changed, nil
 }
 
 func valueSetScratchBytesForNext(seen valueSet, next Value, hint int) int {
@@ -2169,24 +2171,27 @@ func valueSetScratchBytesForCounts(scalarCount, compositeCap int) int {
 	return total
 }
 
-func arrayCompact(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, error) {
+func arrayCompact(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, bool, error) {
 	if len(args) > 0 {
-		return NewNil(), fmt.Errorf("%s does not take arguments", method)
+		return NewNil(), false, fmt.Errorf("%s does not take arguments", method)
 	}
 	if len(kwargs) > 0 {
-		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
+		return NewNil(), false, fmt.Errorf("%s does not take keyword arguments", method)
 	}
 	if valueBlock(block) != nil {
-		return NewNil(), fmt.Errorf("%s does not accept a block", method)
+		return NewNil(), false, fmt.Errorf("%s does not accept a block", method)
 	}
 	arr := receiver.Array()
 	out := make([]Value, 0, len(arr))
+	changed := false
 	for _, item := range arr {
 		if item.Kind() != KindNil {
 			out = append(out, item)
+			continue
 		}
+		changed = true
 	}
-	return NewArray(out), nil
+	return NewArray(out), changed, nil
 }
 
 func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string, keepTruthy, bang bool) (Value, error) {
@@ -2931,15 +2936,16 @@ func arrayMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "uniq":
 		return NewAutoBuiltin("array.uniq", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return arrayUniq(exec, receiver, args, kwargs, block, "array.uniq")
+			result, _, err := arrayUniq(exec, receiver, args, kwargs, block, "array.uniq")
+			return result, err
 		}), nil
 	case "uniq!":
 		return NewAutoBuiltin("array.uniq!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			result, err := arrayUniq(exec, receiver, args, kwargs, block, "array.uniq!")
+			result, changed, err := arrayUniq(exec, receiver, args, kwargs, block, "array.uniq!")
 			if err != nil {
 				return NewNil(), err
 			}
-			if result.Equal(receiver) {
+			if !changed {
 				return NewNil(), nil
 			}
 			return result, nil
@@ -3032,15 +3038,16 @@ func arrayMemberTransforms(property string) (Value, error) {
 		return NewAutoBuiltin("array.sum", arraySum), nil
 	case "compact":
 		return NewAutoBuiltin("array.compact", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return arrayCompact(exec, receiver, args, kwargs, block, "array.compact")
+			result, _, err := arrayCompact(exec, receiver, args, kwargs, block, "array.compact")
+			return result, err
 		}), nil
 	case "compact!":
 		return NewAutoBuiltin("array.compact!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			result, err := arrayCompact(exec, receiver, args, kwargs, block, "array.compact!")
+			result, changed, err := arrayCompact(exec, receiver, args, kwargs, block, "array.compact!")
 			if err != nil {
 				return NewNil(), err
 			}
-			if result.Equal(receiver) {
+			if !changed {
 				return NewNil(), nil
 			}
 			return result, nil

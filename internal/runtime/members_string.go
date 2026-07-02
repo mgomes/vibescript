@@ -1935,6 +1935,26 @@ func stringRuneBytes(r rune) int {
 	return len(string(r))
 }
 
+type stringRuneSegment struct {
+	r          rune
+	start, end int
+}
+
+func nextStringRuneSegment(text string, start int) stringRuneSegment {
+	r, size := utf8.DecodeRuneInString(text[start:])
+	return stringRuneSegment{r: r, start: start, end: start + size}
+}
+
+func stringRuneSegmentsEqual(text string, left, right stringRuneSegment) bool {
+	if left.r != right.r {
+		return false
+	}
+	if left.r != utf8.RuneError {
+		return true
+	}
+	return text[left.start:left.end] == text[right.start:right.end]
+}
+
 func stringCharSetArgsScratchBytes(args []Value) int {
 	if len(args) == 0 {
 		return 0
@@ -1990,11 +2010,14 @@ func stringCountChars(exec *Execution, receiver Value, args []Value, kwargs map[
 		return 0, err
 	}
 	count := 0
-	for _, r := range receiver.String() {
+	text := receiver.String()
+	for i := 0; i < len(text); {
+		seg := nextStringRuneSegment(text, i)
+		i = seg.end
 		if err := exec.step(); err != nil {
 			return 0, err
 		}
-		if stringCharSetsMatch(specs, r) {
+		if stringCharSetsMatch(specs, seg.r) {
 			count++
 		}
 	}
@@ -2022,12 +2045,14 @@ func stringDeleteChars(exec *Execution, receiver Value, args []Value, kwargs map
 	}
 	text := receiver.String()
 	projectedBytes := 0
-	for _, r := range text {
+	for i := 0; i < len(text); {
+		seg := nextStringRuneSegment(text, i)
+		i = seg.end
 		if err := exec.step(); err != nil {
 			return "", err
 		}
-		if !stringCharSetsMatch(specs, r) {
-			projectedBytes = saturatingAdd(projectedBytes, stringRuneBytes(r))
+		if !stringCharSetsMatch(specs, seg.r) {
+			projectedBytes = saturatingAdd(projectedBytes, seg.end-seg.start)
 		}
 	}
 	if err := exec.checkProjectedStringBytesWithCallRoots(projectedBytes, receiver, args, kwargs, block); err != nil {
@@ -2035,9 +2060,11 @@ func stringDeleteChars(exec *Execution, receiver Value, args []Value, kwargs map
 	}
 	var b strings.Builder
 	b.Grow(projectedBytes)
-	for _, r := range text {
-		if !stringCharSetsMatch(specs, r) {
-			b.WriteRune(r)
+	for i := 0; i < len(text); {
+		seg := nextStringRuneSegment(text, i)
+		i = seg.end
+		if !stringCharSetsMatch(specs, seg.r) {
+			b.WriteString(text[seg.start:seg.end])
 		}
 	}
 	return b.String(), nil
@@ -2071,13 +2098,15 @@ func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[str
 	}
 	text := receiver.String()
 	projectedBytes := 0
-	for _, r := range text {
+	for i := 0; i < len(text); {
+		seg := nextStringRuneSegment(text, i)
+		i = seg.end
 		if err := exec.step(); err != nil {
 			return "", err
 		}
-		index, matched := source.orderedIndex(r)
+		index, matched := source.orderedIndex(seg.r)
 		if !matched {
-			projectedBytes = saturatingAdd(projectedBytes, stringRuneBytes(r))
+			projectedBytes = saturatingAdd(projectedBytes, seg.end-seg.start)
 			continue
 		}
 		if replacement.length == 0 {
@@ -2090,11 +2119,13 @@ func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[str
 	}
 	var b strings.Builder
 	b.Grow(projectedBytes)
-	for _, r := range text {
-		index, matched := source.orderedIndex(r)
+	for i := 0; i < len(text); {
+		seg := nextStringRuneSegment(text, i)
+		i = seg.end
+		index, matched := source.orderedIndex(seg.r)
 		switch {
 		case !matched:
-			b.WriteRune(r)
+			b.WriteString(text[seg.start:seg.end])
 		case replacement.length > 0:
 			b.WriteRune(replacement.runeAt(index))
 		}
@@ -2120,17 +2151,19 @@ func stringSqueezeChars(exec *Execution, receiver Value, args []Value, kwargs ma
 	}
 	text := receiver.String()
 	projectedBytes := 0
-	var previous rune
+	var previous stringRuneSegment
 	hasPrevious := false
-	for _, r := range text {
+	for i := 0; i < len(text); {
+		seg := nextStringRuneSegment(text, i)
+		i = seg.end
 		if err := exec.step(); err != nil {
 			return "", err
 		}
-		squeezed := hasPrevious && r == previous && (len(specs) == 0 || stringCharSetsMatch(specs, r))
+		squeezed := hasPrevious && stringRuneSegmentsEqual(text, seg, previous) && (len(specs) == 0 || stringCharSetsMatch(specs, seg.r))
 		if !squeezed {
-			projectedBytes = saturatingAdd(projectedBytes, stringRuneBytes(r))
+			projectedBytes = saturatingAdd(projectedBytes, seg.end-seg.start)
 		}
-		previous = r
+		previous = seg
 		hasPrevious = true
 	}
 	if err := exec.checkProjectedStringBytesWithCallRoots(projectedBytes, receiver, args, kwargs, block); err != nil {
@@ -2139,12 +2172,14 @@ func stringSqueezeChars(exec *Execution, receiver Value, args []Value, kwargs ma
 	var b strings.Builder
 	b.Grow(projectedBytes)
 	hasPrevious = false
-	for _, r := range text {
-		squeezed := hasPrevious && r == previous && (len(specs) == 0 || stringCharSetsMatch(specs, r))
+	for i := 0; i < len(text); {
+		seg := nextStringRuneSegment(text, i)
+		i = seg.end
+		squeezed := hasPrevious && stringRuneSegmentsEqual(text, seg, previous) && (len(specs) == 0 || stringCharSetsMatch(specs, seg.r))
 		if !squeezed {
-			b.WriteRune(r)
+			b.WriteString(text[seg.start:seg.end])
 		}
-		previous = r
+		previous = seg
 		hasPrevious = true
 	}
 	return b.String(), nil
