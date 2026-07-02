@@ -276,7 +276,11 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		return isCallableValue(val), nil
 	case TypeEnum:
 		member := valueEnumValue(val)
-		return member != nil && member.Enum != nil && member.Enum.Name == ty.Name, nil
+		if member != nil && member.Enum != nil && member.Enum.Name == ty.Name {
+			return true, nil
+		}
+		inst := valueInstance(val)
+		return inst != nil && inst.Class != nil && inst.Class.Name == ty.Name, nil
 	case TypeShape:
 		if val.Kind() != KindHash && val.Kind() != KindObject {
 			return false, nil

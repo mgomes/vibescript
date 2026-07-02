@@ -196,6 +196,7 @@ func clonePropertyDecls(properties []PropertyDecl) []PropertyDecl {
 		if property.Names != nil {
 			out[i].Names = append([]string{}, property.Names...)
 		}
+		out[i].Type = cloneTypeExpr(property.Type)
 	}
 	return out
 }
