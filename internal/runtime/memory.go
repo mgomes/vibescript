@@ -1186,6 +1186,17 @@ func (acc *hashBuildAccumulator) addSynthesizedKey(key string) error {
 	return acc.checkQuota()
 }
 
+func (acc *hashBuildAccumulator) addTypedSynthesizedKey(key Value, displayKey string, lookupKey HashLookupKey) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	acc.built = saturatingAdd(acc.built, acc.est.valuePayload(key))
+	acc.built = saturatingAdd(acc.built, acc.est.stringPayloadSize(displayKey))
+	acc.built = saturatingAdd(acc.built, lookupKey.ExtraPayloadBytes())
+	return acc.checkQuota()
+}
+
 // checkTransient rejects the build when a freshly allocated value returned by a
 // block, but not retained as part of the output map, would push the peak
 // footprint over the quota. Array#to_h's block form uses it for the temporary

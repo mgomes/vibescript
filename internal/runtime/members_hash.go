@@ -209,6 +209,17 @@ func typedExclusionSetBytes(count int) int {
 	return saturatingAdd(estimatedMapBaseBytes, saturatingMul(count, estimatedMapEntryBytes+estimatedHashLookupKeyBytes))
 }
 
+func typedHashEntryMapBytes(count int) int {
+	if count <= 0 {
+		return 0
+	}
+	return saturatingAdd(estimatedMapBaseBytes, saturatingMul(count, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes))
+}
+
+func typedHashTransformBufferBytes(outputEntries, scratchBytes int) int {
+	return saturatingAdd(hashTransformBufferBytes(outputEntries, scratchBytes), typedHashEntryMapBytes(outputEntries))
+}
+
 func deepTransformArrayBufferBytes(count int) int {
 	return saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
 }
@@ -250,20 +261,18 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 
 	switch value.Kind() {
 	case KindHash, KindObject:
-		entries := value.Hash()
-		id := reflect.ValueOf(entries).Pointer()
-		if id != 0 {
-			if _, seen := state.seenHashes[id]; seen {
-				return NewNil(), fmt.Errorf("hash.deep_transform_keys does not support cyclic structures")
-			}
-			state.seenHashes[id] = struct{}{}
-			defer delete(state.seenHashes, id)
-		}
-		scratchBytes := sortedKeyBufferBytes(len(entries))
 		if hashHasTypedEntries(value) {
+			id := hashIdentity(value)
+			if id != 0 {
+				if _, seen := state.seenHashes[id]; seen {
+					return NewNil(), fmt.Errorf("hash.deep_transform_keys does not support cyclic structures")
+				}
+				state.seenHashes[id] = struct{}{}
+				defer delete(state.seenHashes, id)
+			}
 			count := value.HashLen()
-			scratchBytes = sortedHashEntryBufferBytes(count)
-			delta := exec.reserveLoopScratch(hashTransformBufferBytes(count, scratchBytes))
+			scratchBytes := sortedHashEntryBufferBytes(count)
+			delta := exec.reserveLoopScratch(typedHashTransformBufferBytes(count, scratchBytes))
 			defer exec.releaseLoopScratch(delta)
 			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
@@ -290,11 +299,12 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 					exec.releaseLoopScratch(prefixDelta)
 					return NewNil(), err
 				}
-				nextKey, err := valueToHashKey(nextKeyValue)
+				lookupKey, err := hashLookupKey(nextKeyValue)
 				if err != nil {
 					exec.releaseLoopScratch(prefixDelta)
 					return NewNil(), fmt.Errorf("hash.deep_transform_keys block returned unsupported hash key: %w", err)
 				}
+				nextKey := hashDisplayKey(nextKeyValue)
 				keyDelta, err := reserveDeepTransformRetainedPayload(exec, len(nextKey), receiver, args, kwargs, block)
 				if err != nil {
 					exec.releaseLoopScratch(prefixDelta)
@@ -309,7 +319,7 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 				if err := hashSet(out, nextKeyValue, nextValue); err != nil {
 					return NewNil(), fmt.Errorf("hash.deep_transform_keys block returned unsupported hash key: %w", err)
 				}
-				if err := acc.addSynthesizedKey(nextKey); err != nil {
+				if err := acc.addTypedSynthesizedKey(nextKeyValue, nextKey, lookupKey); err != nil {
 					return NewNil(), err
 				}
 				if err := acc.addBaselineDeduped(nextValue); err != nil {
@@ -318,6 +328,16 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 			}
 			return out, nil
 		}
+		entries := value.Hash()
+		id := reflect.ValueOf(entries).Pointer()
+		if id != 0 {
+			if _, seen := state.seenHashes[id]; seen {
+				return NewNil(), fmt.Errorf("hash.deep_transform_keys does not support cyclic structures")
+			}
+			state.seenHashes[id] = struct{}{}
+			defer delete(state.seenHashes, id)
+		}
+		scratchBytes := sortedKeyBufferBytes(len(entries))
 		delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), scratchBytes))
 		defer exec.releaseLoopScratch(delta)
 		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
@@ -2360,7 +2380,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
 				scratch := sortedHashEntryBufferBytes(count)
-				delta := exec.reserveLoopScratch(hashTransformBufferBytes(count, scratch))
+				delta := exec.reserveLoopScratch(typedHashTransformBufferBytes(count, scratch))
 				defer exec.releaseLoopScratch(delta)
 				if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
@@ -2385,14 +2405,15 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.checkContext(); err != nil {
 						return NewNil(), err
 					}
-					resolved, err := valueToHashKey(nextKey)
+					lookupKey, err := hashLookupKey(nextKey)
 					if err != nil {
 						return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 					}
+					resolved := hashDisplayKey(nextKey)
 					if err := hashSet(out, nextKey, entry.Value); err != nil {
 						return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 					}
-					if err := acc.addSynthesizedKey(resolved); err != nil {
+					if err := acc.addTypedSynthesizedKey(nextKey, resolved, lookupKey); err != nil {
 						return NewNil(), err
 					}
 				}

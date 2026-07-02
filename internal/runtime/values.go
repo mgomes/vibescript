@@ -29,6 +29,10 @@ func canonicalHashKey(val Value) (string, error) {
 	return value.HashKey(val)
 }
 
+func hashDisplayKey(val Value) string {
+	return value.HashDisplayKey(val)
+}
+
 func hashLookupKey(val Value) (HashLookupKey, error) {
 	return value.NewHashLookupKey(val)
 }

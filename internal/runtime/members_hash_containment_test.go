@@ -132,6 +132,34 @@ func TestHashDeepTransformKeysReservesOutputBuffers(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestHashDeepTransformKeysTypedReceiverDoesNotMaterializeLegacyMap(t *testing.T) {
+	t.Parallel()
+
+	key := NewArray([]Value{NewString("account"), NewSymbol("id")})
+	receiver := NewTypedHash(0)
+	if err := hashSet(receiver, key, NewInt(42)); err != nil {
+		t.Fatalf("hashSet(%s) error = %v, want nil", key.Inspect(), err)
+	}
+	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
+		t.Fatalf("typed receiver legacy map before deep_transform_keys = %v, %v; want nil, false", entries, ok)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	got, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, keyIdentityBlock())
+	if err != nil {
+		t.Fatalf("hash.deep_transform_keys on typed receiver = %v, want success", err)
+	}
+	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
+		t.Fatalf("typed receiver legacy map after deep_transform_keys = %v, %v; want nil, false", entries, ok)
+	}
+	if got.Kind() != KindHash || got.HashLen() != 1 {
+		t.Fatalf("hash.deep_transform_keys typed result = %s with %d entries, want hash with 1 entry", got.Kind(), got.HashLen())
+	}
+	if value, ok, err := hashGet(got, key); err != nil || !ok || value.Int() != 42 {
+		t.Fatalf("hash.deep_transform_keys typed result lookup = (%v, %v, %v), want (42, true, nil)", value, ok, err)
+	}
+}
+
 func TestHashDeepTransformKeysRetainedPayloadReservationTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 
@@ -1549,6 +1577,33 @@ func TestHashTransformReservationsRejectBeforeMapAllocation(t *testing.T) {
 				t.Fatalf("%s leaked %d reserved scratch bytes after rejection", tt.name, exec.reservedScratchBytes)
 			}
 		})
+	}
+}
+
+func TestTypedHashTransformKeysReservesTypedOutputMap(t *testing.T) {
+	t.Parallel()
+
+	const count = 2_000
+	receiver := largeTypedSymbolHash(count)
+	block := keyIdentityBlock()
+	scratch := sortedHashEntryBufferBytes(count)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	legacyBuffers := hashTransformBufferBytes(count, scratch)
+	typedBuffers := typedHashTransformBufferBytes(count, scratch)
+	if legacyBuffers >= typedBuffers {
+		t.Fatalf("test setup expects typed buffers (%d) to exceed legacy buffers (%d)", typedBuffers, legacyBuffers)
+	}
+
+	quota := roots + legacyBuffers
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "transform_keys", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("hash.transform_keys ran %d step(s), want typed output backing rejected before iteration", exec.steps)
+	}
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("hash.transform_keys leaked %d reserved scratch bytes after rejection", exec.reservedScratchBytes)
 	}
 }
 
