@@ -25,6 +25,36 @@ end
 	compareArrays(t, got, []Value{NewNil(), NewNil()})
 }
 
+func TestRubyDoesNotPredeclareFutureNestedAssignmentsAtScopeStart(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def nested_branch
+  before = later
+  if false
+    later = 1
+  end
+  before
+end
+
+def logical_rhs
+  before = later
+  true or later = 1
+  before
+end
+`)
+
+	for _, fn := range []string{"nested_branch", "logical_rhs"} {
+		t.Run(fn, func(t *testing.T) {
+			t.Parallel()
+			_, err := script.Call(context.Background(), fn, nil, CallOptions{})
+			if err == nil || !strings.Contains(err.Error(), "undefined variable later") {
+				t.Fatalf("%s() error = %v, want undefined variable later", fn, err)
+			}
+		})
+	}
+}
+
 func TestRubyBlockAssignmentsRespectLocalBoundary(t *testing.T) {
 	t.Parallel()
 

@@ -173,6 +173,13 @@ func (exec *Execution) pushEnv(env *Env) {
 	exec.envStack = append(exec.envStack, env)
 }
 
+func (exec *Execution) currentEnv() *Env {
+	if len(exec.envStack) == 0 {
+		return nil
+	}
+	return exec.envStack[len(exec.envStack)-1]
+}
+
 func (exec *Execution) popEnv() {
 	if len(exec.envStack) == 0 {
 		return

@@ -2334,16 +2334,27 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 }
 
 func (exec *Execution) evalLocalScopeStatements(stmts []Statement, env *Env) (Value, bool, error) {
-	predeclareLocalBindings(stmts, env)
 	return exec.evalStatements(stmts, env)
 }
 
-func predeclareLocalBindings(stmts []Statement, env *Env) {
+func predeclareStatementLocalBindings(stmt Statement, env *Env) {
+	if !statementCanPredeclareLocalBindings(stmt) {
+		return
+	}
 	var names []string
 	seen := make(map[string]struct{})
-	collectLocalBindingNames(stmts, false, &names, seen)
+	collectLocalBindingNames([]Statement{stmt}, false, &names, seen)
 	for _, name := range names {
 		env.PredeclareLocal(name)
+	}
+}
+
+func statementCanPredeclareLocalBindings(stmt Statement) bool {
+	switch stmt.(type) {
+	case *AssignStmt, *LogicalStmt, *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -2351,9 +2362,7 @@ func collectLocalBindingNames(stmts []Statement, nested bool, names *[]string, s
 	for _, stmt := range stmts {
 		switch s := stmt.(type) {
 		case *AssignStmt:
-			if nested {
-				collectTargetBindingNames(s.Target, names, seen)
-			}
+			collectTargetBindingNames(s.Target, names, seen)
 		case *LogicalStmt:
 			collectLocalBindingNames([]Statement{s.Left}, nested, names, seen)
 			collectLocalBindingNames([]Statement{s.Right}, true, names, seen)
@@ -2405,6 +2414,7 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 		if err := exec.step(); err != nil {
 			return NewNil(), false, exec.wrapError(err, stmt.Pos())
 		}
+		predeclareStatementLocalBindings(stmt, env)
 		val, returned, err := exec.evalStatement(stmt, env)
 		if err != nil {
 			return NewNil(), false, err

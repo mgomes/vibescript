@@ -179,7 +179,7 @@ func (e *Env) PredeclareLocal(name string) {
 	if name == "" || e.hasOwnBinding(name) {
 		return
 	}
-	if e.assignBoundary && e.rebindOuter && e.parent != nil && e.parent.hasDynamicInChain(name) {
+	if e.parent != nil && e.parent.hasBindingInChain(name) {
 		return
 	}
 	e.Define(name, NewNil())
@@ -439,9 +439,9 @@ func (e *Env) hasOwnBinding(name string) bool {
 	return ok
 }
 
-func (e *Env) hasDynamicInChain(name string) bool {
+func (e *Env) hasBindingInChain(name string) bool {
 	for scope := e; scope != nil; scope = scope.parent {
-		if scope.hasDynamic(name) {
+		if scope.hasOwnBinding(name) {
 			return true
 		}
 	}
