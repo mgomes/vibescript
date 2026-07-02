@@ -161,6 +161,31 @@ end`,
 			want: "call to Box.new is missing argument v",
 		},
 		{
+			name: "auto-invoked constructor arity",
+			source: `class Box
+  def initialize(v)
+  end
+end
+
+def run()
+  Box.new
+end`,
+			want: "call to Box.new is missing argument v",
+		},
+		{
+			name: "auto-invoked method arity",
+			source: `class Box
+  def take(v)
+    v
+  end
+end
+
+def run()
+  Box.new.take
+end`,
+			want: "call to Box#take is missing argument v",
+		},
+		{
 			name: "builtin arity",
 			source: `def run()
   JSON.parse("{}", "extra")
@@ -367,6 +392,24 @@ end
 
 def run(Box)
   Box.new.take(1, 2, 3)
+end`,
+		},
+		{
+			name: "explicit member call with arguments is not auto-checked as empty",
+			source: `class Box
+  def take(v)
+    v
+  end
+end
+
+def run()
+  Box.new.take(1)
+end`,
+		},
+		{
+			name: "bare non-auto namespace member stays callable value",
+			source: `def run()
+  JSON.parse
 end`,
 		},
 		{
