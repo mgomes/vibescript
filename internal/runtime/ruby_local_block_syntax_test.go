@@ -86,6 +86,15 @@ def rescue_binding_does_not_leak
   err
 end
 
+def rescue_handler_preserves_source_order
+  begin
+    raise "boom"
+  rescue
+    before = later_rescue_local
+    later_rescue_local = 1
+  end
+end
+
 def unless_true_else_reads_prior_body_local
   unless true
     unless_local = 1
@@ -170,6 +179,10 @@ end
 	_, err := script.Call(context.Background(), "rescue_binding_does_not_leak", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "undefined variable err") {
 		t.Fatalf("rescue_binding_does_not_leak() error = %v, want undefined variable err", err)
+	}
+	_, err = script.Call(context.Background(), "rescue_handler_preserves_source_order", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "undefined variable later_rescue_local") {
+		t.Fatalf("rescue_handler_preserves_source_order() error = %v, want undefined variable later_rescue_local", err)
 	}
 	if got := callFunc(t, script, "unless_true_else_reads_prior_body_local", nil); !got.Equal(NewNil()) {
 		t.Fatalf("unless_true_else_reads_prior_body_local() = %s, want nil", got)
@@ -351,6 +364,9 @@ def run
   for k, v in {a: 1, b: 2}
     out = out + [[k, v]]
   end
+  for head, * in [[5, 6, 7]]
+    out = out + [head]
+  end
   out
 end
 `)
@@ -361,6 +377,7 @@ end
 		NewInt(7),
 		NewArray([]Value{NewSymbol("a"), NewInt(1)}),
 		NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+		NewInt(5),
 	})
 }
 

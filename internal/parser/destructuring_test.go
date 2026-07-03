@@ -124,6 +124,37 @@ func TestParserParallelAssignmentAnonymousRestTargets(t *testing.T) {
 	}
 }
 
+func TestParserForLoopAnonymousRestTarget(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  for head, * in rows
+    head
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ForStmt{
+			Target: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "head"}},
+				{Rest: true},
+			}},
+			Iterable: &ast.Identifier{Name: "rows"},
+			Body: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.Identifier{Name: "head"}},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserParallelAssignmentRejectsDuplicateRestTarget(t *testing.T) {
 	t.Parallel()
 

@@ -313,7 +313,7 @@ func (p *parser) parseForStatement() ast.Statement {
 func (p *parser) parseForTarget() ast.Expression {
 	switch p.curToken.Type {
 	case ast.TokenAsterisk:
-		target := p.parseDestructureTargetList(nil)
+		target := p.parseDestructureTargetList(nil, ast.TokenIn)
 		if target == nil {
 			return nil
 		}
@@ -328,7 +328,7 @@ func (p *parser) parseForTarget() ast.Expression {
 			return nil
 		}
 		if p.peekToken.Type == ast.TokenComma {
-			target := p.parseDestructureTargetList(first)
+			target := p.parseDestructureTargetList(first, ast.TokenIn)
 			if target == nil {
 				return nil
 			}
@@ -1534,7 +1534,7 @@ func compoundAssignmentOperator(tt ast.TokenType) ast.TokenType {
 	}
 }
 
-func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression {
+func (p *parser) parseDestructureTargetList(first ast.Expression, extraAnonymousRestTerminators ...ast.TokenType) ast.Expression {
 	var pos ast.Position
 	elements := []ast.DestructureElement{}
 	seenRest := false
@@ -1551,7 +1551,7 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 		pos = first.Pos()
 		elements = append(elements, ast.DestructureElement{Target: first, Position: first.Pos()})
 	} else {
-		element, ok := p.parseDestructureElement()
+		element, ok := p.parseDestructureElement(extraAnonymousRestTerminators...)
 		if !ok {
 			return nil
 		}
@@ -1563,7 +1563,7 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 	for p.peekToken.Type == ast.TokenComma {
 		p.nextToken()
 		p.nextToken()
-		element, ok := p.parseDestructureElement()
+		element, ok := p.parseDestructureElement(extraAnonymousRestTerminators...)
 		if !ok {
 			return nil
 		}
@@ -1580,13 +1580,13 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 	return &ast.DestructureTarget{Elements: elements, Position: pos}
 }
 
-func (p *parser) parseDestructureElement() (ast.DestructureElement, bool) {
+func (p *parser) parseDestructureElement(extraAnonymousRestTerminators ...ast.TokenType) (ast.DestructureElement, bool) {
 	rest := false
 	if p.curToken.Type == ast.TokenAsterisk {
 		restPos := p.curToken.Pos
 		// A bare "*" not followed by a target is an anonymous (discard) rest.
 		// Leave curToken on "*" so the caller's lookahead sees the terminator.
-		if isAnonymousRestTerminator(p.peekToken.Type) {
+		if isAnonymousRestTerminator(p.peekToken.Type, extraAnonymousRestTerminators...) {
 			return ast.DestructureElement{Rest: true, Position: restPos}, true
 		}
 		rest = true
@@ -1604,7 +1604,12 @@ func (p *parser) parseDestructureElement() (ast.DestructureElement, bool) {
 // target, leaving an anonymous (discard) rest with no bound name. A "*" is
 // anonymous when the next token closes the target list (an assignment operator),
 // continues it (a comma), or closes a nested target group (")" or "]").
-func isAnonymousRestTerminator(tt ast.TokenType) bool {
+func isAnonymousRestTerminator(tt ast.TokenType, extra ...ast.TokenType) bool {
+	for _, terminator := range extra {
+		if tt == terminator {
+			return true
+		}
+	}
 	switch tt {
 	case ast.TokenComma, ast.TokenRParen, ast.TokenRBracket:
 		return true
