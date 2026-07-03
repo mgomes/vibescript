@@ -86,6 +86,75 @@ func TestArraySelectReservesOutputBeforeBlockCalls(t *testing.T) {
 	}
 }
 
+func TestArrayBlockFiltersReserveEmptyResultBackingBeforeBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeIntArray(4000)
+	tests := []struct {
+		method string
+		block  Value
+	}{
+		{method: "delete_if", block: constantBoolBlockValue(true)},
+		{method: "keep_if", block: constantBoolBlockValue(false)},
+		{method: "select!", block: constantBoolBlockValue(false)},
+		{method: "reject!", block: constantBoolBlockValue(true)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.method, func(t *testing.T) {
+			t.Parallel()
+
+			initialCap := boundedFilterCap(len(receiver.Array()))
+			emptyBacking := arraySlotBackingBytes(initialCap)
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+			base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, tc.block)
+			quota := base + emptyBacking - 1
+			if quota <= base {
+				t.Fatalf("quota %d must fit call roots %d and reject empty result backing %d", quota, base, emptyBacking)
+			}
+
+			fitsCallRoots := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			if err := fitsCallRoots.checkCallMemoryRoots(receiver, nil, nil, tc.block); err != nil {
+				t.Fatalf("array.%s call roots should fit under quota %d: %v", tc.method, quota, err)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callArrayMember(t, exec, receiver, tc.method, nil, tc.block)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			if exec.steps != 0 {
+				t.Fatalf("array.%s stepped %d times before rejecting empty result backing; want 0", tc.method, exec.steps)
+			}
+		})
+	}
+}
+
+func TestArrayUniqBlockReservesOutputBeforeBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeIntArray(4000)
+	block := emptyBlockValue()
+	initialCap := boundedSetCap(len(receiver.Array()))
+	outputSlots := arraySlotBackingBytes(initialCap)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	quota := base + outputSlots - 1
+	if quota <= base {
+		t.Fatalf("quota %d must fit call roots %d and reject uniq result backing %d", quota, base, outputSlots)
+	}
+
+	fitsCallRoots := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	if err := fitsCallRoots.checkCallMemoryRoots(receiver, nil, nil, block); err != nil {
+		t.Fatalf("array.uniq call roots should fit under quota %d: %v", quota, err)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callArrayMember(t, exec, receiver, "uniq", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("array.uniq stepped %d times before rejecting output backing; want 0", exec.steps)
+	}
+}
+
 func TestArraySortByReservesDecoratedBufferBeforeBlockCalls(t *testing.T) {
 	t.Parallel()
 
@@ -196,6 +265,125 @@ func TestArrayGroupByStableReservesGroupedSlicesDuringBlockCalls(t *testing.T) {
 	}
 	if exec.reservedScratchBytes != 0 {
 		t.Fatalf("group_by_stable leaked %d scratch bytes after rejection", exec.reservedScratchBytes)
+	}
+}
+
+func TestArrayChunkByBlockPreflightsGroupBacking(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeIntArray(4000)
+	block := constantSymbolBlockValue("all")
+	initialCap := boundedFilterCap(len(receiver.Array()))
+	outerBacking := arraySlotBackingBytes(initialCap)
+	pairBacking := arraySlotBackingBytes(2)
+	groupBacking := arraySlotBackingBytes(len(receiver.Array()))
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	quota := base + outerBacking + pairBacking + groupBacking/2
+	if quota <= base+outerBacking+pairBacking || quota >= base+outerBacking+pairBacking+groupBacking {
+		t.Fatalf("quota %d must fit roots %d, outer backing %d, and pair backing %d while rejecting group backing %d",
+			quota, base, outerBacking, pairBacking, groupBacking)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callArrayMember(t, exec, receiver, "chunk", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps == 0 {
+		t.Fatalf("chunk rejected before exercising block grouping; want at least one step")
+	}
+}
+
+func TestArrayChunkByBlockReservesRetainedKeyBeforeLaterBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	const retainedPayloadBytes = 64 * 1024
+	receiver := largeIntArray(2)
+	retainedPayload := NewString(strings.Repeat("x", retainedPayloadBytes))
+	expectedRetained := newMemoryEstimator().valuePayload(retainedPayload)
+	calls := 0
+	block := arrayChunkRetainedKeyProbeBlock(retainedPayload.String(), expectedRetained, &calls)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	got, err := callArrayMember(t, exec, receiver, "chunk", nil, block)
+	if err != nil {
+		t.Fatalf("array.chunk retained key reservation error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("array.chunk block calls = %d, want 2", calls)
+	}
+	compareArrays(t, got, []Value{NewArray([]Value{retainedPayload, receiver})})
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("array.chunk leaked %d scratch bytes after success", exec.reservedScratchBytes)
+	}
+}
+
+func TestArrayAdjacentSlicesPreflightSegmentBacking(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		member string
+		block  Value
+	}{
+		{name: "slice_when", member: "slice_when", block: constantBoolBlockValue(false)},
+		{name: "chunk_while", member: "chunk_while", block: constantBoolBlockValue(true)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			receiver := largeIntArray(4000)
+			initialCap := boundedFilterCap(len(receiver.Array()))
+			outerBacking := arraySlotBackingBytes(initialCap)
+			segmentBacking := arraySlotBackingBytes(len(receiver.Array()))
+
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+			base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, tc.block)
+			quota := base + outerBacking + segmentBacking/2
+			if quota <= base+outerBacking || quota >= base+outerBacking+segmentBacking {
+				t.Fatalf("quota %d must fit roots %d and outer backing %d while rejecting segment backing %d",
+					quota, base, outerBacking, segmentBacking)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callArrayMember(t, exec, receiver, tc.member, nil, tc.block)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			if exec.steps == 0 {
+				t.Fatalf("%s rejected before exercising adjacent scan; want at least one step", tc.member)
+			}
+		})
+	}
+}
+
+func TestArrayProductPreflightsTupleRowBacking(t *testing.T) {
+	t.Parallel()
+
+	const dims = 1024
+	receiver := NewArray([]Value{NewInt(0)})
+	args := make([]Value, dims-1)
+	for i := range args {
+		args[i] = NewArray([]Value{NewInt(int64(i + 1))})
+	}
+
+	scratch := arrayIntScratchBytes(dims)
+	outerBacking := arraySlotBackingBytes(1)
+	rowBacking := arrayTupleRowBackingBytes(1, dims)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
+	quota := base + scratch + outerBacking + rowBacking/2
+	if quota <= base+scratch+outerBacking || quota >= base+scratch+outerBacking+rowBacking {
+		t.Fatalf("quota %d must fit roots %d, scratch %d, and outer backing %d while rejecting product row backing %d",
+			quota, base, scratch, outerBacking, rowBacking)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callArrayMember(t, exec, receiver, "product", args, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("product advanced to %d steps before rejecting tuple row backing; want 0", exec.steps)
 	}
 }
 
@@ -314,6 +502,12 @@ func constantSymbolBlockValue(name string) Value {
 	return NewBlock(nil, body, newEnv(nil))
 }
 
+func constantBoolBlockValue(value bool) Value {
+	pos := Position{Line: 1, Column: 1}
+	body := []Statement{&ExprStmt{Position: pos, Expr: &BoolLiteral{Value: value, Position: pos}}}
+	return NewBlock(nil, body, newEnv(nil))
+}
+
 func arrayMapRetainedPayloadProbeBlock(payload string, expectedReservedBeforeSecondCall int, calls *int) Value {
 	pos := Position{Line: 1, Column: 1}
 	probe := NewBuiltin("test.array_map_payload_probe", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
@@ -338,6 +532,24 @@ func arraySortByRetainedKeyProbeBlock(payload string, expectedReservedBeforeSeco
 		*calls++
 		if *calls == 2 && exec.reservedScratchBytes < expectedReservedBeforeSecondCall {
 			return NewNil(), fmt.Errorf("reserved scratch before second sort_by block call = %d, want at least %d", exec.reservedScratchBytes, expectedReservedBeforeSecondCall)
+		}
+		return NewString(payload), nil
+	})
+	env := newEnv(nil)
+	env.Define("__probe__", probe)
+	body := []Statement{&ExprStmt{Position: pos, Expr: &CallExpr{
+		Position: pos,
+		Callee:   &Identifier{Name: "__probe__", Position: pos},
+	}}}
+	return NewBlock([]Param{{Kind: ParamNormal, Name: "item"}}, body, env)
+}
+
+func arrayChunkRetainedKeyProbeBlock(payload string, expectedReservedBeforeSecondCall int, calls *int) Value {
+	pos := Position{Line: 1, Column: 1}
+	probe := NewBuiltin("test.array_chunk_key_probe", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		*calls++
+		if *calls == 2 && exec.reservedScratchBytes < expectedReservedBeforeSecondCall {
+			return NewNil(), fmt.Errorf("reserved scratch before second chunk block call = %d, want at least %d", exec.reservedScratchBytes, expectedReservedBeforeSecondCall)
 		}
 		return NewString(payload), nil
 	})
