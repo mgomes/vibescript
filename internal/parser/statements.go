@@ -1678,6 +1678,14 @@ func (p *parser) parseDestructureElement(allowType bool, extraAnonymousRestTermi
 		if element.Type == nil {
 			return ast.DestructureElement{}, false
 		}
+		if rest && !restCaptureTypeAcceptsArray(element.Type) {
+			name := ast.FormatDestructureTarget(target)
+			if name == "" {
+				name = "*"
+			}
+			p.addParseError(element.Type.Position, fmt.Sprintf("rest destructuring target %s captures an array; annotate it as array<...> or any", name))
+			return ast.DestructureElement{}, false
+		}
 	}
 	return element, true
 }

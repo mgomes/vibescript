@@ -235,6 +235,22 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       block.call([1, answer, 0])
     end
 
+    def yield_block
+      yield(answer)
+    end
+
+    def yield_destructured_block
+      yield(answer)
+    end
+
+    def yield_splatted_array_block
+      yield([1, answer])
+    end
+
+    def yield_shape_block
+      yield({ cb: answer })
+    end
+
     def run_untyped
       receive_untyped(answer)
     end
@@ -328,6 +344,30 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
         fns[0].call + head + tail
       end
     end
+
+    def run_yield_block_param
+      yield_block do |fn: function|
+        fn.call
+      end
+    end
+
+    def run_yield_destructured_block_param
+      yield_destructured_block do |(fn: function)|
+        fn.call
+      end
+    end
+
+    def run_yield_splatted_array_block_param
+      yield_splatted_array_block do |head: int, fn: function|
+        fn.call + head
+      end
+    end
+
+    def run_yield_shape_block_param
+      yield_shape_block do |opts: { cb: function }|
+        opts[:cb].call
+      end
+    end
     `)
 
 	tests := []struct {
@@ -360,6 +400,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "typed destructured block parameter keeps scalar callable", fn: "run_scalar_destructured_block_param", want: NewInt(42)},
 		{name: "nested typed destructured block parameter keeps callable", fn: "run_nested_destructured_block_param", want: NewInt(42)},
 		{name: "typed destructured block rest parameter keeps callable", fn: "run_destructured_block_rest_param", want: NewInt(43)},
+		{name: "yield typed block parameter keeps callable", fn: "run_yield_block_param", want: NewInt(42)},
+		{name: "yield typed destructured block parameter keeps callable", fn: "run_yield_destructured_block_param", want: NewInt(42)},
+		{name: "yield splatted array keeps callable element", fn: "run_yield_splatted_array_block_param", want: NewInt(43)},
+		{name: "yield typed shape block parameter keeps callable field", fn: "run_yield_shape_block_param", want: NewInt(42)},
 	}
 
 	for _, tt := range tests {

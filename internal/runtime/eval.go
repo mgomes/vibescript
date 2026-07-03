@@ -1174,6 +1174,13 @@ func rubyBlockBindArgs(params []Param, args []Value) []Value {
 	if len(args) != 1 || args[0].Kind() != KindArray {
 		return args
 	}
+	if rubyBlockPositionalBindCount(params) <= 1 {
+		return args
+	}
+	return args[0].Array()
+}
+
+func rubyBlockPositionalBindCount(params []Param) int {
 	positional := 0
 	for _, param := range params {
 		switch param.Kind {
@@ -1183,10 +1190,7 @@ func rubyBlockBindArgs(params []Param, args []Value) []Value {
 			continue
 		}
 	}
-	if positional <= 1 {
-		return args
-	}
-	return args[0].Array()
+	return positional
 }
 
 func implicitBlockParamIndex(name string) int {
@@ -1440,9 +1444,11 @@ func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
 	if !ok || block.Kind() == KindNil {
 		return NewNil(), exec.localJumpErrorAt(expr.Pos(), "no block given")
 	}
+	blk := valueBlock(block)
 	args := make([]Value, 0, len(expr.Args))
-	for _, arg := range expr.Args {
-		val, err := exec.evalExpression(arg, env)
+	for i, arg := range expr.Args {
+		expectation := yieldArgumentExpectation(blk, i, len(expr.Args))
+		val, err := exec.evalExpressionWithExpectation(arg, env, expectation)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1457,6 +1463,38 @@ func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
 		}
 	}
 	return exec.CallBlock(block, args)
+}
+
+func yieldArgumentExpectation(blk *Block, argIndex, argCount int) expressionExpectation {
+	if blk == nil || len(blk.Params) == 0 {
+		return expressionExpectation{}
+	}
+	if argCount == 1 {
+		param, ok := positionalCallableParam(blk.Params, 0)
+		if !ok {
+			return expressionExpectation{}
+		}
+		expectation := positionalArgumentExpectation(param)
+		if rubyBlockPositionalBindCount(blk.Params) > 1 {
+			expectation.arrayElement = yieldArrayElementExpectation(blk.Params)
+		}
+		return expectation
+	}
+	param, ok := positionalCallableParam(blk.Params, argIndex)
+	if !ok {
+		return expressionExpectation{}
+	}
+	return positionalArgumentExpectation(param)
+}
+
+func yieldArrayElementExpectation(params []Param) func(int, int) expressionExpectation {
+	return func(index, _ int) expressionExpectation {
+		param, ok := positionalCallableParam(params, index)
+		if !ok {
+			return expressionExpectation{}
+		}
+		return positionalArgumentExpectation(param)
+	}
 }
 
 func (exec *Execution) assignToMember(obj Value, property string, value Value, pos Position) error {

@@ -98,6 +98,24 @@ end`
 	}
 }
 
+func TestParserBlockParameterDestructuringRejectsScalarRestType(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  rows.map do |(*tail: int)|
+    tail
+  end
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = nil, want rest destructuring type diagnostic", source)
+	}
+	if got := errs[0].Error(); !strings.Contains(got, "captures an array") {
+		t.Fatalf("parseSource(%q) error = %q, want captures an array diagnostic", source, got)
+	}
+}
+
 func TestParserBlockParameterDestructuringAnonymousRest(t *testing.T) {
 	t.Parallel()
 
