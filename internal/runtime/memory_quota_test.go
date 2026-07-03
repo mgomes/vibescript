@@ -1682,6 +1682,39 @@ func TestMemoryQuotaCountsCallBlockPayload(t *testing.T) {
 	}
 }
 
+func TestMemoryQuotaCountsDirectBlockCalleePayload(t *testing.T) {
+	t.Parallel()
+
+	payload := strings.Repeat("abcdefghij", 4096)
+
+	closureEnv := newEnv(nil)
+	closureEnv.Define("retained", NewString(payload))
+	callee := NewBlock(nil, nil, closureEnv)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	baseRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), NewNil(), nil, nil, NewNil())
+	calleeRoots := probe.estimateMemoryUsageForCallRoots(callee, NewNil(), nil, nil, NewNil())
+	if calleeRoots <= baseRoots {
+		t.Fatalf("direct block callee roots = %d, want greater than base roots %d", calleeRoots, baseRoots)
+	}
+
+	quota := calleeRoots - 1
+	baseOnly := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	if err := baseOnly.checkCallMemoryRootsWithCallee(NewNil(), NewNil(), nil, nil, NewNil()); err != nil {
+		t.Fatalf("base call roots should fit under quota %d: %v", quota, err)
+	}
+
+	tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	if err := tight.checkCallMemoryRootsWithCallee(callee, NewNil(), nil, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("direct block callee one byte below call roots = %v, want errMemoryQuotaExceeded", err)
+	}
+
+	exact := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: calleeRoots}
+	if err := exact.checkCallMemoryRootsWithCallee(callee, NewNil(), nil, nil, NewNil()); err != nil {
+		t.Fatalf("direct block callee at exact call roots %d = %v, want success", calleeRoots, err)
+	}
+}
+
 type highAllocPatternDB struct{}
 
 func (highAllocPatternDB) Find(ctx context.Context, req DBFindRequest) (Value, error) {
