@@ -277,6 +277,8 @@ var precedences = map[ast.TokenType]int{
 	ast.TokenEQ:        precEquality,
 	ast.TokenCaseEQ:    precEquality,
 	ast.TokenNotEQ:     precEquality,
+	ast.TokenMatch:     precEquality,
+	ast.TokenNotMatch:  precEquality,
 	ast.TokenLT:        precComparison,
 	ast.TokenLTE:       precComparison,
 	ast.TokenGT:        precComparison,

@@ -605,6 +605,8 @@ func valueKindName(kind value.ValueKind) string {
 		return "class"
 	case value.KindInstance:
 		return "instance"
+	case value.KindRegex:
+		return "regex"
 	}
 	return "unknown"
 }

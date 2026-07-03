@@ -192,7 +192,15 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 		}
 	case '/':
-		if l.peekRune() == '=' {
+		if l.canStartRegexLiteral() {
+			literal, err := l.readRegexLiteral()
+			if err != "" {
+				setDiagnostic(&tok, err)
+			} else {
+				tok.Type = ast.TokenRegex
+				tok.Literal = literal
+			}
+		} else if l.peekRune() == '=' {
 			first := l.ch
 			l.readRune()
 			tok = l.makeToken(ast.TokenSlashAssign, string(first)+string(l.ch))
@@ -356,6 +364,11 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 			tok = l.makeToken(ast.TokenNotEQ, string(first)+string(l.ch))
 			l.readRune()
+		} else if l.peekRune() == '~' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenNotMatch, string(first)+string(l.ch))
+			l.readRune()
 		} else {
 			tok = l.makeToken(ast.TokenBang, "!")
 			l.readRune()
@@ -381,6 +394,11 @@ func (l *lexer) scanToken() ast.Token {
 			first := l.ch
 			l.readRune()
 			tok = l.makeToken(ast.TokenArrow, string(first)+string(l.ch))
+			l.readRune()
+		case '~':
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenMatch, string(first)+string(l.ch))
 			l.readRune()
 		default:
 			tok = l.makeToken(ast.TokenAssign, "=")
@@ -1302,6 +1320,72 @@ func isPercentLiteralDelimiter(r rune) bool {
 	return r != 0 && !unicode.IsSpace(r) && !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
 }
 
+// canStartRegexLiteral reports whether a `/` under l.ch begins a Ruby-style
+// regex literal rather than division. The rule mirrors Ruby's lexer state: a
+// slash in prefix position (nothing before it on the line that could end an
+// expression) starts a regex, while a slash after a value token is the
+// division operator. `10 / 2` and `total /= n` therefore stay arithmetic,
+// while `foo(/re/)`, `x =~ /re/`, and a statement-leading `/re/` lex as regex
+// literals. Like Ruby, a slash at line-leading whitespace is always a regex,
+// so continuing a division onto a new line requires the `/` to stay on the
+// dividend's line.
+func (l *lexer) canStartRegexLiteral() bool {
+	if l.atLineLeadingWhitespace() {
+		return true
+	}
+	return !canEndExpressionToken(l.lastToken.Type)
+}
+
+// readRegexLiteral scans a `/pattern/flags` literal with l.ch on the opening
+// slash and returns the raw literal text including both delimiters and any
+// trailing flag letters. A backslash escapes the next rune (so `/a\/b/` keeps
+// its escaped slash) and an unescaped `/` inside a `[...]` character class
+// stays part of the pattern. The pattern body must close on the same line:
+// a newline or end of input before the closing slash reports an unterminated
+// literal, which keeps a stray prefix slash from silently swallowing the rest
+// of the source. Flag validity is the parser's concern; the lexer accepts any
+// trailing ASCII letters so the parser can report unknown flags precisely.
+func (l *lexer) readRegexLiteral() (string, string) {
+	var sb strings.Builder
+	sb.WriteRune(l.ch)
+	inClass := false
+	for {
+		l.readRune()
+		switch {
+		case l.ch == 0 || l.ch == '\n':
+			return "", "unterminated regex literal"
+		case l.ch == '\\':
+			next := l.peekRune()
+			if next == 0 || next == '\n' {
+				return "", "unterminated regex literal"
+			}
+			sb.WriteRune(l.ch)
+			l.readRune()
+			sb.WriteRune(l.ch)
+		case l.ch == '[' && !inClass:
+			inClass = true
+			sb.WriteRune(l.ch)
+		case l.ch == ']' && inClass:
+			inClass = false
+			sb.WriteRune(l.ch)
+		case l.ch == '/' && !inClass:
+			sb.WriteRune(l.ch)
+			l.readRune()
+			for isRegexFlagRune(l.ch) {
+				sb.WriteRune(l.ch)
+				l.readRune()
+			}
+			return sb.String(), ""
+		default:
+			sb.WriteRune(l.ch)
+		}
+	}
+}
+
+func isRegexFlagRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+}
+
 func (l *lexer) canStartPercentArrayLiteral() bool {
 	start := l.currentOffset()
 	if start == 0 {
@@ -1504,7 +1588,7 @@ func canEndExpressionToken(tt ast.TokenType) bool {
 		ast.TokenSymbol, ast.TokenWords, ast.TokenSymbols, ast.TokenInterpWords, ast.TokenInterpSymbols,
 		ast.TokenTrue, ast.TokenFalse, ast.TokenNil,
 		ast.TokenSelf, ast.TokenIvar, ast.TokenClassVar, ast.TokenRParen, ast.TokenRBracket,
-		ast.TokenRBrace, ast.TokenEnd:
+		ast.TokenRBrace, ast.TokenEnd, ast.TokenRegex:
 		return true
 	default:
 		return false

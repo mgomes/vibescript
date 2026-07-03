@@ -36,6 +36,18 @@ type StringLiteral struct {
 func (e *StringLiteral) exprNode()     {}
 func (e *StringLiteral) Pos() Position { return e.Position }
 
+// RegexLiteral represents a Ruby-style regex literal such as /pattern/i. The
+// pattern is the raw source between the slashes (Go RE2 syntax) and Flags
+// holds the trailing flag letters in source order.
+type RegexLiteral struct {
+	Pattern  string
+	Flags    string
+	Position Position
+}
+
+func (e *RegexLiteral) exprNode()     {}
+func (e *RegexLiteral) Pos() Position { return e.Position }
+
 // BoolLiteral represents a boolean constant (true or false).
 type BoolLiteral struct {
 	Value    bool

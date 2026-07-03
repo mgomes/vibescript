@@ -58,10 +58,6 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 			p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), "range is missing start expression")
 			return nil
 		}
-		if p.curToken.Type == ast.TokenSlash {
-			p.recoverUnsupportedRegexLiteral()
-			return nil
-		}
 		p.errorUnexpected(p.curToken)
 		return nil
 	}
@@ -263,94 +259,45 @@ func (p *parser) percentArrayLiteralArgumentAt(pos ast.Position) bool {
 	return ok
 }
 
-func (p *parser) recoverUnsupportedRegexLiteral() {
-	startLine := p.curToken.Pos.Line
-	closingSlash := p.findUnsupportedRegexLiteralClose()
-	spanEnd := tokenEnd(p.curToken)
-	if closingSlash != (ast.Position{}) {
-		spanEnd = ast.Position{Line: closingSlash.Line, Column: closingSlash.Column + 1}
+// parseRegexLiteral decodes a TokenRegex literal produced by the lexer. The
+// token literal is the raw source text `/pattern/flags`; the pattern is taken
+// verbatim (Go RE2 syntax, like every string-pattern regex helper) and the
+// trailing flags are validated here so unknown or repeated flags report a
+// precise parse error instead of failing at first evaluation.
+func (p *parser) parseRegexLiteral() ast.Expression {
+	raw := p.curToken.Literal
+	close := strings.LastIndexByte(raw, '/')
+	if len(raw) < 2 || raw[0] != '/' || close <= 0 {
+		p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), "malformed regex literal")
+		return nil
 	}
-	p.addParseErrorSpan(
-		p.curToken.Pos,
-		spanEnd,
-		"regex literals are not supported; use quoted string patterns with Regex.match or string regex helpers",
-	)
-	if closingSlash != (ast.Position{}) {
-		p.recoverToPosition(closingSlash)
-		return
-	}
-	for p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line == startLine {
-		p.nextToken()
-	}
-}
-
-func (p *parser) findUnsupportedRegexLiteralClose() ast.Position {
-	start := p.curToken.Pos
-	if start.Line <= 0 || start.Column <= 0 {
-		return ast.Position{}
-	}
-	lines := strings.Split(p.l.input, "\n")
-	if start.Line > len(lines) {
-		return ast.Position{}
-	}
-	lineRunes := []rune(lines[start.Line-1])
-	if start.Column > len(lineRunes) || lineRunes[start.Column-1] != '/' {
-		return ast.Position{}
-	}
-
-	escaped := false
-	inCharClass := false
-	closingColumn := 0
-	for i := start.Column; i < len(lineRunes); i++ {
-		r := lineRunes[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if r == '\\' {
-			escaped = true
-			continue
-		}
-		if r == '[' && !inCharClass {
-			inCharClass = true
-			continue
-		}
-		if r == ']' && inCharClass {
-			inCharClass = false
-			continue
-		}
-		if r == '/' && !inCharClass {
-			closingColumn = i + 1
-			break
+	pattern := raw[1:close]
+	rawFlags := raw[close+1:]
+	seen := map[byte]bool{}
+	for i := 0; i < len(rawFlags); i++ {
+		flag := rawFlags[i]
+		switch flag {
+		case 'i', 'm':
+			if seen[flag] {
+				p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), fmt.Sprintf("repeated regex flag %q", string(flag)))
+				return nil
+			}
+			seen[flag] = true
+		default:
+			p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), fmt.Sprintf("unsupported regex flag %q; supported flags are i and m", string(flag)))
+			return nil
 		}
 	}
-	if closingColumn == 0 {
-		return ast.Position{}
+	// Flags normalize to a canonical order so /a/im and /a/mi are the same
+	// regex (Ruby compares options as a bitmask, not source order).
+	flags := ""
+	if seen['i'] {
+		flags += "i"
 	}
-	endColumn := closingColumn
-	for i := closingColumn; i < len(lineRunes); i++ {
-		if !isRegexFlagRune(lineRunes[i]) {
-			break
-		}
-		endColumn = i + 1
+	if seen['m'] {
+		flags += "m"
 	}
-	return ast.Position{Line: start.Line, Column: endColumn}
-}
-
-func isRegexFlagRune(r rune) bool {
-	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
-}
-
-func (p *parser) recoverToPosition(pos ast.Position) {
-	for p.peekToken.Type != ast.TokenEOF {
-		if p.peekToken.Pos.Line > pos.Line || (p.peekToken.Pos.Line == pos.Line && p.peekToken.Pos.Column > pos.Column) {
-			return
-		}
-		p.nextToken()
-		if p.curToken.Pos == pos {
-			return
-		}
-	}
+	return &ast.RegexLiteral{Pattern: pattern, Flags: flags, Position: p.curToken.Pos}
 }
 
 type prefixParseKind uint8
@@ -379,6 +326,7 @@ const (
 	prefixParserYieldExpression
 	prefixParserIfExpression
 	prefixParserCaseExpression
+	prefixParserRegexLiteral
 )
 
 func prefixParserKind(tt ast.TokenType) prefixParseKind {
@@ -427,6 +375,8 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserIfExpression
 	case ast.TokenCase:
 		return prefixParserCaseExpression
+	case ast.TokenRegex:
+		return prefixParserRegexLiteral
 	default:
 		return prefixParserNone
 	}
@@ -478,6 +428,8 @@ func (p *parser) parsePrefix(kind prefixParseKind) ast.Expression {
 		return p.parseIfExpression()
 	case prefixParserCaseExpression:
 		return p.parseCaseExpression()
+	case prefixParserRegexLiteral:
+		return p.parseRegexLiteral()
 	default:
 		return nil
 	}
@@ -500,7 +452,7 @@ const (
 func infixParserKind(tt ast.TokenType) infixParseKind {
 	switch tt {
 	case ast.TokenPlus, ast.TokenMinus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent,
-		ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
+		ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenMatch, ast.TokenNotMatch, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
 		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenShovel, ast.TokenAmpersand:
 		return infixParserInfixExpression
 	case ast.TokenQuestion:
@@ -547,7 +499,7 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenSafeNav, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenQuestion, ast.TokenShovel, ast.TokenAmpersand:
+	case ast.TokenDot, ast.TokenSafeNav, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenMatch, ast.TokenNotMatch, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenQuestion, ast.TokenShovel, ast.TokenAmpersand:
 		return true
 	case ast.TokenAsterisk:
 		// A line that begins with "*" continues the previous expression as a

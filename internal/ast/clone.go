@@ -227,6 +227,9 @@ func cloneExpression(expr Expression) Expression {
 	case *StringLiteral:
 		clone := *e
 		return &clone
+	case *RegexLiteral:
+		clone := *e
+		return &clone
 	case *BoolLiteral:
 		clone := *e
 		return &clone

@@ -167,6 +167,8 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		return member, nil
 	case KindMoney:
 		return moneyMember(obj.Money(), property)
+	case KindRegex:
+		return regexMember(property)
 	case KindDuration:
 		return durationMember(obj.Duration(), property, pos)
 	case KindTime:
@@ -410,5 +412,6 @@ func MemberCompletionNames() map[string][]string {
 		"function": withUniversalMembers(functionMemberNames),
 		"nil":      withUniversalMembers(nilMemberNames),
 		"bool":     withUniversalMembers(boolMemberNames),
+		"regex":    withUniversalMembers(regexMemberNames),
 	}
 }

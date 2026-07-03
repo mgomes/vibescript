@@ -59,6 +59,12 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return NewFloat(e.Value), nil
 	case *StringLiteral:
 		return NewString(e.Value), nil
+	case *RegexLiteral:
+		result, err := compileRegexValue("regex literal", e.Pattern, e.Flags)
+		if err != nil {
+			return NewNil(), exec.wrapError(err, e.Pos())
+		}
+		return result, nil
 	case *InterpolatedString:
 		return exec.evalInterpolatedStringLiteral(e, env)
 	case *InterpolatedSymbol:
@@ -811,6 +817,8 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		return NewBool(caseCandidateMatches(right, left)), nil
 	case tokenNotEQ:
 		return NewBool(!left.Equal(right)), nil
+	case tokenMatch, tokenNotMatch:
+		return exec.evalRegexMatchOperator(operator, left, right, pos)
 	case tokenLT:
 		return compareValues(left, right, func(c int) bool { return c < 0 })
 	case tokenLTE:
@@ -2047,6 +2055,11 @@ func caseWhenMatches(hasTarget bool, target, candidate Value) bool {
 }
 
 func caseCandidateMatches(target, candidate Value) bool {
+	// A regex matcher tests the candidate pattern against a string target,
+	// mirroring Ruby's Regexp#=== and `when /re/` clause matching.
+	if candidate.Kind() == KindRegex {
+		return regexCandidateMatches(target, candidate)
+	}
 	if candidate.Kind() != KindRange {
 		return target.Equal(candidate)
 	}

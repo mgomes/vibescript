@@ -1900,11 +1900,21 @@ func stringReplaceResult(
 	if len(args) < 1 {
 		return "", false, fmt.Errorf("%s expects a pattern", method)
 	}
-	if args[0].Kind() != KindString {
-		return "", false, fmt.Errorf("%s pattern must be string", method)
+	pattern, patternIsRegex, err := stringPatternArgument(method, args[0])
+	if err != nil {
+		return "", false, err
+	}
+	if patternIsRegex {
+		// A regex pattern selects regex matching by itself; the regex keyword
+		// exists only to opt a plain-string pattern into regex mode, so mixing
+		// the two would let them silently disagree (regex: false with a regex
+		// pattern has no sensible meaning).
+		if _, present := kwargs["regex"]; present {
+			return "", false, fmt.Errorf("%s does not take the regex keyword with a regex pattern", method)
+		}
+		regex = true
 	}
 	text := receiver.String()
-	pattern := args[0].String()
 
 	if valueBlock(block) != nil {
 		if len(args) != 1 {
@@ -2082,7 +2092,7 @@ func stringTemplateLookup(context Value, keyPath string) (Value, bool) {
 
 func stringTemplateScalarValue(value Value, keyPath string) (string, error) {
 	switch value.Kind() {
-	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindTime:
+	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindTime, KindRegex:
 		return value.String(), nil
 	case KindEnumValue:
 		member := valueEnumValue(value)
@@ -2636,10 +2646,10 @@ func stringMemberQuery(property string) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("string.match expects a pattern and optional offset")
 			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.match pattern must be string")
+			pattern, _, err := stringPatternArgument("string.match", args[0])
+			if err != nil {
+				return NewNil(), err
 			}
-			pattern := args[0].String()
 			text := receiver.String()
 			if err := validateRegexTextPattern("string.match", text, pattern); err != nil {
 				return NewNil(), err
@@ -2703,8 +2713,8 @@ func stringMemberQuery(property string) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("string.match? expects a pattern and optional offset")
 			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.match? pattern must be string")
+			if _, _, err := stringPatternArgument("string.match?", args[0]); err != nil {
+				return NewNil(), err
 			}
 			offset := 0
 			if len(args) == 2 {
@@ -2714,7 +2724,10 @@ func stringMemberQuery(property string) (Value, error) {
 				}
 				offset = i
 			}
-			pattern := args[0].String()
+			pattern, _, err := stringPatternArgument("string.match?", args[0])
+			if err != nil {
+				return NewNil(), err
+			}
 			text := receiver.String()
 			if err := validateRegexTextPattern("string.match?", text, pattern); err != nil {
 				return NewNil(), err
@@ -2733,10 +2746,10 @@ func stringMemberQuery(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("string.scan expects exactly one pattern")
 			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.scan pattern must be string")
+			pattern, _, err := stringPatternArgument("string.scan", args[0])
+			if err != nil {
+				return NewNil(), err
 			}
-			pattern := args[0].String()
 			text := receiver.String()
 			if err := validateRegexTextPattern("string.scan", text, pattern); err != nil {
 				return NewNil(), err

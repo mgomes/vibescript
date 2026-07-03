@@ -1128,7 +1128,7 @@ func validateFuzzExpression(context string, expr Expression) error {
 			return fmt.Errorf("%s identifier name is empty", context)
 		}
 		return nil
-	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral:
+	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *RegexLiteral:
 		return nil
 	case *SymbolLiteral:
 		if e.Name == "" {

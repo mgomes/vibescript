@@ -25,6 +25,7 @@ const (
 	KindEnumValue
 	KindClass
 	KindInstance
+	KindRegex
 )
 
 // Value is a tagged union holding any Vibescript runtime value.
