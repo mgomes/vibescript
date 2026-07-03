@@ -1717,9 +1717,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.restoreRuntimeState(state)
 		}
 	case *ConditionalExpr:
-		c.checkExpressionWithAuto(function, typed.Condition, true)
-		c.checkExpressionWithAuto(function, typed.Consequent, true)
-		c.checkExpressionWithAuto(function, typed.Alternate, true)
+		c.checkConditionalExpression(function, typed)
 	case *IfExpr:
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
@@ -1767,14 +1765,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkExpressionWithAuto(function, typed.Start, true)
 		c.checkExpressionWithAuto(function, typed.End, true)
 	case *CaseExpr:
-		c.checkExpressionWithAuto(function, typed.Target, true)
-		for _, clause := range typed.Clauses {
-			for _, value := range clause.Values {
-				c.checkExpressionWithAuto(function, value.Expr, true)
-			}
-			c.checkExpressionWithAuto(function, clause.Result, true)
-		}
-		c.checkExpressionWithAuto(function, typed.ElseExpr, true)
+		c.checkCaseExpression(function, typed)
 	case *BlockLiteral:
 		return
 	case *YieldExpr:
@@ -1786,6 +1777,73 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 	case *InterpolatedSymbol:
 		c.checkStringParts(function, typed.Parts)
 	}
+}
+
+func (c *scriptChecker) checkConditionalExpression(function string, expr *ConditionalExpr) {
+	baseRuntimeState := c.snapshotRuntimeState()
+	baseScopeState := c.snapshotScopeState()
+	c.checkExpressionWithAuto(function, expr.Condition, true)
+	c.collectRuntimeRequireCallExportsFromExpression(expr.Condition)
+	conditionRuntimeState := c.snapshotRuntimeState()
+	conditionScopeState := c.snapshotScopeState()
+	branchRuntimeStates := make([]checkRuntimeState, 0, 2)
+	branchScopeStates := make([]checkScopeState, 0, 2)
+
+	c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
+	c.checkExpressionWithAuto(function, expr.Consequent, true)
+	c.collectRuntimeRequireCallExportsFromExpression(expr.Consequent)
+	branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+
+	c.restoreRuntimeState(conditionRuntimeState)
+	c.restoreScopeState(conditionScopeState)
+	c.collectRuntimeConditionOutcomeEffects(expr.Condition, false)
+	c.checkExpressionWithAuto(function, expr.Alternate, true)
+	c.collectRuntimeRequireCallExportsFromExpression(expr.Alternate)
+	branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+
+	c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+	c.mergeScopeStates(baseScopeState, branchScopeStates)
+}
+
+func (c *scriptChecker) checkCaseExpression(function string, expr *CaseExpr) {
+	baseRuntimeState := c.snapshotRuntimeState()
+	baseScopeState := c.snapshotScopeState()
+	c.checkExpressionWithAuto(function, expr.Target, true)
+	c.collectRuntimeRequireCallExportsFromExpression(expr.Target)
+	fallthroughRuntimeState := c.snapshotRuntimeState()
+	fallthroughScopeState := c.snapshotScopeState()
+	branchRuntimeStates := make([]checkRuntimeState, 0, len(expr.Clauses)+1)
+	branchScopeStates := make([]checkScopeState, 0, len(expr.Clauses)+1)
+
+	for _, clause := range expr.Clauses {
+		for _, value := range clause.Values {
+			c.restoreRuntimeState(fallthroughRuntimeState)
+			c.restoreScopeState(fallthroughScopeState)
+			c.checkExpressionWithAuto(function, value.Expr, true)
+			c.collectRuntimeRequireCallExportsFromExpression(value.Expr)
+			matchRuntimeState := c.snapshotRuntimeState()
+			matchScopeState := c.snapshotScopeState()
+
+			c.checkExpressionWithAuto(function, clause.Result, true)
+			c.collectRuntimeRequireCallExportsFromExpression(clause.Result)
+			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+			fallthroughRuntimeState = matchRuntimeState
+			fallthroughScopeState = matchScopeState
+		}
+	}
+
+	c.restoreRuntimeState(fallthroughRuntimeState)
+	c.restoreScopeState(fallthroughScopeState)
+	c.checkExpressionWithAuto(function, expr.ElseExpr, true)
+	c.collectRuntimeRequireCallExportsFromExpression(expr.ElseExpr)
+	branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+
+	c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+	c.mergeScopeStates(baseScopeState, branchScopeStates)
 }
 
 func (c *scriptChecker) collectRuntimeCallArgumentEffects(call *CallExpr) {

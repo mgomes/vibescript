@@ -1194,6 +1194,25 @@ end
 	requireCallErrorContains(t, script, "run", []Value{NewBool(false)}, CallOptions{}, "unknown type Status")
 }
 
+func TestCheckWarningsDoNotLeakConditionalExpressionCallArgumentRequires(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def id(value)
+  value
+end
+
+def run(flag) -> Status
+  flag ? id(require("enum_status")) : nil
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", []Value{NewBool(false)}, CallOptions{}, "unknown type Status")
+}
+
 func TestCheckWarningsDoNotHoistIfExpressionConditionRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
@@ -1282,6 +1301,30 @@ def run(flag) -> Status
   else
     :published
   end
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", []Value{NewBool(false)}, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsDoNotLeakCaseArmCallArgumentRequires(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def id(value)
+  value
+end
+
+def run(flag) -> Status
+  case flag
+  when true
+    id(require("enum_status"))
+  else
+    nil
+  end
+  :draft
 end
 `)
 
