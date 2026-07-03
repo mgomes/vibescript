@@ -1729,7 +1729,7 @@ func (exec *Execution) evalBlockGivenCall(call *CallExpr, env *Env) (Value, erro
 }
 
 func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, env *Env) (Value, error) {
-	receiver, err := exec.evalExpressionWithAuto(member.Object, env, memberCallReceiverAutoInvokes(member.Object, env))
+	receiver, err := exec.evalMemberCallReceiver(member, env)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1800,6 +1800,50 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		return NewNil(), err
 	}
 	return result, nil
+}
+
+func (exec *Execution) evalMemberCallReceiver(member *MemberExpr, env *Env) (Value, error) {
+	if member.Property != "call" {
+		return exec.evalExpressionWithAuto(member.Object, env, memberCallReceiverAutoInvokes(member.Object, env))
+	}
+	objectMember, ok := member.Object.(*MemberExpr)
+	if !ok {
+		return exec.evalExpressionWithAuto(member.Object, env, memberCallReceiverAutoInvokes(member.Object, env))
+	}
+	receiver, err := exec.evalExpressionWithAuto(objectMember.Object, env, memberReceiverAutoInvokes(objectMember.Object, objectMember.Property, env))
+	if err != nil {
+		return NewNil(), err
+	}
+	if objectMember.Safe && receiver.Kind() == KindNil {
+		return NewNil(), nil
+	}
+	if err := exec.checkMemoryWith(receiver); err != nil {
+		return NewNil(), err
+	}
+	callee, err := exec.getPublicMember(receiver, objectMember.Property, objectMember.Pos())
+	if err != nil {
+		return NewNil(), err
+	}
+	if memberDataCallable(receiver, objectMember.Property, callee) {
+		return callee, nil
+	}
+	return exec.autoInvokeIfNeeded(objectMember, callee, receiver)
+}
+
+func memberDataCallable(receiver Value, property string, member Value) bool {
+	if !isInvocable(member) {
+		return false
+	}
+	switch receiver.Kind() {
+	case KindHash:
+		data, ok := hashMemberData(receiver, property)
+		return ok && data.Identical(member)
+	case KindObject:
+		data, ok := receiver.Hash()[property]
+		return ok && data.Identical(member)
+	default:
+		return false
+	}
 }
 
 func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, error) {

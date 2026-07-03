@@ -179,8 +179,16 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       opts[:cb].call
     end
 
+    def receive_callable_shape_dot(opts: { cb: function })
+      opts.cb.call()
+    end
+
     def receive_callable_keyword_shape(opts: { cb: function })
       opts[:cb].call
+    end
+
+    def receive_callable_keyword_shape_dot(opts: { cb: function })
+      opts.cb.call()
     end
 
     def receive_keyword_rest_object_or_function(**opts: object | function)
@@ -189,6 +197,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 
     def receive_nested_callable(containers: array<{ cb: function }>)
       containers[0][:cb].call
+    end
+
+    def receive_nested_callable_dot(containers: array<{ cb: function }>)
+      containers[0].cb.call()
     end
 
     def receive_default_callable(fn: function = answer)
@@ -303,8 +315,16 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       receive_callable_shape({ cb: answer })
     end
 
+    def run_shape_literal_dot
+      receive_callable_shape_dot({ cb: answer })
+    end
+
     def run_keyword_shape_literal
       receive_callable_keyword_shape(opts: { cb: answer })
+    end
+
+    def run_keyword_shape_literal_dot
+      receive_callable_keyword_shape_dot(opts: { cb: answer })
     end
 
     def run_keyword_rest_object_or_function
@@ -313,6 +333,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 
     def run_nested_literal
       receive_nested_callable([{ cb: answer }])
+    end
+
+    def run_nested_literal_dot
+      receive_nested_callable_dot([{ cb: answer }])
     end
 
     def run_block_param
@@ -388,9 +412,12 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "array typed argument still auto invokes outer function", fn: "run_array_factory", want: NewInt(42)},
 		{name: "array literal keeps callable elements", fn: "run_array_literal", want: NewInt(42)},
 		{name: "shape literal keeps callable fields", fn: "run_shape_literal", want: NewInt(42)},
+		{name: "shape literal dot-call keeps callable fields", fn: "run_shape_literal_dot", want: NewInt(42)},
 		{name: "keyword shape literal keeps callable fields", fn: "run_keyword_shape_literal", want: NewInt(42)},
+		{name: "keyword shape literal dot-call keeps callable fields", fn: "run_keyword_shape_literal_dot", want: NewInt(42)},
 		{name: "keyword rest union ignores impossible callable arm", fn: "run_keyword_rest_object_or_function", want: NewInt(42)},
 		{name: "nested typed literal keeps callable fields", fn: "run_nested_literal", want: NewInt(42)},
+		{name: "nested typed literal dot-call keeps callable fields", fn: "run_nested_literal_dot", want: NewInt(42)},
 		{name: "typed callable default keeps callable", fn: "receive_default_callable", want: NewInt(42)},
 		{name: "typed array default keeps callable elements", fn: "receive_default_handlers", want: NewInt(42)},
 		{name: "typed shape default keeps callable fields", fn: "receive_default_shape", want: NewInt(42)},
