@@ -67,6 +67,24 @@ def ensure_reads_try_body_local
   end
   seen
 end
+
+def rescue_binding_preserves_handler_assignment
+  begin
+    raise "boom"
+  rescue => err
+    recovered = 1
+  end
+  recovered
+end
+
+def rescue_binding_does_not_leak
+  begin
+    raise "boom"
+  rescue => err
+    recovered = 1
+  end
+  err
+end
 `)
 
 	got := callFunc(t, script, "run", nil)
@@ -85,6 +103,13 @@ end
 	}
 	if got := callFunc(t, script, "ensure_reads_try_body_local", nil); !got.Equal(NewNil()) {
 		t.Fatalf("ensure_reads_try_body_local() = %s, want nil", got)
+	}
+	if got := callFunc(t, script, "rescue_binding_preserves_handler_assignment", nil); !got.Equal(NewInt(1)) {
+		t.Fatalf("rescue_binding_preserves_handler_assignment() = %s, want 1", got)
+	}
+	_, err := script.Call(context.Background(), "rescue_binding_does_not_leak", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "undefined variable err") {
+		t.Fatalf("rescue_binding_does_not_leak() error = %v, want undefined variable err", err)
 	}
 }
 

@@ -2887,6 +2887,7 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	predeclareLocalBindingsFromStatements(stmt.Body, env)
 
 	if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
+		predeclareRescueLocalBindings(stmt, env)
 		rescueEnv := env
 		if stmt.RescueBinding != "" {
 			rescueEnv = newEnv(env)
@@ -2905,7 +2906,7 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 			err = nil
 		}
 	}
-	predeclareLocalBindingsFromStatements(stmt.Rescue, env)
+	predeclareRescueLocalBindings(stmt, env)
 
 	if runElse && len(stmt.Else) > 0 {
 		val, returned, err = exec.evalStatements(stmt.Else, env)
@@ -2926,6 +2927,17 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 		return NewNil(), false, err
 	}
 	return val, returned, nil
+}
+
+func predeclareRescueLocalBindings(stmt *TryStmt, env *Env) {
+	var collector localBindingCollector
+	collectLocalBindingNames(stmt.Rescue, &collector)
+	for _, name := range collector.names {
+		if name == stmt.RescueBinding {
+			continue
+		}
+		env.PredeclareLocal(name)
+	}
 }
 
 func rescuedErrorValue(err error) Value {
