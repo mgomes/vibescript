@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // CheckWarning describes a statically checkable contract issue.
@@ -104,6 +105,7 @@ type scriptChecker struct {
 	moduleEntries           map[string]moduleEntry
 	moduleExportValues      map[string]Value
 	moduleCheckedFunctions  map[string]struct{}
+	moduleCheckContext      string
 	moduleCaller            *moduleContext
 	moduleExportRoot        *Env
 	runtimeTypeRootParent   *Env
@@ -673,6 +675,7 @@ func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) 
 		parentRoot = c.typeRoot
 	}
 	parentRoot = cloneCheckRoot(parentRoot)
+	moduleCheckContext := moduleCheckContextKey(parentRoot)
 	checker := scriptChecker{
 		script:                 entry.script,
 		callOptions:            c.callOptions,
@@ -684,6 +687,7 @@ func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) 
 		moduleEntries:          c.moduleEntries,
 		moduleExportValues:     c.moduleExportValues,
 		moduleCheckedFunctions: c.moduleCheckedFunctions,
+		moduleCheckContext:     moduleCheckContext,
 		runtimeTypeRootParent:  parentRoot,
 	}
 	caller := moduleContextForEntry(entry)
@@ -745,7 +749,15 @@ func sortedRequiredModuleExportedFunctions(functions map[string]*ScriptFunction)
 }
 
 func (c *scriptChecker) markModuleFunctionChecked(moduleKey, functionName string) bool {
-	key := moduleKey + "\x00" + functionName
+	contextKey := c.moduleCheckContext
+	if contextKey == "" {
+		root := c.runtimeTypeRoot
+		if root == nil {
+			root = c.typeRoot
+		}
+		contextKey = moduleCheckContextKey(root)
+	}
+	key := moduleKey + "\x00" + functionName + "\x00" + contextKey
 	if c.moduleCheckedFunctions == nil {
 		c.moduleCheckedFunctions = make(map[string]struct{})
 	}
@@ -754,6 +766,62 @@ func (c *scriptChecker) markModuleFunctionChecked(moduleKey, functionName string
 	}
 	c.moduleCheckedFunctions[key] = struct{}{}
 	return true
+}
+
+func moduleCheckContextKey(root *Env) string {
+	if root == nil {
+		return ""
+	}
+	scopes := make([]string, 0, 4)
+	for scope := root; scope != nil; scope = scope.parent {
+		bindings := make([]string, 0, scope.dynamicLen()+len(scope.statics))
+		scope.rangeDynamicBindings(func(name string, val Value) {
+			bindings = append(bindings, "d:"+name+"="+moduleCheckValueKey(val))
+		})
+		scope.rangeStaticBindings(func(name string, val Value) {
+			bindings = append(bindings, "s:"+name+"="+moduleCheckValueKey(val))
+		})
+		sort.Strings(bindings)
+		scopes = append(scopes, strings.Join(bindings, ","))
+	}
+	return strings.Join(scopes, "|")
+}
+
+func moduleCheckValueKey(val Value) string {
+	switch val.Kind() {
+	case KindEnum:
+		enumDef := valueEnum(val)
+		if enumDef != nil {
+			return fmt.Sprintf("enum:%s:%p", enumDef.Name, enumDef)
+		}
+	case KindEnumValue:
+		member := valueEnumValue(val)
+		if member != nil {
+			enumName := ""
+			if member.Enum != nil {
+				enumName = member.Enum.Name
+			}
+			return fmt.Sprintf("enum-value:%s:%s:%p", enumName, member.Name, member)
+		}
+	case KindFunction:
+		fn := valueFunction(val)
+		if fn != nil {
+			return fmt.Sprintf("function:%s:%p", fn.Name, fn)
+		}
+	case KindBuiltin:
+		builtin := valueBuiltin(val)
+		if builtin != nil {
+			return fmt.Sprintf("builtin:%s:%p", builtin.Name, builtin)
+		}
+	case KindClass:
+		classDef := valueClass(val)
+		if classDef != nil {
+			return fmt.Sprintf("class:%s:%p", classDef.Name, classDef)
+		}
+	case KindObject, KindHash:
+		return fmt.Sprintf("%s:%x", val.Kind(), hashIdentity(val))
+	}
+	return val.Kind().String() + ":" + val.String()
 }
 
 func (c *scriptChecker) canBindRequireAlias(alias string, module Value) bool {

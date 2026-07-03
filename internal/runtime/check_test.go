@@ -1853,6 +1853,35 @@ end
 	requireCheckWarningContains(t, script, "return value expected int, got string")
 }
 
+func TestCheckWarningsRecheckModuleExportsPerCallerContext(t *testing.T) {
+	t.Parallel()
+
+	root := tempModuleTree(t,
+		moduleFile{path: "status.vibe", content: `enum Status
+  Draft
+end
+`},
+		moduleFile{path: "consumer.vibe", content: `def make() -> Status
+  :draft
+end
+`},
+	)
+	engine := mustNewEngineWithModuleRoot(t, root)
+	script := compileScriptWithEngine(t, engine, `
+def run(flag)
+  if flag
+    require("status")
+    require("consumer").make()
+  else
+    require("consumer").make()
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", []Value{NewBool(false)}, CallOptions{}, "unknown type Status")
+}
+
 func TestCheckWarningsValidateRequiredModuleInitializers(t *testing.T) {
 	t.Parallel()
 
