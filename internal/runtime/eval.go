@@ -2441,32 +2441,11 @@ func statementCanPostPredeclareLocalBindings(stmt Statement) bool {
 }
 
 func predeclareAssignmentLocalBindings(stmt *AssignStmt, env *Env) {
-	skip := assignmentTargetNamesCalledWithParens(stmt)
-	predeclareDirectTargetBindingNamesExcept(stmt.Target, env, skip)
-}
-
-func assignmentTargetNamesCalledWithParens(stmt *AssignStmt) map[string]struct{} {
-	var targets localBindingCollector
-	collectTargetBindingNames(stmt.Target, &targets)
-	if len(targets.names) == 0 {
-		return nil
+	if env.rebindOuter {
+		predeclareTargetBindingNames(stmt.Target, env)
+		return
 	}
-	called := make(map[string]struct{})
-	collectParenthesizedIdentifierCallNames(stmt.Value, called)
-	if len(called) == 0 {
-		return nil
-	}
-	var skip map[string]struct{}
-	for _, name := range targets.names {
-		if _, ok := called[name]; !ok {
-			continue
-		}
-		if skip == nil {
-			skip = make(map[string]struct{})
-		}
-		skip[name] = struct{}{}
-	}
-	return skip
+	predeclareDirectAssignmentTargetBindingNames(stmt.Target, stmt.Value, env)
 }
 
 type localBindingCollector struct {
@@ -2537,108 +2516,141 @@ func predeclareTargetBindingNames(target Expression, env *Env) {
 	}
 }
 
-func predeclareDirectTargetBindingNamesExcept(target Expression, env *Env, skip map[string]struct{}) {
-	if env.rebindOuter {
-		predeclareTargetBindingNames(target, env)
-		return
-	}
+func predeclareDirectAssignmentTargetBindingNames(target, value Expression, env *Env) {
 	switch t := target.(type) {
 	case *Identifier:
-		if _, ok := skip[t.Name]; !ok {
+		if !expressionContainsParenthesizedIdentifierCall(value, t.Name) {
 			env.PredeclareLocalUnlessParentBinding(t.Name)
 		}
 	case *DestructureTarget:
 		for _, element := range t.Elements {
-			predeclareDirectTargetBindingNamesExcept(element.Target, env, skip)
+			predeclareDirectAssignmentTargetBindingNames(element.Target, value, env)
 		}
 	}
 }
 
-func collectParenthesizedIdentifierCallNames(expr Expression, out map[string]struct{}) {
+func expressionContainsParenthesizedIdentifierCall(expr Expression, name string) bool {
 	switch t := expr.(type) {
 	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
-		return
+		return false
 	case *ArrayLiteral:
 		for _, elem := range t.Elements {
-			collectParenthesizedIdentifierCallNames(elem, out)
+			if expressionContainsParenthesizedIdentifierCall(elem, name) {
+				return true
+			}
 		}
+		return false
 	case *HashLiteral:
 		for _, pair := range t.Pairs {
-			collectParenthesizedIdentifierCallNames(pair.Key, out)
-			collectParenthesizedIdentifierCallNames(pair.Value, out)
+			if expressionContainsParenthesizedIdentifierCall(pair.Key, name) ||
+				expressionContainsParenthesizedIdentifierCall(pair.Value, name) {
+				return true
+			}
 		}
+		return false
 	case *CallExpr:
-		if ident, ok := t.Callee.(*Identifier); ok && t.Parenthesized {
-			out[ident.Name] = struct{}{}
+		if ident, ok := t.Callee.(*Identifier); ok && t.Parenthesized && ident.Name == name {
+			return true
 		}
-		collectParenthesizedIdentifierCallNames(t.Callee, out)
+		if expressionContainsParenthesizedIdentifierCall(t.Callee, name) {
+			return true
+		}
 		for _, arg := range t.Args {
-			collectParenthesizedIdentifierCallNames(arg, out)
+			if expressionContainsParenthesizedIdentifierCall(arg, name) {
+				return true
+			}
 		}
 		for _, kwarg := range t.KwArgs {
-			collectParenthesizedIdentifierCallNames(kwarg.Value, out)
+			if expressionContainsParenthesizedIdentifierCall(kwarg.Value, name) {
+				return true
+			}
 		}
+		return false
 	case *MemberExpr:
-		collectParenthesizedIdentifierCallNames(t.Object, out)
+		return expressionContainsParenthesizedIdentifierCall(t.Object, name)
 	case *ScopeExpr:
-		collectParenthesizedIdentifierCallNames(t.Object, out)
+		return expressionContainsParenthesizedIdentifierCall(t.Object, name)
 	case *IndexExpr:
-		collectParenthesizedIdentifierCallNames(t.Object, out)
-		for _, index := range t.Indices {
-			collectParenthesizedIdentifierCallNames(index, out)
+		if expressionContainsParenthesizedIdentifierCall(t.Object, name) {
+			return true
 		}
+		for _, index := range t.Indices {
+			if expressionContainsParenthesizedIdentifierCall(index, name) {
+				return true
+			}
+		}
+		return false
 	case *DestructureTarget:
 		for _, element := range t.Elements {
-			collectParenthesizedIdentifierCallNames(element.Target, out)
+			if expressionContainsParenthesizedIdentifierCall(element.Target, name) {
+				return true
+			}
 		}
+		return false
 	case *UnaryExpr:
-		collectParenthesizedIdentifierCallNames(t.Right, out)
+		return expressionContainsParenthesizedIdentifierCall(t.Right, name)
 	case *BinaryExpr:
-		collectParenthesizedIdentifierCallNames(t.Left, out)
-		collectParenthesizedIdentifierCallNames(t.Right, out)
+		return expressionContainsParenthesizedIdentifierCall(t.Left, name) ||
+			expressionContainsParenthesizedIdentifierCall(t.Right, name)
 	case *ConditionalExpr:
-		collectParenthesizedIdentifierCallNames(t.Condition, out)
-		collectParenthesizedIdentifierCallNames(t.Consequent, out)
-		collectParenthesizedIdentifierCallNames(t.Alternate, out)
+		return expressionContainsParenthesizedIdentifierCall(t.Condition, name) ||
+			expressionContainsParenthesizedIdentifierCall(t.Consequent, name) ||
+			expressionContainsParenthesizedIdentifierCall(t.Alternate, name)
 	case *IfExpr:
-		collectParenthesizedIdentifierCallNames(t.Condition, out)
-		collectParenthesizedIdentifierCallNames(t.Consequent, out)
-		for _, branch := range t.ElseIf {
-			collectParenthesizedIdentifierCallNames(branch.Condition, out)
-			collectParenthesizedIdentifierCallNames(branch.Result, out)
+		if expressionContainsParenthesizedIdentifierCall(t.Condition, name) ||
+			expressionContainsParenthesizedIdentifierCall(t.Consequent, name) {
+			return true
 		}
-		collectParenthesizedIdentifierCallNames(t.Alternate, out)
+		for _, branch := range t.ElseIf {
+			if expressionContainsParenthesizedIdentifierCall(branch.Condition, name) ||
+				expressionContainsParenthesizedIdentifierCall(branch.Result, name) {
+				return true
+			}
+		}
+		return expressionContainsParenthesizedIdentifierCall(t.Alternate, name)
 	case *RangeExpr:
-		collectParenthesizedIdentifierCallNames(t.Start, out)
-		collectParenthesizedIdentifierCallNames(t.End, out)
+		return expressionContainsParenthesizedIdentifierCall(t.Start, name) ||
+			expressionContainsParenthesizedIdentifierCall(t.End, name)
 	case *CaseExpr:
-		collectParenthesizedIdentifierCallNames(t.Target, out)
+		if expressionContainsParenthesizedIdentifierCall(t.Target, name) {
+			return true
+		}
 		for _, clause := range t.Clauses {
 			for _, value := range clause.Values {
-				collectParenthesizedIdentifierCallNames(value.Expr, out)
+				if expressionContainsParenthesizedIdentifierCall(value.Expr, name) {
+					return true
+				}
 			}
-			collectParenthesizedIdentifierCallNames(clause.Result, out)
+			if expressionContainsParenthesizedIdentifierCall(clause.Result, name) {
+				return true
+			}
 		}
-		collectParenthesizedIdentifierCallNames(t.ElseExpr, out)
+		return expressionContainsParenthesizedIdentifierCall(t.ElseExpr, name)
 	case *BlockLiteral:
-		return
+		return false
 	case *YieldExpr:
 		for _, arg := range t.Args {
-			collectParenthesizedIdentifierCallNames(arg, out)
+			if expressionContainsParenthesizedIdentifierCall(arg, name) {
+				return true
+			}
 		}
+		return false
 	case *InterpolatedString:
-		collectParenthesizedIdentifierCallNamesFromStringParts(t.Parts, out)
+		return stringPartsContainParenthesizedIdentifierCall(t.Parts, name)
 	case *InterpolatedSymbol:
-		collectParenthesizedIdentifierCallNamesFromStringParts(t.Parts, out)
+		return stringPartsContainParenthesizedIdentifierCall(t.Parts, name)
+	default:
+		return false
 	}
 }
 
-func collectParenthesizedIdentifierCallNamesFromStringParts(parts []StringPart, out map[string]struct{}) {
+func stringPartsContainParenthesizedIdentifierCall(parts []StringPart, name string) bool {
 	for _, part := range parts {
-		if exprPart, ok := part.(StringExpr); ok {
-			collectParenthesizedIdentifierCallNames(exprPart.Expr, out)
+		if exprPart, ok := part.(StringExpr); ok && expressionContainsParenthesizedIdentifierCall(exprPart.Expr, name) {
+			return true
 		}
 	}
+	return false
 }
 
 func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool, error) {
