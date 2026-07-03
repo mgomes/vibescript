@@ -142,6 +142,33 @@ end`
 	}
 }
 
+func TestParserModifierReturnWithoutValue(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(done)
+  return if done
+  1
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.IfStmt{
+			Condition: &ast.Identifier{Name: "done"},
+			Consequent: []ast.Statement{
+				&ast.ReturnStmt{},
+			},
+		},
+		&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 1}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserModifierIfRejectsComplexStatements(t *testing.T) {
 	t.Parallel()
 

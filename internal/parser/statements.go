@@ -111,7 +111,7 @@ func canUseStatementModifier(stmt ast.Statement) bool {
 
 func (p *parser) parseReturnStatement() ast.Statement {
 	pos := p.curToken.Pos
-	if p.peekEndsStatement(pos) {
+	if p.peekEndsStatement(pos) || p.peekStartsSameLineStatementModifier(pos) {
 		return &ast.ReturnStmt{Position: pos}
 	}
 	p.nextToken()

@@ -28,11 +28,11 @@ def missing_else(flag)
 end
 
 def return_if_expression(flag)
-  return if flag
+  return (if flag
     "yes"
   else
     "no"
-  end
+  end)
 end
 
 def argument_if_expression(flag)
