@@ -232,6 +232,24 @@ func TestRubyBatchArrayUniqBlockChargesRetainedKeys(t *testing.T) {
 	}
 }
 
+func TestRubyBatchArrayUniqBlockReservesScalarKeyMapCapacity(t *testing.T) {
+	t.Parallel()
+
+	hint := setOpInitialCap * 2
+	got := valueSetScratchBytesForNext(valueSet{}, NewInt(1), hint)
+	want := valueSetScratchBytesForCounts(setOpInitialCap, 0)
+	if got < want {
+		t.Fatalf("first scalar key scratch = %d, want at least initial map capacity %d", got, want)
+	}
+
+	var seen valueSet
+	seen.add(NewInt(1), hint)
+	got = valueSetScratchBytesForNext(seen, NewInt(2), hint)
+	if got < want {
+		t.Fatalf("second scalar key scratch = %d, want retained initial map capacity %d", got, want)
+	}
+}
+
 func TestRubyBatchArrayBangTransforms(t *testing.T) {
 	t.Parallel()
 

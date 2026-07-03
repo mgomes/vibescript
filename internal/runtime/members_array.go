@@ -2553,7 +2553,6 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		return NewNil(), false, err
 	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-	keyAcc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	keyScratchReserved := 0
 	out := make([]Value, 0, boundedSetCap(len(arr)))
 	var seen valueSet
@@ -2574,12 +2573,12 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		}
 		projectedKeyScratch := valueSetScratchBytesForNext(seen, key, len(arr))
 		if projectedKeyScratch > keyScratchReserved {
-			if err := keyAcc.reserveScratch(projectedKeyScratch - keyScratchReserved); err != nil {
+			if err := acc.reserveScratch(projectedKeyScratch - keyScratchReserved); err != nil {
 				return NewNil(), false, err
 			}
 			keyScratchReserved = projectedKeyScratch
 		}
-		if err := keyAcc.addToReservedBacking(key); err != nil {
+		if err := acc.addToReservedBacking(key); err != nil {
 			return NewNil(), false, err
 		}
 		seen.add(key, len(arr))
@@ -2592,10 +2591,19 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 }
 
 func valueSetScratchBytesForNext(seen valueSet, next Value, hint int) int {
-	scalarCount := len(seen.scalars)
+	scalarSlots := valueSetScalarScratchSlots(seen, hint)
 	compositeCap := cap(seen.composite)
 	if _, ok := scalarValueKey(next); ok {
-		scalarCount++
+		if scalarSlots == 0 {
+			scalarSlots = boundedSetCap(hint)
+		}
+		nextCount := len(seen.scalars) + 1
+		if scalarSlots < nextCount {
+			scalarSlots = nextCount
+		}
+		if scalarSlots == 0 {
+			scalarSlots = 1
+		}
 	} else if len(seen.composite) == compositeCap {
 		if compositeCap == 0 {
 			compositeCap = 1
@@ -2606,7 +2614,18 @@ func valueSetScratchBytesForNext(seen valueSet, next Value, hint int) int {
 			compositeCap = maxCap
 		}
 	}
-	return valueSetScratchBytesForCounts(scalarCount, compositeCap)
+	return valueSetScratchBytesForCounts(scalarSlots, compositeCap)
+}
+
+func valueSetScalarScratchSlots(seen valueSet, hint int) int {
+	if seen.scalars == nil {
+		return 0
+	}
+	slots := boundedSetCap(hint)
+	if slots < len(seen.scalars) {
+		slots = len(seen.scalars)
+	}
+	return slots
 }
 
 func valueSetScratchBytesForCounts(scalarCount, compositeCap int) int {
