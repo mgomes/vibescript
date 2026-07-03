@@ -927,16 +927,24 @@ func (exec *Execution) evalDirectPublicMemberMethodCall(receiver Value, property
 func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
 	args := make([]Value, len(call.Args))
 	for i, arg := range call.Args {
-		val, err := exec.evalExpressionWithAuto(arg, env, true)
+		val, err := exec.evalCallArg(arg, env)
 		if err != nil {
-			return nil, err
-		}
-		if err := exec.checkMemoryWith(val); err != nil {
 			return nil, err
 		}
 		args[i] = val
 	}
 	return args, nil
+}
+
+func (exec *Execution) evalCallArg(arg Expression, env *Env) (Value, error) {
+	val, err := exec.evalExpressionWithAuto(arg, env, true)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(val); err != nil {
+		return NewNil(), err
+	}
+	return val, nil
 }
 
 func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Value, error) {
@@ -1201,6 +1209,10 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		return NewNil(), err
 	}
 
+	if result, handled, err := exec.evalDirectStringMemberCallExpr(call, receiver, member.Property, env); handled || err != nil {
+		return result, err
+	}
+
 	if canCallBuiltinMemberDirect(receiver, member.Property) {
 		return exec.evalDirectBuiltinMemberCallExpr(call, receiver, member.Property, env)
 	}
@@ -1291,6 +1303,181 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 		return NewNil(), err
 	}
 	return result, nil
+}
+
+func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
+	if receiver.Kind() != KindString || len(call.KwArgs) != 0 || call.Block != nil {
+		return NewNil(), false, nil
+	}
+
+	switch property {
+	case "size", "length":
+		if len(call.Args) > 0 {
+			return NewNil(), true, fmt.Errorf("string.%s does not take arguments", property)
+		}
+		if err := exec.checkContext(); err != nil {
+			return NewNil(), true, err
+		}
+		if err := exec.checkCallMemoryRoots(receiver, nil, nil, NewNil()); err != nil {
+			return NewNil(), true, err
+		}
+		result := NewInt(int64(stringRuneLen(receiver.String())))
+		if err := exec.checkMemoryWith(result); err != nil {
+			return NewNil(), true, err
+		}
+		return result, true, nil
+	case "bytesize":
+		if len(call.Args) > 0 {
+			return NewNil(), true, fmt.Errorf("string.bytesize does not take arguments")
+		}
+		if err := exec.checkContext(); err != nil {
+			return NewNil(), true, err
+		}
+		if err := exec.checkCallMemoryRoots(receiver, nil, nil, NewNil()); err != nil {
+			return NewNil(), true, err
+		}
+		result := NewInt(int64(len(receiver.String())))
+		if err := exec.checkMemoryWith(result); err != nil {
+			return NewNil(), true, err
+		}
+		return result, true, nil
+	case "index":
+		return exec.evalDirectStringIndexCall(call, receiver, env)
+	case "rindex":
+		return exec.evalDirectStringRIndexCall(call, receiver, env)
+	case "slice":
+		return exec.evalDirectStringSliceCall(call, receiver, env)
+	default:
+		return NewNil(), false, nil
+	}
+}
+
+func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
+	if len(call.Args) < 1 || len(call.Args) > 2 {
+		return NewNil(), true, fmt.Errorf("string.index expects substring and optional offset")
+	}
+	needle, err := exec.evalCallArg(call.Args[0], env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	offset := 0
+	var offsetVal Value
+	hasOffset := false
+	if len(call.Args) == 2 {
+		offsetVal, err = exec.evalCallArg(call.Args[1], env)
+		if err != nil {
+			return NewNil(), true, err
+		}
+		hasOffset = true
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), true, err
+	}
+	if err := checkDirectStringMemberCallRoots(exec, receiver, needle, offsetVal, hasOffset); err != nil {
+		return NewNil(), true, err
+	}
+	if hasOffset {
+		i, err := valueToInt(offsetVal)
+		if err != nil {
+			return NewNil(), true, fmt.Errorf("string.index offset must be integer")
+		}
+		offset = i
+	}
+	result, err := stringIndexResult(receiver, needle, offset)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), true, err
+	}
+	return result, true, nil
+}
+
+func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
+	if len(call.Args) < 1 || len(call.Args) > 2 {
+		return NewNil(), true, fmt.Errorf("string.rindex expects substring and optional offset")
+	}
+	needle, err := exec.evalCallArg(call.Args[0], env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	offset := stringRuneLen(receiver.String())
+	var offsetVal Value
+	hasOffset := false
+	if len(call.Args) == 2 {
+		offsetVal, err = exec.evalCallArg(call.Args[1], env)
+		if err != nil {
+			return NewNil(), true, err
+		}
+		hasOffset = true
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), true, err
+	}
+	if err := checkDirectStringMemberCallRoots(exec, receiver, needle, offsetVal, hasOffset); err != nil {
+		return NewNil(), true, err
+	}
+	if hasOffset {
+		i, err := valueToInt(offsetVal)
+		if err != nil {
+			return NewNil(), true, fmt.Errorf("string.rindex offset must be integer")
+		}
+		effective, ok := stringEffectiveOffset(receiver.String(), i)
+		if !ok {
+			result := NewNil()
+			if err := exec.checkMemoryWith(result); err != nil {
+				return NewNil(), true, err
+			}
+			return result, true, nil
+		}
+		offset = effective
+	}
+	result, err := stringRIndexResult(receiver, needle, offset)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), true, err
+	}
+	return result, true, nil
+}
+
+func (exec *Execution) evalDirectStringSliceCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
+	if len(call.Args) < 1 || len(call.Args) > 2 {
+		return NewNil(), true, fmt.Errorf("string.slice expects an index, range, or substring with optional length")
+	}
+	first, err := exec.evalCallArg(call.Args[0], env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	var second Value
+	if len(call.Args) == 2 {
+		second, err = exec.evalCallArg(call.Args[1], env)
+		if err != nil {
+			return NewNil(), true, err
+		}
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), true, err
+	}
+	if err := checkDirectStringMemberCallRoots(exec, receiver, first, second, len(call.Args) == 2); err != nil {
+		return NewNil(), true, err
+	}
+	result, err := stringSliceResult(receiver, first, second, len(call.Args) == 2)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), true, err
+	}
+	return result, true, nil
+}
+
+func checkDirectStringMemberCallRoots(exec *Execution, receiver, first, second Value, hasSecond bool) error {
+	if !hasSecond {
+		return exec.checkMemoryWith(receiver, first)
+	}
+	return exec.checkMemoryWith(receiver, first, second)
 }
 
 func canCallBuiltinMemberDirect(receiver Value, property string) bool {
