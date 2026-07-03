@@ -147,15 +147,21 @@ func deterministicHashEntriesInto(receiver Value, buf []HashEntry) []HashEntry {
 	if hashHasTypedEntries(receiver) {
 		return receiver.HashEntriesInto(buf)
 	}
+	// Sort the materialized entries in place rather than building a separate
+	// sorted key list, so this allocates no more than the HashEntries() copy the
+	// callers already account for (a bare hash's sorted scratch would otherwise
+	// fall outside their memory-quota projections).
 	m := receiver.Hash()
 	entries := buf[:0]
 	if cap(entries) < len(m) {
 		entries = make([]HashEntry, 0, len(m))
 	}
-	var keyBuf [smallHashKeyBufferSize]string
-	for _, key := range sortedHashKeysInto(m, keyBuf[:]) {
-		entries = append(entries, HashEntry{Key: NewString(key), Value: m[key]})
+	for key, val := range m {
+		entries = append(entries, HashEntry{Key: NewString(key), Value: val})
 	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Key.String() < entries[j].Key.String()
+	})
 	return entries
 }
 
