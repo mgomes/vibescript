@@ -86,6 +86,48 @@ func TestArraySelectReservesOutputBeforeBlockCalls(t *testing.T) {
 	}
 }
 
+func TestArrayBlockFiltersReserveEmptyResultBackingBeforeBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeIntArray(4000)
+	tests := []struct {
+		method string
+		block  Value
+	}{
+		{method: "delete_if", block: constantBoolBlockValue(true)},
+		{method: "keep_if", block: constantBoolBlockValue(false)},
+		{method: "select!", block: constantBoolBlockValue(false)},
+		{method: "reject!", block: constantBoolBlockValue(true)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.method, func(t *testing.T) {
+			t.Parallel()
+
+			initialCap := boundedFilterCap(len(receiver.Array()))
+			emptyBacking := arraySlotBackingBytes(initialCap)
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+			base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, tc.block)
+			quota := base + emptyBacking - 1
+			if quota <= base {
+				t.Fatalf("quota %d must fit call roots %d and reject empty result backing %d", quota, base, emptyBacking)
+			}
+
+			fitsCallRoots := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			if err := fitsCallRoots.checkCallMemoryRoots(receiver, nil, nil, tc.block); err != nil {
+				t.Fatalf("array.%s call roots should fit under quota %d: %v", tc.method, quota, err)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callArrayMember(t, exec, receiver, tc.method, nil, tc.block)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			if exec.steps != 0 {
+				t.Fatalf("array.%s stepped %d times before rejecting empty result backing; want 0", tc.method, exec.steps)
+			}
+		})
+	}
+}
+
 func TestArraySortByReservesDecoratedBufferBeforeBlockCalls(t *testing.T) {
 	t.Parallel()
 

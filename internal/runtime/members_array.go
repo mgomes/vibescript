@@ -2686,8 +2686,12 @@ func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs ma
 		return NewNil(), err
 	}
 	arr := receiver.Array()
-	out := make([]Value, 0, boundedFilterCap(len(arr)))
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	initialCap := boundedFilterCap(len(arr))
+	if err := acc.reserveSlots(initialCap); err != nil {
+		return NewNil(), err
+	}
+	out := make([]Value, 0, initialCap)
 	changed := false
 	var blockArg [1]Value
 	for _, item := range arr {
