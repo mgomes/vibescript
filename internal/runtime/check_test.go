@@ -1412,12 +1412,65 @@ end`,
   end
 end`,
 		},
+		{
+			name: "assert accepts ignored extra arguments",
+			source: `def run()
+  assert true, "ok", "ignored"
+end`,
+		},
+		{
+			name: "money ignores keywords and block",
+			source: `def run()
+  money("1.00 USD", currency: "USD") do
+    "ignored"
+  end
+end`,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, tc.source)
+			requireNoCheckWarnings(t, script)
+		})
+	}
+}
+
+func TestCheckWarningsCollectCallArgumentRequiresBeforeBinding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "positional argument require",
+			source: `def normalize(_loader = require("enum_status"), status: Status) -> Status
+  status
+end
+
+def run()
+  normalize(require("enum_status"), :draft)
+end`,
+		},
+		{
+			name: "keyword argument require",
+			source: `def normalize(_loader = require("enum_status"), status: Status = :draft) -> Status
+  status
+end
+
+def run()
+  normalize(_loader: require("enum_status"), status: :draft)
+end`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			engine := moduleTestEngine(t)
+			script := compileScriptWithEngine(t, engine, tc.source)
 			requireNoCheckWarnings(t, script)
 		})
 	}

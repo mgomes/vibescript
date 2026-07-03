@@ -1036,6 +1036,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		if staticNilSafeNavigationCall(typed) {
 			return
 		}
+		c.collectRuntimeCallArgumentEffects(typed)
 		c.checkCall(function, typed)
 		for _, arg := range typed.Args {
 			c.checkExpressionWithAuto(function, arg, true)
@@ -1101,6 +1102,15 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkStringParts(function, typed.Parts)
 	case *InterpolatedSymbol:
 		c.checkStringParts(function, typed.Parts)
+	}
+}
+
+func (c *scriptChecker) collectRuntimeCallArgumentEffects(call *CallExpr) {
+	for _, arg := range call.Args {
+		c.collectRuntimeRequireCallExportsFromExpression(arg)
+	}
+	for _, kwarg := range call.KwArgs {
+		c.collectRuntimeRequireCallExportsFromExpression(kwarg.Value)
 	}
 }
 
@@ -1566,8 +1576,8 @@ func staticBuiltinReceiverKind(expr Expression) (string, bool) {
 }
 
 var staticBuiltinSpecs = map[string]staticCallSpec{
-	"assert":            {minArgs: 1, maxArgs: 2},
-	"money":             {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
+	"assert":            {minArgs: 1, maxArgs: -1},
+	"money":             {minArgs: 1, maxArgs: 1},
 	"money_cents":       {minArgs: 2, maxArgs: 2},
 	"now":               {minArgs: 0, maxArgs: 0},
 	"rand":              {minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
