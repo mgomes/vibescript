@@ -231,7 +231,7 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 	}
 	exec.pushModuleContext(ctx)
 	exec.pushReceiver(receiver)
-	val, returned, err := exec.evalStatements(fn.Body, callEnv)
+	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
 	if err != nil && !isLoopControlSignal(err) {
 		err = exec.wrapError(err, pos)
 	}
@@ -593,6 +593,7 @@ func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
 	}
 	clone := newEnvWithCapacity(nil, env.dynamicLen())
 	clone.assignBoundary = env.assignBoundary
+	clone.rebindOuter = env.rebindOuter
 	if r.seenEnvs == nil {
 		r.seenEnvs = make(map[*Env]*Env)
 	}
@@ -746,7 +747,7 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 	env.Define("self", classVal)
 	exec.pushReceiver(classVal)
 	defer exec.popReceiver()
-	_, _, err := exec.evalStatements(classDef.Body, env)
+	_, _, err := exec.evalLocalScopeStatements(classDef.Body, env)
 	if err != nil {
 		return err
 	}
@@ -833,7 +834,7 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 	}
 
 	if ident, ok := call.Callee.(*Identifier); ok {
-		return exec.evalIdentifierCallTarget(ident, env)
+		return exec.evalIdentifierCallTarget(ident, env, callUsesBypassableIdentifierResolution(call))
 	}
 
 	callee, err := exec.evalExpressionWithAuto(call.Callee, env, false)
@@ -848,14 +849,14 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 // while an identifier that falls through to an implicit-self member binds self
 // as the receiver so builtins resolved off self (such as the universal
 // introspection predicates) receive the correct receiver.
-func (exec *Execution) evalIdentifierCallTarget(ident *Identifier, env *Env) (Value, Value, error) {
+func (exec *Execution) evalIdentifierCallTarget(ident *Identifier, env *Env, bypassableCall bool) (Value, Value, error) {
 	// Mirror the per-expression step charged by evalExpressionWithAuto, which
 	// this branch replaces for identifier callees, so step accounting (and the
 	// statement position a step-quota limit reports) is unchanged.
 	if err := exec.step(); err != nil {
 		return NewNil(), NewNil(), err
 	}
-	if val, ok := env.Get(ident.Name); ok {
+	if val, ok := exec.identifierCallBinding(ident.Name, env, bypassableCall); ok {
 		env.clearArrayAppendBuffer(ident.Name)
 		return val, NewNil(), nil
 	}
@@ -867,6 +868,28 @@ func (exec *Execution) evalIdentifierCallTarget(ident *Identifier, env *Env) (Va
 		return member, self, nil
 	}
 	return NewNil(), NewNil(), exec.errorAt(ident.Pos(), "undefined variable %s%s", ident.Name, didYouMean(ident.Name, env.visibleNames()))
+}
+
+func (exec *Execution) identifierCallBinding(name string, env *Env, bypassableCall bool) (Value, bool) {
+	if !bypassableCall || len(exec.localCallBypassStack) == 0 {
+		return env.Get(name)
+	}
+	var skip map[*Env]struct{}
+	for i := len(exec.localCallBypassStack) - 1; i >= 0; i-- {
+		frame := exec.localCallBypassStack[i]
+		binding, ok := frame.bindings[name]
+		if !ok || binding == nil {
+			continue
+		}
+		if skip == nil {
+			skip = make(map[*Env]struct{})
+		}
+		skip[binding] = struct{}{}
+	}
+	if len(skip) == 0 {
+		return env.Get(name)
+	}
+	return env.getSkipping(name, skip)
 }
 
 func (exec *Execution) evalDirectPublicMemberMethodCall(receiver Value, property string, pos Position) (Value, bool, error) {
@@ -1337,7 +1360,7 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 	if err := exec.pushFrame(fn.Name, fn.Pos, fn.owner, fn.owner); err != nil {
 		return NewNil(), err
 	}
-	val, returned, err := exec.evalStatements(fn.Body, callEnv)
+	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
 	if err != nil {
 		err = exec.wrapError(err, fn.Pos)
 	}

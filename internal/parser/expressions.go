@@ -32,6 +32,25 @@ func (p *parser) parseLineExpressionUntil(precedence int, stop ...ast.TokenType)
 	return p.parseExpression(precedence)
 }
 
+func (p *parser) parseLineExpressionUntilForced(precedence int, stop ...ast.TokenType) ast.Expression {
+	p.lineLimitedExprs++
+	stopLen := len(p.lineLimitedStops)
+	forcedStopLen := len(p.lineLimitedForcedStops)
+	p.lineLimitedStops = append(p.lineLimitedStops, stop...)
+	for _, token := range stop {
+		p.lineLimitedForcedStops = append(p.lineLimitedForcedStops, lineLimitedForcedStop{
+			token:       token,
+			suppression: p.lineLimitedStopSuppression,
+		})
+	}
+	defer func() {
+		p.lineLimitedExprs--
+		p.lineLimitedStops = p.lineLimitedStops[:stopLen]
+		p.lineLimitedForcedStops = p.lineLimitedForcedStops[:forcedStopLen]
+	}()
+	return p.parseExpression(precedence)
+}
+
 func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLimited bool) ast.Expression {
 	prefix := prefixParserKind(p.curToken.Type)
 	if prefix == prefixParserNone {
@@ -111,9 +130,21 @@ func (p *parser) peekStopsLineExpression() bool {
 	}
 	for _, stop := range p.lineLimitedStops {
 		if p.peekToken.Type == stop {
+			if p.lineLimitedStopSuppression > 0 && !p.lineStopForced(stop) {
+				return false
+			}
 			if stop == ast.TokenDo && p.peekPeek.Type == ast.TokenPipe {
 				return false
 			}
+			return true
+		}
+	}
+	return false
+}
+
+func (p *parser) lineStopForced(stop ast.TokenType) bool {
+	for _, forced := range p.lineLimitedForcedStops {
+		if forced.token == stop && forced.suppression == p.lineLimitedStopSuppression {
 			return true
 		}
 	}
@@ -209,6 +240,13 @@ func (p *parser) peekStartsPercentArrayArgument(callee ast.Expression) bool {
 func isParenlessArgumentStart(tt ast.TokenType) bool {
 	switch tt {
 	case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace, ast.TokenMinus, ast.TokenPlus:
+		return false
+	case ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil:
+		// A statement modifier keyword following a complete expression guards the
+		// statement; it never opens a parenless argument. (`if` is otherwise a
+		// prefix-expression starter, so without this `foo if cond` would parse as
+		// `foo(if cond ... end)`. Passing an if/unless expression as an argument
+		// requires explicit parentheses.)
 		return false
 	case ast.TokenAmpersand:
 		return true
@@ -463,7 +501,7 @@ func infixParserKind(tt ast.TokenType) infixParseKind {
 	switch tt {
 	case ast.TokenPlus, ast.TokenMinus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent,
 		ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
-		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenShovel, ast.TokenAmpersand:
+		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenShovel, ast.TokenAmpersand:
 		return infixParserInfixExpression
 	case ast.TokenQuestion:
 		return infixParserConditionalExpression
@@ -509,7 +547,7 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenSafeNav, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion, ast.TokenShovel, ast.TokenAmpersand:
+	case ast.TokenDot, ast.TokenSafeNav, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenQuestion, ast.TokenShovel, ast.TokenAmpersand:
 		return true
 	case ast.TokenAsterisk:
 		// A line that begins with "*" continues the previous expression as a
@@ -1254,7 +1292,9 @@ func (p *parser) parseSelfLiteral() ast.Expression {
 
 func (p *parser) parseGroupedExpression() ast.Expression {
 	p.nextToken()
+	p.lineLimitedStopSuppression++
 	expr := p.parseExpression(lowestPrec)
+	p.lineLimitedStopSuppression--
 	if !p.expectPeek(ast.TokenRParen) {
 		return nil
 	}
@@ -1265,7 +1305,12 @@ func (p *parser) parsePrefixExpression() ast.Expression {
 	pos := p.curToken.Pos
 	operator := p.curToken.Type
 	p.nextToken()
-	right := p.parseExpression(precPrefix)
+	var right ast.Expression
+	if operator == ast.TokenNot {
+		right = p.parseLineExpressionUntilForced(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
+	} else {
+		right = p.parseExpression(precPrefix)
+	}
 	if right == nil {
 		return nil
 	}
@@ -1367,6 +1412,10 @@ func (p *parser) parseIndexExpression(object ast.Expression) ast.Expression {
 		return nil
 	}
 	p.nextToken()
+	p.lineLimitedStopSuppression++
+	defer func() {
+		p.lineLimitedStopSuppression--
+	}()
 	indices := []ast.Expression{}
 	index := p.parseExpression(lowestPrec)
 	if index == nil {
@@ -1406,6 +1455,10 @@ func (p *parser) parseArrayLiteral() ast.Expression {
 	}
 
 	p.nextToken()
+	p.lineLimitedStopSuppression++
+	defer func() {
+		p.lineLimitedStopSuppression--
+	}()
 	elements = append(elements, p.parseExpression(lowestPrec))
 
 	for p.peekToken.Type == ast.TokenComma {
@@ -1434,6 +1487,10 @@ func (p *parser) parseHashLiteral() ast.Expression {
 	}
 
 	p.nextToken()
+	p.lineLimitedStopSuppression++
+	defer func() {
+		p.lineLimitedStopSuppression--
+	}()
 	if pair := p.parseHashPair(); pair.Key != nil {
 		pairs = append(pairs, pair)
 	}
@@ -1760,7 +1817,7 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 	if function == nil {
 		return nil
 	}
-	expr := &ast.CallExpr{Callee: function, Position: function.Pos(), Safe: isSafeMemberCallee(function)}
+	expr := &ast.CallExpr{Callee: function, Position: function.Pos(), Safe: isSafeMemberCallee(function), Parenthesized: true}
 	args := []ast.Expression{}
 	kwargs := []ast.KeywordArg{}
 
@@ -1772,6 +1829,7 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 	}
 
 	p.nextToken()
+	p.lineLimitedStopSuppression++
 	p.parseCallArgument(&args, &kwargs)
 
 	for p.peekToken.Type == ast.TokenComma {
@@ -1785,6 +1843,7 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 		}
 		p.parseCallArgument(&args, &kwargs)
 	}
+	p.lineLimitedStopSuppression--
 
 	if !p.expectPeek(ast.TokenRParen) {
 		return nil
@@ -1792,7 +1851,6 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 	expr.Args = args
 	expr.KwArgs = kwargs
-	expr.Parenthesized = true
 	// Mark keyword arguments as eligible to collapse into a positional options
 	// hash. The runtime decides whether the collapse actually applies: plain
 	// function calls (including a function value's `call` alias) collapse like
@@ -2004,7 +2062,7 @@ func isLabelNameToken(tok ast.Token) bool {
 		ast.TokenBegin, ast.TokenRescue, ast.TokenEnsure, ast.TokenRaise,
 		ast.TokenEnd, ast.TokenReturn, ast.TokenYield, ast.TokenDo, ast.TokenThen, ast.TokenFor, ast.TokenWhile, ast.TokenUntil,
 		ast.TokenBreak, ast.TokenNext, ast.TokenIn, ast.TokenIf, ast.TokenUnless, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
-		ast.TokenTrue, ast.TokenFalse, ast.TokenNil:
+		ast.TokenTrue, ast.TokenFalse, ast.TokenNil, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenNot:
 		return true
 	default:
 		return false

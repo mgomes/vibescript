@@ -53,6 +53,9 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 	case *ast.AssignStmt:
 		u.recordAssignedTarget(s.Target)
 		u.visitExpression(s.Value, false)
+	case *ast.LogicalStmt:
+		u.visitStatement(s.Left)
+		u.visitStatement(s.Right)
 	case *ast.ExprStmt:
 		u.visitExpression(s.Expr, false)
 	case *ast.IfStmt:
@@ -63,7 +66,7 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 		}
 		u.visitStatements(s.Alternate)
 	case *ast.ForStmt:
-		u.assigned[s.Iterator] = struct{}{}
+		u.recordAssignedTarget(s.Target)
 		u.visitExpression(s.Iterable, false)
 		u.visitStatements(s.Body)
 	case *ast.WhileStmt:

@@ -424,7 +424,13 @@ func (l *lexer) scanToken() ast.Token {
 		case '&':
 			first := l.ch
 			l.readRune()
-			tok = l.makeToken(ast.TokenAnd, string(first)+string(l.ch))
+			if l.peekRune() == '=' {
+				second := l.ch
+				l.readRune()
+				tok = l.makeToken(ast.TokenAndAssign, string(first)+string(second)+string(l.ch))
+			} else {
+				tok = l.makeToken(ast.TokenAnd, string(first)+string(l.ch))
+			}
 			l.readRune()
 		case '.':
 			first := l.ch
@@ -443,7 +449,13 @@ func (l *lexer) scanToken() ast.Token {
 		if l.peekRune() == '|' {
 			first := l.ch
 			l.readRune()
-			tok = l.makeToken(ast.TokenOr, string(first)+string(l.ch))
+			if l.peekRune() == '=' {
+				second := l.ch
+				l.readRune()
+				tok = l.makeToken(ast.TokenOrAssign, string(first)+string(second)+string(l.ch))
+			} else {
+				tok = l.makeToken(ast.TokenOr, string(first)+string(l.ch))
+			}
 			l.readRune()
 		} else {
 			tok = l.makeToken(ast.TokenPipe, "|")

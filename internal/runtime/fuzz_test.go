@@ -981,13 +981,21 @@ func validateFuzzStatement(context string, stmt Statement) error {
 			return err
 		}
 		return validateFuzzExpression(context+".value", s.Value)
+	case *LogicalStmt:
+		if err := validateFuzzStatement(context+".left", s.Left); err != nil {
+			return err
+		}
+		return validateFuzzStatement(context+".right", s.Right)
 	case *ExprStmt:
 		return validateFuzzExpression(context+".expr", s.Expr)
 	case *IfStmt:
 		return validateFuzzIfStmt(context, s)
 	case *ForStmt:
-		if s.Iterator == "" {
-			return fmt.Errorf("%s iterator is empty", context)
+		if s.Target == nil {
+			return fmt.Errorf("%s target is nil", context)
+		}
+		if err := validateFuzzExpression(context+".target", s.Target); err != nil {
+			return err
 		}
 		if err := validateFuzzExpression(context+".iterable", s.Iterable); err != nil {
 			return err

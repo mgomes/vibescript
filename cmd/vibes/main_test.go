@@ -390,6 +390,15 @@ end`,
 			wantErr: "analysis found 1 issue(s)",
 		},
 		{
+			name: "unreachable_after_left_terminating_logical_statement",
+			script: `def run(value)
+  return value and audit
+  2
+end`,
+			wantOut: []string{"unreachable statement"},
+			wantErr: "analysis found 1 issue(s)",
+		},
+		{
 			name: "unreachable_after_terminating_elsif_chain",
 			script: `def run()
   if false

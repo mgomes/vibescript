@@ -75,12 +75,17 @@ type Execution struct {
 	validatedCapabilityArgsArr [4]string
 	loopDepth                  int
 	rescuedErrors              []error
+	localCallBypassStack       []localCallBypass
 	randSource                 *rand.Rand
 	randSeed                   int64
 	randSeeded                 bool
 	strictEffects              bool
 	allowRequire               bool
 	callOptions                CallOptions
+}
+
+type localCallBypass struct {
+	bindings map[string]*Env
 }
 
 type capabilityContractScope struct {
@@ -171,6 +176,13 @@ func (exec *Execution) capabilityArgsValidated(method string) bool {
 
 func (exec *Execution) pushEnv(env *Env) {
 	exec.envStack = append(exec.envStack, env)
+}
+
+func (exec *Execution) currentEnv() *Env {
+	if len(exec.envStack) == 0 {
+		return nil
+	}
+	return exec.envStack[len(exec.envStack)-1]
 }
 
 func (exec *Execution) popEnv() {

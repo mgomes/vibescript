@@ -94,3 +94,34 @@ func TestParserEmptyIndexExpressionIsError(t *testing.T) {
 		t.Fatal("parseSource(empty index) errors = nil, want a missing-selector diagnostic")
 	}
 }
+
+func TestParserIndexExpressionSuppressesAssignmentStops(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  value = items[flag or fallback]
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "value"},
+			Value: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "items"},
+				Indices: []ast.Expression{
+					&ast.BinaryExpr{
+						Left:     &ast.Identifier{Name: "flag"},
+						Operator: ast.TokenWordOr,
+						Right:    &ast.Identifier{Name: "fallback"},
+					},
+				},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}

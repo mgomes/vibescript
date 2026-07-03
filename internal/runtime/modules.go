@@ -97,9 +97,14 @@ func isValidModuleAlias(name string) bool {
 	return ast.LookupIdent(name) == ast.TokenIdent
 }
 
-func bindRequireAlias(root *Env, alias string, module Value) error {
+func bindRequireAlias(root, scope *Env, alias string, module Value) error {
 	if err := validateRequireAliasBinding(root, alias, module); err != nil {
 		return err
+	}
+	if scope != nil && scope != root {
+		if err := validateRequireAliasBinding(scope, alias, module); err != nil {
+			return err
+		}
 	}
 	if alias == "" {
 		return nil
@@ -208,7 +213,7 @@ func executeModuleEntrypoint(exec *Execution, entry moduleEntry, moduleEnv *Env)
 	}
 	defer exec.popFrame()
 
-	_, _, err := exec.evalStatements(fn.Body, moduleEnv)
+	_, _, err := exec.evalLocalScopeStatements(fn.Body, moduleEnv)
 	if err != nil {
 		err = exec.wrapError(err, fn.Pos)
 	}
@@ -878,7 +883,7 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		exec.modules = make(map[string]Value)
 	}
 	if cached, ok := exec.modules[entry.key]; ok {
-		if err := bindRequireAlias(exec.root, alias, cached); err != nil {
+		if err := bindRequireAlias(exec.root, exec.currentEnv(), alias, cached); err != nil {
 			return NewNil(), err
 		}
 		return cached, nil
@@ -928,8 +933,17 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		}
 	}
 	exportsVal := NewObject(exports)
+	aliasScope := exec.currentEnv()
+	if aliasScope == nil {
+		aliasScope = exec.root
+	}
 	if err := validateRequireAliasBinding(exec.root, alias, exportsVal); err != nil {
 		return NewNil(), err
+	}
+	if aliasScope != exec.root {
+		if err := validateRequireAliasBinding(aliasScope, alias, exportsVal); err != nil {
+			return NewNil(), err
+		}
 	}
 	if err := initializeModuleForCall(exec, entry, moduleEnv, moduleClasses); err != nil {
 		return NewNil(), err

@@ -690,7 +690,7 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 		return NewNil(), err
 	}
 	switch expr.Operator {
-	case tokenAnd:
+	case tokenAnd, tokenWordAnd:
 		// Short-circuit and yield the operand value, not a coerced bool
 		// (Ruby semantics): `a && b` is `a ? b : a`. A falsy left operand is
 		// the result; otherwise the right operand is, whatever its value.
@@ -705,7 +705,7 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 			return NewNil(), err
 		}
 		return right, nil
-	case tokenOr:
+	case tokenOr, tokenWordOr:
 		// Short-circuit and yield the operand value, not a coerced bool
 		// (Ruby semantics): `a || b` is `a ? a : b`. This is what makes the
 		// `value = optional || default` idiom work; previously it collapsed
@@ -934,7 +934,7 @@ func newBlockCallRunner(exec *Execution, block Value, name string, receiver Valu
 		charge: newBlockBindCharge(exec, blk, receiver, callArgs, kwargs, block),
 	}
 	if blockCanReuseEnv(blk) {
-		runner.env = newEnv(blk.Env)
+		runner.env = newBlockAssignmentEnv(blk.Env)
 	}
 	return runner, nil
 }
@@ -957,9 +957,11 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 
 	env := runner.env
 	if env == nil {
-		env = newEnv(runner.blk.Env)
+		env = newBlockAssignmentEnv(runner.blk.Env)
 	} else {
 		env.resetForBlockCall(runner.blk.Env)
+		env.assignBoundary = true
+		env.rebindOuter = true
 	}
 	val, err := runner.exec.callBlock(runner.blk, args, env, runner.charge, chargedRoots...)
 	if err != nil {
@@ -1033,7 +1035,7 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	// argument it was copied from, letting (args) and (rest) each fit the quota
 	// while the real peak (args + rest) exceeds it.
 	charge := newBlockBindCharge(exec, blk, NewNil(), args, nil, block)
-	return exec.callBlock(blk, args, newEnv(blk.Env), charge)
+	return exec.callBlock(blk, args, newBlockAssignmentEnv(blk.Env), charge)
 }
 
 func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge, chargedRoots ...Value) (Value, error) {
@@ -1048,10 +1050,11 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	if err := charge.begin(args, chargedRoots...); err != nil {
 		return NewNil(), err
 	}
+	bindArgs := rubyBlockBindArgs(blk.Params, args)
 	for i, param := range blk.Params {
 		var val Value
-		if i < len(args) {
-			val = args[i]
+		if i < len(bindArgs) {
+			val = bindArgs[i]
 		} else {
 			val = NewNil()
 		}
@@ -1089,7 +1092,7 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 		}
 		blockEnv.Define(name, val)
 	}
-	val, returned, err := exec.evalStatements(blk.Body, blockEnv)
+	val, returned, err := exec.evalLocalScopeStatements(blk.Body, blockEnv)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1097,6 +1100,25 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 		return blockEnv.detachArrayAppendResult(val), nil
 	}
 	return blockEnv.detachArrayAppendResult(val), nil
+}
+
+func rubyBlockBindArgs(params []Param, args []Value) []Value {
+	if len(args) != 1 || args[0].Kind() != KindArray {
+		return args
+	}
+	positional := 0
+	for _, param := range params {
+		switch param.Kind {
+		case ParamNormal, ParamRest:
+			positional++
+		case ParamKeyword, ParamKeywordRest, ParamBlock:
+			continue
+		}
+	}
+	if positional <= 1 {
+		return args
+	}
+	return args[0].Array()
 }
 
 func implicitBlockParamIndex(name string) int {
@@ -1132,6 +1154,8 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 		return expressionCapturesCurrentEnv(s.Value)
 	case *AssignStmt:
 		return expressionCapturesCurrentEnv(s.Target) || expressionCapturesCurrentEnv(s.Value)
+	case *LogicalStmt:
+		return statementCapturesCurrentEnv(s.Left) || statementCapturesCurrentEnv(s.Right)
 	case *ExprStmt:
 		return expressionCapturesCurrentEnv(s.Expr)
 	case *IfStmt:
@@ -1147,7 +1171,7 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 		}
 		return false
 	case *ForStmt:
-		return expressionCapturesCurrentEnv(s.Iterable) || statementsCaptureCurrentEnv(s.Body)
+		return expressionCapturesCurrentEnv(s.Target) || expressionCapturesCurrentEnv(s.Iterable) || statementsCaptureCurrentEnv(s.Body)
 	case *WhileStmt:
 		return expressionCapturesCurrentEnv(s.Condition) || statementsCaptureCurrentEnv(s.Body)
 	case *UntilStmt:
@@ -2053,6 +2077,7 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 	if err := exec.checkMemoryWith(iterable); err != nil {
 		return NewNil(), false, err
 	}
+	predeclareTargetBindingNames(stmt.Target, env)
 	last := NewNil()
 
 	switch iterable.Kind() {
@@ -2062,7 +2087,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 			if err := exec.step(); err != nil {
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())
 			}
-			env.Assign(stmt.Iterator, item)
+			if err := exec.assign(stmt.Target, item, env); err != nil {
+				return NewNil(), false, exec.wrapError(err, stmt.Target.Pos())
+			}
 			val, returned, err := exec.evalStatements(stmt.Body, env)
 			if err != nil {
 				if errors.Is(err, errLoopBreak) {
@@ -2097,7 +2124,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 				if err := exec.step(); err != nil {
 					return NewNil(), false, exec.wrapError(err, stmt.Pos())
 				}
-				env.Assign(stmt.Iterator, NewInt(i))
+				if err := exec.assign(stmt.Target, NewInt(i), env); err != nil {
+					return NewNil(), false, exec.wrapError(err, stmt.Target.Pos())
+				}
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
 					if errors.Is(err, errLoopBreak) {
@@ -2121,7 +2150,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 				if err := exec.step(); err != nil {
 					return NewNil(), false, exec.wrapError(err, stmt.Pos())
 				}
-				env.Assign(stmt.Iterator, NewInt(i))
+				if err := exec.assign(stmt.Target, NewInt(i), env); err != nil {
+					return NewNil(), false, exec.wrapError(err, stmt.Target.Pos())
+				}
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
 					if errors.Is(err, errLoopBreak) {
@@ -2193,7 +2224,9 @@ func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())
 			}
 			pair := NewArray([]Value{entry.Key, entry.Value})
-			env.Assign(stmt.Iterator, pair)
+			if err := exec.assign(stmt.Target, pair, env); err != nil {
+				return NewNil(), false, exec.wrapError(err, stmt.Target.Pos())
+			}
 			val, returned, err := exec.evalStatements(stmt.Body, env)
 			if err != nil {
 				if errors.Is(err, errLoopBreak) {
@@ -2243,7 +2276,9 @@ func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value
 		// Hash keys round-trip as symbols, the same shape hash.each and hash.keys
 		// expose.
 		pair := NewArray([]Value{NewSymbol(key), entries[key]})
-		env.Assign(stmt.Iterator, pair)
+		if err := exec.assign(stmt.Target, pair, env); err != nil {
+			return NewNil(), false, exec.wrapError(err, stmt.Target.Pos())
+		}
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
@@ -2285,6 +2320,9 @@ func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, boo
 		exec.loopDepth--
 	}()
 
+	if stmt.BodyFirst {
+		predeclareLocalBindingsFromStatements(stmt.Body, env)
+	}
 	last := NewNil()
 	for {
 		if err := exec.step(); err != nil {
@@ -2309,6 +2347,7 @@ func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, boo
 				return last, false, nil
 			}
 			if errors.Is(err, errLoopNext) {
+				predeclareLocalBindingsFromStatements(stmt.Body, env)
 				continue
 			}
 			return NewNil(), false, err
@@ -2326,6 +2365,9 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 		exec.loopDepth--
 	}()
 
+	if stmt.BodyFirst {
+		predeclareLocalBindingsFromStatements(stmt.Body, env)
+	}
 	last := NewNil()
 	for {
 		if err := exec.step(); err != nil {
@@ -2350,6 +2392,7 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 				return last, false, nil
 			}
 			if errors.Is(err, errLoopNext) {
+				predeclareLocalBindingsFromStatements(stmt.Body, env)
 				continue
 			}
 			return NewNil(), false, err
@@ -2358,6 +2401,369 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 			return val, true, nil
 		}
 		last = val
+	}
+}
+
+func (exec *Execution) evalLocalScopeStatements(stmts []Statement, env *Env) (Value, bool, error) {
+	return exec.evalStatements(stmts, env)
+}
+
+func predeclareStatementLocalBindings(stmt Statement, env *Env) {
+	switch s := stmt.(type) {
+	case *AssignStmt:
+		predeclareAssignmentLocalBindings(s, env)
+	}
+}
+
+func predeclareStatementPostLocalBindings(stmt Statement, env *Env) {
+	if !statementCanPostPredeclareLocalBindings(stmt) {
+		return
+	}
+	predeclareLocalBindingsFromStatements([]Statement{stmt}, env)
+}
+
+func predeclareLocalBindingsFromStatements(stmts []Statement, env *Env) {
+	var collector localBindingCollector
+	collectLocalBindingNames(stmts, &collector)
+	for _, name := range collector.names {
+		env.PredeclareAssignmentLocal(name)
+	}
+}
+
+func statementCanPostPredeclareLocalBindings(stmt Statement) bool {
+	switch stmt.(type) {
+	case *LogicalStmt, *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+		return true
+	default:
+		return false
+	}
+}
+
+func predeclareAssignmentLocalBindings(stmt *AssignStmt, env *Env) {
+	if env.rebindOuter {
+		predeclareTargetBindingNames(stmt.Target, env)
+		return
+	}
+	predeclareDirectAssignmentTargetBindingNames(stmt.Target, stmt.Value, env)
+}
+
+type localBindingCollector struct {
+	names []string
+	seen  map[string]struct{}
+}
+
+func (c *localBindingCollector) add(name string) {
+	if _, ok := c.seen[name]; ok {
+		return
+	}
+	if c.seen == nil {
+		c.seen = make(map[string]struct{})
+	}
+	c.seen[name] = struct{}{}
+	c.names = append(c.names, name)
+}
+
+func collectLocalBindingNames(stmts []Statement, collector *localBindingCollector) {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *AssignStmt:
+			collectTargetBindingNames(s.Target, collector)
+		case *LogicalStmt:
+			collectLocalBindingNames([]Statement{s.Left}, collector)
+			collectLocalBindingNames([]Statement{s.Right}, collector)
+		case *IfStmt:
+			collectLocalBindingNames(s.Consequent, collector)
+			for _, branch := range s.ElseIf {
+				collectLocalBindingNames(branch.Consequent, collector)
+			}
+			collectLocalBindingNames(s.Alternate, collector)
+		case *ForStmt:
+			collectTargetBindingNames(s.Target, collector)
+			collectLocalBindingNames(s.Body, collector)
+		case *WhileStmt:
+			collectLocalBindingNames(s.Body, collector)
+		case *UntilStmt:
+			collectLocalBindingNames(s.Body, collector)
+		case *TryStmt:
+			collectLocalBindingNames(s.Body, collector)
+			collectLocalBindingNames(s.Rescue, collector)
+			collectLocalBindingNames(s.Else, collector)
+			collectLocalBindingNames(s.Ensure, collector)
+		}
+	}
+}
+
+func collectTargetBindingNames(target Expression, collector *localBindingCollector) {
+	switch t := target.(type) {
+	case *Identifier:
+		collector.add(t.Name)
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			collectTargetBindingNames(element.Target, collector)
+		}
+	}
+}
+
+func predeclareTargetBindingNames(target Expression, env *Env) {
+	switch t := target.(type) {
+	case *Identifier:
+		env.PredeclareLocal(t.Name)
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			predeclareTargetBindingNames(element.Target, env)
+		}
+	}
+}
+
+func predeclareDirectAssignmentTargetBindingNames(target, value Expression, env *Env) {
+	switch t := target.(type) {
+	case *Identifier:
+		env.PredeclareAssignmentLocal(t.Name)
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			predeclareDirectAssignmentTargetBindingNames(element.Target, value, env)
+		}
+	}
+}
+
+func assignmentLocalCallBypassNames(target, value Expression) map[string]struct{} {
+	var names map[string]struct{}
+	collectAssignmentLocalCallBypassNames(target, value, &names)
+	return names
+}
+
+func assignmentLocalCallBypassBindings(target, value Expression, env *Env) map[string]*Env {
+	names := assignmentLocalCallBypassNames(target, value)
+	if len(names) == 0 {
+		return nil
+	}
+	var bindings map[string]*Env
+	for name := range names {
+		scope, ok := env.lookupBindingScope(name)
+		if !ok || scope.callRoot || scope.frozen {
+			continue
+		}
+		if bindings == nil {
+			bindings = make(map[string]*Env)
+		}
+		bindings[name] = scope
+	}
+	return bindings
+}
+
+func collectAssignmentLocalCallBypassNames(target, value Expression, names *map[string]struct{}) {
+	switch t := target.(type) {
+	case *Identifier:
+		if expressionContainsBypassableIdentifierCall(value, t.Name) {
+			if *names == nil {
+				*names = make(map[string]struct{})
+			}
+			(*names)[t.Name] = struct{}{}
+		}
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			collectAssignmentLocalCallBypassNames(element.Target, value, names)
+		}
+	}
+}
+
+func expressionContainsBypassableIdentifierCall(expr Expression, name string) bool {
+	switch t := expr.(type) {
+	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+		return false
+	case *ArrayLiteral:
+		for _, elem := range t.Elements {
+			if expressionContainsBypassableIdentifierCall(elem, name) {
+				return true
+			}
+		}
+		return false
+	case *HashLiteral:
+		for _, pair := range t.Pairs {
+			if expressionContainsBypassableIdentifierCall(pair.Key, name) ||
+				expressionContainsBypassableIdentifierCall(pair.Value, name) {
+				return true
+			}
+		}
+		return false
+	case *CallExpr:
+		if ident, ok := t.Callee.(*Identifier); ok && callUsesBypassableIdentifierResolution(t) && ident.Name == name {
+			return true
+		}
+		if expressionContainsBypassableIdentifierCall(t.Callee, name) {
+			return true
+		}
+		for _, arg := range t.Args {
+			if expressionContainsBypassableIdentifierCall(arg, name) {
+				return true
+			}
+		}
+		for _, kwarg := range t.KwArgs {
+			if expressionContainsBypassableIdentifierCall(kwarg.Value, name) {
+				return true
+			}
+		}
+		return expressionContainsBypassableIdentifierCall(t.Block, name)
+	case *MemberExpr:
+		return expressionContainsBypassableIdentifierCall(t.Object, name)
+	case *ScopeExpr:
+		return expressionContainsBypassableIdentifierCall(t.Object, name)
+	case *IndexExpr:
+		if expressionContainsBypassableIdentifierCall(t.Object, name) {
+			return true
+		}
+		for _, index := range t.Indices {
+			if expressionContainsBypassableIdentifierCall(index, name) {
+				return true
+			}
+		}
+		return false
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			if expressionContainsBypassableIdentifierCall(element.Target, name) {
+				return true
+			}
+		}
+		return false
+	case *UnaryExpr:
+		return expressionContainsBypassableIdentifierCall(t.Right, name)
+	case *BinaryExpr:
+		return expressionContainsBypassableIdentifierCall(t.Left, name) ||
+			expressionContainsBypassableIdentifierCall(t.Right, name)
+	case *ConditionalExpr:
+		return expressionContainsBypassableIdentifierCall(t.Condition, name) ||
+			expressionContainsBypassableIdentifierCall(t.Consequent, name) ||
+			expressionContainsBypassableIdentifierCall(t.Alternate, name)
+	case *IfExpr:
+		if expressionContainsBypassableIdentifierCall(t.Condition, name) ||
+			expressionContainsBypassableIdentifierCall(t.Consequent, name) {
+			return true
+		}
+		for _, branch := range t.ElseIf {
+			if expressionContainsBypassableIdentifierCall(branch.Condition, name) ||
+				expressionContainsBypassableIdentifierCall(branch.Result, name) {
+				return true
+			}
+		}
+		return expressionContainsBypassableIdentifierCall(t.Alternate, name)
+	case *RangeExpr:
+		return expressionContainsBypassableIdentifierCall(t.Start, name) ||
+			expressionContainsBypassableIdentifierCall(t.End, name)
+	case *CaseExpr:
+		if expressionContainsBypassableIdentifierCall(t.Target, name) {
+			return true
+		}
+		for _, clause := range t.Clauses {
+			for _, value := range clause.Values {
+				if expressionContainsBypassableIdentifierCall(value.Expr, name) {
+					return true
+				}
+			}
+			if expressionContainsBypassableIdentifierCall(clause.Result, name) {
+				return true
+			}
+		}
+		return expressionContainsBypassableIdentifierCall(t.ElseExpr, name)
+	case *BlockLiteral:
+		if t == nil {
+			return false
+		}
+		for _, param := range t.Params {
+			if expressionContainsBypassableIdentifierCall(param.DefaultVal, name) {
+				return true
+			}
+		}
+		return statementsContainBypassableIdentifierCall(t.Body, name)
+	case *YieldExpr:
+		for _, arg := range t.Args {
+			if expressionContainsBypassableIdentifierCall(arg, name) {
+				return true
+			}
+		}
+		return false
+	case *InterpolatedString:
+		return stringPartsContainBypassableIdentifierCall(t.Parts, name)
+	case *InterpolatedSymbol:
+		return stringPartsContainBypassableIdentifierCall(t.Parts, name)
+	default:
+		return false
+	}
+}
+
+func callUsesBypassableIdentifierResolution(call *CallExpr) bool {
+	return call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil
+}
+
+func stringPartsContainBypassableIdentifierCall(parts []StringPart, name string) bool {
+	for _, part := range parts {
+		if exprPart, ok := part.(StringExpr); ok && expressionContainsBypassableIdentifierCall(exprPart.Expr, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func statementsContainBypassableIdentifierCall(statements []Statement, name string) bool {
+	for _, stmt := range statements {
+		if statementContainsBypassableIdentifierCall(stmt, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func statementContainsBypassableIdentifierCall(stmt Statement, name string) bool {
+	switch t := stmt.(type) {
+	case nil:
+		return false
+	case *ExprStmt:
+		return expressionContainsBypassableIdentifierCall(t.Expr, name)
+	case *LogicalStmt:
+		return statementContainsBypassableIdentifierCall(t.Left, name) ||
+			statementContainsBypassableIdentifierCall(t.Right, name)
+	case *ReturnStmt:
+		return expressionContainsBypassableIdentifierCall(t.Value, name)
+	case *RaiseStmt:
+		return expressionContainsBypassableIdentifierCall(t.Value, name)
+	case *BreakStmt:
+		return expressionContainsBypassableIdentifierCall(t.Value, name)
+	case *NextStmt:
+		return false
+	case *AssignStmt:
+		return expressionContainsBypassableIdentifierCall(t.Target, name) ||
+			expressionContainsBypassableIdentifierCall(t.Value, name)
+	case *IfStmt:
+		if expressionContainsBypassableIdentifierCall(t.Condition, name) ||
+			statementsContainBypassableIdentifierCall(t.Consequent, name) ||
+			statementsContainBypassableIdentifierCall(t.Alternate, name) {
+			return true
+		}
+		for _, branch := range t.ElseIf {
+			if expressionContainsBypassableIdentifierCall(branch.Condition, name) ||
+				statementsContainBypassableIdentifierCall(branch.Consequent, name) {
+				return true
+			}
+		}
+		return false
+	case *ForStmt:
+		return expressionContainsBypassableIdentifierCall(t.Target, name) ||
+			expressionContainsBypassableIdentifierCall(t.Iterable, name) ||
+			statementsContainBypassableIdentifierCall(t.Body, name)
+	case *WhileStmt:
+		return expressionContainsBypassableIdentifierCall(t.Condition, name) ||
+			statementsContainBypassableIdentifierCall(t.Body, name)
+	case *UntilStmt:
+		return expressionContainsBypassableIdentifierCall(t.Condition, name) ||
+			statementsContainBypassableIdentifierCall(t.Body, name)
+	case *TryStmt:
+		return statementsContainBypassableIdentifierCall(t.Body, name) ||
+			statementsContainBypassableIdentifierCall(t.Rescue, name) ||
+			statementsContainBypassableIdentifierCall(t.Else, name) ||
+			statementsContainBypassableIdentifierCall(t.Ensure, name)
+	case *ClassStmt:
+		return false
+	default:
+		return false
 	}
 }
 
@@ -2372,7 +2778,7 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 		if err := exec.step(); err != nil {
 			return NewNil(), false, exec.wrapError(err, stmt.Pos())
 		}
-		val, returned, err := exec.evalStatement(stmt, env)
+		val, returned, err := exec.evalStatementWithLocalBindings(stmt, env)
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2396,7 +2802,20 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 	return result, false, nil
 }
 
+func (exec *Execution) evalStatementWithLocalBindings(stmt Statement, env *Env) (Value, bool, error) {
+	predeclareStatementLocalBindings(stmt, env)
+	val, returned, err := exec.evalStatement(stmt, env)
+	if err != nil {
+		return val, returned, err
+	}
+	predeclareStatementPostLocalBindings(stmt, env)
+	return val, returned, nil
+}
+
 func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value, error) {
+	if stmt.Operator == tokenAndAssign || stmt.Operator == tokenOrAssign {
+		return exec.evalLogicalAssignment(stmt, env)
+	}
 	current, assign, err := exec.prepareCompoundAssignmentTarget(stmt.Target, env)
 	if err != nil {
 		return NewNil(), err
@@ -2405,7 +2824,7 @@ func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value
 		return NewNil(), err
 	}
 
-	right, err := exec.evalExpression(stmt.Value, env)
+	right, err := exec.evalAssignmentValue(stmt, env)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -2424,6 +2843,79 @@ func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value
 		return NewNil(), err
 	}
 	return result, nil
+}
+
+func (exec *Execution) evalLogicalAssignment(stmt *AssignStmt, env *Env) (Value, error) {
+	target, err := exec.prepareLogicalAssignmentTarget(stmt.Target, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(target.current); err != nil {
+		return NewNil(), err
+	}
+	switch stmt.Operator {
+	case tokenOrAssign:
+		if target.current.Truthy() {
+			return target.current, nil
+		}
+	case tokenAndAssign:
+		if !target.current.Truthy() {
+			return target.current, nil
+		}
+	default:
+		return NewNil(), exec.errorAt(stmt.Pos(), "unsupported logical assignment operator")
+	}
+
+	right, err := exec.evalAssignmentValue(stmt, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(target.current, right); err != nil {
+		return NewNil(), err
+	}
+	if err := target.assign(right); err != nil {
+		return NewNil(), err
+	}
+	return right, nil
+}
+
+type compoundAssignmentTarget struct {
+	current Value
+	assign  func(Value) error
+}
+
+func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *Env) (compoundAssignmentTarget, error) {
+	if ident, ok := target.(*Identifier); ok {
+		assign := func(value Value) error {
+			env.Assign(ident.Name, value)
+			return nil
+		}
+		if current, exists := env.getOwn(ident.Name); exists {
+			return compoundAssignmentTarget{current: current, assign: assign}, nil
+		}
+		if env.rebindOuter && env.parent != nil && env.parent.hasEnclosingLocalBinding(ident.Name) {
+			current, exists := env.Get(ident.Name)
+			if !exists {
+				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)
+			}
+			return compoundAssignmentTarget{current: current, assign: assign}, nil
+		}
+		if env.parent != nil && env.parent.hasAmbientAssignmentBinding(ident.Name) {
+			current, exists := env.Get(ident.Name)
+			if !exists {
+				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)
+			}
+			return compoundAssignmentTarget{current: current, assign: assign}, nil
+		}
+		env.Define(ident.Name, NewNil())
+		return compoundAssignmentTarget{current: NewNil(), assign: assign}, nil
+	}
+
+	current, assign, err := exec.prepareCompoundAssignmentTarget(target, env)
+	if err != nil {
+		return compoundAssignmentTarget{}, err
+	}
+	return compoundAssignmentTarget{current: current, assign: assign}, nil
 }
 
 func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *Env) (Value, func(Value) error, error) {
@@ -2495,6 +2987,8 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	case *ExprStmt:
 		val, err := exec.evalExpression(s.Expr, env)
 		return val, false, err
+	case *LogicalStmt:
+		return exec.evalLogicalStatement(s, env)
 	case *ReturnStmt:
 		if s.Value == nil {
 			return NewNil(), true, nil
@@ -2511,7 +3005,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		if val, handled, err := exec.evalArrayAppendAssignment(s, env); handled || err != nil {
 			return val, false, err
 		}
-		val, err := exec.evalExpression(s.Value, env)
+		val, err := exec.evalAssignmentValue(s, env)
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2526,6 +3020,10 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		}
 		return val, false, nil
 	case *IfStmt:
+		if s.ModifierBodyFirst {
+			predeclareLocalBindingsFromStatements(s.Consequent, env)
+			predeclareLocalBindingsFromStatements(s.Alternate, env)
+		}
 		val, err := exec.evalExpression(s.Condition, env)
 		if err != nil {
 			return NewNil(), false, err
@@ -2534,7 +3032,13 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			return NewNil(), false, err
 		}
 		if val.Truthy() {
+			if s.AlternateFirst {
+				predeclareLocalBindingsFromStatements(s.Alternate, env)
+			}
 			return exec.evalStatements(s.Consequent, env)
+		}
+		if !s.AlternateFirst {
+			predeclareLocalBindingsFromStatements(s.Consequent, env)
 		}
 		for _, clause := range s.ElseIf {
 			condVal, err := exec.evalExpression(clause.Condition, env)
@@ -2547,6 +3051,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			if condVal.Truthy() {
 				return exec.evalStatements(clause.Consequent, env)
 			}
+			predeclareLocalBindingsFromStatements(clause.Consequent, env)
 		}
 		if len(s.Alternate) > 0 {
 			return exec.evalStatements(s.Alternate, env)
@@ -2598,6 +3103,41 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	}
 }
 
+func (exec *Execution) evalAssignmentValue(stmt *AssignStmt, env *Env) (Value, error) {
+	bindings := assignmentLocalCallBypassBindings(stmt.Target, stmt.Value, env)
+	if len(bindings) == 0 {
+		return exec.evalExpression(stmt.Value, env)
+	}
+	exec.localCallBypassStack = append(exec.localCallBypassStack, localCallBypass{bindings: bindings})
+	defer func() {
+		exec.localCallBypassStack = exec.localCallBypassStack[:len(exec.localCallBypassStack)-1]
+	}()
+	return exec.evalExpression(stmt.Value, env)
+}
+
+func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value, bool, error) {
+	left, returned, err := exec.evalStatementWithLocalBindings(stmt.Left, env)
+	if err != nil || returned {
+		return left, returned, err
+	}
+	if err := exec.checkMemoryWith(left); err != nil {
+		return NewNil(), false, exec.wrapError(err, stmt.Left.Pos())
+	}
+	switch stmt.Operator {
+	case tokenWordAnd:
+		if !left.Truthy() {
+			return left, false, nil
+		}
+	case tokenWordOr:
+		if left.Truthy() {
+			return left, false, nil
+		}
+	default:
+		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement operator")
+	}
+	return exec.evalStatementWithLocalBindings(stmt.Right, env)
+}
+
 func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, bool, error) {
 	if stmt.Value != nil {
 		val, err := exec.evalExpression(stmt.Value, env)
@@ -2624,6 +3164,7 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {
 	val, returned, err := exec.evalStatements(stmt.Body, env)
 	runElse := err == nil && !returned
+	predeclareLocalBindingsFromStatements(stmt.Body, env)
 
 	if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
 		rescueEnv := env
@@ -2634,6 +3175,9 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 		exec.pushRescuedError(err)
 		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, rescueEnv)
 		exec.popRescuedError()
+		if rescueEnv != env {
+			copyRescueLocalAssignments(stmt, rescueEnv, env)
+		}
 		if rescueErr != nil {
 			val = NewNil()
 			returned = false
@@ -2644,10 +3188,12 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 			err = nil
 		}
 	}
+	predeclareRescueLocalBindings(stmt, env)
 
 	if runElse && len(stmt.Else) > 0 {
 		val, returned, err = exec.evalStatements(stmt.Else, env)
 	}
+	predeclareLocalBindingsFromStatements(stmt.Else, env)
 
 	if len(stmt.Ensure) > 0 {
 		ensureVal, ensureReturned, ensureErr := exec.evalStatements(stmt.Ensure, env)
@@ -2663,6 +3209,33 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 		return NewNil(), false, err
 	}
 	return val, returned, nil
+}
+
+func copyRescueLocalAssignments(stmt *TryStmt, from, to *Env) {
+	var collector localBindingCollector
+	collectLocalBindingNames(stmt.Rescue, &collector)
+	for _, name := range collector.names {
+		if name == stmt.RescueBinding {
+			continue
+		}
+		val, ok := from.getOwn(name)
+		if !ok {
+			continue
+		}
+		to.PredeclareLocal(name)
+		to.Assign(name, val)
+	}
+}
+
+func predeclareRescueLocalBindings(stmt *TryStmt, env *Env) {
+	var collector localBindingCollector
+	collectLocalBindingNames(stmt.Rescue, &collector)
+	for _, name := range collector.names {
+		if name == stmt.RescueBinding {
+			continue
+		}
+		env.PredeclareLocal(name)
+	}
 }
 
 func rescuedErrorValue(err error) Value {
