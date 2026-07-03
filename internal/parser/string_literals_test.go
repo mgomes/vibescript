@@ -99,7 +99,7 @@ func TestDoubleQuotedStringRubyEscapes(t *testing.T) {
 func TestDoubleQuotedStringRubyEscapesInInterpolationText(t *testing.T) {
 	t.Parallel()
 	source := `def run
-  "\x41#{1}\r"
+  "\xF\x41#{1}\r"
 end`
 
 	program, errs := parseSource(t, source)
@@ -115,8 +115,8 @@ end`
 	if len(lit.Parts) != 3 {
 		t.Fatalf("parts length = %d, want 3", len(lit.Parts))
 	}
-	if text, ok := lit.Parts[0].(ast.StringText); !ok || text.Text != "A" {
-		t.Fatalf("parts[0] = %#v, want text A", lit.Parts[0])
+	if text, ok := lit.Parts[0].(ast.StringText); !ok || text.Text != "\x0fA" {
+		t.Fatalf("parts[0] = %#v, want hex escape text", lit.Parts[0])
 	}
 	if text, ok := lit.Parts[2].(ast.StringText); !ok || text.Text != "\r" {
 		t.Fatalf("parts[2] = %#v, want carriage return text", lit.Parts[2])
