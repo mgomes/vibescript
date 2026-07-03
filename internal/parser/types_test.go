@@ -102,6 +102,10 @@ func TestParserQualifiedEnumTypeAnnotation(t *testing.T) {
 	t.Parallel()
 	source := `def echo(status: status_mod.Status) -> status_mod.Status?
   status
+end
+
+def maybe(status: status_mod.Status | nil) -> status_mod.Status | nil
+  status
 end`
 
 	got, errs := parseSource(t, source)
@@ -114,6 +118,14 @@ end`
 	}
 	if got := fn.ReturnTy; got.Name != "status_mod.Status" || got.Kind != ast.TypeEnum || !got.Nullable {
 		t.Fatalf("return type = %#v, want nullable status_mod.Status enum", got)
+	}
+
+	maybeFn := got.Statements[1].(*ast.FunctionStmt)
+	if got := maybeFn.Params[0].Type; got.Name != "status_mod.Status | nil" || got.Kind != ast.TypeUnion {
+		t.Fatalf("union param type = %#v, want status_mod.Status | nil", got)
+	}
+	if got := maybeFn.ReturnTy; got.Name != "status_mod.Status | nil" || got.Kind != ast.TypeUnion {
+		t.Fatalf("union return type = %#v, want status_mod.Status | nil", got)
 	}
 }
 
