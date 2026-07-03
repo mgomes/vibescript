@@ -29,6 +29,7 @@ end`
 			Consequent: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.Identifier{Name: "ready"}},
 			},
+			ModifierBodyFirst: true,
 		},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
@@ -68,6 +69,7 @@ end`
 					},
 				},
 			},
+			BodyFirst: true,
 		},
 		&ast.ExprStmt{Expr: &ast.Identifier{Name: "i"}},
 	}
@@ -94,8 +96,12 @@ end`
 	if len(body) != 3 {
 		t.Fatalf("function body length = %d, want 3", len(body))
 	}
-	if _, ok := body[1].(*ast.UntilStmt); !ok {
+	loop, ok := body[1].(*ast.UntilStmt)
+	if !ok {
 		t.Fatalf("body[1] = %T, want *ast.UntilStmt", body[1])
+	}
+	if !loop.BodyFirst {
+		t.Fatalf("modifier until BodyFirst = false, want true")
 	}
 }
 
@@ -121,12 +127,14 @@ end`
 					Value:  &ast.StringLiteral{Value: "ok"},
 				},
 			},
+			ModifierBodyFirst: true,
 		},
 		&ast.IfStmt{
 			Condition: &ast.BoolLiteral{Value: true},
 			Consequent: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "done"}},
 			},
+			ModifierBodyFirst: true,
 		},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
@@ -156,12 +164,14 @@ end`
 					Value:  &ast.StringLiteral{Value: "ok"},
 				},
 			},
+			ModifierBodyFirst: true,
 		},
 		&ast.IfStmt{
 			Condition: &ast.BoolLiteral{Value: false},
 			Alternate: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "done"}},
 			},
+			ModifierBodyFirst: true,
 		},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {

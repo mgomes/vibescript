@@ -2319,6 +2319,9 @@ func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, boo
 		exec.loopDepth--
 	}()
 
+	if stmt.BodyFirst {
+		predeclareLocalBindingsFromStatements(stmt.Body, env)
+	}
 	last := NewNil()
 	for {
 		if err := exec.step(); err != nil {
@@ -2360,6 +2363,9 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 		exec.loopDepth--
 	}()
 
+	if stmt.BodyFirst {
+		predeclareLocalBindingsFromStatements(stmt.Body, env)
+	}
 	last := NewNil()
 	for {
 		if err := exec.step(); err != nil {
@@ -2761,6 +2767,10 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		}
 		return val, false, nil
 	case *IfStmt:
+		if s.ModifierBodyFirst {
+			predeclareLocalBindingsFromStatements(s.Consequent, env)
+			predeclareLocalBindingsFromStatements(s.Alternate, env)
+		}
 		val, err := exec.evalExpression(s.Condition, env)
 		if err != nil {
 			return NewNil(), false, err

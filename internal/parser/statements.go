@@ -95,13 +95,13 @@ func (p *parser) parseStatementModifier(stmt ast.Statement) ast.Statement {
 	body := []ast.Statement{stmt}
 	switch modifier.Type {
 	case ast.TokenIf:
-		return &ast.IfStmt{Condition: condition, Consequent: body, Position: modifier.Pos}
+		return &ast.IfStmt{Condition: condition, Consequent: body, ModifierBodyFirst: true, Position: modifier.Pos}
 	case ast.TokenWhile:
-		return &ast.WhileStmt{Condition: condition, Body: body, Position: modifier.Pos}
+		return &ast.WhileStmt{Condition: condition, Body: body, BodyFirst: true, Position: modifier.Pos}
 	case ast.TokenUntil:
-		return &ast.UntilStmt{Condition: condition, Body: body, Position: modifier.Pos}
+		return &ast.UntilStmt{Condition: condition, Body: body, BodyFirst: true, Position: modifier.Pos}
 	case ast.TokenUnless:
-		return &ast.IfStmt{Condition: condition, Alternate: body, Position: modifier.Pos}
+		return &ast.IfStmt{Condition: condition, Alternate: body, ModifierBodyFirst: true, Position: modifier.Pos}
 	default:
 		return stmt
 	}

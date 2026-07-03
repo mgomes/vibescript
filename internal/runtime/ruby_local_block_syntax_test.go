@@ -101,7 +101,27 @@ def unless_false_body_before_later_else_assignment
     later_unless_local = 1
   end
 end
-`)
+
+def postfix_if_reads_body_local_condition
+  postfix_if_local = 1 if postfix_if_local == nil
+  postfix_if_local
+end
+
+def postfix_unless_reads_body_local_condition
+  postfix_unless_local = 1 unless postfix_unless_local != nil
+  postfix_unless_local
+end
+
+def postfix_while_reads_body_local_condition
+  postfix_while_local = 1 while postfix_while_local == nil
+  postfix_while_local
+end
+
+def postfix_until_reads_body_local_condition
+  postfix_until_local = 1 until postfix_until_local != nil
+  postfix_until_local
+end
+	`)
 
 	got := callFunc(t, script, "run", nil)
 	compareArrays(t, got, []Value{NewNil(), NewNil()})
@@ -133,6 +153,16 @@ end
 	_, err = script.Call(context.Background(), "unless_false_body_before_later_else_assignment", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "undefined variable later_unless_local") {
 		t.Fatalf("unless_false_body_before_later_else_assignment() error = %v, want undefined variable later_unless_local", err)
+	}
+	for _, fn := range []string{
+		"postfix_if_reads_body_local_condition",
+		"postfix_unless_reads_body_local_condition",
+		"postfix_while_reads_body_local_condition",
+		"postfix_until_reads_body_local_condition",
+	} {
+		if got := callFunc(t, script, fn, nil); !got.Equal(NewInt(1)) {
+			t.Fatalf("%s() = %s, want 1", fn, got)
+		}
 	}
 }
 

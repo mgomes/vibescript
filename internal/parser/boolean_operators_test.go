@@ -135,6 +135,7 @@ end`
 					Right:    &ast.ExprStmt{Expr: &ast.Identifier{Name: "fallback"}},
 				},
 			},
+			ModifierBodyFirst: true,
 		},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
