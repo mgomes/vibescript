@@ -2346,6 +2346,7 @@ func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, boo
 				return last, false, nil
 			}
 			if errors.Is(err, errLoopNext) {
+				predeclareLocalBindingsFromStatements(stmt.Body, env)
 				continue
 			}
 			return NewNil(), false, err
@@ -2390,6 +2391,7 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 				return last, false, nil
 			}
 			if errors.Is(err, errLoopNext) {
+				predeclareLocalBindingsFromStatements(stmt.Body, env)
 				continue
 			}
 			return NewNil(), false, err

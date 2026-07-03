@@ -121,6 +121,30 @@ def postfix_until_reads_body_local_condition
   postfix_until_local = 1 until postfix_until_local != nil
   postfix_until_local
 end
+
+def while_next_predeclares_later_body_local
+  count = 0
+  while count == 0 || skipped_while_local == nil
+    count = count + 1
+    if count == 1
+      next
+    end
+    skipped_while_local = 1
+  end
+  [count, skipped_while_local]
+end
+
+def until_next_predeclares_later_body_local
+  count = 0
+  until count != 0 && skipped_until_local != nil
+    count = count + 1
+    if count == 1
+      next
+    end
+    skipped_until_local = 1
+  end
+  [count, skipped_until_local]
+end
 	`)
 
 	got := callFunc(t, script, "run", nil)
@@ -163,6 +187,13 @@ end
 		if got := callFunc(t, script, fn, nil); !got.Equal(NewInt(1)) {
 			t.Fatalf("%s() = %s, want 1", fn, got)
 		}
+	}
+	for _, fn := range []string{
+		"while_next_predeclares_later_body_local",
+		"until_next_predeclares_later_body_local",
+	} {
+		got := callFunc(t, script, fn, nil)
+		compareArrays(t, got, []Value{NewInt(2), NewInt(1)})
 	}
 }
 
