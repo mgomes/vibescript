@@ -41,6 +41,7 @@ type Config struct {
 type Engine struct {
 	config            Config
 	builtins          map[string]Value
+	hostBuiltins      map[string]struct{}
 	builtinsMu        sync.RWMutex
 	modules           map[string]moduleEntry
 	modPaths          []string
@@ -109,6 +110,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 	engine := &Engine{
 		config:          cfg,
 		builtins:        make(map[string]Value),
+		hostBuiltins:    make(map[string]struct{}),
 		modules:         make(map[string]moduleEntry),
 		modPaths:        append([]string(nil), cfg.ModulePaths...),
 		modSearchMisses: make(map[string]string),
@@ -230,20 +232,63 @@ func MustNewEngine(cfg Config) *Engine {
 
 // RegisterBuiltin registers a callable global available to scripts.
 func (e *Engine) RegisterBuiltin(name string, fn BuiltinFunc) {
+	e.registerBuiltin(name, fn, true)
+}
+
+func (e *Engine) registerDefaultBuiltin(name string, fn BuiltinFunc) {
+	e.registerBuiltin(name, fn, false)
+}
+
+func (e *Engine) registerBuiltin(name string, fn BuiltinFunc, host bool) {
 	e.builtinsMu.Lock()
 	defer e.builtinsMu.Unlock()
 
 	e.builtins[name] = NewBuiltin(name, fn)
+	if host {
+		if e.hostBuiltins == nil {
+			e.hostBuiltins = make(map[string]struct{})
+		}
+		e.hostBuiltins[name] = struct{}{}
+	} else {
+		delete(e.hostBuiltins, name)
+	}
 	e.builtinProto = nil
 }
 
 // RegisterZeroArgBuiltin registers a builtin that can be invoked without arguments or parentheses.
 func (e *Engine) RegisterZeroArgBuiltin(name string, fn BuiltinFunc) {
+	e.registerZeroArgBuiltin(name, fn, true)
+}
+
+func (e *Engine) registerDefaultZeroArgBuiltin(name string, fn BuiltinFunc) {
+	e.registerZeroArgBuiltin(name, fn, false)
+}
+
+func (e *Engine) registerZeroArgBuiltin(name string, fn BuiltinFunc, host bool) {
 	e.builtinsMu.Lock()
 	defer e.builtinsMu.Unlock()
 
 	e.builtins[name] = NewAutoBuiltin(name, fn)
+	if host {
+		if e.hostBuiltins == nil {
+			e.hostBuiltins = make(map[string]struct{})
+		}
+		e.hostBuiltins[name] = struct{}{}
+	} else {
+		delete(e.hostBuiltins, name)
+	}
 	e.builtinProto = nil
+}
+
+func (e *Engine) hasHostBuiltin(name string) bool {
+	if e == nil {
+		return false
+	}
+	e.builtinsMu.RLock()
+	defer e.builtinsMu.RUnlock()
+
+	_, ok := e.hostBuiltins[name]
+	return ok
 }
 
 func registerCoreBuiltins(engine *Engine) {
@@ -273,10 +318,10 @@ func registerCoreBuiltins(engine *Engine) {
 		{name: "to_float", fn: builtinToFloat},
 	} {
 		if builtin.autoInvoke {
-			engine.RegisterZeroArgBuiltin(builtin.name, builtin.fn)
+			engine.registerDefaultZeroArgBuiltin(builtin.name, builtin.fn)
 			continue
 		}
-		engine.RegisterBuiltin(builtin.name, builtin.fn)
+		engine.registerDefaultBuiltin(builtin.name, builtin.fn)
 	}
 }
 

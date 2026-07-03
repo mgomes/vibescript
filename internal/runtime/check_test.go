@@ -76,6 +76,30 @@ end
 	}
 }
 
+func TestCheckWarningsRespectRegisteredBuiltinsBeforeSpecs(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	engine.RegisterBuiltin("rand", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewInt(int64(len(args))), nil
+	})
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  rand(1, 2)
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() with registered rand builtin returned error: %v", err)
+	}
+	if !got.Equal(NewInt(2)) {
+		t.Fatalf("Call() with registered rand builtin = %s, want 2", got)
+	}
+}
+
 func TestCheckWarningsResolveRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 

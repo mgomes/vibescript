@@ -780,6 +780,9 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if c.typeRootHasBinding(callee.Name) {
 			return staticCallable{}, false
 		}
+		if c.hostBuiltinOverrides(callee.Name) {
+			return staticCallable{}, false
+		}
 		if spec, ok := staticBuiltinSpecs[callee.Name]; ok {
 			return staticCallable{name: callee.Name, spec: spec}, true
 		}
@@ -797,6 +800,13 @@ func (c *scriptChecker) typeRootHasBinding(name string) bool {
 	}
 	_, ok := c.typeRoot.Get(name)
 	return ok
+}
+
+func (c *scriptChecker) hostBuiltinOverrides(name string) bool {
+	if c.script == nil || c.script.engine == nil {
+		return false
+	}
+	return c.script.engine.hasHostBuiltin(name)
 }
 
 func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallable, bool) {
@@ -821,6 +831,9 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 			}
 		}
 		if c.typeRootHasBinding(ident.Name) {
+			return staticCallable{}, false
+		}
+		if c.hostBuiltinOverrides(ident.Name) {
 			return staticCallable{}, false
 		}
 		if spec, ok := staticBuiltinSpecs[ident.Name+"."+member.Property]; ok {
