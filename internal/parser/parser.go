@@ -25,6 +25,7 @@ type parser struct {
 	privateNext                bool
 	lineLimitedExprs           int
 	lineLimitedStops           []ast.TokenType
+	lineLimitedForcedStops     []ast.TokenType
 	lineLimitedStopSuppression int
 	statementNesting           int
 	typeDepth                  int

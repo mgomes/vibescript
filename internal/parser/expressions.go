@@ -32,6 +32,20 @@ func (p *parser) parseLineExpressionUntil(precedence int, stop ...ast.TokenType)
 	return p.parseExpression(precedence)
 }
 
+func (p *parser) parseLineExpressionUntilForced(precedence int, stop ...ast.TokenType) ast.Expression {
+	p.lineLimitedExprs++
+	stopLen := len(p.lineLimitedStops)
+	forcedStopLen := len(p.lineLimitedForcedStops)
+	p.lineLimitedStops = append(p.lineLimitedStops, stop...)
+	p.lineLimitedForcedStops = append(p.lineLimitedForcedStops, stop...)
+	defer func() {
+		p.lineLimitedExprs--
+		p.lineLimitedStops = p.lineLimitedStops[:stopLen]
+		p.lineLimitedForcedStops = p.lineLimitedForcedStops[:forcedStopLen]
+	}()
+	return p.parseExpression(precedence)
+}
+
 func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLimited bool) ast.Expression {
 	prefix := prefixParserKind(p.curToken.Type)
 	if prefix == prefixParserNone {
@@ -111,12 +125,21 @@ func (p *parser) peekStopsLineExpression() bool {
 	}
 	for _, stop := range p.lineLimitedStops {
 		if p.peekToken.Type == stop {
-			if p.lineLimitedStopSuppression > 0 {
+			if p.lineLimitedStopSuppression > 0 && !p.lineStopForced(stop) {
 				return false
 			}
 			if stop == ast.TokenDo && p.peekPeek.Type == ast.TokenPipe {
 				return false
 			}
+			return true
+		}
+	}
+	return false
+}
+
+func (p *parser) lineStopForced(stop ast.TokenType) bool {
+	for _, forced := range p.lineLimitedForcedStops {
+		if forced == stop {
 			return true
 		}
 	}
@@ -1279,7 +1302,7 @@ func (p *parser) parsePrefixExpression() ast.Expression {
 	p.nextToken()
 	var right ast.Expression
 	if operator == ast.TokenNot {
-		right = p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
+		right = p.parseLineExpressionUntilForced(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
 	} else {
 		right = p.parseExpression(precPrefix)
 	}

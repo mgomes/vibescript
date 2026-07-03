@@ -2338,15 +2338,18 @@ func (exec *Execution) evalLocalScopeStatements(stmts []Statement, env *Env) (Va
 }
 
 func predeclareStatementLocalBindings(stmt Statement, env *Env) {
-	if !statementCanPredeclareLocalBindings(stmt) {
+	switch s := stmt.(type) {
+	case *AssignStmt:
+		predeclareDirectTargetBindingNames(s.Target, env)
+	case *ForStmt:
+		predeclareTargetBindingNames(s.Target, env)
+	}
+}
+
+func predeclareStatementPostLocalBindings(stmt Statement, env *Env) {
+	if !statementCanPostPredeclareLocalBindings(stmt) {
 		return
 	}
-
-	if assign, ok := stmt.(*AssignStmt); ok {
-		predeclareDirectTargetBindingNames(assign.Target, env)
-		return
-	}
-
 	var collector localBindingCollector
 	collectLocalBindingNames([]Statement{stmt}, &collector)
 	for _, name := range collector.names {
@@ -2354,9 +2357,9 @@ func predeclareStatementLocalBindings(stmt Statement, env *Env) {
 	}
 }
 
-func statementCanPredeclareLocalBindings(stmt Statement) bool {
+func statementCanPostPredeclareLocalBindings(stmt Statement) bool {
 	switch stmt.(type) {
-	case *AssignStmt, *LogicalStmt, *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+	case *LogicalStmt, *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
 		return true
 	default:
 		return false
@@ -2457,8 +2460,7 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 		if err := exec.step(); err != nil {
 			return NewNil(), false, exec.wrapError(err, stmt.Pos())
 		}
-		predeclareStatementLocalBindings(stmt, env)
-		val, returned, err := exec.evalStatement(stmt, env)
+		val, returned, err := exec.evalStatementWithLocalBindings(stmt, env)
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2480,6 +2482,16 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 		return NewNil(), false, exec.wrapError(err, lastPos)
 	}
 	return result, false, nil
+}
+
+func (exec *Execution) evalStatementWithLocalBindings(stmt Statement, env *Env) (Value, bool, error) {
+	predeclareStatementLocalBindings(stmt, env)
+	val, returned, err := exec.evalStatement(stmt, env)
+	if err != nil {
+		return val, returned, err
+	}
+	predeclareStatementPostLocalBindings(stmt, env)
+	return val, returned, nil
 }
 
 func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value, error) {
@@ -2756,7 +2768,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 }
 
 func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value, bool, error) {
-	left, returned, err := exec.evalStatement(stmt.Left, env)
+	left, returned, err := exec.evalStatementWithLocalBindings(stmt.Left, env)
 	if err != nil || returned {
 		return left, returned, err
 	}
@@ -2775,7 +2787,7 @@ func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value,
 	default:
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement operator")
 	}
-	return exec.evalStatement(stmt.Right, env)
+	return exec.evalStatementWithLocalBindings(stmt.Right, env)
 }
 
 func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, bool, error) {

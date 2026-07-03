@@ -19,10 +19,22 @@ def run
   end
   [branch_local, loop_local]
 end
+
+def nested_after_compound
+  if true
+    if false
+      nested_local = 1
+    end
+    nested_local
+  end
+end
 `)
 
 	got := callFunc(t, script, "run", nil)
 	compareArrays(t, got, []Value{NewNil(), NewNil()})
+	if got := callFunc(t, script, "nested_after_compound", nil); !got.Equal(NewNil()) {
+		t.Fatalf("nested_after_compound() = %s, want nil", got)
+	}
 }
 
 func TestRubyDoesNotPredeclareFutureNestedAssignmentsAtScopeStart(t *testing.T) {
@@ -42,9 +54,16 @@ def logical_rhs
   true or later = 1
   before
 end
+
+def if_body_source_order
+  if true
+    before = later
+    later = 1
+  end
+end
 `)
 
-	for _, fn := range []string{"nested_branch", "logical_rhs"} {
+	for _, fn := range []string{"nested_branch", "logical_rhs", "if_body_source_order"} {
 		t.Run(fn, func(t *testing.T) {
 			t.Parallel()
 			_, err := script.Call(context.Background(), fn, nil, CallOptions{})
@@ -198,6 +217,25 @@ end
 
 	got := callFunc(t, script, "run", nil)
 	compareArrays(t, got, []Value{NewBool(true), NewBool(false), NewString("blocked")})
+}
+
+func TestRubyNotPrecedenceInGroupedExpressions(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def echo(value)
+  value
+end
+
+def run
+  grouped = (not true and false)
+  arg = echo(not true and false)
+  [grouped, arg]
+end
+`)
+
+	got := callFunc(t, script, "run", nil)
+	compareArrays(t, got, []Value{NewBool(false), NewBool(false)})
 }
 
 func TestRubyLogicalAssignmentsShortCircuitTargets(t *testing.T) {

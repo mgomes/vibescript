@@ -158,6 +158,36 @@ end`
 	}
 }
 
+func TestParserNotPrecedenceInsideGroupedExpression(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  x = (not true and false)
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "x"},
+			Value: &ast.BinaryExpr{
+				Left: &ast.UnaryExpr{
+					Operator: ast.TokenNot,
+					Right:    &ast.BoolLiteral{Value: true},
+				},
+				Operator: ast.TokenWordAnd,
+				Right:    &ast.BoolLiteral{Value: false},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserStatementWordBooleanPrecedence(t *testing.T) {
 	t.Parallel()
 
