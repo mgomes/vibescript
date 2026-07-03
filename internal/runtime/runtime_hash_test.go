@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 func compileScript(t *testing.T, source string) *Script {
@@ -2489,6 +2491,44 @@ func TestHashCopyPreservesSortedOrderForBareHostMap(t *testing.T) {
 			got := callFunc(t, script, tc.fn, []Value{bareHostMap()})
 			if diff := valuesDiff([]Value{tc.want}, []Value{got}); diff != "" {
 				t.Fatalf("%s mismatch (-want +got):\n%s", tc.fn, diff)
+			}
+		})
+	}
+}
+
+// TestTypedTransformReservesExactOrderCapacity pins that a typed transform
+// pre-sizes its result's insertion-order backing to the entry count. Growing it
+// by append from capacity 1 would leave a 3-entry result holding 4 order slots,
+// overshooting the slots the memory-quota projection charges.
+func TestTypedTransformReservesExactOrderCapacity(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def transform_values_result()
+      { a: 1, b: 2, c: 3 }.transform_values do |v|
+        v * 2
+      end
+    end
+
+    def transform_keys_result()
+      { a: 1, b: 2, c: 3 }.transform_keys do |k|
+        k
+      end
+    end
+    `)
+
+	for _, tc := range []struct{ name, fn string }{
+		{name: "transform_values", fn: "transform_values_result"},
+		{name: "transform_keys", fn: "transform_keys_result"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, nil)
+			if got.HashLen() != 3 {
+				t.Fatalf("%s entries = %d, want 3", tc.fn, got.HashLen())
+			}
+			if capacity := value.HashOrderCapacity(got); capacity != 3 {
+				t.Fatalf("%s order capacity = %d, want 3 (append growth would overshoot to 4)", tc.fn, capacity)
 			}
 		})
 	}

@@ -319,7 +319,15 @@ func (v Value) HashSet(key, val Value) error {
 				displayKeys = append(displayKeys, displayKey)
 			}
 			sort.Strings(displayKeys)
-			hd.order = make([]HashLookupKey, 0, len(displayKeys)+1)
+			// Honor an order backing a builder reserved up front (ReserveHashOrder)
+			// so a known-size build keeps its exact capacity instead of discarding
+			// it for an append-grown one; a legacy-only hash has none, so this
+			// allocates the seed slice as before.
+			if cap(hd.order) < len(displayKeys)+1 {
+				hd.order = make([]HashLookupKey, 0, len(displayKeys)+1)
+			} else {
+				hd.order = hd.order[:0]
+			}
 			for _, displayKey := range displayKeys {
 				entryKey := promotedLegacyHashKey(displayKey, key)
 				canonical, err := NewHashLookupKey(entryKey)
@@ -394,4 +402,24 @@ func HashOrderCapacity(v Value) int {
 		return cap(hd.order)
 	}
 	return 0
+}
+
+// ReserveHashOrder pre-sizes the insertion-order backing to capacity n so a
+// builder that knows its final entry count avoids the append growth overshoot,
+// where a hash of 3 entries would otherwise retain 4 order slots. This keeps the
+// backing's capacity equal to the entry count the memory-quota projection
+// charges. It is a no-op when v is not a hash, n is non-positive, or the backing
+// already has at least n slots. HashSet honors the reserved capacity when it
+// promotes a legacy map or appends new keys.
+func (v Value) ReserveHashOrder(n int) {
+	if v.kind != KindHash || n <= 0 {
+		return
+	}
+	hd, ok := v.data.(*hashData)
+	if !ok || cap(hd.order) >= n {
+		return
+	}
+	grown := make([]HashLookupKey, len(hd.order), n)
+	copy(grown, hd.order)
+	hd.order = grown
 }

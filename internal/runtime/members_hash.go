@@ -285,6 +285,10 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 			}
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 			out := NewHash(make(map[string]Value, count))
+			// Pre-size the order backing to the projected count so it matches the
+			// insertion-order slots typedHashTransformBufferBytes reserved, rather
+			// than overshooting through append growth.
+			out.ReserveHashOrder(count)
 			var blockArg [1]Value
 			var entryBuf [smallHashKeyBufferSize]HashEntry
 			for _, entry := range orderedTypedHashEntriesInto(value, entryBuf[:]) {
@@ -2407,6 +2411,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				out := NewHash(make(map[string]Value, count))
+				out.ReserveHashOrder(count)
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
 				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
@@ -2470,6 +2475,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// beyond those slots.
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 			out := NewHash(make(map[string]Value, len(entries)))
+			out.ReserveHashOrder(len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
@@ -2596,6 +2602,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				out := NewHash(make(map[string]Value, count))
+				out.ReserveHashOrder(count)
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
 				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
