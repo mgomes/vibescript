@@ -301,6 +301,28 @@ end
 	requireCheckWarningContains(t, script, "call to helper.double has unexpected positional arguments")
 }
 
+func TestCheckWarningsCheckReachablePrivateModuleHelpers(t *testing.T) {
+	t.Parallel()
+
+	dir := tempModuleTree(t, moduleFile{path: "contracts.vibe", content: `private def bad(value: int = "bad")
+  value
+end
+
+def run()
+  bad()
+end
+`})
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("contracts").run()
+end
+`)
+
+	requireCheckWarningContains(t, script, "default value for value expected int, got string")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "argument value expected int, got string")
+}
+
 func TestCheckWarningsDoNotAutoInvokeParameterizedRequiredModuleFunctionMembers(t *testing.T) {
 	t.Parallel()
 

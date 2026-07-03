@@ -696,19 +696,23 @@ func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) 
 	checker.collectRequiredModuleExportsFromModuleInitialization(entry)
 	checker.checkRequiredModuleInitialization(entry)
 
-	for _, fn := range functions {
-		if !checker.markModuleFunctionChecked(entry.key, fn.Name) {
-			continue
-		}
-		label := moduleDisplayName(entry.key) + "." + fn.Name
-		checker.withFreshRuntimeTypeRoot(func() {
-			checker.withRuntimeModuleCollection(func() {
-				checker.collectRequiredModuleExportsFromModuleInitialization(entry)
+	checker.withReachableCallChecks(func() {
+		for _, fn := range functions {
+			if !checker.markModuleFunctionChecked(entry.key, fn.Name) {
+				continue
+			}
+			label := moduleDisplayName(entry.key) + "." + fn.Name
+			checker.withFreshRuntimeTypeRoot(func() {
+				checker.withRuntimeModuleCollection(func() {
+					checker.collectRequiredModuleExportsFromModuleInitialization(entry)
+				})
+				checker.checkRuntimeClassBodies(deferredClassBodiesForFunction(fn, checker.script.deferredClassBodies), true)
+				checker.markReachableFunctionChecked(fn)
+				checker.checkFunction(label, fn)
+				checker.checkReachableFunctions()
 			})
-			checker.checkRuntimeClassBodies(deferredClassBodiesForFunction(fn, checker.script.deferredClassBodies), true)
-			checker.checkFunction(label, fn)
-		})
-	}
+		}
+	})
 
 	c.warnings = append(c.warnings, checker.warnings...)
 	c.moduleEntries = checker.moduleEntries
