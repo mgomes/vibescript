@@ -367,14 +367,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		c.collectRequiredModuleExportsFromExpression(typed.Start)
 		c.collectRequiredModuleExportsFromExpression(typed.End)
 	case *CaseExpr:
-		c.collectRequiredModuleExportsFromExpression(typed.Target)
-		for _, clause := range typed.Clauses {
-			for _, value := range clause.Values {
-				c.collectRequiredModuleExportsFromExpression(value.Expr)
-			}
-			c.collectRequiredModuleExportsFromExpression(clause.Result)
-		}
-		c.collectRequiredModuleExportsFromExpression(typed.ElseExpr)
+		c.collectRequiredModuleExportsFromCaseExpression(typed)
 	case *BlockLiteral:
 		return
 	case *YieldExpr:
@@ -396,6 +389,29 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpressionBranches(branc
 		c.collectRequiredModuleExportsFromExpression(branch)
 		branchStates = append(branchStates, c.snapshotModuleCollectionState())
 	}
+	c.mergeModuleCollectionStates(baseState, branchStates)
+}
+
+func (c *scriptChecker) collectRequiredModuleExportsFromCaseExpression(expr *CaseExpr) {
+	baseState := c.snapshotModuleCollectionState()
+	c.collectRequiredModuleExportsFromExpression(expr.Target)
+	fallthroughState := c.snapshotModuleCollectionState()
+	branchStates := make([]checkModuleCollectionState, 0, len(expr.Clauses)+1)
+
+	for _, clause := range expr.Clauses {
+		for _, value := range clause.Values {
+			c.restoreModuleCollectionState(fallthroughState)
+			c.collectRequiredModuleExportsFromExpression(value.Expr)
+			matchState := c.snapshotModuleCollectionState()
+			c.collectRequiredModuleExportsFromExpression(clause.Result)
+			branchStates = append(branchStates, c.snapshotModuleCollectionState())
+			fallthroughState = matchState
+		}
+	}
+
+	c.restoreModuleCollectionState(fallthroughState)
+	c.collectRequiredModuleExportsFromExpression(expr.ElseExpr)
+	branchStates = append(branchStates, c.snapshotModuleCollectionState())
 	c.mergeModuleCollectionStates(baseState, branchStates)
 }
 

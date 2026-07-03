@@ -788,6 +788,61 @@ end
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
 }
 
+func TestCheckWarningsDoNotHoistCaseArmRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(flag) -> Status
+  case flag
+  when true
+    require("enum_status") && :draft
+  else
+    :published
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", []Value{NewBool(false)}, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsMergeCommonCaseArmRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(flag) -> Status
+  case flag
+  when true
+    require("enum_status") && :draft
+  else
+    require("enum_status") && :published
+  end
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	for _, tc := range []struct {
+		name string
+		flag bool
+		want string
+	}{
+		{name: "then", flag: true, want: "Draft"},
+		{name: "else", flag: false, want: "Published"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := script.Call(context.Background(), "run", []Value{NewBool(tc.flag)}, CallOptions{})
+			if err != nil {
+				t.Fatalf("Call() returned error: %v", err)
+			}
+			if got.Kind() != KindEnumValue || valueEnumValue(got).Name != tc.want {
+				t.Fatalf("Call() = %#v, want Status::%s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckWarningsDoNotHoistLoopBodyRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
