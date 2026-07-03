@@ -310,33 +310,32 @@ func (v Value) HashSet(key, val Value) error {
 				hd.entries = make(map[string]Value)
 			}
 			hd.typedEntries = make(map[HashLookupKey]HashEntry, len(hd.entries))
-			// A legacy string map records no insertion order, so promotion
-			// seeds the order from the sorted display keys: the hash keeps the
-			// deterministic sorted iteration it always had, and only keys
-			// inserted from here on append in insertion order.
-			displayKeys := make([]string, 0, len(hd.entries))
-			for displayKey := range hd.entries {
-				displayKeys = append(displayKeys, displayKey)
-			}
-			sort.Strings(displayKeys)
-			// Honor an order backing a builder reserved up front (ReserveHashOrder)
-			// so a known-size build keeps its exact capacity instead of discarding
-			// it for an append-grown one; a legacy-only hash has none, so this
-			// allocates the seed slice as before.
-			if cap(hd.order) < len(displayKeys)+1 {
-				hd.order = make([]HashLookupKey, 0, len(displayKeys)+1)
+			// A legacy string map records no insertion order, so promotion seeds
+			// the order from the sorted display keys: the hash keeps the
+			// deterministic sorted iteration it always had, and only keys inserted
+			// from here on append in insertion order. Sort the order backing in
+			// place — each promoted lookup key carries its display string in text —
+			// rather than a separate key slice, so promotion adds no scratch a
+			// caller without an Execution context could not charge. Honor a
+			// capacity a builder reserved up front (ReserveHashOrder); a legacy-only
+			// hash has none, so this allocates the backing as before.
+			if cap(hd.order) < len(hd.entries)+1 {
+				hd.order = make([]HashLookupKey, 0, len(hd.entries)+1)
 			} else {
 				hd.order = hd.order[:0]
 			}
-			for _, displayKey := range displayKeys {
+			for displayKey, entryVal := range hd.entries {
 				entryKey := promotedLegacyHashKey(displayKey, key)
 				canonical, err := NewHashLookupKey(entryKey)
 				if err != nil {
 					return err
 				}
-				hd.typedEntries[canonical] = HashEntry{Key: entryKey, Value: hd.entries[displayKey]}
+				hd.typedEntries[canonical] = HashEntry{Key: entryKey, Value: entryVal}
 				hd.order = append(hd.order, canonical)
 			}
+			sort.Slice(hd.order, func(i, j int) bool {
+				return hd.order[i].text < hd.order[j].text
+			})
 		}
 		canonical, err := NewHashLookupKey(key)
 		if err != nil {
