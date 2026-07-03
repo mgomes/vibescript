@@ -191,6 +191,22 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       containers[0][:cb].call
     end
 
+    def receive_default_callable(fn: function = answer)
+      fn.call
+    end
+
+    def receive_default_handlers(fns: array<function> = [answer])
+      fns[0].call
+    end
+
+    def receive_default_shape(opts: { cb: function } = { cb: answer })
+      opts[:cb].call
+    end
+
+    def receive_default_nested(containers: array<{ cb: function }> = [{ cb: answer }])
+      containers[0][:cb].call
+    end
+
     def make_handlers(*fns: array<function>) -> array<function>
       fns
     end
@@ -335,6 +351,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "keyword shape literal keeps callable fields", fn: "run_keyword_shape_literal", want: NewInt(42)},
 		{name: "keyword rest union ignores impossible callable arm", fn: "run_keyword_rest_object_or_function", want: NewInt(42)},
 		{name: "nested typed literal keeps callable fields", fn: "run_nested_literal", want: NewInt(42)},
+		{name: "typed callable default keeps callable", fn: "receive_default_callable", want: NewInt(42)},
+		{name: "typed array default keeps callable elements", fn: "receive_default_handlers", want: NewInt(42)},
+		{name: "typed shape default keeps callable fields", fn: "receive_default_shape", want: NewInt(42)},
+		{name: "nested typed default keeps callable fields", fn: "receive_default_nested", want: NewInt(42)},
 		{name: "typed block call parameter keeps callable", fn: "run_block_param", want: NewInt(42)},
 		{name: "typed destructured block parameter keeps callable array element", fn: "run_destructured_block_param", want: NewInt(42)},
 		{name: "typed destructured block parameter keeps scalar callable", fn: "run_scalar_destructured_block_param", want: NewInt(42)},

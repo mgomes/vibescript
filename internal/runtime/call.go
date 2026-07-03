@@ -2373,7 +2373,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 					usedKw[param.Name] = true
 				}
 			} else if param.DefaultVal != nil {
-				defaultVal, err := exec.evalExpressionWithAuto(param.DefaultVal, env, true)
+				defaultVal, err := exec.evalExpressionWithExpectation(param.DefaultVal, env, typeExpressionExpectation(param.Type))
 				if err != nil {
 					return err
 				}
@@ -2413,7 +2413,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 					usedKw[param.Name] = true
 				}
 			} else if param.DefaultVal != nil {
-				defaultVal, err := exec.evalExpressionWithAuto(param.DefaultVal, env, true)
+				defaultVal, err := exec.evalExpressionWithExpectation(param.DefaultVal, env, positionalArgumentExpectation(param))
 				if err != nil {
 					return err
 				}
