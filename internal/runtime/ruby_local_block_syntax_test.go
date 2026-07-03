@@ -46,6 +46,27 @@ def elsif_condition_reads_prior_branch_local
     "miss"
   end
 end
+
+def rescue_reads_try_body_local
+  begin
+    raise "boom"
+    body_local = 1
+  rescue
+    body_local
+  end
+end
+
+def ensure_reads_try_body_local
+  begin
+    raise "boom"
+    body_local = 1
+  rescue
+    "rescued"
+  ensure
+    seen = body_local
+  end
+  seen
+end
 `)
 
 	got := callFunc(t, script, "run", nil)
@@ -58,6 +79,12 @@ end
 	}
 	if got := callFunc(t, script, "elsif_condition_reads_prior_branch_local", nil); !got.Equal(NewString("ok")) {
 		t.Fatalf("elsif_condition_reads_prior_branch_local() = %s, want ok", got)
+	}
+	if got := callFunc(t, script, "rescue_reads_try_body_local", nil); !got.Equal(NewNil()) {
+		t.Fatalf("rescue_reads_try_body_local() = %s, want nil", got)
+	}
+	if got := callFunc(t, script, "ensure_reads_try_body_local", nil); !got.Equal(NewNil()) {
+		t.Fatalf("ensure_reads_try_body_local() = %s, want nil", got)
 	}
 }
 

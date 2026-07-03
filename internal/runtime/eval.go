@@ -2884,6 +2884,7 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {
 	val, returned, err := exec.evalStatements(stmt.Body, env)
 	runElse := err == nil && !returned
+	predeclareLocalBindingsFromStatements(stmt.Body, env)
 
 	if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
 		rescueEnv := env
@@ -2904,10 +2905,12 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 			err = nil
 		}
 	}
+	predeclareLocalBindingsFromStatements(stmt.Rescue, env)
 
 	if runElse && len(stmt.Else) > 0 {
 		val, returned, err = exec.evalStatements(stmt.Else, env)
 	}
+	predeclareLocalBindingsFromStatements(stmt.Else, env)
 
 	if len(stmt.Ensure) > 0 {
 		ensureVal, ensureReturned, ensureErr := exec.evalStatements(stmt.Ensure, env)
