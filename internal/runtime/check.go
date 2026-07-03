@@ -112,11 +112,12 @@ func (c *scriptChecker) collectFunctionRequiredModuleExports(fn *ScriptFunction)
 	if fn == nil {
 		return
 	}
-	popScope := c.pushFunctionScope(fn)
+	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 
 	for _, param := range fn.Params {
 		c.collectRequiredModuleExportsFromExpression(param.DefaultVal)
+		c.recordParamBinding(param)
 	}
 	c.collectRequiredModuleExportsFromStatements(fn.Body)
 }
@@ -143,39 +144,71 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 	case *AssignStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Target)
 		c.collectRequiredModuleExportsFromExpression(typed.Value)
+		c.recordBindingTarget(typed.Target)
 	case *ExprStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Expr)
 	case *IfStmt:
 		baseState := c.snapshotModuleCollectionState()
+		baseScopeState := c.snapshotScopeState()
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
 		falseState := c.snapshotModuleCollectionState()
+		falseScopeState := c.snapshotScopeState()
 		fallthroughStates := make([]checkModuleCollectionState, 0, len(typed.ElseIf)+2)
+		fallthroughScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
 		c.collectRequiredModuleExportsFromStatements(typed.Consequent)
 		if !blockAlwaysExits(typed.Consequent) {
 			fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
+			fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 		}
 		for _, elseIf := range typed.ElseIf {
 			c.restoreModuleCollectionState(falseState)
+			c.restoreScopeState(falseScopeState)
 			c.collectRequiredModuleExportsFromExpression(elseIf.Condition)
 			falseState = c.snapshotModuleCollectionState()
+			falseScopeState = c.snapshotScopeState()
 			c.collectRequiredModuleExportsFromStatements(elseIf.Consequent)
 			if !blockAlwaysExits(elseIf.Consequent) {
 				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
+				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 		}
 		c.restoreModuleCollectionState(falseState)
+		c.restoreScopeState(falseScopeState)
 		c.collectRequiredModuleExportsFromStatements(typed.Alternate)
 		if len(typed.Alternate) == 0 || !blockAlwaysExits(typed.Alternate) {
 			fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
+			fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 		}
 		c.mergeModuleCollectionStates(baseState, fallthroughStates)
+		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
 	case *ForStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Iterable)
+		if typed.Iterator != "" {
+			c.recordBindingName(typed.Iterator)
+		}
+		bodyState := c.snapshotModuleCollectionState()
+		bodyScopeState := c.snapshotScopeState()
+		c.collectRequiredModuleExportsFromStatements(typed.Body)
+		c.restoreModuleCollectionState(bodyState)
+		c.restoreScopeState(bodyScopeState)
+		c.recordLocalBindings(typed.Body)
 	case *WhileStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		bodyState := c.snapshotModuleCollectionState()
+		bodyScopeState := c.snapshotScopeState()
+		c.collectRequiredModuleExportsFromStatements(typed.Body)
+		c.restoreModuleCollectionState(bodyState)
+		c.restoreScopeState(bodyScopeState)
+		c.recordLocalBindings(typed.Body)
 	case *UntilStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		bodyState := c.snapshotModuleCollectionState()
+		bodyScopeState := c.snapshotScopeState()
+		c.collectRequiredModuleExportsFromStatements(typed.Body)
+		c.restoreModuleCollectionState(bodyState)
+		c.restoreScopeState(bodyScopeState)
+		c.recordLocalBindings(typed.Body)
 	case *TryStmt:
 		c.collectRequiredModuleExportsFromStatements(typed.Body)
 		c.collectRequiredModuleExportsFromStatements(typed.Rescue)
@@ -342,7 +375,7 @@ func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
 	if !ok || callee.Name != "require" {
 		return
 	}
-	moduleName, ok := staticStringLiteralValue(call.Args[0])
+	moduleName, ok := staticRequireModuleName(call.Args[0])
 	if !ok {
 		return
 	}
@@ -431,7 +464,7 @@ func (c *scriptChecker) withRuntimeModuleCollection(collect func()) {
 
 func (c *scriptChecker) checkScript() {
 	for _, fn := range c.sortedScriptFunctions() {
-		c.withFreshRuntimeTypeRoot(func() {
+		c.withFreshRuntimeTypeRootForCallable(fn, func() {
 			c.checkFunction(fn.Name, fn)
 		})
 	}
@@ -440,16 +473,23 @@ func (c *scriptChecker) checkScript() {
 			c.checkStatements(classDef.Name+".<class body>", nil, classDef.Body)
 		})
 		for _, method := range sortedCheckFunctions(classDef.Methods) {
-			c.withFreshRuntimeTypeRoot(func() {
+			c.withFreshRuntimeTypeRootForCallable(method, func() {
 				c.checkFunction(classDef.Name+"#"+method.Name, method)
 			})
 		}
 		for _, method := range sortedCheckFunctions(classDef.ClassMethods) {
-			c.withFreshRuntimeTypeRoot(func() {
+			c.withFreshRuntimeTypeRootForCallable(method, func() {
 				c.checkFunction(classDef.Name+"."+method.Name, method)
 			})
 		}
 	}
+}
+
+func (c *scriptChecker) withFreshRuntimeTypeRootForCallable(fn *ScriptFunction, check func()) {
+	c.withFreshRuntimeTypeRoot(func() {
+		c.collectRuntimeClassBodyRequiredModuleExports(deferredClassBodiesForFunction(fn, c.script.deferredClassBodies))
+		check()
+	})
 }
 
 func (c *scriptChecker) withFreshRuntimeTypeRoot(check func()) {
@@ -462,6 +502,26 @@ func (c *scriptChecker) withFreshRuntimeTypeRoot(check func()) {
 		c.runtimeModules = previousModules
 	}()
 	check()
+}
+
+func (c *scriptChecker) collectRuntimeClassBodyRequiredModuleExports(skip map[string]struct{}) {
+	if c.runtimeTypeRoot == nil {
+		return
+	}
+	c.withRuntimeModuleCollection(func() {
+		for _, name := range c.script.classOrder {
+			if _, deferred := skip[name]; deferred {
+				continue
+			}
+			classDef := c.script.classes[name]
+			if classDef == nil || len(classDef.Body) == 0 {
+				continue
+			}
+			popScope := c.pushScope(make(map[string]struct{}))
+			c.collectRequiredModuleExportsFromStatements(classDef.Body)
+			popScope()
+		}
+	})
 }
 
 type checkRuntimeState struct {
@@ -697,7 +757,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 	if fn == nil {
 		return
 	}
-	popScope := c.pushFunctionCheckScope(fn)
+	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 
 	for _, param := range fn.Params {
@@ -709,6 +769,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 				c.checkRuntimeExpressionAgainstType(label, param.DefaultVal, param.Type, fmt.Sprintf("default value for %s", param.Name))
 			}
 		}
+		c.recordParamBinding(param)
 	}
 	c.checkStatements(label, fn.ReturnTy, fn.Body)
 	if fn.ReturnTy != nil {
@@ -1712,12 +1773,15 @@ func staticLiteralValue(expr Expression) (Value, bool) {
 	return NewNil(), false
 }
 
-func staticStringLiteralValue(expr Expression) (string, bool) {
-	lit, ok := expr.(*StringLiteral)
-	if !ok {
+func staticRequireModuleName(expr Expression) (string, bool) {
+	switch typed := expr.(type) {
+	case *StringLiteral:
+		return typed.Value, true
+	case *SymbolLiteral:
+		return typed.Name, true
+	default:
 		return "", false
 	}
-	return lit.Value, true
 }
 
 func staticUnaryLiteralValue(expr *UnaryExpr) (Value, bool) {
@@ -1778,27 +1842,6 @@ func typeExprPosition(ty *TypeExpr) Position {
 		}
 	}
 	return Position{}
-}
-
-func (c *scriptChecker) pushFunctionScope(fn *ScriptFunction) func() {
-	scope := make(map[string]struct{})
-	for _, param := range fn.Params {
-		if param.Name != "" {
-			scope[param.Name] = struct{}{}
-		}
-	}
-	collectLocalBindings(fn.Body, scope)
-	return c.pushScope(scope)
-}
-
-func (c *scriptChecker) pushFunctionCheckScope(fn *ScriptFunction) func() {
-	scope := make(map[string]struct{})
-	for _, param := range fn.Params {
-		if param.Name != "" {
-			scope[param.Name] = struct{}{}
-		}
-	}
-	return c.pushScope(scope)
 }
 
 func (c *scriptChecker) pushBlockScope(block *BlockLiteral) func() {
@@ -1863,6 +1906,13 @@ func (c *scriptChecker) recordBindingName(name string) {
 		c.scopes[len(c.scopes)-1] = scope
 	}
 	scope[name] = struct{}{}
+}
+
+func (c *scriptChecker) recordParamBinding(param Param) {
+	if param.Name != "" {
+		c.recordBindingName(param.Name)
+	}
+	c.recordBindingTarget(param.Target)
 }
 
 func (c *scriptChecker) recordLocalBindings(statements []Statement) {

@@ -218,6 +218,57 @@ end
 	}
 }
 
+func TestCheckWarningsResolveSymbolRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  require(:enum_status)
+  :published
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after symbol-required module enum export returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Published" {
+		t.Fatalf("Call() after symbol-required module enum export = %#v, want Status::Published", got)
+	}
+}
+
+func TestCheckWarningsSeedCallableContractsWithClassBodyRequires(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+class Normalizer
+  require("enum_status")
+
+  def self.normalize(status: Status = :published) -> Status
+    status
+  end
+end
+
+def run(status: Status = :draft) -> Status
+  Normalizer.normalize(status)
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after class-body required module enum export returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() after class-body required module enum export = %#v, want Status::Draft", got)
+	}
+}
+
 func TestCheckWarningsResolveTransitiveRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
@@ -508,6 +559,27 @@ end
 	}
 	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
 		t.Fatalf("Call() after default-required module enum export = %#v, want Status::Draft", got)
+	}
+}
+
+func TestCheckWarningsDoNotLetFutureBindingsShadowDefaultRequiredModuleExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(_loader = require("enum_status"), require = nil, status: Status = :draft) -> Status
+  body_require = require
+  status
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after default-required module enum export with future bindings returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() after default-required module enum export with future bindings = %#v, want Status::Draft", got)
 	}
 }
 
