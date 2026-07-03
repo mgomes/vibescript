@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestCommaSeparatedReturnValuesReturnArray(t *testing.T) {
 	t.Parallel()
@@ -130,7 +133,9 @@ def run()
 end
 `)
 
-	compareArrays(t, callFunc(t, script, "run", nil), []Value{
+	compareArrays(t, callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{"LIMIT": NewInt(99)},
+	}), []Value{
 		NewInt(12),
 		NewInt(12),
 		NewInt(12),

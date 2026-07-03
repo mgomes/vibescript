@@ -165,6 +165,33 @@ end`
 	}
 }
 
+func TestParserMultilineReturnCommaContinuation(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  return 1,
+    2,
+    3
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ReturnStmt{
+			Value: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.IntegerLiteral{Value: 1},
+				&ast.IntegerLiteral{Value: 2},
+				&ast.IntegerLiteral{Value: 3},
+			}},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserParenlessArgumentListCalls(t *testing.T) {
 	t.Parallel()
 	source := `def run(name, retries)

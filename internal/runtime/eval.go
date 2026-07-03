@@ -35,13 +35,23 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if e.Name == blockGivenName {
 			return NewBool(blockGivenInCurrentCall(env)), nil
 		}
-		val, ok := env.Get(e.Name)
-		if !ok {
-			// allow implicit self method lookup
-			if self, hasSelf := env.Get("self"); hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+		var self Value
+		hasSelf := false
+		if isConstantIdentifier(e.Name) {
+			self, hasSelf = env.Get("self")
+			if hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
 				if val, ok := classConstant(self, e.Name); ok {
 					return val, nil
 				}
+			}
+		}
+		val, ok := env.Get(e.Name)
+		if !ok {
+			// allow implicit self method lookup
+			if !hasSelf {
+				self, hasSelf = env.Get("self")
+			}
+			if hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
 				member, err := exec.getMember(self, e.Name, e.Pos())
 				if err != nil {
 					return NewNil(), err
