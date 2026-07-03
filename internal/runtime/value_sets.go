@@ -265,8 +265,9 @@ func subtractArrayValues(left, right []Value) []Value {
 }
 
 func containsEqualValue(values []Value, target Value) bool {
+	var equality EqualityContext
 	for _, candidate := range values {
-		if target.Equal(candidate) {
+		if equality.Equal(target, candidate) {
 			return true
 		}
 	}

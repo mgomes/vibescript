@@ -414,6 +414,71 @@ func BenchmarkStringTemplateMalformedOpeners(b *testing.B) {
 	}
 }
 
+func benchmarkCompositeRows(n int) []Value {
+	values := make([]Value, n)
+	for i := range values {
+		values[i] = NewHash(map[string]Value{
+			"id":     NewInt(int64(i)),
+			"status": NewString("s" + strconv.Itoa(i%60)),
+			"amount": NewInt(int64(i * 10)),
+		})
+	}
+	return values
+}
+
+func benchmarkMissingCompositeRow() Value {
+	return NewHash(map[string]Value{
+		"id":     NewInt(9999),
+		"status": NewString("missing"),
+		"amount": NewInt(0),
+	})
+}
+
+func BenchmarkArrayIncludeCompositeRowsMiss(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values, target)
+  values.include?(target)
+end`)
+	args := []Value{NewArray(benchmarkCompositeRows(600)), benchmarkMissingCompositeRow()}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkArrayCountCompositeRowsMiss(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values, target)
+  values.count(target)
+end`)
+	args := []Value{NewArray(benchmarkCompositeRows(600)), benchmarkMissingCompositeRow()}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkArrayUniqCompositeRows(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values)
+  values.uniq
+end`)
+	args := []Value{NewArray(benchmarkCompositeRows(600))}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
 func BenchmarkExecutionHashTransformLoop(b *testing.B) {
 	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(payload, n)
   out = {}

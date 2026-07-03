@@ -345,6 +345,10 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 		return moduleEntry{}, fmt.Errorf("require: module paths not configured")
 	}
 
+	if suggestion, ok := e.cachedSearchPathMiss(request.normalized); ok {
+		return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, suggestion)
+	}
+
 	for _, root := range e.modPaths {
 		key := moduleCacheKey(root, request.normalized)
 		candidate := filepath.Join(root, request.normalized)
@@ -367,7 +371,24 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 		return e.compileAndCacheModule(key, root, request.normalized, candidate, data)
 	}
 
-	return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, e.searchPathModuleSuggestion(request))
+	suggestion := e.searchPathModuleSuggestion(request)
+	e.cacheSearchPathMiss(request.normalized, suggestion)
+	return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, suggestion)
+}
+
+func (e *Engine) cachedSearchPathMiss(normalized string) (string, bool) {
+	e.modMu.RLock()
+	suggestion, ok := e.modSearchMisses[normalized]
+	e.modMu.RUnlock()
+	return suggestion, ok
+}
+
+func (e *Engine) cacheSearchPathMiss(normalized, suggestion string) {
+	e.modMu.Lock()
+	if len(e.modSearchMisses) < e.config.MaxCachedModules {
+		e.modSearchMisses[normalized] = suggestion
+	}
+	e.modMu.Unlock()
 }
 
 // moduleSuggestWalkLimit caps how many directory entries are examined per
