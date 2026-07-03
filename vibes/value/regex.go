@@ -1,6 +1,9 @@
 package value
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // Regex is the payload of a KindRegex value: a compiled Ruby-style regex
 // literal. Source is the pattern text between the slashes exactly as written
@@ -22,6 +25,37 @@ func NewRegex(r Regex) Value { return Value{kind: KindRegex, data: r} }
 func (v Value) Regex() Regex { return v.data.(Regex) }
 
 // String renders the regex the way it is written in source: /pattern/flags.
+// Any forward slash in the source that is not already escaped is escaped so the
+// result is a valid, round-trippable literal. Without this, a source built from
+// a string (Regexp.new("a/b"), Regexp.union("a/b")) would render /a/b/, which
+// re-parses as /a/ followed by a stray flag rather than the original pattern.
 func (r Regex) String() string {
-	return "/" + r.Source + "/" + r.Flags
+	return "/" + escapeRegexDelimiters(r.Source) + "/" + r.Flags
+}
+
+// escapeRegexDelimiters backslash-escapes every unescaped forward slash in
+// source. A slash preceded by an odd number of backslashes is already escaped
+// and is left untouched, so literals that already carry \/ (such as /a\/b/) are
+// not double-escaped. Escaping a slash never changes what the pattern matches:
+// RE2 treats \/ and / identically.
+func escapeRegexDelimiters(source string) string {
+	if !strings.ContainsRune(source, '/') {
+		return source
+	}
+	var b strings.Builder
+	b.Grow(len(source) + strings.Count(source, "/"))
+	backslashes := 0
+	for i := 0; i < len(source); i++ {
+		c := source[i]
+		if c == '/' && backslashes%2 == 0 {
+			b.WriteByte('\\')
+		}
+		if c == '\\' {
+			backslashes++
+		} else {
+			backslashes = 0
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }

@@ -49,3 +49,33 @@ func TestRegexValueBasics(t *testing.T) {
 		t.Fatalf("NewHashLookupKey(regex) error = nil, want unsupported hash key")
 	}
 }
+
+// TestRegexStringEscapesDelimiters pins that rendering escapes unescaped
+// delimiter slashes so a regex built from a string (Regexp.new/union) produces a
+// valid, round-trippable literal instead of /a/b/.
+func TestRegexStringEscapesDelimiters(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		flags  string
+		want   string
+	}{
+		{name: "raw slash from string source", source: "a/b", want: `/a\/b/`},
+		{name: "already escaped slash left as-is", source: `a\/b`, want: `/a\/b/`},
+		{name: "escaped backslash before slash", source: `a\\/b`, want: `/a\\\/b/`},
+		{name: "leading slash", source: "/x", want: `/\/x/`},
+		{name: "no slash unchanged", source: "a+", flags: "i", want: "/a+/i"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			re := value.Regex{Source: tc.source, Flags: tc.flags}
+			if got := re.String(); got != tc.want {
+				t.Fatalf("Regex{Source:%q, Flags:%q}.String() = %q, want %q", tc.source, tc.flags, got, tc.want)
+			}
+		})
+	}
+}
