@@ -171,12 +171,24 @@ func TestFunctionOptionsHashPreservesCallableValues(t *testing.T) {
       opts[:cb].call
     end
 
+    def accept_rest_union(*opts: array<hash<string, function>> | nil)
+      opts[0][:cb].call
+    end
+
     def parenless
       accept cb: answer
     end
 
     def parenthesized
       accept(cb: answer)
+    end
+
+    def rest_union_parenless
+      accept_rest_union cb: answer
+    end
+
+    def rest_union_parenthesized
+      accept_rest_union(cb: answer)
     end
     `)
 
@@ -186,6 +198,8 @@ func TestFunctionOptionsHashPreservesCallableValues(t *testing.T) {
 	}{
 		{name: "parenless", fn: "parenless"},
 		{name: "parenthesized", fn: "parenthesized"},
+		{name: "rest union parenless", fn: "rest_union_parenless"},
+		{name: "rest union parenthesized", fn: "rest_union_parenthesized"},
 	}
 
 	for _, tc := range tests {

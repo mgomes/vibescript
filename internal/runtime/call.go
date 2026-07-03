@@ -1140,10 +1140,44 @@ func restParamExpectsCallableElement(ty *TypeExpr) bool {
 }
 
 func restParamElementType(ty *TypeExpr) *TypeExpr {
-	if ty != nil && ty.Kind == TypeArray && len(ty.TypeArgs) > 0 {
-		return ty.TypeArgs[0]
+	if ty == nil {
+		return nil
 	}
-	return ty
+	switch ty.Kind {
+	case TypeArray:
+		if len(ty.TypeArgs) > 0 {
+			return ty.TypeArgs[0]
+		}
+		return nil
+	case TypeUnion:
+		elements := restParamUnionElementTypes(ty)
+		switch len(elements) {
+		case 0:
+			return ty
+		case 1:
+			return elements[0]
+		default:
+			return &TypeExpr{Kind: TypeUnion, Union: elements}
+		}
+	default:
+		return ty
+	}
+}
+
+func restParamUnionElementTypes(ty *TypeExpr) []*TypeExpr {
+	switch ty.Kind {
+	case TypeArray:
+		if len(ty.TypeArgs) > 0 {
+			return []*TypeExpr{ty.TypeArgs[0]}
+		}
+	case TypeUnion:
+		var elements []*TypeExpr
+		for _, option := range ty.Union {
+			elements = append(elements, restParamUnionElementTypes(option)...)
+		}
+		return elements
+	}
+	return nil
 }
 
 func keywordRestParamExpectsCallableValue(ty *TypeExpr, name string) bool {
