@@ -96,3 +96,39 @@ end
 		NewBool(true),
 	})
 }
+
+func TestScopedClassConstants(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+class Config
+  LIMIT = 10
+
+  def self.limit
+    LIMIT
+  end
+
+  def self.scoped_limit
+    Config::LIMIT
+  end
+end
+
+class Other
+  LIMIT = 20
+
+  def self.limit
+    LIMIT
+  end
+end
+
+def run()
+  [Config.limit, Config.scoped_limit, Config::LIMIT, Other.limit]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "run", nil), []Value{
+		NewInt(10),
+		NewInt(10),
+		NewInt(10),
+		NewInt(20),
+	})
+}

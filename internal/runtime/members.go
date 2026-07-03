@@ -344,6 +344,14 @@ func (exec *Execution) getScopedMember(obj Value, property string, pos Position)
 		candidates := slices.Collect(maps.Keys(obj.Hash()))
 		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, candidates))
 	}
+	if obj.Kind() == KindClass {
+		classDef := valueClass(obj)
+		if val, ok := classDef.ClassVars[property]; ok {
+			return val, nil
+		}
+		candidates := slices.Collect(maps.Keys(classDef.ClassVars))
+		return NewNil(), exec.errorAt(pos, "unknown constant %s::%s%s", classDef.Name, property, didYouMean(property, candidates))
+	}
 	if obj.Kind() != KindEnum {
 		return NewNil(), exec.errorAt(pos, "scoped member access is only supported on enums and namespaces")
 	}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/internal/ast"
 )
@@ -37,6 +39,9 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if !ok {
 			// allow implicit self method lookup
 			if self, hasSelf := env.Get("self"); hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+				if val, ok := classConstant(self, e.Name); ok {
+					return val, nil
+				}
 				member, err := exec.getMember(self, e.Name, e.Pos())
 				if err != nil {
 					return NewNil(), err
@@ -1605,6 +1610,10 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	switch t := target.(type) {
 	case *Identifier:
+		if self, ok := env.Get("self"); ok && self.Kind() == KindClass && isConstantIdentifier(t.Name) {
+			valueClass(self).ClassVars[t.Name] = value
+			return nil
+		}
 		env.Assign(t.Name, value)
 		return nil
 	case *DestructureTarget:
@@ -1658,6 +1667,31 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	default:
 		return exec.errorAt(target.Pos(), "invalid assignment target")
 	}
+}
+
+func classConstant(self Value, name string) (Value, bool) {
+	if !isConstantIdentifier(name) {
+		return NewNil(), false
+	}
+	switch self.Kind() {
+	case KindClass:
+		val, ok := valueClass(self).ClassVars[name]
+		return val, ok
+	case KindInstance:
+		inst := valueInstance(self)
+		if inst == nil || inst.Class == nil {
+			return NewNil(), false
+		}
+		val, ok := inst.Class.ClassVars[name]
+		return val, ok
+	default:
+		return NewNil(), false
+	}
+}
+
+func isConstantIdentifier(name string) bool {
+	r, _ := utf8.DecodeRuneInString(name)
+	return r != utf8.RuneError && unicode.IsUpper(r)
 }
 
 func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Value) error {
