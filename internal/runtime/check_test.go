@@ -1634,6 +1634,47 @@ end
 	}
 }
 
+func TestCheckWarningsSkipStaticallyUnreachableFunctionBlockBodies(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def false_if_invoke
+  if false
+    yield
+  end
+end
+
+def run
+  false_if_invoke do
+    rand(1, 2)
+  end
+
+  [1].fetch(0) do
+    rand(1, 2)
+  end
+
+  [1].fetch(-1) do
+    rand(1, 2)
+  end
+
+  [1].fetch(0.0) do
+    rand(1, 2)
+  end
+
+  1
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() returned error: %v", err)
+	}
+	if !got.Equal(NewInt(1)) {
+		t.Fatalf("Call() = %s, want 1", got)
+	}
+}
+
 func TestCheckWarningsSkipNestedIgnoredFunctionBlockBodies(t *testing.T) {
 	t.Parallel()
 
@@ -2450,6 +2491,15 @@ end`,
   JSON.parse("{}", "extra")
 end`,
 			want: "call to JSON.parse has too many arguments",
+		},
+		{
+			name: "array fetch miss checks block",
+			source: `def run()
+  [1].fetch(2) do
+    JSON.parse()
+  end
+end`,
+			want: "call to JSON.parse has too few arguments",
 		},
 		{
 			name: "uuid block",

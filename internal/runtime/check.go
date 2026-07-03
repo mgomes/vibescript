@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -2127,7 +2128,56 @@ func (c *scriptChecker) callMayEvaluateBlockWithSeen(call *CallExpr, seen map[*S
 	if target.fn != nil {
 		return c.functionMayEvaluateCallBlock(target.fn, seen)
 	}
+	if target.name == "array.fetch" {
+		return staticArrayFetchBlockMayEvaluate(call)
+	}
 	return target.spec.usesBlock
+}
+
+func staticArrayFetchBlockMayEvaluate(call *CallExpr) bool {
+	if call == nil || call.Block == nil {
+		return false
+	}
+	if len(call.Args) < 1 || len(call.Args) > 2 {
+		return false
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok {
+		return true
+	}
+	receiver, ok := staticLiteralValue(member.Object)
+	if !ok || receiver.Kind() != KindArray {
+		return true
+	}
+	indexValue, ok := staticLiteralValue(call.Args[0])
+	if !ok {
+		return true
+	}
+	index, ok := staticArrayFetchIndex(indexValue)
+	if !ok {
+		return false
+	}
+	normalized := index
+	length := int64(len(receiver.Array()))
+	if normalized < 0 {
+		normalized += length
+	}
+	return normalized < 0 || normalized >= length
+}
+
+func staticArrayFetchIndex(value Value) (int64, bool) {
+	switch value.Kind() {
+	case KindInt:
+		return value.Int(), true
+	case KindFloat:
+		floatIndex := value.Float()
+		if math.Trunc(floatIndex) != floatIndex {
+			return 0, false
+		}
+		return int64(floatIndex), true
+	default:
+		return 0, false
+	}
 }
 
 func staticallyNonCallableCallee(expr Expression) bool {
@@ -2187,18 +2237,34 @@ func (c *scriptChecker) statementMayEvaluateCallBlock(stmt Statement, seen map[*
 		return c.statementMayEvaluateCallBlock(typed.Left, seen) ||
 			(logicalStatementRightMayEvaluate(typed) && c.statementMayEvaluateCallBlock(typed.Right, seen))
 	case *IfStmt:
-		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
-			c.statementsMayEvaluateCallBlock(typed.Consequent, seen) ||
-			c.statementsMayEvaluateCallBlock(typed.Alternate, seen) {
+		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) {
 			return true
 		}
-		for _, branch := range typed.ElseIf {
-			if c.expressionMayEvaluateCallBlock(branch.Condition, seen) ||
-				c.statementsMayEvaluateCallBlock(branch.Consequent, seen) {
+		truthy, known := staticExpressionTruthiness(typed.Condition)
+		if !known || truthy {
+			if c.statementsMayEvaluateCallBlock(typed.Consequent, seen) {
 				return true
 			}
+			if known {
+				return false
+			}
 		}
-		return false
+		for _, branch := range typed.ElseIf {
+			if c.expressionMayEvaluateCallBlock(branch.Condition, seen) {
+				return true
+			}
+			truthy, known = staticExpressionTruthiness(branch.Condition)
+			if known && !truthy {
+				continue
+			}
+			if c.statementsMayEvaluateCallBlock(branch.Consequent, seen) {
+				return true
+			}
+			if known {
+				return false
+			}
+		}
+		return c.statementsMayEvaluateCallBlock(typed.Alternate, seen)
 	case *ForStmt:
 		return c.expressionMayEvaluateCallBlock(typed.Target, seen) ||
 			c.expressionMayEvaluateCallBlock(typed.Iterable, seen) ||
