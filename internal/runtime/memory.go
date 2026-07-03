@@ -1710,19 +1710,26 @@ func newLoopScratchReservation(exec *Execution, receiver Value, args []Value, kw
 	return reservation, nil
 }
 
-func (r *loopScratchReservation) reserve(scratchBytes int) error {
+func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
 	if r.exec.memoryQuota <= 0 || scratchBytes <= 0 {
-		return nil
+		return true
 	}
 
 	delta := r.exec.reserveLoopScratch(scratchBytes)
 	nextDelta := saturatingAdd(r.delta, delta)
 	if saturatingAdd(r.baseline, nextDelta) > r.exec.memoryQuota {
 		r.exec.releaseLoopScratch(delta)
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, r.exec.memoryQuota)
+		return false
 	}
 	r.delta = nextDelta
-	return nil
+	return true
+}
+
+func (r *loopScratchReservation) reserve(scratchBytes int) error {
+	if r.reserveIfFits(scratchBytes) {
+		return nil
+	}
+	return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, r.exec.memoryQuota)
 }
 
 func (r *loopScratchReservation) release() {

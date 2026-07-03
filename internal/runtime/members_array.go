@@ -668,6 +668,15 @@ func valueSliceScratchBytes(slotCount int) int {
 	return valueSliceBackingBytes(slotCount)
 }
 
+func trimValueSliceIfScratchFits(out []Value, scratch *loopScratchReservation) []Value {
+	if len(out) >= cap(out) || !scratch.reserveIfFits(valueSliceScratchBytes(len(out))) {
+		return out
+	}
+	trimmed := make([]Value, len(out))
+	copy(trimmed, out)
+	return trimmed
+}
+
 func reserveValueSliceAppendScratch(reservation *loopScratchReservation, chargedCap *int, length int) error {
 	nextCap := projectedAppendCap(length, *chargedCap)
 	if nextCap <= *chargedCap {
@@ -1310,14 +1319,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					out = append(out, item)
 				}
 			}
-			if len(out) < cap(out) {
-				if err := scratch.reserve(valueSliceScratchBytes(len(out))); err != nil {
-					return NewNil(), err
-				}
-				trimmed := make([]Value, len(out))
-				copy(trimmed, out)
-				out = trimmed
-			}
+			out = trimValueSliceIfScratchFits(out, &scratch)
 			return NewArray(out), nil
 		}), nil
 	case "reject":
@@ -1356,16 +1358,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					out = append(out, item)
 				}
 			}
-			// A sparse result should not retain a backing array sized to the
-			// whole receiver, so right-size the result.
-			if len(out) < cap(out) {
-				if err := scratch.reserve(valueSliceScratchBytes(len(out))); err != nil {
-					return NewNil(), err
-				}
-				trimmed := make([]Value, len(out))
-				copy(trimmed, out)
-				out = trimmed
-			}
+			out = trimValueSliceIfScratchFits(out, &scratch)
 			return NewArray(out), nil
 		}), nil
 	case "take_while":
@@ -3141,14 +3134,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 					out = append(out, item)
 				}
 			}
-			if len(out) < cap(out) {
-				if err := scratch.reserve(valueSliceScratchBytes(len(out))); err != nil {
-					return NewNil(), err
-				}
-				trimmed := make([]Value, len(out))
-				copy(trimmed, out)
-				out = trimmed
-			}
+			out = trimValueSliceIfScratchFits(out, &scratch)
 			return NewArray(out), nil
 		}), nil
 	case "flatten":

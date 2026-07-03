@@ -506,6 +506,90 @@ func TestArrayFilterMapDenseResultStaysLinear(t *testing.T) {
 	}
 }
 
+func TestArrayOptionalTrimDoesNotTripMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const receiverSize = 1000
+	receiver := largeIntArray(receiverSize)
+	compactItems := make([]Value, receiverSize)
+	for i := range compactItems {
+		compactItems[i] = NewNil()
+	}
+	compactItems[0] = NewInt(0)
+	compactReceiver := NewArray(compactItems)
+
+	cases := []struct {
+		name     string
+		method   string
+		receiver Value
+		block    Value
+		want     []Value
+	}{
+		{
+			name:     "select",
+			method:   "select",
+			receiver: receiver,
+			block:    itemZeroComparisonBlockValue(tokenEQ),
+			want:     []Value{NewInt(0)},
+		},
+		{
+			name:     "reject",
+			method:   "reject",
+			receiver: receiver,
+			block:    itemZeroComparisonBlockValue(tokenNotEQ),
+			want:     []Value{NewInt(0)},
+		},
+		{
+			name:     "compact",
+			method:   "compact",
+			receiver: compactReceiver,
+			block:    NewNil(),
+			want:     []Value{NewInt(0)},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+			baseline := probe.hashCallRootBytes(tc.receiver, nil, nil, tc.block)
+			fullBacking := arraySlotBackingBytes(len(tc.receiver.Array()))
+			trimBacking := valueSliceScratchBytes(len(tc.want))
+			quota := baseline + fullBacking + trimBacking/2
+			if quota <= baseline+fullBacking || quota >= baseline+fullBacking+trimBacking {
+				t.Fatalf("quota %d must fit baseline %d plus full backing %d but reject trim backing %d", quota, baseline, fullBacking, trimBacking)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			got, err := callArrayMember(t, exec, tc.receiver, tc.method, nil, tc.block)
+			if err != nil {
+				t.Fatalf("array.%s under quota that only rejects optional trim = %v, want success", tc.method, err)
+			}
+			compareArrays(t, got, tc.want)
+			if cap(got.Array()) != receiverSize {
+				t.Fatalf("array.%s result cap = %d, want untrimmed cap %d when optional trim cannot fit", tc.method, cap(got.Array()), receiverSize)
+			}
+			if exec.reservedScratchBytes != 0 {
+				t.Fatalf("array.%s leaked %d reserved scratch bytes", tc.method, exec.reservedScratchBytes)
+			}
+		})
+	}
+}
+
+func itemZeroComparisonBlockValue(operator TokenType) Value {
+	pos := Position{Line: 1, Column: 1}
+	body := []Statement{&ExprStmt{
+		Expr: &BinaryExpr{
+			Left:     &Identifier{Name: "item", Position: pos},
+			Operator: operator,
+			Right:    &IntegerLiteral{Value: 0, Position: pos},
+			Position: pos,
+		},
+		Position: pos,
+	}}
+	return NewBlock([]Param{{Kind: ParamNormal, Name: "item"}}, body, newEnv(nil))
+}
+
 // freshIntArrayValue returns an array Value of `width` integer elements, matching
 // the runtime value a freshArrayBlockValue invocation produces so a test can size
 // the memory quota against one kept result.
