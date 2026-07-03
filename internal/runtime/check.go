@@ -940,7 +940,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 				}
 			}
 		case ParamBlock:
-			c.checkRuntimeTypeAnnotation(label, param.Type)
+			c.checkBlockArgumentValue(label, fn.Pos, nil, param.Type, fn.Name, param.Name)
 		}
 		c.recordParamBinding(param)
 	}
@@ -2904,6 +2904,12 @@ func (c *scriptChecker) checkCallArgumentTypes(function string, call staticCallV
 			argIdx = len(call.args)
 		case ParamKeywordRest:
 			c.checkKeywordRestArgumentExpressions(function, call.pos, call.kwargs, usedKw, param.Type, name, param.Name)
+		case ParamBlock:
+			pos := call.pos
+			if call.block != nil {
+				pos = call.block.Pos()
+			}
+			c.checkBlockArgumentValue(function, pos, call.block, param.Type, name, param.Name)
 		}
 	}
 }
@@ -2998,6 +3004,14 @@ func (c *scriptChecker) checkArgumentValue(function string, pos Position, val Va
 	if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
 		c.addArgumentValueWarning(function, pos, callName, paramName, err)
 	}
+}
+
+func (c *scriptChecker) checkBlockArgumentValue(function string, pos Position, block *BlockLiteral, ty *TypeExpr, callName, paramName string) {
+	val := NewNil()
+	if block != nil {
+		val = NewBlock(block.Params, block.Body, newEnv(nil))
+	}
+	c.checkArgumentValue(function, pos, val, ty, callName, paramName)
 }
 
 func (c *scriptChecker) addArgumentValueWarning(function string, pos Position, callName, paramName string, err error) {

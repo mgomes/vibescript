@@ -725,6 +725,13 @@ end`,
 			options: CallOptions{Keywords: map[string]Value{"count": NewString("one")}},
 			want:    "call to run argument count expected int, got string",
 		},
+		{
+			name: "typed block without host block",
+			source: `def run(&block: function)
+  block
+end`,
+			want: "call to run argument block expected function, got nil",
+		},
 	}
 
 	for _, tc := range tests {
@@ -2025,6 +2032,30 @@ def run()
   accept(limit: "slow")
 end`,
 			want: "call to accept argument opts expected hash<string, int>, got { limit: string }",
+		},
+		{
+			name: "typed block argument without block",
+			source: `def accept(&block: function)
+  block
+end
+
+def run()
+  accept()
+end`,
+			want: "call to accept argument block expected function, got nil",
+		},
+		{
+			name: "typed block argument with block",
+			source: `def accept(&block: function)
+  block
+end
+
+def run()
+  accept() do
+    1
+  end
+end`,
+			want: "call to accept argument block expected function, got block",
 		},
 		{
 			name: "method argument type",
