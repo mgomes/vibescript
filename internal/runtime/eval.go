@@ -2555,7 +2555,7 @@ func assignmentLocalCallBypassBindings(target, value Expression, env *Env) map[s
 func collectAssignmentLocalCallBypassNames(target, value Expression, names *map[string]struct{}) {
 	switch t := target.(type) {
 	case *Identifier:
-		if expressionContainsParenthesizedIdentifierCall(value, t.Name) {
+		if expressionContainsBypassableIdentifierCall(value, t.Name) {
 			if *names == nil {
 				*names = make(map[string]struct{})
 			}
@@ -2568,195 +2568,199 @@ func collectAssignmentLocalCallBypassNames(target, value Expression, names *map[
 	}
 }
 
-func expressionContainsParenthesizedIdentifierCall(expr Expression, name string) bool {
+func expressionContainsBypassableIdentifierCall(expr Expression, name string) bool {
 	switch t := expr.(type) {
 	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		return false
 	case *ArrayLiteral:
 		for _, elem := range t.Elements {
-			if expressionContainsParenthesizedIdentifierCall(elem, name) {
+			if expressionContainsBypassableIdentifierCall(elem, name) {
 				return true
 			}
 		}
 		return false
 	case *HashLiteral:
 		for _, pair := range t.Pairs {
-			if expressionContainsParenthesizedIdentifierCall(pair.Key, name) ||
-				expressionContainsParenthesizedIdentifierCall(pair.Value, name) {
+			if expressionContainsBypassableIdentifierCall(pair.Key, name) ||
+				expressionContainsBypassableIdentifierCall(pair.Value, name) {
 				return true
 			}
 		}
 		return false
 	case *CallExpr:
-		if ident, ok := t.Callee.(*Identifier); ok && t.Parenthesized && ident.Name == name {
+		if ident, ok := t.Callee.(*Identifier); ok && callUsesBypassableIdentifierResolution(t) && ident.Name == name {
 			return true
 		}
-		if expressionContainsParenthesizedIdentifierCall(t.Callee, name) {
+		if expressionContainsBypassableIdentifierCall(t.Callee, name) {
 			return true
 		}
 		for _, arg := range t.Args {
-			if expressionContainsParenthesizedIdentifierCall(arg, name) {
+			if expressionContainsBypassableIdentifierCall(arg, name) {
 				return true
 			}
 		}
 		for _, kwarg := range t.KwArgs {
-			if expressionContainsParenthesizedIdentifierCall(kwarg.Value, name) {
+			if expressionContainsBypassableIdentifierCall(kwarg.Value, name) {
 				return true
 			}
 		}
-		return expressionContainsParenthesizedIdentifierCall(t.Block, name)
+		return expressionContainsBypassableIdentifierCall(t.Block, name)
 	case *MemberExpr:
-		return expressionContainsParenthesizedIdentifierCall(t.Object, name)
+		return expressionContainsBypassableIdentifierCall(t.Object, name)
 	case *ScopeExpr:
-		return expressionContainsParenthesizedIdentifierCall(t.Object, name)
+		return expressionContainsBypassableIdentifierCall(t.Object, name)
 	case *IndexExpr:
-		if expressionContainsParenthesizedIdentifierCall(t.Object, name) {
+		if expressionContainsBypassableIdentifierCall(t.Object, name) {
 			return true
 		}
 		for _, index := range t.Indices {
-			if expressionContainsParenthesizedIdentifierCall(index, name) {
+			if expressionContainsBypassableIdentifierCall(index, name) {
 				return true
 			}
 		}
 		return false
 	case *DestructureTarget:
 		for _, element := range t.Elements {
-			if expressionContainsParenthesizedIdentifierCall(element.Target, name) {
+			if expressionContainsBypassableIdentifierCall(element.Target, name) {
 				return true
 			}
 		}
 		return false
 	case *UnaryExpr:
-		return expressionContainsParenthesizedIdentifierCall(t.Right, name)
+		return expressionContainsBypassableIdentifierCall(t.Right, name)
 	case *BinaryExpr:
-		return expressionContainsParenthesizedIdentifierCall(t.Left, name) ||
-			expressionContainsParenthesizedIdentifierCall(t.Right, name)
+		return expressionContainsBypassableIdentifierCall(t.Left, name) ||
+			expressionContainsBypassableIdentifierCall(t.Right, name)
 	case *ConditionalExpr:
-		return expressionContainsParenthesizedIdentifierCall(t.Condition, name) ||
-			expressionContainsParenthesizedIdentifierCall(t.Consequent, name) ||
-			expressionContainsParenthesizedIdentifierCall(t.Alternate, name)
+		return expressionContainsBypassableIdentifierCall(t.Condition, name) ||
+			expressionContainsBypassableIdentifierCall(t.Consequent, name) ||
+			expressionContainsBypassableIdentifierCall(t.Alternate, name)
 	case *IfExpr:
-		if expressionContainsParenthesizedIdentifierCall(t.Condition, name) ||
-			expressionContainsParenthesizedIdentifierCall(t.Consequent, name) {
+		if expressionContainsBypassableIdentifierCall(t.Condition, name) ||
+			expressionContainsBypassableIdentifierCall(t.Consequent, name) {
 			return true
 		}
 		for _, branch := range t.ElseIf {
-			if expressionContainsParenthesizedIdentifierCall(branch.Condition, name) ||
-				expressionContainsParenthesizedIdentifierCall(branch.Result, name) {
+			if expressionContainsBypassableIdentifierCall(branch.Condition, name) ||
+				expressionContainsBypassableIdentifierCall(branch.Result, name) {
 				return true
 			}
 		}
-		return expressionContainsParenthesizedIdentifierCall(t.Alternate, name)
+		return expressionContainsBypassableIdentifierCall(t.Alternate, name)
 	case *RangeExpr:
-		return expressionContainsParenthesizedIdentifierCall(t.Start, name) ||
-			expressionContainsParenthesizedIdentifierCall(t.End, name)
+		return expressionContainsBypassableIdentifierCall(t.Start, name) ||
+			expressionContainsBypassableIdentifierCall(t.End, name)
 	case *CaseExpr:
-		if expressionContainsParenthesizedIdentifierCall(t.Target, name) {
+		if expressionContainsBypassableIdentifierCall(t.Target, name) {
 			return true
 		}
 		for _, clause := range t.Clauses {
 			for _, value := range clause.Values {
-				if expressionContainsParenthesizedIdentifierCall(value.Expr, name) {
+				if expressionContainsBypassableIdentifierCall(value.Expr, name) {
 					return true
 				}
 			}
-			if expressionContainsParenthesizedIdentifierCall(clause.Result, name) {
+			if expressionContainsBypassableIdentifierCall(clause.Result, name) {
 				return true
 			}
 		}
-		return expressionContainsParenthesizedIdentifierCall(t.ElseExpr, name)
+		return expressionContainsBypassableIdentifierCall(t.ElseExpr, name)
 	case *BlockLiteral:
 		if t == nil {
 			return false
 		}
 		for _, param := range t.Params {
-			if expressionContainsParenthesizedIdentifierCall(param.DefaultVal, name) {
+			if expressionContainsBypassableIdentifierCall(param.DefaultVal, name) {
 				return true
 			}
 		}
-		return statementsContainParenthesizedIdentifierCall(t.Body, name)
+		return statementsContainBypassableIdentifierCall(t.Body, name)
 	case *YieldExpr:
 		for _, arg := range t.Args {
-			if expressionContainsParenthesizedIdentifierCall(arg, name) {
+			if expressionContainsBypassableIdentifierCall(arg, name) {
 				return true
 			}
 		}
 		return false
 	case *InterpolatedString:
-		return stringPartsContainParenthesizedIdentifierCall(t.Parts, name)
+		return stringPartsContainBypassableIdentifierCall(t.Parts, name)
 	case *InterpolatedSymbol:
-		return stringPartsContainParenthesizedIdentifierCall(t.Parts, name)
+		return stringPartsContainBypassableIdentifierCall(t.Parts, name)
 	default:
 		return false
 	}
 }
 
-func stringPartsContainParenthesizedIdentifierCall(parts []StringPart, name string) bool {
+func callUsesBypassableIdentifierResolution(call *CallExpr) bool {
+	return call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil
+}
+
+func stringPartsContainBypassableIdentifierCall(parts []StringPart, name string) bool {
 	for _, part := range parts {
-		if exprPart, ok := part.(StringExpr); ok && expressionContainsParenthesizedIdentifierCall(exprPart.Expr, name) {
+		if exprPart, ok := part.(StringExpr); ok && expressionContainsBypassableIdentifierCall(exprPart.Expr, name) {
 			return true
 		}
 	}
 	return false
 }
 
-func statementsContainParenthesizedIdentifierCall(statements []Statement, name string) bool {
+func statementsContainBypassableIdentifierCall(statements []Statement, name string) bool {
 	for _, stmt := range statements {
-		if statementContainsParenthesizedIdentifierCall(stmt, name) {
+		if statementContainsBypassableIdentifierCall(stmt, name) {
 			return true
 		}
 	}
 	return false
 }
 
-func statementContainsParenthesizedIdentifierCall(stmt Statement, name string) bool {
+func statementContainsBypassableIdentifierCall(stmt Statement, name string) bool {
 	switch t := stmt.(type) {
 	case nil:
 		return false
 	case *ExprStmt:
-		return expressionContainsParenthesizedIdentifierCall(t.Expr, name)
+		return expressionContainsBypassableIdentifierCall(t.Expr, name)
 	case *LogicalStmt:
-		return statementContainsParenthesizedIdentifierCall(t.Left, name) ||
-			statementContainsParenthesizedIdentifierCall(t.Right, name)
+		return statementContainsBypassableIdentifierCall(t.Left, name) ||
+			statementContainsBypassableIdentifierCall(t.Right, name)
 	case *ReturnStmt:
-		return expressionContainsParenthesizedIdentifierCall(t.Value, name)
+		return expressionContainsBypassableIdentifierCall(t.Value, name)
 	case *RaiseStmt:
-		return expressionContainsParenthesizedIdentifierCall(t.Value, name)
+		return expressionContainsBypassableIdentifierCall(t.Value, name)
 	case *BreakStmt:
-		return expressionContainsParenthesizedIdentifierCall(t.Value, name)
+		return expressionContainsBypassableIdentifierCall(t.Value, name)
 	case *NextStmt:
 		return false
 	case *AssignStmt:
-		return expressionContainsParenthesizedIdentifierCall(t.Target, name) ||
-			expressionContainsParenthesizedIdentifierCall(t.Value, name)
+		return expressionContainsBypassableIdentifierCall(t.Target, name) ||
+			expressionContainsBypassableIdentifierCall(t.Value, name)
 	case *IfStmt:
-		if expressionContainsParenthesizedIdentifierCall(t.Condition, name) ||
-			statementsContainParenthesizedIdentifierCall(t.Consequent, name) ||
-			statementsContainParenthesizedIdentifierCall(t.Alternate, name) {
+		if expressionContainsBypassableIdentifierCall(t.Condition, name) ||
+			statementsContainBypassableIdentifierCall(t.Consequent, name) ||
+			statementsContainBypassableIdentifierCall(t.Alternate, name) {
 			return true
 		}
 		for _, branch := range t.ElseIf {
-			if expressionContainsParenthesizedIdentifierCall(branch.Condition, name) ||
-				statementsContainParenthesizedIdentifierCall(branch.Consequent, name) {
+			if expressionContainsBypassableIdentifierCall(branch.Condition, name) ||
+				statementsContainBypassableIdentifierCall(branch.Consequent, name) {
 				return true
 			}
 		}
 		return false
 	case *ForStmt:
-		return expressionContainsParenthesizedIdentifierCall(t.Target, name) ||
-			expressionContainsParenthesizedIdentifierCall(t.Iterable, name) ||
-			statementsContainParenthesizedIdentifierCall(t.Body, name)
+		return expressionContainsBypassableIdentifierCall(t.Target, name) ||
+			expressionContainsBypassableIdentifierCall(t.Iterable, name) ||
+			statementsContainBypassableIdentifierCall(t.Body, name)
 	case *WhileStmt:
-		return expressionContainsParenthesizedIdentifierCall(t.Condition, name) ||
-			statementsContainParenthesizedIdentifierCall(t.Body, name)
+		return expressionContainsBypassableIdentifierCall(t.Condition, name) ||
+			statementsContainBypassableIdentifierCall(t.Body, name)
 	case *UntilStmt:
-		return expressionContainsParenthesizedIdentifierCall(t.Condition, name) ||
-			statementsContainParenthesizedIdentifierCall(t.Body, name)
+		return expressionContainsBypassableIdentifierCall(t.Condition, name) ||
+			statementsContainBypassableIdentifierCall(t.Body, name)
 	case *TryStmt:
-		return statementsContainParenthesizedIdentifierCall(t.Body, name) ||
-			statementsContainParenthesizedIdentifierCall(t.Rescue, name) ||
-			statementsContainParenthesizedIdentifierCall(t.Else, name) ||
-			statementsContainParenthesizedIdentifierCall(t.Ensure, name)
+		return statementsContainBypassableIdentifierCall(t.Body, name) ||
+			statementsContainBypassableIdentifierCall(t.Rescue, name) ||
+			statementsContainBypassableIdentifierCall(t.Else, name) ||
+			statementsContainBypassableIdentifierCall(t.Ensure, name)
 	case *ClassStmt:
 		return false
 	default:

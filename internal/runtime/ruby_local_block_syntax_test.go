@@ -282,9 +282,18 @@ def helper
   11
 end
 
+def helper_arg(n)
+  n + 10
+end
+
 def assign_same_name_helper
   helper = [helper, helper()]
   helper
+end
+
+def assign_same_name_helper_parenless
+  helper_arg = helper_arg 1
+  helper_arg
 end
 
 def read_helper_after_assignment
@@ -312,15 +321,32 @@ def compound_same_name_helper
   helper
 end
 
+def compound_same_name_helper_parenless
+  helper_arg = 1
+  helper_arg += helper_arg 2
+  helper_arg
+end
+
 def logical_or_same_name_helper
   helper ||= helper()
   helper
+end
+
+def logical_or_same_name_helper_parenless
+  helper_arg ||= helper_arg 1
+  helper_arg
 end
 
 def logical_and_same_name_helper
   helper = true
   helper &&= helper()
   helper
+end
+
+def logical_and_same_name_helper_parenless
+  helper_arg = true
+  helper_arg &&= helper_arg 1
+  helper_arg
 end
 `)
 
@@ -337,11 +363,23 @@ end
 	if got := callFunc(t, script, "compound_same_name_helper", nil); !got.Equal(NewInt(12)) {
 		t.Fatalf("compound_same_name_helper() = %s, want 12", got)
 	}
+	if got := callFunc(t, script, "assign_same_name_helper_parenless", nil); !got.Equal(NewInt(11)) {
+		t.Fatalf("assign_same_name_helper_parenless() = %s, want 11", got)
+	}
+	if got := callFunc(t, script, "compound_same_name_helper_parenless", nil); !got.Equal(NewInt(13)) {
+		t.Fatalf("compound_same_name_helper_parenless() = %s, want 13", got)
+	}
 	if got := callFunc(t, script, "logical_or_same_name_helper", nil); !got.Equal(NewInt(11)) {
 		t.Fatalf("logical_or_same_name_helper() = %s, want 11", got)
 	}
 	if got := callFunc(t, script, "logical_and_same_name_helper", nil); !got.Equal(NewInt(11)) {
 		t.Fatalf("logical_and_same_name_helper() = %s, want 11", got)
+	}
+	if got := callFunc(t, script, "logical_or_same_name_helper_parenless", nil); !got.Equal(NewInt(11)) {
+		t.Fatalf("logical_or_same_name_helper_parenless() = %s, want 11", got)
+	}
+	if got := callFunc(t, script, "logical_and_same_name_helper_parenless", nil); !got.Equal(NewInt(11)) {
+		t.Fatalf("logical_and_same_name_helper_parenless() = %s, want 11", got)
 	}
 	if got := callFunc(t, script, "read_helper_after_assignment", nil); !got.Equal(NewInt(11)) {
 		t.Fatalf("read_helper_after_assignment() = %s, want 11", got)
