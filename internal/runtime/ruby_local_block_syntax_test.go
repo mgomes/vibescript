@@ -518,6 +518,33 @@ end
 	}
 }
 
+func TestRubyForTargetDoesNotShadowIterableExpression(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run
+  out = []
+  for rows in rows
+    out = out.push(rows)
+  end
+  [out, rows]
+end
+`)
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"rows": NewArray([]Value{NewInt(1), NewInt(2)}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("run() error = %v, want nil", err)
+	}
+	compareArrays(t, got, []Value{
+		NewArray([]Value{NewInt(1), NewInt(2)}),
+		NewInt(2),
+	})
+}
+
 func TestRubyBlockMultiParameterDestructuresSingleYieldedArray(t *testing.T) {
 	t.Parallel()
 

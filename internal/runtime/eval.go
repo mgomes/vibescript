@@ -2077,6 +2077,7 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 	if err := exec.checkMemoryWith(iterable); err != nil {
 		return NewNil(), false, err
 	}
+	predeclareTargetBindingNames(stmt.Target, env)
 	last := NewNil()
 
 	switch iterable.Kind() {
@@ -2411,8 +2412,6 @@ func predeclareStatementLocalBindings(stmt Statement, env *Env) {
 	switch s := stmt.(type) {
 	case *AssignStmt:
 		predeclareAssignmentLocalBindings(s, env)
-	case *ForStmt:
-		predeclareTargetBindingNames(s.Target, env)
 	}
 }
 
