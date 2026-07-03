@@ -34,6 +34,17 @@ type RaiseStmt struct {
 func (s *RaiseStmt) stmtNode()     {}
 func (s *RaiseStmt) Pos() Position { return s.Position }
 
+// AliasStmt represents a Ruby-style function or method alias declaration.
+type AliasStmt struct {
+	NewName  string
+	OldName  string
+	Method   bool
+	Position Position
+}
+
+func (s *AliasStmt) stmtNode()     {}
+func (s *AliasStmt) Pos() Position { return s.Position }
+
 // AssignStmt represents a variable assignment.
 type AssignStmt struct {
 	Target Expression
@@ -173,6 +184,7 @@ type ClassStmt struct {
 	Name         string
 	Methods      []*FunctionStmt
 	ClassMethods []*FunctionStmt
+	Aliases      []*AliasStmt
 	Properties   []PropertyDecl
 	Body         []Statement
 	Position     Position

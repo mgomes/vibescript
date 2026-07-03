@@ -82,7 +82,7 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Pro
 	pos := Position{Line: 1, Column: 1}
 	for _, stmt := range program.Statements {
 		switch typed := stmt.(type) {
-		case *FunctionStmt, *EnumStmt:
+		case *FunctionStmt, *EnumStmt, *AliasStmt:
 			out.Statements = append(out.Statements, typed)
 		case *ClassStmt:
 			out.Statements = append(out.Statements, typed)
@@ -110,7 +110,7 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Pro
 func snippetHasExecutableTopLevel(program *ast.Program) bool {
 	for _, stmt := range program.Statements {
 		switch stmt.(type) {
-		case *FunctionStmt, *ClassStmt, *EnumStmt:
+		case *FunctionStmt, *ClassStmt, *EnumStmt, *AliasStmt:
 			continue
 		default:
 			return true
@@ -153,7 +153,11 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 			if _, exists := enums[s.Name]; exists {
 				return nil, fmt.Errorf("duplicate top-level name %s", s.Name)
 			}
-			classes[s.Name] = compileClassDef(s)
+			classDef, err := compileClassDef(s)
+			if err != nil {
+				return nil, err
+			}
+			classes[s.Name] = classDef
 			classOrder = append(classOrder, s.Name)
 		case *EnumStmt:
 			if _, exists := enums[s.Name]; exists {
@@ -170,6 +174,24 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 				return nil, err
 			}
 			enums[s.Name] = enumDef
+		case *AliasStmt:
+			if s.Method {
+				return nil, fmt.Errorf("method alias %s is not valid at the top level", s.NewName)
+			}
+			if _, exists := functions[s.NewName]; exists {
+				return nil, fmt.Errorf("duplicate function %s", s.NewName)
+			}
+			if _, exists := classes[s.NewName]; exists {
+				return nil, fmt.Errorf("duplicate top-level name %s", s.NewName)
+			}
+			if _, exists := enums[s.NewName]; exists {
+				return nil, fmt.Errorf("duplicate top-level name %s", s.NewName)
+			}
+			target, ok := functions[s.OldName]
+			if !ok {
+				return nil, fmt.Errorf("alias target function %s is not defined", s.OldName)
+			}
+			functions[s.NewName] = aliasScriptFunction(target, s.NewName)
 		default:
 			return nil, fmt.Errorf("unsupported top-level statement %T", stmt)
 		}
@@ -195,7 +217,7 @@ func countTopLevelDeclarations(statements []ast.Statement) (functions, classes, 
 	return functions, classes, enums
 }
 
-func compileClassDef(stmt *ClassStmt) *ClassDef {
+func compileClassDef(stmt *ClassStmt) (*ClassDef, error) {
 	classDef := &ClassDef{
 		Name:         stmt.Name,
 		Methods:      make(map[string]*ScriptFunction),
@@ -246,7 +268,20 @@ func compileClassDef(stmt *ClassStmt) *ClassDef {
 	for _, fn := range stmt.ClassMethods {
 		classDef.ClassMethods[fn.Name] = compileFunctionDef(fn)
 	}
-	return classDef
+	for _, alias := range stmt.Aliases {
+		target, ok := classDef.Methods[alias.OldName]
+		if !ok {
+			return nil, fmt.Errorf("alias target method %s is not defined on class %s", alias.OldName, stmt.Name)
+		}
+		classDef.Methods[alias.NewName] = aliasScriptFunction(target, alias.NewName)
+	}
+	return classDef, nil
+}
+
+func aliasScriptFunction(fn *ScriptFunction, name string) *ScriptFunction {
+	alias := *fn
+	alias.Name = name
+	return &alias
 }
 
 func compileEnumDef(stmt *EnumStmt) (*EnumDef, error) {

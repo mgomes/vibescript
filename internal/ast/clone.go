@@ -85,6 +85,9 @@ func cloneStatement(stmt Statement) Statement {
 		clone.Value = cloneExpression(s.Value)
 		clone.Message = cloneExpression(s.Message)
 		return &clone
+	case *AliasStmt:
+		clone := *s
+		return &clone
 	case *AssignStmt:
 		clone := *s
 		clone.Target = cloneExpression(s.Target)
@@ -142,6 +145,7 @@ func cloneStatement(stmt Statement) Statement {
 		clone := *s
 		clone.Methods = cloneFunctionStmts(s.Methods)
 		clone.ClassMethods = cloneFunctionStmts(s.ClassMethods)
+		clone.Aliases = cloneAliasStmts(s.Aliases)
 		clone.Properties = clonePropertyDecls(s.Properties)
 		clone.Body = cloneStatements(s.Body)
 		return &clone
@@ -172,6 +176,21 @@ func cloneFunctionStmts(functions []*FunctionStmt) []*FunctionStmt {
 	out := make([]*FunctionStmt, len(functions))
 	for i, fn := range functions {
 		out[i] = cloneFunctionStmt(fn)
+	}
+	return out
+}
+
+func cloneAliasStmts(aliases []*AliasStmt) []*AliasStmt {
+	if aliases == nil {
+		return nil
+	}
+	out := make([]*AliasStmt, len(aliases))
+	for i, alias := range aliases {
+		if alias == nil {
+			continue
+		}
+		clone := *alias
+		out[i] = &clone
 	}
 	return out
 }

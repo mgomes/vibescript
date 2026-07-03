@@ -981,6 +981,11 @@ func validateFuzzStatement(context string, stmt Statement) error {
 			return validateFuzzExpression(context+".message", s.Message)
 		}
 		return nil
+	case *AliasStmt:
+		if s.NewName == "" || s.OldName == "" {
+			return fmt.Errorf("%s alias names must not be empty", context)
+		}
+		return nil
 	case *AssignStmt:
 		if err := validateFuzzExpression(context+".target", s.Target); err != nil {
 			return err
@@ -1047,6 +1052,11 @@ func validateFuzzStatement(context string, stmt Statement) error {
 		for i, method := range s.ClassMethods {
 			if err := validateFuzzFunctionStmt(fmt.Sprintf("%s.class_methods[%d]", context, i), method); err != nil {
 				return err
+			}
+		}
+		for i, alias := range s.Aliases {
+			if alias == nil || alias.NewName == "" || alias.OldName == "" {
+				return fmt.Errorf("%s.aliases[%d] names must not be empty", context, i)
 			}
 		}
 		for i, property := range s.Properties {

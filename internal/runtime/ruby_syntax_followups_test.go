@@ -132,3 +132,37 @@ end
 		NewInt(20),
 	})
 }
+
+func TestRubyStyleFunctionAndMethodAliases(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def name()
+  "Ada"
+end
+alias full_name name
+
+class User
+  def name()
+    "Grace"
+  end
+  alias_method :full_name, :name
+end
+
+class Badge
+  def code()
+    "X"
+  end
+  alias label code
+end
+
+def run()
+  [full_name(), User.new.full_name, Badge.new.label]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "run", nil), []Value{
+		NewString("Ada"),
+		NewString("Grace"),
+		NewString("X"),
+	})
+}

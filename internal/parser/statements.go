@@ -53,6 +53,8 @@ func (p *parser) parseStatementOperand() ast.Statement {
 	case ast.TokenIdent:
 		if p.curToken.Literal == "assert" {
 			stmt = p.parseAssertStatement()
+		} else if p.curToken.Literal == "alias" && p.peekStartsAliasName() {
+			stmt = p.parseAliasStatement(false)
 		} else {
 			stmt = p.parseExpressionOrAssignStatement()
 		}
@@ -809,6 +811,33 @@ func (p *parser) parseClassStatement() ast.Statement {
 			} else {
 				stmt.Methods = append(stmt.Methods, fn)
 			}
+		case ast.TokenIdent:
+			switch p.curToken.Literal {
+			case "alias":
+				if p.peekStartsAliasName() {
+					alias := p.parseAliasStatement(true)
+					if alias == nil {
+						return nil
+					}
+					stmt.Aliases = append(stmt.Aliases, alias.(*ast.AliasStmt))
+				} else {
+					s := p.parseStatement()
+					if s != nil {
+						stmt.Body = append(stmt.Body, s)
+					}
+				}
+			case "alias_method":
+				alias := p.parseAliasMethodStatement()
+				if alias == nil {
+					return nil
+				}
+				stmt.Aliases = append(stmt.Aliases, alias.(*ast.AliasStmt))
+			default:
+				s := p.parseStatement()
+				if s != nil {
+					stmt.Body = append(stmt.Body, s)
+				}
+			}
 		case ast.TokenPrivate:
 			if p.peekToken.Type == ast.TokenDef {
 				p.privateNext = true
@@ -836,6 +865,48 @@ func (p *parser) parseClassStatement() ast.Statement {
 	}
 
 	return stmt
+}
+
+func (p *parser) parseAliasStatement(method bool) ast.Statement {
+	pos := p.curToken.Pos
+	if !p.expectPeekAliasName() {
+		return nil
+	}
+	newName := p.curToken.Literal
+	if !p.expectPeekAliasName() {
+		return nil
+	}
+	oldName := p.curToken.Literal
+	return &ast.AliasStmt{NewName: newName, OldName: oldName, Method: method, Position: pos}
+}
+
+func (p *parser) parseAliasMethodStatement() ast.Statement {
+	pos := p.curToken.Pos
+	if !p.expectPeek(ast.TokenSymbol) {
+		return nil
+	}
+	newName := p.curToken.Literal
+	if !p.expectPeek(ast.TokenComma) {
+		return nil
+	}
+	if !p.expectPeek(ast.TokenSymbol) {
+		return nil
+	}
+	oldName := p.curToken.Literal
+	return &ast.AliasStmt{NewName: newName, OldName: oldName, Method: true, Position: pos}
+}
+
+func (p *parser) expectPeekAliasName() bool {
+	if !p.peekStartsAliasName() {
+		p.errorExpected(p.peekToken, "alias name")
+		return false
+	}
+	p.nextToken()
+	return true
+}
+
+func (p *parser) peekStartsAliasName() bool {
+	return p.peekToken.Type == ast.TokenIdent || p.peekToken.Type == ast.TokenSymbol
 }
 
 func (p *parser) parseEnumStatement() ast.Statement {
