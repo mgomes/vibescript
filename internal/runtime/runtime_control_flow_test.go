@@ -1878,6 +1878,12 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
       [value, trace]
     end
 
+    def begin_expression_continuation()
+      begin
+        1
+      end + 2
+    end
+
     def rescue_modifier()
       [1 / 0 rescue "fallback", 7 rescue "unused"]
     end
@@ -2038,6 +2044,9 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
 		NewString("rescued"),
 		NewArray([]Value{NewString("body"), NewString("ensure")}),
 	})
+	if got := callFunc(t, script, "begin_expression_continuation", nil); !got.Equal(NewInt(3)) {
+		t.Fatalf("begin_expression_continuation() = %v, want 3", got)
+	}
 	compareArrays(t, callFunc(t, script, "rescue_modifier", nil), []Value{
 		NewString("fallback"),
 		NewInt(7),

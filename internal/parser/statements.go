@@ -42,6 +42,9 @@ func (p *parser) parseStatement() ast.Statement {
 		stmt = p.parseRetryStatement()
 	case ast.TokenBegin:
 		stmt = p.parseBeginStatement()
+		if continued := p.continueStatementExpression(stmt); continued != nil {
+			stmt = continued
+		}
 	case ast.TokenIdent:
 		if p.curToken.Literal == "assert" {
 			stmt = p.parseAssertStatement()
@@ -52,6 +55,27 @@ func (p *parser) parseStatement() ast.Statement {
 		stmt = p.parseExpressionOrAssignStatement()
 	}
 	return p.parseStatementModifier(stmt)
+}
+
+func (p *parser) continueStatementExpression(stmt ast.Statement) ast.Statement {
+	expr, ok := stmt.(ast.Expression)
+	if !ok {
+		return nil
+	}
+	if isStatementModifier(p.peekToken.Type) && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		return nil
+	}
+	if p.peekToken.Pos.Line != p.curToken.Pos.Line {
+		return nil
+	}
+	if lowestPrec >= p.peekPrecedence() && !p.canParseParenlessCall(expr, lowestPrec, false) {
+		return nil
+	}
+	continued := p.continueExpressionParse(expr, lowestPrec, 0, false)
+	if continued == nil {
+		return nil
+	}
+	return &ast.ExprStmt{Expr: continued, Position: expr.Pos()}
 }
 
 func (p *parser) skipStatementSeparators() {
