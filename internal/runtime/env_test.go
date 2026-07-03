@@ -80,6 +80,26 @@ func TestEnvInlineBindingsSupportAssignmentAndStaticTransitions(t *testing.T) {
 	}
 }
 
+func TestEnvGetSkippingDoesNotCloneFrozenBindingIntoSkippedScope(t *testing.T) {
+	t.Parallel()
+
+	frozen := newEnv(nil)
+	frozen.frozen = true
+	frozen.DefineStatic("JSON", NewObject(map[string]Value{"name": NewString("json")}))
+	env := newEnv(frozen)
+
+	val, ok := env.getSkipping("JSON", map[*Env]struct{}{env: {}})
+	if !ok {
+		t.Fatalf("getSkipping(JSON) missing frozen binding")
+	}
+	if val.Kind() != KindObject {
+		t.Fatalf("getSkipping(JSON) kind = %s, want object", val.Kind())
+	}
+	if env.hasOwnBinding("JSON") {
+		t.Fatalf("getSkipping(JSON) materialized binding into skipped scope")
+	}
+}
+
 func TestEnvResetForBlockCallClearsPerCallState(t *testing.T) {
 	t.Parallel()
 

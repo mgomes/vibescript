@@ -98,11 +98,13 @@ func isValidModuleAlias(name string) bool {
 }
 
 func bindRequireAlias(root, scope *Env, alias string, module Value) error {
-	if scope == nil {
-		scope = root
-	}
-	if err := validateRequireAliasBinding(scope, alias, module); err != nil {
+	if err := validateRequireAliasBinding(root, alias, module); err != nil {
 		return err
+	}
+	if scope != nil && scope != root {
+		if err := validateRequireAliasBinding(scope, alias, module); err != nil {
+			return err
+		}
 	}
 	if alias == "" {
 		return nil
@@ -935,8 +937,13 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 	if aliasScope == nil {
 		aliasScope = exec.root
 	}
-	if err := validateRequireAliasBinding(aliasScope, alias, exportsVal); err != nil {
+	if err := validateRequireAliasBinding(exec.root, alias, exportsVal); err != nil {
 		return NewNil(), err
+	}
+	if aliasScope != exec.root {
+		if err := validateRequireAliasBinding(aliasScope, alias, exportsVal); err != nil {
+			return NewNil(), err
+		}
 	}
 	if err := initializeModuleForCall(exec, entry, moduleEnv, moduleClasses); err != nil {
 		return NewNil(), err

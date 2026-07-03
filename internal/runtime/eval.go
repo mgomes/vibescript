@@ -2448,13 +2448,6 @@ func predeclareAssignmentLocalBindings(stmt *AssignStmt, env *Env) {
 	predeclareDirectAssignmentTargetBindingNames(stmt.Target, stmt.Value, env)
 }
 
-func predeclarePostValueAssignmentLocalBindings(stmt *AssignStmt, env *Env) {
-	if env.rebindOuter {
-		return
-	}
-	predeclarePostValueAssignmentTargetBindingNames(stmt.Target, stmt.Value, env)
-}
-
 type localBindingCollector struct {
 	names []string
 	seen  map[string]struct{}
@@ -2526,9 +2519,7 @@ func predeclareTargetBindingNames(target Expression, env *Env) {
 func predeclareDirectAssignmentTargetBindingNames(target, value Expression, env *Env) {
 	switch t := target.(type) {
 	case *Identifier:
-		if !expressionContainsParenthesizedIdentifierCall(value, t.Name) {
-			env.PredeclareAssignmentLocal(t.Name)
-		}
+		env.PredeclareAssignmentLocal(t.Name)
 	case *DestructureTarget:
 		for _, element := range t.Elements {
 			predeclareDirectAssignmentTargetBindingNames(element.Target, value, env)
@@ -2536,15 +2527,24 @@ func predeclareDirectAssignmentTargetBindingNames(target, value Expression, env 
 	}
 }
 
-func predeclarePostValueAssignmentTargetBindingNames(target, value Expression, env *Env) {
+func assignmentLocalCallBypassNames(target, value Expression) map[string]struct{} {
+	var names map[string]struct{}
+	collectAssignmentLocalCallBypassNames(target, value, &names)
+	return names
+}
+
+func collectAssignmentLocalCallBypassNames(target, value Expression, names *map[string]struct{}) {
 	switch t := target.(type) {
 	case *Identifier:
 		if expressionContainsParenthesizedIdentifierCall(value, t.Name) {
-			env.PredeclareAssignmentLocal(t.Name)
+			if *names == nil {
+				*names = make(map[string]struct{})
+			}
+			(*names)[t.Name] = struct{}{}
 		}
 	case *DestructureTarget:
 		for _, element := range t.Elements {
-			predeclarePostValueAssignmentTargetBindingNames(element.Target, value, env)
+			collectAssignmentLocalCallBypassNames(element.Target, value, names)
 		}
 	}
 }
@@ -2585,7 +2585,7 @@ func expressionContainsParenthesizedIdentifierCall(expr Expression, name string)
 				return true
 			}
 		}
-		return false
+		return expressionContainsParenthesizedIdentifierCall(t.Block, name)
 	case *MemberExpr:
 		return expressionContainsParenthesizedIdentifierCall(t.Object, name)
 	case *ScopeExpr:
@@ -2647,7 +2647,15 @@ func expressionContainsParenthesizedIdentifierCall(expr Expression, name string)
 		}
 		return expressionContainsParenthesizedIdentifierCall(t.ElseExpr, name)
 	case *BlockLiteral:
-		return false
+		if t == nil {
+			return false
+		}
+		for _, param := range t.Params {
+			if expressionContainsParenthesizedIdentifierCall(param.DefaultVal, name) {
+				return true
+			}
+		}
+		return statementsContainParenthesizedIdentifierCall(t.Body, name)
 	case *YieldExpr:
 		for _, arg := range t.Args {
 			if expressionContainsParenthesizedIdentifierCall(arg, name) {
@@ -2671,6 +2679,70 @@ func stringPartsContainParenthesizedIdentifierCall(parts []StringPart, name stri
 		}
 	}
 	return false
+}
+
+func statementsContainParenthesizedIdentifierCall(statements []Statement, name string) bool {
+	for _, stmt := range statements {
+		if statementContainsParenthesizedIdentifierCall(stmt, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func statementContainsParenthesizedIdentifierCall(stmt Statement, name string) bool {
+	switch t := stmt.(type) {
+	case nil:
+		return false
+	case *ExprStmt:
+		return expressionContainsParenthesizedIdentifierCall(t.Expr, name)
+	case *LogicalStmt:
+		return statementContainsParenthesizedIdentifierCall(t.Left, name) ||
+			statementContainsParenthesizedIdentifierCall(t.Right, name)
+	case *ReturnStmt:
+		return expressionContainsParenthesizedIdentifierCall(t.Value, name)
+	case *RaiseStmt:
+		return expressionContainsParenthesizedIdentifierCall(t.Value, name)
+	case *BreakStmt:
+		return expressionContainsParenthesizedIdentifierCall(t.Value, name)
+	case *NextStmt:
+		return false
+	case *AssignStmt:
+		return expressionContainsParenthesizedIdentifierCall(t.Target, name) ||
+			expressionContainsParenthesizedIdentifierCall(t.Value, name)
+	case *IfStmt:
+		if expressionContainsParenthesizedIdentifierCall(t.Condition, name) ||
+			statementsContainParenthesizedIdentifierCall(t.Consequent, name) ||
+			statementsContainParenthesizedIdentifierCall(t.Alternate, name) {
+			return true
+		}
+		for _, branch := range t.ElseIf {
+			if expressionContainsParenthesizedIdentifierCall(branch.Condition, name) ||
+				statementsContainParenthesizedIdentifierCall(branch.Consequent, name) {
+				return true
+			}
+		}
+		return false
+	case *ForStmt:
+		return expressionContainsParenthesizedIdentifierCall(t.Target, name) ||
+			expressionContainsParenthesizedIdentifierCall(t.Iterable, name) ||
+			statementsContainParenthesizedIdentifierCall(t.Body, name)
+	case *WhileStmt:
+		return expressionContainsParenthesizedIdentifierCall(t.Condition, name) ||
+			statementsContainParenthesizedIdentifierCall(t.Body, name)
+	case *UntilStmt:
+		return expressionContainsParenthesizedIdentifierCall(t.Condition, name) ||
+			statementsContainParenthesizedIdentifierCall(t.Body, name)
+	case *TryStmt:
+		return statementsContainParenthesizedIdentifierCall(t.Body, name) ||
+			statementsContainParenthesizedIdentifierCall(t.Rescue, name) ||
+			statementsContainParenthesizedIdentifierCall(t.Else, name) ||
+			statementsContainParenthesizedIdentifierCall(t.Ensure, name)
+	case *ClassStmt:
+		return false
+	default:
+		return false
+	}
 }
 
 func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool, error) {
@@ -2911,14 +2983,13 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		if val, handled, err := exec.evalArrayAppendAssignment(s, env); handled || err != nil {
 			return val, false, err
 		}
-		val, err := exec.evalExpression(s.Value, env)
+		val, err := exec.evalAssignmentValue(s, env)
 		if err != nil {
 			return NewNil(), false, err
 		}
 		if err := exec.checkMemoryWith(val); err != nil {
 			return NewNil(), false, err
 		}
-		predeclarePostValueAssignmentLocalBindings(s, env)
 		if err := exec.assign(s.Target, val, env); err != nil {
 			if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) {
 				return NewNil(), false, err
@@ -3008,6 +3079,18 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	default:
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement")
 	}
+}
+
+func (exec *Execution) evalAssignmentValue(stmt *AssignStmt, env *Env) (Value, error) {
+	names := assignmentLocalCallBypassNames(stmt.Target, stmt.Value)
+	if len(names) == 0 {
+		return exec.evalExpression(stmt.Value, env)
+	}
+	exec.localCallBypassStack = append(exec.localCallBypassStack, localCallBypass{env: env, names: names})
+	defer func() {
+		exec.localCallBypassStack = exec.localCallBypassStack[:len(exec.localCallBypassStack)-1]
+	}()
+	return exec.evalExpression(stmt.Value, env)
 }
 
 func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value, bool, error) {

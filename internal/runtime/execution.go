@@ -75,12 +75,18 @@ type Execution struct {
 	validatedCapabilityArgsArr [4]string
 	loopDepth                  int
 	rescuedErrors              []error
+	localCallBypassStack       []localCallBypass
 	randSource                 *rand.Rand
 	randSeed                   int64
 	randSeeded                 bool
 	strictEffects              bool
 	allowRequire               bool
 	callOptions                CallOptions
+}
+
+type localCallBypass struct {
+	env   *Env
+	names map[string]struct{}
 }
 
 type capabilityContractScope struct {

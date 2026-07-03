@@ -834,7 +834,7 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 	}
 
 	if ident, ok := call.Callee.(*Identifier); ok {
-		return exec.evalIdentifierCallTarget(ident, env)
+		return exec.evalIdentifierCallTarget(ident, env, call.Parenthesized)
 	}
 
 	callee, err := exec.evalExpressionWithAuto(call.Callee, env, false)
@@ -849,14 +849,14 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 // while an identifier that falls through to an implicit-self member binds self
 // as the receiver so builtins resolved off self (such as the universal
 // introspection predicates) receive the correct receiver.
-func (exec *Execution) evalIdentifierCallTarget(ident *Identifier, env *Env) (Value, Value, error) {
+func (exec *Execution) evalIdentifierCallTarget(ident *Identifier, env *Env, parenthesized bool) (Value, Value, error) {
 	// Mirror the per-expression step charged by evalExpressionWithAuto, which
 	// this branch replaces for identifier callees, so step accounting (and the
 	// statement position a step-quota limit reports) is unchanged.
 	if err := exec.step(); err != nil {
 		return NewNil(), NewNil(), err
 	}
-	if val, ok := env.Get(ident.Name); ok {
+	if val, ok := exec.identifierCallBinding(ident.Name, env, parenthesized); ok {
 		env.clearArrayAppendBuffer(ident.Name)
 		return val, NewNil(), nil
 	}
@@ -868,6 +868,27 @@ func (exec *Execution) evalIdentifierCallTarget(ident *Identifier, env *Env) (Va
 		return member, self, nil
 	}
 	return NewNil(), NewNil(), exec.errorAt(ident.Pos(), "undefined variable %s%s", ident.Name, didYouMean(ident.Name, env.visibleNames()))
+}
+
+func (exec *Execution) identifierCallBinding(name string, env *Env, parenthesized bool) (Value, bool) {
+	if !parenthesized || len(exec.localCallBypassStack) == 0 {
+		return env.Get(name)
+	}
+	var skip map[*Env]struct{}
+	for i := len(exec.localCallBypassStack) - 1; i >= 0; i-- {
+		frame := exec.localCallBypassStack[i]
+		if _, ok := frame.names[name]; !ok || frame.env == nil {
+			continue
+		}
+		if skip == nil {
+			skip = make(map[*Env]struct{})
+		}
+		skip[frame.env] = struct{}{}
+	}
+	if len(skip) == 0 {
+		return env.Get(name)
+	}
+	return env.getSkipping(name, skip)
 }
 
 func (exec *Execution) evalDirectPublicMemberMethodCall(receiver Value, property string, pos Position) (Value, bool, error) {

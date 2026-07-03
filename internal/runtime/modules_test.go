@@ -173,6 +173,20 @@ end`,
 			},
 		},
 		{
+			name: "cached_alias_conflict_checks_root_binding",
+			source: `def run()
+  alt = require("helper_alt")
+  require("helper", as: "mod")
+  use_alias(alt)
+end
+
+def use_alias(mod)
+  require("helper_alt", as: "mod")
+end`,
+			fn:      "run",
+			wantErr: `require: alias "mod" already defined`,
+		},
+		{
 			name: "missing_module",
 			source: `def run()
   require("missing")

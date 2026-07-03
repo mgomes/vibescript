@@ -145,6 +145,44 @@ func (e *Env) Get(name string) (Value, bool) {
 	return Value{}, false
 }
 
+func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
+	var lastMutable *Env
+	for scope := e; scope != nil; scope = scope.parent {
+		if _, skipped := skip[scope]; skipped {
+			continue
+		}
+		if !scope.frozen {
+			lastMutable = scope
+		}
+		if idx, ok := scope.inlineIndex(name); ok {
+			val := scope.inline[idx].value
+			if lazy, ok := lazyValue(val); ok {
+				val = lazy.materialize()
+				scope.inline[idx].value = val
+				scope.dropArrayAppendBuffer(name)
+			}
+			return val, true
+		}
+		if val, ok := scope.values[name]; ok {
+			if lazy, ok := lazyValue(val); ok {
+				val = lazy.materialize()
+				scope.values[name] = val
+				scope.dropArrayAppendBuffer(name)
+			}
+			return val, true
+		}
+		if val, ok := scope.statics[name]; ok {
+			if scope.frozen && lastMutable != nil && builtinNeedsCallClone(val) {
+				cloned := cloneBuiltinValueForCall(val)
+				lastMutable.DefineStatic(name, cloned)
+				return cloned, true
+			}
+			return val, true
+		}
+	}
+	return Value{}, false
+}
+
 // setCallBlock marks this scope as a call frame and records the block supplied
 // to the call (nil when none was given). It must be set on the call
 // environment so lookupCallBlock can find it from any nested scope.
