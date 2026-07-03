@@ -376,6 +376,88 @@ end
 	requireNoCheckWarnings(t, script)
 }
 
+func TestCheckWarningsDoNotHoistShortCircuitRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  false && require("enum_status")
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsDoNotHoistConditionalExpressionRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(flag) -> Status
+  flag ? require("enum_status") : nil
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", []Value{NewBool(false)}, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsDoNotHoistIfExpressionConditionRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(flag) -> Status
+  value = if flag
+    nil
+  elsif require("enum_status")
+    nil
+  else
+    nil
+  end
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", []Value{NewBool(true)}, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsDoNotHoistConditionalModuleEntrypointRequires(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "status.vibe"), []byte(`
+enum Status
+  Draft
+end
+`), 0o644); err != nil {
+		t.Fatalf("write status module: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "wrapper.vibe"), []byte(`
+if false
+  require("./status")
+end
+`), 0o644); err != nil {
+		t.Fatalf("write wrapper module: %v", err)
+	}
+
+	engine := MustNewEngine(Config{ModulePaths: []string{root}})
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  require("wrapper")
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
+}
+
 func TestCheckWarningsDoNotTreatShadowedRequireAsModuleImport(t *testing.T) {
 	t.Parallel()
 

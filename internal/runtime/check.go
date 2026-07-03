@@ -146,22 +146,36 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 	case *ExprStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Expr)
 	case *IfStmt:
+		baseState := c.snapshotModuleCollectionState()
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		falseState := c.snapshotModuleCollectionState()
+		fallthroughStates := make([]checkModuleCollectionState, 0, len(typed.ElseIf)+2)
+
 		c.collectRequiredModuleExportsFromStatements(typed.Consequent)
-		for _, elseIf := range typed.ElseIf {
-			c.collectRequiredModuleExportsFromExpression(elseIf.Condition)
-			c.collectRequiredModuleExportsFromStatements(elseIf.Consequent)
+		if !blockAlwaysExits(typed.Consequent) {
+			fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 		}
+		for _, elseIf := range typed.ElseIf {
+			c.restoreModuleCollectionState(falseState)
+			c.collectRequiredModuleExportsFromExpression(elseIf.Condition)
+			falseState = c.snapshotModuleCollectionState()
+			c.collectRequiredModuleExportsFromStatements(elseIf.Consequent)
+			if !blockAlwaysExits(elseIf.Consequent) {
+				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
+			}
+		}
+		c.restoreModuleCollectionState(falseState)
 		c.collectRequiredModuleExportsFromStatements(typed.Alternate)
+		if len(typed.Alternate) == 0 || !blockAlwaysExits(typed.Alternate) {
+			fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
+		}
+		c.mergeModuleCollectionStates(baseState, fallthroughStates)
 	case *ForStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Iterable)
-		c.collectRequiredModuleExportsFromStatements(typed.Body)
 	case *WhileStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
-		c.collectRequiredModuleExportsFromStatements(typed.Body)
 	case *UntilStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
-		c.collectRequiredModuleExportsFromStatements(typed.Body)
 	case *TryStmt:
 		c.collectRequiredModuleExportsFromStatements(typed.Body)
 		c.collectRequiredModuleExportsFromStatements(typed.Rescue)
@@ -212,19 +226,31 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		c.collectRequiredModuleExportsFromExpression(typed.Right)
 	case *BinaryExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Left)
-		c.collectRequiredModuleExportsFromExpression(typed.Right)
+		if binaryRightAlwaysEvaluates(typed) {
+			c.collectRequiredModuleExportsFromExpression(typed.Right)
+		}
 	case *ConditionalExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
-		c.collectRequiredModuleExportsFromExpression(typed.Consequent)
-		c.collectRequiredModuleExportsFromExpression(typed.Alternate)
+		c.collectRequiredModuleExportsFromExpressionBranches(typed.Consequent, typed.Alternate)
 	case *IfExpr:
+		baseState := c.snapshotModuleCollectionState()
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		falseState := c.snapshotModuleCollectionState()
+		branchStates := make([]checkModuleCollectionState, 0, len(typed.ElseIf)+2)
+
 		c.collectRequiredModuleExportsFromExpression(typed.Consequent)
+		branchStates = append(branchStates, c.snapshotModuleCollectionState())
 		for _, branch := range typed.ElseIf {
+			c.restoreModuleCollectionState(falseState)
 			c.collectRequiredModuleExportsFromExpression(branch.Condition)
+			falseState = c.snapshotModuleCollectionState()
 			c.collectRequiredModuleExportsFromExpression(branch.Result)
+			branchStates = append(branchStates, c.snapshotModuleCollectionState())
 		}
+		c.restoreModuleCollectionState(falseState)
 		c.collectRequiredModuleExportsFromExpression(typed.Alternate)
+		branchStates = append(branchStates, c.snapshotModuleCollectionState())
+		c.mergeModuleCollectionStates(baseState, branchStates)
 	case *RangeExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Start)
 		c.collectRequiredModuleExportsFromExpression(typed.End)
@@ -263,11 +289,35 @@ func (c *scriptChecker) collectBlockRequiredModuleExports(block *BlockLiteral) {
 	c.collectRequiredModuleExportsFromStatements(block.Body)
 }
 
+func (c *scriptChecker) collectRequiredModuleExportsFromExpressionBranches(branches ...Expression) {
+	baseState := c.snapshotModuleCollectionState()
+	branchStates := make([]checkModuleCollectionState, 0, len(branches))
+	for _, branch := range branches {
+		c.restoreModuleCollectionState(baseState)
+		c.collectRequiredModuleExportsFromExpression(branch)
+		branchStates = append(branchStates, c.snapshotModuleCollectionState())
+	}
+	c.mergeModuleCollectionStates(baseState, branchStates)
+}
+
 func (c *scriptChecker) collectStringPartRequiredModuleExports(parts []StringPart) {
 	for _, part := range parts {
 		if exprPart, ok := part.(StringExpr); ok {
 			c.collectRequiredModuleExportsFromExpression(exprPart.Expr)
 		}
+	}
+}
+
+func binaryRightAlwaysEvaluates(expr *BinaryExpr) bool {
+	switch expr.Operator {
+	case tokenAnd:
+		val, ok := staticLiteralValue(expr.Left)
+		return ok && val.Truthy()
+	case tokenOr:
+		val, ok := staticLiteralValue(expr.Left)
+		return ok && !val.Truthy()
+	default:
+		return true
 	}
 }
 
@@ -406,6 +456,11 @@ type checkRuntimeState struct {
 	modules map[string]struct{}
 }
 
+type checkModuleCollectionState struct {
+	root    *Env
+	modules map[string]struct{}
+}
+
 type checkScopeState []map[string]struct{}
 
 func (c *scriptChecker) snapshotRuntimeState() checkRuntimeState {
@@ -417,8 +472,15 @@ func (c *scriptChecker) snapshotRuntimeState() checkRuntimeState {
 }
 
 func (c *scriptChecker) restoreRuntimeState(state checkRuntimeState) {
-	c.runtimeTypeRoot = state.root
+	c.runtimeTypeRoot = cloneCheckRoot(state.root)
 	c.runtimeModules = cloneCheckModuleSet(state.modules)
+}
+
+func cloneCheckRoot(root *Env) *Env {
+	if root == nil {
+		return nil
+	}
+	return root.CloneShallow()
 }
 
 func cloneCheckModuleSet(modules map[string]struct{}) map[string]struct{} {
@@ -460,6 +522,52 @@ func (c *scriptChecker) mergeRuntimeStates(base checkRuntimeState, states []chec
 			c.collectModuleExports(entry)
 		}
 	})
+}
+
+func (c *scriptChecker) snapshotModuleCollectionState() checkModuleCollectionState {
+	state := checkModuleCollectionState{modules: cloneCheckModuleSet(c.requiredModules)}
+	if c.moduleExportRoot != nil {
+		state.root = c.moduleExportRoot.CloneShallow()
+	}
+	return state
+}
+
+func (c *scriptChecker) restoreModuleCollectionState(state checkModuleCollectionState) {
+	previousRoot := c.moduleExportRoot
+	root := cloneCheckRoot(state.root)
+	c.moduleExportRoot = root
+	c.requiredModules = cloneCheckModuleSet(state.modules)
+	if c.runtimeTypeRoot == previousRoot {
+		c.runtimeTypeRoot = root
+	}
+	if c.typeRoot == previousRoot {
+		c.typeRoot = root
+	}
+}
+
+func (c *scriptChecker) mergeModuleCollectionStates(base checkModuleCollectionState, states []checkModuleCollectionState) {
+	c.restoreModuleCollectionState(base)
+	if len(states) == 0 {
+		return
+	}
+	common := cloneCheckModuleSet(states[0].modules)
+	for _, state := range states[1:] {
+		for key := range common {
+			if _, ok := state.modules[key]; !ok {
+				delete(common, key)
+			}
+		}
+	}
+	for key := range base.modules {
+		delete(common, key)
+	}
+	for key := range common {
+		entry, ok := c.moduleEntries[key]
+		if !ok {
+			continue
+		}
+		c.collectModuleExports(entry)
+	}
 }
 
 func (c *scriptChecker) snapshotScopeState() checkScopeState {
