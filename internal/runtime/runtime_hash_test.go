@@ -2533,3 +2533,24 @@ func TestTypedTransformReservesExactOrderCapacity(t *testing.T) {
 		})
 	}
 }
+
+// TestHashLiteralReservesExactOrderCapacity pins that a hash literal pre-sizes
+// its insertion-order backing to the pair count, so a 3-entry literal keeps
+// order capacity 3 instead of the 4 append growth would leave.
+func TestHashLiteralReservesExactOrderCapacity(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def literal()
+      { a: 1, b: 2, c: 3 }
+    end
+    `)
+
+	got := callFunc(t, script, "literal", nil)
+	if got.HashLen() != 3 {
+		t.Fatalf("literal entries = %d, want 3", got.HashLen())
+	}
+	if capacity := value.HashOrderCapacity(got); capacity != 3 {
+		t.Fatalf("literal order capacity = %d, want 3 (append growth would overshoot to 4)", capacity)
+	}
+}
