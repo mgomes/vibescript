@@ -254,6 +254,30 @@ func TestCapturedBlockValuesAreCallable(t *testing.T) {
 	}
 }
 
+func TestShapeTypedKeywordRestPreservesCallableFields(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def answer
+      42
+    end
+
+    def label
+      "ok"
+    end
+
+    def accept(**opts: { cb: function, label: string })
+      [opts[:cb].call, opts[:label]]
+    end
+
+    def run
+      accept(cb: answer, label: label)
+    end
+    `)
+
+	got := callFunc(t, script, "run", nil)
+	compareArrays(t, got, []Value{NewInt(42), NewString("ok")})
+}
+
 // TestFunctionValueCallErrors verifies that misuse of fn.call surfaces the
 // same argument and type errors as direct invocation, anchored at the call
 // site, and that unknown members suggest call.

@@ -998,7 +998,7 @@ func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee 
 	for _, kw := range call.KwArgs {
 		expectsCallable := false
 		if hasParams {
-			if param, ok := keywordCallableParam(params, kw.Name); ok && paramExpectsCallableArgument(param) {
+			if keywordArgumentExpectsCallable(params, kw.Name) {
 				expectsCallable = true
 			}
 		}
@@ -1089,18 +1089,18 @@ func positionalCallableParam(params []Param, argIndex int) (Param, bool) {
 	return Param{}, false
 }
 
-func keywordCallableParam(params []Param, name string) (Param, bool) {
+func keywordArgumentExpectsCallable(params []Param, name string) bool {
 	for _, param := range params {
 		switch param.Kind {
 		case ParamKeyword, ParamNormal:
 			if param.Name == name {
-				return param, true
+				return paramExpectsCallableArgument(param)
 			}
 		case ParamKeywordRest:
-			return param, true
+			return keywordRestParamExpectsCallableValue(param.Type, name)
 		}
 	}
-	return Param{}, false
+	return false
 }
 
 func paramExpectsCallableArgument(param Param) bool {
@@ -1108,7 +1108,7 @@ func paramExpectsCallableArgument(param Param) bool {
 	case ParamRest:
 		return restParamExpectsCallableElement(param.Type)
 	case ParamKeywordRest:
-		return keywordRestParamExpectsCallableValue(param.Type)
+		return keywordRestParamExpectsCallableValue(param.Type, "")
 	default:
 		return typeExprIncludesCallable(param.Type)
 	}
@@ -1124,12 +1124,34 @@ func restParamExpectsCallableElement(ty *TypeExpr) bool {
 	return typeExprIncludesCallable(ty)
 }
 
-func keywordRestParamExpectsCallableValue(ty *TypeExpr) bool {
+func keywordRestParamExpectsCallableValue(ty *TypeExpr, name string) bool {
 	if ty == nil {
 		return false
 	}
-	if ty.Kind == TypeHash && len(ty.TypeArgs) > 1 {
-		return typeExprIncludesCallable(ty.TypeArgs[1])
+	switch ty.Kind {
+	case TypeHash:
+		if len(ty.TypeArgs) > 1 {
+			return typeExprIncludesCallable(ty.TypeArgs[1])
+		}
+		return false
+	case TypeShape:
+		if name != "" {
+			field, ok := ty.Shape[name]
+			return ok && typeExprIncludesCallable(field)
+		}
+		for _, field := range ty.Shape {
+			if typeExprIncludesCallable(field) {
+				return true
+			}
+		}
+		return false
+	case TypeUnion:
+		for _, option := range ty.Union {
+			if keywordRestParamExpectsCallableValue(option, name) {
+				return true
+			}
+		}
+		return false
 	}
 	return typeExprIncludesCallable(ty)
 }
@@ -1141,6 +1163,18 @@ func typeExprIncludesCallable(ty *TypeExpr) bool {
 	switch ty.Kind {
 	case TypeFunction:
 		return true
+	case TypeArray, TypeHash:
+		for _, arg := range ty.TypeArgs {
+			if typeExprIncludesCallable(arg) {
+				return true
+			}
+		}
+	case TypeShape:
+		for _, field := range ty.Shape {
+			if typeExprIncludesCallable(field) {
+				return true
+			}
+		}
 	case TypeUnion:
 		for _, option := range ty.Union {
 			if typeExprIncludesCallable(option) {
