@@ -218,9 +218,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
 	case *ForStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Iterable)
-		if typed.Iterator != "" {
-			c.recordBindingName(typed.Iterator)
-		}
+		c.recordBindingTarget(typed.Target)
 		bodyState := c.snapshotModuleCollectionState()
 		bodyScopeState := c.snapshotScopeState()
 		c.collectRequiredModuleExportsFromStatements(typed.Body)
@@ -952,9 +950,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *ForStmt:
 		c.checkExpression(function, typed.Iterable)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Iterable)
-		if typed.Iterator != "" {
-			c.recordBindingName(typed.Iterator)
-		}
+		c.recordBindingTarget(typed.Target)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
 		c.checkStatements(function, returnType, typed.Body)
@@ -2099,9 +2095,7 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 			}
 			collectLocalBindings(typed.Alternate, out)
 		case *ForStmt:
-			if typed.Iterator != "" {
-				out[typed.Iterator] = struct{}{}
-			}
+			collectBindingTarget(typed.Target, out)
 			collectLocalBindings(typed.Body, out)
 		case *WhileStmt:
 			collectLocalBindings(typed.Body, out)
