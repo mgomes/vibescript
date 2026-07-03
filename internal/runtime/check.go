@@ -774,6 +774,9 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if fn, ok := c.script.functions[callee.Name]; ok {
 			return staticCallable{name: callee.Name, fn: fn, resolution: calleeDirect}, true
 		}
+		if c.typeRootHasBinding(callee.Name) {
+			return staticCallable{}, false
+		}
 		if spec, ok := staticBuiltinSpecs[callee.Name]; ok {
 			return staticCallable{name: callee.Name, spec: spec}, true
 		}
@@ -783,6 +786,14 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		}
 	}
 	return staticCallable{}, false
+}
+
+func (c *scriptChecker) typeRootHasBinding(name string) bool {
+	if c.typeRoot == nil {
+		return false
+	}
+	_, ok := c.typeRoot.Get(name)
+	return ok
 }
 
 func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallable, bool) {
@@ -805,6 +816,9 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 			if fn, ok := classDef.ClassMethods[member.Property]; ok {
 				return staticCallable{name: ident.Name + "." + member.Property, fn: fn, resolution: calleeMemberMethod}, true
 			}
+		}
+		if c.typeRootHasBinding(ident.Name) {
+			return staticCallable{}, false
 		}
 		if spec, ok := staticBuiltinSpecs[ident.Name+"."+member.Property]; ok {
 			// A script that reassigns the namespace member (e.g. JSON.parse =

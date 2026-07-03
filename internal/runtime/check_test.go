@@ -50,6 +50,32 @@ end
 	}
 }
 
+func TestCheckWarningsWithOptionsRespectHostGlobalsBeforeBuiltins(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  rand(1, 2)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to rand has too many arguments")
+
+	hostRand := NewBuiltin("rand", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewInt(int64(len(args))), nil
+	})
+	opts := CallOptions{Globals: map[string]Value{"rand": hostRand}}
+	requireNoCheckWarningsWithOptions(t, script, opts)
+
+	got, err := script.Call(context.Background(), "run", nil, opts)
+	if err != nil {
+		t.Fatalf("Call() with host rand global returned error: %v", err)
+	}
+	if !got.Equal(NewInt(2)) {
+		t.Fatalf("Call() with host rand global = %s, want 2", got)
+	}
+}
+
 func TestCheckWarningsResolveRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
