@@ -443,8 +443,10 @@ value recursively:
 ```
 
 Inspected entries follow the hash's insertion order, so the rendering is stable
-across calls and matches iteration. See
-[Debug Representation](stdlib_core_utilities.md#debug-representation) for the full
-per-kind contract.
+across calls and matches iteration. Bare host-provided maps
+(`NewHash(map[string]Value)`) carry no insertion record, so — like their
+iteration — their rendered order is unspecified rather than insertion-ordered.
+See [Debug Representation](stdlib_core_utilities.md#debug-representation) for the
+full per-kind contract.
 
 Review `examples/hashes/` for live scripts used by the tests.
