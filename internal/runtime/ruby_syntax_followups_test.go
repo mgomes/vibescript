@@ -102,6 +102,7 @@ func TestScopedClassConstants(t *testing.T) {
 	script := compileScript(t, `
 class Config
   LIMIT = 10
+  LIMIT += 2
 
   def self.limit
     LIMIT
@@ -109,6 +110,10 @@ class Config
 
   def self.scoped_limit
     Config::LIMIT
+  end
+
+  def self.bump_limit
+    LIMIT += 1
   end
 end
 
@@ -121,14 +126,17 @@ class Other
 end
 
 def run()
-  [Config.limit, Config.scoped_limit, Config::LIMIT, Other.limit]
+  [Config.limit, Config.scoped_limit, Config::LIMIT, Config.bump_limit, Config::LIMIT, Config.limit, Other.limit]
 end
 `)
 
 	compareArrays(t, callFunc(t, script, "run", nil), []Value{
-		NewInt(10),
-		NewInt(10),
-		NewInt(10),
+		NewInt(12),
+		NewInt(12),
+		NewInt(12),
+		NewInt(13),
+		NewInt(13),
+		NewInt(13),
 		NewInt(20),
 	})
 }

@@ -3198,8 +3198,7 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 			return NewNil(), nil, err
 		}
 		return current, func(value Value) error {
-			env.Assign(t.Name, value)
-			return nil
+			return exec.assign(t, value, env)
 		}, nil
 	case *MemberExpr:
 		obj, err := exec.evalExpressionWithAuto(t.Object, env, true)
