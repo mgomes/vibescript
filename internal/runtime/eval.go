@@ -336,10 +336,14 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 // them. The accumulator snapshots the baseline once and charges each element
 // incrementally, deduplicating elements aliased by an environment root.
 func (exec *Execution) evalArrayLiteral(e *ArrayLiteral, env *Env) (Value, error) {
+	return exec.evalArrayLiteralWithElementType(e, env, nil)
+}
+
+func (exec *Execution) evalArrayLiteralWithElementType(e *ArrayLiteral, env *Env, elementType *TypeExpr) (Value, error) {
 	acc := newArrayBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
 	elems := make([]Value, 0, len(e.Elements))
 	for _, el := range e.Elements {
-		val, err := exec.evalExpressionWithAuto(el, env, true)
+		val, err := exec.evalExpressionWithExpectedType(el, env, elementType)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -361,6 +365,10 @@ func (exec *Execution) evalArrayLiteral(e *ArrayLiteral, env *Env) (Value, error
 // entry's key and value payloads incrementally, deduplicating payloads aliased by
 // an environment root.
 func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) {
+	return exec.evalHashLiteralWithValueTypes(e, env, nil)
+}
+
+func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, valueTypeForKey func(Value) *TypeExpr) (Value, error) {
 	var acc *hashLiteralBuildAccumulator
 	if exec.memoryQuota > 0 {
 		acc = newHashLiteralBuildAccumulator(exec)
@@ -387,7 +395,11 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 		if err != nil {
 			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
 		}
-		val, err := exec.evalExpressionWithAuto(pair.Value, env, true)
+		var valueType *TypeExpr
+		if valueTypeForKey != nil {
+			valueType = valueTypeForKey(keyVal)
+		}
+		val, err := exec.evalExpressionWithExpectedType(pair.Value, env, valueType)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -408,6 +420,13 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 		entries[key] = hashLiteralEntry{key: keyVal, lookupKey: lookupKey, value: val}
 	}
 	return hash, nil
+}
+
+func (exec *Execution) evalExpressionWithExpectedType(expr Expression, env *Env, ty *TypeExpr) (Value, error) {
+	if ty == nil {
+		return exec.evalExpressionWithAuto(expr, env, true)
+	}
+	return exec.evalCallArgumentForType(expr, env, ty)
 }
 
 func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {

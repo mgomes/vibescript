@@ -956,13 +956,13 @@ func (exec *Execution) evalCallArgsForCallee(call *CallExpr, env *Env, callee Va
 	params, hasParams := callableParamTypes(callee)
 	args := make([]Value, len(call.Args))
 	for i, arg := range call.Args {
-		expectsCallable := false
+		var expectedType *TypeExpr
 		if hasParams {
-			if param, ok := positionalCallableParam(params, i); ok && paramExpectsCallableArgument(param) {
-				expectsCallable = true
+			if param, ok := positionalCallableParam(params, i); ok {
+				expectedType = positionalArgumentExpectedType(param)
 			}
 		}
-		val, err := exec.evalCallArgument(arg, env, expectsCallable)
+		val, err := exec.evalCallArgumentForType(arg, env, expectedType)
 		if err != nil {
 			return nil, err
 		}
@@ -997,15 +997,14 @@ func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee 
 	optionsHashType, hasOptionsHashTarget := callOptionsHashArgumentType(call, callee, resolution)
 	kwargs := make(map[string]Value, len(call.KwArgs))
 	for _, kw := range call.KwArgs {
-		expectsCallable := false
+		var expectedType *TypeExpr
 		if hasParams {
-			if keywordArgumentExpectsCallable(params, kw.Name) {
-				expectsCallable = true
-			} else if hasOptionsHashTarget && optionsHashArgumentExpectsCallableValue(optionsHashType, kw.Name) {
-				expectsCallable = true
+			expectedType = keywordArgumentExpectedType(params, kw.Name)
+			if expectedType == nil && hasOptionsHashTarget {
+				expectedType = optionsHashArgumentValueType(optionsHashType, kw.Name)
 			}
 		}
-		val, err := exec.evalCallArgument(kw.Value, env, expectsCallable)
+		val, err := exec.evalCallArgumentForType(kw.Value, env, expectedType)
 		if err != nil {
 			return nil, err
 		}
@@ -1015,6 +1014,41 @@ func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee 
 		kwargs[kw.Name] = val
 	}
 	return kwargs, nil
+}
+
+func (exec *Execution) evalCallArgumentForType(arg Expression, env *Env, ty *TypeExpr) (Value, error) {
+	if val, ok, err := exec.evalTypedContainerCallArgument(arg, env, ty); ok || err != nil {
+		return val, err
+	}
+	return exec.evalCallArgument(arg, env, typeExprIncludesCallable(ty))
+}
+
+func (exec *Execution) evalTypedContainerCallArgument(arg Expression, env *Env, ty *TypeExpr) (Value, bool, error) {
+	switch e := arg.(type) {
+	case *ArrayLiteral:
+		elementType, ok := arrayLiteralElementType(ty)
+		if !ok {
+			return NewNil(), false, nil
+		}
+		if err := exec.step(); err != nil {
+			return NewNil(), true, err
+		}
+		val, err := exec.evalArrayLiteralWithElementType(e, env, elementType)
+		return val, true, err
+	case *HashLiteral:
+		if !hashLiteralTypeHasValueSlots(ty) {
+			return NewNil(), false, nil
+		}
+		if err := exec.step(); err != nil {
+			return NewNil(), true, err
+		}
+		val, err := exec.evalHashLiteralWithValueTypes(e, env, func(key Value) *TypeExpr {
+			return hashLiteralValueType(ty, key)
+		})
+		return val, true, err
+	default:
+		return NewNil(), false, nil
+	}
 }
 
 func (exec *Execution) evalCallArgument(arg Expression, env *Env, expectsCallable bool) (Value, error) {
@@ -1092,51 +1126,27 @@ func positionalCallableParam(params []Param, argIndex int) (Param, bool) {
 	return Param{}, false
 }
 
-func keywordArgumentExpectsCallable(params []Param, name string) bool {
+func positionalArgumentExpectedType(param Param) *TypeExpr {
+	switch param.Kind {
+	case ParamRest:
+		return restParamElementType(param.Type)
+	default:
+		return param.Type
+	}
+}
+
+func keywordArgumentExpectedType(params []Param, name string) *TypeExpr {
 	for _, param := range params {
 		switch param.Kind {
 		case ParamKeyword, ParamNormal:
 			if param.Name == name {
-				return paramExpectsCallableArgument(param)
+				return param.Type
 			}
 		case ParamKeywordRest:
-			return keywordRestParamExpectsCallableValue(param.Type, name)
+			return keywordRestParamValueType(param.Type, name)
 		}
 	}
-	return false
-}
-
-func paramExpectsCallableArgument(param Param) bool {
-	switch param.Kind {
-	case ParamRest:
-		return restParamExpectsCallableElement(param.Type)
-	case ParamKeywordRest:
-		return keywordRestParamExpectsCallableValue(param.Type, "")
-	default:
-		return typeExprIncludesCallable(param.Type)
-	}
-}
-
-func restParamExpectsCallableElement(ty *TypeExpr) bool {
-	if ty == nil {
-		return false
-	}
-	switch ty.Kind {
-	case TypeArray:
-		if len(ty.TypeArgs) > 0 {
-			return typeExprIncludesCallable(ty.TypeArgs[0])
-		}
-		return false
-	case TypeUnion:
-		for _, option := range ty.Union {
-			if restParamExpectsCallableElement(option) {
-				return true
-			}
-		}
-		return false
-	default:
-		return false
-	}
+	return nil
 }
 
 func restParamElementType(ty *TypeExpr) *TypeExpr {
@@ -1180,59 +1190,137 @@ func restParamUnionElementTypes(ty *TypeExpr) []*TypeExpr {
 	return nil
 }
 
-func keywordRestParamExpectsCallableValue(ty *TypeExpr, name string) bool {
+func keywordRestParamValueType(ty *TypeExpr, name string) *TypeExpr {
 	if ty == nil {
-		return false
+		return nil
 	}
 	switch ty.Kind {
 	case TypeHash:
 		if len(ty.TypeArgs) > 1 {
-			return typeExprIncludesCallable(ty.TypeArgs[1])
+			return ty.TypeArgs[1]
 		}
-		return false
-	case TypeShape:
-		if name != "" {
-			field, ok := ty.Shape[name]
-			return ok && typeExprIncludesCallable(field)
-		}
-		for _, field := range ty.Shape {
-			if typeExprIncludesCallable(field) {
-				return true
-			}
-		}
-		return false
-	case TypeUnion:
-		for _, option := range ty.Union {
-			if keywordRestParamExpectsCallableValue(option, name) {
-				return true
-			}
-		}
-		return false
-	}
-	return typeExprIncludesCallable(ty)
-}
-
-func optionsHashArgumentExpectsCallableValue(ty *TypeExpr, name string) bool {
-	if ty == nil {
-		return false
-	}
-	switch ty.Kind {
-	case TypeHash:
-		if len(ty.TypeArgs) > 1 {
-			return typeExprIncludesCallable(ty.TypeArgs[1])
-		}
-		return false
+		return nil
 	case TypeShape:
 		field, ok := ty.Shape[name]
-		return ok && typeExprIncludesCallable(field)
+		if !ok {
+			return nil
+		}
+		return field
+	case TypeUnion:
+		return unionOfValueTypes(ty.Union, func(option *TypeExpr) *TypeExpr {
+			return keywordRestParamValueType(option, name)
+		})
+	default:
+		return ty
+	}
+}
+
+func optionsHashArgumentValueType(ty *TypeExpr, name string) *TypeExpr {
+	if ty == nil {
+		return nil
+	}
+	switch ty.Kind {
+	case TypeHash:
+		if len(ty.TypeArgs) > 1 {
+			return ty.TypeArgs[1]
+		}
+		return nil
+	case TypeShape:
+		field, ok := ty.Shape[name]
+		if !ok {
+			return nil
+		}
+		return field
+	case TypeUnion:
+		return unionOfValueTypes(ty.Union, func(option *TypeExpr) *TypeExpr {
+			return optionsHashArgumentValueType(option, name)
+		})
+	default:
+		return nil
+	}
+}
+
+func arrayLiteralElementType(ty *TypeExpr) (*TypeExpr, bool) {
+	if ty == nil {
+		return nil, false
+	}
+	switch ty.Kind {
+	case TypeArray:
+		if len(ty.TypeArgs) > 0 {
+			return ty.TypeArgs[0], true
+		}
+		return nil, false
+	case TypeUnion:
+		elementType := unionOfValueTypes(ty.Union, func(option *TypeExpr) *TypeExpr {
+			if element, ok := arrayLiteralElementType(option); ok {
+				return element
+			}
+			return nil
+		})
+		return elementType, elementType != nil
+	default:
+		return nil, false
+	}
+}
+
+func hashLiteralTypeHasValueSlots(ty *TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	switch ty.Kind {
+	case TypeHash, TypeShape:
+		return true
 	case TypeUnion:
 		for _, option := range ty.Union {
-			if optionsHashArgumentExpectsCallableValue(option, name) {
+			if hashLiteralTypeHasValueSlots(option) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func hashLiteralValueType(ty *TypeExpr, key Value) *TypeExpr {
+	if ty == nil {
+		return nil
+	}
+	switch ty.Kind {
+	case TypeHash:
+		if len(ty.TypeArgs) > 1 {
+			return ty.TypeArgs[1]
+		}
+		return nil
+	case TypeShape:
+		field, ok := ty.Shape[hashDisplayKey(key)]
+		if !ok {
+			return nil
+		}
+		return field
+	case TypeUnion:
+		return unionOfValueTypes(ty.Union, func(option *TypeExpr) *TypeExpr {
+			return hashLiteralValueType(option, key)
+		})
+	default:
+		return nil
+	}
+}
+
+func unionOfValueTypes(options []*TypeExpr, valueType func(*TypeExpr) *TypeExpr) *TypeExpr {
+	var types []*TypeExpr
+	for _, option := range options {
+		ty := valueType(option)
+		if ty != nil {
+			types = append(types, ty)
+		}
+	}
+	switch len(types) {
+	case 0:
+		return nil
+	case 1:
+		return types[0]
+	default:
+		return &TypeExpr{Kind: TypeUnion, Union: types}
+	}
 }
 
 func typeExprIncludesCallable(ty *TypeExpr) bool {

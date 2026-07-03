@@ -163,6 +163,18 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       fns[0].call
     end
 
+    def receive_callable_shape(opts: { cb: function })
+      opts[:cb].call
+    end
+
+    def receive_callable_keyword_shape(opts: { cb: function })
+      opts[:cb].call
+    end
+
+    def receive_nested_callable(containers: array<{ cb: function }>)
+      containers[0][:cb].call
+    end
+
     def make_handlers(*fns: array<function>) -> array<function>
       fns
     end
@@ -207,6 +219,22 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       receive_handlers(handlers)
     end
 
+    def run_array_literal
+      receive_handlers([answer])
+    end
+
+    def run_shape_literal
+      receive_callable_shape({ cb: answer })
+    end
+
+    def run_keyword_shape_literal
+      receive_callable_keyword_shape(opts: { cb: answer })
+    end
+
+    def run_nested_literal
+      receive_nested_callable([{ cb: answer }])
+    end
+
     def run_block_param
       feed_block do |fn: function|
         fn.call
@@ -227,6 +255,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "union typed rest keeps callable element", fn: "run_rest_union", want: NewInt(42)},
 		{name: "rest union ignores impossible callable arm", fn: "run_rest_array_or_function", want: NewInt(42)},
 		{name: "array typed argument still auto invokes outer function", fn: "run_array_factory", want: NewInt(42)},
+		{name: "array literal keeps callable elements", fn: "run_array_literal", want: NewInt(42)},
+		{name: "shape literal keeps callable fields", fn: "run_shape_literal", want: NewInt(42)},
+		{name: "keyword shape literal keeps callable fields", fn: "run_keyword_shape_literal", want: NewInt(42)},
+		{name: "nested typed literal keeps callable fields", fn: "run_nested_literal", want: NewInt(42)},
 		{name: "typed block call parameter keeps callable", fn: "run_block_param", want: NewInt(42)},
 	}
 
