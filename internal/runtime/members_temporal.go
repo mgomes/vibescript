@@ -394,10 +394,17 @@ func callTimeFormat(t time.Time, args []Value, kwargs map[string]Value) (Value, 
 	if err := rejectTemporalKwargs("time.format", kwargs); err != nil {
 		return NewNil(), err
 	}
-	if len(args) != 1 || args[0].Kind() != KindString {
+	if len(args) != 1 {
 		return NewNil(), fmt.Errorf("format expects a Go layout string")
 	}
-	return NewString(t.Format(args[0].String())), nil
+	return timeFormatResult(t, args[0])
+}
+
+func timeFormatResult(t time.Time, layout Value) (Value, error) {
+	if layout.Kind() != KindString {
+		return NewNil(), fmt.Errorf("format expects a Go layout string")
+	}
+	return NewString(t.Format(layout.String())), nil
 }
 
 // callTimeStrftime renders the receiver with a Ruby-style strftime format

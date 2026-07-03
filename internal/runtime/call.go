@@ -1217,6 +1217,10 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		return result, err
 	}
 
+	if result, handled, err := exec.evalDirectTimeMemberCallExpr(call, receiver, member.Property, env); handled || err != nil {
+		return result, err
+	}
+
 	if canCallBuiltinMemberDirect(receiver, member.Property) {
 		return exec.evalDirectBuiltinMemberCallExpr(call, receiver, member.Property, env)
 	}
@@ -1504,6 +1508,11 @@ func (exec *Execution) evalDirectCoreObjectMemberCallExpr(call *CallExpr, receiv
 			return NewNil(), false, nil
 		}
 		return exec.evalDirectRegexReplaceCall(call, receiver, env, true)
+	case "Time.parse":
+		if !exec.isCoreObjectBuiltin(builtin, "Time", "parse") {
+			return NewNil(), false, nil
+		}
+		return exec.evalDirectTimeParseCall(call, receiver, env)
 	default:
 		return NewNil(), false, nil
 	}
@@ -1557,6 +1566,79 @@ func (exec *Execution) evalDirectRegexReplaceCall(call *CallExpr, receiver Value
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
 	if err := exec.checkContext(); err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), true, err
+	}
+	return result, true, nil
+}
+
+func (exec *Execution) evalDirectTimeParseCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
+	if len(call.Args) < 1 || len(call.Args) > 2 {
+		return NewNil(), true, fmt.Errorf("Time.parse expects a time string and optional layout")
+	}
+	input, err := exec.evalCallArg(call.Args[0], env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	var layout Value
+	hasLayout := false
+	if len(call.Args) == 2 {
+		layout, err = exec.evalCallArg(call.Args[1], env)
+		if err != nil {
+			return NewNil(), true, err
+		}
+		hasLayout = true
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), true, err
+	}
+	if hasLayout {
+		if err := exec.checkMemoryWith(receiver, input, layout); err != nil {
+			return NewNil(), true, err
+		}
+	} else if err := exec.checkMemoryWith(receiver, input); err != nil {
+		return NewNil(), true, err
+	}
+	result, err := timeParseResult(input, layout, hasLayout, nil)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), true, err
+	}
+	return result, true, nil
+}
+
+func (exec *Execution) evalDirectTimeMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
+	if receiver.Kind() != KindTime || len(call.KwArgs) != 0 || call.Block != nil {
+		return NewNil(), false, nil
+	}
+	switch property {
+	case "format":
+		return exec.evalDirectTimeFormatCall(call, receiver, env)
+	default:
+		return NewNil(), false, nil
+	}
+}
+
+func (exec *Execution) evalDirectTimeFormatCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
+	if len(call.Args) != 1 {
+		return NewNil(), true, fmt.Errorf("format expects a Go layout string")
+	}
+	layout, err := exec.evalCallArg(call.Args[0], env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(receiver, layout); err != nil {
+		return NewNil(), true, err
+	}
+	result, err := timeFormatResult(receiver.Time(), layout)
+	if err != nil {
 		return NewNil(), true, err
 	}
 	if err := exec.checkMemoryWith(result); err != nil {

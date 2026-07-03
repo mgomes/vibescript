@@ -727,40 +727,52 @@ func registerTimeBuiltins(engine *Engine) {
 			return NewTime(time.Now().In(loc)), nil
 		}),
 		"parse": NewBuiltin("Time.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) < 1 || len(args) > 2 || args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("Time.parse expects a time string and optional layout")
-			}
-			for key := range kwargs {
-				if key != "in" {
-					return NewNil(), fmt.Errorf("Time.parse unknown keyword argument %s", key)
-				}
-			}
-
-			layout := ""
-			hasLayout := false
-			if len(args) == 2 {
-				if args[1].Kind() == KindString {
-					layout = args[1].String()
-					hasLayout = true
-				} else if args[1].Kind() != KindNil {
-					return NewNil(), fmt.Errorf("Time.parse layout must be string")
-				}
-			}
-
-			var loc *time.Location
-			if in, ok := kwargs["in"]; ok {
-				parsed, err := parseLocation(in)
-				if err != nil {
-					return NewNil(), err
-				}
-				loc = parsed
-			}
-
-			t, err := parseTimeString(args[0].String(), layout, hasLayout, loc)
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewTime(t), nil
+			return timeParseValues(args, kwargs)
 		}),
 	})
+}
+
+func timeParseValues(args []Value, kwargs map[string]Value) (Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return NewNil(), fmt.Errorf("Time.parse expects a time string and optional layout")
+	}
+	var layout Value
+	hasLayout := false
+	if len(args) == 2 {
+		layout = args[1]
+		hasLayout = true
+	}
+	var loc *time.Location
+	for key, val := range kwargs {
+		if key != "in" {
+			return NewNil(), fmt.Errorf("Time.parse unknown keyword argument %s", key)
+		}
+		parsed, err := parseLocation(val)
+		if err != nil {
+			return NewNil(), err
+		}
+		loc = parsed
+	}
+	return timeParseResult(args[0], layout, hasLayout, loc)
+}
+
+func timeParseResult(input, layout Value, hasLayout bool, loc *time.Location) (Value, error) {
+	if input.Kind() != KindString {
+		return NewNil(), fmt.Errorf("Time.parse expects a time string and optional layout")
+	}
+	layoutText := ""
+	useLayout := false
+	if hasLayout {
+		if layout.Kind() == KindString {
+			layoutText = layout.String()
+			useLayout = true
+		} else if layout.Kind() != KindNil {
+			return NewNil(), fmt.Errorf("Time.parse layout must be string")
+		}
+	}
+	t, err := parseTimeString(input.String(), layoutText, useLayout, loc)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewTime(t), nil
 }
