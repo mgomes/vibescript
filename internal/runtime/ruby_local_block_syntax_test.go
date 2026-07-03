@@ -353,6 +353,10 @@ def explode
   raise "boom"
 end
 
+def helper
+  99
+end
+
 def run
   first ||= 1
   skipped &&= explode()
@@ -368,9 +372,23 @@ def run
   values[0] ||= 7
   values[1] ||= explode()
   values[2] &&= explode()
-  {first: first, skipped: skipped, a: a, b: b, c: c, d: d, values: values}
+  outer = nil
+  [1].each do
+    outer ||= 8
+  end
+  {first: first, skipped: skipped, a: a, b: b, c: c, d: d, values: values, outer: outer}
 end
-`)
+
+def shadow_helper_with_or_assign
+  helper ||= 2
+  helper
+end
+
+def shadow_helper_with_and_assign
+  helper &&= 2
+  helper
+end
+	`)
 
 	got := callFunc(t, script, "run", nil)
 	compareHash(t, got.Hash(), map[string]Value{
@@ -381,7 +399,14 @@ end
 		"c":       NewInt(5),
 		"d":       NewBool(false),
 		"values":  NewArray([]Value{NewInt(7), NewInt(1), NewBool(false)}),
+		"outer":   NewInt(8),
 	})
+	if got := callFunc(t, script, "shadow_helper_with_or_assign", nil); !got.Equal(NewInt(2)) {
+		t.Fatalf("shadow_helper_with_or_assign() = %s, want 2", got)
+	}
+	if got := callFunc(t, script, "shadow_helper_with_and_assign", nil); !got.Equal(NewNil()) {
+		t.Fatalf("shadow_helper_with_and_assign() = %s, want nil", got)
+	}
 }
 
 func TestRubyLogicalStatementPredeclaresShortCircuitedRHSAssignments(t *testing.T) {

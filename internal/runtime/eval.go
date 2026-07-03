@@ -2608,11 +2608,6 @@ func (exec *Execution) evalLogicalAssignment(stmt *AssignStmt, env *Env) (Value,
 		}
 	case tokenAndAssign:
 		if !target.current.Truthy() {
-			if target.defineOnShortCircuit {
-				if err := target.assign(target.current); err != nil {
-					return NewNil(), err
-				}
-			}
 			return target.current, nil
 		}
 	default:
@@ -2633,23 +2628,28 @@ func (exec *Execution) evalLogicalAssignment(stmt *AssignStmt, env *Env) (Value,
 }
 
 type compoundAssignmentTarget struct {
-	current              Value
-	assign               func(Value) error
-	defineOnShortCircuit bool
+	current Value
+	assign  func(Value) error
 }
 
 func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *Env) (compoundAssignmentTarget, error) {
 	if ident, ok := target.(*Identifier); ok {
-		if _, exists := env.Get(ident.Name); !exists {
-			return compoundAssignmentTarget{
-				current: NewNil(),
-				assign: func(value Value) error {
-					env.Assign(ident.Name, value)
-					return nil
-				},
-				defineOnShortCircuit: true,
-			}, nil
+		assign := func(value Value) error {
+			env.Assign(ident.Name, value)
+			return nil
 		}
+		if current, exists := env.getOwn(ident.Name); exists {
+			return compoundAssignmentTarget{current: current, assign: assign}, nil
+		}
+		if env.rebindOuter && env.parent != nil && env.parent.hasEnclosingLocalBinding(ident.Name) {
+			current, exists := env.Get(ident.Name)
+			if !exists {
+				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)
+			}
+			return compoundAssignmentTarget{current: current, assign: assign}, nil
+		}
+		env.Define(ident.Name, NewNil())
+		return compoundAssignmentTarget{current: NewNil(), assign: assign}, nil
 	}
 
 	current, assign, err := exec.prepareCompoundAssignmentTarget(target, env)
