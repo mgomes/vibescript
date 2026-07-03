@@ -132,7 +132,7 @@ func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error 
 		function = scriptEntrypointFunction
 	}
 	if inv.checkOnly {
-		return checkCompiledScript(script, function)
+		return checkCompiledScript(script, function, inv.callArgs, vibes.CallOptions{})
 	}
 	result, err := script.Call(ctx, function, inv.callArgs, vibes.CallOptions{})
 	if err != nil {
@@ -207,7 +207,7 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, chec
 		return fmt.Errorf("compile failed: %w", remapSnippetCompileError(err, snippet, evalSnippetSourceMap))
 	}
 	if checkOnly {
-		return checkCompiledScript(script, evalSnippetFunction)
+		return checkCompiledScript(script, evalSnippetFunction, nil, vibes.CallOptions{})
 	}
 	result, err := script.Call(ctx, evalSnippetFunction, nil, vibes.CallOptions{})
 	if err != nil {
@@ -216,7 +216,7 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, chec
 	return printResult(out, result)
 }
 
-func checkCompiledScript(script *vibes.Script, function string) error {
+func checkCompiledScript(script *vibes.Script, function string, args []value.Value, opts vibes.CallOptions) error {
 	if function != "" {
 		if _, ok := script.Function(function); !ok {
 			return fmt.Errorf("function %s not found", function)
@@ -224,9 +224,9 @@ func checkCompiledScript(script *vibes.Script, function string) error {
 	}
 	var warnings []vibesruntime.CheckWarning
 	if function == "" {
-		warnings = script.CheckWarnings()
+		warnings = script.CheckWarningsWithOptions(opts)
 	} else {
-		warnings = script.CheckWarningsForFunction(function)
+		warnings = script.CheckWarningsForCall(function, args, opts)
 	}
 	if len(warnings) == 0 {
 		return nil

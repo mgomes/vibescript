@@ -62,6 +62,29 @@ end`,
 			wantErr: "default value for v expected int, got string",
 		},
 		{
+			name: "check_only_reports_missing_entrypoint_argument",
+			script: `def run(name)
+  name
+end`,
+			args:    func(p string) []string { return []string{"-check", p} },
+			wantErr: "call to run is missing argument name",
+		},
+		{
+			name: "check_only_validates_entrypoint_argument_type",
+			script: `def run(count: int)
+  count
+end`,
+			args:    func(p string) []string { return []string{"-check", p, "one"} },
+			wantErr: "call to run argument count expected int, got string",
+		},
+		{
+			name: "check_only_accepts_entrypoint_arguments",
+			script: `def run(name)
+  name
+end`,
+			args: func(p string) []string { return []string{"-check", p, "Ada"} },
+		},
+		{
 			name: "executes_function_and_prints_result",
 			script: `def greet(name)
   name

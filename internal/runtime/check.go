@@ -24,7 +24,7 @@ func (s *Script) CheckWarnings() []CheckWarning {
 // CheckWarningsWithOptions returns statically checkable contract issues using
 // the same host globals that a later Call would receive.
 func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
-	return s.checkWarnings(opts, "")
+	return s.checkWarnings(opts, checkTarget{})
 }
 
 // CheckWarningsForFunction returns statically checkable contract issues for the
@@ -37,10 +37,26 @@ func (s *Script) CheckWarningsForFunction(name string) []CheckWarning {
 // issues for a single function call using the same host globals that Call would
 // receive.
 func (s *Script) CheckWarningsForFunctionWithOptions(name string, opts CallOptions) []CheckWarning {
-	return s.checkWarnings(opts, name)
+	return s.checkWarnings(opts, checkTarget{Function: name})
 }
 
-func (s *Script) checkWarnings(opts CallOptions, targetFunction string) []CheckWarning {
+// CheckWarningsForCall returns statically checkable contract issues for a
+// single function call, including host-supplied arguments and keywords.
+func (s *Script) CheckWarningsForCall(name string, args []Value, opts CallOptions) []CheckWarning {
+	return s.checkWarnings(opts, checkTarget{
+		Function:     name,
+		Args:         args,
+		ValidateCall: true,
+	})
+}
+
+type checkTarget struct {
+	Function     string
+	Args         []Value
+	ValidateCall bool
+}
+
+func (s *Script) checkWarnings(opts CallOptions, target checkTarget) []CheckWarning {
 	if s == nil {
 		return nil
 	}
@@ -54,10 +70,10 @@ func (s *Script) checkWarnings(opts CallOptions, targetFunction string) []CheckW
 		hostGlobals:     checkHostGlobals(optionGlobals),
 	}
 	checker.moduleExportRoot = checker.typeRoot
-	if targetFunction == "" {
+	if target.Function == "" {
 		checker.checkScript()
 	} else {
-		checker.checkFunctionExecution(targetFunction)
+		checker.checkFunctionExecution(target)
 	}
 	sort.SliceStable(checker.warnings, func(i, j int) bool {
 		if checker.warnings[i].Pos.Line != checker.warnings[j].Pos.Line {
@@ -816,13 +832,16 @@ func (c *scriptChecker) checkScript() {
 	}
 }
 
-func (c *scriptChecker) checkFunctionExecution(name string) {
-	fn := c.script.functions[name]
+func (c *scriptChecker) checkFunctionExecution(target checkTarget) {
+	fn := c.script.functions[target.Function]
 	if fn == nil {
 		return
 	}
 	c.withFreshRuntimeTypeRoot(func() {
 		c.checkRuntimeClassBodies(deferredClassBodiesForFunction(fn, c.script.deferredClassBodies), false)
+		if target.ValidateCall {
+			c.checkCallValues(fn.Name, fn.Name, fn.Pos, fn, target.Args, c.callOptions.Keywords)
+		}
 		c.withReachableCallChecks(func() {
 			c.enqueueReachableFunction(fn.Name, fn)
 			c.checkReachableFunctions()
@@ -1943,6 +1962,8 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 			return
 		}
 		c.checkRuntimeExpressionAgainstType(function, typed.Value, ty, "return value")
+	case *LogicalStmt:
+		c.checkImplicitFinalLogicalStatement(function, ty, typed)
 	case *IfStmt:
 		if len(typed.Alternate) == 0 {
 			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
@@ -1974,6 +1995,37 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 			c.checkImplicitFinalBlock(function, ty, typed.Rescue, typed.RescuePosition)
 		}
 	}
+}
+
+func (c *scriptChecker) checkImplicitFinalLogicalStatement(function string, ty *TypeExpr, stmt *LogicalStmt) {
+	if stmt == nil {
+		return
+	}
+	left, known := staticStatementValue(stmt.Left)
+	switch stmt.Operator {
+	case tokenWordAnd:
+		if known {
+			if left.Truthy() {
+				c.checkImplicitFinalStatement(function, ty, stmt.Right)
+			} else {
+				c.checkImplicitFinalStatement(function, ty, stmt.Left)
+			}
+			return
+		}
+	case tokenWordOr:
+		if known {
+			if left.Truthy() {
+				c.checkImplicitFinalStatement(function, ty, stmt.Left)
+			} else {
+				c.checkImplicitFinalStatement(function, ty, stmt.Right)
+			}
+			return
+		}
+	default:
+		return
+	}
+	c.checkImplicitFinalStatement(function, ty, stmt.Left)
+	c.checkImplicitFinalStatement(function, ty, stmt.Right)
 }
 
 func (c *scriptChecker) checkImplicitFinalBlock(function string, ty *TypeExpr, statements []Statement, pos Position) {
@@ -2493,6 +2545,15 @@ func staticKeywordNames(kwargs []KeywordArg) map[string]Value {
 	return out
 }
 
+func sortedValueKeywordNames(kwargs map[string]Value) []string {
+	names := make([]string, 0, len(kwargs))
+	for name := range kwargs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (c *scriptChecker) checkCallShape(function string, call staticCallView, name string, fn *ScriptFunction) {
 	var usedKw map[string]bool
 	if len(call.kwargs) > 0 {
@@ -2544,6 +2605,98 @@ func (c *scriptChecker) checkCallShape(function string, call staticCallView, nam
 	}
 }
 
+func (c *scriptChecker) checkCallValues(function, callName string, pos Position, fn *ScriptFunction, args []Value, kwargs map[string]Value) {
+	c.checkCallValueShape(function, callName, pos, fn, args, kwargs)
+	c.checkCallValueTypes(function, callName, pos, fn, args, kwargs)
+}
+
+func (c *scriptChecker) checkCallValueShape(function, callName string, pos Position, fn *ScriptFunction, args []Value, kwargs map[string]Value) {
+	var usedKw map[string]bool
+	if len(kwargs) > 0 {
+		usedKw = make(map[string]bool, len(kwargs))
+	}
+	argIdx := 0
+
+	for _, param := range fn.Params {
+		switch param.Kind {
+		case ParamKeyword:
+			if _, ok := kwargs[param.Name]; ok {
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else if param.DefaultVal == nil {
+				c.add(function, pos, "call to %s is missing keyword argument %s", callName, param.Name)
+			}
+		case ParamRest:
+			argIdx = len(args)
+		case ParamKeywordRest:
+			for _, name := range sortedValueKeywordNames(kwargs) {
+				if usedKw != nil {
+					usedKw[name] = true
+				}
+			}
+		case ParamBlock:
+		case ParamNormal:
+			if argIdx < len(args) {
+				argIdx++
+			} else if _, ok := kwargs[param.Name]; ok {
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else if param.DefaultVal == nil {
+				c.add(function, pos, "call to %s is missing argument %s", callName, param.Name)
+			}
+		}
+	}
+
+	if argIdx < len(args) {
+		c.add(function, pos, "call to %s has unexpected positional arguments", callName)
+	}
+	if usedKw != nil {
+		for _, name := range sortedValueKeywordNames(kwargs) {
+			if !usedKw[name] {
+				c.add(function, pos, "call to %s has unexpected keyword argument %s", callName, name)
+			}
+		}
+	}
+}
+
+func (c *scriptChecker) checkCallValueTypes(function, callName string, pos Position, fn *ScriptFunction, args []Value, kwargs map[string]Value) {
+	var usedKw map[string]bool
+	if len(kwargs) > 0 {
+		usedKw = make(map[string]bool, len(kwargs))
+	}
+	argIdx := 0
+	for _, param := range fn.Params {
+		switch param.Kind {
+		case ParamNormal:
+			if argIdx < len(args) {
+				c.checkArgumentValue(function, pos, args[argIdx], param.Type, callName, param.Name)
+				argIdx++
+				continue
+			}
+			if val, ok := kwargs[param.Name]; ok {
+				c.checkArgumentValue(function, pos, val, param.Type, callName, param.Name)
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			}
+		case ParamKeyword:
+			if val, ok := kwargs[param.Name]; ok {
+				c.checkArgumentValue(function, pos, val, param.Type, callName, param.Name)
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			}
+		case ParamRest:
+			c.checkRestArgumentValues(function, pos, args[argIdx:], param.Type, callName, param.Name)
+			argIdx = len(args)
+		case ParamKeywordRest:
+			c.checkKeywordRestArgumentValues(function, pos, kwargs, usedKw, param.Type, callName, param.Name)
+		}
+	}
+}
+
 func (c *scriptChecker) checkCallArgumentTypes(function string, call staticCallView, name string, fn *ScriptFunction) {
 	var usedKw map[string]bool
 	if len(call.kwargs) > 0 {
@@ -2577,6 +2730,31 @@ func (c *scriptChecker) checkCallArgumentTypes(function string, call staticCallV
 		case ParamKeywordRest:
 			c.checkKeywordRestArgumentExpressions(function, call.pos, call.kwargs, usedKw, param.Type, name, param.Name)
 		}
+	}
+}
+
+func (c *scriptChecker) checkRestArgumentValues(function string, pos Position, args []Value, ty *TypeExpr, callName, paramName string) {
+	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
+		return
+	}
+	if err := c.checkRuntimeStaticValueType(NewArray(args), ty); err != nil {
+		c.addArgumentValueWarning(function, pos, callName, paramName, err)
+	}
+}
+
+func (c *scriptChecker) checkKeywordRestArgumentValues(function string, pos Position, kwargs map[string]Value, usedKw map[string]bool, ty *TypeExpr, callName, paramName string) {
+	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
+		return
+	}
+	values := make(map[string]Value)
+	for name, val := range kwargs {
+		if usedKw != nil && usedKw[name] {
+			continue
+		}
+		values[name] = val
+	}
+	if err := c.checkRuntimeStaticValueType(NewHash(values), ty); err != nil {
+		c.addArgumentValueWarning(function, pos, callName, paramName, err)
 	}
 }
 
@@ -2636,6 +2814,24 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 		}
 		c.add(function, warningPos, "call to %s argument %s type check failed: %s", callName, paramName, err)
 	}
+}
+
+func (c *scriptChecker) checkArgumentValue(function string, pos Position, val Value, ty *TypeExpr, callName, paramName string) {
+	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
+		return
+	}
+	if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
+		c.addArgumentValueWarning(function, pos, callName, paramName, err)
+	}
+}
+
+func (c *scriptChecker) addArgumentValueWarning(function string, pos Position, callName, paramName string, err error) {
+	var mismatch *typeMismatchError
+	if errors.As(err, &mismatch) {
+		c.add(function, pos, "call to %s argument %s expected %s, got %s", callName, paramName, mismatch.Expected, mismatch.Actual)
+		return
+	}
+	c.add(function, pos, "call to %s argument %s type check failed: %s", callName, paramName, err)
 }
 
 func (c *scriptChecker) checkArgumentExpression(function string, expr Expression, ty *TypeExpr, callName, paramName string) {

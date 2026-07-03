@@ -657,6 +657,73 @@ end`,
 	}
 }
 
+func TestCheckWarningsForCallValidatesArguments(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		args    []Value
+		options CallOptions
+		want    string
+	}{
+		{
+			name: "missing positional",
+			source: `def run(name)
+  name
+end`,
+			want: "call to run is missing argument name",
+		},
+		{
+			name: "unexpected positional",
+			source: `def run()
+  nil
+end`,
+			args: []Value{NewString("extra")},
+			want: "call to run has unexpected positional arguments",
+		},
+		{
+			name: "typed positional",
+			source: `def run(count: int)
+  count
+end`,
+			args: []Value{NewString("one")},
+			want: "call to run argument count expected int, got string",
+		},
+		{
+			name: "missing keyword",
+			source: `def run(name:)
+  name
+end`,
+			want: "call to run is missing keyword argument name",
+		},
+		{
+			name: "typed keyword",
+			source: `def run(count: int)
+  count
+end`,
+			options: CallOptions{Keywords: map[string]Value{"count": NewString("one")}},
+			want:    "call to run argument count expected int, got string",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			warnings := script.CheckWarningsForCall("run", tc.args, tc.options)
+			messages := make([]string, 0, len(warnings))
+			for _, warning := range warnings {
+				messages = append(messages, warning.Message)
+			}
+			got := strings.Join(messages, "\n")
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("CheckWarningsForCall(%q) = %q, want substring %q", "run", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckWarningsResolveSymbolRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
@@ -1684,6 +1751,27 @@ end`,
 			name: "ternary nil branch",
 			source: `def run(flag) -> int
   flag ? nil : 1
+end`,
+			want: "typed return int can implicitly return nil",
+		},
+		{
+			name: "logical and literal final return",
+			source: `def run() -> int
+  true and "bad"
+end`,
+			want: "return value expected int, got string",
+		},
+		{
+			name: "logical or literal final return",
+			source: `def run() -> int
+  false or "bad"
+end`,
+			want: "return value expected int, got string",
+		},
+		{
+			name: "logical and nil short circuit",
+			source: `def run() -> int
+  nil and 1
 end`,
 			want: "typed return int can implicitly return nil",
 		},
