@@ -34,7 +34,6 @@ func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
 		hostGlobals:     checkHostGlobals(opts),
 	}
 	checker.moduleExportRoot = checker.typeRoot
-	checker.collectRequiredModuleExports()
 	checker.checkScript()
 	sort.SliceStable(checker.warnings, func(i, j int) bool {
 		if checker.warnings[i].Pos.Line != checker.warnings[j].Pos.Line {
@@ -58,6 +57,7 @@ type scriptChecker struct {
 	scopes           []map[string]struct{}
 	requiredModules  map[string]struct{}
 	runtimeModules   map[string]struct{}
+	moduleEntries    map[string]moduleEntry
 	moduleCaller     *moduleContext
 	moduleExportRoot *Env
 }
@@ -106,24 +106,6 @@ func (c *scriptChecker) runtimeTypeContext() typeContext {
 		return c.typeContext()
 	}
 	return typeContext{owner: c.script, env: c.runtimeTypeRoot, fallback: c.runtimeTypeRoot}
-}
-
-func (c *scriptChecker) collectRequiredModuleExports() {
-	if c.script == nil || c.script.engine == nil || c.typeRoot == nil {
-		return
-	}
-	for _, fn := range c.sortedScriptFunctions() {
-		c.collectFunctionRequiredModuleExports(fn)
-	}
-	for _, classDef := range c.sortedClasses() {
-		c.collectRequiredModuleExportsFromStatements(classDef.Body)
-		for _, method := range sortedCheckFunctions(classDef.Methods) {
-			c.collectFunctionRequiredModuleExports(method)
-		}
-		for _, method := range sortedCheckFunctions(classDef.ClassMethods) {
-			c.collectFunctionRequiredModuleExports(method)
-		}
-	}
 }
 
 func (c *scriptChecker) collectFunctionRequiredModuleExports(fn *ScriptFunction) {
@@ -326,6 +308,10 @@ func (c *scriptChecker) collectModuleExports(entry moduleEntry) {
 		return
 	}
 	c.requiredModules[entry.key] = struct{}{}
+	if c.moduleEntries == nil {
+		c.moduleEntries = make(map[string]moduleEntry)
+	}
+	c.moduleEntries[entry.key] = entry
 	c.collectRequiredModuleExportsFromModuleEntrypoint(entry)
 	root := c.moduleExportRoot
 	if root == nil {
@@ -361,6 +347,12 @@ func (c *scriptChecker) collectRuntimeRequireCallExportsFromExpression(expr Expr
 	if c.runtimeTypeRoot == nil {
 		return
 	}
+	c.withRuntimeModuleCollection(func() {
+		c.collectRequiredModuleExportsFromExpression(expr)
+	})
+}
+
+func (c *scriptChecker) withRuntimeModuleCollection(collect func()) {
 	previousRoot := c.moduleExportRoot
 	previousModules := c.requiredModules
 	c.moduleExportRoot = c.runtimeTypeRoot
@@ -371,7 +363,7 @@ func (c *scriptChecker) collectRuntimeRequireCallExportsFromExpression(expr Expr
 		c.requiredModules = previousModules
 	}()
 
-	c.collectRequiredModuleExportsFromExpression(expr)
+	collect()
 }
 
 func (c *scriptChecker) checkScript() {
@@ -407,6 +399,65 @@ func (c *scriptChecker) withFreshRuntimeTypeRoot(check func()) {
 		c.runtimeModules = previousModules
 	}()
 	check()
+}
+
+type checkRuntimeState struct {
+	root    *Env
+	modules map[string]struct{}
+}
+
+func (c *scriptChecker) snapshotRuntimeState() checkRuntimeState {
+	state := checkRuntimeState{modules: cloneCheckModuleSet(c.runtimeModules)}
+	if c.runtimeTypeRoot != nil {
+		state.root = c.runtimeTypeRoot.CloneShallow()
+	}
+	return state
+}
+
+func (c *scriptChecker) restoreRuntimeState(state checkRuntimeState) {
+	c.runtimeTypeRoot = state.root
+	c.runtimeModules = cloneCheckModuleSet(state.modules)
+}
+
+func cloneCheckModuleSet(modules map[string]struct{}) map[string]struct{} {
+	if len(modules) == 0 {
+		return nil
+	}
+	clone := make(map[string]struct{}, len(modules))
+	for key := range modules {
+		clone[key] = struct{}{}
+	}
+	return clone
+}
+
+func (c *scriptChecker) mergeRuntimeStates(base checkRuntimeState, states []checkRuntimeState) {
+	c.restoreRuntimeState(base)
+	if len(states) == 0 {
+		return
+	}
+	common := cloneCheckModuleSet(states[0].modules)
+	for _, state := range states[1:] {
+		for key := range common {
+			if _, ok := state.modules[key]; !ok {
+				delete(common, key)
+			}
+		}
+	}
+	for key := range base.modules {
+		delete(common, key)
+	}
+	if len(common) == 0 {
+		return
+	}
+	c.withRuntimeModuleCollection(func() {
+		for key := range common {
+			entry, ok := c.moduleEntries[key]
+			if !ok {
+				continue
+			}
+			c.collectModuleExports(entry)
+		}
+	})
 }
 
 func (c *scriptChecker) sortedScriptFunctions() []*ScriptFunction {
@@ -464,11 +515,10 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		}
 		c.checkExpression(label, param.DefaultVal)
 	}
+	c.checkStatements(label, fn.ReturnTy, fn.Body)
 	if fn.ReturnTy != nil {
-		c.checkTypeAnnotation(label, fn.ReturnTy)
 		c.checkImplicitReturn(label, fn.ReturnTy, fn.Body, fn.Pos)
 	}
-	c.checkStatements(label, fn.ReturnTy, fn.Body)
 }
 
 func (c *scriptChecker) checkStatements(function string, returnType *TypeExpr, statements []Statement) {
@@ -487,9 +537,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *ReturnStmt:
 		if returnType != nil {
 			if typed.Value == nil {
-				c.checkNilAgainstType(function, typed.Pos(), returnType, "return value")
+				c.checkRuntimeNilAgainstType(function, typed.Pos(), returnType, "return value")
 			} else {
-				c.checkExpressionAgainstType(function, typed.Value, returnType, "return value")
+				c.checkRuntimeExpressionAgainstType(function, typed.Value, returnType, "return value")
 			}
 		}
 		c.checkExpression(function, typed.Value)
@@ -506,12 +556,27 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Expr)
 	case *IfStmt:
 		c.checkExpression(function, typed.Condition)
+		baseState := c.snapshotRuntimeState()
+		fallthroughStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
+
 		c.checkStatements(function, returnType, typed.Consequent)
+		if !blockAlwaysExits(typed.Consequent) {
+			fallthroughStates = append(fallthroughStates, c.snapshotRuntimeState())
+		}
 		for _, elseIf := range typed.ElseIf {
+			c.restoreRuntimeState(baseState)
 			c.checkExpression(function, elseIf.Condition)
 			c.checkStatements(function, returnType, elseIf.Consequent)
+			if !blockAlwaysExits(elseIf.Consequent) {
+				fallthroughStates = append(fallthroughStates, c.snapshotRuntimeState())
+			}
 		}
+		c.restoreRuntimeState(baseState)
 		c.checkStatements(function, returnType, typed.Alternate)
+		if len(typed.Alternate) == 0 || !blockAlwaysExits(typed.Alternate) {
+			fallthroughStates = append(fallthroughStates, c.snapshotRuntimeState())
+		}
+		c.mergeRuntimeStates(baseState, fallthroughStates)
 	case *ForStmt:
 		c.checkExpression(function, typed.Iterable)
 		c.checkStatements(function, returnType, typed.Body)
@@ -674,10 +739,18 @@ func (c *scriptChecker) checkStringParts(function string, parts []StringPart) {
 }
 
 func (c *scriptChecker) checkTypeAnnotation(function string, ty *TypeExpr) bool {
+	return c.checkTypeAnnotationWithContext(function, ty, c.typeContext())
+}
+
+func (c *scriptChecker) checkRuntimeTypeAnnotation(function string, ty *TypeExpr) bool {
+	return c.checkTypeAnnotationWithContext(function, ty, c.runtimeTypeContext())
+}
+
+func (c *scriptChecker) checkTypeAnnotationWithContext(function string, ty *TypeExpr, ctx typeContext) bool {
 	if ty == nil {
 		return true
 	}
-	if err := validateTypeExprResolved(ty, c.typeContext()); err != nil {
+	if err := validateTypeExprResolved(ty, ctx); err != nil {
 		c.add(function, typeExprPosition(ty), "%s", err)
 		return false
 	}
@@ -692,8 +765,16 @@ func (c *scriptChecker) checkExpressionAgainstType(function string, expr Express
 	c.checkValueAgainstType(function, expr.Pos(), val, ty, subject)
 }
 
-func (c *scriptChecker) checkNilAgainstType(function string, pos Position, ty *TypeExpr, subject string) {
-	c.checkValueAgainstType(function, pos, NewNil(), ty, subject)
+func (c *scriptChecker) checkRuntimeExpressionAgainstType(function string, expr Expression, ty *TypeExpr, subject string) {
+	val, ok := staticLiteralValue(expr)
+	if !ok {
+		return
+	}
+	c.checkRuntimeValueAgainstType(function, expr.Pos(), val, ty, subject)
+}
+
+func (c *scriptChecker) checkRuntimeNilAgainstType(function string, pos Position, ty *TypeExpr, subject string) {
+	c.checkRuntimeValueAgainstType(function, pos, NewNil(), ty, subject)
 }
 
 func (c *scriptChecker) checkValueAgainstType(function string, pos Position, val Value, ty *TypeExpr, subject string) {
@@ -701,13 +782,26 @@ func (c *scriptChecker) checkValueAgainstType(function string, pos Position, val
 		return
 	}
 	if err := c.checkStaticValueType(val, ty); err != nil {
-		var mismatch *typeMismatchError
-		if errors.As(err, &mismatch) {
-			c.add(function, pos, "%s expected %s, got %s", subject, mismatch.Expected, mismatch.Actual)
-			return
-		}
-		c.add(function, pos, "%s type check failed: %s", subject, err)
+		c.addValueTypeWarning(function, pos, subject, err)
 	}
+}
+
+func (c *scriptChecker) checkRuntimeValueAgainstType(function string, pos Position, val Value, ty *TypeExpr, subject string) {
+	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
+		return
+	}
+	if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
+		c.addValueTypeWarning(function, pos, subject, err)
+	}
+}
+
+func (c *scriptChecker) addValueTypeWarning(function string, pos Position, subject string, err error) {
+	var mismatch *typeMismatchError
+	if errors.As(err, &mismatch) {
+		c.add(function, pos, "%s expected %s, got %s", subject, mismatch.Expected, mismatch.Actual)
+		return
+	}
+	c.add(function, pos, "%s type check failed: %s", subject, err)
 }
 
 func (c *scriptChecker) checkStaticValueType(val Value, ty *TypeExpr) error {
@@ -721,7 +815,7 @@ func (c *scriptChecker) checkRuntimeStaticValueType(val Value, ty *TypeExpr) err
 }
 
 func (c *scriptChecker) checkImplicitReturn(function string, ty *TypeExpr, statements []Statement, pos Position) {
-	if !c.checkTypeAnnotation(function, ty) || typeAllowsNilReturn(ty) {
+	if !c.checkRuntimeTypeAnnotation(function, ty) || typeAllowsNilReturn(ty) {
 		return
 	}
 	c.checkImplicitFinalBlock(function, ty, statements, pos)
@@ -736,13 +830,13 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 			return
 		}
-		c.checkExpressionAgainstType(function, typed.Expr, ty, "return value")
+		c.checkRuntimeExpressionAgainstType(function, typed.Expr, ty, "return value")
 	case *AssignStmt:
 		if expressionCanImplicitlyYieldNil(typed.Value) {
 			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 			return
 		}
-		c.checkExpressionAgainstType(function, typed.Value, ty, "return value")
+		c.checkRuntimeExpressionAgainstType(function, typed.Value, ty, "return value")
 	case *IfStmt:
 		if len(typed.Alternate) == 0 {
 			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
@@ -809,7 +903,16 @@ func statementAlwaysExits(stmt Statement) bool {
 		}
 		return blockAlwaysExits(typed.Alternate)
 	case *TryStmt:
-		return blockAlwaysExits(typed.Ensure)
+		if blockAlwaysExits(typed.Ensure) {
+			return true
+		}
+		if len(typed.Rescue) > 0 && !blockAlwaysExits(typed.Rescue) {
+			return false
+		}
+		if blockAlwaysExits(typed.Body) {
+			return true
+		}
+		return len(typed.Else) > 0 && blockAlwaysExits(typed.Else)
 	default:
 		return false
 	}
@@ -1262,7 +1365,7 @@ func (c *scriptChecker) checkCallArgumentTypes(function string, call staticCallV
 }
 
 func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Position, args []Expression, ty *TypeExpr, callName, paramName string) {
-	if ty == nil || !c.checkTypeAnnotation(function, ty) {
+	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
 		return
 	}
 	values := make([]Value, 0, len(args))
@@ -1288,7 +1391,7 @@ func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Positi
 }
 
 func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos Position, kwargs []KeywordArg, usedKw map[string]bool, ty *TypeExpr, callName, paramName string) {
-	if ty == nil || !c.checkTypeAnnotation(function, ty) {
+	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
 		return
 	}
 	values := make(map[string]Value)
@@ -1321,7 +1424,7 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 
 func (c *scriptChecker) checkArgumentExpression(function string, expr Expression, ty *TypeExpr, callName, paramName string) {
 	val, ok := staticLiteralValue(expr)
-	if !ok || ty == nil || !c.checkTypeAnnotation(function, ty) {
+	if !ok || ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
 		return
 	}
 	if err := c.checkRuntimeStaticValueType(val, ty); err != nil {

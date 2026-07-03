@@ -201,13 +201,9 @@ func TestCheckWarningsResolveRequiredModuleEnumExports(t *testing.T) {
 
 	engine := moduleTestEngine(t)
 	script := compileScriptWithEngine(t, engine, `
-def normalize(status: Status) -> Status
-  status
-end
-
-def run()
+def run() -> Status
   require("enum_status")
-  normalize(:published)
+  :published
 end
 `)
 
@@ -246,13 +242,9 @@ require("./status")
 
 	engine := MustNewEngine(Config{ModulePaths: []string{root}})
 	script := compileScriptWithEngine(t, engine, `
-def normalize(status: Status) -> Status
-  status
-end
-
-def run()
+def run() -> Status
   require("pkg/wrapper")
-  normalize(:published)
+  :published
 end
 `)
 
@@ -265,6 +257,24 @@ end
 	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Published" {
 		t.Fatalf("Call() after transitive module enum export = %#v, want Status::Published", got)
 	}
+}
+
+func TestCheckWarningsDoNotHoistRequiredModuleEnumExportsFromUnrelatedFunctions(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def load()
+  require("enum_status")
+end
+
+def normalize(status: Status) -> Status
+  status
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "normalize", []Value{NewSymbol("draft")}, CallOptions{}, "unknown type Status")
 }
 
 func TestCheckWarningsDoNotHoistRequiredModuleEnumExportsBeforeRequire(t *testing.T) {
@@ -299,6 +309,48 @@ end
 
 	requireCheckWarningContains(t, script, "unknown type Status")
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsKeepConditionalRequiredModuleEnumExportsBranchScoped(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(flag) -> Status
+  if flag
+    require("enum_status")
+  end
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", []Value{NewBool(false)}, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsMergeRequiredModuleEnumExportsFromAllBranches(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(flag) -> Status
+  if flag
+    require("enum_status")
+  else
+    require("enum_status")
+  end
+  :draft
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", []Value{NewBool(false)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after branch-required module enum export returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() after branch-required module enum export = %#v, want Status::Draft", got)
+	}
 }
 
 func TestCheckWarningsDoNotTreatShadowedRequireAsModuleImport(t *testing.T) {
@@ -687,6 +739,17 @@ end`,
   else
     "bad"
   end
+end`,
+		},
+		{
+			name: "begin body return makes following statements unreachable",
+			source: `def run()
+  begin
+    return 1
+  rescue RuntimeError
+    return 2
+  end
+  JSON.parse()
 end`,
 		},
 		{
