@@ -352,6 +352,17 @@ end`,
 			want: "return value expected int, got string",
 		},
 		{
+			name: "begin ensure cleanup does not mask body result",
+			source: `def run() -> int
+  begin
+    nil
+  ensure
+    1
+  end
+end`,
+			want: "typed return int can implicitly return nil",
+		},
+		{
 			name: "break value",
 			source: `def run()
   while true
@@ -427,6 +438,26 @@ end`,
     3
   else
     "bad"
+  end
+end`,
+		},
+		{
+			name: "ensure return overrides begin body result",
+			source: `def run() -> int
+  begin
+    nil
+  ensure
+    return 1
+  end
+end`,
+		},
+		{
+			name: "ensure raise overrides begin body result",
+			source: `def run() -> int
+  begin
+    nil
+  ensure
+    raise "boom"
   end
 end`,
 		},

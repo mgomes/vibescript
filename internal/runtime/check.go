@@ -618,6 +618,9 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 	case *ForStmt, *WhileStmt, *UntilStmt:
 		c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 	case *TryStmt:
+		if blockAlwaysExits(typed.Ensure) {
+			return
+		}
 		if len(typed.Else) > 0 && !blockAlwaysExits(typed.Body) {
 			// The else branch only runs when the body completes without an
 			// explicit return or raise (see evalTryStatement: runElse requires
