@@ -2420,19 +2420,6 @@ end`,
 			want: "call to accept argument block expected function, got nil",
 		},
 		{
-			name: "typed block argument with block",
-			source: `def accept(&block: function)
-  block
-end
-
-def run()
-  accept() do
-    1
-  end
-end`,
-			want: "call to accept argument block expected function, got block",
-		},
-		{
 			name: "method argument type",
 			source: `class Box
   def take(v: int)
@@ -2922,6 +2909,18 @@ end`,
 			source: `def run()
   money("1.00 USD", currency: "USD") do
     "ignored"
+  end
+end`,
+		},
+		{
+			name: "typed block argument with function contract",
+			source: `def accept(&block: function)
+  block
+end
+
+def run()
+  accept() do
+    1
   end
 end`,
 		},
