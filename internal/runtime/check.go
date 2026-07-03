@@ -88,6 +88,15 @@ type scriptChecker struct {
 	moduleCheckedFunctions  map[string]struct{}
 	moduleCaller            *moduleContext
 	moduleExportRoot        *Env
+	checkReachableCalls     bool
+	checkedReachableFuncs   map[*ScriptFunction]struct{}
+	reachableFuncQueue      []reachableFunction
+}
+
+type reachableFunction struct {
+	label        string
+	fn           *ScriptFunction
+	runtimeState checkRuntimeState
 }
 
 func checkOptionGlobals(script *Script, opts CallOptions) map[string]Value {
@@ -814,8 +823,56 @@ func (c *scriptChecker) checkFunctionExecution(name string) {
 	}
 	c.withFreshRuntimeTypeRoot(func() {
 		c.checkRuntimeClassBodies(deferredClassBodiesForFunction(fn, c.script.deferredClassBodies), false)
-		c.checkFunction(fn.Name, fn)
+		c.withReachableCallChecks(func() {
+			c.enqueueReachableFunction(fn.Name, fn)
+			c.checkReachableFunctions()
+		})
 	})
+}
+
+func (c *scriptChecker) withReachableCallChecks(check func()) {
+	previousEnabled := c.checkReachableCalls
+	previousChecked := c.checkedReachableFuncs
+	previousQueue := c.reachableFuncQueue
+	c.checkReachableCalls = true
+	c.checkedReachableFuncs = nil
+	c.reachableFuncQueue = nil
+	defer func() {
+		c.checkReachableCalls = previousEnabled
+		c.checkedReachableFuncs = previousChecked
+		c.reachableFuncQueue = previousQueue
+	}()
+	check()
+}
+
+func (c *scriptChecker) enqueueReachableFunction(label string, fn *ScriptFunction) {
+	if !c.checkReachableCalls || fn == nil || fn.owner != c.script {
+		return
+	}
+	if c.checkedReachableFuncs == nil {
+		c.checkedReachableFuncs = make(map[*ScriptFunction]struct{})
+	}
+	if _, ok := c.checkedReachableFuncs[fn]; ok {
+		return
+	}
+	c.checkedReachableFuncs[fn] = struct{}{}
+	c.reachableFuncQueue = append(c.reachableFuncQueue, reachableFunction{
+		label:        label,
+		fn:           fn,
+		runtimeState: c.snapshotRuntimeState(),
+	})
+}
+
+func (c *scriptChecker) checkReachableFunctions() {
+	for len(c.reachableFuncQueue) > 0 {
+		next := c.reachableFuncQueue[0]
+		c.reachableFuncQueue = c.reachableFuncQueue[1:]
+		scopeState := c.snapshotScopeState()
+		c.restoreRuntimeState(next.runtimeState)
+		c.scopes = nil
+		c.checkFunction(next.label, next.fn)
+		c.restoreScopeState(scopeState)
+	}
 }
 
 func (c *scriptChecker) withFreshRuntimeTypeRootForCallable(fn *ScriptFunction, check func()) {
@@ -2059,6 +2116,7 @@ func (c *scriptChecker) checkCall(function string, call *CallExpr) {
 		view := staticCallViewFor(call, target)
 		c.checkCallShape(function, view, target.name, target.fn)
 		c.checkCallArgumentTypes(function, view, target.name, target.fn)
+		c.enqueueReachableFunction(target.name, target.fn)
 		return
 	}
 	c.checkBuiltinCallShape(function, staticCallViewFor(call, target), target.name, target.spec)

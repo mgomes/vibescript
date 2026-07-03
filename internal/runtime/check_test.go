@@ -528,6 +528,135 @@ end`,
 	}
 }
 
+func TestCheckWarningsForFunctionChecksReachableLocalContracts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "direct function return",
+			source: `def bad() -> int
+  "x"
+end
+
+def unused() -> int
+  "unused"
+end
+
+def run
+  bad()
+end`,
+			want: "return value expected int, got string",
+		},
+		{
+			name: "transitive function return",
+			source: `def leaf() -> int
+  "x"
+end
+
+def middle
+  leaf()
+end
+
+def unused() -> int
+  "unused"
+end
+
+def run
+  middle()
+end`,
+			want: "return value expected int, got string",
+		},
+		{
+			name: "function default",
+			source: `def helper(v: int = "x")
+  v
+end
+
+def unused() -> int
+  "unused"
+end
+
+def run
+  helper()
+end`,
+			want: "default value for v expected int, got string",
+		},
+		{
+			name: "class method return",
+			source: `class Box
+  def self.make() -> int
+    "x"
+  end
+end
+
+def unused() -> int
+  "unused"
+end
+
+def run
+  Box.make()
+end`,
+			want: "return value expected int, got string",
+		},
+		{
+			name: "instance method return",
+			source: `class Box
+  def take() -> int
+    "x"
+  end
+end
+
+def unused() -> int
+  "unused"
+end
+
+def run
+  Box.new.take()
+end`,
+			want: "return value expected int, got string",
+		},
+		{
+			name: "uses call-site namespace state",
+			source: `def helper
+  JSON.parse("{}", "extra")
+end
+
+def unused() -> int
+  "unused"
+end
+
+def run
+  helper()
+  JSON.parse = nil
+end`,
+			want: "call to JSON.parse has too many arguments",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			warnings := script.CheckWarningsForFunction("run")
+			messages := make([]string, 0, len(warnings))
+			for _, warning := range warnings {
+				if warning.Function == "unused" {
+					t.Fatalf("CheckWarningsForFunction(%q) checked unused function: %#v", "run", warnings)
+				}
+				messages = append(messages, warning.Message)
+			}
+			got := strings.Join(messages, "\n")
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckWarningsResolveSymbolRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
