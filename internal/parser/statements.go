@@ -163,7 +163,7 @@ func (p *parser) parseReturnStatement() ast.Statement {
 		return &ast.ReturnStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
+	value := p.parseCommaSeparatedStatementExpression(pos, ast.TokenWordAnd, ast.TokenWordOr)
 	if value == nil {
 		return nil
 	}
@@ -180,7 +180,35 @@ func (p *parser) parseRaiseStatement() ast.Statement {
 	if value == nil {
 		return nil
 	}
+	if p.peekToken.Type == ast.TokenComma && p.peekToken.Pos.Line == pos.Line {
+		p.nextToken()
+		p.nextToken()
+		message := p.parseLineExpression(lowestPrec)
+		if message == nil {
+			return nil
+		}
+		return &ast.RaiseStmt{Value: value, Message: message, Position: pos}
+	}
 	return &ast.RaiseStmt{Value: value, Position: pos}
+}
+
+func (p *parser) parseCommaSeparatedStatementExpression(pos ast.Position, stop ...ast.TokenType) ast.Expression {
+	first := p.parseLineExpressionUntil(lowestPrec, stop...)
+	if first == nil || p.peekToken.Type != ast.TokenComma || p.peekToken.Pos.Line != pos.Line {
+		return first
+	}
+
+	elements := []ast.Expression{first}
+	for p.peekToken.Type == ast.TokenComma && p.peekToken.Pos.Line == pos.Line {
+		p.nextToken()
+		p.nextToken()
+		next := p.parseLineExpressionUntil(lowestPrec, stop...)
+		if next == nil {
+			return nil
+		}
+		elements = append(elements, next)
+	}
+	return &ast.ArrayLiteral{Elements: elements, Position: first.Pos()}
 }
 
 func (p *parser) parseBlock(stop ...ast.TokenType) []ast.Statement {

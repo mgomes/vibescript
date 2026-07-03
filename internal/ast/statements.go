@@ -27,6 +27,7 @@ func (s *ReturnStmt) Pos() Position { return s.Position }
 // RaiseStmt represents a raise statement that throws an error.
 type RaiseStmt struct {
 	Value    Expression
+	Message  Expression
 	Position Position
 }
 

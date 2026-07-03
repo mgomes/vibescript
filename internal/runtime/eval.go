@@ -1343,7 +1343,7 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 	case *ReturnStmt:
 		return expressionCapturesCurrentEnv(s.Value)
 	case *RaiseStmt:
-		return expressionCapturesCurrentEnv(s.Value)
+		return expressionCapturesCurrentEnv(s.Value) || expressionCapturesCurrentEnv(s.Message)
 	case *AssignStmt:
 		return expressionCapturesCurrentEnv(s.Target) || expressionCapturesCurrentEnv(s.Value)
 	case *LogicalStmt:
@@ -3378,6 +3378,27 @@ func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value,
 
 func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, bool, error) {
 	if stmt.Value != nil {
+		if stmt.Message != nil {
+			message, err := exec.evalExpression(stmt.Message, env)
+			if err != nil {
+				return NewNil(), false, err
+			}
+			if message.Kind() != KindString {
+				return NewNil(), false, exec.newRuntimeErrorWithType(runtimeErrorTypeType, "exception message must be string", stmt.Pos())
+			}
+			if errorType, ok := raiseErrorTypeName(stmt.Value); ok {
+				return NewNil(), false, exec.newRuntimeErrorWithType(errorType, message.String(), stmt.Pos())
+			}
+			val, err := exec.evalExpression(stmt.Value, env)
+			if err != nil {
+				return NewNil(), false, err
+			}
+			if val.Kind() != KindString {
+				return NewNil(), false, exec.newRuntimeErrorWithType(raiseErrorType(val), message.String(), stmt.Pos())
+			}
+			return NewNil(), false, exec.errorAt(stmt.Pos(), "%s", message.String())
+		}
+
 		val, err := exec.evalExpression(stmt.Value, env)
 		if err != nil {
 			return NewNil(), false, err
@@ -3397,6 +3418,25 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "")
 	}
 	return NewNil(), false, err
+}
+
+func raiseErrorType(val Value) string {
+	if val.Kind() == KindClass {
+		if class := valueClass(val); class != nil {
+			if kind, ok := ast.CanonicalRuntimeErrorType(class.Name); ok {
+				return kind
+			}
+		}
+	}
+	return runtimeErrorTypeBase
+}
+
+func raiseErrorTypeName(expr Expression) (string, bool) {
+	ident, ok := expr.(*Identifier)
+	if !ok {
+		return "", false
+	}
+	return ast.CanonicalRuntimeErrorType(ident.Name)
 }
 
 func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {

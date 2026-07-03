@@ -76,6 +76,8 @@ func quickTypeCheck(val Value, ty *TypeExpr) (bool, bool) {
 		return false, false
 	case TypeRange:
 		return true, val.Kind() == KindRange
+	case TypeSymbol:
+		return true, val.Kind() == KindSymbol
 	case TypeShape:
 		if len(ty.Shape) == 0 {
 			if val.Kind() != KindHash && val.Kind() != KindObject {
@@ -272,6 +274,8 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		return true, nil
 	case TypeRange:
 		return val.Kind() == KindRange, nil
+	case TypeSymbol:
+		return val.Kind() == KindSymbol, nil
 	case TypeFunction:
 		return isCallableValue(val), nil
 	case TypeEnum:

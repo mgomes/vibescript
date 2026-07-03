@@ -108,6 +108,7 @@ const (
 	TypeArray    = ast.TypeArray
 	TypeHash     = ast.TypeHash
 	TypeRange    = ast.TypeRange
+	TypeSymbol   = ast.TypeSymbol
 	TypeFunction = ast.TypeFunction
 	TypeShape    = ast.TypeShape
 	TypeUnion    = ast.TypeUnion

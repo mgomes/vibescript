@@ -83,6 +83,7 @@ func cloneStatement(stmt Statement) Statement {
 	case *RaiseStmt:
 		clone := *s
 		clone.Value = cloneExpression(s.Value)
+		clone.Message = cloneExpression(s.Message)
 		return &clone
 	case *AssignStmt:
 		clone := *s

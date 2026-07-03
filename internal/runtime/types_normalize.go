@@ -91,10 +91,14 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 		if val.Kind() == KindRange {
 			return val, nil
 		}
+	case TypeSymbol:
+		if val.Kind() == KindSymbol {
+			return val, nil
+		}
 	case TypeShape:
 		return normalizeShapeForType(val, ty, ctx)
 	case TypeUnion:
-		for _, option := range ty.Union {
+		for _, option := range unionNormalizationOrder(ty.Union) {
 			normalized, err := normalizeValueForType(val, option, ctx)
 			if err == nil {
 				return normalized, nil
@@ -120,6 +124,27 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 		Expected: formatTypeExpr(ty),
 		Actual:   formatValueTypeExpr(val),
 	}
+}
+
+func unionNormalizationOrder(options []*TypeExpr) []*TypeExpr {
+	if len(options) < 2 {
+		return options
+	}
+	ordered := make([]*TypeExpr, 0, len(options))
+	for _, option := range options {
+		if option.Kind != TypeAny {
+			ordered = append(ordered, option)
+		}
+	}
+	if len(ordered) == len(options) {
+		return options
+	}
+	for _, option := range options {
+		if option.Kind == TypeAny {
+			ordered = append(ordered, option)
+		}
+	}
+	return ordered
 }
 
 func (ctx typeContext) checkSandbox(extra ...Value) error {

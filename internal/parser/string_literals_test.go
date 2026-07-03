@@ -66,6 +66,62 @@ func TestSingleQuotedStringLiterals(t *testing.T) {
 	}
 }
 
+func TestDoubleQuotedStringRubyEscapes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		source string
+		want   string
+	}{
+		{`"a\rb"`, "a\rb"},
+		{`"\b\f\v\a\e"`, "\b\f\v\a\x1b"},
+		{`"\x41\u0042"`, "AB"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.source, func(t *testing.T) {
+			program, errs := parseSource(t, "def run\n  "+tc.source+"\nend\n")
+			if len(errs) != 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+			fn := program.Statements[0].(*ast.FunctionStmt)
+			stmt := fn.Body[0].(*ast.ExprStmt)
+			lit, ok := stmt.Expr.(*ast.StringLiteral)
+			if !ok {
+				t.Fatalf("expression = %T, want *ast.StringLiteral", stmt.Expr)
+			}
+			if lit.Value != tc.want {
+				t.Fatalf("literal value = %q, want %q", lit.Value, tc.want)
+			}
+		})
+	}
+}
+
+func TestDoubleQuotedStringRubyEscapesInInterpolationText(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  "\x41#{1}\r"
+end`
+
+	program, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn := program.Statements[0].(*ast.FunctionStmt)
+	stmt := fn.Body[0].(*ast.ExprStmt)
+	lit, ok := stmt.Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("expression = %T, want *ast.InterpolatedString", stmt.Expr)
+	}
+	if len(lit.Parts) != 3 {
+		t.Fatalf("parts length = %d, want 3", len(lit.Parts))
+	}
+	if text, ok := lit.Parts[0].(ast.StringText); !ok || text.Text != "A" {
+		t.Fatalf("parts[0] = %#v, want text A", lit.Parts[0])
+	}
+	if text, ok := lit.Parts[2].(ast.StringText); !ok || text.Text != "\r" {
+		t.Fatalf("parts[2] = %#v, want carriage return text", lit.Parts[2])
+	}
+}
+
 func TestDoubleQuotedStringInterpolation(t *testing.T) {
 	t.Parallel()
 	source := `def run

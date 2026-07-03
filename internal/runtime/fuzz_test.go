@@ -972,10 +972,15 @@ func validateFuzzStatement(context string, stmt Statement) error {
 		}
 		return validateFuzzExpression(context+".value", s.Value)
 	case *RaiseStmt:
-		if s.Value == nil {
-			return nil
+		if s.Value != nil {
+			if err := validateFuzzExpression(context+".value", s.Value); err != nil {
+				return err
+			}
 		}
-		return validateFuzzExpression(context+".value", s.Value)
+		if s.Message != nil {
+			return validateFuzzExpression(context+".message", s.Message)
+		}
+		return nil
 	case *AssignStmt:
 		if err := validateFuzzExpression(context+".target", s.Target); err != nil {
 			return err
