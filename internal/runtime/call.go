@@ -85,10 +85,12 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		builtin := valueBuiltin(callee)
 		scope := exec.capabilityContractScopes[builtin]
 		var preCallKnownBuiltins map[*Builtin]struct{}
+		var callAmbientEnvs map[*Env]struct{}
 		if scope != nil && len(scope.contracts) > 0 {
+			callAmbientEnvs = ambientEnvSet(exec.root)
 			preCallKnownBuiltins = cloneBuiltinSet(scope.knownBuiltins)
 			preCallScanner := newCapabilityContractScanner()
-			preCallScanner.ambientEnvs = ambientEnvSet(exec.root)
+			preCallScanner.ambientEnvs = callAmbientEnvs
 			if valueCanContainBuiltins(receiver) {
 				preCallScanner.collectBuiltins(receiver, preCallKnownBuiltins)
 			}
@@ -159,7 +161,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if scope != nil && len(scope.contracts) > 0 {
 			postCallScanner := newCapabilityContractScanner()
 			postCallScanner.excluded = preCallKnownBuiltins
-			postCallScanner.ambientEnvs = ambientEnvSet(exec.root)
+			postCallScanner.ambientEnvs = callAmbientEnvs
 			// Capability methods can lazily publish additional builtins at runtime
 			// (e.g. through factory return values or receiver mutation). Re-scan
 			// these values so future calls still enforce declared contracts.

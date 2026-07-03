@@ -334,8 +334,9 @@ func (c *eventsCapability) CapabilityContracts() map[string]CapabilityMethodCont
 	method := c.inner.PublishMethodName()
 	return map[string]CapabilityMethodContract{
 		method: {
-			ValidateArgs:   c.validatePublishArgs,
-			ValidateReturn: c.inner.ValidatePublishReturn,
+			ValidateArgs:             c.validatePublishArgs,
+			ReturnValidatedByBuiltin: true,
+			ValidateReturn:           c.inner.ValidatePublishReturn,
 		},
 	}
 }

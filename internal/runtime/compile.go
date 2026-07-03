@@ -177,6 +177,7 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 
 	script := &Script{engine: e, functions: functions, classes: classes, classOrder: classOrder, enums: enums, source: source}
 	script.bindFunctionOwnership()
+	script.symbolLiterals = collectSymbolLiterals(script)
 	return script, nil
 }
 

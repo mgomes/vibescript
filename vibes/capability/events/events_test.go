@@ -31,6 +31,14 @@ func (s *stubPublisher) Publish(ctx context.Context, req PublishRequest) (value.
 	return s.result, nil
 }
 
+type benchmarkPublisher struct {
+	result value.Value
+}
+
+func (p benchmarkPublisher) Publish(context.Context, PublishRequest) (value.Value, error) {
+	return p.result, nil
+}
+
 func TestNewCapabilityRejectsInvalidArguments(t *testing.T) {
 	t.Parallel()
 
@@ -246,5 +254,34 @@ func TestCapabilityPublishPreservesReturnHashDefault(t *testing.T) {
 	got := value.HashDefaultValue(result)
 	if got.Kind() != value.KindInt || got.Int() != 42 {
 		t.Fatalf("clone dropped hash default: got %s", got)
+	}
+}
+
+func BenchmarkCapabilityPublishValidated(b *testing.B) {
+	result := value.NewHash(map[string]value.Value{
+		"meta": value.NewHash(map[string]value.Value{
+			"trace": value.NewString("host"),
+			"tags": value.NewArray([]value.Value{
+				value.NewString("alpha"),
+				value.NewString("beta"),
+			}),
+		}),
+	})
+	cap := MustNewCapability("events", benchmarkPublisher{result: result})
+	args := []value.Value{
+		value.NewString("topic"),
+		value.NewHash(map[string]value.Value{"id": value.NewString("p-1")}),
+	}
+	kwargs := map[string]value.Value{"trace": value.NewString("abc")}
+
+	b.ReportAllocs()
+	for range b.N {
+		got, err := cap.PublishValidated(context.Background(), args, kwargs, false)
+		if err != nil {
+			b.Fatalf("PublishValidated() error = %v", err)
+		}
+		if got.Kind() != value.KindHash {
+			b.Fatalf("PublishValidated() = %s, want hash", got.Kind())
+		}
 	}
 }
