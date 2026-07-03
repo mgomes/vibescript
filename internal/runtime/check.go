@@ -1268,7 +1268,10 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 	case *BinaryExpr:
 		c.checkExpressionWithAuto(function, typed.Left, true)
 		if binaryRightMayEvaluate(typed) {
+			state := c.snapshotRuntimeState()
+			c.collectRuntimeRequireCallExportsFromExpression(typed.Left)
 			c.checkExpressionWithAuto(function, typed.Right, true)
+			c.restoreRuntimeState(state)
 		}
 	case *ConditionalExpr:
 		c.checkExpressionWithAuto(function, typed.Condition, true)
@@ -1992,6 +1995,9 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 			return staticCallable{name: receiverKind + "." + member.Property, spec: spec}, true
 		}
 	}
+	if name, fn, ok := c.requiredModuleObjectFunction(member.Object, member.Property); ok {
+		return staticCallable{name: name, fn: fn, resolution: calleeMemberValue}, true
+	}
 	return staticCallable{}, false
 }
 
@@ -2011,6 +2017,34 @@ func (c *scriptChecker) typeRootObjectFunction(name, property string) (*ScriptFu
 		}
 	}
 	return nil, false
+}
+
+func (c *scriptChecker) requiredModuleObjectFunction(expr Expression, property string) (string, *ScriptFunction, bool) {
+	call, ok := expr.(*CallExpr)
+	if !ok {
+		return "", nil, false
+	}
+	moduleName, alias, ok := c.staticRequireCall(call)
+	if !ok {
+		return "", nil, false
+	}
+	entry, err := c.script.engine.loadModule(moduleName, c.moduleCaller)
+	if err != nil {
+		return "", nil, false
+	}
+	exports := c.moduleExportValue(entry)
+	if !c.canBindRequireAlias(alias, exports) {
+		return "", nil, false
+	}
+	member, ok := exports.Hash()[property]
+	if !ok || member.Kind() != KindFunction {
+		return "", nil, false
+	}
+	fn := valueFunction(member)
+	if fn == nil {
+		return "", nil, false
+	}
+	return moduleName + "." + property, fn, true
 }
 
 func checkRootOwnBinding(root *Env, name string) (Value, bool) {

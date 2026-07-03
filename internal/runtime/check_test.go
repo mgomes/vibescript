@@ -288,6 +288,19 @@ end
 	requireCheckWarningContains(t, script, "call to double has unexpected positional arguments")
 }
 
+func TestCheckWarningsResolveInlineRequiredModuleFunctionMembers(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("helper").double(1, 2)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to helper.double has unexpected positional arguments")
+}
+
 func TestCheckWarningsResolveAliasedRequiredModuleFunctionExports(t *testing.T) {
 	t.Parallel()
 
@@ -300,6 +313,19 @@ end
 `)
 
 	requireCheckWarningContains(t, script, "call to helpers.double has unexpected positional arguments")
+}
+
+func TestCheckWarningsApplyLeftRequireEffectsBeforeBinaryRight(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("enum_status") && normalize("bad")
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to normalize argument status expected Status, got string")
 }
 
 func TestCheckWarningsDoNotLeakAliasConflictModuleExports(t *testing.T) {
