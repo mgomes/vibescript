@@ -1905,6 +1905,38 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
       tries
     end
 
+    def retry_helper()
+      retry
+    end
+
+    def retry_crosses_function_boundary()
+      tries = 0
+      begin
+        tries += 1
+        raise "again" if tries == 1
+        "done"
+      rescue
+        retry_helper()
+      end
+    end
+
+    def retry_crosses_block_boundary()
+      tries = 0
+      begin
+        tries += 1
+        raise "again" if tries == 1
+        "done"
+      rescue
+        yield
+      end
+    end
+
+    def retry_block_boundary_runner()
+      retry_crosses_block_boundary do
+        retry
+      end
+    end
+
     def comma_rhs()
       a, b = 1, 2
       first, *rest = 1, 2, 3
@@ -1976,6 +2008,8 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
 	if got := callFunc(t, script, "retry_rescue", nil); !got.Equal(NewInt(2)) {
 		t.Fatalf("retry_rescue() = %v, want 2", got)
 	}
+	requireCallErrorContains(t, script, "retry_crosses_function_boundary", nil, CallOptions{}, "retry cannot cross call boundary")
+	requireCallErrorContains(t, script, "retry_block_boundary_runner", nil, CallOptions{}, "retry cannot cross call boundary")
 	compareArrays(t, callFunc(t, script, "comma_rhs", nil), []Value{
 		NewInt(1),
 		NewInt(2),

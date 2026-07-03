@@ -990,7 +990,7 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 	} else {
 		env.resetForBlockCall(runner.blk.Env)
 	}
-	val, err := runner.exec.callBlock(runner.blk, args, env, runner.charge, chargedRoots...)
+	val, err := runner.exec.callBlock(runner.blk, args, env, runner.charge, Position{}, chargedRoots...)
 	if err != nil {
 		if errors.Is(err, errLoopNext) && !runner.nextContinues {
 			if nextVal, ok := loopNextValue(err); ok {
@@ -1056,6 +1056,10 @@ func implicitBlockParamArity(params []string) int {
 // This is the public entry point for capability adapters that need to
 // call user-supplied blocks (e.g. db.each, db.tx).
 func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
+	return exec.callBlockValue(block, args, Position{})
+}
+
+func (exec *Execution) callBlockValue(block Value, args []Value, pos Position) (Value, error) {
 	if err := ensureBlock(block, ""); err != nil {
 		return NewNil(), err
 	}
@@ -1068,7 +1072,7 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	// argument it was copied from, letting (args) and (rest) each fit the quota
 	// while the real peak (args + rest) exceeds it.
 	charge := newBlockBindCharge(exec, blk, NewNil(), args, nil, block)
-	val, err := exec.callBlock(blk, args, newEnv(blk.Env), charge)
+	val, err := exec.callBlock(blk, args, newEnv(blk.Env), charge, pos)
 	if err != nil && errors.Is(err, errLoopNext) {
 		if nextVal, ok := loopNextValue(err); ok {
 			return nextVal, nil
@@ -1078,7 +1082,7 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	return val, err
 }
 
-func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge, chargedRoots ...Value) (Value, error) {
+func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge, pos Position, chargedRoots ...Value) (Value, error) {
 	exec.pushModuleContext(moduleContext{
 		key:    blk.moduleKey,
 		path:   blk.modulePath,
@@ -1135,6 +1139,9 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	val, returned, err := exec.evalStatements(blk.Body, blockEnv)
 	exec.blockDepth--
 	if err != nil {
+		if errors.Is(err, errRescueRetry) {
+			return NewNil(), exec.localJumpErrorAt(pos, "retry cannot cross call boundary")
+		}
 		return NewNil(), err
 	}
 	if returned {
@@ -1393,7 +1400,7 @@ func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
 			return NewNil(), err
 		}
 	}
-	return exec.CallBlock(block, args)
+	return exec.callBlockValue(block, args, expr.Pos())
 }
 
 func (exec *Execution) assignToMember(obj Value, property string, value Value, pos Position) error {
@@ -1418,11 +1425,8 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 		}
 		_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), pos)
 		if err != nil {
-			if errors.Is(err, errLoopBreak) {
-				return exec.localJumpErrorAt(pos, "break cannot cross call boundary")
-			}
-			if errors.Is(err, errLoopNext) {
-				return exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
+				return controlErr
 			}
 		}
 		return err
@@ -2852,6 +2856,10 @@ func formatRuntimeBacktraceFrame(frame StackFrame) string {
 
 func isLoopControlSignal(err error) bool {
 	return errors.Is(err, errLoopBreak) || errors.Is(err, errLoopNext)
+}
+
+func isRescueRetrySignal(err error) bool {
+	return errors.Is(err, errRescueRetry)
 }
 
 func isFunctionReturnSignal(err error) bool {

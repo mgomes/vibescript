@@ -72,11 +72,8 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 	case KindFunction:
 		result, err := exec.callFunction(valueFunction(callee), receiver, args, kwargs, block, pos)
 		if err != nil {
-			if errors.Is(err, errLoopBreak) {
-				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
-			}
-			if errors.Is(err, errLoopNext) {
-				return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
+				return NewNil(), controlErr
 			}
 			return NewNil(), err
 		}
@@ -137,11 +134,8 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			popValidatedArgs()
 		}
 		if err != nil {
-			if errors.Is(err, errLoopBreak) {
-				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
-			}
-			if errors.Is(err, errLoopNext) {
-				return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
+				return NewNil(), controlErr
 			}
 			if ctxErr := exec.checkContext(); ctxErr != nil {
 				return NewNil(), ctxErr
@@ -193,6 +187,19 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 	}
 }
 
+func (exec *Execution) callBoundaryControlError(err error, pos Position) (bool, error) {
+	if errors.Is(err, errLoopBreak) {
+		return true, exec.localJumpErrorAt(pos, "break cannot cross call boundary")
+	}
+	if errors.Is(err, errLoopNext) {
+		return true, exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+	}
+	if errors.Is(err, errRescueRetry) {
+		return true, exec.localJumpErrorAt(pos, "retry cannot cross call boundary")
+	}
+	return false, nil
+}
+
 func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
 	return exec.callFunctionWithReturnValidation(fn, receiver, args, kwargs, block, pos, true)
 }
@@ -232,7 +239,7 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 	exec.pushModuleContext(ctx)
 	exec.pushReceiver(receiver)
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)
-	if err != nil && !isLoopControlSignal(err) {
+	if err != nil && !isLoopControlSignal(err) && !isRescueRetrySignal(err) {
 		err = exec.wrapError(err, pos)
 	}
 	exec.popReceiver()
@@ -1248,11 +1255,8 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 
 	result, err := callBuiltinMemberDirect(exec, receiver, property, args, kwargs, block)
 	if err != nil {
-		if errors.Is(err, errLoopBreak) {
-			return NewNil(), exec.localJumpErrorAt(call.Pos(), "break cannot cross call boundary")
-		}
-		if errors.Is(err, errLoopNext) {
-			return NewNil(), exec.localJumpErrorAt(call.Pos(), "next cannot cross call boundary")
+		if ok, controlErr := exec.callBoundaryControlError(err, call.Pos()); ok {
+			return NewNil(), controlErr
 		}
 		if ctxErr := exec.checkContext(); ctxErr != nil {
 			return NewNil(), ctxErr

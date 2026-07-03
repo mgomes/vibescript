@@ -393,7 +393,7 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	if err == nil {
 		return nil
 	}
-	if isHostControlSignal(err) || isFunctionReturnSignal(err) {
+	if isHostControlSignal(err) || isFunctionReturnSignal(err) || isRescueRetrySignal(err) {
 		return err
 	}
 	var runtimeErr *RuntimeError
