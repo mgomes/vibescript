@@ -102,7 +102,7 @@ func isStatementModifier(tt ast.TokenType) bool {
 
 func canUseStatementModifier(stmt ast.Statement) bool {
 	switch stmt.(type) {
-	case *ast.AssignStmt, *ast.ExprStmt, *ast.ReturnStmt, *ast.RaiseStmt, *ast.BreakStmt, *ast.NextStmt:
+	case *ast.AssignStmt, *ast.ExprStmt, *ast.ReturnStmt, *ast.RaiseStmt, *ast.BreakStmt, *ast.NextStmt, *ast.RetryStmt:
 		return true
 	default:
 		return false

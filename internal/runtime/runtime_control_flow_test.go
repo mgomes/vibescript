@@ -1934,6 +1934,17 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
       tries
     end
 
+    def retry_modifier_rescue()
+      tries = 0
+      begin
+        tries += 1
+        raise "again" if tries < 2
+      rescue
+        retry if tries < 2
+      end
+      tries
+    end
+
     def retry_helper()
       retry
     end
@@ -2040,6 +2051,9 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
 	}
 	if got := callFunc(t, script, "retry_rescue", nil); !got.Equal(NewInt(2)) {
 		t.Fatalf("retry_rescue() = %v, want 2", got)
+	}
+	if got := callFunc(t, script, "retry_modifier_rescue", nil); !got.Equal(NewInt(2)) {
+		t.Fatalf("retry_modifier_rescue() = %v, want 2", got)
 	}
 	requireCallErrorContains(t, script, "retry_crosses_function_boundary", nil, CallOptions{}, "retry cannot cross call boundary")
 	requireCallErrorContains(t, script, "retry_block_boundary_runner", nil, CallOptions{}, "retry cannot cross call boundary")
