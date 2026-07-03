@@ -301,6 +301,26 @@ end
 	requireCheckWarningContains(t, script, "call to helper.double has unexpected positional arguments")
 }
 
+func TestCheckWarningsSeedInlineRequiredModuleExportsBeforeMemberArguments(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  require("enum_status").normalize(:draft)
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after inline required module member returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() after inline required module member = %#v, want Status::Draft", got)
+	}
+}
+
 func TestCheckWarningsResolveAliasedRequiredModuleFunctionExports(t *testing.T) {
 	t.Parallel()
 
@@ -1167,6 +1187,30 @@ end
 
 	requireCheckWarningContains(t, script, "unknown type Status")
 	requireCallErrorContains(t, script, "run", []Value{NewBool(true)}, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsApplyIfExpressionConditionEffectsBeforeBranch(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  if require("enum_status")
+    normalize(:draft)
+  else
+    :published
+  end
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after if-expression condition require returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() after if-expression condition require = %#v, want Status::Draft", got)
+	}
 }
 
 func TestCheckWarningsDoNotHoistConditionalModuleEntrypointRequires(t *testing.T) {

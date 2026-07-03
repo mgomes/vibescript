@@ -1673,13 +1673,48 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkExpressionWithAuto(function, typed.Consequent, true)
 		c.checkExpressionWithAuto(function, typed.Alternate, true)
 	case *IfExpr:
+		baseRuntimeState := c.snapshotRuntimeState()
+		baseScopeState := c.snapshotScopeState()
 		c.checkExpressionWithAuto(function, typed.Condition, true)
+		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
+		conditionRuntimeState := c.snapshotRuntimeState()
+		conditionScopeState := c.snapshotScopeState()
+		branchRuntimeStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
+		branchScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
+
+		c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
 		c.checkExpressionWithAuto(function, typed.Consequent, true)
+		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		c.restoreRuntimeState(conditionRuntimeState)
+		c.restoreScopeState(conditionScopeState)
+		c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
+		falseRuntimeState := c.snapshotRuntimeState()
+		falseScopeState := c.snapshotScopeState()
 		for _, branch := range typed.ElseIf {
+			c.restoreRuntimeState(falseRuntimeState)
+			c.restoreScopeState(falseScopeState)
 			c.checkExpressionWithAuto(function, branch.Condition, true)
+			c.collectRuntimeRequireCallExportsFromExpression(branch.Condition)
+			conditionRuntimeState = c.snapshotRuntimeState()
+			conditionScopeState = c.snapshotScopeState()
+			c.collectRuntimeConditionOutcomeEffects(branch.Condition, true)
 			c.checkExpressionWithAuto(function, branch.Result, true)
+			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+			c.restoreRuntimeState(conditionRuntimeState)
+			c.restoreScopeState(conditionScopeState)
+			c.collectRuntimeConditionOutcomeEffects(branch.Condition, false)
+			falseRuntimeState = c.snapshotRuntimeState()
+			falseScopeState = c.snapshotScopeState()
 		}
+		c.restoreRuntimeState(falseRuntimeState)
+		c.restoreScopeState(falseScopeState)
 		c.checkExpressionWithAuto(function, typed.Alternate, true)
+		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+		c.mergeScopeStates(baseScopeState, branchScopeStates)
 	case *RangeExpr:
 		c.checkExpressionWithAuto(function, typed.Start, true)
 		c.checkExpressionWithAuto(function, typed.End, true)
@@ -2473,6 +2508,10 @@ func (c *scriptChecker) requiredModuleObjectFunction(expr Expression, property s
 	if fn == nil {
 		return "", nil, false
 	}
+	c.withRuntimeModuleCollection(func() {
+		c.collectModuleExports(entry)
+		c.bindRequireAlias(alias, exports)
+	})
 	return moduleName + "." + property, fn, true
 }
 
