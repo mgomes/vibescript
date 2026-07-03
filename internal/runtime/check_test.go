@@ -591,10 +591,24 @@ end`,
 end`,
 		},
 		{
+			name: "unreachable tail after explicit return skips call checks",
+			source: `def run()
+  return 1
+  JSON.parse()
+end`,
+		},
+		{
 			name: "unreachable tail after raise",
 			source: `def run() -> int
   raise "boom"
   nil
+end`,
+		},
+		{
+			name: "unreachable tail after raise skips call checks",
+			source: `def run()
+  raise "boom"
+  JSON.parse()
 end`,
 		},
 		{
@@ -759,6 +773,14 @@ end
 def run()
   JSON.parse = parse
   JSON.parse("{}", "extra")
+end`,
+		},
+		{
+			name: "safe navigation nil receiver skips arguments and block",
+			source: `def run()
+  nil&.profile(JSON.parse()) do
+    JSON.parse()
+  end
 end`,
 		},
 	}

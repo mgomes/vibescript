@@ -462,6 +462,9 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 func (c *scriptChecker) checkStatements(function string, returnType *TypeExpr, statements []Statement) {
 	for _, stmt := range statements {
 		c.checkStatement(function, returnType, stmt)
+		if statementAlwaysExits(stmt) {
+			return
+		}
 	}
 }
 
@@ -532,8 +535,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkExpressionWithAuto(function, pair.Value, true)
 		}
 	case *CallExpr:
-		c.checkCall(function, typed)
 		c.checkExpressionWithAuto(function, typed.Callee, false)
+		if staticNilSafeNavigationCall(typed) {
+			return
+		}
+		c.checkCall(function, typed)
 		for _, arg := range typed.Args {
 			c.checkExpressionWithAuto(function, arg, true)
 		}
@@ -597,6 +603,18 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 	case *InterpolatedSymbol:
 		c.checkStringParts(function, typed.Parts)
 	}
+}
+
+func staticNilSafeNavigationCall(call *CallExpr) bool {
+	if call == nil || !call.Safe {
+		return false
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || !member.Safe {
+		return false
+	}
+	val, ok := staticLiteralValue(member.Object)
+	return ok && val.Kind() == KindNil
 }
 
 func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr) {
