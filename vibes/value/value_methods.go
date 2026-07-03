@@ -1132,9 +1132,24 @@ func (v Value) Identical(other Value) bool {
 	}
 }
 
+// EqualityContext reuses the cycle-detection scratch used by Value equality.
+// The zero value is ready to use. It is not safe for concurrent use.
+type EqualityContext struct {
+	seen map[valueEqualityPair]struct{}
+}
+
 // Equal reports whether v and other hold the same kind and value.
 func (v Value) Equal(other Value) bool {
-	return valuesEqual(v, other, make(map[valueEqualityPair]struct{}))
+	var ctx EqualityContext
+	return ctx.Equal(v, other)
+}
+
+// Equal reports whether v and other hold the same kind and value.
+func (c *EqualityContext) Equal(v, other Value) bool {
+	if c.seen != nil {
+		clear(c.seen)
+	}
+	return valuesEqual(v, other, &c.seen)
 }
 
 type valueEqualityPair struct {
@@ -1145,7 +1160,7 @@ type valueEqualityPair struct {
 	rightLen int
 }
 
-func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
+func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 	if v.kind != other.kind {
 		return false
 	}
@@ -1195,10 +1210,9 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 			rightLen: len(right),
 		}
 		if pair.leftPtr != 0 || pair.rightPtr != 0 {
-			if _, ok := seen[pair]; ok {
+			if equalityPairSeen(seen, pair) {
 				return true
 			}
-			seen[pair] = struct{}{}
 		}
 		for i := range left {
 			if !valuesEqual(left[i], right[i], seen) {
@@ -1207,9 +1221,9 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 		}
 		return true
 	case KindHash:
-		left := v.HashEntries()
-		right := other.HashEntries()
-		if len(left) != len(right) {
+		leftLen := v.HashLen()
+		rightLen := other.HashLen()
+		if leftLen != rightLen {
 			return false
 		}
 		leftPtr := HashIdentity(v)
@@ -1221,17 +1235,26 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 			kind:     v.kind,
 			leftPtr:  leftPtr,
 			rightPtr: rightPtr,
-			leftLen:  len(left),
-			rightLen: len(right),
+			leftLen:  leftLen,
+			rightLen: rightLen,
 		}
 		if pair.leftPtr != 0 || pair.rightPtr != 0 {
-			if _, ok := seen[pair]; ok {
+			if equalityPairSeen(seen, pair) {
 				return true
 			}
-			seen[pair] = struct{}{}
 		}
-		if !v.HashHasTypedEntries() || !other.HashHasTypedEntries() {
+		leftTyped := v.HashHasTypedEntries()
+		rightTyped := other.HashHasTypedEntries()
+		if !leftTyped && !rightTyped {
+			return hashMapsEqual(v.Hash(), other.Hash(), seen)
+		}
+		left := v.HashEntries()
+		right := other.HashEntries()
+		if !leftTyped || !rightTyped {
 			return hashEntriesEqualByDisplayKey(left, right, seen)
+		}
+		if len(right) <= smallHashEqualityEntryLimit {
+			return hashEntriesEqualByLookupKeyLinear(left, right, seen)
 		}
 		rightByKey, ok := hashEntriesByLookupKey(right)
 		if !ok {
@@ -1270,10 +1293,9 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 			rightLen: len(right),
 		}
 		if pair.leftPtr != 0 || pair.rightPtr != 0 {
-			if _, ok := seen[pair]; ok {
+			if equalityPairSeen(seen, pair) {
 				return true
 			}
-			seen[pair] = struct{}{}
 		}
 		for key, leftValue := range left {
 			rightValue, ok := right[key]
@@ -1295,7 +1317,39 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 	}
 }
 
-func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen map[valueEqualityPair]struct{}) bool {
+func hashMapsEqual(left, right map[string]Value, seen *map[valueEqualityPair]struct{}) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, leftValue := range left {
+		rightValue, ok := right[key]
+		if !ok {
+			return false
+		}
+		if !valuesEqual(leftValue, rightValue, seen) {
+			return false
+		}
+	}
+	return true
+}
+
+const smallHashEqualityEntryLimit = 8
+
+func equalityPairSeen(seen *map[valueEqualityPair]struct{}, pair valueEqualityPair) bool {
+	if *seen == nil {
+		*seen = make(map[valueEqualityPair]struct{})
+	}
+	if _, ok := (*seen)[pair]; ok {
+		return true
+	}
+	(*seen)[pair] = struct{}{}
+	return false
+}
+
+func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen *map[valueEqualityPair]struct{}) bool {
+	if len(right) <= smallHashEqualityEntryLimit {
+		return hashEntriesEqualByDisplayKeyLinear(left, right, seen)
+	}
 	leftByKey, ok := hashEntriesByDisplayKey(left)
 	if !ok {
 		return false
@@ -1313,6 +1367,70 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen map[valueEqualit
 			return false
 		}
 		if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+			return false
+		}
+	}
+	return true
+}
+
+func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}) bool {
+	if hashEntriesHaveDuplicateDisplayKey(left) || hashEntriesHaveDuplicateDisplayKey(right) {
+		return false
+	}
+	for _, leftEntry := range left {
+		key := HashDisplayKey(leftEntry.Key)
+		found := false
+		for _, rightEntry := range right {
+			if HashDisplayKey(rightEntry.Key) != key {
+				continue
+			}
+			if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+				return false
+			}
+			found = true
+			break
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func hashEntriesHaveDuplicateDisplayKey(entries []HashEntry) bool {
+	for i, entry := range entries {
+		key := HashDisplayKey(entry.Key)
+		for _, other := range entries[i+1:] {
+			if HashDisplayKey(other.Key) == key {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}) bool {
+	for _, leftEntry := range left {
+		leftKey, err := NewHashLookupKey(leftEntry.Key)
+		if err != nil {
+			return false
+		}
+		found := false
+		for _, rightEntry := range right {
+			rightKey, err := NewHashLookupKey(rightEntry.Key)
+			if err != nil {
+				return false
+			}
+			if rightKey != leftKey {
+				continue
+			}
+			if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+				return false
+			}
+			found = true
+			break
+		}
+		if !found {
 			return false
 		}
 	}

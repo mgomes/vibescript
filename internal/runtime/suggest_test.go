@@ -578,6 +578,45 @@ func TestSearchPathModuleSuggestionCacheRefreshesAfterClear(t *testing.T) {
 	}
 }
 
+func TestSearchPathModuleMissCacheRefreshesAfterClear(t *testing.T) {
+	t.Parallel()
+	moduleSource := "def value\n  7\nend\n"
+	root := tempModuleTree(t)
+	engine := mustNewEngineWithModuleRoot(t, root)
+	script := compileScriptWithEngine(t, engine, `def run
+  begin
+    mod = require("dynamic")
+    mod.value
+  rescue
+    nil
+  end
+end`)
+
+	first := callFunc(t, script, "run", nil)
+	if first.Kind() != KindNil {
+		t.Fatalf("first run = %#v, want nil", first)
+	}
+	if _, ok := engine.modSearchMisses["dynamic.vibe"]; !ok {
+		t.Fatalf("expected dynamic.vibe miss to be cached")
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "dynamic.vibe"), []byte(moduleSource), 0o644); err != nil {
+		t.Fatalf("write dynamic module: %v", err)
+	}
+	cached := callFunc(t, script, "run", nil)
+	if cached.Kind() != KindNil {
+		t.Fatalf("run before ClearModuleCache = %#v, want cached miss", cached)
+	}
+
+	if cleared := engine.ClearModuleCache(); cleared != 0 {
+		t.Fatalf("ClearModuleCache() = %d, want no loaded modules", cleared)
+	}
+	refreshed := callFunc(t, script, "run", nil)
+	if !refreshed.Equal(NewInt(7)) {
+		t.Fatalf("run after ClearModuleCache = %#v, want 7", refreshed)
+	}
+}
+
 func TestSearchPathModuleSuggestionTextCacheIsBounded(t *testing.T) {
 	t.Parallel()
 	moduleSource := "def value\n  1\nend\n"

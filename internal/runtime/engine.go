@@ -46,6 +46,7 @@ type Engine struct {
 	modPaths          []string
 	modMu             sync.RWMutex
 	randomMu          sync.Mutex
+	modSearchMisses   map[string]string
 	modSuggest        map[string][]string
 	modSuggestText    map[string]string
 	modSuggestVersion uint64
@@ -106,12 +107,13 @@ func NewEngine(cfg Config) (*Engine, error) {
 	cfg.ModuleDenyList = append([]string(nil), cfg.ModuleDenyList...)
 
 	engine := &Engine{
-		config:         cfg,
-		builtins:       make(map[string]Value),
-		modules:        make(map[string]moduleEntry),
-		modPaths:       append([]string(nil), cfg.ModulePaths...),
-		modSuggest:     make(map[string][]string),
-		modSuggestText: make(map[string]string),
+		config:          cfg,
+		builtins:        make(map[string]Value),
+		modules:         make(map[string]moduleEntry),
+		modPaths:        append([]string(nil), cfg.ModulePaths...),
+		modSearchMisses: make(map[string]string),
+		modSuggest:      make(map[string][]string),
+		modSuggestText:  make(map[string]string),
 	}
 
 	registerCoreBuiltins(engine)
@@ -420,6 +422,7 @@ func (e *Engine) ClearModuleCache() int {
 
 	count := len(e.modules)
 	clear(e.modules)
+	clear(e.modSearchMisses)
 	clear(e.modSuggest)
 	clear(e.modSuggestText)
 	e.modSuggestVersion++
