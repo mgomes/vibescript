@@ -301,6 +301,46 @@ end
 	requireCheckWarningContains(t, script, "call to helper.double has unexpected positional arguments")
 }
 
+func TestCheckWarningsDoNotAutoInvokeParameterizedRequiredModuleFunctionMembers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "inline require member",
+			source: `def run()
+  require("helper").double
+end`,
+		},
+		{
+			name: "aliased require member",
+			source: `def run()
+  require("helper", as: "helpers")
+  helpers.double
+end`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			engine := moduleTestEngine(t)
+			script := compileScriptWithEngine(t, engine, tc.source)
+			requireNoCheckWarnings(t, script)
+
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("Call(%q) returned error: %v", "run", err)
+			}
+			if got.Kind() != KindFunction {
+				t.Fatalf("Call(%q) = %s, want function value", "run", got.Kind())
+			}
+		})
+	}
+}
+
 func TestCheckWarningsSeedInlineRequiredModuleExportsBeforeMemberArguments(t *testing.T) {
 	t.Parallel()
 

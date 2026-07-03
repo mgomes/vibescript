@@ -2003,7 +2003,9 @@ func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr)
 	}
 	view := staticCallView{pos: member.Pos()}
 	if target.fn != nil {
-		c.checkCallShape(function, view, target.name, target.fn)
+		if target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0 {
+			c.checkCallShape(function, view, target.name, target.fn)
+		}
 		return
 	}
 	if target.spec.autoInvoke {
