@@ -1412,6 +1412,10 @@ func (p *parser) parseIndexExpression(object ast.Expression) ast.Expression {
 		return nil
 	}
 	p.nextToken()
+	p.lineLimitedStopSuppression++
+	defer func() {
+		p.lineLimitedStopSuppression--
+	}()
 	indices := []ast.Expression{}
 	index := p.parseExpression(lowestPrec)
 	if index == nil {

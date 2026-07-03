@@ -2786,6 +2786,13 @@ func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *En
 			}
 			return compoundAssignmentTarget{current: current, assign: assign}, nil
 		}
+		if env.parent != nil && env.parent.hasAmbientAssignmentBinding(ident.Name) {
+			current, exists := env.Get(ident.Name)
+			if !exists {
+				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)
+			}
+			return compoundAssignmentTarget{current: current, assign: assign}, nil
+		}
 		env.Define(ident.Name, NewNil())
 		return compoundAssignmentTarget{current: NewNil(), assign: assign}, nil
 	}

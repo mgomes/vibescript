@@ -349,6 +349,24 @@ def logical_local
   helper ||= 2
   [helper, call_helper()]
 end
+
+def read_shared
+  shared
+end
+
+def read_maybe
+  maybe
+end
+
+def logical_truthy_global
+  shared ||= 2
+  [shared, read_shared()]
+end
+
+def logical_falsey_global
+  maybe ||= 3
+  [maybe, read_maybe()]
+end
 `)
 
 	if got := callFunc(t, script, "function_local", nil); !got.Equal(NewBool(true)) {
@@ -359,6 +377,20 @@ end
 	}
 	compareArrays(t, callFunc(t, script, "direct_local", nil), []Value{NewInt(1), NewString("global")})
 	compareArrays(t, callFunc(t, script, "logical_local", nil), []Value{NewInt(2), NewString("global")})
+	got, err := script.Call(context.Background(), "logical_truthy_global", nil, CallOptions{
+		Globals: map[string]Value{"shared": NewInt(5), "maybe": NewNil()},
+	})
+	if err != nil {
+		t.Fatalf("logical_truthy_global() returned error: %v", err)
+	}
+	compareArrays(t, got, []Value{NewInt(5), NewInt(5)})
+	got, err = script.Call(context.Background(), "logical_falsey_global", nil, CallOptions{
+		Globals: map[string]Value{"shared": NewInt(5), "maybe": NewNil()},
+	})
+	if err != nil {
+		t.Fatalf("logical_falsey_global() returned error: %v", err)
+	}
+	compareArrays(t, got, []Value{NewInt(3), NewInt(3)})
 }
 
 func TestRubyBlockMultiParameterDestructuresSingleYieldedArray(t *testing.T) {
