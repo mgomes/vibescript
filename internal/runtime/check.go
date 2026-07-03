@@ -62,12 +62,13 @@ func (s *Script) checkWarnings(opts CallOptions, target checkTarget) []CheckWarn
 	}
 	optionGlobals := checkOptionGlobals(s, opts)
 	checker := scriptChecker{
-		script:          s,
-		callOptions:     opts,
-		optionGlobals:   optionGlobals,
-		typeRoot:        checkTypeRoot(s, optionGlobals),
-		runtimeTypeRoot: checkTypeRoot(s, optionGlobals),
-		hostGlobals:     checkHostGlobals(optionGlobals),
+		script:                s,
+		callOptions:           opts,
+		optionGlobals:         optionGlobals,
+		optionGlobalsOverride: true,
+		typeRoot:              checkTypeRoot(s, optionGlobals),
+		runtimeTypeRoot:       checkTypeRoot(s, optionGlobals),
+		hostGlobals:           checkHostGlobals(optionGlobals),
 	}
 	checker.moduleExportRoot = checker.typeRoot
 	if target.Function == "" {
@@ -91,6 +92,7 @@ type scriptChecker struct {
 	script                  *Script
 	callOptions             CallOptions
 	optionGlobals           map[string]Value
+	optionGlobalsOverride   bool
 	typeRoot                *Env
 	runtimeTypeRoot         *Env
 	hostGlobals             map[string]struct{}
@@ -104,6 +106,7 @@ type scriptChecker struct {
 	moduleCheckedFunctions  map[string]struct{}
 	moduleCaller            *moduleContext
 	moduleExportRoot        *Env
+	runtimeTypeRootParent   *Env
 	checkReachableCalls     bool
 	checkedReachableFuncs   map[*ScriptFunction]struct{}
 	reachableFuncQueue      []reachableFunction
@@ -156,10 +159,18 @@ func checkHostGlobals(globals map[string]Value) map[string]struct{} {
 }
 
 func checkTypeRoot(script *Script, globals map[string]Value) *Env {
+	return checkTypeRootWithParentAndGlobals(script, globals, nil, true)
+}
+
+func checkTypeRootWithParent(script *Script, globals map[string]Value, parent *Env) *Env {
+	return checkTypeRootWithParentAndGlobals(script, globals, parent, true)
+}
+
+func checkTypeRootWithParentAndGlobals(script *Script, globals map[string]Value, parent *Env, overrideGlobals bool) *Env {
 	if script == nil {
 		return nil
 	}
-	root := newEnvWithCapacity(nil, len(script.classes)+len(globals))
+	root := newEnvWithCapacity(parent, len(script.classes)+len(globals))
 	script.engine.attachBuiltins(root, len(script.functions)+len(script.enums))
 	callFunctions := cloneFunctionsForCall(script.functions, root)
 	for name, fn := range callFunctions {
@@ -175,6 +186,9 @@ func checkTypeRoot(script *Script, globals map[string]Value) *Env {
 	}
 	rebinder := newCallFunctionRebinder(script, root, callClasses, callEnums)
 	for name, val := range globals {
+		if !overrideGlobals && root.hasOwnBinding(name) {
+			continue
+		}
 		root.Define(name, rebinder.rebindValue(val))
 	}
 	return root
@@ -655,13 +669,23 @@ func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) 
 		return
 	}
 
+	parentRoot := c.runtimeTypeRoot
+	if parentRoot == nil {
+		parentRoot = c.typeRoot
+	}
+	parentRoot = cloneCheckRoot(parentRoot)
 	checker := scriptChecker{
 		script:                 entry.script,
-		typeRoot:               checkTypeRoot(entry.script, nil),
-		runtimeTypeRoot:        checkTypeRoot(entry.script, nil),
+		callOptions:            c.callOptions,
+		optionGlobals:          c.optionGlobals,
+		optionGlobalsOverride:  false,
+		typeRoot:               checkTypeRootWithParentAndGlobals(entry.script, c.optionGlobals, cloneCheckRoot(parentRoot), false),
+		runtimeTypeRoot:        checkTypeRootWithParentAndGlobals(entry.script, c.optionGlobals, cloneCheckRoot(parentRoot), false),
+		hostGlobals:            c.hostGlobals,
 		moduleEntries:          c.moduleEntries,
 		moduleExportValues:     c.moduleExportValues,
 		moduleCheckedFunctions: c.moduleCheckedFunctions,
+		runtimeTypeRootParent:  parentRoot,
 	}
 	caller := moduleContextForEntry(entry)
 	checker.moduleCaller = &caller
@@ -840,13 +864,86 @@ func (c *scriptChecker) checkFunctionExecution(target checkTarget) {
 	c.withFreshRuntimeTypeRoot(func() {
 		c.checkRuntimeClassBodies(deferredClassBodiesForFunction(fn, c.script.deferredClassBodies), false)
 		if target.ValidateCall {
-			c.checkCallValues(fn.Name, fn.Name, fn.Pos, fn, target.Args, c.callOptions.Keywords)
+			c.withReachableCallChecks(func() {
+				c.markReachableFunctionChecked(fn)
+				c.checkFunctionCall(fn.Name, fn, target.Args, c.callOptions.Keywords)
+				c.checkReachableFunctions()
+			})
+			return
 		}
 		c.withReachableCallChecks(func() {
 			c.enqueueReachableFunction(fn.Name, fn)
 			c.checkReachableFunctions()
 		})
 	})
+}
+
+func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args []Value, kwargs map[string]Value) {
+	if fn == nil || !c.checkCallValueShape(label, fn.Name, fn.Pos, fn, args, kwargs) {
+		return
+	}
+	popScope := c.pushScope(make(map[string]struct{}))
+	defer popScope()
+
+	var usedKw map[string]bool
+	if len(kwargs) > 0 {
+		usedKw = make(map[string]bool, len(kwargs))
+	}
+	argIdx := 0
+	for _, param := range fn.Params {
+		switch param.Kind {
+		case ParamNormal:
+			if argIdx < len(args) {
+				c.checkArgumentValue(label, fn.Pos, args[argIdx], param.Type, fn.Name, param.Name)
+				argIdx++
+			} else if val, ok := kwargs[param.Name]; ok {
+				c.checkArgumentValue(label, fn.Pos, val, param.Type, fn.Name, param.Name)
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else {
+				c.checkParamDefault(label, param)
+			}
+		case ParamKeyword:
+			if val, ok := kwargs[param.Name]; ok {
+				c.checkArgumentValue(label, fn.Pos, val, param.Type, fn.Name, param.Name)
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else {
+				c.checkParamDefault(label, param)
+			}
+		case ParamRest:
+			c.checkRestArgumentValues(label, fn.Pos, args[argIdx:], param.Type, fn.Name, param.Name)
+			argIdx = len(args)
+		case ParamKeywordRest:
+			c.checkKeywordRestArgumentValues(label, fn.Pos, kwargs, usedKw, param.Type, fn.Name, param.Name)
+			for _, name := range sortedValueKeywordNames(kwargs) {
+				if usedKw != nil {
+					usedKw[name] = true
+				}
+			}
+		case ParamBlock:
+			c.checkRuntimeTypeAnnotation(label, param.Type)
+		}
+		c.recordParamBinding(param)
+	}
+	c.checkStatements(label, fn.ReturnTy, fn.Body)
+	if fn.ReturnTy != nil {
+		c.checkImplicitReturn(label, fn.ReturnTy, fn.Body, fn.Pos)
+	}
+}
+
+func (c *scriptChecker) checkParamDefault(function string, param Param) {
+	c.checkExpression(function, param.DefaultVal)
+	c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
+	if param.Type == nil {
+		return
+	}
+	c.checkRuntimeTypeAnnotation(function, param.Type)
+	if param.DefaultVal != nil {
+		c.checkRuntimeExpressionAgainstType(function, param.DefaultVal, param.Type, fmt.Sprintf("default value for %s", param.Name))
+	}
 }
 
 func (c *scriptChecker) withReachableCallChecks(check func()) {
@@ -868,18 +965,28 @@ func (c *scriptChecker) enqueueReachableFunction(label string, fn *ScriptFunctio
 	if !c.checkReachableCalls || fn == nil || fn.owner != c.script {
 		return
 	}
-	if c.checkedReachableFuncs == nil {
-		c.checkedReachableFuncs = make(map[*ScriptFunction]struct{})
-	}
-	if _, ok := c.checkedReachableFuncs[fn]; ok {
+	if !c.markReachableFunctionChecked(fn) {
 		return
 	}
-	c.checkedReachableFuncs[fn] = struct{}{}
 	c.reachableFuncQueue = append(c.reachableFuncQueue, reachableFunction{
 		label:        label,
 		fn:           fn,
 		runtimeState: c.snapshotRuntimeState(),
 	})
+}
+
+func (c *scriptChecker) markReachableFunctionChecked(fn *ScriptFunction) bool {
+	if fn == nil {
+		return false
+	}
+	if c.checkedReachableFuncs == nil {
+		c.checkedReachableFuncs = make(map[*ScriptFunction]struct{})
+	}
+	if _, ok := c.checkedReachableFuncs[fn]; ok {
+		return false
+	}
+	c.checkedReachableFuncs[fn] = struct{}{}
+	return true
 }
 
 func (c *scriptChecker) checkReachableFunctions() {
@@ -905,7 +1012,7 @@ func (c *scriptChecker) withFreshRuntimeTypeRoot(check func()) {
 	previousRoot := c.runtimeTypeRoot
 	previousModules := c.runtimeModules
 	previousNamespaceMembers := c.runtimeNamespaceMembers
-	c.runtimeTypeRoot = checkTypeRoot(c.script, c.optionGlobals)
+	c.runtimeTypeRoot = checkTypeRootWithParentAndGlobals(c.script, c.optionGlobals, cloneCheckRoot(c.runtimeTypeRootParent), c.optionGlobalsOverride)
 	c.runtimeModules = nil
 	c.runtimeNamespaceMembers = nil
 	defer func() {
@@ -2606,11 +2713,14 @@ func (c *scriptChecker) checkCallShape(function string, call staticCallView, nam
 }
 
 func (c *scriptChecker) checkCallValues(function, callName string, pos Position, fn *ScriptFunction, args []Value, kwargs map[string]Value) {
-	c.checkCallValueShape(function, callName, pos, fn, args, kwargs)
+	if !c.checkCallValueShape(function, callName, pos, fn, args, kwargs) {
+		return
+	}
 	c.checkCallValueTypes(function, callName, pos, fn, args, kwargs)
 }
 
-func (c *scriptChecker) checkCallValueShape(function, callName string, pos Position, fn *ScriptFunction, args []Value, kwargs map[string]Value) {
+func (c *scriptChecker) checkCallValueShape(function, callName string, pos Position, fn *ScriptFunction, args []Value, kwargs map[string]Value) bool {
+	ok := true
 	var usedKw map[string]bool
 	if len(kwargs) > 0 {
 		usedKw = make(map[string]bool, len(kwargs))
@@ -2626,6 +2736,7 @@ func (c *scriptChecker) checkCallValueShape(function, callName string, pos Posit
 				}
 			} else if param.DefaultVal == nil {
 				c.add(function, pos, "call to %s is missing keyword argument %s", callName, param.Name)
+				ok = false
 			}
 		case ParamRest:
 			argIdx = len(args)
@@ -2645,20 +2756,24 @@ func (c *scriptChecker) checkCallValueShape(function, callName string, pos Posit
 				}
 			} else if param.DefaultVal == nil {
 				c.add(function, pos, "call to %s is missing argument %s", callName, param.Name)
+				ok = false
 			}
 		}
 	}
 
 	if argIdx < len(args) {
 		c.add(function, pos, "call to %s has unexpected positional arguments", callName)
+		ok = false
 	}
 	if usedKw != nil {
 		for _, name := range sortedValueKeywordNames(kwargs) {
 			if !usedKw[name] {
 				c.add(function, pos, "call to %s has unexpected keyword argument %s", callName, name)
+				ok = false
 			}
 		}
 	}
+	return ok
 }
 
 func (c *scriptChecker) checkCallValueTypes(function, callName string, pos Position, fn *ScriptFunction, args []Value, kwargs map[string]Value) {

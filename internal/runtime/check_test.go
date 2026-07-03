@@ -1596,6 +1596,22 @@ end
 	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
 		t.Fatalf("Call() after default-required module enum export = %#v, want Status::Draft", got)
 	}
+
+	callWarnings := script.CheckWarningsForCall("run", nil, CallOptions{
+		Keywords: map[string]Value{"status": NewSymbol("draft")},
+	})
+	if len(callWarnings) > 0 {
+		t.Fatalf("CheckWarningsForCall() after default-required module enum export = %#v, want none", callWarnings)
+	}
+	got, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Keywords: map[string]Value{"status": NewSymbol("draft")},
+	})
+	if err != nil {
+		t.Fatalf("Call() with keyword after default-required module enum export returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() with keyword after default-required module enum export = %#v, want Status::Draft", got)
+	}
 }
 
 func TestCheckWarningsDoNotLetFutureBindingsShadowDefaultRequiredModuleExports(t *testing.T) {
@@ -1700,6 +1716,37 @@ end
 			requireCheckWarningContains(t, script, tc.want)
 			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.wantErr)
 		})
+	}
+}
+
+func TestCheckWarningsValidateRequiredModuleFunctionsWithHostGlobals(t *testing.T) {
+	t.Parallel()
+
+	hostScript := compileScript(t, `
+enum Status
+  Draft
+end
+`)
+	hostStatus := NewEnum(hostScript.enums["Status"])
+	root := tempModuleTree(t, moduleFile{path: "consumer.vibe", content: `def normalize(status: Status) -> Status
+  status
+end
+`})
+	engine := mustNewEngineWithModuleRoot(t, root)
+	script := compileScriptWithEngine(t, engine, `
+def run
+  require("consumer").normalize(:draft)
+end
+`)
+	opts := CallOptions{Globals: map[string]Value{"Status": hostStatus}}
+
+	requireNoCheckWarningsWithOptions(t, script, opts)
+	got, err := script.Call(context.Background(), "run", nil, opts)
+	if err != nil {
+		t.Fatalf("Call() with host enum available to required module returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() with host enum available to required module = %#v, want Status::Draft", got)
 	}
 }
 
