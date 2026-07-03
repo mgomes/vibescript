@@ -184,6 +184,8 @@ func TestTypedHashKeysSurviveHashHelpers(t *testing.T) {
   excepted = hash.except(:a)
   selected = hash.select { |key, value| key == "a" }
   rejected = hash.reject { |key, value| key == :a }
+  deleted_if = hash.delete_if { |key, value| false }
+  kept_if = hash.keep_if { |key, value| true }
   transformed = hash.transform_values { |value| value + 10 }
   compacted = { "a" => 1, :a => nil }.compact
   looped = []
@@ -206,6 +208,12 @@ func TestTypedHashKeysSurviveHashHelpers(t *testing.T) {
     reject_size: rejected.size,
     reject_str: rejected["a"],
     reject_sym_nil: rejected[:a] == nil,
+    delete_if_size: deleted_if.size,
+    delete_if_str: deleted_if["a"],
+    delete_if_sym: deleted_if[:a],
+    keep_if_size: kept_if.size,
+    keep_if_str: kept_if["a"],
+    keep_if_sym: kept_if[:a],
     transform_size: transformed.size,
     transform_str: transformed["a"],
     transform_sym: transformed[:a],
@@ -237,6 +245,12 @@ end`)
 		"reject_size":     NewInt(1),
 		"reject_str":      NewInt(1),
 		"reject_sym_nil":  NewBool(true),
+		"delete_if_size":  NewInt(2),
+		"delete_if_str":   NewInt(1),
+		"delete_if_sym":   NewInt(2),
+		"keep_if_size":    NewInt(2),
+		"keep_if_str":     NewInt(1),
+		"keep_if_sym":     NewInt(2),
 		"transform_size":  NewInt(2),
 		"transform_str":   NewInt(11),
 		"transform_sym":   NewInt(12),

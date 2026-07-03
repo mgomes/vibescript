@@ -136,6 +136,10 @@ end
 def bad()
   1.between?("a", "z")
 end
+
+def lower_bound_false_with_bad_upper()
+  1.between?(2, "x")
+end
 `)
 
 	got := callFunc(t, script, "run", nil)
@@ -149,6 +153,10 @@ end
 		NewBool(true),
 	})
 	requireCallErrorContains(t, script, "bad", nil, CallOptions{}, "unsupported comparison operands")
+	got = callFunc(t, script, "lower_bound_false_with_bad_upper", nil)
+	if !got.Equal(NewBool(false)) {
+		t.Fatalf("lower_bound_false_with_bad_upper = %s, want false", got.Inspect())
+	}
 }
 
 func TestRubyBatchCollectionFiltersAndUniqBlock(t *testing.T) {

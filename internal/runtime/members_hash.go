@@ -1344,6 +1344,41 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	if len(kwargs) > 0 {
 		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
 	}
+	if hashHasTypedEntries(receiver) {
+		count := receiver.HashLen()
+		delta := exec.reserveLoopScratch(hashTransformBufferBytes(count, sortedHashEntryBufferBytes(count)))
+		defer exec.releaseLoopScratch(delta)
+		runner, err := newBlockCallRunner(exec, block, method, receiver, nil, kwargs)
+		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
+		out := newHashPreservingDefault(receiver, make(map[string]Value, count))
+		var blockArgs [2]Value
+		var entryBuf [smallHashKeyBufferSize]HashEntry
+		for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			blockArgs[0] = entry.Key
+			blockArgs[1] = entry.Value
+			include, err := runner.call(blockArgs[:])
+			if err != nil {
+				return NewNil(), err
+			}
+			if err := exec.checkContext(); err != nil {
+				return NewNil(), err
+			}
+			if include.Truthy() == keepTruthy {
+				if err := hashSet(out, entry.Key, entry.Value); err != nil {
+					return NewNil(), err
+				}
+			}
+		}
+		return out, nil
+	}
 	entries := receiver.Hash()
 	delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), sortedKeyBufferBytes(len(entries))))
 	defer exec.releaseLoopScratch(delta)

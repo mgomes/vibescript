@@ -1084,11 +1084,14 @@ func comparableBetween(method string, receiver Value, args []Value, kwargs map[s
 	if err != nil {
 		return NewNil(), err
 	}
+	if !lowerOrdered || lowerOrder > 0 {
+		return NewBool(false), nil
+	}
 	upperOrder, upperOrdered, err := compareValueOrder(receiver, args[1])
 	if err != nil {
 		return NewNil(), err
 	}
-	return NewBool(lowerOrdered && upperOrdered && lowerOrder <= 0 && upperOrder <= 0), nil
+	return NewBool(upperOrdered && upperOrder <= 0), nil
 }
 
 // compareValueOrder reports the relative order of two values as -1, 0, or 1.
