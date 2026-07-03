@@ -677,6 +677,37 @@ end`,
 	}
 }
 
+func TestCheckWarningsForFunctionRechecksReachableFunctionsPerRuntimeState(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def helper() -> Status
+  :draft
+end
+
+def run(flag)
+  if flag
+    require("enum_status")
+    helper()
+  else
+    helper()
+  end
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	messages := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		messages = append(messages, warning.Message)
+	}
+	got := strings.Join(messages, "\n")
+	if !strings.Contains(got, "unknown type Status") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, "unknown type Status")
+	}
+	requireCallErrorContains(t, script, "run", []Value{NewBool(false)}, CallOptions{}, "unknown type Status")
+}
+
 func TestCheckWarningsForCallValidatesArguments(t *testing.T) {
 	t.Parallel()
 

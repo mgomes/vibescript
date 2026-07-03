@@ -110,7 +110,7 @@ type scriptChecker struct {
 	moduleExportRoot        *Env
 	runtimeTypeRootParent   *Env
 	checkReachableCalls     bool
-	checkedReachableFuncs   map[*ScriptFunction]struct{}
+	checkedReachableFuncs   map[string]struct{}
 	reachableFuncQueue      []reachableFunction
 }
 
@@ -1064,13 +1064,22 @@ func (c *scriptChecker) markReachableFunctionChecked(fn *ScriptFunction) bool {
 		return false
 	}
 	if c.checkedReachableFuncs == nil {
-		c.checkedReachableFuncs = make(map[*ScriptFunction]struct{})
+		c.checkedReachableFuncs = make(map[string]struct{})
 	}
-	if _, ok := c.checkedReachableFuncs[fn]; ok {
+	key := c.reachableFunctionCheckKey(fn)
+	if _, ok := c.checkedReachableFuncs[key]; ok {
 		return false
 	}
-	c.checkedReachableFuncs[fn] = struct{}{}
+	c.checkedReachableFuncs[key] = struct{}{}
 	return true
+}
+
+func (c *scriptChecker) reachableFunctionCheckKey(fn *ScriptFunction) string {
+	root := c.runtimeTypeRoot
+	if root == nil {
+		root = c.typeRoot
+	}
+	return fmt.Sprintf("%p\x00%s", fn, moduleCheckContextKey(root))
 }
 
 func (c *scriptChecker) checkReachableFunctions() {
