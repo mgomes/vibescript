@@ -295,7 +295,9 @@ func TestRegexLiteralErrors(t *testing.T) {
 	}
 }
 
-// TestRegexLiteralGuards pins the sandbox limits on regex literal matching.
+// TestRegexLiteralGuards pins the sandbox limits on regex literal matching,
+// including the case-equality paths (===, case/when, and Array#grep) that
+// reach the matcher without going through =~.
 func TestRegexLiteralGuards(t *testing.T) {
 	t.Parallel()
 
@@ -303,8 +305,28 @@ func TestRegexLiteralGuards(t *testing.T) {
     def oversized_match(text)
       text =~ /a/
     end
+
+    def oversized_case_eq(text)
+      /a/ === text
+    end
+
+    def oversized_case_when(text)
+      case text
+      when /a/
+        true
+      else
+        false
+      end
+    end
+
+    def oversized_grep(text)
+      [text].grep(/a/)
+    end
     `)
 
 	huge := strings.Repeat("x", maxRegexInputBytes+1)
 	requireCallErrorContains(t, script, "oversized_match", []Value{NewString(huge)}, CallOptions{}, "=~ text exceeds limit")
+	requireCallErrorContains(t, script, "oversized_case_eq", []Value{NewString(huge)}, CallOptions{}, "regex match text exceeds limit")
+	requireCallErrorContains(t, script, "oversized_case_when", []Value{NewString(huge)}, CallOptions{}, "regex match text exceeds limit")
+	requireCallErrorContains(t, script, "oversized_grep", []Value{NewString(huge)}, CallOptions{}, "regex match text exceeds limit")
 }

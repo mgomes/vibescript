@@ -87,11 +87,18 @@ func (exec *Execution) evalRegexMatchOperator(operator TokenType, left, right Va
 
 // regexCandidateMatches reports whether a regex used as a case-equality
 // matcher (`/re/ === text` or a `when /re/` clause) matches a string target.
-func regexCandidateMatches(target, candidate Value) bool {
+// It enforces the same maxRegexInputBytes guard as =~ and regex.match? so a
+// large target cannot bypass the sandbox's regex input limit through case
+// equality.
+func regexCandidateMatches(target, candidate Value) (bool, error) {
 	if target.Kind() != KindString {
-		return false
+		return false, nil
 	}
-	return candidate.Regex().Compiled.MatchString(target.String())
+	text := target.String()
+	if len(text) > maxRegexInputBytes {
+		return false, guardLimitErrorf("regex match text exceeds limit %d bytes", maxRegexInputBytes)
+	}
+	return candidate.Regex().Compiled.MatchString(text), nil
 }
 
 func regexMember(property string) (Value, error) {
