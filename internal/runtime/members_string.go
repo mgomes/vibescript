@@ -886,13 +886,21 @@ func stringSlice(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	if len(args) < 1 || len(args) > 2 {
 		return NewNil(), fmt.Errorf("string.slice expects an index, range, or substring with optional length")
 	}
-	text := receiver.String()
+	second := NewNil()
 	if len(args) == 2 {
-		start, err := valueToInt(args[0])
+		second = args[1]
+	}
+	return stringSliceResult(receiver, args[0], second, len(args) == 2)
+}
+
+func stringSliceResult(receiver, first, second Value, hasLength bool) (Value, error) {
+	text := receiver.String()
+	if hasLength {
+		start, err := valueToInt(first)
 		if err != nil {
 			return NewNil(), fmt.Errorf("string.slice index must be integer")
 		}
-		length, err := valueToInt(args[1])
+		length, err := valueToInt(second)
 		if err != nil {
 			return NewNil(), fmt.Errorf("string.slice length must be integer")
 		}
@@ -902,7 +910,7 @@ func stringSlice(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		}
 		return NewString(substr), nil
 	}
-	switch arg := args[0]; arg.Kind() {
+	switch arg := first; arg.Kind() {
 	case KindRange:
 		substr, ok := stringRuneRangeSlice(text, arg.Range())
 		if !ok {
@@ -2563,9 +2571,6 @@ func stringMemberQuery(property string) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("string.index expects substring and optional offset")
 			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.index substring must be string")
-			}
 			offset := 0
 			if len(args) == 2 {
 				i, err := valueToInt(args[1])
@@ -2574,23 +2579,12 @@ func stringMemberQuery(property string) (Value, error) {
 				}
 				offset = i
 			}
-			effective, ok := stringEffectiveOffset(receiver.String(), offset)
-			if !ok {
-				return NewNil(), nil
-			}
-			index := stringRuneIndex(receiver.String(), args[0].String(), effective)
-			if index < 0 {
-				return NewNil(), nil
-			}
-			return NewInt(int64(index)), nil
+			return stringIndexResult(receiver, args[0], offset)
 		}), nil
 	case "rindex":
 		return NewAutoBuiltin("string.rindex", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("string.rindex expects substring and optional offset")
-			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.rindex substring must be string")
 			}
 			offset := stringRuneLen(receiver.String())
 			if len(args) == 2 {
@@ -2604,17 +2598,39 @@ func stringMemberQuery(property string) (Value, error) {
 				}
 				offset = effective
 			}
-			index := stringRuneRIndex(receiver.String(), args[0].String(), offset)
-			if index < 0 {
-				return NewNil(), nil
-			}
-			return NewInt(int64(index)), nil
+			return stringRIndexResult(receiver, args[0], offset)
 		}), nil
 	case "slice":
 		return NewAutoBuiltin("string.slice", stringSlice), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
+}
+
+func stringIndexResult(receiver, needle Value, offset int) (Value, error) {
+	if needle.Kind() != KindString {
+		return NewNil(), fmt.Errorf("string.index substring must be string")
+	}
+	effective, ok := stringEffectiveOffset(receiver.String(), offset)
+	if !ok {
+		return NewNil(), nil
+	}
+	index := stringRuneIndex(receiver.String(), needle.String(), effective)
+	if index < 0 {
+		return NewNil(), nil
+	}
+	return NewInt(int64(index)), nil
+}
+
+func stringRIndexResult(receiver, needle Value, offset int) (Value, error) {
+	if needle.Kind() != KindString {
+		return NewNil(), fmt.Errorf("string.rindex substring must be string")
+	}
+	index := stringRuneRIndex(receiver.String(), needle.String(), offset)
+	if index < 0 {
+		return NewNil(), nil
+	}
+	return NewInt(int64(index)), nil
 }
 
 // stringScanInitialCap bounds the result slice's initial capacity so a subject

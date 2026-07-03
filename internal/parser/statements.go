@@ -185,10 +185,6 @@ func (p *parser) parseRaiseStatement() ast.Statement {
 
 func (p *parser) parseBlock(stop ...ast.TokenType) []ast.Statement {
 	stmts := []ast.Statement{}
-	stopSet := make(map[ast.TokenType]struct{}, len(stop))
-	for _, tt := range stop {
-		stopSet[tt] = struct{}{}
-	}
 	p.statementNesting++
 	defer func() {
 		p.statementNesting--
@@ -196,7 +192,7 @@ func (p *parser) parseBlock(stop ...ast.TokenType) []ast.Statement {
 
 	for {
 		p.skipStatementSeparators()
-		if _, ok := stopSet[p.curToken.Type]; ok || p.curToken.Type == ast.TokenEOF {
+		if isBlockStopToken(p.curToken.Type, stop) || p.curToken.Type == ast.TokenEOF {
 			return stmts
 		}
 		stmt := p.parseStatement()
@@ -205,6 +201,15 @@ func (p *parser) parseBlock(stop ...ast.TokenType) []ast.Statement {
 		}
 		p.nextToken()
 	}
+}
+
+func isBlockStopToken(token ast.TokenType, stop []ast.TokenType) bool {
+	for _, candidate := range stop {
+		if token == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *parser) parseIfStatement() ast.Statement {
