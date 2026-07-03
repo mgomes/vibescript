@@ -797,6 +797,21 @@ end
 	requireNoCheckWarnings(t, script)
 }
 
+func TestCheckWarningsPropagateConditionRequireEffectsToTrueBranch(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(flag)
+  if flag && require("enum_status")
+    normalize("bad")
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to normalize argument status expected Status, got string")
+}
+
 func TestCheckWarningsDoNotHoistShortCircuitRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
@@ -1260,6 +1275,30 @@ end
 	}
 	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
 		t.Fatalf("Call() after ensure-required module enum export = %#v, want Status::Draft", got)
+	}
+}
+
+func TestCheckWarningsDefersReturnTypeUntilAfterEnsureRequires(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  begin
+    return :draft
+  ensure
+    require("enum_status")
+  end
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after ensure-required explicit return enum export returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() after ensure-required explicit return enum export = %#v, want Status::Draft", got)
 	}
 }
 

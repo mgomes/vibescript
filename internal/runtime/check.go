@@ -1076,11 +1076,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		return
 	case *ReturnStmt:
 		if returnType != nil {
-			if typed.Value == nil {
-				c.checkRuntimeNilAgainstType(function, typed.Pos(), returnType, "return value")
-			} else {
-				c.checkRuntimeExpressionAgainstType(function, typed.Value, returnType, "return value")
-			}
+			c.checkReturnStatementType(function, returnType, typed)
 		}
 		c.checkExpression(function, typed.Value)
 	case *RaiseStmt:
@@ -1119,28 +1115,40 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		baseScopeState := c.snapshotScopeState()
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
-		falseRuntimeState := c.snapshotRuntimeState()
-		falseScopeState := c.snapshotScopeState()
+		conditionRuntimeState := c.snapshotRuntimeState()
+		conditionScopeState := c.snapshotScopeState()
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
 		fallthroughScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
+		c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
 		c.checkStatements(function, returnType, typed.Consequent)
 		if !blockAlwaysExits(typed.Consequent) {
 			fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 			fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 		}
+		c.restoreRuntimeState(conditionRuntimeState)
+		c.restoreScopeState(conditionScopeState)
+		c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
+		falseRuntimeState := c.snapshotRuntimeState()
+		falseScopeState := c.snapshotScopeState()
 		for _, elseIf := range typed.ElseIf {
 			c.restoreRuntimeState(falseRuntimeState)
 			c.restoreScopeState(falseScopeState)
 			c.checkExpression(function, elseIf.Condition)
 			c.collectRuntimeRequireCallExportsFromExpression(elseIf.Condition)
-			falseRuntimeState = c.snapshotRuntimeState()
-			falseScopeState = c.snapshotScopeState()
+			conditionRuntimeState = c.snapshotRuntimeState()
+			conditionScopeState = c.snapshotScopeState()
+			c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, true)
 			c.checkStatements(function, returnType, elseIf.Consequent)
 			if !blockAlwaysExits(elseIf.Consequent) {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
+			c.restoreRuntimeState(conditionRuntimeState)
+			c.restoreScopeState(conditionScopeState)
+			c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, false)
+			falseRuntimeState = c.snapshotRuntimeState()
+			falseScopeState = c.snapshotScopeState()
 		}
 		c.restoreRuntimeState(falseRuntimeState)
 		c.restoreScopeState(falseScopeState)
@@ -1180,8 +1188,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
 	case *TryStmt:
+		deferReturnType := returnType != nil && len(typed.Ensure) > 0 && !blockAlwaysExits(typed.Ensure)
 		branchReturnType := returnType
-		if blockAlwaysExits(typed.Ensure) {
+		if deferReturnType || blockAlwaysExits(typed.Ensure) {
 			branchReturnType = nil
 		}
 		baseRuntimeState := c.snapshotRuntimeState()
@@ -1211,7 +1220,90 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
 		c.checkStatements(function, returnType, typed.Ensure)
+		if deferReturnType {
+			c.checkDeferredReturnTypes(function, returnType, typed.Body)
+			c.checkDeferredReturnTypes(function, returnType, typed.Else)
+			c.checkDeferredReturnTypes(function, returnType, typed.Rescue)
+		}
 	}
+}
+
+func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, truthy bool) {
+	switch typed := expr.(type) {
+	case *BinaryExpr:
+		switch typed.Operator {
+		case tokenAnd:
+			if truthy {
+				c.collectRuntimeRequireCallExportsFromExpression(typed.Right)
+				c.collectRuntimeConditionOutcomeEffects(typed.Left, true)
+				c.collectRuntimeConditionOutcomeEffects(typed.Right, true)
+			} else if binaryRightAlwaysEvaluates(typed) {
+				c.collectRuntimeConditionOutcomeEffects(typed.Right, false)
+			}
+		case tokenOr:
+			if !truthy {
+				c.collectRuntimeRequireCallExportsFromExpression(typed.Right)
+				c.collectRuntimeConditionOutcomeEffects(typed.Left, false)
+				c.collectRuntimeConditionOutcomeEffects(typed.Right, false)
+			} else if binaryRightAlwaysEvaluates(typed) {
+				c.collectRuntimeConditionOutcomeEffects(typed.Right, true)
+			}
+		}
+	}
+}
+
+func (c *scriptChecker) checkDeferredReturnTypes(function string, returnType *TypeExpr, statements []Statement) {
+	if returnType == nil {
+		return
+	}
+	for _, stmt := range statements {
+		c.checkDeferredReturnTypeStatement(function, returnType, stmt)
+		if statementAlwaysExits(stmt) {
+			return
+		}
+	}
+}
+
+func (c *scriptChecker) checkDeferredReturnTypeStatement(function string, returnType *TypeExpr, stmt Statement) {
+	switch typed := stmt.(type) {
+	case nil:
+		return
+	case *ReturnStmt:
+		c.checkReturnStatementType(function, returnType, typed)
+	case *LogicalStmt:
+		c.checkDeferredReturnTypeStatement(function, returnType, typed.Left)
+		if logicalStatementRightMayEvaluate(typed) {
+			c.checkDeferredReturnTypeStatement(function, returnType, typed.Right)
+		}
+	case *IfStmt:
+		c.checkDeferredReturnTypes(function, returnType, typed.Consequent)
+		for _, elseIf := range typed.ElseIf {
+			c.checkDeferredReturnTypes(function, returnType, elseIf.Consequent)
+		}
+		c.checkDeferredReturnTypes(function, returnType, typed.Alternate)
+	case *ForStmt:
+		c.checkDeferredReturnTypes(function, returnType, typed.Body)
+	case *WhileStmt:
+		c.checkDeferredReturnTypes(function, returnType, typed.Body)
+	case *UntilStmt:
+		c.checkDeferredReturnTypes(function, returnType, typed.Body)
+	case *TryStmt:
+		c.checkDeferredReturnTypes(function, returnType, typed.Body)
+		c.checkDeferredReturnTypes(function, returnType, typed.Else)
+		c.checkDeferredReturnTypes(function, returnType, typed.Rescue)
+		c.checkDeferredReturnTypes(function, returnType, typed.Ensure)
+	}
+}
+
+func (c *scriptChecker) checkReturnStatementType(function string, returnType *TypeExpr, stmt *ReturnStmt) {
+	if stmt == nil {
+		return
+	}
+	if stmt.Value == nil {
+		c.checkRuntimeNilAgainstType(function, stmt.Pos(), returnType, "return value")
+		return
+	}
+	c.checkRuntimeExpressionAgainstType(function, stmt.Value, returnType, "return value")
 }
 
 func (c *scriptChecker) checkExpression(function string, expr Expression) {
