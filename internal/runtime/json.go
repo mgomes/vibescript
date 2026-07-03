@@ -573,6 +573,9 @@ func jsonObjectIdentity(val Value) uintptr {
 }
 
 func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
+	// Typed hashes carry Ruby-style insertion order, so stringify emits members
+	// in that order the way Ruby's JSON.generate does. Legacy hashes and
+	// objects have no recorded order and keep sorted keys for determinism.
 	if val.Kind() == KindHash && hashHasTypedEntries(val) {
 		hashEntries := val.HashEntries()
 		entries := make([]jsonObjectEntry, len(hashEntries))
@@ -581,18 +584,8 @@ func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
 			if err != nil {
 				return nil, fmt.Errorf("JSON.stringify key: %w", err)
 			}
-			sortKey, err := canonicalHashKey(entry.Key)
-			if err != nil {
-				return nil, fmt.Errorf("JSON.stringify key: %w", err)
-			}
-			entries[i] = jsonObjectEntry{key: key, sortKey: sortKey, value: entry.Value}
+			entries[i] = jsonObjectEntry{key: key, value: entry.Value}
 		}
-		sort.Slice(entries, func(i, j int) bool {
-			if entries[i].key != entries[j].key {
-				return entries[i].key < entries[j].key
-			}
-			return entries[i].sortKey < entries[j].sortKey
-		})
 		return entries, nil
 	}
 

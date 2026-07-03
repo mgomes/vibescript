@@ -187,8 +187,10 @@ func arrayMemberGrouping(property string) (Value, error) {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
-			groups := make(map[hashAggregationKey][]Value, arrayGroupingInitialCapacity(len(arr)))
-			keyValues := make(map[hashAggregationKey]Value, arrayGroupingInitialCapacity(len(arr)))
+			initialCapacity := arrayGroupingInitialCapacity(len(arr))
+			order := make([]hashAggregationKey, 0, initialCapacity)
+			groups := make(map[hashAggregationKey][]Value, initialCapacity)
+			keyValues := make(map[hashAggregationKey]Value, initialCapacity)
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
@@ -201,13 +203,15 @@ func arrayMemberGrouping(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("array.group_by block returned unsupported hash key: %w", err)
 				}
 				if _, exists := groups[key]; !exists {
+					order = append(order, key)
 					keyValues[key] = groupValue
 				}
 				groups[key] = append(groups[key], item)
 			}
+			// Ruby's Hash#group_by result lists groups in first-encounter order.
 			result := NewHash(make(map[string]Value, len(groups)))
-			for key, items := range groups {
-				if err := hashSet(result, keyValues[key], NewArray(items)); err != nil {
+			for _, key := range order {
+				if err := hashSet(result, keyValues[key], NewArray(groups[key])); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -264,6 +268,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), fmt.Errorf("array.tally value is unsupported hash key: %w", err)
 			}
+			order := make([]hashAggregationKey, 0, initialCapacity)
 			counts := make(map[hashAggregationKey]int64, initialCapacity)
 			keyValues := make(map[hashAggregationKey]Value, initialCapacity)
 			var runner *blockCallRunner
@@ -289,13 +294,15 @@ func arrayMemberGrouping(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("array.tally value is unsupported hash key: %w", err)
 				}
 				if _, exists := keyValues[key]; !exists {
+					order = append(order, key)
 					keyValues[key] = keyValue
 				}
 				counts[key]++
 			}
+			// Ruby's Array#tally result lists keys in first-encounter order.
 			result := NewHash(make(map[string]Value, len(counts)))
-			for key, count := range counts {
-				if err := hashSet(result, keyValues[key], NewInt(count)); err != nil {
+			for _, key := range order {
+				if err := hashSet(result, keyValues[key], NewInt(counts[key])); err != nil {
 					return NewNil(), err
 				}
 			}

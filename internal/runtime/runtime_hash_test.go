@@ -355,7 +355,7 @@ func TestHashMergeAndKeys(t *testing.T) {
       base.merge(override)
     end
 
-    def sorted_keys()
+    def insertion_keys()
       record = { b: 2, a: 1 }
       record.keys
     end
@@ -373,8 +373,8 @@ func TestHashMergeAndKeys(t *testing.T) {
 		t.Fatalf("raised mismatch: got %v want %v", got, want)
 	}
 
-	keys := callFunc(t, script, "sorted_keys", nil)
-	wantKeys := []Value{NewSymbol("a"), NewSymbol("b")}
+	keys := callFunc(t, script, "insertion_keys", nil)
+	wantKeys := []Value{NewSymbol("b"), NewSymbol("a")}
 	compareArrays(t, keys, wantKeys)
 }
 
@@ -929,7 +929,7 @@ func TestHashMethodNamesWinOverKeys(t *testing.T) {
 	if !collisions["size_key"].Equal(NewString("XL")) {
 		t.Fatalf("size_key = %v, want XL", collisions["size_key"])
 	}
-	compareArrays(t, collisions["keys_method"], []Value{NewSymbol("fetch"), NewSymbol("keys"), NewSymbol("size")})
+	compareArrays(t, collisions["keys_method"], []Value{NewSymbol("size"), NewSymbol("keys"), NewSymbol("fetch")})
 	if !collisions["keys_key"].Equal(NewString("raw keys")) {
 		t.Fatalf("keys_key = %v, want raw keys", collisions["keys_key"])
 	}
@@ -1051,8 +1051,8 @@ func TestHashExpandedHelpers(t *testing.T) {
 	if got["missing_key"].Bool() {
 		t.Fatalf("missing_key should be false")
 	}
-	compareArrays(t, got["keys"], []Value{NewSymbol("a"), NewSymbol("b"), NewSymbol("c")})
-	compareArrays(t, got["values"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, got["keys"], []Value{NewSymbol("b"), NewSymbol("a"), NewSymbol("c")})
+	compareArrays(t, got["values"], []Value{NewInt(2), NewInt(1), NewInt(3)})
 
 	if !got["fetch_hit"].Equal(NewInt(1)) {
 		t.Fatalf("fetch_hit mismatch: %v", got["fetch_hit"])
@@ -1085,9 +1085,9 @@ func TestHashExpandedHelpers(t *testing.T) {
 	}
 	compareHash(t, except.Hash(), map[string]Value{"a": NewInt(1), "c": NewInt(3)})
 
-	compareArrays(t, got["each_pairs"], []Value{NewString("a=1"), NewString("b=2"), NewString("c=3")})
-	compareArrays(t, got["each_keys"], []Value{NewSymbol("a"), NewSymbol("b"), NewSymbol("c")})
-	compareArrays(t, got["each_values"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, got["each_pairs"], []Value{NewString("b=2"), NewString("a=1"), NewString("c=3")})
+	compareArrays(t, got["each_keys"], []Value{NewSymbol("b"), NewSymbol("a"), NewSymbol("c")})
+	compareArrays(t, got["each_values"], []Value{NewInt(2), NewInt(1), NewInt(3)})
 
 	selectGT1 := got["select_gt1"]
 	if selectGT1.Kind() != KindHash {
@@ -1123,7 +1123,7 @@ func TestHashExpandedHelpers(t *testing.T) {
 	if collision.Kind() != KindHash {
 		t.Fatalf("collision expected hash, got %v", collision.Kind())
 	}
-	compareHash(t, collision.Hash(), map[string]Value{"same": NewInt(2)})
+	compareHash(t, collision.Hash(), map[string]Value{"same": NewInt(1)})
 }
 
 func TestHashEachBlockArgumentShape(t *testing.T) {
@@ -1659,7 +1659,7 @@ end`)
 	}
 	compareHash(t, got.Hash(), map[string]Value{
 		"equal": NewBool(false),
-		"json":  NewString(`{"a":2,"a":1}`),
+		"json":  NewString(`{"a":1,"a":2}`),
 	})
 }
 
@@ -2117,4 +2117,306 @@ func TestHashValueOmissionUndefinedLocal(t *testing.T) {
   `)
 
 	requireCallErrorContains(t, script, "build", nil, CallOptions{}, "undefined variable name")
+}
+
+// TestHashInsertionOrder pins Ruby-style insertion order for hash iteration:
+// entries surface in the order they were inserted, an overwritten key keeps
+// its original position, and transforms preserve their receiver's order.
+func TestHashInsertionOrder(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def literal_keys()
+      { b: 2, a: 1 }.keys
+    end
+
+    def literal_values()
+      { b: 2, a: 1 }.values
+    end
+
+    def each_order()
+      out = []
+      { b: 2, a: 1 }.each do |k, v|
+        out = out.push(k)
+      end
+      out
+    end
+
+    def duplicate_literal()
+      h = { a: 1, b: 2, a: 3 }
+      [h.keys, h[:a]]
+    end
+
+    def overwrite_keeps_position()
+      h = { b: 2, a: 1 }
+      h[:b] = 9
+      h.keys
+    end
+
+    def new_key_appends()
+      h = { b: 2 }
+      h[:a] = 1
+      h[:c] = 3
+      h.keys
+    end
+
+    def hash_new_insertion()
+      h = Hash.new
+      h[:z] = 1
+      h[:a] = 2
+      h.keys
+    end
+
+    def merge_order()
+      { b: 2, a: 1 }.merge({ c: 3, a: 9 })
+    end
+
+    def merge_multi_order()
+      { b: 2 }.merge({ d: 4, a: 1 }, { c: 3, a: 9 }).keys
+    end
+
+    def replace_order()
+      { a: 1 }.replace({ z: 9, b: 2 }).keys
+    end
+
+    def store_appends()
+      { c: 3, a: 1 }.store(:b, 2).keys
+    end
+
+    def slice_argument_order()
+      { c: 3, a: 1, b: 2 }.slice(:b, :c).keys
+    end
+
+    def except_receiver_order()
+      { c: 3, a: 1, b: 2 }.except(:a).keys
+    end
+
+    def select_receiver_order()
+      { c: 3, a: 1, b: 2 }.select do |k, v|
+        v >= 1
+      end.keys
+    end
+
+    def reject_receiver_order()
+      { c: 3, a: 1, b: 2 }.reject do |k, v|
+        v == 1
+      end.keys
+    end
+
+    def compact_receiver_order()
+      { c: nil, d: 4, a: 1, b: nil }.compact.keys
+    end
+
+    def transform_values_order()
+      { b: 2, a: 1 }.transform_values do |v|
+        v * 10
+      end.keys
+    end
+
+    def transform_keys_collision()
+      { c: 3, a: 1, b: 2 }.transform_keys do |k|
+        if k == :a
+          :x
+        else
+          :y
+        end
+      end
+    end
+
+    def mixed_key_kinds()
+      { 2 => "two", 1 => "one", b: 2, "a" => 1 }.keys
+    end
+
+    def to_a_order()
+      { c: 3, a: 1, b: 2 }.to_a
+    end
+
+    def flatten_order()
+      { b: 2, a: 1 }.flatten
+    end
+
+    def delete_keeps_order()
+      { c: 3, a: 1, b: 2 }.delete(:a)[:hash].keys
+    end
+
+    def group_by_first_encounter()
+      ["bb", "a", "ccc", "dd"].group_by do |s|
+        s.length
+      end.keys
+    end
+
+    def tally_first_encounter()
+      ["b", "a", "b", "c"].tally.keys
+    end
+
+    def to_h_pair_order()
+      [[:b, 2], [:a, 1]].to_h.keys
+    end
+
+    def json_parse_order()
+      JSON.parse("{\"b\":1,\"a\":2}").keys
+    end
+
+    def json_stringify_order()
+      JSON.stringify({ b: 2, a: 1, c: 3 })
+    end
+
+    def json_round_trip()
+      JSON.stringify(JSON.parse("{\"z\":1,\"m\":{\"b\":2,\"a\":3},\"a\":4}"))
+    end
+
+    def inspect_order()
+      { b: 2, a: 1 }.inspect
+    end
+
+    def interpolation_order()
+      h = { b: 2, a: 1 }
+      "#{h}"
+    end
+
+    def task_argument_order()
+      Tasks.map([{ b: 2, a: 1, c: 3 }], with: :task_probe)[0]
+    end
+
+    def task_probe(h)
+      h.keys
+    end
+
+    def task_result_order()
+      Tasks.map([1], with: :task_build)[0].keys
+    end
+
+    def task_build(n)
+      { z: n, a: 1 }
+    end
+    `)
+
+	sym := func(names ...string) []Value {
+		out := make([]Value, len(names))
+		for i, name := range names {
+			out[i] = NewSymbol(name)
+		}
+		return out
+	}
+
+	tests := []struct {
+		name string
+		fn   string
+		args []Value
+		want Value
+	}{
+		{name: "literal_keys", fn: "literal_keys", want: NewArray(sym("b", "a"))},
+		{name: "literal_values", fn: "literal_values", want: NewArray([]Value{NewInt(2), NewInt(1)})},
+		{name: "each_order", fn: "each_order", want: NewArray(sym("b", "a"))},
+		{
+			name: "duplicate_literal_keeps_first_position_last_value",
+			fn:   "duplicate_literal",
+			want: NewArray([]Value{NewArray(sym("a", "b")), NewInt(3)}),
+		},
+		{name: "overwrite_keeps_position", fn: "overwrite_keeps_position", want: NewArray(sym("b", "a"))},
+		{name: "new_key_appends", fn: "new_key_appends", want: NewArray(sym("b", "a", "c"))},
+		{name: "hash_new_insertion", fn: "hash_new_insertion", want: NewArray(sym("z", "a"))},
+		{name: "merge_multi_order", fn: "merge_multi_order", want: NewArray(sym("b", "d", "a", "c"))},
+		{name: "replace_argument_order", fn: "replace_order", want: NewArray(sym("z", "b"))},
+		{name: "store_appends", fn: "store_appends", want: NewArray(sym("c", "a", "b"))},
+		{name: "slice_argument_order", fn: "slice_argument_order", want: NewArray(sym("b", "c"))},
+		{name: "except_receiver_order", fn: "except_receiver_order", want: NewArray(sym("c", "b"))},
+		{name: "select_receiver_order", fn: "select_receiver_order", want: NewArray(sym("c", "a", "b"))},
+		{name: "reject_receiver_order", fn: "reject_receiver_order", want: NewArray(sym("c", "b"))},
+		{name: "compact_receiver_order", fn: "compact_receiver_order", want: NewArray(sym("d", "a"))},
+		{name: "transform_values_order", fn: "transform_values_order", want: NewArray(sym("b", "a"))},
+		{
+			name: "mixed_key_kinds",
+			fn:   "mixed_key_kinds",
+			want: NewArray([]Value{NewInt(2), NewInt(1), NewSymbol("b"), NewString("a")}),
+		},
+		{
+			name: "to_a_order",
+			fn:   "to_a_order",
+			want: NewArray([]Value{
+				NewArray([]Value{NewSymbol("c"), NewInt(3)}),
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+			}),
+		},
+		{
+			name: "flatten_order",
+			fn:   "flatten_order",
+			want: NewArray([]Value{NewSymbol("b"), NewInt(2), NewSymbol("a"), NewInt(1)}),
+		},
+		{name: "delete_keeps_order", fn: "delete_keeps_order", want: NewArray(sym("c", "b"))},
+		{
+			name: "group_by_first_encounter",
+			fn:   "group_by_first_encounter",
+			want: NewArray([]Value{NewInt(2), NewInt(1), NewInt(3)}),
+		},
+		{
+			name: "tally_first_encounter",
+			fn:   "tally_first_encounter",
+			want: NewArray([]Value{NewString("b"), NewString("a"), NewString("c")}),
+		},
+		{name: "to_h_pair_order", fn: "to_h_pair_order", want: NewArray(sym("b", "a"))},
+		{
+			name: "json_parse_document_order",
+			fn:   "json_parse_order",
+			want: NewArray([]Value{NewString("b"), NewString("a")}),
+		},
+		{
+			name: "json_stringify_insertion_order",
+			fn:   "json_stringify_order",
+			want: NewString(`{"b":2,"a":1,"c":3}`),
+		},
+		{
+			name: "json_round_trip_preserves_document_order",
+			fn:   "json_round_trip",
+			want: NewString(`{"z":1,"m":{"b":2,"a":3},"a":4}`),
+		},
+		{name: "inspect_order", fn: "inspect_order", want: NewString("{b: 2, a: 1}")},
+		{name: "interpolation_order", fn: "interpolation_order", want: NewString("{b: 2, a: 1}")},
+		{
+			name: "task_argument_boundary_preserves_order",
+			fn:   "task_argument_order",
+			want: NewArray(sym("b", "a", "c")),
+		},
+		{name: "task_result_boundary_preserves_order", fn: "task_result_order", want: NewArray(sym("z", "a"))},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, tc.args)
+			if diff := valuesDiff([]Value{tc.want}, []Value{got}); diff != "" {
+				t.Fatalf("%s mismatch (-want +got):\n%s", tc.fn, diff)
+			}
+		})
+	}
+
+	merged := callFunc(t, script, "merge_order", nil)
+	wantMergedKeys := sym("b", "a", "c")
+	gotKeys := merged.HashEntries()
+	if len(gotKeys) != len(wantMergedKeys) {
+		t.Fatalf("merge_order entries = %d, want %d", len(gotKeys), len(wantMergedKeys))
+	}
+	for i, entry := range gotKeys {
+		if !entry.Key.Equal(wantMergedKeys[i]) {
+			t.Fatalf("merge_order key[%d] = %v, want %v", i, entry.Key, wantMergedKeys[i])
+		}
+	}
+	if updated, ok, err := hashGet(merged, NewSymbol("a")); err != nil || !ok || !updated.Equal(NewInt(9)) {
+		t.Fatalf("merge_order :a = %v, %v, %v; want 9", updated, ok, err)
+	}
+
+	collision := callFunc(t, script, "transform_keys_collision", nil)
+	entries := collision.HashEntries()
+	if len(entries) != 2 {
+		t.Fatalf("transform_keys_collision entries = %d, want 2", len(entries))
+	}
+	// c and b both map to :y; the collision keeps :y at c's first-emitted
+	// position while b's later value wins, exactly like Ruby.
+	if !entries[0].Key.Equal(NewSymbol("y")) || !entries[0].Value.Equal(NewInt(2)) {
+		t.Fatalf("transform_keys_collision[0] = %v=%v, want y=2", entries[0].Key, entries[0].Value)
+	}
+	if !entries[1].Key.Equal(NewSymbol("x")) || !entries[1].Value.Equal(NewInt(1)) {
+		t.Fatalf("transform_keys_collision[1] = %v=%v, want x=1", entries[1].Key, entries[1].Value)
+	}
 }

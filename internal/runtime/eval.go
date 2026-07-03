@@ -2188,7 +2188,7 @@ func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value
 			return NewNil(), false, err
 		}
 		var entryBuf [smallHashKeyBufferSize]HashEntry
-		for _, entry := range sortedTypedHashEntriesInto(iterable, entryBuf[:]) {
+		for _, entry := range orderedTypedHashEntriesInto(iterable, entryBuf[:]) {
 			if err := exec.step(); err != nil {
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())
 			}

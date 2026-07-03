@@ -1192,7 +1192,7 @@ func TestJSONBuiltins(t *testing.T) {
 	if stringified.Kind() != KindString {
 		t.Fatalf("expected JSON.stringify to return string, got %v", stringified.Kind())
 	}
-	if got := stringified.String(); got != `{"name":"alex","ratio":1.5,"score":10,"tags":["x",true,null]}` {
+	if got := stringified.String(); got != `{"name":"alex","score":10,"tags":["x",true,null],"ratio":1.5}` {
 		t.Fatalf("stringify mismatch: %q", got)
 	}
 

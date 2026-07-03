@@ -183,12 +183,12 @@ func TestHashToArray(t *testing.T) {
 			},
 		},
 		{
-			name: "pairs follow deterministic sorted-key order",
+			name: "pairs follow insertion order",
 			fn:   "deterministic_order",
 			want: []Value{
+				NewArray([]Value{NewSymbol("c"), NewInt(3)}),
 				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
 				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
-				NewArray([]Value{NewSymbol("c"), NewInt(3)}),
 			},
 		},
 		{

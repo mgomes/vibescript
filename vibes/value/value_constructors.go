@@ -35,9 +35,17 @@ func NewArray(a []Value) Value { return Value{kind: KindArray, data: a} }
 // value (returned without inserting) or a default proc (a KindBlock value the
 // runtime invokes with the hash and key). KindObject keeps a bare map because
 // objects never carry hash defaults.
+//
+// order records Ruby-style insertion order for typedEntries: HashSet appends
+// each new lookup key and keeps an overwritten key at its original position,
+// so when typedEntries is non-nil, order lists each of its keys exactly once.
+// A hash promoted from a legacy string map seeds order from the sorted display
+// keys because a bare Go map carries no insertion record. Legacy-only hashes
+// (typedEntries == nil) keep a nil order and iterate in sorted key order.
 type hashData struct {
 	entries      map[string]Value
 	typedEntries map[HashLookupKey]HashEntry
+	order        []HashLookupKey
 	defaultValue Value
 	defaultProc  Value
 }

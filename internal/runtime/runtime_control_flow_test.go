@@ -318,23 +318,23 @@ func TestForHashLoops(t *testing.T) {
 		want Value
 	}{
 		{
-			name: "yields_sorted_key_value_pairs",
+			name: "yields_insertion_ordered_key_value_pairs",
 			fn:   "pairs",
 			want: NewArray([]Value{
-				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
 				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
 				NewArray([]Value{NewSymbol("c"), NewInt(3)}),
 			}),
 		},
 		{
 			name: "first_element_is_symbol_key",
 			fn:   "keys",
-			want: NewArray([]Value{NewSymbol("a"), NewSymbol("b")}),
+			want: NewArray([]Value{NewSymbol("b"), NewSymbol("a")}),
 		},
 		{
 			name: "second_element_is_value",
 			fn:   "values",
-			want: NewArray([]Value{NewInt(1), NewInt(2)}),
+			want: NewArray([]Value{NewInt(2), NewInt(1)}),
 		},
 		{
 			name: "empty_hash_runs_zero_iterations",
