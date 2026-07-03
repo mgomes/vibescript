@@ -162,10 +162,6 @@ func checkTypeRoot(script *Script, globals map[string]Value) *Env {
 	return checkTypeRootWithParentAndGlobals(script, globals, nil, true)
 }
 
-func checkTypeRootWithParent(script *Script, globals map[string]Value, parent *Env) *Env {
-	return checkTypeRootWithParentAndGlobals(script, globals, parent, true)
-}
-
 func checkTypeRootWithParentAndGlobals(script *Script, globals map[string]Value, parent *Env, overrideGlobals bool) *Env {
 	if script == nil {
 		return nil
@@ -2712,13 +2708,6 @@ func (c *scriptChecker) checkCallShape(function string, call staticCallView, nam
 	}
 }
 
-func (c *scriptChecker) checkCallValues(function, callName string, pos Position, fn *ScriptFunction, args []Value, kwargs map[string]Value) {
-	if !c.checkCallValueShape(function, callName, pos, fn, args, kwargs) {
-		return
-	}
-	c.checkCallValueTypes(function, callName, pos, fn, args, kwargs)
-}
-
 func (c *scriptChecker) checkCallValueShape(function, callName string, pos Position, fn *ScriptFunction, args []Value, kwargs map[string]Value) bool {
 	ok := true
 	var usedKw map[string]bool
@@ -2730,7 +2719,7 @@ func (c *scriptChecker) checkCallValueShape(function, callName string, pos Posit
 	for _, param := range fn.Params {
 		switch param.Kind {
 		case ParamKeyword:
-			if _, ok := kwargs[param.Name]; ok {
+			if _, present := kwargs[param.Name]; present {
 				if usedKw != nil {
 					usedKw[param.Name] = true
 				}
@@ -2750,7 +2739,7 @@ func (c *scriptChecker) checkCallValueShape(function, callName string, pos Posit
 		case ParamNormal:
 			if argIdx < len(args) {
 				argIdx++
-			} else if _, ok := kwargs[param.Name]; ok {
+			} else if _, present := kwargs[param.Name]; present {
 				if usedKw != nil {
 					usedKw[param.Name] = true
 				}
@@ -2774,42 +2763,6 @@ func (c *scriptChecker) checkCallValueShape(function, callName string, pos Posit
 		}
 	}
 	return ok
-}
-
-func (c *scriptChecker) checkCallValueTypes(function, callName string, pos Position, fn *ScriptFunction, args []Value, kwargs map[string]Value) {
-	var usedKw map[string]bool
-	if len(kwargs) > 0 {
-		usedKw = make(map[string]bool, len(kwargs))
-	}
-	argIdx := 0
-	for _, param := range fn.Params {
-		switch param.Kind {
-		case ParamNormal:
-			if argIdx < len(args) {
-				c.checkArgumentValue(function, pos, args[argIdx], param.Type, callName, param.Name)
-				argIdx++
-				continue
-			}
-			if val, ok := kwargs[param.Name]; ok {
-				c.checkArgumentValue(function, pos, val, param.Type, callName, param.Name)
-				if usedKw != nil {
-					usedKw[param.Name] = true
-				}
-			}
-		case ParamKeyword:
-			if val, ok := kwargs[param.Name]; ok {
-				c.checkArgumentValue(function, pos, val, param.Type, callName, param.Name)
-				if usedKw != nil {
-					usedKw[param.Name] = true
-				}
-			}
-		case ParamRest:
-			c.checkRestArgumentValues(function, pos, args[argIdx:], param.Type, callName, param.Name)
-			argIdx = len(args)
-		case ParamKeywordRest:
-			c.checkKeywordRestArgumentValues(function, pos, kwargs, usedKw, param.Type, callName, param.Name)
-		}
-	}
 }
 
 func (c *scriptChecker) checkCallArgumentTypes(function string, call staticCallView, name string, fn *ScriptFunction) {
