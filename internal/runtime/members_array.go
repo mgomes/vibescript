@@ -2554,7 +2554,11 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	keyScratchReserved := 0
-	out := make([]Value, 0, boundedSetCap(len(arr)))
+	initialCap := boundedSetCap(len(arr))
+	if err := acc.reserveSlots(initialCap); err != nil {
+		return NewNil(), false, err
+	}
+	out := make([]Value, 0, initialCap)
 	var seen valueSet
 	var blockArg [1]Value
 	changed := false

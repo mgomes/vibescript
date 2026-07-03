@@ -128,6 +128,33 @@ func TestArrayBlockFiltersReserveEmptyResultBackingBeforeBlockCalls(t *testing.T
 	}
 }
 
+func TestArrayUniqBlockReservesOutputBeforeBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeIntArray(4000)
+	block := emptyBlockValue()
+	initialCap := boundedSetCap(len(receiver.Array()))
+	outputSlots := arraySlotBackingBytes(initialCap)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	quota := base + outputSlots - 1
+	if quota <= base {
+		t.Fatalf("quota %d must fit call roots %d and reject uniq result backing %d", quota, base, outputSlots)
+	}
+
+	fitsCallRoots := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	if err := fitsCallRoots.checkCallMemoryRoots(receiver, nil, nil, block); err != nil {
+		t.Fatalf("array.uniq call roots should fit under quota %d: %v", quota, err)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callArrayMember(t, exec, receiver, "uniq", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("array.uniq stepped %d times before rejecting output backing; want 0", exec.steps)
+	}
+}
+
 func TestArraySortByReservesDecoratedBufferBeforeBlockCalls(t *testing.T) {
 	t.Parallel()
 
