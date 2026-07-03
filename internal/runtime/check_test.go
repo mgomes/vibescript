@@ -271,6 +271,62 @@ end
 	requireCheckWarningContains(t, script, "call to double has unexpected positional arguments")
 }
 
+func TestCheckWarningsPreserveBuiltinShadowingForRequiredModuleExports(t *testing.T) {
+	t.Parallel()
+
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "shadow_rand.vibe"), []byte(`def rand(a, b)
+  a
+end
+`), 0o644); err != nil {
+		t.Fatalf("write shadow_rand module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("shadow_rand")
+  rand(1, 2)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to rand has too many arguments")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "rand expects at most one argument")
+}
+
+func TestCheckWarningsResolveRequiredModuleExportsFromModuleClassBodies(t *testing.T) {
+	t.Parallel()
+
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "status.vibe"), []byte(`enum Status
+  Draft
+end
+`), 0o644); err != nil {
+		t.Fatalf("write status module: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(moduleRoot, "loader.vibe"), []byte(`class Loader
+  require("./status")
+end
+`), 0o644); err != nil {
+		t.Fatalf("write loader module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  require("loader")
+  :draft
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after class-body required module enum export returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() after class-body required module enum export = %#v, want Status::Draft", got)
+	}
+}
+
 func TestCheckWarningsResolveSymbolRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 

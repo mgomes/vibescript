@@ -111,7 +111,8 @@ func checkTypeRoot(script *Script, globals map[string]Value) *Env {
 	if script == nil {
 		return nil
 	}
-	root := newEnvWithCapacity(nil, len(script.functions)+len(script.classes)+len(script.enums)+len(globals))
+	root := newEnvWithCapacity(nil, len(script.classes)+len(globals))
+	script.engine.attachBuiltins(root, len(script.functions)+len(script.enums))
 	callFunctions := cloneFunctionsForCall(script.functions, root)
 	for name, fn := range callFunctions {
 		root.DefineStatic(name, NewFunction(fn))
@@ -281,7 +282,18 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.mergeModuleCollectionStates(baseState, fallthroughStates)
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
 		c.collectRequiredModuleExportsFromStatements(typed.Ensure)
+	case *ClassStmt:
+		c.collectRequiredModuleExportsFromClassBody(typed.Body)
 	}
+}
+
+func (c *scriptChecker) collectRequiredModuleExportsFromClassBody(body []Statement) {
+	if len(body) == 0 {
+		return
+	}
+	popScope := c.pushScope(make(map[string]struct{}))
+	defer popScope()
+	c.collectRequiredModuleExportsFromStatements(body)
 }
 
 func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expression) {
@@ -509,7 +521,7 @@ func (c *scriptChecker) collectModuleExports(entry moduleEntry) {
 		c.moduleEntries = make(map[string]moduleEntry)
 	}
 	c.moduleEntries[entry.key] = entry
-	c.collectRequiredModuleExportsFromModuleEntrypoint(entry)
+	c.collectRequiredModuleExportsFromModuleInitialization(entry)
 	root := c.moduleExportRoot
 	if root == nil {
 		root = c.typeRoot
@@ -531,11 +543,7 @@ func (c *scriptChecker) collectModuleExports(entry moduleEntry) {
 	}
 }
 
-func (c *scriptChecker) collectRequiredModuleExportsFromModuleEntrypoint(entry moduleEntry) {
-	fn := entry.script.functions[moduleEntrypointFunction]
-	if fn == nil {
-		return
-	}
+func (c *scriptChecker) collectRequiredModuleExportsFromModuleInitialization(entry moduleEntry) {
 	caller := moduleContextForEntry(entry)
 	previousCaller := c.moduleCaller
 	previousScopes := c.scopes
@@ -546,6 +554,28 @@ func (c *scriptChecker) collectRequiredModuleExportsFromModuleEntrypoint(entry m
 		c.scopes = previousScopes
 	}()
 
+	c.collectRequiredModuleExportsFromModuleClassBodies(entry)
+	c.collectRequiredModuleExportsFromModuleEntrypoint(entry)
+}
+
+func (c *scriptChecker) collectRequiredModuleExportsFromModuleClassBodies(entry moduleEntry) {
+	for _, name := range entry.script.classOrder {
+		if _, deferred := entry.script.deferredClassBodies[name]; deferred {
+			continue
+		}
+		classDef := entry.script.classes[name]
+		if classDef == nil {
+			continue
+		}
+		c.collectRequiredModuleExportsFromClassBody(classDef.Body)
+	}
+}
+
+func (c *scriptChecker) collectRequiredModuleExportsFromModuleEntrypoint(entry moduleEntry) {
+	fn := entry.script.functions[moduleEntrypointFunction]
+	if fn == nil {
+		return
+	}
 	c.collectFunctionRequiredModuleExports(fn)
 }
 
@@ -1545,11 +1575,12 @@ func checkRootFunction(root *Env, name string) (*ScriptFunction, bool) {
 }
 
 func (c *scriptChecker) typeRootHasBinding(name string) bool {
-	if c.typeRoot == nil {
-		return false
+	for _, root := range []*Env{c.runtimeTypeRoot, c.typeRoot} {
+		if root != nil && root.hasOwnBinding(name) {
+			return true
+		}
 	}
-	_, ok := c.typeRoot.Get(name)
-	return ok
+	return false
 }
 
 func (c *scriptChecker) hostBuiltinOverrides(name string) bool {
