@@ -1213,6 +1213,10 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		return result, err
 	}
 
+	if result, handled, err := exec.evalDirectCoreObjectMemberCallExpr(call, receiver, member, env); handled || err != nil {
+		return result, err
+	}
+
 	if canCallBuiltinMemberDirect(receiver, member.Property) {
 		return exec.evalDirectBuiltinMemberCallExpr(call, receiver, member.Property, env)
 	}
@@ -1478,6 +1482,87 @@ func checkDirectStringMemberCallRoots(exec *Execution, receiver, first, second V
 		return exec.checkMemoryWith(receiver, first)
 	}
 	return exec.checkMemoryWith(receiver, first, second)
+}
+
+func (exec *Execution) evalDirectCoreObjectMemberCallExpr(call *CallExpr, receiver Value, member *MemberExpr, env *Env) (Value, bool, error) {
+	if receiver.Kind() != KindObject || len(call.KwArgs) != 0 || call.Block != nil {
+		return NewNil(), false, nil
+	}
+
+	callee, err := exec.getPublicMember(receiver, member.Property, member.Pos())
+	if err != nil {
+		return NewNil(), false, nil
+	}
+	builtin := valueBuiltin(callee)
+	if builtin == nil {
+		return NewNil(), false, nil
+	}
+
+	switch builtin.Name {
+	case "Regex.replace_all":
+		if !exec.isCoreObjectBuiltin(builtin, "Regex", "replace_all") {
+			return NewNil(), false, nil
+		}
+		return exec.evalDirectRegexReplaceCall(call, receiver, env, true)
+	default:
+		return NewNil(), false, nil
+	}
+}
+
+func (exec *Execution) isCoreObjectBuiltin(builtin *Builtin, namespace, member string) bool {
+	if builtin == nil {
+		return false
+	}
+	exec.engine.builtinsMu.RLock()
+	defer exec.engine.builtinsMu.RUnlock()
+	obj, ok := exec.engine.builtins[namespace]
+	if !ok || obj.Kind() != KindObject {
+		return false
+	}
+	core, ok := obj.Hash()[member]
+	if !ok {
+		return false
+	}
+	return valueBuiltin(core) == builtin
+}
+
+func (exec *Execution) evalDirectRegexReplaceCall(call *CallExpr, receiver Value, env *Env, replaceAll bool) (Value, bool, error) {
+	method := "Regex.replace"
+	if replaceAll {
+		method = "Regex.replace_all"
+	}
+	if len(call.Args) != 3 {
+		return NewNil(), true, fmt.Errorf("%s expects text, pattern, replacement", method)
+	}
+	text, err := exec.evalCallArg(call.Args[0], env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	pattern, err := exec.evalCallArg(call.Args[1], env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	replacement, err := exec.evalCallArg(call.Args[2], env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(receiver, text, pattern, replacement); err != nil {
+		return NewNil(), true, err
+	}
+	result, err := builtinRegexReplaceValues(text, pattern, replacement, replaceAll)
+	if err != nil {
+		return NewNil(), true, exec.wrapError(err, call.Pos())
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), true, err
+	}
+	return result, true, nil
 }
 
 func canCallBuiltinMemberDirect(receiver Value, property string) bool {

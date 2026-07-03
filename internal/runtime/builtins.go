@@ -1650,13 +1650,22 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 	if !block.IsNil() {
 		return NewNil(), fmt.Errorf("%s does not accept blocks", method)
 	}
-	if args[0].Kind() != KindString || args[1].Kind() != KindString || args[2].Kind() != KindString {
+	return builtinRegexReplaceValues(args[0], args[1], args[2], replaceAll)
+}
+
+func builtinRegexReplaceValues(textValue, patternValue, replacementValue Value, replaceAll bool) (Value, error) {
+	method := "Regex.replace"
+	if replaceAll {
+		method = "Regex.replace_all"
+	}
+
+	if textValue.Kind() != KindString || patternValue.Kind() != KindString || replacementValue.Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects string text, pattern, replacement", method)
 	}
 
-	text := args[0].String()
-	pattern := args[1].String()
-	replacement := args[2].String()
+	text := textValue.String()
+	pattern := patternValue.String()
+	replacement := replacementValue.String()
 	if len(pattern) > maxRegexPatternSize {
 		return NewNil(), guardLimitErrorf("%s pattern exceeds limit %d bytes", method, maxRegexPatternSize)
 	}
