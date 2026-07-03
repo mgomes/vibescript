@@ -1052,6 +1052,25 @@ end
 	}
 }
 
+func TestCheckWarningsPreserveCommonRequireAliasesAfterBranchMerge(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(flag)
+  if flag
+    require("helper", as: "helpers")
+  else
+    require("helper", as: "helpers")
+  end
+  helpers.double(1, 2)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to helpers.double has unexpected positional arguments")
+	requireCallErrorContains(t, script, "run", []Value{NewBool(true)}, CallOptions{}, "unexpected positional arguments")
+}
+
 func TestCheckWarningsResolveRequiredModuleEnumExportsFromIfConditions(t *testing.T) {
 	t.Parallel()
 

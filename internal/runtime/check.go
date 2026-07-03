@@ -1145,7 +1145,8 @@ func (c *scriptChecker) mergeRuntimeStates(base checkRuntimeState, states []chec
 	for key := range base.modules {
 		delete(common, key)
 	}
-	if len(common) != 0 {
+	commonAliases := commonObjectAliasBindings(base.root, runtimeStateRoots(states))
+	if len(common) != 0 || len(commonAliases) != 0 {
 		c.withRuntimeModuleCollection(func() {
 			for key := range common {
 				entry, ok := c.moduleEntries[key]
@@ -1153,6 +1154,9 @@ func (c *scriptChecker) mergeRuntimeStates(base checkRuntimeState, states []chec
 					continue
 				}
 				c.collectModuleExports(entry)
+			}
+			for alias, module := range commonAliases {
+				c.bindRequireAlias(alias, module)
 			}
 		})
 	}
@@ -1182,6 +1186,14 @@ func commonRuntimeNamespaceMembers(base checkRuntimeState, states []checkRuntime
 		delete(common, key)
 	}
 	return common
+}
+
+func runtimeStateRoots(states []checkRuntimeState) []*Env {
+	roots := make([]*Env, 0, len(states))
+	for _, state := range states {
+		roots = append(roots, state.root)
+	}
+	return roots
 }
 
 func (c *scriptChecker) snapshotModuleCollectionState() checkModuleCollectionState {
@@ -1228,6 +1240,42 @@ func (c *scriptChecker) mergeModuleCollectionStates(base checkModuleCollectionSt
 		}
 		c.collectModuleExports(entry)
 	}
+	for alias, module := range commonObjectAliasBindings(base.root, moduleCollectionStateRoots(states)) {
+		c.bindRequireAlias(alias, module)
+	}
+}
+
+func moduleCollectionStateRoots(states []checkModuleCollectionState) []*Env {
+	roots := make([]*Env, 0, len(states))
+	for _, state := range states {
+		roots = append(roots, state.root)
+	}
+	return roots
+}
+
+func commonObjectAliasBindings(base *Env, roots []*Env) map[string]Value {
+	if len(roots) == 0 || roots[0] == nil {
+		return nil
+	}
+	common := make(map[string]Value)
+	roots[0].rangeDynamicBindings(func(name string, val Value) {
+		if val.Kind() != KindObject {
+			return
+		}
+		if _, exists := checkRootBinding(base, name); exists {
+			return
+		}
+		common[name] = val
+	})
+	for _, root := range roots[1:] {
+		for name, val := range common {
+			other, ok := checkRootOwnBinding(root, name)
+			if !ok || !sameObjectValue(val, other) {
+				delete(common, name)
+			}
+		}
+	}
+	return common
 }
 
 func (c *scriptChecker) snapshotScopeState() checkScopeState {
