@@ -1167,6 +1167,12 @@ func TestJSONBuiltins(t *testing.T) {
       JSON.stringify({ fn: helper })
     end
 
+    def stringify_reused_deep_array()
+      leaf = [1]
+      branch = [[[[[[[[[leaf]]]]]]]]]
+      JSON.stringify([branch, branch])
+    end
+
     def helper(value)
       value
     end
@@ -1194,6 +1200,9 @@ func TestJSONBuiltins(t *testing.T) {
 	}
 	if got := stringified.String(); got != `{"name":"alex","score":10,"tags":["x",true,null],"ratio":1.5}` {
 		t.Fatalf("stringify mismatch: %q", got)
+	}
+	if got := callFunc(t, script, "stringify_reused_deep_array", nil); got.String() != `[[[[[[[[[[[1]]]]]]]]]],[[[[[[[[[[1]]]]]]]]]]]` {
+		t.Fatalf("stringify_reused_deep_array = %q", got.String())
 	}
 
 	compareArrays(t, callFunc(t, script, "parsed_object_key_identity", nil), []Value{NewInt(1), NewInt(2), NewInt(2)})

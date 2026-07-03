@@ -1451,12 +1451,8 @@ func builtinJSONStringify(exec *Execution, receiver Value, args []Value, kwargs 
 		return NewNil(), fmt.Errorf("JSON.stringify does not accept blocks")
 	}
 
-	state := &jsonStringifyState{
-		seenArrays: map[uintptr]struct{}{},
-		seenHashes: map[uintptr]struct{}{},
-		exec:       exec,
-	}
-	payload, err := appendJSONValue(make([]byte, 0, 256), args[0], state)
+	state := jsonStringifyState{exec: exec}
+	payload, err := appendJSONValue(make([]byte, 0, 256), args[0], &state)
 	if err != nil {
 		return NewNil(), err
 	}
