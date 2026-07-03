@@ -826,6 +826,155 @@ end
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
 }
 
+func TestCheckWarningsSkipIgnoredFunctionBlockBodies(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def noop
+  nil
+end
+
+def run
+  noop do
+    rand(1, 2)
+  end
+  1
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() returned error: %v", err)
+	}
+	if !got.Equal(NewInt(1)) {
+		t.Fatalf("Call() = %s, want 1", got)
+	}
+}
+
+func TestCheckWarningsSkipIgnoredBuiltinBlockBodies(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run
+  money("1.00 USD") do
+    rand(1, 2)
+  end
+  1
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() returned error: %v", err)
+	}
+	if !got.Equal(NewInt(1)) {
+		t.Fatalf("Call() = %s, want 1", got)
+	}
+}
+
+func TestCheckWarningsCheckYieldedFunctionBlockBodies(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def invoke
+  yield
+end
+
+def run
+  invoke do
+    rand(1, 2)
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to rand has too many arguments")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "rand expects at most one argument")
+}
+
+func TestCheckWarningsSkipCapturedFunctionBlockBodies(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def invoke(&block)
+  block != nil
+end
+
+def run
+  invoke do
+    rand(1, 2)
+  end
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() returned error: %v", err)
+	}
+	if !got.Equal(NewBool(true)) {
+		t.Fatalf("Call() = %s, want true", got)
+	}
+}
+
+func TestCheckWarningsSkipNestedIgnoredFunctionBlockBodies(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def noop
+  nil
+end
+
+def wrapper
+  noop do
+    yield
+  end
+end
+
+def run
+  wrapper do
+    rand(1, 2)
+  end
+  1
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() returned error: %v", err)
+	}
+	if !got.Equal(NewInt(1)) {
+		t.Fatalf("Call() = %s, want 1", got)
+	}
+}
+
+func TestCheckWarningsCheckNestedYieldedFunctionBlockBodies(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def invoke
+  yield
+end
+
+def wrapper
+  invoke do
+    yield
+  end
+end
+
+def run
+  wrapper do
+    rand(1, 2)
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to rand has too many arguments")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "rand expects at most one argument")
+}
+
 func TestCheckWarningsDoNotHoistRescueOnlyRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
@@ -1178,6 +1327,24 @@ end`,
   JSON.parse("{}", "extra")
 end`,
 			want: "call to JSON.parse has too many arguments",
+		},
+		{
+			name: "uuid block",
+			source: `def run()
+  uuid do
+    "x"
+  end
+end`,
+			want: "call to uuid does not accept a block",
+		},
+		{
+			name: "random id block",
+			source: `def run()
+  random_id do
+    "x"
+  end
+end`,
+			want: "call to random_id does not accept a block",
 		},
 		{
 			name: "regex replace block",

@@ -1150,7 +1150,9 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		for _, kwarg := range typed.KwArgs {
 			c.checkExpressionWithAuto(function, kwarg.Value, true)
 		}
-		c.checkBlockLiteral(function, typed.Block)
+		if c.callMayEvaluateBlock(typed) {
+			c.checkBlockLiteral(function, typed.Block)
+		}
 	case *MemberExpr:
 		c.checkExpressionWithAuto(function, typed.Object, true)
 		if autoCall {
@@ -1199,7 +1201,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		}
 		c.checkExpressionWithAuto(function, typed.ElseExpr, true)
 	case *BlockLiteral:
-		c.checkBlockLiteral(function, typed)
+		return
 	case *YieldExpr:
 		for _, arg := range typed.Args {
 			c.checkExpressionWithAuto(function, arg, true)
@@ -1263,6 +1265,251 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
 	c.checkStatements(label, nil, block.Body)
+}
+
+func (c *scriptChecker) callMayEvaluateBlock(call *CallExpr) bool {
+	return c.callMayEvaluateBlockWithSeen(call, nil)
+}
+
+func (c *scriptChecker) callMayEvaluateBlockWithSeen(call *CallExpr, seen map[*ScriptFunction]struct{}) bool {
+	if call == nil || call.Block == nil {
+		return false
+	}
+	if staticNilSafeNavigationCall(call) {
+		return false
+	}
+	target, ok := c.resolveCallable(call)
+	if !ok {
+		return !staticallyNonCallableCallee(call.Callee)
+	}
+	if target.fn != nil {
+		return c.functionMayEvaluateCallBlock(target.fn, seen)
+	}
+	return target.spec.usesBlock
+}
+
+func staticallyNonCallableCallee(expr Expression) bool {
+	switch expr.(type) {
+	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral,
+		*ArrayLiteral, *HashLiteral, *RangeExpr, *BlockLiteral, *InterpolatedString, *InterpolatedSymbol:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *scriptChecker) functionMayEvaluateCallBlock(fn *ScriptFunction, seen map[*ScriptFunction]struct{}) bool {
+	if fn == nil {
+		return false
+	}
+	if seen == nil {
+		seen = make(map[*ScriptFunction]struct{})
+	}
+	if _, ok := seen[fn]; ok {
+		return true
+	}
+	seen[fn] = struct{}{}
+	defer delete(seen, fn)
+
+	return c.statementsMayEvaluateCallBlock(fn.Body, seen)
+}
+
+func (c *scriptChecker) statementsMayEvaluateCallBlock(statements []Statement, seen map[*ScriptFunction]struct{}) bool {
+	for _, stmt := range statements {
+		if c.statementMayEvaluateCallBlock(stmt, seen) {
+			return true
+		}
+		if statementAlwaysExits(stmt) {
+			return false
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) statementMayEvaluateCallBlock(stmt Statement, seen map[*ScriptFunction]struct{}) bool {
+	switch typed := stmt.(type) {
+	case nil, *NextStmt, *EnumStmt:
+		return false
+	case *ReturnStmt:
+		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
+	case *RaiseStmt:
+		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
+	case *BreakStmt:
+		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
+	case *AssignStmt:
+		return c.expressionMayEvaluateCallBlock(typed.Target, seen) ||
+			c.expressionMayEvaluateCallBlock(typed.Value, seen)
+	case *ExprStmt:
+		return c.expressionMayEvaluateCallBlock(typed.Expr, seen)
+	case *LogicalStmt:
+		return c.statementMayEvaluateCallBlock(typed.Left, seen) ||
+			(!statementAlwaysExits(typed.Left) && c.statementMayEvaluateCallBlock(typed.Right, seen))
+	case *IfStmt:
+		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
+			c.statementsMayEvaluateCallBlock(typed.Consequent, seen) ||
+			c.statementsMayEvaluateCallBlock(typed.Alternate, seen) {
+			return true
+		}
+		for _, branch := range typed.ElseIf {
+			if c.expressionMayEvaluateCallBlock(branch.Condition, seen) ||
+				c.statementsMayEvaluateCallBlock(branch.Consequent, seen) {
+				return true
+			}
+		}
+		return false
+	case *ForStmt:
+		return c.expressionMayEvaluateCallBlock(typed.Target, seen) ||
+			c.expressionMayEvaluateCallBlock(typed.Iterable, seen) ||
+			c.statementsMayEvaluateCallBlock(typed.Body, seen)
+	case *WhileStmt:
+		return c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
+			c.statementsMayEvaluateCallBlock(typed.Body, seen)
+	case *UntilStmt:
+		return c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
+			c.statementsMayEvaluateCallBlock(typed.Body, seen)
+	case *TryStmt:
+		return c.statementsMayEvaluateCallBlock(typed.Body, seen) ||
+			c.statementsMayEvaluateCallBlock(typed.Rescue, seen) ||
+			c.statementsMayEvaluateCallBlock(typed.Else, seen) ||
+			c.statementsMayEvaluateCallBlock(typed.Ensure, seen)
+	case *ClassStmt:
+		return c.statementsMayEvaluateCallBlock(typed.Body, seen)
+	default:
+		return false
+	}
+}
+
+func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map[*ScriptFunction]struct{}) bool {
+	switch typed := expr.(type) {
+	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+		return false
+	case *ArrayLiteral:
+		for _, elem := range typed.Elements {
+			if c.expressionMayEvaluateCallBlock(elem, seen) {
+				return true
+			}
+		}
+		return false
+	case *HashLiteral:
+		for _, pair := range typed.Pairs {
+			if c.expressionMayEvaluateCallBlock(pair.Key, seen) ||
+				c.expressionMayEvaluateCallBlock(pair.Value, seen) {
+				return true
+			}
+		}
+		return false
+	case *CallExpr:
+		if c.expressionMayEvaluateCallBlock(typed.Callee, seen) {
+			return true
+		}
+		for _, arg := range typed.Args {
+			if c.expressionMayEvaluateCallBlock(arg, seen) {
+				return true
+			}
+		}
+		for _, kwarg := range typed.KwArgs {
+			if c.expressionMayEvaluateCallBlock(kwarg.Value, seen) {
+				return true
+			}
+		}
+		return c.callMayEvaluateBlockWithSeen(typed, seen) &&
+			c.blockLiteralMayEvaluateCallBlock(typed.Block, seen)
+	case *MemberExpr:
+		return c.expressionMayEvaluateCallBlock(typed.Object, seen)
+	case *ScopeExpr:
+		return c.expressionMayEvaluateCallBlock(typed.Object, seen)
+	case *IndexExpr:
+		if c.expressionMayEvaluateCallBlock(typed.Object, seen) {
+			return true
+		}
+		for _, index := range typed.Indices {
+			if c.expressionMayEvaluateCallBlock(index, seen) {
+				return true
+			}
+		}
+		return false
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			if c.expressionMayEvaluateCallBlock(element.Target, seen) {
+				return true
+			}
+		}
+		return false
+	case *UnaryExpr:
+		return c.expressionMayEvaluateCallBlock(typed.Right, seen)
+	case *BinaryExpr:
+		if c.expressionMayEvaluateCallBlock(typed.Left, seen) {
+			return true
+		}
+		return binaryRightMayEvaluate(typed) && c.expressionMayEvaluateCallBlock(typed.Right, seen)
+	case *ConditionalExpr:
+		return c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
+			c.expressionMayEvaluateCallBlock(typed.Consequent, seen) ||
+			c.expressionMayEvaluateCallBlock(typed.Alternate, seen)
+	case *IfExpr:
+		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
+			c.expressionMayEvaluateCallBlock(typed.Consequent, seen) ||
+			c.expressionMayEvaluateCallBlock(typed.Alternate, seen) {
+			return true
+		}
+		for _, branch := range typed.ElseIf {
+			if c.expressionMayEvaluateCallBlock(branch.Condition, seen) ||
+				c.expressionMayEvaluateCallBlock(branch.Result, seen) {
+				return true
+			}
+		}
+		return false
+	case *RangeExpr:
+		return c.expressionMayEvaluateCallBlock(typed.Start, seen) ||
+			c.expressionMayEvaluateCallBlock(typed.End, seen)
+	case *CaseExpr:
+		if c.expressionMayEvaluateCallBlock(typed.Target, seen) ||
+			c.expressionMayEvaluateCallBlock(typed.ElseExpr, seen) {
+			return true
+		}
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				if c.expressionMayEvaluateCallBlock(value.Expr, seen) {
+					return true
+				}
+			}
+			if c.expressionMayEvaluateCallBlock(clause.Result, seen) {
+				return true
+			}
+		}
+		return false
+	case *BlockLiteral:
+		return false
+	case *YieldExpr:
+		return true
+	case *InterpolatedString:
+		return c.stringPartsMayEvaluateCallBlock(typed.Parts, seen)
+	case *InterpolatedSymbol:
+		return c.stringPartsMayEvaluateCallBlock(typed.Parts, seen)
+	default:
+		return false
+	}
+}
+
+func (c *scriptChecker) blockLiteralMayEvaluateCallBlock(block *BlockLiteral, seen map[*ScriptFunction]struct{}) bool {
+	if block == nil {
+		return false
+	}
+	for _, param := range block.Params {
+		if c.expressionMayEvaluateCallBlock(param.DefaultVal, seen) {
+			return true
+		}
+	}
+	return c.statementsMayEvaluateCallBlock(block.Body, seen)
+}
+
+func (c *scriptChecker) stringPartsMayEvaluateCallBlock(parts []StringPart, seen map[*ScriptFunction]struct{}) bool {
+	for _, part := range parts {
+		if exprPart, ok := part.(StringExpr); ok && c.expressionMayEvaluateCallBlock(exprPart.Expr, seen) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *scriptChecker) checkStringParts(function string, parts []StringPart) {
@@ -1507,6 +1754,7 @@ type staticCallSpec struct {
 	allowedKeywords map[string]struct{}
 	rejectBlock     bool
 	autoInvoke      bool
+	usesBlock       bool
 }
 
 func (c *scriptChecker) checkCall(function string, call *CallExpr) {
@@ -1712,8 +1960,8 @@ var staticBuiltinSpecs = map[string]staticCallSpec{
 	"rand":              {minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
 	"srand":             {minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
 	"sleep":             {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
-	"uuid":              {minArgs: 0, maxArgs: 0, rejectKeywords: true},
-	"random_id":         {minArgs: 0, maxArgs: 1, rejectKeywords: true},
+	"uuid":              {minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true},
+	"random_id":         {minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
 	"JSON.parse":        {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
 	"JSON.stringify":    {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
 	"Regex.match":       {minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true},
@@ -1721,7 +1969,7 @@ var staticBuiltinSpecs = map[string]staticCallSpec{
 	"Regex.replace_all": {minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true},
 	"Time.parse":        {minArgs: 1, maxArgs: 2, allowedKeywords: keywordSet("in")},
 	"array.at":          {minArgs: 1, maxArgs: 1, rejectKeywords: true, autoInvoke: true},
-	"array.fetch":       {minArgs: 1, maxArgs: 2, autoInvoke: true},
+	"array.fetch":       {minArgs: 1, maxArgs: 2, autoInvoke: true, usesBlock: true},
 	"array.slice":       {minArgs: 1, maxArgs: 2, rejectKeywords: true, autoInvoke: true},
 	"string.slice":      {minArgs: 1, maxArgs: 2, autoInvoke: true},
 }
