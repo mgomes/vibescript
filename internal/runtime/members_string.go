@@ -2333,54 +2333,52 @@ func stringDeleteChars(exec *Execution, receiver Value, args []Value, kwargs map
 	return b.String(), nil
 }
 
-func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (string, bool, error) {
+func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (string, error) {
 	if len(args) != 2 {
-		return "", false, fmt.Errorf("%s expects source and replacement character sets", method)
+		return "", fmt.Errorf("%s expects source and replacement character sets", method)
 	}
 	if len(kwargs) > 0 {
-		return "", false, fmt.Errorf("%s does not take keyword arguments", method)
+		return "", fmt.Errorf("%s does not take keyword arguments", method)
 	}
 	if valueBlock(block) != nil {
-		return "", false, fmt.Errorf("%s does not accept a block", method)
+		return "", fmt.Errorf("%s does not accept a block", method)
 	}
 	if args[0].Kind() != KindString || args[1].Kind() != KindString {
-		return "", false, fmt.Errorf("%s character sets must be strings", method)
+		return "", fmt.Errorf("%s character sets must be strings", method)
 	}
 	releaseScratch, err := reserveStringCharSetScratch(exec, receiver, args, kwargs, block)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	defer releaseScratch()
 	source, err := parseStringCharSet(method, args[0].String(), true)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	replacement, err := parseStringCharSet(method, args[1].String(), false)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	text := receiver.String()
 	projectedBytes := 0
-	matchedAny := false
 	for i := 0; i < len(text); {
 		seg := nextStringRuneSegment(text, i)
 		i = seg.end
 		if err := exec.step(); err != nil {
-			return "", false, err
+			return "", err
 		}
 		index, matched := source.orderedIndexSegment(text, seg)
 		if !matched {
 			projectedBytes = saturatingAdd(projectedBytes, seg.end-seg.start)
 			continue
 		}
-		matchedAny = true
 		if replacement.length == 0 {
 			continue
 		}
 		projectedBytes = saturatingAdd(projectedBytes, stringCharSetTokenBytes(replacement.tokenAt(index)))
 	}
 	if err := exec.checkProjectedStringBytesWithCallRoots(projectedBytes, receiver, args, kwargs, block); err != nil {
-		return "", false, err
+		return "", err
 	}
 	var b strings.Builder
 	b.Grow(projectedBytes)
@@ -2395,7 +2393,7 @@ func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[str
 			writeStringCharSetToken(&b, replacement.tokenAt(index))
 		}
 	}
-	return b.String(), matchedAny, nil
+	return b.String(), nil
 }
 
 func stringSqueezeChars(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (string, error) {
@@ -4316,7 +4314,7 @@ func stringMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "tr":
 		return NewAutoBuiltin("string.tr", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			updated, _, err := stringTrChars(exec, receiver, args, kwargs, block, "string.tr")
+			updated, err := stringTrChars(exec, receiver, args, kwargs, block, "string.tr")
 			if err != nil {
 				return NewNil(), err
 			}
@@ -4324,14 +4322,12 @@ func stringMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "tr!":
 		return NewAutoBuiltin("string.tr!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			updated, matched, err := stringTrChars(exec, receiver, args, kwargs, block, "string.tr!")
+			original := receiver.String()
+			updated, err := stringTrChars(exec, receiver, args, kwargs, block, "string.tr!")
 			if err != nil {
 				return NewNil(), err
 			}
-			if !matched {
-				return NewNil(), nil
-			}
-			return NewString(updated), nil
+			return stringBangResult(original, updated), nil
 		}), nil
 	case "squeeze":
 		return NewAutoBuiltin("string.squeeze", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

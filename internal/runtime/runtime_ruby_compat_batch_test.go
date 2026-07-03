@@ -685,7 +685,7 @@ end
 		NewNil(),
 		NewString("uby"),
 		NewNil(),
-		NewString("a"),
+		NewNil(),
 		NewNil(),
 	))
 }
