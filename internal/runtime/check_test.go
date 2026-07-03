@@ -458,6 +458,59 @@ end
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
 }
 
+func TestCheckWarningsDoNotHoistLoopBodyRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(items) -> Status
+  for item in items
+    require("enum_status")
+  end
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", []Value{NewArray(nil)}, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsSkipUnreachableShortCircuitOperands(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  false && rand(1, 2)
+  true || rand(1, 2)
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("Call() with unreachable short-circuit operands returned error: %v", err)
+	}
+}
+
+func TestCheckWarningsResolveDefaultRequiredModuleEnumExportsInParameterOrder(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(_loader = require("enum_status"), status: Status = :draft) -> Status
+  status
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after default-required module enum export returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() after default-required module enum export = %#v, want Status::Draft", got)
+	}
+}
+
 func TestCheckWarningsDoNotTreatShadowedRequireAsModuleImport(t *testing.T) {
 	t.Parallel()
 

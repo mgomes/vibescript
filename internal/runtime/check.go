@@ -321,6 +321,19 @@ func binaryRightAlwaysEvaluates(expr *BinaryExpr) bool {
 	}
 }
 
+func binaryRightMayEvaluate(expr *BinaryExpr) bool {
+	switch expr.Operator {
+	case tokenAnd:
+		val, ok := staticLiteralValue(expr.Left)
+		return !ok || val.Truthy()
+	case tokenOr:
+		val, ok := staticLiteralValue(expr.Left)
+		return !ok || !val.Truthy()
+	default:
+		return true
+	}
+}
+
 func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
 	if len(call.Args) == 0 || c.requireCallShadowed() {
 		return
@@ -688,13 +701,14 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 	defer popScope()
 
 	for _, param := range fn.Params {
+		c.checkExpression(label, param.DefaultVal)
+		c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
 		if param.Type != nil {
-			c.checkTypeAnnotation(label, param.Type)
+			c.checkRuntimeTypeAnnotation(label, param.Type)
 			if param.DefaultVal != nil {
-				c.checkExpressionAgainstType(label, param.DefaultVal, param.Type, fmt.Sprintf("default value for %s", param.Name))
+				c.checkRuntimeExpressionAgainstType(label, param.DefaultVal, param.Type, fmt.Sprintf("default value for %s", param.Name))
 			}
 		}
-		c.checkExpression(label, param.DefaultVal)
 	}
 	c.checkStatements(label, fn.ReturnTy, fn.Body)
 	if fn.ReturnTy != nil {
@@ -780,15 +794,30 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if typed.Iterator != "" {
 			c.recordBindingName(typed.Iterator)
 		}
+		bodyRuntimeState := c.snapshotRuntimeState()
+		bodyScopeState := c.snapshotScopeState()
 		c.checkStatements(function, returnType, typed.Body)
+		c.restoreRuntimeState(bodyRuntimeState)
+		c.restoreScopeState(bodyScopeState)
+		c.recordLocalBindings(typed.Body)
 	case *WhileStmt:
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
+		bodyRuntimeState := c.snapshotRuntimeState()
+		bodyScopeState := c.snapshotScopeState()
 		c.checkStatements(function, returnType, typed.Body)
+		c.restoreRuntimeState(bodyRuntimeState)
+		c.restoreScopeState(bodyScopeState)
+		c.recordLocalBindings(typed.Body)
 	case *UntilStmt:
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
+		bodyRuntimeState := c.snapshotRuntimeState()
+		bodyScopeState := c.snapshotScopeState()
 		c.checkStatements(function, returnType, typed.Body)
+		c.restoreRuntimeState(bodyRuntimeState)
+		c.restoreScopeState(bodyScopeState)
+		c.recordLocalBindings(typed.Body)
 	case *TryStmt:
 		branchReturnType := returnType
 		if blockAlwaysExits(typed.Ensure) {
@@ -853,7 +882,9 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkExpressionWithAuto(function, typed.Right, true)
 	case *BinaryExpr:
 		c.checkExpressionWithAuto(function, typed.Left, true)
-		c.checkExpressionWithAuto(function, typed.Right, true)
+		if binaryRightMayEvaluate(typed) {
+			c.checkExpressionWithAuto(function, typed.Right, true)
+		}
 	case *ConditionalExpr:
 		c.checkExpressionWithAuto(function, typed.Condition, true)
 		c.checkExpressionWithAuto(function, typed.Consequent, true)
@@ -960,14 +991,6 @@ func (c *scriptChecker) checkTypeAnnotationWithContext(function string, ty *Type
 	return true
 }
 
-func (c *scriptChecker) checkExpressionAgainstType(function string, expr Expression, ty *TypeExpr, subject string) {
-	val, ok := staticLiteralValue(expr)
-	if !ok {
-		return
-	}
-	c.checkValueAgainstType(function, expr.Pos(), val, ty, subject)
-}
-
 func (c *scriptChecker) checkRuntimeExpressionAgainstType(function string, expr Expression, ty *TypeExpr, subject string) {
 	val, ok := staticLiteralValue(expr)
 	if !ok {
@@ -978,15 +1001,6 @@ func (c *scriptChecker) checkRuntimeExpressionAgainstType(function string, expr 
 
 func (c *scriptChecker) checkRuntimeNilAgainstType(function string, pos Position, ty *TypeExpr, subject string) {
 	c.checkRuntimeValueAgainstType(function, pos, NewNil(), ty, subject)
-}
-
-func (c *scriptChecker) checkValueAgainstType(function string, pos Position, val Value, ty *TypeExpr, subject string) {
-	if ty == nil || !c.checkTypeAnnotation(function, ty) {
-		return
-	}
-	if err := c.checkStaticValueType(val, ty); err != nil {
-		c.addValueTypeWarning(function, pos, subject, err)
-	}
 }
 
 func (c *scriptChecker) checkRuntimeValueAgainstType(function string, pos Position, val Value, ty *TypeExpr, subject string) {
@@ -1005,11 +1019,6 @@ func (c *scriptChecker) addValueTypeWarning(function string, pos Position, subje
 		return
 	}
 	c.add(function, pos, "%s type check failed: %s", subject, err)
-}
-
-func (c *scriptChecker) checkStaticValueType(val Value, ty *TypeExpr) error {
-	_, err := normalizeValueForType(val, ty, c.typeContext())
-	return err
 }
 
 func (c *scriptChecker) checkRuntimeStaticValueType(val Value, ty *TypeExpr) error {
@@ -1854,6 +1863,18 @@ func (c *scriptChecker) recordBindingName(name string) {
 		c.scopes[len(c.scopes)-1] = scope
 	}
 	scope[name] = struct{}{}
+}
+
+func (c *scriptChecker) recordLocalBindings(statements []Statement) {
+	if len(c.scopes) == 0 {
+		return
+	}
+	scope := c.scopes[len(c.scopes)-1]
+	if scope == nil {
+		scope = make(map[string]struct{})
+		c.scopes[len(c.scopes)-1] = scope
+	}
+	collectLocalBindings(statements, scope)
 }
 
 func (c *scriptChecker) identifierShadowed(name string) bool {
