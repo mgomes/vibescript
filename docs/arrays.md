@@ -89,9 +89,8 @@ end
 
 `filter_map` requires a block and takes no arguments. It calls the block once
 per element and collects each result the block returns, dropping any falsy
-result. Like `select` and `reject`, it uses Vibescript's truthiness, so `nil`,
-`false`, `0`, `""`, and empty collections are all dropped; only truthy results
-survive.
+result. Like Ruby, only `nil` and `false` are falsy, so values such as `0`,
+`""`, and empty collections survive.
 
 ```vibe
 [1, 2, 3, 4, 5].chunk(2)   # [[1,2], [3,4], [5]]

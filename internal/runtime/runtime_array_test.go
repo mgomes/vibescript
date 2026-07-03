@@ -401,7 +401,7 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
 	if !got["count_all"].Equal(NewInt(4)) || !got["count_value"].Equal(NewInt(2)) || !got["count_block"].Equal(NewInt(2)) {
 		t.Fatalf("count mismatch: %#v", got)
 	}
-	if !got["any_block"].Bool() || got["any_plain"].Bool() {
+	if !got["any_block"].Bool() || !got["any_plain"].Bool() {
 		t.Fatalf("any? mismatch: block=%v plain=%v", got["any_block"], got["any_plain"])
 	}
 	if !got["all_block"].Bool() || !got["all_plain"].Bool() {
