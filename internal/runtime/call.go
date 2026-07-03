@@ -1135,7 +1135,7 @@ func restParamExpectsCallableElement(ty *TypeExpr) bool {
 		}
 		return false
 	default:
-		return typeExprIncludesCallable(ty)
+		return false
 	}
 }
 
@@ -1485,11 +1485,13 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	var receiver Value
 	var err error
 	if member.Property == "call" {
-		if _, bareIdentifier := member.Object.(*Identifier); bareIdentifier {
-			receiver, err = exec.evalExpressionWithAuto(member.Object, env, false)
-		} else {
-			receiver, err = exec.evalExpression(member.Object, env)
+		autoCall := true
+		if ident, bareIdentifier := member.Object.(*Identifier); bareIdentifier {
+			if scope, ok := env.lookupBindingScope(ident.Name); ok && scope.hasDynamic(ident.Name) {
+				autoCall = false
+			}
 		}
+		receiver, err = exec.evalExpressionWithAuto(member.Object, env, autoCall)
 	} else {
 		receiver, err = exec.evalExpression(member.Object, env)
 	}

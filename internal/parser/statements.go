@@ -1377,12 +1377,13 @@ func shapeHasEmptyNestedShape(ty *ast.TypeExpr) bool {
 
 // typeAnnotationBoundaryFollows reports whether peekToken terminates a
 // parameter's type annotation. Valid terminators are a comma or closing
-// paren (the next parameter or the list end), an `=` introducing a
-// `name: Type = default` positional default, and, for line-limited
-// parameter lists, the constructs that end such a list.
+// paren (the next parameter or the list end), a trailing colon for typed
+// required keywords, an `=` introducing a `name: Type = default` positional
+// default, and, for line-limited parameter lists, the constructs that end such a
+// list.
 func (p *parser) typeAnnotationBoundaryFollows(options paramParseOptions) bool {
 	switch p.peekToken.Type {
-	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign:
+	case ast.TokenComma, ast.TokenRParen, ast.TokenColon, ast.TokenAssign:
 		return true
 	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
 		return options.lineLimitedDefaults

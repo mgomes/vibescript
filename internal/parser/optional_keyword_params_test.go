@@ -122,6 +122,24 @@ end`,
 			},
 		},
 		{
+			name: "shape_typed_required_keyword",
+			source: `def f(opts: { cb: function }:)
+  opts
+end`,
+			want: []ast.Param{
+				{
+					Name: "opts",
+					Kind: ast.ParamKeyword,
+					Type: &ast.TypeExpr{
+						Kind: ast.TypeShape,
+						Shape: map[string]*ast.TypeExpr{
+							"cb": {Name: "function", Kind: ast.TypeFunction},
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "optional_keyword_then_keyword_rest",
 			source: `def f(a: 0, **rest)
   a

@@ -106,6 +106,28 @@ func TestFunctionValueCallZeroArityFollowsIssue416(t *testing.T) {
 	}
 }
 
+func TestFunctionValueCallAutoInvokesStaticZeroArityFactoryReceiver(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    class CallableBox
+      def call(value)
+        value + 1
+      end
+    end
+
+    def maker
+      CallableBox.new
+    end
+
+    def run
+      maker.call(41)
+    end
+    `)
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(42)) {
+		t.Fatalf("run() = %#v, want 42", got)
+	}
+}
+
 func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -131,6 +153,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 
     def receive_callable_rest_union(*fns: array<function> | nil)
       fns[0].call
+    end
+
+    def receive_rest_array_or_function(*values: array<int> | function)
+      values[0]
     end
 
     def receive_handlers(fns: array<function>)
@@ -173,6 +199,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       receive_callable_rest_union(answer)
     end
 
+    def run_rest_array_or_function
+      receive_rest_array_or_function(answer)
+    end
+
     def run_array_factory
       receive_handlers(handlers)
     end
@@ -195,6 +225,7 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "function call alias keeps callable", fn: "run_call_alias", want: NewInt(42)},
 		{name: "typed rest keeps callable element", fn: "run_rest", want: NewInt(42)},
 		{name: "union typed rest keeps callable element", fn: "run_rest_union", want: NewInt(42)},
+		{name: "rest union ignores impossible callable arm", fn: "run_rest_array_or_function", want: NewInt(42)},
 		{name: "array typed argument still auto invokes outer function", fn: "run_array_factory", want: NewInt(42)},
 		{name: "typed block call parameter keeps callable", fn: "run_block_param", want: NewInt(42)},
 	}
