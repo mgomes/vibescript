@@ -1076,12 +1076,30 @@ func (idx *lspCompletionIndex) itemsAt(line int) []map[string]any {
 	}
 	if enclosing >= 0 {
 		scope := idx.scopes[enclosing]
-		for _, block := range scope.blocks {
+		firstMatchingBlock := -1
+		matchingBlocks := 0
+		for i, block := range scope.blocks {
 			if block.startLine <= line && line <= block.endLine {
-				return block.allItems
+				if matchingBlocks == 0 {
+					firstMatchingBlock = i
+				}
+				matchingBlocks++
 			}
 		}
-		return scope.allItems
+		switch matchingBlocks {
+		case 0:
+			return scope.allItems
+		case 1:
+			return scope.blocks[firstMatchingBlock].allItems
+		}
+		parts := make([][]map[string]any, 0, matchingBlocks+1)
+		parts = append(parts, scope.allItems)
+		for _, block := range scope.blocks {
+			if block.startLine <= line && line <= block.endLine {
+				parts = append(parts, block.items)
+			}
+		}
+		return mergedCompletionItems(parts...)
 	}
 	return idx.items
 }
