@@ -1126,7 +1126,25 @@ func paramExpectsCallableArgument(param Param) bool {
 }
 
 func restParamExpectsCallableElement(ty *TypeExpr) bool {
-	return typeExprIncludesCallable(restParamElementType(ty))
+	if ty == nil {
+		return false
+	}
+	switch ty.Kind {
+	case TypeArray:
+		if len(ty.TypeArgs) > 0 {
+			return typeExprIncludesCallable(ty.TypeArgs[0])
+		}
+		return false
+	case TypeUnion:
+		for _, option := range ty.Union {
+			if restParamExpectsCallableElement(option) {
+				return true
+			}
+		}
+		return false
+	default:
+		return typeExprIncludesCallable(ty)
+	}
 }
 
 func restParamElementType(ty *TypeExpr) *TypeExpr {

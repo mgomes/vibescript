@@ -129,6 +129,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       fns[0].call
     end
 
+    def receive_callable_rest_union(*fns: array<function> | nil)
+      fns[0].call
+    end
+
     def receive_handlers(fns: array<function>)
       fns[0].call
     end
@@ -165,6 +169,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       receive_callable_rest(answer)
     end
 
+    def run_rest_union
+      receive_callable_rest_union(answer)
+    end
+
     def run_array_factory
       receive_handlers(handlers)
     end
@@ -186,6 +194,7 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "typed positional call member keeps callable receiver", fn: "run_typed_paren", want: NewInt(42)},
 		{name: "function call alias keeps callable", fn: "run_call_alias", want: NewInt(42)},
 		{name: "typed rest keeps callable element", fn: "run_rest", want: NewInt(42)},
+		{name: "union typed rest keeps callable element", fn: "run_rest_union", want: NewInt(42)},
 		{name: "array typed argument still auto invokes outer function", fn: "run_array_factory", want: NewInt(42)},
 		{name: "typed block call parameter keeps callable", fn: "run_block_param", want: NewInt(42)},
 	}
