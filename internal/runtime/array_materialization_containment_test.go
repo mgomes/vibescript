@@ -110,6 +110,32 @@ func TestArraySortByReservesDecoratedBufferBeforeBlockCalls(t *testing.T) {
 	}
 }
 
+func TestArraySortByReservesRetainedKeysBeforeLaterBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	const retainedPayloadBytes = 64 * 1024
+	receiver := largeIntArray(2)
+	retainedPayload := NewString(strings.Repeat("x", retainedPayloadBytes))
+	expectedRetained := newMemoryEstimator().valuePayload(retainedPayload)
+	expectedDecorated := arraySortByDecoratedBufferBytes(len(receiver.Array()))
+	expectedReserved := expectedDecorated + expectedRetained
+	calls := 0
+	block := arraySortByRetainedKeyProbeBlock(retainedPayload.String(), expectedReserved, &calls)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	got, err := callArrayMember(t, exec, receiver, "sort_by", nil, block)
+	if err != nil {
+		t.Fatalf("array.sort_by retained key reservation error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("array.sort_by block calls = %d, want 2", calls)
+	}
+	compareArrays(t, got, receiver.Array())
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("array.sort_by leaked %d scratch bytes after success", exec.reservedScratchBytes)
+	}
+}
+
 func TestArraySortByIncludesRetainedKeysWhenReservingOutput(t *testing.T) {
 	t.Parallel()
 
@@ -258,6 +284,24 @@ func arrayMapRetainedPayloadProbeBlock(payload string, expectedReservedBeforeSec
 		*calls++
 		if *calls == 2 && exec.reservedScratchBytes < expectedReservedBeforeSecondCall {
 			return NewNil(), fmt.Errorf("reserved scratch before second map block call = %d, want at least %d", exec.reservedScratchBytes, expectedReservedBeforeSecondCall)
+		}
+		return NewString(payload), nil
+	})
+	env := newEnv(nil)
+	env.Define("__probe__", probe)
+	body := []Statement{&ExprStmt{Position: pos, Expr: &CallExpr{
+		Position: pos,
+		Callee:   &Identifier{Name: "__probe__", Position: pos},
+	}}}
+	return NewBlock([]Param{{Kind: ParamNormal, Name: "item"}}, body, env)
+}
+
+func arraySortByRetainedKeyProbeBlock(payload string, expectedReservedBeforeSecondCall int, calls *int) Value {
+	pos := Position{Line: 1, Column: 1}
+	probe := NewBuiltin("test.array_sort_by_payload_probe", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		*calls++
+		if *calls == 2 && exec.reservedScratchBytes < expectedReservedBeforeSecondCall {
+			return NewNil(), fmt.Errorf("reserved scratch before second sort_by block call = %d, want at least %d", exec.reservedScratchBytes, expectedReservedBeforeSecondCall)
 		}
 		return NewString(payload), nil
 	})

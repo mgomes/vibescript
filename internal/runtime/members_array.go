@@ -156,7 +156,11 @@ func arrayMemberGrouping(property string) (Value, error) {
 					return NewNil(), err
 				}
 				withKeys[i] = arraySortByItem{item: item, key: sortKey, index: i}
+				retainedBefore := acc.retainedPayloadBytes()
 				if err := acc.addConservativeToReservedBacking(sortKey); err != nil {
+					return NewNil(), err
+				}
+				if err := scratch.reserve(acc.retainedPayloadBytes() - retainedBefore); err != nil {
 					return NewNil(), err
 				}
 			}
