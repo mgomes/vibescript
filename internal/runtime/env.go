@@ -199,12 +199,16 @@ func (e *Env) Assign(name string, val Value) bool {
 }
 
 func (e *Env) assignArrayAppendBuffer(name string, val Value, buffer []Value) bool {
-	scope := e.assignValue(name, val)
+	scope := e.assignValueWithAppendBufferHandling(name, val, false)
 	scope.setArrayAppendBuffer(name, buffer)
 	return true
 }
 
 func (e *Env) assignValue(name string, val Value) *Env {
+	return e.assignValueWithAppendBufferHandling(name, val, true)
+}
+
+func (e *Env) assignValueWithAppendBufferHandling(name string, val Value, dropAppendBuffer bool) *Env {
 	last := e
 	for scope := e; scope != nil; scope = scope.parent {
 		if scope.frozen {
@@ -213,13 +217,17 @@ func (e *Env) assignValue(name string, val Value) *Env {
 			if inValues || inStatics {
 				last.setDynamic(name, val)
 				last.dropStatic(name)
-				last.dropArrayAppendBuffer(name)
+				if dropAppendBuffer {
+					last.dropArrayAppendBuffer(name)
+				}
 				return last
 			}
 			continue
 		}
 		if scope.setExistingDynamic(name, val) {
-			scope.dropArrayAppendBuffer(name)
+			if dropAppendBuffer {
+				scope.dropArrayAppendBuffer(name)
+			}
 			return scope
 		}
 		if _, ok := scope.statics[name]; ok {
@@ -227,20 +235,26 @@ func (e *Env) assignValue(name string, val Value) *Env {
 			// so estimation starts walking its (now mutable) value.
 			scope.dropStatic(name)
 			scope.setDynamic(name, val)
-			scope.dropArrayAppendBuffer(name)
+			if dropAppendBuffer {
+				scope.dropArrayAppendBuffer(name)
+			}
 			return scope
 		}
 		if scope.assignBoundary {
 			scope.setDynamic(name, val)
 			scope.dropStatic(name)
-			scope.dropArrayAppendBuffer(name)
+			if dropAppendBuffer {
+				scope.dropArrayAppendBuffer(name)
+			}
 			return scope
 		}
 		last = scope
 	}
 	last.setDynamic(name, val)
 	last.dropStatic(name)
-	last.dropArrayAppendBuffer(name)
+	if dropAppendBuffer {
+		last.dropArrayAppendBuffer(name)
+	}
 	return last
 }
 

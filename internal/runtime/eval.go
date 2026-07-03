@@ -449,6 +449,24 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 	if err := exec.checkMemoryWith(obj); err != nil {
 		return NewNil(), err
 	}
+	if len(e.Indices) == 1 {
+		idx, err := exec.evalIndexSelector(e, obj, e.Indices[0], env)
+		if err != nil {
+			return NewNil(), err
+		}
+		var indices [1]Value
+		indices[0] = idx
+		result, err := exec.evalIndexValue(e, obj, indices[:])
+		if err != nil {
+			return NewNil(), err
+		}
+		if exec.memoryQuota > 0 {
+			if err := exec.checkMemoryWith(obj, idx, result); err != nil {
+				return NewNil(), err
+			}
+		}
+		return result, nil
+	}
 	indices, err := exec.evalIndexSelectors(e, obj, env)
 	if err != nil {
 		return NewNil(), err
@@ -480,6 +498,19 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 	return result, nil
 }
 
+func (exec *Execution) evalIndexSelector(e *IndexExpr, obj Value, expr Expression, env *Env) (Value, error) {
+	idx, err := exec.evalExpressionWithAuto(expr, env, true)
+	if err != nil {
+		return NewNil(), err
+	}
+	if exec.memoryQuota > 0 {
+		if err := exec.checkMemoryWith(obj, idx); err != nil {
+			return NewNil(), err
+		}
+	}
+	return idx, nil
+}
+
 // evalIndexSelectors evaluates every selector between the brackets, charging
 // the receiver together with the accumulated selectors against the memory quota
 // as each materializes. The receiver stays live in the caller's obj while
@@ -507,7 +538,7 @@ func (exec *Execution) evalIndexSelectors(e *IndexExpr, obj Value, env *Env) ([]
 		charge[0] = obj
 	}
 	for _, expr := range e.Indices {
-		idx, err := exec.evalExpressionWithAuto(expr, env, true)
+		idx, err := exec.evalIndexSelector(e, obj, expr, env)
 		if err != nil {
 			return nil, err
 		}
