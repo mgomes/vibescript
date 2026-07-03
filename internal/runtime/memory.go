@@ -868,6 +868,17 @@ func (acc *arrayBuildAccumulator) reserveSlots(slotCount int) error {
 	return acc.reserveSlotArrays(slotCount)
 }
 
+func (acc *arrayBuildAccumulator) checkRetainedPayloadBytes(slotCount, payloadBytes int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	used := saturatingAdd(acc.projected(slotCount), payloadBytes)
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 // reserveSlotArrays rejects a build when several result arrays will be live
 // together, such as Array#pop returning both the remaining and removed arrays.
 func (acc *arrayBuildAccumulator) reserveSlotArrays(slotCounts ...int) error {

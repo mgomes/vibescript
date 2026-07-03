@@ -4280,7 +4280,7 @@ func arrayCombination(exec *Execution, receiver Value, args []Value, kwargs map[
 	if err != nil {
 		return NewNil(), err
 	}
-	return arrayBuildCombinations(exec, receiver, args, kwargs, block, count, length, false)
+	return arrayBuildCombinations(exec, receiver, args, kwargs, block, "array.combination", count, length, false)
 }
 
 func arrayRepeatedCombination(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -4306,7 +4306,7 @@ func arrayRepeatedCombination(exec *Execution, receiver Value, args []Value, kwa
 			return NewNil(), err
 		}
 	}
-	return arrayBuildCombinations(exec, receiver, args, kwargs, block, count, length, true)
+	return arrayBuildCombinations(exec, receiver, args, kwargs, block, "array.repeated_combination", count, length, true)
 }
 
 func arrayPermutation(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -4329,7 +4329,7 @@ func arrayPermutation(exec *Execution, receiver Value, args []Value, kwargs map[
 			return NewNil(), err
 		}
 	}
-	return arrayBuildPermutations(exec, receiver, args, kwargs, block, count, length, false)
+	return arrayBuildPermutations(exec, receiver, args, kwargs, block, "array.permutation", count, length, false)
 }
 
 func arrayRepeatedPermutation(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -4345,13 +4345,15 @@ func arrayRepeatedPermutation(exec *Execution, receiver Value, args []Value, kwa
 		return NewArray([]Value{}), nil
 	}
 	count := 1
-	for range length {
-		count, err = checkedArrayMaterializationMul("array.repeated_permutation", count, len(arr))
-		if err != nil {
-			return NewNil(), err
+	if len(arr) > 1 {
+		for range length {
+			count, err = checkedArrayMaterializationMul("array.repeated_permutation", count, len(arr))
+			if err != nil {
+				return NewNil(), err
+			}
 		}
 	}
-	return arrayBuildPermutations(exec, receiver, args, kwargs, block, count, length, true)
+	return arrayBuildPermutations(exec, receiver, args, kwargs, block, "array.repeated_permutation", count, length, true)
 }
 
 func arrayCombinationLength(method string, args []Value, kwargs map[string]Value, block Value) (int, bool, error) {
@@ -4387,9 +4389,13 @@ func arrayPermutationLength(method string, receiver Value, args []Value, kwargs 
 	return arrayCombinationLength(method, args, kwargs, block)
 }
 
-func arrayBuildCombinations(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, count, length int, repeated bool) (Value, error) {
+func arrayBuildCombinations(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string, count, length int, repeated bool) (Value, error) {
 	arr := receiver.Array()
-	if err := exec.checkStepBudgetFor(count); err != nil {
+	work, err := arrayCombinatoricsWork(method, count, length)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkStepBudgetFor(work); err != nil {
 		return NewNil(), err
 	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
@@ -4397,6 +4403,9 @@ func arrayBuildCombinations(exec *Execution, receiver Value, args []Value, kwarg
 		return NewNil(), err
 	}
 	if err := acc.reserveSlots(count); err != nil {
+		return NewNil(), err
+	}
+	if err := acc.checkRetainedPayloadBytes(count, arrayTupleRowBackingBytes(count, length)); err != nil {
 		return NewNil(), err
 	}
 	out := make([]Value, 0, count)
@@ -4415,6 +4424,9 @@ func arrayBuildCombinations(exec *Execution, receiver Value, args []Value, kwarg
 		}
 		row := make([]Value, length)
 		for i, idx := range indices {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
 			row[i] = arr[idx]
 		}
 		out = append(out, NewArray(row))
@@ -4460,9 +4472,13 @@ func advanceRepeatedCombination(indices []int, n int) {
 	}
 }
 
-func arrayBuildPermutations(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, count, length int, repeated bool) (Value, error) {
+func arrayBuildPermutations(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string, count, length int, repeated bool) (Value, error) {
 	arr := receiver.Array()
-	if err := exec.checkStepBudgetFor(count); err != nil {
+	work, err := arrayCombinatoricsWork(method, count, length)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkStepBudgetFor(work); err != nil {
 		return NewNil(), err
 	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
@@ -4476,6 +4492,9 @@ func arrayBuildPermutations(exec *Execution, receiver Value, args []Value, kwarg
 	if err := acc.reserveSlots(count); err != nil {
 		return NewNil(), err
 	}
+	if err := acc.checkRetainedPayloadBytes(count, arrayTupleRowBackingBytes(count, length)); err != nil {
+		return NewNil(), err
+	}
 	out := make([]Value, 0, count)
 	if repeated {
 		indices := make([]int, length)
@@ -4485,6 +4504,9 @@ func arrayBuildPermutations(exec *Execution, receiver Value, args []Value, kwarg
 			}
 			row := make([]Value, length)
 			for i, idx := range indices {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				row[i] = arr[idx]
 			}
 			out = append(out, NewArray(row))
@@ -4511,7 +4533,12 @@ func arrayBuildPermutations(exec *Execution, receiver Value, args []Value, kwarg
 				return err
 			}
 			copyRow := make([]Value, length)
-			copy(copyRow, row)
+			for i, item := range row {
+				if err := exec.step(); err != nil {
+					return err
+				}
+				copyRow[i] = item
+			}
 			out = append(out, NewArray(copyRow))
 			return acc.add(out[len(out)-1], cap(out))
 		}
@@ -4532,6 +4559,18 @@ func arrayBuildPermutations(exec *Execution, receiver Value, args []Value, kwarg
 		return NewNil(), err
 	}
 	return NewArray(out), nil
+}
+
+func arrayCombinatoricsWork(method string, count, length int) (int, error) {
+	rowSlots, err := checkedArrayMaterializationMul(method, count, length)
+	if err != nil {
+		return 0, err
+	}
+	return checkedArrayMaterializationAdd(method, count, rowSlots)
+}
+
+func arrayTupleRowBackingBytes(count, length int) int {
+	return saturatingMul(count, valueSliceBackingBytes(length))
 }
 
 func combinationCount(method string, n, k int) (int, error) {
@@ -4569,6 +4608,13 @@ func checkedArrayMaterializationMul(method string, left, right int) (int, error)
 		return 0, guardLimitErrorf("%s result too large", method)
 	}
 	return left * right, nil
+}
+
+func checkedArrayMaterializationAdd(method string, left, right int) (int, error) {
+	if left > math.MaxInt-right {
+		return 0, guardLimitErrorf("%s result too large", method)
+	}
+	return left + right, nil
 }
 
 func gcdInt(a, b int) int {

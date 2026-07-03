@@ -554,6 +554,73 @@ func TestRubyBatchArrayCombinatoricsCheckStepQuotaBeforePreallocating(t *testing
 	}
 }
 
+func TestRubyBatchArrayCombinatoricsCheckTupleWidthBeforeAllocating(t *testing.T) {
+	t.Parallel()
+
+	const hugeLength = 100_000_000
+	tests := []struct {
+		name   string
+		member string
+	}{
+		{name: "repeated_combination", member: "repeated_combination"},
+		{name: "repeated_permutation", member: "repeated_permutation"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background(), quota: 10, memoryQuota: 1 << 30}
+			_, err := callArrayMember(t, exec, NewArray([]Value{NewInt(1)}), tc.member, []Value{NewInt(hugeLength)}, NewNil())
+			requireErrorIs(t, err, errStepQuotaExceeded)
+			if exec.steps != 0 {
+				t.Fatalf("%s advanced to %d steps before rejecting tuple width; want 0", tc.member, exec.steps)
+			}
+		})
+	}
+}
+
+func TestRubyBatchArrayCombinatoricsReservesTupleBackingBeforeAllocatingRows(t *testing.T) {
+	t.Parallel()
+
+	const length = 4096
+	receiver := NewArray([]Value{NewInt(1)})
+	args := []Value{NewInt(length)}
+	scratch := arrayIntScratchBytes(length)
+	outerSlots := arraySlotBackingBytes(1)
+	rowBacking := arrayTupleRowBackingBytes(1, length)
+	if rowBacking <= 1 {
+		t.Fatalf("row backing estimate = %d, want room for a tight quota", rowBacking)
+	}
+
+	tests := []struct {
+		name   string
+		member string
+	}{
+		{name: "repeated_combination", member: "repeated_combination"},
+		{name: "repeated_permutation", member: "repeated_permutation"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+			base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
+			quota := base + scratch + outerSlots + rowBacking/2
+			if quota <= base+scratch+outerSlots || quota >= base+scratch+outerSlots+rowBacking {
+				t.Fatalf("quota %d must fit roots %d, scratch %d, and outer slots %d while rejecting row backing %d",
+					quota, base, scratch, outerSlots, rowBacking)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callArrayMember(t, exec, receiver, tc.member, args, NewNil())
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			if exec.steps != 0 {
+				t.Fatalf("%s advanced to %d steps before rejecting tuple row backing; want 0", tc.member, exec.steps)
+			}
+		})
+	}
+}
+
 func TestRubyBatchArrayChunkingHelpers(t *testing.T) {
 	t.Parallel()
 
