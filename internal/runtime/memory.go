@@ -38,6 +38,8 @@ const (
 	estimatedHashEntryBytes     = int(unsafe.Sizeof(HashEntry{}))
 )
 
+const inlineSeenEnvs = 8
+
 // estimatedMapEntryStructuralBytes is the per-entry structural footprint a
 // map[string]Value reserves for one slot regardless of what its key and value
 // point at: the bucket overhead, the key string header, and the value slot. It
@@ -49,16 +51,18 @@ const (
 const estimatedMapEntryStructuralBytes = estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
 
 type memoryEstimator struct {
-	seenFrozen    *Env
-	seenEnvs      map[*Env]struct{}
-	seenMaps      map[uintptr]struct{}
-	seenHashData  map[uintptr]struct{}
-	seenSlices    map[uintptr]struct{}
-	seenStrings   map[stringIdentity]struct{}
-	seenClasses   map[*ClassDef]struct{}
-	seenInstances map[*Instance]struct{}
-	seenBlocks    map[*Block]struct{}
-	seenBuiltins  map[*Builtin]struct{}
+	seenFrozen       *Env
+	seenEnvInline    [inlineSeenEnvs]*Env
+	seenEnvInlineLen int
+	seenEnvs         map[*Env]struct{}
+	seenMaps         map[uintptr]struct{}
+	seenHashData     map[uintptr]struct{}
+	seenSlices       map[uintptr]struct{}
+	seenStrings      map[stringIdentity]struct{}
+	seenClasses      map[*ClassDef]struct{}
+	seenInstances    map[*Instance]struct{}
+	seenBlocks       map[*Block]struct{}
+	seenBuiltins     map[*Builtin]struct{}
 
 	// journal, when non-nil, records every seen-set entry a walk newly inserts so
 	// the walk can be rolled back to the estimator's prior state. It backs the
@@ -102,6 +106,8 @@ func newMemoryEstimator() *memoryEstimator {
 func (est *memoryEstimator) reset() {
 	est.seenFrozen = nil
 	est.journal = nil
+	clear(est.seenEnvInline[:est.seenEnvInlineLen])
+	est.seenEnvInlineLen = 0
 	clear(est.seenEnvs)
 	clear(est.seenMaps)
 	clear(est.seenHashData)
@@ -136,7 +142,7 @@ func (est *memoryEstimator) probe(val Value) int {
 func (j *estimatorJournal) rollback(est *memoryEstimator, prevFrozen *Env) {
 	est.seenFrozen = prevFrozen
 	for _, env := range j.envs {
-		delete(est.seenEnvs, env)
+		est.forgetEnv(env)
 	}
 	for _, id := range j.maps {
 		delete(est.seenMaps, id)
@@ -1742,13 +1748,9 @@ func (est *memoryEstimator) env(env *Env) int {
 		est.seenFrozen = env
 		return estimatedEnvBytes + staticBindingsBytes(env)
 	}
-	if _, seen := est.seenEnvs[env]; seen {
+	if est.rememberEnv(env) {
 		return 0
 	}
-	if est.seenEnvs == nil {
-		est.seenEnvs = make(map[*Env]struct{})
-	}
-	est.seenEnvs[env] = struct{}{}
 	if est.journal != nil {
 		est.journal.envs = append(est.journal.envs, env)
 	}
@@ -1784,6 +1786,48 @@ func (est *memoryEstimator) env(env *Env) int {
 	}
 	size += est.env(env.parent)
 	return size
+}
+
+func (est *memoryEstimator) rememberEnv(env *Env) bool {
+	for i := range est.seenEnvInlineLen {
+		if est.seenEnvInline[i] == env {
+			return true
+		}
+	}
+	if est.seenEnvs != nil {
+		if _, seen := est.seenEnvs[env]; seen {
+			return true
+		}
+		est.seenEnvs[env] = struct{}{}
+		return false
+	}
+	if est.seenEnvInlineLen < len(est.seenEnvInline) {
+		est.seenEnvInline[est.seenEnvInlineLen] = env
+		est.seenEnvInlineLen++
+		return false
+	}
+	est.seenEnvs = make(map[*Env]struct{}, len(est.seenEnvInline)+1)
+	for _, seenEnv := range est.seenEnvInline {
+		est.seenEnvs[seenEnv] = struct{}{}
+	}
+	est.seenEnvs[env] = struct{}{}
+	return false
+}
+
+func (est *memoryEstimator) forgetEnv(env *Env) {
+	for i := range est.seenEnvInlineLen {
+		if est.seenEnvInline[i] != env {
+			continue
+		}
+		last := est.seenEnvInlineLen - 1
+		est.seenEnvInline[i] = est.seenEnvInline[last]
+		est.seenEnvInline[last] = nil
+		est.seenEnvInlineLen--
+		break
+	}
+	if est.seenEnvs != nil {
+		delete(est.seenEnvs, env)
+	}
 }
 
 func staticBindingsBytes(env *Env) int {
