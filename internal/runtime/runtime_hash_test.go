@@ -2420,3 +2420,67 @@ func TestHashInsertionOrder(t *testing.T) {
 		t.Fatalf("transform_keys_collision[1] = %v=%v, want x=1", entries[1].Key, entries[1].Value)
 	}
 }
+
+// TestHashCopyPreservesSortedOrderForBareHostMap covers the copy paths that
+// rebuild a hash entry by entry — store, delete, and a mixed typed merge. A
+// bare host-provided map carries no insertion record, so these must contribute
+// its entries in sorted key order; walking Go-map order instead would persist a
+// nondeterministic order and make a documented-sorted host map come out in
+// arbitrary order after the transform.
+func TestHashCopyPreservesSortedOrderForBareHostMap(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def bare_store(h)
+      h.store("zeta", 9).keys
+    end
+
+    def bare_delete(h)
+      h.delete("bravo")[:hash].keys
+    end
+
+    def bare_merge(h)
+      h.merge({ "zeta" => 9 }).keys
+    end
+    `)
+
+	// A bare host map whose Go-map order is deliberately not sorted; the copy
+	// paths must still surface it in sorted key order.
+	bareHostMap := func() Value {
+		return NewHash(map[string]Value{
+			"delta":   NewInt(4),
+			"bravo":   NewInt(2),
+			"alpha":   NewInt(1),
+			"charlie": NewInt(3),
+			"echo":    NewInt(5),
+		})
+	}
+
+	str := func(names ...string) []Value {
+		out := make([]Value, len(names))
+		for i, name := range names {
+			out[i] = NewString(name)
+		}
+		return out
+	}
+
+	tests := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{name: "store_copies_bare_receiver_sorted", fn: "bare_store", want: NewArray(str("alpha", "bravo", "charlie", "delta", "echo", "zeta"))},
+		{name: "delete_copies_bare_receiver_sorted", fn: "bare_delete", want: NewArray(str("alpha", "charlie", "delta", "echo"))},
+		{name: "mixed_merge_copies_bare_receiver_sorted", fn: "bare_merge", want: NewArray(str("alpha", "bravo", "charlie", "delta", "echo", "zeta"))},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, []Value{bareHostMap()})
+			if diff := valuesDiff([]Value{tc.want}, []Value{got}); diff != "" {
+				t.Fatalf("%s mismatch (-want +got):\n%s", tc.fn, diff)
+			}
+		})
+	}
+}

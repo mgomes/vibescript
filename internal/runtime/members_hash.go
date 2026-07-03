@@ -137,6 +137,28 @@ func orderedTypedHashEntriesInto(receiver Value, buf []HashEntry) []HashEntry {
 	return receiver.HashEntriesInto(buf)
 }
 
+// deterministicHashEntriesInto returns receiver's entries in the order a copy
+// should preserve: a typed hash keeps its recorded insertion order; a bare
+// host-provided map carries no insertion record, so its entries contribute in
+// sorted key order. Copying a bare source through HashEntries() would instead
+// persist its arbitrary Go-map traversal as the fresh hash's insertion order,
+// making a documented sorted map nondeterministic after store/delete/merge.
+func deterministicHashEntriesInto(receiver Value, buf []HashEntry) []HashEntry {
+	if hashHasTypedEntries(receiver) {
+		return receiver.HashEntriesInto(buf)
+	}
+	m := receiver.Hash()
+	entries := buf[:0]
+	if cap(entries) < len(m) {
+		entries = make([]HashEntry, 0, len(m))
+	}
+	var keyBuf [smallHashKeyBufferSize]string
+	for _, key := range sortedHashKeysInto(m, keyBuf[:]) {
+		entries = append(entries, HashEntry{Key: NewString(key), Value: m[key]})
+	}
+	return entries
+}
+
 // sortedKeyBufferBytes returns the heap bytes sortedHashKeysInto allocates to
 // hold a sorted key list for keyCount keys. A count that fits the inline stack
 // buffer reuses it and allocates nothing; a larger count heaps a fresh []string
@@ -1401,7 +1423,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					runner = r
 					acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				}
-				for _, entry := range receiver.HashEntries() {
+				// A bare receiver merged under the typed path (an argument carries
+				// typed entries) has no insertion record, so copy it in sorted key
+				// order to keep the merged result deterministic.
+				var entryBuf [smallHashKeyBufferSize]HashEntry
+				for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -1413,7 +1439,6 @@ func hashMemberTransforms(property string) (Value, error) {
 					return out, nil
 				}
 				var blockArgs [3]Value
-				var entryBuf [smallHashKeyBufferSize]HashEntry
 				for _, arg := range args {
 					for _, entry := range orderedTypedHashEntriesInto(arg, entryBuf[:]) {
 						if err := exec.step(); err != nil {
@@ -1773,9 +1798,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			out := NewHash(make(map[string]Value, projected))
 			// Copy the receiver entry by entry rather than with maps.Copy so a
 			// store into a large hash charges a step per copied entry and honors
-			// cancellation, matching replace, compact, and slice. The output map
-			// is order-independent, so no sorted key list is needed.
-			for _, entry := range receiver.HashEntries() {
+			// cancellation, matching replace, compact, and slice. The output tracks
+			// insertion order, so a bare receiver is copied in sorted key order to
+			// keep a documented-sorted host map deterministic after the store.
+			var entryBuf [smallHashKeyBufferSize]HashEntry
+			for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
@@ -1833,7 +1860,8 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out := NewHash(make(map[string]Value, receiver.HashLen()))
-				for _, entry := range receiver.HashEntries() {
+				var entryBuf [smallHashKeyBufferSize]HashEntry
+				for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -1854,7 +1882,8 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			out := NewHash(make(map[string]Value, receiver.HashLen()-1))
-			for _, entry := range receiver.HashEntries() {
+			var entryBuf [smallHashKeyBufferSize]HashEntry
+			for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
