@@ -1719,6 +1719,75 @@ end
 	}
 }
 
+func TestCheckWarningsValidateRequiredModuleInitializers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		module string
+	}{
+		{
+			name: "module entrypoint",
+			module: `JSON.parse("{}", "extra")
+`,
+		},
+		{
+			name: "class body",
+			module: `class Boot
+  JSON.parse("{}", "extra")
+end
+`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := tempModuleTree(t, moduleFile{path: "bad.vibe", content: tc.module})
+			engine := mustNewEngineWithModuleRoot(t, root)
+			script := compileScriptWithEngine(t, engine, `
+def run()
+  require("bad")
+end
+`)
+
+			requireCheckWarningContains(t, script, "call to JSON.parse has too many arguments")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "JSON.parse expects a single JSON string argument")
+		})
+	}
+}
+
+func TestCheckWarningsValidateRequiredModuleFunctionsWithCallerRequiredExports(t *testing.T) {
+	t.Parallel()
+
+	root := tempModuleTree(t,
+		moduleFile{path: "status.vibe", content: `enum Status
+  Draft
+end
+`},
+		moduleFile{path: "consumer.vibe", content: `def normalize(status: Status) -> Status
+  status
+end
+`},
+	)
+	engine := mustNewEngineWithModuleRoot(t, root)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  require("status")
+  require("consumer").normalize(:draft)
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() with caller-required enum available to required module returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() with caller-required enum available to required module = %#v, want Status::Draft", got)
+	}
+}
+
 func TestCheckWarningsValidateRequiredModuleFunctionsWithHostGlobals(t *testing.T) {
 	t.Parallel()
 

@@ -166,8 +166,15 @@ func checkTypeRootWithParentAndGlobals(script *Script, globals map[string]Value,
 	if script == nil {
 		return nil
 	}
-	root := newEnvWithCapacity(parent, len(script.classes)+len(globals))
+	root := newEnvWithCapacity(nil, len(script.classes)+len(globals))
 	script.engine.attachBuiltins(root, len(script.functions)+len(script.enums))
+	if parent != nil {
+		if parent.parent == nil {
+			parent = cloneCheckRoot(parent)
+			parent.parent = root.parent
+		}
+		root.parent = parent
+	}
 	callFunctions := cloneFunctionsForCall(script.functions, root)
 	for name, fn := range callFunctions {
 		root.DefineStatic(name, NewFunction(fn))
@@ -661,10 +668,6 @@ func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) 
 		return
 	}
 	functions := sortedRequiredModuleExportedFunctions(entry.script.functions)
-	if len(functions) == 0 {
-		return
-	}
-
 	parentRoot := c.runtimeTypeRoot
 	if parentRoot == nil {
 		parentRoot = c.typeRoot
@@ -687,6 +690,7 @@ func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) 
 	checker.moduleCaller = &caller
 	checker.moduleExportRoot = checker.typeRoot
 	checker.collectRequiredModuleExportsFromModuleInitialization(entry)
+	checker.checkRequiredModuleInitialization(entry)
 
 	for _, fn := range functions {
 		if !checker.markModuleFunctionChecked(entry.key, fn.Name) {
@@ -706,6 +710,22 @@ func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) 
 	c.moduleEntries = checker.moduleEntries
 	c.moduleExportValues = checker.moduleExportValues
 	c.moduleCheckedFunctions = checker.moduleCheckedFunctions
+}
+
+func (c *scriptChecker) checkRequiredModuleInitialization(entry moduleEntry) {
+	if !c.markModuleFunctionChecked(entry.key, moduleEntrypointFunction) {
+		return
+	}
+	c.withFreshRuntimeTypeRoot(func() {
+		c.withRuntimeModuleCollection(func() {
+			c.collectRequiredModuleExportsFromModuleInitialization(entry)
+		})
+		c.checkRuntimeClassBodies(c.script.deferredClassBodies, false)
+		fn := c.script.functions[moduleEntrypointFunction]
+		if fn != nil {
+			c.checkFunction(moduleDisplayName(entry.key), fn)
+		}
+	})
 }
 
 func sortedRequiredModuleExportedFunctions(functions map[string]*ScriptFunction) []*ScriptFunction {
