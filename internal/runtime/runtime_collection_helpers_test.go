@@ -247,13 +247,12 @@ func TestHashValuesAt(t *testing.T) {
 func TestHashValuesAtRejectsNonKeyArguments(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
-    def lookup(record)
-      record.values_at(1)
+    def lookup()
+      { a: 1 }.values_at({ bad: 1 })
     end
     `)
 
-	record := NewHash(map[string]Value{"a": NewInt(1)})
-	requireCallErrorContains(t, script, "lookup", []Value{record}, CallOptions{}, "hash.values_at keys must be symbol or string")
+	requireCallErrorContains(t, script, "lookup", nil, CallOptions{}, "hash.values_at key is unsupported hash key")
 }
 
 func TestCollectionHelpersPreserveReceiver(t *testing.T) {

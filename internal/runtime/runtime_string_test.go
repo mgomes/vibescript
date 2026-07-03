@@ -1569,8 +1569,8 @@ func TestStringTransforms(t *testing.T) {
 		}
 	}
 
-	compareArrays(t, got["match"], []Value{NewString("ID-12"), NewString("12")})
-	compareArrays(t, got["match_optional_nil"], []Value{NewString("ID"), NewString("ID"), NewNil(), NewNil()})
+	compareMatchDataCaptures(t, got["match"], []Value{NewString("ID-12"), NewString("12")})
+	compareMatchDataCaptures(t, got["match_optional_nil"], []Value{NewString("ID"), NewString("ID"), NewNil(), NewNil()})
 	if got["match_miss"].Kind() != KindNil {
 		t.Fatalf("match_miss expected nil, got %v", got["match_miss"])
 	}

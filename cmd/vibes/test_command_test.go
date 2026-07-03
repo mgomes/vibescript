@@ -82,6 +82,29 @@ end
 	}
 }
 
+func TestTestCommandWiresOutputHelpers(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeTestVibeFile(t, dir, "prints_test.vibe", `def test_prints()
+  puts "hello from a test"
+  assert true
+end
+`)
+
+	out, err := captureStdout(t, func() error {
+		return testCommand([]string{dir})
+	})
+	if err != nil {
+		t.Fatalf("testCommand(%q) err = %v, want nil", dir, err)
+	}
+	if !strings.Contains(out, "hello from a test") {
+		t.Fatalf("testCommand output = %q, want puts output wired to the test stream", out)
+	}
+	if !strings.Contains(out, "1 passed, 0 failed") {
+		t.Fatalf("testCommand output = %q, want passing summary", out)
+	}
+}
+
 func TestTestCommandReportsAssertionPosition(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

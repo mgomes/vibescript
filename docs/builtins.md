@@ -203,7 +203,7 @@ Parses a JSON string into Vibescript values (`hash`, `array`, `string`, `int`,
 
 ```vibe
 payload = JSON.parse("{\"id\":\"p-1\",\"score\":10}")
-payload[:score] # 10
+payload["score"] # 10
 ```
 
 `JSON.parse` enforces a 1 MiB input limit and rejects more than 10,000 nested

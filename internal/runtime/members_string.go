@@ -2493,22 +2493,11 @@ func stringMemberQuery(property string) (Value, error) {
 				// there is no match, so the block form short-circuits here too.
 				return NewNil(), nil
 			}
-			values := make([]Value, len(indices)/2)
-			for i := range values {
-				start := indices[i*2]
-				end := indices[i*2+1]
-				if start < 0 || end < 0 {
-					values[i] = NewNil()
-					continue
-				}
-				values[i] = NewString(text[start:end])
-			}
-			matchData := NewArray(values)
+			matchData := newMatchData(text, indices)
 			if valueBlock(block) != nil {
 				// Ruby's String#match(pattern) { |m| ... } yields the match data and
-				// returns the block's result. Vibescript represents match data as the
-				// [full, capture1, ...] array, so the same value indexes as the
-				// non-block result (m[0] is the whole match, m[1] the first capture).
+				// returns the block's result. MatchData supports the same index access
+				// as Ruby: m[0] is the whole match, m[1] the first capture.
 				runner, err := newBlockCallRunner(exec, block, "string.match", receiver, args, kwargs)
 				if err != nil {
 					return NewNil(), err

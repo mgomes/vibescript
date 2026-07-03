@@ -40,6 +40,133 @@ func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[str
 	return NewNil(), newAssertionFailureError(message)
 }
 
+func builtinPuts(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("puts does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("puts does not accept blocks")
+	}
+	writer := exec.engine.config.OutputWriter
+	if writer == nil {
+		return NewNil(), fmt.Errorf("puts output writer is not configured")
+	}
+	if len(args) == 0 {
+		_, err := fmt.Fprintln(writer)
+		return NewNil(), err
+	}
+	for _, arg := range args {
+		rendered, err := renderOutputValue(exec, "puts", arg, false)
+		if err != nil {
+			return NewNil(), err
+		}
+		if _, err := fmt.Fprintln(writer, rendered); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewNil(), nil
+}
+
+func builtinPrint(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("print does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("print does not accept blocks")
+	}
+	writer := exec.engine.config.OutputWriter
+	if writer == nil {
+		return NewNil(), fmt.Errorf("print output writer is not configured")
+	}
+	for _, arg := range args {
+		rendered, err := renderOutputValue(exec, "print", arg, false)
+		if err != nil {
+			return NewNil(), err
+		}
+		if _, err := fmt.Fprint(writer, rendered); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewNil(), nil
+}
+
+func builtinWarn(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("warn does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("warn does not accept blocks")
+	}
+	writer := exec.engine.config.ErrorWriter
+	if writer == nil {
+		return NewNil(), fmt.Errorf("warn error writer is not configured")
+	}
+	for _, arg := range args {
+		rendered, err := renderOutputValue(exec, "warn", arg, false)
+		if err != nil {
+			return NewNil(), err
+		}
+		if _, err := fmt.Fprintln(writer, rendered); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewNil(), nil
+}
+
+func builtinP(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("p does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("p does not accept blocks")
+	}
+	writer := exec.engine.config.OutputWriter
+	if writer == nil {
+		return NewNil(), fmt.Errorf("p output writer is not configured")
+	}
+	for _, arg := range args {
+		rendered, err := renderOutputValue(exec, "p", arg, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		if _, err := fmt.Fprintln(writer, rendered); err != nil {
+			return NewNil(), err
+		}
+	}
+	if len(args) == 0 {
+		return NewNil(), nil
+	}
+	if len(args) == 1 {
+		return args[0], nil
+	}
+	return NewArray(args), nil
+}
+
+func renderOutputValue(exec *Execution, method string, val Value, inspect bool) (string, error) {
+	var (
+		payload int
+		err     error
+	)
+	if inspect {
+		payload, err = val.InspectByteLenBounded(exec.step)
+	} else {
+		payload, err = val.StringByteLenBounded(exec.step)
+	}
+	if err != nil {
+		return "", err
+	}
+	if payload > maxOutputHelperBytes {
+		return "", guardLimitErrorf("%s output exceeds limit %d bytes", method, maxOutputHelperBytes)
+	}
+	if err := exec.checkProjectedValueRendering(val, payload); err != nil {
+		return "", err
+	}
+	if inspect {
+		return val.InspectBounded(maxOutputHelperBytes)
+	}
+	return val.StringBounded(maxOutputHelperBytes)
+}
+
 func builtinMoney(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) != 1 {
 		return NewNil(), fmt.Errorf("money expects a single string literal")
@@ -1301,7 +1428,7 @@ func builtinJSONParse(exec *Execution, receiver Value, args []Value, kwargs map[
 		return NewNil(), guardLimitErrorf("JSON.parse input exceeds limit %d bytes", maxJSONPayloadBytes)
 	}
 
-	parser := jsonValueParser{raw: raw}
+	parser := jsonValueParser{raw: raw, exec: exec}
 	value, err := parser.parse()
 	if err != nil {
 		var invalidNumber jsonInvalidNumberError
@@ -1327,6 +1454,7 @@ func builtinJSONStringify(exec *Execution, receiver Value, args []Value, kwargs 
 	state := &jsonStringifyState{
 		seenArrays: map[uintptr]struct{}{},
 		seenHashes: map[uintptr]struct{}{},
+		exec:       exec,
 	}
 	payload, err := appendJSONValue(make([]byte, 0, 256), args[0], state)
 	if err != nil {
@@ -1369,6 +1497,65 @@ func builtinRegexMatch(exec *Execution, receiver Value, args []Value, kwargs map
 		return NewNil(), nil
 	}
 	return NewString(text[indices[0]:indices[1]]), nil
+}
+
+func builtinRegexpEscape(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("Regexp.escape does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("Regexp.escape does not accept blocks")
+	}
+	if len(args) != 1 {
+		return NewNil(), fmt.Errorf("Regexp.escape expects a string")
+	}
+	if args[0].Kind() != KindString {
+		return NewNil(), fmt.Errorf("Regexp.escape expects a string")
+	}
+	return NewString(regexp.QuoteMeta(args[0].String())), nil
+}
+
+func builtinRegexpNew(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("Regexp.new does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("Regexp.new does not accept blocks")
+	}
+	if len(args) != 1 {
+		return NewNil(), fmt.Errorf("Regexp.new expects a pattern")
+	}
+	if args[0].Kind() != KindString {
+		return NewNil(), fmt.Errorf("Regexp.new pattern must be string")
+	}
+	return newRegexpObject(args[0].String())
+}
+
+func builtinRegexpUnion(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("Regexp.union does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("Regexp.union does not accept blocks")
+	}
+	pattern, err := regexpUnionPattern(args)
+	if err != nil {
+		return NewNil(), err
+	}
+	return newRegexpObject(pattern)
+}
+
+func builtinRegexpLastMatch(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("Regexp.last_match does not take arguments")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("Regexp.last_match does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("Regexp.last_match does not accept blocks")
+	}
+	return NewNil(), nil
 }
 
 func builtinToInt(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

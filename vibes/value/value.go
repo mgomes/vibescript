@@ -87,7 +87,7 @@ func (v Value) Data() any {
 		// wrapper, so embedders can inspect entries and round-trip a hash
 		// through Data/NewValue. Default metadata is reached via the dedicated
 		// HashDefaultValue/HashDefaultProc accessors.
-		return v.hashEntries()
+		return v.Hash()
 	case KindBool:
 		if v.data == nil {
 			return v.Bool()

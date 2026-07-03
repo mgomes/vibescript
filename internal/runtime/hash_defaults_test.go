@@ -74,6 +74,28 @@ def transform_values_drops_default()
   { a: doubled[:a], missing: doubled[:c] }
 end
 
+def store_drops_default()
+  h = Hash.new(0)
+  stored = h.store(:a, 1)
+  { a: stored[:a], missing: stored[:missing] }
+end
+
+def delete_hit_drops_default()
+  h = Hash.new(0)
+  h[:a] = 1
+  deleted = h.delete(:a)
+  result = deleted[:hash]
+  { deleted: deleted[:deleted], missing: result[:missing], size: result.size }
+end
+
+def delete_miss_drops_default()
+  h = Hash.new(0)
+  h[:a] = 1
+  deleted = h.delete(:b)
+  result = deleted[:hash]
+  { a: result[:a], deleted: deleted[:deleted], missing: result[:missing] }
+end
+
 def plain_literal_missing()
   h = { a: 1 }
   { present: h[:a], missing: h[:missing] }
@@ -291,6 +313,9 @@ func TestHashDefaultTransformPropagation(t *testing.T) {
 		{name: "merge preserves proc default", fn: "merge_preserves_proc_default", field: "computed", wantInt: 42, preserves: true},
 		{name: "select drops default", fn: "select_drops_default", field: "missing"},
 		{name: "transform_values drops default", fn: "transform_values_drops_default", field: "missing"},
+		{name: "store drops default", fn: "store_drops_default", field: "missing"},
+		{name: "delete hit drops default", fn: "delete_hit_drops_default", field: "missing"},
+		{name: "delete miss drops default", fn: "delete_miss_drops_default", field: "missing"},
 	}
 
 	for _, tc := range tests {

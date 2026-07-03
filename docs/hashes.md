@@ -1,7 +1,9 @@
 # Hashes in Vibescript
 
-Hashes are dictionaries whose keys share one string lookup space. Declare common
-identifier-shaped keys with Ruby-style shorthand:
+Hashes are dictionaries with Ruby-style key identity. String and symbol keys are
+distinct, and hash-rocket literals can use other hashable values such as
+integers, arrays, booleans, nil, floats, and ranges. Declare common
+identifier-shaped symbol keys with Ruby-style shorthand:
 
 ```vibe
 player = {
@@ -11,9 +13,9 @@ player = {
 }
 ```
 
-Shorthand labels (`name:`) are normalized into the same key space as strings,
-so you can access values using either symbol or string notation:
-`player[:name]` or `player["name"]`.
+Shorthand labels (`name:`) create symbol keys, so access them with symbol
+notation (`player[:name]`). Use quoted string keys or hash rockets when the key
+must be a string (`player["name"]`) or another runtime value.
 
 When a label key is followed immediately by `,`, `}`, or end-of-input, the value
 is omitted and read from the local variable of the same name. `{ name: }` is
@@ -40,12 +42,11 @@ player = {
 }
 
 player["first-name"]  # "Ada"
-player[:"first-name"] # "Ada"
+player[:"first-name"] # nil
 ```
 
-Quoted keys are symbols in the same key space as shorthand labels, so a
-quoted-symbol literal reads them back: `player[:"first-name"]` and
-`player["first-name"]` both resolve the `:"first-name"` key.
+Quoted keys are strings. Quoted symbols are separate keys, matching Ruby's
+string/symbol distinction.
 
 Reserved words are valid shorthand labels when followed by an explicit value, so
 keyword-shaped payload keys behave like any other label:
@@ -61,19 +62,24 @@ are accepted as keyword arguments at call sites, with or without parentheses
 disambiguates the label from the keyword, so `record rescue: "retry"` passes a
 keyword argument rather than parsing `rescue` as a control-flow keyword.
 
-Hash literals only accept colon-style keys: shorthand labels (`name:`) and
-quoted string keys (`"name":`). Ruby's hash rocket syntax (`=>`) is not
-supported, so write `{ name: "Ada" }` rather than `{ :name => "Ada" }`. To use a
-value computed at runtime as a key, assign into the hash after constructing it:
+Hash literals accept colon-style keys (shorthand labels like `name:` and quoted
+string keys like `"name":`) plus Ruby's hash rocket syntax (`=>`) for runtime
+key expressions:
 
 ```vibe
 current_key = :nickname
-player = { name: "Ada" }
-player[current_key] = "dynamic"
+player = { name: "Ada", "first-name": "Ada", current_key => "dynamic" }
+numbers = { 1 => "one", [2, 3] => "pair" }
 ```
 
-Keys assigned through index access are normalized into the same string lookup
-space. Other key types, such as arrays or numbers, raise
+Index assignment uses the same key model as literals:
+
+```vibe
+player[[1, 2]] = "array key"
+player[[1, 2]] # "array key"
+```
+
+Unsupported key values, such as NaN floats, cyclic arrays, and objects, raise
 `unsupported hash key type ...`.
 
 Dot access keeps hash method names reserved. If a stored key is named like a
@@ -187,14 +193,13 @@ def has_required_fields(player)
 end
 ```
 
-The key membership predicates accept any candidate key. Hashes only store
-symbol and string keys, so a candidate of any other type can never be present
-and the predicate simply returns `false` instead of raising.
+The key membership predicates accept any candidate key and use the same key
+identity as `[]` lookup.
 
 ```vibe
-{ a: 1 }.key?(1)     # false
-{ a: 1 }.member?(1)  # false
-{ a: 1 }.include?(1) # false
+{ a: 1 }.key?(:a)       # true
+{ a: 1 }.key?("a")      # false
+{ 1 => "one" }.key?(1)  # true
 ```
 
 `value?` and `has_value?` compare the candidate against each stored value using

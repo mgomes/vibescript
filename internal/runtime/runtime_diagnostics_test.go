@@ -248,15 +248,15 @@ end`,
 			name: "array.group_by with unsupported group key",
 			script: `def run()
   [1, 2].group_by do |v|
-    v
+    { value: v }
   end
 end`,
-			errMsg: "block must return symbol or string",
+			errMsg: "array.group_by block returned unsupported hash key",
 		},
 		{
 			name:   "array.tally with unsupported values",
-			script: `def run() [1, 2].tally end`,
-			errMsg: "values must be symbol or string",
+			script: `def run() [{ value: 1 }].tally end`,
+			errMsg: "array.tally value is unsupported hash key",
 		},
 		{
 			name:   "array.tally with argument",
@@ -467,10 +467,10 @@ end`,
 			name: "hash.transform_keys invalid return type",
 			script: `def run()
   {a: 1}.transform_keys do |k|
-    1
+    { bad: 1 }
   end
 end`,
-			errMsg: "block must return symbol or string",
+			errMsg: "hash.transform_keys block returned unsupported hash key",
 		},
 		{
 			name:   "hash unknown method",

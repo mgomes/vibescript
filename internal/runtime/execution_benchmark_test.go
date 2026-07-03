@@ -279,7 +279,7 @@ func BenchmarkExecutionJSONParseLoop(b *testing.B) {
   total = 0
   for i in 1..n
     payload = JSON.parse(raw)
-    total = total + payload[:score]
+    total = total + payload["score"]
   end
   total
 end`)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -63,6 +64,8 @@ type replModel struct {
 	textInput   textinput.Model
 	engine      *vibes.Engine
 	env         map[string]value.Value
+	stdout      *bytes.Buffer
+	stderr      *bytes.Buffer
 	history     []historyEntry
 	cmdHistory  []string
 	historyIdx  int
@@ -140,10 +143,14 @@ var replBuiltinCompletions = []string{
 	"money_cents",
 	"require",
 	"now",
+	"p",
+	"print",
+	"puts",
 	"uuid",
 	"random_id",
 	"to_int",
 	"to_float",
+	"warn",
 	"Hash",
 	"JSON",
 	"Regex",
@@ -190,11 +197,15 @@ var replBuiltinFunctionNames = []string{
 	"money",
 	"money_cents",
 	"now",
+	"p",
+	"print",
+	"puts",
 	"require",
 	"uuid",
 	"random_id",
 	"to_int",
 	"to_float",
+	"warn",
 	"JSON.parse",
 	"JSON.stringify",
 	"Regex.match",
@@ -215,7 +226,12 @@ func newREPLModel() (replModel, error) {
 	styles.Blurred.Prompt = promptStyle
 	ti.SetStyles(styles)
 
-	engine, err := vibes.NewEngine(vibes.Config{})
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	engine, err := vibes.NewEngine(vibes.Config{
+		OutputWriter: stdout,
+		ErrorWriter:  stderr,
+	})
 	if err != nil {
 		return replModel{}, fmt.Errorf("init engine: %w", err)
 	}
@@ -224,6 +240,8 @@ func newREPLModel() (replModel, error) {
 		textInput:  ti,
 		engine:     engine,
 		env:        make(map[string]value.Value),
+		stdout:     stdout,
+		stderr:     stderr,
 		historyIdx: -1,
 		showHelp:   false,
 		showVars:   false,
@@ -444,6 +462,8 @@ func (m replModel) handleAutocomplete() replModel {
 }
 
 func (m *replModel) evaluate(input string) (string, bool) {
+	m.resetCapturedOutput()
+
 	wrapped := fmt.Sprintf("def __repl__()\n  %s\nend", input)
 	sourceMap := snippetSourceMap{
 		syntheticFunction:     "__repl__",
@@ -472,10 +492,45 @@ func (m *replModel) evaluate(input string) (string, bool) {
 
 	m.env["_"] = result
 
-	if result.IsNil() {
-		return "nil", false
+	return m.formatEvaluationOutput(result), false
+}
+
+func (m *replModel) resetCapturedOutput() {
+	if m.stdout != nil {
+		m.stdout.Reset()
 	}
-	return formatValue(result), false
+	if m.stderr != nil {
+		m.stderr.Reset()
+	}
+}
+
+func (m *replModel) formatEvaluationOutput(result value.Value) string {
+	captured := m.capturedOutput()
+	if captured == "" {
+		if result.IsNil() {
+			return "nil"
+		}
+		return formatValue(result)
+	}
+	captured = strings.TrimSuffix(captured, "\n")
+	if result.IsNil() {
+		return captured
+	}
+	if captured == "" {
+		return formatValue(result)
+	}
+	return captured + "\n" + formatValue(result)
+}
+
+func (m *replModel) capturedOutput() string {
+	var b strings.Builder
+	if m.stdout != nil {
+		b.WriteString(m.stdout.String())
+	}
+	if m.stderr != nil {
+		b.WriteString(m.stderr.String())
+	}
+	return b.String()
 }
 
 func (m *replModel) extractAssignments(script *vibes.Script, result value.Value) {

@@ -30,6 +30,38 @@ func largeHashReceiver(count int) Value {
 	return NewHash(entries)
 }
 
+func typedSymbolHash(key string, val Value) Value {
+	hash := NewHash(make(map[string]Value, 1))
+	if err := hashSet(hash, NewSymbol(key), val); err != nil {
+		panic(fmt.Sprintf("set typed symbol hash key: %v", err))
+	}
+	return hash
+}
+
+// largeTypedSymbolHash builds a typed (symbol-keyed) hash with count entries so
+// merge tests exercise the typed projection path (hashHasTypedEntries) rather
+// than the legacy string-keyed map.
+func largeTypedSymbolHash(count int) Value {
+	hash := NewTypedHash(0)
+	for i := range count {
+		if err := hashSet(hash, NewSymbol("k"+strconv.Itoa(i)), NewInt(int64(i))); err != nil {
+			panic(fmt.Sprintf("set typed symbol hash key: %v", err))
+		}
+	}
+	return hash
+}
+
+// typedSymbolHashFrom builds a typed (symbol-keyed) hash from name/value pairs.
+func typedSymbolHashFrom(pairs map[string]int) Value {
+	hash := NewTypedHash(0)
+	for k, v := range pairs {
+		if err := hashSet(hash, NewSymbol(k), NewInt(int64(v))); err != nil {
+			panic(fmt.Sprintf("set typed symbol hash key: %v", err))
+		}
+	}
+	return hash
+}
+
 // callHashMember resolves a hash member builtin and invokes it directly so the
 // containment tests can supply a controlled Execution. The builtins are pure
 // functions of (exec, receiver, args, kwargs, block), mirroring how the
@@ -98,6 +130,34 @@ func TestHashDeepTransformKeysReservesOutputBuffers(t *testing.T) {
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	_, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block)
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestHashDeepTransformKeysTypedReceiverDoesNotMaterializeLegacyMap(t *testing.T) {
+	t.Parallel()
+
+	key := NewArray([]Value{NewString("account"), NewSymbol("id")})
+	receiver := NewTypedHash(0)
+	if err := hashSet(receiver, key, NewInt(42)); err != nil {
+		t.Fatalf("hashSet(%s) error = %v, want nil", key.Inspect(), err)
+	}
+	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
+		t.Fatalf("typed receiver legacy map before deep_transform_keys = %v, %v; want nil, false", entries, ok)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	got, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, keyIdentityBlock())
+	if err != nil {
+		t.Fatalf("hash.deep_transform_keys on typed receiver = %v, want success", err)
+	}
+	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
+		t.Fatalf("typed receiver legacy map after deep_transform_keys = %v, %v; want nil, false", entries, ok)
+	}
+	if got.Kind() != KindHash || got.HashLen() != 1 {
+		t.Fatalf("hash.deep_transform_keys typed result = %s with %d entries, want hash with 1 entry", got.Kind(), got.HashLen())
+	}
+	if value, ok, err := hashGet(got, key); err != nil || !ok || value.Int() != 42 {
+		t.Fatalf("hash.deep_transform_keys typed result lookup = (%v, %v, %v), want (42, true, nil)", value, ok, err)
+	}
 }
 
 func TestHashDeepTransformKeysRetainedPayloadReservationTripsMemoryQuota(t *testing.T) {
@@ -543,6 +603,108 @@ func TestHashMergeMultiArgOverlapStaysWithinQuota(t *testing.T) {
 	}
 	if got.Kind() != KindHash || len(got.Hash()) != count {
 		t.Fatalf("merge produced %v with %d entries, want a hash with %d", got.Kind(), len(got.Hash()), count)
+	}
+}
+
+func TestTypedMergedKeyCount(t *testing.T) {
+	t.Parallel()
+
+	base := typedSymbolHashFrom(map[string]int{"a": 1, "b": 2})
+
+	tests := []struct {
+		name  string
+		args  []Value
+		limit int
+		want  int
+	}{
+		{name: "no args", limit: 100, want: 2},
+		{name: "self overlay", args: []Value{base}, limit: 100, want: 2},
+		{name: "all new keys", args: []Value{typedSymbolHashFrom(map[string]int{"c": 3, "d": 4})}, limit: 100, want: 4},
+		{name: "partial overlap", args: []Value{typedSymbolHashFrom(map[string]int{"b": 9, "c": 3})}, limit: 100, want: 3},
+		{
+			name: "duplicate new key across args",
+			args: []Value{
+				typedSymbolHashFrom(map[string]int{"c": 3}),
+				typedSymbolHashFrom(map[string]int{"c": 4}),
+			},
+			limit: 100,
+			want:  3,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background()}
+			got, err := typedMergedKeyCount(exec, base, tc.args, tc.limit)
+			if err != nil {
+				t.Fatalf("typedMergedKeyCount(%s) error = %v, want nil", tc.name, err)
+			}
+			if got != tc.want {
+				t.Fatalf("typedMergedKeyCount(%s) = %d, want %d", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTypedMergedKeyCountStopsAtLimit verifies the typed union counter never
+// grows its deduplication set past the quota-derived budget, mirroring the
+// legacy mergedKeyCount cap.
+func TestTypedMergedKeyCountStopsAtLimit(t *testing.T) {
+	t.Parallel()
+
+	base := typedSymbolHashFrom(map[string]int{"a": 1})
+	first := map[string]int{}
+	second := map[string]int{}
+	for i := range 500 {
+		first["f"+strconv.Itoa(i)] = i
+		second["s"+strconv.Itoa(i)] = i
+	}
+	args := []Value{typedSymbolHashFrom(first), typedSymbolHashFrom(second)}
+
+	const limit = 10
+	exec := &Execution{ctx: context.Background()}
+	got, err := typedMergedKeyCount(exec, base, args, limit)
+	if err != nil {
+		t.Fatalf("typedMergedKeyCount error = %v, want nil", err)
+	}
+	if got <= limit {
+		t.Fatalf("typedMergedKeyCount returned %d, want a value greater than the limit %d", got, limit)
+	}
+	if got > limit+1 {
+		t.Fatalf("typedMergedKeyCount returned %d, want it to stop at limit+1 (%d)", got, limit+1)
+	}
+}
+
+func TestTypedHashMergeProjectionCountsUnionNotSum(t *testing.T) {
+	t.Parallel()
+
+	// A typed hash merged with itself collapses to its own keys, so a quota that
+	// fits the live roots, a union-sized output map, and the sorted scratch buffer
+	// must admit it. The pre-fix typed projection summed receiver+arg lengths and
+	// would have rejected this self-overlay even though it stays within the limit.
+	const count = 2_000
+	receiver := largeTypedSymbolHash(count)
+	args := []Value{receiver}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	base := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
+	scratch := sortedHashEntryBufferBytes(count)
+	quota := base + count*estimatedMapEntryStructuralBytes + scratch
+
+	// Sanity: the discarded sum-based projection (2*count entries) would not fit
+	// this quota, confirming the test exercises the typed union fix.
+	if base+2*count*estimatedMapEntryStructuralBytes+scratch <= quota {
+		t.Fatalf("test setup expects the sum-based projection to exceed the quota")
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "merge", args, NewNil())
+	if err != nil {
+		t.Fatalf("typed merge(self) under union-sized quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash || got.HashLen() != count {
+		t.Fatalf("typed merge(self) produced %v with %d entries, want a hash with %d", got.Kind(), got.HashLen(), count)
 	}
 }
 
@@ -1052,6 +1214,48 @@ func TestHashExceptChargesExclusionSet(t *testing.T) {
 	}
 }
 
+func TestHashExceptTypedArrayKeyChargesCanonicalExclusionPayload(t *testing.T) {
+	t.Parallel()
+
+	keyItems := make([]Value, 256)
+	for i := range keyItems {
+		keyItems[i] = NewString("segment-" + strconv.Itoa(i))
+	}
+	key := NewArray(keyItems)
+	receiver := NewHash(map[string]Value{})
+	if err := hashSet(receiver, key, NewInt(1)); err != nil {
+		t.Fatalf("set typed array key: %v", err)
+	}
+	args := []Value{key}
+
+	lookupKey, err := hashLookupKey(key)
+	if err != nil {
+		t.Fatalf("lookup typed array key: %v", err)
+	}
+	extraPayload := lookupKey.ExtraPayloadBytes()
+	if extraPayload <= 0 {
+		t.Fatalf("expected array lookup key to retain canonical payload, got %d", extraPayload)
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	projected := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
+	projected = saturatingAdd(projected, estimatedMapEntryStructuralBytes)
+	projected = saturatingAdd(projected, typedExclusionSetBytes(1))
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projected + extraPayload/2}
+	_, err = callHashMember(t, exec, receiver, "except", args, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	roomy := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projected + extraPayload + 64*1024}
+	out, err := callHashMember(t, roomy, receiver, "except", args, NewNil())
+	if err != nil {
+		t.Fatalf("typed except within an ample quota failed: %v", err)
+	}
+	if got := out.HashLen(); got != 0 {
+		t.Fatalf("typed except kept %d entries, want 0", got)
+	}
+}
+
 // TestHashBuildAccumulatorChargesIncrementally exercises the accumulator that
 // charges block-returned values during a hash build. Feeding values whose
 // cumulative payload crosses the quota must trip on the insertion that crosses
@@ -1376,6 +1580,45 @@ func TestHashTransformReservationsRejectBeforeMapAllocation(t *testing.T) {
 	}
 }
 
+func TestTypedHashTransformsReserveTypedOutputMap(t *testing.T) {
+	t.Parallel()
+
+	const count = 2_000
+	receiver := largeTypedSymbolHash(count)
+	scratch := sortedHashEntryBufferBytes(count)
+	legacyBuffers := hashTransformBufferBytes(count, scratch)
+	typedBuffers := typedHashTransformBufferBytes(count, scratch)
+	if legacyBuffers >= typedBuffers {
+		t.Fatalf("test setup expects typed buffers (%d) to exceed legacy buffers (%d)", typedBuffers, legacyBuffers)
+	}
+
+	tests := []struct {
+		name  string
+		block Value
+	}{
+		{name: "transform_keys", block: keyIdentityBlock()},
+		{name: "transform_values", block: emptyHashBlock()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+			roots := probe.hashCallRootBytes(receiver, nil, nil, tt.block)
+			quota := roots + legacyBuffers
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callHashMember(t, exec, receiver, tt.name, nil, tt.block)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			if exec.steps != 0 {
+				t.Fatalf("hash.%s ran %d step(s), want typed output backing rejected before iteration", tt.name, exec.steps)
+			}
+			if exec.reservedScratchBytes != 0 {
+				t.Fatalf("hash.%s leaked %d reserved scratch bytes after rejection", tt.name, exec.reservedScratchBytes)
+			}
+		})
+	}
+}
+
 func TestHashTransformReservationsDoNotMaskRequiredBlock(t *testing.T) {
 	t.Parallel()
 
@@ -1497,7 +1740,7 @@ func TestHashMergeManyCollidingOneKeyHashesWithBlockConservativeFootprint(t *tes
 
 	const collisions = 400
 	const payloadBytes = 4 * 1024
-	receiver := NewHash(map[string]Value{"x": NewInt(0)})
+	receiver := typedSymbolHash("x", NewInt(0))
 
 	// The live footprint is the receiver, the colliding argument hashes (each a
 	// one-key map of a small int), and the conservative output charge: one full entry
@@ -1505,7 +1748,7 @@ func TestHashMergeManyCollidingOneKeyHashesWithBlockConservativeFootprint(t *tes
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveArgs := make([]Value, collisions)
 	for i := range liveArgs {
-		liveArgs[i] = NewHash(map[string]Value{"x": NewInt(int64(i + 1))})
+		liveArgs[i] = typedSymbolHash("x", NewInt(int64(i+1)))
 	}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, liveArgs, nil, NewNil())
 	entryBytes := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
@@ -1838,6 +2081,75 @@ end`
 	requireCallRuntimeErrorType(t, script, "run", []Value{largeHashReceiver(2_000)}, CallOptions{}, runtimeErrorTypeLimit)
 }
 
+func TestHashTransformKeysChargesRetainedTypedKeyValues(t *testing.T) {
+	t.Parallel()
+
+	const count = 2_000
+	const keyWidth = 16
+	receiver := largeHashReceiver(count)
+	block := freshArrayKeyBlockValue(keyWidth)
+
+	arrayKey := func(key string) Value {
+		elements := make([]Value, 0, keyWidth+1)
+		for i := range keyWidth {
+			elements = append(elements, NewInt(int64(i)))
+		}
+		elements = append(elements, NewSymbol(key))
+		return NewArray(elements)
+	}
+	displayOnlyPayload := 0
+	typedPayload := 0
+	maxTypedKeyCharge := 0
+	for i := range count {
+		key := arrayKey("k" + strconv.Itoa(i))
+		lookupKey, err := hashLookupKey(key)
+		if err != nil {
+			t.Fatalf("hashLookupKey(sample array key %d) error = %v, want nil", i, err)
+		}
+		displayKey := hashDisplayKey(key)
+		displayOnlyPayload = saturatingAdd(displayOnlyPayload, newMemoryEstimator().stringPayloadSize(displayKey))
+		est := newMemoryEstimator()
+		typedKeyCharge := est.valuePayload(key)
+		typedKeyCharge = saturatingAdd(typedKeyCharge, est.stringPayloadSize(displayKey))
+		typedKeyCharge = saturatingAdd(typedKeyCharge, lookupKey.ExtraPayloadBytes())
+		typedPayload = saturatingAdd(typedPayload, typedKeyCharge)
+		if typedKeyCharge > maxTypedKeyCharge {
+			maxTypedKeyCharge = typedKeyCharge
+		}
+	}
+	if typedPayload <= displayOnlyPayload {
+		t.Fatalf("test setup expects typed key payload (%d) to exceed display-only payload (%d)", typedPayload, displayOnlyPayload)
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	buffers := typedHashTransformBufferBytes(count, sortedKeyBufferBytes(count))
+	transientKeyPayload := maxTypedKeyCharge
+	payloadHeadroom := displayOnlyPayload
+	if transientKeyPayload > payloadHeadroom {
+		payloadHeadroom = transientKeyPayload
+	}
+	if typedPayload <= payloadHeadroom {
+		t.Fatalf("test setup expects retained typed keys (%d) to exceed payload headroom (%d)", typedPayload, payloadHeadroom)
+	}
+
+	quota := saturatingAdd(saturatingAdd(roots, buffers), payloadHeadroom)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "transform_keys", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	roomy := saturatingAdd(saturatingAdd(roots, buffers), typedPayload)
+	roomy = saturatingAdd(roomy, maxTypedKeyCharge)
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roomy}
+	got, err := callHashMember(t, exec, receiver, "transform_keys", nil, block)
+	if err != nil {
+		t.Fatalf("hash.transform_keys with retained typed array keys under roomy quota error = %v, want nil", err)
+	}
+	if got.HashLen() != count {
+		t.Fatalf("hash.transform_keys with retained typed array keys produced %d entries, want %d", got.HashLen(), count)
+	}
+}
+
 // selfCyclicArray builds an array whose single element points back at the array
 // itself: a = [0]; a[0] = a. NewArray stores the slice header directly, so
 // mutating the backing after construction makes the value reach itself, mirroring
@@ -1980,6 +2292,20 @@ func keyIdentityBlock() Value {
 	)
 }
 
+func freshArrayKeyBlockValue(width int) Value {
+	pos := Position{Line: 1, Column: 1}
+	elements := make([]Expression, 0, width+1)
+	for i := range width {
+		elements = append(elements, &IntegerLiteral{Value: int64(i), Position: pos})
+	}
+	elements = append(elements, &Identifier{Name: "k", Position: pos})
+	return NewBlock(
+		[]Param{{Kind: ParamNormal, Name: "k", Target: &Identifier{Name: "k", Position: pos}}},
+		[]Statement{&ExprStmt{Expr: &ArrayLiteral{Elements: elements, Position: pos}, Position: pos}},
+		newEnv(nil),
+	)
+}
+
 // TestHashEmptyBlockTransformHonorsStepQuota pins the P2 finding on PR #776: a
 // block-driven hash transform invoked with an empty block must still charge a
 // step per entry, so a large receiver trips the step quota even though the block
@@ -2092,7 +2418,7 @@ end`,
 		{
 			name: "merge conflict block",
 			source: `def run(values)
-  values.merge({ k0: 99 }) do |key, old_value, new_value|
+  values.merge({ "k0": 99 }) do |key, old_value, new_value|
     cancel_now(new_value)
   end
 end`,

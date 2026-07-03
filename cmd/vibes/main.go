@@ -114,7 +114,7 @@ type runInvocation struct {
 }
 
 func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error {
-	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: inv.moduleDirs})
+	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: inv.moduleDirs, OutputWriter: out, ErrorWriter: os.Stderr})
 	if err != nil {
 		return fmt.Errorf("create engine: %w", err)
 	}
@@ -197,7 +197,7 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, chec
 	if err != nil {
 		return fmt.Errorf("compute module paths: %w", err)
 	}
-	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs})
+	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs, OutputWriter: out, ErrorWriter: os.Stderr})
 	if err != nil {
 		return fmt.Errorf("create engine: %w", err)
 	}

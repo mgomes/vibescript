@@ -151,30 +151,30 @@ func TestSymbolRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSymbolConversionHashLookup documents that a symbol produced by to_sym
-// indexes a hash the same way the source string does. Vibescript collapses
-// symbol and string hash keys onto their shared underlying name, so a hash
-// built with symbol keys is reachable with a converted string key and vice
-// versa. This intentionally diverges from Ruby, where :name and "name" are
-// distinct keys.
+// TestSymbolConversionHashLookup documents that converted symbols index symbol
+// keys without collapsing them into string keys.
 func TestSymbolConversionHashLookup(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `
 		def run()
-			by_symbol = { name: "alice" }
+			by_symbol = { name: "symbol", "name" => "string" }
 			{
 				symbol_key: by_symbol["name".to_sym],
+				string_key: by_symbol["name"],
 				name_round: by_symbol[:name.to_s.to_sym],
 			}
 		end
 	`)
 	got := callFunc(t, script, "run", nil)
 	hash := got.Hash()
-	if !hash["symbol_key"].Equal(NewString("alice")) {
+	if !hash["symbol_key"].Equal(NewString("symbol")) {
 		t.Fatalf("symbol_key: got %#v", hash["symbol_key"])
 	}
-	if !hash["name_round"].Equal(NewString("alice")) {
+	if !hash["string_key"].Equal(NewString("string")) {
+		t.Fatalf("string_key: got %#v", hash["string_key"])
+	}
+	if !hash["name_round"].Equal(NewString("symbol")) {
 		t.Fatalf("name_round: got %#v", hash["name_round"])
 	}
 }

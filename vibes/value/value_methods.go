@@ -260,6 +260,9 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		// than emit a result one byte over the cap.
 		return appendByteBounded(buf, ']', limit)
 	case KindHash:
+		if typed := v.data.(*hashData).typedEntries; typed != nil {
+			return v.appendStringTypedHash(buf, state, limit, typed)
+		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return appendBounded(buf, "{}", limit)
@@ -313,6 +316,51 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		// to the remaining budget instead of materializing the whole value in
 		// the buffer before checking the limit.
 		return appendBounded(buf, v.String(), limit)
+	}
+}
+
+func (v Value) appendStringTypedHash(buf *strings.Builder, state *valueStringState, limit int, entries map[HashLookupKey]HashEntry) error {
+	if len(entries) == 0 {
+		return appendBounded(buf, "{}", limit)
+	}
+	id := HashIdentity(v)
+	if id != 0 {
+		if _, seen := state.maps[id]; seen {
+			return appendBounded(buf, cycleMarker, limit)
+		}
+		state.maps[id] = struct{}{}
+		defer delete(state.maps, id)
+	}
+	if err := appendByteBounded(buf, '{', limit); err != nil {
+		return err
+	}
+	first := true
+	for _, entry := range entries {
+		if !first {
+			if err := appendBounded(buf, elementSeparator, limit); err != nil {
+				return err
+			}
+		}
+		first = false
+		if err := appendStringHashEntryKey(buf, entry.Key, state, limit); err != nil {
+			return err
+		}
+		if err := appendBounded(buf, keyValueSeparator, limit); err != nil {
+			return err
+		}
+		if err := entry.Value.appendString(buf, state, limit); err != nil {
+			return err
+		}
+	}
+	return appendByteBounded(buf, '}', limit)
+}
+
+func appendStringHashEntryKey(buf *strings.Builder, key Value, state *valueStringState, limit int) error {
+	switch key.kind {
+	case KindString, KindSymbol:
+		return appendBounded(buf, key.String(), limit)
+	default:
+		return key.appendInspect(buf, state, limit)
 	}
 }
 
@@ -403,6 +451,9 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 		}
 		return total
 	case KindHash:
+		if typed := v.data.(*hashData).typedEntries; typed != nil {
+			return v.typedHashStringByteLenWithState(state, typed)
+		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose)
@@ -425,6 +476,36 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 		return total
 	default:
 		return len(v.String())
+	}
+}
+
+func (v Value) typedHashStringByteLenWithState(state *valueStringState, entries map[HashLookupKey]HashEntry) int {
+	if len(entries) == 0 {
+		return len(hashOpen) + len(hashClose)
+	}
+	id := HashIdentity(v)
+	if id != 0 {
+		if _, seen := state.maps[id]; seen {
+			return len(cycleMarker)
+		}
+		state.maps[id] = struct{}{}
+		defer delete(state.maps, id)
+	}
+	total := len(hashOpen) + len(hashClose)
+	total += separatorBytes(len(entries))
+	for _, entry := range entries {
+		total += hashStringEntryKeyByteLenWithState(entry.Key, state) + len(keyValueSeparator)
+		total += entry.Value.stringByteLenWithState(state)
+	}
+	return total
+}
+
+func hashStringEntryKeyByteLenWithState(key Value, state *valueStringState) int {
+	switch key.kind {
+	case KindString, KindSymbol:
+		return len(key.String())
+	default:
+		return key.inspectByteLenWithState(state)
 	}
 }
 
@@ -451,6 +532,9 @@ func (v Value) stringRuneLenWithState(state *valueStringState) int {
 		}
 		return total
 	case KindHash:
+		if typed := v.data.(*hashData).typedEntries; typed != nil {
+			return v.typedHashStringRuneLenWithState(state, typed)
+		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose)
@@ -472,6 +556,40 @@ func (v Value) stringRuneLenWithState(state *valueStringState) int {
 		return total
 	default:
 		return utf8.RuneCountInString(v.String())
+	}
+}
+
+func (v Value) typedHashStringRuneLenWithState(state *valueStringState, entries map[HashLookupKey]HashEntry) int {
+	if len(entries) == 0 {
+		return len(hashOpen) + len(hashClose)
+	}
+	id := HashIdentity(v)
+	if id != 0 {
+		if _, seen := state.maps[id]; seen {
+			return len(cycleMarker)
+		}
+		state.maps[id] = struct{}{}
+		defer delete(state.maps, id)
+	}
+	total := len(hashOpen) + len(hashClose)
+	total += separatorBytes(len(entries))
+	for _, entry := range entries {
+		total += hashStringEntryKeyRuneLenWithState(entry.Key, state) + len(keyValueSeparator)
+		total += entry.Value.stringRuneLenWithState(state)
+	}
+	return total
+}
+
+func hashStringEntryKeyRuneLenWithState(key Value, state *valueStringState) int {
+	switch key.kind {
+	case KindString, KindSymbol:
+		return utf8.RuneCountInString(key.String())
+	default:
+		var buf strings.Builder
+		if err := key.appendInspect(&buf, state, 0); err != nil {
+			return 0
+		}
+		return utf8.RuneCountInString(buf.String())
 	}
 }
 
@@ -561,6 +679,9 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 		}
 		return total, nil
 	case KindHash:
+		if typed := v.data.(*hashData).typedEntries; typed != nil {
+			return v.typedHashStringByteLenBoundedWithState(state, step, typed)
+		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose), nil
@@ -587,6 +708,47 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 		return total, nil
 	default:
 		return len(v.String()), nil
+	}
+}
+
+func (v Value) typedHashStringByteLenBoundedWithState(state *valueStringState, step func() error, entries map[HashLookupKey]HashEntry) (int, error) {
+	if len(entries) == 0 {
+		return len(hashOpen) + len(hashClose), nil
+	}
+	id := HashIdentity(v)
+	if id != 0 {
+		if _, seen := state.maps[id]; seen {
+			return len(cycleMarker), nil
+		}
+		state.maps[id] = struct{}{}
+		defer delete(state.maps, id)
+	}
+	total := len(hashOpen) + len(hashClose)
+	total += separatorBytes(len(entries))
+	for _, entry := range entries {
+		n, err := hashStringEntryKeyByteLenBoundedWithState(entry.Key, state, step)
+		if err != nil {
+			return 0, err
+		}
+		total += n + len(keyValueSeparator)
+		valueBytes, err := entry.Value.stringByteLenBoundedWithState(state, step)
+		if err != nil {
+			return 0, err
+		}
+		total += valueBytes
+	}
+	return total, nil
+}
+
+func hashStringEntryKeyByteLenBoundedWithState(key Value, state *valueStringState, step func() error) (int, error) {
+	switch key.kind {
+	case KindString, KindSymbol:
+		if err := step(); err != nil {
+			return 0, err
+		}
+		return len(key.String()), nil
+	default:
+		return key.inspectByteLenBoundedWithState(state, step)
 	}
 }
 
@@ -620,6 +782,9 @@ func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func(
 		}
 		return total, nil
 	case KindHash:
+		if typed := v.data.(*hashData).typedEntries; typed != nil {
+			return v.typedHashStringRuneLenBoundedWithState(state, step, typed)
+		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose), nil
@@ -645,6 +810,50 @@ func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func(
 		return total, nil
 	default:
 		return utf8.RuneCountInString(v.String()), nil
+	}
+}
+
+func (v Value) typedHashStringRuneLenBoundedWithState(state *valueStringState, step func() error, entries map[HashLookupKey]HashEntry) (int, error) {
+	if len(entries) == 0 {
+		return len(hashOpen) + len(hashClose), nil
+	}
+	id := HashIdentity(v)
+	if id != 0 {
+		if _, seen := state.maps[id]; seen {
+			return len(cycleMarker), nil
+		}
+		state.maps[id] = struct{}{}
+		defer delete(state.maps, id)
+	}
+	total := len(hashOpen) + len(hashClose)
+	total += separatorBytes(len(entries))
+	for _, entry := range entries {
+		n, err := hashStringEntryKeyRuneLenBoundedWithState(entry.Key, state, step)
+		if err != nil {
+			return 0, err
+		}
+		total += n + len(keyValueSeparator)
+		valueRunes, err := entry.Value.stringRuneLenBoundedWithState(state, step)
+		if err != nil {
+			return 0, err
+		}
+		total += valueRunes
+	}
+	return total, nil
+}
+
+func hashStringEntryKeyRuneLenBoundedWithState(key Value, state *valueStringState, step func() error) (int, error) {
+	switch key.kind {
+	case KindString, KindSymbol:
+		if err := step(); err != nil {
+			return 0, err
+		}
+		return utf8.RuneCountInString(key.String()), nil
+	default:
+		if _, err := key.inspectByteLenBoundedWithState(state, step); err != nil {
+			return 0, err
+		}
+		return hashStringEntryKeyRuneLenWithState(key, state), nil
 	}
 }
 
@@ -685,6 +894,9 @@ func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit 
 		}
 		return total, false, nil
 	case KindHash:
+		if typed := v.data.(*hashData).typedEntries; typed != nil {
+			return v.typedHashStringByteLenBoundedUpToWithState(state, limit, step, typed)
+		}
 		entries := v.hashEntries()
 		if len(entries) == 0 {
 			total, truncated := stringByteLenCappedAdd(0, len(hashOpen)+len(hashClose), limit)
@@ -724,6 +936,47 @@ func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit 
 		total, truncated := stringByteLenCappedAdd(0, len(v.String()), limit)
 		return total, truncated, nil
 	}
+}
+
+func (v Value) typedHashStringByteLenBoundedUpToWithState(state *valueStringState, limit int, step func() error, entries map[HashLookupKey]HashEntry) (int, bool, error) {
+	if len(entries) == 0 {
+		total, truncated := stringByteLenCappedAdd(0, len(hashOpen)+len(hashClose), limit)
+		return total, truncated, nil
+	}
+	id := HashIdentity(v)
+	if id != 0 {
+		if _, seen := state.maps[id]; seen {
+			total, truncated := stringByteLenCappedAdd(0, len(cycleMarker), limit)
+			return total, truncated, nil
+		}
+		state.maps[id] = struct{}{}
+		defer delete(state.maps, id)
+	}
+	total, truncated := stringByteLenCappedAdd(0, len(hashOpen)+len(hashClose)+separatorBytes(len(entries)), limit)
+	if truncated {
+		return total, true, nil
+	}
+	for _, entry := range entries {
+		n, err := hashStringEntryKeyByteLenBoundedWithState(entry.Key, state, step)
+		if err != nil {
+			return 0, false, err
+		}
+		var keyTruncated bool
+		total, keyTruncated = stringByteLenCappedAdd(total, n+len(keyValueSeparator), limit)
+		if keyTruncated {
+			return total, true, nil
+		}
+		valueBytes, childTruncated, err := entry.Value.stringByteLenBoundedUpToWithState(state, limit-total, step)
+		if err != nil {
+			return 0, false, err
+		}
+		var addTruncated bool
+		total, addTruncated = stringByteLenCappedAdd(total, valueBytes, limit)
+		if childTruncated || addTruncated {
+			return total, true, nil
+		}
+	}
+	return total, false, nil
 }
 
 func stringByteLenCappedAdd(total, n, limit int) (int, bool) {
@@ -768,7 +1021,7 @@ func (v Value) Truthy() bool {
 	case KindArray:
 		return len(v.data.([]Value)) > 0
 	case KindHash:
-		return len(v.hashEntries()) > 0
+		return v.HashLen() > 0
 	case KindEnum, KindEnumValue, KindClass, KindInstance:
 		return true
 	default:
@@ -953,7 +1206,52 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 			}
 		}
 		return true
-	case KindHash, KindObject:
+	case KindHash:
+		left := v.HashEntries()
+		right := other.HashEntries()
+		if len(left) != len(right) {
+			return false
+		}
+		leftPtr := HashIdentity(v)
+		rightPtr := HashIdentity(other)
+		if leftPtr != 0 && leftPtr == rightPtr {
+			return true
+		}
+		pair := valueEqualityPair{
+			kind:     v.kind,
+			leftPtr:  leftPtr,
+			rightPtr: rightPtr,
+			leftLen:  len(left),
+			rightLen: len(right),
+		}
+		if pair.leftPtr != 0 || pair.rightPtr != 0 {
+			if _, ok := seen[pair]; ok {
+				return true
+			}
+			seen[pair] = struct{}{}
+		}
+		if !v.HashHasTypedEntries() || !other.HashHasTypedEntries() {
+			return hashEntriesEqualByDisplayKey(left, right, seen)
+		}
+		rightByKey, ok := hashEntriesByLookupKey(right)
+		if !ok {
+			return false
+		}
+		for _, leftEntry := range left {
+			key, err := NewHashLookupKey(leftEntry.Key)
+			if err != nil {
+				return false
+			}
+			rightEntry, ok := rightByKey[key]
+			if !ok {
+				return false
+			}
+			if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+				return false
+			}
+		}
+		return true
+	case KindObject:
 		left := v.Hash()
 		right := other.Hash()
 		if len(left) != len(right) {
@@ -995,4 +1293,52 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 		}
 		return reflect.DeepEqual(v.data, other.data)
 	}
+}
+
+func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen map[valueEqualityPair]struct{}) bool {
+	leftByKey, ok := hashEntriesByDisplayKey(left)
+	if !ok {
+		return false
+	}
+	rightByKey, ok := hashEntriesByDisplayKey(right)
+	if !ok {
+		return false
+	}
+	if len(leftByKey) != len(rightByKey) {
+		return false
+	}
+	for key, leftEntry := range leftByKey {
+		rightEntry, ok := rightByKey[key]
+		if !ok {
+			return false
+		}
+		if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+			return false
+		}
+	}
+	return true
+}
+
+func hashEntriesByDisplayKey(entries []HashEntry) (map[string]HashEntry, bool) {
+	byKey := make(map[string]HashEntry, len(entries))
+	for _, entry := range entries {
+		key := HashDisplayKey(entry.Key)
+		if _, exists := byKey[key]; exists {
+			return nil, false
+		}
+		byKey[key] = entry
+	}
+	return byKey, true
+}
+
+func hashEntriesByLookupKey(entries []HashEntry) (map[HashLookupKey]HashEntry, bool) {
+	byKey := make(map[HashLookupKey]HashEntry, len(entries))
+	for _, entry := range entries {
+		key, err := NewHashLookupKey(entry.Key)
+		if err != nil {
+			return nil, false
+		}
+		byKey[key] = entry
+	}
+	return byKey, true
 }

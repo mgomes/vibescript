@@ -694,6 +694,87 @@ func TestCallRebindHashPreservesSharedEntryMap(t *testing.T) {
 	}
 }
 
+func TestUniversalDupCloneAndFreeze(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  ary = [1]
+  ary_copy = ary.dup
+  ary_copy[0] = 2
+
+  hash = {1 => ["one"], name: "old"}
+  hash_copy = hash.clone
+  hash_copy[1][0] = "changed"
+  hash_copy[:name] = "new"
+
+  match = "a1".match("([a-z])([0-9])")
+  match_copy = match.dup
+  match_copy.captures[0] = "z"
+
+  {
+    array_original: ary[0],
+    array_copy: ary_copy[0],
+    hash_original_array: hash[1][0],
+    hash_copy_array: hash_copy[1][0],
+    hash_original_symbol: hash[:name],
+    hash_copy_symbol: hash_copy[:name],
+    object_original_capture: match.captures[0],
+    object_copy_capture: match_copy.captures[0],
+    freeze_identity: ary.freeze.equal?(ary),
+    frozen_predicate: ary.frozen?
+  }
+end`)
+
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("dup/clone summary kind = %v, want hash", got.Kind())
+	}
+	compareHash(t, got.Hash(), map[string]Value{
+		"array_original":          NewInt(1),
+		"array_copy":              NewInt(2),
+		"hash_original_array":     NewString("one"),
+		"hash_copy_array":         NewString("changed"),
+		"hash_original_symbol":    NewString("old"),
+		"hash_copy_symbol":        NewString("new"),
+		"object_original_capture": NewString("a"),
+		"object_copy_capture":     NewString("z"),
+		"freeze_identity":         NewBool(true),
+		"frozen_predicate":        NewBool(true),
+	})
+}
+
+func TestUniversalDupCloneHandlesCycles(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  ary = [nil]
+  ary[0] = ary
+  ary_copy = ary.dup
+
+  hash = {}
+  hash[:self] = hash
+  hash_copy = hash.clone
+
+  {
+    array_distinct: ary_copy.equal?(ary),
+    array_cycle: ary_copy[0].equal?(ary_copy),
+    hash_distinct: hash_copy.equal?(hash),
+    hash_cycle: hash_copy[:self].equal?(hash_copy)
+  }
+end`)
+
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("cycle clone summary kind = %v, want hash", got.Kind())
+	}
+	compareHash(t, got.Hash(), map[string]Value{
+		"array_distinct": NewBool(false),
+		"array_cycle":    NewBool(true),
+		"hash_distinct":  NewBool(false),
+		"hash_cycle":     NewBool(true),
+	})
+}
+
 // TestEqlPredicate exercises the universal eql? predicate across core value
 // kinds: it reports hash-key equality, so operands must share a kind and value.
 // An Int never eql-matches a Float even when their numeric values coincide,

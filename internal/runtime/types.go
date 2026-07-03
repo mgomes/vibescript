@@ -219,6 +219,25 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		}
 		keyType := ty.TypeArgs[0]
 		valueType := ty.TypeArgs[1]
+		if hashHasTypedEntries(val) {
+			for _, entry := range val.HashEntries() {
+				keyMatches, err := s.matches(entry.Key, keyType)
+				if err != nil {
+					return false, err
+				}
+				if !keyMatches {
+					return false, nil
+				}
+				valueMatches, err := s.matches(entry.Value, valueType)
+				if err != nil {
+					return false, err
+				}
+				if !valueMatches {
+					return false, nil
+				}
+			}
+			return true, nil
+		}
 		if decided, keyMatches := typeAllowsStringHashKey(keyType); decided {
 			if !keyMatches {
 				return false, nil

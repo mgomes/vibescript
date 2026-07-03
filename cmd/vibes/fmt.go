@@ -114,15 +114,53 @@ func collectVibeFiles(targets []string) ([]string, error) {
 }
 
 func formatVibeSource(source string) string {
-	normalized := strings.ReplaceAll(source, "\r\n", "\n")
-	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	var out strings.Builder
+	out.Grow(len(source) + 1)
 
-	lines := strings.Split(normalized, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimRight(line, " \t")
+	lineStart := 0
+	pendingBlankLines := 0
+	wrote := false
+	for i := 0; i < len(source); {
+		if source[i] != '\n' && source[i] != '\r' {
+			i++
+			continue
+		}
+		lineEnd := trimLineEnd(source, lineStart, i)
+		wrote = appendFormattedLine(&out, source[lineStart:lineEnd], &pendingBlankLines, wrote)
+		if source[i] == '\r' && i+1 < len(source) && source[i+1] == '\n' {
+			i += 2
+		} else {
+			i++
+		}
+		lineStart = i
 	}
+	if lineStart < len(source) {
+		lineEnd := trimLineEnd(source, lineStart, len(source))
+		wrote = appendFormattedLine(&out, source[lineStart:lineEnd], &pendingBlankLines, wrote)
+	}
+	if !wrote {
+		return "\n"
+	}
+	return out.String()
+}
 
-	joined := strings.Join(lines, "\n")
-	joined = strings.TrimRight(joined, "\n")
-	return joined + "\n"
+func appendFormattedLine(out *strings.Builder, line string, pendingBlankLines *int, wrote bool) bool {
+	if line == "" {
+		*pendingBlankLines = *pendingBlankLines + 1
+		return wrote
+	}
+	for range *pendingBlankLines {
+		out.WriteByte('\n')
+	}
+	*pendingBlankLines = 0
+	out.WriteString(line)
+	out.WriteByte('\n')
+	return true
+}
+
+func trimLineEnd(source string, start, end int) int {
+	for end > start && (source[end-1] == ' ' || source[end-1] == '\t') {
+		end--
+	}
+	return end
 }

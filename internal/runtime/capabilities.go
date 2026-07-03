@@ -47,40 +47,210 @@ func cloneHash(src map[string]Value) map[string]Value {
 	return out
 }
 
+const deepCloneSmallSeenLimit = 8
+
+type deepClonePtrEntry struct {
+	id    uintptr
+	value Value
+}
+
+type deepCloneSliceEntry struct {
+	id    sliceIdentity
+	value Value
+}
+
+type deepCloneState struct {
+	arrays  map[sliceIdentity]Value
+	hashes  map[uintptr]Value
+	objects map[uintptr]Value
+
+	smallArrays  [deepCloneSmallSeenLimit]deepCloneSliceEntry
+	smallHashes  [deepCloneSmallSeenLimit]deepClonePtrEntry
+	smallObjects [deepCloneSmallSeenLimit]deepClonePtrEntry
+	arrayCount   int
+	hashCount    int
+	objectCount  int
+}
+
 func deepCloneValue(val Value) Value {
+	var state deepCloneState
+	return deepCloneValueWithState(val, &state)
+}
+
+func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 	switch val.Kind() {
 	case KindArray:
 		arr := val.Array()
+		id := sliceIdentity{
+			Ptr: reflect.ValueOf(arr).Pointer(),
+			Len: len(arr),
+			Cap: cap(arr),
+		}
+		if id.Ptr != 0 {
+			if cloned, ok := state.clonedArray(id); ok {
+				return cloned
+			}
+		}
 		cloned := make([]Value, len(arr))
+		clonedValue := NewArray(cloned)
+		state.rememberArray(id, clonedValue)
 		for i, elem := range arr {
-			cloned[i] = deepCloneValue(elem)
+			cloned[i] = deepCloneValueWithState(elem, state)
 		}
-		return NewArray(cloned)
+		return clonedValue
 	case KindHash:
-		hash := val.Hash()
-		cloned := make(map[string]Value, len(hash))
-		for k, v := range hash {
-			cloned[k] = deepCloneValue(v)
-		}
 		// Preserve the hash's Ruby-style default metadata so the clone keeps the
 		// same missing-key behavior. The default value is deep-cloned like an
 		// entry; the default proc is a runtime-only block, copied by reference.
+		id := hashIdentity(val)
+		if id != 0 {
+			if cloned, ok := state.clonedHash(id); ok {
+				return cloned
+			}
+		}
 		defaultProc := hashDefaultProc(val)
 		defaultValue := hashDefaultValue(val)
-		if defaultProc.IsNil() && defaultValue.IsNil() {
-			return NewHash(cloned)
+		hasDefault := !defaultProc.IsNil() || !defaultValue.IsNil()
+		clonedEntries := make(map[string]Value, val.HashLen())
+		cloned := NewHash(clonedEntries)
+		state.rememberHash(id, cloned)
+		if hasDefault {
+			cloned.SetHashDefaults(deepCloneValueWithState(defaultValue, state), defaultProc)
 		}
-		return NewHashWithDefault(cloned, deepCloneValue(defaultValue), defaultProc)
+		if hashHasTypedEntries(val) {
+			var entryBuf [smallHashKeyBufferSize]HashEntry
+			for _, entry := range val.HashEntriesInto(entryBuf[:]) {
+				setClonedHashEntry(cloned, deepCloneValueWithState(entry.Key, state), deepCloneValueWithState(entry.Value, state))
+			}
+			return cloned
+		}
+		for key, item := range val.Hash() {
+			clonedEntries[key] = deepCloneValueWithState(item, state)
+		}
+		return cloned
 	case KindObject:
 		obj := val.Hash()
-		cloned := make(map[string]Value, len(obj))
-		for k, v := range obj {
-			cloned[k] = deepCloneValue(v)
+		id := reflect.ValueOf(obj).Pointer()
+		if id != 0 {
+			if cloned, ok := state.clonedObject(id); ok {
+				return cloned
+			}
 		}
-		return NewObject(cloned)
+		cloned := make(map[string]Value, len(obj))
+		clonedValue := NewObject(cloned)
+		state.rememberObject(id, clonedValue)
+		for k, v := range obj {
+			cloned[k] = deepCloneValueWithState(v, state)
+		}
+		return clonedValue
 	default:
 		return val
 	}
+}
+
+func (state *deepCloneState) clonedArray(id sliceIdentity) (Value, bool) {
+	if id.Ptr == 0 {
+		return NewNil(), false
+	}
+	if state.arrays != nil {
+		cloned, ok := state.arrays[id]
+		return cloned, ok
+	}
+	for i := range state.arrayCount {
+		entry := state.smallArrays[i]
+		if entry.id == id {
+			return entry.value, true
+		}
+	}
+	return NewNil(), false
+}
+
+func (state *deepCloneState) rememberArray(id sliceIdentity, cloned Value) {
+	if id.Ptr == 0 {
+		return
+	}
+	if state.arrays != nil {
+		state.arrays[id] = cloned
+		return
+	}
+	if state.arrayCount < len(state.smallArrays) {
+		state.smallArrays[state.arrayCount] = deepCloneSliceEntry{id: id, value: cloned}
+		state.arrayCount++
+		return
+	}
+	state.arrays = make(map[sliceIdentity]Value, state.arrayCount+1)
+	for i := range state.arrayCount {
+		entry := state.smallArrays[i]
+		state.arrays[entry.id] = entry.value
+	}
+	state.arrays[id] = cloned
+}
+
+func (state *deepCloneState) clonedHash(id uintptr) (Value, bool) {
+	return state.clonedPtr(id, state.hashes, state.smallHashes[:], state.hashCount)
+}
+
+func (state *deepCloneState) rememberHash(id uintptr, cloned Value) {
+	if id == 0 {
+		return
+	}
+	if state.hashes != nil {
+		state.hashes[id] = cloned
+		return
+	}
+	if state.hashCount < len(state.smallHashes) {
+		state.smallHashes[state.hashCount] = deepClonePtrEntry{id: id, value: cloned}
+		state.hashCount++
+		return
+	}
+	state.hashes = make(map[uintptr]Value, state.hashCount+1)
+	for i := range state.hashCount {
+		entry := state.smallHashes[i]
+		state.hashes[entry.id] = entry.value
+	}
+	state.hashes[id] = cloned
+}
+
+func (state *deepCloneState) clonedObject(id uintptr) (Value, bool) {
+	return state.clonedPtr(id, state.objects, state.smallObjects[:], state.objectCount)
+}
+
+func (state *deepCloneState) rememberObject(id uintptr, cloned Value) {
+	if id == 0 {
+		return
+	}
+	if state.objects != nil {
+		state.objects[id] = cloned
+		return
+	}
+	if state.objectCount < len(state.smallObjects) {
+		state.smallObjects[state.objectCount] = deepClonePtrEntry{id: id, value: cloned}
+		state.objectCount++
+		return
+	}
+	state.objects = make(map[uintptr]Value, state.objectCount+1)
+	for i := range state.objectCount {
+		entry := state.smallObjects[i]
+		state.objects[entry.id] = entry.value
+	}
+	state.objects[id] = cloned
+}
+
+func (state *deepCloneState) clonedPtr(id uintptr, spilled map[uintptr]Value, small []deepClonePtrEntry, count int) (Value, bool) {
+	if id == 0 {
+		return NewNil(), false
+	}
+	if spilled != nil {
+		cloned, ok := spilled[id]
+		return cloned, ok
+	}
+	for i := range count {
+		entry := small[i]
+		if entry.id == id {
+			return entry.value, true
+		}
+	}
+	return NewNil(), false
 }
 
 func mergeHash(dest, src map[string]Value) map[string]Value {

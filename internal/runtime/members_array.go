@@ -187,7 +187,8 @@ func arrayMemberGrouping(property string) (Value, error) {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
-			groups := make(map[string][]Value, arrayGroupingInitialCapacity(len(arr)))
+			groups := make(map[hashAggregationKey][]Value, arrayGroupingInitialCapacity(len(arr)))
+			keyValues := make(map[hashAggregationKey]Value, arrayGroupingInitialCapacity(len(arr)))
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
@@ -195,17 +196,22 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				key, err := valueToHashKey(groupValue)
+				key, err := newHashAggregationKey(groupValue)
 				if err != nil {
-					return NewNil(), fmt.Errorf("array.group_by block must return symbol or string")
+					return NewNil(), fmt.Errorf("array.group_by block returned unsupported hash key: %w", err)
+				}
+				if _, exists := groups[key]; !exists {
+					keyValues[key] = groupValue
 				}
 				groups[key] = append(groups[key], item)
 			}
-			result := make(map[string]Value, len(groups))
+			result := NewHash(make(map[string]Value, len(groups)))
 			for key, items := range groups {
-				result[key] = NewArray(items)
+				if err := hashSet(result, keyValues[key], NewArray(items)); err != nil {
+					return NewNil(), err
+				}
 			}
-			return NewHash(result), nil
+			return result, nil
 		}), nil
 	case "group_by_stable":
 		return NewAutoBuiltin("array.group_by_stable", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -218,9 +224,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			initialCapacity := arrayGroupingInitialCapacity(len(arr))
-			order := make([]string, 0, initialCapacity)
-			keyValues := make(map[string]Value, initialCapacity)
-			groups := make(map[string][]Value, initialCapacity)
+			order := make([]hashAggregationKey, 0, initialCapacity)
+			keyValues := make(map[hashAggregationKey]Value, initialCapacity)
+			groups := make(map[hashAggregationKey][]Value, initialCapacity)
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
@@ -228,9 +234,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				key, err := valueToHashKey(groupValue)
+				key, err := newHashAggregationKey(groupValue)
 				if err != nil {
-					return NewNil(), fmt.Errorf("array.group_by_stable block must return symbol or string")
+					return NewNil(), fmt.Errorf("array.group_by_stable block returned unsupported hash key: %w", err)
 				}
 				if _, exists := groups[key]; !exists {
 					order = append(order, key)
@@ -256,9 +262,10 @@ func arrayMemberGrouping(property string) (Value, error) {
 			hasBlock := valueBlock(block) != nil
 			initialCapacity, err := arrayTallyInitialCapacity(arr, hasBlock)
 			if err != nil {
-				return NewNil(), fmt.Errorf("array.tally values must be symbol or string")
+				return NewNil(), fmt.Errorf("array.tally value is unsupported hash key: %w", err)
 			}
-			counts := make(map[string]int64, initialCapacity)
+			counts := make(map[hashAggregationKey]int64, initialCapacity)
+			keyValues := make(map[hashAggregationKey]Value, initialCapacity)
 			var runner *blockCallRunner
 			if hasBlock {
 				runner, err = newBlockCallRunner(exec, block, "array.tally", receiver, nil, kwargs)
@@ -277,17 +284,22 @@ func arrayMemberGrouping(property string) (Value, error) {
 					}
 					keyValue = mapped
 				}
-				key, err := valueToHashKey(keyValue)
+				key, err := newHashAggregationKey(keyValue)
 				if err != nil {
-					return NewNil(), fmt.Errorf("array.tally values must be symbol or string")
+					return NewNil(), fmt.Errorf("array.tally value is unsupported hash key: %w", err)
+				}
+				if _, exists := keyValues[key]; !exists {
+					keyValues[key] = keyValue
 				}
 				counts[key]++
 			}
-			result := make(map[string]Value, len(counts))
+			result := NewHash(make(map[string]Value, len(counts)))
 			for key, count := range counts {
-				result[key] = NewInt(count)
+				if err := hashSet(result, keyValues[key], NewInt(count)); err != nil {
+					return NewNil(), err
+				}
 			}
-			return NewHash(result), nil
+			return result, nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
@@ -448,6 +460,49 @@ func boundedFilterCap(n int) int {
 	return n
 }
 
+type hashAggregationKey struct {
+	text   string
+	number int64
+	bits   uint64
+	kind   ValueKind
+}
+
+func newHashAggregationKey(val Value) (hashAggregationKey, error) {
+	switch val.Kind() {
+	case KindNil:
+		return hashAggregationKey{kind: KindNil}, nil
+	case KindBool:
+		if val.Bool() {
+			return hashAggregationKey{kind: KindBool, bits: 1}, nil
+		}
+		return hashAggregationKey{kind: KindBool}, nil
+	case KindInt:
+		return hashAggregationKey{kind: KindInt, number: val.Int()}, nil
+	case KindFloat:
+		f := val.Float()
+		if math.IsNaN(f) {
+			return hashAggregationKey{}, fmt.Errorf("unsupported hash key float NaN")
+		}
+		if f == 0 {
+			f = 0
+		}
+		return hashAggregationKey{kind: KindFloat, bits: math.Float64bits(f)}, nil
+	case KindString:
+		return hashAggregationKey{kind: KindString, text: val.String()}, nil
+	case KindSymbol:
+		return hashAggregationKey{kind: KindSymbol, text: val.String()}, nil
+	case KindArray, KindRange:
+		key, err := canonicalHashKey(val)
+		if err != nil {
+			return hashAggregationKey{}, err
+		}
+		return hashAggregationKey{kind: val.Kind(), text: key}, nil
+	default:
+		_, err := canonicalHashKey(val)
+		return hashAggregationKey{}, err
+	}
+}
+
 func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
 	length := len(arr)
 	if length <= 256 {
@@ -460,10 +515,10 @@ func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
 	// Sample direct values only; blocks may be expensive or effectful, so
 	// block tallies use the conservative fixed cap above.
 	const sampleLimit = 64
-	var keys [sampleLimit]string
+	var keys [sampleLimit]hashAggregationKey
 	distinct := 0
 	for _, item := range arr[:sampleLimit] {
-		key, err := valueToHashKey(item)
+		key, err := newHashAggregationKey(item)
 		if err != nil {
 			return 0, err
 		}
@@ -2078,8 +2133,8 @@ func arrayMemberGrep(property string) (Value, error) {
 //
 // In the block form the block maps each element to the [key, value] pair, so the
 // receiver's elements need not themselves be pairs. Either way each pair must be
-// a two-element array whose key resolves through the same symbol/string hash-key
-// rules used everywhere else; a non-array element, a wrong-length pair, or an
+// a two-element array whose key resolves through the same Ruby-style hash-key
+// identity used everywhere else; a non-array element, a wrong-length pair, or an
 // unsupported key type is rejected, matching Ruby's TypeError/ArgumentError for
 // malformed pairs. Duplicate keys keep the last pair encountered, like Ruby.
 func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -2139,7 +2194,7 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		}
 	}
 
-	out := make(map[string]Value, len(arr))
+	out := NewHash(make(map[string]Value, len(arr)))
 	var blockArg [1]Value
 	for _, item := range arr {
 		// Charge a step per element so even the bare form, where runner is nil and
@@ -2170,11 +2225,13 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		if len(elements) != 2 {
 			return NewNil(), fmt.Errorf("array.to_h pair must have exactly two elements")
 		}
-		key, err := valueToHashKey(elements[0])
+		key, err := canonicalHashKey(elements[0])
 		if err != nil {
-			return NewNil(), fmt.Errorf("array.to_h pair key must be symbol or string")
+			return NewNil(), fmt.Errorf("array.to_h pair key is unsupported hash key: %w", err)
 		}
-		out[key] = elements[1]
+		if err := hashSet(out, elements[0], elements[1]); err != nil {
+			return NewNil(), err
+		}
 		if acc != nil {
 			// The block synthesized both the key and the value, so charge each: the
 			// key string via addSynthesizedKey and the value via add. Both route
@@ -2189,7 +2246,7 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 			}
 		}
 	}
-	return NewHash(out), nil
+	return out, nil
 }
 
 // arrayFillInitialCap bounds the capacity reserved up front when building a

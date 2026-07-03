@@ -16,12 +16,14 @@ type jsonStringifyState struct {
 	seenArrays map[uintptr]struct{}
 	seenHashes map[uintptr]struct{}
 	depth      int
+	exec       *Execution
 }
 
 type jsonValueParser struct {
 	raw   string
 	pos   int
 	depth int
+	exec  *Execution
 }
 
 type jsonInvalidNumberError string
@@ -99,6 +101,9 @@ func (p *jsonValueParser) parseArray() (Value, error) {
 			return NewNil(), err
 		}
 		values = append(values, value)
+		if err := p.checkMaterialized(NewArray(values)); err != nil {
+			return NewNil(), err
+		}
 
 		p.skipWhitespace()
 		switch {
@@ -130,7 +135,7 @@ func (p *jsonValueParser) parseObject() (Value, error) {
 		return NewHash(nil), nil
 	}
 
-	values := map[string]Value{}
+	values := NewTypedHash(0)
 	for {
 		if p.pos >= len(p.raw) {
 			return NewNil(), fmt.Errorf("unexpected end of JSON input")
@@ -156,7 +161,12 @@ func (p *jsonValueParser) parseObject() (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
-		values[key] = value
+		if err := values.HashSet(NewString(key), value); err != nil {
+			return NewNil(), err
+		}
+		if err := p.checkMaterialized(values); err != nil {
+			return NewNil(), err
+		}
 
 		p.skipWhitespace()
 		switch {
@@ -166,7 +176,7 @@ func (p *jsonValueParser) parseObject() (Value, error) {
 				return NewNil(), fmt.Errorf("invalid character '}' looking for beginning of object key string")
 			}
 		case p.consumeByte('}'):
-			return NewHash(values), nil
+			return values, nil
 		default:
 			if p.pos >= len(p.raw) {
 				return NewNil(), fmt.Errorf("unexpected end of JSON input")
@@ -419,6 +429,13 @@ func (p *jsonValueParser) leaveContainer() {
 	p.depth--
 }
 
+func (p *jsonValueParser) checkMaterialized(value Value) error {
+	if p.exec == nil {
+		return nil
+	}
+	return p.exec.checkMemoryWith(value)
+}
+
 func isJSONDigit(c byte) bool {
 	return c >= '0' && c <= '9'
 }
@@ -458,10 +475,10 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 		}
 		return appendJSONFloat(buf, f), nil
 	case KindString, KindSymbol:
-		return appendJSONString(buf, val.String()), nil
+		return appendJSONString(buf, val.String(), state)
 	case KindEnumValue:
 		if member := valueEnumValue(val); member != nil {
-			return appendJSONString(buf, member.Symbol), nil
+			return appendJSONString(buf, member.Symbol, state)
 		}
 		return nil, fmt.Errorf("JSON.stringify unsupported enum value")
 	case KindArray:
@@ -496,13 +513,12 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 		}
 		return append(buf, ']'), nil
 	case KindHash, KindObject:
-		hash := val.Hash()
 		if err := state.enterContainer(); err != nil {
 			return nil, err
 		}
 		defer state.leaveContainer()
 
-		id := reflect.ValueOf(hash).Pointer()
+		id := jsonObjectIdentity(val)
 		if id != 0 {
 			if _, seen := state.seenHashes[id]; seen {
 				return nil, fmt.Errorf("JSON.stringify does not support cyclic objects")
@@ -511,25 +527,27 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 			defer delete(state.seenHashes, id)
 		}
 
-		keys := make([]string, 0, len(hash))
-		for key := range hash {
-			keys = append(keys, key)
+		entries, err := jsonObjectEntries(val)
+		if err != nil {
+			return nil, err
 		}
-		sort.Strings(keys)
 
 		buf = append(buf, '{')
-		for i, key := range keys {
+		for i, entry := range entries {
 			if i > 0 {
 				buf = append(buf, ',')
 			}
-			buf = appendJSONString(buf, key)
+			buf, err = appendJSONString(buf, entry.key, state)
+			if err != nil {
+				return nil, err
+			}
 			buf = append(buf, ':')
-			updated, err := appendJSONValue(buf, hash[key], state)
+			updated, err := appendJSONValue(buf, entry.value, state)
 			if err != nil {
 				if errors.Is(err, errJSONMaxDepth) {
 					return nil, err
 				}
-				return nil, fmt.Errorf("JSON.stringify key %q: %w", key, err)
+				return nil, fmt.Errorf("JSON.stringify key %q: %w", entry.key, err)
 			}
 			buf = updated
 		}
@@ -537,6 +555,56 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 	default:
 		return nil, fmt.Errorf("JSON.stringify unsupported value type %s", val.Kind())
 	}
+}
+
+type jsonObjectEntry struct {
+	key     string
+	sortKey string
+	value   Value
+}
+
+func jsonObjectIdentity(val Value) uintptr {
+	if val.Kind() == KindHash {
+		if id := hashIdentity(val); id != 0 {
+			return id
+		}
+	}
+	return reflect.ValueOf(val.Hash()).Pointer()
+}
+
+func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
+	if val.Kind() == KindHash && hashHasTypedEntries(val) {
+		hashEntries := val.HashEntries()
+		entries := make([]jsonObjectEntry, len(hashEntries))
+		for i, entry := range hashEntries {
+			key, err := valueToHashKey(entry.Key)
+			if err != nil {
+				return nil, fmt.Errorf("JSON.stringify key: %w", err)
+			}
+			sortKey, err := canonicalHashKey(entry.Key)
+			if err != nil {
+				return nil, fmt.Errorf("JSON.stringify key: %w", err)
+			}
+			entries[i] = jsonObjectEntry{key: key, sortKey: sortKey, value: entry.Value}
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].key != entries[j].key {
+				return entries[i].key < entries[j].key
+			}
+			return entries[i].sortKey < entries[j].sortKey
+		})
+		return entries, nil
+	}
+
+	hash := val.Hash()
+	entries := make([]jsonObjectEntry, 0, len(hash))
+	for key, item := range hash {
+		entries = append(entries, jsonObjectEntry{key: key, sortKey: key, value: item})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].sortKey < entries[j].sortKey
+	})
+	return entries, nil
 }
 
 func appendJSONFloat(buf []byte, f float64) []byte {
@@ -569,9 +637,12 @@ func (state *jsonStringifyState) leaveContainer() {
 	state.depth--
 }
 
-func appendJSONString(buf []byte, s string) []byte {
+func appendJSONString(buf []byte, s string, state *jsonStringifyState) ([]byte, error) {
 	const hexDigits = "0123456789abcdef"
 
+	if err := state.checkOutputBytes(len(buf) + 1); err != nil {
+		return nil, err
+	}
 	buf = append(buf, '"')
 	start := 0
 	for i := 0; i < len(s); {
@@ -581,6 +652,9 @@ func appendJSONString(buf []byte, s string) []byte {
 				continue
 			}
 
+			if err := state.checkOutputBytes(len(buf) + i - start + 6); err != nil {
+				return nil, err
+			}
 			buf = append(buf, s[start:i]...)
 			switch b {
 			case '\\', '"':
@@ -605,6 +679,9 @@ func appendJSONString(buf []byte, s string) []byte {
 
 		r, size := utf8.DecodeRuneInString(s[i:])
 		if r == utf8.RuneError && size == 1 {
+			if err := state.checkOutputBytes(len(buf) + i - start + len(`\ufffd`)); err != nil {
+				return nil, err
+			}
 			buf = append(buf, s[start:i]...)
 			buf = append(buf, `\ufffd`...)
 			i++
@@ -612,6 +689,9 @@ func appendJSONString(buf []byte, s string) []byte {
 			continue
 		}
 		if r == '\u2028' || r == '\u2029' {
+			if err := state.checkOutputBytes(len(buf) + i - start + 6); err != nil {
+				return nil, err
+			}
 			buf = append(buf, s[start:i]...)
 			buf = append(buf, '\\', 'u', '2', '0', '2', byte('8'+r-'\u2028'))
 			i += size
@@ -620,6 +700,19 @@ func appendJSONString(buf []byte, s string) []byte {
 		}
 		i += size
 	}
+	if err := state.checkOutputBytes(len(buf) + len(s) - start + 1); err != nil {
+		return nil, err
+	}
 	buf = append(buf, s[start:]...)
-	return append(buf, '"')
+	return append(buf, '"'), nil
+}
+
+func (state *jsonStringifyState) checkOutputBytes(size int) error {
+	if size > maxJSONPayloadBytes {
+		return guardLimitErrorf("JSON.stringify output exceeds limit %d bytes", maxJSONPayloadBytes)
+	}
+	if state.exec == nil {
+		return nil
+	}
+	return state.exec.checkProjectedStringBytes(size)
 }

@@ -29,6 +29,8 @@ type Config struct {
 	ModuleDenyList         []string
 	RandomReader           io.Reader
 	RandomReadFunc         func(context.Context, []byte) (int, error)
+	OutputWriter           io.Writer
+	ErrorWriter            io.Writer
 	MaxCachedModules       int
 	MaxSourceBytes         int
 	DefaultTaskConcurrency int
@@ -253,6 +255,9 @@ func registerCoreBuiltins(engine *Engine) {
 		{name: "loop", fn: builtinLoop},
 		{name: "money", fn: builtinMoney},
 		{name: "money_cents", fn: builtinMoneyCents},
+		{name: "p", fn: builtinP},
+		{name: "print", fn: builtinPrint},
+		{name: "puts", fn: builtinPuts},
 		{name: "require", fn: builtinRequire},
 		{name: "now", fn: builtinNow, autoInvoke: true},
 		{name: "rand", fn: builtinRand, autoInvoke: true},
@@ -260,6 +265,7 @@ func registerCoreBuiltins(engine *Engine) {
 		{name: "sprintf", fn: builtinSprintf},
 		{name: "srand", fn: builtinSrand},
 		{name: "uuid", fn: builtinUUID, autoInvoke: true},
+		{name: "warn", fn: builtinWarn},
 		{name: "random_id", fn: builtinRandomID},
 		{name: "to_int", fn: builtinToInt},
 		{name: "to_float", fn: builtinToFloat},
@@ -464,6 +470,13 @@ func registerDataBuiltins(engine *Engine) {
 		"match":       NewBuiltin("Regex.match", builtinRegexMatch),
 		"replace":     NewBuiltin("Regex.replace", builtinRegexReplace),
 		"replace_all": NewBuiltin("Regex.replace_all", builtinRegexReplaceAll),
+	})
+	engine.builtins["Regexp"] = NewObject(map[string]Value{
+		"escape":     NewBuiltin("Regexp.escape", builtinRegexpEscape),
+		"quote":      NewBuiltin("Regexp.quote", builtinRegexpEscape),
+		"new":        NewBuiltin("Regexp.new", builtinRegexpNew),
+		"union":      NewBuiltin("Regexp.union", builtinRegexpUnion),
+		"last_match": NewAutoBuiltin("Regexp.last_match", builtinRegexpLastMatch),
 	})
 }
 

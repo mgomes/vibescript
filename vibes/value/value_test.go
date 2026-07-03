@@ -168,6 +168,25 @@ func TestHashDataRoundTrip(t *testing.T) {
 		}
 	})
 
+	t.Run("typed_hash_data_exposes_entry_map", func(t *testing.T) {
+		t.Parallel()
+		hash := value.NewTypedHash(0)
+		if err := hash.HashSet(value.NewString("k"), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet(\"k\") error = %v", err)
+		}
+		got, ok := hash.Data().(map[string]value.Value)
+		if !ok {
+			t.Fatalf("typed hash Data() = %T, want map[string]value.Value", hash.Data())
+		}
+		if got["k"].Int() != 1 {
+			t.Fatalf("typed hash Data()[\"k\"] = %v, want 1", got["k"])
+		}
+		materialized, ok := hash.HashStringMapIfMaterialized()
+		if !ok || materialized["k"].Int() != 1 {
+			t.Fatalf("typed hash materialized map = %v, %v; want entry map, true", materialized, ok)
+		}
+	})
+
 	t.Run("round_trips_through_new_value", func(t *testing.T) {
 		t.Parallel()
 		entries := map[string]value.Value{"a": value.NewInt(1), "b": value.NewString("x")}
@@ -201,6 +220,39 @@ func TestHashDataRoundTrip(t *testing.T) {
 			t.Fatalf("rebuilt empty hash = %s, want value equal to %s", rebuilt, original)
 		}
 	})
+}
+
+func TestTypedHashMaterializesLegacyMapLazily(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewTypedHash(0)
+	if entries, ok := hash.HashStringMapIfMaterialized(); ok || entries != nil {
+		t.Fatalf("new typed hash materialized legacy map = %v, %v; want nil, false", entries, ok)
+	}
+	if err := hash.HashSet(value.NewString("score"), value.NewInt(7)); err != nil {
+		t.Fatalf("HashSet(\"score\") error = %v", err)
+	}
+	if got, ok, err := hash.HashGet(value.NewString("score")); err != nil || !ok || !got.Equal(value.NewInt(7)) {
+		t.Fatalf("HashGet(\"score\") = %s, %v, %v; want 7, true, nil", got.Inspect(), ok, err)
+	}
+	if entries, ok := hash.HashStringMapIfMaterialized(); ok || entries != nil {
+		t.Fatalf("typed hash materialized legacy map before Hash() = %v, %v; want nil, false", entries, ok)
+	}
+
+	entries := hash.Hash()
+	if got := entries["score"]; !got.Equal(value.NewInt(7)) {
+		t.Fatalf("Hash()[\"score\"] = %s, want 7", got.Inspect())
+	}
+	if materialized, ok := hash.HashStringMapIfMaterialized(); !ok || materialized == nil {
+		t.Fatalf("typed hash legacy map materialized = %v, %v; want non-nil, true", materialized, ok)
+	}
+
+	if err := hash.HashSet(value.NewString("active"), value.NewBool(true)); err != nil {
+		t.Fatalf("HashSet(\"active\") error = %v", err)
+	}
+	if got := entries["active"]; !got.Equal(value.NewBool(true)) {
+		t.Fatalf("materialized Hash()[\"active\"] = %s, want true", got.Inspect())
+	}
 }
 
 func TestScalarValueData(t *testing.T) {
@@ -391,6 +443,11 @@ func TestValuePayloadAccessors(t *testing.T) {
 func TestValueTruthy(t *testing.T) {
 	t.Parallel()
 
+	typedHash := value.NewTypedHash(0)
+	if err := typedHash.HashSet(value.NewString("k"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(\"k\") error = %v", err)
+	}
+
 	tests := []struct {
 		name string
 		val  value.Value
@@ -409,6 +466,8 @@ func TestValueTruthy(t *testing.T) {
 		{"nonempty_array", value.NewArray([]value.Value{value.NewNil()}), true},
 		{"empty_hash", value.NewHash(nil), false},
 		{"nonempty_hash", value.NewHash(map[string]value.Value{"k": value.NewNil()}), true},
+		{"empty_typed_hash", value.NewTypedHash(0), false},
+		{"nonempty_typed_hash", typedHash, true},
 		{"zero_money", value.NewMoney(value.Money{}), true},
 		{"symbol", value.NewSymbol("ok"), true},
 		{"range", value.NewRange(value.Range{}), true},
@@ -541,6 +600,81 @@ func TestValueStringCycleDetection(t *testing.T) {
 			t.Fatalf("String() = %q, want %q", got, "[[1], [1]]")
 		}
 	})
+}
+
+func TestTypedHashStringPreservesDisplayCollidingEntries(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	if err := hash.HashSet(value.NewSymbol("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(:a) error = %v", err)
+	}
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(2)); err != nil {
+		t.Fatalf("HashSet(\"a\") error = %v", err)
+	}
+
+	rendered := hash.String()
+	requireTypedHashCollisionString(t, rendered)
+	if got, want := hash.StringByteLen(), len(rendered); got != want {
+		t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+	}
+	if got, want := hash.StringRuneLen(), utf8.RuneCountInString(rendered); got != want {
+		t.Fatalf("StringRuneLen() = %d, want rendered rune count %d", got, want)
+	}
+
+	bounded, err := hash.StringBounded(1 << 20)
+	if err != nil {
+		t.Fatalf("StringBounded() error = %v, want nil", err)
+	}
+	requireTypedHashCollisionString(t, bounded)
+
+	boundedLen, err := hash.StringByteLenBounded(func() error { return nil })
+	if err != nil {
+		t.Fatalf("StringByteLenBounded() error = %v, want nil", err)
+	}
+	if want := hash.StringByteLen(); boundedLen != want {
+		t.Fatalf("StringByteLenBounded() = %d, want StringByteLen() = %d", boundedLen, want)
+	}
+
+	limit := hash.StringByteLen() - 1
+	got, truncated, err := hash.StringByteLenBoundedUpTo(limit, func() error { return nil })
+	if err != nil {
+		t.Fatalf("StringByteLenBoundedUpTo() error = %v, want nil", err)
+	}
+	if !truncated {
+		t.Fatalf("StringByteLenBoundedUpTo() truncated = false, want true")
+	}
+	if got != limit+1 {
+		t.Fatalf("StringByteLenBoundedUpTo() = %d, want limit+1", got)
+	}
+}
+
+func TestTypedHashStringCycleDetection(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	if err := hash.HashSet(value.NewSymbol("self"), hash); err != nil {
+		t.Fatalf("HashSet(:self) error = %v", err)
+	}
+	if got := hash.String(); got != "{self: <cycle>}" {
+		t.Fatalf("String() = %q, want typed hash cycle marker", got)
+	}
+	if got, want := hash.StringByteLen(), len(hash.String()); got != want {
+		t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+	}
+}
+
+func requireTypedHashCollisionString(t *testing.T, got string) {
+	t.Helper()
+	if !strings.HasPrefix(got, "{") || !strings.HasSuffix(got, "}") {
+		t.Fatalf("typed hash String() = %q, want hash delimiters", got)
+	}
+	if strings.Count(got, "a: ") != 2 {
+		t.Fatalf("typed hash String() = %q, want two display-colliding a entries", got)
+	}
+	if !strings.Contains(got, "a: 1") || !strings.Contains(got, "a: 2") {
+		t.Fatalf("typed hash String() = %q, want both typed entries", got)
+	}
 }
 
 func TestValueStringByteLen(t *testing.T) {

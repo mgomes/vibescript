@@ -10,6 +10,9 @@ import (
 // Object defines for all values:
 //
 //   - itself — returns the receiver unchanged.
+//   - dup/clone — returns a deep data copy for arrays, hashes, and objects.
+//   - freeze/frozen? — exposes Ruby's lifecycle surface; freeze is a no-op and
+//     frozen? reports true because Vibescript does not model mutable freeze state.
 //   - nil? — true only for the nil receiver and false for every other value
 //     (Ruby's Object#nil?).
 //   - eql?/equal? — the equality predicates: `eql?` reports hash-key equality and
@@ -33,6 +36,10 @@ import (
 // completion surfaces them on every receiver via withUniversalMembers.
 var universalMemberNames = []string{
 	"itself",
+	"dup",
+	"clone",
+	"freeze",
+	"frozen?",
 	"nil?",
 	"eql?",
 	"equal?",
@@ -48,7 +55,7 @@ var universalMemberNames = []string{
 // helpers that every value answers through the universal fallback.
 func isUniversalMember(property string) bool {
 	switch property {
-	case "itself", "nil?", "eql?", "equal?", "tap", "yield_self":
+	case "itself", "dup", "clone", "freeze", "frozen?", "nil?", "eql?", "equal?", "tap", "yield_self":
 		return true
 	default:
 		return isUniversalPredicate(property)
@@ -68,7 +75,7 @@ func isUniversalMember(property string) bool {
 // only on a genuine miss.
 func isUniversalDataSafe(property string) bool {
 	switch property {
-	case "itself", "nil?", "eql?", "equal?":
+	case "itself", "dup", "clone", "freeze", "frozen?", "nil?", "eql?", "equal?":
 		return true
 	default:
 		return isUniversalPredicate(property)
@@ -116,14 +123,22 @@ func (exec *Execution) universalMember(obj Value, property string, callerIsRecei
 
 // universalValueMember resolves the universal helpers whose result depends only
 // on the receiver value and the call-time arguments, never on the Execution or
-// the caller's privacy stance: itself returns the receiver, nil? reports nil
-// identity, eql?/equal? are the equality predicates, and tap/yield_self are the
-// block helpers. The introspection predicates' exec-aware sibling delegates here
-// for these names, so the construction of each helper lives in one place.
+// the caller's privacy stance: itself/freeze return the receiver, dup/clone copy
+// container data, frozen? reports the runtime's no-freeze-state contract, nil?
+// reports nil identity, eql?/equal? are the equality predicates, and
+// tap/yield_self are the block helpers. The introspection predicates' exec-aware
+// sibling delegates here for these names, so the construction of each helper
+// lives in one place.
 func universalValueMember(obj Value, property string) (Value, bool) {
 	switch property {
 	case "itself":
 		return bindItself(obj), true
+	case "dup", "clone":
+		return newDupBuiltin(property, obj), true
+	case "freeze":
+		return bindFreeze(obj), true
+	case "frozen?":
+		return newFrozenPredicateBuiltin(obj.Kind().String()), true
 	case "nil?":
 		// The predicate's name carries the receiver's kind so argument errors read
 		// naturally (for example "int.nil? does not take arguments").
@@ -139,6 +154,52 @@ func universalValueMember(obj Value, property string) (Value, bool) {
 	default:
 		return NewNil(), false
 	}
+}
+
+func newDupBuiltin(name string, obj Value) Value {
+	return NewAutoBuiltin(obj.Kind().String()+"."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if len(args) > 0 {
+			return NewNil(), fmt.Errorf("%s does not take arguments", name)
+		}
+		if len(kwargs) > 0 {
+			return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
+		}
+		if !block.IsNil() {
+			return NewNil(), fmt.Errorf("%s does not accept blocks", name)
+		}
+		return deepCloneValue(receiver), nil
+	})
+}
+
+func bindFreeze(obj Value) Value {
+	return NewAutoBuiltin(obj.Kind().String()+".freeze", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if len(args) > 0 {
+			return NewNil(), fmt.Errorf("freeze does not take arguments")
+		}
+		if len(kwargs) > 0 {
+			return NewNil(), fmt.Errorf("freeze does not take keyword arguments")
+		}
+		if !block.IsNil() {
+			return NewNil(), fmt.Errorf("freeze does not accept blocks")
+		}
+		return receiver, nil
+	})
+}
+
+func newFrozenPredicateBuiltin(kind string) Value {
+	name := kind + ".frozen?"
+	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if len(args) > 0 {
+			return NewNil(), fmt.Errorf("%s does not take arguments", name)
+		}
+		if len(kwargs) > 0 {
+			return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
+		}
+		if !block.IsNil() {
+			return NewNil(), fmt.Errorf("%s does not accept blocks", name)
+		}
+		return NewBool(true), nil
+	})
 }
 
 // newUniversalBlockBuiltin returns the auto-invoked builtin for a universal

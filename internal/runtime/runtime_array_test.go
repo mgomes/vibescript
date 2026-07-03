@@ -502,6 +502,38 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
 	compareArrays(t, got["original"], []Value{NewInt(3), NewInt(1), NewInt(2), NewInt(1)})
 }
 
+func TestArrayAggregationNormalizesSignedZeroFloatKeys(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  tally = [0.0, -0.0].tally
+  grouped = [0.0, -0.0].group_by do |v|
+    v
+  end
+  {
+    tally_size: tally.size,
+    tally_positive: tally[0.0],
+    tally_negative: tally[-0.0],
+    grouped_size: grouped.size,
+    grouped_positive_size: grouped[0.0].size,
+    grouped_negative_size: grouped[-0.0].size
+  }
+end`)
+
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("signed zero aggregation summary kind = %v, want hash", got.Kind())
+	}
+	compareHash(t, got.Hash(), map[string]Value{
+		"tally_size":            NewInt(1),
+		"tally_positive":        NewInt(2),
+		"tally_negative":        NewInt(2),
+		"grouped_size":          NewInt(1),
+		"grouped_positive_size": NewInt(2),
+		"grouped_negative_size": NewInt(2),
+	})
+}
+
 func TestArrayChunkWindowValidation(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -1602,12 +1634,12 @@ func TestArrayAndHashHelpers(t *testing.T) {
     end
 
     def bad_hash_remap()
-      { a: 1 }.remap_keys({ a: 1 })
+      { a: 1 }.remap_keys({ a: { bad: 1 } })
     end
 
 	    def bad_deep_transform()
 	      { a: 1 }.deep_transform_keys do |k|
-	        1
+	        { bad: 1 }
 	      end
 	    end
 
@@ -1705,8 +1737,8 @@ func TestArrayAndHashHelpers(t *testing.T) {
 		t.Fatalf("amountCents mismatch: %v", event.Hash()["amountCents"])
 	}
 
-	requireCallErrorContains(t, script, "bad_hash_remap", nil, CallOptions{}, "hash.remap_keys mapping values must be symbol or string")
-	requireCallErrorContains(t, script, "bad_deep_transform", nil, CallOptions{}, "hash.deep_transform_keys block must return symbol or string")
+	requireCallErrorContains(t, script, "bad_hash_remap", nil, CallOptions{}, "hash.remap_keys mapping value is unsupported hash key")
+	requireCallErrorContains(t, script, "bad_deep_transform", nil, CallOptions{}, "hash.deep_transform_keys block returned unsupported hash key")
 	requireCallErrorContains(t, script, "bad_deep_transform_cycle", nil, CallOptions{}, "hash.deep_transform_keys does not support cyclic structures")
 }
 

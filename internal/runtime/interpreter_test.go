@@ -193,7 +193,7 @@ func TestBuiltinsReturnsIsolatedObjectValues(t *testing.T) {
 			}
 
 			script, err := engine.Compile(`def parse_name
-  JSON.parse("{\"name\":\"alex\"}")[:name]
+  JSON.parse("{\"name\":\"alex\"}")["name"]
 end`)
 			if err != nil {
 				t.Fatalf("Compile(parse_name) failed: %v", err)

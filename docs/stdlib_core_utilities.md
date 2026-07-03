@@ -572,10 +572,10 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   `separator`.
 - `reverse -> array` – elements in reverse order.
 - `to_h -> hash` / `to_h { |element| [key, value] } -> hash` – build a hash from
-  two-element `[key, value]` pairs (the inverse of `Hash#to_a`). Keys convert
-  through the symbol/string hash-key rules and duplicate keys keep the last pair;
-  the block form maps each element to its pair. A non-array element, a pair that
-  is not exactly two elements, or a non-symbol/string key raises.
+  two-element `[key, value]` pairs (the inverse of `Hash#to_a`). Keys use the
+  same Ruby-style hash-key identity as hash literals and duplicate keys keep the
+  last pair; the block form maps each element to its pair. A non-array element,
+  a pair that is not exactly two elements, or an unsupported key raises.
 
 Because array methods never mutate the receiver, the removal helpers `pop`,
 `shift`, and `delete` each hand back both halves of the result:
@@ -598,12 +598,11 @@ items.shift(2)  # {array: [3], shifted: [1, 2]}
 - `sort_by { |item| } -> array` – stable sort by the block's key for each
   element.
 - `partition { |item| } -> array` – `[matching, non_matching]` pair of arrays.
-- `group_by { |item| } -> hash` – group elements by block result (must be a
-  symbol or string).
+- `group_by { |item| } -> hash` – group elements by block result.
 - `group_by_stable { |item| } -> array` – `[key, items]` pairs preserving
   first-seen group order.
 - `tally -> hash` / `tally { |item| } -> hash` – occurrence counts keyed by
-  element (or block result); keys must be symbols or strings.
+  element (or block result).
 - `min -> value | nil` / `max -> value | nil` – smallest/largest element using
   natural ordering; `nil` for an empty array.
 - `minmax -> array` – `[min, max]` in one pass; `[nil, nil]` for an empty array.
@@ -623,10 +622,11 @@ end
 
 ## Hashes
 
-See [hashes.md](hashes.md) for worked examples. Hash keys use one string lookup
-space; shorthand symbol labels and quoted string keys normalize to the same
-entries. `keys`, `values`, and all block-based iteration visit entries in
-sorted key order for determinism.
+See [hashes.md](hashes.md) for worked examples. Hash keys keep Ruby-style value
+identity, so symbols and strings are distinct keys and hash-rocket literals can
+use other hashable values such as integers and arrays. `keys`, `values`, and all
+block-based iteration visit entries in sorted canonical-key order for
+determinism.
 
 Property access (`record.name`) resolves the hash methods below before stored
 keys, so method names stay stable even when data contains the same key:
@@ -1057,11 +1057,8 @@ Symbols (`:name`) expose the Ruby string/symbol conversion helpers:
 - `to_sym -> symbol` – returns the receiver unchanged.
 
 `"name".to_sym` and `:name.to_s` round-trip between the two representations.
-Vibescript collapses symbol and string hash keys onto their shared underlying
-name, so a hash keyed with `:name` is reachable with `"name".to_sym` and with
-the plain string `"name"`. This differs from Ruby, where `:name` and `"name"`
-are distinct keys. Symbol and string equality, however, remains kind-sensitive:
-`:name == "name"` is `false`.
+Hash key identity remains kind-sensitive, matching Ruby: `:name` and `"name"`
+are distinct keys, and `:name == "name"` is `false`.
 
 ## Enum Values
 

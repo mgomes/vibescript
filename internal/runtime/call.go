@@ -479,17 +479,28 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 				return clone
 			}
 		}
-		entries := val.Hash()
-		entriesPtr := reflect.ValueOf(entries).Pointer()
-		// A distinct wrapper that shares this entry map already cloned it; reuse
-		// that cloned map so both rebound wrappers mutate one map in place and the
-		// host's intentional aliasing survives rebinding. The shared map is already
-		// fully populated, so skip the fill loop -- only a fresh wrapper (with this
-		// wrapper's own rebound defaults) is built around it.
-		sharedEntries, sharedSeen := r.seenHashEntries[entriesPtr]
+		typedEntries := hashHasTypedEntries(val)
+		// Only the legacy string-key map participates in shared-entry dedup. A
+		// typed hash rebinds through HashEntries() below, so avoid materializing
+		// its lossy string-key map here at all.
+		var entries map[string]Value
+		var entriesPtr uintptr
+		var sharedEntries map[string]Value
+		var sharedSeen bool
+		if !typedEntries {
+			entries = val.Hash()
+			entriesPtr = reflect.ValueOf(entries).Pointer()
+			// A distinct wrapper that shares this entry map already cloned it;
+			// reuse that cloned map so both rebound wrappers mutate one map in
+			// place and the host's intentional aliasing survives rebinding. The
+			// shared map is already fully populated, so skip the fill loop -- only
+			// a fresh wrapper (with this wrapper's own rebound defaults) is built
+			// around it.
+			sharedEntries, sharedSeen = r.seenHashEntries[entriesPtr]
+		}
 		clonedEntries := sharedEntries
 		if !sharedSeen {
-			clonedEntries = make(map[string]Value, len(entries))
+			clonedEntries = make(map[string]Value, val.HashLen())
 		}
 		defaultValue := hashDefaultValue(val)
 		defaultProc := hashDefaultProc(val)
@@ -510,7 +521,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			}
 			r.seenHashes[id] = cloned
 		}
-		if !sharedSeen && entriesPtr != 0 {
+		if !typedEntries && !sharedSeen && entriesPtr != 0 {
 			if r.seenHashEntries == nil {
 				r.seenHashEntries = make(map[uintptr]map[string]Value)
 			}
@@ -528,8 +539,14 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
 		}
 		if !sharedSeen {
-			for key, item := range entries {
-				clonedEntries[key] = r.rebindValue(item)
+			if typedEntries {
+				for _, entry := range val.HashEntries() {
+					setClonedHashEntry(cloned, r.rebindValue(entry.Key), r.rebindValue(entry.Value))
+				}
+			} else {
+				for key, item := range entries {
+					clonedEntries[key] = r.rebindValue(item)
+				}
 			}
 		}
 		return cloned

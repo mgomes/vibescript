@@ -347,6 +347,27 @@ func TestValueInspectByteLenBounded(t *testing.T) {
 			t.Fatalf("InspectByteLenBounded() error = %v, want %v", err, sentinel)
 		}
 	})
+
+	t.Run("step_error_charges_typed_hash_key_walk", func(t *testing.T) {
+		t.Parallel()
+		hash := value.NewHash(nil)
+		if err := hash.HashSet(value.NewArray([]value.Value{value.NewInt(1)}), value.NewString("ok")); err != nil {
+			t.Fatalf("HashSet(array key) error = %v", err)
+		}
+
+		sentinel := errors.New("budget exhausted")
+		steps := 0
+		_, err := hash.InspectByteLenBounded(func() error {
+			steps++
+			if steps == 3 {
+				return sentinel
+			}
+			return nil
+		})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("InspectByteLenBounded() error = %v after %d steps, want %v", err, steps, sentinel)
+		}
+	})
 }
 
 func TestValueWriteInspectTo(t *testing.T) {

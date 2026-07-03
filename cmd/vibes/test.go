@@ -138,7 +138,9 @@ func runTestFile(ctx context.Context, file string, modulePaths pathList, filter 
 		failTest("(module paths)", err)
 		return summary
 	}
-	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs})
+	// Wire the output helpers (puts/print/p/warn) to the test command's streams
+	// so a *_test.vibe that prints does not fail on an unconfigured writer.
+	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs, OutputWriter: out, ErrorWriter: os.Stderr})
 	if err != nil {
 		failTest("(engine)", err)
 		return summary

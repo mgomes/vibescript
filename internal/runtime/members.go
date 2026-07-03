@@ -115,7 +115,7 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 			// so a same-named entry stays readable only as data via index access
 			// (h["eql?"]) and never reaches this branch in the always-wins path.
 			if !isUniversalDataSafe(property) {
-				if val, ok := obj.Hash()[property]; ok {
+				if val, ok := hashMemberData(obj, property); ok {
 					return val, nil
 				}
 			}
@@ -125,7 +125,7 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		if err == nil {
 			return member, nil
 		}
-		if val, ok := obj.Hash()[property]; ok {
+		if val, ok := hashMemberData(obj, property); ok {
 			return val, nil
 		}
 		return NewNil(), err
@@ -198,6 +198,26 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 	default:
 		return NewNil(), exec.errorAt(pos, "unsupported member access on %s", obj.Kind())
 	}
+}
+
+func hashMemberData(obj Value, property string) (Value, bool) {
+	if val, ok, err := hashGet(obj, NewSymbol(property)); err == nil && ok {
+		return val, true
+	}
+	if val, ok, err := hashGet(obj, NewString(property)); err == nil && ok {
+		return val, true
+	}
+	return NewNil(), false
+}
+
+func hashMemberAssignmentKey(obj Value, property string) Value {
+	if _, ok, err := hashGet(obj, NewSymbol(property)); err == nil && ok {
+		return NewSymbol(property)
+	}
+	if _, ok, err := hashGet(obj, NewString(property)); err == nil && ok {
+		return NewString(property)
+	}
+	return NewSymbol(property)
 }
 
 // functionMemberNames lists the members exposed on script function
