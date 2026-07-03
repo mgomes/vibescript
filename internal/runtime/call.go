@@ -1281,19 +1281,23 @@ func restParamElementType(ty *TypeExpr) *TypeExpr {
 		elements := restParamUnionElementTypes(ty)
 		switch len(elements) {
 		case 0:
-			return ty
+			return nil
 		case 1:
 			return elements[0]
 		default:
 			return &TypeExpr{Kind: TypeUnion, Union: elements}
 		}
-	default:
+	case TypeAny:
 		return ty
+	default:
+		return nil
 	}
 }
 
 func restParamUnionElementTypes(ty *TypeExpr) []*TypeExpr {
 	switch ty.Kind {
+	case TypeAny:
+		return []*TypeExpr{ty}
 	case TypeArray:
 		if len(ty.TypeArgs) > 0 {
 			return []*TypeExpr{ty.TypeArgs[0]}
@@ -1313,6 +1317,8 @@ func keywordRestParamValueType(ty *TypeExpr, name string) *TypeExpr {
 		return nil
 	}
 	switch ty.Kind {
+	case TypeAny:
+		return ty
 	case TypeHash:
 		if len(ty.TypeArgs) > 1 {
 			return ty.TypeArgs[1]
@@ -1329,7 +1335,7 @@ func keywordRestParamValueType(ty *TypeExpr, name string) *TypeExpr {
 			return keywordRestParamValueType(option, name)
 		})
 	default:
-		return ty
+		return nil
 	}
 }
 
