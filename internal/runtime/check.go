@@ -1070,9 +1070,11 @@ func (c *scriptChecker) checkRuntimeClassBody(classDef *ClassDef, suppressWarnin
 
 func (c *scriptChecker) withSuppressedWarnings(check func()) {
 	previousWarnings := c.warnings
+	previousModuleCheckedFunctions := cloneCheckStringSet(c.moduleCheckedFunctions)
 	c.warnings = nil
 	defer func() {
 		c.warnings = previousWarnings
+		c.moduleCheckedFunctions = previousModuleCheckedFunctions
 	}()
 	check()
 }
@@ -1548,10 +1550,23 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		baseScopeState := c.snapshotScopeState()
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, 2)
 		fallthroughScopeStates := make([]checkScopeState, 0, 2)
+		deferredReturnChecks := make([]deferredReturnCheck, 0, 2)
 
 		c.checkStatements(function, branchReturnType, typed.Body)
+		if deferReturnType && blockMayReturn(typed.Body) {
+			deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
+				runtimeState: c.snapshotRuntimeState(),
+				statements:   typed.Body,
+			})
+		}
 		if !blockAlwaysExits(typed.Body) {
 			c.checkStatements(function, branchReturnType, typed.Else)
+			if deferReturnType && blockMayReturn(typed.Else) {
+				deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
+					runtimeState: c.snapshotRuntimeState(),
+					statements:   typed.Else,
+				})
+			}
 			if len(typed.Else) == 0 || !blockAlwaysExits(typed.Else) {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
@@ -1563,19 +1578,56 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			popScope := c.pushRescueScope(typed)
 			c.checkStatements(function, branchReturnType, typed.Rescue)
 			popScope()
+			if deferReturnType && blockMayReturn(typed.Rescue) {
+				deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
+					runtimeState: c.snapshotRuntimeState(),
+					statements:   typed.Rescue,
+				})
+			}
 			if !blockAlwaysExits(typed.Rescue) {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 		}
-		c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
-		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+		mergeRuntimeStates := fallthroughRuntimeStates
+		mergeScopeStates := fallthroughScopeStates
+		if deferReturnType && len(mergeRuntimeStates) == 0 && len(deferredReturnChecks) > 0 {
+			mergeRuntimeStates = make([]checkRuntimeState, 0, len(deferredReturnChecks))
+			mergeScopeStates = nil
+			for _, check := range deferredReturnChecks {
+				mergeRuntimeStates = append(mergeRuntimeStates, check.runtimeState)
+			}
+		}
+		c.mergeRuntimeStates(baseRuntimeState, mergeRuntimeStates)
+		c.mergeScopeStates(baseScopeState, mergeScopeStates)
 		c.checkStatements(function, returnType, typed.Ensure)
 		if deferReturnType {
-			c.checkDeferredReturnTypes(function, returnType, typed.Body)
-			c.checkDeferredReturnTypes(function, returnType, typed.Else)
-			c.checkDeferredReturnTypes(function, returnType, typed.Rescue)
+			c.checkDeferredReturnsAfterEnsure(function, returnType, typed.Ensure, deferredReturnChecks)
 		}
+	}
+}
+
+type deferredReturnCheck struct {
+	runtimeState checkRuntimeState
+	statements   []Statement
+}
+
+func (c *scriptChecker) checkDeferredReturnsAfterEnsure(function string, returnType *TypeExpr, ensure []Statement, checks []deferredReturnCheck) {
+	runtimeState := c.snapshotRuntimeState()
+	scopeState := c.snapshotScopeState()
+	defer func() {
+		c.restoreRuntimeState(runtimeState)
+		c.restoreScopeState(scopeState)
+	}()
+
+	for _, check := range checks {
+		c.restoreRuntimeState(check.runtimeState)
+		c.withSuppressedWarnings(func() {
+			c.withRuntimeModuleCollection(func() {
+				c.collectRequiredModuleExportsFromStatements(ensure)
+			})
+		})
+		c.checkDeferredReturnTypes(function, returnType, check.statements)
 	}
 }
 
@@ -2347,6 +2399,54 @@ func blockAlwaysExits(statements []Statement) bool {
 		return false
 	}
 	return statementAlwaysExits(effectiveFinalStatement(statements))
+}
+
+func blockMayReturn(statements []Statement) bool {
+	for _, stmt := range statements {
+		if statementMayReturn(stmt) {
+			return true
+		}
+		if statementAlwaysExits(stmt) {
+			return false
+		}
+	}
+	return false
+}
+
+func statementMayReturn(stmt Statement) bool {
+	switch typed := stmt.(type) {
+	case *ReturnStmt:
+		return true
+	case *LogicalStmt:
+		return statementMayReturn(typed.Left) ||
+			(logicalStatementRightMayEvaluate(typed) && statementMayReturn(typed.Right))
+	case *IfStmt:
+		if blockMayReturn(typed.Consequent) || blockMayReturn(typed.Alternate) {
+			return true
+		}
+		for _, elseIf := range typed.ElseIf {
+			if blockMayReturn(elseIf.Consequent) {
+				return true
+			}
+		}
+	case *ForStmt:
+		return blockMayReturn(typed.Body)
+	case *WhileStmt:
+		return blockMayReturn(typed.Body)
+	case *UntilStmt:
+		return blockMayReturn(typed.Body)
+	case *TryStmt:
+		if blockMayReturn(typed.Ensure) {
+			return true
+		}
+		if blockAlwaysExits(typed.Ensure) {
+			return false
+		}
+		return blockMayReturn(typed.Body) ||
+			blockMayReturn(typed.Else) ||
+			blockMayReturn(typed.Rescue)
+	}
+	return false
 }
 
 // effectiveFinalStatement returns the last statement that can actually run in a

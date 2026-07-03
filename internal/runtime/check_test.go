@@ -1832,6 +1832,27 @@ end
 	}
 }
 
+func TestCheckWarningsDoNotMarkModuleCheckedDuringSuppressedClassBodySeeding(t *testing.T) {
+	t.Parallel()
+
+	root := tempModuleTree(t, moduleFile{path: "bad.vibe", content: `def bad() -> int
+  "x"
+end
+`})
+	engine := mustNewEngineWithModuleRoot(t, root)
+	script := compileScriptWithEngine(t, engine, `
+class Loader
+  require("bad")
+end
+
+def run()
+  nil
+end
+`)
+
+	requireCheckWarningContains(t, script, "return value expected int, got string")
+}
+
 func TestCheckWarningsValidateRequiredModuleInitializers(t *testing.T) {
 	t.Parallel()
 
@@ -2021,6 +2042,31 @@ end`,
 			script := compileScript(t, tc.source)
 			requireCheckWarningContains(t, script, tc.want)
 		})
+	}
+}
+
+func TestCheckWarningsPreserveTryReturnRequireStateForDeferredReturnChecks(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  begin
+    require("enum_status")
+    return :draft
+  ensure
+    nil
+  end
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after begin-return require with ensure returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() after begin-return require with ensure = %#v, want Status::Draft", got)
 	}
 }
 
