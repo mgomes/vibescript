@@ -124,7 +124,7 @@ func (p *parser) parseReturnStatement() ast.Statement {
 
 func (p *parser) parseRaiseStatement() ast.Statement {
 	pos := p.curToken.Pos
-	if p.peekEndsStatement(pos) {
+	if p.peekEndsStatement(pos) || p.peekStartsSameLineStatementModifier(pos) {
 		return &ast.RaiseStmt{Position: pos}
 	}
 	p.nextToken()
