@@ -27,8 +27,9 @@ func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
 		return nil
 	}
 	checker := scriptChecker{
-		script:   s,
-		typeRoot: checkTypeRoot(s, opts),
+		script:      s,
+		typeRoot:    checkTypeRoot(s, opts),
+		hostGlobals: checkHostGlobals(opts),
 	}
 	checker.collectRequiredModuleExports()
 	checker.checkScript()
@@ -47,9 +48,22 @@ func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
 type scriptChecker struct {
 	script          *Script
 	typeRoot        *Env
+	hostGlobals     map[string]struct{}
 	warnings        []CheckWarning
 	scopes          []map[string]struct{}
 	requiredModules map[string]struct{}
+	moduleCaller    *moduleContext
+}
+
+func checkHostGlobals(opts CallOptions) map[string]struct{} {
+	if len(opts.Globals) == 0 {
+		return nil
+	}
+	names := make(map[string]struct{}, len(opts.Globals))
+	for name := range opts.Globals {
+		names[name] = struct{}{}
+	}
+	return names
 }
 
 func checkTypeRoot(script *Script, opts CallOptions) *Env {
@@ -271,20 +285,46 @@ func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
 	if c.requiredModules == nil {
 		c.requiredModules = make(map[string]struct{})
 	}
-	if _, loaded := c.requiredModules[moduleName]; loaded {
-		return
-	}
-	c.requiredModules[moduleName] = struct{}{}
-	entry, err := c.script.engine.loadModule(moduleName, nil)
+	entry, err := c.script.engine.loadModule(moduleName, c.moduleCaller)
 	if err != nil {
 		return
 	}
+	c.collectModuleExports(entry)
+}
+
+func (c *scriptChecker) collectModuleExports(entry moduleEntry) {
+	if c.requiredModules == nil {
+		c.requiredModules = make(map[string]struct{})
+	}
+	if _, loaded := c.requiredModules[entry.key]; loaded {
+		return
+	}
+	c.requiredModules[entry.key] = struct{}{}
+	c.collectRequiredModuleExportsFromModuleEntrypoint(entry)
 	for name, enumDef := range cloneEnumsForCall(entry.script.enums) {
 		if _, exists := c.typeRoot.Get(name); exists {
 			continue
 		}
 		c.typeRoot.Define(name, NewEnum(enumDef))
 	}
+}
+
+func (c *scriptChecker) collectRequiredModuleExportsFromModuleEntrypoint(entry moduleEntry) {
+	fn := entry.script.functions[moduleEntrypointFunction]
+	if fn == nil {
+		return
+	}
+	caller := moduleContextForEntry(entry)
+	previousCaller := c.moduleCaller
+	previousScopes := c.scopes
+	c.moduleCaller = &caller
+	c.scopes = nil
+	defer func() {
+		c.moduleCaller = previousCaller
+		c.scopes = previousScopes
+	}()
+
+	c.collectFunctionRequiredModuleExports(fn)
 }
 
 func (c *scriptChecker) checkScript() {
@@ -774,6 +814,9 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if c.identifierShadowed(callee.Name) {
 			return staticCallable{}, false
 		}
+		if c.hostGlobalShadows(callee.Name) {
+			return staticCallable{}, false
+		}
 		if fn, ok := c.script.functions[callee.Name]; ok {
 			return staticCallable{name: callee.Name, fn: fn, resolution: calleeDirect}, true
 		}
@@ -809,9 +852,17 @@ func (c *scriptChecker) hostBuiltinOverrides(name string) bool {
 	return c.script.engine.hasHostBuiltin(name)
 }
 
+func (c *scriptChecker) hostGlobalShadows(name string) bool {
+	_, ok := c.hostGlobals[name]
+	return ok
+}
+
 func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallable, bool) {
 	if ident, ok := member.Object.(*Identifier); ok {
 		if c.identifierShadowed(ident.Name) {
+			return staticCallable{}, false
+		}
+		if c.hostGlobalShadows(ident.Name) {
 			return staticCallable{}, false
 		}
 		if classDef, ok := c.script.classes[ident.Name]; ok {

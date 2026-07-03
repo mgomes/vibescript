@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -76,6 +78,64 @@ end
 	}
 }
 
+func TestCheckWarningsWithOptionsRespectHostGlobalsBeforeStaticContracts(t *testing.T) {
+	t.Parallel()
+
+	functionScript := compileScript(t, `
+def target(a)
+  a
+end
+
+def run()
+  target(1, 2)
+end
+`)
+	requireCheckWarningContains(t, functionScript, "call to target has unexpected positional arguments")
+
+	hostTarget := NewBuiltin("target", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewInt(int64(len(args))), nil
+	})
+	functionOpts := CallOptions{Globals: map[string]Value{"target": hostTarget}}
+	requireNoCheckWarningsWithOptions(t, functionScript, functionOpts)
+
+	got, err := functionScript.Call(context.Background(), "run", nil, functionOpts)
+	if err != nil {
+		t.Fatalf("Call() with host target global returned error: %v", err)
+	}
+	if !got.Equal(NewInt(2)) {
+		t.Fatalf("Call() with host target global = %s, want 2", got)
+	}
+
+	classScript := compileScript(t, `
+class Box
+  def self.take(v)
+    v
+  end
+end
+
+def run()
+  Box.take(1, 2)
+end
+`)
+	requireCheckWarningContains(t, classScript, "call to Box.take has unexpected positional arguments")
+
+	hostBox := NewObject(map[string]Value{
+		"take": NewBuiltin("Box.take", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+			return NewInt(int64(len(args))), nil
+		}),
+	})
+	classOpts := CallOptions{Globals: map[string]Value{"Box": hostBox}}
+	requireNoCheckWarningsWithOptions(t, classScript, classOpts)
+
+	got, err = classScript.Call(context.Background(), "run", nil, classOpts)
+	if err != nil {
+		t.Fatalf("Call() with host Box global returned error: %v", err)
+	}
+	if !got.Equal(NewInt(2)) {
+		t.Fatalf("Call() with host Box global = %s, want 2", got)
+	}
+}
+
 func TestCheckWarningsRespectRegisteredBuiltinsBeforeSpecs(t *testing.T) {
 	t.Parallel()
 
@@ -123,6 +183,51 @@ end
 	}
 	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Published" {
 		t.Fatalf("Call() after required module enum export = %#v, want Status::Published", got)
+	}
+}
+
+func TestCheckWarningsResolveTransitiveRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	pkgDir := filepath.Join(root, "pkg")
+	if err := os.Mkdir(pkgDir, 0o755); err != nil {
+		t.Fatalf("mkdir module package: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "status.vibe"), []byte(`
+enum Status
+  Draft
+  Published
+end
+`), 0o644); err != nil {
+		t.Fatalf("write status module: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "wrapper.vibe"), []byte(`
+require("./status")
+`), 0o644); err != nil {
+		t.Fatalf("write wrapper module: %v", err)
+	}
+
+	engine := MustNewEngine(Config{ModulePaths: []string{root}})
+	script := compileScriptWithEngine(t, engine, `
+def normalize(status: Status) -> Status
+  status
+end
+
+def run()
+  require("pkg/wrapper")
+  normalize(:published)
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after transitive module enum export returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Published" {
+		t.Fatalf("Call() after transitive module enum export = %#v, want Status::Published", got)
 	}
 }
 
