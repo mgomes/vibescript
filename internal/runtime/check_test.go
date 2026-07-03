@@ -206,6 +206,22 @@ end
 	}
 }
 
+func TestCheckWarningsWalkStatementLogicalStatements(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def one(value)
+  value
+end
+
+def run()
+  true and one()
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to one is missing argument value")
+}
+
 func TestCheckWarningsResolveRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
@@ -226,6 +242,33 @@ end
 	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Published" {
 		t.Fatalf("Call() after required module enum export = %#v, want Status::Published", got)
 	}
+}
+
+func TestCheckWarningsResolveRequiredModuleFunctionExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("helper")
+  double(1, 2)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to double has unexpected positional arguments")
+}
+
+func TestCheckWarningsResolveRequiredModuleFunctionExportsInLogicalStatements(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("helper") and double(1, 2)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to double has unexpected positional arguments")
 }
 
 func TestCheckWarningsResolveSymbolRequiredModuleEnumExports(t *testing.T) {

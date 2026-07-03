@@ -181,6 +181,9 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.recordBindingTarget(typed.Target)
 	case *ExprStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Expr)
+	case *LogicalStmt:
+		c.collectRequiredModuleExportsFromStatement(typed.Left)
+		c.recordLocalBindings([]Statement{typed})
 	case *IfStmt:
 		baseState := c.snapshotModuleCollectionState()
 		baseScopeState := c.snapshotScopeState()
@@ -460,6 +463,15 @@ func (c *scriptChecker) collectModuleExports(entry moduleEntry) {
 			continue
 		}
 		root.Define(name, NewEnum(enumDef))
+	}
+	for name, fn := range entry.script.functions {
+		if name == moduleEntrypointFunction || !shouldExportModuleFunction(fn) {
+			continue
+		}
+		if _, exists := root.Get(name); exists {
+			continue
+		}
+		root.DefineStatic(name, NewFunction(fn))
 	}
 }
 
@@ -910,6 +922,14 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *ExprStmt:
 		c.checkExpression(function, typed.Expr)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Expr)
+	case *LogicalStmt:
+		c.checkStatement(function, returnType, typed.Left)
+		leftRuntimeState := c.snapshotRuntimeState()
+		leftScopeState := c.snapshotScopeState()
+		c.checkStatement(function, returnType, typed.Right)
+		c.restoreRuntimeState(leftRuntimeState)
+		c.restoreScopeState(leftScopeState)
+		c.recordLocalBindings([]Statement{typed})
 	case *IfStmt:
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
@@ -1425,6 +1445,9 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if fn, ok := c.script.functions[callee.Name]; ok {
 			return staticCallable{name: callee.Name, fn: fn, resolution: calleeDirect}, true
 		}
+		if fn, ok := c.typeRootFunction(callee.Name); ok {
+			return staticCallable{name: callee.Name, fn: fn, resolution: calleeDirect}, true
+		}
 		if c.typeRootHasBinding(callee.Name) {
 			return staticCallable{}, false
 		}
@@ -1440,6 +1463,25 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		}
 	}
 	return staticCallable{}, false
+}
+
+func (c *scriptChecker) typeRootFunction(name string) (*ScriptFunction, bool) {
+	if fn, ok := checkRootFunction(c.runtimeTypeRoot, name); ok {
+		return fn, true
+	}
+	return checkRootFunction(c.typeRoot, name)
+}
+
+func checkRootFunction(root *Env, name string) (*ScriptFunction, bool) {
+	if root == nil {
+		return nil, false
+	}
+	val, ok := root.Get(name)
+	if !ok || val.Kind() != KindFunction {
+		return nil, false
+	}
+	fn := valueFunction(val)
+	return fn, fn != nil
 }
 
 func (c *scriptChecker) typeRootHasBinding(name string) bool {
@@ -2088,6 +2130,9 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 		switch typed := stmt.(type) {
 		case *AssignStmt:
 			collectBindingTarget(typed.Target, out)
+		case *LogicalStmt:
+			collectLocalBindings([]Statement{typed.Left}, out)
+			collectLocalBindings([]Statement{typed.Right}, out)
 		case *IfStmt:
 			collectLocalBindings(typed.Consequent, out)
 			for _, elseIf := range typed.ElseIf {
