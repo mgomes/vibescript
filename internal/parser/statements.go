@@ -268,7 +268,7 @@ func (p *parser) parseUnlessStatement() ast.Statement {
 		p.errorExpected(p.curToken, "end")
 	}
 
-	return &ast.IfStmt{Condition: condition, Consequent: alternate, Alternate: body, Position: pos}
+	return &ast.IfStmt{Condition: condition, Consequent: alternate, Alternate: body, AlternateFirst: true, Position: pos}
 }
 
 func (p *parser) consumeConditionalBodySeparator() {

@@ -2769,9 +2769,14 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			return NewNil(), false, err
 		}
 		if val.Truthy() {
+			if s.AlternateFirst {
+				predeclareLocalBindingsFromStatements(s.Alternate, env)
+			}
 			return exec.evalStatements(s.Consequent, env)
 		}
-		predeclareLocalBindingsFromStatements(s.Consequent, env)
+		if !s.AlternateFirst {
+			predeclareLocalBindingsFromStatements(s.Consequent, env)
+		}
 		for _, clause := range s.ElseIf {
 			condVal, err := exec.evalExpression(clause.Condition, env)
 			if err != nil {

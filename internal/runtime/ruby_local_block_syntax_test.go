@@ -85,6 +85,22 @@ def rescue_binding_does_not_leak
   end
   err
 end
+
+def unless_true_else_reads_prior_body_local
+  unless true
+    unless_local = 1
+  else
+    unless_local
+  end
+end
+
+def unless_false_body_before_later_else_assignment
+  unless false
+    later_unless_local
+  else
+    later_unless_local = 1
+  end
+end
 `)
 
 	got := callFunc(t, script, "run", nil)
@@ -110,6 +126,13 @@ end
 	_, err := script.Call(context.Background(), "rescue_binding_does_not_leak", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "undefined variable err") {
 		t.Fatalf("rescue_binding_does_not_leak() error = %v, want undefined variable err", err)
+	}
+	if got := callFunc(t, script, "unless_true_else_reads_prior_body_local", nil); !got.Equal(NewNil()) {
+		t.Fatalf("unless_true_else_reads_prior_body_local() = %s, want nil", got)
+	}
+	_, err = script.Call(context.Background(), "unless_false_body_before_later_else_assignment", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "undefined variable later_unless_local") {
+		t.Fatalf("unless_false_body_before_later_else_assignment() error = %v, want undefined variable later_unless_local", err)
 	}
 }
 

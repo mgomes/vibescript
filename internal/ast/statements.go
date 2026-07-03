@@ -68,11 +68,12 @@ func (s *ExprStmt) Pos() Position { return s.Position }
 
 // IfStmt represents an if/elsif/else conditional statement.
 type IfStmt struct {
-	Condition  Expression
-	Consequent []Statement
-	ElseIf     []*IfStmt
-	Alternate  []Statement
-	Position   Position
+	Condition      Expression
+	Consequent     []Statement
+	ElseIf         []*IfStmt
+	Alternate      []Statement
+	AlternateFirst bool
+	Position       Position
 }
 
 func (s *IfStmt) stmtNode()     {}
