@@ -137,6 +137,23 @@ end`,
 				},
 			},
 		},
+		{
+			name: "default_expression_with_dotted_constant",
+			source: `def area(r, pi: Math.PI)
+  r * r * pi
+end`,
+			want: []ast.Param{
+				{Name: "r"},
+				{
+					Name: "pi",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.MemberExpr{
+						Object:   &ast.Identifier{Name: "Math"},
+						Property: "PI",
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {

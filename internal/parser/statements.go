@@ -888,6 +888,11 @@ func (p *parser) parseAliasStatement(method bool) ast.Statement {
 
 func (p *parser) parseAliasMethodStatement() ast.Statement {
 	pos := p.curToken.Pos
+	parenthesized := false
+	if p.peekToken.Type == ast.TokenLParen {
+		parenthesized = true
+		p.nextToken()
+	}
 	if !p.expectPeek(ast.TokenSymbol) {
 		return nil
 	}
@@ -899,6 +904,9 @@ func (p *parser) parseAliasMethodStatement() ast.Statement {
 		return nil
 	}
 	oldName := p.curToken.Literal
+	if parenthesized && !p.expectPeek(ast.TokenRParen) {
+		return nil
+	}
 	return &ast.AliasStmt{NewName: newName, OldName: oldName, Method: true, Position: pos}
 }
 
@@ -1501,6 +1509,9 @@ func (p *parser) dottedTypeAnnotationFollows(options paramParseOptions) bool {
 	defer p.restore(saved)
 
 	p.nextToken()
+	if startsUppercaseIdentifier(p.curToken.Literal) {
+		return false
+	}
 	p.nextToken()
 	if p.peekToken.Type != ast.TokenIdent {
 		return false

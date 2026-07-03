@@ -168,6 +168,13 @@ class Badge
   alias label code
 end
 
+class ParenthesizedBadge
+  def code()
+    "Y"
+  end
+  alias_method(:label, :code)
+end
+
 class Ordered
   def name()
     "old"
@@ -179,7 +186,7 @@ class Ordered
 end
 
 def run()
-  [full_name(), User.new.full_name, Badge.new.label, Ordered.new.label, Ordered.new.name]
+  [full_name(), User.new.full_name, Badge.new.label, ParenthesizedBadge.new.label, Ordered.new.label, Ordered.new.name]
 end
 `)
 
@@ -187,6 +194,7 @@ end
 		NewString("Ada"),
 		NewString("Grace"),
 		NewString("X"),
+		NewString("Y"),
 		NewString("old"),
 		NewString("new"),
 	})
