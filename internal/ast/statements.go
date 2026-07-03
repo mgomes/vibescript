@@ -179,9 +179,17 @@ type PropertyName struct {
 	Type *TypeExpr
 }
 
+// ClassMemberDecl preserves the source order of class-level declarations.
+type ClassMemberDecl struct {
+	Function *FunctionStmt
+	Alias    *AliasStmt
+	Property *PropertyDecl
+}
+
 // ClassStmt represents a class definition.
 type ClassStmt struct {
 	Name         string
+	Members      []ClassMemberDecl
 	Methods      []*FunctionStmt
 	ClassMethods []*FunctionStmt
 	Aliases      []*AliasStmt

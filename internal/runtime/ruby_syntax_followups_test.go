@@ -163,8 +163,18 @@ class Badge
   alias label code
 end
 
+class Ordered
+  def name()
+    "old"
+  end
+  alias label name
+  def name()
+    "new"
+  end
+end
+
 def run()
-  [full_name(), User.new.full_name, Badge.new.label]
+  [full_name(), User.new.full_name, Badge.new.label, Ordered.new.label, Ordered.new.name]
 end
 `)
 
@@ -172,7 +182,23 @@ end
 		NewString("Ada"),
 		NewString("Grace"),
 		NewString("X"),
+		NewString("old"),
+		NewString("new"),
 	})
+}
+
+func TestClassAliasRequiresEarlierTarget(t *testing.T) {
+	t.Parallel()
+	engine := MustNewEngine(Config{})
+	_, err := engine.Compile(`
+class User
+  alias label name
+  def name()
+    "Ada"
+  end
+end
+`)
+	requireErrorContains(t, err, "alias target method name is not defined on class User")
 }
 
 func TestQualifiedModuleEnumTypeAnnotations(t *testing.T) {

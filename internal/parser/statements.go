@@ -811,6 +811,7 @@ func (p *parser) parseClassStatement() ast.Statement {
 			} else {
 				stmt.Methods = append(stmt.Methods, fn)
 			}
+			stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Function: fn})
 		case ast.TokenIdent:
 			switch p.curToken.Literal {
 			case "alias":
@@ -819,7 +820,9 @@ func (p *parser) parseClassStatement() ast.Statement {
 					if alias == nil {
 						return nil
 					}
-					stmt.Aliases = append(stmt.Aliases, alias.(*ast.AliasStmt))
+					aliasStmt := alias.(*ast.AliasStmt)
+					stmt.Aliases = append(stmt.Aliases, aliasStmt)
+					stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
 				} else {
 					s := p.parseStatement()
 					if s != nil {
@@ -831,7 +834,9 @@ func (p *parser) parseClassStatement() ast.Statement {
 				if alias == nil {
 					return nil
 				}
-				stmt.Aliases = append(stmt.Aliases, alias.(*ast.AliasStmt))
+				aliasStmt := alias.(*ast.AliasStmt)
+				stmt.Aliases = append(stmt.Aliases, aliasStmt)
+				stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
 			default:
 				s := p.parseStatement()
 				if s != nil {
@@ -848,6 +853,7 @@ func (p *parser) parseClassStatement() ast.Statement {
 		case ast.TokenProperty, ast.TokenGetter, ast.TokenSetter:
 			decl := p.parsePropertyDecl(p.curToken.Type)
 			stmt.Properties = append(stmt.Properties, decl)
+			stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Property: &decl})
 		default:
 			s := p.parseStatement()
 			if s != nil {

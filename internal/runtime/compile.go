@@ -225,57 +225,99 @@ func compileClassDef(stmt *ClassStmt) (*ClassDef, error) {
 		ClassVars:    make(map[string]Value),
 		Body:         stmt.Body,
 	}
-	for _, prop := range stmt.Properties {
-		for _, entry := range prop.Names {
-			name := entry.Name
-			if prop.Kind == "property" || prop.Kind == "getter" {
-				getter := &ScriptFunction{
-					Name:     name,
-					ReturnTy: entry.Type,
-					Body:     []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position}},
-					Pos:      prop.Position,
-				}
-				classDef.Methods[name] = getter
-			}
-			if prop.Kind == "property" || prop.Kind == "setter" {
-				setter := &ScriptFunction{
-					Name: name + "=",
-					Params: []Param{{
-						Name: "value",
-						Type: entry.Type,
-					}},
-					Body: []Statement{
-						&AssignStmt{
-							Target:   &IvarExpr{Name: name, Position: prop.Position},
-							Value:    &Identifier{Name: "value", Position: prop.Position},
-							Position: prop.Position,
-						},
-						&ReturnStmt{Value: &Identifier{Name: "value", Position: prop.Position}, Position: prop.Position},
-					},
-					Pos: prop.Position,
-				}
-				classDef.Methods[name+"="] = setter
+
+	if len(stmt.Members) == 0 {
+		return compileClassDefLegacyOrder(stmt, classDef)
+	}
+	for _, member := range stmt.Members {
+		if member.Property != nil {
+			compileClassProperty(classDef, *member.Property)
+			continue
+		}
+		if member.Function != nil {
+			compileClassMethod(classDef, member.Function)
+			continue
+		}
+		if member.Alias != nil {
+			if err := compileClassAlias(classDef, member.Alias, stmt.Name); err != nil {
+				return nil, err
 			}
 		}
-	}
-	for _, fn := range stmt.Methods {
-		compiled := compileFunctionDef(fn)
-		if fn.Name == "initialize" {
-			compiled.Private = true
-		}
-		classDef.Methods[fn.Name] = compiled
-	}
-	for _, fn := range stmt.ClassMethods {
-		classDef.ClassMethods[fn.Name] = compileFunctionDef(fn)
-	}
-	for _, alias := range stmt.Aliases {
-		target, ok := classDef.Methods[alias.OldName]
-		if !ok {
-			return nil, fmt.Errorf("alias target method %s is not defined on class %s", alias.OldName, stmt.Name)
-		}
-		classDef.Methods[alias.NewName] = aliasScriptFunction(target, alias.NewName)
 	}
 	return classDef, nil
+}
+
+func compileClassDefLegacyOrder(stmt *ClassStmt, classDef *ClassDef) (*ClassDef, error) {
+	for _, prop := range stmt.Properties {
+		compileClassProperty(classDef, prop)
+	}
+	for _, fn := range stmt.Methods {
+		compileClassMethod(classDef, fn)
+	}
+	for _, fn := range stmt.ClassMethods {
+		compileClassMethod(classDef, fn)
+	}
+	for _, alias := range stmt.Aliases {
+		if err := compileClassAlias(classDef, alias, stmt.Name); err != nil {
+			return nil, err
+		}
+	}
+	return classDef, nil
+}
+
+func compileClassProperty(classDef *ClassDef, prop PropertyDecl) {
+	for _, entry := range prop.Names {
+		name := entry.Name
+		if prop.Kind == "property" || prop.Kind == "getter" {
+			getter := &ScriptFunction{
+				Name:     name,
+				ReturnTy: entry.Type,
+				Body:     []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position}},
+				Pos:      prop.Position,
+			}
+			classDef.Methods[name] = getter
+		}
+		if prop.Kind == "property" || prop.Kind == "setter" {
+			setter := &ScriptFunction{
+				Name: name + "=",
+				Params: []Param{{
+					Name: "value",
+					Type: entry.Type,
+				}},
+				Body: []Statement{
+					&AssignStmt{
+						Target:   &IvarExpr{Name: name, Position: prop.Position},
+						Value:    &Identifier{Name: "value", Position: prop.Position},
+						Position: prop.Position,
+					},
+					&ReturnStmt{Value: &Identifier{Name: "value", Position: prop.Position}, Position: prop.Position},
+				},
+				Pos: prop.Position,
+			}
+			classDef.Methods[name+"="] = setter
+		}
+	}
+}
+
+func compileClassMethod(classDef *ClassDef, fn *FunctionStmt) {
+	compiled := compileFunctionDef(fn)
+	if fn.Name == "initialize" {
+		compiled.Private = true
+	}
+	if fn.IsClassMethod {
+		classDef.ClassMethods[fn.Name] = compiled
+		return
+	}
+	classDef.Methods[fn.Name] = compiled
+}
+
+func compileClassAlias(classDef *ClassDef, alias *AliasStmt, className string) error {
+	target, ok := classDef.Methods[alias.OldName]
+	if !ok {
+		return fmt.Errorf("alias target method %s is not defined on class %s", alias.OldName, className)
+	}
+	classDef.Methods[alias.NewName] = aliasScriptFunction(target, alias.NewName)
+	return nil
 }
 
 func aliasScriptFunction(fn *ScriptFunction, name string) *ScriptFunction {
