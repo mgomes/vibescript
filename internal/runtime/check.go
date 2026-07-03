@@ -51,19 +51,20 @@ func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
 }
 
 type scriptChecker struct {
-	script           *Script
-	callOptions      CallOptions
-	optionGlobals    map[string]Value
-	typeRoot         *Env
-	runtimeTypeRoot  *Env
-	hostGlobals      map[string]struct{}
-	warnings         []CheckWarning
-	scopes           []map[string]struct{}
-	requiredModules  map[string]struct{}
-	runtimeModules   map[string]struct{}
-	moduleEntries    map[string]moduleEntry
-	moduleCaller     *moduleContext
-	moduleExportRoot *Env
+	script                  *Script
+	callOptions             CallOptions
+	optionGlobals           map[string]Value
+	typeRoot                *Env
+	runtimeTypeRoot         *Env
+	hostGlobals             map[string]struct{}
+	warnings                []CheckWarning
+	scopes                  []map[string]struct{}
+	requiredModules         map[string]struct{}
+	runtimeModules          map[string]struct{}
+	runtimeNamespaceMembers map[string]struct{}
+	moduleEntries           map[string]moduleEntry
+	moduleCaller            *moduleContext
+	moduleExportRoot        *Env
 }
 
 func checkOptionGlobals(script *Script, opts CallOptions) map[string]Value {
@@ -511,10 +512,10 @@ func (c *scriptChecker) checkScript() {
 			c.checkFunction(fn.Name, fn)
 		})
 	}
+	c.withFreshRuntimeTypeRoot(func() {
+		c.checkRuntimeClassBodies(nil, false)
+	})
 	for _, classDef := range c.sortedClasses() {
-		c.withFreshRuntimeTypeRoot(func() {
-			c.checkStatements(classDef.Name+".<class body>", nil, classDef.Body)
-		})
 		for _, method := range sortedCheckFunctions(classDef.Methods) {
 			c.withFreshRuntimeTypeRootForCallable(method, func() {
 				c.checkFunction(classDef.Name+"#"+method.Name, method)
@@ -530,7 +531,7 @@ func (c *scriptChecker) checkScript() {
 
 func (c *scriptChecker) withFreshRuntimeTypeRootForCallable(fn *ScriptFunction, check func()) {
 	c.withFreshRuntimeTypeRoot(func() {
-		c.collectRuntimeClassBodyRequiredModuleExports(deferredClassBodiesForFunction(fn, c.script.deferredClassBodies))
+		c.checkRuntimeClassBodies(deferredClassBodiesForFunction(fn, c.script.deferredClassBodies), true)
 		check()
 	})
 }
@@ -538,38 +539,60 @@ func (c *scriptChecker) withFreshRuntimeTypeRootForCallable(fn *ScriptFunction, 
 func (c *scriptChecker) withFreshRuntimeTypeRoot(check func()) {
 	previousRoot := c.runtimeTypeRoot
 	previousModules := c.runtimeModules
+	previousNamespaceMembers := c.runtimeNamespaceMembers
 	c.runtimeTypeRoot = checkTypeRoot(c.script, c.optionGlobals)
 	c.runtimeModules = nil
+	c.runtimeNamespaceMembers = nil
 	defer func() {
 		c.runtimeTypeRoot = previousRoot
 		c.runtimeModules = previousModules
+		c.runtimeNamespaceMembers = previousNamespaceMembers
 	}()
 	check()
 }
 
-func (c *scriptChecker) collectRuntimeClassBodyRequiredModuleExports(skip map[string]struct{}) {
+func (c *scriptChecker) checkRuntimeClassBodies(skip map[string]struct{}, suppressWarnings bool) {
 	if c.runtimeTypeRoot == nil {
 		return
 	}
-	c.withRuntimeModuleCollection(func() {
-		for _, name := range c.script.classOrder {
-			if _, deferred := skip[name]; deferred {
-				continue
-			}
-			classDef := c.script.classes[name]
-			if classDef == nil || len(classDef.Body) == 0 {
-				continue
-			}
-			popScope := c.pushScope(make(map[string]struct{}))
-			c.collectRequiredModuleExportsFromStatements(classDef.Body)
-			popScope()
+	for _, name := range c.script.classOrder {
+		if _, deferred := skip[name]; deferred {
+			continue
 		}
-	})
+		classDef := c.script.classes[name]
+		if classDef == nil || len(classDef.Body) == 0 {
+			continue
+		}
+		c.checkRuntimeClassBody(classDef, suppressWarnings)
+	}
+}
+
+func (c *scriptChecker) checkRuntimeClassBody(classDef *ClassDef, suppressWarnings bool) {
+	check := func() {
+		popScope := c.pushScope(make(map[string]struct{}))
+		defer popScope()
+		c.checkStatements(classDef.Name+".<class body>", nil, classDef.Body)
+	}
+	if !suppressWarnings {
+		check()
+		return
+	}
+	c.withSuppressedWarnings(check)
+}
+
+func (c *scriptChecker) withSuppressedWarnings(check func()) {
+	previousWarnings := c.warnings
+	c.warnings = nil
+	defer func() {
+		c.warnings = previousWarnings
+	}()
+	check()
 }
 
 type checkRuntimeState struct {
-	root    *Env
-	modules map[string]struct{}
+	root             *Env
+	modules          map[string]struct{}
+	namespaceMembers map[string]struct{}
 }
 
 type checkModuleCollectionState struct {
@@ -580,7 +603,10 @@ type checkModuleCollectionState struct {
 type checkScopeState []map[string]struct{}
 
 func (c *scriptChecker) snapshotRuntimeState() checkRuntimeState {
-	state := checkRuntimeState{modules: cloneCheckModuleSet(c.runtimeModules)}
+	state := checkRuntimeState{
+		modules:          cloneCheckModuleSet(c.runtimeModules),
+		namespaceMembers: cloneCheckStringSet(c.runtimeNamespaceMembers),
+	}
 	if c.runtimeTypeRoot != nil {
 		state.root = c.runtimeTypeRoot.CloneShallow()
 	}
@@ -590,6 +616,7 @@ func (c *scriptChecker) snapshotRuntimeState() checkRuntimeState {
 func (c *scriptChecker) restoreRuntimeState(state checkRuntimeState) {
 	c.runtimeTypeRoot = cloneCheckRoot(state.root)
 	c.runtimeModules = cloneCheckModuleSet(state.modules)
+	c.runtimeNamespaceMembers = cloneCheckStringSet(state.namespaceMembers)
 }
 
 func cloneCheckRoot(root *Env) *Env {
@@ -600,6 +627,10 @@ func cloneCheckRoot(root *Env) *Env {
 }
 
 func cloneCheckModuleSet(modules map[string]struct{}) map[string]struct{} {
+	return cloneCheckStringSet(modules)
+}
+
+func cloneCheckStringSet(modules map[string]struct{}) map[string]struct{} {
 	if len(modules) == 0 {
 		return nil
 	}
@@ -626,18 +657,43 @@ func (c *scriptChecker) mergeRuntimeStates(base checkRuntimeState, states []chec
 	for key := range base.modules {
 		delete(common, key)
 	}
-	if len(common) == 0 {
+	if len(common) != 0 {
+		c.withRuntimeModuleCollection(func() {
+			for key := range common {
+				entry, ok := c.moduleEntries[key]
+				if !ok {
+					continue
+				}
+				c.collectModuleExports(entry)
+			}
+		})
+	}
+
+	commonMembers := commonRuntimeNamespaceMembers(base, states)
+	if len(commonMembers) == 0 {
 		return
 	}
-	c.withRuntimeModuleCollection(func() {
+	if c.runtimeNamespaceMembers == nil {
+		c.runtimeNamespaceMembers = make(map[string]struct{}, len(commonMembers))
+	}
+	for member := range commonMembers {
+		c.runtimeNamespaceMembers[member] = struct{}{}
+	}
+}
+
+func commonRuntimeNamespaceMembers(base checkRuntimeState, states []checkRuntimeState) map[string]struct{} {
+	common := cloneCheckStringSet(states[0].namespaceMembers)
+	for _, state := range states[1:] {
 		for key := range common {
-			entry, ok := c.moduleEntries[key]
-			if !ok {
-				continue
+			if _, ok := state.namespaceMembers[key]; !ok {
+				delete(common, key)
 			}
-			c.collectModuleExports(entry)
 		}
-	})
+	}
+	for key := range base.namespaceMembers {
+		delete(common, key)
+	}
+	return common
 }
 
 func (c *scriptChecker) snapshotModuleCollectionState() checkModuleCollectionState {
@@ -851,6 +907,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkExpression(function, typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
+		c.recordRuntimeBindingTarget(typed.Target)
 		c.recordBindingTarget(typed.Target)
 	case *ExprStmt:
 		c.checkExpression(function, typed.Expr)
@@ -1952,6 +2009,17 @@ func (c *scriptChecker) recordBindingTarget(target Expression) {
 	collectBindingTarget(target, scope)
 }
 
+func (c *scriptChecker) recordRuntimeBindingTarget(target Expression) {
+	memberName, ok := runtimeNamespaceMemberName(target)
+	if !ok {
+		return
+	}
+	if c.runtimeNamespaceMembers == nil {
+		c.runtimeNamespaceMembers = make(map[string]struct{})
+	}
+	c.runtimeNamespaceMembers[memberName] = struct{}{}
+}
+
 func (c *scriptChecker) recordBindingName(name string) {
 	if name == "" || len(c.scopes) == 0 {
 		return
@@ -1992,7 +2060,12 @@ func (c *scriptChecker) identifierShadowed(name string) bool {
 // recorded under their dotted path, which never collides with a plain
 // identifier binding.
 func (c *scriptChecker) namespaceMemberMutated(namespace, property string) bool {
-	return c.scopeHas(namespace + "." + property)
+	memberName := namespace + "." + property
+	if c.scopeHas(memberName) {
+		return true
+	}
+	_, ok := c.runtimeNamespaceMembers[memberName]
+	return ok
 }
 
 func (c *scriptChecker) scopeHas(key string) bool {
@@ -2041,18 +2114,26 @@ func collectBindingTarget(target Expression, out map[string]struct{}) {
 	case *Identifier:
 		out[typed.Name] = struct{}{}
 	case *MemberExpr:
-		// Record `namespace.member` writes (e.g. JSON.parse = ...) under their
-		// dotted path so builtin contract checks can tell when a namespace member
-		// was reassigned. Only a simple `<ident>.<property>` target names a
-		// builtin namespace member.
-		if obj, ok := typed.Object.(*Identifier); ok {
-			out[obj.Name+"."+typed.Property] = struct{}{}
+		if memberName, ok := runtimeNamespaceMemberName(typed); ok {
+			out[memberName] = struct{}{}
 		}
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
 			collectBindingTarget(element.Target, out)
 		}
 	}
+}
+
+func runtimeNamespaceMemberName(target Expression) (string, bool) {
+	member, ok := target.(*MemberExpr)
+	if !ok {
+		return "", false
+	}
+	obj, ok := member.Object.(*Identifier)
+	if !ok {
+		return "", false
+	}
+	return obj.Name + "." + member.Property, true
 }
 
 func (c *scriptChecker) add(function string, pos Position, format string, args ...any) {

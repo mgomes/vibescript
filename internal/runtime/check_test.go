@@ -362,6 +362,45 @@ end
 	}
 }
 
+func TestCheckWarningsAccumulateClassBodyRuntimeEffectsInSourceOrder(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def parse(raw, extra)
+  raw
+end
+
+def normalize(status: Status = :draft) -> Status
+  status
+end
+
+class ZLoadStatus
+  require("enum_status")
+  JSON.parse = parse
+end
+
+class AUseStatus
+  normalize(:draft)
+  JSON.parse("{}", "extra")
+end
+
+def run(status: Status = :published) -> Status
+  normalize(status)
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after ordered class-body effects returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Published" {
+		t.Fatalf("Call() after ordered class-body effects = %#v, want Status::Published", got)
+	}
+}
+
 func TestCheckWarningsResolveTransitiveRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
