@@ -2448,6 +2448,13 @@ func predeclareAssignmentLocalBindings(stmt *AssignStmt, env *Env) {
 	predeclareDirectAssignmentTargetBindingNames(stmt.Target, stmt.Value, env)
 }
 
+func predeclarePostValueAssignmentLocalBindings(stmt *AssignStmt, env *Env) {
+	if env.rebindOuter {
+		return
+	}
+	predeclarePostValueAssignmentTargetBindingNames(stmt.Target, stmt.Value, env)
+}
+
 type localBindingCollector struct {
 	names []string
 	seen  map[string]struct{}
@@ -2525,6 +2532,19 @@ func predeclareDirectAssignmentTargetBindingNames(target, value Expression, env 
 	case *DestructureTarget:
 		for _, element := range t.Elements {
 			predeclareDirectAssignmentTargetBindingNames(element.Target, value, env)
+		}
+	}
+}
+
+func predeclarePostValueAssignmentTargetBindingNames(target, value Expression, env *Env) {
+	switch t := target.(type) {
+	case *Identifier:
+		if expressionContainsParenthesizedIdentifierCall(value, t.Name) {
+			env.PredeclareAssignmentLocal(t.Name)
+		}
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			predeclarePostValueAssignmentTargetBindingNames(element.Target, value, env)
 		}
 	}
 }
@@ -2898,6 +2918,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		if err := exec.checkMemoryWith(val); err != nil {
 			return NewNil(), false, err
 		}
+		predeclarePostValueAssignmentLocalBindings(s, env)
 		if err := exec.assign(s.Target, val, env); err != nil {
 			if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) {
 				return NewNil(), false, err

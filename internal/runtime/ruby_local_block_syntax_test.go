@@ -277,10 +277,29 @@ end
 def run
   Box.new.read
 end
+
+def helper
+  11
+end
+
+def assign_same_name_helper
+  helper = helper()
+  helper
+end
+
+def read_helper_after_assignment
+  helper()
+end
 `)
 
 	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(7)) {
 		t.Fatalf("run() = %s, want 7", got)
+	}
+	if got := callFunc(t, script, "assign_same_name_helper", nil); !got.Equal(NewInt(11)) {
+		t.Fatalf("assign_same_name_helper() = %s, want 11", got)
+	}
+	if got := callFunc(t, script, "read_helper_after_assignment", nil); !got.Equal(NewInt(11)) {
+		t.Fatalf("read_helper_after_assignment() = %s, want 11", got)
 	}
 }
 
