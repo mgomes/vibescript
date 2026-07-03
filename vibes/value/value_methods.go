@@ -335,7 +335,7 @@ func (v Value) appendStringTypedHash(buf *strings.Builder, state *valueStringSta
 		return err
 	}
 	first := true
-	for _, entry := range entries {
+	if err := v.data.(*hashData).forEachTypedEntry(func(entry HashEntry) error {
 		if !first {
 			if err := appendBounded(buf, elementSeparator, limit); err != nil {
 				return err
@@ -348,9 +348,9 @@ func (v Value) appendStringTypedHash(buf *strings.Builder, state *valueStringSta
 		if err := appendBounded(buf, keyValueSeparator, limit); err != nil {
 			return err
 		}
-		if err := entry.Value.appendString(buf, state, limit); err != nil {
-			return err
-		}
+		return entry.Value.appendString(buf, state, limit)
+	}); err != nil {
+		return err
 	}
 	return appendByteBounded(buf, '}', limit)
 }

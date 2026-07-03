@@ -369,6 +369,10 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 		}
 	}
 	hash := NewHash(make(map[string]Value, len(e.Pairs)))
+	// Pre-size the insertion-order backing to the pair count (the same bound
+	// reserveBacking charges) so HashSet's appends do not grow it past the order
+	// slots the memory projection accounts for.
+	hash.ReserveHashOrder(len(e.Pairs))
 	entries := make(map[string]hashLiteralEntry, len(e.Pairs))
 	for _, pair := range e.Pairs {
 		keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
@@ -2250,7 +2254,7 @@ func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value
 			return NewNil(), false, err
 		}
 		var entryBuf [smallHashKeyBufferSize]HashEntry
-		for _, entry := range sortedTypedHashEntriesInto(iterable, entryBuf[:]) {
+		for _, entry := range orderedTypedHashEntriesInto(iterable, entryBuf[:]) {
 			if err := exec.step(); err != nil {
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())
 			}

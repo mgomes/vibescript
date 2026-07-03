@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -198,7 +199,9 @@ func (v Value) HashEntries() []HashEntry {
 }
 
 // HashEntriesInto appends hash entries with original keys preserved into buf
-// when it has enough capacity.
+// when it has enough capacity. Typed entries appear in Ruby-style insertion
+// order; legacy string-map entries appear in Go map order (callers that need
+// determinism for legacy hashes sort by key themselves).
 func (v Value) HashEntriesInto(buf []HashEntry) []HashEntry {
 	switch v.kind {
 	case KindHash:
@@ -207,6 +210,12 @@ func (v Value) HashEntriesInto(buf []HashEntry) []HashEntry {
 			entries := buf[:0]
 			if cap(entries) < len(hd.typedEntries) {
 				entries = make([]HashEntry, 0, len(hd.typedEntries))
+			}
+			if len(hd.order) == len(hd.typedEntries) {
+				for _, lookupKey := range hd.order {
+					entries = append(entries, hd.typedEntries[lookupKey])
+				}
+				return entries
 			}
 			for _, entry := range hd.typedEntries {
 				entries = append(entries, entry)
@@ -289,7 +298,9 @@ func (v Value) HashGet(key Value) (Value, bool, error) {
 	}
 }
 
-// HashSet stores key/value in a hash or object.
+// HashSet stores key/value in a hash or object. On a hash it preserves
+// Ruby-style insertion order: a new key is appended to the recorded order and
+// an existing key keeps its original position while taking the new value.
 func (v Value) HashSet(key, val Value) error {
 	switch v.kind {
 	case KindHash:
@@ -298,19 +309,40 @@ func (v Value) HashSet(key, val Value) error {
 			if hd.entries == nil {
 				hd.entries = make(map[string]Value)
 			}
-			hd.typedEntries = make(map[HashLookupKey]HashEntry)
-			for displayKey, value := range hd.entries {
+			hd.typedEntries = make(map[HashLookupKey]HashEntry, len(hd.entries))
+			// A legacy string map records no insertion order, so promotion seeds
+			// the order from the sorted display keys: the hash keeps the
+			// deterministic sorted iteration it always had, and only keys inserted
+			// from here on append in insertion order. Sort the order backing in
+			// place — each promoted lookup key carries its display string in text —
+			// rather than a separate key slice, so promotion adds no scratch a
+			// caller without an Execution context could not charge. Honor a
+			// capacity a builder reserved up front (ReserveHashOrder); a legacy-only
+			// hash has none, so this allocates the backing as before.
+			if cap(hd.order) < len(hd.entries)+1 {
+				hd.order = make([]HashLookupKey, 0, len(hd.entries)+1)
+			} else {
+				hd.order = hd.order[:0]
+			}
+			for displayKey, entryVal := range hd.entries {
 				entryKey := promotedLegacyHashKey(displayKey, key)
 				canonical, err := NewHashLookupKey(entryKey)
 				if err != nil {
 					return err
 				}
-				hd.typedEntries[canonical] = HashEntry{Key: entryKey, Value: value}
+				hd.typedEntries[canonical] = HashEntry{Key: entryKey, Value: entryVal}
+				hd.order = append(hd.order, canonical)
 			}
+			sort.Slice(hd.order, func(i, j int) bool {
+				return hd.order[i].text < hd.order[j].text
+			})
 		}
 		canonical, err := NewHashLookupKey(key)
 		if err != nil {
 			return err
+		}
+		if _, exists := hd.typedEntries[canonical]; !exists {
+			hd.order = append(hd.order, canonical)
 		}
 		hd.typedEntries[canonical] = HashEntry{Key: key, Value: val}
 		if hd.entries != nil {
@@ -333,4 +365,60 @@ func promotedLegacyHashKey(displayKey string, incoming Value) Value {
 		return incoming
 	}
 	return NewString(displayKey)
+}
+
+// forEachTypedEntry invokes fn for each typed entry, walking the recorded
+// insertion order. The Go-map fallback only fires if the order record does not
+// cover the map, which cannot happen through HashSet (the sole typed-entry
+// writer); it keeps a partially constructed or future-variant hash renderable
+// instead of panicking. fn's first error aborts the walk.
+func (hd *hashData) forEachTypedEntry(fn func(HashEntry) error) error {
+	if len(hd.order) == len(hd.typedEntries) {
+		for _, lookupKey := range hd.order {
+			if err := fn(hd.typedEntries[lookupKey]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, entry := range hd.typedEntries {
+		if err := fn(entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// HashOrderCapacity returns the capacity of the insertion-order backing a hash
+// retains alongside its typed entries, or 0 when v is not a hash or tracks no
+// order. Memory-quota accounting charges the backing's structural bytes; the
+// lookup keys inside it alias strings the entry storage already charges.
+func HashOrderCapacity(v Value) int {
+	if v.kind != KindHash {
+		return 0
+	}
+	if hd, ok := v.data.(*hashData); ok {
+		return cap(hd.order)
+	}
+	return 0
+}
+
+// ReserveHashOrder pre-sizes the insertion-order backing to capacity n so a
+// builder that knows its final entry count avoids the append growth overshoot,
+// where a hash of 3 entries would otherwise retain 4 order slots. This keeps the
+// backing's capacity equal to the entry count the memory-quota projection
+// charges. It is a no-op when v is not a hash, n is non-positive, or the backing
+// already has at least n slots. HashSet honors the reserved capacity when it
+// promotes a legacy map or appends new keys.
+func (v Value) ReserveHashOrder(n int) {
+	if v.kind != KindHash || n <= 0 {
+		return
+	}
+	hd, ok := v.data.(*hashData)
+	if !ok || cap(hd.order) >= n {
+		return
+	}
+	grown := make([]HashLookupKey, len(hd.order), n)
+	copy(grown, hd.order)
+	hd.order = grown
 }

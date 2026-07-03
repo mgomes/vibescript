@@ -1099,9 +1099,11 @@ func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[strin
 }
 
 func (acc *hashLiteralBuildAccumulator) typedEntryStructuralBytes() int {
-	entryBytes := estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes
+	// Each typed entry retains two lookup keys: one in the entry map's bucket
+	// and one slot in the insertion-order backing HashSet grows beside it.
+	entryBytes := estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
 	if acc.typedEntries == 0 {
-		entryBytes = saturatingAdd(estimatedMapBaseBytes, entryBytes)
+		entryBytes = saturatingAdd(estimatedMapBaseBytes+estimatedSliceBaseBytes, entryBytes)
 	}
 	acc.typedEntries++
 	return entryBytes
@@ -2143,6 +2145,13 @@ func (est *memoryEstimator) typedHashEntriesBytes(val Value) int {
 		size = saturatingAdd(size, entry.LookupKey.ExtraPayloadBytes())
 		size = saturatingAdd(size, est.valuePayload(entry.Entry.Key))
 		size = saturatingAdd(size, est.valuePayload(entry.Entry.Value))
+	}
+	// The insertion-order backing retains one lookup-key slot per slot of
+	// capacity (append growth can leave capacity beyond the entry count). Its
+	// lookup keys alias strings the entries above already charge, so only the
+	// structural slots are new.
+	if orderCap := value.HashOrderCapacity(val); orderCap > 0 {
+		size = saturatingAdd(size, saturatingAdd(estimatedSliceBaseBytes, saturatingMul(orderCap, estimatedHashLookupKeyBytes)))
 	}
 	return size
 }

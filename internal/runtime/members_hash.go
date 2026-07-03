@@ -130,38 +130,39 @@ func sortedHashKeysInto(entries map[string]Value, buf []string) []string {
 	return keys
 }
 
-func sortedTypedHashEntriesInto(receiver Value, buf []HashEntry) []HashEntry {
-	entries := receiver.HashEntriesInto(buf)
-	sort.SliceStable(entries, func(i, j int) bool {
-		return hashEntrySortKey(entries[i].Key) < hashEntrySortKey(entries[j].Key)
-	})
-	return entries
+// orderedTypedHashEntriesInto materializes receiver's typed entries into buf in
+// Ruby-style insertion order. The copy snapshots the entries so a user block
+// that mutates the receiver mid-iteration cannot skew the walk.
+func orderedTypedHashEntriesInto(receiver Value, buf []HashEntry) []HashEntry {
+	return receiver.HashEntriesInto(buf)
 }
 
-func hashEntrySortKey(key Value) string {
-	switch key.Kind() {
-	case KindNil:
-		return "0:nil"
-	case KindBool:
-		if key.Bool() {
-			return "1:true"
-		}
-		return "1:false"
-	case KindInt:
-		return fmt.Sprintf("2:%020d", key.Int())
-	case KindFloat:
-		return "3:" + key.Inspect()
-	case KindString:
-		return "4:" + key.String()
-	case KindSymbol:
-		return "5:" + key.String()
-	case KindArray:
-		return "6:" + key.Inspect()
-	case KindRange:
-		return "7:" + key.Inspect()
-	default:
-		return "8:" + key.Inspect()
+// deterministicHashEntriesInto returns receiver's entries in the order a copy
+// should preserve: a typed hash keeps its recorded insertion order; a bare
+// host-provided map carries no insertion record, so its entries contribute in
+// sorted key order. Copying a bare source through HashEntries() would instead
+// persist its arbitrary Go-map traversal as the fresh hash's insertion order,
+// making a documented sorted map nondeterministic after store/delete/merge.
+func deterministicHashEntriesInto(receiver Value, buf []HashEntry) []HashEntry {
+	if hashHasTypedEntries(receiver) {
+		return receiver.HashEntriesInto(buf)
 	}
+	// Sort the materialized entries in place rather than building a separate
+	// sorted key list, so this allocates no more than the HashEntries() copy the
+	// callers already account for (a bare hash's sorted scratch would otherwise
+	// fall outside their memory-quota projections).
+	m := receiver.Hash()
+	entries := buf[:0]
+	if cap(entries) < len(m) {
+		entries = make([]HashEntry, 0, len(m))
+	}
+	for key, val := range m {
+		entries = append(entries, HashEntry{Key: NewString(key), Value: val})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Key.String() < entries[j].Key.String()
+	})
+	return entries
 }
 
 // sortedKeyBufferBytes returns the heap bytes sortedHashKeysInto allocates to
@@ -209,11 +210,16 @@ func typedExclusionSetBytes(count int) int {
 	return saturatingAdd(estimatedMapBaseBytes, saturatingMul(count, estimatedMapEntryBytes+estimatedHashLookupKeyBytes))
 }
 
+// typedHashEntryMapBytes returns the structural bytes a typed hash retains for
+// count entries: the entry map's base and per-entry bucket, lookup key, and
+// entry pair, plus the insertion-order backing (one lookup-key slot per entry
+// behind a slice base) HashSet grows alongside the map.
 func typedHashEntryMapBytes(count int) int {
 	if count <= 0 {
 		return 0
 	}
-	return saturatingAdd(estimatedMapBaseBytes, saturatingMul(count, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes))
+	perEntry := estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
+	return saturatingAdd(estimatedMapBaseBytes+estimatedSliceBaseBytes, saturatingMul(count, perEntry))
 }
 
 func typedHashTransformBufferBytes(outputEntries, scratchBytes int) int {
@@ -279,9 +285,13 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 			}
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 			out := NewHash(make(map[string]Value, count))
+			// Pre-size the order backing to the projected count so it matches the
+			// insertion-order slots typedHashTransformBufferBytes reserved, rather
+			// than overshooting through append growth.
+			out.ReserveHashOrder(count)
 			var blockArg [1]Value
 			var entryBuf [smallHashKeyBufferSize]HashEntry
-			for _, entry := range sortedTypedHashEntriesInto(value, entryBuf[:]) {
+			for _, entry := range orderedTypedHashEntriesInto(value, entryBuf[:]) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
@@ -543,7 +553,7 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				entries := sortedTypedHashEntriesInto(receiver, entryBuf[:])
+				entries := orderedTypedHashEntriesInto(receiver, entryBuf[:])
 				values := make([]Value, 0, len(entries))
 				for _, entry := range entries {
 					if err := exec.step(); err != nil {
@@ -599,7 +609,7 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				entries := sortedTypedHashEntriesInto(receiver, entryBuf[:])
+				entries := orderedTypedHashEntriesInto(receiver, entryBuf[:])
 				values := make([]Value, 0, len(entries))
 				for _, entry := range entries {
 					if err := exec.step(); err != nil {
@@ -752,7 +762,7 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range sortedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -867,7 +877,7 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for i, entry := range sortedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				for i, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -945,7 +955,7 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range sortedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -1018,7 +1028,7 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range sortedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -1091,7 +1101,7 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				entries := sortedTypedHashEntriesInto(receiver, entryBuf[:])
+				entries := orderedTypedHashEntriesInto(receiver, entryBuf[:])
 				pairs := make([]Value, 0, len(entries))
 				for _, entry := range entries {
 					if err := exec.step(); err != nil {
@@ -1423,7 +1433,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					runner = r
 					acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				}
-				for _, entry := range receiver.HashEntries() {
+				// A bare receiver merged under the typed path (an argument carries
+				// typed entries) has no insertion record, so copy it in sorted key
+				// order to keep the merged result deterministic.
+				var entryBuf [smallHashKeyBufferSize]HashEntry
+				for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -1435,9 +1449,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					return out, nil
 				}
 				var blockArgs [3]Value
-				var entryBuf [smallHashKeyBufferSize]HashEntry
 				for _, arg := range args {
-					for _, entry := range sortedTypedHashEntriesInto(arg, entryBuf[:]) {
+					// A bare argument has no insertion record, so walk it in sorted
+					// key order too; inserting it in raw Go-map order would leave the
+					// merged result nondeterministic.
+					for _, entry := range deterministicHashEntriesInto(arg, entryBuf[:]) {
 						if err := exec.step(); err != nil {
 							return NewNil(), err
 						}
@@ -1739,7 +1755,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			if hashHasTypedEntries(receiver) {
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				entries := sortedTypedHashEntriesInto(receiver, entryBuf[:])
+				entries := orderedTypedHashEntriesInto(receiver, entryBuf[:])
 				pairs := make([]Value, len(entries))
 				for i, entry := range entries {
 					pairs[i] = NewArray([]Value{entry.Key, entry.Value})
@@ -1795,9 +1811,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			out := NewHash(make(map[string]Value, projected))
 			// Copy the receiver entry by entry rather than with maps.Copy so a
 			// store into a large hash charges a step per copied entry and honors
-			// cancellation, matching replace, compact, and slice. The output map
-			// is order-independent, so no sorted key list is needed.
-			for _, entry := range receiver.HashEntries() {
+			// cancellation, matching replace, compact, and slice. The output tracks
+			// insertion order, so a bare receiver is copied in sorted key order to
+			// keep a documented-sorted host map deterministic after the store.
+			var entryBuf [smallHashKeyBufferSize]HashEntry
+			for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
@@ -1855,7 +1873,8 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out := NewHash(make(map[string]Value, receiver.HashLen()))
-				for _, entry := range receiver.HashEntries() {
+				var entryBuf [smallHashKeyBufferSize]HashEntry
+				for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -1876,7 +1895,8 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			out := NewHash(make(map[string]Value, receiver.HashLen()-1))
-			for _, entry := range receiver.HashEntries() {
+			var entryBuf [smallHashKeyBufferSize]HashEntry
+			for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
@@ -2105,7 +2125,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := NewHash(make(map[string]Value, count))
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range sortedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -2191,7 +2211,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := NewHash(make(map[string]Value, count))
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range sortedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -2282,7 +2302,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := make([]Value, 0, count)
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for i, entry := range sortedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				for i, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -2391,9 +2411,10 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				out := NewHash(make(map[string]Value, count))
+				out.ReserveHashOrder(count)
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range sortedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -2454,6 +2475,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// beyond those slots.
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 			out := NewHash(make(map[string]Value, len(entries)))
+			out.ReserveHashOrder(len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
@@ -2507,7 +2529,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				out := NewHash(make(map[string]Value, count))
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range sortedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
@@ -2580,9 +2602,10 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				out := NewHash(make(map[string]Value, count))
+				out.ReserveHashOrder(count)
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range sortedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}

@@ -146,9 +146,9 @@ func (v Value) appendInspectHash(buf *strings.Builder, state *valueStringState, 
 		return err
 	}
 	if v.kind == KindHash {
-		if typed := v.data.(*hashData).typedEntries; typed != nil {
+		if hd := v.data.(*hashData); hd.typedEntries != nil {
 			first := true
-			for _, entry := range typed {
+			err := hd.forEachTypedEntry(func(entry HashEntry) error {
 				if !first {
 					if err := appendBounded(buf, elementSeparator, limit); err != nil {
 						return err
@@ -161,9 +161,10 @@ func (v Value) appendInspectHash(buf *strings.Builder, state *valueStringState, 
 				if err := appendBounded(buf, keyValueSeparator, limit); err != nil {
 					return err
 				}
-				if err := entry.Value.appendInspect(buf, state, limit); err != nil {
-					return err
-				}
+				return entry.Value.appendInspect(buf, state, limit)
+			})
+			if err != nil {
+				return err
 			}
 			return appendByteBounded(buf, '}', limit)
 		}

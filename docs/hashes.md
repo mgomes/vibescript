@@ -326,7 +326,7 @@ Two helpers are not yet bounded this way:
 
 - `deep_transform_keys` does not bound its recursive materialization against the
   sandbox limits (tracked in #786).
-- `flatten` materializes a sorted key list and a `[key, value, ...]` array
+- `flatten` materializes an insertion-ordered key list and a `[key, value, ...]` array
   without a projected memory check or per-entry step charge; it is grouped with
   the array-materialization work alongside `keys` and `values`.
 
@@ -361,7 +361,7 @@ end
 - `each`, `each_key`, `each_value`
 - `to_a` returns the `[key, value]` pairs as a nested array, with keys exposed as
   symbols. It is the inverse of `Array#to_h` and equivalent to `flatten(0)`. The
-  materialization charges its output (the pair arrays and the sorted key scratch)
+  materialization charges its output (the pair arrays and the key scratch)
   against the memory quota as the pairs accumulate, and charges the step quota per
   pair while honoring context cancellation, so a large hash stays bounded rather
   than allocating the whole nested array before the runtime can reject it.
@@ -374,15 +374,18 @@ end
   symbols) plus its 0-based index and returns the receiver. Matching Ruby's
   `Hash#each_with_index`, the pair is the first block parameter and the index the
   second, so `{ b: 2, a: 1 }.each_with_index { |pair, index| ... }` yields
-  `([:a, 1], 0)` then `([:b, 2], 1)`.
+  `([:b, 2], 0)` then `([:a, 1], 1)`.
 - `map_with_index` yields the same `[key, value]` pair plus index and collects
   each block result into a new array (`{ b: 2, a: 1 }.map_with_index { |pair, index| [pair[0], index] }`
-  is `[[:a, 0], [:b, 1]]`). It takes no arguments and requires a block.
+  is `[[:b, 0], [:a, 1]]`). It takes no arguments and requires a block.
 
 `keys`, `values`, `flatten`, `to_a`, and block-based hash iteration process
-entries in sorted key order for deterministic behavior. Because the index follows
-that sorted order, it stays stable across runs even though Go map storage is
-unordered.
+entries in Ruby-style insertion order: a hash keeps the order its entries were
+first inserted, an overwritten key keeps its original position, and transforms
+preserve their receiver's order. Iteration is deterministic because the order is
+stored with the hash rather than derived from Go map storage. Hashes that reach
+the runtime as bare Go maps (host-provided values and keyword-argument splats)
+carry no insertion record and iterate in sorted key order instead.
 
 `each` yields each entry following Ruby's block-argument rules. A block with a
 single parameter receives the entry as a two-element `[key, value]` pair, while a
@@ -406,7 +409,7 @@ end
 
 A `for` loop may also iterate a hash directly, mirroring Ruby's loop over
 `each`. Each iteration binds a two-element `[key, value]` pair (keys exposed as
-symbols), visited in the same sorted key order:
+symbols), visited in the same insertion order:
 
 ```vibe
 def entries(hash)
@@ -416,7 +419,7 @@ def entries(hash)
   end
   out
 end
-# entries({ b: 2, a: 1 }) => [[:a, 1], [:b, 2]]
+# entries({ b: 2, a: 1 }) => [[:b, 2], [:a, 1]]
 ```
 
 Example:
@@ -439,9 +442,11 @@ value recursively:
 { "with space": 1 }.inspect # => "{\"with space\": 1}"
 ```
 
-Because hashes iterate in Go's map order, the entry order of an inspected hash is
-not stable across calls. See
-[Debug Representation](stdlib_core_utilities.md#debug-representation) for the full
-per-kind contract.
+Inspected entries follow the hash's insertion order, so the rendering is stable
+across calls and matches iteration. Bare host-provided maps
+(`NewHash(map[string]Value)`) carry no insertion record, so — like their
+iteration — their rendered order is unspecified rather than insertion-ordered.
+See [Debug Representation](stdlib_core_utilities.md#debug-representation) for the
+full per-kind contract.
 
 Review `examples/hashes/` for live scripts used by the tests.
