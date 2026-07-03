@@ -1974,7 +1974,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if valueBlock(block) != nil {
 				return NewNil(), fmt.Errorf("hash.clear does not accept a block")
 			}
-			return NewHash(map[string]Value{}), nil
+			return newHashPreservingDefault(receiver, map[string]Value{}), nil
 		}), nil
 	case "delete_if", "keep_if":
 		name := "hash." + property
