@@ -4633,6 +4633,10 @@ func arraySortBang(exec *Execution, receiver Value, args []Value, kwargs map[str
 		if sortErr != nil {
 			return false
 		}
+		if err := exec.step(); err != nil {
+			sortErr = err
+			return false
+		}
 		if runner != nil {
 			comparatorArgs[0] = out[i]
 			comparatorArgs[1] = out[j]

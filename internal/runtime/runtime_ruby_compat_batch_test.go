@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -17,6 +18,20 @@ func requireRubyBatchValue(t *testing.T, got, want Value) {
 	if diff := valueDiff(want, got); diff != "" {
 		t.Fatalf("value mismatch (-want +got):\n%s", diff)
 	}
+}
+
+func requireRubyBatchStepQuotaError(t testing.TB, err error) {
+	t.Helper()
+	if errors.Is(err, errStepQuotaExceeded) {
+		return
+	}
+	var runtimeErr *RuntimeError
+	if errors.As(err, &runtimeErr) &&
+		runtimeErr.Type == runtimeErrorTypeLimit &&
+		strings.Contains(runtimeErr.Message, errStepQuotaExceeded.Error()) {
+		return
+	}
+	t.Fatalf("expected step quota error, got %v", err)
 }
 
 func rubyBatchDistinctStrings(count int) Value {
@@ -42,6 +57,26 @@ func rubyBatchConcatStringBlock(suffix string) Value {
 		},
 	}
 	return NewBlock([]Param{{Kind: ParamNormal, Name: "item", Target: target}}, body, newEnv(nil))
+}
+
+func rubyBatchZeroComparatorBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	left := &Identifier{Name: "left", Position: pos}
+	right := &Identifier{Name: "right", Position: pos}
+	body := []Statement{
+		&ExprStmt{
+			Expr:     &IntegerLiteral{Value: 0, Position: pos},
+			Position: pos,
+		},
+	}
+	return NewBlock(
+		[]Param{
+			{Kind: ParamNormal, Name: "left", Target: left},
+			{Kind: ParamNormal, Name: "right", Target: right},
+		},
+		body,
+		newEnv(nil),
+	)
 }
 
 func TestRubyBatchDynamicDispatchAndInitializePrivacy(t *testing.T) {
@@ -320,6 +355,31 @@ end
 	}
 	if items[0].Kind() != KindFloat || !math.IsNaN(items[0].Float()) {
 		t.Fatalf("run()[0] = %v, want NaN float", items[0])
+	}
+}
+
+func TestRubyBatchArraySortBangHonorsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		block Value
+	}{
+		{name: "blockless", block: NewNil()},
+		{name: "block comparator", block: rubyBatchZeroComparatorBlock()},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			const quota = 10
+			exec := &Execution{ctx: context.Background(), quota: quota, memoryQuota: 1 << 30}
+			_, err := callArrayMember(t, exec, largeIntArray(1_000), "sort!", nil, tc.block)
+			requireRubyBatchStepQuotaError(t, err)
+			if exec.steps > quota+1 {
+				t.Fatalf("array.sort! took %d steps, want it to stop near the quota %d", exec.steps, quota)
+			}
+		})
 	}
 }
 
