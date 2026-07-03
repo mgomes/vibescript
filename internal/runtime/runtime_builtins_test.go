@@ -1214,6 +1214,30 @@ func TestJSONBuiltins(t *testing.T) {
 	requireCallErrorContains(t, script, "stringify_unsupported", nil, CallOptions{}, "JSON.stringify unsupported value type function")
 }
 
+func TestJSONParseSmallArraysDoNotRetainInitialCapacity(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def parse_arrays()
+      JSON.parse("[[1],[2,3],[]]")
+    end
+    `)
+
+	parsed := callFunc(t, script, "parse_arrays", nil)
+	if parsed.Kind() != KindArray {
+		t.Fatalf("parse_arrays() = %s, want array", parsed.Kind())
+	}
+	for i, value := range parsed.Array() {
+		if value.Kind() != KindArray {
+			t.Fatalf("parse_arrays()[%d] = %s, want array", i, value.Kind())
+		}
+		values := value.Array()
+		if cap(values) != len(values) {
+			t.Fatalf("parse_arrays()[%d] len/cap = %d/%d, want exact capacity so JSON.parse does not retain quota-visible unused array slots", i, len(values), cap(values))
+		}
+	}
+}
+
 func TestJSONParseObjectDataExposesEntries(t *testing.T) {
 	t.Parallel()
 

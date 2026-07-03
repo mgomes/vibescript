@@ -37,8 +37,8 @@ type jsonSeenSlot struct {
 }
 
 const (
-	jsonInitialContainerCapacity = 4
-	jsonInlineSeenCapacity       = 8
+	jsonInitialObjectCapacity = 4
+	jsonInlineSeenCapacity    = 8
 )
 
 type jsonInvalidNumberError string
@@ -109,7 +109,7 @@ func (p *jsonValueParser) parseArray() (Value, error) {
 		return NewArray(nil), nil
 	}
 
-	values := make([]Value, 0, jsonInitialContainerCapacity)
+	var values []Value
 	for {
 		value, err := p.parseValue()
 		if err != nil {
@@ -150,7 +150,7 @@ func (p *jsonValueParser) parseObject() (Value, error) {
 		return NewHash(nil), nil
 	}
 
-	values := NewTypedHash(jsonInitialContainerCapacity)
+	values := NewTypedHash(jsonInitialObjectCapacity)
 	for {
 		if p.pos >= len(p.raw) {
 			return NewNil(), fmt.Errorf("unexpected end of JSON input")
