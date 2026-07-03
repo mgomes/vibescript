@@ -398,13 +398,6 @@ func splitEmptySeparatorCount(text string, limit int) int {
 	return count
 }
 
-func splitEmptySeparatorOffsetScratchBytes(text string, limit int) int {
-	if text == "" || limit == 1 {
-		return 0
-	}
-	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(len(text)+1, estimatedIntBytes))
-}
-
 // splitWithSeparator implements Ruby's String#split(sep, limit) for a non-empty
 // string separator. The limit argument matches Ruby:
 //
@@ -521,21 +514,13 @@ func splitWithSeparatorCount(text, sep string, limit int) int {
 	return lastNonEmptyCount
 }
 
-func stringSplitPartsScratchBytes(count int) int {
-	if count <= 0 {
-		return 0
-	}
-	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(count, estimatedStringHeaderBytes))
-}
-
 func reserveStringSplitResult(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, count, extraScratch int) (*arrayBuildAccumulator, error) {
 	if err := exec.checkStepBudgetFor(count); err != nil {
 		return nil, err
 	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-	scratch := saturatingAdd(stringSplitPartsScratchBytes(count), extraScratch)
-	if scratch > 0 {
-		if err := acc.reserveScratch(scratch); err != nil {
+	if extraScratch > 0 {
+		if err := acc.reserveScratch(extraScratch); err != nil {
 			return nil, err
 		}
 	}
@@ -543,6 +528,168 @@ func reserveStringSplitResult(exec *Execution, receiver Value, args []Value, kwa
 		return nil, err
 	}
 	return acc, nil
+}
+
+func appendStringSplitPart(exec *Execution, values *[]Value, part string, acc *arrayBuildAccumulator) error {
+	if err := exec.step(); err != nil {
+		return err
+	}
+	*values = append(*values, NewString(part))
+	return acc.add((*values)[len(*values)-1], cap(*values))
+}
+
+func stringSplitWhitespaceResult(exec *Execution, text string, limit, count int, acc *arrayBuildAccumulator) (Value, error) {
+	if err := exec.checkStepBudgetFor(count); err != nil {
+		return NewNil(), err
+	}
+	values := make([]Value, 0, count)
+	if text == "" || count == 0 {
+		return NewArray(values), nil
+	}
+	if limit == 1 {
+		if err := appendStringSplitPart(exec, &values, text, acc); err != nil {
+			return NewNil(), err
+		}
+		return NewArray(values), nil
+	}
+	i := 0
+	n := len(text)
+	for i < n {
+		for i < n && isRubyASCIISpace(text[i]) {
+			i++
+		}
+		if i >= n {
+			break
+		}
+		if limit > 0 && len(values) == limit-1 {
+			if err := appendStringSplitPart(exec, &values, text[i:], acc); err != nil {
+				return NewNil(), err
+			}
+			return NewArray(values), nil
+		}
+		start := i
+		for i < n && !isRubyASCIISpace(text[i]) {
+			i++
+		}
+		if err := appendStringSplitPart(exec, &values, text[start:i], acc); err != nil {
+			return NewNil(), err
+		}
+	}
+	if limit != 0 && isRubyASCIISpace(text[n-1]) {
+		if err := appendStringSplitPart(exec, &values, "", acc); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewArray(values), nil
+}
+
+func stringSplitEmptySeparatorResult(exec *Execution, text string, limit, count int, acc *arrayBuildAccumulator) (Value, error) {
+	if err := exec.checkStepBudgetFor(count); err != nil {
+		return NewNil(), err
+	}
+	values := make([]Value, 0, count)
+	if text == "" || count == 0 {
+		return NewArray(values), nil
+	}
+	if limit == 1 {
+		if err := appendStringSplitPart(exec, &values, text, acc); err != nil {
+			return NewNil(), err
+		}
+		return NewArray(values), nil
+	}
+	for i := 0; i < len(text); {
+		if limit > 1 && len(values) == limit-1 {
+			if err := appendStringSplitPart(exec, &values, text[i:], acc); err != nil {
+				return NewNil(), err
+			}
+			return NewArray(values), nil
+		}
+		start := i
+		_, width := utf8.DecodeRuneInString(text[i:])
+		i += width
+		if err := appendStringSplitPart(exec, &values, text[start:i], acc); err != nil {
+			return NewNil(), err
+		}
+	}
+	if limit != 0 {
+		if err := appendStringSplitPart(exec, &values, "", acc); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewArray(values), nil
+}
+
+func stringSplitSeparatorResult(exec *Execution, text, sep string, limit, count int, acc *arrayBuildAccumulator) (Value, error) {
+	if err := exec.checkStepBudgetFor(count); err != nil {
+		return NewNil(), err
+	}
+	values := make([]Value, 0, count)
+	if text == "" || count == 0 {
+		return NewArray(values), nil
+	}
+	switch {
+	case limit > 0:
+		start := 0
+		for len(values) < count-1 {
+			idx := strings.Index(text[start:], sep)
+			if idx < 0 {
+				break
+			}
+			end := start + idx
+			if err := appendStringSplitPart(exec, &values, text[start:end], acc); err != nil {
+				return NewNil(), err
+			}
+			start = end + len(sep)
+		}
+		if err := appendStringSplitPart(exec, &values, text[start:], acc); err != nil {
+			return NewNil(), err
+		}
+	case limit < 0:
+		start := 0
+		for {
+			idx := strings.Index(text[start:], sep)
+			end := len(text)
+			if idx >= 0 {
+				end = start + idx
+			}
+			if err := appendStringSplitPart(exec, &values, text[start:end], acc); err != nil {
+				return NewNil(), err
+			}
+			if idx < 0 {
+				break
+			}
+			start = end + len(sep)
+		}
+	default:
+		pendingEmpty := 0
+		start := 0
+		for {
+			idx := strings.Index(text[start:], sep)
+			end := len(text)
+			if idx >= 0 {
+				end = start + idx
+			}
+			part := text[start:end]
+			if part == "" {
+				pendingEmpty++
+			} else {
+				for range pendingEmpty {
+					if err := appendStringSplitPart(exec, &values, "", acc); err != nil {
+						return NewNil(), err
+					}
+				}
+				pendingEmpty = 0
+				if err := appendStringSplitPart(exec, &values, part, acc); err != nil {
+					return NewNil(), err
+				}
+			}
+			if idx < 0 {
+				break
+			}
+			start = end + len(sep)
+		}
+	}
+	return NewArray(values), nil
 }
 
 func stringSplitResult(exec *Execution, parts []string, acc *arrayBuildAccumulator) (Value, error) {
@@ -1948,6 +2095,30 @@ func stringTemplateScalarValue(value Value, keyPath string) (string, error) {
 	}
 }
 
+type stringTemplateSegmentCache struct {
+	keys   [8]string
+	values [8]string
+	count  int
+}
+
+func (c *stringTemplateSegmentCache) lookup(key string) (string, bool) {
+	for i := range c.count {
+		if c.keys[i] == key {
+			return c.values[i], true
+		}
+	}
+	return "", false
+}
+
+func (c *stringTemplateSegmentCache) store(key, value string) {
+	if c.count >= len(c.keys) {
+		return
+	}
+	c.keys[c.count] = key
+	c.values[c.count] = value
+	c.count++
+}
+
 func appendTemplateChunk(exec *Execution, b *strings.Builder, chunk string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if err := exec.step(); err != nil {
 		return err
@@ -1969,6 +2140,7 @@ func stringTemplate(text string, context Value, strict bool) (string, error) {
 
 func stringTemplateWithExecution(exec *Execution, text string, context Value, strict bool, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
 	var b strings.Builder
+	var cache stringTemplateSegmentCache
 	rendered := false
 	last := 0
 	search := 0
@@ -1990,6 +2162,14 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 			return "", err
 		}
 		placeholder := text[open:end]
+		if segment, ok := cache.lookup(keyPath); ok {
+			if err := appendTemplateChunk(exec, &b, segment, receiver, args, kwargs, block); err != nil {
+				return "", err
+			}
+			last = end
+			search = end
+			continue
+		}
 		value, ok := stringTemplateLookup(context, keyPath)
 		if !ok {
 			if strict {
@@ -2006,6 +2186,7 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 		if err != nil {
 			return "", err
 		}
+		cache.store(keyPath, segment)
 		if err := appendTemplateChunk(exec, &b, segment, receiver, args, kwargs, block); err != nil {
 			return "", err
 		}
@@ -3044,7 +3225,6 @@ func stringMemberTextOps(property string) (Value, error) {
 				limit = int(args[1].Int())
 			}
 			text := receiver.String()
-			var parts []string
 			count := 0
 			switch {
 			// An explicit nil separator behaves like the no-argument form,
@@ -3056,8 +3236,7 @@ func stringMemberTextOps(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				parts = splitOnASCIIWhitespaceLimit(text, limit, count)
-				return stringSplitResult(exec, parts, acc)
+				return stringSplitWhitespaceResult(exec, text, limit, count, acc)
 			case args[0].Kind() != KindString:
 				return NewNil(), fmt.Errorf("string.split separator must be string or nil")
 			case args[0].String() == " ":
@@ -3071,16 +3250,14 @@ func stringMemberTextOps(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				parts = splitOnASCIIWhitespaceLimit(text, limit, count)
-				return stringSplitResult(exec, parts, acc)
+				return stringSplitWhitespaceResult(exec, text, limit, count, acc)
 			case args[0].String() == "":
 				count = splitEmptySeparatorCount(text, limit)
-				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count, splitEmptySeparatorOffsetScratchBytes(text, limit))
+				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count, 0)
 				if err != nil {
 					return NewNil(), err
 				}
-				parts = splitEmptySeparator(text, limit, count)
-				return stringSplitResult(exec, parts, acc)
+				return stringSplitEmptySeparatorResult(exec, text, limit, count, acc)
 			default:
 				sep := args[0].String()
 				count = splitWithSeparatorCount(text, sep, limit)
@@ -3088,8 +3265,7 @@ func stringMemberTextOps(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				parts = splitWithSeparator(text, sep, limit, count)
-				return stringSplitResult(exec, parts, acc)
+				return stringSplitSeparatorResult(exec, text, sep, limit, count, acc)
 			}
 		}), nil
 	case "partition":

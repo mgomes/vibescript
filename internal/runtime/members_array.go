@@ -188,9 +188,12 @@ func arrayMemberGrouping(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			initialCapacity := arrayGroupingInitialCapacity(len(arr))
-			order := make([]hashAggregationKey, 0, initialCapacity)
-			groups := make(map[hashAggregationKey][]Value, initialCapacity)
-			keyValues := make(map[hashAggregationKey]Value, initialCapacity)
+			type groupBucket struct {
+				key   Value
+				items []Value
+			}
+			groupIndexes := make(map[hashAggregationKey]int, initialCapacity)
+			groups := make([]groupBucket, 0, initialCapacity)
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
@@ -202,16 +205,18 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), fmt.Errorf("array.group_by block returned unsupported hash key: %w", err)
 				}
-				if _, exists := groups[key]; !exists {
-					order = append(order, key)
-					keyValues[key] = groupValue
+				index, exists := groupIndexes[key]
+				if !exists {
+					index = len(groups)
+					groupIndexes[key] = index
+					groups = append(groups, groupBucket{key: groupValue})
 				}
-				groups[key] = append(groups[key], item)
+				groups[index].items = append(groups[index].items, item)
 			}
 			// Ruby's Hash#group_by result lists groups in first-encounter order.
 			result := NewHash(make(map[string]Value, len(groups)))
-			for _, key := range order {
-				if err := hashSet(result, keyValues[key], NewArray(groups[key])); err != nil {
+			for _, group := range groups {
+				if err := hashSet(result, group.key, NewArray(group.items)); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -228,9 +233,12 @@ func arrayMemberGrouping(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			initialCapacity := arrayGroupingInitialCapacity(len(arr))
-			order := make([]hashAggregationKey, 0, initialCapacity)
-			keyValues := make(map[hashAggregationKey]Value, initialCapacity)
-			groups := make(map[hashAggregationKey][]Value, initialCapacity)
+			type groupBucket struct {
+				key   Value
+				items []Value
+			}
+			groupIndexes := make(map[hashAggregationKey]int, initialCapacity)
+			groups := make([]groupBucket, 0, initialCapacity)
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
@@ -242,17 +250,19 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), fmt.Errorf("array.group_by_stable block returned unsupported hash key: %w", err)
 				}
-				if _, exists := groups[key]; !exists {
-					order = append(order, key)
-					keyValues[key] = groupValue
+				index, exists := groupIndexes[key]
+				if !exists {
+					index = len(groups)
+					groupIndexes[key] = index
+					groups = append(groups, groupBucket{key: groupValue})
 				}
-				groups[key] = append(groups[key], item)
+				groups[index].items = append(groups[index].items, item)
 			}
-			result := make([]Value, 0, len(order))
-			for _, key := range order {
+			result := make([]Value, 0, len(groups))
+			for _, group := range groups {
 				result = append(result, NewArray([]Value{
-					keyValues[key],
-					NewArray(groups[key]),
+					group.key,
+					NewArray(group.items),
 				}))
 			}
 			return NewArray(result), nil
@@ -268,9 +278,12 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), fmt.Errorf("array.tally value is unsupported hash key: %w", err)
 			}
-			order := make([]hashAggregationKey, 0, initialCapacity)
-			counts := make(map[hashAggregationKey]int64, initialCapacity)
-			keyValues := make(map[hashAggregationKey]Value, initialCapacity)
+			type tallyBucket struct {
+				key   Value
+				count int64
+			}
+			bucketIndexes := make(map[hashAggregationKey]int, initialCapacity)
+			counts := make([]tallyBucket, 0, initialCapacity)
 			var runner *blockCallRunner
 			if hasBlock {
 				runner, err = newBlockCallRunner(exec, block, "array.tally", receiver, nil, kwargs)
@@ -293,16 +306,18 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), fmt.Errorf("array.tally value is unsupported hash key: %w", err)
 				}
-				if _, exists := keyValues[key]; !exists {
-					order = append(order, key)
-					keyValues[key] = keyValue
+				index, exists := bucketIndexes[key]
+				if !exists {
+					index = len(counts)
+					bucketIndexes[key] = index
+					counts = append(counts, tallyBucket{key: keyValue})
 				}
-				counts[key]++
+				counts[index].count++
 			}
 			// Ruby's Array#tally result lists keys in first-encounter order.
 			result := NewHash(make(map[string]Value, len(counts)))
-			for _, key := range order {
-				if err := hashSet(result, keyValues[key], NewInt(counts[key])); err != nil {
+			for _, count := range counts {
+				if err := hashSet(result, count.key, NewInt(count.count)); err != nil {
 					return NewNil(), err
 				}
 			}
