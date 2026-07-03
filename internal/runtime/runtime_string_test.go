@@ -515,22 +515,25 @@ func TestSplitWithSeparatorDefaultAvoidsTrimmedTrailingEmptyAllocation(t *testin
 	}
 }
 
-func TestSplitEmptySeparatorReservesOffsetScratch(t *testing.T) {
+func TestSplitEmptySeparatorDoesNotReserveOffsetScratch(t *testing.T) {
 	t.Parallel()
 
 	text := strings.Repeat("a", 4_096)
 	receiver := NewString(text)
 	args := []Value{NewString("")}
 	count := splitEmptySeparatorCount(text, 0)
-	offsetScratch := splitEmptySeparatorOffsetScratchBytes(text, 0)
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 60}
 	acc := newArrayBuildAccumulator(probe, receiver, args, nil, NewNil())
-	quota := saturatingAdd(acc.projected(count), stringSplitPartsScratchBytes(count))
-	quota = saturatingAdd(quota, offsetScratch) - 1
+	quota := saturatingAdd(acc.projected(count), count*(estimatedStringHeaderBytes+1))
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
-	_, err := callStringMemberForTest(t, exec, receiver, "split", args)
-	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	result, err := callStringMemberForTest(t, exec, receiver, "split", args)
+	if err != nil {
+		t.Fatalf("string.split empty separator exact quota error = %v", err)
+	}
+	if len(result.Array()) != count {
+		t.Fatalf("string.split empty separator len = %d, want %d", len(result.Array()), count)
+	}
 }
 
 func TestStringSplitResultUsesReservedCapacity(t *testing.T) {
@@ -541,8 +544,7 @@ func TestStringSplitResultUsesReservedCapacity(t *testing.T) {
 	receiver := NewString("")
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 60}
 	acc := newArrayBuildAccumulator(probe, receiver, nil, nil, NewNil())
-	quota := saturatingAdd(acc.projected(count), stringSplitPartsScratchBytes(count))
-	quota = saturatingAdd(quota, count*estimatedStringHeaderBytes)
+	quota := saturatingAdd(acc.projected(count), count*estimatedStringHeaderBytes)
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	acc, err := reserveStringSplitResult(exec, receiver, nil, nil, NewNil(), count, 0)

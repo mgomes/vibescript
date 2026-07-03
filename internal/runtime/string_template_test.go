@@ -43,6 +43,11 @@ func TestStringTemplateScanner(t *testing.T) {
 			want: "Hello {{missing}}",
 		},
 		{
+			name: "repeated_missing_placeholder_preserves_each_literal",
+			text: "{{ missing }} {{missing}}",
+			want: "{{ missing }} {{missing}}",
+		},
+		{
 			name: "nested_valid_placeholder_after_invalid_open",
 			text: "{{ bad {{name}}",
 			want: "{{ bad Alex",
