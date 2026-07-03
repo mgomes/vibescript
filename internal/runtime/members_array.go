@@ -1156,7 +1156,14 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				result[i] = val
+				// Retained payloads live in the Go-local result slice before the
+				// returned array exists, so later block calls must charge them as
+				// scratch while they allocate their own transients.
+				retainedBefore := acc.retainedPayloadBytes()
 				if err := acc.addConservativeToReservedBacking(val); err != nil {
+					return NewNil(), err
+				}
+				if err := scratch.reserve(acc.retainedPayloadBytes() - retainedBefore); err != nil {
 					return NewNil(), err
 				}
 			}

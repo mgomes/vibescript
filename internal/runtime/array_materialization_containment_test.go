@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -30,6 +31,32 @@ func TestArrayMapReservesOutputBeforeBlockCalls(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 	if exec.steps != 0 {
 		t.Fatalf("map stepped %d times before rejecting output backing; want 0", exec.steps)
+	}
+}
+
+func TestArrayMapReservesRetainedPayloadBeforeLaterBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	const retainedPayloadBytes = 64 * 1024
+	receiver := largeIntArray(2)
+	retainedPayload := NewString(strings.Repeat("x", retainedPayloadBytes))
+	expectedRetained := newMemoryEstimator().valuePayload(retainedPayload)
+	expectedBacking := arraySlotBackingBytes(len(receiver.Array()))
+	expectedReserved := expectedBacking + expectedRetained
+	calls := 0
+	block := arrayMapRetainedPayloadProbeBlock(retainedPayload.String(), expectedReserved, &calls)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	got, err := callArrayMember(t, exec, receiver, "map", nil, block)
+	if err != nil {
+		t.Fatalf("array.map retained payload reservation error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("array.map block calls = %d, want 2", calls)
+	}
+	compareArrays(t, got, []Value{retainedPayload, retainedPayload})
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("array.map leaked %d scratch bytes after success", exec.reservedScratchBytes)
 	}
 }
 
@@ -223,6 +250,24 @@ func constantSymbolBlockValue(name string) Value {
 	pos := Position{Line: 1, Column: 1}
 	body := []Statement{&ExprStmt{Position: pos, Expr: &SymbolLiteral{Name: name, Position: pos}}}
 	return NewBlock(nil, body, newEnv(nil))
+}
+
+func arrayMapRetainedPayloadProbeBlock(payload string, expectedReservedBeforeSecondCall int, calls *int) Value {
+	pos := Position{Line: 1, Column: 1}
+	probe := NewBuiltin("test.array_map_payload_probe", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		*calls++
+		if *calls == 2 && exec.reservedScratchBytes < expectedReservedBeforeSecondCall {
+			return NewNil(), fmt.Errorf("reserved scratch before second map block call = %d, want at least %d", exec.reservedScratchBytes, expectedReservedBeforeSecondCall)
+		}
+		return NewString(payload), nil
+	})
+	env := newEnv(nil)
+	env.Define("__probe__", probe)
+	body := []Statement{&ExprStmt{Position: pos, Expr: &CallExpr{
+		Position: pos,
+		Callee:   &Identifier{Name: "__probe__", Position: pos},
+	}}}
+	return NewBlock([]Param{{Kind: ParamNormal, Name: "item"}}, body, env)
 }
 
 func groupedSingleBucketQuota(t *testing.T, receiver, block Value) int {
