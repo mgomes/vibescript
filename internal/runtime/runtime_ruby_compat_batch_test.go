@@ -559,6 +559,20 @@ end
 	))
 }
 
+func TestRubyBatchArrayChunkRejectsReservedKeys(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  [1].chunk do |_n|
+    :_foo
+  end
+end
+`)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "array.chunk reserved key :_foo")
+}
+
 func TestRubyBatchStringCharacterSets(t *testing.T) {
 	t.Parallel()
 

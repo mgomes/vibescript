@@ -2722,6 +2722,7 @@ const (
 	arrayChunkNormal arrayChunkControl = iota
 	arrayChunkSeparator
 	arrayChunkAlone
+	arrayChunkInvalid
 )
 
 func arrayChunkControlForKey(key Value) arrayChunkControl {
@@ -2737,6 +2738,9 @@ func arrayChunkControlForKey(key Value) arrayChunkControl {
 	case "_alone":
 		return arrayChunkAlone
 	default:
+		if strings.HasPrefix(key.String(), "_") {
+			return arrayChunkInvalid
+		}
 		return arrayChunkNormal
 	}
 }
@@ -2800,6 +2804,8 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 			}
 			start = i + 1
 			continue
+		case arrayChunkInvalid:
+			return NewNil(), fmt.Errorf("array.chunk reserved key :%s", key.String())
 		}
 		if !active {
 			currentKey = key
