@@ -2412,8 +2412,12 @@ func predeclareStatementPostLocalBindings(stmt Statement, env *Env) {
 	if !statementCanPostPredeclareLocalBindings(stmt) {
 		return
 	}
+	predeclareLocalBindingsFromStatements([]Statement{stmt}, env)
+}
+
+func predeclareLocalBindingsFromStatements(stmts []Statement, env *Env) {
 	var collector localBindingCollector
-	collectLocalBindingNames([]Statement{stmt}, &collector)
+	collectLocalBindingNames(stmts, &collector)
 	for _, name := range collector.names {
 		env.PredeclareLocal(name)
 	}
@@ -2767,6 +2771,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		if val.Truthy() {
 			return exec.evalStatements(s.Consequent, env)
 		}
+		predeclareLocalBindingsFromStatements(s.Consequent, env)
 		for _, clause := range s.ElseIf {
 			condVal, err := exec.evalExpression(clause.Condition, env)
 			if err != nil {
@@ -2778,6 +2783,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			if condVal.Truthy() {
 				return exec.evalStatements(clause.Consequent, env)
 			}
+			predeclareLocalBindingsFromStatements(clause.Consequent, env)
 		}
 		if len(s.Alternate) > 0 {
 			return exec.evalStatements(s.Alternate, env)

@@ -28,12 +28,36 @@ def nested_after_compound
     nested_local
   end
 end
+
+def else_reads_prior_branch_local
+  if false
+    branch_local = 1
+  else
+    branch_local
+  end
+end
+
+def elsif_condition_reads_prior_branch_local
+  if false
+    branch_local = 1
+  elsif branch_local == nil
+    "ok"
+  else
+    "miss"
+  end
+end
 `)
 
 	got := callFunc(t, script, "run", nil)
 	compareArrays(t, got, []Value{NewNil(), NewNil()})
 	if got := callFunc(t, script, "nested_after_compound", nil); !got.Equal(NewNil()) {
 		t.Fatalf("nested_after_compound() = %s, want nil", got)
+	}
+	if got := callFunc(t, script, "else_reads_prior_branch_local", nil); !got.Equal(NewNil()) {
+		t.Fatalf("else_reads_prior_branch_local() = %s, want nil", got)
+	}
+	if got := callFunc(t, script, "elsif_condition_reads_prior_branch_local", nil); !got.Equal(NewString("ok")) {
+		t.Fatalf("elsif_condition_reads_prior_branch_local() = %s, want ok", got)
 	}
 }
 
@@ -61,9 +85,17 @@ def if_body_source_order
     later = 1
   end
 end
+
+def taken_branch_before_later_else_assignment
+  if true
+    later_branch
+  else
+    later_branch = 1
+  end
+end
 `)
 
-	for _, fn := range []string{"nested_branch", "logical_rhs", "if_body_source_order"} {
+	for _, fn := range []string{"nested_branch", "logical_rhs", "if_body_source_order", "taken_branch_before_later_else_assignment"} {
 		t.Run(fn, func(t *testing.T) {
 			t.Parallel()
 			_, err := script.Call(context.Background(), fn, nil, CallOptions{})
