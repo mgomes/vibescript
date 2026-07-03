@@ -67,6 +67,14 @@ func memberReceiverAutoInvokes(property string) bool {
 	return property != "call"
 }
 
+func memberCallReceiverAutoInvokes(object Expression, property string) bool {
+	if property != "call" {
+		return true
+	}
+	_, bareIdentifier := object.(*Identifier)
+	return !bareIdentifier
+}
+
 func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
@@ -1163,18 +1171,6 @@ func typeExprIncludesCallable(ty *TypeExpr) bool {
 	switch ty.Kind {
 	case TypeFunction:
 		return true
-	case TypeArray, TypeHash:
-		for _, arg := range ty.TypeArgs {
-			if typeExprIncludesCallable(arg) {
-				return true
-			}
-		}
-	case TypeShape:
-		for _, field := range ty.Shape {
-			if typeExprIncludesCallable(field) {
-				return true
-			}
-		}
 	case TypeUnion:
 		for _, option := range ty.Union {
 			if typeExprIncludesCallable(option) {
@@ -1418,7 +1414,7 @@ func (exec *Execution) evalBlockGivenCall(call *CallExpr, env *Env) (Value, erro
 }
 
 func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, env *Env) (Value, error) {
-	receiver, err := exec.evalExpression(member.Object, env)
+	receiver, err := exec.evalExpressionWithAuto(member.Object, env, memberCallReceiverAutoInvokes(member.Object, member.Property))
 	if err != nil {
 		return NewNil(), err
 	}

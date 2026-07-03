@@ -121,8 +121,24 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       fn.call
     end
 
+    def receive_callable_paren(fn: function)
+      fn.call()
+    end
+
     def receive_callable_rest(*fns: array<function>)
       fns[0].call
+    end
+
+    def receive_handlers(fns: array<function>)
+      fns[0].call
+    end
+
+    def make_handlers(*fns: array<function>) -> array<function>
+      fns
+    end
+
+    def handlers
+      make_handlers(answer)
     end
 
     def feed_block(&block)
@@ -137,12 +153,20 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       receive_callable(answer)
     end
 
+    def run_typed_paren
+      receive_callable_paren(answer)
+    end
+
     def run_call_alias
       receive_callable.call(answer)
     end
 
     def run_rest
       receive_callable_rest(answer)
+    end
+
+    def run_array_factory
+      receive_handlers(handlers)
     end
 
     def run_block_param
@@ -159,8 +183,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 	}{
 		{name: "untyped still auto invokes", fn: "run_untyped", want: NewInt(42)},
 		{name: "typed positional keeps callable", fn: "run_typed", want: NewInt(42)},
+		{name: "typed positional call member keeps callable receiver", fn: "run_typed_paren", want: NewInt(42)},
 		{name: "function call alias keeps callable", fn: "run_call_alias", want: NewInt(42)},
 		{name: "typed rest keeps callable element", fn: "run_rest", want: NewInt(42)},
+		{name: "array typed argument still auto invokes outer function", fn: "run_array_factory", want: NewInt(42)},
 		{name: "typed block call parameter keeps callable", fn: "run_block_param", want: NewInt(42)},
 	}
 
