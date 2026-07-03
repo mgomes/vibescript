@@ -239,6 +239,7 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 	exec.pushModuleContext(ctx)
 	exec.pushReceiver(receiver)
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)
+	val, returned, err = consumeFunctionReturnSignal(val, returned, err)
 	if err != nil && !isLoopControlSignal(err) && !isRescueRetrySignal(err) {
 		err = exec.wrapError(err, pos)
 	}
@@ -273,6 +274,13 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 		return val, nil
 	}
 	return val, nil
+}
+
+func consumeFunctionReturnSignal(val Value, returned bool, err error) (Value, bool, error) {
+	if returnVal, ok := functionReturnValue(err); ok {
+		return returnVal, true, nil
+	}
+	return val, returned, err
 }
 
 type callFunctionRebinder struct {
@@ -1342,6 +1350,7 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 		return NewNil(), err
 	}
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)
+	val, returned, err = consumeFunctionReturnSignal(val, returned, err)
 	if err != nil {
 		err = exec.wrapError(err, fn.Pos)
 	}

@@ -323,7 +323,7 @@ func cloneExpression(expr Expression) Expression {
 		clone := *e
 		clone.Parts = cloneStringParts(e.Parts)
 		return &clone
-	case *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
 		return cloneStatement(e.(Statement)).(Expression)
 	default:
 		return expr

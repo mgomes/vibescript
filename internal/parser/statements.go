@@ -42,9 +42,6 @@ func (p *parser) parseStatement() ast.Statement {
 		stmt = p.parseRetryStatement()
 	case ast.TokenBegin:
 		stmt = p.parseBeginStatement()
-		if continued := p.continueStatementExpression(stmt); continued != nil {
-			stmt = continued
-		}
 	case ast.TokenIdent:
 		if p.curToken.Literal == "assert" {
 			stmt = p.parseAssertStatement()
@@ -53,6 +50,9 @@ func (p *parser) parseStatement() ast.Statement {
 		}
 	default:
 		stmt = p.parseExpressionOrAssignStatement()
+	}
+	if continued := p.continueStatementExpression(stmt); continued != nil {
+		stmt = continued
 	}
 	return p.parseStatementModifier(stmt)
 }

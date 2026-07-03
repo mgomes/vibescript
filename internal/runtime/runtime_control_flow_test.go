@@ -1884,6 +1884,38 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
       end + 2
     end
 
+    def statement_control_flow_continuations()
+      unless_value = unless false
+        1
+      end + 2
+      unless_nil = unless true
+        1
+      end.nil?
+      while_nil = while false
+      end.nil?
+      until_nil = until true
+      end.nil?
+      for_value = for n in [1]
+      end + [2]
+      [unless_value, unless_nil, while_nil, until_nil, for_value]
+    end
+
+    def return_from_statement_expression_condition()
+      while begin
+        return 1
+      end
+      end
+      2
+    end
+
+    def typed_return_from_statement_expression_condition() -> string
+      while begin
+        return 1
+      end
+      end
+      "unreachable"
+    end
+
     def rescue_modifier()
       [1 / 0 rescue "fallback", 7 rescue "unused"]
     end
@@ -2047,6 +2079,17 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
 	if got := callFunc(t, script, "begin_expression_continuation", nil); !got.Equal(NewInt(3)) {
 		t.Fatalf("begin_expression_continuation() = %v, want 3", got)
 	}
+	compareArrays(t, callFunc(t, script, "statement_control_flow_continuations", nil), []Value{
+		NewInt(3),
+		NewBool(true),
+		NewBool(true),
+		NewBool(true),
+		NewArray([]Value{NewInt(1), NewInt(2)}),
+	})
+	if got := callFunc(t, script, "return_from_statement_expression_condition", nil); !got.Equal(NewInt(1)) {
+		t.Fatalf("return_from_statement_expression_condition() = %v, want 1", got)
+	}
+	requireCallErrorContains(t, script, "typed_return_from_statement_expression_condition", nil, CallOptions{}, "return value for typed_return_from_statement_expression_condition expected string, got int")
 	compareArrays(t, callFunc(t, script, "rescue_modifier", nil), []Value{
 		NewString("fallback"),
 		NewInt(7),

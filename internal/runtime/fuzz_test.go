@@ -1255,6 +1255,8 @@ func validateFuzzExpression(context string, expr Expression) error {
 			return validateFuzzExpression(context+".alternate", e.Alternate)
 		}
 		return nil
+	case *IfStmt:
+		return validateFuzzIfStmt(context, e)
 	case *RangeExpr:
 		if err := validateFuzzExpression(context+".start", e.Start); err != nil {
 			return err

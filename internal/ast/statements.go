@@ -65,6 +65,7 @@ type IfStmt struct {
 }
 
 func (s *IfStmt) stmtNode()     {}
+func (s *IfStmt) exprNode()     {}
 func (s *IfStmt) Pos() Position { return s.Position }
 
 // ForStmt represents a for-in loop.

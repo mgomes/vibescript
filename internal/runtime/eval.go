@@ -83,6 +83,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalRescueModifierExpr(e, env)
 	case *IfExpr:
 		return exec.evalIfExpr(e, env)
+	case *IfStmt:
+		return exec.evalIfStatementExpression(e, env)
 	case *RangeExpr:
 		return exec.evalRangeExpr(e, env)
 	case *CaseExpr:
@@ -1351,7 +1353,7 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		return stringPartsCaptureCurrentEnv(e.Parts)
 	case *InterpolatedSymbol:
 		return stringPartsCaptureCurrentEnv(e.Parts)
-	case *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
 		return statementCapturesCurrentEnv(e.(Statement))
 	default:
 		return true
@@ -2569,6 +2571,45 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 	}
 }
 
+func (exec *Execution) evalIfStatementExpression(stmt *IfStmt, env *Env) (Value, error) {
+	return expressionValueOrReturn(exec.evalIfStatement(stmt, env))
+}
+
+func (exec *Execution) evalIfStatement(stmt *IfStmt, env *Env) (Value, bool, error) {
+	val, err := exec.evalExpression(stmt.Condition, env)
+	if returnVal, ok := functionReturnValue(err); ok {
+		return returnVal, true, nil
+	}
+	if err != nil {
+		return NewNil(), false, err
+	}
+	if err := exec.checkMemoryWith(val); err != nil {
+		return NewNil(), false, err
+	}
+	if val.Truthy() {
+		return exec.evalStatements(stmt.Consequent, env)
+	}
+	for _, clause := range stmt.ElseIf {
+		condVal, err := exec.evalExpression(clause.Condition, env)
+		if returnVal, ok := functionReturnValue(err); ok {
+			return returnVal, true, nil
+		}
+		if err != nil {
+			return NewNil(), false, err
+		}
+		if err := exec.checkMemoryWith(condVal); err != nil {
+			return NewNil(), false, err
+		}
+		if condVal.Truthy() {
+			return exec.evalStatements(clause.Consequent, env)
+		}
+	}
+	if len(stmt.Alternate) > 0 {
+		return exec.evalStatements(stmt.Alternate, env)
+	}
+	return NewNil(), false, nil
+}
+
 func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, error) {
 	switch s := stmt.(type) {
 	case *ExprStmt:
@@ -2620,38 +2661,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		}
 		return val, false, nil
 	case *IfStmt:
-		val, err := exec.evalExpression(s.Condition, env)
-		if returnVal, ok := functionReturnValue(err); ok {
-			return returnVal, true, nil
-		}
-		if err != nil {
-			return NewNil(), false, err
-		}
-		if err := exec.checkMemoryWith(val); err != nil {
-			return NewNil(), false, err
-		}
-		if val.Truthy() {
-			return exec.evalStatements(s.Consequent, env)
-		}
-		for _, clause := range s.ElseIf {
-			condVal, err := exec.evalExpression(clause.Condition, env)
-			if returnVal, ok := functionReturnValue(err); ok {
-				return returnVal, true, nil
-			}
-			if err != nil {
-				return NewNil(), false, err
-			}
-			if err := exec.checkMemoryWith(condVal); err != nil {
-				return NewNil(), false, err
-			}
-			if condVal.Truthy() {
-				return exec.evalStatements(clause.Consequent, env)
-			}
-		}
-		if len(s.Alternate) > 0 {
-			return exec.evalStatements(s.Alternate, env)
-		}
-		return NewNil(), false, nil
+		return exec.evalIfStatement(s, env)
 	case *ForStmt:
 		return exec.evalForStatement(s, env)
 	case *WhileStmt:
