@@ -54,6 +54,37 @@ end`,
 			args: func(p string) []string { return []string{"-check", p} },
 		},
 		{
+			name: "check_only_reports_contract_issues",
+			script: `def run(v: int = "bad")
+  v
+end`,
+			args:    func(p string) []string { return []string{"-check", p} },
+			wantErr: "default value for v expected int, got string",
+		},
+		{
+			name: "check_only_reports_missing_entrypoint_argument",
+			script: `def run(name)
+  name
+end`,
+			args:    func(p string) []string { return []string{"-check", p} },
+			wantErr: "call to run is missing argument name",
+		},
+		{
+			name: "check_only_validates_entrypoint_argument_type",
+			script: `def run(count: int)
+  count
+end`,
+			args:    func(p string) []string { return []string{"-check", p, "one"} },
+			wantErr: "call to run argument count expected int, got string",
+		},
+		{
+			name: "check_only_accepts_entrypoint_arguments",
+			script: `def run(name)
+  name
+end`,
+			args: func(p string) []string { return []string{"-check", p, "Ada"} },
+		},
+		{
 			name: "executes_function_and_prints_result",
 			script: `def greet(name)
   name
@@ -233,6 +264,27 @@ helper`},
 		{
 			name: "check_only_compiles_without_executing",
 			args: []string{"-check", "-e", "1 + 2"},
+		},
+		{
+			name:    "check_only_reports_inline_contract_issues",
+			args:    []string{"-check", "-e", `JSON.parse()`},
+			wantErr: "call to JSON.parse has too few arguments",
+		},
+		{
+			name: "check_only_uses_inline_entrypoint_order",
+			args: []string{
+				"-check",
+				"-module-path", filepath.Join("..", "..", "internal", "runtime", "testdata", "modules"),
+				"-e", `require("enum_status")
+
+class Loader
+  normalize(:draft)
+end
+
+def normalize(status: Status) -> Status
+  status
+end`,
+			},
 		},
 		{
 			name:    "compile_error_surfaces",
