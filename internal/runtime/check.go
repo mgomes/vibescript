@@ -63,6 +63,7 @@ type scriptChecker struct {
 	runtimeModules          map[string]struct{}
 	runtimeNamespaceMembers map[string]struct{}
 	moduleEntries           map[string]moduleEntry
+	moduleExportValues      map[string]Value
 	moduleCaller            *moduleContext
 	moduleExportRoot        *Env
 }
@@ -497,7 +498,7 @@ func staticStatementValue(stmt Statement) (Value, bool) {
 }
 
 func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
-	moduleName, ok := c.staticRequireCallModuleName(call)
+	moduleName, alias, ok := c.staticRequireCall(call)
 	if !ok {
 		return
 	}
@@ -508,33 +509,39 @@ func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
 	if err != nil {
 		return
 	}
+	exports := c.moduleExportValue(entry)
+	if !c.canBindRequireAlias(alias, exports) {
+		return
+	}
 	c.collectModuleExports(entry)
+	c.bindRequireAlias(alias, exports)
 }
 
-func (c *scriptChecker) staticRequireCallModuleName(call *CallExpr) (string, bool) {
+func (c *scriptChecker) staticRequireCall(call *CallExpr) (string, string, bool) {
 	if call == nil || len(call.Args) != 1 || call.Block != nil || c.requireCallShadowed() {
-		return "", false
+		return "", "", false
 	}
 	callee, ok := call.Callee.(*Identifier)
 	if !ok || callee.Name != "require" {
-		return "", false
+		return "", "", false
 	}
 	moduleName, ok := staticRequireModuleName(call.Args[0])
 	if !ok {
-		return "", false
+		return "", "", false
 	}
 	kwargs := make(map[string]Value, len(call.KwArgs))
 	for _, kwarg := range call.KwArgs {
 		val, ok := staticLiteralValue(kwarg.Value)
 		if !ok {
-			return "", false
+			return "", "", false
 		}
 		kwargs[kwarg.Name] = val
 	}
-	if _, err := parseRequireAlias(kwargs); err != nil {
-		return "", false
+	alias, err := parseRequireAlias(kwargs)
+	if err != nil {
+		return "", "", false
 	}
-	return moduleName, true
+	return moduleName, alias, true
 }
 
 func (c *scriptChecker) requireCallShadowed() bool {
@@ -561,20 +568,67 @@ func (c *scriptChecker) collectModuleExports(entry moduleEntry) {
 	if root == nil {
 		root = c.typeRoot
 	}
-	for name, enumDef := range cloneEnumsForCall(entry.script.enums) {
+	for name, val := range c.moduleExportValue(entry).Hash() {
 		if _, exists := root.Get(name); exists {
 			continue
 		}
-		root.Define(name, NewEnum(enumDef))
+		root.DefineStatic(name, val)
+	}
+}
+
+func (c *scriptChecker) moduleExportValue(entry moduleEntry) Value {
+	if c.moduleExportValues == nil {
+		c.moduleExportValues = make(map[string]Value)
+	}
+	if val, ok := c.moduleExportValues[entry.key]; ok {
+		return val
+	}
+	exports := make(map[string]Value, len(entry.script.enums)+len(entry.script.functions))
+	for name, enumDef := range cloneEnumsForCall(entry.script.enums) {
+		exports[name] = NewEnum(enumDef)
 	}
 	for name, fn := range entry.script.functions {
 		if name == moduleEntrypointFunction || !shouldExportModuleFunction(fn) {
 			continue
 		}
-		if _, exists := root.Get(name); exists {
-			continue
-		}
-		root.DefineStatic(name, NewFunction(fn))
+		exports[name] = NewFunction(fn)
+	}
+	val := NewObject(exports)
+	c.moduleExportValues[entry.key] = val
+	return val
+}
+
+func (c *scriptChecker) canBindRequireAlias(alias string, module Value) bool {
+	if alias == "" {
+		return true
+	}
+	if c.identifierShadowed(alias) {
+		return false
+	}
+	root := c.moduleExportRoot
+	if root == nil {
+		root = c.typeRoot
+	}
+	if root == nil {
+		return false
+	}
+	existing, ok := checkRootBinding(root, alias)
+	if !ok {
+		return true
+	}
+	return sameObjectValue(existing, module)
+}
+
+func (c *scriptChecker) bindRequireAlias(alias string, module Value) {
+	if alias == "" {
+		return
+	}
+	root := c.moduleExportRoot
+	if root == nil {
+		root = c.typeRoot
+	}
+	if root != nil {
+		root.Define(alias, module)
 	}
 }
 
@@ -1907,6 +1961,9 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 				return staticCallable{name: ident.Name + "." + member.Property, fn: fn, resolution: calleeMemberMethod}, true
 			}
 		}
+		if fn, ok := c.typeRootObjectFunction(ident.Name, member.Property); ok {
+			return staticCallable{name: ident.Name + "." + member.Property, fn: fn, resolution: calleeMemberValue}, true
+		}
 		if c.typeRootHasBinding(ident.Name) {
 			return staticCallable{}, false
 		}
@@ -1936,6 +1993,54 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		}
 	}
 	return staticCallable{}, false
+}
+
+func (c *scriptChecker) typeRootObjectFunction(name, property string) (*ScriptFunction, bool) {
+	for _, root := range []*Env{c.runtimeTypeRoot, c.typeRoot} {
+		val, ok := checkRootOwnBinding(root, name)
+		if !ok || val.Kind() != KindObject {
+			continue
+		}
+		member, ok := val.Hash()[property]
+		if !ok || member.Kind() != KindFunction {
+			continue
+		}
+		fn := valueFunction(member)
+		if fn != nil {
+			return fn, true
+		}
+	}
+	return nil, false
+}
+
+func checkRootOwnBinding(root *Env, name string) (Value, bool) {
+	if root == nil {
+		return Value{}, false
+	}
+	if idx, ok := root.inlineIndex(name); ok {
+		val := root.inline[idx].value
+		if _, lazy := lazyValue(val); lazy {
+			return Value{}, false
+		}
+		return val, true
+	}
+	if val, ok := root.values[name]; ok {
+		if _, lazy := lazyValue(val); lazy {
+			return Value{}, false
+		}
+		return val, true
+	}
+	val, ok := root.statics[name]
+	return val, ok
+}
+
+func checkRootBinding(root *Env, name string) (Value, bool) {
+	for scope := root; scope != nil; scope = scope.parent {
+		if val, ok := checkRootOwnBinding(scope, name); ok {
+			return val, true
+		}
+	}
+	return Value{}, false
 }
 
 func (c *scriptChecker) staticInstanceClass(expr Expression) (string, bool) {

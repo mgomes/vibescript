@@ -288,6 +288,60 @@ end
 	requireCheckWarningContains(t, script, "call to double has unexpected positional arguments")
 }
 
+func TestCheckWarningsResolveAliasedRequiredModuleFunctionExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("helper", as: "helpers")
+  helpers.double(1, 2)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to helpers.double has unexpected positional arguments")
+}
+
+func TestCheckWarningsDoNotLeakAliasConflictModuleExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def helpers(value)
+  value
+end
+
+def run()
+  begin
+    require("helper", as: "helpers")
+  rescue
+    nil
+  end
+  double(1, 2)
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+}
+
+func TestCheckWarningsDoNotMaterializeBuiltinAliasConflicts(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  begin
+    require("helper", as: "JSON")
+  rescue
+    nil
+  end
+  JSON.parse()
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to JSON.parse has too few arguments")
+}
+
 func TestCheckWarningsResolveRequiredModuleFunctionExportsInLogicalStatements(t *testing.T) {
 	t.Parallel()
 

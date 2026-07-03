@@ -118,12 +118,18 @@ func validateRequireAliasBinding(root *Env, alias string, module Value) error {
 		return nil
 	}
 	if existing, ok := root.Get(alias); ok {
-		if existing.Kind() == KindObject && module.Kind() == KindObject && reflect.ValueOf(existing.Hash()).Pointer() == reflect.ValueOf(module.Hash()).Pointer() {
+		if sameObjectValue(existing, module) {
 			return nil
 		}
 		return fmt.Errorf("require: alias %q already defined", alias)
 	}
 	return nil
+}
+
+func sameObjectValue(left, right Value) bool {
+	return left.Kind() == KindObject &&
+		right.Kind() == KindObject &&
+		reflect.ValueOf(left.Hash()).Pointer() == reflect.ValueOf(right.Hash()).Pointer()
 }
 
 func bindModuleExportsWithoutOverwrite(root *Env, exports map[string]Value) {
