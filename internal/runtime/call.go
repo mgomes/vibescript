@@ -67,14 +67,6 @@ func memberReceiverAutoInvokes(property string) bool {
 	return property != "call"
 }
 
-func memberCallReceiverAutoInvokes(object Expression, property string) bool {
-	if property != "call" {
-		return true
-	}
-	_, bareIdentifier := object.(*Identifier)
-	return !bareIdentifier
-}
-
 func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
@@ -1490,7 +1482,17 @@ func (exec *Execution) evalBlockGivenCall(call *CallExpr, env *Env) (Value, erro
 }
 
 func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, env *Env) (Value, error) {
-	receiver, err := exec.evalExpressionWithAuto(member.Object, env, memberCallReceiverAutoInvokes(member.Object, member.Property))
+	var receiver Value
+	var err error
+	if member.Property == "call" {
+		if _, bareIdentifier := member.Object.(*Identifier); bareIdentifier {
+			receiver, err = exec.evalExpressionWithAuto(member.Object, env, false)
+		} else {
+			receiver, err = exec.evalExpression(member.Object, env)
+		}
+	} else {
+		receiver, err = exec.evalExpression(member.Object, env)
+	}
 	if err != nil {
 		return NewNil(), err
 	}
