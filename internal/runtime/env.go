@@ -185,12 +185,14 @@ func (e *Env) PredeclareLocal(name string) {
 	e.Define(name, NewNil())
 }
 
-func (e *Env) PredeclareLocalUnlessParentBinding(name string) {
+func (e *Env) PredeclareAssignmentLocal(name string) {
 	if name == "" || e.hasOwnBinding(name) {
 		return
 	}
-	if e.parent != nil && e.parent.hasBindingInChain(name) {
-		return
+	if e.parent != nil {
+		if e.parent.hasEnclosingLocalBinding(name) || e.parent.hasAmbientAssignmentBinding(name) {
+			return
+		}
 	}
 	e.Define(name, NewNil())
 }
@@ -483,10 +485,16 @@ func (e *Env) hasEnclosingLocalBinding(name string) bool {
 	return false
 }
 
-func (e *Env) hasBindingInChain(name string) bool {
+func (e *Env) hasAmbientAssignmentBinding(name string) bool {
 	for scope := e; scope != nil; scope = scope.parent {
-		if scope.hasOwnBinding(name) {
+		if !scope.callRoot && !scope.frozen {
+			continue
+		}
+		if scope.hasDynamic(name) {
 			return true
+		}
+		if val, ok := scope.statics[name]; ok {
+			return val.Kind() != KindFunction
 		}
 	}
 	return false

@@ -322,6 +322,10 @@ def helper
   "global"
 end
 
+def call_helper
+  helper()
+end
+
 def function_local
   if false
     helper = 1
@@ -335,6 +339,16 @@ def block_local
   end
   helper()
 end
+
+def direct_local
+  helper = 1
+  [helper, call_helper()]
+end
+
+def logical_local
+  helper ||= 2
+  [helper, call_helper()]
+end
 `)
 
 	if got := callFunc(t, script, "function_local", nil); !got.Equal(NewBool(true)) {
@@ -343,6 +357,8 @@ end
 	if got := callFunc(t, script, "block_local", nil); !got.Equal(NewString("global")) {
 		t.Fatalf("block_local() = %s, want global", got)
 	}
+	compareArrays(t, callFunc(t, script, "direct_local", nil), []Value{NewInt(1), NewString("global")})
+	compareArrays(t, callFunc(t, script, "logical_local", nil), []Value{NewInt(2), NewString("global")})
 }
 
 func TestRubyBlockMultiParameterDestructuresSingleYieldedArray(t *testing.T) {

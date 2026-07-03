@@ -2520,7 +2520,7 @@ func predeclareDirectAssignmentTargetBindingNames(target, value Expression, env 
 	switch t := target.(type) {
 	case *Identifier:
 		if !expressionContainsParenthesizedIdentifierCall(value, t.Name) {
-			env.PredeclareLocalUnlessParentBinding(t.Name)
+			env.PredeclareAssignmentLocal(t.Name)
 		}
 	case *DestructureTarget:
 		for _, element := range t.Elements {
