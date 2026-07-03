@@ -305,6 +305,23 @@ def assign_same_name_outer_helper_from_block
   end
   helper
 end
+
+def compound_same_name_helper
+  helper = 1
+  helper += helper()
+  helper
+end
+
+def logical_or_same_name_helper
+  helper ||= helper()
+  helper
+end
+
+def logical_and_same_name_helper
+  helper = true
+  helper &&= helper()
+  helper
+end
 `)
 
 	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(7)) {
@@ -316,6 +333,15 @@ end
 	}
 	if got := callFunc(t, script, "assign_same_name_outer_helper_from_block", nil); !got.Equal(NewInt(11)) {
 		t.Fatalf("assign_same_name_outer_helper_from_block() = %s, want 11", got)
+	}
+	if got := callFunc(t, script, "compound_same_name_helper", nil); !got.Equal(NewInt(12)) {
+		t.Fatalf("compound_same_name_helper() = %s, want 12", got)
+	}
+	if got := callFunc(t, script, "logical_or_same_name_helper", nil); !got.Equal(NewInt(11)) {
+		t.Fatalf("logical_or_same_name_helper() = %s, want 11", got)
+	}
+	if got := callFunc(t, script, "logical_and_same_name_helper", nil); !got.Equal(NewInt(11)) {
+		t.Fatalf("logical_and_same_name_helper() = %s, want 11", got)
 	}
 	if got := callFunc(t, script, "read_helper_after_assignment", nil); !got.Equal(NewInt(11)) {
 		t.Fatalf("read_helper_after_assignment() = %s, want 11", got)

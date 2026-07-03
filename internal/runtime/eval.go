@@ -2821,7 +2821,7 @@ func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value
 		return NewNil(), err
 	}
 
-	right, err := exec.evalExpression(stmt.Value, env)
+	right, err := exec.evalAssignmentValue(stmt, env)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -2863,7 +2863,7 @@ func (exec *Execution) evalLogicalAssignment(stmt *AssignStmt, env *Env) (Value,
 		return NewNil(), exec.errorAt(stmt.Pos(), "unsupported logical assignment operator")
 	}
 
-	right, err := exec.evalExpression(stmt.Value, env)
+	right, err := exec.evalAssignmentValue(stmt, env)
 	if err != nil {
 		return NewNil(), err
 	}
