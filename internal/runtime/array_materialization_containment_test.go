@@ -225,6 +225,30 @@ func TestArrayChunkByBlockPreflightsGroupBacking(t *testing.T) {
 	}
 }
 
+func TestArrayChunkByBlockReservesRetainedKeyBeforeLaterBlockCalls(t *testing.T) {
+	t.Parallel()
+
+	const retainedPayloadBytes = 64 * 1024
+	receiver := largeIntArray(2)
+	retainedPayload := NewString(strings.Repeat("x", retainedPayloadBytes))
+	expectedRetained := newMemoryEstimator().valuePayload(retainedPayload)
+	calls := 0
+	block := arrayChunkRetainedKeyProbeBlock(retainedPayload.String(), expectedRetained, &calls)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	got, err := callArrayMember(t, exec, receiver, "chunk", nil, block)
+	if err != nil {
+		t.Fatalf("array.chunk retained key reservation error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("array.chunk block calls = %d, want 2", calls)
+	}
+	compareArrays(t, got, []Value{NewArray([]Value{retainedPayload, receiver})})
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("array.chunk leaked %d scratch bytes after success", exec.reservedScratchBytes)
+	}
+}
+
 func TestArrayAdjacentSlicesPreflightSegmentBacking(t *testing.T) {
 	t.Parallel()
 
@@ -439,6 +463,24 @@ func arraySortByRetainedKeyProbeBlock(payload string, expectedReservedBeforeSeco
 		*calls++
 		if *calls == 2 && exec.reservedScratchBytes < expectedReservedBeforeSecondCall {
 			return NewNil(), fmt.Errorf("reserved scratch before second sort_by block call = %d, want at least %d", exec.reservedScratchBytes, expectedReservedBeforeSecondCall)
+		}
+		return NewString(payload), nil
+	})
+	env := newEnv(nil)
+	env.Define("__probe__", probe)
+	body := []Statement{&ExprStmt{Position: pos, Expr: &CallExpr{
+		Position: pos,
+		Callee:   &Identifier{Name: "__probe__", Position: pos},
+	}}}
+	return NewBlock([]Param{{Kind: ParamNormal, Name: "item"}}, body, env)
+}
+
+func arrayChunkRetainedKeyProbeBlock(payload string, expectedReservedBeforeSecondCall int, calls *int) Value {
+	pos := Position{Line: 1, Column: 1}
+	probe := NewBuiltin("test.array_chunk_key_probe", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		*calls++
+		if *calls == 2 && exec.reservedScratchBytes < expectedReservedBeforeSecondCall {
+			return NewNil(), fmt.Errorf("reserved scratch before second chunk block call = %d, want at least %d", exec.reservedScratchBytes, expectedReservedBeforeSecondCall)
 		}
 		return NewString(payload), nil
 	})

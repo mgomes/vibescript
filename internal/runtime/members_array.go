@@ -2752,6 +2752,11 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	if len(kwargs) > 0 {
 		return NewNil(), fmt.Errorf("array.chunk does not take keyword arguments")
 	}
+	scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
+	if err != nil {
+		return NewNil(), err
+	}
+	defer scratch.release()
 	runner, err := newBlockCallRunner(exec, block, "array.chunk", receiver, nil, kwargs)
 	if err != nil {
 		return NewNil(), err
@@ -2766,6 +2771,13 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	if len(arr) == 0 {
 		return NewArray(out), nil
 	}
+	retain := func(val Value, backingCap int) error {
+		retainedBefore := acc.retainedPayloadBytes()
+		if err := acc.add(val, backingCap); err != nil {
+			return err
+		}
+		return scratch.reserve(acc.retainedPayloadBytes() - retainedBefore)
+	}
 	var blockArg [1]Value
 	var currentKey Value
 	active := false
@@ -2779,14 +2791,19 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 		copy(group, arr[begin:end])
 		pair := NewArray([]Value{key, NewArray(group)})
 		out = append(out, pair)
-		return acc.add(pair, cap(out))
+		return retain(pair, cap(out))
 	}
 	for i, item := range arr {
 		if err := exec.step(); err != nil {
 			return NewNil(), err
 		}
 		blockArg[0] = item
-		key, err := runner.call(blockArg[:])
+		var key Value
+		if active {
+			key, err = runner.callWithChargedRoots(blockArg[:], currentKey)
+		} else {
+			key, err = runner.call(blockArg[:])
+		}
 		if err != nil {
 			return NewNil(), err
 		}
@@ -2816,6 +2833,9 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 			return NewNil(), fmt.Errorf("array.chunk reserved key :%s", key.String())
 		}
 		if !active {
+			if err := retain(key, cap(out)); err != nil {
+				return NewNil(), err
+			}
 			currentKey = key
 			start = i
 			active = true
@@ -2823,6 +2843,9 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 		}
 		if !key.Equal(currentKey) {
 			if err := emit(currentKey, start, i); err != nil {
+				return NewNil(), err
+			}
+			if err := retain(key, cap(out)); err != nil {
 				return NewNil(), err
 			}
 			currentKey = key
