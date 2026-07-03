@@ -465,6 +465,34 @@ end
 	))
 }
 
+func TestRubyBatchArrayCombinatoricsCheckStepQuotaBeforePreallocating(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		receiver Value
+		member   string
+		args     []Value
+	}{
+		{name: "combination", receiver: largeIntArray(20), member: "combination", args: []Value{NewInt(10)}},
+		{name: "permutation", receiver: largeIntArray(8), member: "permutation", args: []Value{NewInt(8)}},
+		{name: "repeated_combination", receiver: largeIntArray(10), member: "repeated_combination", args: []Value{NewInt(6)}},
+		{name: "repeated_permutation", receiver: largeIntArray(2), member: "repeated_permutation", args: []Value{NewInt(20)}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background(), quota: 10, memoryQuota: 1 << 30}
+			_, err := callArrayMember(t, exec, tc.receiver, tc.member, tc.args, NewNil())
+			requireErrorIs(t, err, errStepQuotaExceeded)
+			if exec.steps != 0 {
+				t.Fatalf("%s advanced to %d steps before rejecting impossible step budget; want 0", tc.member, exec.steps)
+			}
+		})
+	}
+}
+
 func TestRubyBatchArrayChunkingHelpers(t *testing.T) {
 	t.Parallel()
 

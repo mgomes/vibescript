@@ -4380,6 +4380,9 @@ func arrayPermutationLength(method string, receiver Value, args []Value, kwargs 
 
 func arrayBuildCombinations(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, count, length int, repeated bool) (Value, error) {
 	arr := receiver.Array()
+	if err := exec.checkStepBudgetFor(count); err != nil {
+		return NewNil(), err
+	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	if err := acc.reserveScratch(arrayIntScratchBytes(length)); err != nil {
 		return NewNil(), err
@@ -4450,6 +4453,9 @@ func advanceRepeatedCombination(indices []int, n int) {
 
 func arrayBuildPermutations(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, count, length int, repeated bool) (Value, error) {
 	arr := receiver.Array()
+	if err := exec.checkStepBudgetFor(count); err != nil {
+		return NewNil(), err
+	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	scratch := arrayIntScratchBytes(length)
 	if !repeated {
