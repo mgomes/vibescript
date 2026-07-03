@@ -24,6 +24,23 @@ func (s *Script) CheckWarnings() []CheckWarning {
 // CheckWarningsWithOptions returns statically checkable contract issues using
 // the same host globals that a later Call would receive.
 func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
+	return s.checkWarnings(opts, "")
+}
+
+// CheckWarningsForFunction returns statically checkable contract issues for the
+// execution path of a single function call.
+func (s *Script) CheckWarningsForFunction(name string) []CheckWarning {
+	return s.CheckWarningsForFunctionWithOptions(name, CallOptions{})
+}
+
+// CheckWarningsForFunctionWithOptions returns statically checkable contract
+// issues for a single function call using the same host globals that Call would
+// receive.
+func (s *Script) CheckWarningsForFunctionWithOptions(name string, opts CallOptions) []CheckWarning {
+	return s.checkWarnings(opts, name)
+}
+
+func (s *Script) checkWarnings(opts CallOptions, targetFunction string) []CheckWarning {
 	if s == nil {
 		return nil
 	}
@@ -37,7 +54,11 @@ func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
 		hostGlobals:     checkHostGlobals(optionGlobals),
 	}
 	checker.moduleExportRoot = checker.typeRoot
-	checker.checkScript()
+	if targetFunction == "" {
+		checker.checkScript()
+	} else {
+		checker.checkFunctionExecution(targetFunction)
+	}
 	sort.SliceStable(checker.warnings, func(i, j int) bool {
 		if checker.warnings[i].Pos.Line != checker.warnings[j].Pos.Line {
 			return checker.warnings[i].Pos.Line < checker.warnings[j].Pos.Line
@@ -64,6 +85,7 @@ type scriptChecker struct {
 	runtimeNamespaceMembers map[string]struct{}
 	moduleEntries           map[string]moduleEntry
 	moduleExportValues      map[string]Value
+	moduleCheckedFunctions  map[string]struct{}
 	moduleCaller            *moduleContext
 	moduleExportRoot        *Env
 }
@@ -564,6 +586,7 @@ func (c *scriptChecker) collectModuleExports(entry moduleEntry) {
 	}
 	c.moduleEntries[entry.key] = entry
 	c.collectRequiredModuleExportsFromModuleInitialization(entry)
+	c.checkRequiredModuleExportedFunctions(entry)
 	root := c.moduleExportRoot
 	if root == nil {
 		root = c.typeRoot
@@ -596,6 +619,76 @@ func (c *scriptChecker) moduleExportValue(entry moduleEntry) Value {
 	val := NewObject(exports)
 	c.moduleExportValues[entry.key] = val
 	return val
+}
+
+func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) {
+	if entry.script == nil {
+		return
+	}
+	functions := sortedRequiredModuleExportedFunctions(entry.script.functions)
+	if len(functions) == 0 {
+		return
+	}
+
+	checker := scriptChecker{
+		script:                 entry.script,
+		typeRoot:               checkTypeRoot(entry.script, nil),
+		runtimeTypeRoot:        checkTypeRoot(entry.script, nil),
+		moduleEntries:          c.moduleEntries,
+		moduleExportValues:     c.moduleExportValues,
+		moduleCheckedFunctions: c.moduleCheckedFunctions,
+	}
+	caller := moduleContextForEntry(entry)
+	checker.moduleCaller = &caller
+	checker.moduleExportRoot = checker.typeRoot
+	checker.collectRequiredModuleExportsFromModuleInitialization(entry)
+
+	for _, fn := range functions {
+		if !checker.markModuleFunctionChecked(entry.key, fn.Name) {
+			continue
+		}
+		label := moduleDisplayName(entry.key) + "." + fn.Name
+		checker.withFreshRuntimeTypeRoot(func() {
+			checker.withRuntimeModuleCollection(func() {
+				checker.collectRequiredModuleExportsFromModuleInitialization(entry)
+			})
+			checker.checkRuntimeClassBodies(deferredClassBodiesForFunction(fn, checker.script.deferredClassBodies), true)
+			checker.checkFunction(label, fn)
+		})
+	}
+
+	c.warnings = append(c.warnings, checker.warnings...)
+	c.moduleEntries = checker.moduleEntries
+	c.moduleExportValues = checker.moduleExportValues
+	c.moduleCheckedFunctions = checker.moduleCheckedFunctions
+}
+
+func sortedRequiredModuleExportedFunctions(functions map[string]*ScriptFunction) []*ScriptFunction {
+	names := make([]string, 0, len(functions))
+	for name, fn := range functions {
+		if name == moduleEntrypointFunction || !shouldExportModuleFunction(fn) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]*ScriptFunction, 0, len(names))
+	for _, name := range names {
+		out = append(out, functions[name])
+	}
+	return out
+}
+
+func (c *scriptChecker) markModuleFunctionChecked(moduleKey, functionName string) bool {
+	key := moduleKey + "\x00" + functionName
+	if c.moduleCheckedFunctions == nil {
+		c.moduleCheckedFunctions = make(map[string]struct{})
+	}
+	if _, ok := c.moduleCheckedFunctions[key]; ok {
+		return false
+	}
+	c.moduleCheckedFunctions[key] = struct{}{}
+	return true
 }
 
 func (c *scriptChecker) canBindRequireAlias(alias string, module Value) bool {
@@ -698,7 +791,7 @@ func (c *scriptChecker) checkScript() {
 		})
 	}
 	c.withFreshRuntimeTypeRoot(func() {
-		c.checkRuntimeClassBodies(nil, false)
+		c.checkRuntimeClassBodies(c.script.deferredClassBodies, false)
 	})
 	for _, classDef := range c.sortedClasses() {
 		for _, method := range sortedCheckFunctions(classDef.Methods) {
@@ -712,6 +805,17 @@ func (c *scriptChecker) checkScript() {
 			})
 		}
 	}
+}
+
+func (c *scriptChecker) checkFunctionExecution(name string) {
+	fn := c.script.functions[name]
+	if fn == nil {
+		return
+	}
+	c.withFreshRuntimeTypeRoot(func() {
+		c.checkRuntimeClassBodies(deferredClassBodiesForFunction(fn, c.script.deferredClassBodies), false)
+		c.checkFunction(fn.Name, fn)
+	})
 }
 
 func (c *scriptChecker) withFreshRuntimeTypeRootForCallable(fn *ScriptFunction, check func()) {
@@ -1096,7 +1200,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *ClassStmt:
 		classDef := c.script.classes[typed.Name]
 		if classDef != nil {
-			c.checkRuntimeClassBody(classDef, true)
+			c.checkRuntimeClassBody(classDef, false)
 		}
 	case *LogicalStmt:
 		c.checkStatement(function, returnType, typed.Left)

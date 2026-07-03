@@ -466,6 +466,68 @@ normalize(:draft)
 	}
 }
 
+func TestCheckWarningsCheckSnippetDeferredClassBodyInEntrypointOrder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "uses prior require before deferred class body",
+			source: `require("enum_status")
+
+class Loader
+  normalize(:draft)
+end
+
+def normalize(status: Status) -> Status
+  status
+end`,
+		},
+		{
+			name: "reports deferred class body contract errors",
+			source: `require("enum_status")
+
+class Loader
+  normalize("draft")
+end
+
+def normalize(status: Status) -> Status
+  status
+end`,
+			want: "call to normalize argument status expected Status, got string",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			engine := moduleTestEngine(t)
+			script, err := engine.CompileSnippet(tc.source, "run")
+			if err != nil {
+				t.Fatalf("CompileSnippet(%q) failed: %v", tc.name, err)
+			}
+			if tc.want == "" {
+				if warnings := script.CheckWarningsForFunction("run"); len(warnings) > 0 {
+					t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+				}
+				return
+			}
+			warnings := script.CheckWarningsForFunction("run")
+			messages := make([]string, 0, len(warnings))
+			for _, warning := range warnings {
+				messages = append(messages, warning.Message)
+			}
+			got := strings.Join(messages, "\n")
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckWarningsResolveSymbolRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
@@ -1399,6 +1461,50 @@ end
 
 	requireCheckWarningContainsWithOptions(t, script, opts, "unknown type Status")
 	requireCallErrorContains(t, script, "run", nil, opts, "unknown type Status")
+}
+
+func TestCheckWarningsValidateRequiredModuleFunctionContracts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		module  string
+		want    string
+		wantErr string
+	}{
+		{
+			name: "typed default",
+			module: `def bad(v: int = "x")
+  v
+end`,
+			want:    "default value for v expected int, got string",
+			wantErr: "argument v expected int, got string",
+		},
+		{
+			name: "typed return",
+			module: `def bad() -> int
+  "x"
+end`,
+			want:    "return value expected int, got string",
+			wantErr: "return value for bad expected int, got string",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := tempModuleTree(t, moduleFile{path: "bad.vibe", content: tc.module})
+			engine := mustNewEngineWithModuleRoot(t, root)
+			script := compileScriptWithEngine(t, engine, `
+def run()
+  require("bad").bad()
+end
+`)
+
+			requireCheckWarningContains(t, script, tc.want)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.wantErr)
+		})
+	}
 }
 
 func TestCheckWarningsValidateTypedDefaultsAndReturns(t *testing.T) {

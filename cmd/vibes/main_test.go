@@ -248,6 +248,22 @@ helper`},
 			wantErr: "call to JSON.parse has too few arguments",
 		},
 		{
+			name: "check_only_uses_inline_entrypoint_order",
+			args: []string{
+				"-check",
+				"-module-path", filepath.Join("..", "..", "internal", "runtime", "testdata", "modules"),
+				"-e", `require("enum_status")
+
+class Loader
+  normalize(:draft)
+end
+
+def normalize(status: Status) -> Status
+  status
+end`,
+			},
+		},
+		{
 			name:    "compile_error_surfaces",
 			args:    []string{"-e", "def oops("},
 			wantErr: "compile failed",
