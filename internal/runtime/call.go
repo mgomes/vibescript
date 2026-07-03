@@ -979,6 +979,11 @@ const (
 	// calleeMemberMethod marks a callee surfaced through the direct
 	// member-method path: a genuine instance, class, or constructor method.
 	calleeMemberMethod
+	// calleeForwardedMethod marks a method reached through dynamic dispatch
+	// helpers such as send/public_send. The method lookup is member-based, but
+	// the helper forwards keywords as call arguments rather than enforcing direct
+	// member-call keyword strictness.
+	calleeForwardedMethod
 	// calleeMemberValue marks a callee fetched as a stored member value, such
 	// as a module function exposed on a namespace object.
 	calleeMemberValue
@@ -1031,6 +1036,8 @@ func calleeCollapsesOptionsHash(call *CallExpr, callee Value, resolution calleeR
 	switch resolution {
 	case calleeMemberMethod:
 		return false
+	case calleeForwardedMethod:
+		return true
 	case calleeMemberValue:
 		if callee.Kind() == KindFunction {
 			return true

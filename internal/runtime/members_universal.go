@@ -253,15 +253,15 @@ func dynamicSendCalleeResolution(receiver Value, method string) calleeResolution
 	case KindClass:
 		cl := valueClass(receiver)
 		if method == "new" {
-			return calleeMemberMethod
+			return calleeForwardedMethod
 		}
 		if _, ok := cl.ClassMethods[method]; ok {
-			return calleeMemberMethod
+			return calleeForwardedMethod
 		}
 	case KindInstance:
 		inst := valueInstance(receiver)
 		if _, ok := inst.Class.Methods[method]; ok {
-			return calleeMemberMethod
+			return calleeForwardedMethod
 		}
 	}
 	return calleeMemberValue
