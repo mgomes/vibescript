@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -26,12 +27,14 @@ func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
 	if s == nil {
 		return nil
 	}
+	optionGlobals := checkOptionGlobals(s, opts)
 	checker := scriptChecker{
 		script:          s,
 		callOptions:     opts,
-		typeRoot:        checkTypeRoot(s, opts),
-		runtimeTypeRoot: checkTypeRoot(s, opts),
-		hostGlobals:     checkHostGlobals(opts),
+		optionGlobals:   optionGlobals,
+		typeRoot:        checkTypeRoot(s, optionGlobals),
+		runtimeTypeRoot: checkTypeRoot(s, optionGlobals),
+		hostGlobals:     checkHostGlobals(optionGlobals),
 	}
 	checker.moduleExportRoot = checker.typeRoot
 	checker.checkScript()
@@ -50,6 +53,7 @@ func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
 type scriptChecker struct {
 	script           *Script
 	callOptions      CallOptions
+	optionGlobals    map[string]Value
 	typeRoot         *Env
 	runtimeTypeRoot  *Env
 	hostGlobals      map[string]struct{}
@@ -62,22 +66,51 @@ type scriptChecker struct {
 	moduleExportRoot *Env
 }
 
-func checkHostGlobals(opts CallOptions) map[string]struct{} {
-	if len(opts.Globals) == 0 {
+func checkOptionGlobals(script *Script, opts CallOptions) map[string]Value {
+	if len(opts.Capabilities) == 0 && len(opts.Globals) == 0 {
 		return nil
 	}
-	names := make(map[string]struct{}, len(opts.Globals))
-	for name := range opts.Globals {
+	globals := make(map[string]Value, len(opts.Globals)+len(opts.Capabilities)*2)
+	if script != nil {
+		binding := CapabilityBinding{Context: context.Background(), Engine: script.engine}
+		for _, adapter := range opts.Capabilities {
+			if adapter == nil {
+				continue
+			}
+			bound, err := adapter.Bind(binding)
+			if err != nil {
+				continue
+			}
+			for name, val := range bound {
+				globals[name] = val
+			}
+		}
+	}
+	for name, val := range opts.Globals {
+		globals[name] = val
+	}
+	if len(globals) == 0 {
+		return nil
+	}
+	return globals
+}
+
+func checkHostGlobals(globals map[string]Value) map[string]struct{} {
+	if len(globals) == 0 {
+		return nil
+	}
+	names := make(map[string]struct{}, len(globals))
+	for name := range globals {
 		names[name] = struct{}{}
 	}
 	return names
 }
 
-func checkTypeRoot(script *Script, opts CallOptions) *Env {
+func checkTypeRoot(script *Script, globals map[string]Value) *Env {
 	if script == nil {
 		return nil
 	}
-	root := newEnvWithCapacity(nil, len(script.functions)+len(script.classes)+len(script.enums)+len(opts.Globals))
+	root := newEnvWithCapacity(nil, len(script.functions)+len(script.classes)+len(script.enums)+len(globals))
 	callFunctions := cloneFunctionsForCall(script.functions, root)
 	for name, fn := range callFunctions {
 		root.DefineStatic(name, NewFunction(fn))
@@ -91,7 +124,7 @@ func checkTypeRoot(script *Script, opts CallOptions) *Env {
 		root.DefineStatic(name, NewEnum(enumDef))
 	}
 	rebinder := newCallFunctionRebinder(script, root, callClasses, callEnums)
-	for name, val := range opts.Globals {
+	for name, val := range globals {
 		root.Define(name, rebinder.rebindValue(val))
 	}
 	return root
@@ -505,7 +538,7 @@ func (c *scriptChecker) withFreshRuntimeTypeRootForCallable(fn *ScriptFunction, 
 func (c *scriptChecker) withFreshRuntimeTypeRoot(check func()) {
 	previousRoot := c.runtimeTypeRoot
 	previousModules := c.runtimeModules
-	c.runtimeTypeRoot = checkTypeRoot(c.script, c.callOptions)
+	c.runtimeTypeRoot = checkTypeRoot(c.script, c.optionGlobals)
 	c.runtimeModules = nil
 	defer func() {
 		c.runtimeTypeRoot = previousRoot
@@ -1261,6 +1294,9 @@ func expressionCanImplicitlyYieldNil(expr Expression) bool {
 				return true
 			}
 		}
+	case *ConditionalExpr:
+		return expressionCanImplicitlyYieldNil(typed.Consequent) ||
+			expressionCanImplicitlyYieldNil(typed.Alternate)
 	}
 	return false
 }

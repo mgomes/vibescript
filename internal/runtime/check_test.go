@@ -8,6 +8,16 @@ import (
 	"testing"
 )
 
+type checkOptionGlobalsCapability map[string]Value
+
+func (c checkOptionGlobalsCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	globals := make(map[string]Value, len(c))
+	for name, val := range c {
+		globals[name] = val
+	}
+	return globals, nil
+}
+
 func TestCheckWarningsValidateTypeAnnotations(t *testing.T) {
 	t.Parallel()
 
@@ -265,6 +275,61 @@ end
 	status := got.Array()[0]
 	if status.Kind() != KindEnumValue || valueEnumValue(status).Name != "Published" {
 		t.Fatalf("Call() with required enum block parameter yielded %#v, want Status::Published", status)
+	}
+}
+
+func TestCheckWarningsWithOptionsResolveCapabilityGlobals(t *testing.T) {
+	t.Parallel()
+
+	hostScript := compileScript(t, `
+enum Status
+  Draft
+end
+`)
+	hostStatus := NewEnum(hostScript.enums["Status"])
+	opts := callOptionsWithCapabilities(checkOptionGlobalsCapability{"Status": hostStatus})
+
+	script := compileScript(t, `
+def run(status: Status = :draft) -> Status
+  status
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireNoCheckWarningsWithOptions(t, script, opts)
+
+	got, err := script.Call(context.Background(), "run", nil, opts)
+	if err != nil {
+		t.Fatalf("Call() with capability enum global returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() with capability enum global = %#v, want Status::Draft", got)
+	}
+}
+
+func TestCheckWarningsWithOptionsRespectCapabilityGlobalsBeforeBuiltins(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  rand(1, 2)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to rand has too many arguments")
+
+	capRand := NewBuiltin("rand", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewInt(int64(len(args))), nil
+	})
+	opts := callOptionsWithCapabilities(checkOptionGlobalsCapability{"rand": capRand})
+	requireNoCheckWarningsWithOptions(t, script, opts)
+
+	got, err := script.Call(context.Background(), "run", nil, opts)
+	if err != nil {
+		t.Fatalf("Call() with capability rand global returned error: %v", err)
+	}
+	if !got.Equal(NewInt(2)) {
+		t.Fatalf("Call() with capability rand global = %s, want 2", got)
 	}
 }
 
@@ -774,6 +839,13 @@ end`,
   if flag
     1
   end
+end`,
+			want: "typed return int can implicitly return nil",
+		},
+		{
+			name: "ternary nil branch",
+			source: `def run(flag) -> int
+  flag ? nil : 1
 end`,
 			want: "typed return int can implicitly return nil",
 		},
