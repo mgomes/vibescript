@@ -85,8 +85,7 @@ type Execution struct {
 }
 
 type localCallBypass struct {
-	env   *Env
-	names map[string]struct{}
+	bindings map[string]*Env
 }
 
 type capabilityContractScope struct {

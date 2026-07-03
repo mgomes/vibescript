@@ -297,6 +297,14 @@ def assign_same_name_helper_from_block
   end
   helper[0]
 end
+
+def assign_same_name_outer_helper_from_block
+  helper = 0
+  [1].each do
+    helper = helper()
+  end
+  helper
+end
 `)
 
 	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(7)) {
@@ -305,6 +313,9 @@ end
 	compareArrays(t, callFunc(t, script, "assign_same_name_helper", nil), []Value{NewNil(), NewInt(11)})
 	if got := callFunc(t, script, "assign_same_name_helper_from_block", nil); !got.Equal(NewInt(11)) {
 		t.Fatalf("assign_same_name_helper_from_block() = %s, want 11", got)
+	}
+	if got := callFunc(t, script, "assign_same_name_outer_helper_from_block", nil); !got.Equal(NewInt(11)) {
+		t.Fatalf("assign_same_name_outer_helper_from_block() = %s, want 11", got)
 	}
 	if got := callFunc(t, script, "read_helper_after_assignment", nil); !got.Equal(NewInt(11)) {
 		t.Fatalf("read_helper_after_assignment() = %s, want 11", got)
@@ -394,6 +405,18 @@ def logical_falsey_global
   maybe ||= 3
   [maybe, read_maybe()]
 end
+
+def skipped_if_global
+  if false
+    shared = 1
+  end
+  shared
+end
+
+def skipped_or_global
+  true or shared = 1
+  shared
+end
 `)
 
 	if got := callFunc(t, script, "function_local", nil); !got.Equal(NewBool(true)) {
@@ -418,6 +441,17 @@ end
 		t.Fatalf("logical_falsey_global() returned error: %v", err)
 	}
 	compareArrays(t, got, []Value{NewInt(3), NewInt(3)})
+	for _, fn := range []string{"skipped_if_global", "skipped_or_global"} {
+		got, err := script.Call(context.Background(), fn, nil, CallOptions{
+			Globals: map[string]Value{"shared": NewInt(5), "maybe": NewNil()},
+		})
+		if err != nil {
+			t.Fatalf("%s() returned error: %v", fn, err)
+		}
+		if !got.Equal(NewInt(5)) {
+			t.Fatalf("%s() = %s, want 5", fn, got)
+		}
+	}
 }
 
 func TestRubyBlockMultiParameterDestructuresSingleYieldedArray(t *testing.T) {

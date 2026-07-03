@@ -2427,7 +2427,7 @@ func predeclareLocalBindingsFromStatements(stmts []Statement, env *Env) {
 	var collector localBindingCollector
 	collectLocalBindingNames(stmts, &collector)
 	for _, name := range collector.names {
-		env.PredeclareLocal(name)
+		env.PredeclareAssignmentLocal(name)
 	}
 }
 
@@ -2531,6 +2531,25 @@ func assignmentLocalCallBypassNames(target, value Expression) map[string]struct{
 	var names map[string]struct{}
 	collectAssignmentLocalCallBypassNames(target, value, &names)
 	return names
+}
+
+func assignmentLocalCallBypassBindings(target, value Expression, env *Env) map[string]*Env {
+	names := assignmentLocalCallBypassNames(target, value)
+	if len(names) == 0 {
+		return nil
+	}
+	var bindings map[string]*Env
+	for name := range names {
+		scope, ok := env.lookupBindingScope(name)
+		if !ok || scope.callRoot || scope.frozen {
+			continue
+		}
+		if bindings == nil {
+			bindings = make(map[string]*Env)
+		}
+		bindings[name] = scope
+	}
+	return bindings
 }
 
 func collectAssignmentLocalCallBypassNames(target, value Expression, names *map[string]struct{}) {
@@ -3082,11 +3101,11 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 }
 
 func (exec *Execution) evalAssignmentValue(stmt *AssignStmt, env *Env) (Value, error) {
-	names := assignmentLocalCallBypassNames(stmt.Target, stmt.Value)
-	if len(names) == 0 {
+	bindings := assignmentLocalCallBypassBindings(stmt.Target, stmt.Value, env)
+	if len(bindings) == 0 {
 		return exec.evalExpression(stmt.Value, env)
 	}
-	exec.localCallBypassStack = append(exec.localCallBypassStack, localCallBypass{env: env, names: names})
+	exec.localCallBypassStack = append(exec.localCallBypassStack, localCallBypass{bindings: bindings})
 	defer func() {
 		exec.localCallBypassStack = exec.localCallBypassStack[:len(exec.localCallBypassStack)-1]
 	}()

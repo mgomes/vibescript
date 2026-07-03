@@ -877,13 +877,14 @@ func (exec *Execution) identifierCallBinding(name string, env *Env, parenthesize
 	var skip map[*Env]struct{}
 	for i := len(exec.localCallBypassStack) - 1; i >= 0; i-- {
 		frame := exec.localCallBypassStack[i]
-		if _, ok := frame.names[name]; !ok || frame.env == nil {
+		binding, ok := frame.bindings[name]
+		if !ok || binding == nil {
 			continue
 		}
 		if skip == nil {
 			skip = make(map[*Env]struct{})
 		}
-		skip[frame.env] = struct{}{}
+		skip[binding] = struct{}{}
 	}
 	if len(skip) == 0 {
 		return env.Get(name)
