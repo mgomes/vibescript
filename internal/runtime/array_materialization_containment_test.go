@@ -199,6 +199,101 @@ func TestArrayGroupByStableReservesGroupedSlicesDuringBlockCalls(t *testing.T) {
 	}
 }
 
+func TestArrayChunkByBlockPreflightsGroupBacking(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeIntArray(4000)
+	block := constantSymbolBlockValue("all")
+	initialCap := boundedFilterCap(len(receiver.Array()))
+	outerBacking := arraySlotBackingBytes(initialCap)
+	pairBacking := arraySlotBackingBytes(2)
+	groupBacking := arraySlotBackingBytes(len(receiver.Array()))
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	quota := base + outerBacking + pairBacking + groupBacking/2
+	if quota <= base+outerBacking+pairBacking || quota >= base+outerBacking+pairBacking+groupBacking {
+		t.Fatalf("quota %d must fit roots %d, outer backing %d, and pair backing %d while rejecting group backing %d",
+			quota, base, outerBacking, pairBacking, groupBacking)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callArrayMember(t, exec, receiver, "chunk", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps == 0 {
+		t.Fatalf("chunk rejected before exercising block grouping; want at least one step")
+	}
+}
+
+func TestArrayAdjacentSlicesPreflightSegmentBacking(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		member string
+		block  Value
+	}{
+		{name: "slice_when", member: "slice_when", block: constantBoolBlockValue(false)},
+		{name: "chunk_while", member: "chunk_while", block: constantBoolBlockValue(true)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			receiver := largeIntArray(4000)
+			initialCap := boundedFilterCap(len(receiver.Array()))
+			outerBacking := arraySlotBackingBytes(initialCap)
+			segmentBacking := arraySlotBackingBytes(len(receiver.Array()))
+
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+			base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, tc.block)
+			quota := base + outerBacking + segmentBacking/2
+			if quota <= base+outerBacking || quota >= base+outerBacking+segmentBacking {
+				t.Fatalf("quota %d must fit roots %d and outer backing %d while rejecting segment backing %d",
+					quota, base, outerBacking, segmentBacking)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callArrayMember(t, exec, receiver, tc.member, nil, tc.block)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			if exec.steps == 0 {
+				t.Fatalf("%s rejected before exercising adjacent scan; want at least one step", tc.member)
+			}
+		})
+	}
+}
+
+func TestArrayProductPreflightsTupleRowBacking(t *testing.T) {
+	t.Parallel()
+
+	const dims = 1024
+	receiver := NewArray([]Value{NewInt(0)})
+	args := make([]Value, dims-1)
+	for i := range args {
+		args[i] = NewArray([]Value{NewInt(int64(i + 1))})
+	}
+
+	scratch := arrayIntScratchBytes(dims)
+	outerBacking := arraySlotBackingBytes(1)
+	rowBacking := arrayTupleRowBackingBytes(1, dims)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
+	quota := base + scratch + outerBacking + rowBacking/2
+	if quota <= base+scratch+outerBacking || quota >= base+scratch+outerBacking+rowBacking {
+		t.Fatalf("quota %d must fit roots %d, scratch %d, and outer backing %d while rejecting product row backing %d",
+			quota, base, scratch, outerBacking, rowBacking)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callArrayMember(t, exec, receiver, "product", args, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("product advanced to %d steps before rejecting tuple row backing; want 0", exec.steps)
+	}
+}
+
 func TestArrayTallyReservesCountMapDuringBlockCalls(t *testing.T) {
 	t.Parallel()
 
@@ -311,6 +406,12 @@ end
 func constantSymbolBlockValue(name string) Value {
 	pos := Position{Line: 1, Column: 1}
 	body := []Statement{&ExprStmt{Position: pos, Expr: &SymbolLiteral{Name: name, Position: pos}}}
+	return NewBlock(nil, body, newEnv(nil))
+}
+
+func constantBoolBlockValue(value bool) Value {
+	pos := Position{Line: 1, Column: 1}
+	body := []Statement{&ExprStmt{Position: pos, Expr: &BoolLiteral{Value: value, Position: pos}}}
 	return NewBlock(nil, body, newEnv(nil))
 }
 

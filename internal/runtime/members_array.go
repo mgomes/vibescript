@@ -2758,7 +2758,11 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	}
 	arr := receiver.Array()
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-	out := make([]Value, 0, boundedFilterCap(len(arr)))
+	initialCap := boundedFilterCap(len(arr))
+	if err := acc.reserveSlots(initialCap); err != nil {
+		return NewNil(), err
+	}
+	out := make([]Value, 0, initialCap)
 	if len(arr) == 0 {
 		return NewArray(out), nil
 	}
@@ -2767,6 +2771,10 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	active := false
 	start := 0
 	emit := func(key Value, begin, end int) error {
+		nextCap := projectedAppendCap(len(out), cap(out))
+		if err := acc.checkSlotArrays(nextCap, 2, end-begin); err != nil {
+			return err
+		}
 		group := make([]Value, end-begin)
 		copy(group, arr[begin:end])
 		pair := NewArray([]Value{key, NewArray(group)})
@@ -2842,12 +2850,20 @@ func arrayAdjacentSlices(exec *Execution, receiver Value, args []Value, kwargs m
 	}
 	arr := receiver.Array()
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-	out := make([]Value, 0, boundedFilterCap(len(arr)))
+	initialCap := boundedFilterCap(len(arr))
+	if err := acc.reserveSlots(initialCap); err != nil {
+		return NewNil(), err
+	}
+	out := make([]Value, 0, initialCap)
 	if len(arr) == 0 {
 		return NewArray(out), nil
 	}
 	start := 0
 	flush := func(end int) error {
+		nextCap := projectedAppendCap(len(out), cap(out))
+		if err := acc.checkSlotArrays(nextCap, end-start); err != nil {
+			return err
+		}
 		part := make([]Value, end-start)
 		copy(part, arr[start:end])
 		out = append(out, NewArray(part))
@@ -4228,7 +4244,11 @@ func arrayProduct(exec *Execution, receiver Value, args []Value, kwargs map[stri
 			return NewNil(), err
 		}
 	}
-	if err := exec.checkStepBudgetFor(count); err != nil {
+	work, err := arrayCombinatoricsWork("array.product", count, len(dims))
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkStepBudgetFor(work); err != nil {
 		return NewNil(), err
 	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
@@ -4236,6 +4256,9 @@ func arrayProduct(exec *Execution, receiver Value, args []Value, kwargs map[stri
 		return NewNil(), err
 	}
 	if err := acc.reserveSlots(count); err != nil {
+		return NewNil(), err
+	}
+	if err := acc.checkRetainedPayloadBytes(count, arrayTupleRowBackingBytes(count, len(dims))); err != nil {
 		return NewNil(), err
 	}
 	out := make([]Value, 0, count)
@@ -4246,6 +4269,9 @@ func arrayProduct(exec *Execution, receiver Value, args []Value, kwargs map[stri
 		}
 		row := make([]Value, len(dims))
 		for i, dim := range dims {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
 			row[i] = dim[indices[i]]
 		}
 		out = append(out, NewArray(row))
