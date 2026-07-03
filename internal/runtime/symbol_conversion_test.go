@@ -27,6 +27,19 @@ end`)
 	})
 }
 
+func TestEvalSymbolLiteralWithoutScript(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{quota: 1 << 30}
+	got, err := exec.evalExpression(&SymbolLiteral{Name: "name"}, newEnv(nil))
+	if err != nil {
+		t.Fatalf("evalExpression(symbol) error = %v", err)
+	}
+	if !got.Equal(NewSymbol("name")) {
+		t.Fatalf("evalExpression(symbol) = %#v, want :name", got)
+	}
+}
+
 // TestStringToSymbol covers String#to_sym and its alias String#intern, both of
 // which return the symbol named by the receiver. The result must be a genuine
 // symbol value: Vibescript symbol/string equality is kind-sensitive, so the

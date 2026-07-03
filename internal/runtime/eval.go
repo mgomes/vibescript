@@ -68,7 +68,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *NilLiteral:
 		return NewNil(), nil
 	case *SymbolLiteral:
-		return exec.script.symbolLiteralValue(e), nil
+		return exec.symbolLiteralValue(e), nil
 	case *ArrayLiteral:
 		return exec.evalArrayLiteral(e, env)
 	case *HashLiteral:

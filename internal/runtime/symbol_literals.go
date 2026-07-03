@@ -12,6 +12,16 @@ func (s *Script) symbolLiteralValue(lit *SymbolLiteral) Value {
 	return NewSymbol(lit.Name)
 }
 
+func (exec *Execution) symbolLiteralValue(lit *SymbolLiteral) Value {
+	if lit == nil {
+		return NewNil()
+	}
+	if exec != nil && exec.script != nil {
+		return exec.script.symbolLiteralValue(lit)
+	}
+	return NewSymbol(lit.Name)
+}
+
 func collectSymbolLiterals(script *Script) map[*SymbolLiteral]Value {
 	if script == nil {
 		return nil
