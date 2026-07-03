@@ -455,11 +455,8 @@ func arrayMemberGrouping(property string) (Value, error) {
 			countsCap := initialCapacity
 			lookupPayloadBytes := 0
 			var keyValueEst *memoryEstimator
-			if exec.memoryQuota > 0 {
+			if exec.memoryQuota > 0 && hasBlock {
 				keyValueEst = newMemoryEstimator()
-				if !hasBlock {
-					keyValueEst.value(receiver)
-				}
 			}
 			var blockArg [1]Value
 			for i, item := range arr {
