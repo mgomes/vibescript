@@ -1012,18 +1012,6 @@ func (v Value) Truthy() bool {
 		return false
 	case KindBool:
 		return v.Bool()
-	case KindInt:
-		return v.Int() != 0
-	case KindFloat:
-		return v.Float() != 0
-	case KindString:
-		return v.data.(string) != ""
-	case KindArray:
-		return len(v.data.([]Value)) > 0
-	case KindHash:
-		return v.HashLen() > 0
-	case KindEnum, KindEnumValue, KindClass, KindInstance:
-		return true
 	default:
 		return true
 	}

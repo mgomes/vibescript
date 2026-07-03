@@ -922,9 +922,8 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				// filter_map fuses map followed by a truthiness filter: keep each
-				// truthy block result and drop falsy ones. This uses Vibescript's
-				// Truthy model (matching select/reject/take_while), so 0, "", and
-				// empty collections are dropped alongside nil and false.
+				// truthy block result and drop falsy ones, matching the same
+				// nil/false-only truthiness used by select/reject/take_while.
 				if val.Truthy() {
 					out = append(out, val)
 					if err := acc.addConservative(val, cap(out)); err != nil {

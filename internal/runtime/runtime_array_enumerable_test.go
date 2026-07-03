@@ -121,12 +121,7 @@ func TestArrayFilterMap(t *testing.T) {
 	compareArrays(t, got["original"], []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
 }
 
-// TestArrayFilterMapDropsVibescriptFalsy documents that filter_map uses
-// Vibescript's truthiness model (matching select/reject), so 0, "", and empty
-// collections are dropped alongside nil and false. This diverges from Ruby,
-// where only nil and false are falsy, but stays internally consistent with the
-// other predicate-driven enumerable helpers.
-func TestArrayFilterMapDropsVibescriptFalsy(t *testing.T) {
+func TestArrayFilterMapDropsOnlyNilAndFalse(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def run()
@@ -136,7 +131,7 @@ func TestArrayFilterMapDropsVibescriptFalsy(t *testing.T) {
     end
     `)
 	result := callFunc(t, script, "run", nil)
-	compareArrays(t, result, []Value{NewInt(1), NewString("x"), NewArray([]Value{NewInt(9)}), NewInt(2)})
+	compareArrays(t, result, []Value{NewInt(0), NewInt(1), NewString(""), NewString("x"), NewArray(nil), NewArray([]Value{NewInt(9)}), NewInt(2)})
 }
 
 // arrayFilterMapBuiltin returns the array.filter_map builtin's Go function so a
