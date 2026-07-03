@@ -2442,6 +2442,10 @@ func TestHashCopyPreservesSortedOrderForBareHostMap(t *testing.T) {
     def bare_merge(h)
       h.merge({ "zeta" => 9 }).keys
     end
+
+    def merge_bare_argument(h)
+      { z: 0 }.merge(h).keys
+    end
     `)
 
 	// A bare host map whose Go-map order is deliberately not sorted; the copy
@@ -2472,6 +2476,11 @@ func TestHashCopyPreservesSortedOrderForBareHostMap(t *testing.T) {
 		{name: "store_copies_bare_receiver_sorted", fn: "bare_store", want: NewArray(str("alpha", "bravo", "charlie", "delta", "echo", "zeta"))},
 		{name: "delete_copies_bare_receiver_sorted", fn: "bare_delete", want: NewArray(str("alpha", "charlie", "delta", "echo"))},
 		{name: "mixed_merge_copies_bare_receiver_sorted", fn: "bare_merge", want: NewArray(str("alpha", "bravo", "charlie", "delta", "echo", "zeta"))},
+		{
+			name: "merge_inserts_bare_argument_sorted",
+			fn:   "merge_bare_argument",
+			want: NewArray([]Value{NewSymbol("z"), NewString("alpha"), NewString("bravo"), NewString("charlie"), NewString("delta"), NewString("echo")}),
+		},
 	}
 
 	for _, tc := range tests {

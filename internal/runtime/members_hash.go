@@ -1440,7 +1440,10 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				var blockArgs [3]Value
 				for _, arg := range args {
-					for _, entry := range orderedTypedHashEntriesInto(arg, entryBuf[:]) {
+					// A bare argument has no insertion record, so walk it in sorted
+					// key order too; inserting it in raw Go-map order would leave the
+					// merged result nondeterministic.
+					for _, entry := range deterministicHashEntriesInto(arg, entryBuf[:]) {
 						if err := exec.step(); err != nil {
 							return NewNil(), err
 						}
