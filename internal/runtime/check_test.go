@@ -353,6 +353,29 @@ end
 	}
 }
 
+func TestCheckWarningsResolveRequiredModuleEnumExportsFromIfConditions(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(flag) -> Status
+  if require("enum_status")
+    return :draft
+  end
+
+  if flag
+    raise "stop"
+  elsif require("enum_status")
+    return :draft
+  end
+
+  :published
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+}
+
 func TestCheckWarningsDoNotTreatShadowedRequireAsModuleImport(t *testing.T) {
 	t.Parallel()
 
@@ -950,6 +973,71 @@ end`,
 			t.Parallel()
 			script := compileScript(t, tc.source)
 			requireNoCheckWarnings(t, script)
+		})
+	}
+}
+
+func TestCheckWarningsTrackShadowingInStatementOrder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "later local function binding does not shadow earlier top-level call",
+			source: `def target(a)
+  a
+end
+
+def optional(a = 1)
+  a
+end
+
+def run()
+  target(1, 2)
+  target = optional
+end`,
+			want: "call to target has unexpected positional arguments",
+		},
+		{
+			name: "branch local function binding does not shadow following top-level call",
+			source: `def target(a)
+  a
+end
+
+def optional(a = 1)
+  a
+end
+
+def run(flag)
+  if flag
+    target = optional
+  end
+  target(1, 2)
+end`,
+			want: "call to target has unexpected positional arguments",
+		},
+		{
+			name: "later builtin namespace member reassignment does not shadow earlier call",
+			source: `def parse(raw, extra)
+  raw
+end
+
+def run()
+  JSON.parse("{}", "extra")
+  JSON.parse = parse
+end`,
+			want: "call to JSON.parse has too many arguments",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			requireCheckWarningContains(t, script, tc.want)
 		})
 	}
 }
