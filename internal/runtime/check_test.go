@@ -1755,7 +1755,7 @@ func TestCheckWarningsDoNotHoistSafeNavigationRequiredModuleEnumExports(t *testi
 	t.Parallel()
 
 	engine := moduleTestEngine(t)
-	script := compileScriptWithEngine(t, engine, `
+	staticScript := compileScriptWithEngine(t, engine, `
 def run() -> Status
   nil&.load(require("enum_status")) do
     require("enum_status")
@@ -1764,8 +1764,18 @@ def run() -> Status
 end
 `)
 
-	requireCheckWarningContains(t, script, "unknown type Status")
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
+	requireCheckWarningContains(t, staticScript, "unknown type Status")
+	requireCallErrorContains(t, staticScript, "run", nil, CallOptions{}, "unknown type Status")
+
+	dynamicScript := compileScriptWithEngine(t, engine, `
+def run(maybe) -> Status
+  maybe&.load(require("enum_status"))
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, dynamicScript, "unknown type Status")
+	requireCallErrorContains(t, dynamicScript, "run", []Value{NewNil()}, CallOptions{}, "unknown type Status")
 }
 
 func TestCheckWarningsResolveEnsureRequiredModuleEnumExports(t *testing.T) {

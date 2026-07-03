@@ -399,11 +399,13 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		if staticNilSafeNavigationCall(typed) {
 			return
 		}
-		for _, arg := range typed.Args {
-			c.collectRequiredModuleExportsFromExpression(arg)
-		}
-		for _, kwarg := range typed.KwArgs {
-			c.collectRequiredModuleExportsFromExpression(kwarg.Value)
+		if safeNavigationCallMaySkipArguments(typed) {
+			baseState := c.snapshotModuleCollectionState()
+			c.collectRequiredModuleExportsFromCallArguments(typed)
+			callState := c.snapshotModuleCollectionState()
+			c.mergeModuleCollectionStates(baseState, []checkModuleCollectionState{baseState, callState})
+		} else {
+			c.collectRequiredModuleExportsFromCallArguments(typed)
 		}
 	case *MemberExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
@@ -480,6 +482,15 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		c.collectStringPartRequiredModuleExports(typed.Parts)
 	case *InterpolatedSymbol:
 		c.collectStringPartRequiredModuleExports(typed.Parts)
+	}
+}
+
+func (c *scriptChecker) collectRequiredModuleExportsFromCallArguments(call *CallExpr) {
+	for _, arg := range call.Args {
+		c.collectRequiredModuleExportsFromExpression(arg)
+	}
+	for _, kwarg := range call.KwArgs {
+		c.collectRequiredModuleExportsFromExpression(kwarg.Value)
 	}
 }
 
@@ -1863,6 +1874,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		if staticNilSafeNavigationCall(typed) {
 			return
 		}
+		argumentsMayBeSkipped := safeNavigationCallMaySkipArguments(typed)
+		var argumentState checkRuntimeState
+		if argumentsMayBeSkipped {
+			argumentState = c.snapshotRuntimeState()
+		}
 		c.collectRuntimeCallArgumentEffects(typed)
 		c.checkCall(function, typed)
 		for _, arg := range typed.Args {
@@ -1873,6 +1889,9 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		}
 		if c.callMayEvaluateBlock(typed) {
 			c.checkBlockLiteral(function, typed.Block)
+		}
+		if argumentsMayBeSkipped {
+			c.restoreRuntimeState(argumentState)
 		}
 	case *MemberExpr:
 		c.checkExpressionWithAuto(function, typed.Object, true)
@@ -2073,6 +2092,18 @@ func staticNilSafeNavigationCall(call *CallExpr) bool {
 	}
 	val, ok := staticLiteralValue(member.Object)
 	return ok && val.Kind() == KindNil
+}
+
+func safeNavigationCallMaySkipArguments(call *CallExpr) bool {
+	if call == nil || !call.Safe {
+		return false
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || !member.Safe {
+		return false
+	}
+	val, ok := staticLiteralValue(member.Object)
+	return !ok || val.Kind() == KindNil
 }
 
 func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr) {
