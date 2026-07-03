@@ -1007,6 +1007,39 @@ end
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "rand expects at most one argument")
 }
 
+func TestCheckWarningsSkipShortCircuitedYieldedFunctionBlockBodies(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def false_and_invoke
+  false and yield
+end
+
+def true_or_invoke
+  true or yield
+end
+
+def run
+  false_and_invoke do
+    rand(1, 2)
+  end
+  true_or_invoke do
+    rand(1, 2)
+  end
+  1
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() returned error: %v", err)
+	}
+	if !got.Equal(NewInt(1)) {
+		t.Fatalf("Call() = %s, want 1", got)
+	}
+}
+
 func TestCheckWarningsSkipCapturedFunctionBlockBodies(t *testing.T) {
 	t.Parallel()
 

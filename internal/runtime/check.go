@@ -1383,7 +1383,7 @@ func (c *scriptChecker) statementMayEvaluateCallBlock(stmt Statement, seen map[*
 		return c.expressionMayEvaluateCallBlock(typed.Expr, seen)
 	case *LogicalStmt:
 		return c.statementMayEvaluateCallBlock(typed.Left, seen) ||
-			(!statementAlwaysExits(typed.Left) && c.statementMayEvaluateCallBlock(typed.Right, seen))
+			(logicalStatementRightMayEvaluate(typed) && c.statementMayEvaluateCallBlock(typed.Right, seen))
 	case *IfStmt:
 		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
 			c.statementsMayEvaluateCallBlock(typed.Consequent, seen) ||
