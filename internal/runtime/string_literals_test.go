@@ -41,6 +41,21 @@ end`)
 	}
 }
 
+func TestDoubleQuotedHexEscapesPreserveBytes(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def plain_bytes
+  "\x80\xFF".bytes
+end
+
+def interpolated_bytes
+  "\x80#{""}\xFF".bytes
+end`)
+
+	want := []Value{NewInt(128), NewInt(255)}
+	compareArrays(t, callFunc(t, script, "plain_bytes", nil), want)
+	compareArrays(t, callFunc(t, script, "interpolated_bytes", nil), want)
+}
+
 func TestDoubleQuotedStringInterpolationExecution(t *testing.T) {
 	t.Parallel()
 	script := compileScriptDefault(t, `def interpolated

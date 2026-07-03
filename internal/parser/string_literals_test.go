@@ -76,6 +76,7 @@ func TestDoubleQuotedStringRubyEscapes(t *testing.T) {
 		{`"\b\f\v\a\e"`, "\b\f\v\a\x1b"},
 		{`"\x41\u0042"`, "AB"},
 		{`"\xF\x0f"`, "\x0f\x0f"},
+		{`"\x80\xFF"`, string([]byte{0x80, 0xff})},
 	}
 	for _, tc := range tests {
 		t.Run(tc.source, func(t *testing.T) {
@@ -99,7 +100,7 @@ func TestDoubleQuotedStringRubyEscapes(t *testing.T) {
 func TestDoubleQuotedStringRubyEscapesInInterpolationText(t *testing.T) {
 	t.Parallel()
 	source := `def run
-  "\xF\x41#{1}\r"
+  "\x80\xF\x41#{1}\xFF\r"
 end`
 
 	program, errs := parseSource(t, source)
@@ -115,11 +116,11 @@ end`
 	if len(lit.Parts) != 3 {
 		t.Fatalf("parts length = %d, want 3", len(lit.Parts))
 	}
-	if text, ok := lit.Parts[0].(ast.StringText); !ok || text.Text != "\x0fA" {
+	if text, ok := lit.Parts[0].(ast.StringText); !ok || text.Text != string([]byte{0x80, 0x0f, 'A'}) {
 		t.Fatalf("parts[0] = %#v, want hex escape text", lit.Parts[0])
 	}
-	if text, ok := lit.Parts[2].(ast.StringText); !ok || text.Text != "\r" {
-		t.Fatalf("parts[2] = %#v, want carriage return text", lit.Parts[2])
+	if text, ok := lit.Parts[2].(ast.StringText); !ok || text.Text != string([]byte{0xff, '\r'}) {
+		t.Fatalf("parts[2] = %#v, want byte and carriage return text", lit.Parts[2])
 	}
 }
 

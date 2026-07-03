@@ -1132,7 +1132,7 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 					return "", false, errMsg
 				}
 				raw.WriteString(escaped.raw)
-				decoded.WriteRune(escaped.rune)
+				decoded.WriteByte(escaped.byte)
 			case 'u':
 				escaped, errMsg := l.readFixedHexEscape(4)
 				if errMsg != "" {
@@ -1167,6 +1167,7 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 type decodedEscape struct {
 	raw  string
 	rune rune
+	byte byte
 }
 
 func (l *lexer) readFixedHexEscape(digits int) (decodedEscape, string) {
@@ -1215,7 +1216,7 @@ func (l *lexer) readVariableHexEscape(minDigits, maxDigits int) (decodedEscape, 
 	if value > utf8.MaxRune || (value >= 0xd800 && value <= 0xdfff) {
 		return decodedEscape{}, "invalid Unicode escape in string"
 	}
-	return decodedEscape{raw: raw.String(), rune: value}, ""
+	return decodedEscape{raw: raw.String(), rune: value, byte: byte(value)}, ""
 }
 
 func hexRuneValue(r rune) rune {

@@ -972,7 +972,7 @@ func decodeDoubleQuotedText(raw string) string {
 		case 'x':
 			decoded, ok := decodeVariableHexEscape(raw, i+nextSize, 1, 2)
 			if ok {
-				sb.WriteRune(decoded.rune)
+				sb.WriteByte(decoded.byte)
 				i = decoded.next
 				continue
 			}
@@ -995,6 +995,7 @@ func decodeDoubleQuotedText(raw string) string {
 
 type rawDecodedEscape struct {
 	rune rune
+	byte byte
 	next int
 }
 
@@ -1035,7 +1036,7 @@ func decodeVariableHexEscape(raw string, start, minDigits, maxDigits int) (rawDe
 	if value > utf8.MaxRune || (value >= 0xd800 && value <= 0xdfff) {
 		return rawDecodedEscape{}, false
 	}
-	return rawDecodedEscape{rune: value, next: nextOffset}, true
+	return rawDecodedEscape{rune: value, byte: byte(value), next: nextOffset}, true
 }
 
 func (p *parser) parsePercentWordsLiteral() ast.Expression {

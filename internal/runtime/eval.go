@@ -3429,6 +3429,15 @@ func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value,
 func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, bool, error) {
 	if stmt.Value != nil {
 		if stmt.Message != nil {
+			errorType, staticErrorType := raiseErrorTypeName(stmt.Value)
+			val := NewNil()
+			if !staticErrorType {
+				var err error
+				val, err = exec.evalExpression(stmt.Value, env)
+				if err != nil {
+					return NewNil(), false, err
+				}
+			}
 			message, err := exec.evalExpression(stmt.Message, env)
 			if err != nil {
 				return NewNil(), false, err
@@ -3436,16 +3445,12 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 			if message.Kind() != KindString {
 				return NewNil(), false, exec.newRuntimeErrorWithType(runtimeErrorTypeType, "exception message must be string", stmt.Pos())
 			}
-			if errorType, ok := raiseErrorTypeName(stmt.Value); ok {
-				return NewNil(), false, exec.newRuntimeErrorWithType(errorType, message.String(), stmt.Pos())
-			}
-			val, err := exec.evalExpression(stmt.Value, env)
-			if err != nil {
-				return NewNil(), false, err
-			}
-			errorType, ok := raiseErrorType(val)
-			if !ok {
-				return NewNil(), false, exec.newRuntimeErrorWithType(runtimeErrorTypeType, "exception class/object expected", stmt.Pos())
+			if !staticErrorType {
+				var ok bool
+				errorType, ok = raiseErrorType(val)
+				if !ok {
+					return NewNil(), false, exec.newRuntimeErrorWithType(runtimeErrorTypeType, "exception class/object expected", stmt.Pos())
+				}
 			}
 			return NewNil(), false, exec.newRuntimeErrorWithType(errorType, message.String(), stmt.Pos())
 		}

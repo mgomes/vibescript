@@ -73,6 +73,60 @@ end
 	}
 }
 
+func TestTypedRaiseEvaluatesTargetBeforeMessage(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+class RaiseOrder
+  @@trace = []
+
+  def self.reset()
+    @@trace = []
+  end
+
+  def self.target()
+    @@trace = @@trace + ["target"]
+    1
+  end
+
+  def self.message()
+    @@trace = @@trace + ["message"]
+    "bad"
+  end
+
+  def self.bad_message()
+    @@trace = @@trace + ["message"]
+    1
+  end
+
+  def self.trace()
+    @@trace
+  end
+end
+
+def dynamic_target_order()
+  RaiseOrder.reset()
+  begin
+    raise RaiseOrder.target(), RaiseOrder.message()
+  rescue TypeError
+    RaiseOrder.trace()
+  end
+end
+
+def invalid_message_order()
+  RaiseOrder.reset()
+  begin
+    raise RaiseOrder.target(), RaiseOrder.bad_message()
+  rescue TypeError
+    RaiseOrder.trace()
+  end
+end
+`)
+
+	want := []Value{NewString("target"), NewString("message")}
+	compareArrays(t, callFunc(t, script, "dynamic_target_order", nil), want)
+	compareArrays(t, callFunc(t, script, "invalid_message_order", nil), want)
+}
+
 func TestSymbolTypeAnnotations(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
