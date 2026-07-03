@@ -286,6 +286,21 @@ end
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
 }
 
+func TestCheckWarningsDoNotHoistUnreachableRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  return :draft
+  require("enum_status")
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
+}
+
 func TestCheckWarningsDoNotTreatShadowedRequireAsModuleImport(t *testing.T) {
 	t.Parallel()
 
@@ -692,6 +707,53 @@ end`,
   ensure
     raise "boom"
   end
+end`,
+		},
+		{
+			name: "ensure return masks body return type",
+			source: `def run() -> int
+  begin
+    return "bad"
+  ensure
+    return 1
+  end
+end`,
+		},
+		{
+			name: "ensure return masks rescue return type",
+			source: `def run() -> int
+  begin
+    raise "boom"
+  rescue RuntimeError
+    return "bad"
+  ensure
+    return 1
+  end
+end`,
+		},
+		{
+			name: "ensure return masks else return type",
+			source: `def run() -> int
+  begin
+    1
+  rescue RuntimeError
+    2
+  else
+    return "bad"
+  ensure
+    return 1
+  end
+end`,
+		},
+		{
+			name: "ensure return makes following statements unreachable",
+			source: `def run()
+  begin
+    1
+  ensure
+    return 1
+  end
+  JSON.parse()
 end`,
 		},
 		{

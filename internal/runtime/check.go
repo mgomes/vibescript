@@ -142,6 +142,9 @@ func (c *scriptChecker) collectFunctionRequiredModuleExports(fn *ScriptFunction)
 func (c *scriptChecker) collectRequiredModuleExportsFromStatements(statements []Statement) {
 	for _, stmt := range statements {
 		c.collectRequiredModuleExportsFromStatement(stmt)
+		if statementAlwaysExits(stmt) {
+			return
+		}
 	}
 }
 
@@ -180,7 +183,9 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 	case *TryStmt:
 		c.collectRequiredModuleExportsFromStatements(typed.Body)
 		c.collectRequiredModuleExportsFromStatements(typed.Rescue)
-		c.collectRequiredModuleExportsFromStatements(typed.Else)
+		if !blockAlwaysExits(typed.Body) {
+			c.collectRequiredModuleExportsFromStatements(typed.Else)
+		}
 		c.collectRequiredModuleExportsFromStatements(typed.Ensure)
 	}
 }
@@ -517,10 +522,14 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkExpression(function, typed.Condition)
 		c.checkStatements(function, returnType, typed.Body)
 	case *TryStmt:
-		c.checkStatements(function, returnType, typed.Body)
-		c.checkStatements(function, returnType, typed.Rescue)
+		branchReturnType := returnType
+		if blockAlwaysExits(typed.Ensure) {
+			branchReturnType = nil
+		}
+		c.checkStatements(function, branchReturnType, typed.Body)
+		c.checkStatements(function, branchReturnType, typed.Rescue)
 		if !blockAlwaysExits(typed.Body) {
-			c.checkStatements(function, returnType, typed.Else)
+			c.checkStatements(function, branchReturnType, typed.Else)
 		}
 		c.checkStatements(function, returnType, typed.Ensure)
 	}
@@ -799,6 +808,8 @@ func statementAlwaysExits(stmt Statement) bool {
 			}
 		}
 		return blockAlwaysExits(typed.Alternate)
+	case *TryStmt:
+		return blockAlwaysExits(typed.Ensure)
 	default:
 		return false
 	}
