@@ -1666,17 +1666,7 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	}
 	if exec.capabilityContractScopes != nil {
 		total += estimatedMapBaseBytes + len(exec.capabilityContractScopes)*estimatedMapEntryBytes
-		seenScopes := make(map[*capabilityContractScope]struct{}, len(exec.capabilityContractScopes))
-		for _, scope := range exec.capabilityContractScopes {
-			if scope == nil {
-				continue
-			}
-			if _, seen := seenScopes[scope]; seen {
-				continue
-			}
-			seenScopes[scope] = struct{}{}
-			total += estimatedMapBaseBytes + len(scope.knownBuiltins)*estimatedMapEntryBytes
-		}
+		total += capabilityContractScopeMemory(exec.capabilityContractScopes)
 	}
 	if exec.capabilityContractsByName != nil {
 		total += estimatedMapBaseBytes + len(exec.capabilityContractsByName)*estimatedMapEntryBytes
@@ -1693,6 +1683,47 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 		total += estimatedStringHeaderBytes*3 + len(ctx.key) + len(ctx.path) + len(ctx.root)
 	}
 
+	return total
+}
+
+func capabilityContractScopeMemory(scopes map[*Builtin]*capabilityContractScope) int {
+	const inlineSeenScopes = 8
+
+	total := 0
+	var seen [inlineSeenScopes]*capabilityContractScope
+	seenLen := 0
+	var overflow map[*capabilityContractScope]struct{}
+	for _, scope := range scopes {
+		if scope == nil {
+			continue
+		}
+		duplicate := false
+		for i := range seenLen {
+			if seen[i] == scope {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		if overflow != nil {
+			if _, ok := overflow[scope]; ok {
+				continue
+			}
+			overflow[scope] = struct{}{}
+		} else if seenLen < len(seen) {
+			seen[seenLen] = scope
+			seenLen++
+		} else {
+			overflow = make(map[*capabilityContractScope]struct{}, len(scopes))
+			for _, item := range seen {
+				overflow[item] = struct{}{}
+			}
+			overflow[scope] = struct{}{}
+		}
+		total += estimatedMapBaseBytes + len(scope.knownBuiltins)*estimatedMapEntryBytes
+	}
 	return total
 }
 

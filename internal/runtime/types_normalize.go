@@ -438,14 +438,18 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 	if val.Kind() != KindHash && val.Kind() != KindObject {
 		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 	}
-	entries := val.HashEntries()
+	if val.Kind() == KindObject || !hashHasTypedEntries(val) {
+		return normalizeStringKeyShapeForType(val, ty, ctx)
+	}
+
+	var entryBuf [smallHashKeyBufferSize]HashEntry
+	entries := val.HashEntriesInto(entryBuf[:])
 	if len(entries) != len(ty.Shape) {
 		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 	}
 
-	normalizedEntries := make([]HashEntry, 0, len(entries))
+	var normalizedEntries []HashEntry
 	seenFields := make(map[string]struct{}, len(entries))
-	changed := false
 	for i, entry := range entries {
 		if err := ctx.checkSandboxEvery(i); err != nil {
 			return NewNil(), err
@@ -468,41 +472,89 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 			return NewNil(), err
 		}
 		if !sameNormalizedValue(normalized, entry.Value) {
-			changed = true
+			if normalizedEntries == nil {
+				normalizedEntries = make([]HashEntry, len(entries))
+				copy(normalizedEntries, entries[:i])
+			}
 		}
-		normalizedEntries = append(normalizedEntries, HashEntry{Key: entry.Key, Value: normalized})
+		if normalizedEntries != nil {
+			normalizedEntries[i] = HashEntry{Key: entry.Key, Value: normalized}
+		}
+	}
+	if normalizedEntries == nil {
+		return val, nil
+	}
+	result := NewTypedHash(len(normalizedEntries))
+	for _, entry := range normalizedEntries {
+		if err := result.HashSet(entry.Key, entry.Value); err != nil {
+			return NewNil(), err
+		}
+	}
+	if err := ctx.checkSandbox(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
+}
+
+func normalizeStringKeyShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {
+	entries := val.Hash()
+	if len(entries) != len(ty.Shape) {
+		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+	}
+
+	changed := false
+	i := 0
+	for key, item := range entries {
+		if err := ctx.checkSandboxEvery(i); err != nil {
+			return NewNil(), err
+		}
+		i++
+		fieldType, ok := ty.Shape[key]
+		if !ok {
+			return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+		}
+		normalized, err := normalizeValueForType(item, fieldType, ctx)
+		if err != nil {
+			var mismatch *typeMismatchError
+			if errorAsTypeMismatch(err, &mismatch) {
+				return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+			}
+			return NewNil(), err
+		}
+		if !sameNormalizedValue(normalized, item) {
+			changed = true
+			break
+		}
 	}
 	if !changed {
 		return val, nil
 	}
-	if val.Kind() == KindObject {
-		out := make(map[string]Value, len(normalizedEntries))
-		for _, entry := range normalizedEntries {
-			out[hashDisplayKey(entry.Key)] = entry.Value
-		}
-		result := NewObject(out)
-		if err := ctx.checkSandbox(result); err != nil {
+
+	out := make(map[string]Value, len(entries))
+	i = 0
+	for key, item := range entries {
+		if err := ctx.checkSandboxEvery(i); err != nil {
 			return NewNil(), err
 		}
-		return result, nil
-	}
-	if hashHasTypedEntries(val) {
-		result := NewTypedHash(len(normalizedEntries))
-		for _, entry := range normalizedEntries {
-			if err := result.HashSet(entry.Key, entry.Value); err != nil {
-				return NewNil(), err
+		i++
+		fieldType, ok := ty.Shape[key]
+		if !ok {
+			return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+		}
+		normalized, err := normalizeValueForType(item, fieldType, ctx)
+		if err != nil {
+			var mismatch *typeMismatchError
+			if errorAsTypeMismatch(err, &mismatch) {
+				return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 			}
-		}
-		if err := ctx.checkSandbox(result); err != nil {
 			return NewNil(), err
 		}
-		return result, nil
-	}
-	out := make(map[string]Value, len(normalizedEntries))
-	for _, entry := range normalizedEntries {
-		out[hashDisplayKey(entry.Key)] = entry.Value
+		out[key] = normalized
 	}
 	result := NewHash(out)
+	if val.Kind() == KindObject {
+		result = NewObject(out)
+	}
 	if err := ctx.checkSandbox(result); err != nil {
 		return NewNil(), err
 	}

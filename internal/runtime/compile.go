@@ -124,10 +124,11 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 		return nil, fmt.Errorf("program is nil")
 	}
 
-	functions := make(map[string]*ScriptFunction)
-	classes := make(map[string]*ClassDef)
-	classOrder := make([]string, 0)
-	enums := make(map[string]*EnumDef)
+	functionCount, classCount, enumCount := countTopLevelDeclarations(program.Statements)
+	functions := make(map[string]*ScriptFunction, functionCount)
+	classes := make(map[string]*ClassDef, classCount)
+	classOrder := make([]string, 0, classCount)
+	enums := make(map[string]*EnumDef, enumCount)
 
 	for _, stmt := range program.Statements {
 		switch s := stmt.(type) {
@@ -177,6 +178,20 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 	script := &Script{engine: e, functions: functions, classes: classes, classOrder: classOrder, enums: enums, source: source}
 	script.bindFunctionOwnership()
 	return script, nil
+}
+
+func countTopLevelDeclarations(statements []ast.Statement) (functions, classes, enums int) {
+	for _, stmt := range statements {
+		switch stmt.(type) {
+		case *FunctionStmt:
+			functions++
+		case *ClassStmt:
+			classes++
+		case *EnumStmt:
+			enums++
+		}
+	}
+	return functions, classes, enums
 }
 
 func compileClassDef(stmt *ClassStmt) *ClassDef {
