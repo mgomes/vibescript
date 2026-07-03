@@ -57,7 +57,7 @@ type localScope struct {
 
 func newParser(input string) *parser {
 	l := newLexer(input)
-	p := &parser{l: l, localScopes: []localScope{{names: map[string]struct{}{}}}}
+	p := &parser{l: l, localScopes: []localScope{{}}}
 
 	p.nextToken()
 	p.nextToken()
@@ -67,7 +67,7 @@ func newParser(input string) *parser {
 }
 
 func (p *parser) pushLocalScope(params []ast.Param, funcDef bool) {
-	scope := localScope{names: map[string]struct{}{}, funcDef: funcDef}
+	scope := localScope{funcDef: funcDef}
 	p.localScopes = append(p.localScopes, scope)
 	for _, param := range params {
 		p.declareParamLocal(param)
@@ -104,9 +104,13 @@ func (p *parser) declareLocalTarget(target ast.Expression) {
 
 func (p *parser) declareLocal(name string) {
 	if len(p.localScopes) == 0 {
-		p.localScopes = append(p.localScopes, localScope{names: map[string]struct{}{}})
+		p.localScopes = append(p.localScopes, localScope{})
 	}
-	p.localScopes[len(p.localScopes)-1].names[name] = struct{}{}
+	scope := &p.localScopes[len(p.localScopes)-1]
+	if scope.names == nil {
+		scope.names = make(map[string]struct{})
+	}
+	scope.names[name] = struct{}{}
 }
 
 // localDeclaredInTop reports whether name is already declared in the
