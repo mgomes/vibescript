@@ -616,7 +616,7 @@ var (
 )
 
 func completionItems() []map[string]any {
-	return append([]map[string]any(nil), lspStaticCompletionItems...)
+	return lspStaticCompletionItems
 }
 
 func buildCompletionItems() []map[string]any {
@@ -836,11 +836,10 @@ func (s *lspServer) completionItemsAt(uri string, lines []string, line, characte
 	if isMemberContext(lines, line, character) {
 		return memberCompletionItems()
 	}
-	items := completionItems()
 	if index := s.completionIndex(uri); index != nil {
-		items = append(items, index.itemsAt(line)...)
+		return index.itemsAt(line)
 	}
-	return items
+	return completionItems()
 }
 
 // isMemberContext reports whether the cursor sits immediately after a
@@ -931,7 +930,7 @@ func consumeDigitsWithSeparators(runes []rune, i int) int {
 // memberCompletionItems returns the type-unaware union of every builtin
 // member method, labeled with the receiver types that provide it.
 func memberCompletionItems() []map[string]any {
-	return append([]map[string]any(nil), lspStaticMemberItems...)
+	return lspStaticMemberItems
 }
 
 func buildMemberCompletionItems() []map[string]any {
@@ -963,12 +962,14 @@ func buildMemberCompletionItems() []map[string]any {
 type lspCompletionIndex struct {
 	functions []map[string]any
 	scopes    []lspCompletionScope
+	items     []map[string]any
 }
 
 type lspCompletionScope struct {
 	startLine int
 	endLine   int
 	items     []map[string]any
+	allItems  []map[string]any
 	blocks    []lspCompletionBlock
 }
 
@@ -976,6 +977,7 @@ type lspCompletionBlock struct {
 	startLine int
 	endLine   int
 	items     []map[string]any
+	allItems  []map[string]any
 }
 
 func newLSPCompletionIndex(script *vibes.Script, sourceLines []string) *lspCompletionIndex {
@@ -1021,6 +1023,14 @@ func newLSPCompletionIndex(script *vibes.Script, sourceLines []string) *lspCompl
 		index.scopes = append(index.scopes, scope)
 	}
 	sortCompletionItems(index.functions)
+	index.items = mergedCompletionItems(lspStaticCompletionItems, index.functions)
+	for i := range index.scopes {
+		scope := &index.scopes[i]
+		scope.allItems = mergedCompletionItems(index.items, scope.items)
+		for j := range scope.blocks {
+			scope.blocks[j].allItems = mergedCompletionItems(scope.allItems, scope.blocks[j].items)
+		}
+	}
 	return index
 }
 
@@ -1064,15 +1074,26 @@ func (idx *lspCompletionIndex) itemsAt(line int) []map[string]any {
 			enclosing = i
 		}
 	}
-	items := make([]map[string]any, 0, len(idx.functions))
-	items = append(items, idx.functions...)
 	if enclosing >= 0 {
-		items = append(items, idx.scopes[enclosing].items...)
-		for _, block := range idx.scopes[enclosing].blocks {
+		scope := idx.scopes[enclosing]
+		for _, block := range scope.blocks {
 			if block.startLine <= line && line <= block.endLine {
-				items = append(items, block.items...)
+				return block.allItems
 			}
 		}
+		return scope.allItems
+	}
+	return idx.items
+}
+
+func mergedCompletionItems(parts ...[]map[string]any) []map[string]any {
+	total := 0
+	for _, part := range parts {
+		total += len(part)
+	}
+	items := make([]map[string]any, 0, total)
+	for _, part := range parts {
+		items = append(items, part...)
 	}
 	return items
 }
