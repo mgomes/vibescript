@@ -526,6 +526,88 @@ end
 	requireCallErrorContains(t, script, "run", []Value{NewArray(nil)}, CallOptions{}, "unknown type Status")
 }
 
+func TestCheckWarningsDoNotHoistBlockRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def noop
+  nil
+end
+
+def run() -> Status
+  noop do
+    require("enum_status")
+  end
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsDoNotHoistRescueOnlyRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  begin
+    1
+  rescue RuntimeError
+    require("enum_status")
+  end
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsDoNotHoistSafeNavigationRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  nil&.load(require("enum_status")) do
+    require("enum_status")
+  end
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsResolveEnsureRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  begin
+    1
+  ensure
+    require("enum_status")
+  end
+  :draft
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after ensure-required module enum export returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() after ensure-required module enum export = %#v, want Status::Draft", got)
+	}
+}
+
 func TestCheckWarningsSkipUnreachableShortCircuitOperands(t *testing.T) {
 	t.Parallel()
 

@@ -210,11 +210,32 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
 	case *TryStmt:
+		baseState := c.snapshotModuleCollectionState()
+		baseScopeState := c.snapshotScopeState()
+		fallthroughStates := make([]checkModuleCollectionState, 0, 2)
+		fallthroughScopeStates := make([]checkScopeState, 0, 2)
+
 		c.collectRequiredModuleExportsFromStatements(typed.Body)
-		c.collectRequiredModuleExportsFromStatements(typed.Rescue)
 		if !blockAlwaysExits(typed.Body) {
 			c.collectRequiredModuleExportsFromStatements(typed.Else)
+			if len(typed.Else) == 0 || !blockAlwaysExits(typed.Else) {
+				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
+				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+			}
 		}
+		if len(typed.Rescue) > 0 {
+			c.restoreModuleCollectionState(baseState)
+			c.restoreScopeState(baseScopeState)
+			popScope := c.pushRescueScope(typed)
+			c.collectRequiredModuleExportsFromStatements(typed.Rescue)
+			popScope()
+			if !blockAlwaysExits(typed.Rescue) {
+				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
+				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+			}
+		}
+		c.mergeModuleCollectionStates(baseState, fallthroughStates)
+		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
 		c.collectRequiredModuleExportsFromStatements(typed.Ensure)
 	}
 }
@@ -235,13 +256,15 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 	case *CallExpr:
 		c.collectRequireCallExports(typed)
 		c.collectRequiredModuleExportsFromExpression(typed.Callee)
+		if staticNilSafeNavigationCall(typed) {
+			return
+		}
 		for _, arg := range typed.Args {
 			c.collectRequiredModuleExportsFromExpression(arg)
 		}
 		for _, kwarg := range typed.KwArgs {
 			c.collectRequiredModuleExportsFromExpression(kwarg.Value)
 		}
-		c.collectBlockRequiredModuleExports(typed.Block)
 	case *MemberExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
 	case *ScopeExpr:
@@ -297,7 +320,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		}
 		c.collectRequiredModuleExportsFromExpression(typed.ElseExpr)
 	case *BlockLiteral:
-		c.collectBlockRequiredModuleExports(typed)
+		return
 	case *YieldExpr:
 		for _, arg := range typed.Args {
 			c.collectRequiredModuleExportsFromExpression(arg)
@@ -307,19 +330,6 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 	case *InterpolatedSymbol:
 		c.collectStringPartRequiredModuleExports(typed.Parts)
 	}
-}
-
-func (c *scriptChecker) collectBlockRequiredModuleExports(block *BlockLiteral) {
-	if block == nil {
-		return
-	}
-	popScope := c.pushBlockScope(block)
-	defer popScope()
-
-	for _, param := range block.Params {
-		c.collectRequiredModuleExportsFromExpression(param.DefaultVal)
-	}
-	c.collectRequiredModuleExportsFromStatements(block.Body)
 }
 
 func (c *scriptChecker) collectRequiredModuleExportsFromExpressionBranches(branches ...Expression) {
@@ -884,11 +894,32 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if blockAlwaysExits(typed.Ensure) {
 			branchReturnType = nil
 		}
+		baseRuntimeState := c.snapshotRuntimeState()
+		baseScopeState := c.snapshotScopeState()
+		fallthroughRuntimeStates := make([]checkRuntimeState, 0, 2)
+		fallthroughScopeStates := make([]checkScopeState, 0, 2)
+
 		c.checkStatements(function, branchReturnType, typed.Body)
-		c.checkStatements(function, branchReturnType, typed.Rescue)
 		if !blockAlwaysExits(typed.Body) {
 			c.checkStatements(function, branchReturnType, typed.Else)
+			if len(typed.Else) == 0 || !blockAlwaysExits(typed.Else) {
+				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
+				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+			}
 		}
+		if len(typed.Rescue) > 0 {
+			c.restoreRuntimeState(baseRuntimeState)
+			c.restoreScopeState(baseScopeState)
+			popScope := c.pushRescueScope(typed)
+			c.checkStatements(function, branchReturnType, typed.Rescue)
+			popScope()
+			if !blockAlwaysExits(typed.Rescue) {
+				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
+				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+			}
+		}
+		c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
+		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
 		c.checkStatements(function, returnType, typed.Ensure)
 	}
 }
@@ -1014,6 +1045,9 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	if block == nil {
 		return
 	}
+	runtimeState := c.snapshotRuntimeState()
+	defer c.restoreRuntimeState(runtimeState)
+
 	popScope := c.pushBlockCheckScope(block)
 	defer popScope()
 
@@ -1844,23 +1878,6 @@ func typeExprPosition(ty *TypeExpr) Position {
 	return Position{}
 }
 
-func (c *scriptChecker) pushBlockScope(block *BlockLiteral) func() {
-	scope := make(map[string]struct{})
-	for _, param := range block.Params {
-		if param.Name != "" {
-			scope[param.Name] = struct{}{}
-		}
-		collectBindingTarget(param.Target, scope)
-	}
-	for _, name := range block.ImplicitParams {
-		if name != "" {
-			scope[name] = struct{}{}
-		}
-	}
-	collectLocalBindings(block.Body, scope)
-	return c.pushScope(scope)
-}
-
 func (c *scriptChecker) pushBlockCheckScope(block *BlockLiteral) func() {
 	scope := make(map[string]struct{})
 	for _, param := range block.Params {
@@ -1875,6 +1892,13 @@ func (c *scriptChecker) pushBlockCheckScope(block *BlockLiteral) func() {
 		}
 	}
 	return c.pushScope(scope)
+}
+
+func (c *scriptChecker) pushRescueScope(stmt *TryStmt) func() {
+	if stmt == nil || stmt.RescueBinding == "" {
+		return func() {}
+	}
+	return c.pushScope(map[string]struct{}{stmt.RescueBinding: {}})
 }
 
 func (c *scriptChecker) pushScope(scope map[string]struct{}) func() {
