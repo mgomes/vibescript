@@ -584,6 +584,7 @@ def run()
     "ruby".delete!("z"),
     "ruby".delete!("r"),
     "abc".tr!("z", "x"),
+    "a".tr!("a", "a"),
     "book".squeeze!("z")
   ]
 end
@@ -610,6 +611,7 @@ end
 		NewNil(),
 		NewString("uby"),
 		NewNil(),
+		NewString("a"),
 		NewNil(),
 	))
 }
