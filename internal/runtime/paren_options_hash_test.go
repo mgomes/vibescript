@@ -155,6 +155,50 @@ func TestParenthesizedFunctionOptionsHashTypeMismatch(t *testing.T) {
 	requireCallErrorContains(t, script, "bad_shape", nil, CallOptions{}, "expected { retries: int }")
 }
 
+// TestFunctionOptionsHashPreservesCallableValues verifies that keyword
+// arguments which later collapse into a typed positional options hash use the
+// options hash's value type when deciding whether to preserve a zero-arity
+// function as a callable value.
+func TestFunctionOptionsHashPreservesCallableValues(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def answer
+      42
+    end
+
+    def accept(opts: hash<string, function>)
+      opts[:cb].call
+    end
+
+    def parenless
+      accept cb: answer
+    end
+
+    def parenthesized
+      accept(cb: answer)
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+	}{
+		{name: "parenless", fn: "parenless"},
+		{name: "parenthesized", fn: "parenthesized"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := callFunc(t, script, tc.fn, nil); !got.Equal(NewInt(42)) {
+				t.Fatalf("%s() = %v, want %v", tc.fn, got, NewInt(42))
+			}
+		})
+	}
+}
+
 // TestParenthesizedConstructorOptionsHash verifies that parenthesized constructor
 // calls collapse keyword arguments into initialize's positional options
 // parameter on the same terms as parenless constructors.

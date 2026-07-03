@@ -994,19 +994,22 @@ func (exec *Execution) evalCallArg(arg Expression, env *Env) (Value, error) {
 }
 
 func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Value, error) {
-	return exec.evalCallKwArgsForCallee(call, env, NewNil())
+	return exec.evalCallKwArgsForCallee(call, env, NewNil(), calleeDirect)
 }
 
-func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee Value) (map[string]Value, error) {
+func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee Value, resolution calleeResolution) (map[string]Value, error) {
 	if len(call.KwArgs) == 0 {
 		return nil, nil
 	}
 	params, hasParams := callableParamTypes(callee)
+	optionsHashType, hasOptionsHashTarget := callOptionsHashArgumentType(call, callee, resolution)
 	kwargs := make(map[string]Value, len(call.KwArgs))
 	for _, kw := range call.KwArgs {
 		expectsCallable := false
 		if hasParams {
 			if keywordArgumentExpectsCallable(params, kw.Name) {
+				expectsCallable = true
+			} else if hasOptionsHashTarget && optionsHashArgumentExpectsCallableValue(optionsHashType, kw.Name) {
 				expectsCallable = true
 			}
 		}
@@ -1123,13 +1126,14 @@ func paramExpectsCallableArgument(param Param) bool {
 }
 
 func restParamExpectsCallableElement(ty *TypeExpr) bool {
-	if ty == nil {
-		return false
+	return typeExprIncludesCallable(restParamElementType(ty))
+}
+
+func restParamElementType(ty *TypeExpr) *TypeExpr {
+	if ty != nil && ty.Kind == TypeArray && len(ty.TypeArgs) > 0 {
+		return ty.TypeArgs[0]
 	}
-	if ty.Kind == TypeArray && len(ty.TypeArgs) > 0 {
-		return typeExprIncludesCallable(ty.TypeArgs[0])
-	}
-	return typeExprIncludesCallable(ty)
+	return ty
 }
 
 func keywordRestParamExpectsCallableValue(ty *TypeExpr, name string) bool {
@@ -1162,6 +1166,29 @@ func keywordRestParamExpectsCallableValue(ty *TypeExpr, name string) bool {
 		return false
 	}
 	return typeExprIncludesCallable(ty)
+}
+
+func optionsHashArgumentExpectsCallableValue(ty *TypeExpr, name string) bool {
+	if ty == nil {
+		return false
+	}
+	switch ty.Kind {
+	case TypeHash:
+		if len(ty.TypeArgs) > 1 {
+			return typeExprIncludesCallable(ty.TypeArgs[1])
+		}
+		return false
+	case TypeShape:
+		field, ok := ty.Shape[name]
+		return ok && typeExprIncludesCallable(field)
+	case TypeUnion:
+		for _, option := range ty.Union {
+			if optionsHashArgumentExpectsCallableValue(option, name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func typeExprIncludesCallable(ty *TypeExpr) bool {
@@ -1217,7 +1244,10 @@ func resolveKeywordOptionsHash(call *CallExpr, callee Value, resolution calleeRe
 		return args, kwargs
 	}
 	fn := optionsHashTarget(callee)
-	if fn == nil || !functionCanReceiveOptionsHash(fn, len(args), kwargs) {
+	if fn == nil || !functionCanReceiveOptionsHash(fn, len(args), func(name string) bool {
+		_, ok := kwargs[name]
+		return ok
+	}) {
 		return args, kwargs
 	}
 	hash := make(map[string]Value, len(kwargs))
@@ -1276,10 +1306,36 @@ func optionsHashTarget(callee Value) *ScriptFunction {
 	}
 }
 
-func functionCanReceiveOptionsHash(fn *ScriptFunction, positionalCount int, kwargs map[string]Value) bool {
+func callOptionsHashArgumentType(call *CallExpr, callee Value, resolution calleeResolution) (*TypeExpr, bool) {
+	if !call.KeywordOptionsHash || len(call.KwArgs) == 0 {
+		return nil, false
+	}
+	if !calleeCollapsesOptionsHash(call, callee, resolution) {
+		return nil, false
+	}
+	fn := optionsHashTarget(callee)
+	if fn == nil {
+		return nil, false
+	}
+	return optionsHashArgumentType(fn, len(call.Args), func(name string) bool {
+		for _, kw := range call.KwArgs {
+			if kw.Name == name {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func functionCanReceiveOptionsHash(fn *ScriptFunction, positionalCount int, hasKeyword func(string) bool) bool {
+	_, ok := optionsHashArgumentType(fn, positionalCount, hasKeyword)
+	return ok
+}
+
+func optionsHashArgumentType(fn *ScriptFunction, positionalCount int, hasKeyword func(string) bool) (*TypeExpr, bool) {
 	for _, param := range fn.Params {
 		if param.Kind == ParamKeyword || param.Kind == ParamKeywordRest {
-			return false
+			return nil, false
 		}
 	}
 	for _, param := range fn.Params {
@@ -1289,13 +1345,15 @@ func functionCanReceiveOptionsHash(fn *ScriptFunction, positionalCount int, kwar
 				positionalCount--
 				continue
 			}
-			_, keywordTargetsThisParam := kwargs[param.Name]
-			return !keywordTargetsThisParam
+			if hasKeyword(param.Name) {
+				return nil, false
+			}
+			return param.Type, true
 		case ParamRest:
-			return true
+			return restParamElementType(param.Type), true
 		}
 	}
-	return false
+	return nil, false
 }
 
 func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
@@ -1374,7 +1432,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	kwargs, err := exec.evalCallKwArgsForCallee(call, env, callee)
+	kwargs, err := exec.evalCallKwArgsForCallee(call, env, callee, calleeDirect)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1461,7 +1519,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if err != nil {
 		return NewNil(), err
 	}
-	kwargs, err := exec.evalCallKwArgsForCallee(call, env, callee)
+	kwargs, err := exec.evalCallKwArgsForCallee(call, env, callee, resolution)
 	if err != nil {
 		return NewNil(), err
 	}

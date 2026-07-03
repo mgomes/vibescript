@@ -3219,15 +3219,14 @@ func staticCallCollapsesOptionsHash(call *CallExpr, target staticCallable, view 
 	if call.Parenthesized && !target.constructor && target.resolution == calleeMemberMethod {
 		return false
 	}
-	return functionCanReceiveOptionsHash(target.fn, len(view.args), staticKeywordNames(view.kwargs))
-}
-
-func staticKeywordNames(kwargs []KeywordArg) map[string]Value {
-	out := make(map[string]Value, len(kwargs))
-	for _, kwarg := range kwargs {
-		out[kwarg.Name] = NewNil()
-	}
-	return out
+	return functionCanReceiveOptionsHash(target.fn, len(view.args), func(name string) bool {
+		for _, kwarg := range view.kwargs {
+			if kwarg.Name == name {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 func sortedValueKeywordNames(kwargs map[string]Value) []string {
