@@ -976,13 +976,13 @@ func (exec *Execution) evalCallArgsForCallee(call *CallExpr, env *Env, callee Va
 	params, hasParams := callableParamTypes(callee)
 	args := make([]Value, len(call.Args))
 	for i, arg := range call.Args {
-		var expectedType *TypeExpr
+		expectation := expressionExpectation{}
 		if hasParams {
 			if param, ok := positionalCallableParam(params, i); ok {
-				expectedType = positionalArgumentExpectedType(param)
+				expectation = positionalArgumentExpectation(param)
 			}
 		}
-		val, err := exec.evalCallArgumentForType(arg, env, expectedType)
+		val, err := exec.evalCallArgumentForExpectation(arg, env, expectation)
 		if err != nil {
 			return nil, err
 		}
@@ -1037,33 +1037,37 @@ func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee 
 }
 
 func (exec *Execution) evalCallArgumentForType(arg Expression, env *Env, ty *TypeExpr) (Value, error) {
-	if val, ok, err := exec.evalTypedContainerCallArgument(arg, env, ty); ok || err != nil {
-		return val, err
-	}
-	return exec.evalCallArgument(arg, env, typeExprIncludesCallable(ty))
+	return exec.evalCallArgumentForExpectation(arg, env, typeExpressionExpectation(ty))
 }
 
-func (exec *Execution) evalTypedContainerCallArgument(arg Expression, env *Env, ty *TypeExpr) (Value, bool, error) {
+func (exec *Execution) evalCallArgumentForExpectation(arg Expression, env *Env, expectation expressionExpectation) (Value, error) {
+	if val, ok, err := exec.evalTypedContainerCallArgument(arg, env, expectation); ok || err != nil {
+		return val, err
+	}
+	return exec.evalCallArgument(arg, env, expectation.includesCallable())
+}
+
+func (exec *Execution) evalTypedContainerCallArgument(arg Expression, env *Env, expectation expressionExpectation) (Value, bool, error) {
 	switch e := arg.(type) {
 	case *ArrayLiteral:
-		elementType, ok := arrayLiteralElementType(ty)
+		elementExpectation, ok := expectation.arrayElementExpectation()
 		if !ok {
 			return NewNil(), false, nil
 		}
 		if err := exec.step(); err != nil {
 			return NewNil(), true, err
 		}
-		val, err := exec.evalArrayLiteralWithElementType(e, env, elementType)
+		val, err := exec.evalArrayLiteralWithElementExpectation(e, env, elementExpectation)
 		return val, true, err
 	case *HashLiteral:
-		if !hashLiteralTypeHasValueSlots(ty) {
+		if !hashLiteralTypeHasValueSlots(expectation.ty) {
 			return NewNil(), false, nil
 		}
 		if err := exec.step(); err != nil {
 			return NewNil(), true, err
 		}
 		val, err := exec.evalHashLiteralWithValueTypes(e, env, func(key Value) *TypeExpr {
-			return hashLiteralValueType(ty, key)
+			return hashLiteralValueType(expectation.ty, key)
 		})
 		return val, true, err
 	default:
@@ -1146,13 +1150,107 @@ func positionalCallableParam(params []Param, argIndex int) (Param, bool) {
 	return Param{}, false
 }
 
-func positionalArgumentExpectedType(param Param) *TypeExpr {
+func positionalArgumentExpectation(param Param) expressionExpectation {
 	switch param.Kind {
 	case ParamRest:
-		return restParamElementType(param.Type)
+		return typeExpressionExpectation(restParamElementType(param.Type))
 	default:
-		return param.Type
+		expectation := typeExpressionExpectation(param.Type)
+		if target, ok := param.Target.(*DestructureTarget); ok {
+			expectation.arrayElement = destructureTargetElementExpectation(target)
+		}
+		return expectation
 	}
+}
+
+type expressionExpectation struct {
+	ty           *TypeExpr
+	arrayElement func(int, int) expressionExpectation
+}
+
+func typeExpressionExpectation(ty *TypeExpr) expressionExpectation {
+	if ty == nil {
+		return expressionExpectation{}
+	}
+	return expressionExpectation{ty: ty}
+}
+
+func (expectation expressionExpectation) empty() bool {
+	return expectation.ty == nil && expectation.arrayElement == nil
+}
+
+func (expectation expressionExpectation) includesCallable() bool {
+	if typeExprIncludesCallable(expectation.ty) {
+		return true
+	}
+	if expectation.arrayElement != nil {
+		return expectation.arrayElement(0, 1).includesCallable()
+	}
+	return false
+}
+
+func (expectation expressionExpectation) arrayElementExpectation() (func(int, int) expressionExpectation, bool) {
+	if expectation.arrayElement != nil {
+		return expectation.arrayElement, true
+	}
+	elementType, ok := arrayLiteralElementType(expectation.ty)
+	if !ok {
+		return nil, false
+	}
+	return func(_, _ int) expressionExpectation {
+		return typeExpressionExpectation(elementType)
+	}, true
+}
+
+func destructureTargetElementExpectation(target *DestructureTarget) func(int, int) expressionExpectation {
+	return func(index, count int) expressionExpectation {
+		restIndex := destructureRestElementIndex(target)
+		if restIndex == -1 {
+			if index >= len(target.Elements) {
+				return expressionExpectation{}
+			}
+			return destructureElementSingleValueExpectation(target.Elements[index])
+		}
+		trailing := len(target.Elements) - restIndex - 1
+		restStart := min(restIndex, count)
+		restEnd := max(restStart, count-trailing)
+		switch {
+		case index < restIndex:
+			return destructureElementSingleValueExpectation(target.Elements[index])
+		case index < restEnd:
+			return destructureElementRestValueExpectation(target.Elements[restIndex], index-restStart, restEnd-restStart)
+		default:
+			elementIndex := restIndex + 1 + (index - restEnd)
+			if elementIndex >= len(target.Elements) {
+				return expressionExpectation{}
+			}
+			return destructureElementSingleValueExpectation(target.Elements[elementIndex])
+		}
+	}
+}
+
+func destructureRestElementIndex(target *DestructureTarget) int {
+	for i, element := range target.Elements {
+		if element.Rest {
+			return i
+		}
+	}
+	return -1
+}
+
+func destructureElementSingleValueExpectation(element DestructureElement) expressionExpectation {
+	expectation := typeExpressionExpectation(element.Type)
+	if target, ok := element.Target.(*DestructureTarget); ok {
+		expectation.arrayElement = destructureTargetElementExpectation(target)
+	}
+	return expectation
+}
+
+func destructureElementRestValueExpectation(element DestructureElement, index, count int) expressionExpectation {
+	if target, ok := element.Target.(*DestructureTarget); ok {
+		return destructureTargetElementExpectation(target)(index, count)
+	}
+	return typeExpressionExpectation(restParamElementType(element.Type))
 }
 
 func keywordArgumentExpectedType(params []Param, name string) *TypeExpr {

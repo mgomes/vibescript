@@ -195,6 +195,22 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       block.call(answer)
     end
 
+    def feed_destructured_block(&block)
+      block.call([answer])
+    end
+
+    def feed_scalar_destructured_block(&block)
+      block.call(answer)
+    end
+
+    def feed_nested_destructured_block(&block)
+      block.call([[answer]])
+    end
+
+    def feed_destructured_rest_block(&block)
+      block.call([1, answer, 0])
+    end
+
     def run_untyped
       receive_untyped(answer)
     end
@@ -256,6 +272,30 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
         fn.call
       end
     end
+
+    def run_destructured_block_param
+      feed_destructured_block do |(fn: function)|
+        fn.call
+      end
+    end
+
+    def run_scalar_destructured_block_param
+      feed_scalar_destructured_block do |(fn: function)|
+        fn.call
+      end
+    end
+
+    def run_nested_destructured_block_param
+      feed_nested_destructured_block do |((fn: function))|
+        fn.call
+      end
+    end
+
+    def run_destructured_block_rest_param
+      feed_destructured_rest_block do |(head: int, *fns: array<function>, tail: int)|
+        fns[0].call + head + tail
+      end
+    end
     `)
 
 	tests := []struct {
@@ -278,6 +318,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "keyword shape literal keeps callable fields", fn: "run_keyword_shape_literal", want: NewInt(42)},
 		{name: "nested typed literal keeps callable fields", fn: "run_nested_literal", want: NewInt(42)},
 		{name: "typed block call parameter keeps callable", fn: "run_block_param", want: NewInt(42)},
+		{name: "typed destructured block parameter keeps callable array element", fn: "run_destructured_block_param", want: NewInt(42)},
+		{name: "typed destructured block parameter keeps scalar callable", fn: "run_scalar_destructured_block_param", want: NewInt(42)},
+		{name: "nested typed destructured block parameter keeps callable", fn: "run_nested_destructured_block_param", want: NewInt(42)},
+		{name: "typed destructured block rest parameter keeps callable", fn: "run_destructured_block_rest_param", want: NewInt(43)},
 	}
 
 	for _, tt := range tests {

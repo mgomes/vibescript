@@ -340,10 +340,20 @@ func (exec *Execution) evalArrayLiteral(e *ArrayLiteral, env *Env) (Value, error
 }
 
 func (exec *Execution) evalArrayLiteralWithElementType(e *ArrayLiteral, env *Env, elementType *TypeExpr) (Value, error) {
+	return exec.evalArrayLiteralWithElementExpectation(e, env, func(_, _ int) expressionExpectation {
+		return typeExpressionExpectation(elementType)
+	})
+}
+
+func (exec *Execution) evalArrayLiteralWithElementExpectation(e *ArrayLiteral, env *Env, elementExpectation func(int, int) expressionExpectation) (Value, error) {
 	acc := newArrayBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
 	elems := make([]Value, 0, len(e.Elements))
-	for _, el := range e.Elements {
-		val, err := exec.evalExpressionWithExpectedType(el, env, elementType)
+	for i, el := range e.Elements {
+		expectation := expressionExpectation{}
+		if elementExpectation != nil {
+			expectation = elementExpectation(i, len(e.Elements))
+		}
+		val, err := exec.evalExpressionWithExpectation(el, env, expectation)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -423,10 +433,14 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 }
 
 func (exec *Execution) evalExpressionWithExpectedType(expr Expression, env *Env, ty *TypeExpr) (Value, error) {
-	if ty == nil {
+	return exec.evalExpressionWithExpectation(expr, env, typeExpressionExpectation(ty))
+}
+
+func (exec *Execution) evalExpressionWithExpectation(expr Expression, env *Env, expectation expressionExpectation) (Value, error) {
+	if expectation.empty() {
 		return exec.evalExpressionWithAuto(expr, env, true)
 	}
-	return exec.evalCallArgumentForType(expr, env, ty)
+	return exec.evalCallArgumentForExpectation(expr, env, expectation)
 }
 
 func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
