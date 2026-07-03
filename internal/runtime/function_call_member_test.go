@@ -147,6 +147,14 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       fn.call()
     end
 
+    def receive_callable_respond_to(fn: function)
+      fn.respond_to?(:call)
+    end
+
+    def receive_callable_not_equal_result(fn: function)
+      fn.equal?(answer)
+    end
+
     def receive_callable_rest(*fns: array<function>)
       fns[0].call
     end
@@ -197,6 +205,14 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 
     def run_typed_paren
       receive_callable_paren(answer)
+    end
+
+    def run_typed_respond_to
+      receive_callable_respond_to(answer)
+    end
+
+    def run_typed_not_equal_result
+      receive_callable_not_equal_result(answer)
     end
 
     def run_call_alias
@@ -250,6 +266,8 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "untyped still auto invokes", fn: "run_untyped", want: NewInt(42)},
 		{name: "typed positional keeps callable", fn: "run_typed", want: NewInt(42)},
 		{name: "typed positional call member keeps callable receiver", fn: "run_typed_paren", want: NewInt(42)},
+		{name: "typed callable receiver supports introspection", fn: "run_typed_respond_to", want: NewBool(true)},
+		{name: "typed callable receiver stays distinct from result", fn: "run_typed_not_equal_result", want: NewBool(false)},
 		{name: "function call alias keeps callable", fn: "run_call_alias", want: NewInt(42)},
 		{name: "typed rest keeps callable element", fn: "run_rest", want: NewInt(42)},
 		{name: "union typed rest keeps callable element", fn: "run_rest_union", want: NewInt(42)},

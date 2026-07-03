@@ -63,8 +63,28 @@ func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) 
 	return val, nil
 }
 
-func memberReceiverAutoInvokes(property string) bool {
-	return property != "call"
+func memberReceiverAutoInvokes(object Expression, property string, env *Env) bool {
+	if property == "call" {
+		return false
+	}
+	return !isDynamicCallableMemberReceiver(object, env)
+}
+
+func memberCallReceiverAutoInvokes(object Expression, env *Env) bool {
+	return !isDynamicCallableMemberReceiver(object, env)
+}
+
+func isDynamicCallableMemberReceiver(object Expression, env *Env) bool {
+	ident, ok := object.(*Identifier)
+	if !ok {
+		return false
+	}
+	scope, ok := env.lookupBindingScope(ident.Name)
+	if !ok || !scope.hasDynamic(ident.Name) {
+		return false
+	}
+	val, ok := env.Get(ident.Name)
+	return ok && isInvocable(val)
 }
 
 func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
@@ -839,7 +859,7 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 
 func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, error) {
 	if member, ok := call.Callee.(*MemberExpr); ok {
-		receiver, err := exec.evalExpressionWithAuto(member.Object, env, memberReceiverAutoInvokes(member.Property))
+		receiver, err := exec.evalExpressionWithAuto(member.Object, env, memberReceiverAutoInvokes(member.Object, member.Property, env))
 		if err != nil {
 			return NewNil(), NewNil(), err
 		}
@@ -1604,19 +1624,7 @@ func (exec *Execution) evalBlockGivenCall(call *CallExpr, env *Env) (Value, erro
 }
 
 func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, env *Env) (Value, error) {
-	var receiver Value
-	var err error
-	if member.Property == "call" {
-		autoCall := true
-		if ident, bareIdentifier := member.Object.(*Identifier); bareIdentifier {
-			if scope, ok := env.lookupBindingScope(ident.Name); ok && scope.hasDynamic(ident.Name) {
-				autoCall = false
-			}
-		}
-		receiver, err = exec.evalExpressionWithAuto(member.Object, env, autoCall)
-	} else {
-		receiver, err = exec.evalExpression(member.Object, env)
-	}
+	receiver, err := exec.evalExpressionWithAuto(member.Object, env, memberCallReceiverAutoInvokes(member.Object, env))
 	if err != nil {
 		return NewNil(), err
 	}
