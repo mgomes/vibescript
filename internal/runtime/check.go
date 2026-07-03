@@ -285,7 +285,7 @@ func (c *scriptChecker) collectStringPartRequiredModuleExports(parts []StringPar
 }
 
 func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
-	if len(call.Args) == 0 || c.identifierShadowed("require") {
+	if len(call.Args) == 0 || c.requireCallShadowed() {
 		return
 	}
 	callee, ok := call.Callee.(*Identifier)
@@ -304,6 +304,13 @@ func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
 		return
 	}
 	c.collectModuleExports(entry)
+}
+
+func (c *scriptChecker) requireCallShadowed() bool {
+	return c.identifierShadowed("require") ||
+		c.hostGlobalShadows("require") ||
+		c.typeRootHasBinding("require") ||
+		c.hostBuiltinOverrides("require")
 }
 
 func (c *scriptChecker) collectModuleExports(entry moduleEntry) {
@@ -512,7 +519,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *TryStmt:
 		c.checkStatements(function, returnType, typed.Body)
 		c.checkStatements(function, returnType, typed.Rescue)
-		c.checkStatements(function, returnType, typed.Else)
+		if !blockAlwaysExits(typed.Body) {
+			c.checkStatements(function, returnType, typed.Else)
+		}
 		c.checkStatements(function, returnType, typed.Ensure)
 	}
 }

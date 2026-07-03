@@ -303,6 +303,29 @@ end
 	requireCheckWarningContains(t, script, "unknown type Status")
 }
 
+func TestCheckWarningsWithOptionsDoNotTreatHostRequireAsModuleImport(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def normalize(status: Status) -> Status
+  status
+end
+
+def run()
+  require("enum_status")
+  normalize(:published)
+end
+`)
+	hostRequire := NewBuiltin("host.require", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewNil(), nil
+	})
+	opts := CallOptions{Globals: map[string]Value{"require": hostRequire}}
+
+	requireCheckWarningContainsWithOptions(t, script, opts, "unknown type Status")
+	requireCallErrorContains(t, script, "run", nil, opts, "unknown type Status")
+}
+
 func TestCheckWarningsValidateTypedDefaultsAndReturns(t *testing.T) {
 	t.Parallel()
 
@@ -624,6 +647,18 @@ end`,
 end`,
 		},
 		{
+			name: "begin body return skips unreachable else call checks",
+			source: `def run()
+  begin
+    return 1
+  rescue RuntimeError
+    2
+  else
+    JSON.parse()
+  end
+end`,
+		},
+		{
 			name: "begin body conditional return skips unreachable else",
 			source: `def run(flag) -> int
   begin
@@ -829,13 +864,19 @@ func requireNoCheckWarningsWithOptions(t *testing.T, script *Script, opts CallOp
 func requireCheckWarningContains(t *testing.T, script *Script, want string) {
 	t.Helper()
 
-	warnings := script.CheckWarnings()
+	requireCheckWarningContainsWithOptions(t, script, CallOptions{}, want)
+}
+
+func requireCheckWarningContainsWithOptions(t *testing.T, script *Script, opts CallOptions, want string) {
+	t.Helper()
+
+	warnings := script.CheckWarningsWithOptions(opts)
 	messages := make([]string, 0, len(warnings))
 	for _, warning := range warnings {
 		messages = append(messages, warning.Message)
 	}
 	got := strings.Join(messages, "\n")
 	if !strings.Contains(got, want) {
-		t.Fatalf("CheckWarnings() = %q, want substring %q", got, want)
+		t.Fatalf("CheckWarningsWithOptions() = %q, want substring %q", got, want)
 	}
 }
