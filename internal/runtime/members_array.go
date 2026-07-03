@@ -457,6 +457,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 			var keyValueEst *memoryEstimator
 			if exec.memoryQuota > 0 {
 				keyValueEst = newMemoryEstimator()
+				if !hasBlock {
+					keyValueEst.value(receiver)
+				}
 			}
 			var blockArg [1]Value
 			for i, item := range arr {
@@ -760,7 +763,11 @@ func reserveKeyedMapEntryScratch(reservation *loopScratchReservation, distinct, 
 }
 
 func hashAggregationKeyScratchPayloadBytes(key hashAggregationKey) int {
-	return len(key.text)
+	switch key.kind {
+	case KindArray, KindRange:
+		return len(key.text)
+	}
+	return 0
 }
 
 func hashAggregationKeyLookupPayloadBytes(key hashAggregationKey) int {

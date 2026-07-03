@@ -228,6 +228,42 @@ func TestArrayTallyReservesCountMapDuringBlockCalls(t *testing.T) {
 	}
 }
 
+func TestArrayTallyDoesNotRechargeReceiverOwnedKeyPayload(t *testing.T) {
+	t.Parallel()
+
+	const count = 32
+	const payloadBytes = 4096
+
+	values := make([]Value, count)
+	for i := range count {
+		values[i] = NewString(fmt.Sprintf("%04d-%s", i, strings.Repeat("x", payloadBytes)))
+	}
+	receiver := NewArray(values)
+	block := NewNil()
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	initialCapacity, err := arrayTallyInitialCapacity(receiver.Array(), false)
+	if err != nil {
+		t.Fatalf("arrayTallyInitialCapacity(blockless) error = %v", err)
+	}
+	initialScratch := hashAggregationMapScratchBytes(1, initialCapacity)
+	initialScratch = saturatingAdd(initialScratch, arrayTallyBucketSliceScratchBytes(initialCapacity))
+	resultScratch := typedHashResultBytes(count, 0)
+	quota := roots + initialScratch + resultScratch + 1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callArrayMember(t, exec, receiver, "tally", nil, block)
+	if err != nil {
+		t.Fatalf("array.tally with receiver-owned key payloads under quota %d: %v", quota, err)
+	}
+	if len(got.Hash()) != count {
+		t.Fatalf("array.tally result entries = %d, want %d", len(got.Hash()), count)
+	}
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("tally leaked %d scratch bytes after success", exec.reservedScratchBytes)
+	}
+}
+
 func TestArrayJoinChargesReceiverBeforeBuilderGrowth(t *testing.T) {
 	t.Parallel()
 
