@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -35,6 +36,40 @@ end
 
 	if got := callFunc(t, script, "run", nil); !got.Equal(NewString("bad")) {
 		t.Fatalf("run() = %#v, want bad", got)
+	}
+}
+
+func TestTypedRaiseRejectsInvalidMessageTarget(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def raise_string()
+  raise "bad", "msg"
+end
+
+def raise_int()
+  raise 1, "msg"
+end
+
+def raise_nil()
+  raise nil, "msg"
+end
+`)
+
+	for _, fn := range []string{"raise_string", "raise_int", "raise_nil"} {
+		t.Run(fn, func(t *testing.T) {
+			t.Parallel()
+			err := callScriptErr(t, context.Background(), script, fn, nil, CallOptions{})
+			var typeErr *RuntimeError
+			if !errors.As(err, &typeErr) {
+				t.Fatalf("%s() error = %T, want RuntimeError", fn, err)
+			}
+			if typeErr.Type != runtimeErrorTypeType {
+				t.Fatalf("%s() RuntimeError.Type = %s, want %s", fn, typeErr.Type, runtimeErrorTypeType)
+			}
+			if typeErr.Message != "exception class/object expected" {
+				t.Fatalf("%s() message = %q, want exception class/object expected", fn, typeErr.Message)
+			}
+		})
 	}
 }
 
@@ -118,6 +153,10 @@ class Config
   def self.bump_limit
     LIMIT += 1
   end
+
+  def self.echo(LIMIT)
+    LIMIT
+  end
 end
 
 class Other
@@ -129,7 +168,7 @@ class Other
 end
 
 def run()
-  [Config.limit, Config.scoped_limit, Config::LIMIT, Config.bump_limit, Config::LIMIT, Config.limit, Other.limit]
+  [Config.limit, Config.scoped_limit, Config::LIMIT, Config.echo(3), Config.bump_limit, Config::LIMIT, Config.limit, Other.limit]
 end
 `)
 
@@ -139,6 +178,7 @@ end
 		NewInt(12),
 		NewInt(12),
 		NewInt(12),
+		NewInt(3),
 		NewInt(13),
 		NewInt(13),
 		NewInt(13),

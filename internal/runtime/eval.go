@@ -38,6 +38,13 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		var self Value
 		hasSelf := false
 		if isConstantIdentifier(e.Name) {
+			if val, ok := env.getCallLocal(e.Name); ok {
+				env.clearArrayAppendBuffer(e.Name)
+				if autoCall {
+					return exec.autoInvokeIfNeeded(e, val, NewNil())
+				}
+				return val, nil
+			}
 			self, hasSelf = env.Get("self")
 			if hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
 				if val, ok := classConstant(self, e.Name); ok {
@@ -3436,10 +3443,11 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 			if err != nil {
 				return NewNil(), false, err
 			}
-			if val.Kind() != KindString {
-				return NewNil(), false, exec.newRuntimeErrorWithType(raiseErrorType(val), message.String(), stmt.Pos())
+			errorType, ok := raiseErrorType(val)
+			if !ok {
+				return NewNil(), false, exec.newRuntimeErrorWithType(runtimeErrorTypeType, "exception class/object expected", stmt.Pos())
 			}
-			return NewNil(), false, exec.errorAt(stmt.Pos(), "%s", message.String())
+			return NewNil(), false, exec.newRuntimeErrorWithType(errorType, message.String(), stmt.Pos())
 		}
 
 		val, err := exec.evalExpression(stmt.Value, env)
@@ -3463,15 +3471,15 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 	return NewNil(), false, err
 }
 
-func raiseErrorType(val Value) string {
+func raiseErrorType(val Value) (string, bool) {
 	if val.Kind() == KindClass {
 		if class := valueClass(val); class != nil {
 			if kind, ok := ast.CanonicalRuntimeErrorType(class.Name); ok {
-				return kind
+				return kind, true
 			}
 		}
 	}
-	return runtimeErrorTypeBase
+	return "", false
 }
 
 func raiseErrorTypeName(expr Expression) (string, bool) {

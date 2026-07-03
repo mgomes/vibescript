@@ -1127,7 +1127,7 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 				raw.WriteRune(next)
 				decoded.WriteByte('\v')
 			case 'x':
-				escaped, errMsg := l.readFixedHexEscape(2)
+				escaped, errMsg := l.readVariableHexEscape(1, 2)
 				if errMsg != "" {
 					return "", false, errMsg
 				}
@@ -1184,6 +1184,33 @@ func (l *lexer) readFixedHexEscape(digits int) (decodedEscape, string) {
 		l.readRune()
 		raw.WriteRune(l.ch)
 		value = value*16 + hexRuneValue(l.ch)
+	}
+	if value > utf8.MaxRune || (value >= 0xd800 && value <= 0xdfff) {
+		return decodedEscape{}, "invalid Unicode escape in string"
+	}
+	return decodedEscape{raw: raw.String(), rune: value}, ""
+}
+
+func (l *lexer) readVariableHexEscape(minDigits, maxDigits int) (decodedEscape, string) {
+	raw := strings.Builder{}
+	raw.WriteRune('\\')
+	l.readRune()
+	raw.WriteRune(l.ch)
+
+	value := rune(0)
+	digits := 0
+	for digits < maxDigits {
+		next := l.peekRune()
+		if !isBaseDigit(next, 16) {
+			break
+		}
+		l.readRune()
+		raw.WriteRune(l.ch)
+		value = value*16 + hexRuneValue(l.ch)
+		digits++
+	}
+	if digits < minDigits {
+		return decodedEscape{}, "invalid hex escape in string"
 	}
 	if value > utf8.MaxRune || (value >= 0xd800 && value <= 0xdfff) {
 		return decodedEscape{}, "invalid Unicode escape in string"

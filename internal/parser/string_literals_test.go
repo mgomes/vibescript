@@ -75,6 +75,7 @@ func TestDoubleQuotedStringRubyEscapes(t *testing.T) {
 		{`"a\rb"`, "a\rb"},
 		{`"\b\f\v\a\e"`, "\b\f\v\a\x1b"},
 		{`"\x41\u0042"`, "AB"},
+		{`"\xF\x0f"`, "\x0f\x0f"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.source, func(t *testing.T) {

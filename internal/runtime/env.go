@@ -116,31 +116,50 @@ func (e *Env) Get(name string) (Value, bool) {
 		if !scope.frozen {
 			lastMutable = scope
 		}
-		if idx, ok := scope.inlineIndex(name); ok {
-			val := scope.inline[idx].value
-			if lazy, ok := lazyValue(val); ok {
-				val = lazy.materialize()
-				scope.inline[idx].value = val
-				scope.dropArrayAppendBuffer(name)
-			}
+		if val, ok := scope.getBoundValue(name, lastMutable); ok {
 			return val, true
 		}
-		if val, ok := scope.values[name]; ok {
-			if lazy, ok := lazyValue(val); ok {
-				val = lazy.materialize()
-				scope.values[name] = val
-				scope.dropArrayAppendBuffer(name)
-			}
+	}
+	return Value{}, false
+}
+
+func (e *Env) getCallLocal(name string) (Value, bool) {
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.callRoot || scope.frozen {
+			break
+		}
+		if val, ok := scope.getBoundValue(name, nil); ok {
 			return val, true
 		}
-		if val, ok := scope.statics[name]; ok {
-			if scope.frozen && lastMutable != nil && builtinNeedsCallClone(val) {
-				cloned := cloneBuiltinValueForCall(val)
-				lastMutable.DefineStatic(name, cloned)
-				return cloned, true
-			}
-			return val, true
+	}
+	return Value{}, false
+}
+
+func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
+	if idx, ok := e.inlineIndex(name); ok {
+		val := e.inline[idx].value
+		if lazy, ok := lazyValue(val); ok {
+			val = lazy.materialize()
+			e.inline[idx].value = val
+			e.dropArrayAppendBuffer(name)
 		}
+		return val, true
+	}
+	if val, ok := e.values[name]; ok {
+		if lazy, ok := lazyValue(val); ok {
+			val = lazy.materialize()
+			e.values[name] = val
+			e.dropArrayAppendBuffer(name)
+		}
+		return val, true
+	}
+	if val, ok := e.statics[name]; ok {
+		if e.frozen && lastMutable != nil && builtinNeedsCallClone(val) {
+			cloned := cloneBuiltinValueForCall(val)
+			lastMutable.DefineStatic(name, cloned)
+			return cloned, true
+		}
+		return val, true
 	}
 	return Value{}, false
 }
