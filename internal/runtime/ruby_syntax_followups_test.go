@@ -196,3 +196,86 @@ run()
 		NewNil(),
 	})
 }
+
+func TestParenlessCallBinaryExpressionOperand(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def add(a, b)
+  a + b
+end
+
+def run()
+  1 + add 2, 3
+end
+`)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(6)) {
+		t.Fatalf("run() = %#v, want 6", got)
+	}
+}
+
+func TestParenlessSameLineDoBlockAttachesToOuterCall(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def wrap(x)
+  yield x
+end
+
+def combine(a, b)
+  yield a + b
+end
+
+def run()
+  first = wrap 1 do |x|
+    x + 1
+  end
+
+  second = combine 1, 2 do |x|
+    x * 2
+  end
+
+  [first, second]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "run", nil), []Value{
+		NewInt(2),
+		NewInt(6),
+	})
+}
+
+func TestMultilineRangeEndpoints(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def id(x)
+  x
+end
+
+def run()
+  assigned = 1..
+    2
+  parenthesized = id(3..
+    4)
+  parenless = id 5..
+    6
+
+  [
+    assigned.first,
+    assigned.last,
+    parenthesized.first,
+    parenthesized.last,
+    parenless.first,
+    parenless.last,
+  ]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "run", nil), []Value{
+		NewInt(1),
+		NewInt(2),
+		NewInt(3),
+		NewInt(4),
+		NewInt(5),
+		NewInt(6),
+	})
+}
