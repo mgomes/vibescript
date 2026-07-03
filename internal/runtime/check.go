@@ -270,10 +270,18 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		fallthroughStates := make([]checkModuleCollectionState, 0, len(typed.ElseIf)+2)
 		fallthroughScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
-		c.collectRequiredModuleExportsFromStatements(typed.Consequent)
-		if !blockAlwaysExits(typed.Consequent) {
-			fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
-			fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		if !conditionKnown || conditionTruthy {
+			c.collectRequiredModuleExportsFromStatements(typed.Consequent)
+			if !blockAlwaysExits(typed.Consequent) {
+				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
+				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+			}
+			if conditionKnown {
+				c.mergeModuleCollectionStates(baseState, fallthroughStates)
+				c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+				return
+			}
 		}
 		for _, elseIf := range typed.ElseIf {
 			c.restoreModuleCollectionState(falseState)
@@ -281,10 +289,18 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			c.collectRequiredModuleExportsFromExpression(elseIf.Condition)
 			falseState = c.snapshotModuleCollectionState()
 			falseScopeState = c.snapshotScopeState()
-			c.collectRequiredModuleExportsFromStatements(elseIf.Consequent)
-			if !blockAlwaysExits(elseIf.Consequent) {
-				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
-				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+			branchTruthy, branchKnown := staticExpressionTruthiness(elseIf.Condition)
+			if !branchKnown || branchTruthy {
+				c.collectRequiredModuleExportsFromStatements(elseIf.Consequent)
+				if !blockAlwaysExits(elseIf.Consequent) {
+					fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
+					fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+				}
+				if branchKnown {
+					c.mergeModuleCollectionStates(baseState, fallthroughStates)
+					c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+					return
+				}
 			}
 		}
 		c.restoreModuleCollectionState(falseState)
@@ -417,14 +433,28 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		falseState := c.snapshotModuleCollectionState()
 		branchStates := make([]checkModuleCollectionState, 0, len(typed.ElseIf)+2)
 
-		c.collectRequiredModuleExportsFromExpression(typed.Consequent)
-		branchStates = append(branchStates, c.snapshotModuleCollectionState())
+		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		if !conditionKnown || conditionTruthy {
+			c.collectRequiredModuleExportsFromExpression(typed.Consequent)
+			branchStates = append(branchStates, c.snapshotModuleCollectionState())
+			if conditionKnown {
+				c.mergeModuleCollectionStates(baseState, branchStates)
+				return
+			}
+		}
 		for _, branch := range typed.ElseIf {
 			c.restoreModuleCollectionState(falseState)
 			c.collectRequiredModuleExportsFromExpression(branch.Condition)
 			falseState = c.snapshotModuleCollectionState()
-			c.collectRequiredModuleExportsFromExpression(branch.Result)
-			branchStates = append(branchStates, c.snapshotModuleCollectionState())
+			branchTruthy, branchKnown := staticExpressionTruthiness(branch.Condition)
+			if !branchKnown || branchTruthy {
+				c.collectRequiredModuleExportsFromExpression(branch.Result)
+				branchStates = append(branchStates, c.snapshotModuleCollectionState())
+				if branchKnown {
+					c.mergeModuleCollectionStates(baseState, branchStates)
+					return
+				}
+			}
 		}
 		c.restoreModuleCollectionState(falseState)
 		c.collectRequiredModuleExportsFromExpression(typed.Alternate)
@@ -1554,11 +1584,19 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
 		fallthroughScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
-		c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
-		c.checkStatements(function, returnType, typed.Consequent)
-		if !blockAlwaysExits(typed.Consequent) {
-			fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
-			fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		if !conditionKnown || conditionTruthy {
+			c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
+			c.checkStatements(function, returnType, typed.Consequent)
+			if !blockAlwaysExits(typed.Consequent) {
+				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
+				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+			}
+			if conditionKnown {
+				c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
+				c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+				return
+			}
 		}
 		c.restoreRuntimeState(conditionRuntimeState)
 		c.restoreScopeState(conditionScopeState)
@@ -1572,11 +1610,19 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.collectRuntimeRequireCallExportsFromExpression(elseIf.Condition)
 			conditionRuntimeState = c.snapshotRuntimeState()
 			conditionScopeState = c.snapshotScopeState()
-			c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, true)
-			c.checkStatements(function, returnType, elseIf.Consequent)
-			if !blockAlwaysExits(elseIf.Consequent) {
-				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
-				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+			branchTruthy, branchKnown := staticExpressionTruthiness(elseIf.Condition)
+			if !branchKnown || branchTruthy {
+				c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, true)
+				c.checkStatements(function, returnType, elseIf.Consequent)
+				if !blockAlwaysExits(elseIf.Consequent) {
+					fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
+					fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+				}
+				if branchKnown {
+					c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
+					c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+					return
+				}
 			}
 			c.restoreRuntimeState(conditionRuntimeState)
 			c.restoreScopeState(conditionScopeState)
@@ -1861,10 +1907,18 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		branchRuntimeStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
 		branchScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
-		c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
-		c.checkExpressionWithAuto(function, typed.Consequent, true)
-		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		if !conditionKnown || conditionTruthy {
+			c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
+			c.checkExpressionWithAuto(function, typed.Consequent, true)
+			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+			if conditionKnown {
+				c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+				c.mergeScopeStates(baseScopeState, branchScopeStates)
+				return
+			}
+		}
 		c.restoreRuntimeState(conditionRuntimeState)
 		c.restoreScopeState(conditionScopeState)
 		c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
@@ -1877,10 +1931,18 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.collectRuntimeRequireCallExportsFromExpression(branch.Condition)
 			conditionRuntimeState = c.snapshotRuntimeState()
 			conditionScopeState = c.snapshotScopeState()
-			c.collectRuntimeConditionOutcomeEffects(branch.Condition, true)
-			c.checkExpressionWithAuto(function, branch.Result, true)
-			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+			branchTruthy, branchKnown := staticExpressionTruthiness(branch.Condition)
+			if !branchKnown || branchTruthy {
+				c.collectRuntimeConditionOutcomeEffects(branch.Condition, true)
+				c.checkExpressionWithAuto(function, branch.Result, true)
+				branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+				branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+				if branchKnown {
+					c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+					c.mergeScopeStates(baseScopeState, branchScopeStates)
+					return
+				}
+			}
 			c.restoreRuntimeState(conditionRuntimeState)
 			c.restoreScopeState(conditionScopeState)
 			c.collectRuntimeConditionOutcomeEffects(branch.Condition, false)
@@ -2364,15 +2426,7 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 	case *LogicalStmt:
 		c.checkImplicitFinalLogicalStatement(function, ty, typed)
 	case *IfStmt:
-		if len(typed.Alternate) == 0 {
-			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
-			return
-		}
-		c.checkImplicitFinalBlock(function, ty, typed.Consequent, typed.Pos())
-		for _, elseIf := range typed.ElseIf {
-			c.checkImplicitFinalBlock(function, ty, elseIf.Consequent, elseIf.Pos())
-		}
-		c.checkImplicitFinalBlock(function, ty, typed.Alternate, typed.Pos())
+		c.checkImplicitFinalIfStatement(function, ty, typed)
 	case *ForStmt, *WhileStmt, *UntilStmt:
 		c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 	case *TryStmt:
@@ -2394,6 +2448,35 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 			c.checkImplicitFinalBlock(function, ty, typed.Rescue, typed.RescuePosition)
 		}
 	}
+}
+
+func (c *scriptChecker) checkImplicitFinalIfStatement(function string, ty *TypeExpr, stmt *IfStmt) {
+	if stmt == nil {
+		c.add(function, Position{}, "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		return
+	}
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if !known || truthy {
+		c.checkImplicitFinalBlock(function, ty, stmt.Consequent, stmt.Pos())
+		if known {
+			return
+		}
+	}
+	for _, elseIf := range stmt.ElseIf {
+		truthy, known = staticExpressionTruthiness(elseIf.Condition)
+		if known && !truthy {
+			continue
+		}
+		c.checkImplicitFinalBlock(function, ty, elseIf.Consequent, elseIf.Pos())
+		if known {
+			return
+		}
+	}
+	if len(stmt.Alternate) == 0 {
+		c.add(function, stmt.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		return
+	}
+	c.checkImplicitFinalBlock(function, ty, stmt.Alternate, stmt.Pos())
 }
 
 func (c *scriptChecker) checkImplicitFinalLogicalStatement(function string, ty *TypeExpr, stmt *LogicalStmt) {
@@ -2447,18 +2530,28 @@ func statementAlwaysExits(stmt Statement) bool {
 	case *ReturnStmt, *RaiseStmt, *BreakStmt, *NextStmt:
 		return true
 	case *IfStmt:
-		if len(typed.Alternate) == 0 {
-			return false
-		}
-		if !blockAlwaysExits(typed.Consequent) {
-			return false
+		truthy, known := staticExpressionTruthiness(typed.Condition)
+		if !known || truthy {
+			if !blockAlwaysExits(typed.Consequent) {
+				return false
+			}
+			if known {
+				return true
+			}
 		}
 		for _, elseIf := range typed.ElseIf {
+			truthy, known = staticExpressionTruthiness(elseIf.Condition)
+			if known && !truthy {
+				continue
+			}
 			if !blockAlwaysExits(elseIf.Consequent) {
 				return false
 			}
+			if known {
+				return true
+			}
 		}
-		return blockAlwaysExits(typed.Alternate)
+		return len(typed.Alternate) > 0 && blockAlwaysExits(typed.Alternate)
 	case *TryStmt:
 		if blockAlwaysExits(typed.Ensure) {
 			return true
@@ -2552,17 +2645,28 @@ func expressionCanImplicitlyYieldNil(expr Expression) bool {
 	case *NilLiteral:
 		return true
 	case *IfExpr:
-		if typed.Alternate == nil {
-			return true
-		}
-		if expressionCanImplicitlyYieldNil(typed.Consequent) || expressionCanImplicitlyYieldNil(typed.Alternate) {
-			return true
+		truthy, known := staticExpressionTruthiness(typed.Condition)
+		if !known || truthy {
+			if expressionCanImplicitlyYieldNil(typed.Consequent) {
+				return true
+			}
+			if known {
+				return false
+			}
 		}
 		for _, branch := range typed.ElseIf {
+			truthy, known = staticExpressionTruthiness(branch.Condition)
+			if known && !truthy {
+				continue
+			}
 			if expressionCanImplicitlyYieldNil(branch.Result) {
 				return true
 			}
+			if known {
+				return false
+			}
 		}
+		return typed.Alternate == nil || expressionCanImplicitlyYieldNil(typed.Alternate)
 	case *ConditionalExpr:
 		return expressionCanImplicitlyYieldNil(typed.Consequent) ||
 			expressionCanImplicitlyYieldNil(typed.Alternate)
@@ -3353,6 +3457,14 @@ func staticLiteralValue(expr Expression) (Value, bool) {
 		return NewRange(Range{Start: start, End: end, Exclusive: typed.Exclusive}), true
 	}
 	return NewNil(), false
+}
+
+func staticExpressionTruthiness(expr Expression) (bool, bool) {
+	val, ok := staticLiteralValue(expr)
+	if !ok {
+		return false, false
+	}
+	return val.Truthy(), true
 }
 
 func staticRequireModuleName(expr Expression) (string, bool) {

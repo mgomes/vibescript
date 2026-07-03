@@ -1784,6 +1784,77 @@ end
 	}
 }
 
+func TestCheckWarningsSkipStaticallyUnreachableIfBranches(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run(flag)
+  if false
+    JSON.parse()
+  elsif true
+    1
+  else
+    JSON.parse()
+  end
+
+  if true
+    1
+  else
+    JSON.parse()
+  end
+
+  value = if nil
+    JSON.parse()
+  elsif true
+    1
+  else
+    JSON.parse()
+  end
+
+  other = if flag
+    1
+  elsif true
+    2
+  else
+    JSON.parse()
+  end
+
+  [value, other]
+end
+
+def typed() -> int
+  if false
+    "bad"
+  elsif true
+    1
+  else
+    "bad"
+  end
+end
+
+def exiting()
+  if true
+    return 1
+  end
+  JSON.parse()
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	if _, err := script.Call(context.Background(), "run", []Value{NewBool(false)}, CallOptions{}); err != nil {
+		t.Fatalf("Call(%q, false) with unreachable if branches returned error: %v", "run", err)
+	}
+	if _, err := script.Call(context.Background(), "run", []Value{NewBool(true)}, CallOptions{}); err != nil {
+		t.Fatalf("Call(%q, true) with unreachable if branches returned error: %v", "run", err)
+	}
+	if _, err := script.Call(context.Background(), "typed", nil, CallOptions{}); err != nil {
+		t.Fatalf("Call(%q) with unreachable typed branches returned error: %v", "typed", err)
+	}
+	if _, err := script.Call(context.Background(), "exiting", nil, CallOptions{}); err != nil {
+		t.Fatalf("Call(%q) with statically exiting branch returned error: %v", "exiting", err)
+	}
+}
+
 func TestCheckWarningsResolveDefaultRequiredModuleEnumExportsInParameterOrder(t *testing.T) {
 	t.Parallel()
 
