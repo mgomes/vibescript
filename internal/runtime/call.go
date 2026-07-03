@@ -1321,7 +1321,7 @@ func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver V
 	switch property {
 	case "size", "length":
 		if len(call.Args) > 0 {
-			return NewNil(), true, fmt.Errorf("string.%s does not take arguments", property)
+			return NewNil(), false, nil
 		}
 		if err := exec.checkContext(); err != nil {
 			return NewNil(), true, err
@@ -1336,7 +1336,7 @@ func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver V
 		return result, true, nil
 	case "bytesize":
 		if len(call.Args) > 0 {
-			return NewNil(), true, fmt.Errorf("string.bytesize does not take arguments")
+			return NewNil(), false, nil
 		}
 		if err := exec.checkContext(); err != nil {
 			return NewNil(), true, err
@@ -1362,7 +1362,7 @@ func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver V
 
 func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
 	if len(call.Args) < 1 || len(call.Args) > 2 {
-		return NewNil(), true, fmt.Errorf("string.index expects substring and optional offset")
+		return NewNil(), false, nil
 	}
 	needle, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {
@@ -1387,13 +1387,13 @@ func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value,
 	if hasOffset {
 		i, err := valueToInt(offsetVal)
 		if err != nil {
-			return NewNil(), true, fmt.Errorf("string.index offset must be integer")
+			return NewNil(), true, exec.wrapError(fmt.Errorf("string.index offset must be integer"), call.Pos())
 		}
 		offset = i
 	}
 	result, err := stringIndexResult(receiver, needle, offset)
 	if err != nil {
-		return NewNil(), true, err
+		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
 	if err := exec.checkMemoryWith(result); err != nil {
 		return NewNil(), true, err
@@ -1403,7 +1403,7 @@ func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value,
 
 func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
 	if len(call.Args) < 1 || len(call.Args) > 2 {
-		return NewNil(), true, fmt.Errorf("string.rindex expects substring and optional offset")
+		return NewNil(), false, nil
 	}
 	needle, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {
@@ -1428,7 +1428,7 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 	if hasOffset {
 		i, err := valueToInt(offsetVal)
 		if err != nil {
-			return NewNil(), true, fmt.Errorf("string.rindex offset must be integer")
+			return NewNil(), true, exec.wrapError(fmt.Errorf("string.rindex offset must be integer"), call.Pos())
 		}
 		effective, ok := stringEffectiveOffset(receiver.String(), i)
 		if !ok {
@@ -1442,7 +1442,7 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 	}
 	result, err := stringRIndexResult(receiver, needle, offset)
 	if err != nil {
-		return NewNil(), true, err
+		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
 	if err := exec.checkMemoryWith(result); err != nil {
 		return NewNil(), true, err
@@ -1452,7 +1452,7 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 
 func (exec *Execution) evalDirectStringSliceCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
 	if len(call.Args) < 1 || len(call.Args) > 2 {
-		return NewNil(), true, fmt.Errorf("string.slice expects an index, range, or substring with optional length")
+		return NewNil(), false, nil
 	}
 	first, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {
@@ -1473,7 +1473,7 @@ func (exec *Execution) evalDirectStringSliceCall(call *CallExpr, receiver Value,
 	}
 	result, err := stringSliceResult(receiver, first, second, len(call.Args) == 2)
 	if err != nil {
-		return NewNil(), true, err
+		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
 	if err := exec.checkMemoryWith(result); err != nil {
 		return NewNil(), true, err
@@ -1536,12 +1536,8 @@ func (exec *Execution) isCoreObjectBuiltin(builtin *Builtin, namespace, member s
 }
 
 func (exec *Execution) evalDirectRegexReplaceCall(call *CallExpr, receiver Value, env *Env, replaceAll bool) (Value, bool, error) {
-	method := "Regex.replace"
-	if replaceAll {
-		method = "Regex.replace_all"
-	}
 	if len(call.Args) != 3 {
-		return NewNil(), true, fmt.Errorf("%s expects text, pattern, replacement", method)
+		return NewNil(), false, nil
 	}
 	text, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {
@@ -1576,7 +1572,7 @@ func (exec *Execution) evalDirectRegexReplaceCall(call *CallExpr, receiver Value
 
 func (exec *Execution) evalDirectTimeParseCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
 	if len(call.Args) < 1 || len(call.Args) > 2 {
-		return NewNil(), true, fmt.Errorf("Time.parse expects a time string and optional layout")
+		return NewNil(), false, nil
 	}
 	input, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {
@@ -1603,7 +1599,7 @@ func (exec *Execution) evalDirectTimeParseCall(call *CallExpr, receiver Value, e
 	}
 	result, err := timeParseResult(input, layout, hasLayout, nil)
 	if err != nil {
-		return NewNil(), true, err
+		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
 	if err := exec.checkMemoryWith(result); err != nil {
 		return NewNil(), true, err
@@ -1625,7 +1621,7 @@ func (exec *Execution) evalDirectTimeMemberCallExpr(call *CallExpr, receiver Val
 
 func (exec *Execution) evalDirectTimeFormatCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
 	if len(call.Args) != 1 {
-		return NewNil(), true, fmt.Errorf("format expects a Go layout string")
+		return NewNil(), false, nil
 	}
 	layout, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {
@@ -1639,7 +1635,7 @@ func (exec *Execution) evalDirectTimeFormatCall(call *CallExpr, receiver Value, 
 	}
 	result, err := timeFormatResult(receiver.Time(), layout)
 	if err != nil {
-		return NewNil(), true, err
+		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
 	if err := exec.checkMemoryWith(result); err != nil {
 		return NewNil(), true, err
