@@ -27,6 +27,7 @@ type Script struct {
 	classOrder          []string
 	deferredClassBodies map[string]struct{}
 	enums               map[string]*EnumDef
+	symbolLiterals      map[*SymbolLiteral]Value
 	source              string
 	moduleKey           string
 	modulePath          string
