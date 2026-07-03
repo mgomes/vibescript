@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,81 @@ end
 `)
 
 	requireCheckWarningContains(t, script, "unknown type Missing")
+}
+
+func TestCheckWarningsWithOptionsResolveHostEnumGlobals(t *testing.T) {
+	t.Parallel()
+
+	hostScript := compileScript(t, `
+enum Status
+  Draft
+end
+`)
+	hostStatus := NewEnum(hostScript.enums["Status"])
+
+	script := compileScript(t, `
+def run(status: Status = :draft) -> Status
+  status
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireNoCheckWarningsWithOptions(t, script, CallOptions{
+		Globals: map[string]Value{"Status": hostStatus},
+	})
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Globals: map[string]Value{"Status": hostStatus},
+	})
+	if err != nil {
+		t.Fatalf("Call() with host enum global returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() with host enum global = %#v, want Status::Draft", got)
+	}
+}
+
+func TestCheckWarningsResolveRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def normalize(status: Status) -> Status
+  status
+end
+
+def run()
+  require("enum_status")
+  normalize(:published)
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after required module enum export returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Published" {
+		t.Fatalf("Call() after required module enum export = %#v, want Status::Published", got)
+	}
+}
+
+func TestCheckWarningsDoNotTreatShadowedRequireAsModuleImport(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def normalize(status: Status) -> Status
+  status
+end
+
+def run(require)
+  require("enum_status")
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
 }
 
 func TestCheckWarningsValidateTypedDefaultsAndReturns(t *testing.T) {
@@ -476,6 +552,14 @@ func requireNoCheckWarnings(t *testing.T, script *Script) {
 
 	if warnings := script.CheckWarnings(); len(warnings) > 0 {
 		t.Fatalf("CheckWarnings() = %#v, want none", warnings)
+	}
+}
+
+func requireNoCheckWarningsWithOptions(t *testing.T, script *Script, opts CallOptions) {
+	t.Helper()
+
+	if warnings := script.CheckWarningsWithOptions(opts); len(warnings) > 0 {
+		t.Fatalf("CheckWarningsWithOptions() = %#v, want none", warnings)
 	}
 }
 

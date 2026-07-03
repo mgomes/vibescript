@@ -17,10 +17,20 @@ type CheckWarning struct {
 // script. It reports only facts that are known from the AST and compiled script
 // metadata; dynamic calls remain runtime-checked.
 func (s *Script) CheckWarnings() []CheckWarning {
+	return s.CheckWarningsWithOptions(CallOptions{})
+}
+
+// CheckWarningsWithOptions returns statically checkable contract issues using
+// the same host globals that a later Call would receive.
+func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
 	if s == nil {
 		return nil
 	}
-	checker := scriptChecker{script: s}
+	checker := scriptChecker{
+		script:   s,
+		typeRoot: checkTypeRoot(s, opts),
+	}
+	checker.collectRequiredModuleExports()
 	checker.checkScript()
 	sort.SliceStable(checker.warnings, func(i, j int) bool {
 		if checker.warnings[i].Pos.Line != checker.warnings[j].Pos.Line {
@@ -35,9 +45,246 @@ func (s *Script) CheckWarnings() []CheckWarning {
 }
 
 type scriptChecker struct {
-	script   *Script
-	warnings []CheckWarning
-	scopes   []map[string]struct{}
+	script          *Script
+	typeRoot        *Env
+	warnings        []CheckWarning
+	scopes          []map[string]struct{}
+	requiredModules map[string]struct{}
+}
+
+func checkTypeRoot(script *Script, opts CallOptions) *Env {
+	if script == nil {
+		return nil
+	}
+	root := newEnvWithCapacity(nil, len(script.functions)+len(script.classes)+len(script.enums)+len(opts.Globals))
+	callFunctions := cloneFunctionsForCall(script.functions, root)
+	for name, fn := range callFunctions {
+		root.DefineStatic(name, NewFunction(fn))
+	}
+	callClasses := cloneClassesForCall(script.classes, root)
+	for name, classDef := range callClasses {
+		root.Define(name, NewClass(classDef))
+	}
+	callEnums := cloneEnumsForCall(script.enums)
+	for name, enumDef := range callEnums {
+		root.DefineStatic(name, NewEnum(enumDef))
+	}
+	rebinder := newCallFunctionRebinder(script, root, callClasses, callEnums)
+	for name, val := range opts.Globals {
+		root.Define(name, rebinder.rebindValue(val))
+	}
+	return root
+}
+
+func (c *scriptChecker) typeContext() typeContext {
+	return typeContext{owner: c.script, env: c.typeRoot, fallback: c.typeRoot}
+}
+
+func (c *scriptChecker) collectRequiredModuleExports() {
+	if c.script == nil || c.script.engine == nil || c.typeRoot == nil {
+		return
+	}
+	for _, fn := range c.sortedScriptFunctions() {
+		c.collectFunctionRequiredModuleExports(fn)
+	}
+	for _, classDef := range c.sortedClasses() {
+		c.collectRequiredModuleExportsFromStatements(classDef.Body)
+		for _, method := range sortedCheckFunctions(classDef.Methods) {
+			c.collectFunctionRequiredModuleExports(method)
+		}
+		for _, method := range sortedCheckFunctions(classDef.ClassMethods) {
+			c.collectFunctionRequiredModuleExports(method)
+		}
+	}
+}
+
+func (c *scriptChecker) collectFunctionRequiredModuleExports(fn *ScriptFunction) {
+	if fn == nil {
+		return
+	}
+	popScope := c.pushFunctionScope(fn)
+	defer popScope()
+
+	for _, param := range fn.Params {
+		c.collectRequiredModuleExportsFromExpression(param.DefaultVal)
+	}
+	c.collectRequiredModuleExportsFromStatements(fn.Body)
+}
+
+func (c *scriptChecker) collectRequiredModuleExportsFromStatements(statements []Statement) {
+	for _, stmt := range statements {
+		c.collectRequiredModuleExportsFromStatement(stmt)
+	}
+}
+
+func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement) {
+	switch typed := stmt.(type) {
+	case nil:
+		return
+	case *ReturnStmt:
+		c.collectRequiredModuleExportsFromExpression(typed.Value)
+	case *RaiseStmt:
+		c.collectRequiredModuleExportsFromExpression(typed.Value)
+	case *BreakStmt:
+		c.collectRequiredModuleExportsFromExpression(typed.Value)
+	case *AssignStmt:
+		c.collectRequiredModuleExportsFromExpression(typed.Target)
+		c.collectRequiredModuleExportsFromExpression(typed.Value)
+	case *ExprStmt:
+		c.collectRequiredModuleExportsFromExpression(typed.Expr)
+	case *IfStmt:
+		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		c.collectRequiredModuleExportsFromStatements(typed.Consequent)
+		for _, elseIf := range typed.ElseIf {
+			c.collectRequiredModuleExportsFromExpression(elseIf.Condition)
+			c.collectRequiredModuleExportsFromStatements(elseIf.Consequent)
+		}
+		c.collectRequiredModuleExportsFromStatements(typed.Alternate)
+	case *ForStmt:
+		c.collectRequiredModuleExportsFromExpression(typed.Iterable)
+		c.collectRequiredModuleExportsFromStatements(typed.Body)
+	case *WhileStmt:
+		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		c.collectRequiredModuleExportsFromStatements(typed.Body)
+	case *UntilStmt:
+		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		c.collectRequiredModuleExportsFromStatements(typed.Body)
+	case *TryStmt:
+		c.collectRequiredModuleExportsFromStatements(typed.Body)
+		c.collectRequiredModuleExportsFromStatements(typed.Rescue)
+		c.collectRequiredModuleExportsFromStatements(typed.Else)
+		c.collectRequiredModuleExportsFromStatements(typed.Ensure)
+	}
+}
+
+func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expression) {
+	switch typed := expr.(type) {
+	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+		return
+	case *ArrayLiteral:
+		for _, elem := range typed.Elements {
+			c.collectRequiredModuleExportsFromExpression(elem)
+		}
+	case *HashLiteral:
+		for _, pair := range typed.Pairs {
+			c.collectRequiredModuleExportsFromExpression(pair.Key)
+			c.collectRequiredModuleExportsFromExpression(pair.Value)
+		}
+	case *CallExpr:
+		c.collectRequireCallExports(typed)
+		c.collectRequiredModuleExportsFromExpression(typed.Callee)
+		for _, arg := range typed.Args {
+			c.collectRequiredModuleExportsFromExpression(arg)
+		}
+		for _, kwarg := range typed.KwArgs {
+			c.collectRequiredModuleExportsFromExpression(kwarg.Value)
+		}
+		c.collectBlockRequiredModuleExports(typed.Block)
+	case *MemberExpr:
+		c.collectRequiredModuleExportsFromExpression(typed.Object)
+	case *ScopeExpr:
+		c.collectRequiredModuleExportsFromExpression(typed.Object)
+	case *IndexExpr:
+		c.collectRequiredModuleExportsFromExpression(typed.Object)
+		for _, index := range typed.Indices {
+			c.collectRequiredModuleExportsFromExpression(index)
+		}
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			c.collectRequiredModuleExportsFromExpression(element.Target)
+		}
+	case *UnaryExpr:
+		c.collectRequiredModuleExportsFromExpression(typed.Right)
+	case *BinaryExpr:
+		c.collectRequiredModuleExportsFromExpression(typed.Left)
+		c.collectRequiredModuleExportsFromExpression(typed.Right)
+	case *ConditionalExpr:
+		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		c.collectRequiredModuleExportsFromExpression(typed.Consequent)
+		c.collectRequiredModuleExportsFromExpression(typed.Alternate)
+	case *IfExpr:
+		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		c.collectRequiredModuleExportsFromExpression(typed.Consequent)
+		for _, branch := range typed.ElseIf {
+			c.collectRequiredModuleExportsFromExpression(branch.Condition)
+			c.collectRequiredModuleExportsFromExpression(branch.Result)
+		}
+		c.collectRequiredModuleExportsFromExpression(typed.Alternate)
+	case *RangeExpr:
+		c.collectRequiredModuleExportsFromExpression(typed.Start)
+		c.collectRequiredModuleExportsFromExpression(typed.End)
+	case *CaseExpr:
+		c.collectRequiredModuleExportsFromExpression(typed.Target)
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				c.collectRequiredModuleExportsFromExpression(value.Expr)
+			}
+			c.collectRequiredModuleExportsFromExpression(clause.Result)
+		}
+		c.collectRequiredModuleExportsFromExpression(typed.ElseExpr)
+	case *BlockLiteral:
+		c.collectBlockRequiredModuleExports(typed)
+	case *YieldExpr:
+		for _, arg := range typed.Args {
+			c.collectRequiredModuleExportsFromExpression(arg)
+		}
+	case *InterpolatedString:
+		c.collectStringPartRequiredModuleExports(typed.Parts)
+	case *InterpolatedSymbol:
+		c.collectStringPartRequiredModuleExports(typed.Parts)
+	}
+}
+
+func (c *scriptChecker) collectBlockRequiredModuleExports(block *BlockLiteral) {
+	if block == nil {
+		return
+	}
+	popScope := c.pushBlockScope(block)
+	defer popScope()
+
+	for _, param := range block.Params {
+		c.collectRequiredModuleExportsFromExpression(param.DefaultVal)
+	}
+	c.collectRequiredModuleExportsFromStatements(block.Body)
+}
+
+func (c *scriptChecker) collectStringPartRequiredModuleExports(parts []StringPart) {
+	for _, part := range parts {
+		if exprPart, ok := part.(StringExpr); ok {
+			c.collectRequiredModuleExportsFromExpression(exprPart.Expr)
+		}
+	}
+}
+
+func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
+	if len(call.Args) == 0 || c.identifierShadowed("require") {
+		return
+	}
+	callee, ok := call.Callee.(*Identifier)
+	if !ok || callee.Name != "require" {
+		return
+	}
+	moduleName, ok := staticStringLiteralValue(call.Args[0])
+	if !ok {
+		return
+	}
+	if c.requiredModules == nil {
+		c.requiredModules = make(map[string]struct{})
+	}
+	if _, loaded := c.requiredModules[moduleName]; loaded {
+		return
+	}
+	c.requiredModules[moduleName] = struct{}{}
+	entry, err := c.script.engine.loadModule(moduleName, nil)
+	if err != nil {
+		return
+	}
+	for name, enumDef := range cloneEnumsForCall(entry.script.enums) {
+		if _, exists := c.typeRoot.Get(name); exists {
+			continue
+		}
+		c.typeRoot.Define(name, NewEnum(enumDef))
+	}
 }
 
 func (c *scriptChecker) checkScript() {
@@ -297,7 +544,7 @@ func (c *scriptChecker) checkTypeAnnotation(function string, ty *TypeExpr) bool 
 	if ty == nil {
 		return true
 	}
-	if err := validateTypeExprResolved(ty, typeContext{owner: c.script}); err != nil {
+	if err := validateTypeExprResolved(ty, c.typeContext()); err != nil {
 		c.add(function, typeExprPosition(ty), "%s", err)
 		return false
 	}
@@ -331,7 +578,7 @@ func (c *scriptChecker) checkValueAgainstType(function string, pos Position, val
 }
 
 func (c *scriptChecker) checkStaticValueType(val Value, ty *TypeExpr) error {
-	_, err := normalizeValueForType(val, ty, typeContext{owner: c.script})
+	_, err := normalizeValueForType(val, ty, c.typeContext())
 	return err
 }
 
@@ -964,6 +1211,14 @@ func staticLiteralValue(expr Expression) (Value, bool) {
 		return NewRange(Range{Start: start, End: end, Exclusive: typed.Exclusive}), true
 	}
 	return NewNil(), false
+}
+
+func staticStringLiteralValue(expr Expression) (string, bool) {
+	lit, ok := expr.(*StringLiteral)
+	if !ok {
+		return "", false
+	}
+	return lit.Value, true
 }
 
 func staticUnaryLiteralValue(expr *UnaryExpr) (Value, bool) {
