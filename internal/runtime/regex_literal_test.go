@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -329,4 +331,50 @@ func TestRegexLiteralGuards(t *testing.T) {
 	requireCallErrorContains(t, script, "oversized_case_eq", []Value{NewString(huge)}, CallOptions{}, "regex match text exceeds limit")
 	requireCallErrorContains(t, script, "oversized_case_when", []Value{NewString(huge)}, CallOptions{}, "regex match text exceeds limit")
 	requireCallErrorContains(t, script, "oversized_grep", []Value{NewString(huge)}, CallOptions{}, "regex match text exceeds limit")
+}
+
+// TestRegexValuePatternLimitIgnoresFlagPrefix pins that a regex value whose raw
+// source sits at the pattern-size cap still matches through the string helpers
+// and regex members. The internal (?i)/(?s) flag decoration pushes the compiled
+// form past the cap, but the user's source is within it, so those paths must not
+// reject a value that =~ accepts by counting the flag prefix against the budget.
+func TestRegexValuePatternLimitIgnoresFlagPrefix(t *testing.T) {
+	t.Parallel()
+
+	source := strings.Repeat("a", maxRegexPatternSize)
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 64 << 20}, fmt.Sprintf(`
+    def match_op(text)
+      text =~ /%[1]s/i
+    end
+
+    def string_match_q(text)
+      text.match?(/%[1]s/i)
+    end
+
+    def string_sub(text)
+      text.sub(/%[1]s/i, "X")
+    end
+
+    def regex_match_q(text)
+      /%[1]s/i.match?(text)
+    end
+    `, source))
+
+	// Uppercase input matches only because the i-flag decoration is applied, so a
+	// successful match also confirms the decorated pattern is what runs.
+	args := []Value{NewString(strings.Repeat("A", maxRegexPatternSize))}
+	ctx := context.Background()
+
+	if got := callScript(t, ctx, script, "match_op", args, CallOptions{}); got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("=~ = %v, want 0", got)
+	}
+	if got := callScript(t, ctx, script, "string_match_q", args, CallOptions{}); got.Kind() != KindBool || !got.Bool() {
+		t.Fatalf("string.match? = %v, want true", got)
+	}
+	if got := callScript(t, ctx, script, "string_sub", args, CallOptions{}); got.Kind() != KindString || got.String() != "X" {
+		t.Fatalf("string.sub = %v, want \"X\"", got)
+	}
+	if got := callScript(t, ctx, script, "regex_match_q", args, CallOptions{}); got.Kind() != KindBool || !got.Bool() {
+		t.Fatalf("regex.match? = %v, want true", got)
+	}
 }

@@ -137,7 +137,7 @@ func regexMemberBuiltin(property string) (Value, error) {
 			}
 			text := args[0].String()
 			pattern := regexDecoratedPattern(receiver.Regex())
-			if err := validateRegexTextPattern("regex.match", text, pattern); err != nil {
+			if err := validateRegexTextPattern("regex.match", text, pattern, true); err != nil {
 				return NewNil(), err
 			}
 			indices, err := regexSubmatchFromRuneOffset("regex.match", text, pattern, 0)
