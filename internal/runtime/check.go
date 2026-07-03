@@ -497,14 +497,7 @@ func staticStatementValue(stmt Statement) (Value, bool) {
 }
 
 func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
-	if len(call.Args) == 0 || c.requireCallShadowed() {
-		return
-	}
-	callee, ok := call.Callee.(*Identifier)
-	if !ok || callee.Name != "require" {
-		return
-	}
-	moduleName, ok := staticRequireModuleName(call.Args[0])
+	moduleName, ok := c.staticRequireCallModuleName(call)
 	if !ok {
 		return
 	}
@@ -516,6 +509,32 @@ func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
 		return
 	}
 	c.collectModuleExports(entry)
+}
+
+func (c *scriptChecker) staticRequireCallModuleName(call *CallExpr) (string, bool) {
+	if call == nil || len(call.Args) != 1 || call.Block != nil || c.requireCallShadowed() {
+		return "", false
+	}
+	callee, ok := call.Callee.(*Identifier)
+	if !ok || callee.Name != "require" {
+		return "", false
+	}
+	moduleName, ok := staticRequireModuleName(call.Args[0])
+	if !ok {
+		return "", false
+	}
+	kwargs := make(map[string]Value, len(call.KwArgs))
+	for _, kwarg := range call.KwArgs {
+		val, ok := staticLiteralValue(kwarg.Value)
+		if !ok {
+			return "", false
+		}
+		kwargs[kwarg.Name] = val
+	}
+	if _, err := parseRequireAlias(kwargs); err != nil {
+		return "", false
+	}
+	return moduleName, true
 }
 
 func (c *scriptChecker) requireCallShadowed() bool {
@@ -1024,6 +1043,11 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *ExprStmt:
 		c.checkExpression(function, typed.Expr)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Expr)
+	case *ClassStmt:
+		classDef := c.script.classes[typed.Name]
+		if classDef != nil {
+			c.checkRuntimeClassBody(classDef, true)
+		}
 	case *LogicalStmt:
 		c.checkStatement(function, returnType, typed.Left)
 		leftRuntimeState := c.snapshotRuntimeState()

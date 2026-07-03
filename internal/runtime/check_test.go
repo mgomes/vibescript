@@ -244,6 +244,36 @@ end
 	}
 }
 
+func TestCheckWarningsDoNotResolveInvalidArityRequireModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  require("enum_status", "extra")
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "require expects a single module name argument")
+}
+
+func TestCheckWarningsDoNotResolveInvalidKeywordRequireModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  require("enum_status", name: "status")
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "require: unknown keyword argument name")
+}
+
 func TestCheckWarningsResolveRequiredModuleFunctionExports(t *testing.T) {
 	t.Parallel()
 
@@ -324,6 +354,35 @@ end
 	}
 	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
 		t.Fatalf("Call() after class-body required module enum export = %#v, want Status::Draft", got)
+	}
+}
+
+func TestCheckWarningsResolveSnippetDeferredClassBodyRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script, err := engine.CompileSnippet(`
+class Loader
+  require("enum_status")
+end
+
+def normalize(status: Status) -> Status
+  status
+end
+
+normalize(:draft)
+`, "run")
+	if err != nil {
+		t.Fatalf("CompileSnippet failed: %v", err)
+	}
+
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() after deferred class-body required module enum export returned error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call() after deferred class-body required module enum export = %#v, want Status::Draft", got)
 	}
 }
 
