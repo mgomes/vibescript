@@ -30,8 +30,13 @@ BenchmarkBuiltinMemberDispatchLoop 5000000 100 10000
 # unchanged.
 BenchmarkCallTypedCompositeValidation 14000000 2000 250000
 BenchmarkExecutionCapabilityFindLoop 12000000 9000
-BenchmarkExecutionCapabilityWorkflowLoop 16000000 15000
-BenchmarkExecutionJSONParseLoop 3000000 3200 180000
+# Ruby-style hash insertion order stores one lookup-key slot per entry, a bounded
+# per-hash cost that cannot be tracked for free. These two execution benchmarks
+# build many hashes per call (a workflow loop's per-iteration literals; JSON.parse
+# of an object 80x), so their alloc/byte floors rebased to the feature's cost. The
+# caps below still catch a gross regression above that floor; ns/op is unchanged.
+BenchmarkExecutionCapabilityWorkflowLoop 16000000 15600
+BenchmarkExecutionJSONParseLoop 3000000 3200 210000
 BenchmarkExecutionJSONStringifyLoop 3000000 2000 75000
 BenchmarkExecutionRegexReplaceAllLoop 4000000 4000
 BenchmarkExecutionTallyLoop 10000000 2000
