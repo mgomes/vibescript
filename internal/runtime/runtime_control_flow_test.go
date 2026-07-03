@@ -1882,6 +1882,35 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
       [1 / 0 rescue "fallback", 7 rescue "unused"]
     end
 
+    def rescue_modifier_reraise()
+      1 / 0 rescue begin
+        raise
+      end
+    end
+
+    class RescueModifierCounter
+      @@tries = 0
+
+      def self.reset()
+        @@tries = 0
+      end
+
+      def self.bump()
+        @@tries += 1
+        if @@tries < 2
+          raise "again"
+        end
+        @@tries
+      end
+    end
+
+    def rescue_modifier_retry()
+      RescueModifierCounter.reset()
+      RescueModifierCounter.bump() rescue begin
+        retry
+      end
+    end
+
     def ordered_rescue()
       begin
         1 / 0
@@ -2002,6 +2031,10 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
 		NewString("fallback"),
 		NewInt(7),
 	})
+	requireCallErrorContains(t, script, "rescue_modifier_reraise", nil, CallOptions{}, "division by zero")
+	if got := callFunc(t, script, "rescue_modifier_retry", nil); !got.Equal(NewInt(2)) {
+		t.Fatalf("rescue_modifier_retry() = %v, want 2", got)
+	}
 	if got := callFunc(t, script, "ordered_rescue", nil); !got.Equal(NewString("zero")) {
 		t.Fatalf("ordered_rescue() = %v, want zero", got)
 	}

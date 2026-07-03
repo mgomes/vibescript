@@ -845,14 +845,31 @@ func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Val
 }
 
 func (exec *Execution) evalRescueModifierExpr(expr *RescueModifierExpr, env *Env) (Value, error) {
-	result, err := exec.evalExpressionWithAuto(expr.Body, env, true)
-	if err == nil {
-		return result, nil
+	for {
+		result, err := exec.evalExpressionWithAuto(expr.Body, env, true)
+		if err == nil {
+			return result, nil
+		}
+		if isLoopControlSignal(err) || isRescueRetrySignal(err) || isHostControlSignal(err) || isFunctionReturnSignal(err) || !runtimeErrorMatchesRescueType(err, nil) {
+			return NewNil(), err
+		}
+		fallback, fallbackErr := exec.evalRescueModifierFallback(expr.Fallback, err, env)
+		if errors.Is(fallbackErr, errRescueRetry) {
+			continue
+		}
+		if fallbackErr != nil {
+			return NewNil(), fallbackErr
+		}
+		return fallback, nil
 	}
-	if isLoopControlSignal(err) || isHostControlSignal(err) || isFunctionReturnSignal(err) || !runtimeErrorMatchesRescueType(err, nil) {
-		return NewNil(), err
-	}
-	fallback, fallbackErr := exec.evalExpressionWithAuto(expr.Fallback, env, true)
+}
+
+func (exec *Execution) evalRescueModifierFallback(expr Expression, err error, env *Env) (Value, error) {
+	exec.pushRescuedError(err)
+	exec.rescueDepth++
+	fallback, fallbackErr := exec.evalExpressionWithAuto(expr, env, true)
+	exec.rescueDepth--
+	exec.popRescuedError()
 	if fallbackErr != nil {
 		return NewNil(), fallbackErr
 	}
