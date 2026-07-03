@@ -1285,6 +1285,16 @@ end
 
 	requireCheckWarningContains(t, script, "unknown type Status")
 	requireCallErrorContains(t, script, "run", []Value{NewBool(false)}, CallOptions{}, "unknown type Status")
+
+	staticScript := compileScriptWithEngine(t, engine, `
+def run() -> Status
+  false ? require("enum_status") : nil
+  :draft
+end
+`)
+
+	requireCheckWarningContains(t, staticScript, "unknown type Status")
+	requireCallErrorContains(t, staticScript, "run", nil, CallOptions{}, "unknown type Status")
 }
 
 func TestCheckWarningsDoNotLeakConditionalExpressionCallArgumentRequires(t *testing.T) {
@@ -1819,7 +1829,10 @@ def run(flag)
     JSON.parse()
   end
 
-  [value, other]
+  ternary = true ? 1 : JSON.parse()
+  ternary_false = false ? JSON.parse() : 2
+
+  [value, other, ternary, ternary_false]
 end
 
 def typed() -> int
@@ -1830,6 +1843,10 @@ def typed() -> int
   else
     "bad"
   end
+end
+
+def typed_ternary() -> int
+  true ? 1 : "bad"
 end
 
 def exiting()
@@ -1849,6 +1866,9 @@ end
 	}
 	if _, err := script.Call(context.Background(), "typed", nil, CallOptions{}); err != nil {
 		t.Fatalf("Call(%q) with unreachable typed branches returned error: %v", "typed", err)
+	}
+	if _, err := script.Call(context.Background(), "typed_ternary", nil, CallOptions{}); err != nil {
+		t.Fatalf("Call(%q) with unreachable typed ternary branch returned error: %v", "typed_ternary", err)
 	}
 	if _, err := script.Call(context.Background(), "exiting", nil, CallOptions{}); err != nil {
 		t.Fatalf("Call(%q) with statically exiting branch returned error: %v", "exiting", err)

@@ -426,7 +426,11 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		}
 	case *ConditionalExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
-		c.collectRequiredModuleExportsFromExpressionBranches(typed.Consequent, typed.Alternate)
+		if branch, ok := staticConditionalExpressionBranch(typed); ok {
+			c.collectRequiredModuleExportsFromExpression(branch)
+		} else {
+			c.collectRequiredModuleExportsFromExpressionBranches(typed.Consequent, typed.Alternate)
+		}
 	case *IfExpr:
 		baseState := c.snapshotModuleCollectionState()
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
@@ -1984,11 +1988,19 @@ func (c *scriptChecker) checkConditionalExpression(function string, expr *Condit
 	branchRuntimeStates := make([]checkRuntimeState, 0, 2)
 	branchScopeStates := make([]checkScopeState, 0, 2)
 
-	c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
-	c.checkExpressionWithAuto(function, expr.Consequent, true)
-	c.collectRuntimeRequireCallExportsFromExpression(expr.Consequent)
-	branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+	conditionTruthy, conditionKnown := staticExpressionTruthiness(expr.Condition)
+	if !conditionKnown || conditionTruthy {
+		c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
+		c.checkExpressionWithAuto(function, expr.Consequent, true)
+		c.collectRuntimeRequireCallExportsFromExpression(expr.Consequent)
+		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		if conditionKnown {
+			c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+			c.mergeScopeStates(baseScopeState, branchScopeStates)
+			return
+		}
+	}
 
 	c.restoreRuntimeState(conditionRuntimeState)
 	c.restoreScopeState(conditionScopeState)
@@ -2273,8 +2285,13 @@ func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map
 		}
 		return binaryRightMayEvaluate(typed) && c.expressionMayEvaluateCallBlock(typed.Right, seen)
 	case *ConditionalExpr:
-		return c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
-			c.expressionMayEvaluateCallBlock(typed.Consequent, seen) ||
+		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) {
+			return true
+		}
+		if branch, ok := staticConditionalExpressionBranch(typed); ok {
+			return c.expressionMayEvaluateCallBlock(branch, seen)
+		}
+		return c.expressionMayEvaluateCallBlock(typed.Consequent, seen) ||
 			c.expressionMayEvaluateCallBlock(typed.Alternate, seen)
 	case *IfExpr:
 		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
@@ -2668,6 +2685,9 @@ func expressionCanImplicitlyYieldNil(expr Expression) bool {
 		}
 		return typed.Alternate == nil || expressionCanImplicitlyYieldNil(typed.Alternate)
 	case *ConditionalExpr:
+		if branch, ok := staticConditionalExpressionBranch(typed); ok {
+			return expressionCanImplicitlyYieldNil(branch)
+		}
 		return expressionCanImplicitlyYieldNil(typed.Consequent) ||
 			expressionCanImplicitlyYieldNil(typed.Alternate)
 	}
@@ -3465,6 +3485,17 @@ func staticExpressionTruthiness(expr Expression) (bool, bool) {
 		return false, false
 	}
 	return val.Truthy(), true
+}
+
+func staticConditionalExpressionBranch(expr *ConditionalExpr) (Expression, bool) {
+	truthy, ok := staticExpressionTruthiness(expr.Condition)
+	if !ok {
+		return nil, false
+	}
+	if truthy {
+		return expr.Consequent, true
+	}
+	return expr.Alternate, true
 }
 
 func staticRequireModuleName(expr Expression) (string, bool) {
