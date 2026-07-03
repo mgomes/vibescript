@@ -27,10 +27,13 @@ func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
 		return nil
 	}
 	checker := scriptChecker{
-		script:      s,
-		typeRoot:    checkTypeRoot(s, opts),
-		hostGlobals: checkHostGlobals(opts),
+		script:          s,
+		callOptions:     opts,
+		typeRoot:        checkTypeRoot(s, opts),
+		runtimeTypeRoot: checkTypeRoot(s, opts),
+		hostGlobals:     checkHostGlobals(opts),
 	}
+	checker.moduleExportRoot = checker.typeRoot
 	checker.collectRequiredModuleExports()
 	checker.checkScript()
 	sort.SliceStable(checker.warnings, func(i, j int) bool {
@@ -46,13 +49,17 @@ func (s *Script) CheckWarningsWithOptions(opts CallOptions) []CheckWarning {
 }
 
 type scriptChecker struct {
-	script          *Script
-	typeRoot        *Env
-	hostGlobals     map[string]struct{}
-	warnings        []CheckWarning
-	scopes          []map[string]struct{}
-	requiredModules map[string]struct{}
-	moduleCaller    *moduleContext
+	script           *Script
+	callOptions      CallOptions
+	typeRoot         *Env
+	runtimeTypeRoot  *Env
+	hostGlobals      map[string]struct{}
+	warnings         []CheckWarning
+	scopes           []map[string]struct{}
+	requiredModules  map[string]struct{}
+	runtimeModules   map[string]struct{}
+	moduleCaller     *moduleContext
+	moduleExportRoot *Env
 }
 
 func checkHostGlobals(opts CallOptions) map[string]struct{} {
@@ -92,6 +99,13 @@ func checkTypeRoot(script *Script, opts CallOptions) *Env {
 
 func (c *scriptChecker) typeContext() typeContext {
 	return typeContext{owner: c.script, env: c.typeRoot, fallback: c.typeRoot}
+}
+
+func (c *scriptChecker) runtimeTypeContext() typeContext {
+	if c.runtimeTypeRoot == nil {
+		return c.typeContext()
+	}
+	return typeContext{owner: c.script, env: c.runtimeTypeRoot, fallback: c.runtimeTypeRoot}
 }
 
 func (c *scriptChecker) collectRequiredModuleExports() {
@@ -301,11 +315,15 @@ func (c *scriptChecker) collectModuleExports(entry moduleEntry) {
 	}
 	c.requiredModules[entry.key] = struct{}{}
 	c.collectRequiredModuleExportsFromModuleEntrypoint(entry)
+	root := c.moduleExportRoot
+	if root == nil {
+		root = c.typeRoot
+	}
 	for name, enumDef := range cloneEnumsForCall(entry.script.enums) {
-		if _, exists := c.typeRoot.Get(name); exists {
+		if _, exists := root.Get(name); exists {
 			continue
 		}
-		c.typeRoot.Define(name, NewEnum(enumDef))
+		root.Define(name, NewEnum(enumDef))
 	}
 }
 
@@ -327,19 +345,56 @@ func (c *scriptChecker) collectRequiredModuleExportsFromModuleEntrypoint(entry m
 	c.collectFunctionRequiredModuleExports(fn)
 }
 
+func (c *scriptChecker) collectRuntimeRequireCallExportsFromExpression(expr Expression) {
+	if c.runtimeTypeRoot == nil {
+		return
+	}
+	previousRoot := c.moduleExportRoot
+	previousModules := c.requiredModules
+	c.moduleExportRoot = c.runtimeTypeRoot
+	c.requiredModules = c.runtimeModules
+	defer func() {
+		c.runtimeModules = c.requiredModules
+		c.moduleExportRoot = previousRoot
+		c.requiredModules = previousModules
+	}()
+
+	c.collectRequiredModuleExportsFromExpression(expr)
+}
+
 func (c *scriptChecker) checkScript() {
 	for _, fn := range c.sortedScriptFunctions() {
-		c.checkFunction(fn.Name, fn)
+		c.withFreshRuntimeTypeRoot(func() {
+			c.checkFunction(fn.Name, fn)
+		})
 	}
 	for _, classDef := range c.sortedClasses() {
-		c.checkStatements(classDef.Name+".<class body>", nil, classDef.Body)
+		c.withFreshRuntimeTypeRoot(func() {
+			c.checkStatements(classDef.Name+".<class body>", nil, classDef.Body)
+		})
 		for _, method := range sortedCheckFunctions(classDef.Methods) {
-			c.checkFunction(classDef.Name+"#"+method.Name, method)
+			c.withFreshRuntimeTypeRoot(func() {
+				c.checkFunction(classDef.Name+"#"+method.Name, method)
+			})
 		}
 		for _, method := range sortedCheckFunctions(classDef.ClassMethods) {
-			c.checkFunction(classDef.Name+"."+method.Name, method)
+			c.withFreshRuntimeTypeRoot(func() {
+				c.checkFunction(classDef.Name+"."+method.Name, method)
+			})
 		}
 	}
+}
+
+func (c *scriptChecker) withFreshRuntimeTypeRoot(check func()) {
+	previousRoot := c.runtimeTypeRoot
+	previousModules := c.runtimeModules
+	c.runtimeTypeRoot = checkTypeRoot(c.script, c.callOptions)
+	c.runtimeModules = nil
+	defer func() {
+		c.runtimeTypeRoot = previousRoot
+		c.runtimeModules = previousModules
+	}()
+	check()
 }
 
 func (c *scriptChecker) sortedScriptFunctions() []*ScriptFunction {
@@ -430,8 +485,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *AssignStmt:
 		c.checkExpression(function, typed.Target)
 		c.checkExpression(function, typed.Value)
+		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 	case *ExprStmt:
 		c.checkExpression(function, typed.Expr)
+		c.collectRuntimeRequireCallExportsFromExpression(typed.Expr)
 	case *IfStmt:
 		c.checkExpression(function, typed.Condition)
 		c.checkStatements(function, returnType, typed.Consequent)
@@ -619,6 +676,11 @@ func (c *scriptChecker) checkValueAgainstType(function string, pos Position, val
 
 func (c *scriptChecker) checkStaticValueType(val Value, ty *TypeExpr) error {
 	_, err := normalizeValueForType(val, ty, c.typeContext())
+	return err
+}
+
+func (c *scriptChecker) checkRuntimeStaticValueType(val Value, ty *TypeExpr) error {
+	_, err := normalizeValueForType(val, ty, c.runtimeTypeContext())
 	return err
 }
 
@@ -941,6 +1003,9 @@ func (c *scriptChecker) staticConstructorClass(member *MemberExpr) (string, bool
 	if c.identifierShadowed(ident.Name) {
 		return "", false
 	}
+	if c.hostGlobalShadows(ident.Name) {
+		return "", false
+	}
 	if _, ok := c.script.classes[ident.Name]; !ok {
 		return "", false
 	}
@@ -1170,7 +1235,7 @@ func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Positi
 		}
 		values = append(values, val)
 	}
-	if err := c.checkStaticValueType(NewArray(values), ty); err != nil {
+	if err := c.checkRuntimeStaticValueType(NewArray(values), ty); err != nil {
 		warningPos := pos
 		if len(args) > 0 {
 			warningPos = args[0].Pos()
@@ -1206,7 +1271,7 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 	if warningPos == (Position{}) {
 		warningPos = pos
 	}
-	if err := c.checkStaticValueType(NewHash(values), ty); err != nil {
+	if err := c.checkRuntimeStaticValueType(NewHash(values), ty); err != nil {
 		var mismatch *typeMismatchError
 		if errors.As(err, &mismatch) {
 			c.add(function, warningPos, "call to %s argument %s expected %s, got %s", callName, paramName, mismatch.Expected, mismatch.Actual)
@@ -1221,7 +1286,7 @@ func (c *scriptChecker) checkArgumentExpression(function string, expr Expression
 	if !ok || ty == nil || !c.checkTypeAnnotation(function, ty) {
 		return
 	}
-	if err := c.checkStaticValueType(val, ty); err != nil {
+	if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
 		var mismatch *typeMismatchError
 		if errors.As(err, &mismatch) {
 			c.add(function, expr.Pos(), "call to %s argument %s expected %s, got %s", callName, paramName, mismatch.Expected, mismatch.Actual)

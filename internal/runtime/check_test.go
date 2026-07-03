@@ -134,6 +134,42 @@ end
 	if !got.Equal(NewInt(2)) {
 		t.Fatalf("Call() with host Box global = %s, want 2", got)
 	}
+
+	chainedScript := compileScript(t, `
+class ChainBox
+  def initialize()
+  end
+
+  def take(v)
+    v
+  end
+end
+
+def run()
+  ChainBox.new.take(1, 2)
+end
+`)
+	requireCheckWarningContains(t, chainedScript, "call to ChainBox#take has unexpected positional arguments")
+
+	hostChainBox := NewObject(map[string]Value{
+		"new": NewAutoBuiltin("ChainBox.new", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			return NewObject(map[string]Value{
+				"take": NewBuiltin("ChainBox#take", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+					return NewInt(int64(len(args))), nil
+				}),
+			}), nil
+		}),
+	})
+	chainedOpts := CallOptions{Globals: map[string]Value{"ChainBox": hostChainBox}}
+	requireNoCheckWarningsWithOptions(t, chainedScript, chainedOpts)
+
+	got, err = chainedScript.Call(context.Background(), "run", nil, chainedOpts)
+	if err != nil {
+		t.Fatalf("Call() with host ChainBox global returned error: %v", err)
+	}
+	if !got.Equal(NewInt(2)) {
+		t.Fatalf("Call() with host ChainBox global = %s, want 2", got)
+	}
 }
 
 func TestCheckWarningsRespectRegisteredBuiltinsBeforeSpecs(t *testing.T) {
@@ -229,6 +265,25 @@ end
 	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Published" {
 		t.Fatalf("Call() after transitive module enum export = %#v, want Status::Published", got)
 	}
+}
+
+func TestCheckWarningsDoNotHoistRequiredModuleEnumExportsBeforeRequire(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def normalize(status: Status) -> Status
+  status
+end
+
+def run()
+  normalize(:draft)
+  require("enum_status")
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Status")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
 }
 
 func TestCheckWarningsDoNotTreatShadowedRequireAsModuleImport(t *testing.T) {
