@@ -2201,6 +2201,28 @@ end`,
 			want: "call to one has unexpected positional arguments",
 		},
 		{
+			name: "function call member argument type",
+			source: `def accept(v: int)
+  v
+end
+
+def run()
+  accept.call("bad")
+end`,
+			want: "call to accept.call argument v expected int, got string",
+		},
+		{
+			name: "auto-invoked function call member arity",
+			source: `def accept(v)
+  v
+end
+
+def run()
+  accept.call
+end`,
+			want: "call to accept.call is missing argument v",
+		},
+		{
 			name: "typed rest argument",
 			source: `def collect(*items: array<int>)
   items

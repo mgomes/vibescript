@@ -2668,6 +2668,14 @@ func checkRootFunction(root *Env, name string) (*ScriptFunction, bool) {
 	return fn, fn != nil
 }
 
+func (c *scriptChecker) typeRootFunctionValue(name string) (*ScriptFunction, bool) {
+	fn, ok := c.typeRootFunction(name)
+	if !ok || len(fn.Params) == 0 {
+		return nil, false
+	}
+	return fn, true
+}
+
 func (c *scriptChecker) typeRootHasBinding(name string) bool {
 	for _, root := range []*Env{c.runtimeTypeRoot, c.typeRoot} {
 		if root != nil && root.hasOwnBinding(name) {
@@ -2696,6 +2704,11 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		}
 		if c.hostGlobalShadows(ident.Name) {
 			return staticCallable{}, false
+		}
+		if member.Property == "call" {
+			if fn, ok := c.typeRootFunctionValue(ident.Name); ok {
+				return staticCallable{name: ident.Name + ".call", fn: fn, resolution: calleeDirect}, true
+			}
 		}
 		if classDef, ok := c.script.classes[ident.Name]; ok {
 			if member.Property == "new" {
