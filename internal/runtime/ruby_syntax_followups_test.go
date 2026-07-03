@@ -166,3 +166,33 @@ end
 		NewString("X"),
 	})
 }
+
+func TestQualifiedModuleEnumTypeAnnotations(t *testing.T) {
+	t.Parallel()
+	engine := moduleTestEngine(t)
+	script, err := engine.CompileSnippet(`
+Status = "local"
+status_mod = require("enum_status", as: "status_mod")
+
+def echo(status: status_mod.Status) -> status_mod.Status
+  status
+end
+
+def echo_nullable(status: status_mod.Status? = nil) -> status_mod.Status?
+  status
+end
+
+def run()
+  [echo(:draft).name, echo_nullable()]
+end
+run()
+`, "__main")
+	if err != nil {
+		t.Fatalf("compile snippet: %v", err)
+	}
+
+	compareArrays(t, callScript(t, t.Context(), script, "__main", nil, CallOptions{}), []Value{
+		NewString("Draft"),
+		NewNil(),
+	})
+}

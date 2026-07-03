@@ -621,6 +621,25 @@ func resolveEnumType(ty *TypeExpr, ctx typeContext) (*EnumDef, error) {
 	if ty.Kind != TypeEnum {
 		return nil, fmt.Errorf("unknown type %s", ty.Name)
 	}
+	if qualifier, enumName, qualified := strings.Cut(ty.Name, "."); qualified {
+		enumDef, ok, err := lookupQualifiedEnumInEnv(ctx.env, qualifier, enumName)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return enumDef, nil
+		}
+		if ctx.fallback != ctx.env {
+			enumDef, ok, err := lookupQualifiedEnumInEnv(ctx.fallback, qualifier, enumName)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return enumDef, nil
+			}
+		}
+		return nil, fmt.Errorf("unknown type %s", ty.Name)
+	}
 	enumDef, ok, err := lookupEnumInEnv(ctx.env, ty.Name)
 	if err != nil {
 		return nil, err
@@ -677,6 +696,50 @@ func validateTypeExprResolved(ty *TypeExpr, ctx typeContext) error {
 		}
 	}
 	return nil
+}
+
+func lookupQualifiedEnumInEnv(env *Env, qualifier, enumName string) (*EnumDef, bool, error) {
+	for scope := env; scope != nil; scope = scope.parent {
+		val, ok := scope.getOwn(qualifier)
+		if !ok {
+			continue
+		}
+		enumDef, ok, err := enumFromNamespaceValue(val, enumName)
+		if err != nil || ok {
+			return enumDef, ok, err
+		}
+	}
+	return nil, false, nil
+}
+
+func enumFromNamespaceValue(val Value, enumName string) (*EnumDef, bool, error) {
+	if val.Kind() != KindObject {
+		return nil, false, nil
+	}
+	entries := val.Hash()
+	if enumVal, ok := entries[enumName]; ok && enumVal.Kind() == KindEnum {
+		return valueEnum(enumVal), true, nil
+	}
+
+	var match *EnumDef
+	matches := make([]string, 0, 2)
+	for name, enumVal := range entries {
+		if enumVal.Kind() != KindEnum || !strings.EqualFold(name, enumName) {
+			continue
+		}
+		matches = append(matches, name)
+		if match == nil {
+			match = valueEnum(enumVal)
+			continue
+		}
+		if match != valueEnum(enumVal) {
+			return nil, false, ambiguousEnumTypeError(enumName, matches)
+		}
+	}
+	if match != nil {
+		return match, true, nil
+	}
+	return nil, false, nil
 }
 
 func lookupEnumDef(owner *Script, name string) (*EnumDef, bool, error) {

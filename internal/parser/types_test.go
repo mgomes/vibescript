@@ -98,6 +98,25 @@ end`
 	}
 }
 
+func TestParserQualifiedEnumTypeAnnotation(t *testing.T) {
+	t.Parallel()
+	source := `def echo(status: status_mod.Status) -> status_mod.Status?
+  status
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+	fn := got.Statements[0].(*ast.FunctionStmt)
+	if got := fn.Params[0].Type; got.Name != "status_mod.Status" || got.Kind != ast.TypeEnum || got.Nullable {
+		t.Fatalf("param type = %#v, want non-null status_mod.Status enum", got)
+	}
+	if got := fn.ReturnTy; got.Name != "status_mod.Status" || got.Kind != ast.TypeEnum || !got.Nullable {
+		t.Fatalf("return type = %#v, want nullable status_mod.Status enum", got)
+	}
+}
+
 func TestParserTypeShapeAllowsEnumFieldName(t *testing.T) {
 	t.Parallel()
 	source := `def run(payload: { enum: string, nested: { enum: int } })

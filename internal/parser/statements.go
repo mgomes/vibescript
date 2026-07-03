@@ -1478,6 +1478,8 @@ func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool
 		return false
 	case ast.TokenLT:
 		return p.identLessThanStartsExpression()
+	case ast.TokenDot:
+		return !p.dottedTypeAnnotationFollows(options)
 	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
 		return !options.lineLimitedDefaults
 	default:
@@ -1486,6 +1488,32 @@ func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool
 		}
 		return true
 	}
+}
+
+func (p *parser) dottedTypeAnnotationFollows(options paramParseOptions) bool {
+	saved := p.snapshot()
+	defer p.restore(saved)
+
+	p.nextToken()
+	p.nextToken()
+	if p.peekToken.Type != ast.TokenIdent {
+		return false
+	}
+	p.nextToken()
+	if !startsUppercaseIdentifier(p.curToken.Literal) {
+		return false
+	}
+	if strings.HasSuffix(p.curToken.Literal, "?") {
+		return p.typeAnnotationBoundaryFollows(options)
+	}
+	if p.peekToken.Type == ast.TokenQuestion {
+		p.nextToken()
+	}
+	return p.typeAnnotationBoundaryFollows(options)
+}
+
+func startsUppercaseIdentifier(name string) bool {
+	return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
 }
 
 // identLessThanStartsExpression reports whether `ident <` (with ident at

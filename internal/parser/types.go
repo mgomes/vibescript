@@ -76,6 +76,25 @@ func (p *parser) parseTypeAtom() *ast.TypeExpr {
 			ty.Name = strings.TrimSuffix(ty.Name, "?")
 		}
 	}
+	if ty.Kind == ast.TypeEnum && p.peekToken.Type == ast.TokenDot {
+		if ty.Nullable {
+			p.addParseError(p.curToken.Pos, fmt.Sprintf("nullable suffix on %s is misplaced; write %s.Name? instead", ty.Name, strings.TrimSuffix(ty.Name, "?")))
+			return nil
+		}
+		p.nextToken()
+		if !p.expectPeek(ast.TokenIdent) {
+			return nil
+		}
+		member := p.curToken.Literal
+		if strings.HasSuffix(member, "?") {
+			member = strings.TrimSuffix(member, "?")
+			ty.Nullable = true
+		} else if p.peekToken.Type == ast.TokenQuestion {
+			ty.Nullable = true
+			p.nextToken()
+		}
+		ty.Name += "." + member
+	}
 
 	if p.peekToken.Type == ast.TokenLT {
 		if ty.Kind != ast.TypeArray && ty.Kind != ast.TypeHash {
