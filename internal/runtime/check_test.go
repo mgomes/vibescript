@@ -617,6 +617,54 @@ end
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
 }
 
+func TestCheckWarningsResolveReachableLogicalStatementRequiredModuleEnumExports(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "word and",
+			source: `
+def run() -> Status
+  true and require("enum_status")
+  :draft
+end
+`,
+			want: "Draft",
+		},
+		{
+			name: "word or",
+			source: `
+def run() -> Status
+  false or require("enum_status")
+  :published
+end
+`,
+			want: "Published",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			engine := moduleTestEngine(t)
+			script := compileScriptWithEngine(t, engine, tc.source)
+			requireNoCheckWarnings(t, script)
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("Call() after logical-statement require returned error: %v", err)
+			}
+			if got.Kind() != KindEnumValue || valueEnumValue(got).Name != tc.want {
+				t.Fatalf("Call() after logical-statement require = %#v, want Status::%s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckWarningsDoNotHoistConditionalExpressionRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
@@ -790,6 +838,8 @@ func TestCheckWarningsSkipUnreachableShortCircuitOperands(t *testing.T) {
 def run()
   false && rand(1, 2)
   true || rand(1, 2)
+  false and rand(1, 2)
+  true or rand(1, 2)
 end
 `)
 

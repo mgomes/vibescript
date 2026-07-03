@@ -183,7 +183,16 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.collectRequiredModuleExportsFromExpression(typed.Expr)
 	case *LogicalStmt:
 		c.collectRequiredModuleExportsFromStatement(typed.Left)
-		c.recordLocalBindings([]Statement{typed})
+		leftState := c.snapshotModuleCollectionState()
+		leftScopeState := c.snapshotScopeState()
+		if logicalStatementRightMayEvaluate(typed) {
+			c.collectRequiredModuleExportsFromStatement(typed.Right)
+			if !logicalStatementRightAlwaysEvaluates(typed) {
+				c.restoreModuleCollectionState(leftState)
+				c.restoreScopeState(leftScopeState)
+				c.recordLocalBindings([]Statement{typed})
+			}
+		}
 	case *IfStmt:
 		baseState := c.snapshotModuleCollectionState()
 		baseScopeState := c.snapshotScopeState()
@@ -409,6 +418,53 @@ func binaryRightMayEvaluate(expr *BinaryExpr) bool {
 		return !ok || !val.Truthy()
 	default:
 		return true
+	}
+}
+
+func logicalStatementRightAlwaysEvaluates(stmt *LogicalStmt) bool {
+	if stmt == nil || statementAlwaysExits(stmt.Left) {
+		return false
+	}
+	val, ok := staticStatementValue(stmt.Left)
+	if !ok {
+		return false
+	}
+	switch stmt.Operator {
+	case tokenWordAnd:
+		return val.Truthy()
+	case tokenWordOr:
+		return !val.Truthy()
+	default:
+		return false
+	}
+}
+
+func logicalStatementRightMayEvaluate(stmt *LogicalStmt) bool {
+	if stmt == nil || statementAlwaysExits(stmt.Left) {
+		return false
+	}
+	val, ok := staticStatementValue(stmt.Left)
+	if !ok {
+		return true
+	}
+	switch stmt.Operator {
+	case tokenWordAnd:
+		return val.Truthy()
+	case tokenWordOr:
+		return !val.Truthy()
+	default:
+		return true
+	}
+}
+
+func staticStatementValue(stmt Statement) (Value, bool) {
+	switch typed := stmt.(type) {
+	case *ExprStmt:
+		return staticLiteralValue(typed.Expr)
+	case *AssignStmt:
+		return staticLiteralValue(typed.Value)
+	default:
+		return NewNil(), false
 	}
 }
 
@@ -926,10 +982,14 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkStatement(function, returnType, typed.Left)
 		leftRuntimeState := c.snapshotRuntimeState()
 		leftScopeState := c.snapshotScopeState()
-		c.checkStatement(function, returnType, typed.Right)
-		c.restoreRuntimeState(leftRuntimeState)
-		c.restoreScopeState(leftScopeState)
-		c.recordLocalBindings([]Statement{typed})
+		if logicalStatementRightMayEvaluate(typed) {
+			c.checkStatement(function, returnType, typed.Right)
+			if !logicalStatementRightAlwaysEvaluates(typed) {
+				c.restoreRuntimeState(leftRuntimeState)
+				c.restoreScopeState(leftScopeState)
+				c.recordLocalBindings([]Statement{typed})
+			}
+		}
 	case *IfStmt:
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
