@@ -37,7 +37,12 @@ func (p *parser) parseLineExpressionUntilForced(precedence int, stop ...ast.Toke
 	stopLen := len(p.lineLimitedStops)
 	forcedStopLen := len(p.lineLimitedForcedStops)
 	p.lineLimitedStops = append(p.lineLimitedStops, stop...)
-	p.lineLimitedForcedStops = append(p.lineLimitedForcedStops, stop...)
+	for _, token := range stop {
+		p.lineLimitedForcedStops = append(p.lineLimitedForcedStops, lineLimitedForcedStop{
+			token:       token,
+			suppression: p.lineLimitedStopSuppression,
+		})
+	}
 	defer func() {
 		p.lineLimitedExprs--
 		p.lineLimitedStops = p.lineLimitedStops[:stopLen]
@@ -139,7 +144,7 @@ func (p *parser) peekStopsLineExpression() bool {
 
 func (p *parser) lineStopForced(stop ast.TokenType) bool {
 	for _, forced := range p.lineLimitedForcedStops {
-		if forced == stop {
+		if forced.token == stop && forced.suppression == p.lineLimitedStopSuppression {
 			return true
 		}
 	}

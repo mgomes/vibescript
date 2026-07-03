@@ -158,6 +158,21 @@ end`
 	}
 }
 
+func TestParserNotOperandAllowsNestedWordOperators(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  grouped = not (a or b)
+  array = not [a or b]
+  call_arg = not call(a or b)
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+}
+
 func TestParserNotPrecedenceInsideGroupedExpression(t *testing.T) {
 	t.Parallel()
 

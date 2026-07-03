@@ -25,7 +25,7 @@ type parser struct {
 	privateNext                bool
 	lineLimitedExprs           int
 	lineLimitedStops           []ast.TokenType
-	lineLimitedForcedStops     []ast.TokenType
+	lineLimitedForcedStops     []lineLimitedForcedStop
 	lineLimitedStopSuppression int
 	statementNesting           int
 	typeDepth                  int
@@ -38,6 +38,11 @@ type parser struct {
 	// bracedGroupIsShapeType keep such a clearly-shape-like diagnostic instead
 	// of silently reinterpreting the braces as a hash-literal default.
 	shapeStructurallyInvalid bool
+}
+
+type lineLimitedForcedStop struct {
+	token       ast.TokenType
+	suppression int
 }
 
 // localScope records the local names declared within a single lexical
