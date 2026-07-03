@@ -4222,6 +4222,9 @@ func arrayProduct(exec *Execution, receiver Value, args []Value, kwargs map[stri
 			return NewNil(), err
 		}
 	}
+	if err := exec.checkStepBudgetFor(count); err != nil {
+		return NewNil(), err
+	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	if err := acc.reserveScratch(arrayIntScratchBytes(len(dims))); err != nil {
 		return NewNil(), err
