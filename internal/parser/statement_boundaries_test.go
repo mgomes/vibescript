@@ -85,6 +85,31 @@ end`
 	}
 }
 
+func TestParserZeroArgCallMarksParenthesized(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  x = value()
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	assign, ok := body[0].(*ast.AssignStmt)
+	if !ok {
+		t.Fatalf("body[0] = %T, want *ast.AssignStmt", body[0])
+	}
+	call, ok := assign.Value.(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("assignment value = %T, want *ast.CallExpr", assign.Value)
+	}
+	if !call.Parenthesized {
+		t.Fatalf("value() Parenthesized = false, want true")
+	}
+}
+
 func TestParserParenlessSingleArgumentCalls(t *testing.T) {
 	t.Parallel()
 	source := `def run

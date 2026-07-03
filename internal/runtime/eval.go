@@ -2410,7 +2410,7 @@ func (exec *Execution) evalLocalScopeStatements(stmts []Statement, env *Env) (Va
 func predeclareStatementLocalBindings(stmt Statement, env *Env) {
 	switch s := stmt.(type) {
 	case *AssignStmt:
-		predeclareDirectTargetBindingNames(s.Target, env)
+		predeclareAssignmentLocalBindings(s, env)
 	case *ForStmt:
 		predeclareTargetBindingNames(s.Target, env)
 	}
@@ -2438,6 +2438,35 @@ func statementCanPostPredeclareLocalBindings(stmt Statement) bool {
 	default:
 		return false
 	}
+}
+
+func predeclareAssignmentLocalBindings(stmt *AssignStmt, env *Env) {
+	skip := assignmentTargetNamesCalledWithParens(stmt)
+	predeclareDirectTargetBindingNamesExcept(stmt.Target, env, skip)
+}
+
+func assignmentTargetNamesCalledWithParens(stmt *AssignStmt) map[string]struct{} {
+	var targets localBindingCollector
+	collectTargetBindingNames(stmt.Target, &targets)
+	if len(targets.names) == 0 {
+		return nil
+	}
+	called := make(map[string]struct{})
+	collectParenthesizedIdentifierCallNames(stmt.Value, called)
+	if len(called) == 0 {
+		return nil
+	}
+	var skip map[string]struct{}
+	for _, name := range targets.names {
+		if _, ok := called[name]; !ok {
+			continue
+		}
+		if skip == nil {
+			skip = make(map[string]struct{})
+		}
+		skip[name] = struct{}{}
+	}
+	return skip
 }
 
 type localBindingCollector struct {
@@ -2508,17 +2537,106 @@ func predeclareTargetBindingNames(target Expression, env *Env) {
 	}
 }
 
-func predeclareDirectTargetBindingNames(target Expression, env *Env) {
+func predeclareDirectTargetBindingNamesExcept(target Expression, env *Env, skip map[string]struct{}) {
 	if env.rebindOuter {
 		predeclareTargetBindingNames(target, env)
 		return
 	}
 	switch t := target.(type) {
 	case *Identifier:
-		env.PredeclareLocalUnlessParentBinding(t.Name)
+		if _, ok := skip[t.Name]; !ok {
+			env.PredeclareLocalUnlessParentBinding(t.Name)
+		}
 	case *DestructureTarget:
 		for _, element := range t.Elements {
-			predeclareDirectTargetBindingNames(element.Target, env)
+			predeclareDirectTargetBindingNamesExcept(element.Target, env, skip)
+		}
+	}
+}
+
+func collectParenthesizedIdentifierCallNames(expr Expression, out map[string]struct{}) {
+	switch t := expr.(type) {
+	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+		return
+	case *ArrayLiteral:
+		for _, elem := range t.Elements {
+			collectParenthesizedIdentifierCallNames(elem, out)
+		}
+	case *HashLiteral:
+		for _, pair := range t.Pairs {
+			collectParenthesizedIdentifierCallNames(pair.Key, out)
+			collectParenthesizedIdentifierCallNames(pair.Value, out)
+		}
+	case *CallExpr:
+		if ident, ok := t.Callee.(*Identifier); ok && t.Parenthesized {
+			out[ident.Name] = struct{}{}
+		}
+		collectParenthesizedIdentifierCallNames(t.Callee, out)
+		for _, arg := range t.Args {
+			collectParenthesizedIdentifierCallNames(arg, out)
+		}
+		for _, kwarg := range t.KwArgs {
+			collectParenthesizedIdentifierCallNames(kwarg.Value, out)
+		}
+	case *MemberExpr:
+		collectParenthesizedIdentifierCallNames(t.Object, out)
+	case *ScopeExpr:
+		collectParenthesizedIdentifierCallNames(t.Object, out)
+	case *IndexExpr:
+		collectParenthesizedIdentifierCallNames(t.Object, out)
+		for _, index := range t.Indices {
+			collectParenthesizedIdentifierCallNames(index, out)
+		}
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			collectParenthesizedIdentifierCallNames(element.Target, out)
+		}
+	case *UnaryExpr:
+		collectParenthesizedIdentifierCallNames(t.Right, out)
+	case *BinaryExpr:
+		collectParenthesizedIdentifierCallNames(t.Left, out)
+		collectParenthesizedIdentifierCallNames(t.Right, out)
+	case *ConditionalExpr:
+		collectParenthesizedIdentifierCallNames(t.Condition, out)
+		collectParenthesizedIdentifierCallNames(t.Consequent, out)
+		collectParenthesizedIdentifierCallNames(t.Alternate, out)
+	case *IfExpr:
+		collectParenthesizedIdentifierCallNames(t.Condition, out)
+		collectParenthesizedIdentifierCallNames(t.Consequent, out)
+		for _, branch := range t.ElseIf {
+			collectParenthesizedIdentifierCallNames(branch.Condition, out)
+			collectParenthesizedIdentifierCallNames(branch.Result, out)
+		}
+		collectParenthesizedIdentifierCallNames(t.Alternate, out)
+	case *RangeExpr:
+		collectParenthesizedIdentifierCallNames(t.Start, out)
+		collectParenthesizedIdentifierCallNames(t.End, out)
+	case *CaseExpr:
+		collectParenthesizedIdentifierCallNames(t.Target, out)
+		for _, clause := range t.Clauses {
+			for _, value := range clause.Values {
+				collectParenthesizedIdentifierCallNames(value.Expr, out)
+			}
+			collectParenthesizedIdentifierCallNames(clause.Result, out)
+		}
+		collectParenthesizedIdentifierCallNames(t.ElseExpr, out)
+	case *BlockLiteral:
+		return
+	case *YieldExpr:
+		for _, arg := range t.Args {
+			collectParenthesizedIdentifierCallNames(arg, out)
+		}
+	case *InterpolatedString:
+		collectParenthesizedIdentifierCallNamesFromStringParts(t.Parts, out)
+	case *InterpolatedSymbol:
+		collectParenthesizedIdentifierCallNamesFromStringParts(t.Parts, out)
+	}
+}
+
+func collectParenthesizedIdentifierCallNamesFromStringParts(parts []StringPart, out map[string]struct{}) {
+	for _, part := range parts {
+		if exprPart, ok := part.(StringExpr); ok {
+			collectParenthesizedIdentifierCallNames(exprPart.Expr, out)
 		}
 	}
 }

@@ -255,6 +255,35 @@ end
 	}
 }
 
+func TestRubyAssignmentRHSCanCallImplicitSelfMethodWithSameName(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+class Box
+  def initialize
+    value = value()
+    @value = value
+  end
+
+  def value
+    7
+  end
+
+  def read
+    @value
+  end
+end
+
+def run
+  Box.new.read
+end
+`)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(7)) {
+		t.Fatalf("run() = %s, want 7", got)
+	}
+}
+
 func TestRubyBlockAssignmentsRespectLocalBoundary(t *testing.T) {
 	t.Parallel()
 

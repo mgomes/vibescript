@@ -1813,7 +1813,7 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 	if function == nil {
 		return nil
 	}
-	expr := &ast.CallExpr{Callee: function, Position: function.Pos(), Safe: isSafeMemberCallee(function)}
+	expr := &ast.CallExpr{Callee: function, Position: function.Pos(), Safe: isSafeMemberCallee(function), Parenthesized: true}
 	args := []ast.Expression{}
 	kwargs := []ast.KeywordArg{}
 
@@ -1847,7 +1847,6 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 	expr.Args = args
 	expr.KwArgs = kwargs
-	expr.Parenthesized = true
 	// Mark keyword arguments as eligible to collapse into a positional options
 	// hash. The runtime decides whether the collapse actually applies: plain
 	// function calls (including a function value's `call` alias) collapse like
