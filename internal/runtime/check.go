@@ -1052,7 +1052,7 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	defer popScope()
 
 	for _, param := range block.Params {
-		c.checkTypeAnnotation(function, param.Type)
+		c.checkRuntimeTypeAnnotation(function, param.Type)
 		c.checkExpression(function, param.DefaultVal)
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
@@ -1065,10 +1065,6 @@ func (c *scriptChecker) checkStringParts(function string, parts []StringPart) {
 			c.checkExpression(function, exprPart.Expr)
 		}
 	}
-}
-
-func (c *scriptChecker) checkTypeAnnotation(function string, ty *TypeExpr) bool {
-	return c.checkTypeAnnotationWithContext(function, ty, c.typeContext())
 }
 
 func (c *scriptChecker) checkRuntimeTypeAnnotation(function string, ty *TypeExpr) bool {
@@ -1185,16 +1181,16 @@ func (c *scriptChecker) checkImplicitFinalBlock(function string, ty *TypeExpr, s
 	c.checkImplicitFinalStatement(function, ty, effectiveFinalStatement(statements))
 }
 
-// statementAlwaysExits reports whether evaluating stmt always performs an
-// explicit return or raise, mirroring the runtime's "returned"/error signals.
-// It lets the implicit-return check tell when a begin/else's else branch is
+// statementAlwaysExits reports whether evaluating stmt always terminates the
+// current statement list, mirroring the runtime's "returned"/error signals. It
+// lets the implicit-return check tell when a begin/else's else branch is
 // unreachable: evalTryStatement only runs the else branch when the body did not
 // return and did not raise. The analysis is conservative—it returns true only
 // when every path is known to exit—so a false result never suppresses a real
 // warning.
 func statementAlwaysExits(stmt Statement) bool {
 	switch typed := stmt.(type) {
-	case *ReturnStmt, *RaiseStmt:
+	case *ReturnStmt, *RaiseStmt, *BreakStmt, *NextStmt:
 		return true
 	case *IfStmt:
 		if len(typed.Alternate) == 0 {
@@ -1225,8 +1221,8 @@ func statementAlwaysExits(stmt Statement) bool {
 	}
 }
 
-// blockAlwaysExits reports whether a block always returns or raises, determined
-// by its last reachable statement.
+// blockAlwaysExits reports whether a block always terminates, determined by its
+// last reachable statement.
 func blockAlwaysExits(statements []Statement) bool {
 	if len(statements) == 0 {
 		return false
@@ -1235,8 +1231,8 @@ func blockAlwaysExits(statements []Statement) bool {
 }
 
 // effectiveFinalStatement returns the last statement that can actually run in a
-// non-empty block. The first statement that always exits (return/raise) makes
-// every later statement unreachable, so it becomes the terminal statement;
+// non-empty block. The first statement that always exits makes every later
+// statement unreachable, so it becomes the terminal statement;
 // otherwise the syntactic last statement is the block's result.
 func effectiveFinalStatement(statements []Statement) Statement {
 	for _, stmt := range statements {

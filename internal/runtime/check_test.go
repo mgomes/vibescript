@@ -240,6 +240,34 @@ end
 	}
 }
 
+func TestCheckWarningsResolveRequiredModuleEnumExportsInBlockParameters(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("enum_status")
+  [:published].map do |status: Status|
+    status
+  end
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call() with required enum block parameter returned error: %v", err)
+	}
+	if got.Kind() != KindArray || len(got.Array()) != 1 {
+		t.Fatalf("Call() with required enum block parameter = %#v, want one-element array", got)
+	}
+	status := got.Array()[0]
+	if status.Kind() != KindEnumValue || valueEnumValue(status).Name != "Published" {
+		t.Fatalf("Call() with required enum block parameter yielded %#v, want Status::Published", status)
+	}
+}
+
 func TestCheckWarningsSeedCallableContractsWithClassBodyRequires(t *testing.T) {
 	t.Parallel()
 
@@ -1011,6 +1039,24 @@ end`,
 			source: `def run()
   raise "boom"
   JSON.parse()
+end`,
+		},
+		{
+			name: "unreachable tail after break skips call checks",
+			source: `def run()
+  while true
+    break
+    JSON.parse()
+  end
+end`,
+		},
+		{
+			name: "unreachable tail after next skips call checks",
+			source: `def run()
+  for item in [1]
+    next
+    JSON.parse()
+  end
 end`,
 		},
 		{
