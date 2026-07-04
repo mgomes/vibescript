@@ -3269,14 +3269,19 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	predeclareLocalBindingsFromStatements(stmt.Body, env)
 
 	if err != nil {
-		// Clauses handle in source order: the first whose type matches wins,
-		// mirroring Ruby's specific-to-general rescue dispatch. A clause with an
-		// empty body does not handle (matching the prior single-clause behavior,
-		// where a bare rescue with no statements let the error propagate).
+		// Clauses are selected in source order: the first whose type matches
+		// wins, mirroring Ruby's specific-to-general rescue dispatch, and later
+		// clauses never see an error an earlier clause matched. A selected
+		// clause with an empty body keeps the prior single-clause behavior —
+		// the error propagates (after ensure) rather than being swallowed —
+		// but it still consumes the match.
 		for i := range stmt.Rescues {
 			clause := &stmt.Rescues[i]
-			if len(clause.Body) == 0 || !canRescueRuntimeError(err, clause.Ty) {
+			if !canRescueRuntimeError(err, clause.Ty) {
 				continue
+			}
+			if len(clause.Body) == 0 {
+				break
 			}
 			rescueEnv := env
 			if clause.Binding != "" {

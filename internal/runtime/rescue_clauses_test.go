@@ -132,6 +132,43 @@ end`)
 	compareArrays(t, trace, []Value{NewString("body"), NewString("else"), NewString("ensure")})
 }
 
+// TestEmptyMatchingRescueClauseConsumesDispatch pins ordered dispatch against
+// empty handler bodies: the first type-matching clause is selected even when
+// its body is empty, so later clauses never handle the same error. An empty
+// selected clause keeps the prior single-clause behavior — the error
+// propagates — rather than being swallowed or falling through.
+func TestEmptyMatchingRescueClauseConsumesDispatch(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def empty_match_blocks_fallback
+  begin
+    1 / 0
+  rescue ZeroDivisionError
+  rescue
+    "fallback"
+  end
+end
+
+def empty_nonmatching_clause_is_skipped
+  begin
+    raise "boom"
+  rescue ZeroDivisionError
+  rescue
+    "fallback"
+  end
+end`)
+
+	// The empty ZeroDivisionError clause matches first: the fallback must not
+	// run, and the original error propagates.
+	requireCallErrorContains(t, script, "empty_match_blocks_fallback", nil, CallOptions{}, "division by zero")
+
+	// A non-matching clause is passed over regardless of body emptiness, so
+	// the untyped clause still handles.
+	if got := callScript(t, context.Background(), script, "empty_nonmatching_clause_is_skipped", nil, CallOptions{}); got.String() != "fallback" {
+		t.Fatalf("empty_nonmatching_clause_is_skipped = %v, want fallback", got)
+	}
+}
+
 // TestFunctionLevelMultipleRescueClauses pins that a def-level rescue tail
 // accepts ordered clauses just like an explicit begin block.
 func TestFunctionLevelMultipleRescueClauses(t *testing.T) {
