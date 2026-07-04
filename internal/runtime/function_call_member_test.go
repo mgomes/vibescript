@@ -566,6 +566,16 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       box.cb.call()
     end
 
+    def make_callback_box() -> CallbackBox
+      CallbackBox.new()
+    end
+
+    def run_bare_factory_property_setter
+      make_callback_box.cb = answer
+      box = CallbackBox.last()
+      box.cb.call()
+    end
+
     def run_member_assignment_rhs_order
       AssignmentHarness.new().run()
     end
@@ -683,6 +693,7 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "case property setter stores false callable", fn: "run_property_setter_case_false", want: NewInt(43)},
 		{name: "constructor property setter stores callable", fn: "run_constructor_property_setter", want: NewInt(42)},
 		{name: "static factory property setter stores callable", fn: "run_static_factory_property_setter", want: NewInt(42)},
+		{name: "bare factory property setter stores callable", fn: "run_bare_factory_property_setter", want: NewInt(42)},
 		{name: "member assignment preserves rhs-before-target order", fn: "run_member_assignment_rhs_order", want: NewInt(7)},
 		{name: "property getter callable argument reads stored callable", fn: "run_property_getter_argument", want: NewInt(42)},
 		{name: "property getter array literal reads stored callable", fn: "run_property_getter_array_literal", want: NewInt(42)},

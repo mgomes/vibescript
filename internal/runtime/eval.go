@@ -2843,7 +2843,17 @@ func (exec *Execution) staticMemberAssignmentReceiverClass(expr Expression, env 
 		if !ok {
 			return staticMemberAssignmentReceiver{}, false
 		}
-		return staticMemberAssignmentReceiverForValue(val)
+		if receiver, ok := staticMemberAssignmentReceiverForValue(val); ok {
+			return receiver, true
+		}
+		if !isStaticZeroArityFunctionReceiver(e, env) {
+			return staticMemberAssignmentReceiver{}, false
+		}
+		classDef, ok := exec.staticClassForType(valueFunction(val).ReturnTy, env)
+		if !ok {
+			return staticMemberAssignmentReceiver{}, false
+		}
+		return staticMemberAssignmentReceiver{class: classDef}, true
 	case *IvarExpr, *ClassVarExpr:
 		val, ok := memberAssignmentReceiverValue(expr, env)
 		if !ok {
