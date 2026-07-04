@@ -84,6 +84,16 @@ func TestParserRegexLiterals(t *testing.T) {
 			pattern: "[a/b]",
 		},
 		{
+			name:    "leading bracket is literal class member",
+			source:  "def run\n  check(/[]/]/, text)\nend",
+			pattern: "[]/]",
+		},
+		{
+			name:    "leading bracket in negated class",
+			source:  "def run\n  check(/[^]/]/, text)\nend",
+			pattern: "[^]/]",
+		},
+		{
 			name:    "case-insensitive flag",
 			source:  "def run\n  check(/id/i, text)\nend",
 			pattern: "id",

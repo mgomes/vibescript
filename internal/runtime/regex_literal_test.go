@@ -378,3 +378,44 @@ func TestRegexValuePatternLimitIgnoresFlagPrefix(t *testing.T) {
 		t.Fatalf("regex.match? = %v, want true", got)
 	}
 }
+
+// TestRegexLeadingBracketClass pins that a `]` in the leading class position is
+// a literal member (RE2/Ruby), so /[]/]/ lexes, compiles, and matches `]` or
+// `/` rather than truncating at the first `]`.
+func TestRegexLeadingBracketClass(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def bracket_or_slash(text)
+      text =~ /[]/]/
+    end
+
+    def not_bracket_or_slash(text)
+      text =~ /[^]/]/
+    end
+    `)
+
+	ctx := context.Background()
+	matches := func(fn, text string) Value {
+		return callScript(t, ctx, script, fn, []Value{NewString(text)}, CallOptions{})
+	}
+
+	// /[]/]/ matches ] or / and nothing else.
+	if got := matches("bracket_or_slash", "]"); got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("/[]/]/ vs \"]\" = %v, want 0", got)
+	}
+	if got := matches("bracket_or_slash", "/"); got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("/[]/]/ vs \"/\" = %v, want 0", got)
+	}
+	if got := matches("bracket_or_slash", "a"); got.Kind() != KindNil {
+		t.Fatalf("/[]/]/ vs \"a\" = %v, want nil", got)
+	}
+
+	// /[^]/]/ negates that class: it matches any char except ] or /.
+	if got := matches("not_bracket_or_slash", "a"); got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("/[^]/]/ vs \"a\" = %v, want 0", got)
+	}
+	if got := matches("not_bracket_or_slash", "/"); got.Kind() != KindNil {
+		t.Fatalf("/[^]/]/ vs \"/\" = %v, want nil", got)
+	}
+}

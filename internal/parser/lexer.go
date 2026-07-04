@@ -1340,15 +1340,19 @@ func (l *lexer) canStartRegexLiteral() bool {
 // slash and returns the raw literal text including both delimiters and any
 // trailing flag letters. A backslash escapes the next rune (so `/a\/b/` keeps
 // its escaped slash) and an unescaped `/` inside a `[...]` character class
-// stays part of the pattern. The pattern body must close on the same line:
-// a newline or end of input before the closing slash reports an unterminated
-// literal, which keeps a stray prefix slash from silently swallowing the rest
-// of the source. Flag validity is the parser's concern; the lexer accepts any
-// trailing ASCII letters so the parser can report unknown flags precisely.
+// stays part of the pattern. As in RE2/Ruby, a `]` in the leading class
+// position (immediately after `[` or `[^`) is a literal member rather than the
+// class close, so `/[]/]/` matches `]` or `/` rather than truncating at the
+// first `]`. The pattern body must close on the same line: a newline or end of
+// input before the closing slash reports an unterminated literal, which keeps a
+// stray prefix slash from silently swallowing the rest of the source. Flag
+// validity is the parser's concern; the lexer accepts any trailing ASCII
+// letters so the parser can report unknown flags precisely.
 func (l *lexer) readRegexLiteral() (string, string) {
 	var sb strings.Builder
 	sb.WriteRune(l.ch)
 	inClass := false
+	classPos := 0 // members consumed in the current class; a ] at 0 is literal
 	for {
 		l.readRune()
 		switch {
@@ -1362,9 +1366,22 @@ func (l *lexer) readRegexLiteral() (string, string) {
 			sb.WriteRune(l.ch)
 			l.readRune()
 			sb.WriteRune(l.ch)
+			if inClass {
+				classPos++
+			}
 		case l.ch == '[' && !inClass:
 			inClass = true
+			classPos = 0
 			sb.WriteRune(l.ch)
+			// A `^` right after `[` negates the class; the first `]` still counts
+			// as a literal member, so consume the caret without advancing classPos.
+			if l.peekRune() == '^' {
+				l.readRune()
+				sb.WriteRune(l.ch)
+			}
+		case l.ch == ']' && inClass && classPos == 0:
+			sb.WriteRune(l.ch)
+			classPos++
 		case l.ch == ']' && inClass:
 			inClass = false
 			sb.WriteRune(l.ch)
@@ -1378,6 +1395,9 @@ func (l *lexer) readRegexLiteral() (string, string) {
 			return sb.String(), ""
 		default:
 			sb.WriteRune(l.ch)
+			if inClass {
+				classPos++
+			}
 		}
 	}
 }
