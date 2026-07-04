@@ -219,7 +219,13 @@ func executeModuleEntrypoint(exec *Execution, entry moduleEntry, moduleEnv *Env)
 	}
 	defer exec.popFrame()
 
+	// Module top-level statements run while the requiring method's tokens are
+	// live, but a block created at module level has no enclosing method: pin
+	// the home to none so its return reports LocalJumpError instead of
+	// returning from the importer.
+	exec.pushBlockHomeToken(0)
 	_, _, err := exec.evalLocalScopeStatements(fn.Body, moduleEnv)
+	exec.popBlockHomeToken()
 	if err != nil {
 		err = exec.wrapError(err, fn.Pos)
 	}

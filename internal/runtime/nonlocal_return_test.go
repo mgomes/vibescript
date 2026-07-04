@@ -312,3 +312,30 @@ end`)
 		t.Fatalf("typed_default() = %v, want 42", got)
 	}
 }
+
+// TestModuleLevelBlockReturnDoesNotEscapeIntoImporter pins the home of blocks
+// created outside any method: module top-level statements run while the
+// requiring method's frame is live, but a module-level block has no enclosing
+// method, so a return inside it raises LocalJumpError instead of returning
+// from the importer.
+func TestModuleLevelBlockReturnDoesNotEscapeIntoImporter(t *testing.T) {
+	t.Parallel()
+
+	dir := tempModuleTree(t, moduleFile{path: "escaper.vibe", content: `[1].each do |x|
+  return 99
+end
+
+def ok
+  1
+end
+`})
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	script := compileScriptWithEngine(t, engine, `
+def run
+  require("escaper")
+  "after require"
+end
+`)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unexpected return")
+}

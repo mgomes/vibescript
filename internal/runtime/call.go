@@ -779,7 +779,11 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 	env.Define("self", classVal)
 	exec.pushReceiver(classVal)
 	defer exec.popReceiver()
+	// A class body is not a method body: a block created here has no
+	// enclosing method to return from, so pin the home to none.
+	exec.pushBlockHomeToken(0)
 	_, _, err := exec.evalLocalScopeStatements(classDef.Body, env)
+	exec.popBlockHomeToken()
 	if err != nil {
 		return err
 	}
