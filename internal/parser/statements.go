@@ -423,16 +423,11 @@ func (p *parser) parseBeginStatement() ast.Statement {
 }
 
 func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statement, owner string) ast.Statement {
-	var rescueTy *ast.TypeExpr
-	var rescueBinding string
-	var rescuePos ast.Position
-	var rescueBody []ast.Statement
-	rescuePresent := false
-	if p.curToken.Type == ast.TokenRescue {
-		rescuePresent = true
-		rescuePos = p.curToken.Pos
-		var ok bool
-		rescueTy, rescueBinding, ok = p.parseRescueClause(rescuePos)
+	var rescues []ast.RescueClause
+	anyRescueBody := false
+	for p.curToken.Type == ast.TokenRescue {
+		rescuePos := p.curToken.Pos
+		rescueTy, rescueBinding, ok := p.parseRescueClause(rescuePos)
 		if !ok {
 			p.recoverToBlockEnd()
 			return nil
@@ -447,15 +442,19 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 		if rescueBinding != "" {
 			p.declareLocal(rescueBinding)
 		}
-		rescueBody = p.parseBlock(ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
+		rescueBody := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
 		if rescueBinding != "" && !bindingWasLocal {
 			p.undeclareLocal(rescueBinding)
 		}
+		if len(rescueBody) > 0 {
+			anyRescueBody = true
+		}
+		rescues = append(rescues, ast.RescueClause{Ty: rescueTy, Binding: rescueBinding, Body: rescueBody, Position: rescuePos})
 	}
 
 	var elseBody []ast.Statement
 	if p.curToken.Type == ast.TokenElse {
-		if !rescuePresent {
+		if len(rescues) == 0 {
 			p.addParseError(p.curToken.Pos, fmt.Sprintf("%s else requires rescue", owner))
 			return nil
 		}
@@ -474,12 +473,12 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 		return nil
 	}
 
-	if len(rescueBody) == 0 && len(ensureBody) == 0 {
+	if !anyRescueBody && len(ensureBody) == 0 {
 		p.addParseError(pos, fmt.Sprintf("%s requires rescue and/or ensure", owner))
 		return nil
 	}
 
-	return &ast.TryStmt{Body: body, RescueTy: rescueTy, RescueBinding: rescueBinding, RescuePosition: rescuePos, Rescue: rescueBody, Else: elseBody, Ensure: ensureBody, Position: pos}
+	return &ast.TryStmt{Body: body, Rescues: rescues, Else: elseBody, Ensure: ensureBody, Position: pos}
 }
 
 func (p *parser) parseRescueClause(rescuePos ast.Position) (*ast.TypeExpr, string, bool) {

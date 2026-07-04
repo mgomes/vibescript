@@ -77,12 +77,15 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 		u.visitStatements(s.Body)
 	case *ast.TryStmt:
 		u.visitStatements(s.Body)
-		if s.RescueBinding != "" {
-			u.withScopedBinding(s.RescueBinding, func() {
-				u.visitStatements(s.Rescue)
-			})
-		} else {
-			u.visitStatements(s.Rescue)
+		for i := range s.Rescues {
+			clause := &s.Rescues[i]
+			if clause.Binding != "" {
+				u.withScopedBinding(clause.Binding, func() {
+					u.visitStatements(clause.Body)
+				})
+			} else {
+				u.visitStatements(clause.Body)
+			}
 		}
 		u.visitStatements(s.Else)
 		u.visitStatements(s.Ensure)
