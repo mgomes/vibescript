@@ -1756,7 +1756,7 @@ func TestCheckWarningsRescueExpressionPreservesCalleeAutoCallMode(t *testing.T) 
 
 	script := compileScriptDefault(t, `
 class Box
-def inc(n)
+  def inc(n)
     n + 1
   end
 end
