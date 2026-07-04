@@ -212,3 +212,27 @@ end`)
 
 	requireNoCheckWarnings(t, script)
 }
+
+// TestCheckEmptyRescueClauseDoesNotDropFallthroughState pins the checker's
+// path merging against empty clauses: an empty matching clause propagates the
+// error rather than falling through, so it must not merge the pre-begin state
+// into the code after the block. Here the only path that reaches the double
+// call has the helper module loaded, so its arity warning must survive.
+func TestCheckEmptyRescueClauseDoesNotDropFallthroughState(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  begin
+    require("helper")
+  rescue
+  ensure
+    nil
+  end
+  double(1, 2)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to double has unexpected positional arguments")
+}

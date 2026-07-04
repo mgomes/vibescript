@@ -354,6 +354,12 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		}
 		for i := range typed.Rescues {
 			clause := &typed.Rescues[i]
+			// An empty clause never falls through: it consumes the match but the
+			// original error propagates after ensure, so it contributes no state
+			// to the code after the block.
+			if len(clause.Body) == 0 {
+				continue
+			}
 			c.restoreModuleCollectionState(baseState)
 			c.restoreScopeState(baseScopeState)
 			popScope := c.pushRescueScope(clause)
@@ -1731,6 +1737,12 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		for i := range typed.Rescues {
 			clause := &typed.Rescues[i]
+			// An empty clause never falls through (the matched error propagates
+			// after ensure), so it must not merge the base state into the paths
+			// that reach the code after the block.
+			if len(clause.Body) == 0 {
+				continue
+			}
 			c.restoreRuntimeState(baseRuntimeState)
 			c.restoreScopeState(baseScopeState)
 			popScope := c.pushRescueScope(clause)
