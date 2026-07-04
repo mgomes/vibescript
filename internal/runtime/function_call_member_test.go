@@ -84,9 +84,7 @@ func TestFunctionValueCall(t *testing.T) {
 // TestFunctionValueCallZeroArityFollowsIssue416 documents that fn.call does
 // not change the zero-arity behavior tracked by #416: a bare reference to a
 // zero-arity function is still auto-invoked, so the callee receives the return
-// value, not a function value. Obtaining a zero-arity function as a callable
-// value (so it could be reached by fn.call) is out of scope here and tracked
-// by #416.
+// value, not a function value.
 func TestFunctionValueCallZeroArityFollowsIssue416(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -104,6 +102,22 @@ func TestFunctionValueCallZeroArityFollowsIssue416(t *testing.T) {
     `)
 	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(42)) {
 		t.Fatalf("run() = %#v, want 42 (zero-arity function auto-invoked per #416)", got)
+	}
+}
+
+func TestFunctionValueCallPreservesStaticZeroArityReceiver(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def answer
+      42
+    end
+
+    def run
+      answer.call()
+    end
+    `)
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(42)) {
+		t.Fatalf("run() = %#v, want 42", got)
 	}
 }
 

@@ -74,6 +74,34 @@ func memberCallReceiverAutoInvokes(object Expression, env *Env) bool {
 	return !isDynamicCallableMemberReceiver(object, env)
 }
 
+func callMemberCallReceiverAutoInvokes(call *CallExpr, object Expression, env *Env) bool {
+	if callHasNoArguments(call) && isStaticZeroArityFunctionReceiver(object, env) {
+		return false
+	}
+	return memberCallReceiverAutoInvokes(object, env)
+}
+
+func callHasNoArguments(call *CallExpr) bool {
+	return len(call.Args) == 0 && len(call.KwArgs) == 0 && call.Block == nil
+}
+
+func isStaticZeroArityFunctionReceiver(object Expression, env *Env) bool {
+	ident, ok := object.(*Identifier)
+	if !ok {
+		return false
+	}
+	scope, ok := env.lookupBindingScope(ident.Name)
+	if !ok || scope.hasDynamic(ident.Name) {
+		return false
+	}
+	val, ok := env.Get(ident.Name)
+	if !ok {
+		return false
+	}
+	fn := valueFunction(val)
+	return fn != nil && len(fn.Params) == 0
+}
+
 func isDynamicCallableMemberReceiver(object Expression, env *Env) bool {
 	ident, ok := object.(*Identifier)
 	if !ok {
@@ -1182,7 +1210,7 @@ func (exec *Execution) evalGeneratedGetterArgument(arg Expression, env *Env) (Va
 
 func (exec *Execution) evalCallableMemberArgumentReceiver(memberExpr *MemberExpr, env *Env) (Value, error) {
 	if memberExpr.Property == "call" {
-		return exec.evalMemberCallReceiver(memberExpr, env)
+		return exec.evalMemberCallReceiver(memberExpr, env, memberCallReceiverAutoInvokes)
 	}
 	return exec.evalExpressionWithAuto(memberExpr.Object, env, memberReceiverAutoInvokes(memberExpr.Object, memberExpr.Property, env))
 }
@@ -1866,7 +1894,9 @@ func (exec *Execution) evalBlockGivenCall(call *CallExpr, env *Env) (Value, erro
 }
 
 func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, env *Env) (Value, error) {
-	receiver, err := exec.evalMemberCallReceiver(member, env)
+	receiver, err := exec.evalMemberCallReceiver(member, env, func(object Expression, env *Env) bool {
+		return callMemberCallReceiverAutoInvokes(call, object, env)
+	})
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1939,13 +1969,13 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	return result, nil
 }
 
-func (exec *Execution) evalMemberCallReceiver(member *MemberExpr, env *Env) (Value, error) {
+func (exec *Execution) evalMemberCallReceiver(member *MemberExpr, env *Env, objectAutoInvokes func(Expression, *Env) bool) (Value, error) {
 	if member.Property != "call" {
 		return exec.evalExpressionWithAuto(member.Object, env, memberCallReceiverAutoInvokes(member.Object, env))
 	}
 	objectMember, ok := member.Object.(*MemberExpr)
 	if !ok {
-		return exec.evalExpressionWithAuto(member.Object, env, memberCallReceiverAutoInvokes(member.Object, env))
+		return exec.evalExpressionWithAuto(member.Object, env, objectAutoInvokes(member.Object, env))
 	}
 	receiver, err := exec.evalExpressionWithAuto(objectMember.Object, env, memberReceiverAutoInvokes(objectMember.Object, objectMember.Property, env))
 	if err != nil {
