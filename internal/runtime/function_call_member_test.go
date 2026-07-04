@@ -219,6 +219,25 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       property cb: function
     end
 
+    class IntBox
+      property value: int
+    end
+
+    class AssignmentHarness
+      def switch_assignment_box
+        @assignment_box = @assignment_second
+        7
+      end
+
+      def run
+        @assignment_first = IntBox.new()
+        @assignment_second = IntBox.new()
+        @assignment_box = @assignment_first
+        @assignment_box.value = switch_assignment_box()
+        @assignment_second.value
+      end
+    end
+
     def receive_untyped(value)
       value
     end
@@ -466,6 +485,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       box.cb.call()
     end
 
+    def run_member_assignment_rhs_order
+      AssignmentHarness.new().run()
+    end
+
     def run_property_getter_argument
       box = callable_box()
       receive_callable(box.cb)
@@ -571,6 +594,7 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "nested typed literal keeps callable fields", fn: "run_nested_literal", want: NewInt(42)},
 		{name: "nested typed literal dot-call keeps callable fields", fn: "run_nested_literal_dot", want: NewInt(42)},
 		{name: "property setter stores callable", fn: "run_property_setter", want: NewInt(42)},
+		{name: "member assignment preserves rhs-before-target order", fn: "run_member_assignment_rhs_order", want: NewInt(7)},
 		{name: "property getter callable argument reads stored callable", fn: "run_property_getter_argument", want: NewInt(42)},
 		{name: "property getter array literal reads stored callable", fn: "run_property_getter_array_literal", want: NewInt(42)},
 		{name: "property getter shape literal reads stored callable", fn: "run_property_getter_shape_literal", want: NewInt(42)},

@@ -2759,28 +2759,103 @@ func (exec *Execution) evalMemberAssignment(stmt *AssignStmt, env *Env) (Value, 
 	if !ok {
 		return NewNil(), false, nil
 	}
-	obj, err := exec.evalExpression(target.Object, env)
-	if err != nil {
-		return NewNil(), true, err
+	expectation, ok := exec.memberAssignmentValueExpectation(target, stmt.Value, env)
+	if !ok {
+		return NewNil(), false, nil
 	}
-	if err := exec.checkMemoryWith(obj); err != nil {
-		return NewNil(), true, err
-	}
-	expectation := memberSetterValueExpectation(obj, target.Property)
-	val, err := exec.evalExpressionWithExpectation(stmt.Value, env, expectation)
+	val, err := exec.evalAssignmentValueWithExpectation(stmt, env, expectation)
 	if err != nil {
 		return NewNil(), true, err
 	}
 	if err := exec.checkMemoryWith(val); err != nil {
 		return NewNil(), true, err
 	}
-	if err := exec.assignToEvaluatedMember(target, obj, val); err != nil {
+	if err := exec.assign(stmt.Target, val, env); err != nil {
 		if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) {
 			return NewNil(), true, err
 		}
 		return NewNil(), true, exec.wrapError(err, stmt.Pos())
 	}
 	return val, true, nil
+}
+
+func (exec *Execution) memberAssignmentValueExpectation(target *MemberExpr, value Expression, env *Env) (expressionExpectation, bool) {
+	if !memberAssignmentValueCanUseExpectation(value) {
+		return expressionExpectation{}, false
+	}
+	// Assignment evaluates the RHS before the target. Only peek already-bound
+	// receivers for side-effect-free RHS shapes, then let assign evaluate the
+	// target normally after the value is ready.
+	obj, ok := memberAssignmentReceiverValue(target.Object, env)
+	if !ok {
+		return expressionExpectation{}, false
+	}
+	expectation := memberSetterValueExpectation(obj, target.Property)
+	return expectation, !expectation.empty()
+}
+
+func memberAssignmentValueCanUseExpectation(expr Expression) bool {
+	switch e := expr.(type) {
+	case *Identifier, *IvarExpr, *ClassVarExpr, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *RegexLiteral:
+		return true
+	case *ArrayLiteral:
+		for _, element := range e.Elements {
+			if !memberAssignmentValueCanUseExpectation(element) {
+				return false
+			}
+		}
+		return true
+	case *HashLiteral:
+		for _, pair := range e.Pairs {
+			if !memberAssignmentValueCanUseExpectation(pair.Key) || !memberAssignmentValueCanUseExpectation(pair.Value) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func memberAssignmentReceiverValue(expr Expression, env *Env) (Value, bool) {
+	switch e := expr.(type) {
+	case *Identifier:
+		val, ok := env.Get(e.Name)
+		return val, ok
+	case *IvarExpr:
+		self, ok := env.Get("self")
+		if !ok || self.Kind() != KindInstance {
+			return NewNil(), false
+		}
+		val, ok := valueInstance(self).Ivars[e.Name]
+		if !ok {
+			return NewNil(), true
+		}
+		return val, true
+	case *ClassVarExpr:
+		self, ok := env.Get("self")
+		if !ok {
+			return NewNil(), false
+		}
+		switch self.Kind() {
+		case KindInstance:
+			val, ok := valueInstance(self).Class.ClassVars[e.Name]
+			if !ok {
+				return NewNil(), true
+			}
+			return val, true
+		case KindClass:
+			val, ok := valueClass(self).ClassVars[e.Name]
+			if !ok {
+				return NewNil(), true
+			}
+			return val, true
+		default:
+			return NewNil(), false
+		}
+	default:
+		return NewNil(), false
+	}
 }
 
 func memberSetterValueExpectation(obj Value, property string) expressionExpectation {
