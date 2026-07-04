@@ -2135,10 +2135,22 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 
 	for _, param := range block.Params {
 		c.checkRuntimeTypeAnnotation(function, param.Type)
+		c.checkDestructureTargetTypeAnnotations(function, param.Target)
 		c.checkExpression(function, param.DefaultVal)
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
 	c.checkStatements(label, nil, block.Body)
+}
+
+func (c *scriptChecker) checkDestructureTargetTypeAnnotations(function string, target Expression) {
+	destructure, ok := target.(*DestructureTarget)
+	if !ok {
+		return
+	}
+	for _, element := range destructure.Elements {
+		c.checkRuntimeTypeAnnotation(function, element.Type)
+		c.checkDestructureTargetTypeAnnotations(function, element.Target)
+	}
 }
 
 func (c *scriptChecker) callMayEvaluateBlock(call *CallExpr) bool {

@@ -30,6 +30,20 @@ end
 	requireCheckWarningContains(t, script, "unknown type Missing")
 }
 
+func TestCheckWarningsValidateDestructuredBlockElementTypeAnnotations(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  [1].each do |(x: Missing)|
+    x
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Missing")
+}
+
 func TestCheckWarningsWithOptionsResolveHostEnumGlobals(t *testing.T) {
 	t.Parallel()
 

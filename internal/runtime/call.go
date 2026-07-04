@@ -1044,8 +1044,14 @@ func (exec *Execution) evalCallArgumentForExpectation(arg Expression, env *Env, 
 	if !expectation.empty() {
 		switch e := arg.(type) {
 		case *ConditionalExpr:
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
 			return exec.evalConditionalExprWithExpectation(e, env, expectation)
 		case *IfExpr:
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
 			return exec.evalIfExprWithExpectation(e, env, expectation)
 		}
 	}

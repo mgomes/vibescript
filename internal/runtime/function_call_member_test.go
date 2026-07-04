@@ -471,6 +471,53 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 	}
 }
 
+func TestTypedConditionalCallArgumentsChargeExpressionStep(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	tests := []struct {
+		name string
+		expr Expression
+	}{
+		{
+			name: "conditional",
+			expr: &ConditionalExpr{
+				Condition:  &BoolLiteral{Value: true, Position: pos},
+				Consequent: &IntegerLiteral{Value: 1, Position: pos},
+				Alternate:  &IntegerLiteral{Value: 2, Position: pos},
+				Position:   pos,
+			},
+		},
+		{
+			name: "if",
+			expr: &IfExpr{
+				Condition:  &BoolLiteral{Value: true, Position: pos},
+				Consequent: &IntegerLiteral{Value: 1, Position: pos},
+				Alternate:  &IntegerLiteral{Value: 2, Position: pos},
+				Position:   pos,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			exec := &Execution{}
+			got, err := exec.evalCallArgumentForExpectation(tt.expr, newEnv(nil), typeExpressionExpectation(&TypeExpr{Kind: TypeAny}))
+			if err != nil {
+				t.Fatalf("evalCallArgumentForExpectation(%s) error = %v, want nil", tt.name, err)
+			}
+			if !got.Equal(NewInt(1)) {
+				t.Fatalf("evalCallArgumentForExpectation(%s) = %#v, want 1", tt.name, got)
+			}
+			if exec.steps != 3 {
+				t.Fatalf("evalCallArgumentForExpectation(%s) steps = %d, want 3", tt.name, exec.steps)
+			}
+		})
+	}
+}
+
 func TestCapturedBlockValuesAreCallable(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
