@@ -49,6 +49,25 @@ end`
 	}
 }
 
+func TestParserRetryRejectsSameLineOperand(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  begin
+    raise "again"
+  rescue
+    retry 1
+  end
+end`
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatal("parseSource(retry operand) errors = nil, want retry operand error")
+	}
+	if got, want := errs[0].Error(), "retry does not accept a value"; !strings.Contains(got, want) {
+		t.Fatalf("parseSource(retry operand) error = %q, want substring %q", got, want)
+	}
+}
+
 func TestParserModifierUntilLoop(t *testing.T) {
 	t.Parallel()
 

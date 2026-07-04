@@ -1916,6 +1916,15 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
       "unreachable"
     end
 
+    def return_from_statement_expression_condition_in_block()
+      [1].map do
+        while begin
+          return 7
+        end
+        end
+      end
+    end
+
     def rescue_modifier()
       [1 / 0 rescue "fallback", 7 rescue "unused"]
     end
@@ -2090,6 +2099,9 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
 		t.Fatalf("return_from_statement_expression_condition() = %v, want 1", got)
 	}
 	requireCallErrorContains(t, script, "typed_return_from_statement_expression_condition", nil, CallOptions{}, "return value for typed_return_from_statement_expression_condition expected string, got int")
+	compareArrays(t, callFunc(t, script, "return_from_statement_expression_condition_in_block", nil), []Value{
+		NewInt(7),
+	})
 	compareArrays(t, callFunc(t, script, "rescue_modifier", nil), []Value{
 		NewString("fallback"),
 		NewInt(7),

@@ -363,7 +363,13 @@ func (p *parser) parseStatementValueExpression() ast.Expression {
 }
 
 func (p *parser) parseRetryStatement() ast.Statement {
-	return &ast.RetryStmt{Position: p.curToken.Pos}
+	pos := p.curToken.Pos
+	if p.peekEndsStatement(pos) || p.peekStartsSameLineStatementModifier(pos) {
+		return &ast.RetryStmt{Position: pos}
+	}
+	p.addParseError(p.peekToken.Pos, "retry does not accept a value")
+	p.recoverSameLineStatementRemainder(pos.Line)
+	return nil
 }
 
 func (p *parser) peekStartsSameLineStatementModifier(pos ast.Position) bool {
@@ -506,6 +512,10 @@ func (p *parser) parseRescueBinding() (string, bool) {
 }
 
 func (p *parser) recoverRescueHeaderRemainder(line int) {
+	p.recoverSameLineStatementRemainder(line)
+}
+
+func (p *parser) recoverSameLineStatementRemainder(line int) {
 	for p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line == line && p.peekToken.Type != ast.TokenSemicolon {
 		p.nextToken()
 	}

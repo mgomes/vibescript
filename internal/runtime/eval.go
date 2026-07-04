@@ -1157,6 +1157,7 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	exec.blockDepth++
 	val, returned, err := exec.evalStatements(blk.Body, blockEnv)
 	exec.blockDepth--
+	val, returned, err = consumeFunctionReturnSignal(val, returned, err)
 	if err != nil {
 		if errors.Is(err, errRescueRetry) {
 			return NewNil(), exec.localJumpErrorAt(pos, "retry cannot cross call boundary")
