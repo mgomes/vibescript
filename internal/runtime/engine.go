@@ -47,6 +47,8 @@ type Engine struct {
 	modPaths          []string
 	modMu             sync.RWMutex
 	randomMu          sync.Mutex
+	modRequests       map[string]moduleRequest
+	modSearchHits     map[string]moduleEntry
 	modSearchMisses   map[string]string
 	modSuggest        map[string][]string
 	modSuggestText    map[string]string
@@ -113,6 +115,8 @@ func NewEngine(cfg Config) (*Engine, error) {
 		hostBuiltins:    make(map[string]struct{}),
 		modules:         make(map[string]moduleEntry),
 		modPaths:        append([]string(nil), cfg.ModulePaths...),
+		modRequests:     make(map[string]moduleRequest),
+		modSearchHits:   make(map[string]moduleEntry),
 		modSearchMisses: make(map[string]string),
 		modSuggest:      make(map[string][]string),
 		modSuggestText:  make(map[string]string),
@@ -467,6 +471,8 @@ func (e *Engine) ClearModuleCache() int {
 
 	count := len(e.modules)
 	clear(e.modules)
+	clear(e.modRequests)
+	clear(e.modSearchHits)
 	clear(e.modSearchMisses)
 	clear(e.modSuggest)
 	clear(e.modSuggestText)

@@ -212,3 +212,45 @@ end`)
 		requireCallErrorContains(t, script, "run", nil, CallOptions{}, "require:")
 	})
 }
+
+func TestSearchPathModuleHitCacheRefreshesAfterClear(t *testing.T) {
+	t.Parallel()
+
+	firstRoot := tempModuleTree(t)
+	secondRoot := tempModuleTree(t, moduleFile{
+		path: "helper.vibe",
+		content: `def value()
+  1
+end
+`,
+	})
+	engine := MustNewEngine(Config{ModulePaths: []string{firstRoot, secondRoot}})
+	script := compileScriptWithEngine(t, engine, `def run()
+  mod = require("helper")
+  mod.value()
+end`)
+
+	first := callFunc(t, script, "run", nil)
+	if !first.Equal(NewInt(1)) {
+		t.Fatalf("first run = %#v, want 1", first)
+	}
+	if _, ok := engine.modSearchHits["helper.vibe"]; !ok {
+		t.Fatalf("expected helper.vibe hit to be cached")
+	}
+
+	if err := os.WriteFile(filepath.Join(firstRoot, "helper.vibe"), []byte("def value()\n  2\nend\n"), 0o644); err != nil {
+		t.Fatalf("write earlier-root helper: %v", err)
+	}
+	cached := callFunc(t, script, "run", nil)
+	if !cached.Equal(NewInt(1)) {
+		t.Fatalf("run before ClearModuleCache = %#v, want cached second-root helper", cached)
+	}
+
+	if cleared := engine.ClearModuleCache(); cleared != 1 {
+		t.Fatalf("ClearModuleCache() = %d, want 1", cleared)
+	}
+	refreshed := callFunc(t, script, "run", nil)
+	if !refreshed.Equal(NewInt(2)) {
+		t.Fatalf("run after ClearModuleCache = %#v, want refreshed earlier-root helper", refreshed)
+	}
+}
