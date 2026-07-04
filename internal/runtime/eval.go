@@ -3278,6 +3278,11 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 		for i := range stmt.Rescues {
 			clause := &stmt.Rescues[i]
 			if !canRescueRuntimeError(err, clause.Ty) {
+				// A skipped clause's body locals must exist (as nil) before a
+				// later handler runs: the parser treated its assignments as
+				// surrounding-scope locals, so a matching clause reading such a
+				// name sees the same nil it would after the block.
+				predeclareRescueClauseLocalBindings(clause, env)
 				continue
 			}
 			if len(clause.Body) == 0 {
@@ -3347,15 +3352,18 @@ func copyRescueLocalAssignments(clause *RescueClause, from, to *Env) {
 
 func predeclareRescueLocalBindings(stmt *TryStmt, env *Env) {
 	for i := range stmt.Rescues {
-		clause := &stmt.Rescues[i]
-		var collector localBindingCollector
-		collectLocalBindingNames(clause.Body, &collector)
-		for _, name := range collector.names {
-			if name == clause.Binding {
-				continue
-			}
-			env.PredeclareLocal(name)
+		predeclareRescueClauseLocalBindings(&stmt.Rescues[i], env)
+	}
+}
+
+func predeclareRescueClauseLocalBindings(clause *RescueClause, env *Env) {
+	var collector localBindingCollector
+	collectLocalBindingNames(clause.Body, &collector)
+	for _, name := range collector.names {
+		if name == clause.Binding {
+			continue
 		}
+		env.PredeclareLocal(name)
 	}
 }
 

@@ -236,3 +236,24 @@ end
 
 	requireCheckWarningContains(t, script, "call to double has unexpected positional arguments")
 }
+
+// TestSkippedRescueClauseLocalsPredeclaredForLaterHandlers pins the local
+// scoping across clauses: an assignment in a non-matching earlier clause is a
+// surrounding-scope local, so a later matching handler (and code after the
+// block) reads it as nil rather than raising undefined variable.
+func TestSkippedRescueClauseLocalsPredeclaredForLaterHandlers(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  begin
+    raise "boom"
+  rescue ZeroDivisionError
+    cached = 1
+  rescue RuntimeError
+    [cached, cached == nil]
+  end
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewNil(), NewBool(true)})
+}
