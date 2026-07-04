@@ -227,7 +227,28 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 		returned = true
 		bindReturned = true
 	}
-	if !bindReturned {
+	return exec.callFunctionWithBoundEnv(fn, receiver, callEnv, pos, validateReturn, token, val, returned, bindReturned)
+}
+
+func (exec *Execution) callFunctionWithSingleNormalArg(fn *ScriptFunction, receiver, arg Value, pos Position, validateReturn bool) (Value, error) {
+	param := fn.Params[0]
+	callEnv := newEnvWithCapacity(fn.Env, len(fn.Params)+1)
+	if receiver.Kind() != KindNil {
+		callEnv.Define("self", receiver)
+	}
+	callEnv.setCallBlock(NewNil())
+
+	token := exec.pushReturnToken()
+	if err := exec.bindFunctionParamValue(fn, callEnv, param, arg, pos); err != nil {
+		exec.popReturnToken()
+		return NewNil(), err
+	}
+
+	return exec.callFunctionWithBoundEnv(fn, receiver, callEnv, pos, validateReturn, token, Value{}, false, false)
+}
+
+func (exec *Execution) callFunctionWithBoundEnv(fn *ScriptFunction, receiver Value, callEnv *Env, pos Position, validateReturn bool, token uint64, val Value, returned, skipBody bool) (Value, error) {
+	if !skipBody {
 		exec.pushEnv(callEnv)
 		if err := exec.checkMemory(); err != nil {
 			exec.popEnv()
@@ -253,7 +274,7 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 	exec.pushModuleContext(ctx)
 	exec.pushReceiver(receiver)
 	var err error
-	if !bindReturned {
+	if !skipBody {
 		val, returned, err = exec.evalLocalScopeStatements(fn.Body, callEnv)
 	}
 	exec.popReturnToken()
@@ -1286,6 +1307,10 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		}
 	}
 
+	if fn := singleNormalArgFunction(callee); fn != nil && len(call.Args) == 1 && len(call.KwArgs) == 0 && call.Block == nil {
+		return exec.evalSingleNormalArgFunctionMemberCallExpr(call, receiver, fn, env)
+	}
+
 	args, err := exec.evalCallArgs(call, env)
 	if err != nil {
 		return NewNil(), err
@@ -1308,6 +1333,45 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 
 	result, callErr := exec.invokeCallable(callee, receiver, args, kwargs, block, call.Pos())
 	if callErr != nil {
+		return NewNil(), callErr
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
+}
+
+func singleNormalArgFunction(callee Value) *ScriptFunction {
+	if callee.Kind() != KindFunction {
+		return nil
+	}
+	fn := valueFunction(callee)
+	if fn == nil || len(fn.Params) != 1 || fn.Params[0].Kind != ParamNormal {
+		return nil
+	}
+	return fn
+}
+
+func (exec *Execution) evalSingleNormalArgFunctionMemberCallExpr(call *CallExpr, receiver Value, fn *ScriptFunction, env *Env) (Value, error) {
+	arg, err := exec.evalCallArg(call.Args[0], env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWithPositionalCallRoots(receiver, arg, NewNil(), 1); err != nil {
+		return NewNil(), err
+	}
+
+	result, callErr := exec.callFunctionWithSingleNormalArg(fn, receiver, arg, call.Pos(), true)
+	if callErr != nil {
+		if errors.Is(callErr, errLoopBreak) {
+			return NewNil(), exec.localJumpErrorAt(call.Pos(), "break cannot cross call boundary")
+		}
+		if errors.Is(callErr, errLoopNext) {
+			return NewNil(), exec.localJumpErrorAt(call.Pos(), "next cannot cross call boundary")
+		}
 		return NewNil(), callErr
 	}
 	if err := exec.checkMemoryWith(result); err != nil {
@@ -2062,32 +2126,8 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 			return exec.errorAt(pos, "unknown parameter kind for %s", param.Name)
 		}
 
-		if param.Type != nil {
-			normalized, err := normalizeValueForType(val, param.Type, typeContext{
-				owner:    fn.owner,
-				env:      fn.Env,
-				fallback: exec.root,
-				exec:     exec,
-			})
-			if err != nil {
-				if isHostControlSignal(err) {
-					return err
-				}
-				if isNormalizationLimitError(err) {
-					return exec.wrapError(err, pos)
-				}
-				return exec.errorAt(pos, "%s", formatArgumentTypeMismatch(param.Name, err))
-			}
-			val = normalized
-		}
-		env.Define(param.Name, val)
-		if param.IsIvar {
-			if selfVal, ok := env.Get("self"); ok && selfVal.Kind() == KindInstance {
-				inst := valueInstance(selfVal)
-				if inst != nil {
-					inst.Ivars[param.Name] = val
-				}
-			}
+		if err := exec.bindFunctionParamValue(fn, env, param, val, pos); err != nil {
+			return err
 		}
 	}
 
@@ -2098,6 +2138,37 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 		for name := range kwargs {
 			if !usedKw[name] {
 				return exec.errorAt(pos, "unexpected keyword argument %s", name)
+			}
+		}
+	}
+	return nil
+}
+
+func (exec *Execution) bindFunctionParamValue(fn *ScriptFunction, env *Env, param Param, val Value, pos Position) error {
+	if param.Type != nil {
+		normalized, err := normalizeValueForType(val, param.Type, typeContext{
+			owner:    fn.owner,
+			env:      fn.Env,
+			fallback: exec.root,
+			exec:     exec,
+		})
+		if err != nil {
+			if isHostControlSignal(err) {
+				return err
+			}
+			if isNormalizationLimitError(err) {
+				return exec.wrapError(err, pos)
+			}
+			return exec.errorAt(pos, "%s", formatArgumentTypeMismatch(param.Name, err))
+		}
+		val = normalized
+	}
+	env.Define(param.Name, val)
+	if param.IsIvar {
+		if selfVal, ok := env.Get("self"); ok && selfVal.Kind() == KindInstance {
+			inst := valueInstance(selfVal)
+			if inst != nil {
+				inst.Ivars[param.Name] = val
 			}
 		}
 	}

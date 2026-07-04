@@ -179,6 +179,42 @@ func TestFunctionValueCallErrors(t *testing.T) {
 	}
 }
 
+func TestSingleNormalArgMemberCallBindsTypesAndIvarParams(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    class Recorder
+      def store(@value: int)
+        @value
+      end
+
+      def typed(value: int)
+        value + 1
+      end
+
+      def value
+        @value
+      end
+    end
+
+    def run
+      rec = Recorder.new()
+      stored = rec.store(41)
+      [stored, rec.value, rec.typed(1)]
+    end
+
+    def bad_type
+      Recorder.new().typed("nope")
+    end
+    `)
+
+	got := callFunc(t, script, "run", nil)
+	want := NewArray([]Value{NewInt(41), NewInt(41), NewInt(2)})
+	if !got.Equal(want) {
+		t.Fatalf("run() = %#v, want %#v", got, want)
+	}
+	requireCallErrorContains(t, script, "bad_type", nil, CallOptions{}, "argument value expected int, got string")
+}
+
 // exportedFunctionValue resolves the first of the named functions defined in
 // the script to a function value, so error-path tests can pass it straight
 // to a run helper without an extra wrapper.
