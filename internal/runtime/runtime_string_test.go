@@ -536,6 +536,24 @@ func TestSplitEmptySeparatorDoesNotReserveOffsetScratch(t *testing.T) {
 	}
 }
 
+func TestStringSplitLimitOneDeduplicatesReceiverPayload(t *testing.T) {
+	t.Parallel()
+
+	text := strings.Repeat("payload", 512)
+	receiver := NewString(text)
+	args := []Value{NewNil(), NewInt(1)}
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 60}
+	acc := newArrayBuildAccumulator(probe, receiver, args, nil, NewNil())
+	quota := saturatingAdd(acc.projected(1), estimatedStringHeaderBytes)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	result, err := callStringMemberForTest(t, exec, receiver, "split", args)
+	if err != nil {
+		t.Fatalf("string.split limit one exact quota error = %v", err)
+	}
+	compareArrays(t, result, []Value{receiver})
+}
+
 func TestStringSplitResultUsesReservedCapacity(t *testing.T) {
 	t.Parallel()
 

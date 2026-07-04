@@ -409,6 +409,22 @@ func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int,
 	return nil
 }
 
+// checkProjectedArrayBytesWithCallRoots rejects an array result whose slot
+// backing and precomputed retained element payload would exceed the quota while
+// the builtin's receiver, arguments, keyword arguments, and block are live.
+func (exec *Execution) checkProjectedArrayBytesWithCallRoots(slotCount, payloadBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	used := exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
+	used = saturatingAdd(used, payloadBytes)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 // checkProjectedHashBytes rejects allocations that would exceed the memory quota
 // before a derived map is built. Hash transform helpers (such as merge, except,
 // compact, and remap_keys) materialize an output map sized to their inputs; for
