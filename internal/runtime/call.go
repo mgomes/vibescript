@@ -776,6 +776,7 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 		return nil
 	}
 	env := newEnv(parent)
+	env.classBody = true
 	env.Define("self", classVal)
 	exec.pushReceiver(classVal)
 	defer exec.popReceiver()

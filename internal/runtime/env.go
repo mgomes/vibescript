@@ -33,6 +33,7 @@ type Env struct {
 	arrayAppendBuffers map[string][]Value
 	assignBoundary     bool
 	rebindOuter        bool
+	classBody          bool
 
 	// frozen marks engine-shared scopes (the builtin proto). Their
 	// bindings are readable through the chain but never written:
@@ -103,6 +104,7 @@ func (e *Env) resetForBlockCall(parent *Env) {
 	e.arrayAppendBuffers = nil
 	e.assignBoundary = false
 	e.rebindOuter = false
+	e.classBody = false
 	e.frozen = false
 	e.callRoot = false
 	e.callBlock = Value{}
@@ -131,6 +133,9 @@ func (e *Env) getCallLocal(name string) (Value, bool) {
 		if val, ok := scope.getBoundValue(name, nil); ok {
 			return val, true
 		}
+		if scope.classBody {
+			break
+		}
 	}
 	return Value{}, false
 }
@@ -142,6 +147,9 @@ func (e *Env) hasCallLocalBinding(name string) bool {
 		}
 		if scope.hasOwnBinding(name) {
 			return true
+		}
+		if scope.classBody {
+			return false
 		}
 	}
 	return false
@@ -514,6 +522,7 @@ func (e *Env) CloneShallow() *Env {
 	clone.hasCallBlock = e.hasCallBlock
 	clone.assignBoundary = e.assignBoundary
 	clone.rebindOuter = e.rebindOuter
+	clone.classBody = e.classBody
 	return clone
 }
 
@@ -563,6 +572,9 @@ func (e *Env) hasEnclosingLocalBinding(name string) bool {
 		}
 		if scope.hasOwnBinding(name) {
 			return true
+		}
+		if scope.classBody {
+			return false
 		}
 	}
 	return false
