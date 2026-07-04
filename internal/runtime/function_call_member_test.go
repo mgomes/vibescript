@@ -216,7 +216,20 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
     end
 
     class CallbackBox
+      @@last = nil
       property cb: function
+
+      def initialize
+        @@last = self
+      end
+
+      def self.last() -> CallbackBox
+        @@last
+      end
+
+      def self.make() -> CallbackBox
+        @@last = CallbackBox.new()
+      end
     end
 
     class IntBox
@@ -485,6 +498,18 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       box.cb.call()
     end
 
+    def run_constructor_property_setter
+      CallbackBox.new().cb = answer
+      box = CallbackBox.last()
+      box.cb.call()
+    end
+
+    def run_static_factory_property_setter
+      CallbackBox.make().cb = answer
+      box = CallbackBox.last()
+      box.cb.call()
+    end
+
     def run_member_assignment_rhs_order
       AssignmentHarness.new().run()
     end
@@ -594,6 +619,8 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "nested typed literal keeps callable fields", fn: "run_nested_literal", want: NewInt(42)},
 		{name: "nested typed literal dot-call keeps callable fields", fn: "run_nested_literal_dot", want: NewInt(42)},
 		{name: "property setter stores callable", fn: "run_property_setter", want: NewInt(42)},
+		{name: "constructor property setter stores callable", fn: "run_constructor_property_setter", want: NewInt(42)},
+		{name: "static factory property setter stores callable", fn: "run_static_factory_property_setter", want: NewInt(42)},
 		{name: "member assignment preserves rhs-before-target order", fn: "run_member_assignment_rhs_order", want: NewInt(7)},
 		{name: "property getter callable argument reads stored callable", fn: "run_property_getter_argument", want: NewInt(42)},
 		{name: "property getter array literal reads stored callable", fn: "run_property_getter_array_literal", want: NewInt(42)},

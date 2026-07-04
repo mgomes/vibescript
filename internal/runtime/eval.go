@@ -2783,6 +2783,9 @@ func (exec *Execution) memberAssignmentValueExpectation(target *MemberExpr, valu
 	if !memberAssignmentValueCanUseExpectation(value) {
 		return expressionExpectation{}, false
 	}
+	if expectation, ok := exec.staticMemberAssignmentValueExpectation(target, env); ok {
+		return expectation, true
+	}
 	// Assignment evaluates the RHS before the target. Only peek already-bound
 	// receivers for side-effect-free RHS shapes, then let assign evaluate the
 	// target normally after the value is ready.
@@ -2792,6 +2795,161 @@ func (exec *Execution) memberAssignmentValueExpectation(target *MemberExpr, valu
 	}
 	expectation := memberSetterValueExpectation(obj, target.Property)
 	return expectation, !expectation.empty()
+}
+
+func (exec *Execution) staticMemberAssignmentValueExpectation(target *MemberExpr, env *Env) (expressionExpectation, bool) {
+	receiver, ok := exec.staticMemberAssignmentReceiverClass(target.Object, env)
+	if !ok {
+		return expressionExpectation{}, false
+	}
+	fn := receiver.setter(target.Property)
+	if fn == nil {
+		return expressionExpectation{}, false
+	}
+	expectation := setterFunctionValueExpectation(fn)
+	return expectation, !expectation.empty()
+}
+
+type staticMemberAssignmentReceiver struct {
+	class         *ClassDef
+	classReceiver bool
+}
+
+func (receiver staticMemberAssignmentReceiver) setter(property string) *ScriptFunction {
+	if receiver.class == nil {
+		return nil
+	}
+	setterName := property + "="
+	if receiver.classReceiver {
+		return receiver.class.ClassMethods[setterName]
+	}
+	return receiver.class.Methods[setterName]
+}
+
+func (receiver staticMemberAssignmentReceiver) method(property string) *ScriptFunction {
+	if receiver.class == nil {
+		return nil
+	}
+	if receiver.classReceiver {
+		return receiver.class.ClassMethods[property]
+	}
+	return receiver.class.Methods[property]
+}
+
+func (exec *Execution) staticMemberAssignmentReceiverClass(expr Expression, env *Env) (staticMemberAssignmentReceiver, bool) {
+	switch e := expr.(type) {
+	case *Identifier:
+		val, ok := env.Get(e.Name)
+		if !ok {
+			return staticMemberAssignmentReceiver{}, false
+		}
+		return staticMemberAssignmentReceiverForValue(val)
+	case *IvarExpr, *ClassVarExpr:
+		val, ok := memberAssignmentReceiverValue(expr, env)
+		if !ok {
+			return staticMemberAssignmentReceiver{}, false
+		}
+		return staticMemberAssignmentReceiverForValue(val)
+	case *CallExpr:
+		classDef, ok := exec.staticCallReturnClass(e, env)
+		if !ok {
+			return staticMemberAssignmentReceiver{}, false
+		}
+		return staticMemberAssignmentReceiver{class: classDef}, true
+	case *MemberExpr:
+		receiver, ok := exec.staticMemberAssignmentReceiverClass(e.Object, env)
+		if !ok {
+			return staticMemberAssignmentReceiver{}, false
+		}
+		fn := receiver.method(e.Property)
+		if fn == nil {
+			return staticMemberAssignmentReceiver{}, false
+		}
+		classDef, ok := exec.staticClassForType(fn.ReturnTy, env)
+		if !ok {
+			return staticMemberAssignmentReceiver{}, false
+		}
+		return staticMemberAssignmentReceiver{class: classDef}, true
+	default:
+		return staticMemberAssignmentReceiver{}, false
+	}
+}
+
+func staticMemberAssignmentReceiverForValue(val Value) (staticMemberAssignmentReceiver, bool) {
+	switch val.Kind() {
+	case KindInstance:
+		inst := valueInstance(val)
+		if inst == nil || inst.Class == nil {
+			return staticMemberAssignmentReceiver{}, false
+		}
+		return staticMemberAssignmentReceiver{class: inst.Class}, true
+	case KindClass:
+		classDef := valueClass(val)
+		if classDef == nil {
+			return staticMemberAssignmentReceiver{}, false
+		}
+		return staticMemberAssignmentReceiver{class: classDef, classReceiver: true}, true
+	default:
+		return staticMemberAssignmentReceiver{}, false
+	}
+}
+
+func (exec *Execution) staticCallReturnClass(call *CallExpr, env *Env) (*ClassDef, bool) {
+	switch callee := call.Callee.(type) {
+	case *Identifier:
+		val, ok := env.Get(callee.Name)
+		if !ok || val.Kind() != KindFunction {
+			return nil, false
+		}
+		return exec.staticClassForType(valueFunction(val).ReturnTy, env)
+	case *MemberExpr:
+		receiver, ok := exec.staticMemberAssignmentReceiverClass(callee.Object, env)
+		if !ok {
+			return nil, false
+		}
+		if receiver.classReceiver && callee.Property == "new" {
+			return receiver.class, true
+		}
+		fn := receiver.method(callee.Property)
+		if fn == nil {
+			return nil, false
+		}
+		return exec.staticClassForType(fn.ReturnTy, env)
+	default:
+		return nil, false
+	}
+}
+
+func (exec *Execution) staticClassForType(ty *TypeExpr, env *Env) (*ClassDef, bool) {
+	if ty == nil {
+		return nil, false
+	}
+	if ty.Kind == TypeUnion {
+		var match *ClassDef
+		for _, option := range ty.Union {
+			if option.Kind == TypeNil {
+				continue
+			}
+			classDef, ok := exec.staticClassForType(option, env)
+			if !ok {
+				return nil, false
+			}
+			if match != nil && match != classDef {
+				return nil, false
+			}
+			match = classDef
+		}
+		return match, match != nil
+	}
+	classDef, ok, err := lookupClassTypeExact(ty, typeContext{
+		owner:    exec.script,
+		env:      env,
+		fallback: exec.root,
+	})
+	if err != nil || !ok {
+		return nil, false
+	}
+	return classDef, true
 }
 
 func memberAssignmentValueCanUseExpectation(expr Expression) bool {
@@ -2863,6 +3021,10 @@ func memberSetterValueExpectation(obj Value, property string) expressionExpectat
 	if fn == nil {
 		return expressionExpectation{}
 	}
+	return setterFunctionValueExpectation(fn)
+}
+
+func setterFunctionValueExpectation(fn *ScriptFunction) expressionExpectation {
 	for _, param := range fn.Params {
 		if param.Kind == ParamNormal {
 			return positionalArgumentExpectation(param)
