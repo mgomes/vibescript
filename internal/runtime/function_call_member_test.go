@@ -128,6 +128,32 @@ func TestFunctionValueCallAutoInvokesStaticZeroArityFactoryReceiver(t *testing.T
 	}
 }
 
+func TestFunctionTypedCallMemberArgumentUsesCallReceiverAutoInvoke(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    class CallableBox
+      def call(value)
+        value + 1
+      end
+    end
+
+    def maker
+      CallableBox.new
+    end
+
+    def take_member_call(fn: function)
+      fn(41)
+    end
+
+    def run
+      take_member_call(maker.call)
+    end
+    `)
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(42)) {
+		t.Fatalf("run() = %#v, want 42", got)
+	}
+}
+
 func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

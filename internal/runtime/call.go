@@ -1117,7 +1117,7 @@ func (exec *Execution) evalGeneratedGetterArgument(arg Expression, env *Env) (Va
 	if !ok {
 		return NewNil(), false, nil
 	}
-	obj, err := exec.evalExpressionWithAuto(memberExpr.Object, env, memberReceiverAutoInvokes(memberExpr.Object, memberExpr.Property, env))
+	obj, err := exec.evalCallableMemberArgumentReceiver(memberExpr, env)
 	if err != nil {
 		return NewNil(), true, err
 	}
@@ -1136,6 +1136,13 @@ func (exec *Execution) evalGeneratedGetterArgument(arg Expression, env *Env) (Va
 	}
 	val, err := exec.autoInvokeIfNeeded(memberExpr, member, obj)
 	return val, true, err
+}
+
+func (exec *Execution) evalCallableMemberArgumentReceiver(memberExpr *MemberExpr, env *Env) (Value, error) {
+	if memberExpr.Property == "call" {
+		return exec.evalMemberCallReceiver(memberExpr, env)
+	}
+	return exec.evalExpressionWithAuto(memberExpr.Object, env, memberReceiverAutoInvokes(memberExpr.Object, memberExpr.Property, env))
 }
 
 func generatedAccessorKind(member Value) functionAccessorKind {
