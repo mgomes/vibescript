@@ -1935,7 +1935,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 	case *ConditionalExpr:
 		c.checkConditionalExpression(function, typed)
 	case *RescueExpr:
-		c.checkRescueExpression(function, typed)
+		c.checkRescueExpression(function, typed, autoCall)
 	case *IfExpr:
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
@@ -2049,17 +2049,17 @@ func (c *scriptChecker) checkConditionalExpression(function string, expr *Condit
 	c.mergeScopeStates(baseScopeState, branchScopeStates)
 }
 
-func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr) {
+func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr, autoCall bool) {
 	baseRuntimeState := c.snapshotRuntimeState()
 	baseScopeState := c.snapshotScopeState()
-	c.checkExpressionWithAuto(function, expr.Body, true)
+	c.checkExpressionWithAuto(function, expr.Body, autoCall)
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Body)
 	bodyRuntimeState := c.snapshotRuntimeState()
 	bodyScopeState := c.snapshotScopeState()
 
 	c.restoreRuntimeState(baseRuntimeState)
 	c.restoreScopeState(baseScopeState)
-	c.checkExpressionWithAuto(function, expr.Fallback, true)
+	c.checkExpressionWithAuto(function, expr.Fallback, autoCall)
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Fallback)
 	fallbackRuntimeState := c.snapshotRuntimeState()
 	fallbackScopeState := c.snapshotScopeState()

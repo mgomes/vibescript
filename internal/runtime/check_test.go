@@ -1751,6 +1751,27 @@ end
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
 }
 
+func TestCheckWarningsRescueExpressionPreservesCalleeAutoCallMode(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class Box
+def inc(n)
+    n + 1
+  end
+end
+
+def run
+  (Box.new.inc rescue Box.new.inc)(1)
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	if got := callScript(t, context.Background(), script, "run", nil, CallOptions{}); !got.Equal(NewInt(2)) {
+		t.Fatalf("run() = %s, want 2", got)
+	}
+}
+
 func TestCheckWarningsDoNotHoistSafeNavigationRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
