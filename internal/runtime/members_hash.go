@@ -230,6 +230,13 @@ func typedHashTransformBufferBytes(outputEntries, scratchBytes int) int {
 	return saturatingAdd(hashTransformBufferBytes(outputEntries, scratchBytes), typedHashEntryMapBytes(outputEntries))
 }
 
+func legacyTransformKeysBufferBytes(outputEntries, scratchBytes int) int {
+	if outputEntries == 0 {
+		return hashTransformBufferBytes(0, scratchBytes)
+	}
+	return typedHashTransformBufferBytes(outputEntries, scratchBytes)
+}
+
 func (exec *Execution) checkProjectedTypedHashBytes(count int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	return exec.checkProjectedTypedHashTransformBytes(count, 0, receiver, args, kwargs, block)
 }
@@ -2582,7 +2589,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// output map and scratch, closing the gap where receiver+out+scratch and
 			// receiver+rest each fit the quota while the real peak exceeds it.
 			scratch := sortedKeyBufferBytes(len(entries))
-			delta := exec.reserveLoopScratch(typedHashTransformBufferBytes(len(entries), scratch))
+			delta := exec.reserveLoopScratch(legacyTransformKeysBufferBytes(len(entries), scratch))
 			defer exec.releaseLoopScratch(delta)
 			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err

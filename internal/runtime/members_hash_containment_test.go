@@ -1697,6 +1697,35 @@ func TestProjectedTypedHashTransformChargesEmptyTypedMap(t *testing.T) {
 	}
 }
 
+func TestLegacyEmptyTransformKeysDoesNotReserveTypedMap(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewHash(map[string]Value{})
+	block := keyIdentityBlock()
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	legacyBuffers := hashTransformBufferBytes(0, sortedKeyBufferBytes(0))
+	typedBuffers := typedHashTransformBufferBytes(0, sortedKeyBufferBytes(0))
+	if legacyBuffers >= typedBuffers {
+		t.Fatalf("test setup expects typed buffers (%d) to exceed legacy buffers (%d)", typedBuffers, legacyBuffers)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roots + legacyBuffers}
+	got, err := callHashMember(t, exec, receiver, "transform_keys", nil, block)
+	if err != nil {
+		t.Fatalf("empty legacy hash.transform_keys at legacy reservation quota = %v, want nil", err)
+	}
+	if got.HashLen() != 0 {
+		t.Fatalf("empty legacy hash.transform_keys result entries = %d, want 0", got.HashLen())
+	}
+	if hashHasTypedEntries(got) {
+		t.Fatal("empty legacy hash.transform_keys result has typed entries, want legacy-only hash")
+	}
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("empty legacy hash.transform_keys leaked %d reserved scratch bytes", exec.reservedScratchBytes)
+	}
+}
+
 func TestHashTransformReservationsDoNotMaskRequiredBlock(t *testing.T) {
 	t.Parallel()
 
