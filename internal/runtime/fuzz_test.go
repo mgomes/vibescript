@@ -1232,6 +1232,11 @@ func validateFuzzExpression(context string, expr Expression) error {
 			return err
 		}
 		return validateFuzzExpression(context+".alternate", e.Alternate)
+	case *RescueExpr:
+		if err := validateFuzzExpression(context+".body", e.Body); err != nil {
+			return err
+		}
+		return validateFuzzExpression(context+".fallback", e.Fallback)
 	case *IfExpr:
 		if err := validateFuzzExpression(context+".condition", e.Condition); err != nil {
 			return err

@@ -85,6 +85,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalBinaryExpr(e, env)
 	case *ConditionalExpr:
 		return exec.evalConditionalExpr(e, env)
+	case *RescueExpr:
+		return exec.evalRescueExpr(e, env)
 	case *IfExpr:
 		return exec.evalIfExpr(e, env)
 	case *RangeExpr:
@@ -881,6 +883,30 @@ func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Val
 	return result, nil
 }
 
+func (exec *Execution) evalRescueExpr(expr *RescueExpr, env *Env) (Value, error) {
+	result, err := exec.evalExpressionWithAuto(expr.Body, env, true)
+	if err == nil {
+		if err := exec.checkMemoryWith(result); err != nil {
+			return NewNil(), err
+		}
+		return result, nil
+	}
+	if !canRescueRuntimeError(err, nil) {
+		return NewNil(), err
+	}
+
+	exec.pushRescuedError(err)
+	defer exec.popRescuedError()
+	fallback, fallbackErr := exec.evalExpressionWithAuto(expr.Fallback, env, true)
+	if fallbackErr != nil {
+		return NewNil(), fallbackErr
+	}
+	if err := exec.checkMemoryWith(fallback); err != nil {
+		return NewNil(), err
+	}
+	return fallback, nil
+}
+
 func (exec *Execution) evalIfExpr(expr *IfExpr, env *Env) (Value, error) {
 	resultExpr, err := exec.matchIfExpressionBranch(expr, env)
 	if err != nil {
@@ -1303,6 +1329,9 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		return expressionCapturesCurrentEnv(e.Condition) ||
 			expressionCapturesCurrentEnv(e.Consequent) ||
 			expressionCapturesCurrentEnv(e.Alternate)
+	case *RescueExpr:
+		return expressionCapturesCurrentEnv(e.Body) ||
+			expressionCapturesCurrentEnv(e.Fallback)
 	case *IfExpr:
 		if expressionCapturesCurrentEnv(e.Condition) ||
 			expressionCapturesCurrentEnv(e.Consequent) ||
@@ -2694,6 +2723,9 @@ func expressionContainsBypassableIdentifierCall(expr Expression, name string) bo
 		return expressionContainsBypassableIdentifierCall(t.Condition, name) ||
 			expressionContainsBypassableIdentifierCall(t.Consequent, name) ||
 			expressionContainsBypassableIdentifierCall(t.Alternate, name)
+	case *RescueExpr:
+		return expressionContainsBypassableIdentifierCall(t.Body, name) ||
+			expressionContainsBypassableIdentifierCall(t.Fallback, name)
 	case *IfExpr:
 		if expressionContainsBypassableIdentifierCall(t.Condition, name) ||
 			expressionContainsBypassableIdentifierCall(t.Consequent, name) {
@@ -3226,7 +3258,7 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	runElse := err == nil && !returned
 	predeclareLocalBindingsFromStatements(stmt.Body, env)
 
-	if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
+	if err != nil && len(stmt.Rescue) > 0 && canRescueRuntimeError(err, stmt.RescueTy) {
 		rescueEnv := env
 		if stmt.RescueBinding != "" {
 			rescueEnv = newEnv(env)
@@ -3360,6 +3392,12 @@ func isLoopControlSignal(err error) bool {
 func isHostControlSignal(err error) bool {
 	return errors.Is(err, context.Canceled) ||
 		errors.Is(err, context.DeadlineExceeded)
+}
+
+func canRescueRuntimeError(err error, rescueTy *TypeExpr) bool {
+	return !isLoopControlSignal(err) &&
+		!isHostControlSignal(err) &&
+		runtimeErrorMatchesRescueType(err, rescueTy)
 }
 
 func runtimeErrorMatchesRescueType(err error, rescueTy *TypeExpr) bool {

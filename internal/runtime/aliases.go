@@ -70,6 +70,7 @@ type (
 	UnaryExpr          = ast.UnaryExpr
 	BinaryExpr         = ast.BinaryExpr
 	ConditionalExpr    = ast.ConditionalExpr
+	RescueExpr         = ast.RescueExpr
 	IfExprBranch       = ast.IfExprBranch
 	IfExpr             = ast.IfExpr
 	RangeExpr          = ast.RangeExpr

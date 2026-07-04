@@ -441,6 +441,7 @@ const (
 	infixParserNone infixParseKind = iota
 	infixParserInfixExpression
 	infixParserConditionalExpression
+	infixParserRescueExpression
 	infixParserRangeExpression
 	infixParserCallExpression
 	infixParserMemberExpression
@@ -457,6 +458,8 @@ func infixParserKind(tt ast.TokenType) infixParseKind {
 		return infixParserInfixExpression
 	case ast.TokenQuestion:
 		return infixParserConditionalExpression
+	case ast.TokenRescue:
+		return infixParserRescueExpression
 	case ast.TokenRange, ast.TokenRangeExcl:
 		return infixParserRangeExpression
 	case ast.TokenLParen:
@@ -480,6 +483,8 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 		return p.parseInfixExpression(left)
 	case infixParserConditionalExpression:
 		return p.parseConditionalExpression(left)
+	case infixParserRescueExpression:
+		return p.parseRescueExpression(left)
 	case infixParserRangeExpression:
 		return p.parseRangeExpression(left)
 	case infixParserCallExpression:
@@ -1306,6 +1311,20 @@ func (p *parser) parseConditionalExpression(condition ast.Expression) ast.Expres
 		Alternate:  alternate,
 		Position:   pos,
 	}
+}
+
+func (p *parser) parseRescueExpression(body ast.Expression) ast.Expression {
+	pos := p.curToken.Pos
+	if p.peekToken.Pos.Line != pos.Line || prefixParserKind(p.peekToken.Type) == prefixParserNone {
+		p.addParseError(pos, "rescue modifier requires fallback expression")
+		return nil
+	}
+	p.nextToken()
+	fallback := p.parseExpression(precRescue - 1)
+	if fallback == nil {
+		return nil
+	}
+	return &ast.RescueExpr{Body: body, Fallback: fallback, Position: pos}
 }
 
 func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {

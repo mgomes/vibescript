@@ -6,6 +6,7 @@ var (
 	_ Node       = (*Program)(nil)
 	_ Statement  = (*FunctionStmt)(nil)
 	_ Expression = (*Identifier)(nil)
+	_ Expression = (*RescueExpr)(nil)
 	_ Expression = (*ConditionalExpr)(nil)
 	_ Expression = (*InterpolatedSymbol)(nil)
 	_ StringPart = StringText{}
