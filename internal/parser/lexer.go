@@ -1329,11 +1329,43 @@ func isPercentLiteralDelimiter(r rune) bool {
 // literals. Like Ruby, a slash at line-leading whitespace is always a regex,
 // so continuing a division onto a new line requires the `/` to stay on the
 // dividend's line.
+//
+// The one value-token exception is Ruby's command-argument form `method /re/`:
+// after a bare identifier (a possible parenless call), a slash with whitespace
+// before it but not after — and that is not the `/=` operator — opens a regex
+// argument. Ruby treats this exact spacing as an ambiguous command argument and
+// lexes it as a regexp; symmetric spacing (`a / 2`) or a trailing space keeps
+// division.
 func (l *lexer) canStartRegexLiteral() bool {
 	if l.atLineLeadingWhitespace() {
 		return true
 	}
-	return !canEndExpressionToken(l.lastToken.Type)
+	if !canEndExpressionToken(l.lastToken.Type) {
+		return true
+	}
+	return l.lastToken.Type == ast.TokenIdent &&
+		l.precededByWhitespace() && !l.slashClosedByWhitespaceOrEquals()
+}
+
+// precededByWhitespace reports whether the character immediately before l.ch is
+// whitespace. Leading whitespace has already been skipped by the time a token
+// is read, but the source string still holds it, so the rune before the current
+// offset reveals whether a space separated this token from the previous one.
+func (l *lexer) precededByWhitespace() bool {
+	start := l.currentOffset()
+	if start == 0 {
+		return false
+	}
+	prev, _ := utf8.DecodeLastRuneInString(l.input[:start])
+	return unicode.IsSpace(prev)
+}
+
+// slashClosedByWhitespaceOrEquals reports whether the rune after the `/` under
+// l.ch is whitespace, `=`, or end of input — the cases that mean division
+// (`a / 2`, `a /= 2`, a trailing slash) rather than a command-argument regex.
+func (l *lexer) slashClosedByWhitespaceOrEquals() bool {
+	next := l.peekRune()
+	return next == 0 || next == '=' || unicode.IsSpace(next)
 }
 
 // readRegexLiteral scans a `/pattern/flags` literal with l.ch on the opening
