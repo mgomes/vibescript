@@ -39,6 +39,12 @@ BenchmarkExecutionCapabilityWorkflowLoop 16000000 15600
 BenchmarkExecutionJSONParseLoop 3000000 3200 210000
 BenchmarkExecutionJSONStringifyLoop 3000000 2000 75000
 BenchmarkExecutionRegexReplaceAllLoop 4000000 4000
-BenchmarkExecutionTallyLoop 10000000 2000
+# Allocation-heavy (each iteration builds and tallies large structures), so its
+# ns/op is GC- and shared-runner-variance-sensitive like the typed-composite cap
+# above. The CI runner's best-of-3 sits around 10.3-10.4M ns/op, so the prior
+# 10M cap sat below actual and tripped intermittently across unrelated PRs.
+# Widen the ns/op headroom to absorb that variance; the alloc cap (the stable
+# signal here) is unchanged.
+BenchmarkExecutionTallyLoop 12000000 2000
 BenchmarkCallShortScript 5000 12 3500
 BenchmarkModuleRequireCacheHit 120000 220
