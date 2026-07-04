@@ -24,16 +24,10 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	root := newEnvWithCapacity(nil, rootCapacity)
 	s.engine.attachBuiltins(root, len(s.functions)+len(s.enums))
 
-	callFunctions := cloneFunctionsForCall(s.functions, root)
-	fn, ok := callFunctions[name]
+	bindFunctionsForCall(s.functions, root)
+	fn, ok := materializeCallFunction(root, name)
 	if !ok {
 		return NewNil(), fmt.Errorf("function %s not found", name)
-	}
-	for n, fnDecl := range callFunctions {
-		// Static: function clones are immutable per call, so they are
-		// accounted once instead of on every quota check. Reassigning
-		// the name from script code demotes the binding to dynamic.
-		root.DefineStatic(n, NewFunction(fnDecl))
 	}
 
 	callClasses := cloneClassesForCall(s.classes, root)
@@ -130,13 +124,10 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	root := newEnvWithCapacity(nil, rootCapacity)
 	s.engine.attachBuiltins(root, len(s.functions)+len(s.enums))
 
-	callFunctions := cloneFunctionsForCall(s.functions, root)
-	fn, ok := callFunctions[name]
+	bindFunctionsForCall(s.functions, root)
+	fn, ok := materializeCallFunction(root, name)
 	if !ok {
 		return NewNil(), fmt.Errorf("function %s not found", name)
-	}
-	for n, fnDecl := range callFunctions {
-		root.DefineStatic(n, NewFunction(fnDecl))
 	}
 
 	callClasses := cloneClassesForCall(s.classes, root)
@@ -304,6 +295,39 @@ func cloneFunctionsForCall(functions map[string]*ScriptFunction, env *Env) map[s
 		cloned[name] = cloneFunctionForEnv(fn, env)
 	}
 	return cloned
+}
+
+type callFunctionBinding struct {
+	fn  *ScriptFunction
+	env *Env
+}
+
+func (binding callFunctionBinding) materialize() Value {
+	return NewFunction(cloneFunctionForEnv(binding.fn, binding.env))
+}
+
+func bindFunctionsForCall(functions map[string]*ScriptFunction, root *Env) {
+	if len(functions) == 1 {
+		for name, fn := range functions {
+			root.DefineStatic(name, NewFunction(cloneFunctionForEnv(fn, root)))
+		}
+		return
+	}
+	for name, fn := range functions {
+		// Static: function clones are immutable per call, so they are accounted
+		// once instead of on every quota check. Reassigning the name from script
+		// code demotes the binding to dynamic.
+		root.DefineStatic(name, newLazyValue(callFunctionBinding{fn: fn, env: root}))
+	}
+}
+
+func materializeCallFunction(root *Env, name string) (*ScriptFunction, bool) {
+	val, ok := root.Get(name)
+	if !ok {
+		return nil, false
+	}
+	fn := valueFunction(val)
+	return fn, fn != nil
 }
 
 func cloneClassesForCall(classes map[string]*ClassDef, env *Env) map[string]*ClassDef {
