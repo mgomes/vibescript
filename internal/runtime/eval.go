@@ -1254,8 +1254,12 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 	case *NextStmt, *EnumStmt:
 		return false
 	case *TryStmt:
+		for i := range s.Rescues {
+			if statementsCaptureCurrentEnv(s.Rescues[i].Body) {
+				return true
+			}
+		}
 		return statementsCaptureCurrentEnv(s.Body) ||
-			statementsCaptureCurrentEnv(s.Rescue) ||
 			statementsCaptureCurrentEnv(s.Else) ||
 			statementsCaptureCurrentEnv(s.Ensure)
 	default:
@@ -2575,7 +2579,9 @@ func collectLocalBindingNames(stmts []Statement, collector *localBindingCollecto
 			collectLocalBindingNames(s.Body, collector)
 		case *TryStmt:
 			collectLocalBindingNames(s.Body, collector)
-			collectLocalBindingNames(s.Rescue, collector)
+			for i := range s.Rescues {
+				collectLocalBindingNames(s.Rescues[i].Body, collector)
+			}
 			collectLocalBindingNames(s.Else, collector)
 			collectLocalBindingNames(s.Ensure, collector)
 		}
@@ -2848,8 +2854,12 @@ func statementContainsBypassableIdentifierCall(stmt Statement, name string) bool
 		return expressionContainsBypassableIdentifierCall(t.Condition, name) ||
 			statementsContainBypassableIdentifierCall(t.Body, name)
 	case *TryStmt:
+		for i := range t.Rescues {
+			if statementsContainBypassableIdentifierCall(t.Rescues[i].Body, name) {
+				return true
+			}
+		}
 		return statementsContainBypassableIdentifierCall(t.Body, name) ||
-			statementsContainBypassableIdentifierCall(t.Rescue, name) ||
 			statementsContainBypassableIdentifierCall(t.Else, name) ||
 			statementsContainBypassableIdentifierCall(t.Ensure, name)
 	case *ClassStmt:
@@ -3258,26 +3268,37 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	runElse := err == nil && !returned
 	predeclareLocalBindingsFromStatements(stmt.Body, env)
 
-	if err != nil && len(stmt.Rescue) > 0 && canRescueRuntimeError(err, stmt.RescueTy) {
-		rescueEnv := env
-		if stmt.RescueBinding != "" {
-			rescueEnv = newEnv(env)
-			rescueEnv.Define(stmt.RescueBinding, rescuedErrorValue(err))
-		}
-		exec.pushRescuedError(err)
-		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, rescueEnv)
-		exec.popRescuedError()
-		if rescueEnv != env {
-			copyRescueLocalAssignments(stmt, rescueEnv, env)
-		}
-		if rescueErr != nil {
-			val = NewNil()
-			returned = false
-			err = rescueErr
-		} else {
-			val = rescueVal
-			returned = rescueReturned
-			err = nil
+	if err != nil {
+		// Clauses handle in source order: the first whose type matches wins,
+		// mirroring Ruby's specific-to-general rescue dispatch. A clause with an
+		// empty body does not handle (matching the prior single-clause behavior,
+		// where a bare rescue with no statements let the error propagate).
+		for i := range stmt.Rescues {
+			clause := &stmt.Rescues[i]
+			if len(clause.Body) == 0 || !canRescueRuntimeError(err, clause.Ty) {
+				continue
+			}
+			rescueEnv := env
+			if clause.Binding != "" {
+				rescueEnv = newEnv(env)
+				rescueEnv.Define(clause.Binding, rescuedErrorValue(err))
+			}
+			exec.pushRescuedError(err)
+			rescueVal, rescueReturned, rescueErr := exec.evalStatements(clause.Body, rescueEnv)
+			exec.popRescuedError()
+			if rescueEnv != env {
+				copyRescueLocalAssignments(clause, rescueEnv, env)
+			}
+			if rescueErr != nil {
+				val = NewNil()
+				returned = false
+				err = rescueErr
+			} else {
+				val = rescueVal
+				returned = rescueReturned
+				err = nil
+			}
+			break
 		}
 	}
 	predeclareRescueLocalBindings(stmt, env)
@@ -3303,11 +3324,11 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	return val, returned, nil
 }
 
-func copyRescueLocalAssignments(stmt *TryStmt, from, to *Env) {
+func copyRescueLocalAssignments(clause *RescueClause, from, to *Env) {
 	var collector localBindingCollector
-	collectLocalBindingNames(stmt.Rescue, &collector)
+	collectLocalBindingNames(clause.Body, &collector)
 	for _, name := range collector.names {
-		if name == stmt.RescueBinding {
+		if name == clause.Binding {
 			continue
 		}
 		val, ok := from.getOwn(name)
@@ -3320,13 +3341,16 @@ func copyRescueLocalAssignments(stmt *TryStmt, from, to *Env) {
 }
 
 func predeclareRescueLocalBindings(stmt *TryStmt, env *Env) {
-	var collector localBindingCollector
-	collectLocalBindingNames(stmt.Rescue, &collector)
-	for _, name := range collector.names {
-		if name == stmt.RescueBinding {
-			continue
+	for i := range stmt.Rescues {
+		clause := &stmt.Rescues[i]
+		var collector localBindingCollector
+		collectLocalBindingNames(clause.Body, &collector)
+		for _, name := range collector.names {
+			if name == clause.Binding {
+				continue
+			}
+			env.PredeclareLocal(name)
 		}
-		env.PredeclareLocal(name)
 	}
 }
 

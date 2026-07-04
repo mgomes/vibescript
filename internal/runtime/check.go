@@ -352,13 +352,14 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 		}
-		if len(typed.Rescue) > 0 {
+		for i := range typed.Rescues {
+			clause := &typed.Rescues[i]
 			c.restoreModuleCollectionState(baseState)
 			c.restoreScopeState(baseScopeState)
-			popScope := c.pushRescueScope(typed)
-			c.collectRequiredModuleExportsFromStatements(typed.Rescue)
+			popScope := c.pushRescueScope(clause)
+			c.collectRequiredModuleExportsFromStatements(clause.Body)
 			popScope()
-			if !blockAlwaysExits(typed.Rescue) {
+			if !blockAlwaysExits(clause.Body) {
 				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -1728,19 +1729,20 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 		}
-		if len(typed.Rescue) > 0 {
+		for i := range typed.Rescues {
+			clause := &typed.Rescues[i]
 			c.restoreRuntimeState(baseRuntimeState)
 			c.restoreScopeState(baseScopeState)
-			popScope := c.pushRescueScope(typed)
-			c.checkStatements(function, branchReturnType, typed.Rescue)
+			popScope := c.pushRescueScope(clause)
+			c.checkStatements(function, branchReturnType, clause.Body)
 			popScope()
-			if deferReturnType && blockMayReturn(typed.Rescue) {
+			if deferReturnType && blockMayReturn(clause.Body) {
 				deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
 					runtimeState: c.snapshotRuntimeState(),
-					statements:   typed.Rescue,
+					statements:   clause.Body,
 				})
 			}
-			if !blockAlwaysExits(typed.Rescue) {
+			if !blockAlwaysExits(clause.Body) {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -1849,7 +1851,9 @@ func (c *scriptChecker) checkDeferredReturnTypeStatement(function string, return
 	case *TryStmt:
 		c.checkDeferredReturnTypes(function, returnType, typed.Body)
 		c.checkDeferredReturnTypes(function, returnType, typed.Else)
-		c.checkDeferredReturnTypes(function, returnType, typed.Rescue)
+		for i := range typed.Rescues {
+			c.checkDeferredReturnTypes(function, returnType, typed.Rescues[i].Body)
+		}
 		c.checkDeferredReturnTypes(function, returnType, typed.Ensure)
 	}
 }
@@ -2341,8 +2345,12 @@ func (c *scriptChecker) statementMayEvaluateCallBlock(stmt Statement, seen map[*
 		return c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
 			c.statementsMayEvaluateCallBlock(typed.Body, seen)
 	case *TryStmt:
+		for i := range typed.Rescues {
+			if c.statementsMayEvaluateCallBlock(typed.Rescues[i].Body, seen) {
+				return true
+			}
+		}
 		return c.statementsMayEvaluateCallBlock(typed.Body, seen) ||
-			c.statementsMayEvaluateCallBlock(typed.Rescue, seen) ||
 			c.statementsMayEvaluateCallBlock(typed.Else, seen) ||
 			c.statementsMayEvaluateCallBlock(typed.Ensure, seen)
 	case *ClassStmt:
@@ -2595,8 +2603,11 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 			// the body always exits, the else is unreachable dead code.
 			c.checkImplicitFinalBlock(function, ty, typed.Body, typed.Pos())
 		}
-		if len(typed.Rescue) > 0 {
-			c.checkImplicitFinalBlock(function, ty, typed.Rescue, typed.RescuePosition)
+		for i := range typed.Rescues {
+			clause := &typed.Rescues[i]
+			if len(clause.Body) > 0 {
+				c.checkImplicitFinalBlock(function, ty, clause.Body, clause.Position)
+			}
 		}
 	}
 }
@@ -2707,8 +2718,11 @@ func statementAlwaysExits(stmt Statement) bool {
 		if blockAlwaysExits(typed.Ensure) {
 			return true
 		}
-		if len(typed.Rescue) > 0 && !blockAlwaysExits(typed.Rescue) {
-			return false
+		for i := range typed.Rescues {
+			body := typed.Rescues[i].Body
+			if len(body) > 0 && !blockAlwaysExits(body) {
+				return false
+			}
 		}
 		if blockAlwaysExits(typed.Body) {
 			return true
@@ -2769,9 +2783,13 @@ func statementMayReturn(stmt Statement) bool {
 		if blockAlwaysExits(typed.Ensure) {
 			return false
 		}
+		for i := range typed.Rescues {
+			if blockMayReturn(typed.Rescues[i].Body) {
+				return true
+			}
+		}
 		return blockMayReturn(typed.Body) ||
-			blockMayReturn(typed.Else) ||
-			blockMayReturn(typed.Rescue)
+			blockMayReturn(typed.Else)
 	}
 	return false
 }
@@ -3730,11 +3748,11 @@ func (c *scriptChecker) pushBlockCheckScope(block *BlockLiteral) func() {
 	return c.pushScope(scope)
 }
 
-func (c *scriptChecker) pushRescueScope(stmt *TryStmt) func() {
-	if stmt == nil || stmt.RescueBinding == "" {
+func (c *scriptChecker) pushRescueScope(clause *RescueClause) func() {
+	if clause == nil || clause.Binding == "" {
 		return func() {}
 	}
-	return c.pushScope(map[string]struct{}{stmt.RescueBinding: {}})
+	return c.pushScope(map[string]struct{}{clause.Binding: {}})
 }
 
 func (c *scriptChecker) pushScope(scope map[string]struct{}) func() {
@@ -3847,10 +3865,13 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 			collectLocalBindings(typed.Body, out)
 		case *TryStmt:
 			collectLocalBindings(typed.Body, out)
-			if typed.RescueBinding != "" {
-				out[typed.RescueBinding] = struct{}{}
+			for i := range typed.Rescues {
+				clause := &typed.Rescues[i]
+				if clause.Binding != "" {
+					out[clause.Binding] = struct{}{}
+				}
+				collectLocalBindings(clause.Body, out)
 			}
-			collectLocalBindings(typed.Rescue, out)
 			collectLocalBindings(typed.Else, out)
 			collectLocalBindings(typed.Ensure, out)
 		}

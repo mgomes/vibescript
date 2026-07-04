@@ -127,9 +127,17 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		if len(typed.Else) > 0 {
 			elseTerminated = lintStatements(function, typed.Else, warnings)
 		}
-		rescueTerminated := false
-		if len(typed.Rescue) > 0 {
-			rescueTerminated = lintStatements(function, typed.Rescue, warnings)
+		rescuePresent := false
+		rescueTerminated := true
+		for i := range typed.Rescues {
+			body := typed.Rescues[i].Body
+			if len(body) == 0 {
+				continue
+			}
+			rescuePresent = true
+			if !lintStatements(function, body, warnings) {
+				rescueTerminated = false
+			}
 		}
 		ensureTerminated := false
 		if len(typed.Ensure) > 0 {
@@ -142,7 +150,7 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		if len(typed.Else) > 0 {
 			normalTerminated = bodyTerminated || elseTerminated
 		}
-		if len(typed.Rescue) == 0 {
+		if !rescuePresent {
 			return normalTerminated
 		}
 		return normalTerminated && rescueTerminated
