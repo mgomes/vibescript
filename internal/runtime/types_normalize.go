@@ -567,33 +567,15 @@ func normalizeStringKeyShapeForType(val Value, ty *TypeExpr, ctx typeContext) (V
 }
 
 func normalizeNamedForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {
-	enumDef, ok, err := lookupEnumTypeExact(ty, ctx)
+	match, ok, err := lookupNamedTypeForType(ty, ctx)
 	if err != nil {
 		return NewNil(), err
 	}
 	if ok {
-		return normalizeEnumValueForDef(val, ty, enumDef)
-	}
-	classDef, ok, err := lookupClassTypeExact(ty, ctx)
-	if err != nil {
-		return NewNil(), err
-	}
-	if ok {
-		return normalizeClassInstanceForDef(val, ty, classDef)
-	}
-	enumDef, ok, err = lookupEnumType(ty, ctx)
-	if err != nil {
-		return NewNil(), err
-	}
-	if ok {
-		return normalizeEnumValueForDef(val, ty, enumDef)
-	}
-	classDef, ok, err = lookupClassType(ty, ctx)
-	if err != nil {
-		return NewNil(), err
-	}
-	if ok {
-		return normalizeClassInstanceForDef(val, ty, classDef)
+		if match.enum != nil {
+			return normalizeEnumValueForDef(val, ty, match.enum)
+		}
+		return normalizeClassInstanceForDef(val, ty, match.class)
 	}
 	return NewNil(), fmt.Errorf("unknown type %s", ty.Name)
 }
@@ -629,46 +611,53 @@ func normalizeClassInstanceForDef(val Value, ty *TypeExpr, classDef *ClassDef) (
 }
 
 func ensureNamedTypeExists(ty *TypeExpr, ctx typeContext) error {
-	if _, ok, err := lookupEnumType(ty, ctx); err != nil || ok {
-		return err
-	}
-	if _, ok, err := lookupClassType(ty, ctx); err != nil || ok {
+	if _, ok, err := lookupNamedTypeForType(ty, ctx); err != nil || ok {
 		return err
 	}
 	return fmt.Errorf("unknown type %s", ty.Name)
 }
 
-func lookupEnumType(ty *TypeExpr, ctx typeContext) (*EnumDef, bool, error) {
+type namedTypeMatch struct {
+	enum  *EnumDef
+	class *ClassDef
+}
+
+func lookupNamedTypeForType(ty *TypeExpr, ctx typeContext) (namedTypeMatch, bool, error) {
+	enumDef, ok, err := lookupEnumTypeExact(ty, ctx)
+	if err != nil {
+		return namedTypeMatch{}, false, err
+	}
+	if ok {
+		return namedTypeMatch{enum: enumDef}, true, nil
+	}
+	classDef, ok, err := lookupClassTypeExact(ty, ctx)
+	if err != nil {
+		return namedTypeMatch{}, false, err
+	}
+	if ok {
+		return namedTypeMatch{class: classDef}, true, nil
+	}
+	return lookupNamedTypeFold(ty, ctx)
+}
+
+func lookupNamedTypeFold(ty *TypeExpr, ctx typeContext) (namedTypeMatch, bool, error) {
 	if ty == nil {
-		return nil, false, fmt.Errorf("unknown type")
+		return namedTypeMatch{}, false, fmt.Errorf("unknown type")
 	}
 	if ty.Kind != TypeEnum {
-		return nil, false, fmt.Errorf("unknown type %s", ty.Name)
+		return namedTypeMatch{}, false, fmt.Errorf("unknown type %s", ty.Name)
 	}
-	enumDef, ok, err := lookupEnumInEnv(ctx.env, ty.Name)
-	if err != nil {
-		return nil, false, err
-	}
-	if ok {
-		return enumDef, true, nil
+	match, ok, err := lookupNamedTypeInEnvFold(ctx.env, ty.Name)
+	if err != nil || ok {
+		return match, ok, err
 	}
 	if ctx.fallback != ctx.env {
-		enumDef, ok, err := lookupEnumInEnv(ctx.fallback, ty.Name)
-		if err != nil {
-			return nil, false, err
-		}
-		if ok {
-			return enumDef, true, nil
+		match, ok, err = lookupNamedTypeInEnvFold(ctx.fallback, ty.Name)
+		if err != nil || ok {
+			return match, ok, err
 		}
 	}
-	enumDef, ok, err = lookupEnumDef(ctx.owner, ty.Name)
-	if err != nil {
-		return nil, false, err
-	}
-	if ok {
-		return enumDef, true, nil
-	}
-	return nil, false, nil
+	return lookupNamedTypeDefFold(ctx.owner, ty.Name)
 }
 
 func lookupEnumTypeExact(ty *TypeExpr, ctx typeContext) (*EnumDef, bool, error) {
@@ -725,34 +714,6 @@ func validateTypeExprResolved(ty *TypeExpr, ctx typeContext) error {
 	return nil
 }
 
-func lookupEnumDef(owner *Script, name string) (*EnumDef, bool, error) {
-	if owner == nil || len(owner.enums) == 0 {
-		return nil, false, nil
-	}
-	if enumDef, ok := owner.enums[name]; ok {
-		return enumDef, true, nil
-	}
-	var match *EnumDef
-	matches := make([]string, 0, 2)
-	for enumName, enumDef := range owner.enums {
-		if !strings.EqualFold(enumName, name) {
-			continue
-		}
-		matches = append(matches, enumName)
-		if match == nil {
-			match = enumDef
-			continue
-		}
-		if match != enumDef {
-			return nil, false, ambiguousEnumTypeError(name, matches)
-		}
-	}
-	if match != nil {
-		return match, true, nil
-	}
-	return nil, false, nil
-}
-
 func lookupEnumDefExact(owner *Script, name string) (*EnumDef, bool) {
 	if owner == nil || len(owner.enums) == 0 {
 		return nil, false
@@ -779,6 +740,15 @@ func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool, error) {
 		}
 	}
 	return nil, false, nil
+}
+
+func lookupNamedTypeInEnvFold(env *Env, name string) (namedTypeMatch, bool, error) {
+	for scope := env; scope != nil; scope = scope.parent {
+		if match, ok, err := lookupNamedTypeInScopeFold(scope, name); err != nil || ok {
+			return match, ok, err
+		}
+	}
+	return namedTypeMatch{}, false, nil
 }
 
 // lookupEnumInScope considers a scope's dynamic and static bindings as
@@ -820,37 +790,43 @@ func lookupEnumInScope(scope *Env, name string) (*EnumDef, bool, error) {
 	return nil, false, nil
 }
 
-func lookupClassType(ty *TypeExpr, ctx typeContext) (*ClassDef, bool, error) {
-	if ty == nil {
-		return nil, false, fmt.Errorf("unknown type")
-	}
-	if ty.Kind != TypeEnum {
-		return nil, false, fmt.Errorf("unknown type %s", ty.Name)
-	}
-	classDef, ok, err := lookupClassInEnv(ctx.env, ty.Name)
-	if err != nil {
-		return nil, false, err
-	}
-	if ok {
-		return classDef, true, nil
-	}
-	if ctx.fallback != ctx.env {
-		classDef, ok, err := lookupClassInEnv(ctx.fallback, ty.Name)
-		if err != nil {
-			return nil, false, err
+func lookupNamedTypeInScopeFold(scope *Env, name string) (namedTypeMatch, bool, error) {
+	var match namedTypeMatch
+	enumMatches := make([]string, 0, 2)
+	classMatches := make([]string, 0, 2)
+	var scanErr error
+	scan := func(key string, val Value) {
+		if scanErr != nil || key == name || !strings.EqualFold(key, name) {
+			return
 		}
-		if ok {
-			return classDef, true, nil
+		switch val.Kind() {
+		case KindEnum:
+			enumMatches = append(enumMatches, key)
+			enumDef := valueEnum(val)
+			if match.enum == nil {
+				match.enum = enumDef
+				return
+			}
+			if match.enum != enumDef {
+				scanErr = ambiguousEnumTypeError(name, enumMatches)
+			}
+		case KindClass:
+			classMatches = append(classMatches, key)
+			classDef := valueClass(val)
+			if match.class == nil {
+				match.class = classDef
+				return
+			}
+			if match.class != classDef {
+				scanErr = ambiguousClassTypeError(name, classMatches)
+			}
 		}
 	}
-	classDef, ok, err = lookupClassDef(ctx.owner, ty.Name)
-	if err != nil {
-		return nil, false, err
+	scope.rangeDynamicBindings(scan)
+	for key, val := range scope.statics {
+		scan(key, val)
 	}
-	if ok {
-		return classDef, true, nil
-	}
-	return nil, false, nil
+	return resolveNamedTypeFoldMatch(name, match, enumMatches, classMatches, scanErr)
 }
 
 func lookupClassTypeExact(ty *TypeExpr, ctx typeContext) (*ClassDef, bool, error) {
@@ -877,34 +853,6 @@ func lookupClassTypeExact(ty *TypeExpr, ctx typeContext) (*ClassDef, bool, error
 	return nil, false, nil
 }
 
-func lookupClassDef(owner *Script, name string) (*ClassDef, bool, error) {
-	if owner == nil || len(owner.classes) == 0 {
-		return nil, false, nil
-	}
-	if classDef, ok := owner.classes[name]; ok {
-		return classDef, true, nil
-	}
-	var match *ClassDef
-	matches := make([]string, 0, 2)
-	for className, classDef := range owner.classes {
-		if !strings.EqualFold(className, name) {
-			continue
-		}
-		matches = append(matches, className)
-		if match == nil {
-			match = classDef
-			continue
-		}
-		if match != classDef {
-			return nil, false, ambiguousClassTypeError(name, matches)
-		}
-	}
-	if match != nil {
-		return match, true, nil
-	}
-	return nil, false, nil
-}
-
 func lookupClassDefExact(owner *Script, name string) (*ClassDef, bool) {
 	if owner == nil || len(owner.classes) == 0 {
 		return nil, false
@@ -922,49 +870,54 @@ func lookupClassInEnvExact(env *Env, name string) (*ClassDef, bool) {
 	return nil, false
 }
 
-func lookupClassInEnv(env *Env, name string) (*ClassDef, bool, error) {
-	for scope := env; scope != nil; scope = scope.parent {
-		if classDef, ok, err := lookupClassInScope(scope, name); err != nil {
-			return nil, false, err
-		} else if ok {
-			return classDef, true, nil
+func lookupNamedTypeDefFold(owner *Script, name string) (namedTypeMatch, bool, error) {
+	if owner == nil || len(owner.enums)+len(owner.classes) == 0 {
+		return namedTypeMatch{}, false, nil
+	}
+
+	var match namedTypeMatch
+	enumMatches := make([]string, 0, 2)
+	classMatches := make([]string, 0, 2)
+	for enumName, enumDef := range owner.enums {
+		if enumName == name || !strings.EqualFold(enumName, name) {
+			continue
+		}
+		enumMatches = append(enumMatches, enumName)
+		if match.enum == nil {
+			match.enum = enumDef
+			continue
+		}
+		if match.enum != enumDef {
+			return namedTypeMatch{}, false, ambiguousEnumTypeError(name, enumMatches)
 		}
 	}
-	return nil, false, nil
+	for className, classDef := range owner.classes {
+		if className == name || !strings.EqualFold(className, name) {
+			continue
+		}
+		classMatches = append(classMatches, className)
+		if match.class == nil {
+			match.class = classDef
+			continue
+		}
+		if match.class != classDef {
+			return namedTypeMatch{}, false, ambiguousClassTypeError(name, classMatches)
+		}
+	}
+	return resolveNamedTypeFoldMatch(name, match, enumMatches, classMatches, nil)
 }
 
-func lookupClassInScope(scope *Env, name string) (*ClassDef, bool, error) {
-	if val, ok := scope.getOwn(name); ok && val.Kind() == KindClass {
-		return valueClass(val), true, nil
+func resolveNamedTypeFoldMatch(name string, match namedTypeMatch, enumMatches, classMatches []string, err error) (namedTypeMatch, bool, error) {
+	if err != nil {
+		return namedTypeMatch{}, false, err
 	}
-
-	var match *ClassDef
-	matches := make([]string, 0, 2)
-	var scanErr error
-	scan := func(key string, val Value) {
-		if scanErr != nil || key == name || !strings.EqualFold(key, name) || val.Kind() != KindClass {
-			return
-		}
-		matches = append(matches, key)
-		if match == nil {
-			match = valueClass(val)
-			return
-		}
-		if match != valueClass(val) {
-			scanErr = ambiguousClassTypeError(name, matches)
-		}
+	if match.enum != nil && match.class != nil {
+		return namedTypeMatch{}, false, ambiguousNamedTypeError(name, enumMatches, classMatches)
 	}
-	scope.rangeDynamicBindings(scan)
-	for key, val := range scope.statics {
-		scan(key, val)
-	}
-	if scanErr != nil {
-		return nil, false, scanErr
-	}
-	if match != nil {
+	if match.enum != nil || match.class != nil {
 		return match, true, nil
 	}
-	return nil, false, nil
+	return namedTypeMatch{}, false, nil
 }
 
 func ambiguousClassTypeError(name string, matches []string) error {
@@ -975,6 +928,19 @@ func ambiguousClassTypeError(name string, matches []string) error {
 func ambiguousEnumTypeError(name string, matches []string) error {
 	sort.Strings(matches)
 	return fmt.Errorf("ambiguous enum type %s matches %s", name, strings.Join(matches, ", "))
+}
+
+func ambiguousNamedTypeError(name string, enumMatches, classMatches []string) error {
+	sort.Strings(enumMatches)
+	sort.Strings(classMatches)
+	matches := make([]string, 0, len(enumMatches)+len(classMatches))
+	for _, enumName := range enumMatches {
+		matches = append(matches, "enum "+enumName)
+	}
+	for _, className := range classMatches {
+		matches = append(matches, "class "+className)
+	}
+	return fmt.Errorf("ambiguous type %s matches %s", name, strings.Join(matches, ", "))
 }
 
 func errorAsTypeMismatch(err error, target **typeMismatchError) bool {

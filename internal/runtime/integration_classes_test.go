@@ -202,3 +202,26 @@ end
 		t.Fatalf("run() = %#v, want User", got)
 	}
 }
+
+func TestCaseInsensitiveClassEnumTypeFallbackIsAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+class User
+end
+
+enum user
+  Draft
+end
+
+def accept(value: USER)
+  value
+end
+
+def run()
+  accept(User.new)
+end
+`)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "ambiguous type USER matches enum user, class User")
+}
