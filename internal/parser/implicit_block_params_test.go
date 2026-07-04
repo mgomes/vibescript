@@ -30,6 +30,16 @@ func TestParserInfersImplicitBlockParams(t *testing.T) {
 			want:   []string{"it"},
 		},
 		{
+			name:   "continued_if_statement_expression_uses_numbered",
+			source: `def run; [1].map { unless false; _1; end + 1 }; end`,
+			want:   []string{"_1"},
+		},
+		{
+			name:   "continued_if_statement_expression_uses_it",
+			source: `def run; [1].map { unless false; it; end.to_s }; end`,
+			want:   []string{"it"},
+		},
+		{
 			name:   "explicit_params_disable_implicit",
 			source: `def run; [1].map { |it| it * 2 }; end`,
 			want:   nil,

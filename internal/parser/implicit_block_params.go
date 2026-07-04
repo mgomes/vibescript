@@ -173,7 +173,7 @@ func (u *implicitBlockParamUsage) visitExpression(expr ast.Expression, callCalle
 		u.visitStringParts(e.Parts)
 	case *ast.InterpolatedSymbol:
 		u.visitStringParts(e.Parts)
-	case *ast.ForStmt, *ast.WhileStmt, *ast.UntilStmt, *ast.TryStmt:
+	case *ast.IfStmt, *ast.ForStmt, *ast.WhileStmt, *ast.UntilStmt, *ast.TryStmt:
 		u.visitStatement(e.(ast.Statement))
 	}
 }
