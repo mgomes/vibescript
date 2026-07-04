@@ -397,6 +397,10 @@ func TestRegexLeadingBracketClass(t *testing.T) {
     def posix_alpha_or_slash(text)
       text =~ /[[:alpha:]/]/
     end
+
+    def literal_bracket_colon_slash(text)
+      text =~ /[[:/]/
+    end
     `)
 
 	ctx := context.Background()
@@ -433,5 +437,17 @@ func TestRegexLeadingBracketClass(t *testing.T) {
 	}
 	if got := matches("posix_alpha_or_slash", "5"); got.Kind() != KindNil {
 		t.Fatalf("/[[:alpha:]/]/ vs \"5\" = %v, want nil", got)
+	}
+
+	// /[[:/]/ is a literal class of [, :, and / — not a POSIX class — so it
+	// matches those three and nothing else.
+	if got := matches("literal_bracket_colon_slash", "["); got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("/[[:/]/ vs \"[\" = %v, want 0", got)
+	}
+	if got := matches("literal_bracket_colon_slash", ":"); got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("/[[:/]/ vs \":\" = %v, want 0", got)
+	}
+	if got := matches("literal_bracket_colon_slash", "a"); got.Kind() != KindNil {
+		t.Fatalf("/[[:/]/ vs \"a\" = %v, want nil", got)
 	}
 }

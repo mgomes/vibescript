@@ -1390,9 +1390,10 @@ func (l *lexer) readRegexLiteral() (string, string) {
 				l.readRune()
 				sb.WriteRune(l.ch)
 			}
-		case l.ch == '[' && inClass && !inPosix && l.peekRune() == ':':
+		case l.ch == '[' && inClass && !inPosix && l.posixClassAhead():
 			// A POSIX class such as [:alpha:] nests inside the outer class; scan
 			// through its :] terminator so the ] is not read as the outer close.
+			// A bare [: that is not a POSIX shape (as in /[[:/]/) stays literal.
 			inPosix = true
 			sb.WriteRune(l.ch)
 		case l.ch == ':' && inPosix && l.peekRune() == ']':
@@ -1426,6 +1427,38 @@ func (l *lexer) readRegexLiteral() (string, string) {
 
 func isRegexFlagRune(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+}
+
+// posixClassAhead reports whether the `[` under l.ch opens a POSIX class of the
+// form [:name:] or [:^name:] (name being one or more ASCII letters). Only that
+// shape may enter POSIX scan mode; a bare `[:` that is just literal members —
+// such as the class in /[[:/]/ — must not, or the scanner would swallow the
+// class close and delimiter hunting for a nonexistent `:]`.
+func (l *lexer) posixClassAhead() bool {
+	rest := l.input[l.currentOffset():]
+	if len(rest) < 4 || rest[0] != '[' || rest[1] != ':' {
+		return false
+	}
+	i := 2
+	if rest[i] == '^' {
+		i++
+	}
+	nameStart := i
+	for i < len(rest) {
+		c := rest[i]
+		if c == ':' {
+			return i > nameStart && i+1 < len(rest) && rest[i+1] == ']'
+		}
+		if !isASCIILetter(c) {
+			return false
+		}
+		i++
+	}
+	return false
+}
+
+func isASCIILetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 func (l *lexer) canStartPercentArrayLiteral() bool {
