@@ -77,6 +77,22 @@ func TestMemoryEstimatorDoesNotMaterializeTypedHashMirror(t *testing.T) {
 	}
 }
 
+func TestMemoryEstimatorChargesReservedTypedHashCapacity(t *testing.T) {
+	t.Parallel()
+
+	empty := NewHash(map[string]Value{})
+	empty.ReserveTypedHashOrder(0)
+	reserved := NewHash(map[string]Value{})
+	reserved.ReserveTypedHashOrder(10)
+
+	emptyBytes := newMemoryEstimator().value(empty)
+	reservedBytes := newMemoryEstimator().value(reserved)
+	wantDelta := estimatedSliceBaseBytes + 10*(estimatedMapEntryBytes+2*estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
+	if gotDelta := reservedBytes - emptyBytes; gotDelta != wantDelta {
+		t.Fatalf("reserved typed hash estimate delta = %d, want %d", gotDelta, wantDelta)
+	}
+}
+
 func TestMemoryEstimatorChargesStoredTypedHashArrayLookupKey(t *testing.T) {
 	t.Parallel()
 

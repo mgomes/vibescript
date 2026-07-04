@@ -97,6 +97,39 @@ func TestHashSetPreservesInsertionOrder(t *testing.T) {
 func TestHashOrderCapacity(t *testing.T) {
 	t.Parallel()
 
+	orderOnly := value.NewHash(map[string]value.Value{})
+	orderOnly.ReserveHashOrder(3)
+	if orderOnly.HashHasTypedEntries() {
+		t.Fatalf("ReserveHashOrder() initialized typed entries, want order-only reservation")
+	}
+	if got := value.HashOrderCapacity(orderOnly); got != 3 {
+		t.Fatalf("ReserveHashOrder() order capacity = %d, want 3", got)
+	}
+
+	typedReserved := value.NewHash(map[string]value.Value{})
+	typedReserved.ReserveTypedHashOrder(3)
+	if !typedReserved.HashHasTypedEntries() {
+		t.Fatalf("ReserveTypedHashOrder() left hash legacy-only, want typed entries")
+	}
+	if got := value.HashTypedEntryCapacity(typedReserved); got != 3 {
+		t.Fatalf("ReserveTypedHashOrder() typed entry capacity = %d, want 3", got)
+	}
+	if got := value.HashOrderCapacity(typedReserved); got != 3 {
+		t.Fatalf("ReserveTypedHashOrder() order capacity = %d, want 3", got)
+	}
+
+	grownTyped := value.NewTypedHash(0)
+	if err := grownTyped.HashSet(value.NewSymbol("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(a) error = %v, want nil", err)
+	}
+	grownTyped.ReserveTypedHashOrder(3)
+	if got := value.HashTypedEntryCapacity(grownTyped); got != 3 {
+		t.Fatalf("ReserveTypedHashOrder() grown typed entry capacity = %d, want 3", got)
+	}
+	if got, ok, err := grownTyped.HashGet(value.NewSymbol("a")); err != nil || !ok || !got.Equal(value.NewInt(1)) {
+		t.Fatalf("HashGet(a) after ReserveTypedHashOrder() = %v, %v, %v; want 1, true, nil", got, ok, err)
+	}
+
 	hash := value.NewTypedHash(0)
 	if got := value.HashOrderCapacity(hash); got != 0 {
 		t.Fatalf("empty typed hash order capacity = %d, want 0", got)

@@ -2270,6 +2270,11 @@ func (est *memoryEstimator) typedHashEntriesBytes(val Value) int {
 		size = saturatingAdd(size, est.valuePayload(entry.Entry.Key))
 		size = saturatingAdd(size, est.valuePayload(entry.Entry.Value))
 	}
+	if capacity := value.HashTypedEntryCapacity(val); capacity > len(entries) {
+		extraSlots := capacity - len(entries)
+		extraSlotBytes := estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes
+		size = saturatingAdd(size, saturatingMul(extraSlots, extraSlotBytes))
+	}
 	// The insertion-order backing retains one lookup-key slot per slot of
 	// capacity (append growth can leave capacity beyond the entry count). Its
 	// lookup keys alias strings the entries above already charge, so only the
