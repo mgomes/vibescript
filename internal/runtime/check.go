@@ -3577,6 +3577,14 @@ func staticLiteralValue(expr Expression) (Value, bool) {
 }
 
 func staticExpressionTruthiness(expr Expression) (bool, bool) {
+	if _, ok := expr.(*RegexLiteral); ok {
+		// A regex literal always builds a (truthy) regex value, so a condition
+		// that is just a regex literal is statically true. The checker does not
+		// compile it here — pattern validity stays a runtime concern — it only
+		// needs the truthiness so an if without an else is not treated as a path
+		// that can fall through to nil.
+		return true, true
+	}
 	val, ok := staticLiteralValue(expr)
 	if !ok {
 		return false, false

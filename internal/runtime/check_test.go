@@ -1926,6 +1926,38 @@ end
 	}
 }
 
+func TestCheckRegexLiteralConditionIsStaticallyTruthy(t *testing.T) {
+	t.Parallel()
+
+	// A regex literal is always truthy, so a typed function whose only return
+	// sits under `if /re/` never falls through to nil and its else, if any, is
+	// unreachable. The checker must recognize this or it flags a spurious
+	// return-type warning.
+	script := compileScript(t, `
+def typed_regex() -> int
+  if /ok/
+    1
+  end
+end
+
+def typed_regex_else() -> int
+  if /ok/
+    1
+  else
+    "bad"
+  end
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	if _, err := script.Call(context.Background(), "typed_regex", nil, CallOptions{}); err != nil {
+		t.Fatalf("Call(typed_regex) returned error: %v", err)
+	}
+	if _, err := script.Call(context.Background(), "typed_regex_else", nil, CallOptions{}); err != nil {
+		t.Fatalf("Call(typed_regex_else) returned error: %v", err)
+	}
+}
+
 func TestCheckWarningsResolveDefaultRequiredModuleEnumExportsInParameterOrder(t *testing.T) {
 	t.Parallel()
 
