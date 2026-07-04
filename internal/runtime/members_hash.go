@@ -98,10 +98,16 @@ func (exec *Execution) hashDefaultForKey(receiver, key Value) (Value, error) {
 }
 
 // hashMissingKeyDefault resolves a missing-key [] access, wrapping any default
-// proc error with the index expression's position for a precise diagnostic.
+// proc error with the index expression's position for a precise diagnostic. A
+// non-local return from the proc is not an error: it passes through intact so
+// the method that created the proc can consume it; every real proc error is
+// still re-anchored at the [] expression.
 func (exec *Execution) hashMissingKeyDefault(receiver, key Value, pos Position) (Value, error) {
 	result, err := exec.hashDefaultForKey(receiver, key)
 	if err != nil {
+		if isNonLocalReturnSignal(err) {
+			return NewNil(), err
+		}
 		return NewNil(), exec.errorAt(pos, "%s", err.Error())
 	}
 	return result, nil

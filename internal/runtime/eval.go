@@ -1048,6 +1048,7 @@ func (exec *Execution) matchIfExpressionBranch(expr *IfExpr, env *Env) (Expressi
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
 	blockValue := newBlock(block.Params, block.ImplicitParams, block.Body, env)
 	blk := valueBlock(blockValue)
+	blk.homeReturnToken = exec.currentBlockHomeToken()
 	if ctx := exec.currentModuleContext(); ctx != nil && ctx.script != nil {
 		blk.owner = ctx.script
 	} else {
@@ -1256,14 +1257,41 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 		}
 		blockEnv.Define(name, val)
 	}
+	// The block's lexical home scopes any literal created while the body runs:
+	// a nested block returns from the same method this block does, even when
+	// yield executes the body inside a callee frame.
+	exec.pushBlockHomeToken(blk.homeReturnToken)
 	val, returned, err := exec.evalLocalScopeStatements(blk.Body, blockEnv)
+	exec.popBlockHomeToken()
 	if err != nil {
 		return NewNil(), err
 	}
 	if returned {
-		return blockEnv.detachArrayAppendResult(val), nil
+		// Ruby non-local return: an explicit return in a block body returns
+		// from the method that created the block, not from the block call. A
+		// dead home — the method already returned, the block was built outside
+		// any method, or it runs in another execution — raises LocalJumpError
+		// right here, where a surrounding rescue can catch it. A live home
+		// travels the error path so drivers unwind and ensure blocks run; the
+		// invocation whose token matches converts it into its return value.
+		if !exec.returnTokenLive(blk.homeReturnToken) {
+			return NewNil(), exec.localJumpErrorAt(blockBodyPos(blk), "unexpected return")
+		}
+		return NewNil(), &nonLocalReturnSignal{
+			value: blockEnv.detachArrayAppendResult(val),
+			token: blk.homeReturnToken,
+		}
 	}
 	return blockEnv.detachArrayAppendResult(val), nil
+}
+
+// blockBodyPos anchors a block-level diagnostic to the block's first
+// statement, the closest stable position a detached block value carries.
+func blockBodyPos(blk *Block) Position {
+	if len(blk.Body) > 0 {
+		return blk.Body[0].Pos()
+	}
+	return Position{}
 }
 
 func rubyBlockBindArgs(params []Param, args []Value) []Value {
@@ -3542,6 +3570,7 @@ func isHostControlSignal(err error) bool {
 func canRescueRuntimeError(err error, rescueTy *TypeExpr) bool {
 	return !isLoopControlSignal(err) &&
 		!isHostControlSignal(err) &&
+		!isNonLocalReturnSignal(err) &&
 		runtimeErrorMatchesRescueType(err, rescueTy)
 }
 
