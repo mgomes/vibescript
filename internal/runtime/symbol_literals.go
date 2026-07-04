@@ -184,6 +184,9 @@ func (c *symbolLiteralCollector) collectExpression(expr Expression) {
 		c.collectExpression(typed.Condition)
 		c.collectExpression(typed.Consequent)
 		c.collectExpression(typed.Alternate)
+	case *RescueExpr:
+		c.collectExpression(typed.Body)
+		c.collectExpression(typed.Fallback)
 	case *IfExpr:
 		c.collectExpression(typed.Condition)
 		c.collectExpression(typed.Consequent)

@@ -292,6 +292,11 @@ func cloneExpression(expr Expression) Expression {
 		clone.Consequent = cloneExpression(e.Consequent)
 		clone.Alternate = cloneExpression(e.Alternate)
 		return &clone
+	case *RescueExpr:
+		clone := *e
+		clone.Body = cloneExpression(e.Body)
+		clone.Fallback = cloneExpression(e.Fallback)
+		return &clone
 	case *IfExpr:
 		clone := *e
 		clone.Condition = cloneExpression(e.Condition)

@@ -212,6 +212,9 @@ func lintExpression(function string, expr ast.Expression, warnings *[]Warning) {
 		lintExpression(function, typed.Condition, warnings)
 		lintExpression(function, typed.Consequent, warnings)
 		lintExpression(function, typed.Alternate, warnings)
+	case *ast.RescueExpr:
+		lintExpression(function, typed.Body, warnings)
+		lintExpression(function, typed.Fallback, warnings)
 	case *ast.IfExpr:
 		lintExpression(function, typed.Condition, warnings)
 		lintExpression(function, typed.Consequent, warnings)

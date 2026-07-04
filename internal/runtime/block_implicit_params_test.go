@@ -69,6 +69,25 @@ end`)
 	compareArrays(t, got, []Value{NewInt(2), NewInt(3), NewInt(4)})
 }
 
+func TestImplicitBlockItInRescueCalleeStaysCallable(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def it(value)
+  value + 1
+end
+
+def fallback(value)
+  value + 10
+end
+
+def run
+  [1, 2, 3].map { (it rescue fallback)(_1) }
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewInt(2), NewInt(3), NewInt(4)})
+}
+
 func TestImplicitBlockItCalleeWithPercentArrayStaysCallable(t *testing.T) {
 	t.Parallel()
 

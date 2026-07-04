@@ -434,6 +434,19 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		} else {
 			c.collectRequiredModuleExportsFromExpressionBranches(typed.Consequent, typed.Alternate)
 		}
+	case *RescueExpr:
+		baseState := c.snapshotModuleCollectionState()
+		baseScopeState := c.snapshotScopeState()
+		c.collectRequiredModuleExportsFromExpression(typed.Body)
+		bodyState := c.snapshotModuleCollectionState()
+		bodyScopeState := c.snapshotScopeState()
+		c.restoreModuleCollectionState(baseState)
+		c.restoreScopeState(baseScopeState)
+		c.collectRequiredModuleExportsFromExpression(typed.Fallback)
+		fallbackState := c.snapshotModuleCollectionState()
+		fallbackScopeState := c.snapshotScopeState()
+		c.mergeModuleCollectionStates(baseState, []checkModuleCollectionState{bodyState, fallbackState})
+		c.mergeScopeStates(baseScopeState, []checkScopeState{bodyScopeState, fallbackScopeState})
 	case *IfExpr:
 		baseState := c.snapshotModuleCollectionState()
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
@@ -1921,6 +1934,8 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		}
 	case *ConditionalExpr:
 		c.checkConditionalExpression(function, typed)
+	case *RescueExpr:
+		c.checkRescueExpression(function, typed, autoCall)
 	case *IfExpr:
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
@@ -2032,6 +2047,25 @@ func (c *scriptChecker) checkConditionalExpression(function string, expr *Condit
 
 	c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
 	c.mergeScopeStates(baseScopeState, branchScopeStates)
+}
+
+func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr, autoCall bool) {
+	baseRuntimeState := c.snapshotRuntimeState()
+	baseScopeState := c.snapshotScopeState()
+	c.checkExpressionWithAuto(function, expr.Body, autoCall)
+	c.collectRuntimeRequireCallExportsFromExpression(expr.Body)
+	bodyRuntimeState := c.snapshotRuntimeState()
+	bodyScopeState := c.snapshotScopeState()
+
+	c.restoreRuntimeState(baseRuntimeState)
+	c.restoreScopeState(baseScopeState)
+	c.checkExpressionWithAuto(function, expr.Fallback, autoCall)
+	c.collectRuntimeRequireCallExportsFromExpression(expr.Fallback)
+	fallbackRuntimeState := c.snapshotRuntimeState()
+	fallbackScopeState := c.snapshotScopeState()
+
+	c.mergeRuntimeStates(baseRuntimeState, []checkRuntimeState{bodyRuntimeState, fallbackRuntimeState})
+	c.mergeScopeStates(baseScopeState, []checkScopeState{bodyScopeState, fallbackScopeState})
 }
 
 func (c *scriptChecker) checkCaseExpression(function string, expr *CaseExpr) {
@@ -2390,6 +2424,9 @@ func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map
 		}
 		return c.expressionMayEvaluateCallBlock(typed.Consequent, seen) ||
 			c.expressionMayEvaluateCallBlock(typed.Alternate, seen)
+	case *RescueExpr:
+		return c.expressionMayEvaluateCallBlock(typed.Body, seen) ||
+			c.expressionMayEvaluateCallBlock(typed.Fallback, seen)
 	case *IfExpr:
 		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
 			c.expressionMayEvaluateCallBlock(typed.Consequent, seen) ||
@@ -2787,6 +2824,9 @@ func expressionCanImplicitlyYieldNil(expr Expression) bool {
 		}
 		return expressionCanImplicitlyYieldNil(typed.Consequent) ||
 			expressionCanImplicitlyYieldNil(typed.Alternate)
+	case *RescueExpr:
+		return expressionCanImplicitlyYieldNil(typed.Body) ||
+			expressionCanImplicitlyYieldNil(typed.Fallback)
 	}
 	return false
 }

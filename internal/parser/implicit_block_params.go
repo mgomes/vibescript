@@ -139,6 +139,9 @@ func (u *implicitBlockParamUsage) visitExpression(expr ast.Expression, callCalle
 		u.visitExpression(e.Condition, false)
 		u.visitExpression(e.Consequent, false)
 		u.visitExpression(e.Alternate, false)
+	case *ast.RescueExpr:
+		u.visitExpression(e.Body, callCallee)
+		u.visitExpression(e.Fallback, callCallee)
 	case *ast.IfExpr:
 		u.visitExpression(e.Condition, false)
 		u.visitExpression(e.Consequent, false)
