@@ -75,6 +75,9 @@ func memberCallReceiverAutoInvokes(object Expression, env *Env) bool {
 }
 
 func callMemberCallReceiverAutoInvokes(call *CallExpr, object Expression, env *Env) bool {
+	if isStoredDataCallReceiver(object, env) {
+		return false
+	}
 	if callHasNoArguments(call) && isStaticZeroArityFunctionReceiver(object, env) {
 		return false
 	}
@@ -100,6 +103,48 @@ func isStaticZeroArityFunctionReceiver(object Expression, env *Env) bool {
 	}
 	fn := valueFunction(val)
 	return fn != nil && len(fn.Params) == 0
+}
+
+func isStoredDataCallReceiver(object Expression, env *Env) bool {
+	switch expr := object.(type) {
+	case *IvarExpr, *ClassVarExpr:
+		return true
+	case *Identifier:
+		return isImplicitSelfDataCallReceiver(expr.Name, env)
+	default:
+		return false
+	}
+}
+
+func isImplicitSelfDataCallReceiver(name string, env *Env) bool {
+	if _, ok := env.lookupBindingScope(name); ok {
+		return false
+	}
+	self, ok := env.Get("self")
+	if !ok {
+		return false
+	}
+	switch self.Kind() {
+	case KindInstance:
+		inst := valueInstance(self)
+		if _, ok := inst.Class.Methods[name]; ok || isUniversalDataSafe(name) {
+			return false
+		}
+		_, ok := inst.Ivars[name]
+		return ok
+	case KindClass:
+		classDef := valueClass(self)
+		if name == "new" || isUniversalDataSafe(name) {
+			return false
+		}
+		if _, ok := classDef.ClassMethods[name]; ok {
+			return false
+		}
+		_, ok := classDef.ClassVars[name]
+		return ok
+	default:
+		return false
+	}
 }
 
 func isDynamicCallableMemberReceiver(object Expression, env *Env) bool {

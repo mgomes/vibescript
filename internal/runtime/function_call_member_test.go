@@ -218,6 +218,36 @@ func TestFunctionValueCallUsesStoredInstanceAndClassCallableData(t *testing.T) {
 	}
 }
 
+func TestFunctionValueCallPreservesImplicitSelfStoredCallableData(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    class CallbackBox
+      def run
+        cb.call
+      end
+    end
+
+    def new_box
+      CallbackBox.new()
+    end
+
+    def run_box(box)
+      box.run
+    end
+    `)
+	box := callFunc(t, script, "new_box", nil)
+	valueInstance(box).Ivars["cb"] = NewFunction(&ScriptFunction{
+		Name: "callback",
+		Body: []Statement{&ReturnStmt{
+			Value:    &IntegerLiteral{Value: 42},
+			Position: Position{Line: 1, Column: 1},
+		}},
+	})
+	if got := callFunc(t, script, "run_box", []Value{box}); !got.Equal(NewInt(42)) {
+		t.Fatalf("run_box() = %#v, want 42", got)
+	}
+}
+
 func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
