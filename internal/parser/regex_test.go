@@ -94,6 +94,16 @@ func TestParserRegexLiterals(t *testing.T) {
 			pattern: "[^]/]",
 		},
 		{
+			name:    "posix class",
+			source:  "def run\n  check(/[[:alpha:]]/, text)\nend",
+			pattern: "[[:alpha:]]",
+		},
+		{
+			name:    "posix class with slash member",
+			source:  "def run\n  check(/[[:alpha:]/]/, text)\nend",
+			pattern: "[[:alpha:]/]",
+		},
+		{
 			name:    "case-insensitive flag",
 			source:  "def run\n  check(/id/i, text)\nend",
 			pattern: "id",

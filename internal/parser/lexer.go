@@ -1343,7 +1343,9 @@ func (l *lexer) canStartRegexLiteral() bool {
 // stays part of the pattern. As in RE2/Ruby, a `]` in the leading class
 // position (immediately after `[` or `[^`) is a literal member rather than the
 // class close, so `/[]/]/` matches `]` or `/` rather than truncating at the
-// first `]`. The pattern body must close on the same line: a newline or end of
+// first `]`, and a nested POSIX class such as `[:alpha:]` is scanned through its
+// `:]` terminator so its `]` is not read as the outer close (`/[[:alpha:]/]/`).
+// The pattern body must close on the same line: a newline or end of
 // input before the closing slash reports an unterminated literal, which keeps a
 // stray prefix slash from silently swallowing the rest of the source. Flag
 // validity is the parser's concern; the lexer accepts any trailing ASCII
@@ -1352,7 +1354,8 @@ func (l *lexer) readRegexLiteral() (string, string) {
 	var sb strings.Builder
 	sb.WriteRune(l.ch)
 	inClass := false
-	classPos := 0 // members consumed in the current class; a ] at 0 is literal
+	inPosix := false // inside a [:name:] POSIX class nested in the outer class
+	classPos := 0    // members consumed in the outer class; a ] at 0 is literal
 	for {
 		l.readRune()
 		switch {
@@ -1379,10 +1382,21 @@ func (l *lexer) readRegexLiteral() (string, string) {
 				l.readRune()
 				sb.WriteRune(l.ch)
 			}
-		case l.ch == ']' && inClass && classPos == 0:
+		case l.ch == '[' && inClass && !inPosix && l.peekRune() == ':':
+			// A POSIX class such as [:alpha:] nests inside the outer class; scan
+			// through its :] terminator so the ] is not read as the outer close.
+			inPosix = true
+			sb.WriteRune(l.ch)
+		case l.ch == ':' && inPosix && l.peekRune() == ']':
+			sb.WriteRune(l.ch)
+			l.readRune()
+			sb.WriteRune(l.ch)
+			inPosix = false
+			classPos++
+		case l.ch == ']' && inClass && !inPosix && classPos == 0:
 			sb.WriteRune(l.ch)
 			classPos++
-		case l.ch == ']' && inClass:
+		case l.ch == ']' && inClass && !inPosix:
 			inClass = false
 			sb.WriteRune(l.ch)
 		case l.ch == '/' && !inClass:
