@@ -2548,6 +2548,109 @@ func TestTypedTransformReservesExactOrderCapacity(t *testing.T) {
 	}
 }
 
+// TestTypedCopyReservesExactOrderCapacity pins blockless typed-hash copy paths:
+// they pre-size both the legacy output map and insertion-order backing to the
+// projected result count before the first cloned entry is inserted.
+func TestTypedCopyReservesExactOrderCapacity(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def source()
+      { a: 1, b: 2, c: 3 }
+    end
+
+    def replace_result()
+      { z: 0 }.replace(source)
+    end
+
+    def merge_result()
+      source.merge({ d: 4 })
+    end
+
+    def store_result()
+      source.store(:d, 4)
+    end
+
+    def delete_hit_result()
+      source.delete(:b)[:hash]
+    end
+
+    def delete_miss_result()
+      source.delete(:missing)[:hash]
+    end
+
+    def slice_result()
+      source.slice(:a, :b, :c)
+    end
+
+    def except_result()
+      source.except
+    end
+
+    def select_result()
+      source.select do |k, v|
+        true
+      end
+    end
+
+    def reject_result()
+      source.reject do |k, v|
+        false
+      end
+    end
+
+    def delete_if_result()
+      source.delete_if do |k, v|
+        false
+      end
+    end
+
+    def keep_if_result()
+      source.keep_if do |k, v|
+        true
+      end
+    end
+
+    def remap_keys_result()
+      source.remap_keys({ a: :a, b: :b, c: :c })
+    end
+
+    def compact_result()
+      source.compact
+    end
+    `)
+
+	for _, tc := range []struct {
+		name, fn string
+		want     int
+	}{
+		{name: "replace", fn: "replace_result", want: 3},
+		{name: "merge", fn: "merge_result", want: 4},
+		{name: "store", fn: "store_result", want: 4},
+		{name: "delete_hit", fn: "delete_hit_result", want: 2},
+		{name: "delete_miss", fn: "delete_miss_result", want: 3},
+		{name: "slice", fn: "slice_result", want: 3},
+		{name: "except", fn: "except_result", want: 3},
+		{name: "select", fn: "select_result", want: 3},
+		{name: "reject", fn: "reject_result", want: 3},
+		{name: "delete_if", fn: "delete_if_result", want: 3},
+		{name: "keep_if", fn: "keep_if_result", want: 3},
+		{name: "remap_keys", fn: "remap_keys_result", want: 3},
+		{name: "compact", fn: "compact_result", want: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, nil)
+			if got.HashLen() != tc.want {
+				t.Fatalf("%s entries = %d, want %d", tc.fn, got.HashLen(), tc.want)
+			}
+			if capacity := value.HashOrderCapacity(got); capacity != tc.want {
+				t.Fatalf("%s order capacity = %d, want %d", tc.fn, capacity, tc.want)
+			}
+		})
+	}
+}
+
 // TestHashLiteralReservesExactOrderCapacity pins that a hash literal pre-sizes
 // its insertion-order backing to the pair count, so a 3-entry literal keeps
 // order capacity 3 instead of the 4 append growth would leave.

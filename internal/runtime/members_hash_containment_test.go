@@ -690,11 +690,13 @@ func TestTypedHashMergeProjectionCountsUnionNotSum(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	base := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
 	scratch := sortedHashEntryBufferBytes(count)
-	quota := base + count*estimatedMapEntryStructuralBytes + scratch
+	unionBacking := count*estimatedMapEntryStructuralBytes + typedHashEntryMapBytes(count)
+	quota := base + unionBacking + scratch
 
 	// Sanity: the discarded sum-based projection (2*count entries) would not fit
 	// this quota, confirming the test exercises the typed union fix.
-	if base+2*count*estimatedMapEntryStructuralBytes+scratch <= quota {
+	sumBacking := 2*count*estimatedMapEntryStructuralBytes + typedHashEntryMapBytes(2*count)
+	if base+sumBacking+scratch <= quota {
 		t.Fatalf("test setup expects the sum-based projection to exceed the quota")
 	}
 
@@ -1060,7 +1062,7 @@ func hashStoreProjectionBytes(t *testing.T, receiver Value, args []Value, entrie
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	live := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	return live + estimatedEmptyOutputHashBytes + entries*perEntry
+	return live + estimatedEmptyOutputHashBytes + entries*perEntry + typedHashEntryMapBytes(entries)
 }
 
 // TestHashStoreExistingKeyFitsReceiverQuota pins the P2 finding on PR #776: when
@@ -1075,8 +1077,8 @@ func TestHashStoreExistingKeyFitsReceiverQuota(t *testing.T) {
 	receiver := largeHashReceiver(count)
 	args := []Value{NewSymbol("k0"), NewInt(999)}
 
-	// Size the quota to exactly a copy of the receiver (len(base) entries). Storing
-	// an existing key must fit; the discarded len(base)+1 projection would not.
+	// Size the quota to exactly the typed copy store produces for len(base) entries.
+	// Storing an existing key must fit; the discarded len(base)+1 projection would not.
 	quota := hashStoreProjectionBytes(t, receiver, args, count)
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	got, err := callHashMember(t, exec, receiver, "store", args, NewNil())
@@ -1616,6 +1618,64 @@ func TestTypedHashTransformsReserveTypedOutputMap(t *testing.T) {
 				t.Fatalf("hash.%s leaked %d reserved scratch bytes after rejection", tt.name, exec.reservedScratchBytes)
 			}
 		})
+	}
+}
+
+func TestTypedHashCopiesReserveTypedOutputMap(t *testing.T) {
+	t.Parallel()
+
+	const count = 2_000
+	receiver := largeTypedSymbolHash(count)
+	legacyBuffers := hashTransformBufferBytes(count, 0)
+	typedBuffers := typedHashTransformBufferBytes(count, 0)
+	if legacyBuffers >= typedBuffers {
+		t.Fatalf("test setup expects typed buffers (%d) to exceed legacy buffers (%d)", typedBuffers, legacyBuffers)
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, NewNil())
+	quota := roots + legacyBuffers
+	if roots > quota {
+		t.Fatalf("test setup expects roots (%d) to fit quota (%d)", roots, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "compact", nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("hash.compact ran %d step(s), want typed output backing rejected before iteration", exec.steps)
+	}
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("hash.compact leaked %d reserved scratch bytes after rejection", exec.reservedScratchBytes)
+	}
+}
+
+func TestMaxProjectedTypedHashEntriesAgreesWithProjection(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeTypedSymbolHash(1_000)
+	args := []Value{receiver}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	projectedBase := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
+	scratch := sortedHashEntryBufferBytes(2_000)
+	typedBase := estimatedMapBaseBytes + estimatedSliceBaseBytes
+	perEntry := estimatedMapEntryStructuralBytes + estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
+
+	const wantCap = 50
+	quota := projectedBase + scratch + typedBase + wantCap*perEntry
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+
+	entryCap := exec.maxProjectedTypedHashEntries(scratch, receiver, args, nil, NewNil())
+	if entryCap != wantCap {
+		t.Fatalf("maxProjectedTypedHashEntries = %d, want %d", entryCap, wantCap)
+	}
+
+	if err := exec.checkProjectedTypedHashTransformBytes(entryCap, scratch, receiver, args, nil, NewNil()); err != nil {
+		t.Fatalf("checkProjectedTypedHashTransformBytes(%d, scratch) = %v, want it to fit the cap", entryCap, err)
+	}
+	if err := exec.checkProjectedTypedHashTransformBytes(entryCap+1, scratch, receiver, args, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("checkProjectedTypedHashTransformBytes(%d, scratch) = %v, want it to exceed the cap", entryCap+1, err)
 	}
 }
 
