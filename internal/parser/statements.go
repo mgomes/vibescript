@@ -53,7 +53,7 @@ func (p *parser) parseStatementOperand() ast.Statement {
 	case ast.TokenIdent:
 		if p.curToken.Literal == "assert" {
 			stmt = p.parseAssertStatement()
-		} else if p.curToken.Literal == "alias" && p.peekStartsAliasName() {
+		} else if p.curToken.Literal == "alias" && p.peekStartsAliasNameOnLine(p.curToken.Pos.Line) {
 			stmt = p.parseAliasStatement(false)
 		} else {
 			stmt = p.parseExpressionOrAssignStatement()
@@ -815,7 +815,7 @@ func (p *parser) parseClassStatement() ast.Statement {
 		case ast.TokenIdent:
 			switch p.curToken.Literal {
 			case "alias":
-				if p.peekStartsAliasName() {
+				if p.peekStartsAliasNameOnLine(p.curToken.Pos.Line) {
 					alias := p.parseAliasStatement(true)
 					if alias == nil {
 						return nil
@@ -875,11 +875,11 @@ func (p *parser) parseClassStatement() ast.Statement {
 
 func (p *parser) parseAliasStatement(method bool) ast.Statement {
 	pos := p.curToken.Pos
-	if !p.expectPeekAliasName() {
+	if !p.expectPeekAliasName(pos.Line) {
 		return nil
 	}
 	newName := p.curToken.Literal
-	if !p.expectPeekAliasName() {
+	if !p.expectPeekAliasName(pos.Line) {
 		return nil
 	}
 	oldName := p.curToken.Literal
@@ -910,8 +910,8 @@ func (p *parser) parseAliasMethodStatement() ast.Statement {
 	return &ast.AliasStmt{NewName: newName, OldName: oldName, Method: true, Position: pos}
 }
 
-func (p *parser) expectPeekAliasName() bool {
-	if !p.peekStartsAliasName() {
+func (p *parser) expectPeekAliasName(line int) bool {
+	if !p.peekStartsAliasNameOnLine(line) {
 		p.errorExpected(p.peekToken, "alias name")
 		return false
 	}
@@ -921,6 +921,10 @@ func (p *parser) expectPeekAliasName() bool {
 
 func (p *parser) peekStartsAliasName() bool {
 	return p.peekToken.Type == ast.TokenIdent || p.peekToken.Type == ast.TokenSymbol
+}
+
+func (p *parser) peekStartsAliasNameOnLine(line int) bool {
+	return p.peekToken.Pos.Line == line && p.peekStartsAliasName()
 }
 
 func (p *parser) parseEnumStatement() ast.Statement {

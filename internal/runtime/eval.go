@@ -3489,7 +3489,7 @@ func raiseErrorType(val Value) (string, bool) {
 
 func raiseErrorTypeName(expr Expression) (string, bool) {
 	ident, ok := expr.(*Identifier)
-	if !ok {
+	if !ok || !isConstantIdentifier(ident.Name) {
 		return "", false
 	}
 	return ast.CanonicalRuntimeErrorType(ident.Name)

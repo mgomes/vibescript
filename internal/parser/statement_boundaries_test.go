@@ -85,6 +85,34 @@ end`
 	}
 }
 
+func TestParserAliasIdentifierDoesNotConsumeNextLine(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  alias
+  work()
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.Identifier{Name: "alias"}},
+		&ast.ExprStmt{
+			Expr: &ast.CallExpr{
+				Callee:        &ast.Identifier{Name: "work"},
+				Args:          []ast.Expression{},
+				KwArgs:        []ast.KeywordArg{},
+				Parenthesized: true,
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserZeroArgCallMarksParenthesized(t *testing.T) {
 	t.Parallel()
 	source := `def run

@@ -73,6 +73,27 @@ end
 	}
 }
 
+func TestTypedRaiseEvaluatesLowercaseTarget(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def run(error)
+  raise error, "msg"
+end
+`)
+
+	err := callScriptErr(t, context.Background(), script, "run", []Value{NewString("bad")}, CallOptions{})
+	var typeErr *RuntimeError
+	if !errors.As(err, &typeErr) {
+		t.Fatalf("run() error = %T, want RuntimeError", err)
+	}
+	if typeErr.Type != runtimeErrorTypeType {
+		t.Fatalf("run() RuntimeError.Type = %s, want %s", typeErr.Type, runtimeErrorTypeType)
+	}
+	if typeErr.Message != "exception class/object expected" {
+		t.Fatalf("run() message = %q, want exception class/object expected", typeErr.Message)
+	}
+}
+
 func TestTypedRaiseEvaluatesTargetBeforeMessage(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
