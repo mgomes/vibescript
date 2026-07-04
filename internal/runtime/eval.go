@@ -1477,25 +1477,32 @@ func yieldArgumentExpectation(blk *Block, argIndex, argCount int) expressionExpe
 	if blk == nil || len(blk.Params) == 0 {
 		return expressionExpectation{}
 	}
+	return blockArgumentExpectation(blk.Params, argIndex, argCount)
+}
+
+func blockArgumentExpectation(params []Param, argIndex, argCount int) expressionExpectation {
+	if len(params) == 0 {
+		return expressionExpectation{}
+	}
 	if argCount == 1 {
-		param, ok := positionalCallableParam(blk.Params, 0)
+		param, ok := positionalCallableParam(params, 0)
 		if !ok {
 			return expressionExpectation{}
 		}
 		expectation := positionalArgumentExpectation(param)
-		if rubyBlockPositionalBindCount(blk.Params) > 1 {
-			expectation.arrayElement = yieldArrayElementExpectation(blk.Params)
+		if rubyBlockPositionalBindCount(params) > 1 {
+			expectation.arrayElement = blockArrayElementExpectation(params)
 		}
 		return expectation
 	}
-	param, ok := positionalCallableParam(blk.Params, argIndex)
+	param, ok := positionalCallableParam(params, argIndex)
 	if !ok {
 		return expressionExpectation{}
 	}
 	return positionalArgumentExpectation(param)
 }
 
-func yieldArrayElementExpectation(params []Param) func(int, int) expressionExpectation {
+func blockArrayElementExpectation(params []Param) func(int, int) expressionExpectation {
 	return func(index, _ int) expressionExpectation {
 		param, ok := positionalCallableParam(params, index)
 		if !ok {

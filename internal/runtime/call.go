@@ -983,13 +983,13 @@ func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
 }
 
 func (exec *Execution) evalCallArgsForCallee(call *CallExpr, env *Env, callee Value) ([]Value, error) {
-	params, hasParams := callableParamTypes(callee)
+	paramInfo, hasParams := callableParamTypes(callee)
 	args := make([]Value, len(call.Args))
 	for i, arg := range call.Args {
 		expectation := expressionExpectation{}
 		if hasParams {
-			if param, ok := positionalCallableParam(params, i); ok {
-				expectation = positionalArgumentExpectation(param)
+			if candidate, ok := callableArgumentExpectation(paramInfo, i, len(call.Args)); ok {
+				expectation = candidate
 			}
 		}
 		val, err := exec.evalCallArgumentForExpectation(arg, env, expectation)
@@ -1023,13 +1023,13 @@ func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee 
 	if len(call.KwArgs) == 0 {
 		return nil, nil
 	}
-	params, hasParams := callableParamTypes(callee)
+	paramInfo, hasParams := callableParamTypes(callee)
 	optionsHashType, hasOptionsHashTarget := callOptionsHashArgumentType(call, callee, resolution)
 	kwargs := make(map[string]Value, len(call.KwArgs))
 	for _, kw := range call.KwArgs {
 		var expectedType *TypeExpr
 		if hasParams {
-			expectedType = keywordArgumentExpectedType(params, kw.Name)
+			expectedType = keywordArgumentExpectedType(paramInfo.params, kw.Name)
 			if expectedType == nil && hasOptionsHashTarget {
 				expectedType = optionsHashArgumentValueType(optionsHashType, kw.Name)
 			}
@@ -1176,36 +1176,53 @@ func (exec *Execution) evalBareCallableArgument(arg Expression, env *Env) (Value
 	return callee, true, nil
 }
 
-func callableParamTypes(callee Value) ([]Param, bool) {
+type callableParamInfo struct {
+	params               []Param
+	usesRubyBlockBinding bool
+}
+
+func callableParamTypes(callee Value) (callableParamInfo, bool) {
 	switch callee.Kind() {
 	case KindFunction:
 		fn := valueFunction(callee)
 		if fn == nil {
-			return nil, false
+			return callableParamInfo{}, false
 		}
-		return fn.Params, true
+		return callableParamInfo{params: fn.Params}, true
 	case KindBlock:
 		blk := valueBlock(callee)
 		if blk == nil {
-			return nil, false
+			return callableParamInfo{}, false
 		}
-		return blk.Params, true
+		return callableParamInfo{params: blk.Params, usesRubyBlockBinding: true}, true
 	case KindBuiltin:
 		builtin := valueBuiltin(callee)
 		if builtin == nil {
-			return nil, false
+			return callableParamInfo{}, false
 		}
 		if builtin.OptionsHashTarget != nil {
-			return builtin.OptionsHashTarget.Params, true
+			return callableParamInfo{params: builtin.OptionsHashTarget.Params}, true
 		}
 		if builtin.Name == blockCallBuiltinName && len(builtin.CapturedValues) == 1 && builtin.CapturedValues[0].Kind() == KindBlock {
 			blk := valueBlock(builtin.CapturedValues[0])
 			if blk != nil {
-				return blk.Params, true
+				return callableParamInfo{params: blk.Params, usesRubyBlockBinding: true}, true
 			}
 		}
 	}
-	return nil, false
+	return callableParamInfo{}, false
+}
+
+func callableArgumentExpectation(info callableParamInfo, argIndex, argCount int) (expressionExpectation, bool) {
+	if info.usesRubyBlockBinding {
+		expectation := blockArgumentExpectation(info.params, argIndex, argCount)
+		return expectation, !expectation.empty()
+	}
+	param, ok := positionalCallableParam(info.params, argIndex)
+	if !ok {
+		return expressionExpectation{}, false
+	}
+	return positionalArgumentExpectation(param), true
 }
 
 func positionalCallableParam(params []Param, argIndex int) (Param, bool) {
