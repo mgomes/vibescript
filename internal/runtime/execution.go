@@ -6,17 +6,27 @@ import (
 	"math/rand"
 )
 
+type functionAccessorKind uint8
+
+const (
+	functionAccessorNone functionAccessorKind = iota
+	functionAccessorGetter
+	functionAccessorSetter
+)
+
 // ScriptFunction represents a user-defined function within a Vibescript module.
 type ScriptFunction struct {
-	Name     string
-	Params   []Param
-	ReturnTy *TypeExpr
-	Body     []Statement
-	Pos      Position
-	Env      *Env
-	Exported bool
-	Private  bool
-	owner    *Script
+	Name         string
+	Params       []Param
+	ReturnTy     *TypeExpr
+	Body         []Statement
+	Pos          Position
+	Env          *Env
+	Exported     bool
+	Private      bool
+	Accessor     functionAccessorKind
+	AccessorName string
+	owner        *Script
 }
 
 // Script represents a parsed Vibescript module ready for execution.

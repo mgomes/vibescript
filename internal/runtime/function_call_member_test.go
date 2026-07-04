@@ -139,6 +139,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       43
     end
 
+    class CallbackBox
+      property cb: function
+    end
+
     def receive_untyped(value)
       value
     end
@@ -359,6 +363,32 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       receive_nested_callable_dot([{ cb: answer }])
     end
 
+    def callable_box
+      box = CallbackBox.new()
+      box.cb = answer
+      box
+    end
+
+    def run_property_setter
+      box = callable_box()
+      box.cb.call()
+    end
+
+    def run_property_getter_argument
+      box = callable_box()
+      receive_callable(box.cb)
+    end
+
+    def run_property_getter_array_literal
+      box = callable_box()
+      receive_handlers([box.cb])
+    end
+
+    def run_property_getter_shape_literal
+      box = callable_box()
+      receive_callable_shape({ cb: box.cb })
+    end
+
     def run_block_param
       feed_block do |fn: function|
         fn.call
@@ -440,6 +470,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "keyword rest union ignores impossible callable arm", fn: "run_keyword_rest_object_or_function", want: NewInt(42)},
 		{name: "nested typed literal keeps callable fields", fn: "run_nested_literal", want: NewInt(42)},
 		{name: "nested typed literal dot-call keeps callable fields", fn: "run_nested_literal_dot", want: NewInt(42)},
+		{name: "property setter stores callable", fn: "run_property_setter", want: NewInt(42)},
+		{name: "property getter callable argument reads stored callable", fn: "run_property_getter_argument", want: NewInt(42)},
+		{name: "property getter array literal reads stored callable", fn: "run_property_getter_array_literal", want: NewInt(42)},
+		{name: "property getter shape literal reads stored callable", fn: "run_property_getter_shape_literal", want: NewInt(42)},
 		{name: "typed callable default keeps callable", fn: "receive_default_callable", want: NewInt(42)},
 		{name: "typed array default keeps callable elements", fn: "receive_default_handlers", want: NewInt(42)},
 		{name: "typed shape default keeps callable fields", fn: "receive_default_shape", want: NewInt(42)},

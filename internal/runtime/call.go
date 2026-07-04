@@ -277,6 +277,16 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 	}
 	exec.pushModuleContext(ctx)
 	exec.pushReceiver(receiver)
+	if fn.Accessor == functionAccessorSetter {
+		val, err := exec.executeGeneratedSetter(fn, callEnv)
+		exec.popReceiver()
+		exec.popModuleContext()
+		exec.popFrame()
+		if err != nil {
+			return NewNil(), err
+		}
+		return val, nil
+	}
 	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
 	if err != nil && !isLoopControlSignal(err) {
 		err = exec.wrapError(err, pos)
@@ -1096,7 +1106,47 @@ func (exec *Execution) evalCallArgument(arg Expression, env *Env, expectsCallabl
 	if val, ok, err := exec.evalBareCallableArgument(arg, env); ok || err != nil {
 		return val, err
 	}
+	if val, ok, err := exec.evalGeneratedGetterArgument(arg, env); ok || err != nil {
+		return val, err
+	}
 	return exec.evalExpressionWithAuto(arg, env, false)
+}
+
+func (exec *Execution) evalGeneratedGetterArgument(arg Expression, env *Env) (Value, bool, error) {
+	memberExpr, ok := arg.(*MemberExpr)
+	if !ok {
+		return NewNil(), false, nil
+	}
+	obj, err := exec.evalExpressionWithAuto(memberExpr.Object, env, memberReceiverAutoInvokes(memberExpr.Object, memberExpr.Property, env))
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if memberExpr.Safe && obj.Kind() == KindNil {
+		return NewNil(), true, nil
+	}
+	if err := exec.checkMemoryWith(obj); err != nil {
+		return NewNil(), true, err
+	}
+	member, err := exec.getPublicMember(obj, memberExpr.Property, memberExpr.Pos())
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if generatedAccessorKind(member) != functionAccessorGetter {
+		return NewNil(), false, nil
+	}
+	val, err := exec.autoInvokeIfNeeded(memberExpr, member, obj)
+	return val, true, err
+}
+
+func generatedAccessorKind(member Value) functionAccessorKind {
+	if member.Kind() != KindBuiltin {
+		return functionAccessorNone
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil || builtin.OptionsHashTarget == nil {
+		return functionAccessorNone
+	}
+	return builtin.OptionsHashTarget.Accessor
 }
 
 func (exec *Execution) evalBareCallableArgument(arg Expression, env *Env) (Value, bool, error) {
@@ -2301,6 +2351,14 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 	if err := exec.pushFrame(fn.Name, fn.Pos, fn.owner, fn.owner); err != nil {
 		return NewNil(), err
 	}
+	if fn.Accessor == functionAccessorSetter {
+		val, err := exec.executeGeneratedSetter(fn, callEnv)
+		exec.popFrame()
+		if err != nil {
+			return NewNil(), err
+		}
+		return val, nil
+	}
 	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
 	if err != nil {
 		err = exec.wrapError(err, fn.Pos)
@@ -2336,6 +2394,26 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 	}
 	if returned {
 		return val, nil
+	}
+	return val, nil
+}
+
+func (exec *Execution) executeGeneratedSetter(fn *ScriptFunction, callEnv *Env) (Value, error) {
+	self, ok := callEnv.Get("self")
+	if !ok || self.Kind() != KindInstance {
+		return NewNil(), exec.errorAt(fn.Pos, "no instance context for property setter")
+	}
+	val, ok := callEnv.Get("value")
+	if !ok {
+		return NewNil(), exec.errorAt(fn.Pos, "missing property setter value")
+	}
+	valueInstance(self).Ivars[fn.AccessorName] = val
+	val = callEnv.detachArrayAppendResult(val)
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(val); err != nil {
+		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 	return val, nil
 }

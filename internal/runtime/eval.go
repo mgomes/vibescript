@@ -2689,6 +2689,60 @@ func predeclareDirectAssignmentTargetBindingNames(target, value Expression, env 
 	}
 }
 
+func (exec *Execution) evalMemberAssignment(stmt *AssignStmt, env *Env) (Value, bool, error) {
+	target, ok := stmt.Target.(*MemberExpr)
+	if !ok {
+		return NewNil(), false, nil
+	}
+	obj, err := exec.evalExpression(target.Object, env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(obj); err != nil {
+		return NewNil(), true, err
+	}
+	expectation := memberSetterValueExpectation(obj, target.Property)
+	val, err := exec.evalExpressionWithExpectation(stmt.Value, env, expectation)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(val); err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.assignToEvaluatedMember(target, obj, val); err != nil {
+		if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) {
+			return NewNil(), true, err
+		}
+		return NewNil(), true, exec.wrapError(err, stmt.Pos())
+	}
+	return val, true, nil
+}
+
+func memberSetterValueExpectation(obj Value, property string) expressionExpectation {
+	fn := memberSetterFunction(obj, property)
+	if fn == nil {
+		return expressionExpectation{}
+	}
+	for _, param := range fn.Params {
+		if param.Kind == ParamNormal {
+			return positionalArgumentExpectation(param)
+		}
+	}
+	return expressionExpectation{}
+}
+
+func memberSetterFunction(obj Value, property string) *ScriptFunction {
+	setterName := property + "="
+	switch obj.Kind() {
+	case KindInstance:
+		return valueInstance(obj).Class.Methods[setterName]
+	case KindClass:
+		return valueClass(obj).ClassMethods[setterName]
+	default:
+		return nil
+	}
+}
+
 func assignmentLocalCallBypassNames(target, value Expression) map[string]struct{} {
 	var names map[string]struct{}
 	collectAssignmentLocalCallBypassNames(target, value, &names)
@@ -3166,6 +3220,9 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			return val, false, err
 		}
 		if val, handled, err := exec.evalArrayAppendAssignment(s, env); handled || err != nil {
+			return val, false, err
+		}
+		if val, handled, err := exec.evalMemberAssignment(s, env); handled || err != nil {
 			return val, false, err
 		}
 		val, err := exec.evalAssignmentValue(s, env)
