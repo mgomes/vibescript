@@ -498,6 +498,48 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       box.cb.call()
     end
 
+    def run_property_setter_conditional(flag)
+      box = CallbackBox.new()
+      box.cb = flag ? answer : fallback
+      box.cb.call()
+    end
+
+    def run_property_setter_conditional_true
+      run_property_setter_conditional(true)
+    end
+
+    def run_property_setter_conditional_false
+      run_property_setter_conditional(false)
+    end
+
+    def run_property_setter_if(flag)
+      box = CallbackBox.new()
+      box.cb = if flag then answer else fallback end
+      box.cb.call()
+    end
+
+    def run_property_setter_if_true
+      run_property_setter_if(true)
+    end
+
+    def run_property_setter_if_false
+      run_property_setter_if(false)
+    end
+
+    def run_property_setter_case(flag)
+      box = CallbackBox.new()
+      box.cb = case flag when true then answer else fallback end
+      box.cb.call()
+    end
+
+    def run_property_setter_case_true
+      run_property_setter_case(true)
+    end
+
+    def run_property_setter_case_false
+      run_property_setter_case(false)
+    end
+
     def run_constructor_property_setter
       CallbackBox.new().cb = answer
       box = CallbackBox.last()
@@ -619,6 +661,12 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "nested typed literal keeps callable fields", fn: "run_nested_literal", want: NewInt(42)},
 		{name: "nested typed literal dot-call keeps callable fields", fn: "run_nested_literal_dot", want: NewInt(42)},
 		{name: "property setter stores callable", fn: "run_property_setter", want: NewInt(42)},
+		{name: "conditional property setter stores true callable", fn: "run_property_setter_conditional_true", want: NewInt(42)},
+		{name: "conditional property setter stores false callable", fn: "run_property_setter_conditional_false", want: NewInt(43)},
+		{name: "if property setter stores true callable", fn: "run_property_setter_if_true", want: NewInt(42)},
+		{name: "if property setter stores false callable", fn: "run_property_setter_if_false", want: NewInt(43)},
+		{name: "case property setter stores true callable", fn: "run_property_setter_case_true", want: NewInt(42)},
+		{name: "case property setter stores false callable", fn: "run_property_setter_case_false", want: NewInt(43)},
 		{name: "constructor property setter stores callable", fn: "run_constructor_property_setter", want: NewInt(42)},
 		{name: "static factory property setter stores callable", fn: "run_static_factory_property_setter", want: NewInt(42)},
 		{name: "member assignment preserves rhs-before-target order", fn: "run_member_assignment_rhs_order", want: NewInt(7)},

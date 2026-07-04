@@ -2970,9 +2970,44 @@ func memberAssignmentValueCanUseExpectation(expr Expression) bool {
 			}
 		}
 		return true
+	case *ConditionalExpr:
+		return memberAssignmentValueCanUseExpectation(e.Condition) &&
+			memberAssignmentValueCanUseExpectation(e.Consequent) &&
+			memberAssignmentValueCanUseExpectation(e.Alternate)
+	case *IfExpr:
+		if !memberAssignmentValueCanUseExpectation(e.Condition) ||
+			!memberAssignmentValueCanUseExpectation(e.Consequent) {
+			return false
+		}
+		for _, branch := range e.ElseIf {
+			if !memberAssignmentValueCanUseExpectation(branch.Condition) ||
+				!memberAssignmentValueCanUseExpectation(branch.Result) {
+				return false
+			}
+		}
+		return memberAssignmentOptionalValueCanUseExpectation(e.Alternate)
+	case *CaseExpr:
+		if e.Target != nil && !memberAssignmentValueCanUseExpectation(e.Target) {
+			return false
+		}
+		for _, clause := range e.Clauses {
+			for _, value := range clause.Values {
+				if !memberAssignmentValueCanUseExpectation(value.Expr) {
+					return false
+				}
+			}
+			if !memberAssignmentValueCanUseExpectation(clause.Result) {
+				return false
+			}
+		}
+		return memberAssignmentOptionalValueCanUseExpectation(e.ElseExpr)
 	default:
 		return false
 	}
+}
+
+func memberAssignmentOptionalValueCanUseExpectation(expr Expression) bool {
+	return expr == nil || memberAssignmentValueCanUseExpectation(expr)
 }
 
 func memberAssignmentReceiverValue(expr Expression, env *Env) (Value, bool) {
