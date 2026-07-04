@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"unsafe"
 )
 
 const (
@@ -750,15 +751,60 @@ func sameNormalizedValue(left, right Value) bool {
 	}
 
 	switch left.Kind() {
+	case KindNil:
+		return true
+	case KindBool:
+		return left.Bool() == right.Bool()
+	case KindInt:
+		return left.Int() == right.Int()
+	case KindFloat:
+		return left.Float() == right.Float()
+	case KindString, KindSymbol:
+		return left.String() == right.String()
+	case KindMoney:
+		return left.Money() == right.Money()
+	case KindDuration:
+		return left.Duration() == right.Duration()
+	case KindTime:
+		return left.Time().Equal(right.Time())
+	case KindRange:
+		return left.Range() == right.Range()
+	case KindRegex:
+		leftRegex := left.Regex()
+		rightRegex := right.Regex()
+		return leftRegex.Source == rightRegex.Source && leftRegex.Flags == rightRegex.Flags
 	case KindArray:
 		leftArr := left.Array()
 		rightArr := right.Array()
 		return len(leftArr) == len(rightArr) &&
 			cap(leftArr) == cap(rightArr) &&
-			reflect.ValueOf(leftArr).Pointer() == reflect.ValueOf(rightArr).Pointer()
-	case KindHash, KindObject:
+			sliceDataPointer(leftArr) == sliceDataPointer(rightArr)
+	case KindHash:
+		return hashIdentity(left) == hashIdentity(right)
+	case KindObject:
 		return reflect.ValueOf(left.Hash()).Pointer() == reflect.ValueOf(right.Hash()).Pointer()
+	case KindFunction:
+		return valueFunction(left) == valueFunction(right)
+	case KindBuiltin:
+		return valueBuiltin(left) == valueBuiltin(right)
+	case KindBlock:
+		return valueBlock(left) == valueBlock(right)
+	case KindClass:
+		return valueClass(left) == valueClass(right)
+	case KindInstance:
+		return valueInstance(left) == valueInstance(right)
+	case KindEnum:
+		return valueEnum(left) == valueEnum(right)
+	case KindEnumValue:
+		return valueEnumValue(left) == valueEnumValue(right)
 	default:
 		return left.Equal(right)
 	}
+}
+
+func sliceDataPointer(items []Value) uintptr {
+	if len(items) == 0 && cap(items) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(unsafe.SliceData(items)))
 }

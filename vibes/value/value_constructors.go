@@ -2,7 +2,6 @@ package value
 
 import (
 	"math"
-	"reflect"
 	"time"
 	"unsafe"
 )
@@ -136,7 +135,7 @@ func HashIdentity(v Value) uintptr {
 		return 0
 	}
 	if hd, ok := v.data.(*hashData); ok {
-		return reflect.ValueOf(hd).Pointer()
+		return uintptr(unsafe.Pointer(hd))
 	}
 	return 0
 }
