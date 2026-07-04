@@ -70,12 +70,29 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), err
 	}
 
+	// The invocation token opens before argument binding so a block built by a
+	// default-argument expression homes to this entry invocation.
+	token := exec.pushReturnToken()
 	callEnv, err := prepareCallEnvForFunction(exec, root, rebinder, fn, args, opts.Keywords)
 	if err != nil {
+		exec.popReturnToken()
+		if sig := matchNonLocalReturn(err, token); sig != nil {
+			// A default-argument block returned during binding: that is the
+			// entry function's return value, validated like any other.
+			val, finishErr := finishFunctionForCall(exec, fn, sig.value)
+			if finishErr != nil {
+				return NewNil(), finishErr
+			}
+			if valueNeedsHostClone(val) {
+				return cloneValueForHost(val), nil
+			}
+			return val, nil
+		}
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
-	val, err := executeFunctionForCall(exec, fn, callEnv)
+	val, err := executeFunctionForCall(exec, fn, callEnv, token)
+	exec.popReturnToken()
 	if err != nil {
 		return NewNil(), err
 	}
@@ -161,12 +178,29 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 		return NewNil(), err
 	}
 
+	// The invocation token opens before argument binding so a block built by a
+	// default-argument expression homes to this entry invocation.
+	token := exec.pushReturnToken()
 	callEnv, err := prepareCallEnvForFunction(exec, root, rebinder, fn, args, opts.Keywords)
 	if err != nil {
+		exec.popReturnToken()
+		if sig := matchNonLocalReturn(err, token); sig != nil {
+			// A default-argument block returned during binding: that is the
+			// entry function's return value, validated like any other.
+			val, finishErr := finishFunctionForCall(exec, fn, sig.value)
+			if finishErr != nil {
+				return NewNil(), finishErr
+			}
+			if valueNeedsHostClone(val) {
+				return cloneValueForHost(val), nil
+			}
+			return val, nil
+		}
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
-	val, err := executeFunctionForCall(exec, fn, callEnv)
+	val, err := executeFunctionForCall(exec, fn, callEnv, token)
+	exec.popReturnToken()
 	if err != nil {
 		return NewNil(), err
 	}

@@ -279,3 +279,36 @@ end`)
 		t.Fatalf("rescued_run = %v, want caught local jump", got)
 	}
 }
+
+// TestBlockNonLocalReturnFromDefaultArgument pins token ordering around
+// argument binding: a block in a default-argument expression homes to the
+// invocation being bound, so a return inside it returns from that method —
+// through both the in-script call path and the host entry path — with the
+// caller unaffected and return-type validation still applied.
+func TestBlockNonLocalReturnFromDefaultArgument(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def f(x = [1].each { |i| return "from default" })
+  "body"
+end
+
+def typed_default(x = [1].each { |i| return 42 }) -> int
+  0
+end
+
+def run
+  [f(), "after"]
+end`)
+
+	ctx := context.Background()
+	got := callScript(t, ctx, script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewString("from default"), NewString("after")})
+
+	// The entry path takes the same bind-time return, through validation.
+	if got := callScript(t, ctx, script, "f", nil, CallOptions{}); got.String() != "from default" {
+		t.Fatalf("entry f() = %v, want from default", got)
+	}
+	if got := callScript(t, ctx, script, "typed_default", nil, CallOptions{}); got.Kind() != KindInt || got.Int() != 42 {
+		t.Fatalf("typed_default() = %v, want 42", got)
+	}
+}
