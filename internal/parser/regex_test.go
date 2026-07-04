@@ -260,14 +260,19 @@ func TestParserSlashDisambiguation(t *testing.T) {
 		"def run\n  (1 + 3) / 2\nend",
 		"def run\n  xs = [8]\n  xs[0] / 2\nend",
 		"def run\n  a = 8.0\n  a /= 2\n  a\nend",
+		// A slash after an identifier stays division even when only the left side
+		// has a space: the lexer can't tell a local from a method, so it must not
+		// read these as a command-argument regex.
+		"def run\n  total = 4\n  total /2\nend",
+		"def run\n  total = 4\n  n = 1\n  total /(n + 1)\nend",
+		"def run\n  total = 4\n  n = 1\n  total /-n\nend",
 	}
 	for _, source := range divisions {
 		program, errs := parseSource(t, source)
 		if len(errs) > 0 {
 			t.Fatalf("parseSource(%q) errors = %v, want division to parse", source, errs)
 		}
-		// The command-argument heuristic must not fire for symmetric spacing or
-		// the /= operator, so no regex literal should appear.
+		// None of these forms should lex as a regex literal.
 		walkASTNodes(program, func(node any) {
 			if _, ok := node.(*ast.RegexLiteral); ok {
 				t.Fatalf("parseSource(%q) produced a regex literal, want division", source)
@@ -279,10 +284,6 @@ func TestParserSlashDisambiguation(t *testing.T) {
 		"def run\n  [/a/, /b/]\nend",
 		"def run\n  return /a/\nend",
 		"def run\n  f(/a/)\nend",
-		// Ruby's command-argument form: `method /re/` (space before the slash,
-		// none after) passes a regex, not division.
-		"def run\n  match /a/\nend",
-		"def run\n  scan /a/, text\nend",
 	}
 	for _, source := range regexes {
 		program, errs := parseSource(t, source)

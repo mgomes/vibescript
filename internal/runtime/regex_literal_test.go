@@ -379,28 +379,6 @@ func TestRegexValuePatternLimitIgnoresFlagPrefix(t *testing.T) {
 	}
 }
 
-// TestRegexCommandCallArgument pins Ruby's command-argument form end to end: a
-// regex passed to a parenless call (`method /re/`) reaches the callee as a regex
-// value rather than being lexed as division.
-func TestRegexCommandCallArgument(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `
-def first_match(re, text)
-  text =~ re
-end
-
-def run(text)
-  first_match /[0-9]+/, text
-end
-`)
-
-	got := callScript(t, context.Background(), script, "run", []Value{NewString("abc123")}, CallOptions{})
-	if got.Kind() != KindInt || got.Int() != 3 {
-		t.Fatalf("command-call regex arg =~ = %v, want 3", got)
-	}
-}
-
 // TestRegexLeadingBracketClass pins that a `]` in the leading class position is
 // a literal member (RE2/Ruby), so /[]/]/ lexes, compiles, and matches `]` or
 // `/` rather than truncating at the first `]`.
