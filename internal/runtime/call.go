@@ -233,8 +233,17 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 	}
 	exec.pushModuleContext(ctx)
 	exec.pushReceiver(receiver)
+	token := exec.pushReturnToken()
 	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
-	if err != nil && !isLoopControlSignal(err) {
+	exec.popReturnToken()
+	if sig := matchNonLocalReturn(err, token); sig != nil {
+		// A block created by this invocation returned: that is this method's
+		// return value, flowing through the same return-type validation below.
+		val = sig.value
+		returned = true
+		err = nil
+	}
+	if err != nil && !isLoopControlSignal(err) && !isNonLocalReturnSignal(err) {
 		err = exec.wrapError(err, pos)
 	}
 	exec.popReceiver()
@@ -1719,7 +1728,19 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 	if err := exec.pushFrame(fn.Name, fn.Pos, fn.owner, fn.owner); err != nil {
 		return NewNil(), err
 	}
+	token := exec.pushReturnToken()
 	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
+	exec.popReturnToken()
+	if sig := matchNonLocalReturn(err, token); sig != nil {
+		val = sig.value
+		returned = true
+		err = nil
+	} else if isNonLocalReturnSignal(err) {
+		// A signal that reaches the Call boundary has no live frame to return
+		// from (its method already returned, or the block was built outside any
+		// method), which is Ruby's LocalJumpError.
+		err = exec.localJumpErrorAt(fn.Pos, "unexpected return")
+	}
 	if err != nil {
 		err = exec.wrapError(err, fn.Pos)
 	}
