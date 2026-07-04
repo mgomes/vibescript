@@ -51,8 +51,9 @@ func TestRegexValueBasics(t *testing.T) {
 }
 
 // TestRegexStringEscapesDelimiters pins that rendering escapes unescaped
-// delimiter slashes so a regex built from a string (Regexp.new/union) produces a
-// valid, round-trippable literal instead of /a/b/.
+// delimiter slashes and control characters so a regex built from a string
+// (Regexp.new/union) produces a valid, round-trippable literal instead of /a/b/
+// or one with an embedded newline the lexer rejects.
 func TestRegexStringEscapesDelimiters(t *testing.T) {
 	t.Parallel()
 
@@ -67,6 +68,12 @@ func TestRegexStringEscapesDelimiters(t *testing.T) {
 		{name: "escaped backslash before slash", source: `a\\/b`, want: `/a\\\/b/`},
 		{name: "leading slash", source: "/x", want: `/\/x/`},
 		{name: "no slash unchanged", source: "a+", flags: "i", want: "/a+/i"},
+		{name: "newline", source: "a\nb", want: `/a\nb/`},
+		{name: "tab and slash", source: "a\t/", want: `/a\t\//`},
+		{name: "carriage return", source: "\r", want: `/\r/`},
+		{name: "null byte", source: "\x00", want: `/\x{0}/`},
+		{name: "unit separator", source: "\x1f", want: `/\x{1f}/`},
+		{name: "delete", source: "\x7f", want: `/\x{7f}/`},
 	}
 
 	for _, tc := range tests {

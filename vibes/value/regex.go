@@ -2,6 +2,7 @@ package value
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -25,37 +26,68 @@ func NewRegex(r Regex) Value { return Value{kind: KindRegex, data: r} }
 func (v Value) Regex() Regex { return v.data.(Regex) }
 
 // String renders the regex the way it is written in source: /pattern/flags.
-// Any forward slash in the source that is not already escaped is escaped so the
-// result is a valid, round-trippable literal. Without this, a source built from
-// a string (Regexp.new("a/b"), Regexp.union("a/b")) would render /a/b/, which
-// re-parses as /a/ followed by a stray flag rather than the original pattern.
+// The source is escaped so wrapping it in delimiters yields a valid,
+// round-trippable literal. Without this, a source built from a string
+// (Regexp.new("a/b"), Regexp.new("\n")) would render /a/b/ or embed a raw
+// newline, neither of which the lexer can re-parse.
 func (r Regex) String() string {
-	return "/" + escapeRegexDelimiters(r.Source) + "/" + r.Flags
+	return "/" + escapeRegexLiteralSource(r.Source) + "/" + r.Flags
 }
 
-// escapeRegexDelimiters backslash-escapes every unescaped forward slash in
-// source. A slash preceded by an odd number of backslashes is already escaped
-// and is left untouched, so literals that already carry \/ (such as /a\/b/) are
-// not double-escaped. Escaping a slash never changes what the pattern matches:
-// RE2 treats \/ and / identically.
-func escapeRegexDelimiters(source string) string {
-	if !strings.ContainsRune(source, '/') {
+// escapeRegexLiteralSource returns source rendered so that wrapping it in `/`
+// delimiters yields a valid, round-trippable regex literal. An unescaped forward
+// slash is backslash-escaped (a slash after an odd run of backslashes is already
+// escaped and left alone, so /a\/b/ is not double-escaped), and control
+// characters — which the lexer rejects inside a literal — are rewritten as RE2
+// escapes. RE2 treats the escaped forms identically, so matching is unchanged.
+func escapeRegexLiteralSource(source string) string {
+	if !regexSourceNeedsEscaping(source) {
 		return source
 	}
 	var b strings.Builder
-	b.Grow(len(source) + strings.Count(source, "/"))
+	b.Grow(len(source) + 8)
 	backslashes := 0
 	for i := 0; i < len(source); i++ {
 		c := source[i]
-		if c == '/' && backslashes%2 == 0 {
-			b.WriteByte('\\')
+		switch {
+		case c == '/' && backslashes%2 == 0:
+			b.WriteString(`\/`)
+		case c == '\a':
+			b.WriteString(`\a`)
+		case c == '\t':
+			b.WriteString(`\t`)
+		case c == '\n':
+			b.WriteString(`\n`)
+		case c == '\v':
+			b.WriteString(`\v`)
+		case c == '\f':
+			b.WriteString(`\f`)
+		case c == '\r':
+			b.WriteString(`\r`)
+		case c < 0x20 || c == 0x7f:
+			b.WriteString(`\x{`)
+			b.WriteString(strconv.FormatInt(int64(c), 16))
+			b.WriteString(`}`)
+		default:
+			b.WriteByte(c)
 		}
 		if c == '\\' {
 			backslashes++
 		} else {
 			backslashes = 0
 		}
-		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+// regexSourceNeedsEscaping reports whether source contains a byte that
+// escapeRegexLiteralSource would rewrite: a forward slash or a control
+// character. Patterns without any (the common case) render without allocating.
+func regexSourceNeedsEscaping(source string) bool {
+	for i := 0; i < len(source); i++ {
+		if c := source[i]; c == '/' || c < 0x20 || c == 0x7f {
+			return true
+		}
+	}
+	return false
 }
