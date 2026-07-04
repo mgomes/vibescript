@@ -2646,14 +2646,10 @@ func appendTemplateChunk(exec *Execution, b *strings.Builder, chunk string, rece
 	return nil
 }
 
-func stringTemplate(text string, context Value, strict bool) (string, error) {
-	return stringTemplateWithExecution(&Execution{}, text, context, strict, NewNil(), nil, nil, NewNil())
-}
-
-func stringTemplateWithExecution(exec *Execution, text string, context Value, strict bool, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
-	var b strings.Builder
+func stringTemplateRenderedLen(text string, context Value, strict bool) (bool, int, error) {
 	var cache stringTemplateSegmentCache
 	rendered := false
+	total := 0
 	last := 0
 	search := 0
 	for search < len(text) {
@@ -2667,8 +2663,73 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 			search = open + 1
 			continue
 		}
-		if !rendered {
-			rendered = true
+		rendered = true
+		total = saturatingAdd(total, open-last)
+		placeholder := text[open:end]
+		if segment, ok := cache.lookup(keyPath); ok {
+			total = saturatingAdd(total, len(segment))
+			last = end
+			search = end
+			continue
+		}
+		value, ok := stringTemplateLookup(context, keyPath)
+		if !ok {
+			if strict {
+				return false, 0, fmt.Errorf("string.template missing placeholder %s", keyPath)
+			}
+			total = saturatingAdd(total, len(placeholder))
+			last = end
+			search = end
+			continue
+		}
+		segment, err := stringTemplateScalarValue(value, keyPath)
+		if err != nil {
+			return false, 0, err
+		}
+		cache.store(keyPath, segment)
+		total = saturatingAdd(total, len(segment))
+		last = end
+		search = end
+	}
+	if !rendered {
+		return false, 0, nil
+	}
+	total = saturatingAdd(total, len(text[last:]))
+	return true, total, nil
+}
+
+func stringTemplate(text string, context Value, strict bool) (string, error) {
+	return stringTemplateWithExecution(&Execution{}, text, context, strict, NewNil(), nil, nil, NewNil())
+}
+
+func stringTemplateWithExecution(exec *Execution, text string, context Value, strict bool, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
+	rendered, renderedLen, err := stringTemplateRenderedLen(text, context, strict)
+	if err != nil {
+		return "", err
+	}
+	if !rendered {
+		return text, nil
+	}
+	var b strings.Builder
+	if renderedLen > 0 {
+		if err := exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, renderedLen), receiver, args, kwargs, block); err != nil {
+			return "", err
+		}
+		b.Grow(renderedLen)
+	}
+	var cache stringTemplateSegmentCache
+	last := 0
+	search := 0
+	for search < len(text) {
+		openRel := strings.Index(text[search:], "{{")
+		if openRel < 0 {
+			break
+		}
+		open := search + openRel
+		keyPath, end, ok := parseTemplateAt(text, open)
+		if !ok {
+			search = open + 1
+			continue
 		}
 		if err := appendTemplateChunk(exec, &b, text[last:open], receiver, args, kwargs, block); err != nil {
 			return "", err
@@ -2704,9 +2765,6 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 		}
 		last = end
 		search = end
-	}
-	if !rendered {
-		return text, nil
 	}
 	if err := appendTemplateChunk(exec, &b, text[last:], receiver, args, kwargs, block); err != nil {
 		return "", err
