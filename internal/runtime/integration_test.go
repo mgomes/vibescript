@@ -414,6 +414,16 @@ func TestProgramFixtures(t *testing.T) {
 				"after":  intVal(5),
 			}),
 		},
+		{
+			name:     "classes/typed_property",
+			file:     "classes/typed_property.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"owner":   strVal("Ada Lovelace"),
+				"balance": intVal(100),
+				"note":    strVal("primary"),
+			}),
+		},
 	}
 
 	for _, tc := range cases {

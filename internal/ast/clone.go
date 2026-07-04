@@ -194,7 +194,11 @@ func clonePropertyDecls(properties []PropertyDecl) []PropertyDecl {
 	for i, property := range properties {
 		out[i] = property
 		if property.Names != nil {
-			out[i].Names = append([]string{}, property.Names...)
+			names := make([]PropertyName, len(property.Names))
+			for j, name := range property.Names {
+				names[j] = PropertyName{Name: name.Name, Type: cloneTypeExpr(name.Type)}
+			}
+			out[i].Names = names
 		}
 	}
 	return out

@@ -147,9 +147,15 @@ func (s *TryStmt) Pos() Position { return s.Position }
 
 // PropertyDecl represents a property, getter, or setter declaration in a class.
 type PropertyDecl struct {
-	Names    []string
+	Names    []PropertyName
 	Kind     string // property/getter/setter
 	Position Position
+}
+
+// PropertyName is a single accessor name with an optional type annotation.
+type PropertyName struct {
+	Name string
+	Type *TypeExpr
 }
 
 // ClassStmt represents a class definition.

@@ -1046,7 +1046,7 @@ func validateFuzzStatement(context string, stmt Statement) error {
 				return fmt.Errorf("%s.properties[%d] kind is empty", context, i)
 			}
 			for j, name := range property.Names {
-				if name == "" {
+				if name.Name == "" {
 					return fmt.Errorf("%s.properties[%d].names[%d] is empty", context, i, j)
 				}
 			}
