@@ -229,6 +229,8 @@ var functionMemberNames = []string{"call"}
 
 var blockMemberNames = []string{"call"}
 
+const blockCallBuiltinName = "block.call"
+
 // functionMember resolves member access on a script function value. Only
 // `call` is supported: it returns a builtin that invokes the underlying
 // function with the supplied args, kwargs, and block, mirroring direct
@@ -253,7 +255,7 @@ func (exec *Execution) blockMember(obj Value, property string, pos Position) (Va
 	if property != "call" {
 		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, blockMemberNames))
 	}
-	caller := NewCapturingBuiltin("block.call", func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	caller := NewCapturingBuiltin(blockCallBuiltinName, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
 	}, obj)
 	callerBuiltin := valueBuiltin(caller)

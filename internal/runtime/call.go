@@ -1186,7 +1186,7 @@ func callableParamTypes(callee Value) ([]Param, bool) {
 		if builtin.OptionsHashTarget != nil {
 			return builtin.OptionsHashTarget.Params, true
 		}
-		if len(builtin.CapturedValues) == 1 && builtin.CapturedValues[0].Kind() == KindBlock {
+		if builtin.Name == blockCallBuiltinName && len(builtin.CapturedValues) == 1 && builtin.CapturedValues[0].Kind() == KindBlock {
 			blk := valueBlock(builtin.CapturedValues[0])
 			if blk != nil {
 				return blk.Params, true

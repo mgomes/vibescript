@@ -505,6 +505,28 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 	}
 }
 
+func TestBlockUniversalPredicateArgumentsDoNotUseBlockParamTypes(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def explode
+      raise "ordinary equality argument auto-invoked"
+    end
+
+    def compare_block(&block)
+      block.equal?(explode)
+    end
+
+    def run
+      compare_block do |fn: function|
+        fn.call
+      end
+    end
+    `)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "ordinary equality argument auto-invoked")
+}
+
 func TestTypedConditionalCallArgumentsChargeExpressionStep(t *testing.T) {
 	t.Parallel()
 
