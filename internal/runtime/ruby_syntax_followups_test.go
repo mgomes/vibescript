@@ -428,6 +428,17 @@ end
 	requireErrorContains(t, err, "alias target method name is not defined on class User")
 }
 
+func TestNestedAliasRejectedAtCompileTime(t *testing.T) {
+	t.Parallel()
+	engine := MustNewEngine(Config{})
+	_, err := engine.Compile(`
+def run()
+  alias bar foo
+end
+`)
+	requireErrorContains(t, err, "alias declarations are only supported at the top level or in class bodies")
+}
+
 func TestQualifiedModuleEnumTypeAnnotations(t *testing.T) {
 	t.Parallel()
 	engine := moduleTestEngine(t)

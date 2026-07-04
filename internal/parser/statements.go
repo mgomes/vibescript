@@ -54,7 +54,11 @@ func (p *parser) parseStatementOperand() ast.Statement {
 		if p.curToken.Literal == "assert" {
 			stmt = p.parseAssertStatement()
 		} else if p.curToken.Literal == "alias" && p.peekStartsAliasNameOnLine(p.curToken.Pos.Line) {
-			stmt = p.parseAliasStatement(false)
+			if p.canParseTopLevelAliasStatement() {
+				stmt = p.parseAliasStatement(false)
+			} else {
+				stmt = p.parseUnsupportedAliasStatement()
+			}
 		} else {
 			stmt = p.parseExpressionOrAssignStatement()
 		}
@@ -884,6 +888,22 @@ func (p *parser) parseAliasStatement(method bool) ast.Statement {
 	}
 	oldName := p.curToken.Literal
 	return &ast.AliasStmt{NewName: newName, OldName: oldName, Method: method, Position: pos}
+}
+
+func (p *parser) canParseTopLevelAliasStatement() bool {
+	return !p.insideClass && p.statementNesting == 0
+}
+
+func (p *parser) parseUnsupportedAliasStatement() ast.Statement {
+	pos := p.curToken.Pos
+	p.addParseError(pos, "alias declarations are only supported at the top level or in class bodies")
+	if p.peekStartsAliasNameOnLine(pos.Line) {
+		p.nextToken()
+	}
+	if p.peekStartsAliasNameOnLine(pos.Line) {
+		p.nextToken()
+	}
+	return nil
 }
 
 func (p *parser) parseAliasMethodStatement() ast.Statement {

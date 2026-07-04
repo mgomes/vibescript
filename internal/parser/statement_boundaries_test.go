@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -110,6 +111,21 @@ end`
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserRejectsNestedAliasDeclaration(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  alias bar foo
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatal("expected parse error for nested alias declaration")
+	}
+	if got, want := errs[0].Error(), "alias declarations are only supported at the top level or in class bodies"; !strings.Contains(got, want) {
+		t.Fatalf("parse error = %q, want substring %q", got, want)
 	}
 }
 
