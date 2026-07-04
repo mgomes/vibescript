@@ -77,7 +77,7 @@ type Execution struct {
 	loopDepth                  int
 	rescuedErrors              []error
 	returnTokens               []uint64
-	blockHomeTokens            []uint64
+	homeTokens                 []uint64
 	localCallBypassStack       []localCallBypass
 	randSource                 *rand.Rand
 	randSeed                   int64

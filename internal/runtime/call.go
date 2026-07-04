@@ -1736,9 +1736,10 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 		returned = true
 		err = nil
 	} else if isNonLocalReturnSignal(err) {
-		// A signal that reaches the Call boundary has no live frame to return
-		// from (its method already returned, or the block was built outside any
-		// method), which is Ruby's LocalJumpError.
+		// Defensive backstop: signals only emit while their target is live, so
+		// one reaching the Call boundary unconsumed indicates a frame that
+		// unwound without matching. Surface it as LocalJumpError rather than a
+		// raw signal.
 		err = exec.localJumpErrorAt(fn.Pos, "unexpected return")
 	}
 	if err != nil {

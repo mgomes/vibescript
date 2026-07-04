@@ -114,6 +114,36 @@ end`)
 	}
 }
 
+// TestBlockNonLocalReturnFromCalleeInsideBlock pins the other direction of the
+// lexical-home rule: a method called from a block body opens a fresh scope, so
+// a block it creates returns from the callee — not from the method that owns
+// the enclosing block.
+func TestBlockNonLocalReturnFromCalleeInsideBlock(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def helper
+  [1].each do |x|
+    return "done"
+  end
+  "helper fell through"
+end
+
+def outer
+  results = [1, 2].map do |x|
+    helper
+  end
+  ["outer finished", results]
+end`)
+
+	got := callScript(t, context.Background(), script, "outer", nil, CallOptions{})
+	// helper's non-local return ends helper only; outer's map keeps iterating
+	// and outer runs to completion.
+	compareArrays(t, got, []Value{
+		NewString("outer finished"),
+		NewArray([]Value{NewString("done"), NewString("done")}),
+	})
+}
+
 // TestBlockNonLocalReturnEnsureAndRescue pins the unwind semantics: ensure
 // blocks run on the way out, and no rescue clause (untyped or typed) may
 // intercept the return.
@@ -228,7 +258,24 @@ def run
   maker
   adapter.invoke()
   "unreachable"
+end
+
+def rescued_run
+  maker
+  begin
+    adapter.invoke()
+    "unreachable"
+  rescue LocalJumpError
+    "caught local jump"
+  end
 end`)
 
-	requireCallErrorContains(t, script, "run", nil, CallOptions{Globals: map[string]Value{"adapter": adapter}}, "unexpected return")
+	opts := CallOptions{Globals: map[string]Value{"adapter": adapter}}
+	requireCallErrorContains(t, script, "run", nil, opts, "unexpected return")
+
+	// The error is raised at the invocation site as a regular LocalJumpError,
+	// so a surrounding rescue can catch it like any other local jump failure.
+	if got := callScript(t, context.Background(), script, "rescued_run", nil, opts); got.String() != "caught local jump" {
+		t.Fatalf("rescued_run = %v, want caught local jump", got)
+	}
 }

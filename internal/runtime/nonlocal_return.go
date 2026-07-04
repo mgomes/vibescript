@@ -19,6 +19,8 @@ var nonLocalReturnTokenCounter atomic.Uint64
 // travels the error path so enumerable drivers and ensure blocks unwind
 // exactly as they do for errors, but it is not rescuable: only the invocation
 // whose token matches consumes it, converting it into that method's return.
+// It is only emitted while its target invocation is live (callBlock checks
+// the live set first), so a signal in flight always has a frame to land on.
 type nonLocalReturnSignal struct {
 	value Value
 	token uint64
@@ -44,38 +46,56 @@ func matchNonLocalReturn(err error, token uint64) *nonLocalReturnSignal {
 	return nil
 }
 
-// pushReturnToken opens a method invocation scope and returns its token.
+// pushReturnToken opens a method invocation scope and returns its token. The
+// invocation joins both the live set (returnTokens, consulted before a block
+// return emits a signal) and the lexical home stack (homeTokens, consulted
+// when a block literal is created).
 func (exec *Execution) pushReturnToken() uint64 {
 	token := nonLocalReturnTokenCounter.Add(1)
 	exec.returnTokens = append(exec.returnTokens, token)
+	exec.homeTokens = append(exec.homeTokens, token)
 	return token
 }
 
 func (exec *Execution) popReturnToken() {
 	exec.returnTokens = exec.returnTokens[:len(exec.returnTokens)-1]
+	exec.homeTokens = exec.homeTokens[:len(exec.homeTokens)-1]
 }
 
-// currentBlockHomeToken resolves the invocation a block literal returns from.
-// A literal evaluated while a block body is running belongs lexically to that
-// block's method (yield may be executing the body inside a callee frame whose
-// own token would be wrong), so the innermost executing block's home wins;
-// otherwise the literal belongs to the innermost method invocation. Zero means
-// no home (top-level or host-built blocks): a return from such a block can
-// never match a frame and reports LocalJumpError.
-func (exec *Execution) currentBlockHomeToken() uint64 {
-	if n := len(exec.blockHomeTokens); n > 0 {
-		return exec.blockHomeTokens[n-1]
+// returnTokenLive reports whether the invocation identified by token is still
+// on this execution's call stack. A block whose home invocation is not live —
+// its method already returned, it was created outside any method, or it ran
+// in a different execution (a task worker) — has no frame to return to, so
+// its return raises LocalJumpError at the invocation site instead of
+// emitting a signal.
+func (exec *Execution) returnTokenLive(token uint64) bool {
+	for i := len(exec.returnTokens) - 1; i >= 0; i-- {
+		if exec.returnTokens[i] == token {
+			return true
+		}
 	}
-	if n := len(exec.returnTokens); n > 0 {
-		return exec.returnTokens[n-1]
+	return false
+}
+
+// currentBlockHomeToken resolves the invocation a block literal returns from:
+// the top of the lexical home stack. Method invocations push their own token
+// and an executing block body pushes its block's home, so the top always
+// names the innermost lexical scope — a literal created by a callee running
+// inside a block body homes to that callee, while a literal in the block body
+// itself homes to the block's method even when yield executes the body under
+// a callee frame. Zero means no home (top-level or host-built blocks): a
+// return from such a block reports LocalJumpError.
+func (exec *Execution) currentBlockHomeToken() uint64 {
+	if n := len(exec.homeTokens); n > 0 {
+		return exec.homeTokens[n-1]
 	}
 	return 0
 }
 
 func (exec *Execution) pushBlockHomeToken(token uint64) {
-	exec.blockHomeTokens = append(exec.blockHomeTokens, token)
+	exec.homeTokens = append(exec.homeTokens, token)
 }
 
 func (exec *Execution) popBlockHomeToken() {
-	exec.blockHomeTokens = exec.blockHomeTokens[:len(exec.blockHomeTokens)-1]
+	exec.homeTokens = exec.homeTokens[:len(exec.homeTokens)-1]
 }

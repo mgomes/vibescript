@@ -1177,15 +1177,30 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	}
 	if returned {
 		// Ruby non-local return: an explicit return in a block body returns
-		// from the method that created the block, not from the block call.
-		// Travel the error path so drivers unwind and ensure blocks run; the
+		// from the method that created the block, not from the block call. A
+		// dead home — the method already returned, the block was built outside
+		// any method, or it runs in another execution — raises LocalJumpError
+		// right here, where a surrounding rescue can catch it. A live home
+		// travels the error path so drivers unwind and ensure blocks run; the
 		// invocation whose token matches converts it into its return value.
+		if !exec.returnTokenLive(blk.homeReturnToken) {
+			return NewNil(), exec.localJumpErrorAt(blockBodyPos(blk), "unexpected return")
+		}
 		return NewNil(), &nonLocalReturnSignal{
 			value: blockEnv.detachArrayAppendResult(val),
 			token: blk.homeReturnToken,
 		}
 	}
 	return blockEnv.detachArrayAppendResult(val), nil
+}
+
+// blockBodyPos anchors a block-level diagnostic to the block's first
+// statement, the closest stable position a detached block value carries.
+func blockBodyPos(blk *Block) Position {
+	if len(blk.Body) > 0 {
+		return blk.Body[0].Pos()
+	}
+	return Position{}
 }
 
 func rubyBlockBindArgs(params []Param, args []Value) []Value {
