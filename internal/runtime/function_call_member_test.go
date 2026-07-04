@@ -121,6 +121,24 @@ func TestFunctionValueCallPreservesStaticZeroArityReceiver(t *testing.T) {
 	}
 }
 
+func TestFunctionValueCallPreservesStaticZeroArityReceiverWithBlock(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def around
+      yield
+    end
+
+    def run
+      around.call do
+        42
+      end
+    end
+    `)
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(42)) {
+		t.Fatalf("run() = %#v, want 42", got)
+	}
+}
+
 func TestFunctionValueCallAutoInvokesStaticZeroArityFactoryReceiver(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

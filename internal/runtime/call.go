@@ -78,14 +78,14 @@ func callMemberCallReceiverAutoInvokes(call *CallExpr, object Expression, env *E
 	if isStoredDataCallReceiver(object, env) {
 		return false
 	}
-	if callHasNoArguments(call) && isStaticZeroArityFunctionReceiver(object, env) {
+	if callHasNoValueArguments(call) && isStaticZeroArityFunctionReceiver(object, env) {
 		return false
 	}
 	return memberCallReceiverAutoInvokes(object, env)
 }
 
-func callHasNoArguments(call *CallExpr) bool {
-	return len(call.Args) == 0 && len(call.KwArgs) == 0 && call.Block == nil
+func callHasNoValueArguments(call *CallExpr) bool {
+	return len(call.Args) == 0 && len(call.KwArgs) == 0
 }
 
 func isStaticZeroArityFunctionReceiver(object Expression, env *Env) bool {
