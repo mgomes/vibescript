@@ -2559,6 +2559,10 @@ func TestTypedCopyReservesExactOrderCapacity(t *testing.T) {
       { a: 1, b: 2, c: 3 }
     end
 
+    def nil_source()
+      { a: nil, b: nil, c: nil }
+    end
+
     def replace_result()
       { z: 0 }.replace(source)
     end
@@ -2618,34 +2622,81 @@ func TestTypedCopyReservesExactOrderCapacity(t *testing.T) {
     def compact_result()
       source.compact
     end
+
+    def compact_empty_result()
+      nil_source.compact
+    end
+
+    def slice_empty_result()
+      source.slice(:missing)
+    end
+
+    def except_empty_result()
+      source.except(:a, :b, :c)
+    end
+
+    def select_empty_result()
+      source.select do |k, v|
+        false
+      end
+    end
+
+    def reject_empty_result()
+      source.reject do |k, v|
+        true
+      end
+    end
+
+    def delete_if_empty_result()
+      source.delete_if do |k, v|
+        true
+      end
+    end
+
+    def keep_if_empty_result()
+      source.keep_if do |k, v|
+        false
+      end
+    end
     `)
 
 	for _, tc := range []struct {
-		name, fn string
-		want     int
+		name, fn     string
+		wantLen      int
+		wantCapacity int
 	}{
-		{name: "replace", fn: "replace_result", want: 3},
-		{name: "merge", fn: "merge_result", want: 4},
-		{name: "store", fn: "store_result", want: 4},
-		{name: "delete_hit", fn: "delete_hit_result", want: 2},
-		{name: "delete_miss", fn: "delete_miss_result", want: 3},
-		{name: "slice", fn: "slice_result", want: 3},
-		{name: "except", fn: "except_result", want: 3},
-		{name: "select", fn: "select_result", want: 3},
-		{name: "reject", fn: "reject_result", want: 3},
-		{name: "delete_if", fn: "delete_if_result", want: 3},
-		{name: "keep_if", fn: "keep_if_result", want: 3},
-		{name: "remap_keys", fn: "remap_keys_result", want: 3},
-		{name: "compact", fn: "compact_result", want: 3},
+		{name: "replace", fn: "replace_result", wantLen: 3, wantCapacity: 3},
+		{name: "merge", fn: "merge_result", wantLen: 4, wantCapacity: 4},
+		{name: "store", fn: "store_result", wantLen: 4, wantCapacity: 4},
+		{name: "delete_hit", fn: "delete_hit_result", wantLen: 2, wantCapacity: 2},
+		{name: "delete_miss", fn: "delete_miss_result", wantLen: 3, wantCapacity: 3},
+		{name: "slice", fn: "slice_result", wantLen: 3, wantCapacity: 3},
+		{name: "except", fn: "except_result", wantLen: 3, wantCapacity: 3},
+		{name: "select", fn: "select_result", wantLen: 3, wantCapacity: 3},
+		{name: "reject", fn: "reject_result", wantLen: 3, wantCapacity: 3},
+		{name: "delete_if", fn: "delete_if_result", wantLen: 3, wantCapacity: 3},
+		{name: "keep_if", fn: "keep_if_result", wantLen: 3, wantCapacity: 3},
+		{name: "remap_keys", fn: "remap_keys_result", wantLen: 3, wantCapacity: 3},
+		{name: "compact", fn: "compact_result", wantLen: 3, wantCapacity: 3},
+		{name: "compact_empty", fn: "compact_empty_result", wantLen: 0, wantCapacity: 3},
+		{name: "slice_empty", fn: "slice_empty_result", wantLen: 0, wantCapacity: 1},
+		{name: "except_empty", fn: "except_empty_result", wantLen: 0, wantCapacity: 3},
+		{name: "select_empty", fn: "select_empty_result", wantLen: 0, wantCapacity: 3},
+		{name: "reject_empty", fn: "reject_empty_result", wantLen: 0, wantCapacity: 3},
+		{name: "delete_if_empty", fn: "delete_if_empty_result", wantLen: 0, wantCapacity: 3},
+		{name: "keep_if_empty", fn: "keep_if_empty_result", wantLen: 0, wantCapacity: 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, nil)
-			if got.HashLen() != tc.want {
-				t.Fatalf("%s entries = %d, want %d", tc.fn, got.HashLen(), tc.want)
+			if got.HashLen() != tc.wantLen {
+				t.Fatalf("%s entries = %d, want %d", tc.fn, got.HashLen(), tc.wantLen)
 			}
-			if capacity := value.HashOrderCapacity(got); capacity != tc.want {
-				t.Fatalf("%s order capacity = %d, want %d", tc.fn, capacity, tc.want)
+			if !hashHasTypedEntries(got) {
+				t.Fatalf("%s result is legacy-only, want typed hash storage", tc.fn)
+			}
+			if capacity := value.HashOrderCapacity(got); capacity != tc.wantCapacity {
+				t.Fatalf("%s order capacity = %d, want %d", tc.fn, capacity, tc.wantCapacity)
 			}
 		})
 	}

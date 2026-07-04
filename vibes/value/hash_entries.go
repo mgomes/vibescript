@@ -418,6 +418,9 @@ func (v Value) ReserveHashOrder(n int) {
 	if !ok || cap(hd.order) >= n {
 		return
 	}
+	if hd.typedEntries == nil && len(hd.entries) == 0 {
+		hd.typedEntries = make(map[HashLookupKey]HashEntry, n)
+	}
 	grown := make([]HashLookupKey, len(hd.order), n)
 	copy(grown, hd.order)
 	hd.order = grown
