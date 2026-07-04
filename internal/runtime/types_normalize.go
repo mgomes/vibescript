@@ -567,14 +567,28 @@ func normalizeStringKeyShapeForType(val Value, ty *TypeExpr, ctx typeContext) (V
 }
 
 func normalizeNamedForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {
-	enumDef, ok, err := lookupEnumType(ty, ctx)
+	enumDef, ok, err := lookupEnumTypeExact(ty, ctx)
 	if err != nil {
 		return NewNil(), err
 	}
 	if ok {
 		return normalizeEnumValueForDef(val, ty, enumDef)
 	}
-	classDef, ok, err := lookupClassType(ty, ctx)
+	classDef, ok, err := lookupClassTypeExact(ty, ctx)
+	if err != nil {
+		return NewNil(), err
+	}
+	if ok {
+		return normalizeClassInstanceForDef(val, ty, classDef)
+	}
+	enumDef, ok, err = lookupEnumType(ty, ctx)
+	if err != nil {
+		return NewNil(), err
+	}
+	if ok {
+		return normalizeEnumValueForDef(val, ty, enumDef)
+	}
+	classDef, ok, err = lookupClassType(ty, ctx)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -657,6 +671,30 @@ func lookupEnumType(ty *TypeExpr, ctx typeContext) (*EnumDef, bool, error) {
 	return nil, false, nil
 }
 
+func lookupEnumTypeExact(ty *TypeExpr, ctx typeContext) (*EnumDef, bool, error) {
+	if ty == nil {
+		return nil, false, fmt.Errorf("unknown type")
+	}
+	if ty.Kind != TypeEnum {
+		return nil, false, fmt.Errorf("unknown type %s", ty.Name)
+	}
+	enumDef, ok := lookupEnumInEnvExact(ctx.env, ty.Name)
+	if ok {
+		return enumDef, true, nil
+	}
+	if ctx.fallback != ctx.env {
+		enumDef, ok = lookupEnumInEnvExact(ctx.fallback, ty.Name)
+		if ok {
+			return enumDef, true, nil
+		}
+	}
+	enumDef, ok = lookupEnumDefExact(ctx.owner, ty.Name)
+	if ok {
+		return enumDef, true, nil
+	}
+	return nil, false, nil
+}
+
 func validateTypeExprResolved(ty *TypeExpr, ctx typeContext) error {
 	if ty == nil {
 		return nil
@@ -713,6 +751,23 @@ func lookupEnumDef(owner *Script, name string) (*EnumDef, bool, error) {
 		return match, true, nil
 	}
 	return nil, false, nil
+}
+
+func lookupEnumDefExact(owner *Script, name string) (*EnumDef, bool) {
+	if owner == nil || len(owner.enums) == 0 {
+		return nil, false
+	}
+	enumDef, ok := owner.enums[name]
+	return enumDef, ok
+}
+
+func lookupEnumInEnvExact(env *Env, name string) (*EnumDef, bool) {
+	for scope := env; scope != nil; scope = scope.parent {
+		if val, ok := scope.getOwn(name); ok && val.Kind() == KindEnum {
+			return valueEnum(val), true
+		}
+	}
+	return nil, false
 }
 
 func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool, error) {
@@ -798,6 +853,30 @@ func lookupClassType(ty *TypeExpr, ctx typeContext) (*ClassDef, bool, error) {
 	return nil, false, nil
 }
 
+func lookupClassTypeExact(ty *TypeExpr, ctx typeContext) (*ClassDef, bool, error) {
+	if ty == nil {
+		return nil, false, fmt.Errorf("unknown type")
+	}
+	if ty.Kind != TypeEnum {
+		return nil, false, fmt.Errorf("unknown type %s", ty.Name)
+	}
+	classDef, ok := lookupClassInEnvExact(ctx.env, ty.Name)
+	if ok {
+		return classDef, true, nil
+	}
+	if ctx.fallback != ctx.env {
+		classDef, ok = lookupClassInEnvExact(ctx.fallback, ty.Name)
+		if ok {
+			return classDef, true, nil
+		}
+	}
+	classDef, ok = lookupClassDefExact(ctx.owner, ty.Name)
+	if ok {
+		return classDef, true, nil
+	}
+	return nil, false, nil
+}
+
 func lookupClassDef(owner *Script, name string) (*ClassDef, bool, error) {
 	if owner == nil || len(owner.classes) == 0 {
 		return nil, false, nil
@@ -824,6 +903,23 @@ func lookupClassDef(owner *Script, name string) (*ClassDef, bool, error) {
 		return match, true, nil
 	}
 	return nil, false, nil
+}
+
+func lookupClassDefExact(owner *Script, name string) (*ClassDef, bool) {
+	if owner == nil || len(owner.classes) == 0 {
+		return nil, false
+	}
+	classDef, ok := owner.classes[name]
+	return classDef, ok
+}
+
+func lookupClassInEnvExact(env *Env, name string) (*ClassDef, bool) {
+	for scope := env; scope != nil; scope = scope.parent {
+		if val, ok := scope.getOwn(name); ok && val.Kind() == KindClass {
+			return valueClass(val), true
+		}
+	}
+	return nil, false
 }
 
 func lookupClassInEnv(env *Env, name string) (*ClassDef, bool, error) {

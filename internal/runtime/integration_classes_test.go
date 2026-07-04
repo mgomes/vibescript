@@ -174,3 +174,31 @@ end
 	requireCallErrorContains(t, script, "bad_nominal_arg", nil, CallOptions{}, "argument user expected User, got string")
 	requireCallErrorContains(t, script, "bad_getter_return", nil, CallOptions{}, "return value for name expected string, got int")
 }
+
+func TestExactClassTypeWinsOverCaseInsensitiveEnumFallback(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+class User
+  def label
+    "User"
+  end
+end
+
+enum user
+  Draft
+end
+
+def accept(user: User)
+  user.label
+end
+
+def run()
+  accept(User.new)
+end
+`)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewString("User")) {
+		t.Fatalf("run() = %#v, want User", got)
+	}
+}
