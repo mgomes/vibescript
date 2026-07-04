@@ -1063,6 +1063,11 @@ func (exec *Execution) evalCallArgumentForExpectation(arg Expression, env *Env, 
 				return NewNil(), err
 			}
 			return exec.evalIfExprWithExpectation(e, env, expectation)
+		case *CaseExpr:
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			return exec.evalCaseExprWithExpectation(e, env, expectation)
 		}
 	}
 	if val, ok, err := exec.evalTypedContainerCallArgument(arg, env, expectation); ok || err != nil {

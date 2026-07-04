@@ -337,6 +337,18 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       run_if_branch(true)
     end
 
+    def run_case_branch(flag)
+      receive_callable(case flag when true then answer else fallback end)
+    end
+
+    def run_case_branch_true
+      run_case_branch(true)
+    end
+
+    def run_case_branch_false
+      run_case_branch(false)
+    end
+
     def run_rest
       receive_callable_rest(answer)
     end
@@ -483,6 +495,8 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "function call alias keeps callable", fn: "run_call_alias", want: NewInt(42)},
 		{name: "conditional branch keeps callable", fn: "run_conditional_branch_true", want: NewInt(42)},
 		{name: "if branch keeps callable", fn: "run_if_branch_true", want: NewInt(42)},
+		{name: "case branch keeps callable", fn: "run_case_branch_true", want: NewInt(42)},
+		{name: "case fallback keeps callable", fn: "run_case_branch_false", want: NewInt(43)},
 		{name: "typed rest keeps callable element", fn: "run_rest", want: NewInt(42)},
 		{name: "union typed rest keeps callable element", fn: "run_rest_union", want: NewInt(42)},
 		{name: "rest union ignores impossible callable arm", fn: "run_rest_array_or_function", want: NewInt(42)},
@@ -588,6 +602,48 @@ func TestFunctionTypedMemberArgumentEvaluatesReceiverOnce(t *testing.T) {
     `)
 
 	compareArrays(t, callFunc(t, script, "run", nil), []Value{NewInt(99), NewInt(1)})
+}
+
+func TestFunctionTypedMemberLogicalAssignmentUsesSetterExpectation(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def answer
+      42
+    end
+
+    def fallback
+      43
+    end
+
+    class CallbackBox
+      property cb: function | nil
+    end
+
+    def invoke(fn: function)
+      fn.call
+    end
+
+    def run_or_assignment
+      box = CallbackBox.new()
+      box.cb ||= answer
+      invoke(box.cb)
+    end
+
+    def run_and_assignment
+      box = CallbackBox.new()
+      box.cb = fallback
+      box.cb &&= answer
+      invoke(box.cb)
+    end
+    `)
+
+	if got := callFunc(t, script, "run_or_assignment", nil); !got.Equal(NewInt(42)) {
+		t.Fatalf("run_or_assignment() = %#v, want 42", got)
+	}
+	if got := callFunc(t, script, "run_and_assignment", nil); !got.Equal(NewInt(42)) {
+		t.Fatalf("run_and_assignment() = %#v, want 42", got)
+	}
 }
 
 func TestTypedConditionalCallArgumentsChargeExpressionStep(t *testing.T) {

@@ -2087,6 +2087,10 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 }
 
 func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
+	return exec.evalCaseExprWithExpectation(expr, env, expressionExpectation{})
+}
+
+func (exec *Execution) evalCaseExprWithExpectation(expr *CaseExpr, env *Env, expectation expressionExpectation) (Value, error) {
 	var target Value
 	hasTarget := expr.Target != nil
 	if hasTarget {
@@ -2122,7 +2126,7 @@ func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
 		if !matched {
 			continue
 		}
-		result, err := exec.evalExpressionWithAuto(clause.Result, env, true)
+		result, err := exec.evalExpressionWithExpectation(clause.Result, env, expectation)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -2133,7 +2137,7 @@ func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
 	}
 
 	if expr.ElseExpr != nil {
-		result, err := exec.evalExpressionWithAuto(expr.ElseExpr, env, true)
+		result, err := exec.evalExpressionWithExpectation(expr.ElseExpr, env, expectation)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -3033,11 +3037,11 @@ func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value
 	if stmt.Operator == tokenAndAssign || stmt.Operator == tokenOrAssign {
 		return exec.evalLogicalAssignment(stmt, env)
 	}
-	current, assign, err := exec.prepareCompoundAssignmentTarget(stmt.Target, env)
+	target, err := exec.prepareCompoundAssignmentTarget(stmt.Target, env)
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(current); err != nil {
+	if err := exec.checkMemoryWith(target.current); err != nil {
 		return NewNil(), err
 	}
 
@@ -3045,18 +3049,18 @@ func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(current, right); err != nil {
+	if err := exec.checkMemoryWith(target.current, right); err != nil {
 		return NewNil(), err
 	}
 
-	result, err := exec.evalBinaryOperator(stmt.Operator, current, right, stmt.Pos())
+	result, err := exec.evalBinaryOperator(stmt.Operator, target.current, right, stmt.Pos())
 	if err != nil {
 		return NewNil(), err
 	}
 	if err := exec.checkMemoryWith(result); err != nil {
 		return NewNil(), err
 	}
-	if err := assign(result); err != nil {
+	if err := target.assign(result); err != nil {
 		return NewNil(), err
 	}
 	return result, nil
@@ -3083,7 +3087,7 @@ func (exec *Execution) evalLogicalAssignment(stmt *AssignStmt, env *Env) (Value,
 		return NewNil(), exec.errorAt(stmt.Pos(), "unsupported logical assignment operator")
 	}
 
-	right, err := exec.evalAssignmentValue(stmt, env)
+	right, err := exec.evalAssignmentValueWithExpectation(stmt, env, target.expectation)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -3097,8 +3101,9 @@ func (exec *Execution) evalLogicalAssignment(stmt *AssignStmt, env *Env) (Value,
 }
 
 type compoundAssignmentTarget struct {
-	current Value
-	assign  func(Value) error
+	current     Value
+	assign      func(Value) error
+	expectation expressionExpectation
 }
 
 func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *Env) (compoundAssignmentTarget, error) {
@@ -3128,74 +3133,78 @@ func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *En
 		return compoundAssignmentTarget{current: NewNil(), assign: assign}, nil
 	}
 
-	current, assign, err := exec.prepareCompoundAssignmentTarget(target, env)
-	if err != nil {
-		return compoundAssignmentTarget{}, err
-	}
-	return compoundAssignmentTarget{current: current, assign: assign}, nil
+	return exec.prepareCompoundAssignmentTarget(target, env)
 }
 
-func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *Env) (Value, func(Value) error, error) {
+func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *Env) (compoundAssignmentTarget, error) {
 	switch t := target.(type) {
 	case *Identifier:
 		current, err := exec.evalExpression(t, env)
 		if err != nil {
-			return NewNil(), nil, err
+			return compoundAssignmentTarget{}, err
 		}
-		return current, func(value Value) error {
+		assign := func(value Value) error {
 			env.Assign(t.Name, value)
 			return nil
-		}, nil
+		}
+		return compoundAssignmentTarget{current: current, assign: assign}, nil
 	case *MemberExpr:
 		obj, err := exec.evalExpressionWithAuto(t.Object, env, true)
 		if err != nil {
-			return NewNil(), nil, err
+			return compoundAssignmentTarget{}, err
 		}
 		if err := exec.checkMemoryWith(obj); err != nil {
-			return NewNil(), nil, err
+			return compoundAssignmentTarget{}, err
 		}
 		member, err := exec.getPublicMember(obj, t.Property, t.Pos())
 		if err != nil {
-			return NewNil(), nil, err
+			return compoundAssignmentTarget{}, err
 		}
 		current, err := exec.autoInvokeIfNeeded(t, member, obj)
 		if err != nil {
-			return NewNil(), nil, err
+			return compoundAssignmentTarget{}, err
 		}
-		return current, func(value Value) error {
+		assign := func(value Value) error {
 			return exec.assignToEvaluatedMember(t, obj, value)
+		}
+		return compoundAssignmentTarget{
+			current:     current,
+			assign:      assign,
+			expectation: memberSetterValueExpectation(obj, t.Property),
 		}, nil
 	case *IndexExpr:
 		obj, err := exec.evalExpressionWithAuto(t.Object, env, true)
 		if err != nil {
-			return NewNil(), nil, err
+			return compoundAssignmentTarget{}, err
 		}
 		if err := exec.checkMemoryWith(obj); err != nil {
-			return NewNil(), nil, err
+			return compoundAssignmentTarget{}, err
 		}
 		indices, err := exec.evalIndexSelectors(t, obj, env)
 		if err != nil {
-			return NewNil(), nil, err
+			return compoundAssignmentTarget{}, err
 		}
 		current, err := exec.evalIndexValue(t, obj, indices)
 		if err != nil {
-			return NewNil(), nil, err
+			return compoundAssignmentTarget{}, err
 		}
-		return current, func(value Value) error {
+		assign := func(value Value) error {
 			return exec.assignToEvaluatedIndex(t, obj, indices, value)
-		}, nil
+		}
+		return compoundAssignmentTarget{current: current, assign: assign}, nil
 	case *IvarExpr, *ClassVarExpr:
 		current, err := exec.evalExpression(t, env)
 		if err != nil {
-			return NewNil(), nil, err
+			return compoundAssignmentTarget{}, err
 		}
-		return current, func(value Value) error {
+		assign := func(value Value) error {
 			return exec.assign(t, value, env)
-		}, nil
+		}
+		return compoundAssignmentTarget{current: current, assign: assign}, nil
 	case *DestructureTarget:
-		return NewNil(), nil, exec.errorAt(t.Pos(), "compound assignment is not supported for destructuring targets")
+		return compoundAssignmentTarget{}, exec.errorAt(t.Pos(), "compound assignment is not supported for destructuring targets")
 	default:
-		return NewNil(), nil, exec.errorAt(target.Pos(), "invalid assignment target")
+		return compoundAssignmentTarget{}, exec.errorAt(target.Pos(), "invalid assignment target")
 	}
 }
 
@@ -3324,15 +3333,19 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 }
 
 func (exec *Execution) evalAssignmentValue(stmt *AssignStmt, env *Env) (Value, error) {
+	return exec.evalAssignmentValueWithExpectation(stmt, env, expressionExpectation{})
+}
+
+func (exec *Execution) evalAssignmentValueWithExpectation(stmt *AssignStmt, env *Env, expectation expressionExpectation) (Value, error) {
 	bindings := assignmentLocalCallBypassBindings(stmt.Target, stmt.Value, env)
 	if len(bindings) == 0 {
-		return exec.evalExpression(stmt.Value, env)
+		return exec.evalExpressionWithExpectation(stmt.Value, env, expectation)
 	}
 	exec.localCallBypassStack = append(exec.localCallBypassStack, localCallBypass{bindings: bindings})
 	defer func() {
 		exec.localCallBypassStack = exec.localCallBypassStack[:len(exec.localCallBypassStack)-1]
 	}()
-	return exec.evalExpression(stmt.Value, env)
+	return exec.evalExpressionWithExpectation(stmt.Value, env, expectation)
 }
 
 func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value, bool, error) {
