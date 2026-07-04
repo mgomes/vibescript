@@ -257,3 +257,28 @@ end`)
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	compareArrays(t, got, []Value{NewNil(), NewBool(true)})
 }
+
+// TestCheckLaterRescueClauseSeesEarlierClauseLocals pins check-mode shadowing
+// across clauses: when a later handler runs, every earlier clause was skipped
+// and its assignments predeclared as surrounding-scope locals, so the checker
+// must treat those names as locals — not as calls to same-named functions —
+// and emit no stale arity warnings.
+func TestCheckLaterRescueClauseSeesEarlierClauseLocals(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def target(a)
+  a
+end
+
+def run
+  begin
+    raise "boom"
+  rescue ZeroDivisionError
+    target = 1
+  rescue RuntimeError
+    target(1, 2)
+  end
+end`)
+
+	requireNoCheckWarnings(t, script)
+}

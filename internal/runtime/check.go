@@ -1735,6 +1735,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 		}
+		// When handler i runs, every earlier clause was skipped and predeclared
+		// its body locals as surrounding-scope nils, so each clause is checked
+		// with the accumulated locals of the clauses before it in scope.
+		earlierClauseLocals := map[string]struct{}{}
 		for i := range typed.Rescues {
 			clause := &typed.Rescues[i]
 			// An empty clause never falls through (the matched error propagates
@@ -1745,9 +1749,24 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			}
 			c.restoreRuntimeState(baseRuntimeState)
 			c.restoreScopeState(baseScopeState)
+			popEarlier := func() {}
+			if len(earlierClauseLocals) > 0 {
+				scope := make(map[string]struct{}, len(earlierClauseLocals))
+				for name := range earlierClauseLocals {
+					scope[name] = struct{}{}
+				}
+				popEarlier = c.pushScope(scope)
+			}
 			popScope := c.pushRescueScope(clause)
 			c.checkStatements(function, branchReturnType, clause.Body)
 			popScope()
+			popEarlier()
+			clauseLocals := map[string]struct{}{}
+			collectLocalBindings(clause.Body, clauseLocals)
+			delete(clauseLocals, clause.Binding)
+			for name := range clauseLocals {
+				earlierClauseLocals[name] = struct{}{}
+			}
 			if deferReturnType && blockMayReturn(clause.Body) {
 				deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
 					runtimeState: c.snapshotRuntimeState(),
