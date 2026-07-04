@@ -465,8 +465,16 @@ func (v Value) ReserveTypedHashOrder(n int) {
 			return
 		}
 		hd.typedEntries = make(map[HashLookupKey]HashEntry, n)
+		hd.typedEntryCapacity = n
+		v.ReserveHashOrder(n)
+		return
 	}
 	if n > hd.typedEntryCapacity {
+		grown := make(map[HashLookupKey]HashEntry, n)
+		for lookupKey, entry := range hd.typedEntries {
+			grown[lookupKey] = entry
+		}
+		hd.typedEntries = grown
 		hd.typedEntryCapacity = n
 	}
 	v.ReserveHashOrder(n)
