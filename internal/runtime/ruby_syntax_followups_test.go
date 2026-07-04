@@ -313,7 +313,7 @@ func TestQualifiedModuleEnumTypeAnnotations(t *testing.T) {
 	engine := moduleTestEngine(t)
 	script, err := engine.CompileSnippet(`
 Status = "local"
-status_mod = require("enum_status", as: "status_mod")
+require("enum_status", as: "status_mod")
 
 def echo(status: status_mod.Status) -> status_mod.Status
   status
