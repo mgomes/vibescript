@@ -43,11 +43,12 @@ func NewArray(a []Value) Value { return Value{kind: KindArray, data: a} }
 // keys because a bare Go map carries no insertion record. Legacy-only hashes
 // (typedEntries == nil) keep a nil order and iterate in sorted key order.
 type hashData struct {
-	entries      map[string]Value
-	typedEntries map[HashLookupKey]HashEntry
-	order        []HashLookupKey
-	defaultValue Value
-	defaultProc  Value
+	entries            map[string]Value
+	typedEntries       map[HashLookupKey]HashEntry
+	typedEntryCapacity int
+	order              []HashLookupKey
+	defaultValue       Value
+	defaultProc        Value
 }
 
 // HashDataBytes is the heap footprint of the hashData wrapper every KindHash
@@ -65,7 +66,8 @@ func NewHash(h map[string]Value) Value {
 // string-key map. Hash() materializes that map lazily for legacy callers.
 func NewTypedHash(capacity int) Value {
 	return Value{kind: KindHash, data: &hashData{
-		typedEntries: make(map[HashLookupKey]HashEntry, capacity),
+		typedEntries:       make(map[HashLookupKey]HashEntry, capacity),
+		typedEntryCapacity: capacity,
 	}}
 }
 

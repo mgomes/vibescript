@@ -2698,6 +2698,9 @@ func TestTypedCopyReservesExactOrderCapacity(t *testing.T) {
 			if capacity := value.HashOrderCapacity(got); capacity != tc.wantCapacity {
 				t.Fatalf("%s order capacity = %d, want %d", tc.fn, capacity, tc.wantCapacity)
 			}
+			if capacity := value.HashTypedEntryCapacity(got); capacity != tc.wantCapacity {
+				t.Fatalf("%s typed entry capacity = %d, want %d", tc.fn, capacity, tc.wantCapacity)
+			}
 		})
 	}
 }

@@ -111,6 +111,9 @@ func TestHashOrderCapacity(t *testing.T) {
 	if !typedReserved.HashHasTypedEntries() {
 		t.Fatalf("ReserveTypedHashOrder() left hash legacy-only, want typed entries")
 	}
+	if got := value.HashTypedEntryCapacity(typedReserved); got != 3 {
+		t.Fatalf("ReserveTypedHashOrder() typed entry capacity = %d, want 3", got)
+	}
 	if got := value.HashOrderCapacity(typedReserved); got != 3 {
 		t.Fatalf("ReserveTypedHashOrder() order capacity = %d, want 3", got)
 	}

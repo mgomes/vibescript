@@ -310,6 +310,7 @@ func (v Value) HashSet(key, val Value) error {
 				hd.entries = make(map[string]Value)
 			}
 			hd.typedEntries = make(map[HashLookupKey]HashEntry, len(hd.entries))
+			hd.typedEntryCapacity = len(hd.entries)
 			// A legacy string map records no insertion order, so promotion seeds
 			// the order from the sorted display keys: the hash keeps the
 			// deterministic sorted iteration it always had, and only keys inserted
@@ -346,6 +347,9 @@ func (v Value) HashSet(key, val Value) error {
 			hd.order = append(hd.order, canonical)
 		}
 		hd.typedEntries[canonical] = HashEntry{Key: key, Value: val}
+		if len(hd.typedEntries) > hd.typedEntryCapacity {
+			hd.typedEntryCapacity = len(hd.typedEntries)
+		}
 		if hd.entries != nil {
 			hd.entries[HashDisplayKey(key)] = val
 		}
@@ -404,6 +408,24 @@ func HashOrderCapacity(v Value) int {
 	return 0
 }
 
+// HashTypedEntryCapacity returns the minimum typed-entry map capacity the hash
+// is known to retain. Go does not expose current map bucket capacity, so this
+// tracks explicit reservations plus the live entry count reached through
+// HashSet. Memory-quota estimation uses it to charge reserved typed buckets
+// that may exceed len(typedEntries).
+func HashTypedEntryCapacity(v Value) int {
+	if v.kind != KindHash {
+		return 0
+	}
+	if hd, ok := v.data.(*hashData); ok && hd.typedEntries != nil {
+		if len(hd.typedEntries) > hd.typedEntryCapacity {
+			return len(hd.typedEntries)
+		}
+		return hd.typedEntryCapacity
+	}
+	return 0
+}
+
 // ReserveHashOrder pre-sizes the insertion-order backing to capacity n so a
 // builder that knows its final entry count avoids the append growth overshoot,
 // where a hash of 3 entries would otherwise retain 4 order slots. This keeps the
@@ -443,6 +465,9 @@ func (v Value) ReserveTypedHashOrder(n int) {
 			return
 		}
 		hd.typedEntries = make(map[HashLookupKey]HashEntry, n)
+	}
+	if n > hd.typedEntryCapacity {
+		hd.typedEntryCapacity = n
 	}
 	v.ReserveHashOrder(n)
 }
