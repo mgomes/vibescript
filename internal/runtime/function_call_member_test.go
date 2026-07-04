@@ -527,6 +527,43 @@ func TestBlockUniversalPredicateArgumentsDoNotUseBlockParamTypes(t *testing.T) {
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "ordinary equality argument auto-invoked")
 }
 
+func TestFunctionTypedMemberArgumentEvaluatesReceiverOnce(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    class Holder
+      def cb
+        42
+      end
+    end
+
+    class Factory
+      property calls
+
+      def initialize
+        @calls = 0
+      end
+
+      def make
+        @calls = @calls + 1
+        Holder.new()
+      end
+    end
+
+    def take(fn: function)
+      99
+    end
+
+    def run
+      factory = Factory.new()
+      value = take(factory.make.cb)
+      [value, factory.calls]
+    end
+    `)
+
+	compareArrays(t, callFunc(t, script, "run", nil), []Value{NewInt(99), NewInt(1)})
+}
+
 func TestTypedConditionalCallArgumentsChargeExpressionStep(t *testing.T) {
 	t.Parallel()
 

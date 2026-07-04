@@ -1132,7 +1132,7 @@ func (exec *Execution) evalGeneratedGetterArgument(arg Expression, env *Env) (Va
 		return NewNil(), true, err
 	}
 	if generatedAccessorKind(member) != functionAccessorGetter {
-		return NewNil(), false, nil
+		return member, true, nil
 	}
 	val, err := exec.autoInvokeIfNeeded(memberExpr, member, obj)
 	return val, true, err
