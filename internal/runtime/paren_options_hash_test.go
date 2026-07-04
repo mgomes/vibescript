@@ -86,6 +86,39 @@ func TestParenthesizedFunctionOptionsHash(t *testing.T) {
 	requireCallErrorContains(t, script, "parenthesized_keyword_signature", nil, CallOptions{}, "missing argument opts")
 }
 
+func TestSendCollapsesKeywordOptionsHash(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+class Server
+  def configure(opts)
+    opts[:retries]
+  end
+
+  def self.configure(opts)
+    opts[:retries]
+  end
+end
+
+def run()
+  server = Server.new
+  [
+    server.send(:configure, retries: 3),
+    server.public_send(:configure, retries: 4),
+    Server.send(:configure, retries: 5),
+    Server.public_send(:configure, retries: 6)
+  ]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "run", nil), []Value{
+		NewInt(3),
+		NewInt(4),
+		NewInt(5),
+		NewInt(6),
+	})
+}
+
 // TestParenthesizedPositionalAfterKeywordRejected verifies that a parenthesized
 // call rejects a positional argument that follows a keyword argument for both
 // the direct-call and function-value (`call` alias) forms, matching Ruby (which

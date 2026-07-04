@@ -194,9 +194,12 @@ func clonePropertyDecls(properties []PropertyDecl) []PropertyDecl {
 	for i, property := range properties {
 		out[i] = property
 		if property.Names != nil {
-			out[i].Names = append([]string{}, property.Names...)
+			names := make([]PropertyName, len(property.Names))
+			for j, name := range property.Names {
+				names[j] = PropertyName{Name: name.Name, Type: cloneTypeExpr(name.Type)}
+			}
+			out[i].Names = names
 		}
-		out[i].Type = cloneTypeExpr(property.Type)
 	}
 	return out
 }
@@ -226,6 +229,9 @@ func cloneExpression(expr Expression) Expression {
 		clone := *e
 		return &clone
 	case *StringLiteral:
+		clone := *e
+		return &clone
+	case *RegexLiteral:
 		clone := *e
 		return &clone
 	case *BoolLiteral:
@@ -289,6 +295,11 @@ func cloneExpression(expr Expression) Expression {
 		clone.Condition = cloneExpression(e.Condition)
 		clone.Consequent = cloneExpression(e.Consequent)
 		clone.Alternate = cloneExpression(e.Alternate)
+		return &clone
+	case *RescueExpr:
+		clone := *e
+		clone.Body = cloneExpression(e.Body)
+		clone.Fallback = cloneExpression(e.Fallback)
 		return &clone
 	case *IfExpr:
 		clone := *e

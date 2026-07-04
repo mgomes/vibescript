@@ -9,6 +9,64 @@ import (
 	"github.com/mgomes/vibescript/internal/ast"
 )
 
+func TestParserTypedAccessorDeclarations(t *testing.T) {
+	t.Parallel()
+	source := `class User
+  property name: string
+  getter age: int?
+  setter tag: string
+  property x, y
+  property a: int, b: string | int
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	class, ok := got.Statements[0].(*ast.ClassStmt)
+	if !ok {
+		t.Fatalf("expected class statement, got %T", got.Statements[0])
+	}
+
+	want := []ast.PropertyDecl{
+		{
+			Kind:  "property",
+			Names: []ast.PropertyName{{Name: "name", Type: &ast.TypeExpr{Name: "string", Kind: ast.TypeString}}},
+		},
+		{
+			Kind:  "getter",
+			Names: []ast.PropertyName{{Name: "age", Type: &ast.TypeExpr{Name: "int?", Kind: ast.TypeInt, Nullable: true}}},
+		},
+		{
+			Kind:  "setter",
+			Names: []ast.PropertyName{{Name: "tag", Type: &ast.TypeExpr{Name: "string", Kind: ast.TypeString}}},
+		},
+		{
+			Kind:  "property",
+			Names: []ast.PropertyName{{Name: "x"}, {Name: "y"}},
+		},
+		{
+			Kind: "property",
+			Names: []ast.PropertyName{
+				{Name: "a", Type: &ast.TypeExpr{Name: "int", Kind: ast.TypeInt}},
+				{Name: "b", Type: &ast.TypeExpr{
+					Name: "string | int",
+					Kind: ast.TypeUnion,
+					Union: []*ast.TypeExpr{
+						{Name: "string", Kind: ast.TypeString},
+						{Name: "int", Kind: ast.TypeInt},
+					},
+				}},
+			},
+		},
+	}
+
+	if diff := cmp.Diff(want, class.Properties, astCmpOpts); diff != "" {
+		t.Fatalf("properties mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserRejectsSingletonClassSyntax(t *testing.T) {
 	t.Parallel()
 	_, errs := Parse(`
@@ -31,7 +89,7 @@ func TestParserClassPropertyTypeAnnotations(t *testing.T) {
 	source := `class User
   property name: string
   getter age: int
-  setter friend, manager: User
+  setter friend: User, manager: User
 end`
 
 	got, errs := parseSource(t, source)
@@ -44,19 +102,19 @@ end`
 	}
 	want := []ast.PropertyDecl{
 		{
-			Names: []string{"name"},
 			Kind:  "property",
-			Type:  &ast.TypeExpr{Name: "string", Kind: ast.TypeString},
+			Names: []ast.PropertyName{{Name: "name", Type: &ast.TypeExpr{Name: "string", Kind: ast.TypeString}}},
 		},
 		{
-			Names: []string{"age"},
 			Kind:  "getter",
-			Type:  &ast.TypeExpr{Name: "int", Kind: ast.TypeInt},
+			Names: []ast.PropertyName{{Name: "age", Type: &ast.TypeExpr{Name: "int", Kind: ast.TypeInt}}},
 		},
 		{
-			Names: []string{"friend", "manager"},
-			Kind:  "setter",
-			Type:  &ast.TypeExpr{Name: "User", Kind: ast.TypeEnum},
+			Kind: "setter",
+			Names: []ast.PropertyName{
+				{Name: "friend", Type: &ast.TypeExpr{Name: "User", Kind: ast.TypeEnum}},
+				{Name: "manager", Type: &ast.TypeExpr{Name: "User", Kind: ast.TypeEnum}},
+			},
 		},
 	}
 	if diff := cmp.Diff(want, classStmt.Properties, astCmpOpts); diff != "" {

@@ -868,6 +868,17 @@ func (acc *arrayBuildAccumulator) reserveSlots(slotCount int) error {
 	return acc.reserveSlotArrays(slotCount)
 }
 
+func (acc *arrayBuildAccumulator) checkRetainedPayloadBytes(slotCount, payloadBytes int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	used := saturatingAdd(acc.projected(slotCount), payloadBytes)
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 // reserveSlotArrays rejects a build when several result arrays will be live
 // together, such as Array#pop returning both the remaining and removed arrays.
 func (acc *arrayBuildAccumulator) reserveSlotArrays(slotCounts ...int) error {
@@ -1972,6 +1983,16 @@ func (est *memoryEstimator) value(val Value) int {
 		str := val.String()
 		size += estimatedStringHeaderBytes
 		size += est.stringPayloadSize(str)
+	case KindRegex:
+		// A regex value retains its pattern source and flag strings plus a
+		// compiled RE2 program. The program's exact footprint is not cheaply
+		// knowable, so it is approximated by the source it was compiled from,
+		// which the pattern-size guard bounds at compile time.
+		regex := val.Regex()
+		size += 2 * estimatedStringHeaderBytes
+		size += est.stringPayloadSize(regex.Source)
+		size += est.stringPayloadSize(regex.Flags)
+		size += len(regex.Source)
 	case KindArray:
 		size += est.slice(val.Array())
 	case KindHash:

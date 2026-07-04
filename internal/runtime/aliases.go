@@ -51,6 +51,7 @@ type (
 	IntegerLiteral     = ast.IntegerLiteral
 	FloatLiteral       = ast.FloatLiteral
 	StringLiteral      = ast.StringLiteral
+	RegexLiteral       = ast.RegexLiteral
 	BoolLiteral        = ast.BoolLiteral
 	NilLiteral         = ast.NilLiteral
 	SymbolLiteral      = ast.SymbolLiteral
@@ -69,6 +70,7 @@ type (
 	UnaryExpr          = ast.UnaryExpr
 	BinaryExpr         = ast.BinaryExpr
 	ConditionalExpr    = ast.ConditionalExpr
+	RescueExpr         = ast.RescueExpr
 	IfExprBranch       = ast.IfExprBranch
 	IfExpr             = ast.IfExpr
 	RangeExpr          = ast.RangeExpr
@@ -139,6 +141,8 @@ const (
 	tokenSpaceship = ast.TokenSpaceship
 	tokenEQ        = ast.TokenEQ
 	tokenCaseEQ    = ast.TokenCaseEQ
+	tokenMatch     = ast.TokenMatch
+	tokenNotMatch  = ast.TokenNotMatch
 	tokenNotEQ     = ast.TokenNotEQ
 	tokenAnd       = ast.TokenAnd
 	tokenOr        = ast.TokenOr
@@ -249,6 +253,7 @@ const (
 	KindEnumValue = value.KindEnumValue
 	KindClass     = value.KindClass
 	KindInstance  = value.KindInstance
+	KindRegex     = value.KindRegex
 )
 
 // NewNil returns a nil Value.
@@ -306,6 +311,9 @@ func NewObject(attrs map[string]Value) Value { return value.NewObject(attrs) }
 
 // NewMoney returns a money Value.
 func NewMoney(m Money) Value { return value.NewMoney(m) }
+
+// NewRegex returns a regex Value.
+func NewRegex(r value.Regex) Value { return value.NewRegex(r) }
 
 // NewDuration returns a duration Value.
 func NewDuration(d Duration) Value { return value.NewDuration(d) }

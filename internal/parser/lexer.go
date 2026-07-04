@@ -192,7 +192,15 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 		}
 	case '/':
-		if l.peekRune() == '=' {
+		if l.canStartRegexLiteral() {
+			literal, err := l.readRegexLiteral()
+			if err != "" {
+				setDiagnostic(&tok, err)
+			} else {
+				tok.Type = ast.TokenRegex
+				tok.Literal = literal
+			}
+		} else if l.peekRune() == '=' {
 			first := l.ch
 			l.readRune()
 			tok = l.makeToken(ast.TokenSlashAssign, string(first)+string(l.ch))
@@ -356,6 +364,11 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 			tok = l.makeToken(ast.TokenNotEQ, string(first)+string(l.ch))
 			l.readRune()
+		} else if l.peekRune() == '~' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenNotMatch, string(first)+string(l.ch))
+			l.readRune()
 		} else {
 			tok = l.makeToken(ast.TokenBang, "!")
 			l.readRune()
@@ -381,6 +394,11 @@ func (l *lexer) scanToken() ast.Token {
 			first := l.ch
 			l.readRune()
 			tok = l.makeToken(ast.TokenArrow, string(first)+string(l.ch))
+			l.readRune()
+		case '~':
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenMatch, string(first)+string(l.ch))
 			l.readRune()
 		default:
 			tok = l.makeToken(ast.TokenAssign, "=")
@@ -1302,6 +1320,147 @@ func isPercentLiteralDelimiter(r rune) bool {
 	return r != 0 && !unicode.IsSpace(r) && !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
 }
 
+// canStartRegexLiteral reports whether a `/` under l.ch begins a Ruby-style
+// regex literal rather than division. The rule mirrors Ruby's lexer state: a
+// slash in prefix position (nothing before it on the line that could end an
+// expression) starts a regex, while a slash after a value token is the
+// division operator. `10 / 2` and `total /= n` therefore stay arithmetic,
+// while `foo(/re/)`, `x =~ /re/`, and a statement-leading `/re/` lex as regex
+// literals. Like Ruby, a slash at line-leading whitespace is always a regex,
+// so continuing a division onto a new line requires the `/` to stay on the
+// dividend's line.
+//
+// Ruby's command-argument form `method /re/` (a bare method name followed by a
+// space, a slash, and no trailing space) is intentionally not handled here: the
+// lexer cannot tell a method name from a local variable, so treating that
+// spacing as a regex would misread ordinary division such as `total /2` or
+// `sum /n`. Disambiguating it correctly needs the local-variable tracking Ruby's
+// parser feeds back to its lexer; until then the parenless form requires
+// parentheses (`method(/re/)`).
+func (l *lexer) canStartRegexLiteral() bool {
+	if l.atLineLeadingWhitespace() {
+		return true
+	}
+	return !canEndExpressionToken(l.lastToken.Type)
+}
+
+// readRegexLiteral scans a `/pattern/flags` literal with l.ch on the opening
+// slash and returns the raw literal text including both delimiters and any
+// trailing flag letters. A backslash escapes the next rune (so `/a\/b/` keeps
+// its escaped slash) and an unescaped `/` inside a `[...]` character class
+// stays part of the pattern. As in RE2/Ruby, a `]` in the leading class
+// position (immediately after `[` or `[^`) is a literal member rather than the
+// class close, so `/[]/]/` matches `]` or `/` rather than truncating at the
+// first `]`, and a nested POSIX class such as `[:alpha:]` is scanned through its
+// `:]` terminator so its `]` is not read as the outer close (`/[[:alpha:]/]/`).
+// The pattern body must close on the same line: a newline or end of
+// input before the closing slash reports an unterminated literal, which keeps a
+// stray prefix slash from silently swallowing the rest of the source. Flag
+// validity is the parser's concern; the lexer accepts any trailing ASCII
+// letters so the parser can report unknown flags precisely.
+func (l *lexer) readRegexLiteral() (string, string) {
+	var sb strings.Builder
+	sb.WriteRune(l.ch)
+	inClass := false
+	inPosix := false // inside a [:name:] POSIX class nested in the outer class
+	classPos := 0    // members consumed in the outer class; a ] at 0 is literal
+	for {
+		l.readRune()
+		switch {
+		case l.ch == 0 || l.ch == '\n':
+			return "", "unterminated regex literal"
+		case l.ch == '\\':
+			next := l.peekRune()
+			if next == 0 || next == '\n' {
+				return "", "unterminated regex literal"
+			}
+			sb.WriteRune(l.ch)
+			l.readRune()
+			sb.WriteRune(l.ch)
+			if inClass {
+				classPos++
+			}
+		case l.ch == '[' && !inClass:
+			inClass = true
+			classPos = 0
+			sb.WriteRune(l.ch)
+			// A `^` right after `[` negates the class; the first `]` still counts
+			// as a literal member, so consume the caret without advancing classPos.
+			if l.peekRune() == '^' {
+				l.readRune()
+				sb.WriteRune(l.ch)
+			}
+		case l.ch == '[' && inClass && !inPosix && l.posixClassAhead():
+			// A POSIX class such as [:alpha:] nests inside the outer class; scan
+			// through its :] terminator so the ] is not read as the outer close.
+			// A bare [: that is not a POSIX shape (as in /[[:/]/) stays literal.
+			inPosix = true
+			sb.WriteRune(l.ch)
+		case l.ch == ':' && inPosix && l.peekRune() == ']':
+			sb.WriteRune(l.ch)
+			l.readRune()
+			sb.WriteRune(l.ch)
+			inPosix = false
+			classPos++
+		case l.ch == ']' && inClass && !inPosix && classPos == 0:
+			sb.WriteRune(l.ch)
+			classPos++
+		case l.ch == ']' && inClass && !inPosix:
+			inClass = false
+			sb.WriteRune(l.ch)
+		case l.ch == '/' && !inClass:
+			sb.WriteRune(l.ch)
+			l.readRune()
+			for isRegexFlagRune(l.ch) {
+				sb.WriteRune(l.ch)
+				l.readRune()
+			}
+			return sb.String(), ""
+		default:
+			sb.WriteRune(l.ch)
+			if inClass {
+				classPos++
+			}
+		}
+	}
+}
+
+func isRegexFlagRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+}
+
+// posixClassAhead reports whether the `[` under l.ch opens a POSIX class of the
+// form [:name:] or [:^name:] (name being one or more ASCII letters). Only that
+// shape may enter POSIX scan mode; a bare `[:` that is just literal members —
+// such as the class in /[[:/]/ — must not, or the scanner would swallow the
+// class close and delimiter hunting for a nonexistent `:]`.
+func (l *lexer) posixClassAhead() bool {
+	rest := l.input[l.currentOffset():]
+	if len(rest) < 4 || rest[0] != '[' || rest[1] != ':' {
+		return false
+	}
+	i := 2
+	if rest[i] == '^' {
+		i++
+	}
+	nameStart := i
+	for i < len(rest) {
+		c := rest[i]
+		if c == ':' {
+			return i > nameStart && i+1 < len(rest) && rest[i+1] == ']'
+		}
+		if !isASCIILetter(c) {
+			return false
+		}
+		i++
+	}
+	return false
+}
+
+func isASCIILetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
 func (l *lexer) canStartPercentArrayLiteral() bool {
 	start := l.currentOffset()
 	if start == 0 {
@@ -1504,7 +1663,7 @@ func canEndExpressionToken(tt ast.TokenType) bool {
 		ast.TokenSymbol, ast.TokenWords, ast.TokenSymbols, ast.TokenInterpWords, ast.TokenInterpSymbols,
 		ast.TokenTrue, ast.TokenFalse, ast.TokenNil,
 		ast.TokenSelf, ast.TokenIvar, ast.TokenClassVar, ast.TokenRParen, ast.TokenRBracket,
-		ast.TokenRBrace, ast.TokenEnd:
+		ast.TokenRBrace, ast.TokenEnd, ast.TokenRegex:
 		return true
 	default:
 		return false

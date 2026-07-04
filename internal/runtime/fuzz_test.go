@@ -1046,7 +1046,7 @@ func validateFuzzStatement(context string, stmt Statement) error {
 				return fmt.Errorf("%s.properties[%d] kind is empty", context, i)
 			}
 			for j, name := range property.Names {
-				if name == "" {
+				if name.Name == "" {
 					return fmt.Errorf("%s.properties[%d].names[%d] is empty", context, i, j)
 				}
 			}
@@ -1128,7 +1128,7 @@ func validateFuzzExpression(context string, expr Expression) error {
 			return fmt.Errorf("%s identifier name is empty", context)
 		}
 		return nil
-	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral:
+	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *RegexLiteral:
 		return nil
 	case *SymbolLiteral:
 		if e.Name == "" {
@@ -1232,6 +1232,11 @@ func validateFuzzExpression(context string, expr Expression) error {
 			return err
 		}
 		return validateFuzzExpression(context+".alternate", e.Alternate)
+	case *RescueExpr:
+		if err := validateFuzzExpression(context+".body", e.Body); err != nil {
+			return err
+		}
+		return validateFuzzExpression(context+".fallback", e.Fallback)
 	case *IfExpr:
 		if err := validateFuzzExpression(context+".condition", e.Condition); err != nil {
 			return err

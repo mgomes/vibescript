@@ -59,6 +59,12 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return NewFloat(e.Value), nil
 	case *StringLiteral:
 		return NewString(e.Value), nil
+	case *RegexLiteral:
+		result, err := compileRegexValue("regex literal", e.Pattern, e.Flags)
+		if err != nil {
+			return NewNil(), exec.wrapError(err, e.Pos())
+		}
+		return result, nil
 	case *InterpolatedString:
 		return exec.evalInterpolatedStringLiteral(e, env)
 	case *InterpolatedSymbol:
@@ -79,6 +85,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalBinaryExpr(e, env)
 	case *ConditionalExpr:
 		return exec.evalConditionalExpr(e, env)
+	case *RescueExpr:
+		return exec.evalRescueExpr(e, env, autoCall)
 	case *IfExpr:
 		return exec.evalIfExpr(e, env)
 	case *RangeExpr:
@@ -841,9 +849,15 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		// the right operand is the value being tested. Ranges check membership;
 		// every other value falls back to `==`. This mirrors `when` clause
 		// matching, where the clause value is the matcher.
-		return NewBool(caseCandidateMatches(right, left)), nil
+		matched, err := caseCandidateMatches(right, left)
+		if err != nil {
+			return NewNil(), exec.wrapError(err, pos)
+		}
+		return NewBool(matched), nil
 	case tokenNotEQ:
 		return NewBool(!left.Equal(right)), nil
+	case tokenMatch, tokenNotMatch:
+		return exec.evalRegexMatchOperator(operator, left, right, pos)
 	case tokenLT:
 		return compareValues(left, right, func(c int) bool { return c < 0 })
 	case tokenLTE:
@@ -904,6 +918,30 @@ func (exec *Execution) evalConditionalExprWithExpectation(expr *ConditionalExpr,
 		return NewNil(), err
 	}
 	return result, nil
+}
+
+func (exec *Execution) evalRescueExpr(expr *RescueExpr, env *Env, autoCall bool) (Value, error) {
+	result, err := exec.evalExpressionWithAuto(expr.Body, env, autoCall)
+	if err == nil {
+		if err := exec.checkMemoryWith(result); err != nil {
+			return NewNil(), err
+		}
+		return result, nil
+	}
+	if !canRescueRuntimeError(err, nil) {
+		return NewNil(), err
+	}
+
+	exec.pushRescuedError(err)
+	defer exec.popRescuedError()
+	fallback, fallbackErr := exec.evalExpressionWithAuto(expr.Fallback, env, autoCall)
+	if fallbackErr != nil {
+		return NewNil(), fallbackErr
+	}
+	if err := exec.checkMemoryWith(fallback); err != nil {
+		return NewNil(), err
+	}
+	return fallback, nil
 }
 
 func (exec *Execution) evalIfExpr(expr *IfExpr, env *Env) (Value, error) {
@@ -1336,6 +1374,9 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		return expressionCapturesCurrentEnv(e.Condition) ||
 			expressionCapturesCurrentEnv(e.Consequent) ||
 			expressionCapturesCurrentEnv(e.Alternate)
+	case *RescueExpr:
+		return expressionCapturesCurrentEnv(e.Body) ||
+			expressionCapturesCurrentEnv(e.Fallback)
 	case *IfExpr:
 		if expressionCapturesCurrentEnv(e.Condition) ||
 			expressionCapturesCurrentEnv(e.Consequent) ||
@@ -2159,7 +2200,11 @@ func (exec *Execution) evalCaseExprWithExpectation(expr *CaseExpr, env *Env, exp
 
 func (exec *Execution) caseWhenValueMatches(hasTarget bool, target, candidate Value, splat bool, pos Position) (bool, error) {
 	if !splat {
-		return caseWhenMatches(hasTarget, target, candidate), nil
+		matched, err := caseWhenMatches(hasTarget, target, candidate)
+		if err != nil {
+			return false, exec.wrapError(err, pos)
+		}
+		return matched, nil
 	}
 	if candidate.Kind() != KindArray {
 		return false, exec.errorAt(pos, "case when splat value must be an array")
@@ -2171,32 +2216,41 @@ func (exec *Execution) caseWhenValueMatches(hasTarget bool, target, candidate Va
 		if err := exec.checkMemoryWith(item); err != nil {
 			return false, err
 		}
-		if caseWhenMatches(hasTarget, target, item) {
+		matched, err := caseWhenMatches(hasTarget, target, item)
+		if err != nil {
+			return false, exec.wrapError(err, pos)
+		}
+		if matched {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-func caseWhenMatches(hasTarget bool, target, candidate Value) bool {
+func caseWhenMatches(hasTarget bool, target, candidate Value) (bool, error) {
 	if !hasTarget {
-		return candidate.Truthy()
+		return candidate.Truthy(), nil
 	}
 	return caseCandidateMatches(target, candidate)
 }
 
-func caseCandidateMatches(target, candidate Value) bool {
+func caseCandidateMatches(target, candidate Value) (bool, error) {
+	// A regex matcher tests the candidate pattern against a string target,
+	// mirroring Ruby's Regexp#=== and `when /re/` clause matching.
+	if candidate.Kind() == KindRegex {
+		return regexCandidateMatches(target, candidate)
+	}
 	if candidate.Kind() != KindRange {
-		return target.Equal(candidate)
+		return target.Equal(candidate), nil
 	}
 
 	switch target.Kind() {
 	case KindInt:
-		return rangeContainsInt(candidate.Range(), target.Int())
+		return rangeContainsInt(candidate.Range(), target.Int()), nil
 	case KindFloat:
-		return rangeContainsFloat(candidate.Range(), target.Float())
+		return rangeContainsFloat(candidate.Range(), target.Float()), nil
 	default:
-		return target.Equal(candidate)
+		return target.Equal(candidate), nil
 	}
 }
 
@@ -2862,6 +2916,9 @@ func expressionContainsBypassableIdentifierCall(expr Expression, name string) bo
 		return expressionContainsBypassableIdentifierCall(t.Condition, name) ||
 			expressionContainsBypassableIdentifierCall(t.Consequent, name) ||
 			expressionContainsBypassableIdentifierCall(t.Alternate, name)
+	case *RescueExpr:
+		return expressionContainsBypassableIdentifierCall(t.Body, name) ||
+			expressionContainsBypassableIdentifierCall(t.Fallback, name)
 	case *IfExpr:
 		if expressionContainsBypassableIdentifierCall(t.Condition, name) ||
 			expressionContainsBypassableIdentifierCall(t.Consequent, name) {
@@ -3406,7 +3463,7 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	runElse := err == nil && !returned
 	predeclareLocalBindingsFromStatements(stmt.Body, env)
 
-	if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
+	if err != nil && len(stmt.Rescue) > 0 && canRescueRuntimeError(err, stmt.RescueTy) {
 		rescueEnv := env
 		if stmt.RescueBinding != "" {
 			rescueEnv = newEnv(env)
@@ -3540,6 +3597,12 @@ func isLoopControlSignal(err error) bool {
 func isHostControlSignal(err error) bool {
 	return errors.Is(err, context.Canceled) ||
 		errors.Is(err, context.DeadlineExceeded)
+}
+
+func canRescueRuntimeError(err error, rescueTy *TypeExpr) bool {
+	return !isLoopControlSignal(err) &&
+		!isHostControlSignal(err) &&
+		runtimeErrorMatchesRescueType(err, rescueTy)
 }
 
 func runtimeErrorMatchesRescueType(err error, rescueTy *TypeExpr) bool {

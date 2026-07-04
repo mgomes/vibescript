@@ -204,11 +204,12 @@ func compileClassDef(stmt *ClassStmt) *ClassDef {
 		Body:         stmt.Body,
 	}
 	for _, prop := range stmt.Properties {
-		for _, name := range prop.Names {
+		for _, entry := range prop.Names {
+			name := entry.Name
 			if prop.Kind == "property" || prop.Kind == "getter" {
 				getter := &ScriptFunction{
 					Name:         name,
-					ReturnTy:     prop.Type,
+					ReturnTy:     entry.Type,
 					Body:         []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position}},
 					Pos:          prop.Position,
 					Accessor:     functionAccessorGetter,
@@ -221,7 +222,7 @@ func compileClassDef(stmt *ClassStmt) *ClassDef {
 					Name: name + "=",
 					Params: []Param{{
 						Name: "value",
-						Type: prop.Type,
+						Type: entry.Type,
 					}},
 					Body: []Statement{
 						&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position},
@@ -235,7 +236,11 @@ func compileClassDef(stmt *ClassStmt) *ClassDef {
 		}
 	}
 	for _, fn := range stmt.Methods {
-		classDef.Methods[fn.Name] = compileFunctionDef(fn)
+		compiled := compileFunctionDef(fn)
+		if fn.Name == "initialize" {
+			compiled.Private = true
+		}
+		classDef.Methods[fn.Name] = compiled
 	}
 	for _, fn := range stmt.ClassMethods {
 		classDef.ClassMethods[fn.Name] = compileFunctionDef(fn)

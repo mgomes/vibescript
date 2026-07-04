@@ -669,6 +669,15 @@ With `regex: true`, the replacement string uses Ruby-style backreferences (see
 "abc123".sub("([a-z]+)([0-9]+)", "\\2-\\1", regex: true) # "123-abc"
 ```
 
+A Ruby-style regex literal also selects regex matching by itself (the `regex:`
+keyword is rejected alongside it, since a regex pattern is never literal). The
+same applies to `gsub`, `match`, `match?`, and `scan`:
+
+```vibe
+"ID-12 ID-34".sub(/ID-[0-9]+/, "X") # "X ID-34"
+"abc123".sub(/([a-z]+)([0-9]+)/, "\\2-\\1") # "123-abc"
+```
+
 Given a block instead of a replacement argument, the block receives the matched
 substring and its result (coerced to a string) replaces the first match:
 

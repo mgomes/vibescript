@@ -1765,6 +1765,27 @@ end
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
 }
 
+func TestCheckWarningsRescueExpressionPreservesCalleeAutoCallMode(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class Box
+  def inc(n)
+    n + 1
+  end
+end
+
+def run
+  (Box.new.inc rescue Box.new.inc)(1)
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	if got := callScript(t, context.Background(), script, "run", nil, CallOptions{}); !got.Equal(NewInt(2)) {
+		t.Fatalf("run() = %s, want 2", got)
+	}
+}
+
 func TestCheckWarningsDoNotHoistSafeNavigationRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
@@ -1937,6 +1958,38 @@ end
 	}
 	if _, err := script.Call(context.Background(), "exiting", nil, CallOptions{}); err != nil {
 		t.Fatalf("Call(%q) with statically exiting branch returned error: %v", "exiting", err)
+	}
+}
+
+func TestCheckRegexLiteralConditionIsStaticallyTruthy(t *testing.T) {
+	t.Parallel()
+
+	// A regex literal is always truthy, so a typed function whose only return
+	// sits under `if /re/` never falls through to nil and its else, if any, is
+	// unreachable. The checker must recognize this or it flags a spurious
+	// return-type warning.
+	script := compileScript(t, `
+def typed_regex() -> int
+  if /ok/
+    1
+  end
+end
+
+def typed_regex_else() -> int
+  if /ok/
+    1
+  else
+    "bad"
+  end
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	if _, err := script.Call(context.Background(), "typed_regex", nil, CallOptions{}); err != nil {
+		t.Fatalf("Call(typed_regex) returned error: %v", err)
+	}
+	if _, err := script.Call(context.Background(), "typed_regex_else", nil, CallOptions{}); err != nil {
+		t.Fatalf("Call(typed_regex_else) returned error: %v", err)
 	}
 }
 

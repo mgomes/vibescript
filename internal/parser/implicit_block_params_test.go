@@ -50,6 +50,11 @@ func TestParserInfersImplicitBlockParams(t *testing.T) {
 			want:   []string{"_1"},
 		},
 		{
+			name:   "rescue_callee_branches_keep_it_callable",
+			source: `def run; [1].map { (it rescue fallback)(_1) }; end`,
+			want:   []string{"_1"},
+		},
+		{
 			name:   "nested_block_isolated",
 			source: `def run; [1].map { [2].map { _1 } }; end`,
 			want:   nil,

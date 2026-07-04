@@ -94,6 +94,71 @@ end
 	requireCallErrorContains(t, script, "external_private_class", nil, CallOptions{}, "private method class_secret")
 }
 
+func TestTypedAccessors(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+class User
+  property name: string
+  getter age: int
+  setter tag: string
+
+  def initialize(name, age)
+    @name = name
+    @age = age
+  end
+
+  def set_tag(value)
+    self.tag = value
+  end
+
+  def raw_tag
+    @tag
+  end
+end
+
+def good_name
+  User.new("ada", 30).name
+end
+
+def good_age
+  User.new("ada", 30).age
+end
+
+def good_tag
+  u = User.new("ada", 30)
+  u.tag = "vip"
+  u.raw_tag
+end
+
+def bad_name_read
+  User.new(1, 30).name
+end
+
+def bad_name_write
+  u = User.new("ada", 30)
+  u.name = 42
+end
+
+def bad_tag_write
+  u = User.new("ada", 30)
+  u.set_tag(99)
+end
+`)
+
+	if got := callFunc(t, script, "good_name", nil); !got.Equal(NewString("ada")) {
+		t.Fatalf("good_name = %v, want \"ada\"", got)
+	}
+	if got := callFunc(t, script, "good_age", nil); !got.Equal(NewInt(30)) {
+		t.Fatalf("good_age = %v, want 30", got)
+	}
+	if got := callFunc(t, script, "good_tag", nil); !got.Equal(NewString("vip")) {
+		t.Fatalf("good_tag = %v, want \"vip\"", got)
+	}
+	requireCallErrorContains(t, script, "bad_name_read", nil, CallOptions{}, "return value for name expected string")
+	requireCallErrorContains(t, script, "bad_name_write", nil, CallOptions{}, "expected string")
+	requireCallErrorContains(t, script, "bad_tag_write", nil, CallOptions{}, "expected string")
+}
+
 func TestClassErrorCases(t *testing.T) {
 	t.Parallel()
 	script := compileTestProgram(t, "errors/classes.vibe")

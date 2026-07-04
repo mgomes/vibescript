@@ -1524,7 +1524,7 @@ func builtinRegexpNew(exec *Execution, receiver Value, args []Value, kwargs map[
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("Regexp.new pattern must be string")
 	}
-	return newRegexpObject(args[0].String())
+	return compileRegexValue("Regexp.new", args[0].String(), "")
 }
 
 func builtinRegexpUnion(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1538,7 +1538,7 @@ func builtinRegexpUnion(exec *Execution, receiver Value, args []Value, kwargs ma
 	if err != nil {
 		return NewNil(), err
 	}
-	return newRegexpObject(pattern)
+	return compileRegexValue("Regexp.union", pattern, "")
 }
 
 func builtinRegexpLastMatch(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

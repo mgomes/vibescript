@@ -14,7 +14,7 @@ import (
 var (
 	intMemberNames = []string{
 		"seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week",
-		"abs", "clamp", "even?", "odd?", "times", "upto", "downto", "step",
+		"abs", "clamp", "between?", "even?", "odd?", "times", "upto", "downto", "step",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
@@ -22,19 +22,19 @@ var (
 		"inspect",
 	}
 	floatMemberNames = []string{
-		"abs", "clamp", "round", "floor", "ceil",
+		"abs", "clamp", "between?", "round", "floor", "ceil",
 		"zero?", "positive?", "negative?", "nonzero?",
 		"nan?", "infinite?", "finite?",
 		"div", "divmod", "fdiv", "remainder", "modulo",
 		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
-	moneyMemberNames = []string{"currency", "cents", "amount", "format", "to_s", "string"}
+	moneyMemberNames = []string{"currency", "cents", "amount", "format", "between?", "to_s", "string"}
 )
 
 var (
 	intBuiltinMemberNames = []string{
-		"abs", "clamp", "even?", "odd?", "times", "upto", "downto", "step",
+		"abs", "clamp", "between?", "even?", "odd?", "times", "upto", "downto", "step",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
@@ -43,7 +43,7 @@ var (
 	}
 	intBuiltinMembers       = newMemberTable(intBuiltinMemberNames)
 	floatBuiltinMembers     = newMemberTable(floatMemberNames)
-	moneyBuiltinMemberNames = []string{"format"}
+	moneyBuiltinMemberNames = []string{"format", "between?"}
 	moneyBuiltinMembers     = newMemberTable(moneyBuiltinMemberNames)
 )
 
@@ -80,6 +80,10 @@ func intMemberBuiltin(property string) (Value, error) {
 	case "clamp":
 		return NewAutoBuiltin("int.clamp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return numericClamp("int.clamp", receiver, args, kwargs, block)
+		}), nil
+	case "between?":
+		return NewAutoBuiltin("int.between?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return comparableBetween("int.between?", receiver, args, kwargs, block)
 		}), nil
 	case "even?":
 		return NewAutoBuiltin("int.even?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -292,6 +296,10 @@ func floatMemberBuiltin(property string) (Value, error) {
 	case "clamp":
 		return NewAutoBuiltin("float.clamp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return numericClamp("float.clamp", receiver, args, kwargs, block)
+		}), nil
+	case "between?":
+		return NewAutoBuiltin("float.between?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return comparableBetween("float.between?", receiver, args, kwargs, block)
 		}), nil
 	case "round", "floor", "ceil":
 		mode := roundModeFor(property)
@@ -892,6 +900,10 @@ func moneyMemberBuiltin(property string) (Value, error) {
 	case "format":
 		return NewAutoBuiltin("money.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return NewString(receiver.Money().String()), nil
+		}), nil
+	case "between?":
+		return NewAutoBuiltin("money.between?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return comparableBetween("money.between?", receiver, args, kwargs, block)
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown money member %s", property)
