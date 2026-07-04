@@ -2222,6 +2222,39 @@ func copyArraySliceWindow(arr []Value, window arraySliceWindow) []Value {
 	return out
 }
 
+func arrayJoinSeparator(arg Value, argCount int) (string, error) {
+	if argCount > 1 {
+		return "", fmt.Errorf("array.join accepts at most one separator")
+	}
+	if argCount == 0 {
+		return "", nil
+	}
+	if arg.Kind() != KindString {
+		return "", fmt.Errorf("array.join separator must be string")
+	}
+	return arg.String(), nil
+}
+
+func arrayJoinPayload(exec *Execution, receiver Value, sep string) (int, error) {
+	arr := receiver.Array()
+	if len(arr) == 0 {
+		return 0, nil
+	}
+	return arrayJoinByteLenBounded(arr, sep, exec.step)
+}
+
+func arrayJoinResult(receiver Value, sep string, payload int, b *strings.Builder) (Value, error) {
+	arr := receiver.Array()
+	if len(arr) == 0 {
+		return NewString(""), nil
+	}
+	b.Grow(payload)
+	if err := arrayJoin(b, arr, sep); err != nil {
+		return NewNil(), err
+	}
+	return NewString(b.String()), nil
+}
+
 // arrayReduce folds the receiver into a single value. It supports Ruby's three
 // calling conventions for Array#reduce / Enumerable#inject:
 //
@@ -3704,24 +3737,15 @@ func arrayMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "join":
 		return NewAutoBuiltin("array.join", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 1 {
-				return NewNil(), fmt.Errorf("array.join accepts at most one separator")
+			arg0 := NewNil()
+			if len(args) > 0 {
+				arg0 = args[0]
 			}
-			sep := ""
-			if len(args) == 1 {
-				if args[0].Kind() != KindString {
-					return NewNil(), fmt.Errorf("array.join separator must be string")
-				}
-				sep = args[0].String()
+			sep, err := arrayJoinSeparator(arg0, len(args))
+			if err != nil {
+				return NewNil(), err
 			}
-			arr := receiver.Array()
-			if len(arr) == 0 {
-				return NewString(""), nil
-			}
-			// arrayJoin recursively joins nested arrays with the active separator,
-			// matching Ruby's Array#join, and guards against cyclic or pathologically
-			// deep structures the same way array.flatten does.
-			payload, err := arrayJoinByteLenBounded(arr, sep, exec.step)
+			payload, err := arrayJoinPayload(exec, receiver, sep)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -3729,11 +3753,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err := exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, payload), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			b.Grow(payload)
-			if err := arrayJoin(&b, arr, sep); err != nil {
-				return NewNil(), err
-			}
-			return NewString(b.String()), nil
+			return arrayJoinResult(receiver, sep, payload, &b)
 		}), nil
 	case "reverse":
 		return NewAutoBuiltin("array.reverse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

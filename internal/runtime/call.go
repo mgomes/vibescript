@@ -1254,6 +1254,10 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		return result, err
 	}
 
+	if result, handled, err := exec.evalDirectArrayMemberCallExpr(call, receiver, member.Property, env); handled || err != nil {
+		return result, err
+	}
+
 	if result, handled, err := exec.evalDirectCoreObjectMemberCallExpr(call, receiver, member, env); handled || err != nil {
 		return result, err
 	}
@@ -1396,9 +1400,105 @@ func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver V
 		return exec.evalDirectStringRIndexCall(call, receiver, env)
 	case "slice":
 		return exec.evalDirectStringSliceCall(call, receiver, env)
+	case "split":
+		return exec.evalDirectStringSplitCall(call, receiver, env)
 	default:
 		return NewNil(), false, nil
 	}
+}
+
+func (exec *Execution) evalDirectStringSplitCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
+	if len(call.Args) > 2 {
+		return NewNil(), false, nil
+	}
+	arg0 := NewNil()
+	arg1 := NewNil()
+	if len(call.Args) > 0 {
+		var err error
+		arg0, err = exec.evalCallArg(call.Args[0], env)
+		if err != nil {
+			return NewNil(), true, err
+		}
+	}
+	if len(call.Args) > 1 {
+		var err error
+		arg1, err = exec.evalCallArg(call.Args[1], env)
+		if err != nil {
+			return NewNil(), true, err
+		}
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWithPositionalCallRoots(receiver, arg0, arg1, len(call.Args)); err != nil {
+		return NewNil(), true, err
+	}
+	result, err := stringSplitResultFromPositionalRoots(exec, receiver, arg0, arg1, len(call.Args))
+	if err != nil {
+		if ctxErr := exec.checkContext(); ctxErr != nil {
+			return NewNil(), true, ctxErr
+		}
+		return NewNil(), true, exec.wrapError(err, call.Pos())
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), true, err
+	}
+	return result, true, nil
+}
+
+func (exec *Execution) evalDirectArrayMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
+	if receiver.Kind() != KindArray || property != "join" || len(call.KwArgs) != 0 || call.Block != nil {
+		return NewNil(), false, nil
+	}
+	if len(call.Args) > 1 {
+		return NewNil(), false, nil
+	}
+	arg0 := NewNil()
+	if len(call.Args) == 1 {
+		var err error
+		arg0, err = exec.evalCallArg(call.Args[0], env)
+		if err != nil {
+			return NewNil(), true, err
+		}
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWithPositionalCallRoots(receiver, arg0, NewNil(), len(call.Args)); err != nil {
+		return NewNil(), true, err
+	}
+	sep, err := arrayJoinSeparator(arg0, len(call.Args))
+	if err != nil {
+		if ctxErr := exec.checkContext(); ctxErr != nil {
+			return NewNil(), true, ctxErr
+		}
+		return NewNil(), true, exec.wrapError(err, call.Pos())
+	}
+	payload, err := arrayJoinPayload(exec, receiver, sep)
+	if err != nil {
+		if ctxErr := exec.checkContext(); ctxErr != nil {
+			return NewNil(), true, ctxErr
+		}
+		return NewNil(), true, exec.wrapError(err, call.Pos())
+	}
+	var b strings.Builder
+	if err := exec.checkProjectedStringBytesWithPositionalCallRoots(projectedBuilderCap(&b, payload), receiver, arg0, NewNil(), len(call.Args)); err != nil {
+		return NewNil(), true, err
+	}
+	result, err := arrayJoinResult(receiver, sep, payload, &b)
+	if err != nil {
+		if ctxErr := exec.checkContext(); ctxErr != nil {
+			return NewNil(), true, ctxErr
+		}
+		return NewNil(), true, exec.wrapError(err, call.Pos())
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), true, err
+	}
+	return result, true, nil
 }
 
 func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {

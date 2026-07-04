@@ -541,6 +541,21 @@ type stringSplitProjection struct {
 	payload int
 }
 
+type stringSplitMode uint8
+
+const (
+	stringSplitWhitespace stringSplitMode = iota
+	stringSplitEmptySeparator
+	stringSplitSeparator
+)
+
+type stringSplitCall struct {
+	mode       stringSplitMode
+	sep        string
+	limit      int
+	projection stringSplitProjection
+}
+
 func newStringSplitProjection(source, part string) stringSplitProjection {
 	projection := stringSplitProjection{}
 	projection.add(source, part)
@@ -584,6 +599,99 @@ func reserveProjectedStringSplitResult(exec *Execution, receiver Value, args []V
 		return err
 	}
 	return exec.checkProjectedArrayBytesWithCallRoots(projection.count, projection.payload, receiver, args, kwargs, block)
+}
+
+func reserveProjectedStringSplitResultWithPositionalRoots(exec *Execution, receiver, arg0, arg1 Value, argCount int, projection stringSplitProjection) error {
+	if err := exec.checkStepBudgetFor(projection.count); err != nil {
+		return err
+	}
+	return exec.checkProjectedArrayBytesWithPositionalCallRoots(projection.count, projection.payload, receiver, arg0, arg1, argCount)
+}
+
+func planStringSplitCall(receiver, arg0, arg1 Value, argCount int) (stringSplitCall, error) {
+	if argCount > 2 {
+		return stringSplitCall{}, fmt.Errorf("string.split accepts at most a separator and a limit")
+	}
+	limit := 0
+	if argCount == 2 {
+		if arg1.Kind() != KindInt {
+			return stringSplitCall{}, fmt.Errorf("string.split limit must be integer")
+		}
+		limit = int(arg1.Int())
+	}
+	text := receiver.String()
+	switch {
+	case argCount == 0 || arg0.IsNil():
+		return stringSplitCall{
+			mode:       stringSplitWhitespace,
+			limit:      limit,
+			projection: splitOnASCIIWhitespaceLimitProjection(text, limit),
+		}, nil
+	case arg0.Kind() != KindString:
+		return stringSplitCall{}, fmt.Errorf("string.split separator must be string or nil")
+	case arg0.String() == " ":
+		return stringSplitCall{
+			mode:       stringSplitWhitespace,
+			limit:      limit,
+			projection: splitOnASCIIWhitespaceLimitProjection(text, limit),
+		}, nil
+	case arg0.String() == "":
+		return stringSplitCall{
+			mode:       stringSplitEmptySeparator,
+			limit:      limit,
+			projection: splitEmptySeparatorProjection(text, limit),
+		}, nil
+	default:
+		sep := arg0.String()
+		return stringSplitCall{
+			mode:       stringSplitSeparator,
+			sep:        sep,
+			limit:      limit,
+			projection: splitWithSeparatorProjection(text, sep, limit),
+		}, nil
+	}
+}
+
+func stringSplitCallResult(exec *Execution, receiver Value, split stringSplitCall) (Value, error) {
+	text := receiver.String()
+	switch split.mode {
+	case stringSplitWhitespace:
+		return stringSplitWhitespaceResult(exec, text, split.limit, split.projection.count)
+	case stringSplitEmptySeparator:
+		return stringSplitEmptySeparatorResult(exec, text, split.limit, split.projection.count)
+	default:
+		return stringSplitSeparatorResult(exec, text, split.sep, split.limit, split.projection.count)
+	}
+}
+
+func stringSplitResultFromArgs(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	arg0 := NewNil()
+	arg1 := NewNil()
+	if len(args) > 0 {
+		arg0 = args[0]
+	}
+	if len(args) > 1 {
+		arg1 = args[1]
+	}
+	split, err := planStringSplitCall(receiver, arg0, arg1, len(args))
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := reserveProjectedStringSplitResult(exec, receiver, args, kwargs, block, split.projection); err != nil {
+		return NewNil(), err
+	}
+	return stringSplitCallResult(exec, receiver, split)
+}
+
+func stringSplitResultFromPositionalRoots(exec *Execution, receiver, arg0, arg1 Value, argCount int) (Value, error) {
+	split, err := planStringSplitCall(receiver, arg0, arg1, argCount)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := reserveProjectedStringSplitResultWithPositionalRoots(exec, receiver, arg0, arg1, argCount, split.projection); err != nil {
+		return NewNil(), err
+	}
+	return stringSplitCallResult(exec, receiver, split)
 }
 
 func appendStringSplitPart(exec *Execution, values *[]Value, part string) error {
@@ -3849,60 +3957,7 @@ func stringMemberTextOps(property string) (Value, error) {
 		}), nil
 	case "split":
 		return NewAutoBuiltin("string.split", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 2 {
-				return NewNil(), fmt.Errorf("string.split accepts at most a separator and a limit")
-			}
-			// The optional second argument is Ruby's limit. limit == 0 is the
-			// default and trims trailing empty fields, a positive limit caps the
-			// field count with the remainder unsplit in the final field, and a
-			// negative limit preserves trailing empty fields. The limit must be a
-			// genuine integer: a Float (even one with no fractional part) is
-			// rejected so a computed numeric limit is never silently truncated.
-			limit := 0
-			if len(args) == 2 {
-				if args[1].Kind() != KindInt {
-					return NewNil(), fmt.Errorf("string.split limit must be integer")
-				}
-				limit = int(args[1].Int())
-			}
-			text := receiver.String()
-			switch {
-			// An explicit nil separator behaves like the no-argument form,
-			// splitting on runs of ASCII whitespace, matching Ruby's
-			// String#split(nil).
-			case len(args) == 0 || args[0].IsNil():
-				projection := splitOnASCIIWhitespaceLimitProjection(text, limit)
-				if err := reserveProjectedStringSplitResult(exec, receiver, args, kwargs, block, projection); err != nil {
-					return NewNil(), err
-				}
-				return stringSplitWhitespaceResult(exec, text, limit, projection.count)
-			case args[0].Kind() != KindString:
-				return NewNil(), fmt.Errorf("string.split separator must be string or nil")
-			case args[0].String() == " ":
-				// A single ASCII space is Ruby's AWK whitespace mode, not a literal
-				// separator: it collapses runs of whitespace, discards leading
-				// whitespace, and honors the limit exactly like the nil form, so
-				// " a  b ".split(" ", 2) yields ["a", "b "] rather than a leading
-				// empty field.
-				projection := splitOnASCIIWhitespaceLimitProjection(text, limit)
-				if err := reserveProjectedStringSplitResult(exec, receiver, args, kwargs, block, projection); err != nil {
-					return NewNil(), err
-				}
-				return stringSplitWhitespaceResult(exec, text, limit, projection.count)
-			case args[0].String() == "":
-				projection := splitEmptySeparatorProjection(text, limit)
-				if err := reserveProjectedStringSplitResult(exec, receiver, args, kwargs, block, projection); err != nil {
-					return NewNil(), err
-				}
-				return stringSplitEmptySeparatorResult(exec, text, limit, projection.count)
-			default:
-				sep := args[0].String()
-				projection := splitWithSeparatorProjection(text, sep, limit)
-				if err := reserveProjectedStringSplitResult(exec, receiver, args, kwargs, block, projection); err != nil {
-					return NewNil(), err
-				}
-				return stringSplitSeparatorResult(exec, text, sep, limit, projection.count)
-			}
+			return stringSplitResultFromArgs(exec, receiver, args, kwargs, block)
 		}), nil
 	case "partition":
 		return NewAutoBuiltin("string.partition", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
