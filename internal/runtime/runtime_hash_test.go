@@ -2548,6 +2548,163 @@ func TestTypedTransformReservesExactOrderCapacity(t *testing.T) {
 	}
 }
 
+// TestTypedCopyReservesExactOrderCapacity pins blockless typed-hash copy paths:
+// they pre-size both the legacy output map and insertion-order backing to the
+// projected result count before the first cloned entry is inserted.
+func TestTypedCopyReservesExactOrderCapacity(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def source()
+      { a: 1, b: 2, c: 3 }
+    end
+
+    def nil_source()
+      { a: nil, b: nil, c: nil }
+    end
+
+    def replace_result()
+      { z: 0 }.replace(source)
+    end
+
+    def merge_result()
+      source.merge({ d: 4 })
+    end
+
+    def store_result()
+      source.store(:d, 4)
+    end
+
+    def delete_hit_result()
+      source.delete(:b)[:hash]
+    end
+
+    def delete_miss_result()
+      source.delete(:missing)[:hash]
+    end
+
+    def slice_result()
+      source.slice(:a, :b, :c)
+    end
+
+    def except_result()
+      source.except
+    end
+
+    def select_result()
+      source.select do |k, v|
+        true
+      end
+    end
+
+    def reject_result()
+      source.reject do |k, v|
+        false
+      end
+    end
+
+    def delete_if_result()
+      source.delete_if do |k, v|
+        false
+      end
+    end
+
+    def keep_if_result()
+      source.keep_if do |k, v|
+        true
+      end
+    end
+
+    def remap_keys_result()
+      source.remap_keys({ a: :a, b: :b, c: :c })
+    end
+
+    def compact_result()
+      source.compact
+    end
+
+    def compact_empty_result()
+      nil_source.compact
+    end
+
+    def slice_empty_result()
+      source.slice(:missing)
+    end
+
+    def except_empty_result()
+      source.except(:a, :b, :c)
+    end
+
+    def select_empty_result()
+      source.select do |k, v|
+        false
+      end
+    end
+
+    def reject_empty_result()
+      source.reject do |k, v|
+        true
+      end
+    end
+
+    def delete_if_empty_result()
+      source.delete_if do |k, v|
+        true
+      end
+    end
+
+    def keep_if_empty_result()
+      source.keep_if do |k, v|
+        false
+      end
+    end
+    `)
+
+	for _, tc := range []struct {
+		name, fn     string
+		wantLen      int
+		wantCapacity int
+	}{
+		{name: "replace", fn: "replace_result", wantLen: 3, wantCapacity: 3},
+		{name: "merge", fn: "merge_result", wantLen: 4, wantCapacity: 4},
+		{name: "store", fn: "store_result", wantLen: 4, wantCapacity: 4},
+		{name: "delete_hit", fn: "delete_hit_result", wantLen: 2, wantCapacity: 2},
+		{name: "delete_miss", fn: "delete_miss_result", wantLen: 3, wantCapacity: 3},
+		{name: "slice", fn: "slice_result", wantLen: 3, wantCapacity: 3},
+		{name: "except", fn: "except_result", wantLen: 3, wantCapacity: 3},
+		{name: "select", fn: "select_result", wantLen: 3, wantCapacity: 3},
+		{name: "reject", fn: "reject_result", wantLen: 3, wantCapacity: 3},
+		{name: "delete_if", fn: "delete_if_result", wantLen: 3, wantCapacity: 3},
+		{name: "keep_if", fn: "keep_if_result", wantLen: 3, wantCapacity: 3},
+		{name: "remap_keys", fn: "remap_keys_result", wantLen: 3, wantCapacity: 3},
+		{name: "compact", fn: "compact_result", wantLen: 3, wantCapacity: 3},
+		{name: "compact_empty", fn: "compact_empty_result", wantLen: 0, wantCapacity: 3},
+		{name: "slice_empty", fn: "slice_empty_result", wantLen: 0, wantCapacity: 1},
+		{name: "except_empty", fn: "except_empty_result", wantLen: 0, wantCapacity: 3},
+		{name: "select_empty", fn: "select_empty_result", wantLen: 0, wantCapacity: 3},
+		{name: "reject_empty", fn: "reject_empty_result", wantLen: 0, wantCapacity: 3},
+		{name: "delete_if_empty", fn: "delete_if_empty_result", wantLen: 0, wantCapacity: 3},
+		{name: "keep_if_empty", fn: "keep_if_empty_result", wantLen: 0, wantCapacity: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, nil)
+			if got.HashLen() != tc.wantLen {
+				t.Fatalf("%s entries = %d, want %d", tc.fn, got.HashLen(), tc.wantLen)
+			}
+			if !hashHasTypedEntries(got) {
+				t.Fatalf("%s result is legacy-only, want typed hash storage", tc.fn)
+			}
+			if capacity := value.HashOrderCapacity(got); capacity != tc.wantCapacity {
+				t.Fatalf("%s order capacity = %d, want %d", tc.fn, capacity, tc.wantCapacity)
+			}
+			if capacity := value.HashTypedEntryCapacity(got); capacity != tc.wantCapacity {
+				t.Fatalf("%s typed entry capacity = %d, want %d", tc.fn, capacity, tc.wantCapacity)
+			}
+		})
+	}
+}
+
 // TestHashLiteralReservesExactOrderCapacity pins that a hash literal pre-sizes
 // its insertion-order backing to the pair count, so a 3-entry literal keeps
 // order capacity 3 instead of the 4 append growth would leave.

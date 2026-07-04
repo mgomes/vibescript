@@ -92,6 +92,23 @@ def safe_div(a, b)
 end
 ```
 
+Order multiple `rescue` clauses from specific to general; the first clause
+whose type matches the raised error handles it, as in Ruby:
+
+```vibe
+def parse_config(raw)
+  begin
+    decode(raw)
+  rescue TypeError => err
+    audit("bad shape: " + err.message)
+    default_config
+  rescue RuntimeError => err
+    audit("unexpected: " + err.message)
+    raise
+  end
+end
+```
+
 Re-raise the current rescued error with `raise`:
 
 ```vibe
@@ -106,6 +123,7 @@ end
 Semantics:
 
 - `rescue` runs only when the `begin` body raises an error.
+- A `begin` block may carry multiple ordered `rescue` clauses; the first clause whose type matches handles the error, so order handlers from specific to general.
 - `rescue` supports optional typed matching via `rescue <Type>` and the older `rescue(<Type>)` form.
 - `rescue` supports `AssertionError`, `LimitError`, `RuntimeError`, and unions such as `rescue AssertionError | RuntimeError`.
 - `rescue => err` and `rescue RuntimeError => err` bind an object for the handler body with `type`, `message`, and `code_frame` fields.

@@ -1171,7 +1171,9 @@ func lastStatementLine(statements []ast.Statement) int {
 			case *ast.TryStmt:
 				walk(st.Body)
 				walk(st.Else)
-				walk(st.Rescue)
+				for i := range st.Rescues {
+					walk(st.Rescues[i].Body)
+				}
 				walk(st.Ensure)
 			}
 		}
@@ -1202,15 +1204,19 @@ func rescueCompletionBlocks(statements []ast.Statement, compiledFunctionStart, c
 			case *ast.UntilStmt:
 				walk(st.Body)
 			case *ast.TryStmt:
-				if st.RescueBinding != "" && st.RescuePosition.Line > 0 {
-					startLine := currentFunctionStart + (st.RescuePosition.Line - 1 - compiledFunctionStart)
+				for i := range st.Rescues {
+					clause := &st.Rescues[i]
+					if clause.Binding == "" || clause.Position.Line <= 0 {
+						continue
+					}
+					startLine := currentFunctionStart + (clause.Position.Line - 1 - compiledFunctionStart)
 					endLine := startLine
-					if rescueEnd := lastStatementLine(st.Rescue); rescueEnd > 0 {
+					if rescueEnd := lastStatementLine(clause.Body); rescueEnd > 0 {
 						endLine = currentFunctionStart + (rescueEnd - compiledFunctionStart)
 					}
 					items := []map[string]any{}
 					seen := map[string]struct{}{}
-					addLocalItem(&items, seen, st.RescueBinding, "local")
+					addLocalItem(&items, seen, clause.Binding, "local")
 					blocks = append(blocks, lspCompletionBlock{
 						startLine: startLine,
 						endLine:   endLine,
@@ -1219,7 +1225,9 @@ func rescueCompletionBlocks(statements []ast.Statement, compiledFunctionStart, c
 				}
 				walk(st.Body)
 				walk(st.Else)
-				walk(st.Rescue)
+				for i := range st.Rescues {
+					walk(st.Rescues[i].Body)
+				}
 				walk(st.Ensure)
 			}
 		}
@@ -1271,7 +1279,9 @@ func localNames(statements []ast.Statement) []string {
 			case *ast.TryStmt:
 				walkStmts(st.Body)
 				walkStmts(st.Else)
-				walkStmts(st.Rescue)
+				for i := range st.Rescues {
+					walkStmts(st.Rescues[i].Body)
+				}
 				walkStmts(st.Ensure)
 			}
 		}

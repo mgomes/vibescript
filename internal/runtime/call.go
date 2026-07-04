@@ -326,16 +326,35 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 		callEnv.Define("self", receiver)
 	}
 	callEnv.setCallBlock(block)
+	// The invocation token opens before argument binding so a block built by a
+	// default-argument expression homes to this invocation, not to the caller.
+	token := exec.pushReturnToken()
+	var val Value
+	returned := false
+	bindReturned := false
 	if err := exec.bindFunctionArgs(fn, callEnv, args, kwargs, pos); err != nil {
-		return NewNil(), err
+		sig := matchNonLocalReturn(err, token)
+		if sig == nil {
+			exec.popReturnToken()
+			return NewNil(), err
+		}
+		// A default-argument block returned from this invocation during
+		// binding; that is the method's return value.
+		val = sig.value
+		returned = true
+		bindReturned = true
 	}
-	exec.pushEnv(callEnv)
-	if err := exec.checkMemory(); err != nil {
+	if !bindReturned {
+		exec.pushEnv(callEnv)
+		if err := exec.checkMemory(); err != nil {
+			exec.popEnv()
+			exec.popReturnToken()
+			return NewNil(), err
+		}
 		exec.popEnv()
-		return NewNil(), err
 	}
-	exec.popEnv()
 	if err := exec.pushFrame(fn.Name, pos, exec.currentSourceScript(), fn.owner); err != nil {
+		exec.popReturnToken()
 		return NewNil(), err
 	}
 
@@ -350,18 +369,30 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 	}
 	exec.pushModuleContext(ctx)
 	exec.pushReceiver(receiver)
-	if fn.Accessor == functionAccessorSetter {
-		val, err := exec.executeGeneratedSetter(fn, callEnv)
-		exec.popReceiver()
-		exec.popModuleContext()
-		exec.popFrame()
-		if err != nil {
-			return NewNil(), err
+	var err error
+	if !bindReturned {
+		if fn.Accessor == functionAccessorSetter {
+			val, err := exec.executeGeneratedSetter(fn, callEnv)
+			exec.popReturnToken()
+			exec.popReceiver()
+			exec.popModuleContext()
+			exec.popFrame()
+			if err != nil {
+				return NewNil(), err
+			}
+			return val, nil
 		}
-		return val, nil
+		val, returned, err = exec.evalLocalScopeStatements(fn.Body, callEnv)
 	}
-	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
-	if err != nil && !isLoopControlSignal(err) {
+	exec.popReturnToken()
+	if sig := matchNonLocalReturn(err, token); sig != nil {
+		// A block created by this invocation returned: that is this method's
+		// return value, flowing through the same return-type validation below.
+		val = sig.value
+		returned = true
+		err = nil
+	}
+	if err != nil && !isLoopControlSignal(err) && !isNonLocalReturnSignal(err) {
 		err = exec.wrapError(err, pos)
 	}
 	exec.popReceiver()
@@ -913,7 +944,11 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 	env.Define("self", classVal)
 	exec.pushReceiver(classVal)
 	defer exec.popReceiver()
+	// A class body is not a method body: a block created here has no
+	// enclosing method to return from, so pin the home to none.
+	exec.pushBlockHomeToken(0)
 	_, _, err := exec.evalLocalScopeStatements(classDef.Body, env)
+	exec.popBlockHomeToken()
 	if err != nil {
 		return err
 	}
@@ -2501,7 +2536,11 @@ func bindLazyTaskGlobalsForCall(exec *Execution, root *Env, globals *taskLazyGlo
 	return nil
 }
 
-func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (Value, error) {
+// executeFunctionForCall evaluates the entry function's body. token is the
+// invocation token the caller pushed BEFORE binding arguments (so a block
+// built by a default-argument expression homes to this invocation); the
+// caller pops it after this returns.
+func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env, token uint64) (Value, error) {
 	if err := exec.pushFrame(fn.Name, fn.Pos, fn.owner, fn.owner); err != nil {
 		return NewNil(), err
 	}
@@ -2514,6 +2553,17 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 		return val, nil
 	}
 	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
+	if sig := matchNonLocalReturn(err, token); sig != nil {
+		val = sig.value
+		returned = true
+		err = nil
+	} else if isNonLocalReturnSignal(err) {
+		// Defensive backstop: signals only emit while their target is live, so
+		// one reaching the Call boundary unconsumed indicates a frame that
+		// unwound without matching. Surface it as LocalJumpError rather than a
+		// raw signal.
+		err = exec.localJumpErrorAt(fn.Pos, "unexpected return")
+	}
 	if err != nil {
 		err = exec.wrapError(err, fn.Pos)
 	}
@@ -2525,6 +2575,21 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
+	val, err = finishFunctionForCall(exec, fn, val)
+	if err != nil {
+		return NewNil(), err
+	}
+	if returned {
+		return val, nil
+	}
+	return val, nil
+}
+
+// finishFunctionForCall applies the entry function's return-type validation
+// and result memory charge. It is shared by the normal body path and the
+// bind-time non-local return path (a default-argument block returning during
+// prepareCallEnvForFunction), so both validate identically.
+func finishFunctionForCall(exec *Execution, fn *ScriptFunction, val Value) (Value, error) {
 	if fn.ReturnTy != nil {
 		normalized, err := normalizeValueForType(val, fn.ReturnTy, typeContext{
 			owner:    fn.owner,
@@ -2545,9 +2610,6 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 	}
 	if err := exec.checkMemoryWith(val); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
-	}
-	if returned {
-		return val, nil
 	}
 	return val, nil
 }

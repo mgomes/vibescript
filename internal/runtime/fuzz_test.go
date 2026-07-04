@@ -1014,14 +1014,17 @@ func validateFuzzStatement(context string, stmt Statement) error {
 	case *BreakStmt, *NextStmt:
 		return nil
 	case *TryStmt:
-		if err := validateFuzzTypeExpr(context+".rescue_type", s.RescueTy); err != nil {
-			return err
-		}
 		if err := validateFuzzStatements(context+".body", s.Body); err != nil {
 			return err
 		}
-		if err := validateFuzzStatements(context+".rescue", s.Rescue); err != nil {
-			return err
+		for i := range s.Rescues {
+			clause := &s.Rescues[i]
+			if err := validateFuzzTypeExpr(fmt.Sprintf("%s.rescues[%d].type", context, i), clause.Ty); err != nil {
+				return err
+			}
+			if err := validateFuzzStatements(fmt.Sprintf("%s.rescues[%d].body", context, i), clause.Body); err != nil {
+				return err
+			}
 		}
 		if err := validateFuzzStatements(context+".else", s.Else); err != nil {
 			return err

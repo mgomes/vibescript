@@ -153,6 +153,57 @@ setter rejects a wrong-typed assignment, and a typed getter enforces its return 
 on read — so reading a property whose backing ivar was never set raises unless the
 type is nullable (e.g. `int?`). Bare accessors without an annotation stay untyped.
 
+## Operator And Index Methods
+
+As in Ruby, a class can define operator methods and the index protocol, and
+operator syntax dispatches to them on the receiver (the left operand):
+
+```vibe
+class Vec
+  def initialize(x)
+    @x = x
+  end
+  def x
+    @x
+  end
+  def +(other)
+    Vec.new(x + other.x)
+  end
+  def ==(other)
+    x == other.x
+  end
+end
+
+class Counter
+  def initialize
+    @slots = {}
+  end
+  def [](key)
+    @slots.fetch(key, 0)
+  end
+  def []=(key, value)
+    @slots[key] = value
+  end
+end
+
+(Vec.new(1) + Vec.new(2)).x  # => 3
+Vec.new(1) == Vec.new(1)     # => true
+
+c = Counter.new
+c["a"] = 1
+c["a"] += 5
+c["a"]                       # => 6
+```
+
+Definable names: `+`, `-`, `*`, `/`, `%`, `**`, `<<`, `&`, `==`, `!=`, `<`,
+`<=`, `>`, `>=`, `<=>`, `[]`, and `[]=`. `[]` may take multiple indices
+(`grid[row, col]`), and `[]=` receives the indices followed by the assigned
+value. When a class defines `==` without `!=`, `!=` is its negation; without
+either, instances keep built-in identity equality. Operator methods are
+instance methods only — a top-level or `self.` operator definition is a
+compile error — and dispatch ignores the right operand's class, matching
+Ruby's left-receiver rule.
+
 ## Privacy
 
 Mark methods private with `private def`:

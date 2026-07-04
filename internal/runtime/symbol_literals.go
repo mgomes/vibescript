@@ -124,7 +124,9 @@ func (c *symbolLiteralCollector) collectStatement(stmt Statement) {
 		c.collectExpression(typed.Value)
 	case *TryStmt:
 		c.collectStatements(typed.Body)
-		c.collectStatements(typed.Rescue)
+		for i := range typed.Rescues {
+			c.collectStatements(typed.Rescues[i].Body)
+		}
 		c.collectStatements(typed.Else)
 		c.collectStatements(typed.Ensure)
 	case *ClassStmt:

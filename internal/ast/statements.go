@@ -130,16 +130,25 @@ type NextStmt struct {
 func (s *NextStmt) stmtNode()     {}
 func (s *NextStmt) Pos() Position { return s.Position }
 
-// TryStmt represents a begin/rescue/ensure error-handling block.
+// RescueClause is one ordered handler in a begin/rescue block. Ty narrows the
+// error classes the clause handles (nil catches any rescuable error), Binding
+// names the rescued error inside Body, and Position is the rescue keyword's.
+type RescueClause struct {
+	Ty       *TypeExpr
+	Binding  string
+	Body     []Statement
+	Position Position
+}
+
+// TryStmt represents a begin/rescue/ensure error-handling block. Rescues holds
+// the handlers in source order; at runtime the first clause whose type matches
+// the raised error handles it, mirroring Ruby's ordered rescue dispatch.
 type TryStmt struct {
-	Body           []Statement
-	RescueTy       *TypeExpr
-	RescueBinding  string
-	RescuePosition Position
-	Rescue         []Statement
-	Else           []Statement
-	Ensure         []Statement
-	Position       Position
+	Body     []Statement
+	Rescues  []RescueClause
+	Else     []Statement
+	Ensure   []Statement
+	Position Position
 }
 
 func (s *TryStmt) stmtNode()     {}

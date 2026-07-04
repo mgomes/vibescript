@@ -42,6 +42,7 @@ type (
 	BreakStmt      = ast.BreakStmt
 	NextStmt       = ast.NextStmt
 	TryStmt        = ast.TryStmt
+	RescueClause   = ast.RescueClause
 	PropertyDecl   = ast.PropertyDecl
 	ClassStmt      = ast.ClassStmt
 	EnumMemberStmt = ast.EnumMemberStmt
@@ -1004,6 +1005,11 @@ type Block struct {
 	moduleKey      string
 	modulePath     string
 	moduleRoot     string
+	// homeReturnToken identifies the method invocation the block lexically
+	// belongs to: a return in the block body returns from that invocation
+	// (Ruby non-local return). Zero for host-built or top-level blocks, whose
+	// returns report LocalJumpError.
+	homeReturnToken uint64
 }
 
 // NewBlock returns a block (closure) Value.

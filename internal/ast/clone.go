@@ -126,8 +126,14 @@ func cloneStatement(stmt Statement) Statement {
 	case *TryStmt:
 		clone := *s
 		clone.Body = cloneStatements(s.Body)
-		clone.RescueTy = cloneTypeExpr(s.RescueTy)
-		clone.Rescue = cloneStatements(s.Rescue)
+		if s.Rescues != nil {
+			clone.Rescues = make([]RescueClause, len(s.Rescues))
+			for i, rescue := range s.Rescues {
+				rescue.Ty = cloneTypeExpr(rescue.Ty)
+				rescue.Body = cloneStatements(rescue.Body)
+				clone.Rescues[i] = rescue
+			}
+		}
 		clone.Else = cloneStatements(s.Else)
 		clone.Ensure = cloneStatements(s.Ensure)
 		return &clone

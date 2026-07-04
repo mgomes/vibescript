@@ -611,6 +611,17 @@ func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) 
 		return exec.indexArray(e, obj, indices)
 	case KindHash, KindObject:
 		return exec.indexHash(e, obj, indices)
+	case KindInstance:
+		// obj[i, ...] dispatches to a user-defined [] method, mirroring Ruby's
+		// index-read protocol for collection-like classes.
+		fn, ok := instanceOperatorMethod(obj, "[]")
+		if !ok {
+			return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s: %s does not define []", obj.Kind(), valueInstance(obj).Class.Name)
+		}
+		if fn.Private {
+			return NewNil(), exec.errorAt(e.Position, "private method []")
+		}
+		return exec.callOperatorFunction(fn, obj, indices, e.Position)
 	default:
 		return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s", obj.Kind())
 	}
@@ -815,6 +826,11 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 }
 
 func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value, pos Position) (Value, error) {
+	if left.Kind() == KindInstance {
+		if result, handled, err := exec.evalInstanceOperator(operator, left, right, pos); handled {
+			return result, err
+		}
+	}
 	var result Value
 	var err error
 	switch operator {
@@ -891,6 +907,81 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		return NewNil(), exec.wrapError(err, pos)
 	}
 	return result, nil
+}
+
+// instanceOperatorMethod resolves a user-defined operator method (def +,
+// def ==, def []) on an instance receiver's class.
+func instanceOperatorMethod(receiver Value, name string) (*ScriptFunction, bool) {
+	if receiver.Kind() != KindInstance {
+		return nil, false
+	}
+	fn, ok := valueInstance(receiver).Class.Methods[name]
+	return fn, ok
+}
+
+// evalInstanceOperator dispatches a binary operator on an instance receiver to
+// the class's operator method of the same name, mirroring Ruby where `a + b`
+// is `a.+(b)`. Dispatch keys on the left operand only, like Ruby. == and !=
+// keep their universal fallbacks when the class defines no method: != prefers
+// a user !=, then negates a user ==, then falls back to built-in equality, so
+// defining == alone gives a consistent inverse.
+func (exec *Execution) evalInstanceOperator(operator TokenType, left, right Value, pos Position) (Value, bool, error) {
+	switch operator {
+	case tokenPlus, tokenMinus, tokenAsterisk, tokenSlash, tokenPercent, tokenPower,
+		tokenShovel, tokenAmpersand, tokenLT, tokenLTE, tokenGT, tokenGTE, tokenSpaceship:
+		fn, ok := instanceOperatorMethod(left, string(operator))
+		if !ok {
+			return NewNil(), false, nil
+		}
+		val, err := exec.callInstanceOperatorMethod(fn, string(operator), left, right, pos)
+		return val, true, err
+	case tokenEQ:
+		fn, ok := instanceOperatorMethod(left, "==")
+		if !ok {
+			return NewNil(), false, nil
+		}
+		val, err := exec.callInstanceOperatorMethod(fn, "==", left, right, pos)
+		return val, true, err
+	case tokenNotEQ:
+		if fn, ok := instanceOperatorMethod(left, "!="); ok {
+			val, err := exec.callInstanceOperatorMethod(fn, "!=", left, right, pos)
+			return val, true, err
+		}
+		if fn, ok := instanceOperatorMethod(left, "=="); ok {
+			val, err := exec.callInstanceOperatorMethod(fn, "==", left, right, pos)
+			if err != nil {
+				return NewNil(), true, err
+			}
+			return NewBool(!val.Truthy()), true, nil
+		}
+		return NewNil(), false, nil
+	default:
+		return NewNil(), false, nil
+	}
+}
+
+func (exec *Execution) callInstanceOperatorMethod(fn *ScriptFunction, name string, receiver, arg Value, pos Position) (Value, error) {
+	if fn.Private {
+		return NewNil(), exec.errorAt(pos, "private method %s", name)
+	}
+	return exec.callOperatorFunction(fn, receiver, []Value{arg}, pos)
+}
+
+// callOperatorFunction invokes an operator or index method and, like the
+// normal call wrapper, converts a bare break/next escaping the method body
+// into a call-boundary error. Without this, an operator evaluated inside a
+// caller loop would let the signal silently break or continue that loop.
+func (exec *Execution) callOperatorFunction(fn *ScriptFunction, receiver Value, args []Value, pos Position) (Value, error) {
+	val, err := exec.callFunction(fn, receiver, args, nil, NewNil(), pos)
+	if err != nil {
+		if errors.Is(err, errLoopBreak) {
+			return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
+		}
+		if errors.Is(err, errLoopNext) {
+			return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+		}
+	}
+	return val, err
 }
 
 func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Value, error) {
@@ -998,6 +1089,7 @@ func (exec *Execution) matchIfExpressionBranch(expr *IfExpr, env *Env) (Expressi
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
 	blockValue := newBlock(block.Params, block.ImplicitParams, block.Body, env)
 	blk := valueBlock(blockValue)
+	blk.homeReturnToken = exec.currentBlockHomeToken()
 	if ctx := exec.currentModuleContext(); ctx != nil && ctx.script != nil {
 		blk.owner = ctx.script
 	} else {
@@ -1206,14 +1298,41 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 		}
 		blockEnv.Define(name, val)
 	}
+	// The block's lexical home scopes any literal created while the body runs:
+	// a nested block returns from the same method this block does, even when
+	// yield executes the body inside a callee frame.
+	exec.pushBlockHomeToken(blk.homeReturnToken)
 	val, returned, err := exec.evalLocalScopeStatements(blk.Body, blockEnv)
+	exec.popBlockHomeToken()
 	if err != nil {
 		return NewNil(), err
 	}
 	if returned {
-		return blockEnv.detachArrayAppendResult(val), nil
+		// Ruby non-local return: an explicit return in a block body returns
+		// from the method that created the block, not from the block call. A
+		// dead home — the method already returned, the block was built outside
+		// any method, or it runs in another execution — raises LocalJumpError
+		// right here, where a surrounding rescue can catch it. A live home
+		// travels the error path so drivers unwind and ensure blocks run; the
+		// invocation whose token matches converts it into its return value.
+		if !exec.returnTokenLive(blk.homeReturnToken) {
+			return NewNil(), exec.localJumpErrorAt(blockBodyPos(blk), "unexpected return")
+		}
+		return NewNil(), &nonLocalReturnSignal{
+			value: blockEnv.detachArrayAppendResult(val),
+			token: blk.homeReturnToken,
+		}
 	}
 	return blockEnv.detachArrayAppendResult(val), nil
+}
+
+// blockBodyPos anchors a block-level diagnostic to the block's first
+// statement, the closest stable position a detached block value carries.
+func blockBodyPos(blk *Block) Position {
+	if len(blk.Body) > 0 {
+		return blk.Body[0].Pos()
+	}
+	return Position{}
 }
 
 func rubyBlockBindArgs(params []Param, args []Value) []Value {
@@ -1299,8 +1418,12 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 	case *NextStmt, *EnumStmt:
 		return false
 	case *TryStmt:
+		for i := range s.Rescues {
+			if statementsCaptureCurrentEnv(s.Rescues[i].Body) {
+				return true
+			}
+		}
 		return statementsCaptureCurrentEnv(s.Body) ||
-			statementsCaptureCurrentEnv(s.Rescue) ||
 			statementsCaptureCurrentEnv(s.Else) ||
 			statementsCaptureCurrentEnv(s.Ensure)
 	default:
@@ -1699,6 +1822,23 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 			return exec.errorAt(target.IndexPos(0), "%s", err.Error())
 		}
 		return nil
+	case KindInstance:
+		// obj[i, ...] = value dispatches to a user-defined []= method with the
+		// indices followed by the assigned value, mirroring Ruby's index-write
+		// protocol. The method's return value is discarded, as in Ruby, where
+		// the assignment expression always evaluates to the assigned value.
+		fn, ok := instanceOperatorMethod(obj, "[]=")
+		if !ok {
+			return exec.errorAt(target.Object.Pos(), "cannot index %s: %s does not define []=", obj.Kind(), valueInstance(obj).Class.Name)
+		}
+		if fn.Private {
+			return exec.errorAt(target.Position, "private method []=")
+		}
+		args := make([]Value, 0, len(indices)+1)
+		args = append(args, indices...)
+		args = append(args, value)
+		_, err := exec.callOperatorFunction(fn, obj, args, target.Position)
+		return err
 	default:
 		return exec.errorAt(target.Object.Pos(), "cannot index %s", obj.Kind())
 	}
@@ -2714,7 +2854,9 @@ func collectLocalBindingNames(stmts []Statement, collector *localBindingCollecto
 			collectLocalBindingNames(s.Body, collector)
 		case *TryStmt:
 			collectLocalBindingNames(s.Body, collector)
-			collectLocalBindingNames(s.Rescue, collector)
+			for i := range s.Rescues {
+				collectLocalBindingNames(s.Rescues[i].Body, collector)
+			}
 			collectLocalBindingNames(s.Else, collector)
 			collectLocalBindingNames(s.Ensure, collector)
 		}
@@ -3323,8 +3465,12 @@ func statementContainsBypassableIdentifierCall(stmt Statement, name string) bool
 		return expressionContainsBypassableIdentifierCall(t.Condition, name) ||
 			statementsContainBypassableIdentifierCall(t.Body, name)
 	case *TryStmt:
+		for i := range t.Rescues {
+			if statementsContainBypassableIdentifierCall(t.Rescues[i].Body, name) {
+				return true
+			}
+		}
 		return statementsContainBypassableIdentifierCall(t.Body, name) ||
-			statementsContainBypassableIdentifierCall(t.Rescue, name) ||
 			statementsContainBypassableIdentifierCall(t.Else, name) ||
 			statementsContainBypassableIdentifierCall(t.Ensure, name)
 	case *ClassStmt:
@@ -3745,26 +3891,47 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	runElse := err == nil && !returned
 	predeclareLocalBindingsFromStatements(stmt.Body, env)
 
-	if err != nil && len(stmt.Rescue) > 0 && canRescueRuntimeError(err, stmt.RescueTy) {
-		rescueEnv := env
-		if stmt.RescueBinding != "" {
-			rescueEnv = newEnv(env)
-			rescueEnv.Define(stmt.RescueBinding, rescuedErrorValue(err))
-		}
-		exec.pushRescuedError(err)
-		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, rescueEnv)
-		exec.popRescuedError()
-		if rescueEnv != env {
-			copyRescueLocalAssignments(stmt, rescueEnv, env)
-		}
-		if rescueErr != nil {
-			val = NewNil()
-			returned = false
-			err = rescueErr
-		} else {
-			val = rescueVal
-			returned = rescueReturned
-			err = nil
+	if err != nil {
+		// Clauses are selected in source order: the first whose type matches
+		// wins, mirroring Ruby's specific-to-general rescue dispatch, and later
+		// clauses never see an error an earlier clause matched. A selected
+		// clause with an empty body keeps the prior single-clause behavior —
+		// the error propagates (after ensure) rather than being swallowed —
+		// but it still consumes the match.
+		for i := range stmt.Rescues {
+			clause := &stmt.Rescues[i]
+			if !canRescueRuntimeError(err, clause.Ty) {
+				// A skipped clause's body locals must exist (as nil) before a
+				// later handler runs: the parser treated its assignments as
+				// surrounding-scope locals, so a matching clause reading such a
+				// name sees the same nil it would after the block.
+				predeclareRescueClauseLocalBindings(clause, env)
+				continue
+			}
+			if len(clause.Body) == 0 {
+				break
+			}
+			rescueEnv := env
+			if clause.Binding != "" {
+				rescueEnv = newEnv(env)
+				rescueEnv.Define(clause.Binding, rescuedErrorValue(err))
+			}
+			exec.pushRescuedError(err)
+			rescueVal, rescueReturned, rescueErr := exec.evalStatements(clause.Body, rescueEnv)
+			exec.popRescuedError()
+			if rescueEnv != env {
+				copyRescueLocalAssignments(clause, rescueEnv, env)
+			}
+			if rescueErr != nil {
+				val = NewNil()
+				returned = false
+				err = rescueErr
+			} else {
+				val = rescueVal
+				returned = rescueReturned
+				err = nil
+			}
+			break
 		}
 	}
 	predeclareRescueLocalBindings(stmt, env)
@@ -3790,11 +3957,11 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	return val, returned, nil
 }
 
-func copyRescueLocalAssignments(stmt *TryStmt, from, to *Env) {
+func copyRescueLocalAssignments(clause *RescueClause, from, to *Env) {
 	var collector localBindingCollector
-	collectLocalBindingNames(stmt.Rescue, &collector)
+	collectLocalBindingNames(clause.Body, &collector)
 	for _, name := range collector.names {
-		if name == stmt.RescueBinding {
+		if name == clause.Binding {
 			continue
 		}
 		val, ok := from.getOwn(name)
@@ -3807,10 +3974,16 @@ func copyRescueLocalAssignments(stmt *TryStmt, from, to *Env) {
 }
 
 func predeclareRescueLocalBindings(stmt *TryStmt, env *Env) {
+	for i := range stmt.Rescues {
+		predeclareRescueClauseLocalBindings(&stmt.Rescues[i], env)
+	}
+}
+
+func predeclareRescueClauseLocalBindings(clause *RescueClause, env *Env) {
 	var collector localBindingCollector
-	collectLocalBindingNames(stmt.Rescue, &collector)
+	collectLocalBindingNames(clause.Body, &collector)
 	for _, name := range collector.names {
-		if name == stmt.RescueBinding {
+		if name == clause.Binding {
 			continue
 		}
 		env.PredeclareLocal(name)
@@ -3884,6 +4057,7 @@ func isHostControlSignal(err error) bool {
 func canRescueRuntimeError(err error, rescueTy *TypeExpr) bool {
 	return !isLoopControlSignal(err) &&
 		!isHostControlSignal(err) &&
+		!isNonLocalReturnSignal(err) &&
 		runtimeErrorMatchesRescueType(err, rescueTy)
 }
 

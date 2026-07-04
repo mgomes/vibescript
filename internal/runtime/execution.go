@@ -86,6 +86,8 @@ type Execution struct {
 	validatedCapabilityArgsArr [4]string
 	loopDepth                  int
 	rescuedErrors              []error
+	returnTokens               []uint64
+	homeTokens                 []uint64
 	localCallBypassStack       []localCallBypass
 	randSource                 *rand.Rand
 	randSeed                   int64

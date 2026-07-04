@@ -1338,6 +1338,12 @@ func isPercentLiteralDelimiter(r rune) bool {
 // parser feeds back to its lexer; until then the parenless form requires
 // parentheses (`method(/re/)`).
 func (l *lexer) canStartRegexLiteral() bool {
+	// A slash directly after `def` is the division operator-method name
+	// (def /(other)), never a regex literal, so it must lex as TokenSlash for
+	// the operator-name parser.
+	if l.lastToken.Type == ast.TokenDef {
+		return false
+	}
 	if l.atLineLeadingWhitespace() {
 		return true
 	}
