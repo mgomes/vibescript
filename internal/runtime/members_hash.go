@@ -254,13 +254,13 @@ func (exec *Execution) maxProjectedTypedHashEntries(scratchBytes int, receiver V
 
 func newTypedResultHash(capacity int) Value {
 	out := NewHash(make(map[string]Value, capacity))
-	out.ReserveHashOrder(capacity)
+	out.ReserveTypedHashOrder(capacity)
 	return out
 }
 
 func newTypedHashPreservingDefault(receiver Value, capacity int) Value {
 	out := newHashPreservingDefault(receiver, make(map[string]Value, capacity))
-	out.ReserveHashOrder(capacity)
+	out.ReserveTypedHashOrder(capacity)
 	return out
 }
 
@@ -322,11 +322,7 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 				return NewNil(), err
 			}
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
-			out := NewHash(make(map[string]Value, count))
-			// Pre-size the order backing to the projected count so it matches the
-			// insertion-order slots typedHashTransformBufferBytes reserved, rather
-			// than overshooting through append growth.
-			out.ReserveHashOrder(count)
+			out := newTypedResultHash(count)
 			var blockArg [1]Value
 			var entryBuf [smallHashKeyBufferSize]HashEntry
 			for _, entry := range orderedTypedHashEntriesInto(value, entryBuf[:]) {
@@ -2542,8 +2538,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
-				out := NewHash(make(map[string]Value, count))
-				out.ReserveHashOrder(count)
+				out := newTypedResultHash(count)
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
 				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
@@ -2733,8 +2728,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
-				out := NewHash(make(map[string]Value, count))
-				out.ReserveHashOrder(count)
+				out := newTypedResultHash(count)
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
 				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {

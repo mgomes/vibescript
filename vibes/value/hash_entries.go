@@ -317,8 +317,9 @@ func (v Value) HashSet(key, val Value) error {
 			// place — each promoted lookup key carries its display string in text —
 			// rather than a separate key slice, so promotion adds no scratch a
 			// caller without an Execution context could not charge. Honor a
-			// capacity a builder reserved up front (ReserveHashOrder); a legacy-only
-			// hash has none, so this allocates the backing as before.
+			// capacity a builder reserved up front (ReserveHashOrder or
+			// ReserveTypedHashOrder); a legacy-only hash has none, so this
+			// allocates the backing as before.
 			if cap(hd.order) < len(hd.entries)+1 {
 				hd.order = make([]HashLookupKey, 0, len(hd.entries)+1)
 			} else {
@@ -407,9 +408,10 @@ func HashOrderCapacity(v Value) int {
 // builder that knows its final entry count avoids the append growth overshoot,
 // where a hash of 3 entries would otherwise retain 4 order slots. This keeps the
 // backing's capacity equal to the entry count the memory-quota projection
-// charges. It is a no-op when v is not a hash, n is non-positive, or the backing
-// already has at least n slots. HashSet honors the reserved capacity when it
-// promotes a legacy map or appends new keys.
+// charges. It does not initialize typed-entry storage, so hash literals can
+// reserve order capacity without allocating typed buckets before their
+// per-entry accounting runs. It is a no-op when v is not a hash, n is
+// non-positive, or the backing already has at least n slots.
 func (v Value) ReserveHashOrder(n int) {
 	if v.kind != KindHash || n <= 0 {
 		return
@@ -418,10 +420,29 @@ func (v Value) ReserveHashOrder(n int) {
 	if !ok || cap(hd.order) >= n {
 		return
 	}
-	if hd.typedEntries == nil && len(hd.entries) == 0 {
-		hd.typedEntries = make(map[HashLookupKey]HashEntry, n)
-	}
 	grown := make([]HashLookupKey, len(hd.order), n)
 	copy(grown, hd.order)
 	hd.order = grown
+}
+
+// ReserveTypedHashOrder prepares an empty hash builder for typed-key writes and
+// reserves its insertion-order backing. It preserves a materialized legacy map
+// when one already exists, which keeps Hash() callers synchronized as HashSet
+// populates typed entries. It is a no-op for non-hashes, negative capacities, or
+// legacy hashes that already contain entries.
+func (v Value) ReserveTypedHashOrder(n int) {
+	if v.kind != KindHash || n < 0 {
+		return
+	}
+	hd, ok := v.data.(*hashData)
+	if !ok {
+		return
+	}
+	if hd.typedEntries == nil {
+		if len(hd.entries) != 0 {
+			return
+		}
+		hd.typedEntries = make(map[HashLookupKey]HashEntry, n)
+	}
+	v.ReserveHashOrder(n)
 }

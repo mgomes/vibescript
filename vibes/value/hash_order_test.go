@@ -97,13 +97,22 @@ func TestHashSetPreservesInsertionOrder(t *testing.T) {
 func TestHashOrderCapacity(t *testing.T) {
 	t.Parallel()
 
-	reserved := value.NewHash(map[string]value.Value{})
-	reserved.ReserveHashOrder(3)
-	if !reserved.HashHasTypedEntries() {
-		t.Fatalf("reserved empty hash is legacy-only, want typed entries for quota-visible order backing")
+	orderOnly := value.NewHash(map[string]value.Value{})
+	orderOnly.ReserveHashOrder(3)
+	if orderOnly.HashHasTypedEntries() {
+		t.Fatalf("ReserveHashOrder() initialized typed entries, want order-only reservation")
 	}
-	if got := value.HashOrderCapacity(reserved); got != 3 {
-		t.Fatalf("reserved empty hash order capacity = %d, want 3", got)
+	if got := value.HashOrderCapacity(orderOnly); got != 3 {
+		t.Fatalf("ReserveHashOrder() order capacity = %d, want 3", got)
+	}
+
+	typedReserved := value.NewHash(map[string]value.Value{})
+	typedReserved.ReserveTypedHashOrder(3)
+	if !typedReserved.HashHasTypedEntries() {
+		t.Fatalf("ReserveTypedHashOrder() left hash legacy-only, want typed entries")
+	}
+	if got := value.HashOrderCapacity(typedReserved); got != 3 {
+		t.Fatalf("ReserveTypedHashOrder() order capacity = %d, want 3", got)
 	}
 
 	hash := value.NewTypedHash(0)
