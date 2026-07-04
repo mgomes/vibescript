@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -151,6 +152,55 @@ func TestFunctionTypedCallMemberArgumentUsesCallReceiverAutoInvoke(t *testing.T)
     `)
 	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(42)) {
 		t.Fatalf("run() = %#v, want 42", got)
+	}
+}
+
+func TestFunctionValueCallUsesStoredInstanceAndClassCallableData(t *testing.T) {
+	t.Parallel()
+	instanceScript := compileScript(t, `
+    def answer
+      42
+    end
+
+    class CallbackBox
+      def initialize(@cb: function)
+      end
+    end
+
+    def run_instance_ivar
+      CallbackBox.new(answer).cb.call
+    end
+    `)
+	if got := callFunc(t, instanceScript, "run_instance_ivar", nil); !got.Equal(NewInt(42)) {
+		t.Fatalf("run_instance_ivar() = %#v, want 42", got)
+	}
+
+	classScript := compileScript(t, `
+    def run_class_var
+      CallbackBox.cb.call
+    end
+    `)
+	callback := NewFunction(&ScriptFunction{
+		Name: "callback",
+		Body: []Statement{&ReturnStmt{
+			Value:    &IntegerLiteral{Value: 43},
+			Position: Position{Line: 1, Column: 1},
+		}},
+	})
+	callbackClass := NewClass(&ClassDef{
+		Name:         "CallbackBox",
+		Methods:      map[string]*ScriptFunction{},
+		ClassMethods: map[string]*ScriptFunction{},
+		ClassVars:    map[string]Value{"cb": callback},
+	})
+	got, err := classScript.Call(context.Background(), "run_class_var", nil, CallOptions{
+		Globals: map[string]Value{"CallbackBox": callbackClass},
+	})
+	if err != nil {
+		t.Fatalf("run_class_var() error = %v, want nil", err)
+	}
+	if !got.Equal(NewInt(43)) {
+		t.Fatalf("run_class_var() = %#v, want 43", got)
 	}
 }
 

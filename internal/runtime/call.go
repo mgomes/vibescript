@@ -1917,6 +1917,12 @@ func memberDataCallable(receiver Value, property string, member Value) bool {
 	case KindObject:
 		data, ok := receiver.Hash()[property]
 		return ok && data.Identical(member)
+	case KindInstance:
+		data, ok := valueInstance(receiver).Ivars[property]
+		return ok && data.Identical(member)
+	case KindClass:
+		data, ok := valueClass(receiver).ClassVars[property]
+		return ok && data.Identical(member)
 	default:
 		return false
 	}
