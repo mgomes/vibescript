@@ -623,6 +623,7 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 	p.nextToken()
 
 	isClassMethod := false
+	isOperatorMethod := false
 	var name string
 	if p.curToken.Type == ast.TokenSelf && p.peekToken.Type == ast.TokenDot {
 		isClassMethod = true
@@ -632,6 +633,13 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		}
 		name = p.curToken.Literal
 		p.nextToken()
+	} else if opName, ok := p.parseOperatorMethodName(); ok {
+		if !p.insideClass {
+			p.addParseError(pos, fmt.Sprintf("operator method %s must be defined in a class", opName))
+			return nil
+		}
+		isOperatorMethod = true
+		name = opName
 	} else {
 		if p.curToken.Type != ast.TokenIdent {
 			p.errorExpected(p.curToken, "function name")
@@ -641,7 +649,7 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		p.nextToken()
 	}
 
-	if p.curToken.Type == ast.TokenAssign {
+	if p.curToken.Type == ast.TokenAssign && (!isOperatorMethod || name == "[]") {
 		name += "="
 		p.nextToken()
 	}
@@ -703,6 +711,31 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 	}
 
 	return &ast.FunctionStmt{Name: name, Params: params, ReturnTy: returnTy, Body: body, IsClassMethod: isClassMethod, Private: private, Position: pos}
+}
+
+// parseOperatorMethodName recognizes a Ruby operator token in def-name
+// position (def +, def <<, def [], def []=) and consumes it, returning the
+// method name the runtime dispatches on. Compound-assignment tokens (+=) and
+// operators the grammar cannot dispatch (|, unary forms) are not accepted. The
+// caller appends "=" for the []= form via the shared setter suffix handling.
+func (p *parser) parseOperatorMethodName() (string, bool) {
+	switch p.curToken.Type {
+	case ast.TokenPlus, ast.TokenMinus, ast.TokenAsterisk, ast.TokenSlash, ast.TokenPercent,
+		ast.TokenPower, ast.TokenShovel, ast.TokenAmpersand, ast.TokenEQ, ast.TokenNotEQ,
+		ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship:
+		name := p.curToken.Literal
+		p.nextToken()
+		return name, true
+	case ast.TokenLBracket:
+		if p.peekToken.Type != ast.TokenRBracket {
+			return "", false
+		}
+		p.nextToken()
+		p.nextToken()
+		return "[]", true
+	default:
+		return "", false
+	}
 }
 
 func (p *parser) parseClassStatement() ast.Statement {

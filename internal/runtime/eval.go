@@ -578,6 +578,17 @@ func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) 
 		return exec.indexArray(e, obj, indices)
 	case KindHash, KindObject:
 		return exec.indexHash(e, obj, indices)
+	case KindInstance:
+		// obj[i, ...] dispatches to a user-defined [] method, mirroring Ruby's
+		// index-read protocol for collection-like classes.
+		fn, ok := instanceOperatorMethod(obj, "[]")
+		if !ok {
+			return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s: %s does not define []", obj.Kind(), valueInstance(obj).Class.Name)
+		}
+		if fn.Private {
+			return NewNil(), exec.errorAt(e.Position, "private method []")
+		}
+		return exec.callOperatorFunction(fn, obj, indices, e.Position)
 	default:
 		return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s", obj.Kind())
 	}
@@ -782,6 +793,11 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 }
 
 func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value, pos Position) (Value, error) {
+	if left.Kind() == KindInstance {
+		if result, handled, err := exec.evalInstanceOperator(operator, left, right, pos); handled {
+			return result, err
+		}
+	}
 	var result Value
 	var err error
 	switch operator {
@@ -858,6 +874,81 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		return NewNil(), exec.wrapError(err, pos)
 	}
 	return result, nil
+}
+
+// instanceOperatorMethod resolves a user-defined operator method (def +,
+// def ==, def []) on an instance receiver's class.
+func instanceOperatorMethod(receiver Value, name string) (*ScriptFunction, bool) {
+	if receiver.Kind() != KindInstance {
+		return nil, false
+	}
+	fn, ok := valueInstance(receiver).Class.Methods[name]
+	return fn, ok
+}
+
+// evalInstanceOperator dispatches a binary operator on an instance receiver to
+// the class's operator method of the same name, mirroring Ruby where `a + b`
+// is `a.+(b)`. Dispatch keys on the left operand only, like Ruby. == and !=
+// keep their universal fallbacks when the class defines no method: != prefers
+// a user !=, then negates a user ==, then falls back to built-in equality, so
+// defining == alone gives a consistent inverse.
+func (exec *Execution) evalInstanceOperator(operator TokenType, left, right Value, pos Position) (Value, bool, error) {
+	switch operator {
+	case tokenPlus, tokenMinus, tokenAsterisk, tokenSlash, tokenPercent, tokenPower,
+		tokenShovel, tokenAmpersand, tokenLT, tokenLTE, tokenGT, tokenGTE, tokenSpaceship:
+		fn, ok := instanceOperatorMethod(left, string(operator))
+		if !ok {
+			return NewNil(), false, nil
+		}
+		val, err := exec.callInstanceOperatorMethod(fn, string(operator), left, right, pos)
+		return val, true, err
+	case tokenEQ:
+		fn, ok := instanceOperatorMethod(left, "==")
+		if !ok {
+			return NewNil(), false, nil
+		}
+		val, err := exec.callInstanceOperatorMethod(fn, "==", left, right, pos)
+		return val, true, err
+	case tokenNotEQ:
+		if fn, ok := instanceOperatorMethod(left, "!="); ok {
+			val, err := exec.callInstanceOperatorMethod(fn, "!=", left, right, pos)
+			return val, true, err
+		}
+		if fn, ok := instanceOperatorMethod(left, "=="); ok {
+			val, err := exec.callInstanceOperatorMethod(fn, "==", left, right, pos)
+			if err != nil {
+				return NewNil(), true, err
+			}
+			return NewBool(!val.Truthy()), true, nil
+		}
+		return NewNil(), false, nil
+	default:
+		return NewNil(), false, nil
+	}
+}
+
+func (exec *Execution) callInstanceOperatorMethod(fn *ScriptFunction, name string, receiver, arg Value, pos Position) (Value, error) {
+	if fn.Private {
+		return NewNil(), exec.errorAt(pos, "private method %s", name)
+	}
+	return exec.callOperatorFunction(fn, receiver, []Value{arg}, pos)
+}
+
+// callOperatorFunction invokes an operator or index method and, like the
+// normal call wrapper, converts a bare break/next escaping the method body
+// into a call-boundary error. Without this, an operator evaluated inside a
+// caller loop would let the signal silently break or continue that loop.
+func (exec *Execution) callOperatorFunction(fn *ScriptFunction, receiver Value, args []Value, pos Position) (Value, error) {
+	val, err := exec.callFunction(fn, receiver, args, nil, NewNil(), pos)
+	if err != nil {
+		if errors.Is(err, errLoopBreak) {
+			return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
+		}
+		if errors.Is(err, errLoopNext) {
+			return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+		}
+	}
+	return val, err
 }
 
 func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Value, error) {
@@ -1589,6 +1680,23 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 			return exec.errorAt(target.IndexPos(0), "%s", err.Error())
 		}
 		return nil
+	case KindInstance:
+		// obj[i, ...] = value dispatches to a user-defined []= method with the
+		// indices followed by the assigned value, mirroring Ruby's index-write
+		// protocol. The method's return value is discarded, as in Ruby, where
+		// the assignment expression always evaluates to the assigned value.
+		fn, ok := instanceOperatorMethod(obj, "[]=")
+		if !ok {
+			return exec.errorAt(target.Object.Pos(), "cannot index %s: %s does not define []=", obj.Kind(), valueInstance(obj).Class.Name)
+		}
+		if fn.Private {
+			return exec.errorAt(target.Position, "private method []=")
+		}
+		args := make([]Value, 0, len(indices)+1)
+		args = append(args, indices...)
+		args = append(args, value)
+		_, err := exec.callOperatorFunction(fn, obj, args, target.Position)
+		return err
 	default:
 		return exec.errorAt(target.Object.Pos(), "cannot index %s", obj.Kind())
 	}
