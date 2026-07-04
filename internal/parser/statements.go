@@ -1404,24 +1404,40 @@ func parameterNameExpectation(kind ast.ParamKind) string {
 }
 
 func (p *parser) parsePropertyDecl(kind ast.TokenType) ast.PropertyDecl {
-	pos := p.curToken.Pos
-	names := []string{}
+	decl := ast.PropertyDecl{Kind: strings.ToLower(string(kind)), Position: p.curToken.Pos}
 	p.nextToken()
-	if p.curToken.Type != ast.TokenIdent {
-		p.errorExpected(p.curToken, "property name")
-		return ast.PropertyDecl{Names: names, Kind: strings.ToLower(string(kind)), Position: pos}
+	name, ok := p.parsePropertyName()
+	if !ok {
+		return decl
 	}
-	names = append(names, p.curToken.Literal)
+	decl.Names = append(decl.Names, name)
 	for p.peekToken.Type == ast.TokenComma {
 		p.nextToken()
 		p.nextToken()
-		if p.curToken.Type != ast.TokenIdent {
-			p.errorExpected(p.curToken, "property name")
+		name, ok := p.parsePropertyName()
+		if !ok {
 			break
 		}
-		names = append(names, p.curToken.Literal)
+		decl.Names = append(decl.Names, name)
 	}
-	return ast.PropertyDecl{Names: names, Kind: strings.ToLower(string(kind)), Position: pos}
+	return decl
+}
+
+func (p *parser) parsePropertyName() (ast.PropertyName, bool) {
+	if p.curToken.Type != ast.TokenIdent {
+		p.errorExpected(p.curToken, "property name")
+		return ast.PropertyName{}, false
+	}
+	name := ast.PropertyName{Name: p.curToken.Literal}
+	if p.peekToken.Type == ast.TokenColon {
+		p.nextToken()
+		p.nextToken()
+		name.Type = p.parseTypeExpr()
+		if name.Type == nil {
+			return ast.PropertyName{}, false
+		}
+	}
+	return name, true
 }
 
 func (p *parser) parseExpressionOrAssignStatement() ast.Statement {

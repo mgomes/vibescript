@@ -133,6 +133,26 @@ When assigning through a member (`obj.name = ...`):
 - If only `name` exists (getter without setter), assignment raises a read-only
   property error.
 
+### Typed accessors
+
+Accessor declarations accept a type annotation, and the generated methods enforce
+the same runtime boundary checks as a handwritten getter or setter. The type binds
+to each name individually, so a comma-separated declaration can mix types:
+
+```vibe
+class User
+  property name: string
+  getter age: int?
+  property x: int, y: int
+end
+```
+
+`property name: string` generates a `name -> string` getter and a
+`name=(value: string)` setter; `getter`/`setter` generate the matching half. A typed
+setter rejects a wrong-typed assignment, and a typed getter enforces its return type
+on read — so reading a property whose backing ivar was never set raises unless the
+type is nullable (e.g. `int?`). Bare accessors without an annotation stay untyped.
+
 ## Privacy
 
 Mark methods private with `private def`:
