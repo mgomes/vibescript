@@ -3201,32 +3201,36 @@ type compoundAssignmentTarget struct {
 
 func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *Env) (compoundAssignmentTarget, error) {
 	if ident, ok := target.(*Identifier); ok {
-		assign := func(value Value) error {
+		assignLocal := func(value Value) error {
+			env.Assign(ident.Name, value)
+			return nil
+		}
+		assignClassConstant := func(value Value) error {
 			return exec.assign(ident, value, env)
 		}
-		if self, ok := classConstantAssignmentSelf(ident.Name, env); ok {
-			current, _ := classConstant(self, ident.Name)
-			return compoundAssignmentTarget{current: current, assign: assign}, nil
-		}
 		if current, exists := env.getOwn(ident.Name); exists {
-			return compoundAssignmentTarget{current: current, assign: assign}, nil
+			return compoundAssignmentTarget{current: current, assign: assignLocal}, nil
 		}
 		if env.rebindOuter && env.parent != nil && env.parent.hasEnclosingLocalBinding(ident.Name) {
 			current, exists := env.Get(ident.Name)
 			if !exists {
 				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)
 			}
-			return compoundAssignmentTarget{current: current, assign: assign}, nil
+			return compoundAssignmentTarget{current: current, assign: assignLocal}, nil
+		}
+		if self, ok := classConstantAssignmentSelf(ident.Name, env); ok {
+			current, _ := classConstant(self, ident.Name)
+			return compoundAssignmentTarget{current: current, assign: assignClassConstant}, nil
 		}
 		if env.parent != nil && env.parent.hasAmbientAssignmentBinding(ident.Name) {
 			current, exists := env.Get(ident.Name)
 			if !exists {
 				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)
 			}
-			return compoundAssignmentTarget{current: current, assign: assign}, nil
+			return compoundAssignmentTarget{current: current, assign: assignLocal}, nil
 		}
 		env.Define(ident.Name, NewNil())
-		return compoundAssignmentTarget{current: NewNil(), assign: assign}, nil
+		return compoundAssignmentTarget{current: NewNil(), assign: assignLocal}, nil
 	}
 
 	current, assign, err := exec.prepareCompoundAssignmentTarget(target, env)

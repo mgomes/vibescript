@@ -106,6 +106,10 @@ end
 
 def maybe(status: status_mod.Status | nil) -> status_mod.Status | nil
   status
+end
+
+def upper(status: Types.Status | nil) -> Types.Status?
+  status
 end`
 
 	got, errs := parseSource(t, source)
@@ -126,6 +130,14 @@ end`
 	}
 	if got := maybeFn.ReturnTy; got.Name != "status_mod.Status | nil" || got.Kind != ast.TypeUnion {
 		t.Fatalf("union return type = %#v, want status_mod.Status | nil", got)
+	}
+
+	upperFn := got.Statements[2].(*ast.FunctionStmt)
+	if got := upperFn.Params[0].Type; got.Name != "Types.Status | nil" || got.Kind != ast.TypeUnion {
+		t.Fatalf("uppercase alias union param type = %#v, want Types.Status | nil", got)
+	}
+	if got := upperFn.ReturnTy; got.Name != "Types.Status" || got.Kind != ast.TypeEnum || !got.Nullable {
+		t.Fatalf("uppercase alias return type = %#v, want nullable Types.Status enum", got)
 	}
 }
 
