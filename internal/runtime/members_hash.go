@@ -216,8 +216,11 @@ func typedExclusionSetBytes(count int) int {
 // entry pair, plus the insertion-order backing (one lookup-key slot per entry
 // behind a slice base) HashSet grows alongside the map.
 func typedHashEntryMapBytes(count int) int {
-	if count <= 0 {
+	if count < 0 {
 		return 0
+	}
+	if count == 0 {
+		return estimatedMapBaseBytes
 	}
 	perEntry := estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
 	return saturatingAdd(estimatedMapBaseBytes+estimatedSliceBaseBytes, saturatingMul(count, perEntry))

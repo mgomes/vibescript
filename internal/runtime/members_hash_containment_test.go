@@ -1679,6 +1679,24 @@ func TestMaxProjectedTypedHashEntriesAgreesWithProjection(t *testing.T) {
 	}
 }
 
+func TestProjectedTypedHashTransformChargesEmptyTypedMap(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeTypedSymbolHash(1)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	projectedBase := probe.projectedHashBaseBytes(receiver, nil, nil, NewNil())
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projectedBase + estimatedMapBaseBytes - 1}
+	if err := exec.checkProjectedTypedHashTransformBytes(0, 0, receiver, nil, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("checkProjectedTypedHashTransformBytes(0) = %v, want memory quota error", err)
+	}
+
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projectedBase + estimatedMapBaseBytes}
+	if err := exec.checkProjectedTypedHashTransformBytes(0, 0, receiver, nil, nil, NewNil()); err != nil {
+		t.Fatalf("checkProjectedTypedHashTransformBytes(0) = %v, want nil", err)
+	}
+}
+
 func TestHashTransformReservationsDoNotMaskRequiredBlock(t *testing.T) {
 	t.Parallel()
 
