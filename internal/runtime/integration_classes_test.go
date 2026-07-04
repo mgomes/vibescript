@@ -268,6 +268,42 @@ end
 	}
 }
 
+func TestExactNamedTypeLookupRespectsLexicalScopeOrder(t *testing.T) {
+	t.Parallel()
+
+	enumDef, err := compileEnumDef(&EnumStmt{
+		Name: "Status",
+		Members: []EnumMemberStmt{
+			{Name: "Draft"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile enum: %v", err)
+	}
+	classDef := &ClassDef{
+		Name:         "Status",
+		Methods:      map[string]*ScriptFunction{},
+		ClassMethods: map[string]*ScriptFunction{},
+		ClassVars:    map[string]Value{},
+	}
+
+	outer := newEnv(nil)
+	outer.DefineStatic("Status", NewEnum(enumDef))
+	inner := newEnv(outer)
+	inner.Define("Status", NewClass(classDef))
+
+	match, ok, err := lookupNamedTypeForType(&TypeExpr{Kind: TypeEnum, Name: "Status"}, typeContext{
+		env:      inner,
+		fallback: inner,
+	})
+	if err != nil {
+		t.Fatalf("lookup Status: %v", err)
+	}
+	if !ok || match.class != classDef || match.enum != nil {
+		t.Fatalf("lookup Status = %#v, ok=%v; want inner class", match, ok)
+	}
+}
+
 func TestCaseInsensitiveClassEnumTypeFallbackIsAmbiguous(t *testing.T) {
 	t.Parallel()
 

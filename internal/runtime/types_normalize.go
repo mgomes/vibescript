@@ -623,21 +623,35 @@ type namedTypeMatch struct {
 }
 
 func lookupNamedTypeForType(ty *TypeExpr, ctx typeContext) (namedTypeMatch, bool, error) {
-	enumDef, ok, err := lookupEnumTypeExact(ty, ctx)
+	match, ok, err := lookupNamedTypeExact(ty, ctx)
 	if err != nil {
 		return namedTypeMatch{}, false, err
 	}
 	if ok {
-		return namedTypeMatch{enum: enumDef}, true, nil
-	}
-	classDef, ok, err := lookupClassTypeExact(ty, ctx)
-	if err != nil {
-		return namedTypeMatch{}, false, err
-	}
-	if ok {
-		return namedTypeMatch{class: classDef}, true, nil
+		return match, true, nil
 	}
 	return lookupNamedTypeFold(ty, ctx)
+}
+
+func lookupNamedTypeExact(ty *TypeExpr, ctx typeContext) (namedTypeMatch, bool, error) {
+	if ty == nil {
+		return namedTypeMatch{}, false, fmt.Errorf("unknown type")
+	}
+	if ty.Kind != TypeEnum {
+		return namedTypeMatch{}, false, fmt.Errorf("unknown type %s", ty.Name)
+	}
+	match, ok := lookupNamedTypeInEnvExact(ctx.env, ty.Name)
+	if ok {
+		return match, true, nil
+	}
+	if ctx.fallback != ctx.env {
+		match, ok = lookupNamedTypeInEnvExact(ctx.fallback, ty.Name)
+		if ok {
+			return match, true, nil
+		}
+	}
+	match = lookupNamedTypeDefExact(ctx.owner, ty.Name)
+	return match, match.enum != nil || match.class != nil, nil
 }
 
 func lookupNamedTypeFold(ty *TypeExpr, ctx typeContext) (namedTypeMatch, bool, error) {
@@ -658,30 +672,6 @@ func lookupNamedTypeFold(ty *TypeExpr, ctx typeContext) (namedTypeMatch, bool, e
 		}
 	}
 	return lookupNamedTypeDefFold(ctx.owner, ty.Name)
-}
-
-func lookupEnumTypeExact(ty *TypeExpr, ctx typeContext) (*EnumDef, bool, error) {
-	if ty == nil {
-		return nil, false, fmt.Errorf("unknown type")
-	}
-	if ty.Kind != TypeEnum {
-		return nil, false, fmt.Errorf("unknown type %s", ty.Name)
-	}
-	enumDef, ok := lookupEnumInEnvExact(ctx.env, ty.Name)
-	if ok {
-		return enumDef, true, nil
-	}
-	if ctx.fallback != ctx.env {
-		enumDef, ok = lookupEnumInEnvExact(ctx.fallback, ty.Name)
-		if ok {
-			return enumDef, true, nil
-		}
-	}
-	enumDef, ok = lookupEnumDefExact(ctx.owner, ty.Name)
-	if ok {
-		return enumDef, true, nil
-	}
-	return nil, false, nil
 }
 
 func validateTypeExprResolved(ty *TypeExpr, ctx typeContext) error {
@@ -722,15 +712,6 @@ func lookupEnumDefExact(owner *Script, name string) (*EnumDef, bool) {
 	return enumDef, ok
 }
 
-func lookupEnumInEnvExact(env *Env, name string) (*EnumDef, bool) {
-	for scope := env; scope != nil; scope = scope.parent {
-		if val, ok := scope.getOwn(name); ok && val.Kind() == KindEnum {
-			return valueEnum(val), true
-		}
-	}
-	return nil, false
-}
-
 func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool, error) {
 	for scope := env; scope != nil; scope = scope.parent {
 		if enumDef, ok, err := lookupEnumInScope(scope, name); err != nil {
@@ -749,6 +730,30 @@ func lookupNamedTypeInEnvFold(env *Env, name string) (namedTypeMatch, bool, erro
 		}
 	}
 	return namedTypeMatch{}, false, nil
+}
+
+func lookupNamedTypeInEnvExact(env *Env, name string) (namedTypeMatch, bool) {
+	for scope := env; scope != nil; scope = scope.parent {
+		if match, ok := lookupNamedTypeInScopeExact(scope, name); ok {
+			return match, true
+		}
+	}
+	return namedTypeMatch{}, false
+}
+
+func lookupNamedTypeInScopeExact(scope *Env, name string) (namedTypeMatch, bool) {
+	val, ok := scope.getOwn(name)
+	if !ok {
+		return namedTypeMatch{}, false
+	}
+	switch val.Kind() {
+	case KindEnum:
+		return namedTypeMatch{enum: valueEnum(val)}, true
+	case KindClass:
+		return namedTypeMatch{class: valueClass(val)}, true
+	default:
+		return namedTypeMatch{}, false
+	}
 }
 
 // lookupEnumInScope considers a scope's dynamic and static bindings as
@@ -859,6 +864,16 @@ func lookupClassDefExact(owner *Script, name string) (*ClassDef, bool) {
 	}
 	classDef, ok := owner.classes[name]
 	return classDef, ok
+}
+
+func lookupNamedTypeDefExact(owner *Script, name string) namedTypeMatch {
+	if classDef, ok := lookupClassDefExact(owner, name); ok {
+		return namedTypeMatch{class: classDef}
+	}
+	if enumDef, ok := lookupEnumDefExact(owner, name); ok {
+		return namedTypeMatch{enum: enumDef}
+	}
+	return namedTypeMatch{}
 }
 
 func lookupClassInEnvExact(env *Env, name string) (*ClassDef, bool) {
