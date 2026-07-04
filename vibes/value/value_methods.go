@@ -54,6 +54,8 @@ func (k ValueKind) String() string {
 		return "class"
 	case KindInstance:
 		return "instance"
+	case KindRegex:
+		return "regex"
 	default:
 		return fmt.Sprintf("kind(%d)", int(k))
 	}
@@ -106,6 +108,8 @@ func (v Value) String() string {
 		return v.Duration().String()
 	case KindTime:
 		return v.data.(time.Time).Format(time.RFC3339Nano)
+	case KindRegex:
+		return v.data.(Regex).String()
 	case KindArray, KindHash:
 		var buf strings.Builder
 		state := newValueStringState()
@@ -1171,6 +1175,13 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 		return v.data.(time.Time).Equal(other.data.(time.Time))
 	case KindRange:
 		return v.data.(Range) == other.data.(Range)
+	case KindRegex:
+		// Two regex values are equal when they were written the same way:
+		// same pattern source and same flags, mirroring Ruby's Regexp#==.
+		// The compiled program is derived from those and does not participate.
+		left := v.data.(Regex)
+		right := other.data.(Regex)
+		return left.Source == right.Source && left.Flags == right.Flags
 	case KindArray:
 		left := v.Array()
 		right := other.Array()

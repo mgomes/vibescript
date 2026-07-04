@@ -999,9 +999,9 @@ func TestStringSubGsubLiteralBlockIgnoresPatternCap(t *testing.T) {
 			yield := func(string) (string, error) { return "R", nil }
 			got, matched, err := func() (string, bool, error) {
 				if tc.global {
-					return stringGSubBlock("string.gsub", text, bigPattern, false, yield)
+					return stringGSubBlock("string.gsub", text, bigPattern, false, false, yield)
 				}
-				return stringSubBlock("string.sub", text, bigPattern, false, yield)
+				return stringSubBlock("string.sub", text, bigPattern, false, false, yield)
 			}()
 			if err != nil {
 				t.Fatalf("literal block over pattern cap = %v, want success", err)

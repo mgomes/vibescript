@@ -1226,9 +1226,18 @@ Math.hypot(3, 4) # 5.0
 Note the argument order: `match` takes the pattern first, while the replace
 helpers take the text first.
 
-Regex patterns are quoted strings. Ruby-style `/pattern/` regex literals are
-not supported.
+Regex patterns are quoted strings or Ruby-style `/pattern/flags` regex
+literals. A literal produces a regex value usable with the `=~` and `!~` match
+operators (`"abc" =~ /b/` is the character index `1`, or `nil` when there is
+no match), `case`/`when` matching, and the string pattern helpers. Supported
+flags are `i` (case-insensitive) and `m` (`.` matches newlines).
 
+- `regex.source -> string` / `regex.flags -> string` – the literal's parts.
+- `regex.match(text) -> match data | nil` – match data with `captures`,
+  `pre_match`, `post_match`, `begin`, and `end`, indexable with `m[0]`/`m[1]`.
+- `regex.match?(text) -> bool` – whether the pattern matches.
+- `Regexp.new(pattern) -> regex` / `Regexp.union(parts...) -> regex` – build
+  regex values from strings.
 - `Regex.match(pattern, text) -> string | nil` – first match, or `nil`.
 - `Regex.replace(text, pattern, replacement) -> string` – replace the first
   match; `replacement` supports `$1` style group expansion.

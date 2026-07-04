@@ -36,6 +36,7 @@ const (
 	TokenSymbols            TokenType = "SYMBOLS"
 	TokenInterpWords        TokenType = "INTERP_WORDS"
 	TokenInterpSymbols      TokenType = "INTERP_SYMBOLS"
+	TokenRegex              TokenType = "REGEX"
 
 	TokenAssign         TokenType = "="
 	TokenPlusAssign     TokenType = "+="
@@ -63,6 +64,8 @@ const (
 	TokenEQ             TokenType = "=="
 	TokenCaseEQ         TokenType = "==="
 	TokenNotEQ          TokenType = "!="
+	TokenMatch          TokenType = "=~"
+	TokenNotMatch       TokenType = "!~"
 	TokenAnd            TokenType = "&&"
 	TokenOr             TokenType = "||"
 	TokenWordAnd        TokenType = "AND"

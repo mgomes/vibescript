@@ -1878,7 +1878,7 @@ func arrayPredicate(exec *Execution, receiver Value, args []Value, kwargs map[st
 	if len(args) == 1 {
 		pattern := args[0]
 		return arrayPredicateResult(kind, arr, func(item Value) (bool, error) {
-			return caseCandidateMatches(item, pattern), nil
+			return caseCandidateMatches(item, pattern)
 		})
 	}
 	if valueBlock(block) != nil {
@@ -2508,7 +2508,11 @@ func arrayMemberGrep(property string) (Value, error) {
 		out := make([]Value, 0, len(arr))
 		var blockArg [1]Value
 		for _, item := range arr {
-			if caseCandidateMatches(item, pattern) != keep {
+			matched, err := caseCandidateMatches(item, pattern)
+			if err != nil {
+				return NewNil(), err
+			}
+			if matched != keep {
 				continue
 			}
 			if runner == nil {

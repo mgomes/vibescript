@@ -1983,6 +1983,16 @@ func (est *memoryEstimator) value(val Value) int {
 		str := val.String()
 		size += estimatedStringHeaderBytes
 		size += est.stringPayloadSize(str)
+	case KindRegex:
+		// A regex value retains its pattern source and flag strings plus a
+		// compiled RE2 program. The program's exact footprint is not cheaply
+		// knowable, so it is approximated by the source it was compiled from,
+		// which the pattern-size guard bounds at compile time.
+		regex := val.Regex()
+		size += 2 * estimatedStringHeaderBytes
+		size += est.stringPayloadSize(regex.Source)
+		size += est.stringPayloadSize(regex.Flags)
+		size += len(regex.Source)
 	case KindArray:
 		size += est.slice(val.Array())
 	case KindHash:

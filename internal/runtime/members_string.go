@@ -1535,8 +1535,15 @@ func stringRegexOption(method string, kwargs map[string]Value) (bool, error) {
 	return regexVal.Bool(), nil
 }
 
-func validateRegexTextPattern(method, text, pattern string) error {
-	if len(pattern) > maxRegexPatternSize {
+// validateRegexTextPattern enforces the sandbox size guards before a string
+// helper compiles and runs a regex. patternIsRegex reports that pattern is the
+// flag-decorated form of a regex value: those values already had their source
+// length checked at construction (compileRegexValue), so re-checking the
+// decorated form here would count the internal (?i)/(?s) flag prefix against
+// the pattern budget and reject a value that =~ accepts. A plain-string pattern
+// is compiled fresh, so it is still length-checked.
+func validateRegexTextPattern(method, text, pattern string, patternIsRegex bool) error {
+	if !patternIsRegex && len(pattern) > maxRegexPatternSize {
 		return guardLimitErrorf("%s pattern exceeds limit %d bytes", method, maxRegexPatternSize)
 	}
 	if len(text) > maxRegexInputBytes {
@@ -1713,7 +1720,7 @@ func validateLiteralReplacement(method, text, pattern, replacement string, all b
 	return true, nil
 }
 
-func stringSub(method, text, pattern, replacement string, regex bool) (string, bool, error) {
+func stringSub(method, text, pattern, replacement string, regex, patternIsRegex bool) (string, bool, error) {
 	if !regex {
 		matched, err := validateLiteralReplacement(method, text, pattern, replacement, false)
 		if err != nil {
@@ -1724,7 +1731,7 @@ func stringSub(method, text, pattern, replacement string, regex bool) (string, b
 		}
 		return strings.Replace(text, pattern, replacement, 1), matched, nil
 	}
-	if err := validateRegexTextPattern(method, text, pattern); err != nil {
+	if err := validateRegexTextPattern(method, text, pattern, patternIsRegex); err != nil {
 		return "", false, err
 	}
 	if err := validateRegexReplacement(method, replacement); err != nil {
@@ -1737,7 +1744,7 @@ func stringSub(method, text, pattern, replacement string, regex bool) (string, b
 	return rubyRegexSub(re, text, replacement, method)
 }
 
-func stringGSub(method, text, pattern, replacement string, regex bool) (string, bool, error) {
+func stringGSub(method, text, pattern, replacement string, regex, patternIsRegex bool) (string, bool, error) {
 	if !regex {
 		matched, err := validateLiteralReplacement(method, text, pattern, replacement, true)
 		if err != nil {
@@ -1748,7 +1755,7 @@ func stringGSub(method, text, pattern, replacement string, regex bool) (string, 
 		}
 		return strings.ReplaceAll(text, pattern, replacement), matched, nil
 	}
-	if err := validateRegexTextPattern(method, text, pattern); err != nil {
+	if err := validateRegexTextPattern(method, text, pattern, patternIsRegex); err != nil {
 		return "", false, err
 	}
 	if err := validateRegexReplacement(method, replacement); err != nil {
@@ -1768,8 +1775,8 @@ func stringGSub(method, text, pattern, replacement string, regex bool) (string, 
 // template path, including for patterns that hold invalid UTF-8 (which Go's
 // regexp engine rejects). The pattern and text are size-checked first so an
 // oversized subject or pattern is rejected before compilation.
-func compileStringPatternRegex(method, text, pattern string) (*regexp.Regexp, error) {
-	if err := validateRegexTextPattern(method, text, pattern); err != nil {
+func compileStringPatternRegex(method, text, pattern string, patternIsRegex bool) (*regexp.Regexp, error) {
+	if err := validateRegexTextPattern(method, text, pattern, patternIsRegex); err != nil {
 		return nil, err
 	}
 	re, err := compileCachedRegex(pattern)
@@ -1790,11 +1797,11 @@ func compileStringPatternRegex(method, text, pattern string) (*regexp.Regexp, er
 // patterns and subjects that hold invalid UTF-8. The literal path imposes none of
 // the regex-only pattern/input size caps, matching the literal template form
 // (strings.Replace), which has no such limits; only the regex form validates.
-func stringSubBlock(method, text, pattern string, regex bool, yield func(match string) (string, error)) (string, bool, error) {
+func stringSubBlock(method, text, pattern string, regex, patternIsRegex bool, yield func(match string) (string, error)) (string, bool, error) {
 	if !regex {
 		return literalBlockReplace(text, pattern, false, yield)
 	}
-	re, err := compileStringPatternRegex(method, text, pattern)
+	re, err := compileStringPatternRegex(method, text, pattern, patternIsRegex)
 	if err != nil {
 		return "", false, err
 	}
@@ -1813,11 +1820,11 @@ func stringSubBlock(method, text, pattern string, regex bool, yield func(match s
 // patterns and subjects that hold invalid UTF-8. The literal path imposes none of
 // the regex-only pattern/input size caps, matching the literal template form
 // (strings.ReplaceAll), which has no such limits; only the regex form validates.
-func stringGSubBlock(method, text, pattern string, regex bool, yield func(match string) (string, error)) (string, bool, error) {
+func stringGSubBlock(method, text, pattern string, regex, patternIsRegex bool, yield func(match string) (string, error)) (string, bool, error) {
 	if !regex {
 		return literalBlockReplace(text, pattern, true, yield)
 	}
-	re, err := compileStringPatternRegex(method, text, pattern)
+	re, err := compileStringPatternRegex(method, text, pattern, patternIsRegex)
 	if err != nil {
 		return "", false, err
 	}
@@ -1900,11 +1907,21 @@ func stringReplaceResult(
 	if len(args) < 1 {
 		return "", false, fmt.Errorf("%s expects a pattern", method)
 	}
-	if args[0].Kind() != KindString {
-		return "", false, fmt.Errorf("%s pattern must be string", method)
+	pattern, patternIsRegex, err := stringPatternArgument(method, args[0])
+	if err != nil {
+		return "", false, err
+	}
+	if patternIsRegex {
+		// A regex pattern selects regex matching by itself; the regex keyword
+		// exists only to opt a plain-string pattern into regex mode, so mixing
+		// the two would let them silently disagree (regex: false with a regex
+		// pattern has no sensible meaning).
+		if _, present := kwargs["regex"]; present {
+			return "", false, fmt.Errorf("%s does not take the regex keyword with a regex pattern", method)
+		}
+		regex = true
 	}
 	text := receiver.String()
-	pattern := args[0].String()
 
 	if valueBlock(block) != nil {
 		if len(args) != 1 {
@@ -1916,9 +1933,9 @@ func stringReplaceResult(
 		}
 		yield := stringReplaceBlockYield(exec, runner)
 		if global {
-			return stringGSubBlock(method, text, pattern, regex, yield)
+			return stringGSubBlock(method, text, pattern, regex, patternIsRegex, yield)
 		}
-		return stringSubBlock(method, text, pattern, regex, yield)
+		return stringSubBlock(method, text, pattern, regex, patternIsRegex, yield)
 	}
 
 	if len(args) != 2 {
@@ -1928,9 +1945,9 @@ func stringReplaceResult(
 		return "", false, fmt.Errorf("%s replacement must be string", method)
 	}
 	if global {
-		return stringGSub(method, text, pattern, args[1].String(), regex)
+		return stringGSub(method, text, pattern, args[1].String(), regex, patternIsRegex)
 	}
-	return stringSub(method, text, pattern, args[1].String(), regex)
+	return stringSub(method, text, pattern, args[1].String(), regex, patternIsRegex)
 }
 
 // stringReplaceBangResult builds the return value for String#sub! and
@@ -2577,7 +2594,7 @@ func stringTemplateLookup(context Value, keyPath string) (Value, bool) {
 
 func stringTemplateScalarValue(value Value, keyPath string) (string, error) {
 	switch value.Kind() {
-	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindTime:
+	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindTime, KindRegex:
 		return value.String(), nil
 	case KindEnumValue:
 		member := valueEnumValue(value)
@@ -3143,12 +3160,12 @@ func stringMemberQuery(property string) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("string.match expects a pattern and optional offset")
 			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.match pattern must be string")
+			pattern, patternIsRegex, err := stringPatternArgument("string.match", args[0])
+			if err != nil {
+				return NewNil(), err
 			}
-			pattern := args[0].String()
 			text := receiver.String()
-			if err := validateRegexTextPattern("string.match", text, pattern); err != nil {
+			if err := validateRegexTextPattern("string.match", text, pattern, patternIsRegex); err != nil {
 				return NewNil(), err
 			}
 			// Ruby counts a negative offset back from the end of the string; an
@@ -3210,8 +3227,8 @@ func stringMemberQuery(property string) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("string.match? expects a pattern and optional offset")
 			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.match? pattern must be string")
+			if _, _, err := stringPatternArgument("string.match?", args[0]); err != nil {
+				return NewNil(), err
 			}
 			offset := 0
 			if len(args) == 2 {
@@ -3221,9 +3238,12 @@ func stringMemberQuery(property string) (Value, error) {
 				}
 				offset = i
 			}
-			pattern := args[0].String()
+			pattern, patternIsRegex, err := stringPatternArgument("string.match?", args[0])
+			if err != nil {
+				return NewNil(), err
+			}
 			text := receiver.String()
-			if err := validateRegexTextPattern("string.match?", text, pattern); err != nil {
+			if err := validateRegexTextPattern("string.match?", text, pattern, patternIsRegex); err != nil {
 				return NewNil(), err
 			}
 			matched, err := regexMatchFromRuneOffset("string.match?", text, pattern, offset)
@@ -3240,12 +3260,12 @@ func stringMemberQuery(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("string.scan expects exactly one pattern")
 			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.scan pattern must be string")
+			pattern, patternIsRegex, err := stringPatternArgument("string.scan", args[0])
+			if err != nil {
+				return NewNil(), err
 			}
-			pattern := args[0].String()
 			text := receiver.String()
-			if err := validateRegexTextPattern("string.scan", text, pattern); err != nil {
+			if err := validateRegexTextPattern("string.scan", text, pattern, patternIsRegex); err != nil {
 				return NewNil(), err
 			}
 			re, err := compileCachedRegex(pattern)

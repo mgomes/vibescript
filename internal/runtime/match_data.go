@@ -102,45 +102,6 @@ func matchDataIndex(obj, index Value) (Value, bool, error) {
 	return captures[i], true, nil
 }
 
-func newRegexpObject(pattern string) (Value, error) {
-	if len(pattern) > maxRegexPatternSize {
-		return NewNil(), guardLimitErrorf("Regexp.new pattern exceeds limit %d bytes", maxRegexPatternSize)
-	}
-	if _, err := compileCachedRegex(pattern); err != nil {
-		return NewNil(), fmt.Errorf("Regexp.new invalid regex: %w", err)
-	}
-	patternValue := NewString(pattern)
-	return NewObject(map[string]Value{
-		"source": patternValue,
-		"match": NewCapturingBuiltin("regexp.match", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(kwargs) > 0 {
-				return NewNil(), fmt.Errorf("regexp.match does not accept keyword arguments")
-			}
-			if !block.IsNil() {
-				return NewNil(), fmt.Errorf("regexp.match does not accept blocks")
-			}
-			if len(args) != 1 {
-				return NewNil(), fmt.Errorf("regexp.match expects text")
-			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("regexp.match text must be string")
-			}
-			text := args[0].String()
-			if err := validateRegexTextPattern("regexp.match", text, pattern); err != nil {
-				return NewNil(), err
-			}
-			indices, err := regexSubmatchFromRuneOffset("regexp.match", text, pattern, 0)
-			if err != nil {
-				return NewNil(), err
-			}
-			if indices == nil {
-				return NewNil(), nil
-			}
-			return newMatchData(text, indices), nil
-		}, patternValue),
-	}), nil
-}
-
 func regexpUnionPattern(args []Value) (string, error) {
 	if len(args) == 0 {
 		// A never-matching pattern (Ruby returns /(?!)/). Go's RE2 engine rejects
