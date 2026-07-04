@@ -359,6 +359,10 @@ type callFunctionRebinder struct {
 	// caching the clone keeps aliases of one bound predicate identical across the
 	// host boundary.
 	seenBoundBuiltins map[*Builtin]Value
+	// seenDirectCallAliases caches rebuilt function.call/block.call aliases keyed
+	// on the source builtin pointer, so an escaped alias reachable through
+	// several inbound paths keeps builtin identity after rebinding.
+	seenDirectCallAliases map[*Builtin]Value
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -400,6 +404,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			r.seenBoundBuiltins[builtin] = clone
 			reboundReceiver := r.rebindValue(builtin.BoundReceiver.receiver.value)
 			setBoundReceiver(valueBuiltin(clone), clonedCell, reboundReceiver)
+			return clone
+		}
+		if clone, ok := r.rebindDirectCallAlias(builtin); ok {
 			return clone
 		}
 		// A capability copied into a local (for example `cap = jobs` captured by a
@@ -624,6 +631,36 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	default:
 		return val
 	}
+}
+
+func (r *callFunctionRebinder) rebindDirectCallAlias(builtin *Builtin) (Value, bool) {
+	if !builtin.DirectCallAlias || len(builtin.CapturedValues) != 1 {
+		return NewNil(), false
+	}
+	if clone, ok := r.seenDirectCallAliases[builtin]; ok {
+		return clone, true
+	}
+	reboundTarget := r.rebindValue(builtin.CapturedValues[0])
+	var clone Value
+	switch builtin.Name {
+	case functionCallBuiltinName:
+		if reboundTarget.Kind() != KindFunction {
+			return NewNil(), false
+		}
+		clone = newFunctionCallAlias(reboundTarget, builtin.DirectCallAliasPos)
+	case blockCallBuiltinName:
+		if reboundTarget.Kind() != KindBlock {
+			return NewNil(), false
+		}
+		clone = newBlockCallAlias(reboundTarget, builtin.DirectCallAliasPos)
+	default:
+		return NewNil(), false
+	}
+	if r.seenDirectCallAliases == nil {
+		r.seenDirectCallAliases = make(map[*Builtin]Value)
+	}
+	r.seenDirectCallAliases[builtin] = clone
+	return clone, true
 }
 
 // rebindCapturedEnv re-roots the captured environment of an escaped closure onto

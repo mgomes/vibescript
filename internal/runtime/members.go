@@ -229,7 +229,10 @@ var functionMemberNames = []string{"call"}
 
 var blockMemberNames = []string{"call"}
 
-const blockCallBuiltinName = "block.call"
+const (
+	functionCallBuiltinName = "function.call"
+	blockCallBuiltinName    = "block.call"
+)
 
 // functionMember resolves member access on a script function value. Only
 // `call` is supported: it returns a builtin that invokes the underlying
@@ -240,28 +243,38 @@ func (exec *Execution) functionMember(obj Value, property string, pos Position) 
 	if property != "call" {
 		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, functionMemberNames))
 	}
+	return newFunctionCallAlias(obj, pos), nil
+}
+
+func newFunctionCallAlias(obj Value, pos Position) Value {
 	fn := valueFunction(obj)
-	caller := NewCapturingBuiltin("function.call", func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	caller := NewCapturingBuiltin(functionCallBuiltinName, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
 	}, obj)
 	callerBuiltin := valueBuiltin(caller)
 	callerBuiltin.AutoInvoke = true
 	callerBuiltin.OptionsHashTarget = fn
 	callerBuiltin.DirectCallAlias = true
-	return caller, nil
+	callerBuiltin.DirectCallAliasPos = pos
+	return caller
 }
 
 func (exec *Execution) blockMember(obj Value, property string, pos Position) (Value, error) {
 	if property != "call" {
 		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, blockMemberNames))
 	}
+	return newBlockCallAlias(obj, pos), nil
+}
+
+func newBlockCallAlias(obj Value, pos Position) Value {
 	caller := NewCapturingBuiltin(blockCallBuiltinName, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
 	}, obj)
 	callerBuiltin := valueBuiltin(caller)
 	callerBuiltin.AutoInvoke = true
 	callerBuiltin.DirectCallAlias = true
-	return caller, nil
+	callerBuiltin.DirectCallAliasPos = pos
+	return caller
 }
 
 func (exec *Execution) classMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {

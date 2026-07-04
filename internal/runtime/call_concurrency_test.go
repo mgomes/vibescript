@@ -210,6 +210,45 @@ end`)
 	}
 }
 
+func TestScriptCallRebindsEscapedFunctionCallAliasToCurrentCallEnv(t *testing.T) {
+	script := compileScriptDefault(t, `def format_tenant(value)
+  tenant + "-" + value
+end
+
+def export_fn
+  format_tenant
+end
+
+def run_with(alias, value)
+  alias(value)
+end`)
+
+	exported, err := script.Call(context.Background(), "export_fn", nil, CallOptions{
+		Globals: map[string]Value{
+			"tenant": NewString("first"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("export_fn failed: %v", err)
+	}
+	if exported.Kind() != KindFunction {
+		t.Fatalf("expected function result, got %#v", exported)
+	}
+	alias := newFunctionCallAlias(exported, Position{})
+
+	result, err := script.Call(context.Background(), "run_with", []Value{alias, NewString("value")}, CallOptions{
+		Globals: map[string]Value{
+			"tenant": NewString("second"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("run_with failed: %v", err)
+	}
+	if result.Kind() != KindString || result.String() != "second-value" {
+		t.Fatalf("escaped function.call alias used stale call env: %#v", result)
+	}
+}
+
 func TestScriptCallRebindingDoesNotMutateSharedArgMaps(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		script := compileScriptDefault(t, `def format_tenant(value)
