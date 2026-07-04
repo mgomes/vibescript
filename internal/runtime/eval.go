@@ -1711,6 +1711,22 @@ func isConstantIdentifier(name string) bool {
 	return r != utf8.RuneError && unicode.IsUpper(r)
 }
 
+func isClassConstantAssignmentName(name string, env *Env) bool {
+	_, ok := classConstantAssignmentSelf(name, env)
+	return ok
+}
+
+func classConstantAssignmentSelf(name string, env *Env) (Value, bool) {
+	if env == nil || !isConstantIdentifier(name) {
+		return Value{}, false
+	}
+	self, ok := env.Get("self")
+	if !ok || self.Kind() != KindClass {
+		return Value{}, false
+	}
+	return self, true
+}
+
 func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Value) error {
 	switch obj.Kind() {
 	case KindHash, KindObject:
@@ -2706,6 +2722,9 @@ func predeclareLocalBindingsFromStatements(stmts []Statement, env *Env) {
 	var collector localBindingCollector
 	collectLocalBindingNames(stmts, &collector)
 	for _, name := range collector.names {
+		if isClassConstantAssignmentName(name, env) {
+			continue
+		}
 		env.PredeclareAssignmentLocal(name)
 	}
 }
@@ -2789,6 +2808,9 @@ func collectTargetBindingNames(target Expression, collector *localBindingCollect
 func predeclareTargetBindingNames(target Expression, env *Env) {
 	switch t := target.(type) {
 	case *Identifier:
+		if isClassConstantAssignmentName(t.Name, env) {
+			return
+		}
 		env.PredeclareLocal(t.Name)
 	case *DestructureTarget:
 		for _, element := range t.Elements {
@@ -2800,6 +2822,9 @@ func predeclareTargetBindingNames(target Expression, env *Env) {
 func predeclareDirectAssignmentTargetBindingNames(target, value Expression, env *Env) {
 	switch t := target.(type) {
 	case *Identifier:
+		if isClassConstantAssignmentName(t.Name, env) {
+			return
+		}
 		env.PredeclareAssignmentLocal(t.Name)
 	case *DestructureTarget:
 		for _, element := range t.Elements {
@@ -3177,8 +3202,11 @@ type compoundAssignmentTarget struct {
 func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *Env) (compoundAssignmentTarget, error) {
 	if ident, ok := target.(*Identifier); ok {
 		assign := func(value Value) error {
-			env.Assign(ident.Name, value)
-			return nil
+			return exec.assign(ident, value, env)
+		}
+		if self, ok := classConstantAssignmentSelf(ident.Name, env); ok {
+			current, _ := classConstant(self, ident.Name)
+			return compoundAssignmentTarget{current: current, assign: assign}, nil
 		}
 		if current, exists := env.getOwn(ident.Name); exists {
 			return compoundAssignmentTarget{current: current, assign: assign}, nil

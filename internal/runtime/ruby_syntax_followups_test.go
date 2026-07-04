@@ -169,6 +169,37 @@ end
 	compareArrays(t, callFunc(t, script, "invalid_message_order", nil), want)
 }
 
+func TestClassConstantAssignmentsDoNotCreateShadowingLocals(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+class ConstantFlow
+  LIMIT = 10
+  LIMIT += 2
+  LIMIT &&= LIMIT + 1
+  DEFAULT ||= 7
+  COPY = LIMIT
+
+  def self.touch()
+    COPY &&= LIMIT + DEFAULT
+    FRESH ||= COPY + 1
+    nil
+  end
+end
+
+def run()
+  ConstantFlow.touch()
+  [ConstantFlow::LIMIT, ConstantFlow::COPY, ConstantFlow::DEFAULT, ConstantFlow::FRESH]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "run", nil), []Value{
+		NewInt(13),
+		NewInt(20),
+		NewInt(7),
+		NewInt(21),
+	})
+}
+
 func TestSymbolTypeAnnotations(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
