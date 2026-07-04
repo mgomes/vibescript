@@ -1514,6 +1514,9 @@ func (p *parser) dottedTypeAnnotationFollows(options paramParseOptions) bool {
 
 	p.nextToken()
 	namespace := p.curToken.Literal
+	if p.isLocalName(namespace) {
+		return false
+	}
 	p.nextToken()
 	if p.peekToken.Type != ast.TokenIdent {
 		return false
