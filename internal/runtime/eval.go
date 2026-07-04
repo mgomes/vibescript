@@ -3009,7 +3009,8 @@ func statementContainsBypassableIdentifierCall(stmt Statement, name string) bool
 	case *ReturnStmt:
 		return expressionContainsBypassableIdentifierCall(t.Value, name)
 	case *RaiseStmt:
-		return expressionContainsBypassableIdentifierCall(t.Value, name)
+		return expressionContainsBypassableIdentifierCall(t.Value, name) ||
+			expressionContainsBypassableIdentifierCall(t.Message, name)
 	case *BreakStmt:
 		return expressionContainsBypassableIdentifierCall(t.Value, name)
 	case *NextStmt:
@@ -3429,7 +3430,7 @@ func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value,
 func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, bool, error) {
 	if stmt.Value != nil {
 		if stmt.Message != nil {
-			errorType, staticErrorType := raiseErrorTypeName(stmt.Value)
+			errorType, staticErrorType := raiseErrorTypeName(stmt.Value, env)
 			val := NewNil()
 			if !staticErrorType {
 				var err error
@@ -3487,10 +3488,18 @@ func raiseErrorType(val Value) (string, bool) {
 	return "", false
 }
 
-func raiseErrorTypeName(expr Expression) (string, bool) {
+func raiseErrorTypeName(expr Expression, env *Env) (string, bool) {
 	ident, ok := expr.(*Identifier)
 	if !ok || !isConstantIdentifier(ident.Name) {
 		return "", false
+	}
+	if _, ok := env.Get(ident.Name); ok {
+		return "", false
+	}
+	if self, ok := env.Get("self"); ok && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+		if _, ok := classConstant(self, ident.Name); ok {
+			return "", false
+		}
 	}
 	return ast.CanonicalRuntimeErrorType(ident.Name)
 }

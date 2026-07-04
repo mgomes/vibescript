@@ -242,6 +242,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.collectRequiredModuleExportsFromExpression(typed.Value)
 	case *RaiseStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Value)
+		c.collectRequiredModuleExportsFromExpression(typed.Message)
 	case *BreakStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Value)
 	case *AssignStmt:
@@ -1581,6 +1582,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkExpression(function, typed.Value)
 	case *RaiseStmt:
 		c.checkExpression(function, typed.Value)
+		c.checkExpression(function, typed.Message)
+		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
+		c.collectRuntimeRequireCallExportsFromExpression(typed.Message)
 	case *BreakStmt:
 		c.checkExpression(function, typed.Value)
 	case *AssignStmt:
@@ -2325,7 +2329,8 @@ func (c *scriptChecker) statementMayEvaluateCallBlock(stmt Statement, seen map[*
 	case *ReturnStmt:
 		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
 	case *RaiseStmt:
-		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
+		return c.expressionMayEvaluateCallBlock(typed.Value, seen) ||
+			c.expressionMayEvaluateCallBlock(typed.Message, seen)
 	case *BreakStmt:
 		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
 	case *AssignStmt:
