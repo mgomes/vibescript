@@ -266,3 +266,38 @@ end`)
 	requireCallErrorContains(t, script, "loop_with_index_read", nil, CallOptions{}, "next cannot cross call boundary")
 	requireCallErrorContains(t, script, "loop_with_index_write", nil, CallOptions{}, "break cannot cross call boundary")
 }
+
+// TestSlashOperatorMethodDefinition pins that def / parses: the lexer must
+// not read the slash after def as a regex-literal opener, and division syntax
+// dispatches to the method. Regex literals elsewhere are unaffected.
+func TestSlashOperatorMethodDefinition(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `class Ratio
+  def initialize(n)
+    @n = n
+  end
+  def n
+    @n
+  end
+  def /(other)
+    Ratio.new(n / other.n)
+  end
+end
+
+def divide
+  (Ratio.new(10) / Ratio.new(2)).n
+end
+
+def regex_unaffected(text)
+  text =~ /[0-9]+/
+end`)
+
+	ctx := context.Background()
+	if got := callScript(t, ctx, script, "divide", nil, CallOptions{}); got.Kind() != KindInt || got.Int() != 5 {
+		t.Fatalf("Ratio / Ratio = %v, want 5", got)
+	}
+	if got := callScript(t, ctx, script, "regex_unaffected", []Value{NewString("abc123")}, CallOptions{}); got.Kind() != KindInt || got.Int() != 3 {
+		t.Fatalf("regex after slash-method change = %v, want 3", got)
+	}
+}
