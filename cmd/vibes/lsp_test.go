@@ -727,6 +727,22 @@ end
 	}
 }
 
+func TestCompletionOffersLocalsFromContinuedStatementExpressions(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/continued-statement-expression-locals.vibe"
+	openDoc(t, server, uri, `def run(flag)
+  if flag; x = 1; end.to_s
+  x
+end
+`)
+
+	labels := completionLabels(t, server, uri, 2, 2)
+	if _, ok := labels["x"]; !ok {
+		t.Fatal("completion missing local from continued if statement expression")
+	}
+}
+
 func TestCompletionOffersRescueBindingOnlyInsideHandler(t *testing.T) {
 	t.Parallel()
 	server := newCompletionTestServer()

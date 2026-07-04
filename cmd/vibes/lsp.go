@@ -1215,24 +1215,41 @@ func addLocalItem(items *[]map[string]any, seen map[string]struct{}, name, detai
 func localNames(statements []ast.Statement) []string {
 	var names []string
 	var walkStmts func([]ast.Statement)
+	var walkExpr func(ast.Expression)
+	var walkStringParts func([]ast.StringPart)
 	walkStmts = func(stmts []ast.Statement) {
 		for _, stmt := range stmts {
 			switch st := stmt.(type) {
+			case *ast.ReturnStmt:
+				walkExpr(st.Value)
+			case *ast.RaiseStmt:
+				walkExpr(st.Value)
 			case *ast.AssignStmt:
 				appendAssignmentTargetNames(&names, st.Target)
+				walkExpr(st.Value)
+			case *ast.ExprStmt:
+				walkExpr(st.Expr)
 			case *ast.ForStmt:
 				names = append(names, st.Iterator)
+				walkExpr(st.Iterable)
 				walkStmts(st.Body)
 			case *ast.IfStmt:
+				walkExpr(st.Condition)
 				walkStmts(st.Consequent)
 				for _, elseIf := range st.ElseIf {
 					walkStmts([]ast.Statement{elseIf})
 				}
 				walkStmts(st.Alternate)
 			case *ast.WhileStmt:
+				walkExpr(st.Condition)
 				walkStmts(st.Body)
 			case *ast.UntilStmt:
+				walkExpr(st.Condition)
 				walkStmts(st.Body)
+			case *ast.BreakStmt:
+				walkExpr(st.Value)
+			case *ast.NextStmt:
+				walkExpr(st.Value)
 			case *ast.TryStmt:
 				walkStmts(st.Body)
 				walkStmts(st.Else)
@@ -1240,6 +1257,95 @@ func localNames(statements []ast.Statement) []string {
 					walkStmts(clause.Body)
 				}
 				walkStmts(st.Ensure)
+			}
+		}
+	}
+	walkExpr = func(expr ast.Expression) {
+		switch e := expr.(type) {
+		case nil:
+			return
+		case *ast.Identifier, *ast.IntegerLiteral, *ast.FloatLiteral, *ast.StringLiteral,
+			*ast.BoolLiteral, *ast.NilLiteral, *ast.SymbolLiteral, *ast.IvarExpr, *ast.ClassVarExpr:
+			return
+		case *ast.ArrayLiteral:
+			for _, element := range e.Elements {
+				walkExpr(element)
+			}
+		case *ast.HashLiteral:
+			for _, pair := range e.Pairs {
+				walkExpr(pair.Key)
+				walkExpr(pair.Value)
+			}
+		case *ast.CallExpr:
+			walkExpr(e.Callee)
+			for _, arg := range e.Args {
+				walkExpr(arg)
+			}
+			for _, arg := range e.KwArgs {
+				walkExpr(arg.Value)
+			}
+		case *ast.MemberExpr:
+			walkExpr(e.Object)
+		case *ast.ScopeExpr:
+			walkExpr(e.Object)
+		case *ast.IndexExpr:
+			walkExpr(e.Object)
+			for _, index := range e.Indices {
+				walkExpr(index)
+			}
+		case *ast.DestructureTarget:
+			return
+		case *ast.UnaryExpr:
+			walkExpr(e.Right)
+		case *ast.BinaryExpr:
+			walkExpr(e.Left)
+			walkExpr(e.Right)
+		case *ast.ConditionalExpr:
+			walkExpr(e.Condition)
+			walkExpr(e.Consequent)
+			walkExpr(e.Alternate)
+		case *ast.RescueModifierExpr:
+			walkExpr(e.Body)
+			walkExpr(e.Fallback)
+		case *ast.IfExpr:
+			walkExpr(e.Condition)
+			walkExpr(e.Consequent)
+			for _, branch := range e.ElseIf {
+				walkExpr(branch.Condition)
+				walkExpr(branch.Result)
+			}
+			walkExpr(e.Alternate)
+		case *ast.RangeExpr:
+			walkExpr(e.Start)
+			walkExpr(e.End)
+		case *ast.CaseExpr:
+			walkExpr(e.Target)
+			for _, clause := range e.Clauses {
+				for _, value := range clause.Values {
+					walkExpr(value.Expr)
+				}
+				walkExpr(clause.Result)
+			}
+			walkExpr(e.ElseExpr)
+		case *ast.BlockLiteral:
+			return
+		case *ast.YieldExpr:
+			for _, arg := range e.Args {
+				walkExpr(arg)
+			}
+		case *ast.InterpolatedString:
+			walkStringParts(e.Parts)
+		case *ast.InterpolatedSymbol:
+			walkStringParts(e.Parts)
+		case *ast.IfStmt, *ast.ForStmt, *ast.WhileStmt, *ast.UntilStmt, *ast.TryStmt:
+			walkStmts([]ast.Statement{e.(ast.Statement)})
+		}
+	}
+	walkStringParts = func(parts []ast.StringPart) {
+		for _, part := range parts {
+			expr, ok := part.(ast.StringExpr)
+			if ok {
+				walkExpr(expr.Expr)
 			}
 		}
 	}
