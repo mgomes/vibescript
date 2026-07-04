@@ -949,6 +949,39 @@ func TestPendingTaskJobPayloadsCountTowardMemoryQuota(t *testing.T) {
 	requireErrorIs(t, exec.checkMemory(), errMemoryQuotaExceeded)
 }
 
+func TestPendingUnaryTaskJobPayloadsCountTowardMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	argValues := make([]Value, 256)
+	for i := range argValues {
+		argValues[i] = NewString("arg-payload")
+	}
+	exec := &Execution{
+		ctx:  context.Background(),
+		root: newEnv(nil),
+	}
+	group := &taskGroup{}
+	exec.pushTaskGroup(group)
+	defer exec.popTaskGroup()
+
+	withoutJob := exec.estimateMemoryUsage()
+	job := &taskJob{
+		functionName: "work",
+		inlineArg:    true,
+	}
+	job.inlineArgs[0] = NewArray(argValues)
+	group.retainJobPayload(job)
+	defer group.releaseJobPayload(job)
+
+	withJob := exec.estimateMemoryUsage()
+	if withJob <= withoutJob {
+		t.Fatalf("memory with pending unary job = %d, want greater than %d", withJob, withoutJob)
+	}
+
+	exec.memoryQuota = withJob - 1
+	requireErrorIs(t, exec.checkMemory(), errMemoryQuotaExceeded)
+}
+
 func TestTaskGroupSpawnChecksRetainedPayloadMemoryQuota(t *testing.T) {
 	t.Parallel()
 
@@ -1213,6 +1246,19 @@ def run()
 end`)
 
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "tasks.spawn argument 1 must be data-only")
+}
+
+func TestTasksMapItemsMustBeDataOnly(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def identity(value)
+  value
+end
+
+def run()
+  Tasks.map([identity], with: :identity)
+end`)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "Tasks.map item must be data-only")
 }
 
 func TestTaskResultsMustBeDataOnly(t *testing.T) {
