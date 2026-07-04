@@ -880,6 +880,10 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 }
 
 func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Value, error) {
+	return exec.evalConditionalExprWithExpectation(expr, env, expressionExpectation{})
+}
+
+func (exec *Execution) evalConditionalExprWithExpectation(expr *ConditionalExpr, env *Env, expectation expressionExpectation) (Value, error) {
 	condition, err := exec.evalExpression(expr.Condition, env)
 	if err != nil {
 		return NewNil(), err
@@ -892,7 +896,7 @@ func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Val
 	if condition.Truthy() {
 		branch = expr.Consequent
 	}
-	result, err := exec.evalExpressionWithAuto(branch, env, true)
+	result, err := exec.evalExpressionWithExpectation(branch, env, expectation)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -903,6 +907,10 @@ func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Val
 }
 
 func (exec *Execution) evalIfExpr(expr *IfExpr, env *Env) (Value, error) {
+	return exec.evalIfExprWithExpectation(expr, env, expressionExpectation{})
+}
+
+func (exec *Execution) evalIfExprWithExpectation(expr *IfExpr, env *Env, expectation expressionExpectation) (Value, error) {
 	resultExpr, err := exec.matchIfExpressionBranch(expr, env)
 	if err != nil {
 		return NewNil(), err
@@ -911,7 +919,7 @@ func (exec *Execution) evalIfExpr(expr *IfExpr, env *Env) (Value, error) {
 		return NewNil(), nil
 	}
 
-	result, err := exec.evalExpressionWithAuto(resultExpr, env, true)
+	result, err := exec.evalExpressionWithExpectation(resultExpr, env, expectation)
 	if err != nil {
 		return NewNil(), err
 	}

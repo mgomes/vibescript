@@ -1041,6 +1041,14 @@ func (exec *Execution) evalCallArgumentForType(arg Expression, env *Env, ty *Typ
 }
 
 func (exec *Execution) evalCallArgumentForExpectation(arg Expression, env *Env, expectation expressionExpectation) (Value, error) {
+	if !expectation.empty() {
+		switch e := arg.(type) {
+		case *ConditionalExpr:
+			return exec.evalConditionalExprWithExpectation(e, env, expectation)
+		case *IfExpr:
+			return exec.evalIfExprWithExpectation(e, env, expectation)
+		}
+	}
 	if val, ok, err := exec.evalTypedContainerCallArgument(arg, env, expectation); ok || err != nil {
 		return val, err
 	}

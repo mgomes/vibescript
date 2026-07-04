@@ -135,6 +135,10 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       42
     end
 
+    def fallback
+      43
+    end
+
     def receive_untyped(value)
       value
     end
@@ -287,6 +291,22 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
       receive_callable.call(answer)
     end
 
+    def run_conditional_branch(flag)
+      receive_callable(flag ? answer : fallback)
+    end
+
+    def run_conditional_branch_true
+      run_conditional_branch(true)
+    end
+
+    def run_if_branch(flag)
+      receive_callable(if flag then answer else fallback end)
+    end
+
+    def run_if_branch_true
+      run_if_branch(true)
+    end
+
     def run_rest
       receive_callable_rest(answer)
     end
@@ -405,6 +425,8 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 		{name: "typed callable receiver supports introspection", fn: "run_typed_respond_to", want: NewBool(true)},
 		{name: "typed callable receiver stays distinct from result", fn: "run_typed_not_equal_result", want: NewBool(false)},
 		{name: "function call alias keeps callable", fn: "run_call_alias", want: NewInt(42)},
+		{name: "conditional branch keeps callable", fn: "run_conditional_branch_true", want: NewInt(42)},
+		{name: "if branch keeps callable", fn: "run_if_branch_true", want: NewInt(42)},
 		{name: "typed rest keeps callable element", fn: "run_rest", want: NewInt(42)},
 		{name: "union typed rest keeps callable element", fn: "run_rest_union", want: NewInt(42)},
 		{name: "rest union ignores impossible callable arm", fn: "run_rest_array_or_function", want: NewInt(42)},
@@ -440,6 +462,12 @@ func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) 
 				t.Fatalf("%s() = %#v, want %#v", tt.fn, got, tt.want)
 			}
 		})
+	}
+	if got := callFunc(t, script, "run_conditional_branch", []Value{NewBool(false)}); !got.Equal(NewInt(43)) {
+		t.Fatalf("run_conditional_branch(false) = %#v, want 43", got)
+	}
+	if got := callFunc(t, script, "run_if_branch", []Value{NewBool(false)}); !got.Equal(NewInt(43)) {
+		t.Fatalf("run_if_branch(false) = %#v, want 43", got)
 	}
 }
 
