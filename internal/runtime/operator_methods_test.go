@@ -219,3 +219,50 @@ end`, "operator method + must be defined in a class")
   i
 end`, "operator method [] must be defined in a class")
 }
+
+// TestOperatorMethodLoopSignalsCannotCrossCallBoundary pins that a bare
+// break/next inside an operator, [], or []= method raises the call-boundary
+// error instead of silently breaking or continuing the caller's loop.
+func TestOperatorMethodLoopSignalsCannotCrossCallBoundary(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `class Leaky
+  def +(other)
+    break
+  end
+  def [](i)
+    next
+  end
+  def []=(i, v)
+    break
+  end
+end
+
+def loop_with_plus
+  total = 0
+  for n in [1, 2, 3]
+    Leaky.new + n
+    total = total + 1
+  end
+  total
+end
+
+def loop_with_index_read
+  for n in [1, 2]
+    Leaky.new[n]
+  end
+  "done"
+end
+
+def loop_with_index_write
+  leaky = Leaky.new
+  for n in [1, 2]
+    leaky[n] = n
+  end
+  "done"
+end`)
+
+	requireCallErrorContains(t, script, "loop_with_plus", nil, CallOptions{}, "break cannot cross call boundary")
+	requireCallErrorContains(t, script, "loop_with_index_read", nil, CallOptions{}, "next cannot cross call boundary")
+	requireCallErrorContains(t, script, "loop_with_index_write", nil, CallOptions{}, "break cannot cross call boundary")
+}

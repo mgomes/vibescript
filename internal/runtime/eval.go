@@ -588,7 +588,7 @@ func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) 
 		if fn.Private {
 			return NewNil(), exec.errorAt(e.Position, "private method []")
 		}
-		return exec.callFunction(fn, obj, indices, nil, NewNil(), e.Position)
+		return exec.callOperatorFunction(fn, obj, indices, e.Position)
 	default:
 		return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s", obj.Kind())
 	}
@@ -931,7 +931,24 @@ func (exec *Execution) callInstanceOperatorMethod(fn *ScriptFunction, name strin
 	if fn.Private {
 		return NewNil(), exec.errorAt(pos, "private method %s", name)
 	}
-	return exec.callFunction(fn, receiver, []Value{arg}, nil, NewNil(), pos)
+	return exec.callOperatorFunction(fn, receiver, []Value{arg}, pos)
+}
+
+// callOperatorFunction invokes an operator or index method and, like the
+// normal call wrapper, converts a bare break/next escaping the method body
+// into a call-boundary error. Without this, an operator evaluated inside a
+// caller loop would let the signal silently break or continue that loop.
+func (exec *Execution) callOperatorFunction(fn *ScriptFunction, receiver Value, args []Value, pos Position) (Value, error) {
+	val, err := exec.callFunction(fn, receiver, args, nil, NewNil(), pos)
+	if err != nil {
+		if errors.Is(err, errLoopBreak) {
+			return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
+		}
+		if errors.Is(err, errLoopNext) {
+			return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+		}
+	}
+	return val, err
 }
 
 func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Value, error) {
@@ -1674,7 +1691,7 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		args := make([]Value, 0, len(indices)+1)
 		args = append(args, indices...)
 		args = append(args, value)
-		_, err := exec.callFunction(fn, obj, args, nil, NewNil(), target.Position)
+		_, err := exec.callOperatorFunction(fn, obj, args, target.Position)
 		return err
 	default:
 		return exec.errorAt(target.Object.Pos(), "cannot index %s", obj.Kind())
