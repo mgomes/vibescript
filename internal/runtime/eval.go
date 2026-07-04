@@ -86,7 +86,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *ConditionalExpr:
 		return exec.evalConditionalExpr(e, env)
 	case *RescueExpr:
-		return exec.evalRescueExpr(e, env)
+		return exec.evalRescueExpr(e, env, autoCall)
 	case *IfExpr:
 		return exec.evalIfExpr(e, env)
 	case *RangeExpr:
@@ -883,8 +883,8 @@ func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Val
 	return result, nil
 }
 
-func (exec *Execution) evalRescueExpr(expr *RescueExpr, env *Env) (Value, error) {
-	result, err := exec.evalExpressionWithAuto(expr.Body, env, true)
+func (exec *Execution) evalRescueExpr(expr *RescueExpr, env *Env, autoCall bool) (Value, error) {
+	result, err := exec.evalExpressionWithAuto(expr.Body, env, autoCall)
 	if err == nil {
 		if err := exec.checkMemoryWith(result); err != nil {
 			return NewNil(), err
@@ -897,7 +897,7 @@ func (exec *Execution) evalRescueExpr(expr *RescueExpr, env *Env) (Value, error)
 
 	exec.pushRescuedError(err)
 	defer exec.popRescuedError()
-	fallback, fallbackErr := exec.evalExpressionWithAuto(expr.Fallback, env, true)
+	fallback, fallbackErr := exec.evalExpressionWithAuto(expr.Fallback, env, autoCall)
 	if fallbackErr != nil {
 		return NewNil(), fallbackErr
 	}

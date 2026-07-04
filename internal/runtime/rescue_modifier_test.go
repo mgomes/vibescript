@@ -34,8 +34,16 @@ def parenless_command_call_success
   command_success 9 rescue fail_if_called()
 end
 
+def rescued_call_target
+  (missing rescue fallback_fn)()
+end
+
 def fail_if_called
   raise "fallback called"
+end
+
+def fallback_fn
+  42
 end
 
 def nested_expression
@@ -54,6 +62,9 @@ end
 	}
 	if got := callScript(t, context.Background(), script, "parenless_command_call_success", nil, CallOptions{}); !got.Equal(NewInt(10)) {
 		t.Fatalf("parenless_command_call_success() = %s, want 10", got)
+	}
+	if got := callScript(t, context.Background(), script, "rescued_call_target", nil, CallOptions{}); !got.Equal(NewInt(42)) {
+		t.Fatalf("rescued_call_target() = %s, want 42", got)
 	}
 	if got := callScript(t, context.Background(), script, "nested_expression", nil, CallOptions{}); !got.Equal(NewInt(5)) {
 		t.Fatalf("nested_expression() = %s, want 5", got)
