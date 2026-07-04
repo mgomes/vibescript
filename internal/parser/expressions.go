@@ -1967,7 +1967,7 @@ func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]as
 			return
 		}
 		p.nextToken()
-		value := p.parseLineExpression(lowestPrec)
+		value := p.parseLineExpressionUntil(lowestPrec, ast.TokenRescue)
 		if value == nil {
 			return
 		}
@@ -1975,7 +1975,7 @@ func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]as
 		return
 	}
 
-	expr := p.parseLineExpression(lowestPrec)
+	expr := p.parseLineExpressionUntil(lowestPrec, ast.TokenRescue)
 	if expr != nil {
 		*args = append(*args, expr)
 	}

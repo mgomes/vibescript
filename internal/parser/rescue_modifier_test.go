@@ -98,6 +98,51 @@ end`
 	}
 }
 
+func TestParserRescueModifierWrapsParenlessCommandCall(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  risky 1 rescue fallback
+  record value: 1 rescue fallback
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{
+			Expr: &ast.RescueExpr{
+				Body: &ast.CallExpr{
+					Callee: &ast.Identifier{Name: "risky"},
+					Args: []ast.Expression{
+						&ast.IntegerLiteral{Value: 1},
+					},
+					KwArgs: []ast.KeywordArg{},
+				},
+				Fallback: &ast.Identifier{Name: "fallback"},
+			},
+		},
+		&ast.ExprStmt{
+			Expr: &ast.RescueExpr{
+				Body: &ast.CallExpr{
+					Callee: &ast.Identifier{Name: "record"},
+					Args:   []ast.Expression{},
+					KwArgs: []ast.KeywordArg{
+						{Name: "value", Value: &ast.IntegerLiteral{Value: 1}},
+					},
+					KeywordOptionsHash: true,
+				},
+				Fallback: &ast.Identifier{Name: "fallback"},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserRescueModifierRequiresFallbackExpression(t *testing.T) {
 	t.Parallel()
 

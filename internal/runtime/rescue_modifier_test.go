@@ -18,6 +18,22 @@ def success_path
   10 rescue fail_if_called()
 end
 
+def command_fail(value)
+  raise "boom"
+end
+
+def command_success(value)
+  value + 1
+end
+
+def parenless_command_call_failure
+  command_fail 1 rescue "fallback"
+end
+
+def parenless_command_call_success
+  command_success 9 rescue fail_if_called()
+end
+
 def fail_if_called
   raise "fallback called"
 end
@@ -32,6 +48,12 @@ end
 	}
 	if got := callScript(t, context.Background(), script, "success_path", nil, CallOptions{}); !got.Equal(NewInt(10)) {
 		t.Fatalf("success_path() = %s, want 10", got)
+	}
+	if got := callScript(t, context.Background(), script, "parenless_command_call_failure", nil, CallOptions{}); !got.Equal(NewString("fallback")) {
+		t.Fatalf("parenless_command_call_failure() = %s, want fallback", got)
+	}
+	if got := callScript(t, context.Background(), script, "parenless_command_call_success", nil, CallOptions{}); !got.Equal(NewInt(10)) {
+		t.Fatalf("parenless_command_call_success() = %s, want 10", got)
 	}
 	if got := callScript(t, context.Background(), script, "nested_expression", nil, CallOptions{}); !got.Equal(NewInt(5)) {
 		t.Fatalf("nested_expression() = %s, want 5", got)
