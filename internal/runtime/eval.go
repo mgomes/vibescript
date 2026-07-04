@@ -3211,7 +3211,7 @@ func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *En
 		if current, exists := env.getOwn(ident.Name); exists {
 			return compoundAssignmentTarget{current: current, assign: assignLocal}, nil
 		}
-		if env.rebindOuter && env.parent != nil && env.parent.hasEnclosingLocalBinding(ident.Name) {
+		if env.parent != nil && env.parent.hasEnclosingLocalBinding(ident.Name) {
 			current, exists := env.Get(ident.Name)
 			if !exists {
 				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)

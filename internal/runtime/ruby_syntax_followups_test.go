@@ -331,6 +331,24 @@ class Config
   def self.echo(LIMIT)
     LIMIT
   end
+
+  def self.rescue_or_assign(LIMIT)
+    begin
+      raise "boom"
+    rescue => err
+      LIMIT ||= 1
+      LIMIT
+    end
+  end
+
+  def self.rescue_and_assign(LIMIT)
+    begin
+      raise "boom"
+    rescue => err
+      LIMIT &&= 4
+      LIMIT
+    end
+  end
 end
 
 class Other
@@ -342,7 +360,20 @@ class Other
 end
 
 def run()
-  [Config.limit, Config.scoped_limit, Config::LIMIT, Config.echo(3), Config.bump_limit, Config::LIMIT, Config.limit, Other.limit]
+  [
+    Config.limit,
+    Config.scoped_limit,
+    Config::LIMIT,
+    Config.echo(3),
+    Config.bump_limit,
+    Config::LIMIT,
+    Config.limit,
+    Other.limit,
+    Config.rescue_or_assign(nil),
+    Config::LIMIT,
+    Config.rescue_and_assign(false),
+    Config::LIMIT,
+  ]
 end
 `)
 
@@ -357,6 +388,10 @@ end
 		NewInt(13),
 		NewInt(13),
 		NewInt(20),
+		NewInt(1),
+		NewInt(13),
+		NewBool(false),
+		NewInt(13),
 	})
 }
 
