@@ -99,10 +99,13 @@ func (exec *Execution) hashDefaultForKey(receiver, key Value) (Value, error) {
 
 // hashMissingKeyDefault resolves a missing-key [] access, wrapping any default
 // proc error with the index expression's position for a precise diagnostic.
+// Wrapping goes through wrapError so a control signal from the proc — a
+// non-local return targeting the method that created it — passes through
+// intact instead of being flattened into a plain runtime error.
 func (exec *Execution) hashMissingKeyDefault(receiver, key Value, pos Position) (Value, error) {
 	result, err := exec.hashDefaultForKey(receiver, key)
 	if err != nil {
-		return NewNil(), exec.errorAt(pos, "%s", err.Error())
+		return NewNil(), exec.wrapError(err, pos)
 	}
 	return result, nil
 }

@@ -339,3 +339,24 @@ end
 
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unexpected return")
 }
+
+// TestHashDefaultProcNonLocalReturn pins signal transparency through builtin
+// error wrapping: a return inside a Hash.new default proc reached via a
+// missing-key read returns from the method that created the proc instead of
+// surfacing as a flattened runtime error.
+func TestHashDefaultProcNonLocalReturn(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def lookup
+  h = Hash.new { |hash, key| return "defaulted" }
+  h[:missing]
+  "after"
+end
+
+def run
+  [lookup, "caller continues"]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewString("defaulted"), NewString("caller continues")})
+}
