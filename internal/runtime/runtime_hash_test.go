@@ -2510,6 +2510,37 @@ func TestHashCopyPreservesSortedOrderForBareHostMap(t *testing.T) {
 	}
 }
 
+func TestHashStorePromotesLegacyReceiverByLegacyLookup(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 64 << 20}
+
+	replaced, err := callHashMember(t, exec, NewHash(map[string]Value{"k": NewInt(1)}), "store", []Value{NewSymbol("k"), NewInt(9)}, NewNil())
+	if err != nil {
+		t.Fatalf("store(symbol over legacy string key) = %v, want nil", err)
+	}
+	if replaced.HashLen() != 1 {
+		t.Fatalf("store(symbol over legacy string key) entries = %d, want 1", replaced.HashLen())
+	}
+	if got, ok, err := hashGet(replaced, NewSymbol("k")); err != nil || !ok || !got.Equal(NewInt(9)) {
+		t.Fatalf("store(symbol over legacy string key) :k = %v, %v, %v; want 9, true, nil", got, ok, err)
+	}
+
+	distinct, err := callHashMember(t, exec, NewHash(map[string]Value{"1": NewInt(1)}), "store", []Value{NewInt(1), NewInt(9)}, NewNil())
+	if err != nil {
+		t.Fatalf("store(int beside legacy string key) = %v, want nil", err)
+	}
+	if distinct.HashLen() != 2 {
+		t.Fatalf("store(int beside legacy string key) entries = %d, want 2", distinct.HashLen())
+	}
+	if got, ok, err := hashGet(distinct, NewString("1")); err != nil || !ok || !got.Equal(NewInt(1)) {
+		t.Fatalf("store(int beside legacy string key) string key = %v, %v, %v; want 1, true, nil", got, ok, err)
+	}
+	if got, ok, err := hashGet(distinct, NewInt(1)); err != nil || !ok || !got.Equal(NewInt(9)) {
+		t.Fatalf("store(int beside legacy string key) int key = %v, %v, %v; want 9, true, nil", got, ok, err)
+	}
+}
+
 // TestTypedTransformReservesExactOrderCapacity pins that a typed transform
 // pre-sizes its result's insertion-order backing to the entry count. Growing it
 // by append from capacity 1 would leave a 3-entry result holding 4 order slots,
@@ -2549,8 +2580,8 @@ func TestTypedTransformReservesExactOrderCapacity(t *testing.T) {
 }
 
 // TestTypedCopyReservesExactOrderCapacity pins blockless typed-hash copy paths:
-// they pre-size both the legacy output map and insertion-order backing to the
-// projected result count before the first cloned entry is inserted.
+// they pre-size the typed-entry map and insertion-order backing to the projected
+// result count before the first cloned entry is inserted.
 func TestTypedCopyReservesExactOrderCapacity(t *testing.T) {
 	t.Parallel()
 
