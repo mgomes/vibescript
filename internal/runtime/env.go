@@ -135,6 +135,18 @@ func (e *Env) getCallLocal(name string) (Value, bool) {
 	return Value{}, false
 }
 
+func (e *Env) hasCallLocalBinding(name string) bool {
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.callRoot || scope.frozen {
+			return false
+		}
+		if scope.hasOwnBinding(name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
 	if idx, ok := e.inlineIndex(name); ok {
 		val := e.inline[idx].value

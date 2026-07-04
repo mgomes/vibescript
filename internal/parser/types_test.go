@@ -110,6 +110,10 @@ end
 
 def upper(status: Types.Status | nil) -> Types.Status?
   status
+end
+
+def all_caps(status: Types.STATUS) -> Types.STATUS
+  status
 end`
 
 	got, errs := parseSource(t, source)
@@ -138,6 +142,14 @@ end`
 	}
 	if got := upperFn.ReturnTy; got.Name != "Types.Status" || got.Kind != ast.TypeEnum || !got.Nullable {
 		t.Fatalf("uppercase alias return type = %#v, want nullable Types.Status enum", got)
+	}
+
+	allCapsFn := got.Statements[3].(*ast.FunctionStmt)
+	if got := allCapsFn.Params[0].Type; got.Name != "Types.STATUS" || got.Kind != ast.TypeEnum {
+		t.Fatalf("all-caps qualified param type = %#v, want Types.STATUS enum", got)
+	}
+	if got := allCapsFn.ReturnTy; got.Name != "Types.STATUS" || got.Kind != ast.TypeEnum {
+		t.Fatalf("all-caps qualified return type = %#v, want Types.STATUS enum", got)
 	}
 }
 

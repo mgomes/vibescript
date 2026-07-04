@@ -215,16 +215,34 @@ class ConstantShadow
     LIMIT &&= LIMIT + 1
     LIMIT
   end
+
+  def self.plain_local(LIMIT)
+    LIMIT = LIMIT + 1
+    LIMIT
+  end
+
+  def self.compound_local(LIMIT)
+    LIMIT += 1
+    LIMIT
+  end
 end
 
 def run()
-  [ConstantShadow.or_local(nil), ConstantShadow.and_local(2), ConstantShadow::LIMIT]
+  [
+    ConstantShadow.or_local(nil),
+    ConstantShadow.and_local(2),
+    ConstantShadow.plain_local(3),
+    ConstantShadow.compound_local(4),
+    ConstantShadow::LIMIT,
+  ]
 end
 `)
 
 	compareArrays(t, callFunc(t, script, "run", nil), []Value{
 		NewInt(1),
 		NewInt(3),
+		NewInt(4),
+		NewInt(5),
 		NewInt(10),
 	})
 }
@@ -426,12 +444,16 @@ def echo_upper(status: Types.Status) -> Types.Status
   status
 end
 
+def echo_upper_caps(status: Types.STATUS) -> Types.STATUS
+  status
+end
+
 def echo_nullable(status: status_mod.Status? = nil) -> status_mod.Status?
   status
 end
 
 def run()
-  [echo(:draft).name, echo_upper(:published).name, echo_nullable()]
+  [echo(:draft).name, echo_upper(:published).name, echo_upper_caps(:draft).name, echo_nullable()]
 end
 run()
 `, "__main")
@@ -442,6 +464,7 @@ run()
 	compareArrays(t, callScript(t, t.Context(), script, "__main", nil, CallOptions{}), []Value{
 		NewString("Draft"),
 		NewString("Published"),
+		NewString("Draft"),
 		NewNil(),
 	})
 }

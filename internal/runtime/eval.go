@@ -1627,7 +1627,7 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	switch t := target.(type) {
 	case *Identifier:
-		if self, ok := env.Get("self"); ok && self.Kind() == KindClass && isConstantIdentifier(t.Name) {
+		if self, ok := classConstantAssignmentSelf(t.Name, env); ok && !env.hasCallLocalBinding(t.Name) {
 			valueClass(self).ClassVars[t.Name] = value
 			return nil
 		}

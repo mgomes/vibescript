@@ -1513,6 +1513,7 @@ func (p *parser) dottedTypeAnnotationFollows(options paramParseOptions) bool {
 	defer p.restore(saved)
 
 	p.nextToken()
+	namespace := p.curToken.Literal
 	p.nextToken()
 	if p.peekToken.Type != ast.TokenIdent {
 		return false
@@ -1521,7 +1522,7 @@ func (p *parser) dottedTypeAnnotationFollows(options paramParseOptions) bool {
 	if !startsUppercaseIdentifier(p.curToken.Literal) {
 		return false
 	}
-	if allCapsIdentifier(p.curToken.Literal) {
+	if dottedDefaultConstant(namespace, p.curToken.Literal) {
 		return false
 	}
 	if strings.HasSuffix(p.curToken.Literal, "?") {
@@ -1537,18 +1538,14 @@ func startsUppercaseIdentifier(name string) bool {
 	return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
 }
 
-func allCapsIdentifier(name string) bool {
-	name = strings.TrimSuffix(name, "?")
-	hasUpper := false
-	for _, r := range name {
-		if r >= 'a' && r <= 'z' {
-			return false
-		}
-		if r >= 'A' && r <= 'Z' {
-			hasUpper = true
-		}
+func dottedDefaultConstant(namespace, member string) bool {
+	member = strings.TrimSuffix(member, "?")
+	switch namespace {
+	case "Math":
+		return member == "PI" || member == "E"
+	default:
+		return false
 	}
-	return hasUpper
 }
 
 // identLessThanStartsExpression reports whether `ident <` (with ident at
