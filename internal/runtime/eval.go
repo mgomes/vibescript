@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/internal/ast"
 )
@@ -33,10 +35,30 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if e.Name == blockGivenName {
 			return NewBool(blockGivenInCurrentCall(env)), nil
 		}
+		var self Value
+		hasSelf := false
+		if isConstantIdentifier(e.Name) {
+			if val, ok := env.getCallLocal(e.Name); ok {
+				env.clearArrayAppendBuffer(e.Name)
+				if autoCall {
+					return exec.autoInvokeIfNeeded(e, val, NewNil())
+				}
+				return val, nil
+			}
+			self, hasSelf = env.Get("self")
+			if hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+				if val, ok := classConstant(self, e.Name); ok {
+					return val, nil
+				}
+			}
+		}
 		val, ok := env.Get(e.Name)
 		if !ok {
 			// allow implicit self method lookup
-			if self, hasSelf := env.Get("self"); hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+			if !hasSelf {
+				self, hasSelf = env.Get("self")
+			}
+			if hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
 				member, err := exec.getMember(self, e.Name, e.Pos())
 				if err != nil {
 					return NewNil(), err
@@ -1399,7 +1421,7 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 	case *ReturnStmt:
 		return expressionCapturesCurrentEnv(s.Value)
 	case *RaiseStmt:
-		return expressionCapturesCurrentEnv(s.Value)
+		return expressionCapturesCurrentEnv(s.Value) || expressionCapturesCurrentEnv(s.Message)
 	case *AssignStmt:
 		return expressionCapturesCurrentEnv(s.Target) || expressionCapturesCurrentEnv(s.Value)
 	case *LogicalStmt:
@@ -1730,6 +1752,10 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	switch t := target.(type) {
 	case *Identifier:
+		if self, ok := classConstantAssignmentSelf(t.Name, env); ok && !env.hasCallLocalBinding(t.Name) {
+			valueClass(self).ClassVars[t.Name] = value
+			return nil
+		}
 		env.Assign(t.Name, value)
 		return nil
 	case *DestructureTarget:
@@ -1783,6 +1809,47 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	default:
 		return exec.errorAt(target.Pos(), "invalid assignment target")
 	}
+}
+
+func classConstant(self Value, name string) (Value, bool) {
+	if !isConstantIdentifier(name) {
+		return NewNil(), false
+	}
+	switch self.Kind() {
+	case KindClass:
+		val, ok := valueClass(self).ClassVars[name]
+		return val, ok
+	case KindInstance:
+		inst := valueInstance(self)
+		if inst == nil || inst.Class == nil {
+			return NewNil(), false
+		}
+		val, ok := inst.Class.ClassVars[name]
+		return val, ok
+	default:
+		return NewNil(), false
+	}
+}
+
+func isConstantIdentifier(name string) bool {
+	r, _ := utf8.DecodeRuneInString(name)
+	return r != utf8.RuneError && unicode.IsUpper(r)
+}
+
+func isClassConstantAssignmentName(name string, env *Env) bool {
+	_, ok := classConstantAssignmentSelf(name, env)
+	return ok
+}
+
+func classConstantAssignmentSelf(name string, env *Env) (Value, bool) {
+	if env == nil || !isConstantIdentifier(name) {
+		return Value{}, false
+	}
+	self, ok := env.Get("self")
+	if !ok || self.Kind() != KindClass {
+		return Value{}, false
+	}
+	return self, true
 }
 
 func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Value) error {
@@ -2805,6 +2872,9 @@ func predeclareLocalBindingsFromStatements(stmts []Statement, env *Env) {
 	var collector localBindingCollector
 	collectLocalBindingNames(stmts, &collector)
 	for _, name := range collector.names {
+		if isClassConstantAssignmentName(name, env) {
+			continue
+		}
 		env.PredeclareAssignmentLocal(name)
 	}
 }
@@ -2888,6 +2958,9 @@ func collectTargetBindingNames(target Expression, collector *localBindingCollect
 func predeclareTargetBindingNames(target Expression, env *Env) {
 	switch t := target.(type) {
 	case *Identifier:
+		if isClassConstantAssignmentName(t.Name, env) {
+			return
+		}
 		env.PredeclareLocal(t.Name)
 	case *DestructureTarget:
 		for _, element := range t.Elements {
@@ -2899,6 +2972,9 @@ func predeclareTargetBindingNames(target Expression, env *Env) {
 func predeclareDirectAssignmentTargetBindingNames(target, value Expression, env *Env) {
 	switch t := target.(type) {
 	case *Identifier:
+		if isClassConstantAssignmentName(t.Name, env) {
+			return
+		}
 		env.PredeclareAssignmentLocal(t.Name)
 	case *DestructureTarget:
 		for _, element := range t.Elements {
@@ -3494,7 +3570,8 @@ func statementContainsBypassableIdentifierCall(stmt Statement, name string) bool
 	case *ReturnStmt:
 		return expressionContainsBypassableIdentifierCall(t.Value, name)
 	case *RaiseStmt:
-		return expressionContainsBypassableIdentifierCall(t.Value, name)
+		return expressionContainsBypassableIdentifierCall(t.Value, name) ||
+			expressionContainsBypassableIdentifierCall(t.Message, name)
 	case *BreakStmt:
 		return expressionContainsBypassableIdentifierCall(t.Value, name)
 	case *NextStmt:
@@ -3661,29 +3738,48 @@ type compoundAssignmentTarget struct {
 
 func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *Env) (compoundAssignmentTarget, error) {
 	if ident, ok := target.(*Identifier); ok {
-		assign := func(value Value) error {
+		assignLocal := func(value Value) error {
 			env.Assign(ident.Name, value)
 			return nil
 		}
-		if current, exists := env.getOwn(ident.Name); exists {
-			return compoundAssignmentTarget{current: current, assign: assign}, nil
+		assignClassConstant := func(value Value) error {
+			return exec.assign(ident, value, env)
 		}
-		if env.rebindOuter && env.parent != nil && env.parent.hasEnclosingLocalBinding(ident.Name) {
+		if current, exists := env.getOwn(ident.Name); exists {
+			return compoundAssignmentTarget{current: current, assign: assignLocal}, nil
+		}
+		// Enclosing locals win only within the class-body boundary: a method
+		// parameter or block local named LIMIT is the ||= target, but a
+		// same-named local OUTSIDE the class body is not, so DEFAULT ||= x in
+		// a class body creates the class constant (matching = and +=) instead
+		// of clobbering a top-level DEFAULT.
+		if env.hasCallLocalBinding(ident.Name) {
 			current, exists := env.Get(ident.Name)
 			if !exists {
 				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)
 			}
-			return compoundAssignmentTarget{current: current, assign: assign}, nil
+			return compoundAssignmentTarget{current: current, assign: assignLocal}, nil
+		}
+		if self, ok := classConstantAssignmentSelf(ident.Name, env); ok {
+			current, _ := classConstant(self, ident.Name)
+			return compoundAssignmentTarget{current: current, assign: assignClassConstant}, nil
+		}
+		if env.parent != nil && env.parent.hasEnclosingLocalBinding(ident.Name) {
+			current, exists := env.Get(ident.Name)
+			if !exists {
+				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)
+			}
+			return compoundAssignmentTarget{current: current, assign: assignLocal}, nil
 		}
 		if env.parent != nil && env.parent.hasAmbientAssignmentBinding(ident.Name) {
 			current, exists := env.Get(ident.Name)
 			if !exists {
 				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)
 			}
-			return compoundAssignmentTarget{current: current, assign: assign}, nil
+			return compoundAssignmentTarget{current: current, assign: assignLocal}, nil
 		}
 		env.Define(ident.Name, NewNil())
-		return compoundAssignmentTarget{current: NewNil(), assign: assign}, nil
+		return compoundAssignmentTarget{current: NewNil(), assign: assignLocal}, nil
 	}
 
 	return exec.prepareCompoundAssignmentTarget(target, env)
@@ -3697,8 +3793,7 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 			return compoundAssignmentTarget{}, err
 		}
 		assign := func(value Value) error {
-			env.Assign(t.Name, value)
-			return nil
+			return exec.assign(t, value, env)
 		}
 		return compoundAssignmentTarget{current: current, assign: assign}, nil
 	case *MemberExpr:
@@ -3926,6 +4021,33 @@ func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value,
 
 func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, bool, error) {
 	if stmt.Value != nil {
+		if stmt.Message != nil {
+			errorType, staticErrorType := raiseErrorTypeName(stmt.Value, env)
+			val := NewNil()
+			if !staticErrorType {
+				var err error
+				val, err = exec.evalExpression(stmt.Value, env)
+				if err != nil {
+					return NewNil(), false, err
+				}
+			}
+			message, err := exec.evalExpression(stmt.Message, env)
+			if err != nil {
+				return NewNil(), false, err
+			}
+			if message.Kind() != KindString {
+				return NewNil(), false, exec.newRuntimeErrorWithType(runtimeErrorTypeType, "exception message must be string", stmt.Pos())
+			}
+			if !staticErrorType {
+				var ok bool
+				errorType, ok = raiseErrorType(val)
+				if !ok {
+					return NewNil(), false, exec.newRuntimeErrorWithType(runtimeErrorTypeType, "exception class/object expected", stmt.Pos())
+				}
+			}
+			return NewNil(), false, exec.newRuntimeErrorWithType(errorType, message.String(), stmt.Pos())
+		}
+
 		val, err := exec.evalExpression(stmt.Value, env)
 		if err != nil {
 			return NewNil(), false, err
@@ -3945,6 +4067,33 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "")
 	}
 	return NewNil(), false, err
+}
+
+func raiseErrorType(val Value) (string, bool) {
+	if val.Kind() == KindClass {
+		if class := valueClass(val); class != nil {
+			if kind, ok := ast.CanonicalRuntimeErrorType(class.Name); ok {
+				return kind, true
+			}
+		}
+	}
+	return "", false
+}
+
+func raiseErrorTypeName(expr Expression, env *Env) (string, bool) {
+	ident, ok := expr.(*Identifier)
+	if !ok || !isConstantIdentifier(ident.Name) {
+		return "", false
+	}
+	if _, ok := env.Get(ident.Name); ok {
+		return "", false
+	}
+	if self, ok := env.Get("self"); ok && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+		if _, ok := classConstant(self, ident.Name); ok {
+			return "", false
+		}
+	}
+	return ast.CanonicalRuntimeErrorType(ident.Name)
 }
 
 func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {

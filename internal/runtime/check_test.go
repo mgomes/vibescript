@@ -102,6 +102,22 @@ end
 	}
 }
 
+func TestCheckWarningsVisitRaiseMessageExpression(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def message()
+  "bad"
+end
+
+def run()
+  raise RuntimeError, message(1)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to message has unexpected positional arguments")
+}
+
 func TestCheckWarningsWithOptionsRespectHostGlobalsBeforeStaticContracts(t *testing.T) {
 	t.Parallel()
 

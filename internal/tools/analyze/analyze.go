@@ -91,6 +91,7 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		return true
 	case *ast.RaiseStmt:
 		lintExpression(function, typed.Value, warnings)
+		lintExpression(function, typed.Message, warnings)
 		return true
 	case *ast.AssignStmt:
 		lintExpression(function, typed.Target, warnings)

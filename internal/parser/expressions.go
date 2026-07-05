@@ -51,6 +51,17 @@ func (p *parser) parseLineExpressionUntilForced(precedence int, stop ...ast.Toke
 	return p.parseExpression(precedence)
 }
 
+func (p *parser) parseParenlessArgumentExpression() ast.Expression {
+	// In command calls, same-line do/end binds to the outer call, not to the
+	// final argument expression. Rescue stops here too so rescue modifiers bind
+	// to the command call instead of being swallowed by the last argument.
+	p.parenlessArgDoStops++
+	defer func() {
+		p.parenlessArgDoStops--
+	}()
+	return p.parseLineExpressionUntil(lowestPrec, ast.TokenDo, ast.TokenRescue)
+}
+
 func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLimited bool) ast.Expression {
 	prefix := prefixParserKind(p.curToken.Type)
 	if prefix == prefixParserNone {
@@ -129,7 +140,7 @@ func (p *parser) peekStopsLineExpression() bool {
 			if p.lineLimitedStopSuppression > 0 && !p.lineStopForced(stop) {
 				return false
 			}
-			if stop == ast.TokenDo && p.peekPeek.Type == ast.TokenPipe {
+			if stop == ast.TokenDo && p.peekPeek.Type == ast.TokenPipe && p.parenlessArgDoStops == 0 {
 				return false
 			}
 			return true
@@ -148,7 +159,7 @@ func (p *parser) lineStopForced(stop ast.TokenType) bool {
 }
 
 func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, lineLimited bool) bool {
-	if !lineLimited || precedence != lowestPrec {
+	if !lineLimited || precedence > precPrefix {
 		return false
 	}
 	if !isParenlessCallCallee(left) {
@@ -942,16 +953,90 @@ func decodeDoubleQuotedText(raw string) string {
 		switch next {
 		case '"', '\\':
 			sb.WriteRune(next)
+		case 'a':
+			sb.WriteByte('\a')
+		case 'b':
+			sb.WriteByte('\b')
+		case 'e':
+			sb.WriteByte(0x1b)
+		case 'f':
+			sb.WriteByte('\f')
 		case 'n':
 			sb.WriteByte('\n')
+		case 'r':
+			sb.WriteByte('\r')
 		case 't':
 			sb.WriteByte('\t')
+		case 'v':
+			sb.WriteByte('\v')
+		case 'x':
+			decoded, ok := decodeVariableHexEscape(raw, i+nextSize, 1, 2)
+			if ok {
+				sb.WriteByte(decoded.byte)
+				i = decoded.next
+				continue
+			}
+			sb.WriteRune(next)
+		case 'u':
+			decoded, ok := decodeFixedHexEscape(raw, i+nextSize, 4)
+			if ok {
+				sb.WriteRune(decoded.rune)
+				i = decoded.next
+				continue
+			}
+			sb.WriteRune(next)
 		default:
 			sb.WriteRune(next)
 		}
 		i += nextSize
 	}
 	return sb.String()
+}
+
+type rawDecodedEscape struct {
+	rune rune
+	byte byte
+	next int
+}
+
+func decodeFixedHexEscape(raw string, start, digits int) (rawDecodedEscape, bool) {
+	if start+digits > len(raw) {
+		return rawDecodedEscape{}, false
+	}
+	value := rune(0)
+	for i := range digits {
+		r, size := utf8.DecodeRuneInString(raw[start+i:])
+		if size != 1 || !isBaseDigit(r, 16) {
+			return rawDecodedEscape{}, false
+		}
+		value = value*16 + hexRuneValue(r)
+	}
+	if value > utf8.MaxRune || (value >= 0xd800 && value <= 0xdfff) {
+		return rawDecodedEscape{}, false
+	}
+	return rawDecodedEscape{rune: value, next: start + digits}, true
+}
+
+func decodeVariableHexEscape(raw string, start, minDigits, maxDigits int) (rawDecodedEscape, bool) {
+	value := rune(0)
+	nextOffset := start
+	digits := 0
+	for digits < maxDigits && nextOffset < len(raw) {
+		r, size := utf8.DecodeRuneInString(raw[nextOffset:])
+		if size != 1 || !isBaseDigit(r, 16) {
+			break
+		}
+		value = value*16 + hexRuneValue(r)
+		nextOffset += size
+		digits++
+	}
+	if digits < minDigits {
+		return rawDecodedEscape{}, false
+	}
+	if value > utf8.MaxRune || (value >= 0xd800 && value <= 0xdfff) {
+		return rawDecodedEscape{}, false
+	}
+	return rawDecodedEscape{rune: value, byte: byte(value), next: nextOffset}, true
 }
 
 func (p *parser) parsePercentWordsLiteral() ast.Expression {
@@ -1967,7 +2052,7 @@ func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]as
 			return
 		}
 		p.nextToken()
-		value := p.parseLineExpressionUntil(lowestPrec, ast.TokenRescue)
+		value := p.parseParenlessArgumentExpression()
 		if value == nil {
 			return
 		}
@@ -1975,7 +2060,7 @@ func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]as
 		return
 	}
 
-	expr := p.parseLineExpressionUntil(lowestPrec, ast.TokenRescue)
+	expr := p.parseParenlessArgumentExpression()
 	if expr != nil {
 		*args = append(*args, expr)
 	}

@@ -91,10 +91,14 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 		if val.Kind() == KindRange {
 			return val, nil
 		}
+	case TypeSymbol:
+		if val.Kind() == KindSymbol {
+			return val, nil
+		}
 	case TypeShape:
 		return normalizeShapeForType(val, ty, ctx)
 	case TypeUnion:
-		for _, option := range ty.Union {
+		for _, option := range unionNormalizationOrder(ty.Union) {
 			normalized, err := normalizeValueForType(val, option, ctx)
 			if err == nil {
 				return normalized, nil
@@ -120,6 +124,27 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 		Expected: formatTypeExpr(ty),
 		Actual:   formatValueTypeExpr(val),
 	}
+}
+
+func unionNormalizationOrder(options []*TypeExpr) []*TypeExpr {
+	if len(options) < 2 {
+		return options
+	}
+	ordered := make([]*TypeExpr, 0, len(options))
+	for _, option := range options {
+		if option.Kind != TypeAny {
+			ordered = append(ordered, option)
+		}
+	}
+	if len(ordered) == len(options) {
+		return options
+	}
+	for _, option := range options {
+		if option.Kind == TypeAny {
+			ordered = append(ordered, option)
+		}
+	}
+	return ordered
 }
 
 func (ctx typeContext) checkSandbox(extra ...Value) error {
@@ -640,6 +665,25 @@ func lookupNamedTypeExact(ty *TypeExpr, ctx typeContext) (namedTypeMatch, bool, 
 	if ty.Kind != TypeEnum {
 		return namedTypeMatch{}, false, fmt.Errorf("unknown type %s", ty.Name)
 	}
+	if qualifier, enumName, qualified := strings.Cut(ty.Name, "."); qualified {
+		// A qualified name (Module.Enum) resolves through the module namespace
+		// only: a miss is a hard unknown-type error rather than a fold-lookup
+		// fallback, since dotted names are never stored as plain bindings.
+		enumDef, ok, err := lookupQualifiedEnumInEnv(ctx.env, qualifier, enumName)
+		if err != nil {
+			return namedTypeMatch{}, false, err
+		}
+		if !ok && ctx.fallback != ctx.env {
+			enumDef, ok, err = lookupQualifiedEnumInEnv(ctx.fallback, qualifier, enumName)
+			if err != nil {
+				return namedTypeMatch{}, false, err
+			}
+		}
+		if ok {
+			return namedTypeMatch{enum: enumDef}, true, nil
+		}
+		return namedTypeMatch{}, false, fmt.Errorf("unknown type %s", ty.Name)
+	}
 	match, ok := lookupNamedTypeInEnvExact(ctx.env, ty.Name)
 	if ok {
 		return match, true, nil
@@ -702,6 +746,50 @@ func validateTypeExprResolved(ty *TypeExpr, ctx typeContext) error {
 		}
 	}
 	return nil
+}
+
+func lookupQualifiedEnumInEnv(env *Env, qualifier, enumName string) (*EnumDef, bool, error) {
+	for scope := env; scope != nil; scope = scope.parent {
+		val, ok := scope.getOwn(qualifier)
+		if !ok {
+			continue
+		}
+		enumDef, ok, err := enumFromNamespaceValue(val, enumName)
+		if err != nil || ok {
+			return enumDef, ok, err
+		}
+	}
+	return nil, false, nil
+}
+
+func enumFromNamespaceValue(val Value, enumName string) (*EnumDef, bool, error) {
+	if val.Kind() != KindObject {
+		return nil, false, nil
+	}
+	entries := val.Hash()
+	if enumVal, ok := entries[enumName]; ok && enumVal.Kind() == KindEnum {
+		return valueEnum(enumVal), true, nil
+	}
+
+	var match *EnumDef
+	matches := make([]string, 0, 2)
+	for name, enumVal := range entries {
+		if enumVal.Kind() != KindEnum || !strings.EqualFold(name, enumName) {
+			continue
+		}
+		matches = append(matches, name)
+		if match == nil {
+			match = valueEnum(enumVal)
+			continue
+		}
+		if match != valueEnum(enumVal) {
+			return nil, false, ambiguousEnumTypeError(enumName, matches)
+		}
+	}
+	if match != nil {
+		return match, true, nil
+	}
+	return nil, false, nil
 }
 
 func lookupEnumDefExact(owner *Script, name string) (*EnumDef, bool) {

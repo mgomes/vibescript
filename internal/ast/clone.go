@@ -83,6 +83,10 @@ func cloneStatement(stmt Statement) Statement {
 	case *RaiseStmt:
 		clone := *s
 		clone.Value = cloneExpression(s.Value)
+		clone.Message = cloneExpression(s.Message)
+		return &clone
+	case *AliasStmt:
+		clone := *s
 		return &clone
 	case *AssignStmt:
 		clone := *s
@@ -139,8 +143,10 @@ func cloneStatement(stmt Statement) Statement {
 		return &clone
 	case *ClassStmt:
 		clone := *s
+		clone.Members = cloneClassMemberDecls(s.Members)
 		clone.Methods = cloneFunctionStmts(s.Methods)
 		clone.ClassMethods = cloneFunctionStmts(s.ClassMethods)
+		clone.Aliases = cloneAliasStmts(s.Aliases)
 		clone.Properties = clonePropertyDecls(s.Properties)
 		clone.Body = cloneStatements(s.Body)
 		return &clone
@@ -173,6 +179,40 @@ func cloneFunctionStmts(functions []*FunctionStmt) []*FunctionStmt {
 		out[i] = cloneFunctionStmt(fn)
 	}
 	return out
+}
+
+func cloneClassMemberDecls(members []ClassMemberDecl) []ClassMemberDecl {
+	if members == nil {
+		return nil
+	}
+	out := make([]ClassMemberDecl, len(members))
+	for i, member := range members {
+		out[i] = ClassMemberDecl{
+			Function: cloneFunctionStmt(member.Function),
+			Alias:    cloneAliasStmt(member.Alias),
+			Property: clonePropertyDeclPtr(member.Property),
+		}
+	}
+	return out
+}
+
+func cloneAliasStmts(aliases []*AliasStmt) []*AliasStmt {
+	if aliases == nil {
+		return nil
+	}
+	out := make([]*AliasStmt, len(aliases))
+	for i, alias := range aliases {
+		out[i] = cloneAliasStmt(alias)
+	}
+	return out
+}
+
+func cloneAliasStmt(alias *AliasStmt) *AliasStmt {
+	if alias == nil {
+		return nil
+	}
+	clone := *alias
+	return &clone
 }
 
 func cloneIfStmt(stmt *IfStmt) *IfStmt {
@@ -208,6 +248,14 @@ func clonePropertyDecls(properties []PropertyDecl) []PropertyDecl {
 		}
 	}
 	return out
+}
+
+func clonePropertyDeclPtr(property *PropertyDecl) *PropertyDecl {
+	if property == nil {
+		return nil
+	}
+	clone := clonePropertyDecls([]PropertyDecl{*property})
+	return &clone[0]
 }
 
 func cloneExpressions(expressions []Expression) []Expression {

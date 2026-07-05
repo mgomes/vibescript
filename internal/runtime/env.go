@@ -33,6 +33,7 @@ type Env struct {
 	arrayAppendBuffers map[string][]Value
 	assignBoundary     bool
 	rebindOuter        bool
+	classBody          bool
 
 	// frozen marks engine-shared scopes (the builtin proto). Their
 	// bindings are readable through the chain but never written:
@@ -103,6 +104,7 @@ func (e *Env) resetForBlockCall(parent *Env) {
 	e.arrayAppendBuffers = nil
 	e.assignBoundary = false
 	e.rebindOuter = false
+	e.classBody = false
 	e.frozen = false
 	e.callRoot = false
 	e.callBlock = Value{}
@@ -116,31 +118,68 @@ func (e *Env) Get(name string) (Value, bool) {
 		if !scope.frozen {
 			lastMutable = scope
 		}
-		if idx, ok := scope.inlineIndex(name); ok {
-			val := scope.inline[idx].value
-			if lazy, ok := lazyValue(val); ok {
-				val = lazy.materialize()
-				scope.inline[idx].value = val
-				scope.dropArrayAppendBuffer(name)
-			}
+		if val, ok := scope.getBoundValue(name, lastMutable); ok {
 			return val, true
 		}
-		if val, ok := scope.values[name]; ok {
-			if lazy, ok := lazyValue(val); ok {
-				val = lazy.materialize()
-				scope.values[name] = val
-				scope.dropArrayAppendBuffer(name)
-			}
+	}
+	return Value{}, false
+}
+
+func (e *Env) getCallLocal(name string) (Value, bool) {
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.callRoot || scope.frozen {
+			break
+		}
+		if val, ok := scope.getBoundValue(name, nil); ok {
 			return val, true
 		}
-		if val, ok := scope.statics[name]; ok {
-			if scope.frozen && lastMutable != nil && builtinNeedsCallClone(val) {
-				cloned := cloneBuiltinValueForCall(val)
-				lastMutable.DefineStatic(name, cloned)
-				return cloned, true
-			}
-			return val, true
+		if scope.classBody {
+			break
 		}
+	}
+	return Value{}, false
+}
+
+func (e *Env) hasCallLocalBinding(name string) bool {
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.callRoot || scope.frozen {
+			return false
+		}
+		if scope.hasOwnBinding(name) {
+			return true
+		}
+		if scope.classBody {
+			return false
+		}
+	}
+	return false
+}
+
+func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
+	if idx, ok := e.inlineIndex(name); ok {
+		val := e.inline[idx].value
+		if lazy, ok := lazyValue(val); ok {
+			val = lazy.materialize()
+			e.inline[idx].value = val
+			e.dropArrayAppendBuffer(name)
+		}
+		return val, true
+	}
+	if val, ok := e.values[name]; ok {
+		if lazy, ok := lazyValue(val); ok {
+			val = lazy.materialize()
+			e.values[name] = val
+			e.dropArrayAppendBuffer(name)
+		}
+		return val, true
+	}
+	if val, ok := e.statics[name]; ok {
+		if e.frozen && lastMutable != nil && builtinNeedsCallClone(val) {
+			cloned := cloneBuiltinValueForCall(val)
+			lastMutable.DefineStatic(name, cloned)
+			return cloned, true
+		}
+		return val, true
 	}
 	return Value{}, false
 }
@@ -483,6 +522,7 @@ func (e *Env) CloneShallow() *Env {
 	clone.hasCallBlock = e.hasCallBlock
 	clone.assignBoundary = e.assignBoundary
 	clone.rebindOuter = e.rebindOuter
+	clone.classBody = e.classBody
 	return clone
 }
 
@@ -532,6 +572,9 @@ func (e *Env) hasEnclosingLocalBinding(name string) bool {
 		}
 		if scope.hasOwnBinding(name) {
 			return true
+		}
+		if scope.classBody {
+			return false
 		}
 	}
 	return false

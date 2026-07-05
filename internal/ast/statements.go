@@ -27,11 +27,23 @@ func (s *ReturnStmt) Pos() Position { return s.Position }
 // RaiseStmt represents a raise statement that throws an error.
 type RaiseStmt struct {
 	Value    Expression
+	Message  Expression
 	Position Position
 }
 
 func (s *RaiseStmt) stmtNode()     {}
 func (s *RaiseStmt) Pos() Position { return s.Position }
+
+// AliasStmt represents a Ruby-style function or method alias declaration.
+type AliasStmt struct {
+	NewName  string
+	OldName  string
+	Method   bool
+	Position Position
+}
+
+func (s *AliasStmt) stmtNode()     {}
+func (s *AliasStmt) Pos() Position { return s.Position }
 
 // AssignStmt represents a variable assignment.
 type AssignStmt struct {
@@ -167,11 +179,20 @@ type PropertyName struct {
 	Type *TypeExpr
 }
 
+// ClassMemberDecl preserves the source order of class-level declarations.
+type ClassMemberDecl struct {
+	Function *FunctionStmt
+	Alias    *AliasStmt
+	Property *PropertyDecl
+}
+
 // ClassStmt represents a class definition.
 type ClassStmt struct {
 	Name         string
+	Members      []ClassMemberDecl
 	Methods      []*FunctionStmt
 	ClassMethods []*FunctionStmt
+	Aliases      []*AliasStmt
 	Properties   []PropertyDecl
 	Body         []Statement
 	Position     Position

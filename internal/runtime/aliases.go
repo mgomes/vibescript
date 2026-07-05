@@ -32,6 +32,7 @@ type (
 	FunctionStmt   = ast.FunctionStmt
 	ReturnStmt     = ast.ReturnStmt
 	RaiseStmt      = ast.RaiseStmt
+	AliasStmt      = ast.AliasStmt
 	AssignStmt     = ast.AssignStmt
 	LogicalStmt    = ast.LogicalStmt
 	ExprStmt       = ast.ExprStmt
@@ -108,6 +109,7 @@ const (
 	TypeArray    = ast.TypeArray
 	TypeHash     = ast.TypeHash
 	TypeRange    = ast.TypeRange
+	TypeSymbol   = ast.TypeSymbol
 	TypeFunction = ast.TypeFunction
 	TypeShape    = ast.TypeShape
 	TypeUnion    = ast.TypeUnion

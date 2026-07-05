@@ -30,6 +30,7 @@ type parser struct {
 	statementNesting           int
 	typeDepth                  int
 	localScopes                []localScope
+	parenlessArgDoStops        int
 
 	// shapeStructurallyInvalid records that the most recent parseTypeShape
 	// rejected a brace group whose field values all parsed as types but whose
