@@ -85,7 +85,7 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 
 	handles := make([]*taskHandle, len(items))
 	for i, item := range items {
-		handle, err := group.spawn(exec, functionName, []Value{item}, nil)
+		handle, err := group.spawnUnary(exec, functionName, item)
 		if err != nil {
 			group.cancel()
 			_ = group.closeAndWait()
@@ -137,6 +137,8 @@ type taskGroup struct {
 type taskJob struct {
 	functionName string
 	args         []Value
+	inlineArgs   [1]Value
+	inlineArg    bool
 	kwargs       map[string]Value
 	handle       *taskHandle
 }
@@ -259,8 +261,6 @@ func (group *taskGroup) spawn(exec *Execution, functionName string, args []Value
 	if err := group.err(); err != nil {
 		return nil, err
 	}
-	ctx := exec.Context()
-
 	taskArgs, err := cloneTaskArgs("tasks.spawn", args)
 	if err != nil {
 		return nil, err
@@ -270,6 +270,28 @@ func (group *taskGroup) spawn(exec *Execution, functionName string, args []Value
 		return nil, err
 	}
 
+	return group.enqueue(exec, functionName, taskArgs, Value{}, false, taskKwargs)
+}
+
+func (group *taskGroup) spawnUnary(exec *Execution, functionName string, arg Value) (*taskHandle, error) {
+	if group.isClosed() {
+		return nil, fmt.Errorf("task manager cannot be used after task scope exits")
+	}
+	if err := group.err(); err != nil {
+		return nil, err
+	}
+
+	taskArg, err := cloneTaskValue("Tasks.map item", arg)
+	if err != nil {
+		return nil, err
+	}
+
+	return group.enqueue(exec, functionName, nil, taskArg, true, nil)
+}
+
+func (group *taskGroup) enqueue(exec *Execution, functionName string, taskArgs []Value, inlineArg Value, hasInlineArg bool, taskKwargs map[string]Value) (*taskHandle, error) {
+	ctx := exec.Context()
+
 	handle := &taskHandle{
 		group: group,
 		done:  make(chan struct{}),
@@ -278,8 +300,12 @@ func (group *taskGroup) spawn(exec *Execution, functionName string, args []Value
 	job := &taskJob{
 		functionName: functionName,
 		args:         taskArgs,
+		inlineArg:    hasInlineArg,
 		kwargs:       taskKwargs,
 		handle:       handle,
+	}
+	if hasInlineArg {
+		job.inlineArgs[0] = inlineArg
 	}
 
 	group.retainJobPayload(job)
@@ -326,7 +352,7 @@ func (group *taskGroup) runJob(job *taskJob) {
 	}
 
 	opts := group.callOptionsForJob(job)
-	result, err := group.script.callWithLazyTaskGlobals(group.ctx, job.functionName, job.args, opts, group.lazyGlobalsForJob())
+	result, err := group.script.callWithLazyTaskGlobals(group.ctx, job.functionName, job.callArgs(), opts, group.lazyGlobalsForJob())
 	if err != nil {
 		taskErr := fmt.Errorf("task %s failed: %w", job.functionName, err)
 		group.recordErr(taskErr)
@@ -354,6 +380,13 @@ func (group *taskGroup) callOptionsForJob(job *taskJob) CallOptions {
 	opts.Globals = nil
 	opts.Keywords = job.kwargs
 	return opts
+}
+
+func (job *taskJob) callArgs() []Value {
+	if job.inlineArg {
+		return job.inlineArgs[:1]
+	}
+	return job.args
 }
 
 func (group *taskGroup) lazyGlobalsForJob() *taskLazyGlobals {
@@ -436,10 +469,17 @@ func (group *taskGroup) jobPayloadMemory(est *memoryEstimator) int {
 
 	total := 0
 	for job := range group.jobPayloads {
-		total += est.slice(job.args)
+		total += job.argsMemory(est)
 		total += est.hash(job.kwargs)
 	}
 	return total
+}
+
+func (job *taskJob) argsMemory(est *memoryEstimator) int {
+	if job.inlineArg {
+		return saturatingAdd(sliceStructuralBytes(job.inlineArgs[:1]), est.value(job.inlineArgs[0]))
+	}
+	return est.slice(job.args)
 }
 
 func (group *taskGroup) retainedResultMemory(est *memoryEstimator) int {
@@ -596,7 +636,19 @@ func cloneTaskKwargs(method string, kwargs map[string]Value) (map[string]Value, 
 }
 
 func cloneTaskResult(functionName string, result Value) (Value, error) {
+	if taskImmutableDataValue(result) {
+		return result, nil
+	}
 	return cloneTaskValue(fmt.Sprintf("task %s return value", functionName), result)
+}
+
+func taskImmutableDataValue(val Value) bool {
+	switch val.Kind() {
+	case KindNil, KindBool, KindInt, KindFloat, KindString, KindMoney, KindDuration, KindTime, KindSymbol, KindRange, KindRegex:
+		return true
+	default:
+		return false
+	}
 }
 
 func cloneTaskGlobals(globals map[string]Value) map[string]Value {
@@ -900,6 +952,9 @@ func (cloner *taskGlobalCloner) rebuildHash(src Value, clonedEntries map[string]
 }
 
 func cloneTaskValue(label string, val Value) (Value, error) {
+	if taskImmutableDataValue(val) {
+		return val, nil
+	}
 	if err := validateCapabilityDataOnlyValue(label, val); err != nil {
 		return NewNil(), err
 	}

@@ -2,7 +2,6 @@ package value
 
 import (
 	"math"
-	"reflect"
 	"time"
 	"unsafe"
 )
@@ -65,9 +64,14 @@ func NewHash(h map[string]Value) Value {
 // NewTypedHash returns a hash with typed-key storage and no materialized legacy
 // string-key map. Hash() materializes that map lazily for legacy callers.
 func NewTypedHash(capacity int) Value {
+	var order []HashLookupKey
+	if capacity > 0 {
+		order = make([]HashLookupKey, 0, capacity)
+	}
 	return Value{kind: KindHash, data: &hashData{
 		typedEntries:       make(map[HashLookupKey]HashEntry, capacity),
 		typedEntryCapacity: capacity,
+		order:              order,
 	}}
 }
 
@@ -136,7 +140,7 @@ func HashIdentity(v Value) uintptr {
 		return 0
 	}
 	if hd, ok := v.data.(*hashData); ok {
-		return reflect.ValueOf(hd).Pointer()
+		return uintptr(unsafe.Pointer(hd))
 	}
 	return 0
 }

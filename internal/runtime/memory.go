@@ -204,6 +204,18 @@ func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []V
 	return nil
 }
 
+func (exec *Execution) checkMemoryWithPositionalCallRoots(receiver, arg0, arg1 Value, argCount int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	used := exec.estimateMemoryUsageForPositionalCallRoots(NewNil(), receiver, arg0, arg1, argCount, NewNil())
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 // checkAccumulatorWithCallRoots rejects a fold step whose running accumulator,
 // together with the builtin's live call roots and any extra Go-local values that
 // coexist with it at the step's peak, would exceed the memory quota. Builtins
@@ -291,6 +303,20 @@ func (exec *Execution) checkProjectedStringBytesWithCallRoots(payloadBytes int, 
 	}
 
 	used := exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
+	used = saturatingAdd(used, payloadBytes)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
+func (exec *Execution) checkProjectedStringBytesWithPositionalCallRoots(payloadBytes int, receiver, arg0, arg1 Value, argCount int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	used := exec.estimateMemoryUsageForPositionalCallRoots(NewNil(), receiver, arg0, arg1, argCount, NewNil())
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
 	if used > exec.memoryQuota {
@@ -403,6 +429,36 @@ func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int,
 	}
 	used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
 	used = saturatingAdd(used, saturatingMul(count, estimatedValueBytes))
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
+// checkProjectedArrayBytesWithCallRoots rejects an array result whose slot
+// backing and precomputed retained element payload would exceed the quota while
+// the builtin's receiver, arguments, keyword arguments, and block are live.
+func (exec *Execution) checkProjectedArrayBytesWithCallRoots(slotCount, payloadBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	used := exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
+	used = saturatingAdd(used, payloadBytes)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
+func (exec *Execution) checkProjectedArrayBytesWithPositionalCallRoots(slotCount, payloadBytes int, receiver, arg0, arg1 Value, argCount int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	used := exec.estimateMemoryUsageForPositionalCallRoots(NewNil(), receiver, arg0, arg1, argCount, NewNil())
+	used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
+	used = saturatingAdd(used, payloadBytes)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
@@ -1665,6 +1721,31 @@ func (exec *Execution) estimateMemoryUsageForCallRoots(callee, receiver Value, a
 	}
 	for _, kwarg := range kwargs {
 		total += est.value(kwarg)
+	}
+	if !block.IsNil() {
+		total += est.value(block)
+	}
+
+	est.reset()
+	return total
+}
+
+func (exec *Execution) estimateMemoryUsageForPositionalCallRoots(callee, receiver, arg0, arg1 Value, argCount int, block Value) int {
+	est := exec.memoryEstimatorForCheck()
+
+	total := exec.estimateMemoryUsageBase(est)
+
+	if callee.Kind() != KindNil {
+		total += est.value(callee)
+	}
+	if receiver.Kind() != KindNil {
+		total += est.value(receiver)
+	}
+	if argCount > 0 {
+		total += est.value(arg0)
+	}
+	if argCount > 1 {
+		total += est.value(arg1)
 	}
 	if !block.IsNil() {
 		total += est.value(block)

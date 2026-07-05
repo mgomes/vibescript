@@ -174,6 +174,7 @@ func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
 		return val, true
 	}
 	if val, ok := e.statics[name]; ok {
+		val = e.materializeStatic(name, val)
 		if e.frozen && lastMutable != nil && builtinNeedsCallClone(val) {
 			cloned := cloneBuiltinValueForCall(val)
 			lastMutable.DefineStatic(name, cloned)
@@ -211,6 +212,7 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 			return val, true
 		}
 		if val, ok := scope.statics[name]; ok {
+			val = scope.materializeStatic(name, val)
 			if scope.frozen && lastMutable != nil && builtinNeedsCallClone(val) {
 				cloned := cloneBuiltinValueForCall(val)
 				lastMutable.DefineStatic(name, cloned)
@@ -589,6 +591,9 @@ func (e *Env) hasAmbientAssignmentBinding(name string) bool {
 			return true
 		}
 		if val, ok := scope.statics[name]; ok {
+			if _, lazy := lazyValue(val); lazy {
+				return false
+			}
 			return val.Kind() != KindFunction
 		}
 	}
@@ -603,7 +608,7 @@ func (e *Env) getOwn(name string) (Value, bool) {
 		return val, true
 	}
 	if val, ok := e.statics[name]; ok {
-		return val, true
+		return e.materializeStatic(name, val), true
 	}
 	return Value{}, false
 }
@@ -675,8 +680,18 @@ func (e *Env) rangeDynamicBindings(visit func(string, Value)) {
 
 func (e *Env) rangeStaticBindings(visit func(string, Value)) {
 	for name, val := range e.statics {
-		visit(name, val)
+		visit(name, e.materializeStatic(name, val))
 	}
+}
+
+func (e *Env) materializeStatic(name string, val Value) Value {
+	lazy, ok := lazyValue(val)
+	if !ok {
+		return val
+	}
+	materialized := lazy.materialize()
+	e.statics[name] = materialized
+	return materialized
 }
 
 func (e *Env) dropStatic(name string) {

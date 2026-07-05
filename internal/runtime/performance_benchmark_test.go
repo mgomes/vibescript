@@ -96,6 +96,27 @@ end`)
 	}
 }
 
+func BenchmarkCallManyUnusedFunctions(b *testing.B) {
+	var source strings.Builder
+	for i := range 200 {
+		source.WriteString("def helper_")
+		source.WriteString(strconv.Itoa(i))
+		source.WriteString("\n  ")
+		source.WriteString(strconv.Itoa(i))
+		source.WriteString("\nend\n\n")
+	}
+	source.WriteString("def run\n  1\nend\n")
+	script := compileScriptWithEngine(b, benchmarkEngine(), source.String())
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
 func BenchmarkCallControlFlowWorkload(b *testing.B) {
 	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(limit)
   i = 0

@@ -118,6 +118,14 @@ func TestHashOrderCapacity(t *testing.T) {
 		t.Fatalf("ReserveTypedHashOrder() order capacity = %d, want 3", got)
 	}
 
+	newTypedReserved := value.NewTypedHash(3)
+	if got := value.HashTypedEntryCapacity(newTypedReserved); got != 3 {
+		t.Fatalf("NewTypedHash(3) typed entry capacity = %d, want 3", got)
+	}
+	if got := value.HashOrderCapacity(newTypedReserved); got != 3 {
+		t.Fatalf("NewTypedHash(3) order capacity = %d, want 3", got)
+	}
+
 	grownTyped := value.NewTypedHash(0)
 	if err := grownTyped.HashSet(value.NewSymbol("a"), value.NewInt(1)); err != nil {
 		t.Fatalf("HashSet(a) error = %v, want nil", err)

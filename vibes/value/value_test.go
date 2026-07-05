@@ -255,6 +255,23 @@ func TestTypedHashMaterializesLegacyMapLazily(t *testing.T) {
 	}
 }
 
+func TestTypedHashMaterializedLegacyMapUsesInsertionOrder(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewTypedHash(2)
+	if err := hash.HashSet(value.NewSymbol("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(:a) error = %v", err)
+	}
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(9)); err != nil {
+		t.Fatalf("HashSet(\"a\") error = %v", err)
+	}
+
+	entries := hash.Hash()
+	if got := entries["a"]; !got.Equal(value.NewInt(9)) {
+		t.Fatalf("Hash()[\"a\"] = %s, want 9", got.Inspect())
+	}
+}
+
 func TestScalarValueData(t *testing.T) {
 	t.Parallel()
 

@@ -233,7 +233,9 @@ func typedHashEntryMapBytes(count int) int {
 }
 
 func typedHashTransformBufferBytes(outputEntries, scratchBytes int) int {
-	return saturatingAdd(hashTransformBufferBytes(outputEntries, scratchBytes), typedHashEntryMapBytes(outputEntries))
+	bytes := estimatedValueBytes + estimatedHashDataBytes
+	bytes = saturatingAdd(bytes, typedHashEntryMapBytes(outputEntries))
+	return saturatingAdd(bytes, scratchBytes)
 }
 
 func legacyTransformKeysBufferBytes(outputEntries, scratchBytes int) int {
@@ -248,35 +250,42 @@ func (exec *Execution) checkProjectedTypedHashBytes(count int, receiver Value, a
 }
 
 func (exec *Execution) checkProjectedTypedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	extraBytes := saturatingAdd(scratchBytes, typedHashEntryMapBytes(outputEntries))
-	return exec.checkProjectedHashTransformBytes(outputEntries, extraBytes, receiver, args, kwargs, block)
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
+	used = saturatingAdd(used, typedHashTransformBufferBytes(outputEntries, scratchBytes))
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
 }
 
 func (exec *Execution) maxProjectedTypedHashEntries(scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
 	if exec.memoryQuota <= 0 {
 		return math.MaxInt
 	}
-	used := saturatingAdd(exec.projectedHashBaseBytes(receiver, args, kwargs, block), scratchBytes)
+	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
+	used = saturatingAdd(used, scratchBytes)
+	used = saturatingAdd(used, estimatedValueBytes+estimatedHashDataBytes+estimatedMapBaseBytes)
 	if used >= exec.memoryQuota {
 		return 0
 	}
-	typedBase := estimatedMapBaseBytes + estimatedSliceBaseBytes
-	if saturatingAdd(used, typedBase) > exec.memoryQuota {
+	if saturatingAdd(used, estimatedSliceBaseBytes) > exec.memoryQuota {
 		return 0
 	}
-	perEntry := estimatedMapEntryStructuralBytes + estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
-	return (exec.memoryQuota - used - typedBase) / perEntry
+	perEntry := estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
+	return (exec.memoryQuota - used - estimatedSliceBaseBytes) / perEntry
 }
 
 func newTypedResultHash(capacity int) Value {
-	out := NewHash(make(map[string]Value, capacity))
-	out.ReserveTypedHashOrder(capacity)
-	return out
+	return NewTypedHash(capacity)
 }
 
 func newTypedHashPreservingDefault(receiver Value, capacity int) Value {
-	out := newHashPreservingDefault(receiver, make(map[string]Value, capacity))
-	out.ReserveTypedHashOrder(capacity)
+	out := NewTypedHash(capacity)
+	out.SetHashDefaults(hashDefaultValue(receiver), hashDefaultProc(receiver))
 	return out
 }
 
@@ -1915,6 +1924,10 @@ func hashMemberTransforms(property string) (Value, error) {
 			if _, err := canonicalHashKey(args[0]); err != nil {
 				return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
 			}
+			storeDisplayKey, err := valueToHashKey(args[0])
+			if err != nil {
+				return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
+			}
 			// Vibescript's method-based hash helpers are immutable-style: store
 			// returns a new hash with the key assigned rather than mutating the
 			// receiver, matching merge and the array collection helpers.
@@ -1925,10 +1938,13 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Sizing the projection by the existing-key case avoids rejecting an
 			// in-place-style update that fits a quota tuned to the receiver's size.
 			projected := receiver.HashLen()
+			storeKeyExists := false
 			if _, exists, err := hashGet(receiver, args[0]); err != nil {
 				return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
 			} else if !exists {
 				projected = saturatingAdd(projected, 1)
+			} else {
+				storeKeyExists = true
 			}
 			if err := exec.checkProjectedTypedHashBytes(projected, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
@@ -1939,15 +1955,36 @@ func hashMemberTransforms(property string) (Value, error) {
 			// cancellation, matching replace, compact, and slice. The output tracks
 			// insertion order, so a bare receiver is copied in sorted key order to
 			// keep a documented-sorted host map deterministic after the store.
+			typedReceiver := hashHasTypedEntries(receiver)
+			storeReplaced := false
 			var entryBuf [smallHashKeyBufferSize]HashEntry
 			for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
+				if !typedReceiver && storeKeyExists {
+					entryDisplayKey, err := valueToHashKey(entry.Key)
+					if err != nil {
+						return NewNil(), fmt.Errorf("hash.store stored key is unsupported hash key: %w", err)
+					}
+					if entryDisplayKey == storeDisplayKey {
+						// Store the new value at the entry's position so an
+						// existing key keeps its place in the result order,
+						// matching the typed-receiver path and Ruby's
+						// position-preserving Hash#store.
+						if err := hashSet(out, args[0], args[1]); err != nil {
+							return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
+						}
+						storeReplaced = true
+						continue
+					}
+				}
 				setClonedHashEntry(out, entry.Key, entry.Value)
 			}
-			if err := hashSet(out, args[0], args[1]); err != nil {
-				return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
+			if !storeReplaced {
+				if err := hashSet(out, args[0], args[1]); err != nil {
+					return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
+				}
 			}
 			return out, nil
 		}), nil
