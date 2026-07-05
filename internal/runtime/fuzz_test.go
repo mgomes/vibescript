@@ -72,6 +72,8 @@ func FuzzParserSuccessfulProgramsHaveCompleteAST(f *testing.F) {
 		"def run()\n  x = for value in [1]\n    value\n  end\nend",
 		"def run()\n  x = begin\n    1\n  rescue\n    2\n  end\nend",
 		"def run()\n  1 rescue 2\nend",
+		"0..",
+		"def run()\n  x = 5..\n  y = ..5\n  [x, y]\nend",
 	} {
 		f.Add(seed)
 	}
@@ -1084,8 +1086,33 @@ func validateFuzzStatement(context string, stmt Statement) error {
 					}
 				}
 			}
+			if member.Visibility != nil {
+				set++
+				if member.Visibility.Level == "" {
+					return fmt.Errorf("%s.members[%d].visibility level is empty", context, i)
+				}
+			}
+			if member.Mixin != nil {
+				set++
+				if member.Mixin.Kind == "" {
+					return fmt.Errorf("%s.members[%d].mixin kind is empty", context, i)
+				}
+				if len(member.Mixin.Modules) == 0 {
+					return fmt.Errorf("%s.members[%d].mixin has no modules", context, i)
+				}
+				for j, ref := range member.Mixin.Modules {
+					if ref.Name == "" {
+						return fmt.Errorf("%s.members[%d].mixin.modules[%d] name is empty", context, i, j)
+					}
+				}
+			}
 			if set != 1 {
 				return fmt.Errorf("%s.members[%d] must contain exactly one declaration", context, i)
+			}
+		}
+		for i, module := range s.Modules {
+			if err := validateFuzzStatement(fmt.Sprintf("%s.modules[%d]", context, i), module); err != nil {
+				return err
 			}
 		}
 		for i, method := range s.Methods {
@@ -1193,9 +1220,8 @@ func validateFuzzExpression(context string, expr Expression) error {
 	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *RegexLiteral:
 		return nil
 	case *SymbolLiteral:
-		if e.Name == "" {
-			return fmt.Errorf("%s symbol name is empty", context)
-		}
+		// The quoted form :"" is a legal empty symbol, matching Ruby, so an
+		// empty name is a valid parse.
 		return nil
 	case *ArrayLiteral:
 		for i, elem := range e.Elements {
@@ -1224,10 +1250,17 @@ func validateFuzzExpression(context string, expr Expression) error {
 			}
 		}
 		for i, arg := range e.KwArgs {
-			if arg.Name == "" {
-				return fmt.Errorf("%s.kwargs[%d] name is empty", context, i)
+			// A keyword splat (**opts) is stored as a keyword argument with
+			// an empty name; named keyword arguments must keep theirs.
+			if arg.Name == "" && arg.Value == nil {
+				return fmt.Errorf("%s.kwargs[%d] has neither name nor value", context, i)
 			}
 			if err := validateFuzzExpression(fmt.Sprintf("%s.kwargs[%d].value", context, i), arg.Value); err != nil {
+				return err
+			}
+		}
+		if e.BlockArg != nil {
+			if err := validateFuzzExpression(context+".block_arg", e.BlockArg); err != nil {
 				return err
 			}
 		}
@@ -1263,6 +1296,11 @@ func validateFuzzExpression(context string, expr Expression) error {
 					return fmt.Errorf("%s.elements[%d] has duplicate rest target", context, i)
 				}
 				seenRest = true
+				// A bare rest (`* = expr`, `a, * = ...`) discards the
+				// matched values, so its target is intentionally nil.
+				if element.Target == nil {
+					continue
+				}
 			}
 			if err := validateFuzzExpression(fmt.Sprintf("%s.elements[%d].target", context, i), element.Target); err != nil {
 				return err
@@ -1328,9 +1366,25 @@ func validateFuzzExpression(context string, expr Expression) error {
 		return validateFuzzStatement(context, e)
 	case *TryStmt:
 		return validateFuzzStatement(context, e)
+	case *SplatArg:
+		if e.Value == nil {
+			return fmt.Errorf("%s splat argument has no value", context)
+		}
+		return validateFuzzExpression(context+".value", e.Value)
 	case *RangeExpr:
-		if err := validateFuzzExpression(context+".start", e.Start); err != nil {
-			return err
+		// Beginless (..n) and endless (n..) ranges intentionally leave the
+		// open endpoint nil. A bare .. is a parse error, so a range with
+		// neither endpoint still fails validation.
+		if e.Start == nil && e.End == nil {
+			return fmt.Errorf("%s range has neither endpoint", context)
+		}
+		if e.Start != nil {
+			if err := validateFuzzExpression(context+".start", e.Start); err != nil {
+				return err
+			}
+		}
+		if e.End == nil {
+			return nil
 		}
 		return validateFuzzExpression(context+".end", e.End)
 	case *CaseExpr:
