@@ -374,7 +374,8 @@ func normalizeHashForType(val Value, ty *TypeExpr, ctx typeContext) (Value, erro
 }
 
 func normalizeTypedHashForType(val Value, ty, keyType, valueType *TypeExpr, ctx typeContext) (Value, error) {
-	entries := val.HashEntries()
+	var entryBuf [smallHashKeyBufferSize]HashEntry
+	entries := val.HashEntriesInto(entryBuf[:])
 
 	defaultProc := hashDefaultProc(val)
 	if !defaultProc.IsNil() {
