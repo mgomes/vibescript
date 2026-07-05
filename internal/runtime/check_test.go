@@ -3138,6 +3138,785 @@ end
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Missing")
 }
 
+func TestCheckWarningsFlagUndefinedNameInFunctionBody(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  missing_name
+end
+`)
+
+	requireCheckWarningContains(t, script, "undefined variable missing_name")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "undefined variable missing_name")
+}
+
+func TestCheckWarningsFlagUndefinedFunctionCallInFunctionBody(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  helper(1)
+end
+`)
+
+	requireCheckWarningContains(t, script, "undefined variable helper")
+}
+
+func TestCheckWarningsFlagTypoedLocalReference(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  count = 1
+  countr + 1
+end
+`)
+
+	requireCheckWarningContains(t, script, "undefined variable countr")
+}
+
+func TestCheckWarningsFlagUndefinedNameInTopLevelSnippet(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	script, err := engine.CompileSnippet("missing_name\n", "run")
+	if err != nil {
+		t.Fatalf("CompileSnippet failed: %v", err)
+	}
+
+	requireCheckWarningContains(t, script, "undefined variable missing_name")
+}
+
+func TestCheckWarningsForCallFlagUndefinedNamesOnExecutionPath(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  missing_name
+end
+`)
+
+	warnings := script.CheckWarningsForCall("run", nil, CallOptions{})
+	found := false
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "undefined variable missing_name") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CheckWarningsForCall() = %#v, want undefined variable missing_name", warnings)
+	}
+}
+
+func TestCheckOrderIndependentWarningsCoverUncalledFunctions(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	script, err := engine.CompileSnippet(`
+def uncalled()
+  missing_name
+end
+`, "run")
+	if err != nil {
+		t.Fatalf("CompileSnippet failed: %v", err)
+	}
+
+	if warnings := script.CheckWarningsForCall("run", nil, CallOptions{}); len(warnings) > 0 {
+		t.Fatalf("CheckWarningsForCall() = %#v, want none for the empty entrypoint", warnings)
+	}
+	warnings := script.CheckOrderIndependentWarnings()
+	if len(warnings) != 1 || !strings.Contains(warnings[0].Message, "undefined variable missing_name") {
+		t.Fatalf("CheckOrderIndependentWarnings() = %#v, want undefined variable missing_name", warnings)
+	}
+}
+
+func TestCheckOrderIndependentWarningsDropStateSensitiveWarnings(t *testing.T) {
+	t.Parallel()
+
+	// The Missing annotation is a state-sensitive warning (a host global or a
+	// require executed elsewhere could bind it), so the order-independent
+	// subset must not include it.
+	script := compileScript(t, `
+def accept(v: Missing) -> Missing
+  v
+end
+`)
+
+	requireCheckWarningContains(t, script, "unknown type Missing")
+	if warnings := script.CheckOrderIndependentWarnings(); len(warnings) > 0 {
+		t.Fatalf("CheckOrderIndependentWarnings() = %#v, want none", warnings)
+	}
+}
+
+func TestCheckWarningsFlagBareErrorClassNameOutsideRaise(t *testing.T) {
+	t.Parallel()
+
+	// Canonical error class names resolve without an env binding only in the
+	// raise class position; everywhere else the runtime raises undefined
+	// variable, so the checker mirrors that.
+	script := compileScript(t, `
+def classify(err)
+  case err
+  when TypeError
+    "type"
+  else
+    "other"
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "undefined variable TypeError")
+}
+
+func TestCheckWarningsResolveRaiseErrorClassAndMessageNames(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  raise RuntimeError, "boom"
+end
+`))
+}
+
+func TestCheckWarningsResolveRequiredModuleExportNames(t *testing.T) {
+	t.Parallel()
+
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "mathx.vibe"), []byte(`export def double(x)
+  x * 2
+end
+
+export def triple(x)
+  x * 3
+end
+`), 0o644); err != nil {
+		t.Fatalf("write mathx module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+
+	// Requires bind exports into the call root at runtime, so exports are
+	// legal references from any function, not only the one that requires.
+	requireNoCheckWarnings(t, compileScriptWithEngine(t, engine, `
+def run()
+  require("mathx")
+  double(2)
+end
+
+def helper()
+  triple(3)
+end
+`))
+}
+
+func TestCheckWarningsResolveRequiredModuleAliasNames(t *testing.T) {
+	t.Parallel()
+
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "mathx.vibe"), []byte(`export def double(x)
+  x * 2
+end
+`), 0o644); err != nil {
+		t.Fatalf("write mathx module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+
+	requireNoCheckWarnings(t, compileScriptWithEngine(t, engine, `
+def run()
+  require("mathx", as: "MathX")
+  MathX.double(2)
+end
+
+def alias_value()
+  MathX
+end
+`))
+}
+
+func TestCheckWarningsSuppressUndefinedNamesAfterNonStaticRequireAlias(t *testing.T) {
+	t.Parallel()
+
+	// An as: alias that is not a string or symbol literal cannot be folded
+	// statically, so the script opts out of undefined-name checking exactly
+	// like a dynamic require target.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run(alias_name)
+  require("mathx", as: alias_name)
+  something_from_module
+end
+`))
+}
+
+func TestCheckWarningsSeeRequiresInsideNextValues(t *testing.T) {
+	t.Parallel()
+
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "mathx.vibe"), []byte(`export def double(x)
+  x * 2
+end
+`), 0o644); err != nil {
+		t.Fatalf("write mathx module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+
+	// A require reached only through a next value still binds its exports
+	// for the whole script.
+	requireNoCheckWarnings(t, compileScriptWithEngine(t, engine, `
+def run()
+  i = 0
+  while i < 1
+    i += 1
+    next require("mathx")
+  end
+  double(2)
+end
+`))
+}
+
+func TestCheckWarningsRespectNextValueBindings(t *testing.T) {
+	t.Parallel()
+
+	// A statement-expression in a next value binds locals in the enclosing
+	// scope; the union model must include them.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  i = 0
+  while i < 3
+    i += 1
+    if i > 1
+      puts captured
+    end
+    next begin
+      captured = i
+    end
+  end
+end
+`))
+}
+
+func TestCheckWarningsSuppressUndefinedNamesAfterDynamicRequire(t *testing.T) {
+	t.Parallel()
+
+	// A require whose module name is not statically resolvable can bind
+	// arbitrary export names, so the whole script opts out of the check.
+	requireNoCheckWarnings(t, compileScript(t, `
+def load_it(name)
+  require(name)
+  something_from_module
+end
+`))
+}
+
+func TestCheckWarningsResolveBuiltinAndKernelNames(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  puts "hi"
+  print "x"
+  values = [rand, now, uuid, JSON.stringify({a: 1})]
+  if block_given?
+    yield values
+  end
+  values
+end
+`))
+}
+
+func TestCheckWarningsResolveEnumAndClassNamesForwardReferences(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  point = Point.new(1, 2)
+  [Status::Draft, Status.values, point.sum, later(1)]
+end
+
+def later(x)
+  x + 1
+end
+
+enum Status
+  Draft
+  Live
+end
+
+class Point
+  property x
+  property y
+
+  def initialize(x, y)
+    @x = x
+    @y = y
+  end
+
+  def sum
+    x + y
+  end
+end
+`))
+}
+
+func TestCheckWarningsResolveImplicitSelfMembers(t *testing.T) {
+	t.Parallel()
+
+	// Methods and class bodies run with self bound, so bare identifiers can
+	// resolve through implicit self member lookup the checker cannot model.
+	requireNoCheckWarnings(t, compileScript(t, `
+class Greeter
+  getter name
+
+  register_defaults
+
+  def self.register_defaults
+    "registered"
+  end
+
+  def initialize(name)
+    @name = name
+  end
+
+  def greet
+    prefix + name
+  end
+
+  def prefix
+    "hello "
+  end
+
+  def keep_self
+    self
+  end
+
+  def self.build
+    default_label
+  end
+
+  def self.default_label
+    "greeter"
+  end
+end
+`))
+}
+
+func TestCheckWarningsResolveRescueBindingsAndSkippedClauseLocals(t *testing.T) {
+	t.Parallel()
+
+	// Locals from the begin body and from every rescue clause are predeclared
+	// once the statement completes, and a later clause sees the (skipped)
+	// earlier clauses' locals as nils, mirroring the runtime.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  begin
+    risky = 1
+  rescue TypeError => te
+    first_fallback = te
+  rescue RuntimeError => e
+    second_fallback = [e, first_fallback]
+  end
+  [risky, first_fallback, second_fallback]
+end
+`))
+}
+
+func TestCheckWarningsResolveBlockParameterNames(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1, 2].each do |v|
+    puts v
+  end
+  pairs = [[1, 2]].map do |(a, b)|
+    a + b
+  end
+  doubled = [3].map { _1 * 2 }
+  bumped = [4].map { it + 1 }
+  [pairs, doubled, bumped]
+end
+`))
+}
+
+func TestCheckWarningsResolveLocalBindingForms(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  lazy ||= 3
+  a, b = [1, 2]
+  for i in [1, 2]
+    puts i
+  end
+  [lazy, a, b, i]
+end
+`))
+}
+
+func TestCheckWarningsRespectLocalsBoundLaterInBody(t *testing.T) {
+	t.Parallel()
+
+	// The union model predeclares every name a body can bind, so a read
+	// before the assignment stays silent even though the runtime fails on
+	// that path. The over-approximation only ever suppresses warnings.
+	engine := MustNewEngine(Config{})
+	script, err := engine.CompileSnippet(`
+puts value
+value = 1
+`, "run")
+	if err != nil {
+		t.Fatalf("CompileSnippet failed: %v", err)
+	}
+
+	requireNoCheckWarnings(t, script)
+}
+
+func TestCheckWarningsForCallResolveCallTimeHostGlobals(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  host_value
+end
+`)
+
+	// Without the host's options the reference cannot resolve.
+	requireCheckWarningContains(t, script, "undefined variable host_value")
+
+	// Hosts check with the same options they later pass to Call; a name
+	// supplied through CallOptions.Globals must never be reported.
+	opts := CallOptions{Globals: map[string]Value{"host_value": NewInt(7)}}
+	if warnings := script.CheckWarningsForCall("run", nil, opts); len(warnings) > 0 {
+		t.Fatalf("CheckWarningsForCall() = %#v, want none with host global", warnings)
+	}
+	requireNoCheckWarningsWithOptions(t, script, opts)
+
+	got, err := script.Call(context.Background(), "run", nil, opts)
+	if err != nil {
+		t.Fatalf("Call() with host global returned error: %v", err)
+	}
+	if !got.Equal(NewInt(7)) {
+		t.Fatalf("Call() with host global = %s, want 7", got)
+	}
+}
+
+func TestCheckWarningsResolveCapabilityGlobalsFromOptions(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  ctx
+end
+`)
+
+	requireCheckWarningContains(t, script, "undefined variable ctx")
+	requireNoCheckWarningsWithOptions(t, script, CallOptions{
+		Capabilities: []CapabilityAdapter{checkOptionGlobalsCapability{"ctx": NewString("host")}},
+	})
+}
+
+func TestCheckWarningsFlagLiteralArrayBlockParamTypeMismatch(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  ["x"].map do |value: int|
+    value
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "argument value expected int, got string")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "argument value expected int, got string")
+}
+
+func TestCheckWarningsFlagLiteralArrayBlockParamMismatchOnAnyElement(t *testing.T) {
+	t.Parallel()
+
+	// The runtime fails on the first yielded element that misses the
+	// annotation, so one contradicting element is enough.
+	script := compileScript(t, `
+def run()
+  [1, "x"].each do |v: int|
+    v
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "argument v expected int, got string")
+}
+
+func TestCheckWarningsFlagLiteralArrayBlockParamMismatchAcrossIterators(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{"each", "map", "select", "reject", "find"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+def run()
+  ["x"].`+method+` do |v: int|
+    v
+  end
+end
+`)
+			requireCheckWarningContains(t, script, "argument v expected int, got string")
+		})
+	}
+}
+
+func TestCheckWarningsSkipLaterFindElements(t *testing.T) {
+	t.Parallel()
+
+	// find stops yielding on the first truthy block result, so only the
+	// first element is guaranteed to reach the annotation check.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1, "x"].find do |v: int|
+    v > 0
+  end
+end
+`))
+
+	script := compileScript(t, `
+def run()
+  ["x", 1].find do |v: int|
+    v > 0
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "argument v expected int, got string")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "argument v expected int, got string")
+}
+
+func TestCheckWarningsSkipLaterElementsWhenBlockCanEscape(t *testing.T) {
+	t.Parallel()
+
+	// A break, return, or raise in the body can end the iteration before a
+	// later mismatched element is yielded, so those bodies only pin the
+	// first element.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1, "x"].each do |v: int|
+    break
+  end
+end
+`))
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1, "x"].each do |v: int|
+    return v
+  end
+end
+`))
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  begin
+    [1, "x"].each do |v: int|
+      raise RuntimeError, "stop"
+    end
+  rescue => e
+    e
+  end
+end
+`))
+
+	// The first element is always yielded, so a mismatch there still warns
+	// even when the body can escape.
+	script := compileScript(t, `
+def run()
+  ["x", 1].each do |v: int|
+    break
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "argument v expected int, got string")
+}
+
+func TestCheckWarningsKeepLaterElementsWhenBlockOnlySkips(t *testing.T) {
+	t.Parallel()
+
+	// next moves to the following iteration without ending it, so every
+	// element is still yielded and later mismatches stay flagged.
+	script := compileScript(t, `
+def run()
+  [1, "x"].each do |v: int|
+    next
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "argument v expected int, got string")
+}
+
+func TestCheckWarningsFlagLiteralArrayBlockParamFloatIntMismatch(t *testing.T) {
+	t.Parallel()
+
+	// Block parameter contracts do not coerce int to float, so the checker
+	// mirrors the runtime rejection.
+	script := compileScript(t, `
+def run()
+  [1].map do |v: float|
+    v
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "argument v expected float, got int")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "argument v expected float, got int")
+}
+
+func TestCheckWarningsFlagEachWithIndexBlockParamMismatches(t *testing.T) {
+	t.Parallel()
+
+	element := compileScript(t, `
+def run()
+  ["x"].each_with_index do |v: int, i: int|
+    [v, i]
+  end
+end
+`)
+	requireCheckWarningContains(t, element, "argument v expected int, got string")
+
+	index := compileScript(t, `
+def run()
+  [1].each_with_index do |v: int, i: string|
+    [v, i]
+  end
+end
+`)
+	requireCheckWarningContains(t, index, "argument i expected string, got int")
+	requireCallErrorContains(t, index, "run", nil, CallOptions{}, "argument i expected string, got int")
+}
+
+func TestCheckWarningsSkipBlockParamTypesForNonLiteralReceivers(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run(xs)
+  xs.map do |v: int|
+    v
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForCompatibleUnions(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1, "x"].each do |v: int | string|
+    v
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForDestructuredParams(t *testing.T) {
+	t.Parallel()
+
+	// Array elements destructure into the parenthesized targets, so the
+	// element parameter shape no longer matches a single scalar yield.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [[1, 2]].map do |(a: int, b: int)|
+    a + b
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForUntypedParams(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  ["x"].map do |v|
+    v
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForUserDefinedIterators(t *testing.T) {
+	t.Parallel()
+
+	// Yield sites inside user functions are runtime-enforced; the literal
+	// receiver check only covers builtin array iterators.
+	requireNoCheckWarnings(t, compileScript(t, `
+def my_each(items)
+  yield items[0]
+end
+
+def run()
+  my_each(["x"]) do |v: int|
+    v
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForHashReceivers(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  {a: 1}.each do |k: string, v: int|
+    [k, v]
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForEmptyLiteralReceivers(t *testing.T) {
+	t.Parallel()
+
+	// An empty literal never yields, so the runtime never rejects the block.
+	script := compileScript(t, `
+def run()
+  [].each do |v: int|
+    v
+  end
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("Call() over empty literal returned error: %v", err)
+	}
+}
+
+func TestCheckWarningsSkipBlockParamTypesForExtraParams(t *testing.T) {
+	t.Parallel()
+
+	// A second parameter on a single-yield iterator binds nil at runtime;
+	// the checker stays silent rather than model that shape.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1].each do |v: int, extra: string|
+    [v, extra]
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForUncoveredIterators(t *testing.T) {
+	t.Parallel()
+
+	// reverse_each yields in reverse order and each_slice yields arrays;
+	// both stay outside the covered iterator set.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  ["x"].reverse_each do |v: int|
+    v
+  end
+  [1, 2].each_slice(2) do |pair: int|
+    pair
+  end
+end
+`))
+}
+
 func requireNoCheckWarnings(t *testing.T, script *Script) {
 	t.Helper()
 

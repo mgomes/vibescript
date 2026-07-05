@@ -59,6 +59,10 @@ type checkTarget struct {
 }
 
 func (s *Script) checkWarnings(opts CallOptions, target checkTarget) []CheckWarning {
+	return s.checkWarningsMode(opts, target, false)
+}
+
+func (s *Script) checkWarningsMode(opts CallOptions, target checkTarget, orderIndependentOnly bool) []CheckWarning {
 	if s == nil {
 		return nil
 	}
@@ -71,6 +75,7 @@ func (s *Script) checkWarnings(opts CallOptions, target checkTarget) []CheckWarn
 		typeRoot:              checkTypeRoot(s, optionGlobals),
 		runtimeTypeRoot:       checkTypeRoot(s, optionGlobals),
 		hostGlobals:           checkHostGlobals(optionGlobals),
+		orderIndependentOnly:  orderIndependentOnly,
 	}
 	checker.moduleExportRoot = checker.typeRoot
 	if target.Function == "" {
@@ -113,6 +118,11 @@ type scriptChecker struct {
 	checkReachableCalls     bool
 	checkedReachableFuncs   map[string]struct{}
 	reachableFuncQueue      []reachableFunction
+	selfScope               bool
+	localNameUnions         []map[string]struct{}
+	nameFactsCache          *checkNameFacts
+	selfScopeFns            map[*ScriptFunction]struct{}
+	orderIndependentOnly    bool
 }
 
 type reachableFunction struct {
@@ -756,6 +766,7 @@ func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) 
 		moduleCheckedFunctions: c.moduleCheckedFunctions,
 		moduleCheckContext:     moduleCheckContext,
 		runtimeTypeRootParent:  parentRoot,
+		orderIndependentOnly:   c.orderIndependentOnly,
 	}
 	caller := moduleContextForEntry(entry)
 	checker.moduleCaller = &caller
@@ -1039,6 +1050,8 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 	}
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
+	popNameScope := c.pushFunctionNameScope(fn)
+	defer popNameScope()
 
 	var usedKw map[string]bool
 	if len(kwargs) > 0 {
@@ -1207,6 +1220,11 @@ func (c *scriptChecker) checkRuntimeClassBody(classDef *ClassDef, suppressWarnin
 	check := func() {
 		popScope := c.pushScope(make(map[string]struct{}))
 		defer popScope()
+		// Class bodies run with self bound to the class, so bare identifiers
+		// can resolve through implicit self members the checker cannot see.
+		previousSelf := c.selfScope
+		c.selfScope = true
+		defer func() { c.selfScope = previousSelf }()
 		c.checkStatements(classDef.Name+".<class body>", nil, classDef.Body)
 	}
 	if !suppressWarnings {
@@ -1544,6 +1562,8 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 	}
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
+	popNameScope := c.pushFunctionNameScope(fn)
+	defer popNameScope()
 
 	for _, param := range fn.Params {
 		c.checkExpression(label, param.DefaultVal)
@@ -1581,7 +1601,11 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		c.checkExpression(function, typed.Value)
 	case *RaiseStmt:
-		c.checkExpression(function, typed.Value)
+		// raise RuntimeError, "boom" resolves a bare canonical error class
+		// name without an env binding, so it is not an identifier reference.
+		if !staticRaiseErrorClass(typed) {
+			c.checkExpression(function, typed.Value)
+		}
 		c.checkExpression(function, typed.Message)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Message)
@@ -1910,8 +1934,10 @@ func (c *scriptChecker) checkExpression(function string, expr Expression) {
 
 func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression, autoCall bool) {
 	switch typed := expr.(type) {
-	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		return
+	case *Identifier:
+		c.checkIdentifierResolved(function, typed)
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
 			c.checkExpressionWithAuto(function, elem, true)
@@ -1940,6 +1966,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkExpressionWithAuto(function, kwarg.Value, true)
 		}
 		if c.callMayEvaluateBlock(typed) {
+			c.checkLiteralArrayBlockParamTypes(function, typed)
 			c.checkBlockLiteral(function, typed.Block)
 		}
 		if argumentsMayBeSkipped {
@@ -2205,6 +2232,8 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 
 	popScope := c.pushBlockCheckScope(block)
 	defer popScope()
+	popNameScope := c.pushBlockNameScope(block)
+	defer popNameScope()
 
 	for _, param := range block.Params {
 		c.checkRuntimeTypeAnnotation(function, param.Type)
@@ -2213,6 +2242,298 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
 	c.checkStatements(label, nil, block.Body)
+}
+
+// literalArrayElementYieldMethods are the builtin array iterators that yield
+// each element as the block's single argument, in element order, so a typed
+// block parameter can be validated against a literal receiver's elements.
+var literalArrayElementYieldMethods = map[string]struct{}{
+	"each":   {},
+	"map":    {},
+	"select": {},
+	"reject": {},
+	"find":   {},
+}
+
+// checkLiteralArrayBlockParamTypes validates typed block parameters against a
+// literal array receiver of a builtin element iterator: ["x"].map do |v: int|
+// fails on the first yield at runtime, so the contradiction is statically
+// known. The check stays silent unless the receiver is an array literal whose
+// elements are all scalar literals and the block declares exactly the plain
+// named parameters the iterator yields (one element parameter, plus an index
+// parameter for each_with_index); destructuring, rest parameters, implicit
+// parameters, and every other receiver or method shape are left to runtime
+// enforcement.
+func (c *scriptChecker) checkLiteralArrayBlockParamTypes(function string, call *CallExpr) {
+	if call == nil || call.Block == nil {
+		return
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok {
+		return
+	}
+	withIndex := member.Property == "each_with_index"
+	if !withIndex {
+		if _, ok := literalArrayElementYieldMethods[member.Property]; !ok {
+			return
+		}
+	}
+	arrayLit, ok := member.Object.(*ArrayLiteral)
+	if !ok {
+		return
+	}
+	elements := make([]Value, 0, len(arrayLit.Elements))
+	for _, elem := range arrayLit.Elements {
+		val, ok := staticLiteralValue(elem)
+		if !ok || !scalarLiteralElementKind(val.Kind()) {
+			return
+		}
+		elements = append(elements, val)
+	}
+	block := call.Block
+	wantParams := 1
+	if withIndex {
+		wantParams = 2
+	}
+	if len(block.Params) != wantParams || len(block.ImplicitParams) > 0 {
+		return
+	}
+	for _, param := range block.Params {
+		if param.Kind != ParamNormal || param.Name == "" || param.Target != nil {
+			return
+		}
+	}
+	// The runtime rejects the first yielded value that misses its annotation,
+	// so report only the first contradicting element in iteration order. Only
+	// the first yield is guaranteed to happen: find stops on the first truthy
+	// block result, and a break, return, or raise in the body can end the
+	// iteration before a later element is reached, so later elements are
+	// checked only when no early exit is possible.
+	guaranteed := elements
+	if len(elements) > 1 && (member.Property == "find" || blockBodyMayEscapeIteration(block.Body)) {
+		guaranteed = elements[:1]
+	}
+	for index, element := range guaranteed {
+		if c.addLiteralBlockParamMismatch(function, block.Params[0], element) {
+			return
+		}
+		if withIndex && c.addLiteralBlockParamMismatch(function, block.Params[1], NewInt(int64(index))) {
+			return
+		}
+	}
+}
+
+// blockBodyMayEscapeIteration reports whether the block body contains a
+// statement that can stop the receiver's iteration before every element has
+// been yielded: break ends the loop, return exits the enclosing method
+// non-locally, and raise abandons the iteration even when a surrounding
+// rescue keeps the script alive. Occurrences count at any nesting depth — a
+// break inside a nested loop or block only exits that inner construct, but
+// proving that statically is not worth risking a false positive, so any
+// occurrence restricts the literal-receiver check to the first yield.
+func blockBodyMayEscapeIteration(statements []Statement) bool {
+	for _, stmt := range statements {
+		if statementMayEscapeIteration(stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+func statementMayEscapeIteration(stmt Statement) bool {
+	switch typed := stmt.(type) {
+	case nil:
+		return false
+	case *BreakStmt, *ReturnStmt, *RaiseStmt:
+		return true
+	case *NextStmt:
+		return expressionMayEscapeIteration(typed.Value)
+	case *AssignStmt:
+		return expressionMayEscapeIteration(typed.Target) || expressionMayEscapeIteration(typed.Value)
+	case *ExprStmt:
+		return expressionMayEscapeIteration(typed.Expr)
+	case *LogicalStmt:
+		return statementMayEscapeIteration(typed.Left) || statementMayEscapeIteration(typed.Right)
+	case *IfStmt:
+		if expressionMayEscapeIteration(typed.Condition) || blockBodyMayEscapeIteration(typed.Consequent) {
+			return true
+		}
+		for _, elseIf := range typed.ElseIf {
+			if statementMayEscapeIteration(elseIf) {
+				return true
+			}
+		}
+		return blockBodyMayEscapeIteration(typed.Alternate)
+	case *ForStmt:
+		return expressionMayEscapeIteration(typed.Iterable) || blockBodyMayEscapeIteration(typed.Body)
+	case *WhileStmt:
+		return expressionMayEscapeIteration(typed.Condition) || blockBodyMayEscapeIteration(typed.Body)
+	case *UntilStmt:
+		return expressionMayEscapeIteration(typed.Condition) || blockBodyMayEscapeIteration(typed.Body)
+	case *TryStmt:
+		if blockBodyMayEscapeIteration(typed.Body) || blockBodyMayEscapeIteration(typed.Else) || blockBodyMayEscapeIteration(typed.Ensure) {
+			return true
+		}
+		for i := range typed.Rescues {
+			if blockBodyMayEscapeIteration(typed.Rescues[i].Body) {
+				return true
+			}
+		}
+		return false
+	case *FunctionStmt:
+		return blockBodyMayEscapeIteration(typed.Body)
+	case *ClassStmt:
+		return blockBodyMayEscapeIteration(typed.Body)
+	default:
+		return false
+	}
+}
+
+func expressionMayEscapeIteration(expr Expression) bool {
+	switch typed := expr.(type) {
+	case nil:
+		return false
+	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:
+		return statementMayEscapeIteration(typed.(Statement))
+	case *BlockLiteral:
+		for _, param := range typed.Params {
+			if expressionMayEscapeIteration(param.DefaultVal) {
+				return true
+			}
+		}
+		return blockBodyMayEscapeIteration(typed.Body)
+	case *CallExpr:
+		if expressionMayEscapeIteration(typed.Callee) {
+			return true
+		}
+		for _, arg := range typed.Args {
+			if expressionMayEscapeIteration(arg) {
+				return true
+			}
+		}
+		for _, kwarg := range typed.KwArgs {
+			if expressionMayEscapeIteration(kwarg.Value) {
+				return true
+			}
+		}
+		return typed.Block != nil && expressionMayEscapeIteration(typed.Block)
+	case *UnaryExpr:
+		return expressionMayEscapeIteration(typed.Right)
+	case *BinaryExpr:
+		return expressionMayEscapeIteration(typed.Left) || expressionMayEscapeIteration(typed.Right)
+	case *ConditionalExpr:
+		return expressionMayEscapeIteration(typed.Condition) ||
+			expressionMayEscapeIteration(typed.Consequent) ||
+			expressionMayEscapeIteration(typed.Alternate)
+	case *IfExpr:
+		if expressionMayEscapeIteration(typed.Condition) || expressionMayEscapeIteration(typed.Consequent) {
+			return true
+		}
+		for _, branch := range typed.ElseIf {
+			if expressionMayEscapeIteration(branch.Condition) || expressionMayEscapeIteration(branch.Result) {
+				return true
+			}
+		}
+		return expressionMayEscapeIteration(typed.Alternate)
+	case *RescueExpr:
+		return expressionMayEscapeIteration(typed.Body) || expressionMayEscapeIteration(typed.Fallback)
+	case *RangeExpr:
+		return expressionMayEscapeIteration(typed.Start) || expressionMayEscapeIteration(typed.End)
+	case *ArrayLiteral:
+		for _, elem := range typed.Elements {
+			if expressionMayEscapeIteration(elem) {
+				return true
+			}
+		}
+		return false
+	case *HashLiteral:
+		for _, pair := range typed.Pairs {
+			if expressionMayEscapeIteration(pair.Key) || expressionMayEscapeIteration(pair.Value) {
+				return true
+			}
+		}
+		return false
+	case *IndexExpr:
+		if expressionMayEscapeIteration(typed.Object) {
+			return true
+		}
+		for _, index := range typed.Indices {
+			if expressionMayEscapeIteration(index) {
+				return true
+			}
+		}
+		return false
+	case *MemberExpr:
+		return expressionMayEscapeIteration(typed.Object)
+	case *ScopeExpr:
+		return expressionMayEscapeIteration(typed.Object)
+	case *CaseExpr:
+		if expressionMayEscapeIteration(typed.Target) {
+			return true
+		}
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				if expressionMayEscapeIteration(value.Expr) {
+					return true
+				}
+			}
+			if expressionMayEscapeIteration(clause.Result) {
+				return true
+			}
+		}
+		return expressionMayEscapeIteration(typed.ElseExpr)
+	case *YieldExpr:
+		for _, arg := range typed.Args {
+			if expressionMayEscapeIteration(arg) {
+				return true
+			}
+		}
+		return false
+	case *InterpolatedString:
+		return stringPartsMayEscapeIteration(typed.Parts)
+	case *InterpolatedSymbol:
+		return stringPartsMayEscapeIteration(typed.Parts)
+	default:
+		return false
+	}
+}
+
+func stringPartsMayEscapeIteration(parts []StringPart) bool {
+	for _, part := range parts {
+		if exprPart, ok := part.(StringExpr); ok && expressionMayEscapeIteration(exprPart.Expr) {
+			return true
+		}
+	}
+	return false
+}
+
+func scalarLiteralElementKind(kind ValueKind) bool {
+	switch kind {
+	case KindInt, KindFloat, KindString, KindBool, KindSymbol, KindNil:
+		return true
+	default:
+		return false
+	}
+}
+
+// addLiteralBlockParamMismatch reports whether the yielded value misses the
+// block parameter's annotation, recording a warning that mirrors the runtime
+// failure ("argument NAME expected TYPE, got KIND" at the annotation).
+func (c *scriptChecker) addLiteralBlockParamMismatch(function string, param Param, val Value) bool {
+	if param.Type == nil || !c.checkRuntimeTypeAnnotation(function, param.Type) {
+		return false
+	}
+	err := c.checkRuntimeStaticValueType(val, param.Type)
+	if err == nil {
+		return false
+	}
+	var mismatch *typeMismatchError
+	if errors.As(err, &mismatch) {
+		c.addOrderIndependent(function, param.Type.Position, "argument %s expected %s, got %s", param.Name, mismatch.Expected, mismatch.Actual)
+	} else {
+		c.addOrderIndependent(function, param.Type.Position, "argument %s type check failed: %s", param.Name, err)
+	}
+	return true
 }
 
 func (c *scriptChecker) checkDestructureTargetTypeAnnotations(function string, target Expression) {
@@ -3953,6 +4274,17 @@ func runtimeNamespaceMemberName(target Expression) (string, bool) {
 }
 
 func (c *scriptChecker) add(function string, pos Position, format string, args ...any) {
+	if c.orderIndependentOnly {
+		return
+	}
+	c.addOrderIndependent(function, pos, format, args...)
+}
+
+// addOrderIndependent records a warning that holds no matter which function
+// runs first or what state earlier calls established, so it survives
+// order-independent-only mode. Undefined-name and literal block parameter
+// warnings use it directly; every state-sensitive warning goes through add.
+func (c *scriptChecker) addOrderIndependent(function string, pos Position, format string, args ...any) {
 	c.warnings = append(c.warnings, CheckWarning{
 		Function: function,
 		Pos:      pos,
