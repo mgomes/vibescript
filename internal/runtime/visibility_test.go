@@ -336,3 +336,25 @@ end
 	}
 	requireCallErrorContains(t, script, "external", nil, CallOptions{}, "private method seed")
 }
+
+func TestVisibilityLocalReadIsNotASectionDirective(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+class Config
+  protected = 5
+  protected
+
+  def shown
+    "visible"
+  end
+end
+
+def run
+  Config.new.shown
+end
+`)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewString("visible")) {
+		t.Fatalf("run = %v, want visible", got)
+	}
+}

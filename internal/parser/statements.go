@@ -1038,8 +1038,10 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 // statement. It is a directive when followed on the same line by a module
 // name, an opening paren, or `self` (which gets a targeted diagnostic), or
 // when it stands alone (a bare directive missing its module name, also a
-// targeted diagnostic). Anything else — an assignment such as `include = 1` —
-// parses as a normal statement so the words stay usable as identifiers.
+// targeted diagnostic) — unless a local of that name is in scope, in which
+// case the bare word reads the local as it always has. Anything else — an
+// assignment such as `include = 1` — parses as a normal statement so the
+// words stay usable as identifiers.
 func (p *parser) startsMixinDirective() bool {
 	if p.peekToken.Pos.Line == p.curToken.Pos.Line {
 		switch p.peekToken.Type {
@@ -1047,7 +1049,7 @@ func (p *parser) startsMixinDirective() bool {
 			return true
 		}
 	}
-	return p.peekEndsStatement(p.curToken.Pos)
+	return !p.isLocalName(p.curToken.Literal) && p.peekEndsStatement(p.curToken.Pos)
 }
 
 // parseMixinMember parses an include/extend directive with curToken on the
@@ -1104,9 +1106,12 @@ func (p *parser) parseMixinMember() *ast.MixinDecl {
 // in class-member position begins a visibility directive rather than an
 // ordinary statement. The identifier is a directive when it stands alone
 // (section form), precedes a definition (`public def`), or precedes symbol
-// method names (`protected :compare`). Anything else — an assignment such as
-// `public = 1` or an unrelated expression — parses as a normal statement so
-// the words stay usable as plain identifiers outside directive positions.
+// method names (`protected :compare`). A local of the same name suppresses
+// the section form — a bare word after `protected = 5` reads the local as it
+// always has, matching Ruby, where only the argument forms reach the
+// directive method. Anything else — an assignment such as `public = 1` or an
+// unrelated expression — parses as a normal statement so the words stay
+// usable as plain identifiers outside directive positions.
 func (p *parser) startsVisibilityDirective() bool {
 	if p.startsVisibilityInlineTarget() {
 		return true
@@ -1114,7 +1119,7 @@ func (p *parser) startsVisibilityDirective() bool {
 	if p.peekToken.Type == ast.TokenSymbol && p.peekToken.Pos.Line == p.curToken.Pos.Line {
 		return true
 	}
-	return p.peekEndsStatement(p.curToken.Pos)
+	return !p.isLocalName(p.curToken.Literal) && p.peekEndsStatement(p.curToken.Pos)
 }
 
 // startsVisibilityInlineTarget reports whether the token after a visibility

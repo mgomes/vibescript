@@ -154,6 +154,53 @@ end`)
 	}
 }
 
+func TestParserVisibilityLocalSuppressesSectionDirective(t *testing.T) {
+	t.Parallel()
+	source := `class Config
+  protected = 5
+  protected
+  def shown
+    1
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+	class := got.Statements[0].(*ast.ClassStmt)
+	for _, member := range class.Members {
+		if member.Visibility != nil {
+			t.Fatalf("bare protected after a protected local parsed as a %s directive, want identifier expression", member.Visibility.Level)
+		}
+	}
+	if len(class.Body) != 2 {
+		t.Fatalf("class body statement count = %d, want assignment and identifier read", len(class.Body))
+	}
+	if len(class.Methods) != 1 || class.Methods[0].Visibility != "" {
+		t.Fatalf("methods = %+v, want one method with inherited (empty) visibility", class.Methods)
+	}
+}
+
+func TestParserVisibilitySectionDirectiveWithoutLocalStaysDirective(t *testing.T) {
+	t.Parallel()
+	source := `class Config
+  protected
+  def guarded
+    1
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+	class := got.Statements[0].(*ast.ClassStmt)
+	if len(class.Members) == 0 || class.Members[0].Visibility == nil || class.Members[0].Visibility.Level != ast.VisibilityProtected {
+		t.Fatalf("members = %+v, want leading protected section directive", class.Members)
+	}
+}
+
 func TestParserVisibilityWordsStayIdentifiersOutsideDirectives(t *testing.T) {
 	t.Parallel()
 	source := `class Config

@@ -106,3 +106,25 @@ end`
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
 }
+
+func TestParserMixinLocalSuppressesBareDirectiveDiagnostic(t *testing.T) {
+	t.Parallel()
+	source := `class C
+  include = 1
+  include
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+	class := got.Statements[0].(*ast.ClassStmt)
+	for _, member := range class.Members {
+		if member.Mixin != nil {
+			t.Fatalf("bare include after an include local parsed as a mixin directive, want identifier expression")
+		}
+	}
+	if len(class.Body) != 2 {
+		t.Fatalf("class body statement count = %d, want assignment and identifier read", len(class.Body))
+	}
+}
