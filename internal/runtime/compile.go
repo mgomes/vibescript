@@ -82,7 +82,7 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Pro
 	pos := Position{Line: 1, Column: 1}
 	for _, stmt := range program.Statements {
 		switch typed := stmt.(type) {
-		case *FunctionStmt, *EnumStmt:
+		case *FunctionStmt, *EnumStmt, *AliasStmt:
 			out.Statements = append(out.Statements, typed)
 		case *ClassStmt:
 			out.Statements = append(out.Statements, typed)
@@ -110,7 +110,7 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Pro
 func snippetHasExecutableTopLevel(program *ast.Program) bool {
 	for _, stmt := range program.Statements {
 		switch stmt.(type) {
-		case *FunctionStmt, *ClassStmt, *EnumStmt:
+		case *FunctionStmt, *ClassStmt, *EnumStmt, *AliasStmt:
 			continue
 		default:
 			return true
@@ -124,10 +124,11 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 		return nil, fmt.Errorf("program is nil")
 	}
 
-	functions := make(map[string]*ScriptFunction)
-	classes := make(map[string]*ClassDef)
-	classOrder := make([]string, 0)
-	enums := make(map[string]*EnumDef)
+	functionCount, classCount, enumCount := countTopLevelDeclarations(program.Statements)
+	functions := make(map[string]*ScriptFunction, functionCount)
+	classes := make(map[string]*ClassDef, classCount)
+	classOrder := make([]string, 0, classCount)
+	enums := make(map[string]*EnumDef, enumCount)
 
 	for _, stmt := range program.Statements {
 		switch s := stmt.(type) {
@@ -152,7 +153,11 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 			if _, exists := enums[s.Name]; exists {
 				return nil, fmt.Errorf("duplicate top-level name %s", s.Name)
 			}
-			classes[s.Name] = compileClassDef(s)
+			classDef, err := compileClassDef(s)
+			if err != nil {
+				return nil, err
+			}
+			classes[s.Name] = classDef
 			classOrder = append(classOrder, s.Name)
 		case *EnumStmt:
 			if _, exists := enums[s.Name]; exists {
@@ -169,6 +174,24 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 				return nil, err
 			}
 			enums[s.Name] = enumDef
+		case *AliasStmt:
+			if s.Method {
+				return nil, fmt.Errorf("method alias %s is not valid at the top level", s.NewName)
+			}
+			if _, exists := functions[s.NewName]; exists {
+				return nil, fmt.Errorf("duplicate function %s", s.NewName)
+			}
+			if _, exists := classes[s.NewName]; exists {
+				return nil, fmt.Errorf("duplicate top-level name %s", s.NewName)
+			}
+			if _, exists := enums[s.NewName]; exists {
+				return nil, fmt.Errorf("duplicate top-level name %s", s.NewName)
+			}
+			target, ok := functions[s.OldName]
+			if !ok {
+				return nil, fmt.Errorf("alias target function %s is not defined", s.OldName)
+			}
+			functions[s.NewName] = aliasScriptFunction(target, s.NewName)
 		default:
 			return nil, fmt.Errorf("unsupported top-level statement %T", stmt)
 		}
@@ -176,10 +199,25 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 
 	script := &Script{engine: e, functions: functions, classes: classes, classOrder: classOrder, enums: enums, source: source}
 	script.bindFunctionOwnership()
+	script.symbolLiterals = collectSymbolLiterals(script)
 	return script, nil
 }
 
-func compileClassDef(stmt *ClassStmt) *ClassDef {
+func countTopLevelDeclarations(statements []ast.Statement) (functions, classes, enums int) {
+	for _, stmt := range statements {
+		switch stmt.(type) {
+		case *FunctionStmt:
+			functions++
+		case *ClassStmt:
+			classes++
+		case *EnumStmt:
+			enums++
+		}
+	}
+	return functions, classes, enums
+}
+
+func compileClassDef(stmt *ClassStmt) (*ClassDef, error) {
 	classDef := &ClassDef{
 		Name:         stmt.Name,
 		Methods:      make(map[string]*ScriptFunction),
@@ -187,43 +225,103 @@ func compileClassDef(stmt *ClassStmt) *ClassDef {
 		ClassVars:    make(map[string]Value),
 		Body:         stmt.Body,
 	}
-	for _, prop := range stmt.Properties {
-		for _, name := range prop.Names {
-			if prop.Kind == "property" || prop.Kind == "getter" {
-				getter := &ScriptFunction{
-					Name: name,
-					Body: []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position}},
-					Pos:  prop.Position,
-				}
-				classDef.Methods[name] = getter
-			}
-			if prop.Kind == "property" || prop.Kind == "setter" {
-				setter := &ScriptFunction{
-					Name: name + "=",
-					Params: []Param{{
-						Name: "value",
-					}},
-					Body: []Statement{
-						&AssignStmt{
-							Target:   &IvarExpr{Name: name, Position: prop.Position},
-							Value:    &Identifier{Name: "value", Position: prop.Position},
-							Position: prop.Position,
-						},
-						&ReturnStmt{Value: &Identifier{Name: "value", Position: prop.Position}, Position: prop.Position},
-					},
-					Pos: prop.Position,
-				}
-				classDef.Methods[name+"="] = setter
+	if len(stmt.Members) == 0 {
+		return compileClassDefLegacyOrder(stmt, classDef)
+	}
+	for _, member := range stmt.Members {
+		if member.Property != nil {
+			compileClassProperty(classDef, *member.Property)
+			continue
+		}
+		if member.Function != nil {
+			compileClassMethod(classDef, member.Function)
+			continue
+		}
+		if member.Alias != nil {
+			if err := compileClassAlias(classDef, member.Alias, stmt.Name); err != nil {
+				return nil, err
 			}
 		}
 	}
+	return classDef, nil
+}
+
+func compileClassDefLegacyOrder(stmt *ClassStmt, classDef *ClassDef) (*ClassDef, error) {
+	for _, prop := range stmt.Properties {
+		compileClassProperty(classDef, prop)
+	}
 	for _, fn := range stmt.Methods {
-		classDef.Methods[fn.Name] = compileFunctionDef(fn)
+		compileClassMethod(classDef, fn)
 	}
 	for _, fn := range stmt.ClassMethods {
-		classDef.ClassMethods[fn.Name] = compileFunctionDef(fn)
+		compileClassMethod(classDef, fn)
 	}
-	return classDef
+	for _, alias := range stmt.Aliases {
+		if err := compileClassAlias(classDef, alias, stmt.Name); err != nil {
+			return nil, err
+		}
+	}
+	return classDef, nil
+}
+
+func compileClassProperty(classDef *ClassDef, prop PropertyDecl) {
+	for _, entry := range prop.Names {
+		name := entry.Name
+		if prop.Kind == "property" || prop.Kind == "getter" {
+			getter := &ScriptFunction{
+				Name:         name,
+				ReturnTy:     entry.Type,
+				Body:         []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position}},
+				Pos:          prop.Position,
+				Accessor:     functionAccessorGetter,
+				AccessorName: name,
+			}
+			classDef.Methods[name] = getter
+		}
+		if prop.Kind == "property" || prop.Kind == "setter" {
+			setter := &ScriptFunction{
+				Name: name + "=",
+				Params: []Param{{
+					Name: "value",
+					Type: entry.Type,
+				}},
+				Body: []Statement{
+					&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position},
+				},
+				Pos:          prop.Position,
+				Accessor:     functionAccessorSetter,
+				AccessorName: name,
+			}
+			classDef.Methods[name+"="] = setter
+		}
+	}
+}
+
+func compileClassMethod(classDef *ClassDef, fn *FunctionStmt) {
+	compiled := compileFunctionDef(fn)
+	if fn.Name == "initialize" {
+		compiled.Private = true
+	}
+	if fn.IsClassMethod {
+		classDef.ClassMethods[fn.Name] = compiled
+		return
+	}
+	classDef.Methods[fn.Name] = compiled
+}
+
+func compileClassAlias(classDef *ClassDef, alias *AliasStmt, className string) error {
+	target, ok := classDef.Methods[alias.OldName]
+	if !ok {
+		return fmt.Errorf("alias target method %s is not defined on class %s", alias.OldName, className)
+	}
+	classDef.Methods[alias.NewName] = aliasScriptFunction(target, alias.NewName)
+	return nil
+}
+
+func aliasScriptFunction(fn *ScriptFunction, name string) *ScriptFunction {
+	alias := *fn
+	alias.Name = name
+	return &alias
 }
 
 func compileEnumDef(stmt *EnumStmt) (*EnumDef, error) {

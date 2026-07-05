@@ -50,9 +50,13 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 		u.visitExpression(s.Value, false)
 	case *ast.RaiseStmt:
 		u.visitExpression(s.Value, false)
+		u.visitExpression(s.Message, false)
 	case *ast.AssignStmt:
 		u.recordAssignedTarget(s.Target)
 		u.visitExpression(s.Value, false)
+	case *ast.LogicalStmt:
+		u.visitStatement(s.Left)
+		u.visitStatement(s.Right)
 	case *ast.ExprStmt:
 		u.visitExpression(s.Expr, false)
 	case *ast.IfStmt:
@@ -63,7 +67,7 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 		}
 		u.visitStatements(s.Alternate)
 	case *ast.ForStmt:
-		u.assigned[s.Iterator] = struct{}{}
+		u.recordAssignedTarget(s.Target)
 		u.visitExpression(s.Iterable, false)
 		u.visitStatements(s.Body)
 	case *ast.WhileStmt:
@@ -74,7 +78,8 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 		u.visitStatements(s.Body)
 	case *ast.TryStmt:
 		u.visitStatements(s.Body)
-		for _, clause := range s.Rescues {
+		for i := range s.Rescues {
+			clause := &s.Rescues[i]
 			if clause.Binding != "" {
 				u.withScopedBinding(clause.Binding, func() {
 					u.visitStatements(clause.Body)
@@ -140,9 +145,9 @@ func (u *implicitBlockParamUsage) visitExpression(expr ast.Expression, callCalle
 		u.visitExpression(e.Condition, false)
 		u.visitExpression(e.Consequent, false)
 		u.visitExpression(e.Alternate, false)
-	case *ast.RescueModifierExpr:
-		u.visitExpression(e.Body, false)
-		u.visitExpression(e.Fallback, false)
+	case *ast.RescueExpr:
+		u.visitExpression(e.Body, callCallee)
+		u.visitExpression(e.Fallback, callCallee)
 	case *ast.IfExpr:
 		u.visitExpression(e.Condition, false)
 		u.visitExpression(e.Consequent, false)

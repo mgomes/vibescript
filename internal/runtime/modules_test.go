@@ -31,7 +31,11 @@ type requireBehaviorCase struct {
 	wantInt int64
 	want    Value
 	wantErr string
-	verify  func(t *testing.T, result Value)
+	// memoryQuota overrides the engine's default memory quota. Cases that pin
+	// which limit fires (such as the recursion cap) set explicit headroom so
+	// legitimate per-frame accounting growth cannot flip the outcome.
+	memoryQuota int
+	verify      func(t *testing.T, result Value)
 }
 
 // TestRequireBehavior aggregates the formerly individual TestRequire*
@@ -171,6 +175,20 @@ end`,
 					}
 				}
 			},
+		},
+		{
+			name: "cached_alias_conflict_checks_root_binding",
+			source: `def run()
+  alt = require("helper_alt")
+  require("helper", as: "mod")
+  use_alias(alt)
+end
+
+def use_alias(mod)
+  require("helper_alt", as: "mod")
+end`,
+			fn:      "run",
+			wantErr: `require: alias "mod" already defined`,
 		},
 		{
 			name: "missing_module",
@@ -336,6 +354,10 @@ end`,
 end`,
 			fn:      "run",
 			wantErr: "recursion depth exceeded",
+			// The intent is the recursion cap firing across module boundaries;
+			// explicit quota headroom keeps the memory limit from racing it as
+			// per-frame require accounting evolves.
+			memoryQuota: 256 << 10,
 		},
 		{
 			name: "allows_cached_module_reuse_across_module_calls",
@@ -352,6 +374,9 @@ end`,
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			engine := moduleTestEngine(t)
+			if tc.memoryQuota > 0 {
+				engine = MustNewEngine(Config{ModulePaths: []string{filepath.FromSlash(moduleFixturesRoot)}, MemoryQuotaBytes: tc.memoryQuota})
+			}
 			script := compileScriptWithEngine(t, engine, tc.source)
 
 			if tc.wantErr != "" {
@@ -1224,6 +1249,9 @@ func TestRequireKeepsModuleTopLevelAssignmentsLocal(t *testing.T) {
 	t.Parallel()
 	dir := tempModuleTree(t, moduleFile{path: "settings.vibe", content: `offset = 10
 secret = "module-local"
+[1].each do
+  caller_only = 123
+end
 
 def add(value)
   value + offset
@@ -1232,10 +1260,12 @@ end
 	engine := mustNewEngineWithModuleRoot(t, dir)
 	script := compileScriptWithEngine(t, engine, `def run(value)
   offset = 99
+  caller_only = 77
   settings = require("settings")
   {
     sum: settings.add(value),
-    caller_offset: offset
+    caller_offset: offset,
+    caller_only: caller_only
   }
 end`)
 
@@ -1249,6 +1279,9 @@ end`)
 	}
 	if got := out["caller_offset"]; got.Kind() != KindInt || got.Int() != 99 {
 		t.Fatalf("run(5).caller_offset = %#v, want 99", got)
+	}
+	if got := out["caller_only"]; got.Kind() != KindInt || got.Int() != 77 {
+		t.Fatalf("run(5).caller_only = %#v, want 77", got)
 	}
 
 	leakProbe := compileScriptWithEngine(t, engine, `def run()

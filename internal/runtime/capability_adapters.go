@@ -283,14 +283,9 @@ func (a *dbCapabilityAdapter) Bind(_ CapabilityBinding) (map[string]Value, error
 }
 
 func (a *dbCapabilityAdapter) CapabilityContracts() map[string]CapabilityMethodContract {
-	src := a.cap.Contracts()
-	out := make(map[string]CapabilityMethodContract, len(src))
-	for k := range src {
-		// DB methods validate and clone at the host boundary so payload graphs
-		// are not walked once by the runtime and again by the adapter.
-		out[k] = CapabilityMethodContract{}
-	}
-	return out
+	// DB methods validate arguments and clone returns inside the adapter wrapper,
+	// so there are no runtime-level contracts to bind or rescan.
+	return nil
 }
 
 func (a *dbCapabilityAdapter) wrapCall(method string, fn, validatedFn func(db.ExecutionContext, []Value, map[string]Value, Value) (Value, error)) BuiltinFunc {
@@ -339,8 +334,9 @@ func (c *eventsCapability) CapabilityContracts() map[string]CapabilityMethodCont
 	method := c.inner.PublishMethodName()
 	return map[string]CapabilityMethodContract{
 		method: {
-			ValidateArgs:   c.validatePublishArgs,
-			ValidateReturn: c.inner.ValidatePublishReturn,
+			ValidateArgs:             c.validatePublishArgs,
+			ReturnValidatedByBuiltin: true,
+			ValidateReturn:           c.inner.ValidatePublishReturn,
 		},
 	}
 }

@@ -33,6 +33,7 @@ end`
 			Alternate: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "ok"}},
 			},
+			AlternateFirst: true,
 		},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
@@ -60,6 +61,7 @@ end`
 			Alternate: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "ok"}},
 			},
+			AlternateFirst: true,
 		},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
@@ -88,6 +90,7 @@ end`
 			Alternate: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "ok"}},
 			},
+			AlternateFirst: true,
 		},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {

@@ -36,6 +36,18 @@ type StringLiteral struct {
 func (e *StringLiteral) exprNode()     {}
 func (e *StringLiteral) Pos() Position { return e.Position }
 
+// RegexLiteral represents a Ruby-style regex literal such as /pattern/i. The
+// pattern is the raw source between the slashes (Go RE2 syntax) and Flags
+// holds the trailing flag letters in source order.
+type RegexLiteral struct {
+	Pattern  string
+	Flags    string
+	Position Position
+}
+
+func (e *RegexLiteral) exprNode()     {}
+func (e *RegexLiteral) Pos() Position { return e.Position }
+
 // BoolLiteral represents a boolean constant (true or false).
 type BoolLiteral struct {
 	Value    bool
@@ -174,6 +186,7 @@ func (e *IndexExpr) IndexPos(i int) Position {
 // Position records the location of the "*" for diagnostics.
 type DestructureElement struct {
 	Target   Expression
+	Type     *TypeExpr
 	Rest     bool
 	Position Position
 }
@@ -238,15 +251,16 @@ type ConditionalExpr struct {
 func (e *ConditionalExpr) exprNode()     {}
 func (e *ConditionalExpr) Pos() Position { return e.Position }
 
-// RescueModifierExpr represents an expression-level rescue fallback.
-type RescueModifierExpr struct {
+// RescueExpr represents a Ruby-style rescue modifier expression
+// (e.g. risky_call rescue fallback).
+type RescueExpr struct {
 	Body     Expression
 	Fallback Expression
 	Position Position
 }
 
-func (e *RescueModifierExpr) exprNode()     {}
-func (e *RescueModifierExpr) Pos() Position { return e.Position }
+func (e *RescueExpr) exprNode()     {}
+func (e *RescueExpr) Pos() Position { return e.Position }
 
 // IfExprBranch represents one elsif branch in an if expression.
 type IfExprBranch struct {

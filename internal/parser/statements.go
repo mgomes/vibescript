@@ -8,6 +8,16 @@ import (
 )
 
 func (p *parser) parseStatement() ast.Statement {
+	stmt := p.parseStatementOperand()
+	stmt = p.parseStatementLogical(stmt, lowestPrec)
+	// Apply the postfix modifier to the whole statement, after any logical
+	// split. A modifier has lower precedence than word `and`/`or`, so
+	// `ready or fallback if cond` guards the entire `ready or fallback`
+	// statement rather than just the `fallback` operand.
+	return p.parseStatementModifier(stmt)
+}
+
+func (p *parser) parseStatementOperand() ast.Statement {
 	var stmt ast.Statement
 	switch p.curToken.Type {
 	case ast.TokenDef:
@@ -45,6 +55,12 @@ func (p *parser) parseStatement() ast.Statement {
 	case ast.TokenIdent:
 		if p.curToken.Literal == "assert" {
 			stmt = p.parseAssertStatement()
+		} else if p.curToken.Literal == "alias" && p.peekStartsAliasNameOnLine(p.curToken.Pos.Line) {
+			if p.canParseTopLevelAliasStatement() {
+				stmt = p.parseAliasStatement(false)
+			} else {
+				stmt = p.parseUnsupportedAliasStatement()
+			}
 		} else {
 			stmt = p.parseExpressionOrAssignStatement()
 		}
@@ -54,7 +70,10 @@ func (p *parser) parseStatement() ast.Statement {
 	if continued := p.continueStatementExpression(stmt); continued != nil {
 		stmt = continued
 	}
-	return p.parseStatementModifier(stmt)
+	// The modifier is applied by parseStatement once the full statement
+	// (including any logical split) is assembled, so a right-hand operand in a
+	// logical statement does not greedily capture it.
+	return stmt
 }
 
 func (p *parser) continueStatementExpression(stmt ast.Statement) ast.Statement {
@@ -108,13 +127,13 @@ func (p *parser) parseStatementModifier(stmt ast.Statement) ast.Statement {
 	body := []ast.Statement{stmt}
 	switch modifier.Type {
 	case ast.TokenIf:
-		return &ast.IfStmt{Condition: condition, Consequent: body, Position: modifier.Pos}
+		return &ast.IfStmt{Condition: condition, Consequent: body, ModifierBodyFirst: true, Position: modifier.Pos}
 	case ast.TokenWhile:
-		return &ast.WhileStmt{Condition: condition, Body: body, Position: modifier.Pos}
+		return &ast.WhileStmt{Condition: condition, Body: body, BodyFirst: true, Position: modifier.Pos}
 	case ast.TokenUntil:
-		return &ast.UntilStmt{Condition: condition, Body: body, Position: modifier.Pos}
+		return &ast.UntilStmt{Condition: condition, Body: body, BodyFirst: true, Position: modifier.Pos}
 	case ast.TokenUnless:
-		return &ast.IfStmt{Condition: condition, Alternate: body, Position: modifier.Pos}
+		return &ast.IfStmt{Condition: condition, Alternate: body, ModifierBodyFirst: true, Position: modifier.Pos}
 	default:
 		return stmt
 	}
@@ -126,10 +145,47 @@ func isStatementModifier(tt ast.TokenType) bool {
 
 func canUseStatementModifier(stmt ast.Statement) bool {
 	switch stmt.(type) {
-	case *ast.AssignStmt, *ast.ExprStmt, *ast.ReturnStmt, *ast.RaiseStmt, *ast.BreakStmt, *ast.NextStmt, *ast.RetryStmt:
+	case *ast.AssignStmt, *ast.ExprStmt, *ast.LogicalStmt, *ast.ReturnStmt, *ast.RaiseStmt, *ast.BreakStmt, *ast.NextStmt, *ast.RetryStmt:
 		return true
 	default:
 		return false
+	}
+}
+
+func (p *parser) parseStatementLogical(left ast.Statement, precedence int) ast.Statement {
+	if left == nil {
+		return nil
+	}
+	for isStatementLogicalOperator(p.peekToken.Type) && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		opPrecedence := statementLogicalPrecedence(p.peekToken.Type)
+		if precedence >= opPrecedence {
+			return left
+		}
+		op := p.peekToken
+		p.nextToken()
+		p.nextToken()
+		right := p.parseStatementOperand()
+		if right == nil {
+			return left
+		}
+		right = p.parseStatementLogical(right, opPrecedence)
+		left = &ast.LogicalStmt{Left: left, Operator: op.Type, Right: right, Position: op.Pos}
+	}
+	return left
+}
+
+func isStatementLogicalOperator(tt ast.TokenType) bool {
+	return tt == ast.TokenWordAnd || tt == ast.TokenWordOr
+}
+
+func statementLogicalPrecedence(tt ast.TokenType) int {
+	switch tt {
+	case ast.TokenWordOr:
+		return precWordOr
+	case ast.TokenWordAnd:
+		return precWordAnd
+	default:
+		return lowestPrec
 	}
 }
 
@@ -139,7 +195,7 @@ func (p *parser) parseReturnStatement() ast.Statement {
 		return &ast.ReturnStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseStatementValueExpression()
+	value := p.parseCommaSeparatedStatementExpression(ast.TokenWordAnd, ast.TokenWordOr, ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil)
 	if value == nil {
 		return nil
 	}
@@ -156,15 +212,42 @@ func (p *parser) parseRaiseStatement() ast.Statement {
 	if value == nil {
 		return nil
 	}
+	if p.peekToken.Type == ast.TokenComma && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		// The comma introducing a message must sit on the line the first
+		// argument ENDS on (like return's list detection), so a multiline
+		// first argument keeps its message.
+		p.nextToken()
+		p.nextToken()
+		message := p.parseLineExpression(lowestPrec)
+		if message == nil {
+			return nil
+		}
+		return &ast.RaiseStmt{Value: value, Message: message, Position: pos}
+	}
 	return &ast.RaiseStmt{Value: value, Position: pos}
+}
+
+func (p *parser) parseCommaSeparatedStatementExpression(stop ...ast.TokenType) ast.Expression {
+	first := p.parseLineExpressionUntil(lowestPrec, stop...)
+	if first == nil || p.peekToken.Type != ast.TokenComma || p.peekToken.Pos.Line != p.curToken.Pos.Line {
+		return first
+	}
+
+	elements := []ast.Expression{first}
+	for p.peekToken.Type == ast.TokenComma && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		p.nextToken()
+		p.nextToken()
+		next := p.parseLineExpressionUntil(lowestPrec, stop...)
+		if next == nil {
+			return nil
+		}
+		elements = append(elements, next)
+	}
+	return &ast.ArrayLiteral{Elements: elements, Position: first.Pos()}
 }
 
 func (p *parser) parseBlock(stop ...ast.TokenType) []ast.Statement {
 	stmts := []ast.Statement{}
-	stopSet := make(map[ast.TokenType]struct{}, len(stop))
-	for _, tt := range stop {
-		stopSet[tt] = struct{}{}
-	}
 	p.statementNesting++
 	defer func() {
 		p.statementNesting--
@@ -172,7 +255,7 @@ func (p *parser) parseBlock(stop ...ast.TokenType) []ast.Statement {
 
 	for {
 		p.skipStatementSeparators()
-		if _, ok := stopSet[p.curToken.Type]; ok || p.curToken.Type == ast.TokenEOF {
+		if isBlockStopToken(p.curToken.Type, stop) || p.curToken.Type == ast.TokenEOF {
 			return stmts
 		}
 		stmt := p.parseStatement()
@@ -183,10 +266,19 @@ func (p *parser) parseBlock(stop ...ast.TokenType) []ast.Statement {
 	}
 }
 
+func isBlockStopToken(token ast.TokenType, stop []ast.TokenType) bool {
+	for _, candidate := range stop {
+		if token == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *parser) parseIfStatement() ast.Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseLineExpressionUntil(lowestPrec, ast.TokenThen)
+	condition := p.parseLineExpressionUntilForced(lowestPrec, ast.TokenThen)
 	if condition == nil {
 		return nil
 	}
@@ -198,7 +290,7 @@ func (p *parser) parseIfStatement() ast.Statement {
 	var elseifClauses []*ast.IfStmt
 	for p.curToken.Type == ast.TokenElsif {
 		p.nextToken()
-		cond := p.parseLineExpressionUntil(lowestPrec, ast.TokenThen)
+		cond := p.parseLineExpressionUntilForced(lowestPrec, ast.TokenThen)
 		if cond == nil {
 			return nil
 		}
@@ -225,7 +317,7 @@ func (p *parser) parseIfStatement() ast.Statement {
 func (p *parser) parseUnlessStatement() ast.Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseLineExpressionUntil(lowestPrec, ast.TokenThen)
+	condition := p.parseLineExpressionUntilForced(lowestPrec, ast.TokenThen)
 	if condition == nil {
 		return nil
 	}
@@ -244,7 +336,7 @@ func (p *parser) parseUnlessStatement() ast.Statement {
 		p.errorExpected(p.curToken, "end")
 	}
 
-	return &ast.IfStmt{Condition: condition, Consequent: alternate, Alternate: body, Position: pos}
+	return &ast.IfStmt{Condition: condition, Consequent: alternate, Alternate: body, AlternateFirst: true, Position: pos}
 }
 
 func (p *parser) consumeConditionalBodySeparator() {
@@ -256,10 +348,11 @@ func (p *parser) consumeConditionalBodySeparator() {
 
 func (p *parser) parseForStatement() ast.Statement {
 	pos := p.curToken.Pos
-	if !p.expectPeek(ast.TokenIdent) {
+	p.nextToken()
+	target := p.parseForTarget()
+	if target == nil {
 		return nil
 	}
-	iterator := p.curToken.Literal
 
 	if !p.expectPeek(ast.TokenIn) {
 		return nil
@@ -272,17 +365,53 @@ func (p *parser) parseForStatement() ast.Statement {
 	}
 
 	p.advanceToLoopBody()
-	// The iterator binds a local in the surrounding scope, so register it
+	// The loop target binds locals in the surrounding scope, so register it
 	// before parsing the body for name-sensitive parsing decisions such as
 	// percent-literal vs modulo disambiguation.
-	p.declareLocal(iterator)
+	p.declareLocalTarget(target)
 	body := p.parseBlock(ast.TokenEnd)
 
 	if p.curToken.Type != ast.TokenEnd {
 		p.errorExpected(p.curToken, "end")
 	}
 
-	return &ast.ForStmt{Iterator: iterator, Iterable: iterable, Body: body, Position: pos}
+	return &ast.ForStmt{Target: target, Iterable: iterable, Body: body, Position: pos}
+}
+
+func (p *parser) parseForTarget() ast.Expression {
+	switch p.curToken.Type {
+	case ast.TokenAsterisk:
+		target := p.parseDestructureTargetList(nil, false, ast.TokenIn)
+		if target == nil {
+			return nil
+		}
+		if !isBlockParameterTarget(target) {
+			p.addParseError(target.Pos(), "invalid for loop target")
+			return nil
+		}
+		return target
+	default:
+		first := p.parseDestructureSingleTarget(false)
+		if first == nil {
+			return nil
+		}
+		if p.peekToken.Type == ast.TokenComma {
+			target := p.parseDestructureTargetList(first, false, ast.TokenIn)
+			if target == nil {
+				return nil
+			}
+			if !isBlockParameterTarget(target) {
+				p.addParseError(target.Pos(), "invalid for loop target")
+				return nil
+			}
+			return target
+		}
+		if !isBlockParameterTarget(first) {
+			p.addParseError(first.Pos(), "invalid for loop target")
+			return nil
+		}
+		return first
+	}
 }
 
 func (p *parser) parseWhileStatement() ast.Statement {
@@ -359,7 +488,7 @@ func (p *parser) parseNextStatement() ast.Statement {
 }
 
 func (p *parser) parseStatementValueExpression() ast.Expression {
-	return p.parseLineExpressionUntil(lowestPrec, ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil)
+	return p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil)
 }
 
 func (p *parser) parseRetryStatement() ast.Statement {
@@ -385,9 +514,9 @@ func (p *parser) parseBeginStatement() ast.Statement {
 
 func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statement, owner string) ast.Statement {
 	var rescues []ast.RescueClause
+	anyRescueBody := false
 	for p.curToken.Type == ast.TokenRescue {
 		rescuePos := p.curToken.Pos
-		var ok bool
 		rescueTy, rescueBinding, ok := p.parseRescueClause(rescuePos)
 		if !ok {
 			p.recoverToBlockEnd()
@@ -407,12 +536,10 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 		if rescueBinding != "" && !bindingWasLocal {
 			p.undeclareLocal(rescueBinding)
 		}
-		rescues = append(rescues, ast.RescueClause{
-			Type:     rescueTy,
-			Binding:  rescueBinding,
-			Position: rescuePos,
-			Body:     rescueBody,
-		})
+		if len(rescueBody) > 0 {
+			anyRescueBody = true
+		}
+		rescues = append(rescues, ast.RescueClause{Ty: rescueTy, Binding: rescueBinding, Body: rescueBody, Position: rescuePos})
 	}
 
 	var elseBody []ast.Statement
@@ -436,7 +563,8 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 		return nil
 	}
 
-	if owner == "function" && len(rescues) == 0 && len(ensureBody) == 0 {
+	needsHandler := len(rescues) > 0 || owner == "function"
+	if needsHandler && !anyRescueBody && len(ensureBody) == 0 {
 		p.addParseError(pos, fmt.Sprintf("%s requires rescue and/or ensure", owner))
 		return nil
 	}
@@ -590,6 +718,7 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 	p.nextToken()
 
 	isClassMethod := false
+	isOperatorMethod := false
 	var name string
 	if p.curToken.Type == ast.TokenSelf && p.peekToken.Type == ast.TokenDot {
 		isClassMethod = true
@@ -599,6 +728,13 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		}
 		name = p.curToken.Literal
 		p.nextToken()
+	} else if opName, ok := p.parseOperatorMethodName(); ok {
+		if !p.insideClass {
+			p.addParseError(pos, fmt.Sprintf("operator method %s must be defined in a class", opName))
+			return nil
+		}
+		isOperatorMethod = true
+		name = opName
 	} else {
 		if p.curToken.Type != ast.TokenIdent {
 			p.errorExpected(p.curToken, "function name")
@@ -608,7 +744,7 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		p.nextToken()
 	}
 
-	if p.curToken.Type == ast.TokenAssign {
+	if p.curToken.Type == ast.TokenAssign && (!isOperatorMethod || name == "[]") {
 		name += "="
 		p.nextToken()
 	}
@@ -672,6 +808,31 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 	return &ast.FunctionStmt{Name: name, Params: params, ReturnTy: returnTy, Body: body, IsClassMethod: isClassMethod, Private: private, Position: pos}
 }
 
+// parseOperatorMethodName recognizes a Ruby operator token in def-name
+// position (def +, def <<, def [], def []=) and consumes it, returning the
+// method name the runtime dispatches on. Compound-assignment tokens (+=) and
+// operators the grammar cannot dispatch (|, unary forms) are not accepted. The
+// caller appends "=" for the []= form via the shared setter suffix handling.
+func (p *parser) parseOperatorMethodName() (string, bool) {
+	switch p.curToken.Type {
+	case ast.TokenPlus, ast.TokenMinus, ast.TokenAsterisk, ast.TokenSlash, ast.TokenPercent,
+		ast.TokenPower, ast.TokenShovel, ast.TokenAmpersand, ast.TokenEQ, ast.TokenNotEQ,
+		ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship:
+		name := p.curToken.Literal
+		p.nextToken()
+		return name, true
+	case ast.TokenLBracket:
+		if p.peekToken.Type != ast.TokenRBracket {
+			return "", false
+		}
+		p.nextToken()
+		p.nextToken()
+		return "[]", true
+	default:
+		return "", false
+	}
+}
+
 func (p *parser) parseClassStatement() ast.Statement {
 	pos := p.curToken.Pos
 	if p.peekToken.Type == ast.TokenShovel {
@@ -715,6 +876,38 @@ func (p *parser) parseClassStatement() ast.Statement {
 			} else {
 				stmt.Methods = append(stmt.Methods, fn)
 			}
+			stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Function: fn})
+		case ast.TokenIdent:
+			switch p.curToken.Literal {
+			case "alias":
+				if p.peekStartsAliasNameOnLine(p.curToken.Pos.Line) {
+					alias := p.parseAliasStatement(true)
+					if alias == nil {
+						return nil
+					}
+					aliasStmt := alias.(*ast.AliasStmt)
+					stmt.Aliases = append(stmt.Aliases, aliasStmt)
+					stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
+				} else {
+					s := p.parseStatement()
+					if s != nil {
+						stmt.Body = append(stmt.Body, s)
+					}
+				}
+			case "alias_method":
+				alias := p.parseAliasMethodStatement()
+				if alias == nil {
+					return nil
+				}
+				aliasStmt := alias.(*ast.AliasStmt)
+				stmt.Aliases = append(stmt.Aliases, aliasStmt)
+				stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
+			default:
+				s := p.parseStatement()
+				if s != nil {
+					stmt.Body = append(stmt.Body, s)
+				}
+			}
 		case ast.TokenPrivate:
 			if p.peekToken.Type == ast.TokenDef {
 				p.privateNext = true
@@ -725,6 +918,7 @@ func (p *parser) parseClassStatement() ast.Statement {
 		case ast.TokenProperty, ast.TokenGetter, ast.TokenSetter:
 			decl := p.parsePropertyDecl(p.curToken.Type)
 			stmt.Properties = append(stmt.Properties, decl)
+			stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Property: &decl})
 		default:
 			s := p.parseStatement()
 			if s != nil {
@@ -742,6 +936,76 @@ func (p *parser) parseClassStatement() ast.Statement {
 	}
 
 	return stmt
+}
+
+func (p *parser) parseAliasStatement(method bool) ast.Statement {
+	pos := p.curToken.Pos
+	if !p.expectPeekAliasName(pos.Line) {
+		return nil
+	}
+	newName := p.curToken.Literal
+	if !p.expectPeekAliasName(pos.Line) {
+		return nil
+	}
+	oldName := p.curToken.Literal
+	return &ast.AliasStmt{NewName: newName, OldName: oldName, Method: method, Position: pos}
+}
+
+func (p *parser) canParseTopLevelAliasStatement() bool {
+	return !p.insideClass && p.statementNesting == 0
+}
+
+func (p *parser) parseUnsupportedAliasStatement() ast.Statement {
+	pos := p.curToken.Pos
+	p.addParseError(pos, "alias declarations are only supported at the top level or in class bodies")
+	if p.peekStartsAliasNameOnLine(pos.Line) {
+		p.nextToken()
+	}
+	if p.peekStartsAliasNameOnLine(pos.Line) {
+		p.nextToken()
+	}
+	return nil
+}
+
+func (p *parser) parseAliasMethodStatement() ast.Statement {
+	pos := p.curToken.Pos
+	parenthesized := false
+	if p.peekToken.Type == ast.TokenLParen {
+		parenthesized = true
+		p.nextToken()
+	}
+	if !p.expectPeek(ast.TokenSymbol) {
+		return nil
+	}
+	newName := p.curToken.Literal
+	if !p.expectPeek(ast.TokenComma) {
+		return nil
+	}
+	if !p.expectPeek(ast.TokenSymbol) {
+		return nil
+	}
+	oldName := p.curToken.Literal
+	if parenthesized && !p.expectPeek(ast.TokenRParen) {
+		return nil
+	}
+	return &ast.AliasStmt{NewName: newName, OldName: oldName, Method: true, Position: pos}
+}
+
+func (p *parser) expectPeekAliasName(line int) bool {
+	if !p.peekStartsAliasNameOnLine(line) {
+		p.errorExpected(p.peekToken, "alias name")
+		return false
+	}
+	p.nextToken()
+	return true
+}
+
+func (p *parser) peekStartsAliasName() bool {
+	return p.peekToken.Type == ast.TokenIdent || p.peekToken.Type == ast.TokenSymbol
+}
+
+func (p *parser) peekStartsAliasNameOnLine(line int) bool {
+	return p.peekToken.Pos.Line == line && p.peekStartsAliasName()
 }
 
 func (p *parser) parseEnumStatement() ast.Statement {
@@ -977,6 +1241,18 @@ func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position,
 		if param.Type == nil {
 			return ast.Param{}, ast.Position{}, false
 		}
+		if err := captureParamTypeError(param); err != "" {
+			p.addParseError(param.Type.Position, err)
+			return ast.Param{}, ast.Position{}, false
+		}
+		if kind == ast.ParamNormal && !param.IsIvar && p.peekToken.Type == ast.TokenColon {
+			p.nextToken()
+			if !p.peekEndsRequiredKeywordParam(options) {
+				p.addParseError(p.curToken.Pos, "typed required keyword parameter must end after trailing ':'")
+				return ast.Param{}, ast.Position{}, false
+			}
+			param.Kind = ast.ParamKeyword
+		}
 	}
 	if p.peekToken.Type == ast.TokenAssign {
 		if kind != ast.ParamNormal {
@@ -992,6 +1268,54 @@ func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position,
 		}
 	}
 	return param, pos, true
+}
+
+func captureParamTypeError(param ast.Param) string {
+	switch param.Kind {
+	case ast.ParamRest:
+		if !restCaptureTypeAcceptsArray(param.Type) {
+			return fmt.Sprintf("rest parameter %s captures an array; annotate it as array<...> or any", param.Name)
+		}
+	case ast.ParamKeywordRest:
+		if !keywordRestCaptureTypeAcceptsHash(param.Type) {
+			return fmt.Sprintf("keyword rest parameter %s captures a hash; annotate it as hash<...>, object, a shape type, or any", param.Name)
+		}
+	}
+	return ""
+}
+
+func restCaptureTypeAcceptsArray(ty *ast.TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	switch ty.Kind {
+	case ast.TypeAny, ast.TypeArray:
+		return true
+	case ast.TypeUnion:
+		for _, option := range ty.Union {
+			if restCaptureTypeAcceptsArray(option) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func keywordRestCaptureTypeAcceptsHash(ty *ast.TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	switch ty.Kind {
+	case ast.TypeAny, ast.TypeHash, ast.TypeShape:
+		return true
+	case ast.TypeUnion:
+		for _, option := range ty.Union {
+			if keywordRestCaptureTypeAcceptsHash(option) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isFunctionParamStart(tt ast.TokenType) bool {
@@ -1283,12 +1607,13 @@ func shapeHasEmptyNestedShape(ty *ast.TypeExpr) bool {
 
 // typeAnnotationBoundaryFollows reports whether peekToken terminates a
 // parameter's type annotation. Valid terminators are a comma or closing
-// paren (the next parameter or the list end), an `=` introducing a
-// `name: Type = default` positional default, and, for line-limited
-// parameter lists, the constructs that end such a list.
+// paren (the next parameter or the list end), a trailing colon for typed
+// required keywords, an `=` introducing a `name: Type = default` positional
+// default, a `|` continuing a union, and, for line-limited parameter lists,
+// the constructs that end such a list.
 func (p *parser) typeAnnotationBoundaryFollows(options paramParseOptions) bool {
 	switch p.peekToken.Type {
-	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign:
+	case ast.TokenComma, ast.TokenRParen, ast.TokenColon, ast.TokenAssign, ast.TokenPipe:
 		return true
 	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
 		return options.lineLimitedDefaults
@@ -1306,13 +1631,16 @@ func (p *parser) typeAnnotationBoundaryFollows(options paramParseOptions) bool {
 // indexing) makes it the head of an expression.
 func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool {
 	switch p.peekPeek.Type {
-	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign, ast.TokenPipe:
+	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign, ast.TokenPipe, ast.TokenColon:
 		// A boundary (`,` `)`), an `=` introducing a `name: Type = default`
-		// positional default, or a `|` union continuation all keep the
-		// identifier a type name.
+		// positional default, a `|` union continuation, or a trailing `:` for
+		// typed required keywords (`name: Type:`) all keep the identifier a type
+		// name.
 		return false
 	case ast.TokenLT:
 		return p.identLessThanStartsExpression()
+	case ast.TokenDot:
+		return !p.dottedTypeAnnotationFollows(options)
 	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
 		return !options.lineLimitedDefaults
 	default:
@@ -1320,6 +1648,67 @@ func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool
 			return false
 		}
 		return true
+	}
+}
+
+func (p *parser) dottedTypeAnnotationFollows(options paramParseOptions) bool {
+	saved := p.snapshot()
+	defer p.restore(saved)
+
+	p.nextToken()
+	namespace := p.curToken.Literal
+	if p.isLocalName(namespace) {
+		return false
+	}
+	p.nextToken()
+	if p.peekToken.Type != ast.TokenIdent {
+		return false
+	}
+	p.nextToken()
+	if !dottedMemberLooksLikeTypeName(p.curToken.Literal) {
+		return false
+	}
+	if dottedDefaultConstant(namespace, p.curToken.Literal) {
+		return false
+	}
+	if strings.HasSuffix(p.curToken.Literal, "?") {
+		return p.typeAnnotationBoundaryFollows(options)
+	}
+	if p.peekToken.Type == ast.TokenQuestion {
+		p.nextToken()
+	}
+	return p.typeAnnotationBoundaryFollows(options)
+}
+
+func startsUppercaseIdentifier(name string) bool {
+	return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
+}
+
+// dottedMemberLooksLikeTypeName reports whether the member of a dotted name in
+// annotation position is shaped like a type: PascalCase (Statuses.Status).
+// A SCREAMING_CASE member (Data.RESULT, settings.MAX) is a constant by
+// convention, so `name: obj.CONST` stays a keyword default expression rather
+// than an unresolvable qualified type annotation.
+func dottedMemberLooksLikeTypeName(name string) bool {
+	name = strings.TrimSuffix(name, "?")
+	if !startsUppercaseIdentifier(name) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if name[i] >= 'a' && name[i] <= 'z' {
+			return true
+		}
+	}
+	return false
+}
+
+func dottedDefaultConstant(namespace, member string) bool {
+	member = strings.TrimSuffix(member, "?")
+	switch namespace {
+	case "Math":
+		return member == "PI" || member == "E"
+	default:
+		return false
 	}
 }
 
@@ -1370,36 +1759,57 @@ func parameterNameExpectation(kind ast.ParamKind) string {
 }
 
 func (p *parser) parsePropertyDecl(kind ast.TokenType) ast.PropertyDecl {
-	pos := p.curToken.Pos
-	names := []string{}
+	decl := ast.PropertyDecl{Kind: strings.ToLower(string(kind)), Position: p.curToken.Pos}
 	p.nextToken()
-	if p.curToken.Type != ast.TokenIdent {
-		p.errorExpected(p.curToken, "property name")
-		return ast.PropertyDecl{Names: names, Kind: strings.ToLower(string(kind)), Position: pos}
+	name, ok := p.parsePropertyName()
+	if !ok {
+		return decl
 	}
-	names = append(names, p.curToken.Literal)
+	decl.Names = append(decl.Names, name)
 	for p.peekToken.Type == ast.TokenComma {
 		p.nextToken()
 		p.nextToken()
-		if p.curToken.Type != ast.TokenIdent {
-			p.errorExpected(p.curToken, "property name")
+		name, ok := p.parsePropertyName()
+		if !ok {
 			break
 		}
-		names = append(names, p.curToken.Literal)
+		decl.Names = append(decl.Names, name)
 	}
-	return ast.PropertyDecl{Names: names, Kind: strings.ToLower(string(kind)), Position: pos}
+	return decl
+}
+
+func (p *parser) parsePropertyName() (ast.PropertyName, bool) {
+	if p.curToken.Type != ast.TokenIdent {
+		p.errorExpected(p.curToken, "property name")
+		return ast.PropertyName{}, false
+	}
+	name := ast.PropertyName{Name: p.curToken.Literal}
+	if p.peekToken.Type == ast.TokenColon {
+		p.nextToken()
+		p.nextToken()
+		name.Type = p.parseTypeExpr()
+		if name.Type == nil {
+			return ast.PropertyName{}, false
+		}
+	}
+	return name, true
 }
 
 func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 	if p.curToken.Type == ast.TokenAsterisk {
-		target := p.parseDestructureTargetList(nil)
+		target := p.parseDestructureTargetList(nil, false)
 		if target == nil {
 			return nil
 		}
 		return p.parseAssignmentValue(target)
 	}
 
-	expr := p.parseLineExpression(lowestPrec)
+	// Stop the expression at a statement-level `and`/`or` so parseStatementLogical
+	// can split the line (e.g. `ready or raise "not ready"`). Inside brackets the
+	// stop is suppressed, so grouped forms like `(a or b)` still parse the word
+	// operators as ordinary infix expressions. Assignment and return/raise paths
+	// already stop here for the same reason.
+	expr := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
 	if expr == nil {
 		return nil
 	}
@@ -1410,7 +1820,7 @@ func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 	}
 
 	if p.peekToken.Type == ast.TokenComma {
-		target := p.parseDestructureTargetList(expr)
+		target := p.parseDestructureTargetList(expr, false)
 		if target == nil {
 			return nil
 		}
@@ -1448,7 +1858,7 @@ func (p *parser) parseAssignmentValue(target ast.Expression) ast.Statement {
 	pos := target.Pos()
 	p.nextToken()
 	p.nextToken()
-	value := p.parseExpressionWithBlock()
+	value := p.parseAssignmentExpression()
 	if _, ok := target.(*ast.DestructureTarget); ok && p.peekToken.Type == ast.TokenComma {
 		value = p.parseCommaSeparatedAssignmentValue(value, pos)
 	}
@@ -1471,6 +1881,18 @@ func (p *parser) parseCommaSeparatedAssignmentValue(first ast.Expression, pos as
 		values = append(values, p.parseExpressionWithBlock())
 	}
 	return &ast.ArrayLiteral{Elements: values, Position: pos}
+}
+
+func (p *parser) parseAssignmentExpression() ast.Expression {
+	expr := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
+	if expr == nil {
+		return nil
+	}
+	if p.canAttachPeekBlock() {
+		p.nextToken()
+		return p.callWithBlock(expr, p.parseBlockLiteral())
+	}
+	return expr
 }
 
 func (p *parser) recoverAssignmentRemainder() {
@@ -1498,12 +1920,16 @@ func compoundAssignmentOperator(tt ast.TokenType) ast.TokenType {
 		return ast.TokenSlash
 	case ast.TokenPercentAssign:
 		return ast.TokenPercent
+	case ast.TokenAndAssign:
+		return ast.TokenAndAssign
+	case ast.TokenOrAssign:
+		return ast.TokenOrAssign
 	default:
 		return ""
 	}
 }
 
-func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression {
+func (p *parser) parseDestructureTargetList(first ast.Expression, allowElementTypes bool, extraAnonymousRestTerminators ...ast.TokenType) ast.Expression {
 	var pos ast.Position
 	elements := []ast.DestructureElement{}
 	seenRest := false
@@ -1520,7 +1946,7 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 		pos = first.Pos()
 		elements = append(elements, ast.DestructureElement{Target: first, Position: first.Pos()})
 	} else {
-		element, ok := p.parseDestructureElement()
+		element, ok := p.parseDestructureElement(allowElementTypes, extraAnonymousRestTerminators...)
 		if !ok {
 			return nil
 		}
@@ -1532,7 +1958,7 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 	for p.peekToken.Type == ast.TokenComma {
 		p.nextToken()
 		p.nextToken()
-		element, ok := p.parseDestructureElement()
+		element, ok := p.parseDestructureElement(allowElementTypes, extraAnonymousRestTerminators...)
 		if !ok {
 			return nil
 		}
@@ -1549,31 +1975,53 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 	return &ast.DestructureTarget{Elements: elements, Position: pos}
 }
 
-func (p *parser) parseDestructureElement() (ast.DestructureElement, bool) {
+func (p *parser) parseDestructureElement(allowType bool, extraAnonymousRestTerminators ...ast.TokenType) (ast.DestructureElement, bool) {
 	rest := false
 	if p.curToken.Type == ast.TokenAsterisk {
 		restPos := p.curToken.Pos
 		// A bare "*" not followed by a target is an anonymous (discard) rest.
 		// Leave curToken on "*" so the caller's lookahead sees the terminator.
-		if isAnonymousRestTerminator(p.peekToken.Type) {
+		if isAnonymousRestTerminator(p.peekToken.Type, extraAnonymousRestTerminators...) {
 			return ast.DestructureElement{Rest: true, Position: restPos}, true
 		}
 		rest = true
 		p.nextToken()
 	}
 
-	target := p.parseDestructureSingleTarget()
+	target := p.parseDestructureSingleTarget(allowType)
 	if target == nil {
 		return ast.DestructureElement{}, false
 	}
-	return ast.DestructureElement{Target: target, Rest: rest, Position: target.Pos()}, true
+	element := ast.DestructureElement{Target: target, Rest: rest, Position: target.Pos()}
+	if allowType && p.peekToken.Type == ast.TokenColon {
+		p.nextToken()
+		p.nextToken()
+		element.Type = p.parseTypeExpr()
+		if element.Type == nil {
+			return ast.DestructureElement{}, false
+		}
+		if rest && !restCaptureTypeAcceptsArray(element.Type) {
+			name := ast.FormatDestructureTarget(target)
+			if name == "" {
+				name = "*"
+			}
+			p.addParseError(element.Type.Position, fmt.Sprintf("rest destructuring target %s captures an array; annotate it as array<...> or any", name))
+			return ast.DestructureElement{}, false
+		}
+	}
+	return element, true
 }
 
 // isAnonymousRestTerminator reports whether tt ends a bare "*" destructuring
 // target, leaving an anonymous (discard) rest with no bound name. A "*" is
 // anonymous when the next token closes the target list (an assignment operator),
 // continues it (a comma), or closes a nested target group (")" or "]").
-func isAnonymousRestTerminator(tt ast.TokenType) bool {
+func isAnonymousRestTerminator(tt ast.TokenType, extra ...ast.TokenType) bool {
+	for _, terminator := range extra {
+		if tt == terminator {
+			return true
+		}
+	}
 	switch tt {
 	case ast.TokenComma, ast.TokenRParen, ast.TokenRBracket:
 		return true
@@ -1582,12 +2030,12 @@ func isAnonymousRestTerminator(tt ast.TokenType) bool {
 	}
 }
 
-func (p *parser) parseDestructureSingleTarget() ast.Expression {
+func (p *parser) parseDestructureSingleTarget(allowElementTypes bool) ast.Expression {
 	switch p.curToken.Type {
 	case ast.TokenLParen:
-		return p.parseNestedDestructureTarget(ast.TokenRParen, ")")
+		return p.parseNestedDestructureTarget(ast.TokenRParen, ")", allowElementTypes)
 	case ast.TokenLBracket:
-		return p.parseNestedDestructureTarget(ast.TokenRBracket, "]")
+		return p.parseNestedDestructureTarget(ast.TokenRBracket, "]", allowElementTypes)
 	default:
 		target := p.parseLineExpression(lowestPrec)
 		if target == nil {
@@ -1605,7 +2053,7 @@ func (p *parser) parseDestructureSingleTarget() ast.Expression {
 	}
 }
 
-func (p *parser) parseNestedDestructureTarget(stop ast.TokenType, _ string) ast.Expression {
+func (p *parser) parseNestedDestructureTarget(stop ast.TokenType, _ string, allowElementTypes bool) ast.Expression {
 	pos := p.curToken.Pos
 	if p.peekToken.Type == stop {
 		p.errorExpected(p.peekToken, "destructuring assignment target")
@@ -1613,7 +2061,7 @@ func (p *parser) parseNestedDestructureTarget(stop ast.TokenType, _ string) ast.
 	}
 
 	p.nextToken()
-	target := p.parseDestructureTargetList(nil)
+	target := p.parseDestructureTargetList(nil, allowElementTypes)
 	if target == nil {
 		return nil
 	}

@@ -223,8 +223,20 @@ nested arrays/objects.
 
 ## Regex
 
-Regex patterns are quoted strings. Ruby-style `/pattern/` regex literals are
-not supported.
+Regex patterns are quoted strings or Ruby-style `/pattern/flags` regex
+literals. A literal produces a first-class regex value with `source`, `flags`,
+`match`, and `match?` members, works with the `=~` and `!~` match operators and
+`case`/`when` matching, and is accepted by the string pattern helpers
+(`match`, `match?`, `scan`, `sub`, `gsub`). Supported flags are `i`
+(case-insensitive) and `m` (`.` matches newlines); patterns use Go's RE2
+syntax, exactly like quoted string patterns.
+
+```vibe
+"ID-12" =~ /id-([0-9]+)/i     # 0 (character index of the match, nil when none)
+"ID-12" !~ /x/                # true
+/id-([0-9]+)/i.match("ID-12") # match data: m[0] "ID-12", m[1] "12"
+"ID-12 ID-34".gsub(/ID-/, "") # "12 34"
+```
 
 ### `Regex.match(pattern, text)`
 

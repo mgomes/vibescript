@@ -112,6 +112,34 @@ end`,
 			},
 		},
 		{
+			name: "typed_required_keyword",
+			source: `def f(name: string:, retries: int:)
+  name
+end`,
+			want: []ast.Param{
+				{Name: "name", Kind: ast.ParamKeyword, Type: &ast.TypeExpr{Name: "string", Kind: ast.TypeString}},
+				{Name: "retries", Kind: ast.ParamKeyword, Type: &ast.TypeExpr{Name: "int", Kind: ast.TypeInt}},
+			},
+		},
+		{
+			name: "shape_typed_required_keyword",
+			source: `def f(opts: { cb: function }:)
+  opts
+end`,
+			want: []ast.Param{
+				{
+					Name: "opts",
+					Kind: ast.ParamKeyword,
+					Type: &ast.TypeExpr{
+						Kind: ast.TypeShape,
+						Shape: map[string]*ast.TypeExpr{
+							"cb": {Name: "function", Kind: ast.TypeFunction},
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "optional_keyword_then_keyword_rest",
 			source: `def f(a: 0, **rest)
   a
@@ -133,6 +161,40 @@ end`,
 					DefaultVal: &ast.MemberExpr{
 						Object:   &ast.Identifier{Name: "helper"},
 						Property: "value",
+					},
+				},
+			},
+		},
+		{
+			name: "default_expression_with_dotted_constant",
+			source: `def area(r, pi: Math.PI)
+  r * r * pi
+end`,
+			want: []ast.Param{
+				{Name: "r"},
+				{
+					Name: "pi",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.MemberExpr{
+						Object:   &ast.Identifier{Name: "Math"},
+						Property: "PI",
+					},
+				},
+			},
+		},
+		{
+			name: "default_expression_with_local_dotted_constant",
+			source: `def f(config, limit: config.DEFAULT)
+  limit
+end`,
+			want: []ast.Param{
+				{Name: "config"},
+				{
+					Name: "limit",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.MemberExpr{
+						Object:   &ast.Identifier{Name: "config"},
+						Property: "DEFAULT",
 					},
 				},
 			},

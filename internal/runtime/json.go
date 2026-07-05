@@ -13,10 +13,14 @@ import (
 )
 
 type jsonStringifyState struct {
-	seenArrays map[uintptr]struct{}
-	seenHashes map[uintptr]struct{}
-	depth      int
-	exec       *Execution
+	seenArrayInline [jsonInlineSeenCapacity]uintptr
+	seenHashInline  [jsonInlineSeenCapacity]uintptr
+	seenArrays      map[uintptr]struct{}
+	seenHashes      map[uintptr]struct{}
+	seenArrayLen    int
+	seenHashLen     int
+	depth           int
+	exec            *Execution
 }
 
 type jsonValueParser struct {
@@ -25,6 +29,17 @@ type jsonValueParser struct {
 	depth int
 	exec  *Execution
 }
+
+type jsonSeenSlot struct {
+	id    uintptr
+	index int
+	inMap bool
+}
+
+const (
+	jsonInitialObjectCapacity = 4
+	jsonInlineSeenCapacity    = 8
+)
 
 type jsonInvalidNumberError string
 
@@ -94,7 +109,7 @@ func (p *jsonValueParser) parseArray() (Value, error) {
 		return NewArray(nil), nil
 	}
 
-	values := []Value{}
+	var values []Value
 	for {
 		value, err := p.parseValue()
 		if err != nil {
@@ -135,7 +150,7 @@ func (p *jsonValueParser) parseObject() (Value, error) {
 		return NewHash(nil), nil
 	}
 
-	values := NewTypedHash(0)
+	values := NewTypedHash(jsonInitialObjectCapacity)
 	for {
 		if p.pos >= len(p.raw) {
 			return NewNil(), fmt.Errorf("unexpected end of JSON input")
@@ -489,13 +504,11 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 		defer state.leaveContainer()
 
 		id := reflect.ValueOf(arr).Pointer()
-		if id != 0 {
-			if _, seen := state.seenArrays[id]; seen {
-				return nil, fmt.Errorf("JSON.stringify does not support cyclic arrays")
-			}
-			state.seenArrays[id] = struct{}{}
-			defer delete(state.seenArrays, id)
+		arraySlot, err := state.pushSeenArray(id)
+		if err != nil {
+			return nil, err
 		}
+		defer state.popSeenArray(arraySlot)
 
 		buf = append(buf, '[')
 		for i, item := range arr {
@@ -519,13 +532,11 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 		defer state.leaveContainer()
 
 		id := jsonObjectIdentity(val)
-		if id != 0 {
-			if _, seen := state.seenHashes[id]; seen {
-				return nil, fmt.Errorf("JSON.stringify does not support cyclic objects")
-			}
-			state.seenHashes[id] = struct{}{}
-			defer delete(state.seenHashes, id)
+		hashSlot, err := state.pushSeenHash(id)
+		if err != nil {
+			return nil, err
 		}
+		defer state.popSeenHash(hashSlot)
 
 		entries, err := jsonObjectEntries(val)
 		if err != nil {
@@ -563,6 +574,20 @@ type jsonObjectEntry struct {
 	value   Value
 }
 
+type jsonObjectEntriesBySortKey []jsonObjectEntry
+
+func (entries jsonObjectEntriesBySortKey) Len() int {
+	return len(entries)
+}
+
+func (entries jsonObjectEntriesBySortKey) Less(i, j int) bool {
+	return entries[i].sortKey < entries[j].sortKey
+}
+
+func (entries jsonObjectEntriesBySortKey) Swap(i, j int) {
+	entries[i], entries[j] = entries[j], entries[i]
+}
+
 func jsonObjectIdentity(val Value) uintptr {
 	if val.Kind() == KindHash {
 		if id := hashIdentity(val); id != 0 {
@@ -573,6 +598,9 @@ func jsonObjectIdentity(val Value) uintptr {
 }
 
 func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
+	// Typed hashes carry Ruby-style insertion order, so stringify emits members
+	// in that order the way Ruby's JSON.generate does. Legacy hashes and
+	// objects have no recorded order and keep sorted keys for determinism.
 	if val.Kind() == KindHash && hashHasTypedEntries(val) {
 		hashEntries := val.HashEntries()
 		entries := make([]jsonObjectEntry, len(hashEntries))
@@ -581,18 +609,8 @@ func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
 			if err != nil {
 				return nil, fmt.Errorf("JSON.stringify key: %w", err)
 			}
-			sortKey, err := canonicalHashKey(entry.Key)
-			if err != nil {
-				return nil, fmt.Errorf("JSON.stringify key: %w", err)
-			}
-			entries[i] = jsonObjectEntry{key: key, sortKey: sortKey, value: entry.Value}
+			entries[i] = jsonObjectEntry{key: key, value: entry.Value}
 		}
-		sort.Slice(entries, func(i, j int) bool {
-			if entries[i].key != entries[j].key {
-				return entries[i].key < entries[j].key
-			}
-			return entries[i].sortKey < entries[j].sortKey
-		})
 		return entries, nil
 	}
 
@@ -601,9 +619,7 @@ func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
 	for key, item := range hash {
 		entries = append(entries, jsonObjectEntry{key: key, sortKey: key, value: item})
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].sortKey < entries[j].sortKey
-	})
+	sort.Sort(jsonObjectEntriesBySortKey(entries))
 	return entries, nil
 }
 
@@ -635,6 +651,104 @@ func (state *jsonStringifyState) enterContainer() error {
 
 func (state *jsonStringifyState) leaveContainer() {
 	state.depth--
+}
+
+func (state *jsonStringifyState) pushSeenArray(id uintptr) (jsonSeenSlot, error) {
+	if id == 0 {
+		return jsonSeenSlot{}, nil
+	}
+	for i := range state.seenArrayLen {
+		if state.seenArrayInline[i] == id {
+			return jsonSeenSlot{}, fmt.Errorf("JSON.stringify does not support cyclic arrays")
+		}
+	}
+	if _, seen := state.seenArrays[id]; seen {
+		return jsonSeenSlot{}, fmt.Errorf("JSON.stringify does not support cyclic arrays")
+	}
+	if state.seenArrays == nil && state.seenArrayLen < len(state.seenArrayInline) {
+		index := state.seenArrayLen
+		state.seenArrayInline[index] = id
+		state.seenArrayLen++
+		return jsonSeenSlot{id: id, index: index}, nil
+	}
+	if state.seenArrays == nil {
+		state.seenArrays = make(map[uintptr]struct{}, len(state.seenArrayInline)+1)
+		for _, seenID := range state.seenArrayInline {
+			if seenID != 0 {
+				state.seenArrays[seenID] = struct{}{}
+			}
+		}
+	}
+	state.seenArrays[id] = struct{}{}
+	return jsonSeenSlot{id: id, inMap: true}, nil
+}
+
+func (state *jsonStringifyState) popSeenArray(slot jsonSeenSlot) {
+	if slot.id == 0 {
+		return
+	}
+	if slot.inMap {
+		delete(state.seenArrays, slot.id)
+		return
+	}
+	if state.seenArrays != nil {
+		delete(state.seenArrays, slot.id)
+	}
+	last := state.seenArrayLen - 1
+	if slot.index >= 0 && slot.index <= last {
+		state.seenArrayInline[slot.index] = state.seenArrayInline[last]
+		state.seenArrayInline[last] = 0
+		state.seenArrayLen--
+	}
+}
+
+func (state *jsonStringifyState) pushSeenHash(id uintptr) (jsonSeenSlot, error) {
+	if id == 0 {
+		return jsonSeenSlot{}, nil
+	}
+	for i := range state.seenHashLen {
+		if state.seenHashInline[i] == id {
+			return jsonSeenSlot{}, fmt.Errorf("JSON.stringify does not support cyclic objects")
+		}
+	}
+	if _, seen := state.seenHashes[id]; seen {
+		return jsonSeenSlot{}, fmt.Errorf("JSON.stringify does not support cyclic objects")
+	}
+	if state.seenHashes == nil && state.seenHashLen < len(state.seenHashInline) {
+		index := state.seenHashLen
+		state.seenHashInline[index] = id
+		state.seenHashLen++
+		return jsonSeenSlot{id: id, index: index}, nil
+	}
+	if state.seenHashes == nil {
+		state.seenHashes = make(map[uintptr]struct{}, len(state.seenHashInline)+1)
+		for _, seenID := range state.seenHashInline {
+			if seenID != 0 {
+				state.seenHashes[seenID] = struct{}{}
+			}
+		}
+	}
+	state.seenHashes[id] = struct{}{}
+	return jsonSeenSlot{id: id, inMap: true}, nil
+}
+
+func (state *jsonStringifyState) popSeenHash(slot jsonSeenSlot) {
+	if slot.id == 0 {
+		return
+	}
+	if slot.inMap {
+		delete(state.seenHashes, slot.id)
+		return
+	}
+	if state.seenHashes != nil {
+		delete(state.seenHashes, slot.id)
+	}
+	last := state.seenHashLen - 1
+	if slot.index >= 0 && slot.index <= last {
+		state.seenHashInline[slot.index] = state.seenHashInline[last]
+		state.seenHashInline[last] = 0
+		state.seenHashLen--
+	}
 }
 
 func appendJSONString(buf []byte, s string, state *jsonStringifyState) ([]byte, error) {

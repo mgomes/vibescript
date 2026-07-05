@@ -977,22 +977,40 @@ func validateFuzzStatement(context string, stmt Statement) error {
 		}
 		return validateFuzzExpression(context+".value", s.Value)
 	case *RaiseStmt:
-		if s.Value == nil {
-			return nil
+		if s.Value != nil {
+			if err := validateFuzzExpression(context+".value", s.Value); err != nil {
+				return err
+			}
 		}
-		return validateFuzzExpression(context+".value", s.Value)
+		if s.Message != nil {
+			return validateFuzzExpression(context+".message", s.Message)
+		}
+		return nil
+	case *AliasStmt:
+		if s.NewName == "" || s.OldName == "" {
+			return fmt.Errorf("%s alias names must not be empty", context)
+		}
+		return nil
 	case *AssignStmt:
 		if err := validateFuzzExpression(context+".target", s.Target); err != nil {
 			return err
 		}
 		return validateFuzzExpression(context+".value", s.Value)
+	case *LogicalStmt:
+		if err := validateFuzzStatement(context+".left", s.Left); err != nil {
+			return err
+		}
+		return validateFuzzStatement(context+".right", s.Right)
 	case *ExprStmt:
 		return validateFuzzExpression(context+".expr", s.Expr)
 	case *IfStmt:
 		return validateFuzzIfStmt(context, s)
 	case *ForStmt:
-		if s.Iterator == "" {
-			return fmt.Errorf("%s iterator is empty", context)
+		if s.Target == nil {
+			return fmt.Errorf("%s target is nil", context)
+		}
+		if err := validateFuzzExpression(context+".target", s.Target); err != nil {
+			return err
 		}
 		if err := validateFuzzExpression(context+".iterable", s.Iterable); err != nil {
 			return err
@@ -1024,8 +1042,9 @@ func validateFuzzStatement(context string, stmt Statement) error {
 		if err := validateFuzzStatements(context+".body", s.Body); err != nil {
 			return err
 		}
-		for i, clause := range s.Rescues {
-			if err := validateFuzzTypeExpr(fmt.Sprintf("%s.rescues[%d].type", context, i), clause.Type); err != nil {
+		for i := range s.Rescues {
+			clause := &s.Rescues[i]
+			if err := validateFuzzTypeExpr(fmt.Sprintf("%s.rescues[%d].type", context, i), clause.Ty); err != nil {
 				return err
 			}
 			if err := validateFuzzStatements(fmt.Sprintf("%s.rescues[%d].body", context, i), clause.Body); err != nil {
@@ -1040,6 +1059,35 @@ func validateFuzzStatement(context string, stmt Statement) error {
 		if s.Name == "" {
 			return fmt.Errorf("%s class name is empty", context)
 		}
+		for i, member := range s.Members {
+			set := 0
+			if member.Function != nil {
+				set++
+				if err := validateFuzzFunctionStmt(fmt.Sprintf("%s.members[%d].function", context, i), member.Function); err != nil {
+					return err
+				}
+			}
+			if member.Alias != nil {
+				set++
+				if member.Alias.NewName == "" || member.Alias.OldName == "" {
+					return fmt.Errorf("%s.members[%d].alias names must not be empty", context, i)
+				}
+			}
+			if member.Property != nil {
+				set++
+				if member.Property.Kind == "" {
+					return fmt.Errorf("%s.members[%d].property kind is empty", context, i)
+				}
+				for j, name := range member.Property.Names {
+					if name.Name == "" {
+						return fmt.Errorf("%s.members[%d].property.names[%d] is empty", context, i, j)
+					}
+				}
+			}
+			if set != 1 {
+				return fmt.Errorf("%s.members[%d] must contain exactly one declaration", context, i)
+			}
+		}
 		for i, method := range s.Methods {
 			if err := validateFuzzFunctionStmt(fmt.Sprintf("%s.methods[%d]", context, i), method); err != nil {
 				return err
@@ -1050,12 +1098,17 @@ func validateFuzzStatement(context string, stmt Statement) error {
 				return err
 			}
 		}
+		for i, alias := range s.Aliases {
+			if alias == nil || alias.NewName == "" || alias.OldName == "" {
+				return fmt.Errorf("%s.aliases[%d] names must not be empty", context, i)
+			}
+		}
 		for i, property := range s.Properties {
 			if property.Kind == "" {
 				return fmt.Errorf("%s.properties[%d] kind is empty", context, i)
 			}
 			for j, name := range property.Names {
-				if name == "" {
+				if name.Name == "" {
 					return fmt.Errorf("%s.properties[%d].names[%d] is empty", context, i, j)
 				}
 			}
@@ -1137,7 +1190,7 @@ func validateFuzzExpression(context string, expr Expression) error {
 			return fmt.Errorf("%s identifier name is empty", context)
 		}
 		return nil
-	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral:
+	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *RegexLiteral:
 		return nil
 	case *SymbolLiteral:
 		if e.Name == "" {
@@ -1241,7 +1294,7 @@ func validateFuzzExpression(context string, expr Expression) error {
 			return err
 		}
 		return validateFuzzExpression(context+".alternate", e.Alternate)
-	case *RescueModifierExpr:
+	case *RescueExpr:
 		if err := validateFuzzExpression(context+".body", e.Body); err != nil {
 			return err
 		}

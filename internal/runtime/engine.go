@@ -41,11 +41,13 @@ type Config struct {
 type Engine struct {
 	config            Config
 	builtins          map[string]Value
+	hostBuiltins      map[string]struct{}
 	builtinsMu        sync.RWMutex
 	modules           map[string]moduleEntry
 	modPaths          []string
 	modMu             sync.RWMutex
 	randomMu          sync.Mutex
+	modSearchMisses   map[string]string
 	modSuggest        map[string][]string
 	modSuggestText    map[string]string
 	modSuggestVersion uint64
@@ -106,12 +108,14 @@ func NewEngine(cfg Config) (*Engine, error) {
 	cfg.ModuleDenyList = append([]string(nil), cfg.ModuleDenyList...)
 
 	engine := &Engine{
-		config:         cfg,
-		builtins:       make(map[string]Value),
-		modules:        make(map[string]moduleEntry),
-		modPaths:       append([]string(nil), cfg.ModulePaths...),
-		modSuggest:     make(map[string][]string),
-		modSuggestText: make(map[string]string),
+		config:          cfg,
+		builtins:        make(map[string]Value),
+		hostBuiltins:    make(map[string]struct{}),
+		modules:         make(map[string]moduleEntry),
+		modPaths:        append([]string(nil), cfg.ModulePaths...),
+		modSearchMisses: make(map[string]string),
+		modSuggest:      make(map[string][]string),
+		modSuggestText:  make(map[string]string),
 	}
 
 	registerCoreBuiltins(engine)
@@ -228,20 +232,63 @@ func MustNewEngine(cfg Config) *Engine {
 
 // RegisterBuiltin registers a callable global available to scripts.
 func (e *Engine) RegisterBuiltin(name string, fn BuiltinFunc) {
+	e.registerBuiltin(name, fn, true)
+}
+
+func (e *Engine) registerDefaultBuiltin(name string, fn BuiltinFunc) {
+	e.registerBuiltin(name, fn, false)
+}
+
+func (e *Engine) registerBuiltin(name string, fn BuiltinFunc, host bool) {
 	e.builtinsMu.Lock()
 	defer e.builtinsMu.Unlock()
 
 	e.builtins[name] = NewBuiltin(name, fn)
+	if host {
+		if e.hostBuiltins == nil {
+			e.hostBuiltins = make(map[string]struct{})
+		}
+		e.hostBuiltins[name] = struct{}{}
+	} else {
+		delete(e.hostBuiltins, name)
+	}
 	e.builtinProto = nil
 }
 
 // RegisterZeroArgBuiltin registers a builtin that can be invoked without arguments or parentheses.
 func (e *Engine) RegisterZeroArgBuiltin(name string, fn BuiltinFunc) {
+	e.registerZeroArgBuiltin(name, fn, true)
+}
+
+func (e *Engine) registerDefaultZeroArgBuiltin(name string, fn BuiltinFunc) {
+	e.registerZeroArgBuiltin(name, fn, false)
+}
+
+func (e *Engine) registerZeroArgBuiltin(name string, fn BuiltinFunc, host bool) {
 	e.builtinsMu.Lock()
 	defer e.builtinsMu.Unlock()
 
 	e.builtins[name] = NewAutoBuiltin(name, fn)
+	if host {
+		if e.hostBuiltins == nil {
+			e.hostBuiltins = make(map[string]struct{})
+		}
+		e.hostBuiltins[name] = struct{}{}
+	} else {
+		delete(e.hostBuiltins, name)
+	}
 	e.builtinProto = nil
+}
+
+func (e *Engine) hasHostBuiltin(name string) bool {
+	if e == nil {
+		return false
+	}
+	e.builtinsMu.RLock()
+	defer e.builtinsMu.RUnlock()
+
+	_, ok := e.hostBuiltins[name]
+	return ok
 }
 
 func registerCoreBuiltins(engine *Engine) {
@@ -271,10 +318,10 @@ func registerCoreBuiltins(engine *Engine) {
 		{name: "to_float", fn: builtinToFloat},
 	} {
 		if builtin.autoInvoke {
-			engine.RegisterZeroArgBuiltin(builtin.name, builtin.fn)
+			engine.registerDefaultZeroArgBuiltin(builtin.name, builtin.fn)
 			continue
 		}
-		engine.RegisterBuiltin(builtin.name, builtin.fn)
+		engine.registerDefaultBuiltin(builtin.name, builtin.fn)
 	}
 }
 
@@ -377,6 +424,7 @@ func cloneBuiltinValue(val Value) Value {
 		clonedBuiltin := valueBuiltin(cloned)
 		clonedBuiltin.OptionsHashTarget = builtin.OptionsHashTarget
 		clonedBuiltin.DirectCallAlias = builtin.DirectCallAlias
+		clonedBuiltin.DirectCallAliasPos = builtin.DirectCallAliasPos
 		clonedBuiltin.CapturedValues = builtin.CapturedValues
 		clonedBuiltin.Capability = builtin.Capability
 		// A bound predicate's BoundReceiver and Fn both read one mutable cell, so a
@@ -420,6 +468,7 @@ func (e *Engine) ClearModuleCache() int {
 
 	count := len(e.modules)
 	clear(e.modules)
+	clear(e.modSearchMisses)
 	clear(e.modSuggest)
 	clear(e.modSuggestText)
 	e.modSuggestVersion++
@@ -679,40 +728,52 @@ func registerTimeBuiltins(engine *Engine) {
 			return NewTime(time.Now().In(loc)), nil
 		}),
 		"parse": NewBuiltin("Time.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) < 1 || len(args) > 2 || args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("Time.parse expects a time string and optional layout")
-			}
-			for key := range kwargs {
-				if key != "in" {
-					return NewNil(), fmt.Errorf("Time.parse unknown keyword argument %s", key)
-				}
-			}
-
-			layout := ""
-			hasLayout := false
-			if len(args) == 2 {
-				if args[1].Kind() == KindString {
-					layout = args[1].String()
-					hasLayout = true
-				} else if args[1].Kind() != KindNil {
-					return NewNil(), fmt.Errorf("Time.parse layout must be string")
-				}
-			}
-
-			var loc *time.Location
-			if in, ok := kwargs["in"]; ok {
-				parsed, err := parseLocation(in)
-				if err != nil {
-					return NewNil(), err
-				}
-				loc = parsed
-			}
-
-			t, err := parseTimeString(args[0].String(), layout, hasLayout, loc)
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewTime(t), nil
+			return timeParseValues(args, kwargs)
 		}),
 	})
+}
+
+func timeParseValues(args []Value, kwargs map[string]Value) (Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return NewNil(), fmt.Errorf("Time.parse expects a time string and optional layout")
+	}
+	var layout Value
+	hasLayout := false
+	if len(args) == 2 {
+		layout = args[1]
+		hasLayout = true
+	}
+	var loc *time.Location
+	for key, val := range kwargs {
+		if key != "in" {
+			return NewNil(), fmt.Errorf("Time.parse unknown keyword argument %s", key)
+		}
+		parsed, err := parseLocation(val)
+		if err != nil {
+			return NewNil(), err
+		}
+		loc = parsed
+	}
+	return timeParseResult(args[0], layout, hasLayout, loc)
+}
+
+func timeParseResult(input, layout Value, hasLayout bool, loc *time.Location) (Value, error) {
+	if input.Kind() != KindString {
+		return NewNil(), fmt.Errorf("Time.parse expects a time string and optional layout")
+	}
+	layoutText := ""
+	useLayout := false
+	if hasLayout {
+		if layout.Kind() == KindString {
+			layoutText = layout.String()
+			useLayout = true
+		} else if layout.Kind() != KindNil {
+			return NewNil(), fmt.Errorf("Time.parse layout must be string")
+		}
+	}
+	t, err := parseTimeString(input.String(), layoutText, useLayout, loc)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewTime(t), nil
 }

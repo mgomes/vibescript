@@ -77,6 +77,7 @@ const (
 	TypeArray
 	TypeHash
 	TypeRange
+	TypeSymbol
 	TypeFunction
 	TypeShape
 	TypeUnion

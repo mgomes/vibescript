@@ -69,6 +69,25 @@ end`)
 	compareArrays(t, got, []Value{NewInt(2), NewInt(3), NewInt(4)})
 }
 
+func TestImplicitBlockItInRescueCalleeStaysCallable(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def it(value)
+  value + 1
+end
+
+def fallback(value)
+  value + 10
+end
+
+def run
+  [1, 2, 3].map { (it rescue fallback)(_1) }
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewInt(2), NewInt(3), NewInt(4)})
+}
+
 func TestImplicitBlockItCalleeWithPercentArrayStaysCallable(t *testing.T) {
 	t.Parallel()
 
@@ -111,12 +130,12 @@ end`)
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	compareArrays(t, got, []Value{
 		NewArray([]Value{
-			NewArray([]Value{NewSymbol("a"), NewInt(1)}),
 			NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+			NewArray([]Value{NewSymbol("a"), NewInt(1)}),
 		}),
 		NewArray([]Value{
-			NewArray([]Value{NewSymbol("a"), NewInt(1)}),
 			NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+			NewArray([]Value{NewSymbol("a"), NewInt(1)}),
 		}),
 	})
 }
@@ -134,6 +153,17 @@ end`)
 	if !got.Equal(NewBool(true)) {
 		t.Fatalf("run = %#v, want true", got)
 	}
+}
+
+func TestImplicitBlockParamsInLogicalStatements(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  [1, 2, 3].map { x = _1 and true }
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewBool(true), NewBool(true), NewBool(true)})
 }
 
 func TestImplicitBlockParamsAreLocalsForPercentModuloParsing(t *testing.T) {

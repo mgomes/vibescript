@@ -21,13 +21,16 @@ type parser struct {
 	omittedErrors int
 	codeFrames    *source.CodeFrameFormatter
 
-	insideClass      bool
-	privateNext      bool
-	lineLimitedExprs int
-	lineLimitedStops []ast.TokenType
-	statementNesting int
-	typeDepth        int
-	localScopes      []localScope
+	insideClass                bool
+	privateNext                bool
+	lineLimitedExprs           int
+	lineLimitedStops           []ast.TokenType
+	lineLimitedForcedStops     []lineLimitedForcedStop
+	lineLimitedStopSuppression int
+	statementNesting           int
+	typeDepth                  int
+	localScopes                []localScope
+	parenlessArgDoStops        int
 
 	// shapeStructurallyInvalid records that the most recent parseTypeShape
 	// rejected a brace group whose field values all parsed as types but whose
@@ -36,6 +39,11 @@ type parser struct {
 	// bracedGroupIsShapeType keep such a clearly-shape-like diagnostic instead
 	// of silently reinterpreting the braces as a hash-literal default.
 	shapeStructurallyInvalid bool
+}
+
+type lineLimitedForcedStop struct {
+	token       ast.TokenType
+	suppression int
 }
 
 // localScope records the local names declared within a single lexical
@@ -50,7 +58,7 @@ type localScope struct {
 
 func newParser(input string) *parser {
 	l := newLexer(input)
-	p := &parser{l: l, localScopes: []localScope{{names: map[string]struct{}{}}}}
+	p := &parser{l: l, localScopes: []localScope{{}}}
 
 	p.nextToken()
 	p.nextToken()
@@ -60,7 +68,7 @@ func newParser(input string) *parser {
 }
 
 func (p *parser) pushLocalScope(params []ast.Param, funcDef bool) {
-	scope := localScope{names: map[string]struct{}{}, funcDef: funcDef}
+	scope := localScope{funcDef: funcDef}
 	p.localScopes = append(p.localScopes, scope)
 	for _, param := range params {
 		p.declareParamLocal(param)
@@ -97,9 +105,13 @@ func (p *parser) declareLocalTarget(target ast.Expression) {
 
 func (p *parser) declareLocal(name string) {
 	if len(p.localScopes) == 0 {
-		p.localScopes = append(p.localScopes, localScope{names: map[string]struct{}{}})
+		p.localScopes = append(p.localScopes, localScope{})
 	}
-	p.localScopes[len(p.localScopes)-1].names[name] = struct{}{}
+	scope := &p.localScopes[len(p.localScopes)-1]
+	if scope.names == nil {
+		scope.names = make(map[string]struct{})
+	}
+	scope.names[name] = struct{}{}
 }
 
 // localDeclaredInTop reports whether name is already declared in the
@@ -240,7 +252,9 @@ func (p *parser) parseProgram() (*ast.Program, []error) {
 
 const (
 	lowestPrec = iota
-	precAssign
+	precRescue
+	precWordOr
+	precWordAnd
 	precConditional
 	precOr
 	precAnd
@@ -257,13 +271,17 @@ const (
 )
 
 var precedences = map[ast.TokenType]int{
-	ast.TokenRescue:    precAssign,
+	ast.TokenRescue:    precRescue,
 	ast.TokenQuestion:  precConditional,
+	ast.TokenWordOr:    precWordOr,
+	ast.TokenWordAnd:   precWordAnd,
 	ast.TokenOr:        precOr,
 	ast.TokenAnd:       precAnd,
 	ast.TokenEQ:        precEquality,
 	ast.TokenCaseEQ:    precEquality,
 	ast.TokenNotEQ:     precEquality,
+	ast.TokenMatch:     precEquality,
+	ast.TokenNotMatch:  precEquality,
 	ast.TokenLT:        precComparison,
 	ast.TokenLTE:       precComparison,
 	ast.TokenGT:        precComparison,
@@ -483,6 +501,10 @@ func tokenLabel(tt ast.TokenType) string {
 		return "'nil'"
 	case ast.TokenNot:
 		return "'not'"
+	case ast.TokenWordAnd:
+		return "'and'"
+	case ast.TokenWordOr:
+		return "'or'"
 	default:
 		if len(tt) == 1 || strings.HasPrefix(string(tt), "<") || strings.HasPrefix(string(tt), ">") {
 			return fmt.Sprintf("%q", string(tt))

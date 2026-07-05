@@ -1489,7 +1489,7 @@ end`
 		}},
 	}
 	if len(tryStmt.Rescues) != 1 {
-		t.Fatalf("tryStmt.Rescues length = %d, want 1", len(tryStmt.Rescues))
+		t.Fatalf("Rescues length = %d, want 1", len(tryStmt.Rescues))
 	}
 	if diff := cmp.Diff(wantRescueBody, tryStmt.Rescues[0].Body, astCmpOpts); diff != "" {
 		t.Fatalf("rescue body mismatch (-want +got):\n%s", diff)
@@ -1533,7 +1533,7 @@ end`
 		}},
 	}
 	if len(tryStmt.Rescues) != 1 {
-		t.Fatalf("tryStmt.Rescues length = %d, want 1", len(tryStmt.Rescues))
+		t.Fatalf("Rescues length = %d, want 1", len(tryStmt.Rescues))
 	}
 	if diff := cmp.Diff(wantRescueBody, tryStmt.Rescues[0].Body, astCmpOpts); diff != "" {
 		t.Fatalf("rescue body mismatch (-want +got):\n%s", diff)

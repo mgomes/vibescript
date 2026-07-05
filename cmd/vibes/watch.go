@@ -144,14 +144,21 @@ func snapshotWatchTargets(inv runInvocation) watchSnapshot {
 	stamp := func(path string) {
 		snapshot[path] = stampWatchTarget(path)
 	}
+	stampInfo := func(path string, info os.FileInfo) {
+		if info.Mode()&os.ModeSymlink != 0 {
+			stamp(path)
+			return
+		}
+		snapshot[path] = fileStamp{modTime: info.ModTime(), size: info.Size()}
+	}
 
 	stamp(resolveWatchPath(inv.scriptPath))
 	for _, dir := range inv.moduleDirs {
-		_ = filepath.WalkDir(resolveWatchPath(dir), func(path string, entry os.DirEntry, err error) error {
-			if err != nil || entry.IsDir() || filepath.Ext(entry.Name()) != ".vibe" {
+		_ = filepath.Walk(resolveWatchPath(dir), func(path string, info os.FileInfo, err error) error {
+			if err != nil || info == nil || info.IsDir() || filepath.Ext(info.Name()) != ".vibe" {
 				return nil
 			}
-			stamp(path)
+			stampInfo(path, info)
 			return nil
 		})
 	}

@@ -38,6 +38,8 @@ const (
 	estimatedHashEntryBytes     = int(unsafe.Sizeof(HashEntry{}))
 )
 
+const inlineSeenEnvs = 8
+
 // estimatedMapEntryStructuralBytes is the per-entry structural footprint a
 // map[string]Value reserves for one slot regardless of what its key and value
 // point at: the bucket overhead, the key string header, and the value slot. It
@@ -49,16 +51,18 @@ const (
 const estimatedMapEntryStructuralBytes = estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
 
 type memoryEstimator struct {
-	seenFrozen    *Env
-	seenEnvs      map[*Env]struct{}
-	seenMaps      map[uintptr]struct{}
-	seenHashData  map[uintptr]struct{}
-	seenSlices    map[uintptr]struct{}
-	seenStrings   map[stringIdentity]struct{}
-	seenClasses   map[*ClassDef]struct{}
-	seenInstances map[*Instance]struct{}
-	seenBlocks    map[*Block]struct{}
-	seenBuiltins  map[*Builtin]struct{}
+	seenFrozen       *Env
+	seenEnvInline    [inlineSeenEnvs]*Env
+	seenEnvInlineLen int
+	seenEnvs         map[*Env]struct{}
+	seenMaps         map[uintptr]struct{}
+	seenHashData     map[uintptr]struct{}
+	seenSlices       map[uintptr]struct{}
+	seenStrings      map[stringIdentity]struct{}
+	seenClasses      map[*ClassDef]struct{}
+	seenInstances    map[*Instance]struct{}
+	seenBlocks       map[*Block]struct{}
+	seenBuiltins     map[*Builtin]struct{}
 
 	// journal, when non-nil, records every seen-set entry a walk newly inserts so
 	// the walk can be rolled back to the estimator's prior state. It backs the
@@ -102,6 +106,8 @@ func newMemoryEstimator() *memoryEstimator {
 func (est *memoryEstimator) reset() {
 	est.seenFrozen = nil
 	est.journal = nil
+	clear(est.seenEnvInline[:est.seenEnvInlineLen])
+	est.seenEnvInlineLen = 0
 	clear(est.seenEnvs)
 	clear(est.seenMaps)
 	clear(est.seenHashData)
@@ -136,7 +142,7 @@ func (est *memoryEstimator) probe(val Value) int {
 func (j *estimatorJournal) rollback(est *memoryEstimator, prevFrozen *Env) {
 	est.seenFrozen = prevFrozen
 	for _, env := range j.envs {
-		delete(est.seenEnvs, env)
+		est.forgetEnv(env)
 	}
 	for _, id := range j.maps {
 		delete(est.seenMaps, id)
@@ -656,6 +662,19 @@ type arrayBuildAccumulator struct {
 	block    Value
 }
 
+type arraySortByItem struct {
+	item  Value
+	key   Value
+	index int
+}
+
+func arraySortByDecoratedBufferBytes(count int) int {
+	if count <= 0 {
+		return 0
+	}
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(count, int(unsafe.Sizeof(arraySortByItem{}))))
+}
+
 // newArrayBuildAccumulator snapshots the execution's current live memory —
 // exec's reachable roots plus the builtin's live call roots (receiver, args,
 // kwargs, block) — as the baseline for an incremental array build. It uses its
@@ -778,6 +797,21 @@ func (acc *arrayBuildAccumulator) addConservative(val Value, backingCap int) err
 	return nil
 }
 
+func (acc *arrayBuildAccumulator) addConservativeToReservedBacking(val Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	if acc.result == nil {
+		acc.result = newMemoryEstimator()
+	}
+	acc.payload = saturatingAdd(acc.payload, acc.result.valuePayload(val))
+	if used := saturatingAdd(acc.base, acc.payload); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 // checkTransient rejects the build when a freshly allocated value yielded to the
 // block (and live only for that call) would push the peak footprint over the
 // quota. Builders that synthesize a per-iteration argument the result does not
@@ -834,17 +868,34 @@ func (acc *arrayBuildAccumulator) reserveSlots(slotCount int) error {
 	return acc.reserveSlotArrays(slotCount)
 }
 
+func (acc *arrayBuildAccumulator) checkRetainedPayloadBytes(slotCount, payloadBytes int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	used := saturatingAdd(acc.projected(slotCount), payloadBytes)
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 // reserveSlotArrays rejects a build when several result arrays will be live
 // together, such as Array#pop returning both the remaining and removed arrays.
 func (acc *arrayBuildAccumulator) reserveSlotArrays(slotCounts ...int) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
+	return acc.checkSlotArrays(slotCounts...)
+}
+
+func (acc *arrayBuildAccumulator) checkSlotArrays(slotCounts ...int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
 
 	used := saturatingAdd(acc.base, acc.payload)
 	for _, slotCount := range slotCounts {
-		backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(slotCount, estimatedValueBytes))
-		used = saturatingAdd(used, backing)
+		used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
 	}
 	if used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
@@ -858,8 +909,29 @@ func (acc *arrayBuildAccumulator) reserveSlotArrays(slotCounts ...int) error {
 // reserveSlots share it so the per-append and up-front checks charge the slot array
 // identically.
 func (acc *arrayBuildAccumulator) projected(slotCount int) int {
-	backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(slotCount, estimatedValueBytes))
-	return saturatingAdd(saturatingAdd(acc.base, backing), acc.payload)
+	return saturatingAdd(saturatingAdd(acc.base, arraySlotBackingBytes(slotCount)), acc.payload)
+}
+
+func arraySlotBackingBytes(slotCount int) int {
+	return saturatingAdd(estimatedValueBytes, valueSliceBackingBytes(slotCount))
+}
+
+func valueSliceBackingBytes(slotCount int) int {
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(slotCount, estimatedValueBytes))
+}
+
+func projectedAppendCap(length, capacity int) int {
+	if length < capacity {
+		return capacity
+	}
+	if capacity == 0 {
+		return 1
+	}
+	next := saturatingMul(capacity, 2)
+	if needed := length + 1; next < needed {
+		return needed
+	}
+	return next
 }
 
 func (acc *arrayBuildAccumulator) retainedPayloadBytes() int {
@@ -1093,9 +1165,11 @@ func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[strin
 }
 
 func (acc *hashLiteralBuildAccumulator) typedEntryStructuralBytes() int {
-	entryBytes := estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes
+	// Each typed entry retains two lookup keys: one in the entry map's bucket
+	// and one slot in the insertion-order backing HashSet grows beside it.
+	entryBytes := estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
 	if acc.typedEntries == 0 {
-		entryBytes = saturatingAdd(estimatedMapBaseBytes, entryBytes)
+		entryBytes = saturatingAdd(estimatedMapBaseBytes+estimatedSliceBaseBytes, entryBytes)
 	}
 	acc.typedEntries++
 	return entryBytes
@@ -1629,6 +1703,54 @@ func (exec *Execution) releaseLoopScratch(delta int) {
 	exec.reservedScratchBytes -= delta
 }
 
+type loopScratchReservation struct {
+	exec     *Execution
+	baseline int
+	delta    int
+}
+
+func newLoopScratchReservation(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (loopScratchReservation, error) {
+	reservation := loopScratchReservation{exec: exec}
+	if exec.memoryQuota <= 0 {
+		return reservation, nil
+	}
+	reservation.baseline = exec.hashCallRootBytes(receiver, args, kwargs, block)
+	if reservation.baseline > exec.memoryQuota {
+		return loopScratchReservation{}, fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return reservation, nil
+}
+
+func (r *loopScratchReservation) reserveIfFits(scratchBytes int) bool {
+	if r.exec.memoryQuota <= 0 || scratchBytes <= 0 {
+		return true
+	}
+
+	delta := r.exec.reserveLoopScratch(scratchBytes)
+	nextDelta := saturatingAdd(r.delta, delta)
+	if saturatingAdd(r.baseline, nextDelta) > r.exec.memoryQuota {
+		r.exec.releaseLoopScratch(delta)
+		return false
+	}
+	r.delta = nextDelta
+	return true
+}
+
+func (r *loopScratchReservation) reserve(scratchBytes int) error {
+	if r.reserveIfFits(scratchBytes) {
+		return nil
+	}
+	return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, r.exec.memoryQuota)
+}
+
+func (r *loopScratchReservation) release() {
+	if r == nil || r.delta == 0 {
+		return
+	}
+	r.exec.releaseLoopScratch(r.delta)
+	r.delta = 0
+}
+
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	total := exec.reservedScratchBytes
 
@@ -1666,17 +1788,7 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	}
 	if exec.capabilityContractScopes != nil {
 		total += estimatedMapBaseBytes + len(exec.capabilityContractScopes)*estimatedMapEntryBytes
-		seenScopes := make(map[*capabilityContractScope]struct{}, len(exec.capabilityContractScopes))
-		for _, scope := range exec.capabilityContractScopes {
-			if scope == nil {
-				continue
-			}
-			if _, seen := seenScopes[scope]; seen {
-				continue
-			}
-			seenScopes[scope] = struct{}{}
-			total += estimatedMapBaseBytes + len(scope.knownBuiltins)*estimatedMapEntryBytes
-		}
+		total += capabilityContractScopeMemory(exec.capabilityContractScopes)
 	}
 	if exec.capabilityContractsByName != nil {
 		total += estimatedMapBaseBytes + len(exec.capabilityContractsByName)*estimatedMapEntryBytes
@@ -1696,6 +1808,47 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	return total
 }
 
+func capabilityContractScopeMemory(scopes map[*Builtin]*capabilityContractScope) int {
+	const inlineSeenScopes = 8
+
+	total := 0
+	var seen [inlineSeenScopes]*capabilityContractScope
+	seenLen := 0
+	var overflow map[*capabilityContractScope]struct{}
+	for _, scope := range scopes {
+		if scope == nil {
+			continue
+		}
+		duplicate := false
+		for i := range seenLen {
+			if seen[i] == scope {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		if overflow != nil {
+			if _, ok := overflow[scope]; ok {
+				continue
+			}
+			overflow[scope] = struct{}{}
+		} else if seenLen < len(seen) {
+			seen[seenLen] = scope
+			seenLen++
+		} else {
+			overflow = make(map[*capabilityContractScope]struct{}, len(scopes))
+			for _, item := range seen {
+				overflow[item] = struct{}{}
+			}
+			overflow[scope] = struct{}{}
+		}
+		total += estimatedMapBaseBytes + len(scope.knownBuiltins)*estimatedMapEntryBytes
+	}
+	return total
+}
+
 func (est *memoryEstimator) env(env *Env) int {
 	if env == nil {
 		return 0
@@ -1711,13 +1864,9 @@ func (est *memoryEstimator) env(env *Env) int {
 		est.seenFrozen = env
 		return estimatedEnvBytes + staticBindingsBytes(env)
 	}
-	if _, seen := est.seenEnvs[env]; seen {
+	if est.rememberEnv(env) {
 		return 0
 	}
-	if est.seenEnvs == nil {
-		est.seenEnvs = make(map[*Env]struct{})
-	}
-	est.seenEnvs[env] = struct{}{}
 	if est.journal != nil {
 		est.journal.envs = append(est.journal.envs, env)
 	}
@@ -1753,6 +1902,48 @@ func (est *memoryEstimator) env(env *Env) int {
 	}
 	size += est.env(env.parent)
 	return size
+}
+
+func (est *memoryEstimator) rememberEnv(env *Env) bool {
+	for i := range est.seenEnvInlineLen {
+		if est.seenEnvInline[i] == env {
+			return true
+		}
+	}
+	if est.seenEnvs != nil {
+		if _, seen := est.seenEnvs[env]; seen {
+			return true
+		}
+		est.seenEnvs[env] = struct{}{}
+		return false
+	}
+	if est.seenEnvInlineLen < len(est.seenEnvInline) {
+		est.seenEnvInline[est.seenEnvInlineLen] = env
+		est.seenEnvInlineLen++
+		return false
+	}
+	est.seenEnvs = make(map[*Env]struct{}, len(est.seenEnvInline)+1)
+	for _, seenEnv := range est.seenEnvInline {
+		est.seenEnvs[seenEnv] = struct{}{}
+	}
+	est.seenEnvs[env] = struct{}{}
+	return false
+}
+
+func (est *memoryEstimator) forgetEnv(env *Env) {
+	for i := range est.seenEnvInlineLen {
+		if est.seenEnvInline[i] != env {
+			continue
+		}
+		last := est.seenEnvInlineLen - 1
+		est.seenEnvInline[i] = est.seenEnvInline[last]
+		est.seenEnvInline[last] = nil
+		est.seenEnvInlineLen--
+		break
+	}
+	if est.seenEnvs != nil {
+		delete(est.seenEnvs, env)
+	}
 }
 
 func staticBindingsBytes(env *Env) int {
@@ -1792,6 +1983,16 @@ func (est *memoryEstimator) value(val Value) int {
 		str := val.String()
 		size += estimatedStringHeaderBytes
 		size += est.stringPayloadSize(str)
+	case KindRegex:
+		// A regex value retains its pattern source and flag strings plus a
+		// compiled RE2 program. The program's exact footprint is not cheaply
+		// knowable, so it is approximated by the source it was compiled from,
+		// which the pattern-size guard bounds at compile time.
+		regex := val.Regex()
+		size += 2 * estimatedStringHeaderBytes
+		size += est.stringPayloadSize(regex.Source)
+		size += est.stringPayloadSize(regex.Flags)
+		size += len(regex.Source)
 	case KindArray:
 		size += est.slice(val.Array())
 	case KindHash:
@@ -2068,6 +2269,18 @@ func (est *memoryEstimator) typedHashEntriesBytes(val Value) int {
 		size = saturatingAdd(size, entry.LookupKey.ExtraPayloadBytes())
 		size = saturatingAdd(size, est.valuePayload(entry.Entry.Key))
 		size = saturatingAdd(size, est.valuePayload(entry.Entry.Value))
+	}
+	if capacity := value.HashTypedEntryCapacity(val); capacity > len(entries) {
+		extraSlots := capacity - len(entries)
+		extraSlotBytes := estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes
+		size = saturatingAdd(size, saturatingMul(extraSlots, extraSlotBytes))
+	}
+	// The insertion-order backing retains one lookup-key slot per slot of
+	// capacity (append growth can leave capacity beyond the entry count). Its
+	// lookup keys alias strings the entries above already charge, so only the
+	// structural slots are new.
+	if orderCap := value.HashOrderCapacity(val); orderCap > 0 {
+		size = saturatingAdd(size, saturatingAdd(estimatedSliceBaseBytes, saturatingMul(orderCap, estimatedHashLookupKeyBytes)))
 	}
 	return size
 }

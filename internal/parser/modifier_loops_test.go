@@ -9,6 +9,34 @@ import (
 	"github.com/mgomes/vibescript/internal/ast"
 )
 
+func TestParserModifierAfterBareIdentifier(t *testing.T) {
+	t.Parallel()
+
+	// A bare identifier is a parenless-call callee, but a following `if` is a
+	// statement modifier, not an `if`-expression argument.
+	source := `def run(condition)
+  ready if condition
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.IfStmt{
+			Condition: &ast.Identifier{Name: "condition"},
+			Consequent: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.Identifier{Name: "ready"}},
+			},
+			ModifierBodyFirst: true,
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserModifierWhileLoop(t *testing.T) {
 	t.Parallel()
 
@@ -41,6 +69,7 @@ end`
 					},
 				},
 			},
+			BodyFirst: true,
 		},
 		&ast.ExprStmt{Expr: &ast.Identifier{Name: "i"}},
 	}
@@ -86,8 +115,12 @@ end`
 	if len(body) != 3 {
 		t.Fatalf("function body length = %d, want 3", len(body))
 	}
-	if _, ok := body[1].(*ast.UntilStmt); !ok {
+	loop, ok := body[1].(*ast.UntilStmt)
+	if !ok {
 		t.Fatalf("body[1] = %T, want *ast.UntilStmt", body[1])
+	}
+	if !loop.BodyFirst {
+		t.Fatalf("modifier until BodyFirst = false, want true")
 	}
 }
 
@@ -113,12 +146,14 @@ end`
 					Value:  &ast.StringLiteral{Value: "ok"},
 				},
 			},
+			ModifierBodyFirst: true,
 		},
 		&ast.IfStmt{
 			Condition: &ast.BoolLiteral{Value: true},
 			Consequent: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "done"}},
 			},
+			ModifierBodyFirst: true,
 		},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
@@ -148,12 +183,14 @@ end`
 					Value:  &ast.StringLiteral{Value: "ok"},
 				},
 			},
+			ModifierBodyFirst: true,
 		},
 		&ast.IfStmt{
 			Condition: &ast.BoolLiteral{Value: false},
 			Alternate: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "done"}},
 			},
+			ModifierBodyFirst: true,
 		},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
@@ -180,6 +217,7 @@ end`
 			Consequent: []ast.Statement{
 				&ast.ReturnStmt{},
 			},
+			ModifierBodyFirst: true,
 		},
 		&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 1}},
 	}
@@ -208,12 +246,14 @@ end`
 			Consequent: []ast.Statement{
 				&ast.RaiseStmt{},
 			},
+			ModifierBodyFirst: true,
 		},
 		&ast.IfStmt{
 			Condition: &ast.Identifier{Name: "ok"},
 			Alternate: []ast.Statement{
 				&ast.RaiseStmt{},
 			},
+			ModifierBodyFirst: true,
 		},
 		&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 1}},
 	}

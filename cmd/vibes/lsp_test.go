@@ -768,6 +768,40 @@ end
 	}
 }
 
+func TestCompletionOffersNestedRescueBindings(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/nested-rescue-binding-locals.vibe"
+	openDoc(t, server, uri, `def run()
+  begin
+    raise("outer")
+  rescue RuntimeError => outer_err
+    begin
+      raise("inner")
+    rescue RuntimeError => inner_err
+      inner_err
+    end
+    outer_err
+  end
+end
+`)
+
+	insideInner := completionLabels(t, server, uri, 7, 6)
+	for _, want := range []string{"outer_err", "inner_err"} {
+		if _, ok := insideInner[want]; !ok {
+			t.Fatalf("nested rescue completion missing %q", want)
+		}
+	}
+
+	afterInner := completionLabels(t, server, uri, 9, 4)
+	if _, ok := afterInner["outer_err"]; !ok {
+		t.Fatal("outer rescue binding missing after nested handler")
+	}
+	if _, leaked := afterInner["inner_err"]; leaked {
+		t.Fatal("inner rescue binding leaked after nested handler")
+	}
+}
+
 func TestCompletionSurvivesUnparsableEdits(t *testing.T) {
 	t.Parallel()
 	server := newCompletionTestServer()

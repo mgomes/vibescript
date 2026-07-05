@@ -697,22 +697,22 @@ def builtin_ok
   takes_callable(assert)(true)
 end
 
-def block_rejected(&block)
-  takes_callable(block)
+def block_ok(&block)
+  takes_callable(block).call(2)
 end
 
-def call_block_rejected
-  block_rejected do |n|
+def call_block_ok
+  block_ok do |n|
     n * 2
   end
 end
 
-def block_annotation_rejected(&block: function)
-  block
+def block_annotation_ok(&block: function)
+  block.call(3)
 end
 
-def call_block_annotation_rejected
-  block_annotation_rejected do |n|
+def call_block_annotation_ok
+  block_annotation_ok do |n|
     n * 2
   end
 end
@@ -728,9 +728,45 @@ end
 	if got := callFunc(t, script, "builtin_ok", nil); got.Kind() != KindNil {
 		t.Fatalf("builtin function annotation = %v, want nil", got)
 	}
-	requireCallErrorContains(t, script, "call_block_rejected", nil, CallOptions{}, "argument fn expected function, got block")
-	requireCallErrorContains(t, script, "call_block_annotation_rejected", nil, CallOptions{}, "argument block expected function, got block")
+	if got := callFunc(t, script, "call_block_ok", nil); !got.Equal(NewInt(4)) {
+		t.Fatalf("block function annotation = %v, want 4", got)
+	}
+	if got := callFunc(t, script, "call_block_annotation_ok", nil); !got.Equal(NewInt(6)) {
+		t.Fatalf("typed block annotation = %v, want 6", got)
+	}
 	requireCallErrorContains(t, script, "reject_non_callable", nil, CallOptions{}, "argument fn expected function, got int")
+}
+
+func TestNullableCompoundTypeSuffixes(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def array_value(values: array<int>?)
+  values
+end
+
+def hash_value(values: hash<string, int>?)
+  values
+end
+
+def shape_value(value: { id: int }?)
+  value
+end
+`)
+
+	if got := callFunc(t, script, "array_value", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("array_value(nil) = %#v, want nil", got)
+	}
+	if got := callFunc(t, script, "array_value", []Value{NewArray([]Value{NewInt(1)})}); got.Kind() != KindArray {
+		t.Fatalf("array_value([1]) = %#v, want array", got)
+	}
+	if got := callFunc(t, script, "hash_value", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("hash_value(nil) = %#v, want nil", got)
+	}
+	if got := callFunc(t, script, "shape_value", []Value{NewHash(map[string]Value{"id": NewInt(1)})}); got.Kind() != KindHash {
+		t.Fatalf("shape_value({id: 1}) = %#v, want hash", got)
+	}
+	requireCallErrorContains(t, script, "array_value", []Value{NewArray([]Value{NewString("bad")})}, CallOptions{},
+		"argument values expected array<int>?, got array<string>")
 }
 
 func TestNullableUnknownAnnotationsMustResolveBeforeAcceptingNil(t *testing.T) {

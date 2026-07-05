@@ -86,6 +86,39 @@ func TestParenthesizedFunctionOptionsHash(t *testing.T) {
 	requireCallErrorContains(t, script, "parenthesized_keyword_signature", nil, CallOptions{}, "missing argument opts")
 }
 
+func TestSendCollapsesKeywordOptionsHash(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+class Server
+  def configure(opts)
+    opts[:retries]
+  end
+
+  def self.configure(opts)
+    opts[:retries]
+  end
+end
+
+def run()
+  server = Server.new
+  [
+    server.send(:configure, retries: 3),
+    server.public_send(:configure, retries: 4),
+    Server.send(:configure, retries: 5),
+    Server.public_send(:configure, retries: 6)
+  ]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "run", nil), []Value{
+		NewInt(3),
+		NewInt(4),
+		NewInt(5),
+		NewInt(6),
+	})
+}
+
 // TestParenthesizedPositionalAfterKeywordRejected verifies that a parenthesized
 // call rejects a positional argument that follows a keyword argument for both
 // the direct-call and function-value (`call` alias) forms, matching Ruby (which
@@ -153,6 +186,64 @@ func TestParenthesizedFunctionOptionsHashTypeMismatch(t *testing.T) {
     `)
 
 	requireCallErrorContains(t, script, "bad_shape", nil, CallOptions{}, "expected { retries: int }")
+}
+
+// TestFunctionOptionsHashPreservesCallableValues verifies that keyword
+// arguments which later collapse into a typed positional options hash use the
+// options hash's value type when deciding whether to preserve a zero-arity
+// function as a callable value.
+func TestFunctionOptionsHashPreservesCallableValues(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def answer
+      42
+    end
+
+    def accept(opts: hash<string, function>)
+      opts[:cb].call
+    end
+
+    def accept_rest_union(*opts: array<hash<string, function>> | nil)
+      opts[0][:cb].call
+    end
+
+    def parenless
+      accept cb: answer
+    end
+
+    def parenthesized
+      accept(cb: answer)
+    end
+
+    def rest_union_parenless
+      accept_rest_union cb: answer
+    end
+
+    def rest_union_parenthesized
+      accept_rest_union(cb: answer)
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+	}{
+		{name: "parenless", fn: "parenless"},
+		{name: "parenthesized", fn: "parenthesized"},
+		{name: "rest union parenless", fn: "rest_union_parenless"},
+		{name: "rest union parenthesized", fn: "rest_union_parenthesized"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := callFunc(t, script, tc.fn, nil); !got.Equal(NewInt(42)) {
+				t.Fatalf("%s() = %v, want %v", tc.fn, got, NewInt(42))
+			}
+		})
+	}
 }
 
 // TestParenthesizedConstructorOptionsHash verifies that parenthesized constructor

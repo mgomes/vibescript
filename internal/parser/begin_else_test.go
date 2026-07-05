@@ -35,11 +35,9 @@ end`
 				&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 1}},
 			},
 			Rescues: []ast.RescueClause{
-				{
-					Body: []ast.Statement{
-						&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 2}},
-					},
-				},
+				{Body: []ast.Statement{
+					&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 2}},
+				}},
 			},
 			Else: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 3}},
@@ -83,12 +81,12 @@ end`
 	if len(stmt.Rescues) != 1 {
 		t.Fatalf("Rescues length = %d, want 1", len(stmt.Rescues))
 	}
-	rescue := stmt.Rescues[0]
-	if rescue.Type == nil || rescue.Type.Name != "RuntimeError" {
-		t.Fatalf("rescue.Type = %#v, want RuntimeError", rescue.Type)
+	clause := stmt.Rescues[0]
+	if clause.Ty == nil || clause.Ty.Name != "RuntimeError" {
+		t.Fatalf("rescue Ty = %#v, want RuntimeError", clause.Ty)
 	}
-	if rescue.Binding != "err" {
-		t.Fatalf("rescue.Binding = %q, want err", rescue.Binding)
+	if clause.Binding != "err" {
+		t.Fatalf("rescue Binding = %q, want err", clause.Binding)
 	}
 	wantBody := []ast.Statement{
 		&ast.RaiseStmt{Value: &ast.StringLiteral{Value: "boom"}},
@@ -102,7 +100,7 @@ end`
 			Property: "message",
 		}},
 	}
-	if diff := cmp.Diff(wantRescue, rescue.Body, astCmpOpts); diff != "" {
+	if diff := cmp.Diff(wantRescue, clause.Body, astCmpOpts); diff != "" {
 		t.Fatalf("try rescue mismatch (-want +got):\n%s", diff)
 	}
 	wantElse := []ast.Statement{
@@ -164,23 +162,23 @@ end`
 			if len(stmt.Rescues) != 1 {
 				t.Fatalf("Rescues length = %d, want 1", len(stmt.Rescues))
 			}
-			rescue := stmt.Rescues[0]
+			clause := stmt.Rescues[0]
 			if tt.wantType == "" {
-				if rescue.Type != nil {
-					t.Fatalf("rescue.Type = %#v, want nil", rescue.Type)
+				if clause.Ty != nil {
+					t.Fatalf("rescue Ty = %#v, want nil", clause.Ty)
 				}
-			} else if rescue.Type == nil || rescue.Type.Name != tt.wantType {
-				t.Fatalf("rescue.Type = %#v, want %q", rescue.Type, tt.wantType)
+			} else if clause.Ty == nil || clause.Ty.Name != tt.wantType {
+				t.Fatalf("rescue Ty = %#v, want %q", clause.Ty, tt.wantType)
 			}
-			if rescue.Binding != tt.wantBinding {
-				t.Fatalf("rescue.Binding = %q, want %q", rescue.Binding, tt.wantBinding)
+			if clause.Binding != tt.wantBinding {
+				t.Fatalf("rescue Binding = %q, want %q", clause.Binding, tt.wantBinding)
 			}
-			if len(rescue.Body) != 1 {
-				t.Fatalf("rescue.Body length = %d, want 1", len(rescue.Body))
+			if len(clause.Body) != 1 {
+				t.Fatalf("rescue body length = %d, want 1", len(clause.Body))
 			}
-			rescueExpr, ok := rescue.Body[0].(*ast.ExprStmt)
+			rescueExpr, ok := clause.Body[0].(*ast.ExprStmt)
 			if !ok {
-				t.Fatalf("rescue.Body[0] = %T, want *ast.ExprStmt", rescue.Body[0])
+				t.Fatalf("rescue body[0] = %T, want *ast.ExprStmt", clause.Body[0])
 			}
 			lit, ok := rescueExpr.Expr.(*ast.StringLiteral)
 			if !ok {
@@ -273,6 +271,89 @@ end`,
 				t.Fatalf("parseSource(%q) error = %q, want substring %q", tt.source, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestParserMultipleRescueClauses pins that ordered rescue clauses parse into
+// TryStmt.Rescues in source order, each keeping its own type, binding, and body.
+func TestParserMultipleRescueClauses(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  begin
+    raise("boom")
+  rescue AssertionError
+    "assertion"
+  rescue RuntimeError => err
+    err.message
+  rescue
+    "fallback"
+  else
+    "ok"
+  ensure
+    cleanup
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 1 {
+		t.Fatalf("function body length = %d, want 1", len(body))
+	}
+	stmt, ok := body[0].(*ast.TryStmt)
+	if !ok {
+		t.Fatalf("body[0] = %T, want *ast.TryStmt", body[0])
+	}
+	if len(stmt.Rescues) != 3 {
+		t.Fatalf("Rescues length = %d, want 3", len(stmt.Rescues))
+	}
+
+	first := stmt.Rescues[0]
+	if first.Ty == nil || first.Ty.Name != "AssertionError" || first.Binding != "" {
+		t.Fatalf("Rescues[0] = Ty %#v Binding %q, want AssertionError with no binding", first.Ty, first.Binding)
+	}
+	second := stmt.Rescues[1]
+	if second.Ty == nil || second.Ty.Name != "RuntimeError" || second.Binding != "err" {
+		t.Fatalf("Rescues[1] = Ty %#v Binding %q, want RuntimeError => err", second.Ty, second.Binding)
+	}
+	third := stmt.Rescues[2]
+	if third.Ty != nil || third.Binding != "" {
+		t.Fatalf("Rescues[2] = Ty %#v Binding %q, want untyped with no binding", third.Ty, third.Binding)
+	}
+	for i, clause := range stmt.Rescues {
+		if len(clause.Body) != 1 {
+			t.Fatalf("Rescues[%d] body length = %d, want 1", i, len(clause.Body))
+		}
+	}
+	if len(stmt.Else) != 1 || len(stmt.Ensure) != 1 {
+		t.Fatalf("Else/Ensure lengths = %d/%d, want 1/1", len(stmt.Else), len(stmt.Ensure))
+	}
+}
+
+// TestParserRescueAfterElseRejected pins Ruby's clause ordering: every rescue
+// must precede else, so a rescue after else fails to parse.
+func TestParserRescueAfterElseRejected(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  begin
+    1
+  rescue AssertionError
+    2
+  else
+    3
+  rescue RuntimeError
+    4
+  end
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = none, want rescue-after-else rejection", source)
 	}
 }
 

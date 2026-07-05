@@ -60,6 +60,11 @@ func TestParserInfersImplicitBlockParams(t *testing.T) {
 			want:   []string{"_1"},
 		},
 		{
+			name:   "rescue_callee_branches_keep_it_callable",
+			source: `def run; [1].map { (it rescue fallback)(_1) }; end`,
+			want:   []string{"_1"},
+		},
+		{
 			name:   "nested_block_isolated",
 			source: `def run; [1].map { [2].map { _1 } }; end`,
 			want:   nil,
@@ -83,6 +88,11 @@ func TestParserInfersImplicitBlockParams(t *testing.T) {
 			name:   "rescue_binding_scoped_inside_handler",
 			source: `def run; [1].map { begin; raise "x"; rescue => it; nil; end; it }; end`,
 			want:   []string{"it"},
+		},
+		{
+			name:   "logical_statement",
+			source: `def run; [1].map { x = _1 and true }; end`,
+			want:   []string{"_1"},
 		},
 	}
 

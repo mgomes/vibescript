@@ -97,9 +97,14 @@ func isValidModuleAlias(name string) bool {
 	return ast.LookupIdent(name) == ast.TokenIdent
 }
 
-func bindRequireAlias(root *Env, alias string, module Value) error {
+func bindRequireAlias(root, scope *Env, alias string, module Value) error {
 	if err := validateRequireAliasBinding(root, alias, module); err != nil {
 		return err
+	}
+	if scope != nil && scope != root {
+		if err := validateRequireAliasBinding(scope, alias, module); err != nil {
+			return err
+		}
 	}
 	if alias == "" {
 		return nil
@@ -113,12 +118,18 @@ func validateRequireAliasBinding(root *Env, alias string, module Value) error {
 		return nil
 	}
 	if existing, ok := root.Get(alias); ok {
-		if existing.Kind() == KindObject && module.Kind() == KindObject && reflect.ValueOf(existing.Hash()).Pointer() == reflect.ValueOf(module.Hash()).Pointer() {
+		if sameObjectValue(existing, module) {
 			return nil
 		}
 		return fmt.Errorf("require: alias %q already defined", alias)
 	}
 	return nil
+}
+
+func sameObjectValue(left, right Value) bool {
+	return left.Kind() == KindObject &&
+		right.Kind() == KindObject &&
+		reflect.ValueOf(left.Hash()).Pointer() == reflect.ValueOf(right.Hash()).Pointer()
 }
 
 func bindModuleExportsWithoutOverwrite(root *Env, exports map[string]Value) {
@@ -208,7 +219,13 @@ func executeModuleEntrypoint(exec *Execution, entry moduleEntry, moduleEnv *Env)
 	}
 	defer exec.popFrame()
 
-	_, _, err := exec.evalStatements(fn.Body, moduleEnv)
+	// Module top-level statements run while the requiring method's tokens are
+	// live, but a block created at module level has no enclosing method: pin
+	// the home to none so its return reports LocalJumpError instead of
+	// returning from the importer.
+	exec.pushBlockHomeToken(0)
+	_, _, err := exec.evalLocalScopeStatements(fn.Body, moduleEnv)
+	exec.popBlockHomeToken()
 	if err != nil {
 		err = exec.wrapError(err, fn.Pos)
 	}
@@ -340,6 +357,10 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 		return moduleEntry{}, fmt.Errorf("require: module paths not configured")
 	}
 
+	if suggestion, ok := e.cachedSearchPathMiss(request.normalized); ok {
+		return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, suggestion)
+	}
+
 	for _, root := range e.modPaths {
 		key := moduleCacheKey(root, request.normalized)
 		candidate := filepath.Join(root, request.normalized)
@@ -362,7 +383,24 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 		return e.compileAndCacheModule(key, root, request.normalized, candidate, data)
 	}
 
-	return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, e.searchPathModuleSuggestion(request))
+	suggestion := e.searchPathModuleSuggestion(request)
+	e.cacheSearchPathMiss(request.normalized, suggestion)
+	return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, suggestion)
+}
+
+func (e *Engine) cachedSearchPathMiss(normalized string) (string, bool) {
+	e.modMu.RLock()
+	suggestion, ok := e.modSearchMisses[normalized]
+	e.modMu.RUnlock()
+	return suggestion, ok
+}
+
+func (e *Engine) cacheSearchPathMiss(normalized, suggestion string) {
+	e.modMu.Lock()
+	if len(e.modSearchMisses) < e.config.MaxCachedModules {
+		e.modSearchMisses[normalized] = suggestion
+	}
+	e.modMu.Unlock()
 }
 
 // moduleSuggestWalkLimit caps how many directory entries are examined per
@@ -878,7 +916,7 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		exec.modules = make(map[string]Value)
 	}
 	if cached, ok := exec.modules[entry.key]; ok {
-		if err := bindRequireAlias(exec.root, alias, cached); err != nil {
+		if err := bindRequireAlias(exec.root, exec.currentEnv(), alias, cached); err != nil {
 			return NewNil(), err
 		}
 		return cached, nil
@@ -928,8 +966,17 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		}
 	}
 	exportsVal := NewObject(exports)
+	aliasScope := exec.currentEnv()
+	if aliasScope == nil {
+		aliasScope = exec.root
+	}
 	if err := validateRequireAliasBinding(exec.root, alias, exportsVal); err != nil {
 		return NewNil(), err
+	}
+	if aliasScope != exec.root {
+		if err := validateRequireAliasBinding(aliasScope, alias, exportsVal); err != nil {
+			return NewNil(), err
+		}
 	}
 	if err := initializeModuleForCall(exec, entry, moduleEnv, moduleClasses); err != nil {
 		return NewNil(), err

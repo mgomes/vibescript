@@ -32,7 +32,9 @@ type (
 	FunctionStmt   = ast.FunctionStmt
 	ReturnStmt     = ast.ReturnStmt
 	RaiseStmt      = ast.RaiseStmt
+	AliasStmt      = ast.AliasStmt
 	AssignStmt     = ast.AssignStmt
+	LogicalStmt    = ast.LogicalStmt
 	ExprStmt       = ast.ExprStmt
 	IfStmt         = ast.IfStmt
 	ForStmt        = ast.ForStmt
@@ -52,6 +54,7 @@ type (
 	IntegerLiteral     = ast.IntegerLiteral
 	FloatLiteral       = ast.FloatLiteral
 	StringLiteral      = ast.StringLiteral
+	RegexLiteral       = ast.RegexLiteral
 	BoolLiteral        = ast.BoolLiteral
 	NilLiteral         = ast.NilLiteral
 	SymbolLiteral      = ast.SymbolLiteral
@@ -70,7 +73,7 @@ type (
 	UnaryExpr          = ast.UnaryExpr
 	BinaryExpr         = ast.BinaryExpr
 	ConditionalExpr    = ast.ConditionalExpr
-	RescueModifierExpr = ast.RescueModifierExpr
+	RescueExpr         = ast.RescueExpr
 	IfExprBranch       = ast.IfExprBranch
 	IfExpr             = ast.IfExpr
 	RangeExpr          = ast.RangeExpr
@@ -107,6 +110,7 @@ const (
 	TypeArray    = ast.TypeArray
 	TypeHash     = ast.TypeHash
 	TypeRange    = ast.TypeRange
+	TypeSymbol   = ast.TypeSymbol
 	TypeFunction = ast.TypeFunction
 	TypeShape    = ast.TypeShape
 	TypeUnion    = ast.TypeUnion
@@ -131,6 +135,8 @@ const (
 	tokenPower     = ast.TokenPower
 	tokenSlash     = ast.TokenSlash
 	tokenPercent   = ast.TokenPercent
+	tokenAndAssign = ast.TokenAndAssign
+	tokenOrAssign  = ast.TokenOrAssign
 	tokenLT        = ast.TokenLT
 	tokenShovel    = ast.TokenShovel
 	tokenGT        = ast.TokenGT
@@ -139,9 +145,13 @@ const (
 	tokenSpaceship = ast.TokenSpaceship
 	tokenEQ        = ast.TokenEQ
 	tokenCaseEQ    = ast.TokenCaseEQ
+	tokenMatch     = ast.TokenMatch
+	tokenNotMatch  = ast.TokenNotMatch
 	tokenNotEQ     = ast.TokenNotEQ
 	tokenAnd       = ast.TokenAnd
 	tokenOr        = ast.TokenOr
+	tokenWordAnd   = ast.TokenWordAnd
+	tokenWordOr    = ast.TokenWordOr
 	tokenAmpersand = ast.TokenAmpersand
 	tokenQuestion  = ast.TokenQuestion
 	tokenComma     = ast.TokenComma
@@ -213,14 +223,15 @@ func cloneStringSlice(values []string) []string {
 // re-exports in vibes/value_alias.go and exist purely to keep the
 // runtime sources readable after the move out of package vibes.
 type (
-	Value          = value.Value
-	ValueKind      = value.ValueKind
-	HashEntry      = value.HashEntry
-	HashLookupKey  = value.HashLookupKey
-	TypedHashEntry = value.TypedHashEntry
-	Money          = value.Money
-	Duration       = value.Duration
-	Range          = value.Range
+	Value           = value.Value
+	ValueKind       = value.ValueKind
+	EqualityContext = value.EqualityContext
+	HashEntry       = value.HashEntry
+	HashLookupKey   = value.HashLookupKey
+	TypedHashEntry  = value.TypedHashEntry
+	Money           = value.Money
+	Duration        = value.Duration
+	Range           = value.Range
 )
 
 type sliceIdentity = value.SliceIdentity
@@ -246,6 +257,7 @@ const (
 	KindEnumValue = value.KindEnumValue
 	KindClass     = value.KindClass
 	KindInstance  = value.KindInstance
+	KindRegex     = value.KindRegex
 )
 
 // NewNil returns a nil Value.
@@ -303,6 +315,9 @@ func NewObject(attrs map[string]Value) Value { return value.NewObject(attrs) }
 
 // NewMoney returns a money Value.
 func NewMoney(m Money) Value { return value.NewMoney(m) }
+
+// NewRegex returns a regex Value.
+func NewRegex(r value.Regex) Value { return value.NewRegex(r) }
 
 // NewDuration returns a duration Value.
 func NewDuration(d Duration) Value { return value.NewDuration(d) }
@@ -781,6 +796,7 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 	}
 	clone := newEnvWithCapacity(nil, env.dynamicLen())
 	clone.assignBoundary = env.assignBoundary
+	clone.rebindOuter = env.rebindOuter
 	clone.callRoot = env.callRoot
 	state.envs[env] = clone
 	clone.parent = cloneEnvForHost(env.parent, state)
@@ -944,6 +960,10 @@ type Builtin struct {
 	// keyword options hash just like `fn(...)`. Method and constructor wrappers
 	// leave this false to keep parenthesized keyword binding strict.
 	DirectCallAlias bool
+	// DirectCallAliasPos is the source position attached to the member access
+	// that created a direct-call alias. Rebinding an escaped alias rebuilds its
+	// closure around the live callable and preserves this position for diagnostics.
+	DirectCallAliasPos Position
 	// CapturedValues holds runtime values the builtin's Fn closes over and keeps
 	// alive for as long as the builtin is reachable. The memory estimator charges
 	// their payloads so a stored bound builtin (for example `probe = big.eql?`,
@@ -988,6 +1008,11 @@ type Block struct {
 	moduleKey      string
 	modulePath     string
 	moduleRoot     string
+	// homeReturnToken identifies the method invocation the block lexically
+	// belongs to: a return in the block body returns from that invocation
+	// (Ruby non-local return). Zero for host-built or top-level blocks, whose
+	// returns report LocalJumpError.
+	homeReturnToken uint64
 }
 
 // NewBlock returns a block (closure) Value.

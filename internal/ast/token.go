@@ -36,6 +36,7 @@ const (
 	TokenSymbols            TokenType = "SYMBOLS"
 	TokenInterpWords        TokenType = "INTERP_WORDS"
 	TokenInterpSymbols      TokenType = "INTERP_SYMBOLS"
+	TokenRegex              TokenType = "REGEX"
 
 	TokenAssign         TokenType = "="
 	TokenPlusAssign     TokenType = "+="
@@ -44,6 +45,8 @@ const (
 	TokenPowerAssign    TokenType = "**="
 	TokenSlashAssign    TokenType = "/="
 	TokenPercentAssign  TokenType = "%="
+	TokenAndAssign      TokenType = "&&="
+	TokenOrAssign       TokenType = "||="
 	TokenPlus           TokenType = "+"
 	TokenMinus          TokenType = "-"
 	TokenBang           TokenType = "!"
@@ -61,8 +64,12 @@ const (
 	TokenEQ             TokenType = "=="
 	TokenCaseEQ         TokenType = "==="
 	TokenNotEQ          TokenType = "!="
+	TokenMatch          TokenType = "=~"
+	TokenNotMatch       TokenType = "!~"
 	TokenAnd            TokenType = "&&"
 	TokenOr             TokenType = "||"
+	TokenWordAnd        TokenType = "AND"
+	TokenWordOr         TokenType = "OR"
 	TokenAmpersand      TokenType = "&"
 	TokenQuestion       TokenType = "?"
 
@@ -173,6 +180,9 @@ var keywordTokenTypes = map[string]TokenType{
 	"true":     TokenTrue,
 	"false":    TokenFalse,
 	"nil":      TokenNil,
+	"and":      TokenWordAnd,
+	"or":       TokenWordOr,
+	"not":      TokenNot,
 }
 
 // Keywords returns the parser's reserved keyword literals in sorted order.

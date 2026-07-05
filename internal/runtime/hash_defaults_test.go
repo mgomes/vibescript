@@ -60,6 +60,20 @@ def merge_preserves_proc_default()
   { a: merged[:a], computed: merged[:b] }
 end
 
+def clear_preserves_value_default()
+  h = Hash.new(0)
+  h[:a] = 1
+  cleared = h.clear
+  { size: cleared.size, missing: cleared[:missing] }
+end
+
+def clear_preserves_proc_default()
+  h = Hash.new { |hash, key| 42 }
+  h[:a] = 1
+  cleared = h.clear
+  { size: cleared.size, computed: cleared[:missing] }
+end
+
 def select_drops_default()
   h = Hash.new(0)
   h[:a] = 1
@@ -311,6 +325,8 @@ func TestHashDefaultTransformPropagation(t *testing.T) {
 	}{
 		{name: "merge preserves value default", fn: "merge_preserves_value_default", field: "missing", wantInt: 0, preserves: true},
 		{name: "merge preserves proc default", fn: "merge_preserves_proc_default", field: "computed", wantInt: 42, preserves: true},
+		{name: "clear preserves value default", fn: "clear_preserves_value_default", field: "missing", wantInt: 0, preserves: true},
+		{name: "clear preserves proc default", fn: "clear_preserves_proc_default", field: "computed", wantInt: 42, preserves: true},
 		{name: "select drops default", fn: "select_drops_default", field: "missing"},
 		{name: "transform_values drops default", fn: "transform_values_drops_default", field: "missing"},
 		{name: "store drops default", fn: "store_drops_default", field: "missing"},

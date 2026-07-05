@@ -80,6 +80,26 @@ func TestEnvInlineBindingsSupportAssignmentAndStaticTransitions(t *testing.T) {
 	}
 }
 
+func TestEnvGetSkippingDoesNotCloneFrozenBindingIntoSkippedScope(t *testing.T) {
+	t.Parallel()
+
+	frozen := newEnv(nil)
+	frozen.frozen = true
+	frozen.DefineStatic("JSON", NewObject(map[string]Value{"name": NewString("json")}))
+	env := newEnv(frozen)
+
+	val, ok := env.getSkipping("JSON", map[*Env]struct{}{env: {}})
+	if !ok {
+		t.Fatalf("getSkipping(JSON) missing frozen binding")
+	}
+	if val.Kind() != KindObject {
+		t.Fatalf("getSkipping(JSON) kind = %s, want object", val.Kind())
+	}
+	if env.hasOwnBinding("JSON") {
+		t.Fatalf("getSkipping(JSON) materialized binding into skipped scope")
+	}
+}
+
 func TestEnvResetForBlockCallClearsPerCallState(t *testing.T) {
 	t.Parallel()
 
@@ -96,6 +116,7 @@ func TestEnvResetForBlockCallClearsPerCallState(t *testing.T) {
 	env.staticBytes = 99
 	env.arrayAppendBuffers = map[string][]Value{"items": {NewInt(6)}}
 	env.assignBoundary = true
+	env.rebindOuter = true
 	env.frozen = true
 
 	env.resetForBlockCall(parent)
@@ -123,6 +144,9 @@ func TestEnvResetForBlockCallClearsPerCallState(t *testing.T) {
 	}
 	if env.assignBoundary {
 		t.Fatalf("assignBoundary after reset = true, want false")
+	}
+	if env.rebindOuter {
+		t.Fatalf("rebindOuter after reset = true, want false")
 	}
 	if env.frozen {
 		t.Fatalf("frozen after reset = true, want false")

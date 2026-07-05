@@ -170,6 +170,30 @@ func TestOptionalKeywordParameterTypedPositionalUnaffected(t *testing.T) {
 	}
 }
 
+func TestRequiredKeywordParameterTypeAnnotation(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def greet(name: string:, times: int:)
+      name + ":" + times.to_s
+    end
+    `)
+
+	got := callScript(t, context.Background(), script, "greet", nil, CallOptions{
+		Keywords: map[string]Value{"name": NewString("Ada"), "times": NewInt(2)},
+	})
+	if !got.Equal(NewString("Ada:2")) {
+		t.Fatalf("greet(name: Ada, times: 2) = %#v, want Ada:2", got)
+	}
+	requireCallErrorContains(t, script, "greet", nil, CallOptions{
+		Keywords: map[string]Value{"name": NewString("Ada")},
+	}, "missing keyword argument times")
+	requireCallErrorContains(t, script, "greet", []Value{NewString("Ada"), NewInt(2)}, CallOptions{},
+		"missing keyword argument name")
+	requireCallErrorContains(t, script, "greet", nil, CallOptions{
+		Keywords: map[string]Value{"name": NewString("Ada"), "times": NewString("two")},
+	}, "argument times expected int, got string")
+}
+
 // TestOptionalKeywordParameterNilLeadingUnionTypedPositional verifies that a
 // nil-leading union annotation (`a: nil | int`) binds as a typed positional
 // parameter rather than a `nil` keyword default. The `|` continuation after

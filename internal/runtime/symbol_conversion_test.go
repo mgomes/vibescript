@@ -2,6 +2,44 @@ package runtime
 
 import "testing"
 
+func TestCompileCachesSymbolLiteralValues(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run(payload)
+  payload.slice(:id, :name)
+end`)
+	if len(script.symbolLiterals) != 2 {
+		t.Fatalf("symbol literal cache has %d entries, want 2", len(script.symbolLiterals))
+	}
+	for lit, val := range script.symbolLiterals {
+		if val.Kind() != KindSymbol || val.String() != lit.Name {
+			t.Fatalf("cached literal %q = %#v, want matching symbol", lit.Name, val)
+		}
+	}
+
+	got := callFunc(t, script, "run", []Value{NewHash(map[string]Value{
+		"id":   NewString("7"),
+		"name": NewString("Ada"),
+	})})
+	compareHash(t, got.Hash(), map[string]Value{
+		"id":   NewString("7"),
+		"name": NewString("Ada"),
+	})
+}
+
+func TestEvalSymbolLiteralWithoutScript(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{quota: 1 << 30}
+	got, err := exec.evalExpression(&SymbolLiteral{Name: "name"}, newEnv(nil))
+	if err != nil {
+		t.Fatalf("evalExpression(symbol) error = %v", err)
+	}
+	if !got.Equal(NewSymbol("name")) {
+		t.Fatalf("evalExpression(symbol) = %#v, want :name", got)
+	}
+}
+
 // TestStringToSymbol covers String#to_sym and its alias String#intern, both of
 // which return the symbol named by the receiver. The result must be a genuine
 // symbol value: Vibescript symbol/string equality is kind-sensitive, so the

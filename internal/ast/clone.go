@@ -83,11 +83,20 @@ func cloneStatement(stmt Statement) Statement {
 	case *RaiseStmt:
 		clone := *s
 		clone.Value = cloneExpression(s.Value)
+		clone.Message = cloneExpression(s.Message)
+		return &clone
+	case *AliasStmt:
+		clone := *s
 		return &clone
 	case *AssignStmt:
 		clone := *s
 		clone.Target = cloneExpression(s.Target)
 		clone.Value = cloneExpression(s.Value)
+		return &clone
+	case *LogicalStmt:
+		clone := *s
+		clone.Left = cloneStatement(s.Left)
+		clone.Right = cloneStatement(s.Right)
 		return &clone
 	case *ExprStmt:
 		clone := *s
@@ -97,6 +106,7 @@ func cloneStatement(stmt Statement) Statement {
 		return cloneIfStmt(s)
 	case *ForStmt:
 		clone := *s
+		clone.Target = cloneExpression(s.Target)
 		clone.Iterable = cloneExpression(s.Iterable)
 		clone.Body = cloneStatements(s.Body)
 		return &clone
@@ -124,14 +134,23 @@ func cloneStatement(stmt Statement) Statement {
 	case *TryStmt:
 		clone := *s
 		clone.Body = cloneStatements(s.Body)
-		clone.Rescues = cloneRescueClauses(s.Rescues)
+		if s.Rescues != nil {
+			clone.Rescues = make([]RescueClause, len(s.Rescues))
+			for i, rescue := range s.Rescues {
+				rescue.Ty = cloneTypeExpr(rescue.Ty)
+				rescue.Body = cloneStatements(rescue.Body)
+				clone.Rescues[i] = rescue
+			}
+		}
 		clone.Else = cloneStatements(s.Else)
 		clone.Ensure = cloneStatements(s.Ensure)
 		return &clone
 	case *ClassStmt:
 		clone := *s
+		clone.Members = cloneClassMemberDecls(s.Members)
 		clone.Methods = cloneFunctionStmts(s.Methods)
 		clone.ClassMethods = cloneFunctionStmts(s.ClassMethods)
+		clone.Aliases = cloneAliasStmts(s.Aliases)
 		clone.Properties = clonePropertyDecls(s.Properties)
 		clone.Body = cloneStatements(s.Body)
 		return &clone
@@ -166,6 +185,40 @@ func cloneFunctionStmts(functions []*FunctionStmt) []*FunctionStmt {
 	return out
 }
 
+func cloneClassMemberDecls(members []ClassMemberDecl) []ClassMemberDecl {
+	if members == nil {
+		return nil
+	}
+	out := make([]ClassMemberDecl, len(members))
+	for i, member := range members {
+		out[i] = ClassMemberDecl{
+			Function: cloneFunctionStmt(member.Function),
+			Alias:    cloneAliasStmt(member.Alias),
+			Property: clonePropertyDeclPtr(member.Property),
+		}
+	}
+	return out
+}
+
+func cloneAliasStmts(aliases []*AliasStmt) []*AliasStmt {
+	if aliases == nil {
+		return nil
+	}
+	out := make([]*AliasStmt, len(aliases))
+	for i, alias := range aliases {
+		out[i] = cloneAliasStmt(alias)
+	}
+	return out
+}
+
+func cloneAliasStmt(alias *AliasStmt) *AliasStmt {
+	if alias == nil {
+		return nil
+	}
+	clone := *alias
+	return &clone
+}
+
 func cloneIfStmt(stmt *IfStmt) *IfStmt {
 	if stmt == nil {
 		return nil
@@ -191,10 +244,22 @@ func clonePropertyDecls(properties []PropertyDecl) []PropertyDecl {
 	for i, property := range properties {
 		out[i] = property
 		if property.Names != nil {
-			out[i].Names = append([]string{}, property.Names...)
+			names := make([]PropertyName, len(property.Names))
+			for j, name := range property.Names {
+				names[j] = PropertyName{Name: name.Name, Type: cloneTypeExpr(name.Type)}
+			}
+			out[i].Names = names
 		}
 	}
 	return out
+}
+
+func clonePropertyDeclPtr(property *PropertyDecl) *PropertyDecl {
+	if property == nil {
+		return nil
+	}
+	clone := clonePropertyDecls([]PropertyDecl{*property})
+	return &clone[0]
 }
 
 func cloneExpressions(expressions []Expression) []Expression {
@@ -222,6 +287,9 @@ func cloneExpression(expr Expression) Expression {
 		clone := *e
 		return &clone
 	case *StringLiteral:
+		clone := *e
+		return &clone
+	case *RegexLiteral:
 		clone := *e
 		return &clone
 	case *BoolLiteral:
@@ -286,7 +354,7 @@ func cloneExpression(expr Expression) Expression {
 		clone.Consequent = cloneExpression(e.Consequent)
 		clone.Alternate = cloneExpression(e.Alternate)
 		return &clone
-	case *RescueModifierExpr:
+	case *RescueExpr:
 		clone := *e
 		clone.Body = cloneExpression(e.Body)
 		clone.Fallback = cloneExpression(e.Fallback)
@@ -330,22 +398,6 @@ func cloneExpression(expr Expression) Expression {
 	}
 }
 
-func cloneRescueClauses(clauses []RescueClause) []RescueClause {
-	if clauses == nil {
-		return nil
-	}
-	out := make([]RescueClause, len(clauses))
-	for i, clause := range clauses {
-		out[i] = RescueClause{
-			Type:     cloneTypeExpr(clause.Type),
-			Binding:  clause.Binding,
-			Position: clause.Position,
-			Body:     cloneStatements(clause.Body),
-		}
-	}
-	return out
-}
-
 func cloneIfExprBranches(branches []IfExprBranch) []IfExprBranch {
 	if branches == nil {
 		return nil
@@ -368,6 +420,7 @@ func cloneDestructureElements(elements []DestructureElement) []DestructureElemen
 	for i, element := range elements {
 		out[i] = DestructureElement{
 			Target:   cloneExpression(element.Target),
+			Type:     cloneTypeExpr(element.Type),
 			Rest:     element.Rest,
 			Position: element.Position,
 		}

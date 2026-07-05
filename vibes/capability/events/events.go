@@ -111,10 +111,7 @@ func (c *Capability) PublishValidated(ctx context.Context, args []value.Value, k
 			return value.NewNil(), err
 		}
 	}
-	if err := c.ValidatePublishReturn(result); err != nil {
-		return value.NewNil(), err
-	}
-	return deepClone(result), nil
+	return capabilitycontract.CloneMethodResult(c.PublishMethodName(), result)
 }
 
 // nameArg coerces a string or symbol argument into its underlying name,

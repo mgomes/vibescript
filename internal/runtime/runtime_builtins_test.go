@@ -1167,6 +1167,12 @@ func TestJSONBuiltins(t *testing.T) {
       JSON.stringify({ fn: helper })
     end
 
+    def stringify_reused_deep_array()
+      leaf = [1]
+      branch = [[[[[[[[[leaf]]]]]]]]]
+      JSON.stringify([branch, branch])
+    end
+
     def helper(value)
       value
     end
@@ -1192,8 +1198,11 @@ func TestJSONBuiltins(t *testing.T) {
 	if stringified.Kind() != KindString {
 		t.Fatalf("expected JSON.stringify to return string, got %v", stringified.Kind())
 	}
-	if got := stringified.String(); got != `{"name":"alex","ratio":1.5,"score":10,"tags":["x",true,null]}` {
+	if got := stringified.String(); got != `{"name":"alex","score":10,"tags":["x",true,null],"ratio":1.5}` {
 		t.Fatalf("stringify mismatch: %q", got)
+	}
+	if got := callFunc(t, script, "stringify_reused_deep_array", nil); got.String() != `[[[[[[[[[[[1]]]]]]]]]],[[[[[[[[[[1]]]]]]]]]]]` {
+		t.Fatalf("stringify_reused_deep_array = %q", got.String())
 	}
 
 	compareArrays(t, callFunc(t, script, "parsed_object_key_identity", nil), []Value{NewInt(1), NewInt(2), NewInt(2)})
@@ -1203,6 +1212,30 @@ func TestJSONBuiltins(t *testing.T) {
 
 	requireCallErrorContains(t, script, "parse_invalid", nil, CallOptions{}, "JSON.parse invalid JSON")
 	requireCallErrorContains(t, script, "stringify_unsupported", nil, CallOptions{}, "JSON.stringify unsupported value type function")
+}
+
+func TestJSONParseSmallArraysDoNotRetainInitialCapacity(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def parse_arrays()
+      JSON.parse("[[1],[2,3],[]]")
+    end
+    `)
+
+	parsed := callFunc(t, script, "parse_arrays", nil)
+	if parsed.Kind() != KindArray {
+		t.Fatalf("parse_arrays() = %s, want array", parsed.Kind())
+	}
+	for i, value := range parsed.Array() {
+		if value.Kind() != KindArray {
+			t.Fatalf("parse_arrays()[%d] = %s, want array", i, value.Kind())
+		}
+		values := value.Array()
+		if cap(values) != len(values) {
+			t.Fatalf("parse_arrays()[%d] len/cap = %d/%d, want exact capacity so JSON.parse does not retain quota-visible unused array slots", i, len(values), cap(values))
+		}
+	}
 }
 
 func TestJSONParseObjectDataExposesEntries(t *testing.T) {

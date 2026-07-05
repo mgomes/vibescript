@@ -43,6 +43,32 @@ rows.map do |(head, *, tail)|
 end
 ```
 
+## Returning from the enclosing method
+
+As in Ruby, an explicit `return` inside a normal block returns from the method
+whose body created the block, not just from the block call, so iteration ends
+immediately:
+
+```vibe
+def first_even(values)
+  values.each do |value|
+    if value % 2 == 0
+      return value
+    end
+  end
+  "none"
+end
+
+first_even([1, 2, 3]) # => 2
+```
+
+The return unwinds like an error — `ensure` blocks on the way out still run —
+but no `rescue` clause can intercept it, and a typed method validates the value
+against its return type as usual. A block invoked after its method has already
+returned (for example, one a host adapter stored) has no frame to return from,
+so an explicit `return` in it raises `LocalJumpError`, matching Ruby. To leave
+just the block with a value, make the value the block's last expression.
+
 ## Detecting and invoking a supplied block
 
 A function or method receives a block from its caller and runs it with `yield`.

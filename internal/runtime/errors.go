@@ -396,6 +396,12 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	if isHostControlSignal(err) || isFunctionReturnSignal(err) || isRescueRetrySignal(err) {
 		return err
 	}
+	if isNonLocalReturnSignal(err) {
+		// A non-local return must reach its home invocation intact; flattening
+		// it into a RuntimeError would lose the target token and make it
+		// rescuable on the way.
+		return err
+	}
 	var runtimeErr *RuntimeError
 	if errors.As(err, &runtimeErr) {
 		return err

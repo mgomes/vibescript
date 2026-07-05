@@ -318,23 +318,23 @@ func TestForHashLoops(t *testing.T) {
 		want Value
 	}{
 		{
-			name: "yields_sorted_key_value_pairs",
+			name: "yields_insertion_ordered_key_value_pairs",
 			fn:   "pairs",
 			want: NewArray([]Value{
-				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
 				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
 				NewArray([]Value{NewSymbol("c"), NewInt(3)}),
 			}),
 		},
 		{
 			name: "first_element_is_symbol_key",
 			fn:   "keys",
-			want: NewArray([]Value{NewSymbol("a"), NewSymbol("b")}),
+			want: NewArray([]Value{NewSymbol("b"), NewSymbol("a")}),
 		},
 		{
 			name: "second_element_is_value",
 			fn:   "values",
-			want: NewArray([]Value{NewInt(1), NewInt(2)}),
+			want: NewArray([]Value{NewInt(2), NewInt(1)}),
 		},
 		{
 			name: "empty_hash_runs_zero_iterations",
@@ -2099,9 +2099,11 @@ func TestRubyControlFlowSyntaxBatch(t *testing.T) {
 		t.Fatalf("return_from_statement_expression_condition() = %v, want 1", got)
 	}
 	requireCallErrorContains(t, script, "typed_return_from_statement_expression_condition", nil, CallOptions{}, "return value for typed_return_from_statement_expression_condition expected string, got int")
-	compareArrays(t, callFunc(t, script, "return_from_statement_expression_condition_in_block", nil), []Value{
-		NewInt(7),
-	})
+	// Ruby non-local return: the return inside the block's statement
+	// expression returns from the enclosing method, not from the map block.
+	if got := callFunc(t, script, "return_from_statement_expression_condition_in_block", nil); !got.Equal(NewInt(7)) {
+		t.Fatalf("return_from_statement_expression_condition_in_block() = %v, want 7", got)
+	}
 	compareArrays(t, callFunc(t, script, "rescue_modifier", nil), []Value{
 		NewString("fallback"),
 		NewInt(7),

@@ -121,12 +121,7 @@ func TestArrayFilterMap(t *testing.T) {
 	compareArrays(t, got["original"], []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
 }
 
-// TestArrayFilterMapDropsVibescriptFalsy documents that filter_map uses
-// Vibescript's truthiness model (matching select/reject), so 0, "", and empty
-// collections are dropped alongside nil and false. This diverges from Ruby,
-// where only nil and false are falsy, but stays internally consistent with the
-// other predicate-driven enumerable helpers.
-func TestArrayFilterMapDropsVibescriptFalsy(t *testing.T) {
+func TestArrayFilterMapDropsOnlyNilAndFalse(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def run()
@@ -136,7 +131,7 @@ func TestArrayFilterMapDropsVibescriptFalsy(t *testing.T) {
     end
     `)
 	result := callFunc(t, script, "run", nil)
-	compareArrays(t, result, []Value{NewInt(1), NewString("x"), NewArray([]Value{NewInt(9)}), NewInt(2)})
+	compareArrays(t, result, []Value{NewInt(0), NewInt(1), NewString(""), NewString("x"), NewArray(nil), NewArray([]Value{NewInt(9)}), NewInt(2)})
 }
 
 // arrayFilterMapBuiltin returns the array.filter_map builtin's Go function so a
@@ -509,6 +504,90 @@ func TestArrayFilterMapDenseResultStaysLinear(t *testing.T) {
 	if n := len(got.Array()); n != receiverSize {
 		t.Fatalf("filter_map kept %d elements, want %d", n, receiverSize)
 	}
+}
+
+func TestArrayOptionalTrimDoesNotTripMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const receiverSize = 1000
+	receiver := largeIntArray(receiverSize)
+	compactItems := make([]Value, receiverSize)
+	for i := range compactItems {
+		compactItems[i] = NewNil()
+	}
+	compactItems[0] = NewInt(0)
+	compactReceiver := NewArray(compactItems)
+
+	cases := []struct {
+		name     string
+		method   string
+		receiver Value
+		block    Value
+		want     []Value
+	}{
+		{
+			name:     "select",
+			method:   "select",
+			receiver: receiver,
+			block:    itemZeroComparisonBlockValue(tokenEQ),
+			want:     []Value{NewInt(0)},
+		},
+		{
+			name:     "reject",
+			method:   "reject",
+			receiver: receiver,
+			block:    itemZeroComparisonBlockValue(tokenNotEQ),
+			want:     []Value{NewInt(0)},
+		},
+		{
+			name:     "compact",
+			method:   "compact",
+			receiver: compactReceiver,
+			block:    NewNil(),
+			want:     []Value{NewInt(0)},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+			baseline := probe.hashCallRootBytes(tc.receiver, nil, nil, tc.block)
+			fullBacking := arraySlotBackingBytes(len(tc.receiver.Array()))
+			trimBacking := valueSliceScratchBytes(len(tc.want))
+			quota := baseline + fullBacking + trimBacking/2
+			if quota <= baseline+fullBacking || quota >= baseline+fullBacking+trimBacking {
+				t.Fatalf("quota %d must fit baseline %d plus full backing %d but reject trim backing %d", quota, baseline, fullBacking, trimBacking)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			got, err := callArrayMember(t, exec, tc.receiver, tc.method, nil, tc.block)
+			if err != nil {
+				t.Fatalf("array.%s under quota that only rejects optional trim = %v, want success", tc.method, err)
+			}
+			compareArrays(t, got, tc.want)
+			if cap(got.Array()) != receiverSize {
+				t.Fatalf("array.%s result cap = %d, want untrimmed cap %d when optional trim cannot fit", tc.method, cap(got.Array()), receiverSize)
+			}
+			if exec.reservedScratchBytes != 0 {
+				t.Fatalf("array.%s leaked %d reserved scratch bytes", tc.method, exec.reservedScratchBytes)
+			}
+		})
+	}
+}
+
+func itemZeroComparisonBlockValue(operator TokenType) Value {
+	pos := Position{Line: 1, Column: 1}
+	body := []Statement{&ExprStmt{
+		Expr: &BinaryExpr{
+			Left:     &Identifier{Name: "item", Position: pos},
+			Operator: operator,
+			Right:    &IntegerLiteral{Value: 0, Position: pos},
+			Position: pos,
+		},
+		Position: pos,
+	}}
+	return NewBlock([]Param{{Kind: ParamNormal, Name: "item"}}, body, newEnv(nil))
 }
 
 // freshIntArrayValue returns an array Value of `width` integer elements, matching

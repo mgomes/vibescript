@@ -91,10 +91,18 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		return true
 	case *ast.RaiseStmt:
 		lintExpression(function, typed.Value, warnings)
+		lintExpression(function, typed.Message, warnings)
 		return true
 	case *ast.AssignStmt:
 		lintExpression(function, typed.Target, warnings)
 		lintExpression(function, typed.Value, warnings)
+		return false
+	case *ast.LogicalStmt:
+		leftTerminated := statementTerminates(function, typed.Left, warnings)
+		if leftTerminated {
+			return true
+		}
+		statementTerminates(function, typed.Right, warnings)
 		return false
 	case *ast.ExprStmt:
 		lintExpression(function, typed.Expr, warnings)
@@ -102,6 +110,7 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 	case *ast.IfStmt:
 		return ifStatementTerminates(function, typed, warnings)
 	case *ast.ForStmt:
+		lintExpression(function, typed.Target, warnings)
 		lintExpression(function, typed.Iterable, warnings)
 		lintStatements(function, typed.Body, warnings)
 		return false
@@ -119,10 +128,16 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		if len(typed.Else) > 0 {
 			elseTerminated = lintStatements(function, typed.Else, warnings)
 		}
-		rescuesTerminate := len(typed.Rescues) > 0
-		for _, clause := range typed.Rescues {
-			if !lintStatements(function, clause.Body, warnings) {
-				rescuesTerminate = false
+		rescuePresent := false
+		rescueTerminated := true
+		for i := range typed.Rescues {
+			body := typed.Rescues[i].Body
+			if len(body) == 0 {
+				continue
+			}
+			rescuePresent = true
+			if !lintStatements(function, body, warnings) {
+				rescueTerminated = false
 			}
 		}
 		ensureTerminated := false
@@ -136,10 +151,10 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		if len(typed.Else) > 0 {
 			normalTerminated = bodyTerminated || elseTerminated
 		}
-		if len(typed.Rescues) == 0 {
+		if !rescuePresent {
 			return normalTerminated
 		}
-		return normalTerminated && rescuesTerminate
+		return normalTerminated && rescueTerminated
 	default:
 		return false
 	}
@@ -206,7 +221,7 @@ func lintExpression(function string, expr ast.Expression, warnings *[]Warning) {
 		lintExpression(function, typed.Condition, warnings)
 		lintExpression(function, typed.Consequent, warnings)
 		lintExpression(function, typed.Alternate, warnings)
-	case *ast.RescueModifierExpr:
+	case *ast.RescueExpr:
 		lintExpression(function, typed.Body, warnings)
 		lintExpression(function, typed.Fallback, warnings)
 	case *ast.IfExpr:

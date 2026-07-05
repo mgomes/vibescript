@@ -77,6 +77,22 @@ func TestMemoryEstimatorDoesNotMaterializeTypedHashMirror(t *testing.T) {
 	}
 }
 
+func TestMemoryEstimatorChargesReservedTypedHashCapacity(t *testing.T) {
+	t.Parallel()
+
+	empty := NewHash(map[string]Value{})
+	empty.ReserveTypedHashOrder(0)
+	reserved := NewHash(map[string]Value{})
+	reserved.ReserveTypedHashOrder(10)
+
+	emptyBytes := newMemoryEstimator().value(empty)
+	reservedBytes := newMemoryEstimator().value(reserved)
+	wantDelta := estimatedSliceBaseBytes + 10*(estimatedMapEntryBytes+2*estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
+	if gotDelta := reservedBytes - emptyBytes; gotDelta != wantDelta {
+		t.Fatalf("reserved typed hash estimate delta = %d, want %d", gotDelta, wantDelta)
+	}
+}
+
 func TestMemoryEstimatorChargesStoredTypedHashArrayLookupKey(t *testing.T) {
 	t.Parallel()
 
@@ -134,6 +150,52 @@ func TestMemoryEstimatorResetAllowsReuse(t *testing.T) {
 	}
 	if reused != first {
 		t.Fatalf("reused estimate = %d, want first estimate %d", reused, first)
+	}
+}
+
+func TestMemoryEstimatorUsesInlineEnvSeenSetForSmallEnvGraphs(t *testing.T) {
+	t.Parallel()
+
+	root := newEnv(nil)
+	child := newEnv(root)
+	est := newMemoryEstimator()
+
+	first := est.env(child)
+	aliased := est.env(child)
+	if aliased != 0 {
+		t.Fatalf("aliased env estimate = %d, want 0 after first estimate %d", aliased, first)
+	}
+	if est.seenEnvs != nil {
+		t.Fatal("small env graph allocated overflow seen-env map")
+	}
+	if est.seenEnvInlineLen != 2 {
+		t.Fatalf("inline env count = %d, want child and root", est.seenEnvInlineLen)
+	}
+	est.reset()
+	if est.seenEnvInlineLen != 0 {
+		t.Fatalf("inline env count after reset = %d, want 0", est.seenEnvInlineLen)
+	}
+	if reused := est.env(child); reused != first {
+		t.Fatalf("reused env estimate = %d, want first estimate %d", reused, first)
+	}
+}
+
+func TestMemoryEstimatorProbeRollsBackInlineEnvSeenSet(t *testing.T) {
+	t.Parallel()
+
+	root := newEnv(nil)
+	probed := newEnv(root)
+	est := newMemoryEstimator()
+	est.env(root)
+
+	if measured := est.probe(wrapBlock(&Block{Env: probed})); measured == 0 {
+		t.Fatal("probe measured 0 bytes, want block and env footprint")
+	}
+	if est.seenEnvs != nil {
+		t.Fatal("probe over small env graph allocated overflow seen-env map")
+	}
+	if after := est.env(probed); after == 0 {
+		t.Fatal("probe env remained deduplicated after rollback")
 	}
 }
 

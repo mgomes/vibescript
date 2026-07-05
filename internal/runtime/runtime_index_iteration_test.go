@@ -41,22 +41,22 @@ func TestIndexAwareIterationHappyPaths(t *testing.T) {
 		},
 		{
 			// Ruby's Hash#each_with_index yields the [key, value] pair plus the
-			// index; Vibescript visits entries in sorted key order so the index is
-			// deterministic regardless of insertion order.
-			name:   "hash each_with_index pair and index in sorted order",
+			// index; entries visit in insertion order so the index follows the
+			// order the hash was built in.
+			name:   "hash each_with_index pair and index in insertion order",
 			source: `def run(); out = []; { b: 2, a: 1, c: 3 }.each_with_index do |pair, index| out = out.push([pair, index]) end; out; end`,
 			want: []Value{
-				NewArray([]Value{NewArray([]Value{NewSymbol("a"), NewInt(1)}), NewInt(0)}),
-				NewArray([]Value{NewArray([]Value{NewSymbol("b"), NewInt(2)}), NewInt(1)}),
+				NewArray([]Value{NewArray([]Value{NewSymbol("b"), NewInt(2)}), NewInt(0)}),
+				NewArray([]Value{NewArray([]Value{NewSymbol("a"), NewInt(1)}), NewInt(1)}),
 				NewArray([]Value{NewArray([]Value{NewSymbol("c"), NewInt(3)}), NewInt(2)}),
 			},
 		},
 		{
-			name:   "hash map_with_index pair and index in sorted order",
+			name:   "hash map_with_index pair and index in insertion order",
 			source: `def run(); { b: 2, a: 1, c: 3 }.map_with_index do |pair, index| [pair[0], pair[1], index] end; end`,
 			want: []Value{
-				NewArray([]Value{NewSymbol("a"), NewInt(1), NewInt(0)}),
-				NewArray([]Value{NewSymbol("b"), NewInt(2), NewInt(1)}),
+				NewArray([]Value{NewSymbol("b"), NewInt(2), NewInt(0)}),
+				NewArray([]Value{NewSymbol("a"), NewInt(1), NewInt(1)}),
 				NewArray([]Value{NewSymbol("c"), NewInt(3), NewInt(2)}),
 			},
 		},

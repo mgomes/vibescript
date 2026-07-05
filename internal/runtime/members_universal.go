@@ -17,6 +17,8 @@ import (
 //     (Ruby's Object#nil?).
 //   - eql?/equal? — the equality predicates: `eql?` reports hash-key equality and
 //     `equal?` reports object identity.
+//   - send/public_send — dynamic dispatch helpers that invoke a method named by
+//     a symbol or string.
 //   - tap/yield_self — the block helpers: `tap` yields the receiver to its block
 //     and returns the receiver (threading side effects through a pipeline without
 //     changing the value), while `yield_self` yields the receiver and returns the
@@ -43,6 +45,8 @@ var universalMemberNames = []string{
 	"nil?",
 	"eql?",
 	"equal?",
+	"send",
+	"public_send",
 	"tap",
 	"yield_self",
 	respondToMemberName,
@@ -55,7 +59,7 @@ var universalMemberNames = []string{
 // helpers that every value answers through the universal fallback.
 func isUniversalMember(property string) bool {
 	switch property {
-	case "itself", "dup", "clone", "freeze", "frozen?", "nil?", "eql?", "equal?", "tap", "yield_self":
+	case "itself", "dup", "clone", "freeze", "frozen?", "nil?", "eql?", "equal?", "send", "public_send", "tap", "yield_self":
 		return true
 	default:
 		return isUniversalPredicate(property)
@@ -75,7 +79,7 @@ func isUniversalMember(property string) bool {
 // only on a genuine miss.
 func isUniversalDataSafe(property string) bool {
 	switch property {
-	case "itself", "dup", "clone", "freeze", "frozen?", "nil?", "eql?", "equal?":
+	case "itself", "dup", "clone", "freeze", "frozen?", "nil?", "eql?", "equal?", "send", "public_send":
 		return true
 	default:
 		return isUniversalPredicate(property)
@@ -90,7 +94,7 @@ func isUniversalDataSafe(property string) bool {
 // while any other stored value is data and must let the universal helper answer.
 func isCallableMember(val Value) bool {
 	switch val.Kind() {
-	case KindFunction, KindBuiltin:
+	case KindFunction, KindBuiltin, KindBlock:
 		return true
 	default:
 		return false
@@ -147,6 +151,10 @@ func universalValueMember(obj Value, property string) (Value, bool) {
 		return bindEqualityPredicate("eql?", obj, Value.Eql), true
 	case "equal?":
 		return bindEqualityPredicate("equal?", obj, Value.Identical), true
+	case "send":
+		return newUniversalSendBuiltin("send", true), true
+	case "public_send":
+		return newUniversalSendBuiltin("public_send", false), true
 	case "tap":
 		return newUniversalBlockBuiltin("tap", true), true
 	case "yield_self":
@@ -200,6 +208,63 @@ func newFrozenPredicateBuiltin(kind string) Value {
 		}
 		return NewBool(true), nil
 	})
+}
+
+// newUniversalSendBuiltin builds Object#send and Object#public_send. send uses
+// the receiver-visible lookup so private methods are reachable by name, matching
+// Ruby. public_send deliberately resolves through the public member path.
+func newUniversalSendBuiltin(name string, allowPrivate bool) Value {
+	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if len(args) == 0 {
+			return NewNil(), fmt.Errorf("%s expects a method name", name)
+		}
+		method, ok := methodNameArg(args[0])
+		if !ok {
+			return NewNil(), fmt.Errorf("%s expects a symbol or string method name", name)
+		}
+		callArgs := args[1:]
+		var member Value
+		var err error
+		if allowPrivate {
+			member, err = exec.resolveMember(receiver, method, Position{}, true)
+		} else {
+			member, err = exec.getPublicMember(receiver, method, Position{})
+		}
+		if err != nil {
+			return NewNil(), err
+		}
+		callArgs, kwargs = resolveKeywordOptionsHash(dynamicSendCallExpr(kwargs), member, dynamicSendCalleeResolution(receiver, method), callArgs, kwargs)
+		if err := exec.checkCallMemoryRootsWithCallee(member, receiver, callArgs, kwargs, block); err != nil {
+			return NewNil(), err
+		}
+		return exec.invokeCallable(member, receiver, callArgs, kwargs, block, Position{})
+	})
+}
+
+func dynamicSendCallExpr(kwargs map[string]Value) *CallExpr {
+	return &CallExpr{
+		KeywordOptionsHash: len(kwargs) > 0,
+		Parenthesized:      true,
+	}
+}
+
+func dynamicSendCalleeResolution(receiver Value, method string) calleeResolution {
+	switch receiver.Kind() {
+	case KindClass:
+		cl := valueClass(receiver)
+		if method == "new" {
+			return calleeForwardedMethod
+		}
+		if _, ok := cl.ClassMethods[method]; ok {
+			return calleeForwardedMethod
+		}
+	case KindInstance:
+		inst := valueInstance(receiver)
+		if _, ok := inst.Class.Methods[method]; ok {
+			return calleeForwardedMethod
+		}
+	}
+	return calleeMemberValue
 }
 
 // newUniversalBlockBuiltin returns the auto-invoked builtin for a universal

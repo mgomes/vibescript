@@ -125,8 +125,8 @@ rendering stays a parseable literal rather than emitting an escape the language
 cannot decode). Hash keys render in Vibescript's colon-label form (`name:`, or
 `"with space":` when the key is not a bare identifier) rather than Ruby's
 unsupported hash-rocket syntax, so an inspected hash parses back as a Vibescript
-literal. Because hashes iterate in Go's map order, the entry order of an
-inspected hash is not stable across calls. Symbols render as `:name`, or as
+literal. Inspected entries follow the hash's insertion order, so the rendering
+is stable across calls and matches iteration. Symbols render as `:name`, or as
 `:"name"` (Ruby's shape) when the name is not a bare identifier — the quoted form
 is a debug rendering for symbols (such as those created from a quoted hash key)
 that have no bare-symbol literal syntax, not a re-parseable literal. Cycles
@@ -625,7 +625,7 @@ end
 See [hashes.md](hashes.md) for worked examples. Hash keys keep Ruby-style value
 identity, so symbols and strings are distinct keys and hash-rocket literals can
 use other hashable values such as integers and arrays. `keys`, `values`, and all
-block-based iteration visit entries in sorted canonical-key order for
+block-based iteration visit entries in Ruby-style insertion order for
 determinism.
 
 Property access (`record.name`) resolves the hash methods below before stored
@@ -670,21 +670,21 @@ methods.
   descends one level: a symbol/string key into a hash or an integer index into
   an array, so a single `dig` can traverse mixed hash/array data. `nil` when any
   step is missing or out of range; a non-integer array index raises.
-- `keys -> array` – symbol keys in sorted order.
-- `values -> array` – values in sorted key order.
+- `keys -> array` – keys in insertion order.
+- `values -> array` – values in insertion order.
 
 ### Iteration
 
 - `each { |key, value| } -> hash` – yield each pair; returns the receiver.
 - `each_with_index { |pair, index| } -> hash` – yield each `[key, value]` pair
-  with its 0-based index in sorted key order, matching Ruby's
+  with its 0-based index in insertion order, matching Ruby's
   `Hash#each_with_index`; returns the receiver. Takes no arguments.
 - `each_key { |key| } -> hash` – yield each key.
 - `each_value { |value| } -> hash` – yield each value.
-- `to_a -> array` – nested `[key, value]` pairs in sorted key order, with keys
+- `to_a -> array` – nested `[key, value]` pairs in insertion order, with keys
   exposed as symbols. The inverse of `Array#to_h`, equivalent to `flatten(0)`.
 - `map_with_index { |pair, index| } -> array` – new array of block results,
-  yielding each `[key, value]` pair with its 0-based index in sorted key order.
+  yielding each `[key, value]` pair with its 0-based index in insertion order.
   Takes no arguments.
 
 ### Transform and Filter
@@ -708,7 +708,7 @@ methods.
   flattened to `depth`. The default depth produces `[key, value, ...]`; array
   values stay nested unless a deeper `depth` is given. A `depth` of `0` keeps the
   pairs nested, a negative `depth` flattens completely, and a `Float` depth is
-  truncated. Entries are emitted in sorted key order.
+  truncated. Entries are emitted in insertion order.
 - `store(key, value) -> hash` – new hash with `key` assigned to `value`; the
   receiver is left unchanged (immutable-style, unlike Ruby's mutating `store`).
 - `delete(key) -> hash` / `delete(key) { |key| default } -> hash` – returns
@@ -1226,9 +1226,18 @@ Math.hypot(3, 4) # 5.0
 Note the argument order: `match` takes the pattern first, while the replace
 helpers take the text first.
 
-Regex patterns are quoted strings. Ruby-style `/pattern/` regex literals are
-not supported.
+Regex patterns are quoted strings or Ruby-style `/pattern/flags` regex
+literals. A literal produces a regex value usable with the `=~` and `!~` match
+operators (`"abc" =~ /b/` is the character index `1`, or `nil` when there is
+no match), `case`/`when` matching, and the string pattern helpers. Supported
+flags are `i` (case-insensitive) and `m` (`.` matches newlines).
 
+- `regex.source -> string` / `regex.flags -> string` – the literal's parts.
+- `regex.match(text) -> match data | nil` – match data with `captures`,
+  `pre_match`, `post_match`, `begin`, and `end`, indexable with `m[0]`/`m[1]`.
+- `regex.match?(text) -> bool` – whether the pattern matches.
+- `Regexp.new(pattern) -> regex` / `Regexp.union(parts...) -> regex` – build
+  regex values from strings.
 - `Regex.match(pattern, text) -> string | nil` – first match, or `nil`.
 - `Regex.replace(text, pattern, replacement) -> string` – replace the first
   match; `replacement` supports `$1` style group expansion.

@@ -53,8 +53,8 @@ func TestLogicalOperatorsShortCircuit(t *testing.T) {
 		// These are the cases the boolean-collapsing implementation got wrong.
 		{name: "or_keeps_truthy_left", fn: "or_default", args: []Value{NewString("provided")}, want: NewString("provided")},
 		{name: "or_falls_back_on_nil", fn: "or_default", args: []Value{NewNil()}, want: NewString("default")},
-		{name: "or_falls_back_on_empty_string", fn: "or_default", args: []Value{NewString("")}, want: NewString("default")},
-		{name: "or_falls_back_on_zero", fn: "or_default", args: []Value{NewInt(0)}, want: NewString("default")},
+		{name: "or_keeps_empty_string", fn: "or_default", args: []Value{NewString("")}, want: NewString("")},
+		{name: "or_keeps_zero", fn: "or_default", args: []Value{NewInt(0)}, want: NewInt(0)},
 		{name: "or_keeps_nonzero_int", fn: "or_default", args: []Value{NewInt(5)}, want: NewInt(5)},
 		{name: "and_returns_right_when_left_truthy", fn: "and_value", args: []Value{NewString("a"), NewString("b")}, want: NewString("b")},
 		{name: "and_returns_left_when_left_falsy", fn: "and_value", args: []Value{NewNil(), NewString("b")}, want: NewNil()},

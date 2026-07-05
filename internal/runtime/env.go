@@ -32,6 +32,8 @@ type Env struct {
 	staticBytes        int32
 	arrayAppendBuffers map[string][]Value
 	assignBoundary     bool
+	rebindOuter        bool
+	classBody          bool
 
 	// frozen marks engine-shared scopes (the builtin proto). Their
 	// bindings are readable through the chain but never written:
@@ -76,11 +78,17 @@ func newEnvWithCapacity(parent *Env, capacity int) *Env {
 	return env
 }
 
-// newAssignmentBoundaryEnv can read parent bindings, but missing-name writes
-// stop in this scope instead of escaping into an outer mutable scope.
+// newAssignmentBoundaryEnv can read parent bindings, but writes stop in this
+// scope instead of escaping into an outer mutable scope.
 func newAssignmentBoundaryEnv(parent *Env) *Env {
 	env := newEnv(parent)
 	env.assignBoundary = true
+	return env
+}
+
+func newBlockAssignmentEnv(parent *Env) *Env {
+	env := newAssignmentBoundaryEnv(parent)
+	env.rebindOuter = true
 	return env
 }
 
@@ -95,6 +103,8 @@ func (e *Env) resetForBlockCall(parent *Env) {
 	e.staticBytes = 0
 	e.arrayAppendBuffers = nil
 	e.assignBoundary = false
+	e.rebindOuter = false
+	e.classBody = false
 	e.frozen = false
 	e.callRoot = false
 	e.callBlock = Value{}
@@ -105,6 +115,81 @@ func (e *Env) resetForBlockCall(parent *Env) {
 func (e *Env) Get(name string) (Value, bool) {
 	var lastMutable *Env
 	for scope := e; scope != nil; scope = scope.parent {
+		if !scope.frozen {
+			lastMutable = scope
+		}
+		if val, ok := scope.getBoundValue(name, lastMutable); ok {
+			return val, true
+		}
+	}
+	return Value{}, false
+}
+
+func (e *Env) getCallLocal(name string) (Value, bool) {
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.callRoot || scope.frozen {
+			break
+		}
+		if val, ok := scope.getBoundValue(name, nil); ok {
+			return val, true
+		}
+		if scope.classBody {
+			break
+		}
+	}
+	return Value{}, false
+}
+
+func (e *Env) hasCallLocalBinding(name string) bool {
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.callRoot || scope.frozen {
+			return false
+		}
+		if scope.hasOwnBinding(name) {
+			return true
+		}
+		if scope.classBody {
+			return false
+		}
+	}
+	return false
+}
+
+func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
+	if idx, ok := e.inlineIndex(name); ok {
+		val := e.inline[idx].value
+		if lazy, ok := lazyValue(val); ok {
+			val = lazy.materialize()
+			e.inline[idx].value = val
+			e.dropArrayAppendBuffer(name)
+		}
+		return val, true
+	}
+	if val, ok := e.values[name]; ok {
+		if lazy, ok := lazyValue(val); ok {
+			val = lazy.materialize()
+			e.values[name] = val
+			e.dropArrayAppendBuffer(name)
+		}
+		return val, true
+	}
+	if val, ok := e.statics[name]; ok {
+		if e.frozen && lastMutable != nil && builtinNeedsCallClone(val) {
+			cloned := cloneBuiltinValueForCall(val)
+			lastMutable.DefineStatic(name, cloned)
+			return cloned, true
+		}
+		return val, true
+	}
+	return Value{}, false
+}
+
+func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
+	var lastMutable *Env
+	for scope := e; scope != nil; scope = scope.parent {
+		if _, skipped := skip[scope]; skipped {
+			continue
+		}
 		if !scope.frozen {
 			lastMutable = scope
 		}
@@ -167,6 +252,28 @@ func (e *Env) Define(name string, val Value) {
 	e.dropArrayAppendBuffer(name)
 }
 
+func (e *Env) PredeclareLocal(name string) {
+	if name == "" || e.hasOwnBinding(name) {
+		return
+	}
+	if e.parent != nil && e.parent.hasEnclosingLocalBinding(name) {
+		return
+	}
+	e.Define(name, NewNil())
+}
+
+func (e *Env) PredeclareAssignmentLocal(name string) {
+	if name == "" || e.hasOwnBinding(name) {
+		return
+	}
+	if e.parent != nil {
+		if e.parent.hasEnclosingLocalBinding(name) || e.parent.hasAmbientAssignmentBinding(name) {
+			return
+		}
+	}
+	e.Define(name, NewNil())
+}
+
 // growStatics pre-sizes the statics map for n upcoming DefineStatic
 // calls so bulk binding (builtins, per-call function clones) does not
 // rehash repeatedly.
@@ -199,12 +306,71 @@ func (e *Env) Assign(name string, val Value) bool {
 }
 
 func (e *Env) assignArrayAppendBuffer(name string, val Value, buffer []Value) bool {
-	scope := e.assignValue(name, val)
+	scope := e.assignValueWithAppendBufferHandling(name, val, false)
 	scope.setArrayAppendBuffer(name, buffer)
 	return true
 }
 
 func (e *Env) assignValue(name string, val Value) *Env {
+	return e.assignValueWithAppendBufferHandling(name, val, true)
+}
+
+func (e *Env) assignValueWithAppendBufferHandling(name string, val Value, dropAppendBuffer bool) *Env {
+	last := e
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.frozen {
+			inValues := scope.hasDynamic(name)
+			_, inStatics := scope.statics[name]
+			if inValues || inStatics {
+				last.setDynamic(name, val)
+				last.dropStatic(name)
+				if dropAppendBuffer {
+					last.dropArrayAppendBuffer(name)
+				}
+				return last
+			}
+			continue
+		}
+		if scope.setExistingDynamic(name, val) {
+			if dropAppendBuffer {
+				scope.dropArrayAppendBuffer(name)
+			}
+			return scope
+		}
+		if _, ok := scope.statics[name]; ok {
+			// The binding is no longer immutable-by-binding; demote it
+			// so estimation starts walking its (now mutable) value.
+			scope.dropStatic(name)
+			scope.setDynamic(name, val)
+			if dropAppendBuffer {
+				scope.dropArrayAppendBuffer(name)
+			}
+			return scope
+		}
+		if scope.assignBoundary {
+			if scope.rebindOuter && scope.parent != nil {
+				if target, ok := scope.parent.assignExistingValue(name, val); ok {
+					return target
+				}
+			}
+			scope.setDynamic(name, val)
+			scope.dropStatic(name)
+			if dropAppendBuffer {
+				scope.dropArrayAppendBuffer(name)
+			}
+			return scope
+		}
+		last = scope
+	}
+	last.setDynamic(name, val)
+	last.dropStatic(name)
+	if dropAppendBuffer {
+		last.dropArrayAppendBuffer(name)
+	}
+	return last
+}
+
+func (e *Env) assignExistingValue(name string, val Value) (*Env, bool) {
 	last := e
 	for scope := e; scope != nil; scope = scope.parent {
 		if scope.frozen {
@@ -214,34 +380,26 @@ func (e *Env) assignValue(name string, val Value) *Env {
 				last.setDynamic(name, val)
 				last.dropStatic(name)
 				last.dropArrayAppendBuffer(name)
-				return last
+				return last, true
 			}
 			continue
 		}
 		if scope.setExistingDynamic(name, val) {
 			scope.dropArrayAppendBuffer(name)
-			return scope
+			return scope, true
 		}
 		if _, ok := scope.statics[name]; ok {
-			// The binding is no longer immutable-by-binding; demote it
-			// so estimation starts walking its (now mutable) value.
 			scope.dropStatic(name)
 			scope.setDynamic(name, val)
 			scope.dropArrayAppendBuffer(name)
-			return scope
+			return scope, true
 		}
-		if scope.assignBoundary {
-			scope.setDynamic(name, val)
-			scope.dropStatic(name)
-			scope.dropArrayAppendBuffer(name)
-			return scope
+		if scope.assignBoundary && !scope.rebindOuter {
+			return nil, false
 		}
 		last = scope
 	}
-	last.setDynamic(name, val)
-	last.dropStatic(name)
-	last.dropArrayAppendBuffer(name)
-	return last
+	return nil, false
 }
 
 func (e *Env) arrayAppendBuffer(name string) ([]Value, bool) {
@@ -362,6 +520,9 @@ func (e *Env) CloneShallow() *Env {
 	}
 	clone.callBlock = e.callBlock
 	clone.hasCallBlock = e.hasCallBlock
+	clone.assignBoundary = e.assignBoundary
+	clone.rebindOuter = e.rebindOuter
+	clone.classBody = e.classBody
 	return clone
 }
 
@@ -394,6 +555,44 @@ func (e *Env) hasDynamic(name string) bool {
 	}
 	_, ok := e.values[name]
 	return ok
+}
+
+func (e *Env) hasOwnBinding(name string) bool {
+	if e.hasDynamic(name) {
+		return true
+	}
+	_, ok := e.statics[name]
+	return ok
+}
+
+func (e *Env) hasEnclosingLocalBinding(name string) bool {
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.callRoot || scope.frozen {
+			return false
+		}
+		if scope.hasOwnBinding(name) {
+			return true
+		}
+		if scope.classBody {
+			return false
+		}
+	}
+	return false
+}
+
+func (e *Env) hasAmbientAssignmentBinding(name string) bool {
+	for scope := e; scope != nil; scope = scope.parent {
+		if !scope.callRoot && !scope.frozen {
+			continue
+		}
+		if scope.hasDynamic(name) {
+			return true
+		}
+		if val, ok := scope.statics[name]; ok {
+			return val.Kind() != KindFunction
+		}
+	}
+	return false
 }
 
 func (e *Env) getOwn(name string) (Value, bool) {

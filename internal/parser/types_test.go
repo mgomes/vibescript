@@ -98,6 +98,67 @@ end`
 	}
 }
 
+func TestParserQualifiedEnumTypeAnnotation(t *testing.T) {
+	t.Parallel()
+	source := `def echo(status: status_mod.Status) -> status_mod.Status?
+  status
+end
+
+def maybe(status: status_mod.Status | nil) -> status_mod.Status | nil
+  status
+end
+
+def upper(status: Types.Status | nil) -> Types.Status?
+  status
+end
+
+def all_caps(status: Types.STATUS) -> Types.STATUS
+  status
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+	fn := got.Statements[0].(*ast.FunctionStmt)
+	if got := fn.Params[0].Type; got.Name != "status_mod.Status" || got.Kind != ast.TypeEnum || got.Nullable {
+		t.Fatalf("param type = %#v, want non-null status_mod.Status enum", got)
+	}
+	if got := fn.ReturnTy; got.Name != "status_mod.Status" || got.Kind != ast.TypeEnum || !got.Nullable {
+		t.Fatalf("return type = %#v, want nullable status_mod.Status enum", got)
+	}
+
+	maybeFn := got.Statements[1].(*ast.FunctionStmt)
+	if got := maybeFn.Params[0].Type; got.Name != "status_mod.Status | nil" || got.Kind != ast.TypeUnion {
+		t.Fatalf("union param type = %#v, want status_mod.Status | nil", got)
+	}
+	if got := maybeFn.ReturnTy; got.Name != "status_mod.Status | nil" || got.Kind != ast.TypeUnion {
+		t.Fatalf("union return type = %#v, want status_mod.Status | nil", got)
+	}
+
+	upperFn := got.Statements[2].(*ast.FunctionStmt)
+	if got := upperFn.Params[0].Type; got.Name != "Types.Status | nil" || got.Kind != ast.TypeUnion {
+		t.Fatalf("uppercase alias union param type = %#v, want Types.Status | nil", got)
+	}
+	if got := upperFn.ReturnTy; got.Name != "Types.Status" || got.Kind != ast.TypeEnum || !got.Nullable {
+		t.Fatalf("uppercase alias return type = %#v, want nullable Types.Status enum", got)
+	}
+
+	// A SCREAMING_CASE dotted member in parameter position is a constant
+	// default by convention, not a type annotation; return position has no
+	// such ambiguity, so the same spelling stays a (fold-resolved) type there.
+	allCapsFn := got.Statements[3].(*ast.FunctionStmt)
+	if got := allCapsFn.Params[0].Type; got != nil {
+		t.Fatalf("all-caps qualified param type = %#v, want none (constant default)", got)
+	}
+	if allCapsFn.Params[0].DefaultVal == nil {
+		t.Fatalf("all-caps qualified param default = nil, want Types.STATUS member expression")
+	}
+	if got := allCapsFn.ReturnTy; got.Name != "Types.STATUS" || got.Kind != ast.TypeEnum {
+		t.Fatalf("all-caps qualified return type = %#v, want Types.STATUS enum", got)
+	}
+}
+
 func TestParserTypeShapeAllowsEnumFieldName(t *testing.T) {
 	t.Parallel()
 	source := `def run(payload: { enum: string, nested: { enum: int } })
@@ -278,20 +339,42 @@ end`,
 			wantType: &ast.TypeExpr{Name: "hash?", Kind: ast.TypeHash, Nullable: true},
 		},
 		{
-			name: "array_with_args_then_union_nil",
-			source: `def run(values: array<int> | nil)
+			name: "array_with_args_nullable_suffix",
+			source: `def run(values: array<int>?)
   values
 end`,
 			wantType: &ast.TypeExpr{
-				Name: "array<int> | nil",
-				Kind: ast.TypeUnion,
-				Union: []*ast.TypeExpr{
-					{
-						Name:     "array",
-						Kind:     ast.TypeArray,
-						TypeArgs: []*ast.TypeExpr{{Name: "int", Kind: ast.TypeInt}},
-					},
-					{Name: "nil", Kind: ast.TypeNil},
+				Name:     "array",
+				Kind:     ast.TypeArray,
+				Nullable: true,
+				TypeArgs: []*ast.TypeExpr{{Name: "int", Kind: ast.TypeInt}},
+			},
+		},
+		{
+			name: "hash_with_args_nullable_suffix",
+			source: `def run(values: hash<string, int>?)
+  values
+end`,
+			wantType: &ast.TypeExpr{
+				Name:     "hash",
+				Kind:     ast.TypeHash,
+				Nullable: true,
+				TypeArgs: []*ast.TypeExpr{
+					{Name: "string", Kind: ast.TypeString},
+					{Name: "int", Kind: ast.TypeInt},
+				},
+			},
+		},
+		{
+			name: "shape_nullable_suffix",
+			source: `def run(values: { id: int }?)
+  values
+end`,
+			wantType: &ast.TypeExpr{
+				Kind:     ast.TypeShape,
+				Nullable: true,
+				Shape: map[string]*ast.TypeExpr{
+					"id": {Name: "int", Kind: ast.TypeInt},
 				},
 			},
 		},
@@ -369,21 +452,35 @@ end`,
 			source: `def run(values: array?<int>)
   values
 end`,
-			wantErr: "nullable suffix on array is misplaced; write the nullable container as a union, e.g. array<...> | nil, instead of array?<...>",
+			wantErr: "nullable suffix on array is misplaced; write the nullable container after its type arguments, e.g. array<...>?, instead of array?<...>",
 		},
 		{
 			name: "nullable_suffix_before_hash_args",
 			source: `def run(values: hash?<string, int>)
   values
 end`,
-			wantErr: "nullable suffix on hash is misplaced; write the nullable container as a union, e.g. hash<...> | nil, instead of hash?<...>",
+			wantErr: "nullable suffix on hash is misplaced; write the nullable container after its type arguments, e.g. hash<...>?, instead of hash?<...>",
 		},
 		{
 			name: "nullable_suffix_before_object_args",
 			source: `def run(values: object?<string, int>)
   values
 end`,
-			wantErr: "nullable suffix on object is misplaced; write the nullable container as a union, e.g. object<...> | nil, instead of object?<...>",
+			wantErr: "nullable suffix on object is misplaced; write the nullable container after its type arguments, e.g. object<...>?, instead of object?<...>",
+		},
+		{
+			name: "double_nullable_scalar",
+			source: `def run(values: int??)
+  values
+end`,
+			wantErr: "duplicate nullable suffix",
+		},
+		{
+			name: "double_nullable_generic",
+			source: `def run(values: array<int>??)
+  values
+end`,
+			wantErr: "duplicate nullable suffix",
 		},
 	}
 
@@ -403,15 +500,16 @@ end`,
 
 // TestParserNullableSuffixSuggestionParses guards against the diagnostic for a
 // misplaced nullable suffix pointing users at syntax the parser cannot accept.
-// The error message suggests the union form (e.g. array<int> | nil), so the
-// suggested spelling must itself parse without errors.
+// The error message suggests postfix nullable compound types, so the suggested
+// spelling must itself parse without errors.
 func TestParserNullableSuffixSuggestionParses(t *testing.T) {
 	t.Parallel()
 
 	suggestions := []string{
-		"array<int> | nil",
-		"hash<string, int> | nil",
-		"object<string, int> | nil",
+		"array<int>?",
+		"hash<string, int>?",
+		"object<string, int>?",
+		"{ id: int }?",
 	}
 
 	for _, suggestion := range suggestions {

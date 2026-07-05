@@ -124,7 +124,7 @@ end`
 			},
 		},
 		&ast.ForStmt{
-			Iterator: "item",
+			Target: &ast.Identifier{Name: "item"},
 			Iterable: callExpression(
 				"range",
 				&ast.IntegerLiteral{Value: 1},
@@ -185,7 +185,7 @@ end`
 			},
 		},
 		&ast.ForStmt{
-			Iterator: "item",
+			Target: &ast.Identifier{Name: "item"},
 			Iterable: &ast.CallExpr{
 				Callee: &ast.MemberExpr{
 					Object:   &ast.Identifier{Name: "values"},
@@ -255,7 +255,9 @@ func incrementIStatement() ast.Statement {
 
 func forSumStatement() ast.Statement {
 	return &ast.ForStmt{
-		Iterator: "item",
+		Target: &ast.Identifier{
+			Name: "item",
+		},
 		Iterable: &ast.Identifier{
 			Name: "items",
 		},
