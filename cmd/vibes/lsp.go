@@ -1767,18 +1767,8 @@ func exactDefinitionLocation(program *ast.Program, uri string, sourceLines []str
 				return anchoredLocation(uri, sourceLines, st.Position, st.Name)
 			}
 		case *ast.ClassStmt:
-			if st.Name == word {
-				return anchoredLocation(uri, sourceLines, st.Position, st.Name)
-			}
-			for _, method := range st.Methods {
-				if method.Name == word {
-					return anchoredLocation(uri, sourceLines, method.Position, method.Name)
-				}
-			}
-			for _, method := range st.ClassMethods {
-				if method.Name == word {
-					return anchoredLocation(uri, sourceLines, method.Position, method.Name)
-				}
+			if location := classDefinitionLocation(st, uri, sourceLines, word); location != nil {
+				return location
 			}
 		case *ast.EnumStmt:
 			if st.Name == word {
@@ -1792,6 +1782,67 @@ func exactDefinitionLocation(program *ast.Program, uri string, sourceLines []str
 		}
 	}
 	return nil
+}
+
+// classDefinitionLocation resolves word within one class or module
+// declaration: the declaration name itself, its methods (including
+// visibility-prefixed ones), its module constants, and nested module
+// declarations, recursively.
+func classDefinitionLocation(st *ast.ClassStmt, uri string, sourceLines []string, word string) map[string]any {
+	if st.Name == word {
+		return anchoredLocation(uri, sourceLines, st.Position, st.Name)
+	}
+	for _, method := range st.Methods {
+		if method.Name == word {
+			return anchoredLocation(uri, sourceLines, method.Position, method.Name)
+		}
+	}
+	for _, method := range st.ClassMethods {
+		if method.Name == word {
+			return anchoredLocation(uri, sourceLines, method.Position, method.Name)
+		}
+	}
+	for _, constant := range moduleConstantDecls(st) {
+		if constant.name == word {
+			return anchoredLocation(uri, sourceLines, constant.pos, constant.name)
+		}
+	}
+	for _, nested := range st.Modules {
+		if location := classDefinitionLocation(nested, uri, sourceLines, word); location != nil {
+			return location
+		}
+	}
+	return nil
+}
+
+// moduleConstantDecl is a constant declared by assignment in a module
+// body (`LIMIT = 100`), the module counterpart of an enum member.
+type moduleConstantDecl struct {
+	name string
+	pos  ast.Position
+}
+
+// moduleConstantDecls collects the constants a module body declares.
+// Class bodies return none: class-body statements are arbitrary code
+// run at instantiation time, while a module body is the module's
+// declared surface.
+func moduleConstantDecls(st *ast.ClassStmt) []moduleConstantDecl {
+	if !st.IsModule {
+		return nil
+	}
+	var constants []moduleConstantDecl
+	for _, stmt := range st.Body {
+		assign, ok := stmt.(*ast.AssignStmt)
+		if !ok || assign.Operator != "" {
+			continue
+		}
+		ident, ok := assign.Target.(*ast.Identifier)
+		if !ok || !isConstantStyleName(ident.Name) {
+			continue
+		}
+		constants = append(constants, moduleConstantDecl{name: ident.Name, pos: assign.Position})
+	}
+	return constants
 }
 
 // anchoredLocation builds a Location for a declaration after
@@ -1823,17 +1874,18 @@ func anchorDeclLine(sourceLines []string, pos ast.Position, name string) int {
 }
 
 // declLineMatches reports whether the line declares name: a def, class,
-// or enum keyword (allowing export/private modifiers and self. method
-// receivers), or a bare enum-member identifier.
+// module, or enum keyword (allowing export and visibility modifiers and
+// self. method receivers), a bare enum-member identifier, or a constant
+// assignment (`LIMIT = 100`) for constant-style names.
 func declLineMatches(sourceLines []string, line int, name string) bool {
 	if line < 0 || line >= len(sourceLines) {
 		return false
 	}
 	text := strings.TrimSpace(sourceLines[line])
-	for _, modifier := range []string{"export ", "private "} {
+	for _, modifier := range []string{"export ", "private ", "protected ", "public "} {
 		text = strings.TrimPrefix(text, modifier)
 	}
-	for _, keyword := range []string{"def ", "class ", "enum "} {
+	for _, keyword := range []string{"def ", "class ", "module ", "enum "} {
 		rest, ok := strings.CutPrefix(text, keyword)
 		if !ok {
 			continue
@@ -1845,7 +1897,31 @@ func declLineMatches(sourceLines []string, line int, name string) bool {
 		tail := []rune(rest[len(name):])
 		return len(tail) == 0 || !isWordRune(tail[0])
 	}
-	return text == name
+	if text == name {
+		return true
+	}
+	return isConstantStyleName(name) && constantAssignmentMatches(text, name)
+}
+
+// isConstantStyleName reports whether name is spelled like a constant
+// (leading uppercase letter), the only names a bare assignment line can
+// declare.
+func isConstantStyleName(name string) bool {
+	for _, r := range name {
+		return unicode.IsUpper(r)
+	}
+	return false
+}
+
+// constantAssignmentMatches reports whether text declares name as a
+// constant assignment: the name followed by a plain `=` (not `==`).
+func constantAssignmentMatches(text, name string) bool {
+	rest, ok := strings.CutPrefix(text, name)
+	if !ok {
+		return false
+	}
+	rest = strings.TrimLeft(rest, " \t")
+	return strings.HasPrefix(rest, "=") && !strings.HasPrefix(rest, "==")
 }
 
 // locationAt builds a Location whose range covers the declared name on
@@ -1944,43 +2020,64 @@ func (s *lspServer) documentSymbolsFor(uri string) []lspDocumentSymbol {
 }
 
 // documentSymbols renders the document outline: top-level functions,
-// classes with their methods, and enums with their members.
+// classes and modules with their members, and enums with their members.
 func documentSymbols(program *ast.Program, sourceLines []string) []lspDocumentSymbol {
 	if program == nil {
 		return []lspDocumentSymbol{}
 	}
 	symbols := make([]lspDocumentSymbol, 0, len(program.Statements))
-	appendSymbol := func(dst []lspDocumentSymbol, name string, kind int, pos ast.Position, anchorName string, children []lspDocumentSymbol) []lspDocumentSymbol {
-		line := anchorDeclLine(sourceLines, pos, anchorName)
-		if line < 0 {
-			// The declaration is gone from the live buffer; a stale
-			// outline entry would point into unrelated text.
-			return dst
-		}
-		return append(dst, symbolFor(name, kind, line, sourceLines, children))
-	}
 	for _, stmt := range program.Statements {
 		switch st := stmt.(type) {
 		case *ast.FunctionStmt:
-			symbols = appendSymbol(symbols, st.Name, 12, st.Position, st.Name, nil)
+			symbols = appendAnchoredSymbol(symbols, sourceLines, st.Name, 12, st.Position, st.Name, nil)
 		case *ast.ClassStmt:
-			children := make([]lspDocumentSymbol, 0, len(st.Methods)+len(st.ClassMethods))
-			for _, method := range st.Methods {
-				children = appendSymbol(children, method.Name, 6, method.Position, method.Name, nil)
-			}
-			for _, method := range st.ClassMethods {
-				children = appendSymbol(children, "self."+method.Name, 6, method.Position, method.Name, nil)
-			}
-			symbols = appendSymbol(symbols, st.Name, 5, st.Position, st.Name, children)
+			symbols = appendClassLikeSymbol(symbols, sourceLines, st)
 		case *ast.EnumStmt:
 			children := make([]lspDocumentSymbol, 0, len(st.Members))
 			for _, member := range st.Members {
-				children = appendSymbol(children, member.Name, 22, member.Position, member.Name, nil)
+				children = appendAnchoredSymbol(children, sourceLines, member.Name, 22, member.Position, member.Name, nil)
 			}
-			symbols = appendSymbol(symbols, st.Name, 10, st.Position, st.Name, children)
+			symbols = appendAnchoredSymbol(symbols, sourceLines, st.Name, 10, st.Position, st.Name, children)
 		}
 	}
 	return symbols
+}
+
+// appendAnchoredSymbol appends one outline symbol after re-anchoring
+// its declaration line in the live buffer.
+func appendAnchoredSymbol(dst []lspDocumentSymbol, sourceLines []string, name string, kind int, pos ast.Position, anchorName string, children []lspDocumentSymbol) []lspDocumentSymbol {
+	line := anchorDeclLine(sourceLines, pos, anchorName)
+	if line < 0 {
+		// The declaration is gone from the live buffer; a stale
+		// outline entry would point into unrelated text.
+		return dst
+	}
+	return append(dst, symbolFor(name, kind, line, sourceLines, children))
+}
+
+// appendClassLikeSymbol appends the outline symbol for a class (kind 5)
+// or module (kind 2) declaration: methods and self. methods as method
+// children, module constants as constant children, and nested module
+// declarations rendered recursively.
+func appendClassLikeSymbol(dst []lspDocumentSymbol, sourceLines []string, st *ast.ClassStmt) []lspDocumentSymbol {
+	children := make([]lspDocumentSymbol, 0, len(st.Methods)+len(st.ClassMethods)+len(st.Modules))
+	for _, method := range st.Methods {
+		children = appendAnchoredSymbol(children, sourceLines, method.Name, 6, method.Position, method.Name, nil)
+	}
+	for _, method := range st.ClassMethods {
+		children = appendAnchoredSymbol(children, sourceLines, "self."+method.Name, 6, method.Position, method.Name, nil)
+	}
+	for _, constant := range moduleConstantDecls(st) {
+		children = appendAnchoredSymbol(children, sourceLines, constant.name, 14, constant.pos, constant.name, nil)
+	}
+	for _, nested := range st.Modules {
+		children = appendClassLikeSymbol(children, sourceLines, nested)
+	}
+	kind := 5
+	if st.IsModule {
+		kind = 2
+	}
+	return appendAnchoredSymbol(dst, sourceLines, st.Name, kind, st.Position, st.Name, children)
 }
 
 // symbolFor builds one DocumentSymbol. The selection range covers the
