@@ -78,6 +78,25 @@ end`
 	}
 }
 
+func TestParserRetryRejectsSameLineOperand(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  begin
+    raise "again"
+  rescue
+    retry 1
+  end
+end`
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatal("parseSource(retry operand) errors = nil, want retry operand error")
+	}
+	if got, want := errs[0].Error(), "retry does not accept a value"; !strings.Contains(got, want) {
+		t.Fatalf("parseSource(retry operand) error = %q, want substring %q", got, want)
+	}
+}
+
 func TestParserModifierUntilLoop(t *testing.T) {
 	t.Parallel()
 
@@ -173,6 +192,70 @@ end`
 			},
 			ModifierBodyFirst: true,
 		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserModifierReturnWithoutValue(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(done)
+  return if done
+  1
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.IfStmt{
+			Condition: &ast.Identifier{Name: "done"},
+			Consequent: []ast.Statement{
+				&ast.ReturnStmt{},
+			},
+			ModifierBodyFirst: true,
+		},
+		&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 1}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserModifierRaiseWithoutValue(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(failed, ok)
+  raise if failed
+  raise unless ok
+  1
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.IfStmt{
+			Condition: &ast.Identifier{Name: "failed"},
+			Consequent: []ast.Statement{
+				&ast.RaiseStmt{},
+			},
+			ModifierBodyFirst: true,
+		},
+		&ast.IfStmt{
+			Condition: &ast.Identifier{Name: "ok"},
+			Alternate: []ast.Statement{
+				&ast.RaiseStmt{},
+			},
+			ModifierBodyFirst: true,
+		},
+		&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 1}},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)

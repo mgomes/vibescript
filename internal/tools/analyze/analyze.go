@@ -254,6 +254,8 @@ func lintExpression(function string, expr ast.Expression, warnings *[]Warning) {
 		lintStringParts(function, typed.Parts, warnings)
 	case *ast.InterpolatedSymbol:
 		lintStringParts(function, typed.Parts, warnings)
+	case *ast.IfStmt, *ast.ForStmt, *ast.WhileStmt, *ast.UntilStmt, *ast.TryStmt:
+		statementTerminates(function, typed.(ast.Statement), warnings)
 	}
 }
 

@@ -126,6 +126,10 @@ func cloneStatement(stmt Statement) Statement {
 		return &clone
 	case *NextStmt:
 		clone := *s
+		clone.Value = cloneExpression(s.Value)
+		return &clone
+	case *RetryStmt:
+		clone := *s
 		return &clone
 	case *TryStmt:
 		clone := *s
@@ -387,6 +391,8 @@ func cloneExpression(expr Expression) Expression {
 		clone := *e
 		clone.Parts = cloneStringParts(e.Parts)
 		return &clone
+	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+		return cloneStatement(e.(Statement)).(Expression)
 	default:
 		return expr
 	}

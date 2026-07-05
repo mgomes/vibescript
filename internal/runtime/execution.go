@@ -85,6 +85,8 @@ type Execution struct {
 	envStackArr                [8]*Env
 	validatedCapabilityArgsArr [4]string
 	loopDepth                  int
+	blockDepth                 int
+	rescueDepth                int
 	rescuedErrors              []error
 	returnTokens               []uint64
 	homeTokens                 []uint64

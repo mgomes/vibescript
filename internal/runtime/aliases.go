@@ -42,8 +42,9 @@ type (
 	UntilStmt      = ast.UntilStmt
 	BreakStmt      = ast.BreakStmt
 	NextStmt       = ast.NextStmt
-	TryStmt        = ast.TryStmt
+	RetryStmt      = ast.RetryStmt
 	RescueClause   = ast.RescueClause
+	TryStmt        = ast.TryStmt
 	PropertyDecl   = ast.PropertyDecl
 	ClassStmt      = ast.ClassStmt
 	EnumMemberStmt = ast.EnumMemberStmt

@@ -24,11 +24,11 @@ func TestParserIfExpressions(t *testing.T) {
     "enabled"
   end
 
-  return if flag
+  return (if flag
     "yes"
   else
     "no"
-  end
+  end)
 
   pick(if flag then "yes" else "no" end)
 end`

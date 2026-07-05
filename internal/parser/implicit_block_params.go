@@ -93,6 +93,8 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 	case *ast.BreakStmt:
 		u.visitExpression(s.Value, false)
 	case *ast.NextStmt:
+		u.visitExpression(s.Value, false)
+	case *ast.RetryStmt:
 		return
 	}
 }
@@ -176,6 +178,8 @@ func (u *implicitBlockParamUsage) visitExpression(expr ast.Expression, callCalle
 		u.visitStringParts(e.Parts)
 	case *ast.InterpolatedSymbol:
 		u.visitStringParts(e.Parts)
+	case *ast.IfStmt, *ast.ForStmt, *ast.WhileStmt, *ast.UntilStmt, *ast.TryStmt:
+		u.visitStatement(e.(ast.Statement))
 	}
 }
 

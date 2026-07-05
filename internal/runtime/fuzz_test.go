@@ -67,6 +67,11 @@ func FuzzParserSuccessfulProgramsHaveCompleteAST(f *testing.F) {
 		"class Point\n  property x, y\n  def initialize(@x, @y)\n  end\nend",
 		"enum Status\n  Draft\n  Published\nend",
 		"def run(values)\n  values.map do |value|\n    value * 2\n  end\nend",
+		"def run()\n  x = while false\n  end\nend",
+		"def run()\n  x = until true\n  end\nend",
+		"def run()\n  x = for value in [1]\n    value\n  end\nend",
+		"def run()\n  x = begin\n    1\n  rescue\n    2\n  end\nend",
+		"def run()\n  1 rescue 2\nend",
 	} {
 		f.Add(seed)
 	}
@@ -1021,7 +1026,17 @@ func validateFuzzStatement(context string, stmt Statement) error {
 			return err
 		}
 		return validateFuzzStatements(context+".body", s.Body)
-	case *BreakStmt, *NextStmt:
+	case *BreakStmt:
+		if s.Value == nil {
+			return nil
+		}
+		return validateFuzzExpression(context+".value", s.Value)
+	case *NextStmt:
+		if s.Value == nil {
+			return nil
+		}
+		return validateFuzzExpression(context+".value", s.Value)
+	case *RetryStmt:
 		return nil
 	case *TryStmt:
 		if err := validateFuzzStatements(context+".body", s.Body); err != nil {
@@ -1303,6 +1318,16 @@ func validateFuzzExpression(context string, expr Expression) error {
 			return validateFuzzExpression(context+".alternate", e.Alternate)
 		}
 		return nil
+	case *IfStmt:
+		return validateFuzzIfStmt(context, e)
+	case *ForStmt:
+		return validateFuzzStatement(context, e)
+	case *WhileStmt:
+		return validateFuzzStatement(context, e)
+	case *UntilStmt:
+		return validateFuzzStatement(context, e)
+	case *TryStmt:
+		return validateFuzzStatement(context, e)
 	case *RangeExpr:
 		if err := validateFuzzExpression(context+".start", e.Start); err != nil {
 			return err

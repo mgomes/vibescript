@@ -1726,13 +1726,15 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 	nestedNext := callFunc(t, script, "nested_next", nil)
 	compareArrays(t, nestedNext, []Value{NewInt(11), NewInt(13), NewInt(21), NewInt(23)})
 
+	nextBoundary := callFunc(t, script, "next_from_block_boundary", nil)
+	compareArrays(t, nextBoundary, []Value{NewInt(1), NewInt(2), NewInt(3)})
+
 	boundaryCases := []struct {
 		name string
 		fn   string
 		want string
 	}{
 		{name: "break_from_block_boundary", fn: "break_from_block_boundary", want: "break cannot cross call boundary"},
-		{name: "next_from_block_boundary", fn: "next_from_block_boundary", want: "next cannot cross call boundary"},
 		{name: "break_from_setter_boundary", fn: "break_from_setter_boundary", want: "break cannot cross call boundary"},
 		{name: "next_from_setter_boundary", fn: "next_from_setter_boundary", want: "next cannot cross call boundary"},
 	}
@@ -1821,6 +1823,331 @@ func TestFunctionDefinitionWithoutParens(t *testing.T) {
 	if result.Kind() != KindString || result.String() != "hi" {
 		t.Fatalf("unexpected result: %v", result)
 	}
+}
+
+func TestRubyControlFlowSyntaxBatch(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def contextual_then()
+      then = 1
+      then
+    end
+
+    def unless_expr(flag)
+      value = unless flag then "open" else "closed" end
+      missing = unless flag then "body" end
+      [value, missing]
+    end
+
+    def loop_exprs()
+      i = 0
+      while_value = while i < 3
+        i += 1
+        break "stop" if i == 2
+        i
+      end
+      while_nil = while false
+        1
+      end
+      until_nil = until true
+        1
+      end
+      for_value = for n in [1, 2]
+        n
+      end
+      for_break = for n in [1, 2, 3]
+        break n if n == 2
+      end
+      [while_value, while_nil, until_nil, for_value, for_break]
+    end
+
+    def begin_expression(fail)
+      trace = []
+      value = begin
+        trace = trace + ["body"]
+        if fail
+          raise "bad"
+        end
+        "ok"
+      rescue
+        "rescued"
+      ensure
+        trace = trace + ["ensure"]
+      end
+      [value, trace]
+    end
+
+    def begin_expression_continuation()
+      begin
+        1
+      end + 2
+    end
+
+    def statement_control_flow_continuations()
+      unless_value = unless false
+        1
+      end + 2
+      unless_nil = unless true
+        1
+      end.nil?
+      while_nil = while false
+      end.nil?
+      until_nil = until true
+      end.nil?
+      for_value = for n in [1]
+      end + [2]
+      [unless_value, unless_nil, while_nil, until_nil, for_value]
+    end
+
+    def return_from_statement_expression_condition()
+      while begin
+        return 1
+      end
+      end
+      2
+    end
+
+    def typed_return_from_statement_expression_condition() -> string
+      while begin
+        return 1
+      end
+      end
+      "unreachable"
+    end
+
+    def return_from_statement_expression_condition_in_block()
+      [1].map do
+        while begin
+          return 7
+        end
+        end
+      end
+    end
+
+    def rescue_modifier()
+      [1 / 0 rescue "fallback", 7 rescue "unused"]
+    end
+
+    def rescue_modifier_reraise()
+      1 / 0 rescue begin
+        raise
+      end
+    end
+
+    class RescueModifierCounter
+      @@tries = 0
+
+      def self.reset()
+        @@tries = 0
+      end
+
+      def self.bump()
+        @@tries += 1
+        if @@tries < 2
+          raise "again"
+        end
+        @@tries
+      end
+    end
+
+    def rescue_modifier_retry()
+      RescueModifierCounter.reset()
+      RescueModifierCounter.bump() rescue begin
+        retry
+      end
+    end
+
+    def ordered_rescue()
+      begin
+        1 / 0
+      rescue AssertionError
+        "assertion"
+      rescue ZeroDivisionError
+        "zero"
+      rescue
+        "fallback"
+      end
+    end
+
+    def retry_rescue()
+      tries = 0
+      begin
+        tries += 1
+        raise "again" if tries < 2
+      rescue
+        retry
+      end
+      tries
+    end
+
+    def retry_modifier_rescue()
+      tries = 0
+      begin
+        tries += 1
+        raise "again" if tries < 2
+      rescue
+        retry if tries < 2
+      end
+      tries
+    end
+
+    def retry_helper()
+      retry
+    end
+
+    def retry_crosses_function_boundary()
+      tries = 0
+      begin
+        tries += 1
+        raise "again" if tries == 1
+        "done"
+      rescue
+        retry_helper()
+      end
+    end
+
+    def retry_crosses_block_boundary()
+      tries = 0
+      begin
+        tries += 1
+        raise "again" if tries == 1
+        "done"
+      rescue
+        yield
+      end
+    end
+
+    def retry_block_boundary_runner()
+      retry_crosses_block_boundary do
+        retry
+      end
+    end
+
+    def comma_rhs()
+      a, b = 1, 2
+      first, *rest = 1, 2, 3
+      x, (y, z) = 1, [2, 3]
+      [a, b, first, rest, x, y, z]
+    end
+
+    def modifier_return(flag)
+      return "yes" if flag
+      "no"
+    end
+
+    def modifier_loop()
+      out = []
+      for n in [1, 2, 3]
+        break if n == 3
+        next if n == 2
+        out = out + [n]
+      end
+      out
+    end
+
+    def modifier_raise(flag)
+      raise "bad" unless flag
+      "ok"
+    end
+
+    def next_value_map()
+      [1, 2, 3].map do |n|
+        next 0 if n == 2
+        n * 10
+      end
+    end
+    `)
+
+	if got := callFunc(t, script, "contextual_then", nil); !got.Equal(NewInt(1)) {
+		t.Fatalf("contextual_then() = %v, want 1", got)
+	}
+	compareArrays(t, callFunc(t, script, "unless_expr", []Value{NewBool(false)}), []Value{
+		NewString("open"),
+		NewString("body"),
+	})
+	compareArrays(t, callFunc(t, script, "unless_expr", []Value{NewBool(true)}), []Value{
+		NewString("closed"),
+		NewNil(),
+	})
+	compareArrays(t, callFunc(t, script, "loop_exprs", nil), []Value{
+		NewString("stop"),
+		NewNil(),
+		NewNil(),
+		NewArray([]Value{NewInt(1), NewInt(2)}),
+		NewInt(2),
+	})
+	compareArrays(t, callFunc(t, script, "begin_expression", []Value{NewBool(false)}), []Value{
+		NewString("ok"),
+		NewArray([]Value{NewString("body"), NewString("ensure")}),
+	})
+	compareArrays(t, callFunc(t, script, "begin_expression", []Value{NewBool(true)}), []Value{
+		NewString("rescued"),
+		NewArray([]Value{NewString("body"), NewString("ensure")}),
+	})
+	if got := callFunc(t, script, "begin_expression_continuation", nil); !got.Equal(NewInt(3)) {
+		t.Fatalf("begin_expression_continuation() = %v, want 3", got)
+	}
+	compareArrays(t, callFunc(t, script, "statement_control_flow_continuations", nil), []Value{
+		NewInt(3),
+		NewBool(true),
+		NewBool(true),
+		NewBool(true),
+		NewArray([]Value{NewInt(1), NewInt(2)}),
+	})
+	if got := callFunc(t, script, "return_from_statement_expression_condition", nil); !got.Equal(NewInt(1)) {
+		t.Fatalf("return_from_statement_expression_condition() = %v, want 1", got)
+	}
+	requireCallErrorContains(t, script, "typed_return_from_statement_expression_condition", nil, CallOptions{}, "return value for typed_return_from_statement_expression_condition expected string, got int")
+	// Ruby non-local return: the return inside the block's statement
+	// expression returns from the enclosing method, not from the map block.
+	if got := callFunc(t, script, "return_from_statement_expression_condition_in_block", nil); !got.Equal(NewInt(7)) {
+		t.Fatalf("return_from_statement_expression_condition_in_block() = %v, want 7", got)
+	}
+	compareArrays(t, callFunc(t, script, "rescue_modifier", nil), []Value{
+		NewString("fallback"),
+		NewInt(7),
+	})
+	requireCallErrorContains(t, script, "rescue_modifier_reraise", nil, CallOptions{}, "division by zero")
+	if got := callFunc(t, script, "rescue_modifier_retry", nil); !got.Equal(NewInt(2)) {
+		t.Fatalf("rescue_modifier_retry() = %v, want 2", got)
+	}
+	if got := callFunc(t, script, "ordered_rescue", nil); !got.Equal(NewString("zero")) {
+		t.Fatalf("ordered_rescue() = %v, want zero", got)
+	}
+	if got := callFunc(t, script, "retry_rescue", nil); !got.Equal(NewInt(2)) {
+		t.Fatalf("retry_rescue() = %v, want 2", got)
+	}
+	if got := callFunc(t, script, "retry_modifier_rescue", nil); !got.Equal(NewInt(2)) {
+		t.Fatalf("retry_modifier_rescue() = %v, want 2", got)
+	}
+	requireCallErrorContains(t, script, "retry_crosses_function_boundary", nil, CallOptions{}, "retry cannot cross call boundary")
+	requireCallErrorContains(t, script, "retry_block_boundary_runner", nil, CallOptions{}, "retry cannot cross call boundary")
+	compareArrays(t, callFunc(t, script, "comma_rhs", nil), []Value{
+		NewInt(1),
+		NewInt(2),
+		NewInt(1),
+		NewArray([]Value{NewInt(2), NewInt(3)}),
+		NewInt(1),
+		NewInt(2),
+		NewInt(3),
+	})
+	if got := callFunc(t, script, "modifier_return", []Value{NewBool(true)}); !got.Equal(NewString("yes")) {
+		t.Fatalf("modifier_return(true) = %v, want yes", got)
+	}
+	if got := callFunc(t, script, "modifier_return", []Value{NewBool(false)}); !got.Equal(NewString("no")) {
+		t.Fatalf("modifier_return(false) = %v, want no", got)
+	}
+	compareArrays(t, callFunc(t, script, "modifier_loop", nil), []Value{NewInt(1)})
+	if got := callFunc(t, script, "modifier_raise", []Value{NewBool(true)}); !got.Equal(NewString("ok")) {
+		t.Fatalf("modifier_raise(true) = %v, want ok", got)
+	}
+	requireCallErrorContains(t, script, "modifier_raise", []Value{NewBool(false)}, CallOptions{}, "bad")
+	compareArrays(t, callFunc(t, script, "next_value_map", nil), []Value{
+		NewInt(10),
+		NewInt(0),
+		NewInt(30),
+	})
 }
 
 func TestFunctionDefinitionWithoutParensBindsParameters(t *testing.T) {

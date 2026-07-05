@@ -169,11 +169,8 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 	case KindFunction:
 		result, err := exec.callFunction(valueFunction(callee), receiver, args, kwargs, block, pos)
 		if err != nil {
-			if errors.Is(err, errLoopBreak) {
-				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
-			}
-			if errors.Is(err, errLoopNext) {
-				return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
+				return NewNil(), controlErr
 			}
 			return NewNil(), err
 		}
@@ -256,11 +253,8 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			popValidatedArgs()
 		}
 		if err != nil {
-			if errors.Is(err, errLoopBreak) {
-				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
-			}
-			if errors.Is(err, errLoopNext) {
-				return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
+				return NewNil(), controlErr
 			}
 			if ctxErr := exec.checkContext(); ctxErr != nil {
 				return NewNil(), ctxErr
@@ -310,6 +304,19 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 	default:
 		return NewNil(), exec.errorAt(pos, "attempted to call non-callable value")
 	}
+}
+
+func (exec *Execution) callBoundaryControlError(err error, pos Position) (bool, error) {
+	if errors.Is(err, errLoopBreak) {
+		return true, exec.localJumpErrorAt(pos, "break cannot cross call boundary")
+	}
+	if errors.Is(err, errLoopNext) {
+		return true, exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+	}
+	if errors.Is(err, errRescueRetry) {
+		return true, exec.localJumpErrorAt(pos, "retry cannot cross call boundary")
+	}
+	return false, nil
 }
 
 func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
@@ -404,6 +411,7 @@ func (exec *Execution) callFunctionWithBoundEnv(fn *ScriptFunction, receiver Val
 			return val, nil
 		}
 		val, returned, err = exec.evalLocalScopeStatements(fn.Body, callEnv)
+		val, returned, err = consumeFunctionReturnSignal(val, returned, err)
 	}
 	exec.popReturnToken()
 	if sig := matchNonLocalReturn(err, token); sig != nil {
@@ -413,7 +421,7 @@ func (exec *Execution) callFunctionWithBoundEnv(fn *ScriptFunction, receiver Val
 		returned = true
 		err = nil
 	}
-	if err != nil && !isLoopControlSignal(err) && !isNonLocalReturnSignal(err) {
+	if err != nil && !isLoopControlSignal(err) && !isRescueRetrySignal(err) && !isNonLocalReturnSignal(err) {
 		err = exec.wrapError(err, pos)
 	}
 	exec.popReceiver()
@@ -447,6 +455,13 @@ func (exec *Execution) callFunctionWithBoundEnv(fn *ScriptFunction, receiver Val
 		return val, nil
 	}
 	return val, nil
+}
+
+func consumeFunctionReturnSignal(val Value, returned bool, err error) (Value, bool, error) {
+	if returnVal, ok := functionReturnValue(err); ok {
+		return returnVal, true, nil
+	}
+	return val, returned, err
 }
 
 type callFunctionRebinder struct {
@@ -2205,11 +2220,8 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 
 	result, err := callBuiltinMemberDirect(exec, receiver, property, args, kwargs, block)
 	if err != nil {
-		if errors.Is(err, errLoopBreak) {
-			return NewNil(), exec.localJumpErrorAt(call.Pos(), "break cannot cross call boundary")
-		}
-		if errors.Is(err, errLoopNext) {
-			return NewNil(), exec.localJumpErrorAt(call.Pos(), "next cannot cross call boundary")
+		if ok, controlErr := exec.callBoundaryControlError(err, call.Pos()); ok {
+			return NewNil(), controlErr
 		}
 		if ctxErr := exec.checkContext(); ctxErr != nil {
 			return NewNil(), ctxErr
@@ -2733,6 +2745,7 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env, t
 		return val, nil
 	}
 	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
+	val, returned, err = consumeFunctionReturnSignal(val, returned, err)
 	if sig := matchNonLocalReturn(err, token); sig != nil {
 		val = sig.value
 		returned = true

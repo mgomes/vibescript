@@ -90,6 +90,7 @@ type IfStmt struct {
 }
 
 func (s *IfStmt) stmtNode()     {}
+func (s *IfStmt) exprNode()     {}
 func (s *IfStmt) Pos() Position { return s.Position }
 
 // ForStmt represents a for-in loop.
@@ -123,7 +124,11 @@ type UntilStmt struct {
 }
 
 func (s *UntilStmt) stmtNode()     {}
+func (s *UntilStmt) exprNode()     {}
 func (s *UntilStmt) Pos() Position { return s.Position }
+
+func (s *ForStmt) exprNode()   {}
+func (s *WhileStmt) exprNode() {}
 
 // BreakStmt represents a break statement that exits a loop.
 type BreakStmt struct {
@@ -136,11 +141,20 @@ func (s *BreakStmt) Pos() Position { return s.Position }
 
 // NextStmt represents a next statement that skips to the next loop iteration.
 type NextStmt struct {
+	Value    Expression
 	Position Position
 }
 
 func (s *NextStmt) stmtNode()     {}
 func (s *NextStmt) Pos() Position { return s.Position }
+
+// RetryStmt represents a retry statement inside a rescue handler.
+type RetryStmt struct {
+	Position Position
+}
+
+func (s *RetryStmt) stmtNode()     {}
+func (s *RetryStmt) Pos() Position { return s.Position }
 
 // RescueClause is one ordered handler in a begin/rescue block. Ty narrows the
 // error classes the clause handles (nil catches any rescuable error), Binding
@@ -164,6 +178,7 @@ type TryStmt struct {
 }
 
 func (s *TryStmt) stmtNode()     {}
+func (s *TryStmt) exprNode()     {}
 func (s *TryStmt) Pos() Position { return s.Position }
 
 // PropertyDecl represents a property, getter, or setter declaration in a class.

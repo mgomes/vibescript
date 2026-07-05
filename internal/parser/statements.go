@@ -48,6 +48,8 @@ func (p *parser) parseStatementOperand() ast.Statement {
 		stmt = p.parseBreakStatement()
 	case ast.TokenNext:
 		stmt = p.parseNextStatement()
+	case ast.TokenRetry:
+		stmt = p.parseRetryStatement()
 	case ast.TokenBegin:
 		stmt = p.parseBeginStatement()
 	case ast.TokenIdent:
@@ -65,10 +67,34 @@ func (p *parser) parseStatementOperand() ast.Statement {
 	default:
 		stmt = p.parseExpressionOrAssignStatement()
 	}
+	if continued := p.continueStatementExpression(stmt); continued != nil {
+		stmt = continued
+	}
 	// The modifier is applied by parseStatement once the full statement
 	// (including any logical split) is assembled, so a right-hand operand in a
 	// logical statement does not greedily capture it.
 	return stmt
+}
+
+func (p *parser) continueStatementExpression(stmt ast.Statement) ast.Statement {
+	expr, ok := stmt.(ast.Expression)
+	if !ok {
+		return nil
+	}
+	if isStatementModifier(p.peekToken.Type) && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		return nil
+	}
+	if p.peekToken.Pos.Line != p.curToken.Pos.Line {
+		return nil
+	}
+	if lowestPrec >= p.peekPrecedence() && !p.canParseParenlessCall(expr, lowestPrec, false) {
+		return nil
+	}
+	continued := p.continueExpressionParse(expr, lowestPrec, 0, false)
+	if continued == nil {
+		return nil
+	}
+	return &ast.ExprStmt{Expr: continued, Position: expr.Pos()}
 }
 
 func (p *parser) skipStatementSeparators() {
@@ -87,7 +113,7 @@ func (p *parser) parseStatementModifier(stmt ast.Statement) ast.Statement {
 		p.nextToken()
 		p.nextToken()
 		_ = p.parseLineExpression(lowestPrec)
-		p.addParseError(modifier.Pos, fmt.Sprintf("modifier %s is only supported after expression or assignment statements", strings.ToLower(string(modifier.Type))))
+		p.addParseError(modifier.Pos, fmt.Sprintf("modifier %s is only supported after expression or assignment statements, or leaf control-flow statements", strings.ToLower(string(modifier.Type))))
 		return stmt
 	}
 
@@ -119,7 +145,7 @@ func isStatementModifier(tt ast.TokenType) bool {
 
 func canUseStatementModifier(stmt ast.Statement) bool {
 	switch stmt.(type) {
-	case *ast.AssignStmt, *ast.ExprStmt, *ast.LogicalStmt:
+	case *ast.AssignStmt, *ast.ExprStmt, *ast.LogicalStmt, *ast.ReturnStmt, *ast.RaiseStmt, *ast.BreakStmt, *ast.NextStmt, *ast.RetryStmt:
 		return true
 	default:
 		return false
@@ -165,11 +191,11 @@ func statementLogicalPrecedence(tt ast.TokenType) int {
 
 func (p *parser) parseReturnStatement() ast.Statement {
 	pos := p.curToken.Pos
-	if p.peekEndsStatement(pos) {
+	if p.peekEndsStatement(pos) || p.peekStartsSameLineStatementModifier(pos) {
 		return &ast.ReturnStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseCommaSeparatedStatementExpression(ast.TokenWordAnd, ast.TokenWordOr)
+	value := p.parseCommaSeparatedStatementExpression(ast.TokenWordAnd, ast.TokenWordOr, ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil)
 	if value == nil {
 		return nil
 	}
@@ -178,11 +204,11 @@ func (p *parser) parseReturnStatement() ast.Statement {
 
 func (p *parser) parseRaiseStatement() ast.Statement {
 	pos := p.curToken.Pos
-	if p.peekEndsStatement(pos) {
+	if p.peekEndsStatement(pos) || p.peekStartsSameLineStatementModifier(pos) {
 		return &ast.RaiseStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
+	value := p.parseStatementValueExpression()
 	if value == nil {
 		return nil
 	}
@@ -252,7 +278,7 @@ func isBlockStopToken(token ast.TokenType, stop []ast.TokenType) bool {
 func (p *parser) parseIfStatement() ast.Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseLineExpression(lowestPrec)
+	condition := p.parseLineExpressionUntilForced(lowestPrec, ast.TokenThen)
 	if condition == nil {
 		return nil
 	}
@@ -264,7 +290,7 @@ func (p *parser) parseIfStatement() ast.Statement {
 	var elseifClauses []*ast.IfStmt
 	for p.curToken.Type == ast.TokenElsif {
 		p.nextToken()
-		cond := p.parseLineExpression(lowestPrec)
+		cond := p.parseLineExpressionUntilForced(lowestPrec, ast.TokenThen)
 		if cond == nil {
 			return nil
 		}
@@ -291,7 +317,7 @@ func (p *parser) parseIfStatement() ast.Statement {
 func (p *parser) parseUnlessStatement() ast.Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseLineExpression(lowestPrec)
+	condition := p.parseLineExpressionUntilForced(lowestPrec, ast.TokenThen)
 	if condition == nil {
 		return nil
 	}
@@ -437,11 +463,11 @@ func (p *parser) advanceToLoopBody() {
 
 func (p *parser) parseBreakStatement() ast.Statement {
 	pos := p.curToken.Pos
-	if p.peekEndsStatement(pos) {
+	if p.peekEndsStatement(pos) || p.peekStartsSameLineStatementModifier(pos) {
 		return &ast.BreakStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
+	value := p.parseStatementValueExpression()
 	if value == nil {
 		return nil
 	}
@@ -449,7 +475,34 @@ func (p *parser) parseBreakStatement() ast.Statement {
 }
 
 func (p *parser) parseNextStatement() ast.Statement {
-	return &ast.NextStmt{Position: p.curToken.Pos}
+	pos := p.curToken.Pos
+	if p.peekEndsStatement(pos) || p.peekStartsSameLineStatementModifier(pos) {
+		return &ast.NextStmt{Position: pos}
+	}
+	p.nextToken()
+	value := p.parseStatementValueExpression()
+	if value == nil {
+		return nil
+	}
+	return &ast.NextStmt{Value: value, Position: pos}
+}
+
+func (p *parser) parseStatementValueExpression() ast.Expression {
+	return p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil)
+}
+
+func (p *parser) parseRetryStatement() ast.Statement {
+	pos := p.curToken.Pos
+	if p.peekEndsStatement(pos) || p.peekStartsSameLineStatementModifier(pos) {
+		return &ast.RetryStmt{Position: pos}
+	}
+	p.addParseError(p.peekToken.Pos, "retry does not accept a value")
+	p.recoverSameLineStatementRemainder(pos.Line)
+	return nil
+}
+
+func (p *parser) peekStartsSameLineStatementModifier(pos ast.Position) bool {
+	return isStatementModifier(p.peekToken.Type) && p.peekToken.Pos.Line == pos.Line
 }
 
 func (p *parser) parseBeginStatement() ast.Statement {
@@ -510,7 +563,8 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 		return nil
 	}
 
-	if !anyRescueBody && len(ensureBody) == 0 {
+	needsHandler := len(rescues) > 0 || owner == "function"
+	if needsHandler && !anyRescueBody && len(ensureBody) == 0 {
 		p.addParseError(pos, fmt.Sprintf("%s requires rescue and/or ensure", owner))
 		return nil
 	}
@@ -586,6 +640,10 @@ func (p *parser) parseRescueBinding() (string, bool) {
 }
 
 func (p *parser) recoverRescueHeaderRemainder(line int) {
+	p.recoverSameLineStatementRemainder(line)
+}
+
+func (p *parser) recoverSameLineStatementRemainder(line int) {
 	for p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line == line && p.peekToken.Type != ast.TokenSemicolon {
 		p.nextToken()
 	}
@@ -1801,9 +1859,28 @@ func (p *parser) parseAssignmentValue(target ast.Expression) ast.Statement {
 	p.nextToken()
 	p.nextToken()
 	value := p.parseAssignmentExpression()
+	if _, ok := target.(*ast.DestructureTarget); ok && p.peekToken.Type == ast.TokenComma {
+		value = p.parseCommaSeparatedAssignmentValue(value, pos)
+	}
 	stmt := &ast.AssignStmt{Target: target, Value: value, Operator: compoundAssignmentOperator(operatorToken), Position: pos}
 	p.declareLocalTarget(target)
 	return stmt
+}
+
+func (p *parser) parseCommaSeparatedAssignmentValue(first ast.Expression, pos ast.Position) ast.Expression {
+	if first == nil {
+		return nil
+	}
+	values := []ast.Expression{first}
+	for p.peekToken.Type == ast.TokenComma {
+		p.nextToken()
+		if p.peekEndsStatement(p.curToken.Pos) {
+			break
+		}
+		p.nextToken()
+		values = append(values, p.parseExpressionWithBlock())
+	}
+	return &ast.ArrayLiteral{Elements: values, Position: pos}
 }
 
 func (p *parser) parseAssignmentExpression() ast.Expression {

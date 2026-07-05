@@ -390,6 +390,7 @@ func builtinLoop(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	if err != nil {
 		return NewNil(), err
 	}
+	runner.nextContinues = true
 
 	exec.loopDepth++
 	defer func() {

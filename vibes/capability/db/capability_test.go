@@ -228,15 +228,16 @@ end`)
 	}
 }
 
-func TestDBCapabilityEachLoopControlCannotCrossCallbackBoundary(t *testing.T) {
+func TestDBCapabilityEachLoopControlBoundary(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name    string
-		fn      string
-		wantErr string
+		name      string
+		fn        string
+		wantErr   string
+		wantValue value.Value
 	}{
 		{name: "break_from_callback", fn: "break_from_callback", wantErr: "break used outside of loop"},
-		{name: "next_from_callback", fn: "next_from_callback", wantErr: "next used outside of loop"},
+		{name: "next_from_callback", fn: "next_from_callback", wantValue: value.NewString("done")},
 	}
 	source := `def break_from_callback()
   db.each("Player") do |row|
@@ -252,6 +253,7 @@ def next_from_callback()
       next
     end
   end
+  "done"
 end`
 
 	for _, tc := range tests {
@@ -264,10 +266,16 @@ end`
 				},
 			}
 			script := compileScriptDefault(t, source)
-			err := callScriptErr(t, context.Background(), script, tc.fn, nil, callOptionsWithCapabilities(
-				vibes.MustNewDBCapability("db", stub),
-			))
-			requireErrorContains(t, err, tc.wantErr)
+			options := callOptionsWithCapabilities(vibes.MustNewDBCapability("db", stub))
+			if tc.wantErr != "" {
+				err := callScriptErr(t, context.Background(), script, tc.fn, nil, options)
+				requireErrorContains(t, err, tc.wantErr)
+				return
+			}
+			got := callScript(t, context.Background(), script, tc.fn, nil, options)
+			if !got.Equal(tc.wantValue) {
+				t.Fatalf("%s() = %v, want %v", tc.fn, got, tc.wantValue)
+			}
 		})
 	}
 }
