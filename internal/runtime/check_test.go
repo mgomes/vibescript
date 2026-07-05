@@ -3323,12 +3323,73 @@ end
 
 	requireNoCheckWarnings(t, compileScriptWithEngine(t, engine, `
 def run()
-  require("mathx", as: MathX)
+  require("mathx", as: "MathX")
   MathX.double(2)
 end
 
 def alias_value()
   MathX
+end
+`))
+}
+
+func TestCheckWarningsSuppressUndefinedNamesAfterNonStaticRequireAlias(t *testing.T) {
+	t.Parallel()
+
+	// An as: alias that is not a string or symbol literal cannot be folded
+	// statically, so the script opts out of undefined-name checking exactly
+	// like a dynamic require target.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run(alias_name)
+  require("mathx", as: alias_name)
+  something_from_module
+end
+`))
+}
+
+func TestCheckWarningsSeeRequiresInsideNextValues(t *testing.T) {
+	t.Parallel()
+
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "mathx.vibe"), []byte(`export def double(x)
+  x * 2
+end
+`), 0o644); err != nil {
+		t.Fatalf("write mathx module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+
+	// A require reached only through a next value still binds its exports
+	// for the whole script.
+	requireNoCheckWarnings(t, compileScriptWithEngine(t, engine, `
+def run()
+  i = 0
+  while i < 1
+    i += 1
+    next require("mathx")
+  end
+  double(2)
+end
+`))
+}
+
+func TestCheckWarningsRespectNextValueBindings(t *testing.T) {
+	t.Parallel()
+
+	// A statement-expression in a next value binds locals in the enclosing
+	// scope; the union model must include them.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  i = 0
+  while i < 3
+    i += 1
+    if i > 1
+      puts captured
+    end
+    next begin
+      captured = i
+    end
+  end
 end
 `))
 }
@@ -3600,6 +3661,91 @@ end
 			requireCheckWarningContains(t, script, "argument v expected int, got string")
 		})
 	}
+}
+
+func TestCheckWarningsSkipLaterFindElements(t *testing.T) {
+	t.Parallel()
+
+	// find stops yielding on the first truthy block result, so only the
+	// first element is guaranteed to reach the annotation check.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1, "x"].find do |v: int|
+    v > 0
+  end
+end
+`))
+
+	script := compileScript(t, `
+def run()
+  ["x", 1].find do |v: int|
+    v > 0
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "argument v expected int, got string")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "argument v expected int, got string")
+}
+
+func TestCheckWarningsSkipLaterElementsWhenBlockCanEscape(t *testing.T) {
+	t.Parallel()
+
+	// A break, return, or raise in the body can end the iteration before a
+	// later mismatched element is yielded, so those bodies only pin the
+	// first element.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1, "x"].each do |v: int|
+    break
+  end
+end
+`))
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1, "x"].each do |v: int|
+    return v
+  end
+end
+`))
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  begin
+    [1, "x"].each do |v: int|
+      raise RuntimeError, "stop"
+    end
+  rescue => e
+    e
+  end
+end
+`))
+
+	// The first element is always yielded, so a mismatch there still warns
+	// even when the body can escape.
+	script := compileScript(t, `
+def run()
+  ["x", 1].each do |v: int|
+    break
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "argument v expected int, got string")
+}
+
+func TestCheckWarningsKeepLaterElementsWhenBlockOnlySkips(t *testing.T) {
+	t.Parallel()
+
+	// next moves to the following iteration without ending it, so every
+	// element is still yielded and later mismatches stay flagged.
+	script := compileScript(t, `
+def run()
+  [1, "x"].each do |v: int|
+    next
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "argument v expected int, got string")
 }
 
 func TestCheckWarningsFlagLiteralArrayBlockParamFloatIntMismatch(t *testing.T) {

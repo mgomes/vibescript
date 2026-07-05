@@ -2304,8 +2304,16 @@ func (c *scriptChecker) checkLiteralArrayBlockParamTypes(function string, call *
 		}
 	}
 	// The runtime rejects the first yielded value that misses its annotation,
-	// so report only the first contradicting element in iteration order.
-	for index, element := range elements {
+	// so report only the first contradicting element in iteration order. Only
+	// the first yield is guaranteed to happen: find stops on the first truthy
+	// block result, and a break, return, or raise in the body can end the
+	// iteration before a later element is reached, so later elements are
+	// checked only when no early exit is possible.
+	guaranteed := elements
+	if len(elements) > 1 && (member.Property == "find" || blockBodyMayEscapeIteration(block.Body)) {
+		guaranteed = elements[:1]
+	}
+	for index, element := range guaranteed {
 		if c.addLiteralBlockParamMismatch(function, block.Params[0], element) {
 			return
 		}
@@ -2313,6 +2321,190 @@ func (c *scriptChecker) checkLiteralArrayBlockParamTypes(function string, call *
 			return
 		}
 	}
+}
+
+// blockBodyMayEscapeIteration reports whether the block body contains a
+// statement that can stop the receiver's iteration before every element has
+// been yielded: break ends the loop, return exits the enclosing method
+// non-locally, and raise abandons the iteration even when a surrounding
+// rescue keeps the script alive. Occurrences count at any nesting depth — a
+// break inside a nested loop or block only exits that inner construct, but
+// proving that statically is not worth risking a false positive, so any
+// occurrence restricts the literal-receiver check to the first yield.
+func blockBodyMayEscapeIteration(statements []Statement) bool {
+	for _, stmt := range statements {
+		if statementMayEscapeIteration(stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+func statementMayEscapeIteration(stmt Statement) bool {
+	switch typed := stmt.(type) {
+	case nil:
+		return false
+	case *BreakStmt, *ReturnStmt, *RaiseStmt:
+		return true
+	case *NextStmt:
+		return expressionMayEscapeIteration(typed.Value)
+	case *AssignStmt:
+		return expressionMayEscapeIteration(typed.Target) || expressionMayEscapeIteration(typed.Value)
+	case *ExprStmt:
+		return expressionMayEscapeIteration(typed.Expr)
+	case *LogicalStmt:
+		return statementMayEscapeIteration(typed.Left) || statementMayEscapeIteration(typed.Right)
+	case *IfStmt:
+		if expressionMayEscapeIteration(typed.Condition) || blockBodyMayEscapeIteration(typed.Consequent) {
+			return true
+		}
+		for _, elseIf := range typed.ElseIf {
+			if statementMayEscapeIteration(elseIf) {
+				return true
+			}
+		}
+		return blockBodyMayEscapeIteration(typed.Alternate)
+	case *ForStmt:
+		return expressionMayEscapeIteration(typed.Iterable) || blockBodyMayEscapeIteration(typed.Body)
+	case *WhileStmt:
+		return expressionMayEscapeIteration(typed.Condition) || blockBodyMayEscapeIteration(typed.Body)
+	case *UntilStmt:
+		return expressionMayEscapeIteration(typed.Condition) || blockBodyMayEscapeIteration(typed.Body)
+	case *TryStmt:
+		if blockBodyMayEscapeIteration(typed.Body) || blockBodyMayEscapeIteration(typed.Else) || blockBodyMayEscapeIteration(typed.Ensure) {
+			return true
+		}
+		for i := range typed.Rescues {
+			if blockBodyMayEscapeIteration(typed.Rescues[i].Body) {
+				return true
+			}
+		}
+		return false
+	case *FunctionStmt:
+		return blockBodyMayEscapeIteration(typed.Body)
+	case *ClassStmt:
+		return blockBodyMayEscapeIteration(typed.Body)
+	default:
+		return false
+	}
+}
+
+func expressionMayEscapeIteration(expr Expression) bool {
+	switch typed := expr.(type) {
+	case nil:
+		return false
+	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:
+		return statementMayEscapeIteration(typed.(Statement))
+	case *BlockLiteral:
+		for _, param := range typed.Params {
+			if expressionMayEscapeIteration(param.DefaultVal) {
+				return true
+			}
+		}
+		return blockBodyMayEscapeIteration(typed.Body)
+	case *CallExpr:
+		if expressionMayEscapeIteration(typed.Callee) {
+			return true
+		}
+		for _, arg := range typed.Args {
+			if expressionMayEscapeIteration(arg) {
+				return true
+			}
+		}
+		for _, kwarg := range typed.KwArgs {
+			if expressionMayEscapeIteration(kwarg.Value) {
+				return true
+			}
+		}
+		return typed.Block != nil && expressionMayEscapeIteration(typed.Block)
+	case *UnaryExpr:
+		return expressionMayEscapeIteration(typed.Right)
+	case *BinaryExpr:
+		return expressionMayEscapeIteration(typed.Left) || expressionMayEscapeIteration(typed.Right)
+	case *ConditionalExpr:
+		return expressionMayEscapeIteration(typed.Condition) ||
+			expressionMayEscapeIteration(typed.Consequent) ||
+			expressionMayEscapeIteration(typed.Alternate)
+	case *IfExpr:
+		if expressionMayEscapeIteration(typed.Condition) || expressionMayEscapeIteration(typed.Consequent) {
+			return true
+		}
+		for _, branch := range typed.ElseIf {
+			if expressionMayEscapeIteration(branch.Condition) || expressionMayEscapeIteration(branch.Result) {
+				return true
+			}
+		}
+		return expressionMayEscapeIteration(typed.Alternate)
+	case *RescueExpr:
+		return expressionMayEscapeIteration(typed.Body) || expressionMayEscapeIteration(typed.Fallback)
+	case *RangeExpr:
+		return expressionMayEscapeIteration(typed.Start) || expressionMayEscapeIteration(typed.End)
+	case *ArrayLiteral:
+		for _, elem := range typed.Elements {
+			if expressionMayEscapeIteration(elem) {
+				return true
+			}
+		}
+		return false
+	case *HashLiteral:
+		for _, pair := range typed.Pairs {
+			if expressionMayEscapeIteration(pair.Key) || expressionMayEscapeIteration(pair.Value) {
+				return true
+			}
+		}
+		return false
+	case *IndexExpr:
+		if expressionMayEscapeIteration(typed.Object) {
+			return true
+		}
+		for _, index := range typed.Indices {
+			if expressionMayEscapeIteration(index) {
+				return true
+			}
+		}
+		return false
+	case *MemberExpr:
+		return expressionMayEscapeIteration(typed.Object)
+	case *ScopeExpr:
+		return expressionMayEscapeIteration(typed.Object)
+	case *CaseExpr:
+		if expressionMayEscapeIteration(typed.Target) {
+			return true
+		}
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				if expressionMayEscapeIteration(value.Expr) {
+					return true
+				}
+			}
+			if expressionMayEscapeIteration(clause.Result) {
+				return true
+			}
+		}
+		return expressionMayEscapeIteration(typed.ElseExpr)
+	case *YieldExpr:
+		for _, arg := range typed.Args {
+			if expressionMayEscapeIteration(arg) {
+				return true
+			}
+		}
+		return false
+	case *InterpolatedString:
+		return stringPartsMayEscapeIteration(typed.Parts)
+	case *InterpolatedSymbol:
+		return stringPartsMayEscapeIteration(typed.Parts)
+	default:
+		return false
+	}
+}
+
+func stringPartsMayEscapeIteration(parts []StringPart) bool {
+	for _, part := range parts {
+		if exprPart, ok := part.(StringExpr); ok && expressionMayEscapeIteration(exprPart.Expr) {
+			return true
+		}
+	}
+	return false
 }
 
 func scalarLiteralElementKind(kind ValueKind) bool {

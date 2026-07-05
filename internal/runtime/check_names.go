@@ -28,6 +28,10 @@ import "github.com/mgomes/vibescript/internal/ast"
 // snippet functions the entrypoint never calls, where state-sensitive
 // warnings (for example a type annotation that resolves only after a require
 // in the entrypoint runs) would misfire.
+//
+// The pass checks against empty CallOptions, so hosts that inject Globals or
+// Capabilities should prefer CheckWarningsWithOptions with their real
+// options: free names that only those options bind are reported here.
 func (s *Script) CheckOrderIndependentWarnings() []CheckWarning {
 	return s.checkWarningsMode(CallOptions{}, checkTarget{}, true)
 }
@@ -208,6 +212,8 @@ func collectOwnScopeNamesFromStatement(stmt Statement, out map[string]struct{}) 
 		collectOwnScopeNamesFromExpression(typed.Value, out)
 		collectOwnScopeNamesFromExpression(typed.Message, out)
 	case *BreakStmt:
+		collectOwnScopeNamesFromExpression(typed.Value, out)
+	case *NextStmt:
 		collectOwnScopeNamesFromExpression(typed.Value, out)
 	case *ExprStmt:
 		collectOwnScopeNamesFromExpression(typed.Expr, out)
@@ -430,6 +436,8 @@ func visitCallExprsInStatement(stmt Statement, visit func(*CallExpr)) {
 		visitCallExprsInExpression(typed.Value, visit)
 		visitCallExprsInExpression(typed.Message, visit)
 	case *BreakStmt:
+		visitCallExprsInExpression(typed.Value, visit)
+	case *NextStmt:
 		visitCallExprsInExpression(typed.Value, visit)
 	case *AssignStmt:
 		visitCallExprsInExpression(typed.Target, visit)
