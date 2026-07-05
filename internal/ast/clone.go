@@ -152,6 +152,13 @@ func cloneStatement(stmt Statement) Statement {
 		clone.ClassMethods = cloneFunctionStmts(s.ClassMethods)
 		clone.Aliases = cloneAliasStmts(s.Aliases)
 		clone.Properties = clonePropertyDecls(s.Properties)
+		if s.Modules != nil {
+			clone.Modules = make([]*ClassStmt, len(s.Modules))
+			for i, module := range s.Modules {
+				cloned, _ := cloneStatement(module).(*ClassStmt)
+				clone.Modules[i] = cloned
+			}
+		}
 		clone.Body = cloneStatements(s.Body)
 		return &clone
 	case *EnumStmt:
@@ -192,12 +199,36 @@ func cloneClassMemberDecls(members []ClassMemberDecl) []ClassMemberDecl {
 	out := make([]ClassMemberDecl, len(members))
 	for i, member := range members {
 		out[i] = ClassMemberDecl{
-			Function: cloneFunctionStmt(member.Function),
-			Alias:    cloneAliasStmt(member.Alias),
-			Property: clonePropertyDeclPtr(member.Property),
+			Function:   cloneFunctionStmt(member.Function),
+			Alias:      cloneAliasStmt(member.Alias),
+			Property:   clonePropertyDeclPtr(member.Property),
+			Visibility: cloneVisibilityDecl(member.Visibility),
+			Mixin:      cloneMixinDecl(member.Mixin),
 		}
 	}
 	return out
+}
+
+func cloneVisibilityDecl(decl *VisibilityDecl) *VisibilityDecl {
+	if decl == nil {
+		return nil
+	}
+	clone := *decl
+	if decl.Names != nil {
+		clone.Names = append([]string(nil), decl.Names...)
+	}
+	return &clone
+}
+
+func cloneMixinDecl(decl *MixinDecl) *MixinDecl {
+	if decl == nil {
+		return nil
+	}
+	clone := *decl
+	if decl.Modules != nil {
+		clone.Modules = append([]MixinRef(nil), decl.Modules...)
+	}
+	return &clone
 }
 
 func cloneAliasStmts(aliases []*AliasStmt) []*AliasStmt {
