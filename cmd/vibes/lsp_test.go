@@ -67,12 +67,11 @@ func TestDiagnosticsForSourceWithParseError(t *testing.T) {
 		t.Fatalf("expected diagnostics for invalid source")
 	}
 	first := diags[0]
-	if first["severity"] != 1 {
-		t.Fatalf("expected severity 1, got %#v", first["severity"])
+	if first.Severity != 1 {
+		t.Fatalf("expected severity 1, got %#v", first.Severity)
 	}
-	message, ok := first["message"].(string)
-	if !ok || message == "" {
-		t.Fatalf("expected non-empty diagnostic message, got %#v", first["message"])
+	if first.Message == "" {
+		t.Fatalf("expected non-empty diagnostic message, got %#v", first.Message)
 	}
 }
 
@@ -85,20 +84,15 @@ func TestDiagnosticsForSourceSpanOffendingToken(t *testing.T) {
 		t.Fatal("expected diagnostics for invalid function name")
 	}
 
-	rng, ok := diags[0]["range"].(map[string]any)
-	if !ok {
-		t.Fatalf("diagnostic range missing: %#v", diags[0])
+	rng := diags[0].Range
+	if rng.Start.Line != 0 || rng.Start.Character != 4 {
+		t.Fatalf("start = %#v, want line 0 character 4", rng.Start)
 	}
-	start := rng["start"].(map[string]any)
-	end := rng["end"].(map[string]any)
-	if start["line"] != 0 || start["character"] != 4 {
-		t.Fatalf("start = %#v, want line 0 character 4", start)
+	if rng.End.Line != 0 || rng.End.Character != 7 {
+		t.Fatalf("end = %#v, want line 0 character 7 (token span, not zero-width point)", rng.End)
 	}
-	if end["line"] != 0 || end["character"] != 7 {
-		t.Fatalf("end = %#v, want line 0 character 7 (token span, not zero-width point)", end)
-	}
-	if diags[0]["message"] != "expected function name, got integer" {
-		t.Fatalf("message = %#v, want bare parser message", diags[0]["message"])
+	if diags[0].Message != "expected function name, got integer" {
+		t.Fatalf("message = %#v, want bare parser message", diags[0].Message)
 	}
 }
 
@@ -111,12 +105,8 @@ func TestDiagnosticsForSourceFallBackToPointRangeAtEOF(t *testing.T) {
 	}
 
 	for _, diag := range diags {
-		rng := diag["range"].(map[string]any)
-		start := rng["start"].(map[string]any)
-		end := rng["end"].(map[string]any)
-		startLine, startChar := start["line"].(int), start["character"].(int)
-		endLine, endChar := end["line"].(int), end["character"].(int)
-		if endLine < startLine || (endLine == startLine && endChar <= startChar) {
+		rng := diag.Range
+		if rng.End.Line < rng.Start.Line || (rng.End.Line == rng.Start.Line && rng.End.Character <= rng.Start.Character) {
 			t.Fatalf("diagnostic range is not forward-progressing: %#v", rng)
 		}
 	}
@@ -133,14 +123,12 @@ func TestDiagnosticsForSourceUseUTF16CharacterOffsets(t *testing.T) {
 		t.Fatal("expected diagnostics for malformed array literal")
 	}
 
-	rng := diags[0]["range"].(map[string]any)
-	start := rng["start"].(map[string]any)
-	end := rng["end"].(map[string]any)
-	if start["line"] != 1 || start["character"] != 17 {
-		t.Fatalf("start = %#v, want line 1 character 17 (UTF-16 units)", start)
+	rng := diags[0].Range
+	if rng.Start.Line != 1 || rng.Start.Character != 17 {
+		t.Fatalf("start = %#v, want line 1 character 17 (UTF-16 units)", rng.Start)
 	}
-	if end["line"] != 1 || end["character"] != 18 {
-		t.Fatalf("end = %#v, want line 1 character 18 spanning the token", end)
+	if rng.End.Line != 1 || rng.End.Character != 18 {
+		t.Fatalf("end = %#v, want line 1 character 18 spanning the token", rng.End)
 	}
 }
 
@@ -151,13 +139,12 @@ func TestDiagnosticsForSourceWithoutPositionsReportDocumentStart(t *testing.T) {
 	if len(diags) != 1 {
 		t.Fatalf("expected single positionless diagnostic, got %d", len(diags))
 	}
-	rng := diags[0]["range"].(map[string]any)
-	start := rng["start"].(map[string]any)
-	if start["line"] != 0 || start["character"] != 0 {
+	start := diags[0].Range.Start
+	if start.Line != 0 || start.Character != 0 {
 		t.Fatalf("positionless diagnostic start = %#v, want document start", start)
 	}
-	if diags[0]["message"] != "duplicate function run" {
-		t.Fatalf("message = %#v, want compile error text", diags[0]["message"])
+	if diags[0].Message != "duplicate function run" {
+		t.Fatalf("message = %#v, want compile error text", diags[0].Message)
 	}
 }
 
@@ -253,15 +240,14 @@ func TestHandleMessageDidOpenPublishesDiagnostics(t *testing.T) {
 	if messages[0].Method != "textDocument/publishDiagnostics" {
 		t.Fatalf("unexpected method: %q", messages[0].Method)
 	}
-	paramsMap, ok := messages[0].Params.(map[string]any)
+	params2, ok := messages[0].Params.(lspPublishDiagnosticsParams)
 	if !ok {
 		t.Fatalf("unexpected params payload: %#v", messages[0].Params)
 	}
-	diags, ok := paramsMap["diagnostics"].([]map[string]any)
-	if !ok {
-		t.Fatalf("unexpected diagnostics payload: %#v", paramsMap["diagnostics"])
+	if params2.URI != "file:///tmp/test.vibe" {
+		t.Fatalf("params uri = %q, want the opened document", params2.URI)
 	}
-	if len(diags) == 0 {
+	if len(params2.Diagnostics) == 0 {
 		t.Fatalf("expected diagnostics for invalid source")
 	}
 }
@@ -581,6 +567,8 @@ func newCompletionTestServer() *lspServer {
 		compiled:    make(map[string]*vibes.Script),
 		completions: make(map[string]*lspCompletionIndex),
 		programs:    make(map[string]*ast.Program),
+		published:   make(map[string]publishedDiagnostics),
+		symbols:     make(map[string][]lspDocumentSymbol),
 	}
 }
 
@@ -1392,7 +1380,7 @@ func TestPublishDiagnosticsClearsNavigationWhenParsingIsSkipped(t *testing.T) {
 	uri := "file:///tmp/too-large.vibe"
 	source := "def old\n  1\nend\n"
 	server.setDocument(uri, source)
-	diagnostics := server.publishDiagnostics(uri, source).Params.(map[string]any)["diagnostics"].([]map[string]any)
+	diagnostics := server.publishDiagnostics(uri, source).Params.(lspPublishDiagnosticsParams).Diagnostics
 	if len(diagnostics) != 0 {
 		t.Fatalf("initial diagnostics = %#v, want none", diagnostics)
 	}
@@ -1416,7 +1404,7 @@ func TestPublishDiagnosticsClearsNavigationWhenParsingIsSkipped(t *testing.T) {
 
 	oversized := strings.Repeat(source, 8)
 	server.setDocument(uri, oversized)
-	diagnostics = server.publishDiagnostics(uri, oversized).Params.(map[string]any)["diagnostics"].([]map[string]any)
+	diagnostics = server.publishDiagnostics(uri, oversized).Params.(lspPublishDiagnosticsParams).Diagnostics
 	if len(diagnostics) == 0 {
 		t.Fatal("oversized publish diagnostics = none, want source-size diagnostic")
 	}
@@ -1431,6 +1419,172 @@ func TestPublishDiagnosticsClearsNavigationWhenParsingIsSkipped(t *testing.T) {
 	}
 	if server.completionIndex(uri) != nil {
 		t.Fatal("completionIndex returned a stale index after the compiled script was dropped")
+	}
+}
+
+func TestPublishDiagnosticsSkipsRecompileForUnchangedSource(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/unchanged.vibe"
+	source := "def helper(n)\n  n\nend\n"
+	server.setDocument(uri, source)
+	if diags := server.publishDiagnostics(uri, source).Params.(lspPublishDiagnosticsParams).Diagnostics; len(diags) != 0 {
+		t.Fatalf("initial diagnostics = %#v, want none", diags)
+	}
+	program := server.programs[uri]
+	if program == nil {
+		t.Fatal("initial publish did not cache navigation program")
+	}
+
+	// Republishing byte-identical text (open/save replays, reverted
+	// buffers) must reuse the previous result instead of recompiling.
+	server.setDocument(uri, source)
+	if diags := server.publishDiagnostics(uri, source).Params.(lspPublishDiagnosticsParams).Diagnostics; len(diags) != 0 {
+		t.Fatalf("republished diagnostics = %#v, want none", diags)
+	}
+	if server.programs[uri] != program {
+		t.Fatal("unchanged republish recompiled the document")
+	}
+
+	edited := source + "def broken(\n"
+	server.setDocument(uri, edited)
+	if diags := server.publishDiagnostics(uri, edited).Params.(lspPublishDiagnosticsParams).Diagnostics; len(diags) == 0 {
+		t.Fatal("edited publish diagnostics = none, want parse errors")
+	}
+	editedProgram := server.programs[uri]
+
+	// Reverting to the original text misses the cache (the last compile
+	// saw the edited text) and must produce a fresh clean result.
+	server.setDocument(uri, source)
+	if diags := server.publishDiagnostics(uri, source).Params.(lspPublishDiagnosticsParams).Diagnostics; len(diags) != 0 {
+		t.Fatalf("reverted diagnostics = %#v, want none", diags)
+	}
+	if server.programs[uri] == editedProgram {
+		t.Fatal("reverted publish did not recompile after an intervening edit")
+	}
+}
+
+func TestPublishDiagnosticsWireFormat(t *testing.T) {
+	t.Parallel()
+	message := diagnosticsNotification("file:///tmp/wire.vibe", []lspDiagnostic{
+		newDiagnostic(diagnosticRange{startLine: 1, startChar: 2, endLine: 1, endChar: 5}, "boom"),
+	})
+	payload, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("marshal notification: %v", err)
+	}
+	var decoded struct {
+		Params struct {
+			URI         string           `json:"uri"`
+			Diagnostics []map[string]any `json:"diagnostics"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("unmarshal notification: %v", err)
+	}
+	if decoded.Params.URI != "file:///tmp/wire.vibe" {
+		t.Fatalf("uri = %q, want the published document", decoded.Params.URI)
+	}
+	if len(decoded.Params.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %#v, want one entry", decoded.Params.Diagnostics)
+	}
+	diag := decoded.Params.Diagnostics[0]
+	if diag["severity"] != float64(1) || diag["source"] != "vibes-lsp" || diag["message"] != "boom" {
+		t.Fatalf("diagnostic fields = %#v, want severity/source/message wire keys", diag)
+	}
+	rng, ok := diag["range"].(map[string]any)
+	if !ok {
+		t.Fatalf("diagnostic range = %#v, want nested start/end object", diag["range"])
+	}
+	start, ok := rng["start"].(map[string]any)
+	if !ok || start["line"] != float64(1) || start["character"] != float64(2) {
+		t.Fatalf("range start = %#v, want line/character wire keys", rng["start"])
+	}
+	end, ok := rng["end"].(map[string]any)
+	if !ok || end["line"] != float64(1) || end["character"] != float64(5) {
+		t.Fatalf("range end = %#v, want line/character wire keys", rng["end"])
+	}
+
+	clean, err := json.Marshal(diagnosticsNotification("file:///tmp/wire.vibe", []lspDiagnostic{}))
+	if err != nil {
+		t.Fatalf("marshal clean notification: %v", err)
+	}
+	if !strings.Contains(string(clean), `"diagnostics":[]`) {
+		t.Fatalf("clean notification %s, want an empty diagnostics array, not null", clean)
+	}
+}
+
+func documentSymbolsResult(t *testing.T, server *lspServer, uri string) []lspDocumentSymbol {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+	})
+	if err != nil {
+		t.Fatalf("marshal documentSymbol params: %v", err)
+	}
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("31"),
+		Method:  "textDocument/documentSymbol",
+		Params:  payload,
+	})
+	if len(messages) != 1 {
+		t.Fatalf("documentSymbol responses = %d, want 1", len(messages))
+	}
+	symbols, ok := messages[0].Result.([]lspDocumentSymbol)
+	if !ok {
+		t.Fatalf("documentSymbol result = %#v, want []lspDocumentSymbol", messages[0].Result)
+	}
+	return symbols
+}
+
+func TestDocumentSymbolOutlineCachedBetweenEdits(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/outline-cache.vibe"
+	openDoc(t, server, uri, "def alpha()\n  1\nend\n\ndef beta()\n  2\nend\n")
+
+	first := documentSymbolsResult(t, server, uri)
+	if len(first) != 2 {
+		t.Fatalf("outline = %d symbols, want 2", len(first))
+	}
+	second := documentSymbolsResult(t, server, uri)
+	if &first[0] != &second[0] {
+		t.Fatal("repeat outline request rebuilt the symbols instead of reusing the cache")
+	}
+
+	// Shift the declarations down while leaving the buffer unparsable:
+	// the cached outline predates the edit, so it must be dropped and
+	// the fresh outline anchored to the live buffer lines.
+	payload, err := json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": "# one\n# two\ndef alpha()\n  1\nend\n\ndef beta()\n  2\nend\n\ndef broken("}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+
+	shifted := documentSymbolsResult(t, server, uri)
+	if len(shifted) != 2 {
+		t.Fatalf("outline after mid-edit parse = %d symbols, want 2", len(shifted))
+	}
+	if shifted[0].Range.Start.Line != 2 {
+		t.Fatalf("alpha outline line = %d, want 2 after the buffer shifted", shifted[0].Range.Start.Line)
+	}
+
+	// Replace the buffer with text declaring none of the symbols: the
+	// retained navigation program must not resurrect the old outline.
+	payload, err = json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": "def broken("}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+	if emptied := documentSymbolsResult(t, server, uri); len(emptied) != 0 {
+		t.Fatalf("outline = %d symbols for a buffer containing none of them", len(emptied))
 	}
 }
 
@@ -1747,7 +1901,7 @@ func BenchmarkLSPPublishDiagnosticsLargeDocument(b *testing.B) {
 	b.ReportAllocs()
 	for range b.N {
 		message := server.publishDiagnostics(uri, source)
-		diagnostics := message.Params.(map[string]any)["diagnostics"].([]map[string]any)
+		diagnostics := message.Params.(lspPublishDiagnosticsParams).Diagnostics
 		if len(diagnostics) != 0 {
 			b.Fatalf("publishDiagnostics diagnostics = %#v, want none", diagnostics)
 		}
@@ -1759,7 +1913,7 @@ func BenchmarkLSPCompletionLargeDocument(b *testing.B) {
 	uri := "file:///tmp/completion-large.vibe"
 	source, completionLine := largeLSPCompletionSource(2_000, 8)
 	server.setDocument(uri, source)
-	diagnostics := server.publishDiagnostics(uri, source).Params.(map[string]any)["diagnostics"].([]map[string]any)
+	diagnostics := server.publishDiagnostics(uri, source).Params.(lspPublishDiagnosticsParams).Diagnostics
 	if len(diagnostics) != 0 {
 		b.Fatalf("large completion source diagnostics = %#v, want none", diagnostics)
 	}
@@ -1846,7 +2000,7 @@ func benchmarkLSPNavigationServer(b *testing.B) (*lspServer, string, int) {
 	uri := "file:///tmp/large.vibe"
 	source, callLine := largeLSPNavigationSource(2_000)
 	server.setDocument(uri, source)
-	diagnostics := server.publishDiagnostics(uri, source).Params.(map[string]any)["diagnostics"].([]map[string]any)
+	diagnostics := server.publishDiagnostics(uri, source).Params.(lspPublishDiagnosticsParams).Diagnostics
 	if len(diagnostics) != 0 {
 		b.Fatalf("large navigation source diagnostics = %#v, want none", diagnostics)
 	}

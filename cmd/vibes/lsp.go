@@ -130,6 +130,23 @@ type lspServer struct {
 	// statements per document. Unlike compiled it tolerates partial
 	// parses, so navigation keeps working while the buffer is mid-edit.
 	programs map[string]*ast.Program
+	// published holds the most recent diagnostics result per document
+	// together with the exact source it was computed from. didChange
+	// full sync re-sends the entire buffer, so a text-identical publish
+	// (open/save replays, reverted edits) can skip the whole
+	// parse-and-compile pass: the compiled/program caches already
+	// reflect that source.
+	published map[string]publishedDiagnostics
+	// symbols caches the rendered document-symbol outline per document.
+	// It is invalidated on every edit and on every fresh diagnostics
+	// compile, so a cached outline is always anchored to the live
+	// buffer lines and the current navigation program.
+	symbols map[string][]lspDocumentSymbol
+}
+
+type publishedDiagnostics struct {
+	source      string
+	diagnostics []lspDiagnostic
 }
 
 func runLSP() error {
@@ -142,6 +159,8 @@ func runLSP() error {
 		compiled:    make(map[string]*vibes.Script),
 		completions: make(map[string]*lspCompletionIndex),
 		programs:    make(map[string]*ast.Program),
+		published:   make(map[string]publishedDiagnostics),
+		symbols:     make(map[string][]lspDocumentSymbol),
 	}
 	return server.serve()
 }
@@ -302,7 +321,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 			{
 				JSONRPC: "2.0",
 				ID:      incoming.ID,
-				Result:  documentSymbols(s.programs[uri], s.documentLines(uri)),
+				Result:  s.documentSymbolsFor(uri),
 			},
 		}
 	case "textDocument/signatureHelp":
@@ -417,6 +436,9 @@ func (s *lspServer) setDocument(uri, source string) {
 	if s.completions != nil {
 		delete(s.completions, uri)
 	}
+	if s.symbols != nil {
+		delete(s.symbols, uri)
+	}
 }
 
 func (s *lspServer) documentLines(uri string) []string {
@@ -436,6 +458,12 @@ func (s *lspServer) documentLines(uri string) []string {
 }
 
 func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
+	if cached, ok := s.published[uri]; ok && cached.source == source {
+		// The buffer text is exactly what was last compiled for this
+		// document, so the compiled-script and navigation caches
+		// already reflect it and the compile pass can be skipped.
+		return diagnosticsNotification(uri, cached.diagnostics)
+	}
 	script, program, parseErrs, diagnostics := compileForDiagnostics(s.engine, source)
 	// The completion index is derived from the compiled script and the
 	// current buffer lines. setDocument already invalidated any cached
@@ -458,13 +486,22 @@ func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
 	} else if len(parseErrs) == 0 && s.programs != nil {
 		delete(s.programs, uri)
 	}
+	if s.symbols != nil {
+		// The navigation program may have been replaced or dropped, so
+		// a cached outline could anchor against stale statements.
+		delete(s.symbols, uri)
+	}
+	if s.published != nil {
+		s.published[uri] = publishedDiagnostics{source: source, diagnostics: diagnostics}
+	}
+	return diagnosticsNotification(uri, diagnostics)
+}
+
+func diagnosticsNotification(uri string, diagnostics []lspDiagnostic) lspOutboundMessage {
 	return lspOutboundMessage{
 		JSONRPC: "2.0",
 		Method:  "textDocument/publishDiagnostics",
-		Params: map[string]any{
-			"uri":         uri,
-			"diagnostics": diagnostics,
-		},
+		Params:  lspPublishDiagnosticsParams{URI: uri, Diagnostics: diagnostics},
 	}
 }
 
@@ -489,28 +526,28 @@ func (s *lspServer) completionIndex(uri string) *lspCompletionIndex {
 	return index
 }
 
-func diagnosticsForSource(engine *vibes.Engine, source string) []map[string]any {
+func diagnosticsForSource(engine *vibes.Engine, source string) []lspDiagnostic {
 	_, _, _, diagnostics := compileForDiagnostics(engine, source)
 	return diagnostics
 }
 
 // compileForDiagnostics parses once, compiles the parsed program when possible,
 // and returns the AST so diagnostics and navigation caches stay in sync.
-func compileForDiagnostics(engine *vibes.Engine, source string) (*vibes.Script, *ast.Program, []error, []map[string]any) {
+func compileForDiagnostics(engine *vibes.Engine, source string) (*vibes.Script, *ast.Program, []error, []lspDiagnostic) {
 	script, program, parseErrs, err := vibesruntime.CompileSnippetWithProgram(engine, source, scriptEntrypointFunction)
 	if err == nil {
-		return script, program, nil, []map[string]any{}
+		return script, program, nil, []lspDiagnostic{}
 	}
 
 	if len(parseErrs) > 0 {
 		issues := vibes.ParseIssues(err)
 		if len(issues) == 0 {
-			return nil, program, parseErrs, []map[string]any{
+			return nil, program, parseErrs, []lspDiagnostic{
 				newDiagnostic(diagnosticRange{}, err.Error()),
 			}
 		}
 		lines := strings.Split(source, "\n")
-		out := make([]map[string]any, 0, len(issues))
+		out := make([]lspDiagnostic, 0, len(issues))
 		for _, issue := range issues {
 			out = append(out, newDiagnostic(rangeForIssue(issue, lines), issue.Message))
 		}
@@ -521,13 +558,13 @@ func compileForDiagnostics(engine *vibes.Engine, source string) (*vibes.Script, 
 	if len(issues) == 0 {
 		// Non-parse compile failures (size limits, duplicate top-level
 		// names) carry no position; surface them at the document start.
-		return nil, program, nil, []map[string]any{
+		return nil, program, nil, []lspDiagnostic{
 			newDiagnostic(diagnosticRange{}, err.Error()),
 		}
 	}
 
 	lines := strings.Split(source, "\n")
-	out := make([]map[string]any, 0, len(issues))
+	out := make([]lspDiagnostic, 0, len(issues))
 	for _, issue := range issues {
 		out = append(out, newDiagnostic(rangeForIssue(issue, lines), issue.Message))
 	}
@@ -588,25 +625,37 @@ func utf16Character(lineText string, runeColumn int) int {
 	return units + (runeColumn - runes)
 }
 
-func newDiagnostic(rng diagnosticRange, message string) map[string]any {
+// lspDiagnostic is one Diagnostic in a publishDiagnostics payload. A
+// typed struct avoids the nested map[string]any allocations the
+// per-publish payload used to pay for every issue.
+type lspDiagnostic struct {
+	Range    lspRange `json:"range"`
+	Severity int      `json:"severity"`
+	Source   string   `json:"source"`
+	Message  string   `json:"message"`
+}
+
+// lspPublishDiagnosticsParams is the textDocument/publishDiagnostics
+// params payload. Diagnostics is always non-nil so a clean document
+// marshals as an empty array rather than null.
+type lspPublishDiagnosticsParams struct {
+	URI         string          `json:"uri"`
+	Diagnostics []lspDiagnostic `json:"diagnostics"`
+}
+
+func newDiagnostic(rng diagnosticRange, message string) lspDiagnostic {
 	if rng.endLine < rng.startLine || (rng.endLine == rng.startLine && rng.endChar <= rng.startChar) {
 		rng.endLine = rng.startLine
 		rng.endChar = rng.startChar + 1
 	}
-	return map[string]any{
-		"range": map[string]any{
-			"start": map[string]any{
-				"line":      rng.startLine,
-				"character": rng.startChar,
-			},
-			"end": map[string]any{
-				"line":      rng.endLine,
-				"character": rng.endChar,
-			},
+	return lspDiagnostic{
+		Range: lspRange{
+			Start: lspPosition{Line: rng.startLine, Character: rng.startChar},
+			End:   lspPosition{Line: rng.endLine, Character: rng.endChar},
 		},
-		"severity": 1,
-		"source":   "vibes-lsp",
-		"message":  message,
+		Severity: 1,
+		Source:   "vibes-lsp",
+		Message:  message,
 	}
 }
 
@@ -1877,6 +1926,21 @@ type lspDocumentSymbol struct {
 	Range          lspRange            `json:"range"`
 	SelectionRange lspRange            `json:"selectionRange"`
 	Children       []lspDocumentSymbol `json:"children,omitempty"`
+}
+
+// documentSymbolsFor returns the outline for uri, reusing the cached
+// rendering while neither the buffer (setDocument) nor the navigation
+// program (a fresh diagnostics compile) has changed since it was built,
+// so repeated outline requests between edits cost a map lookup.
+func (s *lspServer) documentSymbolsFor(uri string) []lspDocumentSymbol {
+	if cached, ok := s.symbols[uri]; ok {
+		return cached
+	}
+	symbols := documentSymbols(s.programs[uri], s.documentLines(uri))
+	if s.symbols != nil {
+		s.symbols[uri] = symbols
+	}
+	return symbols
 }
 
 // documentSymbols renders the document outline: top-level functions,
