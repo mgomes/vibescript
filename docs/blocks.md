@@ -66,8 +66,9 @@ The return unwinds like an error — `ensure` blocks on the way out still run �
 but no `rescue` clause can intercept it, and a typed method validates the value
 against its return type as usual. A block invoked after its method has already
 returned (for example, one a host adapter stored) has no frame to return from,
-so an explicit `return` in it raises `LocalJumpError`, matching Ruby. To leave
-just the block with a value, make the value the block's last expression.
+so an explicit `return` in it raises `unexpected return` — a `LocalJumpError`,
+rescuable with `rescue LocalJumpError`, matching Ruby. To leave just the block
+with a value, make the value the block's last expression.
 
 ## Detecting and invoking a supplied block
 
@@ -121,7 +122,7 @@ Procs and lambdas differ exactly as in Ruby:
   arguments pad to `nil`, extra arguments are dropped, a single array argument
   auto-splats across multiple parameters, and `return` in the body returns
   from the method whose body created the proc. Calling such a proc after that
-  method has already returned raises `LocalJumpError`.
+  method has already returned raises `unexpected return` (a `LocalJumpError`).
 - A **lambda** (`lambda { }` / `->() { }`) behaves like an anonymous method.
   Arity is strict — `->(a, b) { }.call(1)` raises
   `lambda expects 2 arguments, got 1` — and `return`, `break`, and `next` in
