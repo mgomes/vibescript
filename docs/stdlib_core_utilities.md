@@ -85,10 +85,10 @@ a.equal?(b)   # true  (same object)
 a.equal?(c)   # false (distinct objects)
 ```
 
-Empty arrays are the one identity exception: an empty array has no element
-storage to alias, so all empty arrays report `equal?` to one another
-(`[].equal?([])` is `true`). Empty hashes remain distinct objects
-(`{}.equal?({})` is `false`).
+Emptiness grants no identity exception: every array or hash construction —
+including an empty literal — produces a distinct object, so `[].equal?([])`
+and `{}.equal?({})` are both `false`. Only aliases of one collection (bindings
+that observe each other's in-place mutations) are `equal?`.
 
 A NaN float is `equal?` to itself even though `==` never holds for NaN. Because
 floats carry no distinct identity, any two NaN floats are also `equal?`, keeping
