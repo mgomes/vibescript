@@ -31,7 +31,7 @@ type parser struct {
 	typeDepth                  int
 	localScopes                []localScope
 	parenlessArgDoStops        int
-	whenValueDepth             int
+	whenValueGroupDepths       []int
 	groupDepth                 int
 
 	// shapeStructurallyInvalid records that the most recent parseTypeShape

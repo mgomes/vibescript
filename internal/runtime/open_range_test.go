@@ -191,3 +191,55 @@ end`)
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	compareArrays(t, got, []Value{NewBool(true), NewInt(2), NewInt(4)})
 }
+
+// TestWhenValueGroupedMultilineRangeStaysBounded pins the adversarial-review
+// finding: the when-value newline rule applies only at the value's own group
+// depth, so a parenthesized or call-grouped bounded endpoint may still
+// continue onto the next line inside a when clause.
+func TestWhenValueGroupedMultilineRangeStaysBounded(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def id(x)
+  x
+end
+
+def run
+  a = case 7
+  when (3..
+    9) then "in"
+  else "out"
+  end
+  b = case 7
+  when id(3..
+    9) then "in"
+  else "out"
+  end
+  [a, b]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewString("in"), NewString("in")})
+}
+
+// TestOpenRangeFloatMembershipBeyondInt64 pins one-sided membership for float
+// magnitudes past the int64 guard band, including infinities.
+func TestOpenRangeFloatMembershipBeyondInt64(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  [
+    (0..) === 1.0e19, (..0) === -1.0e19,
+    (0..) === (1.0 / 0), (..0) === (1.0 / 0),
+    (0..) === (-1.0 / 0), (..0) === (-1.0 / 0),
+    (0..) === (0.0 / 0.0)
+  ]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{
+		NewBool(true), NewBool(true),
+		NewBool(true), NewBool(false),
+		NewBool(false), NewBool(true),
+		NewBool(false),
+	})
+}

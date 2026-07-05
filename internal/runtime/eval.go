@@ -2562,13 +2562,20 @@ func rangeContainsInt(rng Range, value int64) bool {
 }
 
 func rangeContainsFloat(rng Range, value float64) bool {
-	if math.IsNaN(value) || value < minInt64Float || value >= maxInt64FloatExclusive {
+	if math.IsNaN(value) {
 		return false
 	}
-
-	floor := int64(math.Floor(value))
-	ceil := int64(math.Ceil(value))
+	// Open ranges admit magnitudes beyond int64: anything far below the end
+	// is inside a beginless range, anything far above the start is inside an
+	// endless one (including the matching infinity).
 	if rng.Beginless {
+		if value < minInt64Float {
+			return true
+		}
+		if value >= maxInt64FloatExclusive {
+			return false
+		}
+		floor := int64(math.Floor(value))
 		// value < End (exclusive) holds exactly when its floor is below End;
 		// value <= End (inclusive) additionally admits the integral value at
 		// End itself. Integer comparisons keep this exact near int64 bounds,
@@ -2579,10 +2586,23 @@ func rangeContainsFloat(rng Range, value float64) bool {
 		return floor < rng.End || (floor == rng.End && value == math.Floor(value))
 	}
 	if rng.Endless {
+		if value >= maxInt64FloatExclusive {
+			return true
+		}
+		if value < minInt64Float {
+			return false
+		}
 		// value >= Start holds when its ceiling is above Start, or the value
 		// is exactly the integral Start.
+		ceil := int64(math.Ceil(value))
 		return ceil > rng.Start || (ceil == rng.Start && value == math.Ceil(value))
 	}
+	if value < minInt64Float || value >= maxInt64FloatExclusive {
+		return false
+	}
+
+	floor := int64(math.Floor(value))
+	ceil := int64(math.Ceil(value))
 	if rng.Start <= rng.End {
 		if floor < rng.Start {
 			return false

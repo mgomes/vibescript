@@ -1444,7 +1444,7 @@ func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 	precedence := p.curPrecedence()
 	if prefixParserKind(p.peekToken.Type) == prefixParserNone ||
 		p.peekIsActiveExpressionStop() ||
-		((p.groupDepth == 0 || p.whenValueDepth > 0) && p.peekToken.Pos.Line != pos.Line) {
+		((p.groupDepth == 0 || p.atWhenValueGroupDepth()) && p.peekToken.Pos.Line != pos.Line) {
 		// Nothing after the dots can start an expression (a closing bracket,
 		// comma, end, EOF ...): this is Ruby's endless range. Inside when
 		// values the line break itself ends the range (when 3..), while a
@@ -1473,6 +1473,13 @@ func (p *parser) peekIsActiveExpressionStop() bool {
 		}
 	}
 	return false
+}
+
+// atWhenValueGroupDepth reports whether range dots sit directly in a when
+// value (at the value's own group nesting), where a line break ends the range.
+func (p *parser) atWhenValueGroupDepth() bool {
+	n := len(p.whenValueGroupDepths)
+	return n > 0 && p.whenValueGroupDepths[n-1] == p.groupDepth
 }
 
 func (p *parser) parseBeginlessRangeExpression() ast.Expression {
@@ -2381,11 +2388,13 @@ func (p *parser) parseCaseWhenValue() *ast.CaseWhenValue {
 		p.nextToken()
 	}
 	// Inside when values, range dots ending the line form an endless range
-	// (when 3.. matches 3 and up); the general multiline bounded-endpoint
-	// continuation stays available everywhere else.
-	p.whenValueDepth++
+	// (when 3.. matches 3 and up). The entry group depth is recorded so the
+	// rule only applies to dots at the when value's own nesting level: a
+	// bounded endpoint inside parens or call arguments may still continue
+	// onto the next line.
+	p.whenValueGroupDepths = append(p.whenValueGroupDepths, p.groupDepth)
 	expr := p.parseLineExpressionUntilForced(lowestPrec, ast.TokenThen)
-	p.whenValueDepth--
+	p.whenValueGroupDepths = p.whenValueGroupDepths[:len(p.whenValueGroupDepths)-1]
 	if expr == nil {
 		return nil
 	}
