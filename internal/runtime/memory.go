@@ -1433,10 +1433,13 @@ func (acc *hashBuildAccumulator) retainedPayloadBytes() int {
 // against a reused address.
 //
 // Per-entry growth in outer scope is still caught by the body's own per-statement
-// checks, which walk the live env (the bound rest included) on each statement. The
-// snapshot baseline (the receiver the body checks cannot see, plus the fresh rest)
-// and the body checks (state the body grows, which the pre-loop snapshot misses)
-// together bound the live footprint.
+// checks, which walk the live env (the bound rest included) on each statement.
+// Those walks cannot see Go-frame-only roots, so callBlock reserves
+// ephemeralRootBytes into the live baseline while the body runs: the snapshot
+// baseline bounds the bind-time peak (receiver plus fresh rest) and the body
+// checks, reading env plus the reservation, bound the combined live footprint
+// (receiver plus whatever the body retains) -- closing the ~2x transient a
+// retained accumulator of rest copies could otherwise reach (issue #835).
 //
 // Each call resets a SEPARATE per-call estimator (est) and seeds it with that call's
 // arguments (the [key, value] pair for Hash#each, the destructured element for array
@@ -1450,6 +1453,20 @@ type blockBindCharge struct {
 	rootEst  *memoryEstimator
 	baseline int
 	built    int
+
+	// ephemeralRootBytes is the marginal footprint of the call roots that live only
+	// on the iterator's Go frame: what the receiver, callArgs, kwargs, and block
+	// added to the baseline beyond exec's reachable roots. While a block body runs,
+	// callBlock folds these bytes into the live baseline via reserveLoopScratch so
+	// the body's own checks -- per-statement walks and mutator growth preflights,
+	// which cannot see Go-frame values -- bound the COMBINED peak of the ephemeral
+	// receiver plus whatever the body accumulates. Without it, the receiver is
+	// counted only in this charge's one-time snapshot while the accumulator is
+	// counted only by the body checks, and each view fits a quota the combined live
+	// footprint exceeds by up to 2x (issue #835). A receiver that is reachable from
+	// the environment deduplicated against the base walk at construction, so its
+	// marginal here is ~0 and env-rooted iteration is unaffected.
+	ephemeralRootBytes int
 }
 
 // newBlockBindCharge snapshots the live call roots as the baseline for charging a
@@ -1473,7 +1490,8 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 		return nil
 	}
 	rootEst := newMemoryEstimator()
-	baseline := exec.estimateMemoryUsageBase(rootEst)
+	base := exec.estimateMemoryUsageBase(rootEst)
+	baseline := base
 	if receiver.Kind() != KindNil {
 		baseline = saturatingAdd(baseline, rootEst.value(receiver))
 	}
@@ -1487,11 +1505,24 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 		baseline = saturatingAdd(baseline, rootEst.value(block))
 	}
 	return &blockBindCharge{
-		exec:     exec,
-		est:      newMemoryEstimator(),
-		rootEst:  rootEst,
-		baseline: baseline,
+		exec:               exec,
+		est:                newMemoryEstimator(),
+		rootEst:            rootEst,
+		baseline:           baseline,
+		ephemeralRootBytes: baseline - base,
 	}
+}
+
+// ephemeralRootScratch returns the bytes callBlock reserves into the live
+// baseline while the block body runs: the marginal footprint of the Go-frame-only
+// call roots the body's own checks cannot see. Zero for a nil charge and for
+// iteration over environment-reachable roots, whose marginal deduplicated to ~0
+// against the base walk at construction.
+func (c *blockBindCharge) ephemeralRootScratch() int {
+	if c == nil {
+		return 0
+	}
+	return c.ephemeralRootBytes
 }
 
 // begin prepares the charge for one block call: it resets the per-call estimator and
