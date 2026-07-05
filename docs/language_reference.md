@@ -261,7 +261,9 @@ end
 
 Inheritance is not supported.
 
-Module declarations group module functions and constants under a namespace:
+Module declarations group module functions and constants under a namespace,
+and their instance-style methods mix into classes with `include` (instance
+methods) or `extend` (class methods):
 
 ```vibe
 module Billing
@@ -281,8 +283,8 @@ when followed by a constant name. Declarations are allowed at the top level
 and nested inside other module bodies (`Outer::Inner`); modules cannot be
 instantiated.
 
-See `docs/classes.md` for class methods, `@`/`@@` variables, accessors, and
-visibility semantics.
+See `docs/classes.md` for class methods, `@`/`@@` variables, accessors,
+mixins, and visibility semantics.
 
 ## Enums
 

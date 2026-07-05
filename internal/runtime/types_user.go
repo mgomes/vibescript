@@ -17,9 +17,16 @@ type ClassDef struct {
 	// the qualified name (Name + "::" + short) and linked into ClassVars per
 	// call so Outer::Inner resolves like any other scoped constant.
 	NestedModules []string
-	Body          []Statement
-	bodyRan       bool
-	owner         *Script
+	// IncludedModules lists the qualified names of modules mixed in with
+	// include, in precedence order from lowest to highest (earlier include
+	// directives before later ones; within one directive, later arguments
+	// before earlier ones, matching Ruby's ancestor ordering). Their
+	// constants are adopted into ClassVars in this order before the class
+	// body runs, and is_a? reports instances as belonging to them.
+	IncludedModules []string
+	Body            []Statement
+	bodyRan         bool
+	owner           *Script
 }
 
 // Instance represents a runtime instance of a ClassDef with its own instance variables.

@@ -337,14 +337,15 @@ func cloneClassesForCall(classes map[string]*ClassDef, env *Env) map[string]*Cla
 	cloned := make(map[string]*ClassDef, len(classes))
 	for name, classDef := range classes {
 		classClone := &ClassDef{
-			Name:          classDef.Name,
-			IsModule:      classDef.IsModule,
-			Methods:       make(map[string]*ScriptFunction, len(classDef.Methods)),
-			ClassMethods:  make(map[string]*ScriptFunction, len(classDef.ClassMethods)),
-			ClassVars:     make(map[string]Value),
-			NestedModules: classDef.NestedModules,
-			Body:          classDef.Body,
-			owner:         classDef.owner,
+			Name:            classDef.Name,
+			IsModule:        classDef.IsModule,
+			Methods:         make(map[string]*ScriptFunction, len(classDef.Methods)),
+			ClassMethods:    make(map[string]*ScriptFunction, len(classDef.ClassMethods)),
+			ClassVars:       make(map[string]Value),
+			NestedModules:   classDef.NestedModules,
+			IncludedModules: classDef.IncludedModules,
+			Body:            classDef.Body,
+			owner:           classDef.owner,
 		}
 		for methodName, method := range classDef.Methods {
 			classClone.Methods[methodName] = cloneFunctionForEnv(method, env)
@@ -396,13 +397,14 @@ func cloneClassForSnapshot(classDef *ClassDef) *ClassDef {
 		return nil
 	}
 	classClone := &ClassDef{
-		Name:          classDef.Name,
-		IsModule:      classDef.IsModule,
-		Methods:       make(map[string]*ScriptFunction, len(classDef.Methods)),
-		ClassMethods:  make(map[string]*ScriptFunction, len(classDef.ClassMethods)),
-		ClassVars:     cloneBuiltinMap(classDef.ClassVars),
-		NestedModules: classDef.NestedModules,
-		Body:          cloneStatements(classDef.Body),
+		Name:            classDef.Name,
+		IsModule:        classDef.IsModule,
+		Methods:         make(map[string]*ScriptFunction, len(classDef.Methods)),
+		ClassMethods:    make(map[string]*ScriptFunction, len(classDef.ClassMethods)),
+		ClassVars:       cloneBuiltinMap(classDef.ClassVars),
+		NestedModules:   classDef.NestedModules,
+		IncludedModules: classDef.IncludedModules,
+		Body:            cloneStatements(classDef.Body),
 	}
 	for methodName, method := range classDef.Methods {
 		classClone.Methods[methodName] = cloneFunctionForSnapshot(method)

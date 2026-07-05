@@ -76,10 +76,12 @@ func newRespondToBuiltin(callerIsReceiver bool) Value {
 }
 
 // newClassPredicateBuiltin builds an is_a?/kind_of?/instance_of? predicate, each
-// distinguished by name only. All three currently test direct class identity:
-// an instance belongs to exactly its own class. Vibescript has no inheritance,
-// so is_a?/kind_of? (ancestry) and instance_of? (exact class) coincide; when a
-// superclass chain is added, is_a?/kind_of? will additionally walk it.
+// distinguished by name only. All three test direct class identity — an
+// instance belongs to exactly its own class, since Vibescript has no
+// inheritance — and is_a?/kind_of? additionally report true for modules the
+// instance's class includes, mirroring Ruby's module ancestry. instance_of?
+// stays exact-class only. When a superclass chain is added, is_a?/kind_of?
+// will additionally walk it.
 func newClassPredicateBuiltin(name string) Value {
 	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if len(kwargs) > 0 {
@@ -98,8 +100,27 @@ func newClassPredicateBuiltin(name string) Value {
 		if receiver.Kind() != KindInstance {
 			return NewBool(false), nil
 		}
-		return NewBool(valueInstance(receiver).Class == want), nil
+		cl := valueInstance(receiver).Class
+		if cl == want {
+			return NewBool(true), nil
+		}
+		if want.IsModule && name != instanceOfMemberName {
+			return NewBool(classIncludesModule(cl, want.Name)), nil
+		}
+		return NewBool(false), nil
 	})
+}
+
+// classIncludesModule reports whether cl includes the module with the given
+// qualified name. Names are compared rather than definition pointers because
+// each call works on its own clones of both definitions.
+func classIncludesModule(cl *ClassDef, moduleName string) bool {
+	for _, included := range cl.IncludedModules {
+		if included == moduleName {
+			return true
+		}
+	}
+	return false
 }
 
 // methodNameArg extracts a method name from a respond_to? argument. Ruby accepts

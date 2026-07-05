@@ -983,6 +983,19 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 						stmt.Body = append(stmt.Body, s)
 					}
 				}
+			case ast.MixinInclude, ast.MixinExtend:
+				if p.startsMixinDirective() {
+					mixin := p.parseMixinMember()
+					if mixin == nil {
+						return nil
+					}
+					stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Mixin: mixin})
+				} else {
+					s := p.parseStatement()
+					if s != nil {
+						stmt.Body = append(stmt.Body, s)
+					}
+				}
 			default:
 				s := p.parseStatement()
 				if s != nil {
@@ -1018,6 +1031,73 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 	}
 
 	return stmt
+}
+
+// startsMixinDirective reports whether an `include`/`extend` identifier in
+// class-member position begins a mixin directive rather than an ordinary
+// statement. It is a directive when followed on the same line by a module
+// name, an opening paren, or `self` (which gets a targeted diagnostic), or
+// when it stands alone (a bare directive missing its module name, also a
+// targeted diagnostic). Anything else — an assignment such as `include = 1` —
+// parses as a normal statement so the words stay usable as identifiers.
+func (p *parser) startsMixinDirective() bool {
+	if p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		switch p.peekToken.Type {
+		case ast.TokenIdent, ast.TokenLParen, ast.TokenSelf:
+			return true
+		}
+	}
+	return p.peekEndsStatement(p.curToken.Pos)
+}
+
+// parseMixinMember parses an include/extend directive with curToken on the
+// directive word. Module names may be scope-qualified (Support::Naming) and
+// comma-separated; an optional paren group wraps the list.
+func (p *parser) parseMixinMember() *ast.MixinDecl {
+	kind := p.curToken.Literal
+	pos := p.curToken.Pos
+	decl := &ast.MixinDecl{Kind: kind, Position: pos}
+
+	parenthesized := false
+	if p.peekToken.Type == ast.TokenLParen && p.peekToken.Pos.Line == pos.Line {
+		parenthesized = true
+		p.nextToken()
+	}
+	for {
+		if p.peekToken.Type == ast.TokenSelf {
+			p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s self is not supported; define module functions with def self.name", kind))
+			p.recoverSameLineStatementRemainder(pos.Line)
+			return nil
+		}
+		if p.peekToken.Type != ast.TokenIdent {
+			p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s expects a module name", kind))
+			p.recoverSameLineStatementRemainder(pos.Line)
+			return nil
+		}
+		p.nextToken()
+		if !startsUppercaseIdentifier(p.curToken.Literal) {
+			p.addParseError(p.curToken.Pos, "module name must start with an uppercase letter")
+			p.recoverSameLineStatementRemainder(pos.Line)
+			return nil
+		}
+		ref := ast.MixinRef{Name: p.curToken.Literal, Position: p.curToken.Pos}
+		for p.peekToken.Type == ast.TokenScope {
+			p.nextToken()
+			if !p.expectPeek(ast.TokenIdent) {
+				return nil
+			}
+			ref.Name += "::" + p.curToken.Literal
+		}
+		decl.Modules = append(decl.Modules, ref)
+		if p.peekToken.Type != ast.TokenComma {
+			break
+		}
+		p.nextToken()
+	}
+	if parenthesized && !p.expectPeek(ast.TokenRParen) {
+		return nil
+	}
+	return decl
 }
 
 // startsVisibilityDirective reports whether a `public`/`protected` identifier

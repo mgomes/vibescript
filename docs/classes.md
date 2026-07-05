@@ -381,7 +381,77 @@ Rules and limits:
 - Modules cannot be instantiated: `Billing.new` raises
   `module Billing cannot be instantiated`.
 - A module may also declare instance-style methods (plain `def`); they are not
-  callable on the module itself.
+  callable on the module itself — they exist to be mixed into classes with
+  `include`/`extend` (see Mixins below).
+
+## Mixins: `include` And `extend`
+
+Class bodies (and module bodies) accept Ruby's mixin directives. `include`
+mixes a module's instance-style methods into the class's instance methods;
+`extend` mixes them into the class's own (`self.`) methods:
+
+```vibe
+module Named
+  def display_name
+    "I am " + name
+  end
+end
+
+class Person
+  include Named
+
+  def initialize(name)
+    @name = name
+  end
+
+  def name
+    @name
+  end
+end
+
+Person.new("Ada").display_name    # "I am Ada"
+```
+
+The directive references a module declared earlier in source (file-based
+`require` namespaces cannot be included). Multiple modules may be listed
+(`include A, B`), names may be scope-qualified (`include Support::Naming`),
+and inside a module body a sibling nested module resolves by short name.
+
+Vibescript applies mixins by copying method definitions at compile time, with
+collision rules that match Ruby's ancestor ordering:
+
+- the class's own definitions always win over included methods, wherever the
+  `include` appears in the body;
+- a later `include` wins over an earlier one;
+- within one directive, earlier modules win (`include A, B` behaves as if `B`
+  were included first).
+
+What carries over:
+
+- **Visibility** — a module's private/protected methods stay private/protected
+  in the including class, and the class may retarget them
+  (`public :name`) without affecting the module.
+- **Operator and index methods** — `def +`, `def []`, `def []=` defined in a
+  module dispatch on instances of the including class.
+- **Accessors** — `property`/`getter`/`setter` declared in a module generate
+  accessor methods that copy like any other method.
+- **Constants** — an included module's constants surface as class constants
+  (`Config::MAX`) and are readable by bare name inside methods. The class's
+  own constants win; mutations stay in the class's per-call copy and never
+  write back to the module.
+- **Ancestry** — `is_a?`/`kind_of?` report `true` for included modules
+  (`instance_of?` stays exact-class), and a module name used as a type
+  contract (`def describe(thing: Named)`) accepts instances of any class that
+  includes it.
+
+Modules can `include` other modules; the composed method set and constants
+flow through transitively. `extend` copies the module's instance-style
+methods to the class surface only — it does not adopt constants and does not
+affect `is_a?`.
+
+Not supported (each fails with a targeted diagnostic): `extend self` (define
+module functions with `def self.name` instead), including a class, and
+referencing a module that has not been declared yet.
 
 ## Introspection
 
