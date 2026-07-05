@@ -1367,6 +1367,16 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	if err := charge.begin(args, chargedRoots...); err != nil {
 		return NewNil(), err
 	}
+	// Fold the charge's Go-frame-only call roots (an ephemeral receiver held
+	// alive by the iterating builtin, host-supplied arguments) into the live
+	// baseline for the duration of this call, so the body's per-statement and
+	// mutator-growth checks bound the combined peak of those roots plus whatever
+	// the body retains. The bytes were measured once at charge construction;
+	// reserving them here is O(1) per call, not a re-walk (issue #835).
+	if scratch := charge.ephemeralRootScratch(); scratch > 0 {
+		delta := exec.reserveLoopScratch(scratch)
+		defer exec.releaseLoopScratch(delta)
+	}
 	// A lambda binds its arguments strictly, like a method: it never
 	// auto-splats a single array argument across multiple parameters.
 	bindArgs := args
