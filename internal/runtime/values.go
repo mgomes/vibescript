@@ -379,16 +379,29 @@ type flattenState struct {
 	arrays map[sliceIdentity]struct{}
 	depth  int
 	method string
+	// visit, when set, is charged once per element examined, so a flatten over
+	// a huge or deeply nested input participates in the step quota and its
+	// periodic memory/context checks while the result is still being built.
+	visit func() error
+	// appendLeaf, when set, appends a leaf element to the shared output slice
+	// after charging its slot growth against the memory quota; the hook owns
+	// the append so it can meter the backing before it grows.
+	appendLeaf func(out []Value, v Value) ([]Value, error)
 }
 
 func flattenValues(values []Value, depth int, method string) ([]Value, error) {
-	return flattenValuesWithState(values, depth, &flattenState{
+	return flattenValuesInto(make([]Value, 0, len(values)), values, depth, &flattenState{
 		arrays: make(map[sliceIdentity]struct{}),
 		method: method,
 	})
 }
 
-func flattenValuesWithState(values []Value, depth int, state *flattenState) ([]Value, error) {
+// flattenValuesInto appends the flattened elements of values onto out, sharing
+// a single output slice across every recursion level. Building into one shared
+// slice (instead of a fresh slice per level merged upward) keeps the transient
+// footprint at one backing array, so the quota hooks on flattenState observe
+// the build's true peak as it grows.
+func flattenValuesInto(out, values []Value, depth int, state *flattenState) ([]Value, error) {
 	if state.depth >= maxFlattenDepth {
 		return nil, guardLimitErrorf("%s exceeded maximum depth", state.method)
 	}
@@ -411,21 +424,33 @@ func flattenValuesWithState(values []Value, depth int, state *flattenState) ([]V
 		state.depth--
 	}()
 
-	out := make([]Value, 0, len(values))
 	for _, v := range values {
+		if state.visit != nil {
+			if err := state.visit(); err != nil {
+				return nil, err
+			}
+		}
 		if v.Kind() == KindArray && depth != 0 {
 			nextDepth := depth
 			if nextDepth > 0 {
 				nextDepth--
 			}
-			flattened, err := flattenValuesWithState(v.Array(), nextDepth, state)
+			var err error
+			out, err = flattenValuesInto(out, v.Array(), nextDepth, state)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, flattened...)
-		} else {
-			out = append(out, v)
+			continue
 		}
+		if state.appendLeaf != nil {
+			var err error
+			out, err = state.appendLeaf(out, v)
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		out = append(out, v)
 	}
 	return out, nil
 }
