@@ -358,3 +358,91 @@ end
 		t.Fatalf("run = %v, want visible", got)
 	}
 }
+
+func TestVisibilityDirectiveCollidesWithScriptFunction(t *testing.T) {
+	t.Parallel()
+	want := "protected in class Acct is a visibility directive, but this script also defines a function named protected"
+
+	requireCompileErrorContainsDefault(t, `
+def protected(name)
+  name
+end
+
+class Acct
+  def b
+    1
+  end
+
+  protected :b
+end
+`, want)
+
+	requireCompileErrorContainsDefault(t, `
+class Acct
+  protected
+
+  def b
+    1
+  end
+end
+
+def protected(name)
+  name
+end
+`, want)
+
+	requireCompileErrorContainsDefault(t, `
+def protected(name)
+  name
+end
+
+class Acct
+  protected def b
+    1
+  end
+end
+`, want)
+
+	requireCompileErrorContainsDefault(t, `
+def public(name)
+  name
+end
+
+class Acct
+  def b
+    1
+  end
+
+  public :b
+end
+`, "public in class Acct is a visibility directive, but this script also defines a function named public")
+}
+
+func TestParenthesizedVisibilityCallStaysACall(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def public(name)
+  "called with #{name}"
+end
+
+class Acct
+  def b
+    "b-result"
+  end
+
+  RESULT = public(:b)
+end
+
+def run
+  [Acct::RESULT, Acct.new.b]
+end
+`)
+
+	got := callFunc(t, script, "run", nil).Array()
+	if !got[0].Equal(NewString("called with b")) {
+		t.Fatalf("class body call = %v, want the user function result", got[0])
+	}
+	if !got[1].Equal(NewString("b-result")) {
+		t.Fatalf("b = %v, want it to stay publicly callable", got[1])
+	}
+}

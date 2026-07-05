@@ -143,6 +143,10 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 	classOrder := make([]string, 0, classCount)
 	enums := make(map[string]*EnumDef, enumCount)
 
+	if err := checkDirectiveNameCollisions(program.Statements); err != nil {
+		return nil, err
+	}
+
 	for _, stmt := range program.Statements {
 		switch s := stmt.(type) {
 		case *FunctionStmt:
@@ -204,6 +208,92 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 	script.bindFunctionOwnership()
 	script.symbolLiterals = collectSymbolLiterals(script)
 	return script, nil
+}
+
+// checkDirectiveNameCollisions rejects scripts that use a bare word both as a
+// class-body directive and as the name of a script function. Before the
+// contextual directives existed, bare `public :b`, `protected`, or
+// `include Foo` in a class body were parenless calls to the user's function,
+// so compiling both meanings would silently reinterpret existing code. The
+// scan runs before class compilation so the collision diagnostic wins over
+// later mixin-resolution errors, and it consults declaration names directly
+// so a function defined after the class still collides.
+func checkDirectiveNameCollisions(statements []ast.Statement) error {
+	names := make(map[string]struct{})
+	for _, stmt := range statements {
+		switch s := stmt.(type) {
+		case *FunctionStmt:
+			names[s.Name] = struct{}{}
+		case *AliasStmt:
+			if !s.Method {
+				names[s.NewName] = struct{}{}
+			}
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	for _, stmt := range statements {
+		if classStmt, ok := stmt.(*ClassStmt); ok {
+			if err := checkClassDirectiveNameCollisions(classStmt, names); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func checkClassDirectiveNameCollisions(stmt *ClassStmt, functions map[string]struct{}) error {
+	kind := "class"
+	if stmt.IsModule {
+		kind = "module"
+	}
+	for _, member := range stmt.Members {
+		switch {
+		case member.Visibility != nil:
+			if err := visibilityDirectiveCollision(member.Visibility.Level, kind, stmt.Name, functions); err != nil {
+				return err
+			}
+		case member.Function != nil:
+			if err := visibilityDirectiveCollision(member.Function.Visibility, kind, stmt.Name, functions); err != nil {
+				return err
+			}
+		case member.Property != nil:
+			if err := visibilityDirectiveCollision(member.Property.Visibility, kind, stmt.Name, functions); err != nil {
+				return err
+			}
+		case member.Mixin != nil:
+			if _, ok := functions[member.Mixin.Kind]; ok {
+				return fmt.Errorf("%s in %s %s is a mixin directive, but this script also defines a function named %s; rename the function", member.Mixin.Kind, kind, stmt.Name, member.Mixin.Kind)
+			}
+		}
+	}
+	for _, nested := range stmt.Modules {
+		if err := checkClassDirectiveNameCollisions(nested, functions); err != nil {
+			return err
+		}
+	}
+	for _, body := range stmt.Body {
+		if nested, ok := body.(*ClassStmt); ok {
+			if err := checkClassDirectiveNameCollisions(nested, functions); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// visibilityDirectiveCollision reports the collision for the visibility
+// levels spelled with a contextual bare word. `private` is a lexer keyword,
+// so a function of that name can never exist and the level never collides.
+func visibilityDirectiveCollision(level, kind, name string, functions map[string]struct{}) error {
+	if level != ast.VisibilityPublic && level != ast.VisibilityProtected {
+		return nil
+	}
+	if _, ok := functions[level]; !ok {
+		return nil
+	}
+	return fmt.Errorf("%s in %s %s is a visibility directive, but this script also defines a function named %s; rename the function, or call it with parentheses (%s(:name)), which stays a call", level, kind, name, level, level)
 }
 
 func countTopLevelDeclarations(statements []ast.Statement) (functions, classes, enums int) {

@@ -533,3 +533,47 @@ class Uses
 end
 `, "extend target module Missing is not defined")
 }
+
+func TestMixinDirectiveCollidesWithScriptFunction(t *testing.T) {
+	t.Parallel()
+	requireCompileErrorContainsDefault(t, `
+def include(m)
+  m
+end
+
+module Named
+end
+
+class Person
+  include Named
+end
+`, "include in class Person is a mixin directive, but this script also defines a function named include; rename the function")
+
+	requireCompileErrorContainsDefault(t, `
+module Named
+end
+
+class Person
+  extend Named
+end
+
+def extend(m)
+  m
+end
+`, "extend in class Person is a mixin directive, but this script also defines a function named extend; rename the function")
+
+	requireCompileErrorContainsDefault(t, `
+def include(m)
+  m
+end
+
+module Outer
+  module Inner
+  end
+
+  module Wrapper
+    include Inner
+  end
+end
+`, "include in module Wrapper is a mixin directive, but this script also defines a function named include; rename the function")
+}
