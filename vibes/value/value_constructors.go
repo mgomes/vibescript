@@ -48,6 +48,7 @@ func (v Value) SetArrayElems(elems []Value) {
 		return
 	}
 	if ad, ok := v.data.(*arrayData); ok {
+		BumpMutationEpoch()
 		ad.elems = elems
 	}
 }
@@ -136,6 +137,7 @@ func (v Value) SetHashDefaults(defaultValue, defaultProc Value) {
 		return
 	}
 	if hd, ok := v.data.(*hashData); ok {
+		BumpMutationEpoch()
 		hd.defaultValue = defaultValue
 		hd.defaultProc = defaultProc
 	}

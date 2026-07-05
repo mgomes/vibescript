@@ -80,6 +80,10 @@ func (v Value) Hash() map[string]Value {
 	case KindHash:
 		hd := v.data.(*hashData)
 		if hd.entries == nil && hd.typedEntries != nil {
+			// Materializing the legacy view grows the wrapper's reachable
+			// footprint on what is otherwise a read path, so it must
+			// invalidate memoized estimator walks like any mutator.
+			BumpMutationEpoch()
 			hd.entries = make(map[string]Value, len(hd.typedEntries))
 			if len(hd.order) == len(hd.typedEntries) {
 				for _, lookupKey := range hd.order {

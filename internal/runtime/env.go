@@ -93,6 +93,7 @@ func newBlockAssignmentEnv(parent *Env) *Env {
 }
 
 func (e *Env) resetForBlockCall(parent *Env) {
+	value.BumpMutationEpoch()
 	e.parent = parent
 	for i := range int(e.inlineLen) {
 		e.inline[i] = envBinding{}
@@ -159,6 +160,7 @@ func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
 	if idx, ok := e.inlineIndex(name); ok {
 		val := e.inline[idx].value
 		if lazy, ok := lazyValue(val); ok {
+			value.BumpMutationEpoch()
 			val = lazy.materialize()
 			e.inline[idx].value = val
 			e.dropArrayAppendBuffer(name)
@@ -167,6 +169,7 @@ func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
 	}
 	if val, ok := e.values[name]; ok {
 		if lazy, ok := lazyValue(val); ok {
+			value.BumpMutationEpoch()
 			val = lazy.materialize()
 			e.values[name] = val
 			e.dropArrayAppendBuffer(name)
@@ -197,6 +200,7 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 		if idx, ok := scope.inlineIndex(name); ok {
 			val := scope.inline[idx].value
 			if lazy, ok := lazyValue(val); ok {
+				value.BumpMutationEpoch()
 				val = lazy.materialize()
 				scope.inline[idx].value = val
 				scope.dropArrayAppendBuffer(name)
@@ -205,6 +209,7 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 		}
 		if val, ok := scope.values[name]; ok {
 			if lazy, ok := lazyValue(val); ok {
+				value.BumpMutationEpoch()
 				val = lazy.materialize()
 				scope.values[name] = val
 				scope.dropArrayAppendBuffer(name)
@@ -228,6 +233,7 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 // to the call (nil when none was given). It must be set on the call
 // environment so lookupCallBlock can find it from any nested scope.
 func (e *Env) setCallBlock(block Value) {
+	value.BumpMutationEpoch()
 	e.callBlock = block
 	e.hasCallBlock = true
 }
@@ -281,6 +287,7 @@ func (e *Env) PredeclareAssignmentLocal(name string) {
 // rehash repeatedly.
 func (e *Env) growStatics(n int) {
 	if e.statics == nil {
+		value.BumpMutationEpoch()
 		e.statics = make(map[string]Value, n)
 	}
 }
@@ -288,6 +295,7 @@ func (e *Env) growStatics(n int) {
 // DefineStatic binds a variable whose deep size is fixed at definition
 // time, keeping it out of the per-check estimation walk.
 func (e *Env) DefineStatic(name string, val Value) {
+	value.BumpMutationEpoch()
 	e.deleteDynamic(name)
 	if e.statics == nil {
 		e.statics = make(map[string]Value)
@@ -439,6 +447,7 @@ func (e *Env) lookupBindingScope(name string) (*Env, bool) {
 }
 
 func (e *Env) setArrayAppendBuffer(name string, buffer []Value) {
+	value.BumpMutationEpoch()
 	if e.arrayAppendBuffers == nil {
 		e.arrayAppendBuffers = make(map[string][]Value)
 	}
@@ -604,10 +613,12 @@ func (e *Env) getOwn(name string) (Value, bool) {
 
 func (e *Env) setExistingDynamic(name string, val Value) bool {
 	if idx, ok := e.inlineIndex(name); ok {
+		value.BumpMutationEpoch()
 		e.inline[idx].value = val
 		return true
 	}
 	if _, ok := e.values[name]; ok {
+		value.BumpMutationEpoch()
 		e.values[name] = val
 		return true
 	}
@@ -618,6 +629,7 @@ func (e *Env) setDynamic(name string, val Value) {
 	if e.setExistingDynamic(name, val) {
 		return
 	}
+	value.BumpMutationEpoch()
 	if e.values != nil {
 		e.values[name] = val
 		return
@@ -632,6 +644,7 @@ func (e *Env) setDynamic(name string, val Value) {
 }
 
 func (e *Env) deleteDynamic(name string) {
+	value.BumpMutationEpoch()
 	if idx, ok := e.inlineIndex(name); ok {
 		last := int(e.inlineLen) - 1
 		copy(e.inline[idx:last], e.inline[idx+1:int(e.inlineLen)])
@@ -678,6 +691,7 @@ func (e *Env) materializeStatic(name string, val Value) Value {
 	if !ok {
 		return val
 	}
+	value.BumpMutationEpoch()
 	materialized := lazy.materialize()
 	e.statics[name] = materialized
 	return materialized
@@ -690,6 +704,7 @@ func (e *Env) dropStatic(name string) {
 	if _, ok := e.statics[name]; !ok {
 		return
 	}
+	value.BumpMutationEpoch()
 	delete(e.statics, name)
 	e.staticBytes -= int32(staticEntryBytes(name))
 	if len(e.statics) == 0 {
@@ -701,6 +716,7 @@ func (e *Env) dropArrayAppendBuffer(name string) {
 	if e.arrayAppendBuffers == nil {
 		return
 	}
+	value.BumpMutationEpoch()
 	delete(e.arrayAppendBuffers, name)
 	if len(e.arrayAppendBuffers) == 0 {
 		e.arrayAppendBuffers = nil

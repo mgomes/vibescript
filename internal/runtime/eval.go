@@ -1926,6 +1926,7 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 		return exec.errorAt(pos, "cannot assign to read-only property %s", property)
 	}
 
+	bumpMutationEpoch()
 	vars[property] = value
 	return nil
 }
@@ -1934,6 +1935,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	switch t := target.(type) {
 	case *Identifier:
 		if self, ok := classConstantAssignmentSelf(t.Name, env); ok && !env.hasCallLocalBinding(t.Name) {
+			bumpMutationEpoch()
 			valueClass(self).ClassVars[t.Name] = value
 			return nil
 		}
@@ -1957,6 +1959,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if !ok || self.Kind() != KindInstance {
 			return exec.errorAt(target.Pos(), "no instance context for ivar")
 		}
+		bumpMutationEpoch()
 		valueInstance(self).Ivars[t.Name] = value
 		return nil
 	case *ClassVarExpr:
@@ -1966,9 +1969,11 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		}
 		switch self.Kind() {
 		case KindInstance:
+			bumpMutationEpoch()
 			valueInstance(self).Class.ClassVars[t.Name] = value
 			return nil
 		case KindClass:
+			bumpMutationEpoch()
 			valueClass(self).ClassVars[t.Name] = value
 			return nil
 		default:
@@ -2071,6 +2076,7 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		if pos < 0 || pos >= len(arr) {
 			return exec.errorAt(target.IndexPos(0), "array index out of bounds")
 		}
+		bumpMutationEpoch()
 		arr[pos] = value
 		return nil
 	case KindHash, KindObject:

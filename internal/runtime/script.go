@@ -50,6 +50,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
+	defer exec.releaseBaseWalkCache()
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err
@@ -158,6 +159,7 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
+	defer exec.releaseBaseWalkCache()
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err

@@ -411,6 +411,7 @@ type boundReceiverClone struct {
 // clone's cell and mirrors it into the builtin's captured slot so the memory
 // estimator continues to charge the live receiver's payload.
 func setBoundReceiver(builtin *Builtin, cell *boundReceiver, receiver Value) {
+	bumpMutationEpoch()
 	cell.value = receiver
 	if len(builtin.CapturedValues) > 0 {
 		builtin.CapturedValues[0] = receiver

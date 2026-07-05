@@ -249,7 +249,18 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if argsValidated {
 			popValidatedArgs = exec.pushValidatedCapabilityArgs(builtin.Name)
 		}
+		// Builtins are Go code that may mutate reachable containers through raw
+		// slice/map writes the epoch cannot observe per-write, so dispatch bumps
+		// the epoch once up front (invalidating any memoized estimator walk from
+		// before the call) and builtinDepth suppresses memo commits for every
+		// check that runs while the builtin — or script code it drives — is on
+		// the stack. Together they make a stale memo unreachable: no memo from
+		// before the call survives the bump, and no memo can be recorded while
+		// the builtin's unobserved writes may still be in progress.
+		bumpMutationEpoch()
+		exec.builtinDepth++
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
+		exec.builtinDepth--
 		if popValidatedArgs != nil {
 			popValidatedArgs()
 		}
@@ -1137,6 +1148,7 @@ func (exec *Execution) adoptIncludedModuleConstants(classDef *ClassDef, env *Env
 		if !ok || moduleVal.Kind() != KindClass {
 			continue
 		}
+		bumpMutationEpoch()
 		for name, val := range valueClass(moduleVal).ClassVars {
 			classDef.ClassVars[name] = val
 		}
@@ -3165,6 +3177,7 @@ func (exec *Execution) executeGeneratedSetter(fn *ScriptFunction, callEnv *Env) 
 	if !ok {
 		return NewNil(), exec.errorAt(fn.Pos, "missing property setter value")
 	}
+	bumpMutationEpoch()
 	valueInstance(self).Ivars[fn.AccessorName] = val
 	val = callEnv.settleArrayAppendResult(val)
 	if err := exec.checkContext(); err != nil {
@@ -3361,6 +3374,7 @@ func (exec *Execution) bindFunctionParamValue(fn *ScriptFunction, env *Env, para
 		if selfVal, ok := env.Get("self"); ok && selfVal.Kind() == KindInstance {
 			inst := valueInstance(selfVal)
 			if inst != nil {
+				bumpMutationEpoch()
 				inst.Ivars[param.Name] = val
 			}
 		}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -53,6 +54,11 @@ type Engine struct {
 	modSuggest        map[string][]string
 	modSuggestText    map[string]string
 	modSuggestVersion uint64
+
+	// spareBaseWalkCache holds one released estimator memo struct (journal
+	// backing dropped) for reuse by the engine's next call; see
+	// Execution.releaseBaseWalkCache.
+	spareBaseWalkCache atomic.Pointer[baseWalkCache]
 
 	// builtinProto is the frozen env shared as every call root's parent.
 	// Mutable namespace builtins are cloned lazily by Env.Get before a

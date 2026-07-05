@@ -318,6 +318,7 @@ func (v Value) HashSet(key, val Value) error {
 	switch v.kind {
 	case KindHash:
 		hd := v.data.(*hashData)
+		BumpMutationEpoch()
 		if hd.typedEntries == nil {
 			if hd.entries == nil {
 				hd.entries = make(map[string]Value)
@@ -371,6 +372,7 @@ func (v Value) HashSet(key, val Value) error {
 		if key.kind != KindString && key.kind != KindSymbol {
 			return fmt.Errorf("unsupported hash key type %s", key.kind)
 		}
+		BumpMutationEpoch()
 		v.data.(map[string]Value)[key.String()] = val
 		return nil
 	default:
@@ -404,6 +406,7 @@ func (v Value) HashDeleteKey(key Value) (Value, bool, error) {
 			if !ok {
 				return NewNil(), false, nil
 			}
+			BumpMutationEpoch()
 			delete(hd.typedEntries, canonical)
 			for i, lookupKey := range hd.order {
 				if lookupKey == canonical {
@@ -425,6 +428,7 @@ func (v Value) HashDeleteKey(key Value) (Value, bool, error) {
 		if !ok {
 			return NewNil(), false, nil
 		}
+		BumpMutationEpoch()
 		delete(hd.entries, key.String())
 		return val, true, nil
 	case KindObject:
@@ -436,6 +440,7 @@ func (v Value) HashDeleteKey(key Value) (Value, bool, error) {
 		if !ok {
 			return NewNil(), false, nil
 		}
+		BumpMutationEpoch()
 		delete(entries, key.String())
 		return val, true, nil
 	default:
@@ -451,6 +456,7 @@ func (v Value) HashClearEntries() {
 	switch v.kind {
 	case KindHash:
 		hd := v.data.(*hashData)
+		BumpMutationEpoch()
 		if hd.typedEntries != nil {
 			hd.typedEntries = make(map[HashLookupKey]HashEntry)
 		}
@@ -460,6 +466,7 @@ func (v Value) HashClearEntries() {
 			hd.entries = map[string]Value{}
 		}
 	case KindObject:
+		BumpMutationEpoch()
 		clear(v.data.(map[string]Value))
 	}
 }
@@ -534,6 +541,7 @@ func (v Value) ReserveHashOrder(n int) {
 	if !ok || cap(hd.order) >= n {
 		return
 	}
+	BumpMutationEpoch()
 	grown := make([]HashLookupKey, len(hd.order), n)
 	copy(grown, hd.order)
 	hd.order = grown
@@ -556,12 +564,14 @@ func (v Value) ReserveTypedHashOrder(n int) {
 		if len(hd.entries) != 0 {
 			return
 		}
+		BumpMutationEpoch()
 		hd.typedEntries = make(map[HashLookupKey]HashEntry, n)
 		hd.typedEntryCapacity = n
 		v.ReserveHashOrder(n)
 		return
 	}
 	if n > hd.typedEntryCapacity {
+		BumpMutationEpoch()
 		grown := make(map[HashLookupKey]HashEntry, n)
 		for lookupKey, entry := range hd.typedEntries {
 			grown[lookupKey] = entry
