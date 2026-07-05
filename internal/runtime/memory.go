@@ -263,7 +263,9 @@ func (j *estimatorJournal) clear() {
 // themselves go through beginBaseWalk; this remains for probes (tests and
 // diagnostics) that need a bare estimator with the execution's identity.
 func (exec *Execution) memoryEstimatorForCheck() *memoryEstimator {
-	exec.baseWalkCache.valid = false
+	if c := exec.baseWalkCache; c != nil {
+		c.valid = false
+	}
 	est := &exec.memoryEst
 	est.journal = nil
 	est.reset()
@@ -315,7 +317,42 @@ type baseWalkCache struct {
 	epoch         uint64
 	topo          uint64
 	valid         bool
-	open          bool
+}
+
+// releaseBaseWalkCache parks the execution's memo struct in the owning
+// engine's single spare slot once the call that owned it finishes, so the next
+// Script.Call on the engine reuses it instead of allocating: without this,
+// every quota-enforced call — including the shortest scripts — would pay one
+// cache allocation on its first memoizable check. The memo is invalidated and
+// its env reference dropped before parking, so nothing from this execution
+// survives into the next borrower (beginBaseWalk additionally re-invalidates
+// on acquisition). A cache with a session still open (which cannot happen on
+// the call-completion path) is left in place rather than parked.
+//
+// Only the struct is recycled; the journal's backing arrays are dropped for
+// the GC. That is deliberate twice over. Reusing the backing across calls
+// reproducibly doubled the per-op cost of high-frequency large-payload call
+// loops on darwin/arm64 (a GC/runtime interaction the allocation and hit-rate
+// counters rule out being algorithmic — walk counts, GC cycle counts, and
+// bytes allocated were all equal), and keeping arrays grown by one call's
+// large journal budget would otherwise be retained on the engine indefinitely.
+// The backing regrows lazily only in calls whose sessions actually record
+// insertions, which short calls do not.
+//
+// A single atomic slot is used instead of a sync.Pool deliberately: an atomic
+// swap costs a few nanoseconds, has no per-GC-cycle machinery, and captures
+// the dominant reuse pattern (sequential calls on one engine). Concurrent
+// calls beyond the slot simply allocate fresh.
+func (exec *Execution) releaseBaseWalkCache() {
+	c := exec.baseWalkCache
+	if c == nil || exec.baseWalkOpen || exec.engine == nil {
+		return
+	}
+	exec.baseWalkCache = nil
+	c.valid = false
+	c.prevFrozen = nil
+	c.journal = estimatorJournal{}
+	exec.engine.spareBaseWalkCache.Store(c)
 }
 
 // baseWalkSession is one memory check's view of the base walk: est is
@@ -343,8 +380,7 @@ type baseWalkSession struct {
 // shared estimator, so they invalidate the memo (valid = false) rather than
 // leave stamps pointing at a clobbered seen-state.
 func (exec *Execution) beginBaseWalk() baseWalkSession {
-	c := &exec.baseWalkCache
-	if c.open {
+	if exec.baseWalkOpen {
 		// Sessions never nest (estimator walks do not re-enter evaluation); if
 		// one ever does, a throwaway estimator keeps the open session's
 		// committed state intact at the cost of one uncached walk.
@@ -355,11 +391,30 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	scalars := exec.estimateScalarBase()
 	est := &exec.memoryEst
 	if exec.builtinDepth > 0 || len(exec.activeTaskGroups) > 0 || globals != nil || baseWalkCacheDisabled.Load() {
-		c.valid = false
-		c.open = true
+		// The bypass walk clobbers whatever committed state the shared
+		// estimator held, so an existing memo is discarded; a cache that was
+		// never allocated stays unallocated and the bypass costs nothing.
+		if c := exec.baseWalkCache; c != nil {
+			c.valid = false
+		}
+		exec.baseWalkOpen = true
 		est.journal = nil
 		est.reset()
 		return baseWalkSession{exec: exec, est: est, base: scalars + exec.estimateGraphBase(est, globals)}
+	}
+	c := exec.baseWalkCache
+	if c == nil {
+		if exec.engine != nil {
+			c = exec.engine.spareBaseWalkCache.Swap(nil)
+		}
+		if c == nil {
+			c = new(baseWalkCache)
+		}
+		// A recycled cache may carry another execution's stamps; its memo is
+		// meaningless against this execution's empty estimator, so it starts
+		// invalid and the first check commits fresh.
+		c.valid = false
+		exec.baseWalkCache = c
 	}
 	// Snapshot the epoch before walking: a bump that lands mid-walk then fails
 	// the equality check on the next session, forcing a conservative re-walk.
@@ -372,7 +427,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		c.journalBudget = sessionJournalBudget(est.identityCount())
 		c.valid = true
 	}
-	c.open = true
+	exec.baseWalkOpen = true
 	c.prevFrozen = est.seenFrozen
 	c.journal.clear()
 	c.journal.limit = c.journalBudget
@@ -388,11 +443,11 @@ func (s *baseWalkSession) close() {
 	if s.est != &s.exec.memoryEst {
 		return
 	}
-	c := &s.exec.baseWalkCache
-	c.open = false
+	s.exec.baseWalkOpen = false
 	if !s.cached {
 		return
 	}
+	c := s.exec.baseWalkCache
 	s.est.journal = nil
 	if c.journal.overflowed {
 		// The extras walk committed more identities than the journal recorded;

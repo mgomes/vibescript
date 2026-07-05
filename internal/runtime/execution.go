@@ -79,14 +79,21 @@ type Execution struct {
 	reservedScratchBytes      int
 
 	// baseWalkCache memoizes the reachable-graph portion of the memory
-	// estimator's base walk (see beginBaseWalk). baseTopoVersion invalidates it
-	// whenever the walk's root set changes shape (env stack push/pop, task group
-	// push/pop); the process-wide mutation epoch invalidates it whenever any
-	// reachable state mutates. builtinDepth counts the Go builtins currently on
-	// the call stack: while it is non-zero the memo is neither used nor
-	// refreshed, because builtin Go code can mutate containers through raw
-	// slice/map writes between its own memory checks without bumping the epoch.
-	baseWalkCache   baseWalkCache
+	// estimator's base walk (see beginBaseWalk). It is allocated lazily on the
+	// first memoizable check, so executions that never reach one — no memory
+	// quota, or only memo-bypassed checks — pay neither the struct nor its
+	// journal backing. baseWalkOpen marks a base-walk session in flight (both
+	// memoized and bypass sessions), guarding against nested sessions on the
+	// shared estimator without touching the cache. baseTopoVersion invalidates
+	// the memo whenever the walk's root set changes shape (env stack push/pop,
+	// task group push/pop); the process-wide mutation epoch invalidates it
+	// whenever any reachable state mutates. builtinDepth counts the Go builtins
+	// currently on the call stack: while it is non-zero the memo is neither
+	// used nor refreshed, because builtin Go code can mutate containers through
+	// raw slice/map writes between its own memory checks without bumping the
+	// epoch.
+	baseWalkCache   *baseWalkCache
+	baseWalkOpen    bool
 	baseTopoVersion uint64
 	builtinDepth    int
 

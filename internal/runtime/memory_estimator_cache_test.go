@@ -160,7 +160,7 @@ func TestBaseWalkMemoIsUsedAndInvalidated(t *testing.T) {
 	if cold != fresh {
 		t.Fatalf("cold estimate %d != fresh %d", cold, fresh)
 	}
-	if !exec.baseWalkCache.valid {
+	if exec.baseWalkCache == nil || !exec.baseWalkCache.valid {
 		t.Fatalf("memo not committed by cold estimate")
 	}
 
@@ -217,7 +217,7 @@ func TestBaseWalkMemoBuiltinDepthBypass(t *testing.T) {
 	if got := exec.estimateMemoryUsage(); got != freshMutated {
 		t.Fatalf("in-builtin check reused stale memo: got %d, want %d", got, freshMutated)
 	}
-	if exec.baseWalkCache.valid {
+	if exec.baseWalkCache != nil && exec.baseWalkCache.valid {
 		t.Fatalf("in-builtin check must not refresh the memo")
 	}
 }
@@ -234,7 +234,7 @@ func baseWalkMemoMutation(t *testing.T, name string, grow bool, setup func(*Exec
 		mutate := setup(exec, env)
 
 		before := exec.estimateMemoryUsage()
-		if !exec.baseWalkCache.valid {
+		if exec.baseWalkCache == nil || !exec.baseWalkCache.valid {
 			t.Fatalf("memo not primed")
 		}
 		mutate()
