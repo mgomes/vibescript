@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -85,6 +86,49 @@ end`
 	}
 }
 
+func TestParserAliasIdentifierDoesNotConsumeNextLine(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  alias
+  work()
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.Identifier{Name: "alias"}},
+		&ast.ExprStmt{
+			Expr: &ast.CallExpr{
+				Callee:        &ast.Identifier{Name: "work"},
+				Args:          []ast.Expression{},
+				KwArgs:        []ast.KeywordArg{},
+				Parenthesized: true,
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserRejectsNestedAliasDeclaration(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  alias bar foo
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatal("expected parse error for nested alias declaration")
+	}
+	if got, want := errs[0].Error(), "alias declarations are only supported at the top level or in class bodies"; !strings.Contains(got, want) {
+		t.Fatalf("parse error = %q, want substring %q", got, want)
+	}
+}
+
 func TestParserZeroArgCallMarksParenthesized(t *testing.T) {
 	t.Parallel()
 	source := `def run
@@ -158,6 +202,33 @@ end`
 				Args:   []ast.Expression{&ast.IntegerLiteral{Value: 4}},
 				KwArgs: []ast.KeywordArg{},
 			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserMultilineReturnCommaContinuation(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  return 1,
+    2,
+    3
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ReturnStmt{
+			Value: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.IntegerLiteral{Value: 1},
+				&ast.IntegerLiteral{Value: 2},
+				&ast.IntegerLiteral{Value: 3},
+			}},
 		},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {

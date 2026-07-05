@@ -144,6 +144,25 @@ func (p *parser) parseNamedTypeAtom() *ast.TypeExpr {
 			ty.Name = strings.TrimSuffix(ty.Name, "?")
 		}
 	}
+	if ty.Kind == ast.TypeEnum && p.peekToken.Type == ast.TokenDot {
+		// A qualified module type (Module.Enum) keeps the dotted name so the
+		// runtime resolves it through the module namespace. The nullable
+		// suffix belongs on the member, not the qualifier.
+		if ty.Nullable {
+			p.addParseError(p.curToken.Pos, fmt.Sprintf("nullable suffix on %s is misplaced; write %s.Name? instead", ty.Name, strings.TrimSuffix(ty.Name, "?")))
+			return nil
+		}
+		p.nextToken()
+		if !p.expectPeek(ast.TokenIdent) {
+			return nil
+		}
+		member := p.curToken.Literal
+		if strings.HasSuffix(member, "?") {
+			member = strings.TrimSuffix(member, "?")
+			ty.Nullable = true
+		}
+		ty.Name += "." + member
+	}
 	return ty
 }
 

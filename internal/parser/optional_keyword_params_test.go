@@ -165,6 +165,40 @@ end`,
 				},
 			},
 		},
+		{
+			name: "default_expression_with_dotted_constant",
+			source: `def area(r, pi: Math.PI)
+  r * r * pi
+end`,
+			want: []ast.Param{
+				{Name: "r"},
+				{
+					Name: "pi",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.MemberExpr{
+						Object:   &ast.Identifier{Name: "Math"},
+						Property: "PI",
+					},
+				},
+			},
+		},
+		{
+			name: "default_expression_with_local_dotted_constant",
+			source: `def f(config, limit: config.DEFAULT)
+  limit
+end`,
+			want: []ast.Param{
+				{Name: "config"},
+				{
+					Name: "limit",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.MemberExpr{
+						Object:   &ast.Identifier{Name: "config"},
+						Property: "DEFAULT",
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {

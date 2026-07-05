@@ -53,6 +53,12 @@ func (p *parser) parseStatementOperand() ast.Statement {
 	case ast.TokenIdent:
 		if p.curToken.Literal == "assert" {
 			stmt = p.parseAssertStatement()
+		} else if p.curToken.Literal == "alias" && p.peekStartsAliasNameOnLine(p.curToken.Pos.Line) {
+			if p.canParseTopLevelAliasStatement() {
+				stmt = p.parseAliasStatement(false)
+			} else {
+				stmt = p.parseUnsupportedAliasStatement()
+			}
 		} else {
 			stmt = p.parseExpressionOrAssignStatement()
 		}
@@ -163,7 +169,7 @@ func (p *parser) parseReturnStatement() ast.Statement {
 		return &ast.ReturnStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
+	value := p.parseCommaSeparatedStatementExpression(ast.TokenWordAnd, ast.TokenWordOr)
 	if value == nil {
 		return nil
 	}
@@ -180,7 +186,38 @@ func (p *parser) parseRaiseStatement() ast.Statement {
 	if value == nil {
 		return nil
 	}
+	if p.peekToken.Type == ast.TokenComma && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		// The comma introducing a message must sit on the line the first
+		// argument ENDS on (like return's list detection), so a multiline
+		// first argument keeps its message.
+		p.nextToken()
+		p.nextToken()
+		message := p.parseLineExpression(lowestPrec)
+		if message == nil {
+			return nil
+		}
+		return &ast.RaiseStmt{Value: value, Message: message, Position: pos}
+	}
 	return &ast.RaiseStmt{Value: value, Position: pos}
+}
+
+func (p *parser) parseCommaSeparatedStatementExpression(stop ...ast.TokenType) ast.Expression {
+	first := p.parseLineExpressionUntil(lowestPrec, stop...)
+	if first == nil || p.peekToken.Type != ast.TokenComma || p.peekToken.Pos.Line != p.curToken.Pos.Line {
+		return first
+	}
+
+	elements := []ast.Expression{first}
+	for p.peekToken.Type == ast.TokenComma && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		p.nextToken()
+		p.nextToken()
+		next := p.parseLineExpressionUntil(lowestPrec, stop...)
+		if next == nil {
+			return nil
+		}
+		elements = append(elements, next)
+	}
+	return &ast.ArrayLiteral{Elements: elements, Position: first.Pos()}
 }
 
 func (p *parser) parseBlock(stop ...ast.TokenType) []ast.Statement {
@@ -781,6 +818,38 @@ func (p *parser) parseClassStatement() ast.Statement {
 			} else {
 				stmt.Methods = append(stmt.Methods, fn)
 			}
+			stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Function: fn})
+		case ast.TokenIdent:
+			switch p.curToken.Literal {
+			case "alias":
+				if p.peekStartsAliasNameOnLine(p.curToken.Pos.Line) {
+					alias := p.parseAliasStatement(true)
+					if alias == nil {
+						return nil
+					}
+					aliasStmt := alias.(*ast.AliasStmt)
+					stmt.Aliases = append(stmt.Aliases, aliasStmt)
+					stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
+				} else {
+					s := p.parseStatement()
+					if s != nil {
+						stmt.Body = append(stmt.Body, s)
+					}
+				}
+			case "alias_method":
+				alias := p.parseAliasMethodStatement()
+				if alias == nil {
+					return nil
+				}
+				aliasStmt := alias.(*ast.AliasStmt)
+				stmt.Aliases = append(stmt.Aliases, aliasStmt)
+				stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
+			default:
+				s := p.parseStatement()
+				if s != nil {
+					stmt.Body = append(stmt.Body, s)
+				}
+			}
 		case ast.TokenPrivate:
 			if p.peekToken.Type == ast.TokenDef {
 				p.privateNext = true
@@ -791,6 +860,7 @@ func (p *parser) parseClassStatement() ast.Statement {
 		case ast.TokenProperty, ast.TokenGetter, ast.TokenSetter:
 			decl := p.parsePropertyDecl(p.curToken.Type)
 			stmt.Properties = append(stmt.Properties, decl)
+			stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Property: &decl})
 		default:
 			s := p.parseStatement()
 			if s != nil {
@@ -808,6 +878,76 @@ func (p *parser) parseClassStatement() ast.Statement {
 	}
 
 	return stmt
+}
+
+func (p *parser) parseAliasStatement(method bool) ast.Statement {
+	pos := p.curToken.Pos
+	if !p.expectPeekAliasName(pos.Line) {
+		return nil
+	}
+	newName := p.curToken.Literal
+	if !p.expectPeekAliasName(pos.Line) {
+		return nil
+	}
+	oldName := p.curToken.Literal
+	return &ast.AliasStmt{NewName: newName, OldName: oldName, Method: method, Position: pos}
+}
+
+func (p *parser) canParseTopLevelAliasStatement() bool {
+	return !p.insideClass && p.statementNesting == 0
+}
+
+func (p *parser) parseUnsupportedAliasStatement() ast.Statement {
+	pos := p.curToken.Pos
+	p.addParseError(pos, "alias declarations are only supported at the top level or in class bodies")
+	if p.peekStartsAliasNameOnLine(pos.Line) {
+		p.nextToken()
+	}
+	if p.peekStartsAliasNameOnLine(pos.Line) {
+		p.nextToken()
+	}
+	return nil
+}
+
+func (p *parser) parseAliasMethodStatement() ast.Statement {
+	pos := p.curToken.Pos
+	parenthesized := false
+	if p.peekToken.Type == ast.TokenLParen {
+		parenthesized = true
+		p.nextToken()
+	}
+	if !p.expectPeek(ast.TokenSymbol) {
+		return nil
+	}
+	newName := p.curToken.Literal
+	if !p.expectPeek(ast.TokenComma) {
+		return nil
+	}
+	if !p.expectPeek(ast.TokenSymbol) {
+		return nil
+	}
+	oldName := p.curToken.Literal
+	if parenthesized && !p.expectPeek(ast.TokenRParen) {
+		return nil
+	}
+	return &ast.AliasStmt{NewName: newName, OldName: oldName, Method: true, Position: pos}
+}
+
+func (p *parser) expectPeekAliasName(line int) bool {
+	if !p.peekStartsAliasNameOnLine(line) {
+		p.errorExpected(p.peekToken, "alias name")
+		return false
+	}
+	p.nextToken()
+	return true
+}
+
+func (p *parser) peekStartsAliasName() bool {
+	return p.peekToken.Type == ast.TokenIdent || p.peekToken.Type == ast.TokenSymbol
+}
+
+func (p *parser) peekStartsAliasNameOnLine(line int) bool {
+	return p.peekToken.Pos.Line == line && p.peekStartsAliasName()
 }
 
 func (p *parser) parseEnumStatement() ast.Statement {
@@ -1411,11 +1551,11 @@ func shapeHasEmptyNestedShape(ty *ast.TypeExpr) bool {
 // parameter's type annotation. Valid terminators are a comma or closing
 // paren (the next parameter or the list end), a trailing colon for typed
 // required keywords, an `=` introducing a `name: Type = default` positional
-// default, and, for line-limited parameter lists, the constructs that end such a
-// list.
+// default, a `|` continuing a union, and, for line-limited parameter lists,
+// the constructs that end such a list.
 func (p *parser) typeAnnotationBoundaryFollows(options paramParseOptions) bool {
 	switch p.peekToken.Type {
-	case ast.TokenComma, ast.TokenRParen, ast.TokenColon, ast.TokenAssign:
+	case ast.TokenComma, ast.TokenRParen, ast.TokenColon, ast.TokenAssign, ast.TokenPipe:
 		return true
 	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
 		return options.lineLimitedDefaults
@@ -1441,6 +1581,8 @@ func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool
 		return false
 	case ast.TokenLT:
 		return p.identLessThanStartsExpression()
+	case ast.TokenDot:
+		return !p.dottedTypeAnnotationFollows(options)
 	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
 		return !options.lineLimitedDefaults
 	default:
@@ -1448,6 +1590,67 @@ func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool
 			return false
 		}
 		return true
+	}
+}
+
+func (p *parser) dottedTypeAnnotationFollows(options paramParseOptions) bool {
+	saved := p.snapshot()
+	defer p.restore(saved)
+
+	p.nextToken()
+	namespace := p.curToken.Literal
+	if p.isLocalName(namespace) {
+		return false
+	}
+	p.nextToken()
+	if p.peekToken.Type != ast.TokenIdent {
+		return false
+	}
+	p.nextToken()
+	if !dottedMemberLooksLikeTypeName(p.curToken.Literal) {
+		return false
+	}
+	if dottedDefaultConstant(namespace, p.curToken.Literal) {
+		return false
+	}
+	if strings.HasSuffix(p.curToken.Literal, "?") {
+		return p.typeAnnotationBoundaryFollows(options)
+	}
+	if p.peekToken.Type == ast.TokenQuestion {
+		p.nextToken()
+	}
+	return p.typeAnnotationBoundaryFollows(options)
+}
+
+func startsUppercaseIdentifier(name string) bool {
+	return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
+}
+
+// dottedMemberLooksLikeTypeName reports whether the member of a dotted name in
+// annotation position is shaped like a type: PascalCase (Statuses.Status).
+// A SCREAMING_CASE member (Data.RESULT, settings.MAX) is a constant by
+// convention, so `name: obj.CONST` stays a keyword default expression rather
+// than an unresolvable qualified type annotation.
+func dottedMemberLooksLikeTypeName(name string) bool {
+	name = strings.TrimSuffix(name, "?")
+	if !startsUppercaseIdentifier(name) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if name[i] >= 'a' && name[i] <= 'z' {
+			return true
+		}
+	}
+	return false
+}
+
+func dottedDefaultConstant(namespace, member string) bool {
+	member = strings.TrimSuffix(member, "?")
+	switch namespace {
+	case "Math":
+		return member == "PI" || member == "E"
+	default:
+		return false
 	}
 }
 

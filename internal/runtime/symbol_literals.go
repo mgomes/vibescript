@@ -95,6 +95,7 @@ func (c *symbolLiteralCollector) collectStatement(stmt Statement) {
 		c.collectExpression(typed.Value)
 	case *RaiseStmt:
 		c.collectExpression(typed.Value)
+		c.collectExpression(typed.Message)
 	case *AssignStmt:
 		c.collectExpression(typed.Target)
 		c.collectExpression(typed.Value)

@@ -90,3 +90,27 @@ end
 		t.Fatalf("run() = %#v, want 10", got)
 	}
 }
+
+func TestCompileSnippetClassConstantsIgnoreEnclosingUppercaseLocals(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	script, err := engine.CompileSnippet(`LIMIT = 1
+
+class Config
+  LIMIT = 2
+  COPY = LIMIT
+end
+
+[Config::LIMIT, Config::COPY, LIMIT]
+`, "__eval__")
+	if err != nil {
+		t.Fatalf("CompileSnippet failed: %v", err)
+	}
+
+	compareArrays(t, callScript(t, context.Background(), script, "__eval__", nil, CallOptions{}), []Value{
+		NewInt(2),
+		NewInt(2),
+		NewInt(1),
+	})
+}

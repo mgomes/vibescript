@@ -42,6 +42,8 @@ func ResolveType(name string) (TypeKind, bool) {
 		return TypeHash, nullable
 	case "range":
 		return TypeRange, nullable
+	case "symbol":
+		return TypeSymbol, nullable
 	case "function":
 		return TypeFunction, nullable
 	}
@@ -94,6 +96,8 @@ func FormatTypeExpr(ty *TypeExpr) string {
 		name = formatHashTypeName(ty)
 	case TypeRange:
 		name = "range"
+	case TypeSymbol:
+		name = "symbol"
 	case TypeFunction:
 		name = "function"
 	case TypeShape:

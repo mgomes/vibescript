@@ -972,10 +972,20 @@ func validateFuzzStatement(context string, stmt Statement) error {
 		}
 		return validateFuzzExpression(context+".value", s.Value)
 	case *RaiseStmt:
-		if s.Value == nil {
-			return nil
+		if s.Value != nil {
+			if err := validateFuzzExpression(context+".value", s.Value); err != nil {
+				return err
+			}
 		}
-		return validateFuzzExpression(context+".value", s.Value)
+		if s.Message != nil {
+			return validateFuzzExpression(context+".message", s.Message)
+		}
+		return nil
+	case *AliasStmt:
+		if s.NewName == "" || s.OldName == "" {
+			return fmt.Errorf("%s alias names must not be empty", context)
+		}
+		return nil
 	case *AssignStmt:
 		if err := validateFuzzExpression(context+".target", s.Target); err != nil {
 			return err
@@ -1034,6 +1044,35 @@ func validateFuzzStatement(context string, stmt Statement) error {
 		if s.Name == "" {
 			return fmt.Errorf("%s class name is empty", context)
 		}
+		for i, member := range s.Members {
+			set := 0
+			if member.Function != nil {
+				set++
+				if err := validateFuzzFunctionStmt(fmt.Sprintf("%s.members[%d].function", context, i), member.Function); err != nil {
+					return err
+				}
+			}
+			if member.Alias != nil {
+				set++
+				if member.Alias.NewName == "" || member.Alias.OldName == "" {
+					return fmt.Errorf("%s.members[%d].alias names must not be empty", context, i)
+				}
+			}
+			if member.Property != nil {
+				set++
+				if member.Property.Kind == "" {
+					return fmt.Errorf("%s.members[%d].property kind is empty", context, i)
+				}
+				for j, name := range member.Property.Names {
+					if name.Name == "" {
+						return fmt.Errorf("%s.members[%d].property.names[%d] is empty", context, i, j)
+					}
+				}
+			}
+			if set != 1 {
+				return fmt.Errorf("%s.members[%d] must contain exactly one declaration", context, i)
+			}
+		}
 		for i, method := range s.Methods {
 			if err := validateFuzzFunctionStmt(fmt.Sprintf("%s.methods[%d]", context, i), method); err != nil {
 				return err
@@ -1042,6 +1081,11 @@ func validateFuzzStatement(context string, stmt Statement) error {
 		for i, method := range s.ClassMethods {
 			if err := validateFuzzFunctionStmt(fmt.Sprintf("%s.class_methods[%d]", context, i), method); err != nil {
 				return err
+			}
+		}
+		for i, alias := range s.Aliases {
+			if alias == nil || alias.NewName == "" || alias.OldName == "" {
+				return fmt.Errorf("%s.aliases[%d] names must not be empty", context, i)
 			}
 		}
 		for i, property := range s.Properties {

@@ -1086,16 +1086,60 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 				raw.WriteRune('\\')
 				raw.WriteRune(next)
 				decoded.WriteRune(next)
+			case 'a':
+				l.readRune()
+				raw.WriteRune('\\')
+				raw.WriteRune(next)
+				decoded.WriteByte('\a')
+			case 'b':
+				l.readRune()
+				raw.WriteRune('\\')
+				raw.WriteRune(next)
+				decoded.WriteByte('\b')
+			case 'e':
+				l.readRune()
+				raw.WriteRune('\\')
+				raw.WriteRune(next)
+				decoded.WriteByte(0x1b)
+			case 'f':
+				l.readRune()
+				raw.WriteRune('\\')
+				raw.WriteRune(next)
+				decoded.WriteByte('\f')
 			case 'n':
 				l.readRune()
 				raw.WriteRune('\\')
 				raw.WriteRune(next)
 				decoded.WriteByte('\n')
+			case 'r':
+				l.readRune()
+				raw.WriteRune('\\')
+				raw.WriteRune(next)
+				decoded.WriteByte('\r')
 			case 't':
 				l.readRune()
 				raw.WriteRune('\\')
 				raw.WriteRune(next)
 				decoded.WriteByte('\t')
+			case 'v':
+				l.readRune()
+				raw.WriteRune('\\')
+				raw.WriteRune(next)
+				decoded.WriteByte('\v')
+			case 'x':
+				escaped, errMsg := l.readVariableHexEscape(1, 2)
+				if errMsg != "" {
+					return "", false, errMsg
+				}
+				raw.WriteString(escaped.raw)
+				decoded.WriteByte(escaped.byte)
+			case 'u':
+				escaped, errMsg := l.readFixedHexEscape(4)
+				if errMsg != "" {
+					return "", false, errMsg
+				}
+				raw.WriteString(escaped.raw)
+				decoded.WriteRune(escaped.rune)
 			default:
 				l.readRune()
 				raw.WriteRune('\\')
@@ -1117,6 +1161,74 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 			raw.WriteRune(l.ch)
 			decoded.WriteRune(l.ch)
 		}
+	}
+}
+
+type decodedEscape struct {
+	raw  string
+	rune rune
+	byte byte
+}
+
+func (l *lexer) readFixedHexEscape(digits int) (decodedEscape, string) {
+	raw := strings.Builder{}
+	raw.WriteRune('\\')
+	l.readRune()
+	raw.WriteRune(l.ch)
+
+	value := rune(0)
+	for range digits {
+		next := l.peekRune()
+		if !isBaseDigit(next, 16) {
+			return decodedEscape{}, fmt.Sprintf("invalid %d-digit hex escape in string", digits)
+		}
+		l.readRune()
+		raw.WriteRune(l.ch)
+		value = value*16 + hexRuneValue(l.ch)
+	}
+	if value > utf8.MaxRune || (value >= 0xd800 && value <= 0xdfff) {
+		return decodedEscape{}, "invalid Unicode escape in string"
+	}
+	return decodedEscape{raw: raw.String(), rune: value}, ""
+}
+
+func (l *lexer) readVariableHexEscape(minDigits, maxDigits int) (decodedEscape, string) {
+	raw := strings.Builder{}
+	raw.WriteRune('\\')
+	l.readRune()
+	raw.WriteRune(l.ch)
+
+	value := rune(0)
+	digits := 0
+	for digits < maxDigits {
+		next := l.peekRune()
+		if !isBaseDigit(next, 16) {
+			break
+		}
+		l.readRune()
+		raw.WriteRune(l.ch)
+		value = value*16 + hexRuneValue(l.ch)
+		digits++
+	}
+	if digits < minDigits {
+		return decodedEscape{}, "invalid hex escape in string"
+	}
+	if value > utf8.MaxRune || (value >= 0xd800 && value <= 0xdfff) {
+		return decodedEscape{}, "invalid Unicode escape in string"
+	}
+	return decodedEscape{raw: raw.String(), rune: value, byte: byte(value)}, ""
+}
+
+func hexRuneValue(r rune) rune {
+	switch {
+	case r >= '0' && r <= '9':
+		return r - '0'
+	case r >= 'a' && r <= 'f':
+		return r - 'a' + 10
+	case r >= 'A' && r <= 'F':
+		return r - 'A' + 10
+	default:
+		return 0
 	}
 }
 

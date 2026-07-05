@@ -50,6 +50,7 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 		u.visitExpression(s.Value, false)
 	case *ast.RaiseStmt:
 		u.visitExpression(s.Value, false)
+		u.visitExpression(s.Message, false)
 	case *ast.AssignStmt:
 		u.recordAssignedTarget(s.Target)
 		u.visitExpression(s.Value, false)

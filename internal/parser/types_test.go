@@ -98,6 +98,67 @@ end`
 	}
 }
 
+func TestParserQualifiedEnumTypeAnnotation(t *testing.T) {
+	t.Parallel()
+	source := `def echo(status: status_mod.Status) -> status_mod.Status?
+  status
+end
+
+def maybe(status: status_mod.Status | nil) -> status_mod.Status | nil
+  status
+end
+
+def upper(status: Types.Status | nil) -> Types.Status?
+  status
+end
+
+def all_caps(status: Types.STATUS) -> Types.STATUS
+  status
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+	fn := got.Statements[0].(*ast.FunctionStmt)
+	if got := fn.Params[0].Type; got.Name != "status_mod.Status" || got.Kind != ast.TypeEnum || got.Nullable {
+		t.Fatalf("param type = %#v, want non-null status_mod.Status enum", got)
+	}
+	if got := fn.ReturnTy; got.Name != "status_mod.Status" || got.Kind != ast.TypeEnum || !got.Nullable {
+		t.Fatalf("return type = %#v, want nullable status_mod.Status enum", got)
+	}
+
+	maybeFn := got.Statements[1].(*ast.FunctionStmt)
+	if got := maybeFn.Params[0].Type; got.Name != "status_mod.Status | nil" || got.Kind != ast.TypeUnion {
+		t.Fatalf("union param type = %#v, want status_mod.Status | nil", got)
+	}
+	if got := maybeFn.ReturnTy; got.Name != "status_mod.Status | nil" || got.Kind != ast.TypeUnion {
+		t.Fatalf("union return type = %#v, want status_mod.Status | nil", got)
+	}
+
+	upperFn := got.Statements[2].(*ast.FunctionStmt)
+	if got := upperFn.Params[0].Type; got.Name != "Types.Status | nil" || got.Kind != ast.TypeUnion {
+		t.Fatalf("uppercase alias union param type = %#v, want Types.Status | nil", got)
+	}
+	if got := upperFn.ReturnTy; got.Name != "Types.Status" || got.Kind != ast.TypeEnum || !got.Nullable {
+		t.Fatalf("uppercase alias return type = %#v, want nullable Types.Status enum", got)
+	}
+
+	// A SCREAMING_CASE dotted member in parameter position is a constant
+	// default by convention, not a type annotation; return position has no
+	// such ambiguity, so the same spelling stays a (fold-resolved) type there.
+	allCapsFn := got.Statements[3].(*ast.FunctionStmt)
+	if got := allCapsFn.Params[0].Type; got != nil {
+		t.Fatalf("all-caps qualified param type = %#v, want none (constant default)", got)
+	}
+	if allCapsFn.Params[0].DefaultVal == nil {
+		t.Fatalf("all-caps qualified param default = nil, want Types.STATUS member expression")
+	}
+	if got := allCapsFn.ReturnTy; got.Name != "Types.STATUS" || got.Kind != ast.TypeEnum {
+		t.Fatalf("all-caps qualified return type = %#v, want Types.STATUS enum", got)
+	}
+}
+
 func TestParserTypeShapeAllowsEnumFieldName(t *testing.T) {
 	t.Parallel()
 	source := `def run(payload: { enum: string, nested: { enum: int } })
