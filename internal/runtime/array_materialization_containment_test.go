@@ -496,6 +496,169 @@ end
 	requireCallRuntimeErrorType(t, script, "run", []Value{largeIntArray(1000)}, CallOptions{}, runtimeErrorTypeLimit)
 }
 
+func TestArrayFlattenChargesResultDuringBuild(t *testing.T) {
+	t.Parallel()
+
+	const groups = 8
+	const perGroup = 500
+	const leaves = groups * perGroup
+	nested := make([]Value, groups)
+	want := make([]Value, 0, leaves)
+	for i := range nested {
+		inner := make([]Value, perGroup)
+		for j := range inner {
+			inner[j] = NewInt(int64(i*perGroup + j))
+			want = append(want, inner[j])
+		}
+		nested[i] = NewArray(inner)
+	}
+	receiver := NewArray(nested)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
+
+	t.Run("under_quota", func(t *testing.T) {
+		t.Parallel()
+
+		// The growth checks charge the doubled backing before each append grows
+		// it, so a successful build never projects more than twice the largest
+		// capacity the append schedule reaches; four times the leaf count bounds
+		// that projection with room for the schedule's overshoot past the final
+		// length.
+		quota := base + arraySlotBackingBytes(4*leaves) + 4096
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		got, err := callArrayMember(t, exec, receiver, "flatten", nil, NewNil())
+		if err != nil {
+			t.Fatalf("array.flatten under quota %d: %v", quota, err)
+		}
+		compareArrays(t, got, want)
+	})
+
+	t.Run("over_quota", func(t *testing.T) {
+		t.Parallel()
+
+		quota := base + arraySlotBackingBytes(leaves/2)
+		fitsCallRoots := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		if err := fitsCallRoots.checkCallMemoryRoots(receiver, nil, nil, NewNil()); err != nil {
+			t.Fatalf("receiver should fit under quota %d: %v", quota, err)
+		}
+
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		_, err := callArrayMember(t, exec, receiver, "flatten", nil, NewNil())
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+		if exec.steps >= leaves {
+			t.Fatalf("array.flatten examined %d elements before rejecting; want rejection before the %d-leaf result materializes", exec.steps, leaves)
+		}
+	})
+}
+
+func TestArrayWindowPreflightsResultBacking(t *testing.T) {
+	t.Parallel()
+
+	const elements = 4000
+	const windowSize = 3
+	const windowCount = elements - windowSize + 1
+	receiver := largeIntArray(elements)
+	size := NewInt(windowSize)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, []Value{size}, nil, NewNil())
+
+	t.Run("under_quota", func(t *testing.T) {
+		t.Parallel()
+
+		arr := receiver.Array()
+		est := newMemoryEstimator()
+		payload := 0
+		want := make([]Value, windowCount)
+		for i := range want {
+			row := make([]Value, windowSize)
+			copy(row, arr[i:i+windowSize])
+			want[i] = NewArray(row)
+			payload += est.valuePayload(want[i])
+		}
+		// Mirror the build's peak projection: the outer slot reservation, one
+		// in-flight window backing, and every retained window payload.
+		quota := base + arraySlotBackingBytes(windowCount) + arraySlotBackingBytes(windowSize) + payload + 4096
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		got, err := callArrayMember(t, exec, receiver, "window", []Value{size}, NewNil())
+		if err != nil {
+			t.Fatalf("array.window under quota %d: %v", quota, err)
+		}
+		compareArrays(t, got, want)
+	})
+
+	t.Run("over_quota", func(t *testing.T) {
+		t.Parallel()
+
+		quota := base + arraySlotBackingBytes(windowCount)/2
+		fitsCallRoots := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		if err := fitsCallRoots.checkCallMemoryRoots(receiver, []Value{size}, nil, NewNil()); err != nil {
+			t.Fatalf("receiver and size should fit under quota %d: %v", quota, err)
+		}
+
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		_, err := callArrayMember(t, exec, receiver, "window", []Value{size}, NewNil())
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+		if exec.steps != 0 {
+			t.Fatalf("array.window stepped %d times before rejecting the outer backing; want 0", exec.steps)
+		}
+	})
+}
+
+func TestArrayJoinQuotaCoversRenderedPayload(t *testing.T) {
+	t.Parallel()
+
+	const parts = 8
+	chunk := strings.Repeat("x", 1000)
+	elements := make([]Value, 0, parts+2)
+	wantParts := make([]string, 0, parts+2)
+	for range parts {
+		elements = append(elements, NewString(chunk))
+		wantParts = append(wantParts, chunk)
+	}
+	// Mixed scalar types pin the rendered-payload bound: the int renders as its
+	// decimal form and nil contributes an empty segment, exactly as the built
+	// string will contain them.
+	elements = append(elements, NewInt(12345), NewNil())
+	wantParts = append(wantParts, "12345", "")
+	receiver := NewArray(elements)
+	sep := NewString("-")
+	want := strings.Join(wantParts, "-")
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, []Value{sep}, nil, NewNil())
+	finalBytes := probe.estimateMemoryUsage(NewString(want))
+
+	t.Run("under_quota", func(t *testing.T) {
+		t.Parallel()
+
+		quota := base + finalBytes + 16384
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		got, err := callArrayMember(t, exec, receiver, "join", []Value{sep}, NewNil())
+		if err != nil {
+			t.Fatalf("array.join under quota %d: %v", quota, err)
+		}
+		if got.Kind() != KindString || got.String() != want {
+			t.Fatalf("array.join result mismatch: got %d bytes, want %d bytes", len(got.String()), len(want))
+		}
+	})
+
+	t.Run("over_quota", func(t *testing.T) {
+		t.Parallel()
+
+		quota := base + finalBytes/2
+		fitsCallRoots := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		if err := fitsCallRoots.checkCallMemoryRoots(receiver, []Value{sep}, nil, NewNil()); err != nil {
+			t.Fatalf("receiver and separator should fit under quota %d: %v", quota, err)
+		}
+
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		_, err := callArrayMember(t, exec, receiver, "join", []Value{sep}, NewNil())
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+	})
+}
+
 func constantSymbolBlockValue(name string) Value {
 	pos := Position{Line: 1, Column: 1}
 	body := []Statement{&ExprStmt{Position: pos, Expr: &SymbolLiteral{Name: name, Position: pos}}}

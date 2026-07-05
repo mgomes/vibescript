@@ -379,6 +379,35 @@ end`)
 	}
 }
 
+func TestArrayFlattenChecksCanceledContextDuringBuild(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	engine := MustNewEngine(Config{MemoryQuotaBytes: 32 << 20})
+	engine.builtins["cancel_now"] = NewBuiltin("cancel_now", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		cancel()
+		return NewNil(), nil
+	})
+	script := compileScriptWithEngine(t, engine, `def run(values)
+  cancel_now()
+  values.flatten
+end`)
+
+	nested := make([]Value, 64)
+	for i := range nested {
+		inner := make([]Value, 64)
+		for j := range inner {
+			inner[j] = NewInt(int64(i*64 + j))
+		}
+		nested[i] = NewArray(inner)
+	}
+
+	_, err := script.Call(ctx, "run", []Value{NewArray(nested)}, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Array#flatten after cancellation error = %v, want context.Canceled", err)
+	}
+}
+
 func TestBlockIteratorsStopWhenBlockCancelsContext(t *testing.T) {
 	t.Parallel()
 

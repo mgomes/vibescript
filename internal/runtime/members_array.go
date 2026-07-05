@@ -3673,8 +3673,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 				}
 				depth = n
 			}
-			arr := receiver.Array()
-			out, err := flattenValues(arr, depth, "array.flatten")
+			out, err := arrayFlattenBounded(exec, receiver, args, kwargs, block, depth)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -4757,6 +4756,43 @@ func arrayReverseCopy(exec *Execution, receiver Value, args []Value, kwargs map[
 		}
 	}
 	return NewArray(out), nil
+}
+
+// arrayFlattenBounded materializes Array#flatten under sandbox accounting.
+// Flatten's output length cannot be cheaply bounded up front (nested arrays can
+// expand each receiver slot into arbitrarily many leaves), so instead of a
+// one-shot preflight it reserves the initial backing sized to the receiver and
+// then meters the build as it grows: every element examined charges a step
+// (whose slow path runs the periodic memory and context checks), and each time
+// the output backing is about to grow, the doubled backing is charged before
+// append allocates it. Every appended leaf aliases a value the accumulator's
+// baseline already walked through the receiver, so leaf payloads deduplicate
+// to zero and only the slot backing is new memory — charging growth alone
+// bounds the build without paying a per-leaf estimator walk. A flatten whose
+// result would exceed the memory quota is therefore rejected before the
+// over-quota backing is allocated, instead of after the full result has
+// materialized natively.
+func arrayFlattenBounded(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, depth int) ([]Value, error) {
+	arr := receiver.Array()
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	if err := acc.reserveSlots(len(arr)); err != nil {
+		return nil, err
+	}
+	out := make([]Value, 0, len(arr))
+	state := &flattenState{
+		arrays: make(map[sliceIdentity]struct{}),
+		method: "array.flatten",
+		visit:  exec.step,
+		appendLeaf: func(out []Value, v Value) ([]Value, error) {
+			if len(out) == cap(out) {
+				if err := acc.checkSlotArrays(projectedAppendCap(len(out), cap(out))); err != nil {
+					return nil, err
+				}
+			}
+			return append(out, v), nil
+		},
+	}
+	return flattenValuesInto(out, arr, depth, state)
 }
 
 func arraySortBang(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
