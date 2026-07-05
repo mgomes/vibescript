@@ -762,10 +762,16 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 
 	params := []ast.Param{}
 	var returnTy *ast.TypeExpr
+	// signatureEndLine tracks the line the def signature ends on so the
+	// optional `-> Type` return annotation only binds when it sits on that
+	// line. A `->` on a later line is the first body statement — a stabby
+	// lambda literal — not an annotation.
+	signatureEndLine := pos.Line
 	// Optional parens on the same line.
 	if p.curToken.Type == ast.TokenLParen && p.curToken.Pos.Line == pos.Line {
 		if p.peekToken.Type == ast.TokenRParen {
 			p.nextToken() // consume ')'
+			signatureEndLine = p.curToken.Pos.Line
 			p.nextToken()
 		} else {
 			p.nextToken()
@@ -773,13 +779,15 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 			if !p.expectPeek(ast.TokenRParen) {
 				return nil
 			}
+			signatureEndLine = p.curToken.Pos.Line
 			p.nextToken()
 		}
 	} else if p.curToken.Pos.Line == pos.Line && isFunctionParamStart(p.curToken.Type) {
 		params = p.parseParamsWithOptions(paramParseOptions{lineLimitedDefaults: true})
+		signatureEndLine = p.curToken.Pos.Line
 		p.nextToken()
 	}
-	if p.curToken.Type == ast.TokenThinArrow {
+	if p.curToken.Type == ast.TokenThinArrow && p.curToken.Pos.Line == signatureEndLine {
 		p.nextToken()
 		returnTy = p.parseTypeExpr()
 		if returnTy == nil {

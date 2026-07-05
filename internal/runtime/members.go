@@ -231,7 +231,7 @@ func hashMemberAssignmentKey(obj Value, property string) Value {
 // suggestions and editor completion.
 var functionMemberNames = []string{"call"}
 
-var blockMemberNames = []string{"call"}
+var blockMemberNames = []string{"call", "lambda?"}
 
 const (
 	functionCallBuiltinName = "function.call"
@@ -264,10 +264,15 @@ func newFunctionCallAlias(obj Value, pos Position) Value {
 }
 
 func (exec *Execution) blockMember(obj Value, property string, pos Position) (Value, error) {
-	if property != "call" {
+	switch property {
+	case "call":
+		return newBlockCallAlias(obj, pos), nil
+	case "lambda?":
+		blk := valueBlock(obj)
+		return NewBool(blk != nil && blk.lambda), nil
+	default:
 		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, blockMemberNames))
 	}
-	return newBlockCallAlias(obj, pos), nil
 }
 
 // builtinCallableMember resolves member access on a raw builtin value — a

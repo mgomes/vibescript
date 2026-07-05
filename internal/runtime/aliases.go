@@ -1027,6 +1027,12 @@ type Block struct {
 	// (Ruby non-local return). Zero for host-built or top-level blocks, whose
 	// returns report LocalJumpError.
 	homeReturnToken uint64
+	// lambda marks a lambda-semantics callable (`lambda { }` or `->() { }`).
+	// A lambda enforces strict positional arity, never auto-splats a single
+	// array argument, and treats return/break/next in its body as local: they
+	// end the lambda call with a value instead of unwinding the enclosing
+	// method (Ruby's lambda vs proc distinction).
+	lambda bool
 }
 
 // NewBlock returns a block (closure) Value.

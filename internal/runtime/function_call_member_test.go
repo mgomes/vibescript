@@ -1176,7 +1176,7 @@ func TestBlockValueCallMemberSuggestion(t *testing.T) {
 	if !ok {
 		t.Fatalf("MemberCompletionNames missing block entry")
 	}
-	want := append([]string{"call"}, universalMemberNames...)
+	want := append([]string{"call", "lambda?"}, universalMemberNames...)
 	if diff := cmp.Diff(want, names); diff != "" {
 		t.Fatalf("block member completion mismatch (-want +got):\n%s", diff)
 	}

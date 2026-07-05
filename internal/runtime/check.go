@@ -2067,6 +2067,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 	case *CaseExpr:
 		c.checkCaseExpression(function, typed)
 	case *BlockLiteral:
+		// A standalone block literal is a stabby lambda; its body checks like a
+		// call block's. Plain call blocks are checked from the CallExpr case.
+		if typed.Lambda {
+			c.checkBlockLiteral(function, typed)
+		}
 		return
 	case *YieldExpr:
 		for _, arg := range typed.Args {

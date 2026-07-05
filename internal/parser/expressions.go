@@ -342,6 +342,7 @@ const (
 	prefixParserWhileExpression
 	prefixParserUntilExpression
 	prefixParserRegexLiteral
+	prefixParserLambdaLiteral
 )
 
 func prefixParserKind(tt ast.TokenType) prefixParseKind {
@@ -402,6 +403,8 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserUntilExpression
 	case ast.TokenRegex:
 		return prefixParserRegexLiteral
+	case ast.TokenThinArrow:
+		return prefixParserLambdaLiteral
 	default:
 		return prefixParserNone
 	}
@@ -465,6 +468,8 @@ func (p *parser) parsePrefix(kind prefixParseKind) ast.Expression {
 		return p.parseUntilExpression()
 	case prefixParserRegexLiteral:
 		return p.parseRegexLiteral()
+	case prefixParserLambdaLiteral:
+		return p.parseLambdaLiteral()
 	default:
 		return nil
 	}
@@ -1835,6 +1840,102 @@ func (p *parser) parseBlockParameters() ([]ast.Param, bool) {
 	}
 
 	if !p.expectPeek(ast.TokenPipe) {
+		return nil, false
+	}
+
+	return params, true
+}
+
+// parseLambdaLiteral parses a stabby lambda: `->(a, b) { ... }`,
+// `-> { ... }`, or the do/end body form. Parameters are optional and use the
+// block-parameter grammar (identifiers with optional type annotations and
+// destructuring targets), so `->` lambdas support exactly the parameter
+// shapes blocks do. A lambda with no parameter list infers implicit
+// parameters (`it`, `_1`..`_9`) the same way a block literal does.
+func (p *parser) parseLambdaLiteral() ast.Expression {
+	pos := p.curToken.Pos
+	params := []ast.Param{}
+	hasExplicitParams := false
+	if p.peekToken.Type == ast.TokenLParen {
+		hasExplicitParams = true
+		p.nextToken()
+		var ok bool
+		params, ok = p.parseLambdaParameters()
+		if !ok {
+			return nil
+		}
+	}
+
+	var stopToken ast.TokenType
+	var stopName string
+	switch p.peekToken.Type {
+	case ast.TokenLBrace:
+		stopToken, stopName = ast.TokenRBrace, "}"
+	case ast.TokenDo:
+		stopToken, stopName = ast.TokenEnd, "end"
+	default:
+		p.errorExpected(p.peekToken, "lambda body opened with { or do")
+		return nil
+	}
+	p.nextToken()
+	p.nextToken()
+
+	inferImplicitIt := !p.isLocalName("it")
+	p.pushLocalScope(params, false)
+	if !hasExplicitParams {
+		p.declareNumberedImplicitBlockParamCandidates()
+	}
+	body := p.parseBlock(stopToken)
+	p.popLocalScope()
+	if p.curToken.Type != stopToken {
+		p.errorExpected(p.curToken, stopName)
+	}
+
+	implicitParams := []string(nil)
+	if !hasExplicitParams {
+		implicitParams = inferImplicitBlockParams(body, inferImplicitIt)
+	}
+
+	return &ast.BlockLiteral{
+		Params:         params,
+		ImplicitParams: implicitParams,
+		Body:           body,
+		Lambda:         true,
+		Position:       pos,
+	}
+}
+
+// parseLambdaParameters parses the parenthesized parameter list of a stabby
+// lambda. The current token is the opening parenthesis; on success the
+// current token is the closing parenthesis.
+func (p *parser) parseLambdaParameters() ([]ast.Param, bool) {
+	params := []ast.Param{}
+	p.nextToken()
+	if p.curToken.Type == ast.TokenRParen {
+		return params, true
+	}
+
+	param, ok := p.parseBlockParameter()
+	if !ok {
+		return nil, false
+	}
+	params = append(params, param)
+
+	for p.peekToken.Type == ast.TokenComma {
+		p.nextToken()
+		p.nextToken()
+		if p.curToken.Type == ast.TokenRParen {
+			p.addParseError(p.curToken.Pos, "trailing comma in lambda parameter list")
+			return nil, false
+		}
+		param, ok := p.parseBlockParameter()
+		if !ok {
+			return nil, false
+		}
+		params = append(params, param)
+	}
+
+	if !p.expectPeek(ast.TokenRParen) {
 		return nil, false
 	}
 

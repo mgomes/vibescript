@@ -382,6 +382,43 @@ func builtinFormat(exec *Execution, receiver Value, args []Value, kwargs map[str
 	return formatStringBuiltin(exec, "format", receiver, args, kwargs, block)
 }
 
+// builtinProc backs both `proc { ... }` and `Proc.new { ... }`: the supplied
+// block already is the proc value, with block (non-lambda) semantics — padded
+// arguments and a non-local return that unwinds the method whose body created
+// the block. Passing an existing proc or lambda through returns it unchanged,
+// matching Ruby's proc(&callable).
+func builtinProc(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 0 || len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("proc does not take arguments")
+	}
+	if valueBlock(block) == nil {
+		return NewNil(), fmt.Errorf("tried to create a Proc object without a block")
+	}
+	return block, nil
+}
+
+// builtinLambda converts the supplied block into a lambda: strict positional
+// arity and local return/break/next semantics. The lambda flag is set on a
+// shallow copy so a forwarded proc (`lambda(&existing)`) is converted without
+// mutating the original block value; Ruby 3.3 raises for that non-literal
+// form instead, but converting keeps the older Kernel#lambda contract while
+// leaving the source proc untouched.
+func builtinLambda(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 0 || len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("lambda does not take arguments")
+	}
+	blk := valueBlock(block)
+	if blk == nil {
+		return NewNil(), fmt.Errorf("tried to create a lambda without a block")
+	}
+	if blk.lambda {
+		return block, nil
+	}
+	clone := *blk
+	clone.lambda = true
+	return wrapBlock(&clone), nil
+}
+
 func builtinLoop(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) > 0 {
 		return NewNil(), fmt.Errorf("loop does not take arguments")

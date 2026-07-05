@@ -303,7 +303,9 @@ func registerCoreBuiltins(engine *Engine) {
 	}{
 		{name: "assert", fn: builtinAssert},
 		{name: "format", fn: builtinFormat},
+		{name: "lambda", fn: builtinLambda, autoInvoke: true},
 		{name: "loop", fn: builtinLoop},
+		{name: "proc", fn: builtinProc, autoInvoke: true},
 		{name: "money", fn: builtinMoney},
 		{name: "money_cents", fn: builtinMoneyCents},
 		{name: "p", fn: builtinP},
@@ -520,6 +522,9 @@ func registerDataBuiltins(engine *Engine) {
 	engine.builtins["JSON"] = NewObject(map[string]Value{
 		"parse":     NewBuiltin("JSON.parse", builtinJSONParse),
 		"stringify": NewBuiltin("JSON.stringify", builtinJSONStringify),
+	})
+	engine.builtins["Proc"] = NewObject(map[string]Value{
+		"new": NewAutoBuiltin("Proc.new", builtinProc),
 	})
 	engine.builtins["Regex"] = NewObject(map[string]Value{
 		"match":       NewBuiltin("Regex.match", builtinRegexMatch),

@@ -97,6 +97,44 @@ the enclosing method's block, matching Ruby. The predicate is reserved and
 cannot be shadowed by a local; the parenthesized `block_given?()` form behaves
 the same and, like Ruby, accepts no arguments.
 
+## Procs and lambdas
+
+Blocks become first-class values through Ruby's callable constructors:
+`Proc.new { ... }`, `proc { ... }`, `lambda { ... }`, and the stabby lambda
+`->(args) { ... }` (which also accepts a `do ... end` body). All four produce
+values invoked with `.call`, and they pass through function-typed parameters
+like any other callable:
+
+```vibe
+def run
+  double = ->(n) { n * 2 }
+  add = lambda do |a, b|
+    a + b
+  end
+  add.call(double.call(20), 2) # => 42
+end
+```
+
+Procs and lambdas differ exactly as in Ruby:
+
+- A **proc** (`proc { }` / `Proc.new { }`) keeps block semantics. Missing
+  arguments pad to `nil`, extra arguments are dropped, a single array argument
+  auto-splats across multiple parameters, and `return` in the body returns
+  from the method whose body created the proc. Calling such a proc after that
+  method has already returned raises `LocalJumpError`.
+- A **lambda** (`lambda { }` / `->() { }`) behaves like an anonymous method.
+  Arity is strict — `->(a, b) { }.call(1)` raises
+  `lambda expects 2 arguments, got 1` — and `return`, `break`, and `next` in
+  the body are all local: they end the lambda call with a value instead of
+  unwinding the enclosing method.
+
+`fn.lambda?` reports which semantics a callable value carries. Lambda
+parameters use the block-parameter grammar, so type annotations
+(`->(x: Int) { ... }`) and destructuring targets work, and a lambda without a
+parameter list infers implicit parameters (`it`, `_1`..`_9`) just as blocks
+do. The `-> Type` return annotation on `def` still parses; it must sit on the
+signature line, while a `->` opening the next line starts a lambda literal.
+
 Ruby-style ampersand block forwarding (`&block`) and symbol-to-proc shorthand
 (`&:method_name`) are not supported. Write an explicit `do ... end` or brace
 block instead.

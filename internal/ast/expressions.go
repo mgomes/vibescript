@@ -321,7 +321,12 @@ type BlockLiteral struct {
 	Params         []Param
 	ImplicitParams []string
 	Body           []Statement
-	Position       Position
+	// Lambda marks a stabby lambda literal (`->(x) { ... }`). A lambda is a
+	// first-class expression that evaluates to a callable value with strict
+	// arity and method-like (local) return/break semantics, unlike a plain
+	// block literal, which only ever appears attached to a call.
+	Lambda   bool
+	Position Position
 }
 
 func (b *BlockLiteral) exprNode()     {}
