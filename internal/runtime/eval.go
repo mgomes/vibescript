@@ -664,6 +664,9 @@ func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) 
 		if fn.Private {
 			return NewNil(), exec.errorAt(e.Position, "private method []")
 		}
+		if fn.Protected && !exec.protectedInstanceAccessAllowed(valueInstance(obj).Class) {
+			return NewNil(), exec.errorAt(e.Position, "protected method []")
+		}
 		return exec.callOperatorFunction(fn, obj, indices, e.Position)
 	default:
 		return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s", obj.Kind())
@@ -1006,6 +1009,9 @@ func (exec *Execution) evalInstanceOperator(operator TokenType, left, right Valu
 func (exec *Execution) callInstanceOperatorMethod(fn *ScriptFunction, name string, receiver, arg Value, pos Position) (Value, error) {
 	if fn.Private {
 		return NewNil(), exec.errorAt(pos, "private method %s", name)
+	}
+	if fn.Protected && !exec.protectedInstanceAccessAllowed(valueInstance(receiver).Class) {
+		return NewNil(), exec.errorAt(pos, "protected method %s", name)
 	}
 	return exec.callOperatorFunction(fn, receiver, []Value{arg}, pos)
 }
@@ -1784,6 +1790,9 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 		if fn.Private {
 			return exec.errorAt(pos, "private method %s", setterName)
 		}
+		if fn.Protected && !exec.assignTargetProtectedAccessAllowed(obj) {
+			return exec.errorAt(pos, "protected method %s", setterName)
+		}
 		_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), pos)
 		if err != nil {
 			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
@@ -1963,6 +1972,9 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		}
 		if fn.Private {
 			return exec.errorAt(target.Position, "private method []=")
+		}
+		if fn.Protected && !exec.protectedInstanceAccessAllowed(valueInstance(obj).Class) {
+			return exec.errorAt(target.Position, "protected method []=")
 		}
 		args := make([]Value, 0, len(indices)+1)
 		args = append(args, indices...)

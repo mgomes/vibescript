@@ -318,8 +318,8 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 		return constructor, nil
 	}
 	if fn, ok := cl.ClassMethods[property]; ok {
-		if fn.Private && !callerIsReceiver {
-			return NewNil(), privateMemberAccess(exec.errorAt(pos, "private method %s", property))
+		if err := exec.classMethodAccessError(fn, cl, property, pos, callerIsReceiver); err != nil {
+			return NewNil(), err
 		}
 		method := NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
@@ -355,8 +355,8 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 		return NewClass(inst.Class), nil
 	}
 	if fn, ok := inst.Class.Methods[property]; ok {
-		if fn.Private && !callerIsReceiver {
-			return NewNil(), privateMemberAccess(exec.errorAt(pos, "private method %s", property))
+		if err := exec.instanceMethodAccessError(fn, inst.Class, property, pos, callerIsReceiver); err != nil {
+			return NewNil(), err
 		}
 		method := NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
@@ -437,13 +437,48 @@ func (exec *Execution) enumValueMember(obj Value, property string, pos Position)
 	}
 }
 
+// instanceMethodAccessError reports whether the current call site may invoke
+// fn, an instance method of cl. Private methods require the caller to be the
+// receiver itself (implicit-self calls); protected methods additionally allow
+// call sites whose self is another instance of the same class. Both failures
+// are wrapped as private-member errors so resolveMember's universal fallback
+// stays suppressed and the privacy diagnostic surfaces.
+func (exec *Execution) instanceMethodAccessError(fn *ScriptFunction, cl *ClassDef, name string, pos Position, callerIsReceiver bool) error {
+	if callerIsReceiver {
+		return nil
+	}
+	if fn.Private {
+		return privateMemberAccess(exec.errorAt(pos, "private method %s", name))
+	}
+	if fn.Protected && !exec.protectedInstanceAccessAllowed(cl) {
+		return privateMemberAccess(exec.errorAt(pos, "protected method %s", name))
+	}
+	return nil
+}
+
+// classMethodAccessError mirrors instanceMethodAccessError for class methods:
+// a protected class method is callable only when the caller's self is the
+// class itself.
+func (exec *Execution) classMethodAccessError(fn *ScriptFunction, cl *ClassDef, name string, pos Position, callerIsReceiver bool) error {
+	if callerIsReceiver {
+		return nil
+	}
+	if fn.Private {
+		return privateMemberAccess(exec.errorAt(pos, "private method %s", name))
+	}
+	if fn.Protected && !exec.protectedClassAccessAllowed(cl) {
+		return privateMemberAccess(exec.errorAt(pos, "protected method %s", name))
+	}
+	return nil
+}
+
 // appendAccessibleMethodNames collects method names for did-you-mean
-// candidates, omitting private methods unless the caller is the receiver
-// itself — suggestions must not point at members the call site cannot
-// invoke (or disclose their existence).
+// candidates, omitting private and protected methods unless the caller is
+// the receiver itself — suggestions must not point at members the call site
+// cannot invoke (or disclose their existence).
 func appendAccessibleMethodNames(candidates []string, methods map[string]*ScriptFunction, callerIsReceiver bool) []string {
 	for name, fn := range methods {
-		if fn.Private && !callerIsReceiver {
+		if (fn.Private || fn.Protected) && !callerIsReceiver {
 			continue
 		}
 		candidates = append(candidates, name)

@@ -24,6 +24,7 @@ type ScriptFunction struct {
 	Env          *Env
 	Exported     bool
 	Private      bool
+	Protected    bool
 	Accessor     functionAccessorKind
 	AccessorName string
 	owner        *Script
@@ -148,6 +149,39 @@ func (exec *Execution) isCurrentReceiver(v Value) bool {
 		return valueInstance(v) == valueInstance(cur)
 	case v.Kind() == KindClass && cur.Kind() == KindClass:
 		return valueClass(v) == valueClass(cur)
+	default:
+		return false
+	}
+}
+
+// protectedInstanceAccessAllowed reports whether the currently executing
+// method may invoke a protected instance method defined on cl: the caller's
+// self must itself be an instance of cl, mirroring Ruby's rule that protected
+// methods are callable between instances of the same class (Vibescript has no
+// inheritance, so the class itself is the whole family).
+func (exec *Execution) protectedInstanceAccessAllowed(cl *ClassDef) bool {
+	cur := exec.currentReceiver()
+	return cur.Kind() == KindInstance && valueInstance(cur).Class == cl
+}
+
+// protectedClassAccessAllowed reports whether the currently executing method
+// may invoke a protected class method defined on cl: the caller's self must
+// be the class itself, i.e. the call happens inside another class method of
+// the same class.
+func (exec *Execution) protectedClassAccessAllowed(cl *ClassDef) bool {
+	cur := exec.currentReceiver()
+	return cur.Kind() == KindClass && valueClass(cur) == cl
+}
+
+// assignTargetProtectedAccessAllowed applies the protected rules to a setter
+// assignment target, which may be an instance (protected instance setter) or
+// a class (protected class setter).
+func (exec *Execution) assignTargetProtectedAccessAllowed(obj Value) bool {
+	switch obj.Kind() {
+	case KindInstance:
+		return exec.protectedInstanceAccessAllowed(valueInstance(obj).Class)
+	case KindClass:
+		return exec.protectedClassAccessAllowed(valueClass(obj))
 	default:
 		return false
 	}

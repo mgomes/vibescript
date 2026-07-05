@@ -230,8 +230,8 @@ func isInvocable(v Value) bool {
 // attributes, not methods, so they never respond even when readable as members
 // (mirroring Ruby, where respond_to? reports methods only). A user-defined method
 // (including an override of a universal member such as respond_to?) responds only
-// per privacy: a private method responds when allowPrivate is set, matching the
-// dispatch that would otherwise raise. A universal member with no override
+// per privacy: a private or protected method responds when allowPrivate is set,
+// matching the dispatch that would otherwise raise. A universal member with no override
 // responds because resolveMember answers it via the universal fallback, except a
 // data-eligible block helper (tap/yield_self) shadowed by a non-callable ivar:
 // dispatch returns that ivar, so the receiver does not respond.
@@ -240,7 +240,7 @@ func instanceRespondsTo(inst *Instance, method string, allowPrivate bool) bool {
 		return true
 	}
 	if fn, ok := inst.Class.Methods[method]; ok {
-		return allowPrivate || !fn.Private
+		return allowPrivate || (!fn.Private && !fn.Protected)
 	}
 	if isUniversalMember(method) {
 		return universalMemberResponds(method, inst.Ivars)
@@ -262,7 +262,7 @@ func classRespondsTo(cl *ClassDef, method string, allowPrivate bool) bool {
 		return true
 	}
 	if fn, ok := cl.ClassMethods[method]; ok {
-		return allowPrivate || !fn.Private
+		return allowPrivate || (!fn.Private && !fn.Protected)
 	}
 	if isUniversalMember(method) {
 		return universalMemberResponds(method, cl.ClassVars)

@@ -204,9 +204,13 @@ instance methods only — a top-level or `self.` operator definition is a
 compile error — and dispatch ignores the right operand's class, matching
 Ruby's left-receiver rule.
 
-## Privacy
+## Visibility
 
-Mark methods private with `private def`:
+Methods are public by default. Class bodies support the Ruby visibility
+directives in three forms: inline modifiers, section directives, and symbol
+directives.
+
+Inline modifiers apply to a single declaration:
 
 ```vibe
 class Helper
@@ -214,17 +218,61 @@ class Helper
     42
   end
 
+  private property token: string
+
   def call_internal
     secret
   end
 end
 ```
 
+A visibility word on its own line starts a section: every declaration that
+follows it — methods, `def self.` class methods, and
+`property`/`getter`/`setter` accessors alike — takes that visibility until
+another section directive:
+
+```vibe
+class Secret
+  private
+
+  def hidden
+    "hidden"
+  end
+
+  def also_hidden
+    "hidden too"
+  end
+
+  public
+
+  def shown
+    hidden
+  end
+end
+```
+
+Symbol directives change the visibility of methods that are already defined:
+
+```vibe
+class Secret
+  def hidden
+    "hidden"
+  end
+
+  private :hidden
+end
+```
+
+`public :name`, `private :name, :other`, and `protected :name` are all
+supported; naming a method that has not been defined is a compile error.
+
+### Private
+
 Private methods are callable only with an implicit receiver. Inside a method,
 call `secret`, not `self.secret`; explicit receiver calls like `self.secret` or
 `other.secret` raise a runtime `private method` error.
 
-Private class methods use the same form with a `self.` method name:
+Private class methods use the same forms with a `self.` method name:
 
 ```vibe
 class Helper
@@ -240,6 +288,41 @@ end
 
 Vibescript does not support Ruby's singleton-class syntax (`class << self`).
 Use `def self.name` or `private def self.name` inside the class body.
+
+### Protected
+
+Protected methods allow explicit receivers, but only when the caller's `self`
+is itself an instance of the same class — the Ruby idiom for comparing two
+instances' internals (Vibescript has no inheritance, so Ruby's "same class or
+subclass" reduces to "same class"):
+
+```vibe
+class Account
+  def initialize(balance)
+    @balance = balance
+  end
+
+  def richer_than?(other)
+    balance > other.balance
+  end
+
+  protected
+
+  def balance
+    @balance
+  end
+end
+```
+
+`Account.new(10).richer_than?(Account.new(3))` returns `true`, while calling
+`account.balance` anywhere outside the class raises a runtime
+`protected method balance` error. A protected class method is callable only
+from other class methods of the same class. Operator and index methods
+(`def +`, `def []`) honor `private` and `protected` like any other method.
+
+One documented divergence from Ruby: a visibility section also covers
+`def self.` class methods declared after it, whereas Ruby scopes sections to
+instance methods only.
 
 ## Introspection
 
@@ -258,8 +341,8 @@ user.respond_to?(:greet)    # false  (no such method)
 
 `is_a?`/`kind_of?`/`instance_of?` currently test direct class identity (there is
 no inheritance yet), so all three agree. `respond_to?` reports public methods;
-private methods report `false` externally but `true` when the receiver checks
-itself (or when called with `respond_to?(name, true)`). Instance variables are
+private and protected methods report `false` externally but `true` when the
+receiver checks itself (or when called with `respond_to?(name, true)`). Instance variables are
 attributes, not methods, so they never respond. These predicates are documented
 in full in [stdlib_core_utilities.md](stdlib_core_utilities.md#object-introspection).
 
@@ -267,5 +350,6 @@ in full in [stdlib_core_utilities.md](stdlib_core_utilities.md#object-introspect
 
 - Calling a missing method: `unknown member ...` / `unknown class member ...`
 - Calling a private method externally: `private method ...`
+- Calling a protected method outside the class family: `protected method ...`
 - Assigning to getter-only attributes: `cannot assign to read-only property ...`
 - Calling `.new` with wrong arguments for `initialize`: argument errors

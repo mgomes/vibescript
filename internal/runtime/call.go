@@ -1144,6 +1144,9 @@ func (exec *Execution) evalDirectPublicMemberMethodCall(receiver Value, property
 		if fn.Private {
 			return NewNil(), true, exec.errorAt(pos, "private method %s", property)
 		}
+		if fn.Protected && !exec.protectedClassAccessAllowed(classDef) {
+			return NewNil(), true, exec.errorAt(pos, "protected method %s", property)
+		}
 		return NewFunction(fn), true, nil
 	case KindInstance:
 		instance := valueInstance(receiver)
@@ -1153,6 +1156,9 @@ func (exec *Execution) evalDirectPublicMemberMethodCall(receiver Value, property
 		}
 		if fn.Private {
 			return NewNil(), true, exec.errorAt(pos, "private method %s", property)
+		}
+		if fn.Protected && !exec.protectedInstanceAccessAllowed(instance.Class) {
+			return NewNil(), true, exec.errorAt(pos, "protected method %s", property)
 		}
 		return NewFunction(fn), true, nil
 	default:

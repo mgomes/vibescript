@@ -228,17 +228,32 @@ func compileClassDef(stmt *ClassStmt) (*ClassDef, error) {
 	if len(stmt.Members) == 0 {
 		return compileClassDefLegacyOrder(stmt, classDef)
 	}
+	// Section directives (`private` on its own line) apply to every
+	// definition that follows them until another section directive, matching
+	// Ruby's sticky visibility sections. An inline modifier on a single
+	// definition overrides the section for that definition only.
+	sectionVisibility := ""
 	for _, member := range stmt.Members {
 		if member.Property != nil {
-			compileClassProperty(classDef, *member.Property)
+			compileClassProperty(classDef, *member.Property, sectionVisibility)
 			continue
 		}
 		if member.Function != nil {
-			compileClassMethod(classDef, member.Function)
+			compileClassMethod(classDef, member.Function, sectionVisibility)
 			continue
 		}
 		if member.Alias != nil {
 			if err := compileClassAlias(classDef, member.Alias, stmt.Name); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if member.Visibility != nil {
+			if len(member.Visibility.Names) == 0 {
+				sectionVisibility = member.Visibility.Level
+				continue
+			}
+			if err := applyNamedVisibility(classDef, member.Visibility, stmt.Name); err != nil {
 				return nil, err
 			}
 		}
@@ -246,15 +261,39 @@ func compileClassDef(stmt *ClassStmt) (*ClassDef, error) {
 	return classDef, nil
 }
 
+// applyNamedVisibility applies a named directive (`private :hidden, :other`)
+// to methods that are already defined, mirroring Ruby's retroactive
+// symbol-argument visibility calls. Instance methods are consulted first,
+// then class methods.
+func applyNamedVisibility(classDef *ClassDef, decl *ast.VisibilityDecl, className string) error {
+	for _, name := range decl.Names {
+		if fn, ok := classDef.Methods[name]; ok {
+			setFunctionVisibility(fn, decl.Level)
+			continue
+		}
+		if fn, ok := classDef.ClassMethods[name]; ok {
+			setFunctionVisibility(fn, decl.Level)
+			continue
+		}
+		return fmt.Errorf("%s target method %s is not defined on class %s", decl.Level, name, className)
+	}
+	return nil
+}
+
+func setFunctionVisibility(fn *ScriptFunction, level string) {
+	fn.Private = level == ast.VisibilityPrivate
+	fn.Protected = level == ast.VisibilityProtected
+}
+
 func compileClassDefLegacyOrder(stmt *ClassStmt, classDef *ClassDef) (*ClassDef, error) {
 	for _, prop := range stmt.Properties {
-		compileClassProperty(classDef, prop)
+		compileClassProperty(classDef, prop, "")
 	}
 	for _, fn := range stmt.Methods {
-		compileClassMethod(classDef, fn)
+		compileClassMethod(classDef, fn, "")
 	}
 	for _, fn := range stmt.ClassMethods {
-		compileClassMethod(classDef, fn)
+		compileClassMethod(classDef, fn, "")
 	}
 	for _, alias := range stmt.Aliases {
 		if err := compileClassAlias(classDef, alias, stmt.Name); err != nil {
@@ -264,7 +303,11 @@ func compileClassDefLegacyOrder(stmt *ClassStmt, classDef *ClassDef) (*ClassDef,
 	return classDef, nil
 }
 
-func compileClassProperty(classDef *ClassDef, prop PropertyDecl) {
+func compileClassProperty(classDef *ClassDef, prop PropertyDecl, sectionVisibility string) {
+	visibility := prop.Visibility
+	if visibility == "" {
+		visibility = sectionVisibility
+	}
 	for _, entry := range prop.Names {
 		name := entry.Name
 		if prop.Kind == "property" || prop.Kind == "getter" {
@@ -276,6 +319,7 @@ func compileClassProperty(classDef *ClassDef, prop PropertyDecl) {
 				Accessor:     functionAccessorGetter,
 				AccessorName: name,
 			}
+			setFunctionVisibility(getter, visibility)
 			classDef.Methods[name] = getter
 		}
 		if prop.Kind == "property" || prop.Kind == "setter" {
@@ -292,13 +336,23 @@ func compileClassProperty(classDef *ClassDef, prop PropertyDecl) {
 				Accessor:     functionAccessorSetter,
 				AccessorName: name,
 			}
+			setFunctionVisibility(setter, visibility)
 			classDef.Methods[name+"="] = setter
 		}
 	}
 }
 
-func compileClassMethod(classDef *ClassDef, fn *FunctionStmt) {
+func compileClassMethod(classDef *ClassDef, fn *FunctionStmt, sectionVisibility string) {
 	compiled := compileFunctionDef(fn)
+	visibility := fn.Visibility
+	if visibility == "" {
+		if fn.Private {
+			visibility = ast.VisibilityPrivate
+		} else {
+			visibility = sectionVisibility
+		}
+	}
+	setFunctionVisibility(compiled, visibility)
 	if fn.Name == "initialize" {
 		compiled.Private = true
 	}

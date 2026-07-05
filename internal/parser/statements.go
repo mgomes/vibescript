@@ -799,13 +799,13 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		return nil
 	}
 
-	private := false
-	if p.insideClass && p.privateNext {
-		private = true
-		p.privateNext = false
+	visibility := ""
+	if p.insideClass && p.pendingVisibility != "" {
+		visibility = p.pendingVisibility
+		p.pendingVisibility = ""
 	}
 
-	return &ast.FunctionStmt{Name: name, Params: params, ReturnTy: returnTy, Body: body, IsClassMethod: isClassMethod, Private: private, Position: pos}
+	return &ast.FunctionStmt{Name: name, Params: params, ReturnTy: returnTy, Body: body, IsClassMethod: isClassMethod, Private: visibility == ast.VisibilityPrivate, Visibility: visibility, Position: pos}
 }
 
 // parseOperatorMethodName recognizes a Ruby operator token in def-name
@@ -851,9 +851,9 @@ func (p *parser) parseClassStatement() ast.Statement {
 	}
 
 	prevInside := p.insideClass
-	prevPrivate := p.privateNext
+	prevVisibility := p.pendingVisibility
 	p.insideClass = true
-	p.privateNext = false
+	p.pendingVisibility = ""
 	p.statementNesting++
 	defer func() {
 		p.statementNesting--
@@ -902,6 +902,17 @@ func (p *parser) parseClassStatement() ast.Statement {
 				aliasStmt := alias.(*ast.AliasStmt)
 				stmt.Aliases = append(stmt.Aliases, aliasStmt)
 				stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
+			case ast.VisibilityPublic, ast.VisibilityProtected:
+				if p.startsVisibilityDirective() {
+					if p.parseVisibilityMember(stmt, p.curToken.Literal) {
+						continue
+					}
+				} else {
+					s := p.parseStatement()
+					if s != nil {
+						stmt.Body = append(stmt.Body, s)
+					}
+				}
 			default:
 				s := p.parseStatement()
 				if s != nil {
@@ -909,14 +920,15 @@ func (p *parser) parseClassStatement() ast.Statement {
 				}
 			}
 		case ast.TokenPrivate:
-			if p.peekToken.Type == ast.TokenDef {
-				p.privateNext = true
-				p.nextToken()
+			if p.parseVisibilityMember(stmt, ast.VisibilityPrivate) {
 				continue
 			}
-			p.privateNext = true
 		case ast.TokenProperty, ast.TokenGetter, ast.TokenSetter:
 			decl := p.parsePropertyDecl(p.curToken.Type)
+			if p.pendingVisibility != "" {
+				decl.Visibility = p.pendingVisibility
+				p.pendingVisibility = ""
+			}
 			stmt.Properties = append(stmt.Properties, decl)
 			stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Property: &decl})
 		default:
@@ -929,13 +941,86 @@ func (p *parser) parseClassStatement() ast.Statement {
 	}
 
 	p.insideClass = prevInside
-	p.privateNext = prevPrivate
+	p.pendingVisibility = prevVisibility
 
 	if p.curToken.Type != ast.TokenEnd {
 		p.errorExpected(p.curToken, "end")
 	}
 
 	return stmt
+}
+
+// startsVisibilityDirective reports whether a `public`/`protected` identifier
+// in class-member position begins a visibility directive rather than an
+// ordinary statement. The identifier is a directive when it stands alone
+// (section form), precedes a definition (`public def`), or precedes symbol
+// method names (`protected :compare`). Anything else — an assignment such as
+// `public = 1` or an unrelated expression — parses as a normal statement so
+// the words stay usable as plain identifiers outside directive positions.
+func (p *parser) startsVisibilityDirective() bool {
+	if p.startsVisibilityInlineTarget() {
+		return true
+	}
+	if p.peekToken.Type == ast.TokenSymbol && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		return true
+	}
+	return p.peekEndsStatement(p.curToken.Pos)
+}
+
+// startsVisibilityInlineTarget reports whether the token after a visibility
+// keyword begins a declaration the modifier applies to inline: a method
+// definition (`private def hidden`) or an accessor declaration
+// (`private property secret`). The declaration must start on the same line as
+// the modifier — a visibility word alone on its own line is a section
+// directive that covers every following definition, matching Ruby.
+func (p *parser) startsVisibilityInlineTarget() bool {
+	if p.peekToken.Pos.Line != p.curToken.Pos.Line {
+		return false
+	}
+	switch p.peekToken.Type {
+	case ast.TokenDef, ast.TokenProperty, ast.TokenGetter, ast.TokenSetter:
+		return true
+	default:
+		return false
+	}
+}
+
+// parseVisibilityMember handles a visibility keyword in class-member position.
+// It returns true when the directive inlines onto the next declaration
+// (`private def`, `public def self.x`, `private property secret`), leaving
+// curToken on the declaration keyword so the class-body loop parses it next
+// without advancing. Otherwise
+// it appends a section directive (bare `private`) or a named directive
+// (`private :hidden, :other`) to the class members and returns false.
+func (p *parser) parseVisibilityMember(stmt *ast.ClassStmt, level string) bool {
+	pos := p.curToken.Pos
+	if p.startsVisibilityInlineTarget() {
+		p.pendingVisibility = level
+		p.nextToken()
+		return true
+	}
+
+	decl := &ast.VisibilityDecl{Level: level, Position: pos}
+	if p.peekToken.Type == ast.TokenSymbol && p.peekToken.Pos.Line == pos.Line {
+		for {
+			p.nextToken()
+			decl.Names = append(decl.Names, p.curToken.Literal)
+			if p.peekToken.Type != ast.TokenComma {
+				break
+			}
+			p.nextToken()
+			if p.peekToken.Type != ast.TokenSymbol {
+				p.errorExpected(p.peekToken, "method name symbol")
+				return false
+			}
+		}
+	} else if !p.peekEndsStatement(pos) {
+		p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s expects a method definition, symbol method names, or no argument", level))
+		p.recoverSameLineStatementRemainder(pos.Line)
+		return false
+	}
+	stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Visibility: decl})
+	return false
 }
 
 func (p *parser) parseAliasStatement(method bool) ast.Statement {
