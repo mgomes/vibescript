@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/mgomes/vibescript/vibes/value"
@@ -92,6 +93,64 @@ type estimatorJournal struct {
 	instances []*Instance
 	blocks    []*Block
 	builtins  []*Builtin
+
+	// limit, when positive, bounds how many insertions this journal records;
+	// entries counts them and overflowed reports that the limit was hit. A
+	// memoized base-walk session uses a bounded journal (see sessionJournalBudget)
+	// because extras that dedup against the base record almost nothing, while a
+	// large fresh extra graph (a capability result not yet bound anywhere)
+	// would make the journal — and its entry-by-entry rollback — cost more
+	// than simply re-walking on the next check. Once overflowed the walk stops
+	// recording and the session's close invalidates the memo instead of
+	// rolling back: a partial rollback would leave unrecorded extras committed,
+	// letting a later value falsely deduplicate against a freed backing.
+	// probe's journals stay unbounded (limit 0) so probes always roll back
+	// exactly.
+	limit      int
+	entries    int
+	overflowed bool
+}
+
+// minSessionJournalLimit floors a memoized session's journal budget. Hit-path
+// extras (call roots that alias the environment, literals, small fresh values)
+// insert at most a few dozen identities, so this floor keeps them journaled
+// even over a near-empty environment.
+const minSessionJournalLimit = 256
+
+// sessionJournalBudget sizes a session's journal from the committed base
+// walk's deduplicated identity count. Journaling extras of E identities costs
+// roughly one append plus one rollback delete per identity, while losing the
+// memo costs a full base re-walk (B identities) on the next check — usually
+// several checks. Extras comparable to the base are therefore still worth
+// journaling, but a graph much larger than the base (a huge capability return
+// not yet bound anywhere) is cheaper to re-walk than to journal and roll back
+// at every check site it passes through.
+func sessionJournalBudget(baseIdentities int) int {
+	if baseIdentities < minSessionJournalLimit {
+		return minSessionJournalLimit
+	}
+	return baseIdentities
+}
+
+// identityCount reports how many deduplicated identities the estimator has
+// committed across its seen-sets. Used to size a session's journal budget
+// relative to the base walk it protects.
+func (est *memoryEstimator) identityCount() int {
+	return est.seenEnvInlineLen + len(est.seenEnvs) + len(est.seenMaps) +
+		len(est.seenHashData) + len(est.seenSlices) + len(est.seenStrings) +
+		len(est.seenClasses) + len(est.seenInstances) + len(est.seenBlocks) +
+		len(est.seenBuiltins)
+}
+
+// record reports whether the journal should record one more insertion,
+// tripping overflowed once a bounded journal fills.
+func (j *estimatorJournal) record() bool {
+	if j.limit > 0 && j.entries >= j.limit {
+		j.overflowed = true
+		return false
+	}
+	j.entries++
+	return true
 }
 
 type stringIdentity struct {
@@ -127,12 +186,19 @@ func (est *memoryEstimator) reset() {
 // every call) must deduplicate against the committed call roots (the receiver)
 // without being committed itself -- so the NEXT call's accumulator cannot falsely
 // deduplicate against this one's possibly-freed backing.
+//
+// probe saves and restores any journal already open on the estimator, so it can
+// run inside a memoized base-walk session (see beginBaseWalk): the probe's own
+// insertions are rolled back here and never leak into the session's journal,
+// while insertions the session recorded before the probe stay journaled for the
+// session's own rollback.
 func (est *memoryEstimator) probe(val Value) int {
 	prevFrozen := est.seenFrozen
-	est.journal = &estimatorJournal{}
-	journal := est.journal
+	prevJournal := est.journal
+	journal := &estimatorJournal{}
+	est.journal = journal
 	size := est.value(val)
-	est.journal = nil
+	est.journal = prevJournal
 	journal.rollback(est, prevFrozen)
 	return size
 }
@@ -170,10 +236,175 @@ func (j *estimatorJournal) rollback(est *memoryEstimator, prevFrozen *Env) {
 	}
 }
 
+// clear truncates the journal's records while keeping their backing capacity so
+// a memoized base-walk session can reuse one journal across checks without
+// re-allocating. Pointer-typed records are zeroed first so a rolled-back probe
+// value cannot be retained by the truncated backing array.
+func (j *estimatorJournal) clear() {
+	clear(j.envs)
+	j.envs = j.envs[:0]
+	j.maps = j.maps[:0]
+	j.hashData = j.hashData[:0]
+	j.slices = j.slices[:0]
+	j.strings = j.strings[:0]
+	clear(j.classes)
+	j.classes = j.classes[:0]
+	clear(j.instances)
+	j.instances = j.instances[:0]
+	clear(j.blocks)
+	j.blocks = j.blocks[:0]
+	clear(j.builtins)
+	j.builtins = j.builtins[:0]
+}
+
+// memoryEstimatorForCheck returns the shared per-execution estimator reset to
+// an empty seen-state, invalidating any memoized base walk because the caller
+// is about to overwrite the committed state the memo points at. Checks
+// themselves go through beginBaseWalk; this remains for probes (tests and
+// diagnostics) that need a bare estimator with the execution's identity.
 func (exec *Execution) memoryEstimatorForCheck() *memoryEstimator {
+	exec.baseWalkCache.valid = false
 	est := &exec.memoryEst
+	est.journal = nil
 	est.reset()
 	return est
+}
+
+// bumpMutationEpoch advances the process-wide mutation epoch that invalidates
+// every memoized estimator base walk. Runtime code must call it before any
+// write that changes state reachable from an execution's roots outside the
+// value package's own wrapper mutators: environment container writes go through
+// Env's setters (which bump), and array/hash wrapper mutations go through the
+// value package (which bumps), so the direct call sites are the raw
+// slice/map writes (index assignment, ivar and class-var stores) plus builtin
+// dispatch, which wholesale covers every Go builtin's internal writes.
+func bumpMutationEpoch() { value.BumpMutationEpoch() }
+
+// baseWalkCacheDisabled turns off base-walk memoization so tests can assert
+// that memoized and unmemoized estimates are byte-identical. Never set outside
+// tests: disabling costs a full graph re-walk per check but changes no result.
+var baseWalkCacheDisabled atomic.Bool
+
+// baseWalkCache memoizes the reachable-graph portion of the estimator's base
+// walk between checks. The memo is the pair (exec.memoryEst's committed
+// seen-state, graphBytes): a later check whose graph provably cannot have
+// changed -- the process-wide mutation epoch and the execution's root-set
+// topology version both still match -- resumes from that state instead of
+// re-walking the graph, then walks only its extra roots. Because the resumed
+// computation is literally the suffix of the walk the check would have
+// performed from scratch (the estimator's total is order-independent: it is a
+// deduplicated union over reachable identities), a memoized check returns
+// exactly the bytes an unmemoized one would; there is no partial or per-node
+// invalidation to reason about, a single epoch bump anywhere discards the
+// whole memo.
+//
+// Extra roots walked on top of the memo are recorded in journal and rolled
+// back when the session closes, restoring the committed base-only state (and
+// the single-slot frozen-env cache via prevFrozen) so the next check resumes
+// from an uncontaminated memo. A stale rollback would let a later extra
+// falsely deduplicate against a freed backing, so the journal is cleared and
+// re-armed on every session.
+type baseWalkCache struct {
+	journal    estimatorJournal
+	prevFrozen *Env
+	graphBytes int
+	// journalBudget is the per-session journal limit derived from the
+	// committed walk's identity count (see sessionJournalBudget), refreshed
+	// whenever the graph walk is re-memoized.
+	journalBudget int
+	epoch         uint64
+	topo          uint64
+	valid         bool
+	open          bool
+}
+
+// baseWalkSession is one memory check's view of the base walk: est is
+// positioned exactly after the base walk (committed seen-state loaded), and
+// base is the full base total (reachable graph plus the cheap scalar state
+// recomputed every check). The caller walks its extra roots through est --
+// they deduplicate against the base and against each other, exactly as in an
+// unmemoized walk -- and must call close before the next check runs.
+type baseWalkSession struct {
+	exec   *Execution
+	est    *memoryEstimator
+	base   int
+	cached bool
+}
+
+// beginBaseWalk opens a base-walk session, reusing the memoized graph walk
+// when it is provably current and re-walking (and re-memoizing) otherwise.
+//
+// The memo is bypassed entirely -- neither used nor refreshed -- while any Go
+// builtin is on the call stack (builtinDepth > 0), because builtin code can
+// mutate reachable containers through raw slice/map writes between its own
+// checks without bumping the epoch; while task groups are active or lazily
+// cloned task globals exist, whose retained memory evolves concurrently with
+// the walk; and under the test-only kill switch. Bypass walks run on the same
+// shared estimator, so they invalidate the memo (valid = false) rather than
+// leave stamps pointing at a clobbered seen-state.
+func (exec *Execution) beginBaseWalk() baseWalkSession {
+	c := &exec.baseWalkCache
+	if c.open {
+		// Sessions never nest (estimator walks do not re-enter evaluation); if
+		// one ever does, a throwaway estimator keeps the open session's
+		// committed state intact at the cost of one uncached walk.
+		est := newMemoryEstimator()
+		return baseWalkSession{exec: exec, est: est, base: exec.estimateMemoryUsageBase(est)}
+	}
+	globals := taskLazyGlobalsFromContext(exec.Context())
+	scalars := exec.estimateScalarBase()
+	est := &exec.memoryEst
+	if exec.builtinDepth > 0 || len(exec.activeTaskGroups) > 0 || globals != nil || baseWalkCacheDisabled.Load() {
+		c.valid = false
+		c.open = true
+		est.journal = nil
+		est.reset()
+		return baseWalkSession{exec: exec, est: est, base: scalars + exec.estimateGraphBase(est, globals)}
+	}
+	// Snapshot the epoch before walking: a bump that lands mid-walk then fails
+	// the equality check on the next session, forcing a conservative re-walk.
+	epoch := value.MutationEpoch()
+	if !c.valid || c.epoch != epoch || c.topo != exec.baseTopoVersion {
+		est.reset()
+		c.epoch = epoch
+		c.topo = exec.baseTopoVersion
+		c.graphBytes = exec.estimateGraphBase(est, nil)
+		c.journalBudget = sessionJournalBudget(est.identityCount())
+		c.valid = true
+	}
+	c.open = true
+	c.prevFrozen = est.seenFrozen
+	c.journal.clear()
+	c.journal.limit = c.journalBudget
+	est.journal = &c.journal
+	return baseWalkSession{exec: exec, est: est, base: scalars + c.graphBytes, cached: true}
+}
+
+// close ends a base-walk session. A memoized session rolls back every
+// insertion its extra roots made, restoring the committed base-only state the
+// next check resumes from; a bypass session leaves the shared estimator dirty
+// exactly as pre-memo checks did (the next session resets it).
+func (s *baseWalkSession) close() {
+	if s.est != &s.exec.memoryEst {
+		return
+	}
+	c := &s.exec.baseWalkCache
+	c.open = false
+	if !s.cached {
+		return
+	}
+	s.est.journal = nil
+	if c.journal.overflowed {
+		// The extras walk committed more identities than the journal recorded;
+		// a partial rollback would leave the memo claiming a base-only state
+		// it no longer holds, so discard the memo and let the next check
+		// re-walk from scratch.
+		c.valid = false
+		c.journal.clear()
+		return
+	}
+	c.journal.rollback(s.est, c.prevFrozen)
+	c.journal.clear()
 }
 
 func (exec *Execution) checkMemory() error {
@@ -248,25 +479,25 @@ func (exec *Execution) checkAccumulatorWithCallRoots(accumulator, receiver Value
 		return nil
 	}
 
-	est := exec.memoryEstimatorForCheck()
-	used := exec.estimateMemoryUsageBase(est)
-	used = saturatingAdd(used, est.value(accumulator))
+	s := exec.beginBaseWalk()
+	used := s.base
+	used = saturatingAdd(used, s.est.value(accumulator))
 	if receiver.Kind() != KindNil {
-		used = saturatingAdd(used, est.value(receiver))
+		used = saturatingAdd(used, s.est.value(receiver))
 	}
 	for _, arg := range args {
-		used = saturatingAdd(used, est.value(arg))
+		used = saturatingAdd(used, s.est.value(arg))
 	}
 	for _, kwarg := range kwargs {
-		used = saturatingAdd(used, est.value(kwarg))
+		used = saturatingAdd(used, s.est.value(kwarg))
 	}
 	if !block.IsNil() {
-		used = saturatingAdd(used, est.value(block))
+		used = saturatingAdd(used, s.est.value(block))
 	}
 	for _, extra := range liveExtras {
-		used = saturatingAdd(used, est.value(extra))
+		used = saturatingAdd(used, s.est.value(extra))
 	}
-	est.reset()
+	s.close()
 
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
@@ -285,9 +516,9 @@ func (exec *Execution) checkProjectedStringBytes(payloadBytes int) error {
 		return nil
 	}
 
-	est := exec.memoryEstimatorForCheck()
-	used := exec.estimateMemoryUsageBase(est)
-	est.reset()
+	s := exec.beginBaseWalk()
+	used := s.base
+	s.close()
 
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
@@ -366,10 +597,10 @@ func (exec *Execution) checkProjectedValueRendering(val Value, payloadBytes int)
 		return nil
 	}
 
-	est := exec.memoryEstimatorForCheck()
-	used := exec.estimateMemoryUsageBase(est)
-	used = saturatingAdd(used, est.value(val))
-	est.reset()
+	s := exec.beginBaseWalk()
+	used := s.base
+	used = saturatingAdd(used, s.est.value(val))
+	s.close()
 
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
@@ -416,12 +647,12 @@ func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int,
 		return nil
 	}
 
-	est := exec.memoryEstimatorForCheck()
-	used := exec.estimateMemoryUsageBase(est)
+	s := exec.beginBaseWalk()
+	used := s.base
 	if liveRoot.Kind() != KindNil {
-		used = saturatingAdd(used, est.value(liveRoot))
+		used = saturatingAdd(used, s.est.value(liveRoot))
 	}
-	est.reset()
+	s.close()
 
 	if liveSlots > 0 {
 		used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
@@ -655,24 +886,27 @@ func (exec *Execution) valueReachableFromLiveBase(value, block Value) bool {
 	if exec.memoryQuota <= 0 || value.Kind() == KindNil {
 		return false
 	}
-	est := exec.memoryEstimatorForCheck()
-	exec.estimateMemoryUsageBase(est)
+	s := exec.beginBaseWalk()
 	if !block.IsNil() {
-		est.value(block)
+		s.est.value(block)
 	}
-	return est.probe(value) <= estimatedValueBytes
+	reachable := s.est.probe(value) <= estimatedValueBytes
+	s.close()
+	return reachable
 }
 
 func (exec *Execution) checkCollapsedPairBytesWithLiveBase(receiver, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
-	est := exec.memoryEstimatorForCheck()
-	used := exec.estimateMemoryUsageBase(est)
+	s := exec.beginBaseWalk()
+	used := s.base
 	if !block.IsNil() {
-		used = saturatingAdd(used, est.value(block))
+		used = saturatingAdd(used, s.est.value(block))
 	}
-	if used = saturatingAdd(used, maxCollapsedPairBytesWithEstimator(receiver, est)); used > exec.memoryQuota {
+	used = saturatingAdd(used, maxCollapsedPairBytesWithEstimator(receiver, s.est))
+	s.close()
+	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
 	return nil
@@ -889,23 +1123,22 @@ func (acc *arrayBuildAccumulator) checkTransient(transient Value, backingCap int
 		return nil
 	}
 
-	est := acc.exec.memoryEstimatorForCheck()
-	defer est.reset()
-	acc.exec.estimateMemoryUsageBase(est)
+	s := acc.exec.beginBaseWalk()
+	defer s.close()
 	if acc.receiver.Kind() != KindNil {
-		est.value(acc.receiver)
+		s.est.value(acc.receiver)
 	}
 	for _, arg := range acc.args {
-		est.value(arg)
+		s.est.value(arg)
 	}
 	for _, kwarg := range acc.kwargs {
-		est.value(kwarg)
+		s.est.value(kwarg)
 	}
 	if !acc.block.IsNil() {
-		est.value(acc.block)
+		s.est.value(acc.block)
 	}
 
-	transientBytes := est.value(transient)
+	transientBytes := s.est.value(transient)
 	if used := saturatingAdd(acc.projected(backingCap), transientBytes); used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
@@ -1370,23 +1603,22 @@ func (acc *hashBuildAccumulator) checkTransient(transient Value) error {
 		return nil
 	}
 
-	est := acc.exec.memoryEstimatorForCheck()
-	defer est.reset()
-	acc.exec.estimateMemoryUsageBase(est)
+	s := acc.exec.beginBaseWalk()
+	defer s.close()
 	if acc.receiver.Kind() != KindNil {
-		est.value(acc.receiver)
+		s.est.value(acc.receiver)
 	}
 	for _, arg := range acc.args {
-		est.value(arg)
+		s.est.value(arg)
 	}
 	for _, kwarg := range acc.kwargs {
-		est.value(kwarg)
+		s.est.value(kwarg)
 	}
 	if !acc.block.IsNil() {
-		est.value(acc.block)
+		s.est.value(acc.block)
 	}
 
-	used := saturatingAdd(saturatingAdd(acc.base, acc.built), est.value(transient))
+	used := saturatingAdd(saturatingAdd(acc.base, acc.built), s.est.value(transient))
 	if used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
@@ -1668,21 +1900,21 @@ func targetCollectsRest(target Expression) bool {
 // build no derived map (the pure iterators) are not charged a map they never
 // allocate; callers that do build one fold the empty-map overhead in themselves.
 func (exec *Execution) hashCallRootBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
-	est := exec.memoryEstimatorForCheck()
-	used := exec.estimateMemoryUsageBase(est)
+	s := exec.beginBaseWalk()
+	used := s.base
 	if receiver.Kind() != KindNil {
-		used = saturatingAdd(used, est.value(receiver))
+		used = saturatingAdd(used, s.est.value(receiver))
 	}
 	for _, arg := range args {
-		used = saturatingAdd(used, est.value(arg))
+		used = saturatingAdd(used, s.est.value(arg))
 	}
 	for _, kwarg := range kwargs {
-		used = saturatingAdd(used, est.value(kwarg))
+		used = saturatingAdd(used, s.est.value(kwarg))
 	}
 	if !block.IsNil() {
-		used = saturatingAdd(used, est.value(block))
+		used = saturatingAdd(used, s.est.value(block))
 	}
-	est.reset()
+	s.close()
 
 	return used
 }
@@ -1725,64 +1957,64 @@ func (exec *Execution) maxProjectedHashEntries(scratchBytes int, receiver Value,
 }
 
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
-	est := exec.memoryEstimatorForCheck()
+	s := exec.beginBaseWalk()
 
-	total := exec.estimateMemoryUsageBase(est)
+	total := s.base
 	for _, extra := range extras {
-		total += est.value(extra)
+		total += s.est.value(extra)
 	}
 
-	est.reset()
+	s.close()
 	return total
 }
 
 func (exec *Execution) estimateMemoryUsageForCallRoots(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
-	est := exec.memoryEstimatorForCheck()
+	s := exec.beginBaseWalk()
 
-	total := exec.estimateMemoryUsageBase(est)
+	total := s.base
 
 	if callee.Kind() != KindNil {
-		total += est.value(callee)
+		total += s.est.value(callee)
 	}
 	if receiver.Kind() != KindNil {
-		total += est.value(receiver)
+		total += s.est.value(receiver)
 	}
 	for _, arg := range args {
-		total += est.value(arg)
+		total += s.est.value(arg)
 	}
 	for _, kwarg := range kwargs {
-		total += est.value(kwarg)
+		total += s.est.value(kwarg)
 	}
 	if !block.IsNil() {
-		total += est.value(block)
+		total += s.est.value(block)
 	}
 
-	est.reset()
+	s.close()
 	return total
 }
 
 func (exec *Execution) estimateMemoryUsageForPositionalCallRoots(callee, receiver, arg0, arg1 Value, argCount int, block Value) int {
-	est := exec.memoryEstimatorForCheck()
+	s := exec.beginBaseWalk()
 
-	total := exec.estimateMemoryUsageBase(est)
+	total := s.base
 
 	if callee.Kind() != KindNil {
-		total += est.value(callee)
+		total += s.est.value(callee)
 	}
 	if receiver.Kind() != KindNil {
-		total += est.value(receiver)
+		total += s.est.value(receiver)
 	}
 	if argCount > 0 {
-		total += est.value(arg0)
+		total += s.est.value(arg0)
 	}
 	if argCount > 1 {
-		total += est.value(arg1)
+		total += s.est.value(arg1)
 	}
 	if !block.IsNil() {
-		total += est.value(block)
+		total += s.est.value(block)
 	}
 
-	est.reset()
+	s.close()
 	return total
 }
 
@@ -1864,9 +2096,15 @@ func (r *loopScratchReservation) release() {
 }
 
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
-	total := exec.reservedScratchBytes
+	return exec.estimateScalarBase() + exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
+}
 
-	total += est.env(exec.root)
+// estimateGraphBase walks the reachable value graph rooted at the execution:
+// the env chain, the env stack, loaded modules, and any active task-group or
+// lazily cloned global retention. It is the expensive, memoizable portion of
+// the base walk; estimateScalarBase covers the rest.
+func (exec *Execution) estimateGraphBase(est *memoryEstimator, globals *taskLazyGlobals) int {
+	total := est.env(exec.root)
 	for _, env := range exec.envStack {
 		total += est.env(env)
 	}
@@ -1878,10 +2116,19 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 		total += group.jobPayloadMemory(est)
 		total += group.retainedResultMemory(est)
 	}
-	if globals := taskLazyGlobalsFromContext(exec.Context()); globals != nil {
+	if globals != nil {
 		total += globals.retainedSourceMemory(est)
 		total += globals.retainedCloneMemory(est)
 	}
+	return total
+}
+
+// estimateScalarBase sums the base-walk contributions that need no estimator:
+// per-stack slot overheads, reserved scratch, and small bookkeeping maps. It is
+// recomputed on every check (it is O(small) and changes with plain stack
+// pushes), so the memoized graph walk never has to be invalidated for it.
+func (exec *Execution) estimateScalarBase() int {
+	total := exec.reservedScratchBytes
 
 	total += len(exec.callStack) * estimatedCallFrameBytes
 	total += len(exec.receiverStack) * estimatedValueBytes
@@ -1979,7 +2226,7 @@ func (est *memoryEstimator) env(env *Env) int {
 	if est.rememberEnv(env) {
 		return 0
 	}
-	if est.journal != nil {
+	if est.journal != nil && est.journal.record() {
 		est.journal.envs = append(est.journal.envs, env)
 	}
 
@@ -2139,7 +2386,7 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenClasses = make(map[*ClassDef]struct{})
 		}
 		est.seenClasses[cl] = struct{}{}
-		if est.journal != nil {
+		if est.journal != nil && est.journal.record() {
 			est.journal.classes = append(est.journal.classes, cl)
 		}
 		size += est.hash(cl.ClassVars)
@@ -2155,7 +2402,7 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenInstances = make(map[*Instance]struct{})
 		}
 		est.seenInstances[inst] = struct{}{}
-		if est.journal != nil {
+		if est.journal != nil && est.journal.record() {
 			est.journal.instances = append(est.journal.instances, inst)
 		}
 		size += estimatedInstanceBytes
@@ -2172,7 +2419,7 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenBlocks = make(map[*Block]struct{})
 		}
 		est.seenBlocks[blk] = struct{}{}
-		if est.journal != nil {
+		if est.journal != nil && est.journal.record() {
 			est.journal.blocks = append(est.journal.blocks, blk)
 		}
 		size += estimatedBlockBytes + estimatedSliceBaseBytes + len(blk.Params)*estimatedStringHeaderBytes
@@ -2216,7 +2463,7 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenBuiltins = make(map[*Builtin]struct{})
 		}
 		est.seenBuiltins[builtin] = struct{}{}
-		if est.journal != nil {
+		if est.journal != nil && est.journal.record() {
 			est.journal.builtins = append(est.journal.builtins, builtin)
 		}
 		size = saturatingAdd(size, estimatedBuiltinBytes)
@@ -2268,7 +2515,7 @@ func (est *memoryEstimator) stringPayloadSize(str string) int {
 		est.seenStrings = make(map[stringIdentity]struct{})
 	}
 	est.seenStrings[key] = struct{}{}
-	if est.journal != nil {
+	if est.journal != nil && est.journal.record() {
 		est.journal.strings = append(est.journal.strings, key)
 	}
 	return len(str)
@@ -2325,7 +2572,7 @@ func (est *memoryEstimator) slice(values []Value) int {
 			est.seenSlices = make(map[uintptr]struct{})
 		}
 		est.seenSlices[id] = struct{}{}
-		if est.journal != nil {
+		if est.journal != nil && est.journal.record() {
 			est.journal.slices = append(est.journal.slices, id)
 		}
 	}
@@ -2366,7 +2613,7 @@ func (est *memoryEstimator) hashWrapperBytes(val Value) int {
 		est.seenHashData = make(map[uintptr]struct{})
 	}
 	est.seenHashData[id] = struct{}{}
-	if est.journal != nil {
+	if est.journal != nil && est.journal.record() {
 		est.journal.hashData = append(est.journal.hashData, id)
 	}
 	return saturatingAdd(estimatedHashDataBytes, est.typedHashEntriesBytes(val))
@@ -2411,7 +2658,7 @@ func (est *memoryEstimator) hash(values map[string]Value) int {
 			est.seenMaps = make(map[uintptr]struct{})
 		}
 		est.seenMaps[id] = struct{}{}
-		if est.journal != nil {
+		if est.journal != nil && est.journal.record() {
 			est.journal.maps = append(est.journal.maps, id)
 		}
 	}

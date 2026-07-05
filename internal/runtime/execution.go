@@ -78,6 +78,18 @@ type Execution struct {
 	memoryEst                 memoryEstimator
 	reservedScratchBytes      int
 
+	// baseWalkCache memoizes the reachable-graph portion of the memory
+	// estimator's base walk (see beginBaseWalk). baseTopoVersion invalidates it
+	// whenever the walk's root set changes shape (env stack push/pop, task group
+	// push/pop); the process-wide mutation epoch invalidates it whenever any
+	// reachable state mutates. builtinDepth counts the Go builtins currently on
+	// the call stack: while it is non-zero the memo is neither used nor
+	// refreshed, because builtin Go code can mutate containers through raw
+	// slice/map writes between its own memory checks without bumping the epoch.
+	baseWalkCache   baseWalkCache
+	baseTopoVersion uint64
+	builtinDepth    int
+
 	// Inline backing storage for the always-used per-call stacks, so a
 	// fresh Execution costs one allocation instead of one per stack.
 	// Appends beyond these capacities spill to the heap as usual.
@@ -225,6 +237,7 @@ func (exec *Execution) capabilityArgsValidated(method string) bool {
 }
 
 func (exec *Execution) pushEnv(env *Env) {
+	exec.baseTopoVersion++
 	exec.envStack = append(exec.envStack, env)
 }
 
@@ -239,10 +252,12 @@ func (exec *Execution) popEnv() {
 	if len(exec.envStack) == 0 {
 		return
 	}
+	exec.baseTopoVersion++
 	exec.envStack = exec.envStack[:len(exec.envStack)-1]
 }
 
 func (exec *Execution) pushTaskGroup(group *taskGroup) {
+	exec.baseTopoVersion++
 	exec.activeTaskGroups = append(exec.activeTaskGroups, group)
 }
 
@@ -250,6 +265,7 @@ func (exec *Execution) popTaskGroup() {
 	if len(exec.activeTaskGroups) == 0 {
 		return
 	}
+	exec.baseTopoVersion++
 	exec.activeTaskGroups = exec.activeTaskGroups[:len(exec.activeTaskGroups)-1]
 }
 
