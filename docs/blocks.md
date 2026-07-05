@@ -135,9 +135,56 @@ parameter list infers implicit parameters (`it`, `_1`..`_9`) just as blocks
 do. The `-> Type` return annotation on `def` still parses; it must sit on the
 signature line, while a `->` opening the next line starts a lambda literal.
 
-Ruby-style ampersand block forwarding (`&block`) and symbol-to-proc shorthand
-(`&:method_name`) are not supported. Write an explicit `do ... end` or brace
-block instead.
+## Block forwarding and symbol-to-proc
+
+Ruby-style ampersand block arguments convert a value into the call's block. A
+method captures its caller's block with a `&param` and forwards it with
+`&argument`, and `yield` in the callee sees the forwarded block — including
+its non-local return, which still unwinds to the method whose body wrote the
+block literal:
+
+```vibe
+def call_it
+  yield 3
+end
+
+def forward(&block)
+  call_it(&block)
+end
+
+forward do |n|
+  n + 1
+end # => 4
+```
+
+The `&` argument must be the last argument, appears at most once, and cannot
+be combined with a literal block. It accepts a proc or lambda (passed through
+unchanged), a function value or bound method (forwarded with its own arity
+and return checking), a symbol (converted via symbol-to-proc), or `nil`
+(no block, so `block_given?` is false). Anything else raises
+`block argument must be a block, function, or symbol`.
+
+The `&:method_name` shorthand builds a one-argument callable that sends
+`method_name` to each value, so it drives enumerables exactly like Ruby:
+
+```vibe
+def shout(words)
+  words.map(&:upcase)
+end
+
+def total(numbers)
+  numbers.reduce(&:+)
+end
+
+shout(["a", "b"]) # => ["A", "B"]
+total([1, 2, 3])  # => 6
+```
+
+Dispatch is public-only — `&:secret` against a private method raises
+`private method secret` just like an external call — and extra yielded
+arguments pass along (`reduce(&:+)` computes `acc + item` per step, with
+operator symbols routed through the same helpers the operators use). Getter
+members, including typed accessors, resolve exactly as `value.member` would.
 
 Reference scripts live in `examples/blocks/` and `examples/hashes/` (for merge
 and reporting helpers).

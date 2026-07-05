@@ -174,13 +174,15 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 		return true
 	}
 	if p.peekToken.Type == ast.TokenAmpersand {
-		// "&" is both the binary intersection operator and the (unsupported)
-		// block-pass / symbol-to-proc sigil. Ruby disambiguates by spacing:
-		// "foo &bar" passes a block while "foo & bar", "foo&bar", and a
-		// trailing "&" line continuation are all the binary operator. Only the
-		// block-pass shape starts a parenless argument here so the helpful
-		// block-pass diagnostic still fires; the operator shapes fall through
-		// to the infix path.
+		// "&" is both the binary intersection operator and the block-pass /
+		// symbol-to-proc sigil. Ruby disambiguates by spacing: "foo &bar"
+		// passes a block while "foo & bar", "foo&bar", and a trailing "&"
+		// line continuation are all the binary operator. A known local can
+		// never be a parenless callee, so "locals &other" stays intersection
+		// in every spacing, matching Ruby's local-variable rule.
+		if ident, ok := left.(*ast.Identifier); ok && p.isLocalName(ident.Name) {
+			return false
+		}
 		return p.peekAmpersandStartsBlockPass()
 	}
 	return isParenlessArgumentStart(p.peekToken.Type)
@@ -2064,18 +2066,21 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 	p.nextToken()
 	p.lineLimitedStopSuppression++
-	p.parseCallArgument(&args, &kwargs)
+	p.parseCallArgument(&args, &kwargs, &expr.BlockArg)
 
 	for p.peekToken.Type == ast.TokenComma {
 		p.nextToken()
 		if p.peekToken.Type == ast.TokenRParen {
 			break
 		}
+		if expr.BlockArg != nil {
+			p.addParseError(p.peekToken.Pos, "block argument must be the last argument")
+		}
 		p.nextToken()
 		if len(kwargs) > 0 && (!isLabelNameToken(p.curToken) || p.peekToken.Type != ast.TokenColon) {
 			p.addParseError(p.curToken.Pos, "positional arguments cannot follow keyword arguments")
 		}
-		p.parseCallArgument(&args, &kwargs)
+		p.parseCallArgument(&args, &kwargs, &expr.BlockArg)
 	}
 	p.lineLimitedStopSuppression--
 
@@ -2095,6 +2100,9 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 		expr.KeywordOptionsHash = true
 	}
 	if p.canAttachPeekBlock() {
+		if expr.BlockArg != nil {
+			p.addParseError(p.peekToken.Pos, "cannot pass both a block argument and a literal block")
+		}
 		p.nextToken()
 		expr.Block = p.parseBlockLiteral()
 	}
@@ -2111,18 +2119,21 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 	keywordOptionsHash := false
 
 	p.nextToken()
-	p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash)
+	p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash, &expr.BlockArg)
 
 	for p.peekToken.Type == ast.TokenComma &&
 		p.peekToken.Pos.Line == p.curToken.Pos.Line &&
 		p.peekPeek.Pos.Line == p.curToken.Pos.Line &&
 		(isParenlessArgumentStart(p.peekPeek.Type) || isLabelNameToken(p.peekPeek)) {
+		if expr.BlockArg != nil {
+			p.addParseError(p.peekPeek.Pos, "block argument must be the last argument")
+		}
 		p.nextToken()
 		p.nextToken()
 		if keywordOptionsHash && (!isLabelNameToken(p.curToken) || p.peekToken.Type != ast.TokenColon) {
 			p.addParseError(p.curToken.Pos, "positional arguments cannot follow bare keyword arguments in parenless calls")
 		}
-		p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash)
+		p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash, &expr.BlockArg)
 	}
 
 	expr.Args = args
@@ -2145,6 +2156,9 @@ func (p *parser) callWithBlock(callee ast.Expression, block *ast.BlockLiteral) a
 	} else {
 		call = &ast.CallExpr{Callee: callee, Position: callee.Pos(), Safe: isSafeMemberCallee(callee)}
 	}
+	if call.BlockArg != nil && block != nil {
+		p.addParseError(block.Pos(), "cannot pass both a block argument and a literal block")
+	}
 	call.Block = block
 	return call
 }
@@ -2159,7 +2173,7 @@ func (p *parser) canAttachPeekBlock() bool {
 	return p.peekToken.Type == ast.TokenLBrace && p.peekToken.Pos.Line == p.curToken.Pos.Line
 }
 
-func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg) {
+func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, blockArg *ast.Expression) {
 	switch p.curToken.Type {
 	case ast.TokenAsterisk:
 		p.recoverUnsupportedCallExpansion("call splat is not supported; pass positional arguments explicitly")
@@ -2170,7 +2184,7 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 	}
 
 	if p.curToken.Type == ast.TokenAmpersand {
-		p.recoverUnsupportedAmpersandCallArgument()
+		p.parseBlockPassArgument(blockArg, false)
 		return
 	}
 
@@ -2197,7 +2211,7 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 	}
 }
 
-func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, keywordOptionsHash *bool) {
+func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, keywordOptionsHash *bool, blockArg *ast.Expression) {
 	if p.curToken.Type == ast.TokenPercent {
 		expr := p.parsePercentArrayLiteralArgument()
 		if expr != nil {
@@ -2216,7 +2230,7 @@ func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]as
 	}
 
 	if p.curToken.Type == ast.TokenAmpersand {
-		p.recoverUnsupportedAmpersandCallArgument()
+		p.parseBlockPassArgument(blockArg, true)
 		return
 	}
 
@@ -2256,13 +2270,26 @@ func (p *parser) recoverUnsupportedCallExpansion(message string) {
 	p.recoverUnsupportedCallArgument()
 }
 
-func (p *parser) recoverUnsupportedAmpersandCallArgument() {
-	p.addParseErrorSpan(
-		p.curToken.Pos,
-		tokenEnd(p.curToken),
-		"ampersand block forwarding and symbol-to-proc shorthand are not supported; use an explicit do/end or brace block",
-	)
-	p.recoverUnsupportedCallArgument()
+// parseBlockPassArgument parses a Ruby-style ampersand block argument in call
+// position: `&blk` forwards a callable as the call's block and `&:name` is
+// the symbol-to-proc shorthand. The current token is the ampersand.
+func (p *parser) parseBlockPassArgument(blockArg *ast.Expression, parenless bool) {
+	ampPos := p.curToken.Pos
+	p.nextToken()
+	var value ast.Expression
+	if parenless {
+		value = p.parseParenlessArgumentExpression()
+	} else {
+		value = p.parseExpression(lowestPrec)
+	}
+	if value == nil {
+		return
+	}
+	if *blockArg != nil {
+		p.addParseError(ampPos, "duplicate block argument")
+		return
+	}
+	*blockArg = value
 }
 
 func (p *parser) recoverUnsupportedCallArgument() {

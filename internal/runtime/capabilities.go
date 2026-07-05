@@ -885,6 +885,7 @@ func (s *capabilityContractScanner) bindContracts(
 			s.scanClosureEnv(blk.Env, func(item Value) {
 				s.bindContracts(item, scope, target, scopes)
 			})
+			s.bindContracts(blk.forward, scope, target, scopes)
 		}
 	}
 }
@@ -966,6 +967,7 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 			s.scanClosureEnv(blk.Env, func(item Value) {
 				s.collectBuiltins(item, out)
 			})
+			s.collectBuiltins(blk.forward, out)
 		}
 	}
 }

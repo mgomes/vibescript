@@ -125,6 +125,7 @@ func (u *implicitBlockParamUsage) visitExpression(expr ast.Expression, callCalle
 		for _, arg := range e.KwArgs {
 			u.visitExpression(arg.Value, false)
 		}
+		u.visitExpression(e.BlockArg, false)
 	case *ast.MemberExpr:
 		u.visitExpression(e.Object, false)
 	case *ast.ScopeExpr:

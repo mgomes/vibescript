@@ -121,8 +121,14 @@ type CallExpr struct {
 	// (`receiver&.method(...)`). When set and the receiver evaluates to nil,
 	// the runtime short-circuits the call to nil instead of dispatching. It is
 	// meaningful only when Callee is a *MemberExpr whose Safe flag is also set.
-	Safe     bool
-	Block    *BlockLiteral
+	Safe  bool
+	Block *BlockLiteral
+	// BlockArg holds a Ruby-style ampersand block argument (`f(&blk)`,
+	// `f(&:name)`): the expression after `&`, evaluated at call time and
+	// converted into the call's block. It is mutually exclusive with Block —
+	// the parser rejects a call that supplies both — and must be the last
+	// argument.
+	BlockArg Expression
 	Position Position
 }
 

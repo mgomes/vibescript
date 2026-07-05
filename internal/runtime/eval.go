@@ -1280,6 +1280,12 @@ func blockPositionalArity(blk *Block) int {
 	if blk == nil {
 		return 0
 	}
+	// A forwarding block reports arity 1 so hash iterators hand it each
+	// entry as a single [key, value] pair, matching Ruby, where a
+	// symbol-to-proc or forwarded method receives the collapsed pair.
+	if isInvocable(blk.forward) {
+		return 1
+	}
 	if len(blk.Params) == 0 {
 		return implicitBlockParamArity(blk.ImplicitParams)
 	}
@@ -1337,6 +1343,12 @@ func (exec *Execution) callBlockValue(block Value, args []Value, pos Position) (
 }
 
 func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge, pos Position, chargedRoots ...Value) (Value, error) {
+	if isInvocable(blk.forward) {
+		if err := charge.begin(args, chargedRoots...); err != nil {
+			return NewNil(), err
+		}
+		return exec.invokeCallable(blk.forward, NewNil(), args, nil, NewNil(), pos)
+	}
 	if blk.lambda {
 		if err := exec.checkLambdaArity(blk, len(args), pos); err != nil {
 			return NewNil(), err
@@ -3707,7 +3719,7 @@ func expressionContainsBypassableIdentifierCall(expr Expression, name string) bo
 }
 
 func callUsesBypassableIdentifierResolution(call *CallExpr) bool {
-	return call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil
+	return call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil || call.BlockArg != nil
 }
 
 func stringPartsContainBypassableIdentifierCall(parts []StringPart, name string) bool {

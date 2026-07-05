@@ -523,6 +523,9 @@ func (c *scriptChecker) collectRequiredModuleExportsFromCallArguments(call *Call
 	for _, kwarg := range call.KwArgs {
 		c.collectRequiredModuleExportsFromExpression(kwarg.Value)
 	}
+	if call.BlockArg != nil {
+		c.collectRequiredModuleExportsFromExpression(call.BlockArg)
+	}
 }
 
 func (c *scriptChecker) collectRequiredModuleExportsFromExpressionBranches(branches ...Expression) {
@@ -661,7 +664,7 @@ func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
 }
 
 func (c *scriptChecker) staticRequireCall(call *CallExpr) (string, string, bool) {
-	if call == nil || len(call.Args) != 1 || call.Block != nil || c.requireCallShadowed() {
+	if call == nil || len(call.Args) != 1 || call.Block != nil || call.BlockArg != nil || c.requireCallShadowed() {
 		return "", "", false
 	}
 	callee, ok := call.Callee.(*Identifier)
@@ -1965,6 +1968,9 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		for _, kwarg := range typed.KwArgs {
 			c.checkExpressionWithAuto(function, kwarg.Value, true)
 		}
+		if typed.BlockArg != nil {
+			c.checkExpressionWithAuto(function, typed.BlockArg, false)
+		}
 		if c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
 			c.checkBlockLiteral(function, typed.Block)
@@ -2766,6 +2772,11 @@ func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map
 			if c.expressionMayEvaluateCallBlock(kwarg.Value, seen) {
 				return true
 			}
+		}
+		if typed.BlockArg != nil {
+			// A forwarded block argument may wrap or be the current call
+			// block, and the callee may invoke it.
+			return true
 		}
 		return c.callMayEvaluateBlockWithSeen(typed, seen) &&
 			c.blockLiteralMayEvaluateCallBlock(typed.Block, seen)

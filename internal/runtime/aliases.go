@@ -702,6 +702,7 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		clone.ImplicitParams = cloneStringSlice(block.ImplicitParams)
 		clone.Body = cloneStatements(block.Body)
 		clone.Env = cloneEnvForHost(block.Env, state)
+		clone.forward = cloneValueForHostWithState(block.forward, state)
 		return value.NewValue(KindBlock, &clone)
 	case KindBuiltin:
 		return cloneBuiltinForHost(val, state)
@@ -1033,6 +1034,13 @@ type Block struct {
 	// end the lambda call with a value instead of unwinding the enclosing
 	// method (Ruby's lambda vs proc distinction).
 	lambda bool
+	// forward holds the callable a non-block value converted through an
+	// ampersand block argument (`f(&fn)`, `f(&:name)`). When set, calling the
+	// block dispatches to this callable instead of binding Params and
+	// evaluating Body, so forwarded functions, bound methods, and
+	// symbol-to-proc builtins travel the block plumbing (yield, iterators,
+	// block_given?) unchanged. Zero for ordinary blocks.
+	forward Value
 }
 
 // NewBlock returns a block (closure) Value.

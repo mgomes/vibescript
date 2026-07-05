@@ -198,6 +198,7 @@ func lintExpression(function string, expr ast.Expression, warnings *[]Warning) {
 		for _, kwarg := range typed.KwArgs {
 			lintExpression(function, kwarg.Value, warnings)
 		}
+		lintExpression(function, typed.BlockArg, warnings)
 		lintBlockLiteral(function, typed.Block, warnings)
 	case *ast.MemberExpr:
 		lintExpression(function, typed.Object, warnings)

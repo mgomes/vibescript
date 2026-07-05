@@ -365,8 +365,11 @@ numbers.map do |n|
 end
 ```
 
-Ruby-style ampersand block forwarding and symbol-to-proc shorthand are not
-supported; use an explicit `do ... end` or brace block.
+Ruby-style ampersand block arguments forward a callable as the call's block:
+`m(&blk)` passes a captured block, function value, or bound method along, and
+`m(&:name)` is the symbol-to-proc shorthand that sends `name` to each yielded
+value. The `&` argument must be last and cannot be combined with a literal
+block. See [Blocks and Enumerables](blocks.md) for details.
 
 Ruby-style safe navigation (`receiver&.member`) reads a member or calls a
 method only when the receiver is not `nil`. When the receiver is `nil`, the

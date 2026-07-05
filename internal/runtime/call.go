@@ -85,7 +85,7 @@ func callMemberCallReceiverAutoInvokes(call *CallExpr, object Expression, env *E
 }
 
 func callHasNoValueArguments(call *CallExpr) bool {
-	return len(call.Args) == 0 && len(call.KwArgs) == 0
+	return len(call.Args) == 0 && len(call.KwArgs) == 0 && call.BlockArg == nil
 }
 
 func isStaticZeroArityFunctionReceiver(object Expression, env *Env) bool {
@@ -659,6 +659,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		clone := *blk
 		clone.Env = r.rebindCapturedEnv(blk.Env)
+		// A forwarding block's target rebinds too, so a captured capability
+		// grant is revoked exactly as it would be behind a plain builtin.
+		clone.forward = r.rebindValue(blk.forward)
 		cloneVal := wrapBlock(&clone)
 		if r.seenBlocks == nil {
 			r.seenBlocks = make(map[*Block]Value)
@@ -1402,7 +1405,7 @@ func generatedAccessorKind(member Value) functionAccessorKind {
 
 func (exec *Execution) evalBareCallableArgument(arg Expression, env *Env) (Value, bool, error) {
 	call, ok := arg.(*CallExpr)
-	if !ok || call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil {
+	if !ok || call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil || call.BlockArg != nil {
 		return NewNil(), false, nil
 	}
 	if _, ok := call.Callee.(*Identifier); !ok {
@@ -1952,10 +1955,26 @@ func optionsHashArgumentType(fn *ScriptFunction, positionalCount int, hasKeyword
 }
 
 func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
-	if call.Block == nil {
+	if call.Block != nil {
+		block, err := exec.evalBlockLiteral(call.Block, env)
+		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkMemoryWith(block); err != nil {
+			return NewNil(), err
+		}
+		return block, nil
+	}
+	if call.BlockArg == nil {
 		return NewNil(), nil
 	}
-	block, err := exec.evalBlockLiteral(call.Block, env)
+	// The `&` argument evaluates with a callable expectation so a bare
+	// function reference forwards as a value instead of auto-invoking.
+	val, err := exec.evalCallArgument(call.BlockArg, env, true)
+	if err != nil {
+		return NewNil(), err
+	}
+	block, err := exec.blockArgumentValue(val, call.BlockArg.Pos())
 	if err != nil {
 		return NewNil(), err
 	}
@@ -2117,7 +2136,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		}
 	}
 
-	if fn := singleNormalArgFunction(callee); fn != nil && len(call.Args) == 1 && len(call.KwArgs) == 0 && call.Block == nil {
+	if fn := singleNormalArgFunction(callee); fn != nil && len(call.Args) == 1 && len(call.KwArgs) == 0 && call.Block == nil && call.BlockArg == nil {
 		return exec.evalSingleNormalArgFunctionMemberCallExpr(call, receiver, fn, env)
 	}
 
@@ -2286,7 +2305,7 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 }
 
 func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindString || len(call.KwArgs) != 0 || call.Block != nil {
+	if receiver.Kind() != KindString || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil {
 		return NewNil(), false, nil
 	}
 
@@ -2374,7 +2393,7 @@ func (exec *Execution) evalDirectStringSplitCall(call *CallExpr, receiver Value,
 }
 
 func (exec *Execution) evalDirectArrayMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindArray || property != "join" || len(call.KwArgs) != 0 || call.Block != nil {
+	if receiver.Kind() != KindArray || property != "join" || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil {
 		return NewNil(), false, nil
 	}
 	if len(call.Args) > 1 {
@@ -2557,7 +2576,7 @@ func checkDirectStringMemberCallRoots(exec *Execution, receiver, first, second V
 }
 
 func (exec *Execution) evalDirectCoreObjectMemberCallExpr(call *CallExpr, receiver Value, member *MemberExpr, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindObject || len(call.KwArgs) != 0 || call.Block != nil {
+	if receiver.Kind() != KindObject || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil {
 		return NewNil(), false, nil
 	}
 
@@ -2676,7 +2695,7 @@ func (exec *Execution) evalDirectTimeParseCall(call *CallExpr, receiver Value, e
 }
 
 func (exec *Execution) evalDirectTimeMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindTime || len(call.KwArgs) != 0 || call.Block != nil {
+	if receiver.Kind() != KindTime || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil {
 		return NewNil(), false, nil
 	}
 	switch property {
