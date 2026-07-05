@@ -1396,6 +1396,11 @@ func typedMergedKeyCount(exec *Execution, receiver Value, args []Value, limit in
 	return count, nil
 }
 
+// hashFilterByBlock implements Ruby's Hash#delete_if and Hash#keep_if: the
+// block visits a snapshot of the entries, the entries it condemns are removed
+// from the receiver in place only after the walk completes (so the block never
+// observes a half-filtered receiver), and the receiver is returned. Surviving
+// entries keep their recorded insertion order.
 func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string, keepTruthy bool) (Value, error) {
 	if len(args) > 0 {
 		return NewNil(), fmt.Errorf("%s does not take arguments", method)
@@ -1414,7 +1419,7 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 		if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 			return NewNil(), err
 		}
-		out := newTypedHashPreservingDefault(receiver, count)
+		var dropped []Value
 		var blockArgs [2]Value
 		var entryBuf [smallHashKeyBufferSize]HashEntry
 		for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
@@ -1430,13 +1435,16 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 			if err := exec.checkContext(); err != nil {
 				return NewNil(), err
 			}
-			if include.Truthy() == keepTruthy {
-				if err := hashSet(out, entry.Key, entry.Value); err != nil {
-					return NewNil(), err
-				}
+			if include.Truthy() != keepTruthy {
+				dropped = append(dropped, entry.Key)
 			}
 		}
-		return out, nil
+		for _, key := range dropped {
+			if _, _, err := hashDeleteKey(receiver, key); err != nil {
+				return NewNil(), err
+			}
+		}
+		return receiver, nil
 	}
 	entries := receiver.Hash()
 	delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), sortedKeyBufferBytes(len(entries))))
@@ -1448,7 +1456,7 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
-	out := make(map[string]Value, len(entries))
+	var dropped []Value
 	var blockArgs [2]Value
 	var keyBuf [smallHashKeyBufferSize]string
 	for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
@@ -1464,21 +1472,105 @@ func hashFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 		if err := exec.checkContext(); err != nil {
 			return NewNil(), err
 		}
-		if include.Truthy() == keepTruthy {
-			out[key] = entries[key]
+		if include.Truthy() != keepTruthy {
+			dropped = append(dropped, NewSymbol(key))
 		}
 	}
-	return newHashPreservingDefault(receiver, out), nil
+	for _, key := range dropped {
+		if _, _, err := hashDeleteKey(receiver, key); err != nil {
+			return NewNil(), err
+		}
+	}
+	return receiver, nil
+}
+
+// hashMergeInPlace implements Ruby's Hash#merge! / Hash#update: it folds each
+// argument's entries into the receiver in place, resolving key conflicts
+// through the optional block (invoked with key, old value, new value), and
+// returns the receiver. Argument entries land in insertion order (bare host
+// maps contribute in sorted key order), so new keys append to the receiver's
+// recorded order exactly as index assignment would.
+func hashMergeInPlace(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, name string) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("hash.%s does not accept keyword arguments", name)
+	}
+	for i, arg := range args {
+		if arg.Kind() != KindHash && arg.Kind() != KindObject {
+			return NewNil(), fmt.Errorf("hash.%s argument %d must be a hash", name, i+1)
+		}
+	}
+	if len(args) == 0 {
+		return receiver, nil
+	}
+	added := 0
+	maxArgLen := 0
+	for _, arg := range args {
+		argLen := arg.HashLen()
+		added = saturatingAdd(added, argLen)
+		if argLen > maxArgLen {
+			maxArgLen = argLen
+		}
+	}
+	// The first typed write to a legacy receiver also materializes typed maps
+	// for its existing entries (promotion), so charge those alongside the new
+	// keys.
+	if !hashHasTypedEntries(receiver) {
+		added = saturatingAdd(added, receiver.HashLen())
+	}
+	// Charge the worst-case growth (every argument entry landing in a fresh
+	// typed receiver slot) plus the sorted-entry scratch the deterministic walk
+	// may allocate, before the receiver grows.
+	if err := exec.checkProjectedTypedHashTransformBytes(added, sortedHashEntryBufferBytes(maxArgLen), receiver, args, kwargs, block); err != nil {
+		return NewNil(), err
+	}
+	var runner *blockCallRunner
+	if valueBlock(block) != nil {
+		r, err := newBlockCallRunner(exec, block, "hash."+name, receiver, args, kwargs)
+		if err != nil {
+			return NewNil(), err
+		}
+		runner = r
+	}
+	var entryBuf [smallHashKeyBufferSize]HashEntry
+	var blockArgs [3]Value
+	for _, arg := range args {
+		// The snapshot buffer also makes h.merge!(h) safe: the walk reads the
+		// copied entries while the writes land in the receiver.
+		for _, entry := range deterministicHashEntriesInto(arg, entryBuf[:]) {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			val := entry.Value
+			if runner != nil {
+				oldValue, conflict, err := hashGet(receiver, entry.Key)
+				if err != nil {
+					return NewNil(), err
+				}
+				if conflict {
+					blockArgs[0] = entry.Key
+					blockArgs[1] = oldValue
+					blockArgs[2] = val
+					merged, err := runner.call(blockArgs[:])
+					if err != nil {
+						return NewNil(), err
+					}
+					val = merged
+				}
+			}
+			if err := hashSet(receiver, entry.Key, val); err != nil {
+				return NewNil(), err
+			}
+		}
+	}
+	return receiver, nil
 }
 
 func hashMemberTransforms(property string) (Value, error) {
 	switch property {
-	case "merge", "update", "merge!":
-		// update and merge! are Ruby aliases of merge. Ruby mutates the receiver
-		// in place and returns it; Vibescript's method-based hash helpers are
-		// immutable-style, so all three return a new merged hash and leave the
-		// receiver unchanged. Index assignment (hash[key] = value) remains the
-		// way to mutate in place.
+	case "merge":
+		// merge is non-mutating in Ruby too: it returns a new merged hash and
+		// leaves the receiver unchanged. The mutating aliases update/merge!
+		// fold into the receiver in place; see hashMergeInPlace below.
 		name := property
 		// AutoBuiltin so a parenless `hash.merge` invokes with zero arguments and
 		// returns a copy of the receiver, matching Ruby where the call has no
@@ -1813,6 +1905,15 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Ruby's Hash#merge copies the receiver's default onto the result.
 			return newHashPreservingDefault(receiver, out), nil
 		}), nil
+	case "update", "merge!":
+		// Ruby's Hash#update / Hash#merge! fold the argument hashes into the
+		// receiver in place (resolving conflicts through the optional block)
+		// and return the receiver. AutoBuiltin so a parenless `hash.merge!`
+		// invokes with zero arguments and is a no-op returning the receiver.
+		name := property
+		return NewAutoBuiltin("hash."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return hashMergeInPlace(exec, receiver, args, kwargs, block, name)
+		}), nil
 	case "replace":
 		return NewBuiltin("hash.replace", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			// Reject keyword arguments rather than silently dropping them; the
@@ -1823,48 +1924,43 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) != 1 || (args[0].Kind() != KindHash && args[0].Kind() != KindObject) {
 				return NewNil(), fmt.Errorf("hash.replace expects a single hash argument")
 			}
-			if hashHasTypedEntries(args[0]) {
-				count := args[0].HashLen()
-				if err := exec.checkProjectedTypedHashBytes(count, receiver, args, kwargs, block); err != nil {
-					return NewNil(), err
-				}
-				out := newTypedResultHash(count)
-				for _, entry := range args[0].HashEntries() {
-					if err := exec.step(); err != nil {
-						return NewNil(), err
-					}
-					if err := hashSet(out, entry.Key, entry.Value); err != nil {
-						return NewNil(), err
-					}
-				}
-				return out, nil
-			}
 			// Ruby's Hash#replace discards the receiver's contents and adopts the
-			// argument's entries, mutating in place. Vibescript's hash helpers are
-			// immutable-style, so replace returns a fresh hash holding a copy of
-			// the replacement's entries and leaves the receiver unchanged.
-			replacement := args[0].Hash()
-			// Preflight the copied map before reserving it so a large replacement
-			// cannot allocate past the quota ahead of the statement-level check.
-			if err := exec.checkProjectedHashBytes(len(replacement), receiver, args, kwargs, block); err != nil {
+			// argument's entries (and default) in place, returning the receiver.
+			// Preflight the adopted entries before the receiver grows, plus the
+			// sorted-entry scratch a bare replacement's deterministic walk may
+			// allocate.
+			count := args[0].HashLen()
+			if err := exec.checkProjectedTypedHashTransformBytes(count, sortedHashEntryBufferBytes(count), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			out := make(map[string]Value, len(replacement))
-			// The output map is order-independent, so iterate the replacement
-			// directly rather than materializing a sorted key list. A sorted
-			// walk would heap a len(replacement) []string scratch buffer that
-			// the scratch-free memory preflight above does not charge, letting
-			// it escape the quota; iterating in place keeps accounting exact and
-			// mirrors compact and slice. The range loop still charges a step per
-			// copied entry so a large replacement participates in the step quota
-			// and honors cancellation, matching every other O(n) hash transform.
-			for key, val := range replacement {
+			// Poll the step/cancellation budget before the first mutation so an
+			// already-aborted execution never wipes the receiver.
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			// Snapshot the replacement's entries before clearing so h.replace(h)
+			// is a harmless no-op rather than wiping the entries it is about to
+			// copy.
+			var entryBuf [smallHashKeyBufferSize]HashEntry
+			entries := deterministicHashEntriesInto(args[0], entryBuf[:])
+			hashClearEntries(receiver)
+			// Pre-size the typed storage and order backing to the adopted entry
+			// count so the rebuilt receiver holds exactly the slots the
+			// projection charged, with no append-growth overshoot.
+			receiver.ReserveTypedHashOrder(len(entries))
+			for _, entry := range entries {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
-				out[key] = val
+				if err := hashSet(receiver, entry.Key, entry.Value); err != nil {
+					return NewNil(), err
+				}
 			}
-			return NewHash(out), nil
+			// Adopt the replacement's default metadata, matching Ruby's
+			// Hash#replace (initialize_copy) which copies the default too. An
+			// object argument carries no defaults, so the receiver's are cleared.
+			receiver.SetHashDefaults(hashDefaultValue(args[0]), hashDefaultProc(args[0]))
+			return receiver, nil
 		}), nil
 	case "flatten":
 		return NewAutoBuiltin("hash.flatten", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1924,69 +2020,23 @@ func hashMemberTransforms(property string) (Value, error) {
 			if _, err := canonicalHashKey(args[0]); err != nil {
 				return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
 			}
-			storeDisplayKey, err := valueToHashKey(args[0])
-			if err != nil {
-				return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
-			}
-			// Vibescript's method-based hash helpers are immutable-style: store
-			// returns a new hash with the key assigned rather than mutating the
-			// receiver, matching merge and the array collection helpers.
-			// Preflight the copied map before reserving it so storing into a large
-			// hash cannot allocate past the quota ahead of the statement-level
-			// check. Storing an existing key replaces its value, so the result keeps
-			// len(base) entries; only a new key grows the map to len(base)+1.
-			// Sizing the projection by the existing-key case avoids rejecting an
-			// in-place-style update that fits a quota tuned to the receiver's size.
-			projected := receiver.HashLen()
-			storeKeyExists := false
-			if _, exists, err := hashGet(receiver, args[0]); err != nil {
-				return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
-			} else if !exists {
-				projected = saturatingAdd(projected, 1)
-			} else {
-				storeKeyExists = true
+			// Ruby's Hash#store is index assignment: it writes the entry into
+			// the receiver in place and returns the stored value. HashSet keeps
+			// an existing key at its recorded position, preserving Ruby's
+			// position-preserving store. Charge the potential growth before the
+			// receiver takes it: one typed slot, plus the typed maps the first
+			// write to a legacy receiver materializes during promotion.
+			projected := 1
+			if !hashHasTypedEntries(receiver) {
+				projected = saturatingAdd(receiver.HashLen(), 1)
 			}
 			if err := exec.checkProjectedTypedHashBytes(projected, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			out := newTypedResultHash(projected)
-			// Copy the receiver entry by entry rather than with maps.Copy so a
-			// store into a large hash charges a step per copied entry and honors
-			// cancellation, matching replace, compact, and slice. The output tracks
-			// insertion order, so a bare receiver is copied in sorted key order to
-			// keep a documented-sorted host map deterministic after the store.
-			typedReceiver := hashHasTypedEntries(receiver)
-			storeReplaced := false
-			var entryBuf [smallHashKeyBufferSize]HashEntry
-			for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
-				if err := exec.step(); err != nil {
-					return NewNil(), err
-				}
-				if !typedReceiver && storeKeyExists {
-					entryDisplayKey, err := valueToHashKey(entry.Key)
-					if err != nil {
-						return NewNil(), fmt.Errorf("hash.store stored key is unsupported hash key: %w", err)
-					}
-					if entryDisplayKey == storeDisplayKey {
-						// Store the new value at the entry's position so an
-						// existing key keeps its place in the result order,
-						// matching the typed-receiver path and Ruby's
-						// position-preserving Hash#store.
-						if err := hashSet(out, args[0], args[1]); err != nil {
-							return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
-						}
-						storeReplaced = true
-						continue
-					}
-				}
-				setClonedHashEntry(out, entry.Key, entry.Value)
+			if err := hashSet(receiver, args[0], args[1]); err != nil {
+				return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
 			}
-			if !storeReplaced {
-				if err := hashSet(out, args[0], args[1]); err != nil {
-					return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
-				}
-			}
-			return out, nil
+			return args[1], nil
 		}), nil
 	case "delete":
 		return NewBuiltin("hash.delete", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1996,94 +2046,26 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("hash.delete expects a key")
 			}
-			deleteKey, err := canonicalHashKey(args[0])
+			if _, err := canonicalHashKey(args[0]); err != nil {
+				return NewNil(), fmt.Errorf("hash.delete key is unsupported hash key: %w", err)
+			}
+			// Ruby's Hash#delete removes the entry from the receiver in place
+			// and returns the removed value. The removal keeps the surviving
+			// entries in their recorded insertion order and allocates nothing.
+			removed, existed, err := hashDeleteKey(receiver, args[0])
 			if err != nil {
 				return NewNil(), fmt.Errorf("hash.delete key is unsupported hash key: %w", err)
 			}
-			deleteDisplayKey, err := valueToHashKey(args[0])
-			if err != nil {
-				return NewNil(), fmt.Errorf("hash.delete key is unsupported hash key: %w", err)
+			if existed {
+				return removed, nil
 			}
-			typedReceiver := hashHasTypedEntries(receiver)
-			// Vibescript's method-based hash helpers are immutable-style: delete
-			// returns a new hash with the key removed rather than mutating the
-			// receiver. Because the receiver itself is non-mutating, the removed
-			// value is reported alongside the pruned hash as { hash:, deleted: },
-			// mirroring Array#pop's { array:, popped: } convention.
-			deleted, present, err := hashGet(receiver, args[0])
-			if err != nil {
-				return NewNil(), fmt.Errorf("hash.delete key is unsupported hash key: %w", err)
+			// On a miss Ruby returns nil, or the result of a block invoked with
+			// the requested key, matching `h.delete(key) { |k| default }`. The
+			// receiver is left untouched.
+			if valueBlock(block) != nil {
+				return exec.CallBlock(block, []Value{args[0]})
 			}
-			if !present {
-				// On a miss Ruby returns nil, or the result of a block invoked with
-				// the requested key, matching `h.delete(key) { |k| default }`.
-				deleted = NewNil()
-				if valueBlock(block) != nil {
-					result, err := exec.CallBlock(block, []Value{args[0]})
-					if err != nil {
-						return NewNil(), err
-					}
-					deleted = result
-				}
-				// The hash is unchanged on a miss, so the copy holds every entry.
-				// Preflight that copy against the quota before reserving it, matching
-				// store, replace, slice, and the other map-producing transforms; the
-				// post-call memory check only runs after the allocation, so without
-				// this a delete on a large hash near the quota could transiently
-				// exceed MemoryQuotaBytes instead of returning a quota error.
-				if err := exec.checkProjectedTypedHashBytes(receiver.HashLen(), receiver, args, kwargs, block); err != nil {
-					return NewNil(), err
-				}
-				out := newTypedResultHash(receiver.HashLen())
-				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
-					if err := exec.step(); err != nil {
-						return NewNil(), err
-					}
-					setClonedHashEntry(out, entry.Key, entry.Value)
-				}
-				return NewHash(map[string]Value{
-					"hash":    out,
-					"deleted": deleted,
-				}), nil
-			}
-			// The result drops exactly one entry, so it is never larger than the
-			// receiver; no growth projection is needed. Preflight that copy against
-			// the quota before reserving it, matching store, replace, and slice; the
-			// post-call check only runs after the allocation. Copy entry by entry so
-			// deleting from a large hash charges a step per copied entry and honors
-			// cancellation.
-			if err := exec.checkProjectedTypedHashBytes(receiver.HashLen()-1, receiver, args, kwargs, block); err != nil {
-				return NewNil(), err
-			}
-			out := newTypedResultHash(receiver.HashLen() - 1)
-			var entryBuf [smallHashKeyBufferSize]HashEntry
-			for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
-				if err := exec.step(); err != nil {
-					return NewNil(), err
-				}
-				entryKey, err := canonicalHashKey(entry.Key)
-				if err != nil {
-					return NewNil(), fmt.Errorf("hash.delete stored key is unsupported hash key: %w", err)
-				}
-				if typedReceiver && entryKey == deleteKey {
-					continue
-				}
-				if !typedReceiver {
-					entryDisplayKey, err := valueToHashKey(entry.Key)
-					if err != nil {
-						return NewNil(), fmt.Errorf("hash.delete stored key is unsupported hash key: %w", err)
-					}
-					if entryDisplayKey == deleteDisplayKey {
-						continue
-					}
-				}
-				setClonedHashEntry(out, entry.Key, entry.Value)
-			}
-			return NewHash(map[string]Value{
-				"hash":    out,
-				"deleted": deleted,
-			}), nil
+			return NewNil(), nil
 		}), nil
 	case "clear":
 		return NewAutoBuiltin("hash.clear", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -2096,7 +2078,10 @@ func hashMemberTransforms(property string) (Value, error) {
 			if valueBlock(block) != nil {
 				return NewNil(), fmt.Errorf("hash.clear does not accept a block")
 			}
-			return newHashPreservingDefault(receiver, map[string]Value{}), nil
+			// Ruby's Hash#clear empties the receiver in place, keeps its default
+			// metadata, and returns the receiver.
+			hashClearEntries(receiver)
+			return receiver, nil
 		}), nil
 	case "delete_if", "keep_if":
 		name := "hash." + property

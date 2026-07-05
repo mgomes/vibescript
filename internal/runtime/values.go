@@ -45,6 +45,14 @@ func hashSet(container, key, val Value) error {
 	return container.HashSet(key, val)
 }
 
+func hashDeleteKey(container, key Value) (Value, bool, error) {
+	return container.HashDeleteKey(key)
+}
+
+func hashClearEntries(container Value) {
+	container.HashClearEntries()
+}
+
 func hashHasTypedEntries(val Value) bool {
 	return val.HashHasTypedEntries()
 }

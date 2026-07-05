@@ -12,7 +12,8 @@ func TestHashStoreKeepsLegacyReceiverKeyPosition(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def run(h)
-  h.store("b", 9).keys
+  h.store("b", 9)
+  h.keys
 end`)
 
 	host := NewHash(map[string]Value{"a": NewInt(1), "b": NewInt(2), "c": NewInt(3)})

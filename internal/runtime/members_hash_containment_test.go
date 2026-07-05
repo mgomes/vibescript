@@ -309,6 +309,8 @@ func TestHashBlocklessTransformHonorsStepQuota(t *testing.T) {
 	const count = 5_000
 	const stepQuota = 100
 
+	// store is absent: it is a single in-place write nowadays and never walks
+	// the receiver's entries.
 	tests := []struct {
 		name string
 		args []Value
@@ -318,7 +320,6 @@ func TestHashBlocklessTransformHonorsStepQuota(t *testing.T) {
 		{name: "merge", args: []Value{largeHashReceiver(count)}},
 		{name: "replace", args: []Value{largeHashReceiver(count)}},
 		{name: "slice", args: hashSymbolKeys(count)},
-		{name: "store", args: []Value{NewSymbol("extra"), NewInt(1)}},
 		{name: "remap_keys", args: []Value{NewHash(map[string]Value{})}},
 	}
 
@@ -337,9 +338,13 @@ func TestHashBlocklessTransformHonorsCancellation(t *testing.T) {
 	t.Parallel()
 
 	// step() polls cancellation on its first invocation, so a canceled context
-	// aborts the walk before any entries are copied. A small receiver is enough.
-	receiver := largeHashReceiver(8)
-
+	// aborts the walk before any entries are copied — replace polls before its
+	// first mutation, so a canceled call leaves the receiver intact. A small
+	// receiver is enough; each case builds its own since the in-place forms
+	// would otherwise let one row's abort skew another's input.
+	//
+	// store is absent: it is a single in-place write nowadays with no walk to
+	// interrupt.
 	tests := []struct {
 		name string
 		args []Value
@@ -349,13 +354,13 @@ func TestHashBlocklessTransformHonorsCancellation(t *testing.T) {
 		{name: "merge", args: []Value{largeHashReceiver(8)}},
 		{name: "replace", args: []Value{largeHashReceiver(8)}},
 		{name: "slice", args: hashSymbolKeys(8)},
-		{name: "store", args: []Value{NewSymbol("extra"), NewInt(1)}},
 		{name: "remap_keys", args: []Value{NewHash(map[string]Value{})}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			receiver := largeHashReceiver(8)
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 0}
@@ -363,68 +368,65 @@ func TestHashBlocklessTransformHonorsCancellation(t *testing.T) {
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("%s under canceled context = %v, want context.Canceled", tc.name, err)
 			}
+			if receiver.HashLen() != 8 {
+				t.Fatalf("%s mutated the receiver under a canceled context: %d entries, want 8", tc.name, receiver.HashLen())
+			}
 		})
 	}
 }
 
-// TestHashReplaceFitsOutputQuotaWithoutScratch pins the final finding on PR #776:
-// Hash#replace copies the replacement into an order-independent output map, so it
-// iterates the replacement directly rather than materializing a sorted key list.
-// Its blockless preflight (checkProjectedHashBytes) therefore charges only the
-// output map and no scratch buffer, so a quota sized to exactly the live call
-// roots plus that output map must admit the call over a large replacement.
-//
-// This is the no-scratch counterpart to TestHashSelectSortedKeyBufferTripsMemory-
-// Quota, which pins that map-producing transforms which DO sort charge their
-// scratch. If replace ever regrows a sorted walk and (correctly) charges the
-// sortedKeyBufferBytes(count) buffer through the transform preflight, this tight
-// output-only quota would start rejecting and this test would fail, forcing the
-// reviewer to confront the reintroduced cost. It also exercises the in-place copy
-// over enough entries to spill past the inline key buffer, guarding the order-
-// independent correctness of the result against a large replacement.
-func TestHashReplaceFitsOutputQuotaWithoutScratch(t *testing.T) {
+// TestHashReplaceChargesTypedOutputAndScratch pins the in-place replace's
+// memory model: replace adopts the argument's entries into the receiver, whose
+// storage becomes typed (HashSet promotes on the first write), and the
+// deterministic entry walk snapshots the replacement into a sorted entry
+// buffer. The preflight charges both, so a quota sized to exactly the live
+// call roots plus the typed output and that scratch admits the call, while a
+// quota withholding the scratch rejects it up front.
+func TestHashReplaceChargesTypedOutputAndScratch(t *testing.T) {
 	t.Parallel()
 
-	// Enough keys that a reintroduced sorted-key list would heap a real buffer
-	// rather than reusing the inline stack array, so its omission is a meaningful
-	// share of the budget the no-scratch quota deliberately withholds.
+	// Enough keys that the sorted entry buffer heaps a real allocation rather
+	// than reusing the inline stack array.
 	const count = 50_000
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	base := probe.projectedHashBaseBytes(largeHashReceiver(count), []Value{largeHashReceiver(count)}, nil, NewNil())
+	scratch := sortedHashEntryBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated entry buffer for %d entries", count)
+	}
+	quota := base + typedHashTransformBufferBytes(count, scratch)
+
 	receiver := largeHashReceiver(count)
 	replacement := largeHashReceiver(count)
-
-	// Size the quota to exactly what replace allocates: the live call roots
-	// (receiver plus the replacement argument) and the output map of
-	// len(replacement) entries. No scratch term -- replace iterates in place.
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	base := probe.projectedHashBaseBytes(receiver, []Value{replacement}, nil, NewNil())
-	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	outputStructure := count * perEntry
-	quota := base + outputStructure
-
-	// Sanity: a sorted-key scratch buffer for this many entries is non-trivial, so
-	// the no-scratch quota genuinely withholds it. A walk that charged that buffer
-	// through the preflight could not fit this budget, proving the fit pins the in-
-	// place copy rather than an incidentally roomy quota.
-	scratch := sortedKeyBufferBytes(count)
-	if scratch <= 0 {
-		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
-	}
-
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	got, err := callHashMember(t, exec, receiver, "replace", []Value{replacement}, NewNil())
 	if err != nil {
-		t.Fatalf("replace under an output-sized quota = %v, want success", err)
+		t.Fatalf("replace under an output-plus-scratch quota = %v, want success", err)
 	}
 	if got.Kind() != KindHash {
 		t.Fatalf("replace returned %v, want hash", got.Kind())
 	}
-	if len(got.Hash()) != count {
-		t.Fatalf("replace produced %d entries, want %d", len(got.Hash()), count)
+	if got.HashLen() != count {
+		t.Fatalf("replace produced %d entries, want %d", got.HashLen(), count)
+	}
+	if receiver.HashLen() != count {
+		t.Fatalf("receiver holds %d entries after replace, want %d", receiver.HashLen(), count)
 	}
 	for key, want := range replacement.Hash() {
-		if got.Hash()[key].String() != want.String() {
-			t.Fatalf("replace entry %q = %v, want %v", key, got.Hash()[key], want)
+		if receiver.Hash()[key].String() != want.String() {
+			t.Fatalf("replace entry %q = %v, want %v", key, receiver.Hash()[key], want)
 		}
+	}
+
+	// Withholding the scratch term must reject the call before any mutation.
+	tight := base + typedHashTransformBufferBytes(count, 0)
+	receiver = largeHashReceiver(count)
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: tight}
+	_, err = callHashMember(t, exec, receiver, "replace", []Value{largeHashReceiver(count)}, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if receiver.HashLen() != count {
+		t.Fatalf("receiver mutated by a rejected replace: %d entries, want %d", receiver.HashLen(), count)
 	}
 }
 
@@ -1064,38 +1066,52 @@ func hashStoreProjectionBytes(t *testing.T, receiver Value, args []Value, entrie
 	return live + typedHashTransformBufferBytes(entries, 0)
 }
 
-// TestHashStoreExistingKeyFitsReceiverQuota pins the P2 finding on PR #776: when
-// store replaces an existing key, the result keeps len(base) entries, so a quota
-// sized to a copy of the receiver must admit the update. The pre-fix projection
-// always charged len(base)+1 and would reject this in-place-style replacement
-// even though the output stays within the limit.
-func TestHashStoreExistingKeyFitsReceiverQuota(t *testing.T) {
+// TestHashStoreChargesSlotAndPromotion pins the in-place store's memory
+// model: store writes a single entry into the receiver, so it charges one
+// typed slot — plus, on the first write to a legacy (bare host map) receiver,
+// the typed maps HashSet materializes during promotion. A quota sized to
+// exactly that admits the write with no headroom for the receiver copy the old
+// immutable-style store used to build.
+func TestHashStoreChargesSlotAndPromotion(t *testing.T) {
 	t.Parallel()
 
 	const count = 5_000
 	receiver := largeHashReceiver(count)
 	args := []Value{NewSymbol("k0"), NewInt(999)}
 
-	// Size the quota to exactly the typed copy store produces for len(base) entries.
-	// Storing an existing key must fit; the discarded len(base)+1 projection would not.
-	quota := hashStoreProjectionBytes(t, receiver, args, count)
+	// A legacy receiver's first typed write promotes every existing entry, so
+	// the projection charges count+1 slots.
+	quota := hashStoreProjectionBytes(t, receiver, args, count+1)
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	got, err := callHashMember(t, exec, receiver, "store", args, NewNil())
 	if err != nil {
-		t.Fatalf("store(existing key) under receiver-sized quota = %v, want success", err)
+		t.Fatalf("store under a slot-plus-promotion quota = %v, want success", err)
 	}
-	if got.Kind() != KindHash || len(got.Hash()) != count {
-		t.Fatalf("store produced %v with %d entries, want a hash with %d", got.Kind(), len(got.Hash()), count)
+	if got.Kind() != KindInt || got.Int() != 999 {
+		t.Fatalf("store returned %v, want the stored value 999", got)
 	}
-	if got.Hash()["k0"].String() != NewInt(999).String() {
-		t.Fatalf("store did not replace k0: got %v", got.Hash()["k0"])
+	if receiver.Hash()["k0"].Int() != 999 {
+		t.Fatalf("store did not write k0 into the receiver: got %v", receiver.Hash()["k0"])
+	}
+	if receiver.HashLen() != count {
+		t.Fatalf("receiver holds %d entries after replacing an existing key, want %d", receiver.HashLen(), count)
 	}
 
-	// Sanity: a new key grows the map to len(base)+1, which this quota cannot hold,
-	// confirming the quota is tight enough to exercise the existing-key case.
+	// An already-typed receiver charges only the single new slot.
+	typed := receiver
+	args = []Value{NewSymbol("brand_new"), NewInt(1)}
+	quota = hashStoreProjectionBytes(t, typed, args, 1)
 	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
-	_, err = callHashMember(t, exec, receiver, "store", []Value{NewSymbol("brand_new"), NewInt(1)}, NewNil())
-	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	got, err = callHashMember(t, exec, typed, "store", args, NewNil())
+	if err != nil {
+		t.Fatalf("store of a fresh key under a single-slot quota = %v, want success", err)
+	}
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("store returned %v, want the stored value 1", got)
+	}
+	if typed.HashLen() != count+1 {
+		t.Fatalf("receiver holds %d entries after storing a fresh key, want %d", typed.HashLen(), count+1)
+	}
 }
 
 // TestHashExceptFailsFastOnTinyReceiver pins the P1 finding on PR #776: a tiny

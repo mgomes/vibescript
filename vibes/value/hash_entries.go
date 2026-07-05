@@ -385,6 +385,85 @@ func promotedLegacyHashKey(displayKey string, incoming Value) Value {
 	return NewString(displayKey)
 }
 
+// HashDeleteKey removes the entry for key from a hash or object in place,
+// returning the removed value and whether the key was present. On a typed hash
+// it removes the key's slot from the recorded insertion order (keeping the
+// order/entries invariant HashSet maintains) and mirrors the removal into the
+// materialized legacy map when one exists. A missing key leaves the hash
+// untouched. An error is returned only for an unsupported key.
+func (v Value) HashDeleteKey(key Value) (Value, bool, error) {
+	switch v.kind {
+	case KindHash:
+		hd := v.data.(*hashData)
+		if hd.typedEntries != nil {
+			canonical, err := NewHashLookupKey(key)
+			if err != nil {
+				return NewNil(), false, err
+			}
+			entry, ok := hd.typedEntries[canonical]
+			if !ok {
+				return NewNil(), false, nil
+			}
+			delete(hd.typedEntries, canonical)
+			for i, lookupKey := range hd.order {
+				if lookupKey == canonical {
+					hd.order = append(hd.order[:i], hd.order[i+1:]...)
+					break
+				}
+			}
+			if hd.entries != nil {
+				delete(hd.entries, HashDisplayKey(entry.Key))
+			}
+			return entry.Value, true, nil
+		}
+		// Mirror HashGet's legacy lookup exactly: a bare string map only
+		// resolves string and symbol keys.
+		if hd.entries == nil || (key.kind != KindString && key.kind != KindSymbol) {
+			return NewNil(), false, nil
+		}
+		val, ok := hd.entries[key.String()]
+		if !ok {
+			return NewNil(), false, nil
+		}
+		delete(hd.entries, key.String())
+		return val, true, nil
+	case KindObject:
+		if key.kind != KindString && key.kind != KindSymbol {
+			return NewNil(), false, nil
+		}
+		entries := v.data.(map[string]Value)
+		val, ok := entries[key.String()]
+		if !ok {
+			return NewNil(), false, nil
+		}
+		delete(entries, key.String())
+		return val, true, nil
+	default:
+		return NewNil(), false, nil
+	}
+}
+
+// HashClearEntries removes every entry from a hash or object in place,
+// preserving a hash's Ruby-style default metadata (Ruby's Hash#clear keeps the
+// default). The typed-entry map, insertion order, and any materialized legacy
+// map are replaced with fresh empty storage so the old backings are released.
+func (v Value) HashClearEntries() {
+	switch v.kind {
+	case KindHash:
+		hd := v.data.(*hashData)
+		if hd.typedEntries != nil {
+			hd.typedEntries = make(map[HashLookupKey]HashEntry)
+		}
+		hd.typedEntryCapacity = 0
+		hd.order = nil
+		if hd.entries != nil {
+			hd.entries = map[string]Value{}
+		}
+	case KindObject:
+		clear(v.data.(map[string]Value))
+	}
+}
+
 // forEachTypedEntry invokes fn for each typed entry, walking the recorded
 // insertion order. The Go-map fallback only fires if the order record does not
 // cover the map, which cannot happen through HashSet (the sole typed-entry
