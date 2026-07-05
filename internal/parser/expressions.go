@@ -1705,7 +1705,7 @@ func (p *parser) parseBlockParameter() (ast.Param, bool) {
 }
 
 func (p *parser) parseDestructuredBlockParameter(stop ast.TokenType, stopName string) (ast.Param, bool) {
-	target := p.parseNestedDestructureTarget(stop, stopName)
+	target := p.parseNestedDestructureTarget(stop, stopName, true)
 	if target == nil {
 		return ast.Param{}, false
 	}

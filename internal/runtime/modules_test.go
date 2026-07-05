@@ -31,7 +31,11 @@ type requireBehaviorCase struct {
 	wantInt int64
 	want    Value
 	wantErr string
-	verify  func(t *testing.T, result Value)
+	// memoryQuota overrides the engine's default memory quota. Cases that pin
+	// which limit fires (such as the recursion cap) set explicit headroom so
+	// legitimate per-frame accounting growth cannot flip the outcome.
+	memoryQuota int
+	verify      func(t *testing.T, result Value)
 }
 
 // TestRequireBehavior aggregates the formerly individual TestRequire*
@@ -350,6 +354,10 @@ end`,
 end`,
 			fn:      "run",
 			wantErr: "recursion depth exceeded",
+			// The intent is the recursion cap firing across module boundaries;
+			// explicit quota headroom keeps the memory limit from racing it as
+			// per-frame require accounting evolves.
+			memoryQuota: 256 << 10,
 		},
 		{
 			name: "allows_cached_module_reuse_across_module_calls",
@@ -366,6 +374,9 @@ end`,
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			engine := moduleTestEngine(t)
+			if tc.memoryQuota > 0 {
+				engine = MustNewEngine(Config{ModulePaths: []string{filepath.FromSlash(moduleFixturesRoot)}, MemoryQuotaBytes: tc.memoryQuota})
+			}
 			script := compileScriptWithEngine(t, engine, tc.source)
 
 			if tc.wantErr != "" {

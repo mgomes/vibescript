@@ -278,20 +278,42 @@ end`,
 			wantType: &ast.TypeExpr{Name: "hash?", Kind: ast.TypeHash, Nullable: true},
 		},
 		{
-			name: "array_with_args_then_union_nil",
-			source: `def run(values: array<int> | nil)
+			name: "array_with_args_nullable_suffix",
+			source: `def run(values: array<int>?)
   values
 end`,
 			wantType: &ast.TypeExpr{
-				Name: "array<int> | nil",
-				Kind: ast.TypeUnion,
-				Union: []*ast.TypeExpr{
-					{
-						Name:     "array",
-						Kind:     ast.TypeArray,
-						TypeArgs: []*ast.TypeExpr{{Name: "int", Kind: ast.TypeInt}},
-					},
-					{Name: "nil", Kind: ast.TypeNil},
+				Name:     "array",
+				Kind:     ast.TypeArray,
+				Nullable: true,
+				TypeArgs: []*ast.TypeExpr{{Name: "int", Kind: ast.TypeInt}},
+			},
+		},
+		{
+			name: "hash_with_args_nullable_suffix",
+			source: `def run(values: hash<string, int>?)
+  values
+end`,
+			wantType: &ast.TypeExpr{
+				Name:     "hash",
+				Kind:     ast.TypeHash,
+				Nullable: true,
+				TypeArgs: []*ast.TypeExpr{
+					{Name: "string", Kind: ast.TypeString},
+					{Name: "int", Kind: ast.TypeInt},
+				},
+			},
+		},
+		{
+			name: "shape_nullable_suffix",
+			source: `def run(values: { id: int }?)
+  values
+end`,
+			wantType: &ast.TypeExpr{
+				Kind:     ast.TypeShape,
+				Nullable: true,
+				Shape: map[string]*ast.TypeExpr{
+					"id": {Name: "int", Kind: ast.TypeInt},
 				},
 			},
 		},
@@ -369,21 +391,35 @@ end`,
 			source: `def run(values: array?<int>)
   values
 end`,
-			wantErr: "nullable suffix on array is misplaced; write the nullable container as a union, e.g. array<...> | nil, instead of array?<...>",
+			wantErr: "nullable suffix on array is misplaced; write the nullable container after its type arguments, e.g. array<...>?, instead of array?<...>",
 		},
 		{
 			name: "nullable_suffix_before_hash_args",
 			source: `def run(values: hash?<string, int>)
   values
 end`,
-			wantErr: "nullable suffix on hash is misplaced; write the nullable container as a union, e.g. hash<...> | nil, instead of hash?<...>",
+			wantErr: "nullable suffix on hash is misplaced; write the nullable container after its type arguments, e.g. hash<...>?, instead of hash?<...>",
 		},
 		{
 			name: "nullable_suffix_before_object_args",
 			source: `def run(values: object?<string, int>)
   values
 end`,
-			wantErr: "nullable suffix on object is misplaced; write the nullable container as a union, e.g. object<...> | nil, instead of object?<...>",
+			wantErr: "nullable suffix on object is misplaced; write the nullable container after its type arguments, e.g. object<...>?, instead of object?<...>",
+		},
+		{
+			name: "double_nullable_scalar",
+			source: `def run(values: int??)
+  values
+end`,
+			wantErr: "duplicate nullable suffix",
+		},
+		{
+			name: "double_nullable_generic",
+			source: `def run(values: array<int>??)
+  values
+end`,
+			wantErr: "duplicate nullable suffix",
 		},
 	}
 
@@ -403,15 +439,16 @@ end`,
 
 // TestParserNullableSuffixSuggestionParses guards against the diagnostic for a
 // misplaced nullable suffix pointing users at syntax the parser cannot accept.
-// The error message suggests the union form (e.g. array<int> | nil), so the
-// suggested spelling must itself parse without errors.
+// The error message suggests postfix nullable compound types, so the suggested
+// spelling must itself parse without errors.
 func TestParserNullableSuffixSuggestionParses(t *testing.T) {
 	t.Parallel()
 
 	suggestions := []string{
-		"array<int> | nil",
-		"hash<string, int> | nil",
-		"object<string, int> | nil",
+		"array<int>?",
+		"hash<string, int>?",
+		"object<string, int>?",
+		"{ id: int }?",
 	}
 
 	for _, suggestion := range suggestions {
