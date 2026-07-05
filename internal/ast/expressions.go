@@ -121,8 +121,14 @@ type CallExpr struct {
 	// (`receiver&.method(...)`). When set and the receiver evaluates to nil,
 	// the runtime short-circuits the call to nil instead of dispatching. It is
 	// meaningful only when Callee is a *MemberExpr whose Safe flag is also set.
-	Safe     bool
-	Block    *BlockLiteral
+	Safe  bool
+	Block *BlockLiteral
+	// BlockArg holds a Ruby-style ampersand block argument (`f(&blk)`,
+	// `f(&:name)`): the expression after `&`, evaluated at call time and
+	// converted into the call's block. It is mutually exclusive with Block —
+	// the parser rejects a call that supplies both — and must be the last
+	// argument.
+	BlockArg Expression
 	Position Position
 }
 
@@ -133,7 +139,22 @@ func (e *CallExpr) Pos() Position { return e.Position }
 type KeywordArg struct {
 	Name  string
 	Value Expression
+	// Splat marks a keyword splat argument (`f(**opts)`): Name is empty and
+	// Value evaluates to a hash whose entries expand into the call's keyword
+	// arguments in source order, later entries winning on duplicate keys.
+	Splat bool
 }
+
+// SplatArg represents a positional splat argument in a call (`f(*args)`).
+// Value evaluates to an array whose elements expand into the call's
+// positional arguments in place. It only ever appears inside CallExpr.Args.
+type SplatArg struct {
+	Value    Expression
+	Position Position
+}
+
+func (e *SplatArg) exprNode()     {}
+func (e *SplatArg) Pos() Position { return e.Position }
 
 // MemberExpr represents a dot-access property lookup (e.g. obj.prop).
 type MemberExpr struct {
@@ -321,7 +342,12 @@ type BlockLiteral struct {
 	Params         []Param
 	ImplicitParams []string
 	Body           []Statement
-	Position       Position
+	// Lambda marks a stabby lambda literal (`->(x) { ... }`). A lambda is a
+	// first-class expression that evaluates to a callable value with strict
+	// arity and method-like (local) return/break semantics, unlike a plain
+	// block literal, which only ever appears attached to a call.
+	Lambda   bool
+	Position Position
 }
 
 func (b *BlockLiteral) exprNode()     {}

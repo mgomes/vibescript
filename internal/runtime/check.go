@@ -438,6 +438,8 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		for _, element := range typed.Elements {
 			c.collectRequiredModuleExportsFromExpression(element.Target)
 		}
+	case *SplatArg:
+		c.collectRequiredModuleExportsFromExpression(typed.Value)
 	case *UnaryExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Right)
 	case *BinaryExpr:
@@ -522,6 +524,9 @@ func (c *scriptChecker) collectRequiredModuleExportsFromCallArguments(call *Call
 	}
 	for _, kwarg := range call.KwArgs {
 		c.collectRequiredModuleExportsFromExpression(kwarg.Value)
+	}
+	if call.BlockArg != nil {
+		c.collectRequiredModuleExportsFromExpression(call.BlockArg)
 	}
 }
 
@@ -661,7 +666,7 @@ func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
 }
 
 func (c *scriptChecker) staticRequireCall(call *CallExpr) (string, string, bool) {
-	if call == nil || len(call.Args) != 1 || call.Block != nil || c.requireCallShadowed() {
+	if call == nil || len(call.Args) != 1 || call.Block != nil || call.BlockArg != nil || c.requireCallShadowed() {
 		return "", "", false
 	}
 	callee, ok := call.Callee.(*Identifier)
@@ -1965,6 +1970,9 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		for _, kwarg := range typed.KwArgs {
 			c.checkExpressionWithAuto(function, kwarg.Value, true)
 		}
+		if typed.BlockArg != nil {
+			c.checkExpressionWithAuto(function, typed.BlockArg, false)
+		}
 		if c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
 			c.checkBlockLiteral(function, typed.Block)
@@ -1988,6 +1996,8 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		for _, element := range typed.Elements {
 			c.checkExpressionWithAuto(function, element.Target, true)
 		}
+	case *SplatArg:
+		c.checkExpressionWithAuto(function, typed.Value, true)
 	case *UnaryExpr:
 		c.checkExpressionWithAuto(function, typed.Right, true)
 	case *BinaryExpr:
@@ -2067,6 +2077,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 	case *CaseExpr:
 		c.checkCaseExpression(function, typed)
 	case *BlockLiteral:
+		// A standalone block literal is a stabby lambda; its body checks like a
+		// call block's. Plain call blocks are checked from the CallExpr case.
+		if typed.Lambda {
+			c.checkBlockLiteral(function, typed)
+		}
 		return
 	case *YieldExpr:
 		for _, arg := range typed.Args {
@@ -2416,7 +2431,12 @@ func expressionMayEscapeIteration(expr Expression) bool {
 				return true
 			}
 		}
+		if typed.BlockArg != nil && expressionMayEscapeIteration(typed.BlockArg) {
+			return true
+		}
 		return typed.Block != nil && expressionMayEscapeIteration(typed.Block)
+	case *SplatArg:
+		return expressionMayEscapeIteration(typed.Value)
 	case *UnaryExpr:
 		return expressionMayEscapeIteration(typed.Right)
 	case *BinaryExpr:
@@ -2762,6 +2782,11 @@ func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map
 				return true
 			}
 		}
+		if typed.BlockArg != nil {
+			// A forwarded block argument may wrap or be the current call
+			// block, and the callee may invoke it.
+			return true
+		}
 		return c.callMayEvaluateBlockWithSeen(typed, seen) &&
 			c.blockLiteralMayEvaluateCallBlock(typed.Block, seen)
 	case *MemberExpr:
@@ -2785,6 +2810,8 @@ func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map
 			}
 		}
 		return false
+	case *SplatArg:
+		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
 	case *UnaryExpr:
 		return c.expressionMayEvaluateCallBlock(typed.Right, seen)
 	case *BinaryExpr:
@@ -3259,6 +3286,15 @@ func (c *scriptChecker) checkCall(function string, call *CallExpr) {
 	if !ok {
 		return
 	}
+	if callExpandsArguments(call) {
+		// Splat expansion makes the argument shape dynamic: the runtime
+		// validates the expanded call with the same binding errors a literal
+		// spelling would raise, so static shape checks step aside.
+		if target.fn != nil {
+			c.enqueueReachableFunction(target.name, target.fn)
+		}
+		return
+	}
 	if target.fn != nil {
 		view := staticCallViewFor(call, target)
 		c.checkCallShape(function, view, target.name, target.fn)
@@ -3267,6 +3303,17 @@ func (c *scriptChecker) checkCall(function string, call *CallExpr) {
 		return
 	}
 	c.checkBuiltinCallShape(function, staticCallViewFor(call, target), target.name, target.spec)
+}
+
+// callExpandsArguments reports whether a call carries a positional or
+// keyword splat, so its final argument shape is only known at runtime.
+func callExpandsArguments(call *CallExpr) bool {
+	for _, kw := range call.KwArgs {
+		if kw.Splat {
+			return true
+		}
+	}
+	return callHasSplatArg(call)
 }
 
 func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {

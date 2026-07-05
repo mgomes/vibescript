@@ -174,14 +174,26 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 		return true
 	}
 	if p.peekToken.Type == ast.TokenAmpersand {
-		// "&" is both the binary intersection operator and the (unsupported)
-		// block-pass / symbol-to-proc sigil. Ruby disambiguates by spacing:
-		// "foo &bar" passes a block while "foo & bar", "foo&bar", and a
-		// trailing "&" line continuation are all the binary operator. Only the
-		// block-pass shape starts a parenless argument here so the helpful
-		// block-pass diagnostic still fires; the operator shapes fall through
-		// to the infix path.
+		// "&" is both the binary intersection operator and the block-pass /
+		// symbol-to-proc sigil. Ruby disambiguates by spacing: "foo &bar"
+		// passes a block while "foo & bar", "foo&bar", and a trailing "&"
+		// line continuation are all the binary operator. A known local can
+		// never be a parenless callee, so "locals &other" stays intersection
+		// in every spacing, matching Ruby's local-variable rule.
+		if ident, ok := left.(*ast.Identifier); ok && p.isLocalName(ident.Name) {
+			return false
+		}
 		return p.peekAmpersandStartsBlockPass()
+	}
+	if p.peekToken.Type == ast.TokenAsterisk || p.peekToken.Type == ast.TokenPower {
+		// "*" (and "**") is both a binary operator and the splat sigil; the
+		// same spacing shape Ruby uses for the ampersand applies — "foo *args"
+		// splats while "foo * args", "foo*args", and a trailing "*" are the
+		// operator — and a known local callee keeps the operator reading.
+		if ident, ok := left.(*ast.Identifier); ok && p.isLocalName(ident.Name) {
+			return false
+		}
+		return p.peekSigilStartsPrefixArgument()
 	}
 	return isParenlessArgumentStart(p.peekToken.Type)
 }
@@ -203,6 +215,13 @@ func (p *parser) peekAmpersandStartsBlockPass() bool {
 	if p.peekToken.Type != ast.TokenAmpersand {
 		return false
 	}
+	return p.peekSigilStartsPrefixArgument()
+}
+
+// peekSigilStartsPrefixArgument reports whether the lookahead sigil (&, *,
+// or **) has the argument-prefix spacing: detached from the callee yet flush
+// against its operand on the same line.
+func (p *parser) peekSigilStartsPrefixArgument() bool {
 	calleeFlush := p.peekToken.Pos.Line == p.curToken.End.Line &&
 		p.peekToken.Pos.Column == p.curToken.End.Column
 	if calleeFlush {
@@ -342,6 +361,7 @@ const (
 	prefixParserWhileExpression
 	prefixParserUntilExpression
 	prefixParserRegexLiteral
+	prefixParserLambdaLiteral
 )
 
 func prefixParserKind(tt ast.TokenType) prefixParseKind {
@@ -402,6 +422,8 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserUntilExpression
 	case ast.TokenRegex:
 		return prefixParserRegexLiteral
+	case ast.TokenThinArrow:
+		return prefixParserLambdaLiteral
 	default:
 		return prefixParserNone
 	}
@@ -465,6 +487,8 @@ func (p *parser) parsePrefix(kind prefixParseKind) ast.Expression {
 		return p.parseUntilExpression()
 	case prefixParserRegexLiteral:
 		return p.parseRegexLiteral()
+	case prefixParserLambdaLiteral:
+		return p.parseLambdaLiteral()
 	default:
 		return nil
 	}
@@ -1841,6 +1865,102 @@ func (p *parser) parseBlockParameters() ([]ast.Param, bool) {
 	return params, true
 }
 
+// parseLambdaLiteral parses a stabby lambda: `->(a, b) { ... }`,
+// `-> { ... }`, or the do/end body form. Parameters are optional and use the
+// block-parameter grammar (identifiers with optional type annotations and
+// destructuring targets), so `->` lambdas support exactly the parameter
+// shapes blocks do. A lambda with no parameter list infers implicit
+// parameters (`it`, `_1`..`_9`) the same way a block literal does.
+func (p *parser) parseLambdaLiteral() ast.Expression {
+	pos := p.curToken.Pos
+	params := []ast.Param{}
+	hasExplicitParams := false
+	if p.peekToken.Type == ast.TokenLParen {
+		hasExplicitParams = true
+		p.nextToken()
+		var ok bool
+		params, ok = p.parseLambdaParameters()
+		if !ok {
+			return nil
+		}
+	}
+
+	var stopToken ast.TokenType
+	var stopName string
+	switch p.peekToken.Type {
+	case ast.TokenLBrace:
+		stopToken, stopName = ast.TokenRBrace, "}"
+	case ast.TokenDo:
+		stopToken, stopName = ast.TokenEnd, "end"
+	default:
+		p.errorExpected(p.peekToken, "lambda body opened with { or do")
+		return nil
+	}
+	p.nextToken()
+	p.nextToken()
+
+	inferImplicitIt := !p.isLocalName("it")
+	p.pushLocalScope(params, false)
+	if !hasExplicitParams {
+		p.declareNumberedImplicitBlockParamCandidates()
+	}
+	body := p.parseBlock(stopToken)
+	p.popLocalScope()
+	if p.curToken.Type != stopToken {
+		p.errorExpected(p.curToken, stopName)
+	}
+
+	implicitParams := []string(nil)
+	if !hasExplicitParams {
+		implicitParams = inferImplicitBlockParams(body, inferImplicitIt)
+	}
+
+	return &ast.BlockLiteral{
+		Params:         params,
+		ImplicitParams: implicitParams,
+		Body:           body,
+		Lambda:         true,
+		Position:       pos,
+	}
+}
+
+// parseLambdaParameters parses the parenthesized parameter list of a stabby
+// lambda. The current token is the opening parenthesis; on success the
+// current token is the closing parenthesis.
+func (p *parser) parseLambdaParameters() ([]ast.Param, bool) {
+	params := []ast.Param{}
+	p.nextToken()
+	if p.curToken.Type == ast.TokenRParen {
+		return params, true
+	}
+
+	param, ok := p.parseBlockParameter()
+	if !ok {
+		return nil, false
+	}
+	params = append(params, param)
+
+	for p.peekToken.Type == ast.TokenComma {
+		p.nextToken()
+		p.nextToken()
+		if p.curToken.Type == ast.TokenRParen {
+			p.addParseError(p.curToken.Pos, "trailing comma in lambda parameter list")
+			return nil, false
+		}
+		param, ok := p.parseBlockParameter()
+		if !ok {
+			return nil, false
+		}
+		params = append(params, param)
+	}
+
+	if !p.expectPeek(ast.TokenRParen) {
+		return nil, false
+	}
+
+	return params, true
+}
+
 func (p *parser) parseBlockParameter() (ast.Param, bool) {
 	switch p.curToken.Type {
 	case ast.TokenIdent:
@@ -1963,18 +2083,21 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 	p.nextToken()
 	p.lineLimitedStopSuppression++
-	p.parseCallArgument(&args, &kwargs)
+	p.parseCallArgument(&args, &kwargs, &expr.BlockArg)
 
 	for p.peekToken.Type == ast.TokenComma {
 		p.nextToken()
 		if p.peekToken.Type == ast.TokenRParen {
 			break
 		}
+		if expr.BlockArg != nil {
+			p.addParseError(p.peekToken.Pos, "block argument must be the last argument")
+		}
 		p.nextToken()
-		if len(kwargs) > 0 && (!isLabelNameToken(p.curToken) || p.peekToken.Type != ast.TokenColon) {
+		if len(kwargs) > 0 && !argumentMayFollowKeywords(p.curToken, p.peekToken) {
 			p.addParseError(p.curToken.Pos, "positional arguments cannot follow keyword arguments")
 		}
-		p.parseCallArgument(&args, &kwargs)
+		p.parseCallArgument(&args, &kwargs, &expr.BlockArg)
 	}
 	p.lineLimitedStopSuppression--
 
@@ -1994,6 +2117,9 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 		expr.KeywordOptionsHash = true
 	}
 	if p.canAttachPeekBlock() {
+		if expr.BlockArg != nil {
+			p.addParseError(p.peekToken.Pos, "cannot pass both a block argument and a literal block")
+		}
 		p.nextToken()
 		expr.Block = p.parseBlockLiteral()
 	}
@@ -2010,18 +2136,22 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 	keywordOptionsHash := false
 
 	p.nextToken()
-	p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash)
+	p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash, &expr.BlockArg)
 
 	for p.peekToken.Type == ast.TokenComma &&
 		p.peekToken.Pos.Line == p.curToken.Pos.Line &&
 		p.peekPeek.Pos.Line == p.curToken.Pos.Line &&
-		(isParenlessArgumentStart(p.peekPeek.Type) || isLabelNameToken(p.peekPeek)) {
+		(isParenlessArgumentStart(p.peekPeek.Type) || isLabelNameToken(p.peekPeek) ||
+			p.peekPeek.Type == ast.TokenAsterisk || p.peekPeek.Type == ast.TokenPower) {
+		if expr.BlockArg != nil {
+			p.addParseError(p.peekPeek.Pos, "block argument must be the last argument")
+		}
 		p.nextToken()
 		p.nextToken()
-		if keywordOptionsHash && (!isLabelNameToken(p.curToken) || p.peekToken.Type != ast.TokenColon) {
+		if keywordOptionsHash && !argumentMayFollowKeywords(p.curToken, p.peekToken) {
 			p.addParseError(p.curToken.Pos, "positional arguments cannot follow bare keyword arguments in parenless calls")
 		}
-		p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash)
+		p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash, &expr.BlockArg)
 	}
 
 	expr.Args = args
@@ -2044,6 +2174,9 @@ func (p *parser) callWithBlock(callee ast.Expression, block *ast.BlockLiteral) a
 	} else {
 		call = &ast.CallExpr{Callee: callee, Position: callee.Pos(), Safe: isSafeMemberCallee(callee)}
 	}
+	if call.BlockArg != nil && block != nil {
+		p.addParseError(block.Pos(), "cannot pass both a block argument and a literal block")
+	}
 	call.Block = block
 	return call
 }
@@ -2058,18 +2191,27 @@ func (p *parser) canAttachPeekBlock() bool {
 	return p.peekToken.Type == ast.TokenLBrace && p.peekToken.Pos.Line == p.curToken.Pos.Line
 }
 
-func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg) {
+func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, blockArg *ast.Expression) {
 	switch p.curToken.Type {
 	case ast.TokenAsterisk:
-		p.recoverUnsupportedCallExpansion("call splat is not supported; pass positional arguments explicitly")
+		pos := p.curToken.Pos
+		p.nextToken()
+		value := p.parseExpression(lowestPrec)
+		if value != nil {
+			*args = append(*args, &ast.SplatArg{Value: value, Position: pos})
+		}
 		return
 	case ast.TokenPower:
-		p.recoverUnsupportedCallExpansion("keyword splat is not supported; pass keyword arguments explicitly")
+		p.nextToken()
+		value := p.parseExpression(lowestPrec)
+		if value != nil {
+			*kwargs = append(*kwargs, ast.KeywordArg{Value: value, Splat: true})
+		}
 		return
 	}
 
 	if p.curToken.Type == ast.TokenAmpersand {
-		p.recoverUnsupportedAmpersandCallArgument()
+		p.parseBlockPassArgument(blockArg, false)
 		return
 	}
 
@@ -2096,7 +2238,7 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 	}
 }
 
-func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, keywordOptionsHash *bool) {
+func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, keywordOptionsHash *bool, blockArg *ast.Expression) {
 	if p.curToken.Type == ast.TokenPercent {
 		expr := p.parsePercentArrayLiteralArgument()
 		if expr != nil {
@@ -2107,15 +2249,25 @@ func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]as
 
 	switch p.curToken.Type {
 	case ast.TokenAsterisk:
-		p.recoverUnsupportedCallExpansion("call splat is not supported; pass positional arguments explicitly")
+		pos := p.curToken.Pos
+		p.nextToken()
+		value := p.parseParenlessArgumentExpression()
+		if value != nil {
+			*args = append(*args, &ast.SplatArg{Value: value, Position: pos})
+		}
 		return
 	case ast.TokenPower:
-		p.recoverUnsupportedCallExpansion("keyword splat is not supported; pass keyword arguments explicitly")
+		p.nextToken()
+		value := p.parseParenlessArgumentExpression()
+		if value != nil {
+			*kwargs = append(*kwargs, ast.KeywordArg{Value: value, Splat: true})
+			*keywordOptionsHash = true
+		}
 		return
 	}
 
 	if p.curToken.Type == ast.TokenAmpersand {
-		p.recoverUnsupportedAmpersandCallArgument()
+		p.parseBlockPassArgument(blockArg, true)
 		return
 	}
 
@@ -2143,6 +2295,17 @@ func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]as
 	}
 }
 
+// argumentMayFollowKeywords reports whether the argument starting at cur may
+// legally follow keyword arguments in a call: another keyword label, a
+// keyword splat (`**opts`), or the trailing block argument (`&blk`). Only
+// plain positional arguments (including `*splat`) must precede keywords.
+func argumentMayFollowKeywords(cur, peek ast.Token) bool {
+	if cur.Type == ast.TokenPower || cur.Type == ast.TokenAmpersand {
+		return true
+	}
+	return isLabelNameToken(cur) && peek.Type == ast.TokenColon
+}
+
 func (p *parser) parenlessKeywordArgumentCanUseShorthand() bool {
 	if p.peekToken.Type == ast.TokenEOF || p.peekToken.Type == ast.TokenComma {
 		return true
@@ -2150,38 +2313,26 @@ func (p *parser) parenlessKeywordArgumentCanUseShorthand() bool {
 	return p.peekToken.Pos.Line != p.curToken.Pos.Line
 }
 
-func (p *parser) recoverUnsupportedCallExpansion(message string) {
-	p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), message)
-	p.recoverUnsupportedCallArgument()
-}
-
-func (p *parser) recoverUnsupportedAmpersandCallArgument() {
-	p.addParseErrorSpan(
-		p.curToken.Pos,
-		tokenEnd(p.curToken),
-		"ampersand block forwarding and symbol-to-proc shorthand are not supported; use an explicit do/end or brace block",
-	)
-	p.recoverUnsupportedCallArgument()
-}
-
-func (p *parser) recoverUnsupportedCallArgument() {
-	startLine := p.curToken.Pos.Line
-	nesting := 0
-	for p.peekToken.Type != ast.TokenEOF &&
-		p.peekToken.Pos.Line == startLine {
-		if nesting == 0 && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRParen) {
-			return
-		}
-		p.nextToken()
-		switch p.curToken.Type {
-		case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace:
-			nesting++
-		case ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
-			if nesting > 0 {
-				nesting--
-			}
-		}
+// parseBlockPassArgument parses a Ruby-style ampersand block argument in call
+// position: `&blk` forwards a callable as the call's block and `&:name` is
+// the symbol-to-proc shorthand. The current token is the ampersand.
+func (p *parser) parseBlockPassArgument(blockArg *ast.Expression, parenless bool) {
+	ampPos := p.curToken.Pos
+	p.nextToken()
+	var value ast.Expression
+	if parenless {
+		value = p.parseParenlessArgumentExpression()
+	} else {
+		value = p.parseExpression(lowestPrec)
 	}
+	if value == nil {
+		return
+	}
+	if *blockArg != nil {
+		p.addParseError(ampPos, "duplicate block argument")
+		return
+	}
+	*blockArg = value
 }
 
 // isLabelNameToken reports whether a token may appear immediately before a

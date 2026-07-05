@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -289,11 +288,11 @@ func TestParserIntersectionSpacingShapes(t *testing.T) {
 	}
 }
 
-// TestParserBlockPassShapeReportsDiagnostic confirms the spacing rule still
-// surfaces the helpful block-pass diagnostic for the "foo &bar" shape, where
-// the ampersand is detached from the callee but flush against the operand,
-// after both a local identifier and a member expression.
-func TestParserBlockPassShapeReportsDiagnostic(t *testing.T) {
+// TestParserBlockPassShapeParsesBlockArgument confirms the spacing rule
+// reads the "foo &bar" shape — ampersand detached from the callee but flush
+// against the operand — as a parenless block-pass argument after a
+// non-local identifier and after a member expression.
+func TestParserBlockPassShapeParsesBlockArgument(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -317,33 +316,54 @@ end`,
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, errs := parseSource(t, tc.source)
-			if len(errs) == 0 {
-				t.Fatal("expected a parse error for ampersand block-pass shape")
+			program, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
 			}
-			if !strings.Contains(errs[0].Error(), "ampersand block forwarding") {
-				t.Fatalf("error = %q, want block-pass diagnostic", errs[0].Error())
+			body := parsedFunctionBody(t, program)
+			stmt, ok := body[0].(*ast.ExprStmt)
+			if !ok {
+				t.Fatalf("statement is %T, want *ast.ExprStmt", body[0])
+			}
+			call, ok := stmt.Expr.(*ast.CallExpr)
+			if !ok {
+				t.Fatalf("expression is %T, want *ast.CallExpr", stmt.Expr)
+			}
+			if call.BlockArg == nil {
+				t.Fatal("call has no BlockArg")
 			}
 		})
 	}
 }
 
-// TestParserFlushAmpersandReportsBlockPass confirms the spacing rule still
-// surfaces the helpful block-pass diagnostic for the flush form "foo &block",
-// which Ruby reads as passing a block rather than the binary operator.
-func TestParserFlushAmpersandReportsBlockPass(t *testing.T) {
+// TestParserBlockPassShapeAfterLocalStaysBinary confirms a known local can
+// never be a parenless callee, so "locals &other" is the binary intersection
+// operator even in the block-pass spacing, matching Ruby's local-variable
+// rule.
+func TestParserBlockPassShapeAfterLocalStaysBinary(t *testing.T) {
 	t.Parallel()
 
 	source := `def run
-  collect &block
+  values = [1, 2]
+  other = [2]
+  values &other
 end`
 
-	_, errs := parseSource(t, source)
-	if len(errs) == 0 {
-		t.Fatal("expected a parse error for flush ampersand block-pass")
+	program, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
 	}
-	if !strings.Contains(errs[0].Error(), "ampersand block forwarding") {
-		t.Fatalf("error = %q, want block-pass diagnostic", errs[0].Error())
+	body := parsedFunctionBody(t, program)
+	stmt, ok := body[2].(*ast.ExprStmt)
+	if !ok {
+		t.Fatalf("statement is %T, want *ast.ExprStmt", body[2])
+	}
+	binary, ok := stmt.Expr.(*ast.BinaryExpr)
+	if !ok {
+		t.Fatalf("expression is %T, want *ast.BinaryExpr", stmt.Expr)
+	}
+	if binary.Operator != ast.TokenAmpersand {
+		t.Fatalf("operator = %q, want %q", binary.Operator, ast.TokenAmpersand)
 	}
 }
 

@@ -2154,6 +2154,10 @@ func (est *memoryEstimator) value(val Value) int {
 		}
 		size += estimatedStringHeaderBytes*3 + len(blk.moduleKey) + len(blk.modulePath) + len(blk.moduleRoot)
 		size += est.env(blk.Env)
+		// A forwarding block carries its target callable (a symbol-to-proc
+		// builtin or a forwarded bound method) instead of a body; charge it so
+		// procs minted in a loop stay inside the quota.
+		size += est.value(blk.forward)
 	case KindFunction:
 		// Functions are compile-time/static artifacts for memory quotas.
 	case KindBuiltin:

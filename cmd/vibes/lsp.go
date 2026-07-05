@@ -32,7 +32,9 @@ var lspKeywords = ast.Keywords()
 var lspBuiltins = []string{
 	"assert",
 	"format",
+	"lambda",
 	"loop",
+	"proc",
 	"money",
 	"money_cents",
 	"now",
@@ -1376,6 +1378,9 @@ func localNames(statements []ast.Statement) []string {
 			for _, arg := range e.KwArgs {
 				walkExpr(arg.Value)
 			}
+			walkExpr(e.BlockArg)
+		case *ast.SplatArg:
+			walkExpr(e.Value)
 		case *ast.MemberExpr:
 			walkExpr(e.Object)
 		case *ast.ScopeExpr:
@@ -1462,12 +1467,14 @@ func appendAssignmentTargetNames(names *[]string, target ast.Expression) {
 var builtinSignatures = map[string]string{
 	"assert":      "assert(condition, message = nil) -> nil",
 	"format":      "format(format_string, *values) -> string",
+	"lambda":      "lambda { |args| ... } -> lambda",
 	"loop":        "loop { ... } -> value",
 	"money":       `money("12.34 USD") -> money`,
 	"money_cents": "money_cents(cents, currency) -> money",
 	"now":         "now -> string",
 	"p":           "p(*values) -> value",
 	"print":       "print(*values) -> nil",
+	"proc":        "proc { |args| ... } -> proc",
 	"puts":        "puts(*values) -> nil",
 	"rand":        "rand(max = nil) -> number",
 	"random_id":   "random_id(length = 16) -> string",
