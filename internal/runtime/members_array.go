@@ -1781,6 +1781,13 @@ const arrayValuesAtInitialCap = 4096
 // ephemeral receiver) that emit charges each appended slot against.
 func arrayValuesAtRange(acc *arrayBuildAccumulator, emittedSoFar int, arr []Value, rng Range, emit func(Value) error) error {
 	length := int64(len(arr))
+	if rng.Beginless {
+		rng.Start = 0
+	}
+	if rng.Endless {
+		rng.End = length - 1
+		rng.Exclusive = false
+	}
 	begin := rng.Start
 	if begin < 0 {
 		begin += length
@@ -2188,6 +2195,16 @@ func arraySliceStartLengthWindow(arrLen, start, length int) (arraySliceWindow, b
 func arraySliceRangeWindow(arrLen int, rng Range) (arraySliceWindow, bool) {
 	length := int64(arrLen)
 	begin := rng.Start
+	if rng.Beginless {
+		// A beginless range slices from the start of the receiver.
+		begin = 0
+	}
+	if rng.Endless {
+		// An endless range slices through the end of the receiver; the
+		// inclusive MaxInt64 clamp below already maps this to the length.
+		rng.End = math.MaxInt64
+		rng.Exclusive = false
+	}
 	if begin < 0 {
 		begin += length
 	}
@@ -3353,6 +3370,13 @@ func arrayFillSpanFromStart(begin, length, count int) (arrayFillSpan, error) {
 // silently overflow into a no-op.
 func arrayFillRangeSpan(rng Range, length int) (arrayFillSpan, error) {
 	length64 := int64(length)
+	if rng.Beginless {
+		rng.Start = 0
+	}
+	if rng.Endless {
+		rng.End = length64 - 1
+		rng.Exclusive = false
+	}
 	begin := rng.Start
 	if begin < 0 {
 		begin += length64

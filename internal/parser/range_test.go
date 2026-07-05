@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -58,53 +57,76 @@ end`
 	}
 }
 
-func TestParserRejectsBeginlessRange(t *testing.T) {
+func TestParserBeginlessRange(t *testing.T) {
 	t.Parallel()
 
-	for _, expr := range []string{"..5", "...5"} {
-		expr := expr
-		t.Run(expr, func(t *testing.T) {
+	for _, tc := range []struct {
+		expr      string
+		exclusive bool
+	}{{"..5", false}, {"...5", true}} {
+		tc := tc
+		t.Run(tc.expr, func(t *testing.T) {
 			t.Parallel()
 
 			source := `def run
-  ` + expr + `
+  ` + tc.expr + `
 end`
 
-			_, errs := parseSource(t, source)
-			if len(errs) != 1 {
-				t.Fatalf("parseSource(%q) errors = %d, want 1: %v", source, len(errs), errs)
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
 			}
-			if got, want := errs[0].Error(), "range is missing start expression"; !strings.Contains(got, want) {
-				t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.RangeExpr{
+					End:       &ast.IntegerLiteral{Value: 5},
+					Exclusive: tc.exclusive,
+				}},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
 }
 
-func TestParserRejectsEndlessRange(t *testing.T) {
+func TestParserEndlessRange(t *testing.T) {
 	t.Parallel()
 
-	for _, expr := range []string{"1..", "1..."} {
-		expr := expr
-		t.Run(expr, func(t *testing.T) {
+	for _, tc := range []struct {
+		expr      string
+		exclusive bool
+	}{{"1..", false}, {"1...", true}} {
+		tc := tc
+		t.Run(tc.expr, func(t *testing.T) {
 			t.Parallel()
 
 			source := `def run
-  ` + expr + `
+  ` + tc.expr + `
 end`
 
-			_, errs := parseSource(t, source)
-			if len(errs) != 1 {
-				t.Fatalf("parseSource(%q) errors = %d, want 1: %v", source, len(errs), errs)
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
 			}
-			if got, want := errs[0].Error(), "range is missing end expression"; !strings.Contains(got, want) {
-				t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.RangeExpr{
+					Start:     &ast.IntegerLiteral{Value: 1},
+					Exclusive: tc.exclusive,
+				}},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
 }
 
-func TestParserAllowsMultilineRangeEndpoint(t *testing.T) {
+// TestParserBareMultilineRangeIsEndless pins the Ruby rule that a newline
+// terminates a range at statement level: bare dots at end of line form an
+// endless range and the next line is a separate statement. Grouped forms
+// (parens, brackets, call arguments) still continue onto the next line — see
+// TestParserAllowsMultilineRangeEndpointInCallArgument.
+func TestParserBareMultilineRangeIsEndless(t *testing.T) {
 	t.Parallel()
 
 	source := `def run
@@ -120,8 +142,8 @@ end`
 	wantBody := []ast.Statement{
 		&ast.ExprStmt{Expr: &ast.RangeExpr{
 			Start: &ast.IntegerLiteral{Value: 1},
-			End:   &ast.IntegerLiteral{Value: 2},
 		}},
+		&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 2}},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)

@@ -301,6 +301,9 @@ func (exec *Execution) randomFloat64() (float64, error) {
 }
 
 func (exec *Execution) randomRangeValue(rng Range) (Value, error) {
+	if rng.Beginless || rng.Endless {
+		return NewNil(), fmt.Errorf("rand range must be bounded")
+	}
 	low, high, ok := randomRangeInclusiveBounds(rng)
 	if !ok {
 		return NewNil(), fmt.Errorf("rand range is empty")
