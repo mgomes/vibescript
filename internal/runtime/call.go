@@ -514,6 +514,24 @@ type callFunctionRebinder struct {
 	// on the source builtin pointer, so an escaped alias reachable through
 	// several inbound paths keeps builtin identity after rebinding.
 	seenDirectCallAliases map[*Builtin]Value
+	// inboundDataFast marks a call whose positional and keyword arguments were
+	// verified data-only and alias-free by scanInboundCallValues, so top-level
+	// inbound composites may deep-copy through the tight data copier instead
+	// of the full rebind walk. See rebindInboundValue.
+	inboundDataFast bool
+	// inboundRegister makes the tight copier register every copied composite
+	// in the seen-maps above. bindGlobalsForCall sets it when the call defers
+	// composite globals, whose deferred scan and slow-path materialization
+	// resolve global-aliases-argument cases through those registrations.
+	inboundRegister bool
+	// pendingGlobalSources collects the deferred composite global sources
+	// until the first one is read; rebindGlobalValue then scans them all at
+	// once (so aliasing among globals, or against already-rebound values, is
+	// detected) and caches the verdict in globalsDataFast. A call that never
+	// reads a deferred global never scans them.
+	pendingGlobalSources []Value
+	globalsScanned       bool
+	globalsDataFast      bool
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -857,13 +875,99 @@ func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
 	return clone
 }
 
+// rebindInboundValue rebinds one top-level inbound host value (a positional
+// or keyword argument). When the pre-scan proved the argument set data-only
+// and alias-free, composites skip the rebinder walk and deep-copy through the
+// tight data copier — the copy is still a full deep copy, so script-side
+// mutators never write into host memory. A value the slow path already
+// rebound (a capability adapter published the same composite during binding)
+// falls back to the rebinder so aliases keep deduplicating to one shared
+// clone.
+func (r *callFunctionRebinder) rebindInboundValue(val Value) Value {
+	if r.inboundDataFast && r.inboundValueUnseen(val) {
+		return r.fastCopyInbound(val)
+	}
+	return r.rebindValue(val)
+}
+
+// rebindGlobalValue materializes one deferred composite global. The first
+// read scans every deferred global source in one pass — so aliasing among
+// globals, or between a global source and any composite the call has already
+// rebound or fast-copied with registration, is detected — and caches the
+// verdict for the rest of the call. Data-only, alias-free sources take the
+// tight copier; everything else takes the full rebind walk.
+func (r *callFunctionRebinder) rebindGlobalValue(val Value) Value {
+	if !r.globalsScanned {
+		r.globalsScanned = true
+		r.globalsDataFast = r.scanPendingGlobalSources()
+		r.pendingGlobalSources = nil
+	}
+	if r.globalsDataFast && r.inboundValueUnseen(val) {
+		return copyInboundDataValue(val)
+	}
+	return r.rebindValue(val)
+}
+
+func (r *callFunctionRebinder) scanPendingGlobalSources() bool {
+	scanner := inboundDataScanner{rebinder: r}
+	for _, source := range r.pendingGlobalSources {
+		if !scanner.scan(source) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *callFunctionRebinder) fastCopyInbound(val Value) Value {
+	if r.inboundRegister {
+		return r.copyAndRegisterInboundValue(val)
+	}
+	return copyInboundDataValue(val)
+}
+
+// inboundValueUnseen reports whether the slow rebind walk (or a registering
+// fast copy) has not already cloned this composite, in which case the tight
+// copier may build a fresh clone without breaking alias dedup.
+func (r *callFunctionRebinder) inboundValueUnseen(val Value) bool {
+	switch val.Kind() {
+	case KindArray:
+		_, seen := r.seenArrays[arrayIdentity(val)]
+		return !seen
+	case KindHash:
+		return r.inboundHashUnseen(val)
+	case KindObject:
+		_, seen := r.seenMaps[reflect.ValueOf(val.Hash()).Pointer()]
+		return !seen
+	default:
+		return false
+	}
+}
+
+// inboundHashUnseen reports whether the slow path has rebound neither this
+// hash wrapper nor its entry map. The scan admitted only legacy-keyed hashes,
+// so the entry map is always materialized; fail safe to the slow path if not.
+func (r *callFunctionRebinder) inboundHashUnseen(val Value) bool {
+	if _, seen := r.seenHashes[hashIdentity(val)]; seen {
+		return false
+	}
+	entries, ok := hashStringMapIfMaterialized(val)
+	if !ok {
+		return false
+	}
+	if entries == nil {
+		return true
+	}
+	_, shared := r.seenHashEntries[reflect.ValueOf(entries).Pointer()]
+	return !shared
+}
+
 func (r *callFunctionRebinder) rebindValues(values []Value) []Value {
 	if len(values) == 0 {
 		return values
 	}
 	out := make([]Value, len(values))
 	for i, val := range values {
-		out[i] = r.rebindValue(val)
+		out[i] = r.rebindInboundValue(val)
 	}
 	return out
 }
@@ -874,7 +978,7 @@ func (r *callFunctionRebinder) rebindKeywords(kwargs map[string]Value) map[strin
 	}
 	out := make(map[string]Value, len(kwargs))
 	for name, val := range kwargs {
-		out[name] = r.rebindValue(val)
+		out[name] = r.rebindInboundValue(val)
 	}
 	return out
 }
@@ -2853,6 +2957,50 @@ func callBuiltinMemberDirect(exec *Execution, receiver Value, property string, a
 	}
 }
 
+// hostGlobalLazyBinding defers rebinding one host-provided global until the
+// script first reads it. Binding a global eagerly deep-copies the host value
+// into the call root even when the parent function never touches it (it may
+// exist only for tasks to inherit), so composites bind lazily and the copy
+// happens on first read. The environment stores the materialized clone back
+// into the binding, so the copy runs at most once per call and mutation
+// visibility across repeated reads matches the eager behavior exactly.
+// Strict-effects validation stays eager in bindGlobalsForCallLazy, so a
+// global that would be rejected at bind time is still rejected at bind time.
+type hostGlobalLazyBinding struct {
+	rebinder *callFunctionRebinder
+	value    Value
+}
+
+func (binding hostGlobalLazyBinding) materialize() Value {
+	return binding.rebinder.rebindGlobalValue(binding.value)
+}
+
+// hostGlobalBindsEagerly reports whether a host global binds its value at call
+// entry. Immutable scalars need no copy, so deferring them buys nothing and
+// would cost a lazy-materialization hop on every first read; enums bind
+// eagerly so they resolve as constants exactly like the per-call enum clones,
+// mirroring the eager-enum rule in bindLazyTaskGlobalsForCall.
+func hostGlobalBindsEagerly(val Value) bool {
+	return taskImmutableDataValue(val) || val.Kind() == KindEnum
+}
+
+// globalsBindLazily reports whether any global would take a lazy binding, in
+// which case Script.Call runs on the lazy-globals path.
+func globalsBindLazily(globals map[string]Value) bool {
+	for _, val := range globals {
+		if !hostGlobalBindsEagerly(val) {
+			return true
+		}
+	}
+	return false
+}
+
+// bindGlobalsForCall eagerly binds globals into the call root. The plain
+// Script.Call path uses it only when every global binds eagerly (see
+// globalsBindLazily); calls carrying composite globals are routed through
+// callWithLazyTaskGlobals, whose bindGlobalsForCallLazy defers their copies.
+// Keeping the lazy-binding store out of this function keeps the rebinder
+// from escaping to the heap on the plain Call hot path.
 func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebinder, globals map[string]Value) error {
 	if err := exec.checkContext(); err != nil {
 		return err
@@ -2866,6 +3014,39 @@ func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebind
 
 	for name, val := range globals {
 		root.Define(name, rebinder.rebindValue(val))
+	}
+
+	return nil
+}
+
+// bindGlobalsForCallLazy binds host globals with deferred copies: immutable
+// scalars and enums bind eagerly (nothing to defer), while composites bind as
+// lazy env bindings that deep-copy through the rebinder on first read.
+func bindGlobalsForCallLazy(exec *Execution, root *Env, rebinder *callFunctionRebinder, globals map[string]Value) error {
+	if err := exec.checkContext(); err != nil {
+		return err
+	}
+
+	if exec.strictEffects {
+		if err := validateStrictGlobals(globals); err != nil {
+			return err
+		}
+	}
+
+	for name, val := range globals {
+		if hostGlobalBindsEagerly(val) {
+			root.Define(name, rebinder.rebindValue(val))
+			continue
+		}
+		root.defineLazy(name, hostGlobalLazyBinding{rebinder: rebinder, value: val})
+		rebinder.pendingGlobalSources = append(rebinder.pendingGlobalSources, val)
+	}
+	// Deferred globals may be read after the arguments are fast-copied; make
+	// those copies register their composites so the deferred global scan and
+	// slow-path materialization can still deduplicate a global source that
+	// aliases an argument.
+	if len(rebinder.pendingGlobalSources) > 0 {
+		rebinder.inboundRegister = true
 	}
 
 	return nil

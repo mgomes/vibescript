@@ -7,6 +7,7 @@ package capabilitycontract
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"strings"
 	"unsafe"
@@ -501,19 +502,28 @@ func cloneDataOnlyHash(val value.Value, visiting *seenSet, depth int) (value.Val
 	visiting.maps[ptr] = struct{}{}
 	defer delete(visiting.maps, ptr)
 
-	cloned := make(map[string]value.Value, len(entries))
+	var cloned map[string]value.Value
 	issue := dataOnlyOK
-	for key, item := range entries {
-		next, result := cloneDataOnlyValue(item, visiting, depth+1)
-		switch result {
-		case dataOnlyCallable:
-			return value.NewNil(), dataOnlyCallable
-		case dataOnlyDepth:
-			return value.NewNil(), dataOnlyDepth
-		case dataOnlyCycle:
-			issue = dataOnlyCycle
-		default:
-			cloned[key] = next
+	if len(entries) > 0 && scalarOnlyDataEntries(entries) {
+		// Every value is a scalar, so validation cannot fail and the clone can
+		// copy the map's bucket structure wholesale instead of rehashing and
+		// reinserting every key. This is the dominant shape for row payloads
+		// crossing the capability boundary.
+		cloned = maps.Clone(entries)
+	} else {
+		cloned = make(map[string]value.Value, len(entries))
+		for key, item := range entries {
+			next, result := cloneDataOnlyValue(item, visiting, depth+1)
+			switch result {
+			case dataOnlyCallable:
+				return value.NewNil(), dataOnlyCallable
+			case dataOnlyDepth:
+				return value.NewNil(), dataOnlyDepth
+			case dataOnlyCycle:
+				issue = dataOnlyCycle
+			default:
+				cloned[key] = next
+			}
 		}
 	}
 
@@ -553,19 +563,26 @@ func cloneDataOnlyMap(
 		return value.NewNil(), dataOnlyCycle
 	}
 	visiting.maps[ptr] = struct{}{}
-	cloned := make(map[string]value.Value, len(entries))
+	var cloned map[string]value.Value
 	issue := dataOnlyOK
-	for key, item := range entries {
-		next, result := cloneDataOnlyValue(item, visiting, depth+1)
-		switch result {
-		case dataOnlyCallable:
-			return value.NewNil(), dataOnlyCallable
-		case dataOnlyDepth:
-			return value.NewNil(), dataOnlyDepth
-		case dataOnlyCycle:
-			issue = dataOnlyCycle
-		default:
-			cloned[key] = next
+	if len(entries) > 0 && scalarOnlyDataEntries(entries) {
+		// See cloneDataOnlyHash: scalar-only maps validate trivially and clone
+		// their bucket structure wholesale.
+		cloned = maps.Clone(entries)
+	} else {
+		cloned = make(map[string]value.Value, len(entries))
+		for key, item := range entries {
+			next, result := cloneDataOnlyValue(item, visiting, depth+1)
+			switch result {
+			case dataOnlyCallable:
+				return value.NewNil(), dataOnlyCallable
+			case dataOnlyDepth:
+				return value.NewNil(), dataOnlyDepth
+			case dataOnlyCycle:
+				issue = dataOnlyCycle
+			default:
+				cloned[key] = next
+			}
 		}
 	}
 	delete(visiting.maps, ptr)
@@ -573,6 +590,23 @@ func cloneDataOnlyMap(
 		return value.NewNil(), issue
 	}
 	return construct(cloned), dataOnlyOK
+}
+
+// scalarOnlyDataEntries reports whether every value in one entry map is an
+// immutable scalar kind — nothing to validate recursively and nothing that
+// needs an isolating per-value clone. Kinds are whitelisted so any future
+// composite or callable kind fails closed onto the per-entry walk.
+func scalarOnlyDataEntries(entries map[string]value.Value) bool {
+	for _, item := range entries {
+		switch item.Kind() {
+		case value.KindNil, value.KindBool, value.KindInt, value.KindFloat,
+			value.KindString, value.KindMoney, value.KindDuration,
+			value.KindTime, value.KindSymbol, value.KindRange, value.KindRegex:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func valueKindName(kind value.ValueKind) string {

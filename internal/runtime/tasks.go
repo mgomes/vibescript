@@ -195,8 +195,15 @@ func taskGlobalsFromRoot(root *Env, globals map[string]Value) map[string]Value {
 	out := make(map[string]Value, len(globals))
 	for name, original := range globals {
 		if val, ok := rootBindingValue(root, name); ok {
-			out[name] = val
-			continue
+			// A still-lazy host global has not been read (let alone written) by
+			// the parent, so the pristine host value is its current state. Hand
+			// tasks the original source instead of forcing a materialization the
+			// parent never needed; the task-side lazy machinery still deep-copies
+			// it before any task code can touch it.
+			if _, lazy := lazyValue(val); !lazy {
+				out[name] = val
+				continue
+			}
 		}
 		out[name] = original
 	}
@@ -715,6 +722,14 @@ func (globals *taskLazyGlobals) materialize(name string) Value {
 	source := globals.values[name]
 	var cloned Value
 	if globals.rebinder != nil {
+		// Always take the full rebind walk here, never the inbound data-only
+		// fast path. Task-global sources can be the parent call's materialized
+		// clones, which parent script code may mutate concurrently with a
+		// spawned task (tasks.spawn does not block the parent), so a
+		// call-entry data-only verdict for these sources could go stale before
+		// this materialization runs. The rebinder walk classifies every value
+		// as it visits it, so a block or capability inserted after entry is
+		// still re-rooted and revoked correctly.
 		cloned = globals.rebinder.rebindValue(source)
 	} else {
 		cloned = globals.cloner.clone(source)
