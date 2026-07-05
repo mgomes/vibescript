@@ -1,5 +1,7 @@
 package value
 
+import "strconv"
+
 // ValueKind identifies the type of a runtime Value.
 type ValueKind int
 
@@ -43,6 +45,12 @@ type Range struct {
 	Start     int64
 	End       int64
 	Exclusive bool
+	// Beginless and Endless mark Ruby's open-ended ranges (..n and n..).
+	// The corresponding endpoint field is meaningless when its flag is set;
+	// both false is an ordinary bounded range, so existing constructors are
+	// unaffected. Both true is never produced (a bare .. is a parse error).
+	Beginless bool
+	Endless   bool
 }
 
 // NewValue constructs a Value with the given kind and underlying data.
@@ -107,4 +115,21 @@ func (v Value) Data() any {
 		}
 	}
 	return v.data
+}
+
+// String renders the range the way it is written in source, including the
+// open-ended forms: 1..5, 1..., ..5, 1.., and so on.
+func (r Range) String() string {
+	dots := ".."
+	if r.Exclusive {
+		dots = "..."
+	}
+	start, end := "", ""
+	if !r.Beginless {
+		start = strconv.FormatInt(r.Start, 10)
+	}
+	if !r.Endless {
+		end = strconv.FormatInt(r.End, 10)
+	}
+	return start + dots + end
 }

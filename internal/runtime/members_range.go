@@ -71,7 +71,24 @@ func (exec *Execution) rangeMember(obj Value, property string, pos Position) (Va
 // similar short-circuiting helpers). The terminal value is detected before the
 // next increment so a span ending at MaxInt64/MinInt64 stops cleanly rather
 // than wrapping around.
+// rangeOpenIterationError reports the standard error for iterating a range
+// with a missing endpoint: iteration is unbounded on the open side, so every
+// enumerating helper rejects it up front instead of running into the quota.
+func rangeOpenIterationError(rng Range) error {
+	if rng.Beginless {
+		return fmt.Errorf("cannot iterate a beginless range")
+	}
+	return fmt.Errorf("cannot iterate an endless range")
+}
+
+func rangeIsOpen(rng Range) bool {
+	return rng.Beginless || rng.Endless
+}
+
 func (exec *Execution) rangeForEach(rng Range, yield func(value int64) (stop bool, err error)) error {
+	if rangeIsOpen(rng) {
+		return rangeOpenIterationError(rng)
+	}
 	ascending := rng.Start <= rng.End
 	current := rng.Start
 	for {
@@ -170,6 +187,9 @@ func rangeMemberStep() Value {
 			return NewNil(), err
 		}
 		rng := receiver.Range()
+		if rangeIsOpen(rng) {
+			return NewNil(), rangeOpenIterationError(rng)
+		}
 		ascending := rng.Start <= rng.End
 		// Descending ranges advance by the stride in the negative direction; the
 		// stride magnitude is identical, so the signed delta is just negated.
@@ -386,6 +406,9 @@ func rangeMemberCount() Value {
 		}
 		rng := receiver.Range()
 		if valueBlock(block) == nil {
+			if rangeIsOpen(rng) {
+				return NewNil(), rangeOpenIterationError(rng)
+			}
 			length, overflow := rangeLength(rng)
 			if overflow {
 				return NewNil(), fmt.Errorf("range.count overflow")
@@ -530,11 +553,17 @@ func rangeMemberFirst() Value {
 			return NewNil(), fmt.Errorf("range.first does not take keyword arguments")
 		}
 		rng := receiver.Range()
+		if rng.Beginless {
+			return NewNil(), fmt.Errorf("cannot get the first element of a beginless range")
+		}
 		if len(args) == 0 {
 			return NewInt(rng.Start), nil
 		}
 		if len(args) != 1 {
 			return NewNil(), fmt.Errorf("range.first expects at most one argument")
+		}
+		if rng.Endless {
+			return NewNil(), rangeOpenIterationError(rng)
 		}
 		count, err := rangeCountArg(args[0], "range.first")
 		if err != nil {
@@ -553,11 +582,17 @@ func rangeMemberLast() Value {
 			return NewNil(), fmt.Errorf("range.last does not take keyword arguments")
 		}
 		rng := receiver.Range()
+		if rng.Endless {
+			return NewNil(), fmt.Errorf("cannot get the last element of an endless range")
+		}
 		if len(args) == 0 {
 			return NewInt(rng.End), nil
 		}
 		if len(args) != 1 {
 			return NewNil(), fmt.Errorf("range.last expects at most one argument")
+		}
+		if rng.Beginless {
+			return NewNil(), rangeOpenIterationError(rng)
 		}
 		count, err := rangeCountArg(args[0], "range.last")
 		if err != nil {
@@ -578,7 +613,11 @@ func rangeMemberSize() Value {
 		if len(kwargs) > 0 {
 			return NewNil(), fmt.Errorf("range.size does not take keyword arguments")
 		}
-		length, overflow := rangeLength(receiver.Range())
+		rng := receiver.Range()
+		if rangeIsOpen(rng) {
+			return NewNil(), rangeOpenIterationError(rng)
+		}
+		length, overflow := rangeLength(rng)
 		if overflow {
 			return NewNil(), fmt.Errorf("range.size overflow")
 		}
@@ -611,6 +650,9 @@ func rangeMemberToArray() Value {
 			return NewNil(), fmt.Errorf("range.to_a does not take keyword arguments")
 		}
 		rng := receiver.Range()
+		if rangeIsOpen(rng) {
+			return NewNil(), rangeOpenIterationError(rng)
+		}
 		length, overflow := rangeLength(rng)
 		if overflow {
 			return NewNil(), guardLimitErrorf("range.to_a result too large")

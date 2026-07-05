@@ -121,11 +121,7 @@ func (v Value) String() string {
 		_ = v.appendString(&buf, state, 0)
 		return buf.String()
 	case KindRange:
-		r := v.data.(Range)
-		if r.Exclusive {
-			return fmt.Sprintf("%d...%d", r.Start, r.End)
-		}
-		return fmt.Sprintf("%d..%d", r.Start, r.End)
+		return v.data.(Range).String()
 	default:
 		if RuntimeStringer != nil {
 			if s, ok := RuntimeStringer(v); ok {

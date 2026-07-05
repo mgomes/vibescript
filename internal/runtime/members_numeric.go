@@ -498,9 +498,16 @@ func numericClampBounds(method string, args []Value) (*Value, *Value, error) {
 		if rng.Exclusive {
 			return nil, nil, fmt.Errorf("%s cannot clamp with exclusive range", method)
 		}
-		minVal := NewInt(rng.Start)
-		maxVal := NewInt(rng.End)
-		return &minVal, &maxVal, nil
+		var minPtr, maxPtr *Value
+		if !rng.Beginless {
+			minVal := NewInt(rng.Start)
+			minPtr = &minVal
+		}
+		if !rng.Endless {
+			maxVal := NewInt(rng.End)
+			maxPtr = &maxVal
+		}
+		return minPtr, maxPtr, nil
 	case 2:
 		minVal, err := numericClampBound(method, args[0])
 		if err != nil {

@@ -66,8 +66,7 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 	prefix := prefixParserKind(p.curToken.Type)
 	if prefix == prefixParserNone {
 		if p.curToken.Type == ast.TokenRange || p.curToken.Type == ast.TokenRangeExcl {
-			p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), "range is missing start expression")
-			return nil
+			return p.parseBeginlessRangeExpression()
 		}
 		p.errorUnexpected(p.curToken)
 		return nil
@@ -1358,6 +1357,8 @@ func (p *parser) parseSelfLiteral() ast.Expression {
 }
 
 func (p *parser) parseGroupedExpression() ast.Expression {
+	p.groupDepth++
+	defer func() { p.groupDepth-- }()
 	p.nextToken()
 	p.lineLimitedStopSuppression++
 	expr := p.parseExpression(lowestPrec)
@@ -1441,9 +1442,15 @@ func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 	pos := p.curToken.Pos
 	exclusive := p.curToken.Type == ast.TokenRangeExcl
 	precedence := p.curPrecedence()
-	if prefixParserKind(p.peekToken.Type) == prefixParserNone {
-		p.addParseErrorSpan(pos, tokenEnd(p.curToken), "range is missing end expression")
-		return nil
+	if prefixParserKind(p.peekToken.Type) == prefixParserNone ||
+		p.peekIsActiveExpressionStop() ||
+		((p.groupDepth == 0 || p.whenValueDepth > 0) && p.peekToken.Pos.Line != pos.Line) {
+		// Nothing after the dots can start an expression (a closing bracket,
+		// comma, end, EOF ...): this is Ruby's endless range. Inside when
+		// values the line break itself ends the range (when 3..), while a
+		// next-line expression elsewhere still continues a bounded range,
+		// preserving multiline endpoints.
+		return &ast.RangeExpr{Start: left, Exclusive: exclusive, Position: pos}
 	}
 	p.nextToken()
 	right := p.parseExpression(precedence)
@@ -1451,6 +1458,36 @@ func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 		return nil
 	}
 	return &ast.RangeExpr{Start: left, End: right, Exclusive: exclusive, Position: pos}
+}
+
+// parseBeginlessRangeExpression parses Ruby's beginless range (..n / ...n)
+// with the range token in prefix position.
+// peekIsActiveExpressionStop reports whether the peek token is a stop token of
+// the enclosing line-limited expression (then in a when clause or condition,
+// word and/or in a modifier value). Range dots followed by such a token cannot
+// continue into a bounded endpoint, so the range is endless.
+func (p *parser) peekIsActiveExpressionStop() bool {
+	for _, stop := range p.lineLimitedStops {
+		if p.peekToken.Type == stop {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *parser) parseBeginlessRangeExpression() ast.Expression {
+	pos := p.curToken.Pos
+	exclusive := p.curToken.Type == ast.TokenRangeExcl
+	if prefixParserKind(p.peekToken.Type) == prefixParserNone {
+		p.addParseErrorSpan(pos, tokenEnd(p.curToken), "range is missing end expression")
+		return nil
+	}
+	p.nextToken()
+	right := p.parseExpression(precRange)
+	if right == nil {
+		return nil
+	}
+	return &ast.RangeExpr{End: right, Exclusive: exclusive, Position: pos}
 }
 
 func (p *parser) parseMemberExpression(object ast.Expression) ast.Expression {
@@ -1487,6 +1524,8 @@ func (p *parser) parseScopeExpression(object ast.Expression) ast.Expression {
 }
 
 func (p *parser) parseIndexExpression(object ast.Expression) ast.Expression {
+	p.groupDepth++
+	defer func() { p.groupDepth-- }()
 	pos := p.curToken.Pos
 	if p.peekToken.Type == ast.TokenRBracket {
 		p.addParseError(p.peekToken.Pos, "index expression requires at least one selector")
@@ -1527,6 +1566,8 @@ func isMemberNameToken(tok ast.Token) bool {
 }
 
 func (p *parser) parseArrayLiteral() ast.Expression {
+	p.groupDepth++
+	defer func() { p.groupDepth-- }()
 	pos := p.curToken.Pos
 	elements := []ast.Expression{}
 
@@ -1559,6 +1600,8 @@ func (p *parser) parseArrayLiteral() ast.Expression {
 }
 
 func (p *parser) parseHashLiteral() ast.Expression {
+	p.groupDepth++
+	defer func() { p.groupDepth-- }()
 	pos := p.curToken.Pos
 	pairs := []ast.HashPair{}
 
@@ -1895,6 +1938,8 @@ func (p *parser) blockParamUnionContinues() bool {
 }
 
 func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
+	p.groupDepth++
+	defer func() { p.groupDepth-- }()
 	if function == nil {
 		return nil
 	}
@@ -2335,7 +2380,12 @@ func (p *parser) parseCaseWhenValue() *ast.CaseWhenValue {
 		splat = true
 		p.nextToken()
 	}
+	// Inside when values, range dots ending the line form an endless range
+	// (when 3.. matches 3 and up); the general multiline bounded-endpoint
+	// continuation stays available everywhere else.
+	p.whenValueDepth++
 	expr := p.parseLineExpressionUntilForced(lowestPrec, ast.TokenThen)
+	p.whenValueDepth--
 	if expr == nil {
 		return nil
 	}

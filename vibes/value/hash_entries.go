@@ -32,6 +32,8 @@ type HashLookupKey struct {
 	flag           bool
 	rangeEnd       int64
 	rangeExclusive bool
+	rangeBeginless bool
+	rangeEndless   bool
 }
 
 // NewHashLookupKey returns the comparable lookup key for a hash key value.
@@ -63,6 +65,8 @@ func NewHashLookupKey(key Value) (HashLookupKey, error) {
 			number:         r.Start,
 			rangeEnd:       r.End,
 			rangeExclusive: r.Exclusive,
+			rangeBeginless: r.Beginless,
+			rangeEndless:   r.Endless,
 		}, nil
 	case KindArray:
 		canonical, err := HashKey(key)
@@ -145,7 +149,16 @@ func hashKey(key Value, arrays map[SliceIdentity]struct{}) (string, error) {
 		return b.String(), nil
 	case KindRange:
 		r := key.Range()
-		return "range:" + strconv.FormatInt(r.Start, 10) + ":" + strconv.FormatInt(r.End, 10) + ":" + strconv.FormatBool(r.Exclusive), nil
+		start, end := strconv.FormatInt(r.Start, 10), strconv.FormatInt(r.End, 10)
+		// Open endpoints canonicalize as empty bounds so (1..) can never
+		// collide with any bounded range sharing its start.
+		if r.Beginless {
+			start = ""
+		}
+		if r.Endless {
+			end = ""
+		}
+		return "range:" + start + ":" + end + ":" + strconv.FormatBool(r.Exclusive), nil
 	default:
 		return "", fmt.Errorf("unsupported hash key type %s", key.kind)
 	}

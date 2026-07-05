@@ -31,6 +31,8 @@ type parser struct {
 	typeDepth                  int
 	localScopes                []localScope
 	parenlessArgDoStops        int
+	whenValueDepth             int
+	groupDepth                 int
 
 	// shapeStructurallyInvalid records that the most recent parseTypeShape
 	// rejected a brace group whose field values all parsed as types but whose
@@ -185,6 +187,7 @@ type parserSnapshot struct {
 	peekToken  ast.Token
 	peekPeek   ast.Token
 	typeDepth  int
+	groupDepth int
 	errorCount int
 	omitCount  int
 }
@@ -202,6 +205,7 @@ func (p *parser) snapshot() parserSnapshot {
 		peekToken:  p.peekToken,
 		peekPeek:   p.peekPeek,
 		typeDepth:  p.typeDepth,
+		groupDepth: p.groupDepth,
 		errorCount: len(p.errors),
 		omitCount:  p.omittedErrors,
 	}
@@ -220,6 +224,7 @@ func (p *parser) restore(s parserSnapshot) {
 	p.peekToken = s.peekToken
 	p.peekPeek = s.peekPeek
 	p.typeDepth = s.typeDepth
+	p.groupDepth = s.groupDepth
 	p.errors = p.errors[:s.errorCount]
 	p.omittedErrors = s.omitCount
 }

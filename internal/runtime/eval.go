@@ -2385,23 +2385,30 @@ func arrayValueFromAppendBuffer(buffer []Value) Value {
 }
 
 func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
-	startVal, err := exec.evalExpression(expr.Start, env)
-	if err != nil {
-		return NewNil(), err
+	rng := Range{Exclusive: expr.Exclusive, Beginless: expr.Start == nil, Endless: expr.End == nil}
+	if expr.Start != nil {
+		startVal, err := exec.evalExpression(expr.Start, env)
+		if err != nil {
+			return NewNil(), err
+		}
+		start, err := valueToInt64(startVal)
+		if err != nil {
+			return NewNil(), exec.errorAt(expr.Start.Pos(), "%s", err.Error())
+		}
+		rng.Start = start
 	}
-	endVal, err := exec.evalExpression(expr.End, env)
-	if err != nil {
-		return NewNil(), err
+	if expr.End != nil {
+		endVal, err := exec.evalExpression(expr.End, env)
+		if err != nil {
+			return NewNil(), err
+		}
+		end, err := valueToInt64(endVal)
+		if err != nil {
+			return NewNil(), exec.errorAt(expr.End.Pos(), "%s", err.Error())
+		}
+		rng.End = end
 	}
-	start, err := valueToInt64(startVal)
-	if err != nil {
-		return NewNil(), exec.errorAt(expr.Start.Pos(), "%s", err.Error())
-	}
-	end, err := valueToInt64(endVal)
-	if err != nil {
-		return NewNil(), exec.errorAt(expr.End.Pos(), "%s", err.Error())
-	}
-	return NewRange(Range{Start: start, End: end, Exclusive: expr.Exclusive}), nil
+	return NewRange(rng), nil
 }
 
 func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
@@ -2524,7 +2531,24 @@ func caseCandidateMatches(target, candidate Value) (bool, error) {
 	}
 }
 
+// openRangeKindLabel names the open side of a range for iteration errors.
+func openRangeKindLabel(rng Range) string {
+	if rng.Beginless {
+		return "a beginless range"
+	}
+	return "an endless range"
+}
+
 func rangeContainsInt(rng Range, value int64) bool {
+	if rng.Beginless {
+		if rng.Exclusive {
+			return value < rng.End
+		}
+		return value <= rng.End
+	}
+	if rng.Endless {
+		return value >= rng.Start
+	}
 	if rng.Start <= rng.End {
 		if rng.Exclusive {
 			return value >= rng.Start && value < rng.End
@@ -2544,6 +2568,21 @@ func rangeContainsFloat(rng Range, value float64) bool {
 
 	floor := int64(math.Floor(value))
 	ceil := int64(math.Ceil(value))
+	if rng.Beginless {
+		// value < End (exclusive) holds exactly when its floor is below End;
+		// value <= End (inclusive) additionally admits the integral value at
+		// End itself. Integer comparisons keep this exact near int64 bounds,
+		// like the bounded cases below.
+		if rng.Exclusive {
+			return floor < rng.End
+		}
+		return floor < rng.End || (floor == rng.End && value == math.Floor(value))
+	}
+	if rng.Endless {
+		// value >= Start holds when its ceiling is above Start, or the value
+		// is exactly the integral Start.
+		return ceil > rng.Start || (ceil == rng.Start && value == math.Ceil(value))
+	}
 	if rng.Start <= rng.End {
 		if floor < rng.Start {
 			return false
@@ -2655,6 +2694,9 @@ func (exec *Execution) evalForLoop(stmt *ForStmt, env *Env, mode loopResultMode)
 		last = val
 	case KindRange:
 		r := iterable.Range()
+		if r.Beginless || r.Endless {
+			return NewNil(), false, exec.errorAt(stmt.Pos(), "cannot iterate %s", openRangeKindLabel(r))
+		}
 		if r.Start <= r.End {
 			for i := r.Start; rangeLoopAscendingContinues(i, r); i++ {
 				if err := exec.step(); err != nil {

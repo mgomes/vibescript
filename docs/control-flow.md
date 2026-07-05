@@ -13,8 +13,22 @@ Vibescript supports these control-flow forms:
 ## `for` loops
 
 Ranges with `..` include the final endpoint. Ranges with `...` exclude the
-final endpoint. Descending ranges use the same rule. `do` may be used as an
-optional body separator after the iterable expression.
+final endpoint. Descending ranges use the same rule.
+
+Ruby's open-ended ranges are supported: `start..` (endless) and `..finish`
+(beginless). They shine in slicing and matching — `arr[1..]` takes everything
+from index 1 on, `s[..2]` the leading characters, `when 3..` matches three and
+up, and `n.clamp(1..)` bounds only the low side. Open ranges cannot be
+iterated: `each`, `map`, `to_a`, `size`, `step`, `for`, `min`/`max`, and
+`first(n)`/`last(n)` reject them up front (`cannot iterate an endless range`)
+rather than running into the sandbox quotas; the finite endpoint reads
+(`(1..).first`, `(..9).last`) still work. At statement level a newline ends a
+range, so `x = 1..` is endless and the next line is a separate statement —
+inside parens, brackets, or call arguments a bounded endpoint may still
+continue onto the next line.
+
+In `for` loops, `do` may be used as an optional body separator after the
+iterable expression.
 
 ```vibe
 def sum_first_five

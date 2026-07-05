@@ -580,6 +580,10 @@ end
 	})
 }
 
+// TestMultilineRangeEndpoints pins the Ruby rule that a newline terminates a
+// range at statement level (the dots form an endless range and the next line
+// is a separate statement) while grouped forms — parens, brackets, call
+// arguments — continue the bounded endpoint onto the next line.
 func TestMultilineRangeEndpoints(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -592,27 +596,21 @@ def run()
     2
   parenthesized = id(3..
     4)
-  parenless = id 5..
-    6
 
   [
     assigned.first,
-    assigned.last,
+    assigned === 100,
     parenthesized.first,
     parenthesized.last,
-    parenless.first,
-    parenless.last,
   ]
 end
 `)
 
 	compareArrays(t, callFunc(t, script, "run", nil), []Value{
 		NewInt(1),
-		NewInt(2),
+		NewBool(true),
 		NewInt(3),
 		NewInt(4),
-		NewInt(5),
-		NewInt(6),
 	})
 }
 

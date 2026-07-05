@@ -1288,6 +1288,16 @@ func stringInsertByteOffset(text string, index int) (int, bool) {
 func stringRuneRangeSlice(text string, rng Range) (string, bool) {
 	length := int64(stringRuneLen(text))
 	begin := rng.Start
+	if rng.Beginless {
+		// A beginless range slices from the start of the receiver.
+		begin = 0
+	}
+	if rng.Endless {
+		// An endless range slices through the end of the receiver; the
+		// inclusive MaxInt64 clamp below already maps this to the length.
+		rng.End = math.MaxInt64
+		rng.Exclusive = false
+	}
 	if begin < 0 {
 		begin += length
 	}
@@ -1388,6 +1398,13 @@ func stringByteslice(text string, args []Value) (Value, error) {
 // string.
 func stringByteRangeSlice(text string, rng Range) (string, bool) {
 	length := int64(len(text))
+	if rng.Beginless {
+		rng.Start = 0
+	}
+	if rng.Endless {
+		rng.End = length
+		rng.Exclusive = true
+	}
 	begin := rng.Start
 	if begin < 0 {
 		begin += length
