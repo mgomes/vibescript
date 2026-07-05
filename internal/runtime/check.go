@@ -59,6 +59,10 @@ type checkTarget struct {
 }
 
 func (s *Script) checkWarnings(opts CallOptions, target checkTarget) []CheckWarning {
+	return s.checkWarningsMode(opts, target, false)
+}
+
+func (s *Script) checkWarningsMode(opts CallOptions, target checkTarget, orderIndependentOnly bool) []CheckWarning {
 	if s == nil {
 		return nil
 	}
@@ -71,6 +75,7 @@ func (s *Script) checkWarnings(opts CallOptions, target checkTarget) []CheckWarn
 		typeRoot:              checkTypeRoot(s, optionGlobals),
 		runtimeTypeRoot:       checkTypeRoot(s, optionGlobals),
 		hostGlobals:           checkHostGlobals(optionGlobals),
+		orderIndependentOnly:  orderIndependentOnly,
 	}
 	checker.moduleExportRoot = checker.typeRoot
 	if target.Function == "" {
@@ -113,6 +118,11 @@ type scriptChecker struct {
 	checkReachableCalls     bool
 	checkedReachableFuncs   map[string]struct{}
 	reachableFuncQueue      []reachableFunction
+	selfScope               bool
+	localNameUnions         []map[string]struct{}
+	nameFactsCache          *checkNameFacts
+	selfScopeFns            map[*ScriptFunction]struct{}
+	orderIndependentOnly    bool
 }
 
 type reachableFunction struct {
@@ -756,6 +766,7 @@ func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) 
 		moduleCheckedFunctions: c.moduleCheckedFunctions,
 		moduleCheckContext:     moduleCheckContext,
 		runtimeTypeRootParent:  parentRoot,
+		orderIndependentOnly:   c.orderIndependentOnly,
 	}
 	caller := moduleContextForEntry(entry)
 	checker.moduleCaller = &caller
@@ -1039,6 +1050,8 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 	}
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
+	popNameScope := c.pushFunctionNameScope(fn)
+	defer popNameScope()
 
 	var usedKw map[string]bool
 	if len(kwargs) > 0 {
@@ -1207,6 +1220,11 @@ func (c *scriptChecker) checkRuntimeClassBody(classDef *ClassDef, suppressWarnin
 	check := func() {
 		popScope := c.pushScope(make(map[string]struct{}))
 		defer popScope()
+		// Class bodies run with self bound to the class, so bare identifiers
+		// can resolve through implicit self members the checker cannot see.
+		previousSelf := c.selfScope
+		c.selfScope = true
+		defer func() { c.selfScope = previousSelf }()
 		c.checkStatements(classDef.Name+".<class body>", nil, classDef.Body)
 	}
 	if !suppressWarnings {
@@ -1544,6 +1562,8 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 	}
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
+	popNameScope := c.pushFunctionNameScope(fn)
+	defer popNameScope()
 
 	for _, param := range fn.Params {
 		c.checkExpression(label, param.DefaultVal)
@@ -1581,7 +1601,11 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		c.checkExpression(function, typed.Value)
 	case *RaiseStmt:
-		c.checkExpression(function, typed.Value)
+		// raise RuntimeError, "boom" resolves a bare canonical error class
+		// name without an env binding, so it is not an identifier reference.
+		if !staticRaiseErrorClass(typed) {
+			c.checkExpression(function, typed.Value)
+		}
 		c.checkExpression(function, typed.Message)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Message)
@@ -1910,8 +1934,10 @@ func (c *scriptChecker) checkExpression(function string, expr Expression) {
 
 func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression, autoCall bool) {
 	switch typed := expr.(type) {
-	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		return
+	case *Identifier:
+		c.checkIdentifierResolved(function, typed)
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
 			c.checkExpressionWithAuto(function, elem, true)
@@ -2205,6 +2231,8 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 
 	popScope := c.pushBlockCheckScope(block)
 	defer popScope()
+	popNameScope := c.pushBlockNameScope(block)
+	defer popNameScope()
 
 	for _, param := range block.Params {
 		c.checkRuntimeTypeAnnotation(function, param.Type)
@@ -3953,6 +3981,17 @@ func runtimeNamespaceMemberName(target Expression) (string, bool) {
 }
 
 func (c *scriptChecker) add(function string, pos Position, format string, args ...any) {
+	if c.orderIndependentOnly {
+		return
+	}
+	c.addOrderIndependent(function, pos, format, args...)
+}
+
+// addOrderIndependent records a warning that holds no matter which function
+// runs first or what state earlier calls established, so it survives
+// order-independent-only mode. Undefined-name warnings use it directly;
+// every state-sensitive warning goes through add.
+func (c *scriptChecker) addOrderIndependent(function string, pos Position, format string, args ...any) {
 	c.warnings = append(c.warnings, CheckWarning{
 		Function: function,
 		Pos:      pos,

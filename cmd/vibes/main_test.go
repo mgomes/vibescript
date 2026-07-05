@@ -271,6 +271,18 @@ helper`},
 			wantErr: "call to JSON.parse has too few arguments",
 		},
 		{
+			name:    "check_only_reports_top_level_undefined_name",
+			args:    []string{"-check", "-e", "missing_name"},
+			wantErr: "undefined variable missing_name",
+		},
+		{
+			name: "check_only_reports_undefined_name_in_uncalled_function",
+			args: []string{"-check", "-e", `def run
+  helper(1)
+end`},
+			wantErr: "undefined variable helper",
+		},
+		{
 			name: "check_only_uses_inline_entrypoint_order",
 			args: []string{
 				"-check",

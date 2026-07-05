@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	vibesruntime "github.com/mgomes/vibescript/internal/runtime"
@@ -207,13 +208,50 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, chec
 		return fmt.Errorf("compile failed: %w", remapSnippetCompileError(err, snippet, evalSnippetSourceMap))
 	}
 	if checkOnly {
-		return checkCompiledScript(script, evalSnippetFunction, nil, vibes.CallOptions{})
+		return checkSnippetScript(script)
 	}
 	result, err := script.Call(ctx, evalSnippetFunction, nil, vibes.CallOptions{})
 	if err != nil {
 		return fmt.Errorf("execution failed: %w", remapSnippetRuntimeError(err, snippet, evalSnippetSourceMap))
 	}
 	return printResult(out, result)
+}
+
+// checkSnippetScript validates a -e snippet: first the entrypoint execution
+// path (matching what run would execute, including state established by
+// top-level requires), then the order-independent whole-snippet warnings so
+// functions the snippet never calls still surface undefined names. Snippets
+// are self-contained — no host injects globals or capabilities into vibes
+// run -e — so the supplemental warnings cannot be resolved by call-time
+// state.
+func checkSnippetScript(script *vibes.Script) error {
+	warnings := script.CheckWarningsForCall(evalSnippetFunction, nil, vibes.CallOptions{})
+	seen := make(map[string]struct{}, len(warnings))
+	warningKey := func(warning vibesruntime.CheckWarning) string {
+		return fmt.Sprintf("%d:%d:%s", warning.Pos.Line, warning.Pos.Column, warning.Message)
+	}
+	for _, warning := range warnings {
+		seen[warningKey(warning)] = struct{}{}
+	}
+	for _, warning := range script.CheckOrderIndependentWarnings() {
+		if _, duplicate := seen[warningKey(warning)]; duplicate {
+			continue
+		}
+		warnings = append(warnings, warning)
+	}
+	if len(warnings) == 0 {
+		return nil
+	}
+	sort.SliceStable(warnings, func(i, j int) bool {
+		if warnings[i].Pos.Line != warnings[j].Pos.Line {
+			return warnings[i].Pos.Line < warnings[j].Pos.Line
+		}
+		if warnings[i].Pos.Column != warnings[j].Pos.Column {
+			return warnings[i].Pos.Column < warnings[j].Pos.Column
+		}
+		return warnings[i].Function < warnings[j].Function
+	})
+	return formatCheckWarnings(warnings)
 }
 
 func checkCompiledScript(script *vibes.Script, function string, args []value.Value, opts vibes.CallOptions) error {
