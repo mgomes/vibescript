@@ -267,6 +267,117 @@ end`)
 	}
 }
 
+// TestForwardingBlockRevokesCapturedCapabilityOnReentry pins that a
+// forwarding block wrapping a capability bound method (`id(&jobs.enqueue)`)
+// which escapes one Script.Call and re-enters a call that granted no
+// capabilities is revoked, exactly like a capability captured by a block
+// literal. Forwarding blocks were built without an owner stamp, so the
+// inbound rebinder skipped them and the escaped block kept the originating
+// call's live grant (CWE-862). The call must fail closed and the host queue
+// must never be touched.
+func TestForwardingBlockRevokesCapturedCapabilityOnReentry(t *testing.T) {
+	t.Parallel()
+
+	stub := &jobQueueStub{}
+	script := compileScriptDefault(t, `
+def id(&b)
+  b
+end
+
+def make()
+  id(&jobs.enqueue)
+end
+
+def use(b)
+  b.call("demo", { key: "k" })
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "make", nil,
+		callOptionsWithCapabilities(MustNewJobQueueCapability("jobs", stub)),
+	)
+	if exported.Kind() != KindBlock {
+		t.Fatalf("make returned %v, want a block", exported.Kind())
+	}
+
+	err := callScriptErr(t, context.Background(), script, "use",
+		[]Value{exported}, CallOptions{})
+	requireErrorContains(t, err, "capability jobs.enqueue was not granted to this call")
+	if len(stub.enqueueCalls) != 0 {
+		t.Fatalf("capability invoked %d times from a call that granted no capabilities", len(stub.enqueueCalls))
+	}
+}
+
+// TestForwardingBlockRebindsToCurrentCall pins that a forwarding block
+// wrapping a script function (`id(&decorate)`) which escapes one Script.Call
+// and re-enters another resolves the function — and the globals it reads —
+// against the current call rather than the call where the block was minted,
+// matching the escaped block-literal contract.
+func TestForwardingBlockRebindsToCurrentCall(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def id(&b)
+  b
+end
+
+def decorate(k)
+  tenant + ":" + k
+end
+
+def make()
+  id(&decorate)
+end
+
+def use(b, k)
+  b.call(k)
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "make", nil,
+		CallOptions{Globals: map[string]Value{"tenant": NewString("first")}},
+	)
+	if exported.Kind() != KindBlock {
+		t.Fatalf("make returned %v, want a block", exported.Kind())
+	}
+
+	got := callScript(t, context.Background(), script, "use",
+		[]Value{exported, NewString("key")},
+		CallOptions{Globals: map[string]Value{"tenant": NewString("second")}},
+	)
+	if got.Kind() != KindString || got.String() != "second:key" {
+		t.Fatalf("forwarded call = %#v, want \"second:key\" from the current call's global", got)
+	}
+}
+
+// TestSymbolToProcBlockReentry pins that an escaped `&:name` forwarding block
+// stays callable when passed back into a later call: its symbol dispatch
+// captures nothing call-scoped, so the inbound rebind is a no-op for it.
+func TestSymbolToProcBlockReentry(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def id(&b)
+  b
+end
+
+def make()
+  id(&:upcase)
+end
+
+def use(b, s)
+  b.call(s)
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "make", nil, CallOptions{})
+	got := callScript(t, context.Background(), script, "use",
+		[]Value{exported, NewString("hi")}, CallOptions{})
+	if got.Kind() != KindString || got.String() != "HI" {
+		t.Fatalf("symbol-to-proc reentry = %#v, want \"HI\"", got)
+	}
+}
+
 // TestLambdaConversionKeepsSourceProc pins the Kernel#lambda conversion
 // contract chosen for Vibescript: lambda(&existing_proc) returns a
 // lambda-semantics copy and leaves the original proc untouched (Ruby 3.3

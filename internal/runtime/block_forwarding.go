@@ -15,26 +15,49 @@ func (exec *Execution) blockArgumentValue(val Value, pos Position) (Value, error
 	case KindBlock:
 		return val, nil
 	case KindSymbol:
-		return newSymbolToProcBlock(val.String(), pos), nil
+		return exec.newSymbolToProcBlock(val.String(), pos), nil
 	case KindFunction, KindBuiltin:
-		return wrapBlock(&Block{forward: val}), nil
+		return exec.newForwardingBlock(val), nil
 	default:
 		return NewNil(), exec.errorAt(pos, "block argument must be a block, function, or symbol, got %s", val.Kind())
 	}
+}
+
+// newForwardingBlock wraps target in a forwarding block stamped with the
+// minting execution's script and module identity, exactly like a block
+// literal. The owner stamp is what admits the block to the inbound call
+// rebinder: a forwarding block that escapes one call and re-enters a later
+// one must have its target re-resolved against the live call — revoking a
+// captured capability grant and re-rooting a forwarded script function onto
+// the current call root — just as a literal block's captured environment is.
+func (exec *Execution) newForwardingBlock(target Value) Value {
+	blk := &Block{forward: target}
+	ctx := exec.currentModuleContext()
+	if ctx != nil && ctx.script != nil {
+		blk.owner = ctx.script
+	} else {
+		blk.owner = exec.script
+	}
+	if ctx != nil {
+		blk.moduleKey = ctx.key
+		blk.modulePath = ctx.path
+		blk.moduleRoot = ctx.root
+	}
+	return wrapBlock(blk)
 }
 
 // newSymbolToProcBlock builds the callable behind `&:name`: a forwarding
 // block that sends name to its first argument, passing any remaining
 // arguments along — Ruby's Symbol#to_proc. The symbol is recorded as a
 // captured value so the memory estimator charges each minted proc.
-func newSymbolToProcBlock(name string, pos Position) Value {
+func (exec *Execution) newSymbolToProcBlock(name string, pos Position) Value {
 	fn := NewCapturingBuiltin("symbol.to_proc", func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if len(args) == 0 {
 			return NewNil(), fmt.Errorf("no receiver given to &:%s", name)
 		}
 		return exec.sendSymbolProcMember(args[0], name, args[1:], pos)
 	}, NewSymbol(name))
-	return wrapBlock(&Block{forward: fn})
+	return exec.newForwardingBlock(fn)
 }
 
 // sendSymbolProcMember applies one symbol-to-proc invocation:
