@@ -19,11 +19,11 @@ def double_sum(values)
 end
 
 def push_and_pop(values, extra)
-  pushed = values.push(extra)
-  result = pushed.pop
+  values.push(extra)
+  popped = values.pop
   {
-    array: result[:array],
-    popped: result[:popped]
+    array: values,
+    popped: popped
   }
 end
 

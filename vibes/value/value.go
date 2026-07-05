@@ -83,6 +83,13 @@ func NewValue(kind ValueKind, data any) Value {
 		if h, ok := data.(map[string]Value); ok {
 			return NewHash(h)
 		}
+	case KindArray:
+		// A KindArray payload is internally a *arrayData wrapper, but the public
+		// payload exposed by Data is the bare element slice. Re-wrap it so that
+		// an array round-tripped through Data/NewValue stays a usable KindArray.
+		if a, ok := data.([]Value); ok {
+			return NewArray(a)
+		}
 	}
 	return Value{kind: kind, data: data}
 }
@@ -97,6 +104,11 @@ func (v Value) Data() any {
 		// through Data/NewValue. Default metadata is reached via the dedicated
 		// HashDefaultValue/HashDefaultProc accessors.
 		return v.Hash()
+	case KindArray:
+		// Expose the public element slice rather than the internal *arrayData
+		// wrapper, so embedders can inspect elements and round-trip an array
+		// through Data/NewValue.
+		return v.Array()
 	case KindBool:
 		if v.data == nil {
 			return v.Bool()

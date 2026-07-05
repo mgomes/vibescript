@@ -887,11 +887,11 @@ end`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Kind() != KindHash {
-		t.Fatalf("expected hash result, got %v", result.Kind())
-	}
-	if got, ok := result.Hash()["b"]; !ok || got.Kind() != KindInt || got.Int() != 2 {
-		t.Fatalf("unexpected store result: %#v", result.Hash())
+	// hash.store mutates its bound receiver in place and returns the stored
+	// value; the foreign builtin surfacing that contract proves the
+	// capability's own store contract did not bind to it.
+	if result.Kind() != KindInt || result.Int() != 2 {
+		t.Fatalf("expected the stored value 2, got %#v", result)
 	}
 }
 

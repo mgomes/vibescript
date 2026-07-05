@@ -7,17 +7,20 @@ import (
 
 func TestArrayDelete(t *testing.T) {
 	t.Parallel()
+	// Ruby contract: delete removes every matching element from the receiver
+	// in place and returns the removed element (or the block result / nil on a
+	// miss). Each helper reports both halves so the receiver state is pinned.
 	script := compileScript(t, `
     def delete_value(values, target)
-      values.delete(target)
+      { removed: values.delete(target), values: values }
     end
 
     def delete_with_default(values, target)
-      values.delete(target) { "missing" }
+      { removed: values.delete(target) { "missing" }, values: values }
     end
 
     def delete_with_param(values, target)
-      values.delete(target) { |o| o }
+      { removed: values.delete(target) { |o| o }, values: values }
     end
     `)
 
@@ -77,37 +80,33 @@ func TestArrayDelete(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := callFunc(t, script, tt.function, tt.args)
-			if result.Kind() != KindHash {
-				t.Fatalf("expected hash result, got %v", result.Kind())
-			}
-			res := result.Hash()
-			compareArrays(t, res["array"], tt.wantArray)
-			if diff := valueDiff(tt.wantDeleted, res["deleted"]); diff != "" {
-				t.Fatalf("deleted mismatch (-want +got):\n%s", diff)
+			res := callFunc(t, script, tt.function, tt.args).Hash()
+			compareArrays(t, res["values"], tt.wantArray)
+			if diff := valueDiff(tt.wantDeleted, res["removed"]); diff != "" {
+				t.Fatalf("removed mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
 }
 
-func TestArrayDeleteIsNonMutating(t *testing.T) {
+func TestArrayDeleteMutatesReceiver(t *testing.T) {
 	t.Parallel()
-	// delete mirrors pop: it returns a new array and leaves the receiver
-	// untouched, matching Vibescript's non-mutating collection model.
+	// delete removes the matches from the receiver itself, so an alias bound
+	// before the call observes the pruned contents, matching Ruby.
 	script := compileScript(t, `
-    def delete_preserves_source(values, target)
+    def delete_mutates_source(values, target)
+      other = values
       removed = values.delete(target)
-      { source: values, removed: removed }
+      { source: values, other: other, removed: removed }
     end
     `)
 
-	result := callFunc(t, script, "delete_preserves_source",
+	result := callFunc(t, script, "delete_mutates_source",
 		[]Value{NewArray([]Value{NewInt(1), NewInt(2), NewInt(2)}), NewInt(2)}).Hash()
-	compareArrays(t, result["source"], []Value{NewInt(1), NewInt(2), NewInt(2)})
-	removed := result["removed"].Hash()
-	compareArrays(t, removed["array"], []Value{NewInt(1)})
-	if diff := valueDiff(NewInt(2), removed["deleted"]); diff != "" {
-		t.Fatalf("deleted mismatch (-want +got):\n%s", diff)
+	compareArrays(t, result["source"], []Value{NewInt(1)})
+	compareArrays(t, result["other"], []Value{NewInt(1)})
+	if diff := valueDiff(NewInt(2), result["removed"]); diff != "" {
+		t.Fatalf("removed mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -124,8 +123,7 @@ func TestArrayDeleteReturnsStoredElement(t *testing.T) {
     def delete_nested
       stored = [1, 2]
       search = [1, 2]
-      result = [stored].delete(search)
-      deleted = result[:deleted]
+      deleted = [stored].delete(search)
       deleted[0] = 999
       { deleted: deleted, search: search }
     end
@@ -134,8 +132,7 @@ func TestArrayDeleteReturnsStoredElement(t *testing.T) {
       first = ["x"]
       last = ["x"]
       search = ["x"]
-      result = [first, last].delete(search)
-      deleted = result[:deleted]
+      deleted = [first, last].delete(search)
       deleted[0] = "mutated"
       { first: first, last: last }
     end
@@ -194,11 +191,10 @@ func TestArrayDeleteAllMatchesFitsBelowFullCopyQuota(t *testing.T) {
 	if err != nil {
 		t.Fatalf("array.delete with every element removed under sparse quota = %v, want success", err)
 	}
-	result := got.Hash()
-	compareArrays(t, result["array"], []Value{})
-	if diff := valueDiff(NewInt(1), result["deleted"]); diff != "" {
-		t.Fatalf("deleted mismatch (-want +got):\n%s", diff)
+	if diff := valueDiff(NewInt(1), got); diff != "" {
+		t.Fatalf("removed mismatch (-want +got):\n%s", diff)
 	}
+	compareArrays(t, receiver, []Value{})
 }
 
 func TestArrayDeleteAllMatchesHonorsStepQuota(t *testing.T) {
@@ -242,13 +238,16 @@ func TestArrayDeleteErrors(t *testing.T) {
 
 func TestArrayShift(t *testing.T) {
 	t.Parallel()
+	// Ruby contract: shift removes elements from the front of the receiver in
+	// place. Bare shift returns the removed element (nil on an empty array);
+	// shift(n) returns the removed prefix as an array.
 	script := compileScript(t, `
     def shift_one(values)
-      values.shift
+      { removed: values.shift, values: values }
     end
 
     def shift_n(values, n)
-      values.shift(n)
+      { removed: values.shift(n), values: values }
     end
     `)
 
@@ -306,14 +305,10 @@ func TestArrayShift(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := callFunc(t, script, tt.function, tt.args)
-			if result.Kind() != KindHash {
-				t.Fatalf("expected hash result, got %v", result.Kind())
-			}
-			res := result.Hash()
-			compareArrays(t, res["array"], tt.wantArray)
-			if diff := valueDiff(tt.wantShifted, res["shifted"]); diff != "" {
-				t.Fatalf("shifted mismatch (-want +got):\n%s", diff)
+			res := callFunc(t, script, tt.function, tt.args).Hash()
+			compareArrays(t, res["values"], tt.wantArray)
+			if diff := valueDiff(tt.wantShifted, res["removed"]); diff != "" {
+				t.Fatalf("removed mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -352,8 +347,8 @@ func TestArrayShiftErrors(t *testing.T) {
 
 func TestArrayUnshift(t *testing.T) {
 	t.Parallel()
-	// unshift is a Ruby alias for prepend: it inserts the arguments, in order, at
-	// the front and returns a new array.
+	// unshift is a Ruby alias for prepend: it inserts the arguments, in order,
+	// at the front of the receiver in place and returns the receiver.
 	script := compileScript(t, `
     def unshift_values(values, a, b)
       values.unshift(a, b)
@@ -496,19 +491,24 @@ func TestArrayInsert(t *testing.T) {
 	}
 }
 
-func TestArrayInsertIsNonMutating(t *testing.T) {
+func TestArrayInsertMutatesReceiver(t *testing.T) {
 	t.Parallel()
+	// insert splices into the receiver in place and returns the receiver
+	// itself, matching Ruby's Array#insert.
 	script := compileScript(t, `
-    def insert_preserves_source(values, value)
+    def insert_mutates_source(values, value)
       inserted = values.insert(1, value)
-      { source: values, inserted: inserted }
+      { source: values, inserted: inserted, same: inserted.equal?(values) }
     end
     `)
 
-	result := callFunc(t, script, "insert_preserves_source",
+	result := callFunc(t, script, "insert_mutates_source",
 		[]Value{NewArray([]Value{NewInt(1), NewInt(2)}), NewString("x")}).Hash()
-	compareArrays(t, result["source"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, result["source"], []Value{NewInt(1), NewString("x"), NewInt(2)})
 	compareArrays(t, result["inserted"], []Value{NewInt(1), NewString("x"), NewInt(2)})
+	if !result["same"].Bool() {
+		t.Fatal("insert must return the receiver itself")
+	}
 }
 
 func TestArrayInsertErrors(t *testing.T) {
@@ -592,11 +592,14 @@ func TestArrayInsertCountsLiveCallRoots(t *testing.T) {
 	}
 }
 
-func TestArrayNoopRemovalPreflightsReceiverCopy(t *testing.T) {
+// TestArrayNoopRemovalAllocatesNoReceiverCopy pins that the in-place pop(0)
+// and shift(0) no longer copy the receiver: under a quota with no headroom for
+// a second receiver-sized array they still succeed, return an empty array, and
+// leave the receiver's contents untouched.
+func TestArrayNoopRemovalAllocatesNoReceiverCopy(t *testing.T) {
 	t.Parallel()
 	const receiverSize = 20_000
 
-	receiver := largeIntArray(receiverSize)
 	args := []Value{NewInt(0)}
 	tests := []struct {
 		name   string
@@ -610,6 +613,7 @@ func TestArrayNoopRemovalPreflightsReceiverCopy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			receiver := largeIntArray(receiverSize)
 			probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 62}
 			acc := newArrayBuildAccumulator(probe, receiver, args, nil, NewNil())
 			quota := acc.projected(receiverSize) - 1
@@ -617,120 +621,58 @@ func TestArrayNoopRemovalPreflightsReceiverCopy(t *testing.T) {
 				t.Fatalf("test setup call roots = %d exceed quota = %d", acc.base, quota)
 			}
 
-			fits := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
-			if err := fits.checkCallMemoryRoots(receiver, args, nil, NewNil()); err != nil {
-				t.Fatalf("receiver and count should fit under quota %d: %v", quota, err)
-			}
-
 			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
-			_, err := callArrayMember(t, exec, receiver, tt.member, args, NewNil())
-			requireErrorIs(t, err, errMemoryQuotaExceeded)
-			if exec.steps != 0 {
-				t.Fatalf("steps = %d, want %s rejected before copying the receiver", exec.steps, tt.name)
+			got, err := callArrayMember(t, exec, receiver, tt.member, args, NewNil())
+			if err != nil {
+				t.Fatalf("%s under a copy-tight quota = %v, want success (no receiver copy)", tt.name, err)
+			}
+			compareArrays(t, got, []Value{})
+			if length := len(receiver.Array()); length != receiverSize {
+				t.Fatalf("receiver length after %s = %d, want %d", tt.name, length, receiverSize)
 			}
 		})
 	}
 }
 
-// TestArrayHelpersDoNotAliasReceiverBacking guards every collection helper this
-// PR adds or touches against the non-mutating contract: a returned result array
-// must never share the receiver's backing slice. Vibescript arrays are mutable
-// through index assignment (arr[i] = v writes straight into the backing slice),
-// so each case index-assigns into the returned array and then asserts the source
-// receiver is unchanged. compareArrays only inspects values and cannot catch
-// aliasing, so the in-script mutation is what makes this regression meaningful.
-func TestArrayHelpersDoNotAliasReceiverBacking(t *testing.T) {
+// TestArrayRemovalResultsDoNotAliasReceiverBacking guards pop(n)/shift(n)
+// against handing out arrays that share the receiver's backing slice: the
+// removed elements are copied out, so index-assigning into the returned array
+// never disturbs the (mutated) receiver, and later pushes onto the receiver
+// never rewrite an escaped removal result.
+func TestArrayRemovalResultsDoNotAliasReceiverBacking(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
-    def shift_zero(values)
-      result = values.shift(0)
-      out = result[:array]
-      out[0] = 999
-      values
-    end
-
-    def pop_zero(values)
-      result = values.pop(0)
-      out = result[:array]
-      out[0] = 999
-      values
-    end
-
     def shift_count(values)
-      result = values.shift(1)
-      out = result[:array]
-      out[0] = 999
+      removed = values.shift(1)
+      removed[0] = 999
       values
     end
 
     def pop_count(values)
-      result = values.pop(1)
-      out = result[:array]
-      out[0] = 999
+      removed = values.pop(1)
+      removed[0] = 999
       values
     end
 
-    def delete_miss(values)
-      result = values.delete(999)
-      out = result[:array]
-      out[0] = 999
-      values
-    end
-
-    def delete_hit(values)
-      result = values.delete(2)
-      out = result[:array]
-      out[0] = 999
-      values
-    end
-
-    def insert_noop(values)
-      out = values.insert(1)
-      out[0] = 999
-      values
-    end
-
-    def insert_values(values)
-      out = values.insert(1, "x")
-      out[0] = 999
-      values
-    end
-
-    def prepend_noop(values)
-      out = values.prepend
-      out[0] = 999
-      values
-    end
-
-    def unshift_noop(values)
-      out = values.unshift
-      out[0] = 999
-      values
+    def pop_then_push(values)
+      removed = values.pop(2)
+      values.push(7)
+      values.push(8)
+      removed
     end
     `)
 
-	tests := []struct {
-		name     string
-		function string
-	}{
-		{"shift(0) copies the receiver", "shift_zero"},
-		{"pop(0) copies the receiver", "pop_zero"},
-		{"shift(n) copies the receiver", "shift_count"},
-		{"pop(n) copies the receiver", "pop_count"},
-		{"delete on a miss copies the receiver", "delete_miss"},
-		{"delete on a hit copies the receiver", "delete_hit"},
-		{"insert with no values copies the receiver", "insert_noop"},
-		{"insert with values copies the receiver", "insert_values"},
-		{"prepend with no values copies the receiver", "prepend_noop"},
-		{"unshift with no values copies the receiver", "unshift_noop"},
-	}
+	source := callFunc(t, script, "shift_count",
+		[]Value{NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})})
+	compareArrays(t, source, []Value{NewInt(2), NewInt(3)})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			source := callFunc(t, script, tt.function,
-				[]Value{NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})})
-			compareArrays(t, source, []Value{NewInt(1), NewInt(2), NewInt(3)})
-		})
-	}
+	source = callFunc(t, script, "pop_count",
+		[]Value{NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})})
+	compareArrays(t, source, []Value{NewInt(1), NewInt(2)})
+
+	// Pushing after a pop reuses the receiver's spare capacity; the escaped
+	// removal result must hold its own copy of the removed elements.
+	removed := callFunc(t, script, "pop_then_push",
+		[]Value{NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})})
+	compareArrays(t, removed, []Value{NewInt(2), NewInt(3)})
 }

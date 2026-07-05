@@ -558,8 +558,8 @@ matching Ruby:
 
 ```vibe
 out = []
-"a1 b2".scan("[a-z][0-9]") do |m| out = out.push(m) end # returns "a1 b2"
-out                                                       # ["a1", "b2"]
+"a1 b2".scan("[a-z][0-9]") do |m| out.push(m) end # returns "a1 b2"
+out                                                # ["a1", "b2"]
 ```
 
 A pattern with many capture groups over a large subject can force the regex engine
@@ -871,14 +871,22 @@ Returns `replacement`:
 
 ### Bang aliases
 
-The following methods are supported as aliases and return transformed strings.
-When there is no change, bang methods return `nil`.
+Strings are immutable values, so — unlike the array and hash mutators — the
+bang methods cannot rewrite the receiver in place; rebind the result
+(`s = s.upcase! || s`) when you need the change to stick. They keep Ruby's
+return contract: the transformed string when a change was made, `nil` when
+nothing changed.
 
 - `strip!`, `lstrip!`, `rstrip!`, `chomp!`, `chop!`
 - `squish!`
-- `delete_prefix!`, `delete_suffix!`
+- `delete!`, `delete_prefix!`, `delete_suffix!`
+- `tr!`, `squeeze!`
 - `upcase!`, `downcase!`, `capitalize!`, `swapcase!`, `reverse!`
-- `sub!`, `gsub!`
+
+`sub!` and `gsub!` key their result off the match instead of a byte
+comparison: they return the rewritten string whenever the pattern matched —
+even when the replacement reproduces the original text — and `nil` only when
+the pattern never matched.
 
 ## Splitting
 

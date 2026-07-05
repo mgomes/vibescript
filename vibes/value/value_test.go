@@ -1926,6 +1926,11 @@ func TestValueIdentical(t *testing.T) {
 	// backing map is allocated from nil input; the fix must not break self
 	// identity while making independent empties distinct.
 	sameEmptyHash := value.NewHash(nil)
+	// An array's identity is likewise its arrayData wrapper, not its element
+	// backing, so a single array (even an empty one) stays identical to itself
+	// while independent constructions are distinct objects.
+	sharedArray := value.NewArray(sharedSlice)
+	sameEmptyArray := value.NewArray(nil)
 
 	tests := []struct {
 		name  string
@@ -1946,20 +1951,19 @@ func TestValueIdentical(t *testing.T) {
 		{"symbols", value.NewSymbol("a"), value.NewSymbol("a"), true},
 		{"nils", value.NewNil(), value.NewNil(), true},
 		{"ranges", value.NewRange(value.Range{Start: 1, End: 3}), value.NewRange(value.Range{Start: 1, End: 3}), true},
-		{"arrays_shared_backing", value.NewArray(sharedSlice), value.NewArray(sharedSlice), true},
+		// Aliasing an array Value (the way `b = a` copies the struct, including
+		// its wrapper pointer) preserves identity, while two NewArray calls that
+		// merely share a backing slice allocate distinct wrappers and are
+		// distinct objects: an in-place mutator growing one never grows the other.
+		{"arrays_shared_wrapper", sharedArray, sharedArray, true},
+		{"arrays_shared_backing_distinct", value.NewArray(sharedSlice), value.NewArray(sharedSlice), false},
 		{"arrays_distinct_backing", value.NewArray([]value.Value{value.NewInt(1)}), value.NewArray([]value.Value{value.NewInt(1)}), false},
-		// An empty array has no element storage to alias, so two empties report
-		// identical regardless of their backing storage.
-		{"empty_arrays_identical", value.NewArray([]value.Value{}), value.NewArray([]value.Value{}), true},
-		// An empty array produced with spare capacity (the way array.select and
-		// peers preallocate via make([]Value, 0, len(arr))) carries a distinct,
-		// non-zerobase backing pointer and a non-zero capacity, yet it must still
-		// be identical to a literal empty array under the all-empties-alike
-		// contract.
-		{"empty_array_with_spare_cap_identical", value.NewArray(make([]value.Value, 0, 4)), value.NewArray([]value.Value{}), true},
-		{"empty_arrays_distinct_spare_cap_identical", value.NewArray(make([]value.Value, 0, 4)), value.NewArray(make([]value.Value, 0, 8)), true},
-		// A non-empty array is never identical to an empty one even though the
-		// empty case short-circuits before comparing backing storage.
+		// Each array carries its own wrapper, so independently constructed
+		// empties are distinct objects — pushing onto one must never affect the
+		// other — exactly as two empty hashes are distinct.
+		{"empty_arrays_distinct", value.NewArray([]value.Value{}), value.NewArray([]value.Value{}), false},
+		{"empty_array_with_spare_cap_distinct", value.NewArray(make([]value.Value, 0, 4)), value.NewArray([]value.Value{}), false},
+		{"empty_array_identical_to_itself", sameEmptyArray, sameEmptyArray, true},
 		{"empty_array_vs_nonempty_distinct", value.NewArray([]value.Value{}), value.NewArray([]value.Value{value.NewInt(1)}), false},
 		// Aliasing a hash Value preserves its wrapper, so it is identical to itself.
 		{"hashes_shared_wrapper", sharedHash, sharedHash, true},

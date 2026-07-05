@@ -55,18 +55,19 @@ Common enumerable helpers include:
 - `take(n)` / `drop(n)` to keep or skip a prefix; both reject negative counts.
 - `zip(*arrays)` to combine arrays element-wise into rows, padding short arrays with `nil`.
 - `transpose` to swap the rows and columns of a matrix of equal-length array rows; it raises when a row is not an array or the rows differ in length.
-- `push`/`pop` for building or removing values while keeping the original array untouched.
-- `append(*values)` is a Ruby-style alias for `push`, returning a new array with the values added to the end in order.
-- `array << value` is the Ruby-style shovel operator. Because Vibescript arrays are immutable it does not mutate the receiver: it returns a new array with the single value appended (`[1, 2] << 3` is `[1, 2, 3]`). Accumulate by reassigning, `values = values << value`, the same idiom used with `push` and `+`; a bare `values << value` statement computes the appended array and discards it. The left operand must be an array.
-- `prepend(*values)` returns a new array with the values inserted at the front in order (`[3].prepend(1, 2)` is `[1, 2, 3]`). `unshift(*values)` is a Ruby-style alias.
-- `shift` / `shift(n)` removes element(s) from the front. Because the array is not mutated, it returns a `{ array:, shifted: }` hash mirroring `pop`: bare `shift` removes one element (`shifted` is the value or `nil` on an empty array) and `shift(n)` removes up to `n` (`shifted` is an array). `n` must be a non-negative integer.
-- `delete(value)` removes every element equal to `value`, returning a `{ array:, deleted: }` hash. Following Ruby, `deleted` is the last removed element when at least one match was removed and `nil` otherwise; when an element is equal to but a distinct object from `value` you get back the stored element, not your search argument. `delete(value) { default }` reports the block result on a miss instead.
-- `insert(index, *values)` returns a new array with `values` inserted before the element at `index`. A negative index counts back from the end and inserts *after* that element, so `insert(-1, x)` appends; an index past the end pads the gap with `nil`. A negative index whose magnitude exceeds the length raises. Inserting no values returns the array unchanged.
+- `push(*values)` appends the values to the receiver in place and returns the receiver, matching Ruby. `append(*values)` is the Ruby-style alias. Bare `push` and `push()` are no-ops that return the receiver.
+- `array << value` is the Ruby-style shovel operator: it appends the single value to the receiver in place and returns the receiver (`[1, 2] << 3` is `[1, 2, 3]`), so a bare `values << value` statement accumulates and chains like Ruby's. The left operand must be an array.
+- `pop` / `pop(n)` removes element(s) from the end of the receiver in place. Bare `pop` returns the removed element (`nil` on an empty array); `pop(n)` removes up to `n` elements and returns them as an array in receiver order.
+- `prepend(*values)` inserts the values at the front of the receiver in place and returns the receiver (`[3].prepend(1, 2)` is `[1, 2, 3]`). `unshift(*values)` is a Ruby-style alias.
+- `shift` / `shift(n)` removes element(s) from the front of the receiver in place, mirroring `pop`: bare `shift` returns the removed element (`nil` on an empty array) and `shift(n)` removes up to `n` and returns them as an array. `n` must be a non-negative integer.
+- `delete(value)` removes every element equal to `value` from the receiver in place. Following Ruby, it returns the last removed element when at least one match was removed and `nil` otherwise; when an element is equal to but a distinct object from `value` you get back the stored element, not your search argument. `delete(value) { default }` returns the block result on a miss instead, leaving the receiver untouched.
+- `insert(index, *values)` splices `values` into the receiver before the element at `index` and returns the receiver. A negative index counts back from the end and inserts *after* that element, so `insert(-1, x)` appends; an index past the end pads the gap with `nil`. A negative index whose magnitude exceeds the length raises. Inserting no values returns the receiver unchanged.
+- `clear` removes every element from the receiver in place and returns it.
 - `sum` to total an array. `sum` starts from `0`; `sum(initial)` starts from `initial` (so `[1, 2, 3].sum(10)` is `16` and `["a", "b"].sum("")` is `"ab"`). A block transforms each element before it is added, so `[1, 2, 3].sum { |n| n * 2 }` is `12` and `sum(initial) { ... }` combines both. Each addition must operate on compatible operands, mirroring Ruby's `+`: summing a string with a non-string (such as the default `0` accumulator against string elements) raises rather than silently coercing the operands.
 - `compact` to drop `nil` entries.
 - `flatten(depth = nil)` to collapse nested arrays. No argument, `nil`, or a negative depth flattens fully; `0` returns a shallow copy; a positive depth flattens that many levels and a `Float` depth is truncated to an integer. A nonnumeric depth raises.
 - `to_h` to build a hash from an array of two-element `[key, value]` pairs (the inverse of `Hash#to_a`). Keys use the same Ruby-style hash-key identity used everywhere else, and duplicate keys keep the last pair. A block form `to_h { |element| [key, value] }` maps each element to its pair, so the receiver's elements need not already be pairs. A non-array element, a pair that is not exactly two elements, or an unsupported key raises. In the block form the synthesized keys and values are charged against the memory quota as entries are inserted, so a block that produces fresh content per element cannot grow the result past the quota before the build completes.
-- `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to replace all or part of an array with a value, returning a new array. A block form `fill { |index| ... }`, optionally narrowed by a `start`/`length` or range (`fill(start) { ... }`, `fill(start, length) { ... }`, `fill(range) { ... }`), computes each replacement from its index. When a block is given there is no fill-value argument: every positional argument selects the window, so `fill(0) { |i| ... }` fills from index `0` to the end rather than filling with `0`.
+- `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to overwrite all or part of the receiver in place with a value, returning the receiver. A block form `fill { |index| ... }`, optionally narrowed by a `start`/`length` or range (`fill(start) { ... }`, `fill(start, length) { ... }`, `fill(range) { ... }`), computes each replacement from its index. When a block is given there is no fill-value argument: every positional argument selects the window, so `fill(0) { |i| ... }` fills from index `0` to the end rather than filling with `0`.
 - `chunk(size)` to split into fixed-size slices.
 - `window(size)` to build overlapping windows.
 - `join(sep = "")` to produce a string. Nested arrays are joined recursively with the same separator, so `[1, [2, 3], 4].join("-")` is `"1-2-3-4"`; `nil` elements contribute an empty segment (`[1, nil, "x"].join(",")` is `"1,,x"`); and an empty array joins to `""`. The separator must be a string.
@@ -101,11 +102,13 @@ result. Like Ruby, only `nil` and `false` are falsy, so values such as `0`,
 [1, 2] << 3                 # [1, 2, 3]
 [3].prepend(1, 2)           # [1, 2, 3]
 [3].unshift(1, 2)           # [1, 2, 3]
-[1, 2, 3].shift             # {array: [2, 3], shifted: 1}
-[1, 2, 3].shift(2)          # {array: [3], shifted: [1, 2]}
-[1, 2, 3].shift(0)          # {array: [1, 2, 3], shifted: []}
-[1, 2, 2, 3].delete(2)      # {array: [1, 3], deleted: 2}
-[1, 2, 3].delete(9)         # {array: [1, 2, 3], deleted: nil}
+[1, 2, 3].shift             # 1 (receiver becomes [2, 3])
+[1, 2, 3].shift(2)          # [1, 2] (receiver becomes [3])
+[1, 2, 3].shift(0)          # [] (receiver unchanged)
+[1, 2, 3].pop               # 3 (receiver becomes [1, 2])
+[1, 2, 3].pop(2)            # [2, 3] (receiver becomes [1])
+[1, 2, 2, 3].delete(2)      # 2 (receiver becomes [1, 3])
+[1, 2, 3].delete(9)         # nil (receiver unchanged)
 [1, 2, 3].insert(1, "x")    # [1, "x", 2, 3]
 [1, 2, 3].insert(-2, "x")   # [1, 2, "x", 3]
 [1].insert(3, "x")          # [1, nil, nil, "x"]
@@ -133,8 +136,51 @@ form are mutually exclusive: a block is never consulted when an explicit fill
 value is given, and when a block is given there is no fill-value argument at all.
 Every positional argument passed alongside a block selects the window, so
 `fill(0) { |i| ... }` fills from index `0` to the end with block results rather
-than filling with `0`. Like the other array helpers, `fill` returns a new array
-and leaves the receiver untouched.
+than filling with `0`. Like Ruby's `Array#fill`, it overwrites the receiver in
+place and returns it.
+
+## Mutating methods
+
+Arrays are mutable objects with reference semantics, exactly as in Ruby: two
+variables bound to the same array observe each other's mutations, `dup` /
+`clone` detach a deep copy, and `equal?` reports object identity (two empty
+literals are distinct objects). The Ruby-named mutators modify the receiver in
+place:
+
+- `push`/`append`, `prepend`/`unshift`, `<<`, `insert`, `fill`, and `clear`
+  mutate and return the receiver.
+- `pop`, `shift`, and `delete` mutate the receiver and return the removed
+  value(s).
+- `delete_if { |item| }` removes every element the block accepts and returns
+  the receiver; `keep_if { |item| }` keeps only accepted elements. Both always
+  return the receiver.
+- `map!`, `sort!` (with the same optional comparator block as `sort`), and
+  `reverse!` transform the receiver in place and always return it.
+- `select!` / `reject!` mirror `keep_if` / `delete_if` but return `nil` when
+  nothing was removed; `uniq!` and `compact!` likewise return the receiver when
+  they removed something and `nil` when the array was already unique or
+  `nil`-free.
+
+Their non-bang counterparts (`map`, `sort`, `reverse`, `select`, `reject`,
+`uniq`, `compact`, `+`, `first(n)`, slices, and so on) still return new arrays
+and never touch the receiver, matching Ruby.
+
+```vibe
+values = [3, 1, 2, 2]
+other = values
+values.sort!            # [1, 2, 2, 3] (values itself)
+values.uniq!            # [1, 2, 3]
+values.uniq!            # nil (nothing changed)
+values.delete_if { |v| v == 2 }
+other                   # [1, 3] — aliases observe every mutation
+```
+
+Iteration helpers walk the elements captured when iteration began: a block
+that pushes to or clears the receiver mid-`each` changes the receiver, but the
+in-flight iteration still visits exactly the original elements (element writes
+through `arr[i] = x` remain visible). Values crossing the host boundary keep
+their per-call isolation: arguments and globals are deep-cloned per call, so
+in-script mutation never leaks back into the host's originals.
 
 ## Search and predicates
 
@@ -295,7 +341,7 @@ receiver.
 def collect_slices(values, size)
   slices = []
   values.each_slice(size) do |slice|
-    slices = slices.push(slice)
+    slices.push(slice)
   end
   slices
 end

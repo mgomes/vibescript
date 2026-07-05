@@ -54,17 +54,12 @@ type deepClonePtrEntry struct {
 	value Value
 }
 
-type deepCloneSliceEntry struct {
-	id    sliceIdentity
-	value Value
-}
-
 type deepCloneState struct {
-	arrays  map[sliceIdentity]Value
+	arrays  map[uintptr]Value
 	hashes  map[uintptr]Value
 	objects map[uintptr]Value
 
-	smallArrays  [deepCloneSmallSeenLimit]deepCloneSliceEntry
+	smallArrays  [deepCloneSmallSeenLimit]deepClonePtrEntry
 	smallHashes  [deepCloneSmallSeenLimit]deepClonePtrEntry
 	smallObjects [deepCloneSmallSeenLimit]deepClonePtrEntry
 	arrayCount   int
@@ -80,13 +75,11 @@ func deepCloneValue(val Value) Value {
 func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 	switch val.Kind() {
 	case KindArray:
+		// Key on the array wrapper identity so aliases of one mutable array
+		// clone to one shared object and a cyclic array terminates here.
 		arr := val.Array()
-		id := sliceIdentity{
-			Ptr: reflect.ValueOf(arr).Pointer(),
-			Len: len(arr),
-			Cap: cap(arr),
-		}
-		if id.Ptr != 0 {
+		id := arrayIdentity(val)
+		if id != 0 {
 			if cloned, ok := state.clonedArray(id); ok {
 				return cloned
 			}
@@ -148,8 +141,8 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 	}
 }
 
-func (state *deepCloneState) clonedArray(id sliceIdentity) (Value, bool) {
-	if id.Ptr == 0 {
+func (state *deepCloneState) clonedArray(id uintptr) (Value, bool) {
+	if id == 0 {
 		return NewNil(), false
 	}
 	if state.arrays != nil {
@@ -165,8 +158,8 @@ func (state *deepCloneState) clonedArray(id sliceIdentity) (Value, bool) {
 	return NewNil(), false
 }
 
-func (state *deepCloneState) rememberArray(id sliceIdentity, cloned Value) {
-	if id.Ptr == 0 {
+func (state *deepCloneState) rememberArray(id uintptr, cloned Value) {
+	if id == 0 {
 		return
 	}
 	if state.arrays != nil {
@@ -174,11 +167,11 @@ func (state *deepCloneState) rememberArray(id sliceIdentity, cloned Value) {
 		return
 	}
 	if state.arrayCount < len(state.smallArrays) {
-		state.smallArrays[state.arrayCount] = deepCloneSliceEntry{id: id, value: cloned}
+		state.smallArrays[state.arrayCount] = deepClonePtrEntry{id: id, value: cloned}
 		state.arrayCount++
 		return
 	}
-	state.arrays = make(map[sliceIdentity]Value, state.arrayCount+1)
+	state.arrays = make(map[uintptr]Value, state.arrayCount+1)
 	for i := range state.arrayCount {
 		entry := state.smallArrays[i]
 		state.arrays[entry.id] = entry.value
@@ -323,9 +316,9 @@ func cloneCapabilityMethodResult(method string, result Value) (Value, error) {
 
 type capabilityDataCloneScanner struct {
 	label          string
-	clonedArrays   map[sliceIdentity]Value
+	clonedArrays   map[uintptr]Value
 	clonedMaps     map[uintptr]Value
-	visitingArrays map[sliceIdentity]struct{}
+	visitingArrays map[uintptr]struct{}
 	visitingMaps   map[uintptr]struct{}
 }
 
@@ -335,9 +328,9 @@ func cloneCapabilityDataOnlyValue(label string, val Value) (Value, error) {
 	}
 	scanner := &capabilityDataCloneScanner{
 		label:          label,
-		clonedArrays:   make(map[sliceIdentity]Value),
+		clonedArrays:   make(map[uintptr]Value),
 		clonedMaps:     make(map[uintptr]Value),
-		visitingArrays: make(map[sliceIdentity]struct{}),
+		visitingArrays: make(map[uintptr]struct{}),
 		visitingMaps:   make(map[uintptr]struct{}),
 	}
 	return scanner.clone(val)
@@ -359,13 +352,12 @@ func (s *capabilityDataCloneScanner) clone(val Value) (Value, error) {
 }
 
 func (s *capabilityDataCloneScanner) cloneArray(val Value) (Value, error) {
+	// Key on the array wrapper identity so aliases of one mutable array clone
+	// to one shared object (and distinct empties stay distinct), and so a
+	// cyclic array is detected by object rather than by backing slice.
 	values := val.Array()
-	id := sliceIdentity{
-		Ptr: reflect.ValueOf(values).Pointer(),
-		Len: len(values),
-		Cap: cap(values),
-	}
-	if id.Ptr != 0 {
+	id := arrayIdentity(val)
+	if id != 0 {
 		if _, visiting := s.visitingArrays[id]; visiting {
 			return NewNil(), fmt.Errorf("%s must not contain cyclic references", s.label)
 		}
@@ -376,7 +368,7 @@ func (s *capabilityDataCloneScanner) cloneArray(val Value) (Value, error) {
 	}
 	clonedValues := make([]Value, len(values))
 	cloned := NewArray(clonedValues)
-	if id.Ptr != 0 {
+	if id != 0 {
 		s.clonedArrays[id] = cloned
 	}
 	for i, item := range values {
@@ -386,7 +378,7 @@ func (s *capabilityDataCloneScanner) cloneArray(val Value) (Value, error) {
 		}
 		clonedValues[i] = clonedItem
 	}
-	if id.Ptr != 0 {
+	if id != 0 {
 		delete(s.visitingArrays, id)
 	}
 	return cloned, nil

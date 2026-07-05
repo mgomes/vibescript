@@ -88,26 +88,24 @@ def transform_values_drops_default()
   { a: doubled[:a], missing: doubled[:c] }
 end
 
-def store_drops_default()
+def store_preserves_default()
   h = Hash.new(0)
-  stored = h.store(:a, 1)
-  { a: stored[:a], missing: stored[:missing] }
+  h.store(:a, 1)
+  { a: h[:a], missing: h[:missing] }
 end
 
-def delete_hit_drops_default()
+def delete_hit_preserves_default()
   h = Hash.new(0)
   h[:a] = 1
   deleted = h.delete(:a)
-  result = deleted[:hash]
-  { deleted: deleted[:deleted], missing: result[:missing], size: result.size }
+  { deleted: deleted, missing: h[:missing], size: h.size }
 end
 
-def delete_miss_drops_default()
+def delete_miss_preserves_default()
   h = Hash.new(0)
   h[:a] = 1
   deleted = h.delete(:b)
-  result = deleted[:hash]
-  { a: result[:a], deleted: deleted[:deleted], missing: result[:missing] }
+  { a: h[:a], deleted: deleted, missing: h[:missing] }
 end
 
 def plain_literal_missing()
@@ -329,9 +327,11 @@ func TestHashDefaultTransformPropagation(t *testing.T) {
 		{name: "clear preserves proc default", fn: "clear_preserves_proc_default", field: "computed", wantInt: 42, preserves: true},
 		{name: "select drops default", fn: "select_drops_default", field: "missing"},
 		{name: "transform_values drops default", fn: "transform_values_drops_default", field: "missing"},
-		{name: "store drops default", fn: "store_drops_default", field: "missing"},
-		{name: "delete hit drops default", fn: "delete_hit_drops_default", field: "missing"},
-		{name: "delete miss drops default", fn: "delete_miss_drops_default", field: "missing"},
+		// store and delete mutate the receiver in place, so the receiver's own
+		// default metadata naturally survives, matching Ruby.
+		{name: "store preserves default", fn: "store_preserves_default", field: "missing", wantInt: 0, preserves: true},
+		{name: "delete hit preserves default", fn: "delete_hit_preserves_default", field: "missing", wantInt: 0, preserves: true},
+		{name: "delete miss preserves default", fn: "delete_miss_preserves_default", field: "missing", wantInt: 0, preserves: true},
 	}
 
 	for _, tc := range tests {

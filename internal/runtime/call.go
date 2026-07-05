@@ -430,6 +430,10 @@ func (exec *Execution) callFunctionWithBoundEnv(fn *ScriptFunction, receiver Val
 	if err != nil {
 		return NewNil(), err
 	}
+	// Settle before the value escapes the call: a closure created by the body
+	// can keep callEnv (and the accumulator registration) alive after return,
+	// and a later fast-path concat must not append into the escaped backing.
+	val = callEnv.settleArrayAppendResult(val)
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
@@ -471,7 +475,13 @@ type callFunctionRebinder struct {
 	callEnums     map[string]*EnumDef
 	seenFunctions map[*ScriptFunction]*ScriptFunction
 	seenInstances map[*Instance]Value
-	seenArrays    map[sliceIdentity]Value
+	// seenArrays caches rebound KindArray values keyed on the source array's
+	// wrapper identity. Aliases of one mutable array rebind to one shared
+	// object (so an in-place push through one alias stays visible through the
+	// others) while independently constructed arrays -- including distinct
+	// empties -- rebind to distinct objects. Keying on the element backing
+	// would collapse distinct empty arrays onto one rebound object.
+	seenArrays map[uintptr]Value
 	// seenHashes caches rebound KindHash values keyed on the source hash's wrapper
 	// identity. A hash reachable through several paths in the inbound graph rebinds
 	// to one wrapper and keeps its identity, so a bound predicate rebound to that
@@ -657,18 +667,14 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		return cloneVal
 	case KindArray:
 		items := val.Array()
-		id := sliceIdentity{
-			Ptr: reflect.ValueOf(items).Pointer(),
-			Len: len(items),
-			Cap: cap(items),
-		}
+		id := arrayIdentity(val)
 		if clone, seen := r.seenArrays[id]; seen {
 			return clone
 		}
 		clonedItems := make([]Value, len(items))
 		clonedArray := NewArray(clonedItems)
 		if r.seenArrays == nil {
-			r.seenArrays = make(map[sliceIdentity]Value)
+			r.seenArrays = make(map[uintptr]Value)
 		}
 		r.seenArrays[id] = clonedArray
 		for i := range items {
@@ -2806,7 +2812,7 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env, t
 	if err != nil {
 		return NewNil(), err
 	}
-	val = callEnv.detachArrayAppendResult(val)
+	val = callEnv.settleArrayAppendResult(val)
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
@@ -2859,7 +2865,7 @@ func (exec *Execution) executeGeneratedSetter(fn *ScriptFunction, callEnv *Env) 
 		return NewNil(), exec.errorAt(fn.Pos, "missing property setter value")
 	}
 	valueInstance(self).Ivars[fn.AccessorName] = val
-	val = callEnv.detachArrayAppendResult(val)
+	val = callEnv.settleArrayAppendResult(val)
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}

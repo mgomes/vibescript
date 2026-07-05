@@ -427,11 +427,11 @@ path reuses `==`, integers and floats remain distinct kinds, so `1 === 1.0` is
 language features.
 
 The collection operators work on arrays. `array << value` appends a single
-value, and `array & other` returns the elements common to both arrays with
-duplicates removed and the left array's order preserved. Because Vibescript
-arrays are immutable, `<<` does not mutate the receiver like Ruby's shovel does:
-it returns a new array, so accumulate by reassigning (`values = values << x`),
-the same idiom used with `push` and `+`. Following Ruby, `+` binds tighter than
+value to the receiver in place and returns the receiver, exactly like Ruby's
+shovel: a bare `values << x` statement accumulates and every alias of the array
+observes the append. `array & other` returns a new array holding the elements
+common to both arrays with duplicates removed and the left array's order
+preserved. Following Ruby, `+` binds tighter than
 `<<`, which binds tighter than `&`. The `&` operator is disambiguated from the
 (unsupported) block-pass sigil by spacing, exactly as Ruby does: only an `&`
 that is detached from the callee yet flush against its operand (`call &block`)

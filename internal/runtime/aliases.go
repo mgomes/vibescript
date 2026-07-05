@@ -303,6 +303,17 @@ func hashDefaultProc(v Value) Value { return value.HashDefaultProc(v) }
 // hash defaults key their seen-set on this rather than the bare entry map.
 func hashIdentity(v Value) uintptr { return value.HashIdentity(v) }
 
+// arrayIdentity returns a stable identity for an array wrapper, or 0 when v is
+// not an array. Cloners key their seen-sets on this rather than the element
+// backing so aliases of one mutable array clone to one shared object while
+// distinct arrays (including independent empties) clone to distinct objects.
+func arrayIdentity(v Value) uintptr { return value.ArrayIdentity(v) }
+
+// setArrayElems replaces an array's element slice in place through its shared
+// wrapper. It is the primitive behind the Ruby-style in-place mutators (push,
+// pop, clear, map!, ...): every Value aliasing the array observes the change.
+func setArrayElems(v Value, elems []Value) { v.SetArrayElems(elems) }
+
 func hashStringMapIfMaterialized(v Value) (map[string]Value, bool) {
 	return v.HashStringMapIfMaterialized()
 }
@@ -378,7 +389,14 @@ func parseTimeString(input, layout string, hasLayout bool, loc *time.Location) (
 }
 
 type hostValueCloneState struct {
-	arrays map[sliceIdentity]Value
+	// arrays caches cloned KindArray values keyed on the source array's wrapper
+	// identity, so aliases of one mutable array clone to one shared object (a
+	// later in-place mutation through one cloned alias stays visible through
+	// the others) while independently constructed arrays — including distinct
+	// empties — clone to distinct objects. Keying on the element backing would
+	// collapse distinct empty arrays onto one clone. This also dedups an array
+	// that contains itself.
+	arrays map[uintptr]Value
 	// hashes caches cloned KindHash values keyed on the source hash's wrapper
 	// identity, so a hash reachable through several paths in the returned graph
 	// clones to one wrapper and keeps its identity. Caching only the entry map
@@ -436,7 +454,7 @@ type hostValueCloneState struct {
 }
 
 type hostValueScanState struct {
-	arrays map[sliceIdentity]struct{}
+	arrays map[uintptr]struct{}
 	maps   map[uintptr]struct{}
 }
 
@@ -514,7 +532,7 @@ func hashDefaultNeedsHostClone(val Value, state hostValueScanState) bool {
 
 func valueNeedsHostCloneWithFreshState(val Value) bool {
 	state := hostValueScanState{
-		arrays: make(map[sliceIdentity]struct{}),
+		arrays: make(map[uintptr]struct{}),
 		maps:   make(map[uintptr]struct{}),
 	}
 	return valueNeedsHostCloneWithState(val, state)
@@ -543,19 +561,16 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 	case KindFunction, KindClass, KindInstance, KindEnum, KindEnumValue, KindBlock, KindBuiltin:
 		return true
 	case KindArray:
-		items := val.Array()
-		id := sliceIdentity{
-			Ptr: reflect.ValueOf(items).Pointer(),
-			Len: len(items),
-			Cap: cap(items),
-		}
-		if id.Ptr != 0 {
+		// Key on the array wrapper so a cyclic array (one that reaches itself)
+		// terminates at the seen check; the wrapper identity is stable even
+		// while in-place mutators swap the element backing.
+		if id := arrayIdentity(val); id != 0 {
 			if _, ok := state.arrays[id]; ok {
 				return false
 			}
 			state.arrays[id] = struct{}{}
 		}
-		for _, item := range items {
+		for _, item := range val.Array() {
 			if valueNeedsHostCloneWithState(item, state) {
 				return true
 			}
@@ -597,7 +612,7 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 
 func cloneValueForHost(val Value) Value {
 	state := hostValueCloneState{
-		arrays:        make(map[sliceIdentity]Value),
+		arrays:        make(map[uintptr]Value),
 		hashes:        make(map[uintptr]Value),
 		hashEntries:   make(map[uintptr]map[string]Value),
 		maps:          make(map[uintptr]map[string]Value),
@@ -616,19 +631,15 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 	switch val.Kind() {
 	case KindArray:
 		items := val.Array()
-		id := sliceIdentity{
-			Ptr: reflect.ValueOf(items).Pointer(),
-			Len: len(items),
-			Cap: cap(items),
-		}
-		if id.Ptr != 0 {
+		id := arrayIdentity(val)
+		if id != 0 {
 			if clone, ok := state.arrays[id]; ok {
 				return clone
 			}
 		}
 		clonedItems := make([]Value, len(items))
 		cloned := NewArray(clonedItems)
-		if id.Ptr != 0 {
+		if id != 0 {
 			state.arrays[id] = cloned
 		}
 		for i, item := range items {

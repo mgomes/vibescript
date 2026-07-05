@@ -54,7 +54,7 @@ func TestHashArbitraryKeys(t *testing.T) {
 	script := compileScript(t, `def run()
   hash = {1 => "one", [1, 2] => "array", "name" => "string", :name => "symbol"}
   hash[[3, 4]] = "assigned"
-	  stored = hash.store([5], "stored")
+	  hash.store([5], "stored")
 	  copy = hash.dup
 	  mixed = { "name" => "string", :name => "symbol" }
 	  groups = [1, 2, 3].group_by { |n| n % 2 }
@@ -68,7 +68,7 @@ func TestHashArbitraryKeys(t *testing.T) {
     string_key: hash["name"],
     symbol_key: hash[:name],
 	    assigned_array: hash[[3, 4]],
-	    stored_array: stored[[5]],
+	    stored_array: hash[[5]],
 	    copied_int: copy[1],
 	    copied_array: copy[[1, 2]],
 	    mixed_size: mixed.size,
@@ -617,11 +617,13 @@ func TestHashMergeMultipleHashes(t *testing.T) {
 
 func TestHashUpdateAndMergeBangAliases(t *testing.T) {
 	t.Parallel()
+	// update and merge! are Ruby's in-place merge: they fold the arguments into
+	// the receiver itself and return the receiver.
 	script := compileScript(t, `
-    def update_returns_new_hash()
+    def update_mutates_receiver()
       original = { a: 1 }
       updated = original.update({ b: 2 })
-      { original: original, updated: updated }
+      { original: original, updated: updated, same: updated.equal?(original) }
     end
 
     def update_multiple()
@@ -634,26 +636,36 @@ func TestHashUpdateAndMergeBangAliases(t *testing.T) {
       end
     end
 
-    def merge_bang_returns_new_hash()
+    def merge_bang_mutates_receiver()
       original = { a: 1 }
       merged = original.merge!({ a: 5 })
-      { original: original, merged: merged }
+      { original: original, merged: merged, same: merged.equal?(original) }
     end
 
-    def update_parenless_copies()
+    def merge_bang_alias_visibility()
+      h = { a: 1 }
+      g = h
+      h.merge!({ b: 2 })
+      g
+    end
+
+    def update_parenless_noop()
       ({ a: 1, b: 2 }).update
     end
 
-    def merge_bang_parenless_copies()
+    def merge_bang_parenless_noop()
       ({ a: 1, b: 2 }).merge!
     end
     `)
 
-	t.Run("update returns a new hash and leaves the receiver unchanged", func(t *testing.T) {
+	t.Run("update mutates the receiver and returns it", func(t *testing.T) {
 		t.Parallel()
-		result := callFunc(t, script, "update_returns_new_hash", nil).Hash()
-		compareHash(t, result["original"].Hash(), map[string]Value{"a": NewInt(1)})
+		result := callFunc(t, script, "update_mutates_receiver", nil).Hash()
+		compareHash(t, result["original"].Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
 		compareHash(t, result["updated"].Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
+		if !result["same"].Bool() {
+			t.Fatal("update must return the receiver itself")
+		}
 	})
 
 	t.Run("update accepts multiple hashes", func(t *testing.T) {
@@ -668,22 +680,31 @@ func TestHashUpdateAndMergeBangAliases(t *testing.T) {
 		compareHash(t, got.Hash(), map[string]Value{"a": NewInt(3)})
 	})
 
-	t.Run("merge! returns a new hash and leaves the receiver unchanged", func(t *testing.T) {
+	t.Run("merge! mutates the receiver and returns it", func(t *testing.T) {
 		t.Parallel()
-		result := callFunc(t, script, "merge_bang_returns_new_hash", nil).Hash()
-		compareHash(t, result["original"].Hash(), map[string]Value{"a": NewInt(1)})
+		result := callFunc(t, script, "merge_bang_mutates_receiver", nil).Hash()
+		compareHash(t, result["original"].Hash(), map[string]Value{"a": NewInt(5)})
 		compareHash(t, result["merged"].Hash(), map[string]Value{"a": NewInt(5)})
+		if !result["same"].Bool() {
+			t.Fatal("merge! must return the receiver itself")
+		}
 	})
 
-	t.Run("parenless update returns a copy of the receiver", func(t *testing.T) {
+	t.Run("merge! is visible through aliases", func(t *testing.T) {
 		t.Parallel()
-		got := callFunc(t, script, "update_parenless_copies", nil)
+		got := callFunc(t, script, "merge_bang_alias_visibility", nil)
 		compareHash(t, got.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
 	})
 
-	t.Run("parenless merge! returns a copy of the receiver", func(t *testing.T) {
+	t.Run("parenless update is a no-op returning the receiver", func(t *testing.T) {
 		t.Parallel()
-		got := callFunc(t, script, "merge_bang_parenless_copies", nil)
+		got := callFunc(t, script, "update_parenless_noop", nil)
+		compareHash(t, got.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
+	})
+
+	t.Run("parenless merge! is a no-op returning the receiver", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "merge_bang_parenless_noop", nil)
 		compareHash(t, got.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
 	})
 }
@@ -691,10 +712,10 @@ func TestHashUpdateAndMergeBangAliases(t *testing.T) {
 func TestHashReplace(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
-    def replace_returns_replacement()
+    def replace_mutates_receiver()
       original = { a: 1 }
       replaced = original.replace({ b: 2 })
-      { original: original, replaced: replaced }
+      { original: original, replaced: replaced, same: replaced.equal?(original) }
     end
 
     def replace_with_empty()
@@ -702,11 +723,14 @@ func TestHashReplace(t *testing.T) {
     end
     `)
 
-	t.Run("replace adopts the argument and leaves the receiver unchanged", func(t *testing.T) {
+	t.Run("replace adopts the argument in place and returns the receiver", func(t *testing.T) {
 		t.Parallel()
-		result := callFunc(t, script, "replace_returns_replacement", nil).Hash()
-		compareHash(t, result["original"].Hash(), map[string]Value{"a": NewInt(1)})
+		result := callFunc(t, script, "replace_mutates_receiver", nil).Hash()
+		compareHash(t, result["original"].Hash(), map[string]Value{"b": NewInt(2)})
 		compareHash(t, result["replaced"].Hash(), map[string]Value{"b": NewInt(2)})
+		if !result["same"].Bool() {
+			t.Fatal("replace must return the receiver itself")
+		}
 	})
 
 	t.Run("replace with an empty hash clears the contents", func(t *testing.T) {
@@ -1854,21 +1878,27 @@ func TestHashValuePredicatesRejectWrongArity(t *testing.T) {
 	}
 }
 
-func TestHashStoreReturnsNewHash(t *testing.T) {
+func TestHashStoreMutatesReceiver(t *testing.T) {
 	t.Parallel()
+	// Ruby's Hash#store is index assignment: it writes into the receiver in
+	// place and returns the stored value.
 	script := compileScript(t, `
     def add_key()
       original = { a: 1 }
-      updated = original.store(:b, 2)
-      { original: original, updated: updated }
+      returned = original.store(:b, 2)
+      { original: original, returned: returned }
     end
 
     def overwrite()
-      { a: 1 }.store("a", 9)
+      h = { a: 1 }
+      h.store("a", 9)
+      h
     end
 
     def string_key()
-      { a: 1 }.store("b", 2)
+      h = { a: 1 }
+      h.store("b", 2)
+      h
     end
     `)
 
@@ -1877,13 +1907,10 @@ func TestHashStoreReturnsNewHash(t *testing.T) {
 	if original.Kind() != KindHash {
 		t.Fatalf("original expected hash, got %v", original.Kind())
 	}
-	compareHash(t, original.Hash(), map[string]Value{"a": NewInt(1)})
-
-	updated := added["updated"]
-	if updated.Kind() != KindHash {
-		t.Fatalf("updated expected hash, got %v", updated.Kind())
+	compareHash(t, original.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
+	if returned := added["returned"]; !returned.Equal(NewInt(2)) {
+		t.Fatalf("store returned %v, want the stored value 2", returned)
 	}
-	compareHash(t, updated.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
 
 	overwritten := callFunc(t, script, "overwrite", nil)
 	if overwritten.Kind() != KindHash {
@@ -2196,7 +2223,9 @@ func TestHashInsertionOrder(t *testing.T) {
     end
 
     def store_appends()
-      { c: 3, a: 1 }.store(:b, 2).keys
+      h = { c: 3, a: 1 }
+      h.store(:b, 2)
+      h.keys
     end
 
     def slice_argument_order()
@@ -2252,7 +2281,9 @@ func TestHashInsertionOrder(t *testing.T) {
     end
 
     def delete_keeps_order()
-      { c: 3, a: 1, b: 2 }.delete(:a)[:hash].keys
+      h = { c: 3, a: 1, b: 2 }
+      h.delete(:a)
+      h.keys
     end
 
     def group_by_first_encounter()
@@ -2448,11 +2479,13 @@ func TestHashCopyPreservesSortedOrderForBareHostMap(t *testing.T) {
 
 	script := compileScript(t, `
     def bare_store(h)
-      h.store("zeta", 9).keys
+      h.store("zeta", 9)
+      h.keys
     end
 
     def bare_delete(h)
-      h.delete("bravo")[:hash].keys
+      h.delete("bravo")
+      h.keys
     end
 
     def bare_merge(h)
@@ -2490,7 +2523,9 @@ func TestHashCopyPreservesSortedOrderForBareHostMap(t *testing.T) {
 		want Value
 	}{
 		{name: "store_copies_bare_receiver_sorted", fn: "bare_store", want: NewArray(str("alpha", "bravo", "charlie", "delta", "echo", "zeta"))},
-		{name: "delete_copies_bare_receiver_sorted", fn: "bare_delete", want: NewArray(str("alpha", "charlie", "delta", "echo"))},
+		// The in-place delete keeps a bare host map legacy, and a legacy-only
+		// hash surfaces its keys as symbols in sorted order.
+		{name: "delete_keeps_bare_receiver_sorted", fn: "bare_delete", want: NewArray([]Value{NewSymbol("alpha"), NewSymbol("charlie"), NewSymbol("delta"), NewSymbol("echo")})},
 		{name: "mixed_merge_copies_bare_receiver_sorted", fn: "bare_merge", want: NewArray(str("alpha", "bravo", "charlie", "delta", "echo", "zeta"))},
 		{
 			name: "merge_inserts_bare_argument_sorted",
@@ -2515,8 +2550,8 @@ func TestHashStorePromotesLegacyReceiverByLegacyLookup(t *testing.T) {
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 64 << 20}
 
-	replaced, err := callHashMember(t, exec, NewHash(map[string]Value{"k": NewInt(1)}), "store", []Value{NewSymbol("k"), NewInt(9)}, NewNil())
-	if err != nil {
+	replaced := NewHash(map[string]Value{"k": NewInt(1)})
+	if _, err := callHashMember(t, exec, replaced, "store", []Value{NewSymbol("k"), NewInt(9)}, NewNil()); err != nil {
 		t.Fatalf("store(symbol over legacy string key) = %v, want nil", err)
 	}
 	if replaced.HashLen() != 1 {
@@ -2526,8 +2561,8 @@ func TestHashStorePromotesLegacyReceiverByLegacyLookup(t *testing.T) {
 		t.Fatalf("store(symbol over legacy string key) :k = %v, %v, %v; want 9, true, nil", got, ok, err)
 	}
 
-	distinct, err := callHashMember(t, exec, NewHash(map[string]Value{"1": NewInt(1)}), "store", []Value{NewInt(1), NewInt(9)}, NewNil())
-	if err != nil {
+	distinct := NewHash(map[string]Value{"1": NewInt(1)})
+	if _, err := callHashMember(t, exec, distinct, "store", []Value{NewInt(1), NewInt(9)}, NewNil()); err != nil {
 		t.Fatalf("store(int beside legacy string key) = %v, want nil", err)
 	}
 	if distinct.HashLen() != 2 {
@@ -2602,16 +2637,16 @@ func TestTypedCopyReservesExactOrderCapacity(t *testing.T) {
       source.merge({ d: 4 })
     end
 
-    def store_result()
-      source.store(:d, 4)
-    end
-
     def delete_hit_result()
-      source.delete(:b)[:hash]
+      h = source
+      h.delete(:b)
+      h
     end
 
     def delete_miss_result()
-      source.delete(:missing)[:hash]
+      h = source
+      h.delete(:missing)
+      h
     end
 
     def slice_result()
@@ -2696,10 +2731,13 @@ func TestTypedCopyReservesExactOrderCapacity(t *testing.T) {
 		wantLen      int
 		wantCapacity int
 	}{
+		// store is absent: it is plain in-place index assignment nowadays and
+		// grows the receiver's order backing by append like hash[k] = v does.
+		// The in-place delete keeps the receiver's existing order backing, so
+		// delete_hit retains the receiver's capacity of 3 with 2 survivors.
 		{name: "replace", fn: "replace_result", wantLen: 3, wantCapacity: 3},
 		{name: "merge", fn: "merge_result", wantLen: 4, wantCapacity: 4},
-		{name: "store", fn: "store_result", wantLen: 4, wantCapacity: 4},
-		{name: "delete_hit", fn: "delete_hit_result", wantLen: 2, wantCapacity: 2},
+		{name: "delete_hit", fn: "delete_hit_result", wantLen: 2, wantCapacity: 3},
 		{name: "delete_miss", fn: "delete_miss_result", wantLen: 3, wantCapacity: 3},
 		{name: "slice", fn: "slice_result", wantLen: 3, wantCapacity: 3},
 		{name: "except", fn: "except_result", wantLen: 3, wantCapacity: 3},
