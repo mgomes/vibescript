@@ -624,9 +624,16 @@ func normalizeEnumValueForDef(val Value, ty *TypeExpr, enumDef *EnumDef) (Value,
 	}
 }
 
+// normalizeClassInstanceForDef accepts an instance of the named class. A
+// module used as a contract accepts any instance whose class includes it,
+// mirroring is_a? and Ruby's duck-typed module contracts.
 func normalizeClassInstanceForDef(val Value, ty *TypeExpr, classDef *ClassDef) (Value, error) {
 	if val.Kind() == KindInstance {
-		if inst := valueInstance(val); inst != nil && inst.Class == classDef {
+		inst := valueInstance(val)
+		if inst != nil && inst.Class == classDef {
+			return val, nil
+		}
+		if inst != nil && inst.Class != nil && classDef.IsModule && classIncludesModule(inst.Class, classDef.Name) {
 			return val, nil
 		}
 	}

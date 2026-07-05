@@ -22,7 +22,7 @@ type parser struct {
 	codeFrames    *source.CodeFrameFormatter
 
 	insideClass                bool
-	privateNext                bool
+	pendingVisibility          string
 	lineLimitedExprs           int
 	lineLimitedStops           []ast.TokenType
 	lineLimitedForcedStops     []lineLimitedForcedStop

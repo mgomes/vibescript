@@ -954,15 +954,15 @@ func initializeClassBodiesForCall(exec *Execution, env *Env, callClasses map[str
 		if _, deferred := skip[name]; deferred {
 			continue
 		}
-		if len(classDef.Body) == 0 {
+		if len(classDef.Body) == 0 && len(classDef.IncludedModules) == 0 {
 			continue
 		}
 		classVal, ok := env.Get(name)
 		if !ok {
-			return exec.errorAt(classDef.Body[0].Pos(), "class %s is not bound", name)
+			return exec.errorAt(classInitPos(classDef), "class %s is not bound", name)
 		}
 		if err := exec.initializeClassBody(classVal, classDef, env); err != nil {
-			return exec.wrapError(err, classDef.Body[0].Pos())
+			return exec.wrapError(err, classInitPos(classDef))
 		}
 		if err := exec.checkContext(); err != nil {
 			return err
@@ -972,25 +972,61 @@ func initializeClassBodiesForCall(exec *Execution, env *Env, callClasses map[str
 	return nil
 }
 
+func classInitPos(classDef *ClassDef) Position {
+	if len(classDef.Body) > 0 {
+		return classDef.Body[0].Pos()
+	}
+	return Position{}
+}
+
 func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, parent *Env) error {
-	if classDef == nil || len(classDef.Body) == 0 || classDef.bodyRan {
+	if classDef == nil || classDef.bodyRan {
 		return nil
 	}
-	env := newEnv(parent)
-	env.classBody = true
-	env.Define("self", classVal)
-	exec.pushReceiver(classVal)
-	defer exec.popReceiver()
-	// A class body is not a method body: a block created here has no
-	// enclosing method to return from, so pin the home to none.
-	exec.pushBlockHomeToken(0)
-	_, _, err := exec.evalLocalScopeStatements(classDef.Body, env)
-	exec.popBlockHomeToken()
-	if err != nil {
-		return err
+	if len(classDef.Body) == 0 && len(classDef.IncludedModules) == 0 {
+		return nil
+	}
+	// Included module constants are adopted before the body runs so the body
+	// can read them and its own assignments win; later includes were recorded
+	// after earlier ones, so overwriting in order applies Ruby's precedence.
+	exec.adoptIncludedModuleConstants(classDef, parent)
+	if len(classDef.Body) > 0 {
+		env := newEnv(parent)
+		env.classBody = true
+		env.Define("self", classVal)
+		exec.pushReceiver(classVal)
+		defer exec.popReceiver()
+		// A class body is not a method body: a block created here has no
+		// enclosing method to return from, so pin the home to none.
+		exec.pushBlockHomeToken(0)
+		_, _, err := exec.evalLocalScopeStatements(classDef.Body, env)
+		exec.popBlockHomeToken()
+		if err != nil {
+			return err
+		}
 	}
 	classDef.bodyRan = true
 	return nil
+}
+
+// adoptIncludedModuleConstants surfaces included module constants as class
+// constants, so Config::LIMIT resolves on the including class and included
+// methods can read the module's constants through self. Sources resolve
+// through the call environment, which binds every per-call class and module
+// clone by (qualified) name, keeping the adoption inside this call's isolated
+// state. Modules always initialize before the classes that include them —
+// include requires the module to be declared earlier in source — so their
+// constants are populated by the time they are adopted.
+func (exec *Execution) adoptIncludedModuleConstants(classDef *ClassDef, env *Env) {
+	for _, moduleName := range classDef.IncludedModules {
+		moduleVal, ok := env.Get(moduleName)
+		if !ok || moduleVal.Kind() != KindClass {
+			continue
+		}
+		for name, val := range valueClass(moduleVal).ClassVars {
+			classDef.ClassVars[name] = val
+		}
+	}
 }
 
 func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctionRebinder, fn *ScriptFunction, args []Value, keywords map[string]Value) (*Env, error) {
@@ -1144,6 +1180,9 @@ func (exec *Execution) evalDirectPublicMemberMethodCall(receiver Value, property
 		if fn.Private {
 			return NewNil(), true, exec.errorAt(pos, "private method %s", property)
 		}
+		if fn.Protected && !exec.protectedClassAccessAllowed(classDef) {
+			return NewNil(), true, exec.errorAt(pos, "protected method %s", property)
+		}
 		return NewFunction(fn), true, nil
 	case KindInstance:
 		instance := valueInstance(receiver)
@@ -1153,6 +1192,9 @@ func (exec *Execution) evalDirectPublicMemberMethodCall(receiver Value, property
 		}
 		if fn.Private {
 			return NewNil(), true, exec.errorAt(pos, "private method %s", property)
+		}
+		if fn.Protected && !exec.protectedInstanceAccessAllowed(instance.Class) {
+			return NewNil(), true, exec.errorAt(pos, "protected method %s", property)
 		}
 		return NewFunction(fn), true, nil
 	default:

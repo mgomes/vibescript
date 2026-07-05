@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -86,7 +87,10 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Pro
 			out.Statements = append(out.Statements, typed)
 		case *ClassStmt:
 			out.Statements = append(out.Statements, typed)
-			if len(typed.Body) > 0 && hasExecutableTopLevel {
+			// Mixin directives defer alongside class bodies: adopting an
+			// included module's constants must wait until the module's own
+			// (possibly deferred) body has run in source order.
+			if (len(typed.Body) > 0 || classStmtHasMixins(typed)) && hasExecutableTopLevel {
 				if len(body) == 0 {
 					pos = typed.Pos()
 				}
@@ -105,6 +109,15 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Pro
 		deferredClassBodies = nil
 	}
 	return out, deferredClassBodies
+}
+
+func classStmtHasMixins(stmt *ClassStmt) bool {
+	for _, member := range stmt.Members {
+		if member.Mixin != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func snippetHasExecutableTopLevel(program *ast.Program) bool {
@@ -130,6 +143,10 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 	classOrder := make([]string, 0, classCount)
 	enums := make(map[string]*EnumDef, enumCount)
 
+	if err := checkDirectiveNameCollisions(program.Statements); err != nil {
+		return nil, err
+	}
+
 	for _, stmt := range program.Statements {
 		switch s := stmt.(type) {
 		case *FunctionStmt:
@@ -144,21 +161,11 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 			}
 			functions[s.Name] = compileFunctionDef(s)
 		case *ClassStmt:
-			if _, exists := classes[s.Name]; exists {
-				return nil, fmt.Errorf("duplicate class %s", s.Name)
-			}
-			if _, exists := functions[s.Name]; exists {
-				return nil, fmt.Errorf("duplicate top-level name %s", s.Name)
-			}
-			if _, exists := enums[s.Name]; exists {
-				return nil, fmt.Errorf("duplicate top-level name %s", s.Name)
-			}
-			classDef, err := compileClassDef(s)
+			var err error
+			classOrder, err = registerClassStmt(s, "", functions, classes, enums, classOrder)
 			if err != nil {
 				return nil, err
 			}
-			classes[s.Name] = classDef
-			classOrder = append(classOrder, s.Name)
 		case *EnumStmt:
 			if _, exists := enums[s.Name]; exists {
 				return nil, fmt.Errorf("duplicate enum %s", s.Name)
@@ -203,6 +210,92 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 	return script, nil
 }
 
+// checkDirectiveNameCollisions rejects scripts that use a bare word both as a
+// class-body directive and as the name of a script function. Before the
+// contextual directives existed, bare `public :b`, `protected`, or
+// `include Foo` in a class body were parenless calls to the user's function,
+// so compiling both meanings would silently reinterpret existing code. The
+// scan runs before class compilation so the collision diagnostic wins over
+// later mixin-resolution errors, and it consults declaration names directly
+// so a function defined after the class still collides.
+func checkDirectiveNameCollisions(statements []ast.Statement) error {
+	names := make(map[string]struct{})
+	for _, stmt := range statements {
+		switch s := stmt.(type) {
+		case *FunctionStmt:
+			names[s.Name] = struct{}{}
+		case *AliasStmt:
+			if !s.Method {
+				names[s.NewName] = struct{}{}
+			}
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	for _, stmt := range statements {
+		if classStmt, ok := stmt.(*ClassStmt); ok {
+			if err := checkClassDirectiveNameCollisions(classStmt, names); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func checkClassDirectiveNameCollisions(stmt *ClassStmt, functions map[string]struct{}) error {
+	kind := "class"
+	if stmt.IsModule {
+		kind = "module"
+	}
+	for _, member := range stmt.Members {
+		switch {
+		case member.Visibility != nil:
+			if err := visibilityDirectiveCollision(member.Visibility.Level, kind, stmt.Name, functions); err != nil {
+				return err
+			}
+		case member.Function != nil:
+			if err := visibilityDirectiveCollision(member.Function.Visibility, kind, stmt.Name, functions); err != nil {
+				return err
+			}
+		case member.Property != nil:
+			if err := visibilityDirectiveCollision(member.Property.Visibility, kind, stmt.Name, functions); err != nil {
+				return err
+			}
+		case member.Mixin != nil:
+			if _, ok := functions[member.Mixin.Kind]; ok {
+				return fmt.Errorf("%s in %s %s is a mixin directive, but this script also defines a function named %s; rename the function", member.Mixin.Kind, kind, stmt.Name, member.Mixin.Kind)
+			}
+		}
+	}
+	for _, nested := range stmt.Modules {
+		if err := checkClassDirectiveNameCollisions(nested, functions); err != nil {
+			return err
+		}
+	}
+	for _, body := range stmt.Body {
+		if nested, ok := body.(*ClassStmt); ok {
+			if err := checkClassDirectiveNameCollisions(nested, functions); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// visibilityDirectiveCollision reports the collision for the visibility
+// levels spelled with a contextual bare word. `private` is a lexer keyword,
+// so a function of that name can never exist and the level never collides.
+func visibilityDirectiveCollision(level, kind, name string, functions map[string]struct{}) error {
+	if level != ast.VisibilityPublic && level != ast.VisibilityProtected {
+		return nil
+	}
+	if _, ok := functions[level]; !ok {
+		return nil
+	}
+	return fmt.Errorf("%s in %s %s is a visibility directive, but this script also defines a function named %s; rename the function, or call it with parentheses (%s(:name)), which stays a call", level, kind, name, level, level)
+}
+
 func countTopLevelDeclarations(statements []ast.Statement) (functions, classes, enums int) {
 	for _, stmt := range statements {
 		switch stmt.(type) {
@@ -217,9 +310,58 @@ func countTopLevelDeclarations(statements []ast.Statement) (functions, classes, 
 	return functions, classes, enums
 }
 
-func compileClassDef(stmt *ClassStmt) (*ClassDef, error) {
+// registerClassStmt compiles a class or module declaration into the classes
+// map. Nested module declarations register first, under their qualified name
+// (Outer::Inner), so the enclosing body can reference them; the enclosing
+// definition records their short names for per-call constant linking. The
+// updated class order (nested definitions before their parent, so nested
+// bodies initialize first) is returned.
+func registerClassStmt(stmt *ClassStmt, qualifier string, functions map[string]*ScriptFunction, classes map[string]*ClassDef, enums map[string]*EnumDef, classOrder []string) ([]string, error) {
+	name := stmt.Name
+	if qualifier != "" {
+		name = qualifier + "::" + stmt.Name
+	}
+	kind := "class"
+	if stmt.IsModule {
+		kind = "module"
+	}
+	if _, exists := classes[name]; exists {
+		return nil, fmt.Errorf("duplicate %s %s", kind, name)
+	}
+	if _, exists := functions[name]; exists {
+		return nil, fmt.Errorf("duplicate top-level name %s", name)
+	}
+	if _, exists := enums[name]; exists {
+		return nil, fmt.Errorf("duplicate top-level name %s", name)
+	}
+	var err error
+	for _, nested := range stmt.Modules {
+		classOrder, err = registerClassStmt(nested, name, functions, classes, enums, classOrder)
+		if err != nil {
+			return nil, err
+		}
+	}
+	classDef, err := compileClassDef(stmt, name, classes)
+	if err != nil {
+		return nil, err
+	}
+	classDef.Name = name
+	for _, nested := range stmt.Modules {
+		classDef.NestedModules = append(classDef.NestedModules, nested.Name)
+	}
+	classes[name] = classDef
+	return append(classOrder, name), nil
+}
+
+// compileClassDef compiles a class or module declaration. qualifiedName is
+// the registration name (Outer::Inner for nested modules) used to resolve
+// mixin references lexically, and classes holds the definitions compiled so
+// far — include/extend can only reference modules declared earlier in source,
+// matching Ruby's execution-order constant resolution.
+func compileClassDef(stmt *ClassStmt, qualifiedName string, classes map[string]*ClassDef) (*ClassDef, error) {
 	classDef := &ClassDef{
 		Name:         stmt.Name,
+		IsModule:     stmt.IsModule,
 		Methods:      make(map[string]*ScriptFunction),
 		ClassMethods: make(map[string]*ScriptFunction),
 		ClassVars:    make(map[string]Value),
@@ -228,17 +370,60 @@ func compileClassDef(stmt *ClassStmt) (*ClassDef, error) {
 	if len(stmt.Members) == 0 {
 		return compileClassDefLegacyOrder(stmt, classDef)
 	}
+	// Section directives (`private` on its own line) apply to every
+	// definition that follows them until another section directive, matching
+	// Ruby's sticky visibility sections. An inline modifier on a single
+	// definition overrides the section for that definition only.
+	sectionVisibility := ""
+	// own tracks the method names this declaration defines itself (methods,
+	// accessors, aliases). A class's own definitions always win over included
+	// module methods regardless of where the include appears, mirroring
+	// Ruby's ancestor ordering: the class sits closer than any module.
+	own := mixinOwnNames{instance: make(map[string]struct{}), class: make(map[string]struct{})}
 	for _, member := range stmt.Members {
 		if member.Property != nil {
-			compileClassProperty(classDef, *member.Property)
+			compileClassProperty(classDef, *member.Property, sectionVisibility)
+			// Register only the methods the declaration kind actually
+			// defines (mirroring compileClassProperty), so `getter x` still
+			// adopts a module's `x=` and `setter x` a module's `x`.
+			for _, entry := range member.Property.Names {
+				if member.Property.Kind == "property" || member.Property.Kind == "getter" {
+					own.instance[entry.Name] = struct{}{}
+				}
+				if member.Property.Kind == "property" || member.Property.Kind == "setter" {
+					own.instance[entry.Name+"="] = struct{}{}
+				}
+			}
 			continue
 		}
 		if member.Function != nil {
-			compileClassMethod(classDef, member.Function)
+			compileClassMethod(classDef, member.Function, sectionVisibility)
+			if member.Function.IsClassMethod {
+				own.class[member.Function.Name] = struct{}{}
+			} else {
+				own.instance[member.Function.Name] = struct{}{}
+			}
 			continue
 		}
 		if member.Alias != nil {
 			if err := compileClassAlias(classDef, member.Alias, stmt.Name); err != nil {
+				return nil, err
+			}
+			own.instance[member.Alias.NewName] = struct{}{}
+			continue
+		}
+		if member.Visibility != nil {
+			if len(member.Visibility.Names) == 0 {
+				sectionVisibility = member.Visibility.Level
+				continue
+			}
+			if err := applyNamedVisibility(classDef, member.Visibility, stmt.Name); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if member.Mixin != nil {
+			if err := applyMixin(classDef, member.Mixin, qualifiedName, classes, own); err != nil {
 				return nil, err
 			}
 		}
@@ -246,15 +431,129 @@ func compileClassDef(stmt *ClassStmt) (*ClassDef, error) {
 	return classDef, nil
 }
 
+// mixinOwnNames records the method names a class defines itself, per method
+// namespace, so mixin copies never displace them.
+type mixinOwnNames struct {
+	instance map[string]struct{}
+	class    map[string]struct{}
+}
+
+// applyMixin copies a module's instance-style methods into the declaring
+// definition: include targets the instance methods, extend the class methods.
+// Later include/extend directives overwrite copies made by earlier ones, and
+// within one directive earlier arguments win (`include A, B` behaves as if B
+// were included first), matching Ruby's ancestor ordering as closely as a
+// copy model can. Re-including a module that is already an ancestor is a full
+// no-op, as in Ruby: neither its methods nor its constants regain precedence.
+// The class's own definitions always take precedence.
+func applyMixin(classDef *ClassDef, mixin *ast.MixinDecl, qualifiedName string, classes map[string]*ClassDef, own mixinOwnNames) error {
+	for i := len(mixin.Modules) - 1; i >= 0; i-- {
+		ref := mixin.Modules[i]
+		moduleDef, moduleName, err := resolveMixinModule(mixin.Kind, ref.Name, qualifiedName, classes)
+		if err != nil {
+			return err
+		}
+		switch mixin.Kind {
+		case ast.MixinInclude:
+			if slices.Contains(classDef.IncludedModules, moduleName) {
+				continue
+			}
+			copyMixinMethods(classDef.Methods, moduleDef.Methods, own.instance)
+			// The module's own ancestry joins the includer's ahead of the
+			// module itself, so a directly included module keeps precedence
+			// over what it pulled in, and is_a?/type contracts see the whole
+			// transitive chain. Modules resolve only when declared earlier in
+			// source, so moduleDef's list is already transitively complete,
+			// and self/mutual includes are rejected before this point.
+			for _, transitive := range moduleDef.IncludedModules {
+				if !slices.Contains(classDef.IncludedModules, transitive) {
+					classDef.IncludedModules = append(classDef.IncludedModules, transitive)
+				}
+			}
+			classDef.IncludedModules = append(classDef.IncludedModules, moduleName)
+		case ast.MixinExtend:
+			copyMixinMethods(classDef.ClassMethods, moduleDef.Methods, own.class)
+		default:
+			return fmt.Errorf("unsupported mixin directive %s", mixin.Kind)
+		}
+	}
+	return nil
+}
+
+// resolveMixinModule resolves a mixin reference lexically: a name written
+// inside module Outer tries Outer::Name before the top level, so nested
+// modules can include their siblings by short name.
+func resolveMixinModule(kind, ref, qualifiedName string, classes map[string]*ClassDef) (*ClassDef, string, error) {
+	prefix := qualifiedName
+	for {
+		candidate := ref
+		if prefix != "" {
+			candidate = prefix + "::" + ref
+		}
+		if def, ok := classes[candidate]; ok {
+			if !def.IsModule {
+				return nil, "", fmt.Errorf("%s target %s is not a module", kind, candidate)
+			}
+			return def, candidate, nil
+		}
+		if prefix == "" {
+			return nil, "", fmt.Errorf("%s target module %s is not defined", kind, ref)
+		}
+		if idx := strings.LastIndex(prefix, "::"); idx >= 0 {
+			prefix = prefix[:idx]
+		} else {
+			prefix = ""
+		}
+	}
+}
+
+// copyMixinMethods copies module methods into a destination method map,
+// skipping names the destination's declaration defines itself. Each copy is a
+// fresh ScriptFunction so later visibility directives on the including class
+// never mutate the module's own definition.
+func copyMixinMethods(dest, source map[string]*ScriptFunction, own map[string]struct{}) {
+	for name, fn := range source {
+		if _, isOwn := own[name]; isOwn {
+			continue
+		}
+		copied := *fn
+		dest[name] = &copied
+	}
+}
+
+// applyNamedVisibility applies a named directive (`private :hidden, :other`)
+// to methods that are already defined, mirroring Ruby's retroactive
+// symbol-argument visibility calls. Instance methods are consulted first,
+// then class methods.
+func applyNamedVisibility(classDef *ClassDef, decl *ast.VisibilityDecl, className string) error {
+	for _, name := range decl.Names {
+		if fn, ok := classDef.Methods[name]; ok {
+			setFunctionVisibility(fn, decl.Level)
+			continue
+		}
+		if fn, ok := classDef.ClassMethods[name]; ok {
+			setFunctionVisibility(fn, decl.Level)
+			continue
+		}
+		return fmt.Errorf("%s target method %s is not defined on class %s", decl.Level, name, className)
+	}
+	return nil
+}
+
+func setFunctionVisibility(fn *ScriptFunction, level string) {
+	fn.Private = level == ast.VisibilityPrivate
+	fn.Protected = level == ast.VisibilityProtected
+}
+
 func compileClassDefLegacyOrder(stmt *ClassStmt, classDef *ClassDef) (*ClassDef, error) {
 	for _, prop := range stmt.Properties {
-		compileClassProperty(classDef, prop)
+		compileClassProperty(classDef, prop, "")
 	}
 	for _, fn := range stmt.Methods {
-		compileClassMethod(classDef, fn)
+		compileClassMethod(classDef, fn, "")
 	}
 	for _, fn := range stmt.ClassMethods {
-		compileClassMethod(classDef, fn)
+		compileClassMethod(classDef, fn, "")
 	}
 	for _, alias := range stmt.Aliases {
 		if err := compileClassAlias(classDef, alias, stmt.Name); err != nil {
@@ -264,7 +563,11 @@ func compileClassDefLegacyOrder(stmt *ClassStmt, classDef *ClassDef) (*ClassDef,
 	return classDef, nil
 }
 
-func compileClassProperty(classDef *ClassDef, prop PropertyDecl) {
+func compileClassProperty(classDef *ClassDef, prop PropertyDecl, sectionVisibility string) {
+	visibility := prop.Visibility
+	if visibility == "" {
+		visibility = sectionVisibility
+	}
 	for _, entry := range prop.Names {
 		name := entry.Name
 		if prop.Kind == "property" || prop.Kind == "getter" {
@@ -276,6 +579,7 @@ func compileClassProperty(classDef *ClassDef, prop PropertyDecl) {
 				Accessor:     functionAccessorGetter,
 				AccessorName: name,
 			}
+			setFunctionVisibility(getter, visibility)
 			classDef.Methods[name] = getter
 		}
 		if prop.Kind == "property" || prop.Kind == "setter" {
@@ -292,13 +596,23 @@ func compileClassProperty(classDef *ClassDef, prop PropertyDecl) {
 				Accessor:     functionAccessorSetter,
 				AccessorName: name,
 			}
+			setFunctionVisibility(setter, visibility)
 			classDef.Methods[name+"="] = setter
 		}
 	}
 }
 
-func compileClassMethod(classDef *ClassDef, fn *FunctionStmt) {
+func compileClassMethod(classDef *ClassDef, fn *FunctionStmt, sectionVisibility string) {
 	compiled := compileFunctionDef(fn)
+	visibility := fn.Visibility
+	if visibility == "" {
+		if fn.Private {
+			visibility = ast.VisibilityPrivate
+		} else {
+			visibility = sectionVisibility
+		}
+	}
+	setFunctionVisibility(compiled, visibility)
 	if fn.Name == "initialize" {
 		compiled.Private = true
 	}

@@ -2112,3 +2112,148 @@ func largeLSPCompletionSource(functionCount, localCount int) (string, int) {
 	}
 	return b.String(), completionLine
 }
+
+const moduleNavigationFixture = `module Billing
+  LIMIT = 100
+
+  module Codes
+    PREFIX = "B"
+
+    def tag
+      PREFIX
+    end
+  end
+
+  def self.code
+    "B-1"
+  end
+end
+
+class Account
+  include Billing::Codes
+
+  protected def guard
+    1
+  end
+
+  public def shown
+    2
+  end
+end
+
+def run()
+  Billing::LIMIT
+end
+`
+
+func TestDocumentSymbolsIncludeModulesAndVisibilityPrefixedDefs(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/outline-modules.vibe"
+	openDoc(t, server, uri, moduleNavigationFixture)
+
+	symbols := documentSymbolsResult(t, server, uri)
+	byName := map[string]lspDocumentSymbol{}
+	for _, symbol := range symbols {
+		byName[symbol.Name] = symbol
+	}
+
+	billing, ok := byName["Billing"]
+	if !ok {
+		t.Fatalf("outline %v is missing the Billing module", symbolNames(symbols))
+	}
+	if billing.Kind != 2 {
+		t.Fatalf("Billing kind = %d, want module kind 2", billing.Kind)
+	}
+	billingChildren := map[string]lspDocumentSymbol{}
+	for _, child := range billing.Children {
+		billingChildren[child.Name] = child
+	}
+	if limit, ok := billingChildren["LIMIT"]; !ok || limit.Kind != 14 {
+		t.Fatalf("Billing children = %v, want constant LIMIT with kind 14", symbolNames(billing.Children))
+	}
+	if code, ok := billingChildren["self.code"]; !ok || code.Kind != 6 {
+		t.Fatalf("Billing children = %v, want method self.code with kind 6", symbolNames(billing.Children))
+	}
+	codes, ok := billingChildren["Codes"]
+	if !ok || codes.Kind != 2 {
+		t.Fatalf("Billing children = %v, want nested module Codes with kind 2", symbolNames(billing.Children))
+	}
+	codesChildren := map[string]lspDocumentSymbol{}
+	for _, child := range codes.Children {
+		codesChildren[child.Name] = child
+	}
+	if tag, ok := codesChildren["tag"]; !ok || tag.Kind != 6 {
+		t.Fatalf("Codes children = %v, want method tag", symbolNames(codes.Children))
+	}
+	if prefix, ok := codesChildren["PREFIX"]; !ok || prefix.Kind != 14 {
+		t.Fatalf("Codes children = %v, want constant PREFIX", symbolNames(codes.Children))
+	}
+
+	account := byName["Account"]
+	if account.Kind != 5 {
+		t.Fatalf("Account kind = %d, want class kind 5", account.Kind)
+	}
+	accountChildren := make([]string, 0, len(account.Children))
+	for _, child := range account.Children {
+		accountChildren = append(accountChildren, child.Name)
+	}
+	if !slices.Contains(accountChildren, "guard") || !slices.Contains(accountChildren, "shown") {
+		t.Fatalf("Account children = %v, want visibility-prefixed defs guard and shown", accountChildren)
+	}
+}
+
+func symbolNames(symbols []lspDocumentSymbol) []string {
+	names := make([]string, 0, len(symbols))
+	for _, symbol := range symbols {
+		names = append(names, symbol.Name)
+	}
+	return names
+}
+
+func TestDocumentSymbolModuleOutlineServedFromCache(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/outline-modules-cache.vibe"
+	openDoc(t, server, uri, moduleNavigationFixture)
+
+	first := documentSymbolsResult(t, server, uri)
+	if len(first) != 3 {
+		t.Fatalf("outline = %d top-level symbols, want Billing, Account, run", len(first))
+	}
+	second := documentSymbolsResult(t, server, uri)
+	if &first[0] != &second[0] {
+		t.Fatal("repeat outline request rebuilt the symbols instead of reusing the cache")
+	}
+	if second[0].Name != "Billing" || second[0].Kind != 2 {
+		t.Fatalf("cached outline root = %s kind %d, want Billing kind 2", second[0].Name, second[0].Kind)
+	}
+}
+
+func TestDefinitionResolvesModulesAndVisibilityPrefixedDefs(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/nav-modules.vibe"
+	openDoc(t, server, uri, moduleNavigationFixture)
+
+	wantLines := map[string]int{
+		"Billing": 0,
+		"LIMIT":   1,
+		"Codes":   3,
+		"PREFIX":  4,
+		"tag":     6,
+		"code":    11,
+		"guard":   19,
+		"shown":   23,
+	}
+	for word, wantLine := range wantLines {
+		location := definitionLocation(server.programs[uri], uri, server.documentLines(uri), word)
+		if location == nil {
+			t.Fatalf("definition for %s = nil, want line %d", word, wantLine)
+		}
+		start := location["range"].(map[string]any)["start"].(map[string]any)
+		if start["line"] != wantLine {
+			t.Fatalf("definition line for %s = %#v, want %d", word, start["line"], wantLine)
+		}
+	}
+}

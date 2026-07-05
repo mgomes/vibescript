@@ -61,6 +61,8 @@ func (p *parser) parseStatementOperand() ast.Statement {
 			} else {
 				stmt = p.parseUnsupportedAliasStatement()
 			}
+		} else if p.curToken.Literal == "module" && p.peekStartsModuleDeclaration() {
+			stmt = p.parseModuleDeclarationStatement()
 		} else {
 			stmt = p.parseExpressionOrAssignStatement()
 		}
@@ -799,13 +801,13 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		return nil
 	}
 
-	private := false
-	if p.insideClass && p.privateNext {
-		private = true
-		p.privateNext = false
+	visibility := ""
+	if p.insideClass && p.pendingVisibility != "" {
+		visibility = p.pendingVisibility
+		p.pendingVisibility = ""
 	}
 
-	return &ast.FunctionStmt{Name: name, Params: params, ReturnTy: returnTy, Body: body, IsClassMethod: isClassMethod, Private: private, Position: pos}
+	return &ast.FunctionStmt{Name: name, Params: params, ReturnTy: returnTy, Body: body, IsClassMethod: isClassMethod, Private: visibility == ast.VisibilityPrivate, Visibility: visibility, Position: pos}
 }
 
 // parseOperatorMethodName recognizes a Ruby operator token in def-name
@@ -842,18 +844,61 @@ func (p *parser) parseClassStatement() ast.Statement {
 	if !p.expectPeek(ast.TokenIdent) {
 		return nil
 	}
+	return p.parseClassLikeBody(pos, false)
+}
+
+// parseModuleStatement parses a `module Name ... end` declaration with
+// curToken on the contextual `module` keyword. Module names are constants, so
+// they must start with an uppercase letter.
+func (p *parser) parseModuleStatement() ast.Statement {
+	pos := p.curToken.Pos
+	if !p.expectPeek(ast.TokenIdent) {
+		return nil
+	}
+	if !startsUppercaseIdentifier(p.curToken.Literal) {
+		p.addParseError(p.curToken.Pos, "module name must start with an uppercase letter")
+		return nil
+	}
+	return p.parseClassLikeBody(pos, true)
+}
+
+// peekStartsModuleDeclaration reports whether a `module` identifier at
+// curToken is followed by a declaration name on the same line, i.e. the token
+// sequence reads as a module declaration rather than an unrelated expression
+// (`module = require(...)`, `module.helper`).
+func (p *parser) peekStartsModuleDeclaration() bool {
+	return p.peekToken.Type == ast.TokenIdent && p.peekToken.Pos.Line == p.curToken.Pos.Line
+}
+
+// parseModuleDeclarationStatement handles a module declaration recognized in
+// general statement position. Declarations are only legal at the top level
+// (module bodies parse their nested declarations directly), so class bodies,
+// function bodies, and other nested contexts get a targeted diagnostic.
+func (p *parser) parseModuleDeclarationStatement() ast.Statement {
+	if p.insideClass || p.statementNesting > 0 {
+		p.addParseError(p.curToken.Pos, "module declarations are only supported at the top level and nested in module bodies")
+		return nil
+	}
+	return p.parseModuleStatement()
+}
+
+// parseClassLikeBody parses the shared class/module body with curToken on the
+// declaration name. Module bodies additionally accept nested module
+// declarations and reject class declarations.
+func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Statement {
 	name := p.curToken.Literal
 	p.nextToken()
 
 	stmt := &ast.ClassStmt{
 		Name:     name,
+		IsModule: isModule,
 		Position: pos,
 	}
 
 	prevInside := p.insideClass
-	prevPrivate := p.privateNext
+	prevVisibility := p.pendingVisibility
 	p.insideClass = true
-	p.privateNext = false
+	p.pendingVisibility = ""
 	p.statementNesting++
 	defer func() {
 		p.statementNesting--
@@ -865,6 +910,15 @@ func (p *parser) parseClassStatement() ast.Statement {
 			break
 		}
 		switch p.curToken.Type {
+		case ast.TokenClass:
+			if isModule {
+				p.addParseError(p.curToken.Pos, "class declarations are not supported in module bodies")
+				return nil
+			}
+			s := p.parseStatement()
+			if s != nil {
+				stmt.Body = append(stmt.Body, s)
+			}
 		case ast.TokenDef:
 			fnStmt := p.parseFunctionStatement()
 			if fnStmt == nil {
@@ -902,6 +956,46 @@ func (p *parser) parseClassStatement() ast.Statement {
 				aliasStmt := alias.(*ast.AliasStmt)
 				stmt.Aliases = append(stmt.Aliases, aliasStmt)
 				stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Alias: aliasStmt})
+			case ast.VisibilityPublic, ast.VisibilityProtected:
+				if p.startsVisibilityDirective() {
+					if p.parseVisibilityMember(stmt, p.curToken.Literal) {
+						continue
+					}
+				} else {
+					s := p.parseStatement()
+					if s != nil {
+						stmt.Body = append(stmt.Body, s)
+					}
+				}
+			case "module":
+				if isModule && p.peekStartsModuleDeclaration() {
+					nested := p.parseModuleStatement()
+					if nested == nil {
+						return nil
+					}
+					stmt.Modules = append(stmt.Modules, nested.(*ast.ClassStmt))
+				} else {
+					// Class bodies (and non-declaration uses) route through the
+					// general statement path, which reports the targeted
+					// module-placement diagnostic for declaration-shaped input.
+					s := p.parseStatement()
+					if s != nil {
+						stmt.Body = append(stmt.Body, s)
+					}
+				}
+			case ast.MixinInclude, ast.MixinExtend:
+				if p.startsMixinDirective() {
+					mixin := p.parseMixinMember()
+					if mixin == nil {
+						return nil
+					}
+					stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Mixin: mixin})
+				} else {
+					s := p.parseStatement()
+					if s != nil {
+						stmt.Body = append(stmt.Body, s)
+					}
+				}
 			default:
 				s := p.parseStatement()
 				if s != nil {
@@ -909,14 +1003,15 @@ func (p *parser) parseClassStatement() ast.Statement {
 				}
 			}
 		case ast.TokenPrivate:
-			if p.peekToken.Type == ast.TokenDef {
-				p.privateNext = true
-				p.nextToken()
+			if p.parseVisibilityMember(stmt, ast.VisibilityPrivate) {
 				continue
 			}
-			p.privateNext = true
 		case ast.TokenProperty, ast.TokenGetter, ast.TokenSetter:
 			decl := p.parsePropertyDecl(p.curToken.Type)
+			if p.pendingVisibility != "" {
+				decl.Visibility = p.pendingVisibility
+				p.pendingVisibility = ""
+			}
 			stmt.Properties = append(stmt.Properties, decl)
 			stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Property: &decl})
 		default:
@@ -929,13 +1024,158 @@ func (p *parser) parseClassStatement() ast.Statement {
 	}
 
 	p.insideClass = prevInside
-	p.privateNext = prevPrivate
+	p.pendingVisibility = prevVisibility
 
 	if p.curToken.Type != ast.TokenEnd {
 		p.errorExpected(p.curToken, "end")
 	}
 
 	return stmt
+}
+
+// startsMixinDirective reports whether an `include`/`extend` identifier in
+// class-member position begins a mixin directive rather than an ordinary
+// statement. It is a directive when followed on the same line by a module
+// name, an opening paren, or `self` (which gets a targeted diagnostic), or
+// when it stands alone (a bare directive missing its module name, also a
+// targeted diagnostic) — unless a local of that name is in scope, in which
+// case the bare word reads the local as it always has. Anything else — an
+// assignment such as `include = 1` — parses as a normal statement so the
+// words stay usable as identifiers.
+func (p *parser) startsMixinDirective() bool {
+	if p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		switch p.peekToken.Type {
+		case ast.TokenIdent, ast.TokenLParen, ast.TokenSelf:
+			return true
+		}
+	}
+	return !p.isLocalName(p.curToken.Literal) && p.peekEndsStatement(p.curToken.Pos)
+}
+
+// parseMixinMember parses an include/extend directive with curToken on the
+// directive word. Module names may be scope-qualified (Support::Naming) and
+// comma-separated; an optional paren group wraps the list.
+func (p *parser) parseMixinMember() *ast.MixinDecl {
+	kind := p.curToken.Literal
+	pos := p.curToken.Pos
+	decl := &ast.MixinDecl{Kind: kind, Position: pos}
+
+	parenthesized := false
+	if p.peekToken.Type == ast.TokenLParen && p.peekToken.Pos.Line == pos.Line {
+		parenthesized = true
+		p.nextToken()
+	}
+	for {
+		if p.peekToken.Type == ast.TokenSelf {
+			p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s self is not supported; define module functions with def self.name", kind))
+			p.recoverSameLineStatementRemainder(pos.Line)
+			return nil
+		}
+		if p.peekToken.Type != ast.TokenIdent {
+			p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s expects a module name", kind))
+			p.recoverSameLineStatementRemainder(pos.Line)
+			return nil
+		}
+		p.nextToken()
+		if !startsUppercaseIdentifier(p.curToken.Literal) {
+			p.addParseError(p.curToken.Pos, "module name must start with an uppercase letter")
+			p.recoverSameLineStatementRemainder(pos.Line)
+			return nil
+		}
+		ref := ast.MixinRef{Name: p.curToken.Literal, Position: p.curToken.Pos}
+		for p.peekToken.Type == ast.TokenScope {
+			p.nextToken()
+			if !p.expectPeek(ast.TokenIdent) {
+				return nil
+			}
+			ref.Name += "::" + p.curToken.Literal
+		}
+		decl.Modules = append(decl.Modules, ref)
+		if p.peekToken.Type != ast.TokenComma {
+			break
+		}
+		p.nextToken()
+	}
+	if parenthesized && !p.expectPeek(ast.TokenRParen) {
+		return nil
+	}
+	return decl
+}
+
+// startsVisibilityDirective reports whether a `public`/`protected` identifier
+// in class-member position begins a visibility directive rather than an
+// ordinary statement. The identifier is a directive when it stands alone
+// (section form), precedes a definition (`public def`), or precedes symbol
+// method names (`protected :compare`). A local of the same name suppresses
+// the section form — a bare word after `protected = 5` reads the local as it
+// always has, matching Ruby, where only the argument forms reach the
+// directive method. Anything else — an assignment such as `public = 1` or an
+// unrelated expression — parses as a normal statement so the words stay
+// usable as plain identifiers outside directive positions.
+func (p *parser) startsVisibilityDirective() bool {
+	if p.startsVisibilityInlineTarget() {
+		return true
+	}
+	if p.peekToken.Type == ast.TokenSymbol && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		return true
+	}
+	return !p.isLocalName(p.curToken.Literal) && p.peekEndsStatement(p.curToken.Pos)
+}
+
+// startsVisibilityInlineTarget reports whether the token after a visibility
+// keyword begins a declaration the modifier applies to inline: a method
+// definition (`private def hidden`) or an accessor declaration
+// (`private property secret`). The declaration must start on the same line as
+// the modifier — a visibility word alone on its own line is a section
+// directive that covers every following definition, matching Ruby.
+func (p *parser) startsVisibilityInlineTarget() bool {
+	if p.peekToken.Pos.Line != p.curToken.Pos.Line {
+		return false
+	}
+	switch p.peekToken.Type {
+	case ast.TokenDef, ast.TokenProperty, ast.TokenGetter, ast.TokenSetter:
+		return true
+	default:
+		return false
+	}
+}
+
+// parseVisibilityMember handles a visibility keyword in class-member position.
+// It returns true when the directive inlines onto the next declaration
+// (`private def`, `public def self.x`, `private property secret`), leaving
+// curToken on the declaration keyword so the class-body loop parses it next
+// without advancing. Otherwise
+// it appends a section directive (bare `private`) or a named directive
+// (`private :hidden, :other`) to the class members and returns false.
+func (p *parser) parseVisibilityMember(stmt *ast.ClassStmt, level string) bool {
+	pos := p.curToken.Pos
+	if p.startsVisibilityInlineTarget() {
+		p.pendingVisibility = level
+		p.nextToken()
+		return true
+	}
+
+	decl := &ast.VisibilityDecl{Level: level, Position: pos}
+	if p.peekToken.Type == ast.TokenSymbol && p.peekToken.Pos.Line == pos.Line {
+		for {
+			p.nextToken()
+			decl.Names = append(decl.Names, p.curToken.Literal)
+			if p.peekToken.Type != ast.TokenComma {
+				break
+			}
+			p.nextToken()
+			if p.peekToken.Type != ast.TokenSymbol {
+				p.errorExpected(p.peekToken, "method name symbol")
+				return false
+			}
+		}
+	} else if !p.peekEndsStatement(pos) {
+		p.addParseError(p.peekToken.Pos, fmt.Sprintf("%s expects a method definition, symbol method names, or no argument", level))
+		p.recoverSameLineStatementRemainder(pos.Line)
+		return false
+	}
+	stmt.Members = append(stmt.Members, ast.ClassMemberDecl{Visibility: decl})
+	return false
 }
 
 func (p *parser) parseAliasStatement(method bool) ast.Statement {

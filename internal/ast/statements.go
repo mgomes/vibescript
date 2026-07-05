@@ -9,7 +9,12 @@ type FunctionStmt struct {
 	IsClassMethod bool
 	Exported      bool
 	Private       bool
-	Position      Position
+	// Visibility records an inline visibility modifier (`private def`,
+	// `public def`, `protected def`) on a class-body definition. It is empty
+	// when the definition carries no inline modifier and inherits the
+	// surrounding section directive instead.
+	Visibility string
+	Position   Position
 }
 
 func (s *FunctionStmt) stmtNode()     {}
@@ -183,9 +188,13 @@ func (s *TryStmt) Pos() Position { return s.Position }
 
 // PropertyDecl represents a property, getter, or setter declaration in a class.
 type PropertyDecl struct {
-	Names    []PropertyName
-	Kind     string // property/getter/setter
-	Position Position
+	Names []PropertyName
+	Kind  string // property/getter/setter
+	// Visibility records an inline visibility modifier
+	// (`private property secret`); empty means the declaration inherits the
+	// surrounding section directive.
+	Visibility string
+	Position   Position
 }
 
 // PropertyName is a single accessor name with an optional type annotation.
@@ -194,21 +203,69 @@ type PropertyName struct {
 	Type *TypeExpr
 }
 
-// ClassMemberDecl preserves the source order of class-level declarations.
-type ClassMemberDecl struct {
-	Function *FunctionStmt
-	Alias    *AliasStmt
-	Property *PropertyDecl
+// Visibility levels for class-body visibility directives.
+const (
+	VisibilityPublic    = "public"
+	VisibilityPrivate   = "private"
+	VisibilityProtected = "protected"
+)
+
+// VisibilityDecl represents a `public`, `private`, or `protected` directive in
+// a class body. An empty Names list is a section directive that applies to the
+// definitions that follow it; a non-empty list (`private :hidden, :other`)
+// retroactively sets the visibility of the named methods.
+type VisibilityDecl struct {
+	Level    string
+	Names    []string
+	Position Position
 }
 
-// ClassStmt represents a class definition.
+// Mixin directive kinds.
+const (
+	MixinInclude = "include"
+	MixinExtend  = "extend"
+)
+
+// MixinRef names one module in an include/extend directive. Name preserves
+// any scope qualification as written (`Support::Naming`).
+type MixinRef struct {
+	Name     string
+	Position Position
+}
+
+// MixinDecl represents an `include` or `extend` directive in a class or
+// module body. Include mixes a module's instance-style methods into the
+// declaring class's instance methods; extend mixes them into its class
+// methods.
+type MixinDecl struct {
+	Kind     string // MixinInclude or MixinExtend
+	Modules  []MixinRef
+	Position Position
+}
+
+// ClassMemberDecl preserves the source order of class-level declarations.
+type ClassMemberDecl struct {
+	Function   *FunctionStmt
+	Alias      *AliasStmt
+	Property   *PropertyDecl
+	Visibility *VisibilityDecl
+	Mixin      *MixinDecl
+}
+
+// ClassStmt represents a class or module definition. Module declarations
+// (`module Name ... end`) share the class statement shape: IsModule is set,
+// instance-style methods land in Methods (mixed into classes via include),
+// `def self.` module functions land in ClassMethods, and nested module
+// declarations are collected in Modules.
 type ClassStmt struct {
 	Name         string
+	IsModule     bool
 	Members      []ClassMemberDecl
 	Methods      []*FunctionStmt
 	ClassMethods []*FunctionStmt
 	Aliases      []*AliasStmt
 	Properties   []PropertyDecl
+	Modules      []*ClassStmt
 	Body         []Statement
 	Position     Position
 }
