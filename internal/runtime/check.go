@@ -2431,7 +2431,12 @@ func expressionMayEscapeIteration(expr Expression) bool {
 				return true
 			}
 		}
+		if typed.BlockArg != nil && expressionMayEscapeIteration(typed.BlockArg) {
+			return true
+		}
 		return typed.Block != nil && expressionMayEscapeIteration(typed.Block)
+	case *SplatArg:
+		return expressionMayEscapeIteration(typed.Value)
 	case *UnaryExpr:
 		return expressionMayEscapeIteration(typed.Right)
 	case *BinaryExpr:

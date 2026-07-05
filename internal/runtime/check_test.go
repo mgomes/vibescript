@@ -3333,6 +3333,92 @@ end
 `))
 }
 
+func TestCheckWarningsFlagUndefinedNameInBlockArg(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def id(&b)
+  b
+end
+
+def run()
+  id(&missing_name)
+end
+`)
+
+	requireCheckWarningContains(t, script, "undefined variable missing_name")
+}
+
+func TestCheckWarningsFlagUndefinedNameInSplatArg(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def take(*args)
+  args
+end
+
+def run()
+  take(*missing)
+end
+`)
+
+	requireCheckWarningContains(t, script, "undefined variable missing")
+}
+
+func TestCheckWarningsResolveRequireInsideSplatArg(t *testing.T) {
+	t.Parallel()
+
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "mathx.vibe"), []byte(`export def double(x)
+  x * 2
+end
+`), 0o644); err != nil {
+		t.Fatalf("write mathx module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+
+	requireNoCheckWarnings(t, compileScriptWithEngine(t, engine, `
+def take(*args)
+  args
+end
+
+def run()
+  take(*[require("mathx")])
+end
+
+def helper()
+  double(3)
+end
+`))
+}
+
+func TestCheckWarningsResolveRequireInsideBlockArg(t *testing.T) {
+	t.Parallel()
+
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "mathx.vibe"), []byte(`export def double(x)
+  x * 2
+end
+`), 0o644); err != nil {
+		t.Fatalf("write mathx module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+
+	requireNoCheckWarnings(t, compileScriptWithEngine(t, engine, `
+def id(&b)
+  b
+end
+
+def run()
+  id(&require("mathx").double)
+end
+
+def helper()
+  double(3)
+end
+`))
+}
+
 func TestCheckWarningsSuppressUndefinedNamesAfterNonStaticRequireAlias(t *testing.T) {
 	t.Parallel()
 

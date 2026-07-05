@@ -275,6 +275,9 @@ func collectOwnScopeNamesFromExpression(expr Expression, out map[string]struct{}
 		for _, kwarg := range typed.KwArgs {
 			collectOwnScopeNamesFromExpression(kwarg.Value, out)
 		}
+		collectOwnScopeNamesFromExpression(typed.BlockArg, out)
+	case *SplatArg:
+		collectOwnScopeNamesFromExpression(typed.Value, out)
 	case *MemberExpr:
 		collectOwnScopeNamesFromExpression(typed.Object, out)
 	case *ScopeExpr:
@@ -500,12 +503,15 @@ func visitCallExprsInExpression(expr Expression, visit func(*CallExpr)) {
 		for _, kwarg := range typed.KwArgs {
 			visitCallExprsInExpression(kwarg.Value, visit)
 		}
+		visitCallExprsInExpression(typed.BlockArg, visit)
 		if typed.Block != nil {
 			for _, param := range typed.Block.Params {
 				visitCallExprsInExpression(param.DefaultVal, visit)
 			}
 			visitCallExprsInStatements(typed.Block.Body, visit)
 		}
+	case *SplatArg:
+		visitCallExprsInExpression(typed.Value, visit)
 	case *MemberExpr:
 		visitCallExprsInExpression(typed.Object, visit)
 	case *ScopeExpr:
