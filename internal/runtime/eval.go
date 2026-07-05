@@ -901,6 +901,13 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 			result, err = moduloValues(left, right)
 		}
 	case tokenShovel:
+		// The array shovel appends to the receiver in place; charge the backing
+		// reallocation the append may perform before it happens.
+		if left.Kind() == KindArray {
+			if err := arrayReserveInPlaceGrowth(exec, left, []Value{right}, nil, NewNil(), 1); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = shovelValues(left, right)
 	case tokenAmpersand:
 		result, err = intersectValues(left, right)
@@ -2251,63 +2258,25 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 		return NewNil(), false, nil
 	}
 
-	switch value := stmt.Value.(type) {
-	case *CallExpr:
-		member, ok := value.Callee.(*MemberExpr)
-		// Only push uses the accumulator fast path. That path reuses the
-		// receiver's hidden backing buffer across iterations, which is sound for
-		// push because it is the canonical accumulator pattern. append is a
-		// documented non-mutating helper: routing it through the shared buffer
-		// would let escaped aliases (b = a) observe later appends, so it stays on
-		// the normal copy path that always returns a fresh array.
-		if !ok || member.Property != "push" || len(value.KwArgs) > 0 || value.Block != nil {
-			return NewNil(), false, nil
-		}
-		receiver, ok := member.Object.(*Identifier)
-		if !ok || receiver.Name != target.Name {
-			return NewNil(), false, nil
-		}
-		return exec.evalArrayPushAssignment(target.Name, value, env)
-	case *BinaryExpr:
-		left, ok := value.Left.(*Identifier)
-		if !ok || left.Name != target.Name {
-			return NewNil(), false, nil
-		}
-		switch value.Operator {
-		case tokenPlus:
-			right, ok := value.Right.(*ArrayLiteral)
-			if !ok {
-				return NewNil(), false, nil
-			}
-			return exec.evalArrayConcatAppendAssignment(target.Name, value, right, env)
-		case tokenShovel:
-			return exec.evalArrayShovelAppendAssignment(target.Name, value, env)
-		default:
-			return NewNil(), false, nil
-		}
-	default:
+	// Only `values = values + [...]` uses the accumulator fast path: `+` is a
+	// genuinely non-mutating operator, so reusing the receiver's hidden backing
+	// buffer across iterations is invisible. push and << mutate the receiver in
+	// place nowadays (matching Ruby), so they need no reassignment fast path —
+	// the mutation itself already amortizes growth and must stay visible
+	// through every alias, which the hidden-buffer path would break.
+	value, ok := stmt.Value.(*BinaryExpr)
+	if !ok || value.Operator != tokenPlus {
 		return NewNil(), false, nil
 	}
-}
-
-func (exec *Execution) evalArrayPushAssignment(name string, call *CallExpr, env *Env) (Value, bool, error) {
-	receiver, ok := env.Get(name)
-	if !ok || receiver.Kind() != KindArray {
+	left, ok := value.Left.(*Identifier)
+	if !ok || left.Name != target.Name {
 		return NewNil(), false, nil
 	}
-	if err := exec.checkMemoryWith(receiver); err != nil {
-		return NewNil(), true, err
+	right, ok := value.Right.(*ArrayLiteral)
+	if !ok {
+		return NewNil(), false, nil
 	}
-
-	args, err := exec.evalCallArgs(call, env)
-	if err != nil {
-		return NewNil(), true, err
-	}
-	if err := exec.checkCallMemoryRoots(receiver, args, nil, NewNil()); err != nil {
-		return NewNil(), true, err
-	}
-
-	return exec.assignArrayAppendResult(name, receiver.Array(), args, env), true, nil
+	return exec.evalArrayConcatAppendAssignment(target.Name, value, right, env)
 }
 
 func (exec *Execution) evalArrayConcatAppendAssignment(name string, expr *BinaryExpr, right *ArrayLiteral, env *Env) (Value, bool, error) {
@@ -2329,36 +2298,6 @@ func (exec *Execution) evalArrayConcatAppendAssignment(name string, expr *Binary
 	}
 
 	result := exec.assignArrayAppendResult(name, receiver.Array(), values, env)
-	if err := exec.checkMemoryWith(result); err != nil {
-		return NewNil(), true, exec.wrapError(err, expr.Pos())
-	}
-	return result, true, nil
-}
-
-// evalArrayShovelAppendAssignment handles the accumulator form
-// `values = values << element`, appending the single right-hand value to the
-// receiver through the shared backing buffer just like the push and concat
-// fast paths. The shovel operator never mutates in place, so this reassignment
-// is the idiomatic Vibescript accumulator and avoids re-copying the array on
-// every iteration.
-func (exec *Execution) evalArrayShovelAppendAssignment(name string, expr *BinaryExpr, env *Env) (Value, bool, error) {
-	receiver, ok := env.Get(name)
-	if !ok || receiver.Kind() != KindArray {
-		return NewNil(), false, nil
-	}
-	if err := exec.checkMemoryWith(receiver); err != nil {
-		return NewNil(), true, err
-	}
-
-	element, err := exec.evalExpressionWithAuto(expr.Right, env, true)
-	if err != nil {
-		return NewNil(), true, err
-	}
-	if err := exec.checkMemoryWith(receiver, element); err != nil {
-		return NewNil(), true, err
-	}
-
-	result := exec.assignArrayAppendResult(name, receiver.Array(), []Value{element}, env)
 	if err := exec.checkMemoryWith(result); err != nil {
 		return NewNil(), true, exec.wrapError(err, expr.Pos())
 	}

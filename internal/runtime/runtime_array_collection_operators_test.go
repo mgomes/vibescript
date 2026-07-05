@@ -63,11 +63,11 @@ func TestArrayShovelOperator(t *testing.T) {
 	}
 }
 
-// TestArrayShovelIsNonMutating documents the Vibescript-specific divergence
-// from Ruby: a bare "values << x" expression statement produces a new array and
-// leaves the receiver unchanged, because the language's collections are
-// immutable. Observable accumulation requires reassignment.
-func TestArrayShovelIsNonMutating(t *testing.T) {
+// TestArrayShovelMutatesReceiver pins the Ruby contract: a bare "values << x"
+// expression statement appends to the receiver in place and returns the
+// receiver itself, so accumulation needs no reassignment and every alias
+// observes the growth.
+func TestArrayShovelMutatesReceiver(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `
@@ -76,20 +76,28 @@ func TestArrayShovelIsNonMutating(t *testing.T) {
       values << 3
       values
     end
+
+    def returns_receiver()
+      values = [1]
+      (values << 2).equal?(values)
+    end
     `)
 
 	got := callFunc(t, script, "discarded", nil)
-	want := NewArray([]Value{NewInt(1), NewInt(2)})
+	want := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
 	if diff := valueDiff(want, got); diff != "" {
 		t.Fatalf("shovel mismatch (-want +got):\n%s", diff)
 	}
+	if got := callFunc(t, script, "returns_receiver", nil); !got.Bool() {
+		t.Fatalf("(values << 2) is not the receiver; << must return self")
+	}
 }
 
-// TestArrayShovelAccumulatorPreservesAliasIsolation mirrors the push/concat
-// accumulator alias tests: the reassignment fast path reuses a hidden backing
-// buffer, but an escaped alias taken before an append must never observe later
-// appends.
-func TestArrayShovelAccumulatorPreservesAliasIsolation(t *testing.T) {
+// TestArrayShovelSharesAliases pins Ruby's reference semantics around <<: two
+// variables bound to the same array both observe an in-place append, and the
+// reassignment accumulator idiom (`out = out << x`) still works because <<
+// returns the receiver.
+func TestArrayShovelSharesAliases(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `
@@ -101,7 +109,7 @@ func TestArrayShovelAccumulatorPreservesAliasIsolation(t *testing.T) {
       out
     end
 
-    def alias_isolation()
+    def alias_visibility()
       a = [1]
       b = a
       a = a << 2
@@ -122,20 +130,24 @@ func TestArrayShovelAccumulatorPreservesAliasIsolation(t *testing.T) {
 	compareArrays(t, callFunc(t, script, "accumulate", []Value{NewInt(5)}),
 		[]Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4), NewInt(5)})
 
-	aliased := callFunc(t, script, "alias_isolation", nil).Hash()
-	compareArrays(t, aliased["a"], []Value{NewInt(1), NewInt(2)})
-	compareArrays(t, aliased["b"], []Value{NewInt(9)})
+	// b aliases the same array object, so it sees the append, and a sees b's
+	// element write: one object, two names, exactly as Ruby behaves.
+	aliased := callFunc(t, script, "alias_visibility", nil).Hash()
+	compareArrays(t, aliased["a"], []Value{NewInt(9), NewInt(2)})
+	compareArrays(t, aliased["b"], []Value{NewInt(9), NewInt(2)})
 
+	// Every << appends to the one shared object, so both names end bound to
+	// the fully accumulated array.
 	repeated := callFunc(t, script, "repeated_alias", nil).Hash()
-	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2)})
-	compareArrays(t, repeated["b"], []Value{NewInt(1), NewInt(3)})
+	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, repeated["b"], []Value{NewInt(1), NewInt(2), NewInt(3)})
 }
 
-// TestArrayShovelAccumulatorDetachesEscapedBlockResults mirrors the push fast
-// path's escape test: each array the block returns must be an independent
-// snapshot rather than an alias of the shared backing buffer, so mutating one
-// escaped result never disturbs the others.
-func TestArrayShovelAccumulatorDetachesEscapedBlockResults(t *testing.T) {
+// TestArrayShovelBlockResultsAliasReceiver pins the flip side of Ruby's
+// reference semantics: a block returning `out << v` returns the receiver
+// itself, so a map collecting those results holds aliases of one object and a
+// later element write is visible through every one of them.
+func TestArrayShovelBlockResultsAliasReceiver(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `
@@ -154,7 +166,7 @@ func TestArrayShovelAccumulatorDetachesEscapedBlockResults(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("block_results length = %d, want 2", len(results))
 	}
-	compareArrays(t, results[0], []Value{NewInt(1)})
+	compareArrays(t, results[0], []Value{NewInt(9), NewInt(2)})
 	compareArrays(t, results[1], []Value{NewInt(9), NewInt(2)})
 }
 

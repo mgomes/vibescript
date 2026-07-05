@@ -10,8 +10,8 @@ func TestArrayPushPopAndSum(t *testing.T) {
 	script := compileScript(t, `
     def push_and_pop(values, extra)
       pushed = values.push(extra)
-      result = pushed.pop()
-      result
+      popped = pushed.pop()
+      { popped: popped, values: values, same: pushed.equal?(values) }
     end
 
     def uniq_sum(values)
@@ -19,16 +19,20 @@ func TestArrayPushPopAndSum(t *testing.T) {
     end
     `)
 
+	// Ruby contract: push appends in place and returns the receiver; pop
+	// removes and returns the last element.
 	base := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
-	result := callFunc(t, script, "push_and_pop", []Value{base, NewInt(4)})
-	if result.Kind() != KindHash {
-		t.Fatalf("expected hash result, got %v", result.Kind())
-	}
-	resHash := result.Hash()
-	compareArrays(t, resHash["array"], []Value{NewInt(1), NewInt(2), NewInt(3)})
-	if popped := resHash["popped"]; !popped.Equal(NewInt(4)) {
+	result := callFunc(t, script, "push_and_pop", []Value{base, NewInt(4)}).Hash()
+	if popped := result["popped"]; !popped.Equal(NewInt(4)) {
 		t.Fatalf("popped mismatch: %v", popped)
 	}
+	compareArrays(t, result["values"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	if !result["same"].Bool() {
+		t.Fatal("push must return the receiver itself")
+	}
+	// Host arguments are cloned per call, so the script-side push/pop never
+	// leaks back into the host's original array.
+	compareArrays(t, base, []Value{NewInt(1), NewInt(2), NewInt(3)})
 
 	uniq := callFunc(t, script, "uniq_sum", []Value{NewArray([]Value{NewInt(1), NewInt(1), NewInt(3)})})
 	if !uniq.Equal(NewInt(4)) {
@@ -124,9 +128,9 @@ func TestArrayPushRejectsKeywordArguments(t *testing.T) {
 
 func TestArrayPushAppendAssignmentZeroArgs(t *testing.T) {
 	t.Parallel()
-	// x = x.push and x = x.push() exercise the in-place append-assignment
-	// fast path; with no values they must be no-ops that keep x intact and
-	// preserve alias isolation against later appends.
+	// x = x.push and x = x.push() with no values are no-ops that return the
+	// receiver itself; a later push(v) mutates that same shared object, so an
+	// alias taken earlier observes both the append and element writes.
 	script := compileScript(t, `
     def no_parens()
       x = [1, 2]
@@ -140,7 +144,7 @@ func TestArrayPushAppendAssignmentZeroArgs(t *testing.T) {
       x
     end
 
-    def alias_isolation()
+    def alias_visibility()
       a = [1]
       b = a
       a = a.push
@@ -153,9 +157,9 @@ func TestArrayPushAppendAssignmentZeroArgs(t *testing.T) {
 	compareArrays(t, callFunc(t, script, "no_parens", nil), []Value{NewInt(1), NewInt(2)})
 	compareArrays(t, callFunc(t, script, "empty_parens", nil), []Value{NewInt(1), NewInt(2)})
 
-	aliased := callFunc(t, script, "alias_isolation", nil).Hash()
-	compareArrays(t, aliased["a"], []Value{NewInt(1), NewInt(2)})
-	compareArrays(t, aliased["b"], []Value{NewInt(9)})
+	aliased := callFunc(t, script, "alias_visibility", nil).Hash()
+	compareArrays(t, aliased["a"], []Value{NewInt(9), NewInt(2)})
+	compareArrays(t, aliased["b"], []Value{NewInt(9), NewInt(2)})
 }
 
 func TestArrayAppendAssignmentAccumulation(t *testing.T) {
@@ -183,7 +187,10 @@ func TestArrayAppendAssignmentAccumulation(t *testing.T) {
 	compareArrays(t, callFunc(t, script, "concat_accumulate", []Value{NewInt(5)}), want)
 }
 
-func TestArrayAppendAssignmentPreservesAliasIsolation(t *testing.T) {
+// TestArrayAppendAssignmentAliasSemantics pins the split Ruby draws between
+// push and +: push appends to the shared object in place (aliases observe it),
+// while + always builds a fresh array (aliases stay isolated).
+func TestArrayAppendAssignmentAliasSemantics(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def push_alias()
@@ -213,19 +220,23 @@ func TestArrayAppendAssignmentPreservesAliasIsolation(t *testing.T) {
     `)
 
 	push := callFunc(t, script, "push_alias", nil).Hash()
-	compareArrays(t, push["a"], []Value{NewInt(1), NewInt(2)})
-	compareArrays(t, push["b"], []Value{NewInt(9)})
+	compareArrays(t, push["a"], []Value{NewInt(9), NewInt(2)})
+	compareArrays(t, push["b"], []Value{NewInt(9), NewInt(2)})
 
 	concat := callFunc(t, script, "concat_alias", nil).Hash()
 	compareArrays(t, concat["a"], []Value{NewInt(1), NewInt(2)})
 	compareArrays(t, concat["b"], []Value{NewInt(9)})
 
 	repeated := callFunc(t, script, "repeated_alias", nil).Hash()
-	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2)})
-	compareArrays(t, repeated["b"], []Value{NewInt(1), NewInt(3)})
+	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, repeated["b"], []Value{NewInt(1), NewInt(2), NewInt(3)})
 }
 
-func TestArrayAppendAssignmentDetachesEscapedBlockResults(t *testing.T) {
+// TestArrayAppendAssignmentBlockResultsAliasReceiver pins Ruby's reference
+// semantics for a block returning `out.push(v)`: push returns the receiver, so
+// a map collecting the results holds aliases of one object and a later element
+// write is visible through every one of them.
+func TestArrayAppendAssignmentBlockResultsAliasReceiver(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def block_results()
@@ -243,7 +254,7 @@ func TestArrayAppendAssignmentDetachesEscapedBlockResults(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("block_results length = %d, want 2", len(results))
 	}
-	compareArrays(t, results[0], []Value{NewInt(1)})
+	compareArrays(t, results[0], []Value{NewInt(9), NewInt(2)})
 	compareArrays(t, results[1], []Value{NewInt(9), NewInt(2)})
 }
 
@@ -2033,31 +2044,37 @@ func TestArrayAppendAndPrepend(t *testing.T) {
 	}
 }
 
-func TestArrayAppendIsNonMutating(t *testing.T) {
+func TestArrayAppendMutatesReceiver(t *testing.T) {
 	t.Parallel()
-	// append and prepend mirror push: they return a new array and leave the
-	// receiver untouched, matching Vibescript's non-mutating collection model.
+	// append and prepend mirror push/unshift: they splice the arguments into
+	// the receiver in place and return the receiver itself, matching Ruby.
 	script := compileScript(t, `
-    def append_preserves_source(values, extra)
+    def append_mutates_source(values, extra)
       appended = values.append(extra)
-      { source: values, appended: appended }
+      { source: values, appended: appended, same: appended.equal?(values) }
     end
 
-    def prepend_preserves_source(values, extra)
+    def prepend_mutates_source(values, extra)
       prepended = values.prepend(extra)
-      { source: values, prepended: prepended }
+      { source: values, prepended: prepended, same: prepended.equal?(values) }
     end
     `)
 
-	appended := callFunc(t, script, "append_preserves_source",
+	appended := callFunc(t, script, "append_mutates_source",
 		[]Value{NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(3)}).Hash()
-	compareArrays(t, appended["source"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, appended["source"], []Value{NewInt(1), NewInt(2), NewInt(3)})
 	compareArrays(t, appended["appended"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	if !appended["same"].Bool() {
+		t.Fatal("append must return the receiver itself")
+	}
 
-	prepended := callFunc(t, script, "prepend_preserves_source",
+	prepended := callFunc(t, script, "prepend_mutates_source",
 		[]Value{NewArray([]Value{NewInt(2), NewInt(3)}), NewInt(1)}).Hash()
-	compareArrays(t, prepended["source"], []Value{NewInt(2), NewInt(3)})
+	compareArrays(t, prepended["source"], []Value{NewInt(1), NewInt(2), NewInt(3)})
 	compareArrays(t, prepended["prepended"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	if !prepended["same"].Bool() {
+		t.Fatal("prepend must return the receiver itself")
+	}
 }
 
 func TestArrayAppendPrependRejectKeywordArguments(t *testing.T) {
@@ -2079,13 +2096,11 @@ func TestArrayAppendPrependRejectKeywordArguments(t *testing.T) {
 		"array.prepend does not take keyword arguments")
 }
 
-func TestArrayAppendAssignmentReturnsFreshArray(t *testing.T) {
+func TestArrayAppendAssignmentSharesReceiver(t *testing.T) {
 	t.Parallel()
-	// append is a documented non-mutating helper. Unlike push, x = x.append(i)
-	// must not route through the accumulator fast path that reuses a hidden
-	// backing buffer: every append has to return a fresh array so escaped
-	// aliases never observe later appends. Accumulation in a loop still works
-	// because each iteration starts from the previous (independent) result.
+	// append is an alias of push, so x = x.append(i) mutates the shared object
+	// and rebinds x to that same object: loop accumulation still works, and an
+	// alias taken at any point observes every later append and element write.
 	script := compileScript(t, `
     def append_accumulate(n)
       out = []
@@ -2119,27 +2134,23 @@ func TestArrayAppendAssignmentReturnsFreshArray(t *testing.T) {
 	compareArrays(t, callFunc(t, script, "append_accumulate", []Value{NewInt(5)}), want)
 
 	aliased := callFunc(t, script, "append_alias", nil).Hash()
-	compareArrays(t, aliased["a"], []Value{NewInt(1), NewInt(2)})
-	compareArrays(t, aliased["b"], []Value{NewInt(9)})
+	compareArrays(t, aliased["a"], []Value{NewInt(9), NewInt(2)})
+	compareArrays(t, aliased["b"], []Value{NewInt(9), NewInt(2)})
 
-	// Several appends grow the result past its exact length before b escapes via
-	// b = a, then a appends once more. b must retain [9, 2, 3] and a [1, 2, 3, 4]:
-	// append never lets an escaped alias observe a later append.
 	repeated := callFunc(t, script, "repeated_append_alias", nil).Hash()
-	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
-	compareArrays(t, repeated["b"], []Value{NewInt(9), NewInt(2), NewInt(3)})
+	compareArrays(t, repeated["a"], []Value{NewInt(9), NewInt(2), NewInt(3), NewInt(4)})
+	compareArrays(t, repeated["b"], []Value{NewInt(9), NewInt(2), NewInt(3), NewInt(4)})
 }
 
-// TestArrayAppendAssignmentStaysOffPushFastPath pins the routing contract behind
-// append's non-mutating guarantee. push is the accumulator pattern, so
-// x = x.push(i) is allowed to retain a hidden backing buffer on x and reuse it
-// for the next push. append is documented non-mutating: routing x = x.append(i)
-// through that shared buffer would make the optimization's correctness depend on
-// the read-escape guard that drops the buffer whenever x is read elsewhere.
-// Excluding append from the fast path removes that dependency, so append must
-// never leave a retained append buffer behind. This white-box check fails if
-// append is ever re-added to evalArrayAppendAssignment's fast path.
-func TestArrayAppendAssignmentStaysOffPushFastPath(t *testing.T) {
+// TestArrayPushAssignmentLeavesNoAppendBuffer pins the routing contract after
+// push became a true in-place mutator: the reassignment accumulator fast path
+// (a hidden backing buffer retained on the binding) exists only for the
+// non-mutating `x = x + [...]` form. push and append mutate the receiver
+// directly, so neither may leave a retained append buffer behind — the buffer
+// hands out cap-clamped snapshots that an in-place mutator must never share.
+// This white-box check fails if push or append is ever re-added to
+// evalArrayAppendAssignment's fast path.
+func TestArrayPushAssignmentLeavesNoAppendBuffer(t *testing.T) {
 	t.Parallel()
 
 	retainedBufferAfter := func(t *testing.T, method string) bool {
@@ -2173,10 +2184,10 @@ func TestArrayAppendAssignmentStaysOffPushFastPath(t *testing.T) {
 		return retained
 	}
 
-	if !retainedBufferAfter(t, "push") {
-		t.Fatal("push must retain a backing buffer for the accumulator fast path")
+	if retainedBufferAfter(t, "push") {
+		t.Fatal("push mutates in place and must not retain a fast-path append buffer")
 	}
 	if retainedBufferAfter(t, "append") {
-		t.Fatal("append must not retain a fast-path backing buffer; it must return a fresh array")
+		t.Fatal("append mutates in place and must not retain a fast-path append buffer")
 	}
 }

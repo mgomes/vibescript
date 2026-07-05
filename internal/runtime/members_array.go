@@ -2771,11 +2771,15 @@ func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs ma
 		}
 		changed = true
 	}
-	result := NewArray(out)
 	if bang && !changed {
 		return NewNil(), nil
 	}
-	return result, nil
+	// The kept elements are swapped into the receiver only after the block has
+	// visited every (snapshot) element, so the block never observes a
+	// half-filtered receiver. delete_if/keep_if always return the mutated
+	// receiver; the bang forms return nil above when nothing was removed.
+	setArrayElems(receiver, out)
+	return receiver, nil
 }
 
 type arrayChunkControl int
@@ -3257,7 +3261,11 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		}
 	}
 
-	return NewArray(out), nil
+	// Swap the filled elements into the receiver only after the (optional)
+	// block has produced every element, so the block never observes a
+	// half-filled receiver. Returns the receiver, matching Ruby's Array#fill.
+	setArrayElems(receiver, out)
+	return receiver, nil
 }
 
 // arrayFillResolveSpan parses the window selectors shared by both fill forms and
@@ -3413,36 +3421,54 @@ func arrayMemberTransforms(property string) (Value, error) {
 	switch property {
 	case "push", "append":
 		// Ruby exposes Array#append as an alias for Array#push, appending the
-		// arguments (in order) to the end of the receiver. Vibescript's
-		// collections are non-mutating, so both return a new array.
+		// arguments (in order) to the end of the receiver in place and
+		// returning the receiver; every alias of the array observes the growth.
 		name := "array." + property
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
 			}
-			base := receiver.Array()
-			out := make([]Value, len(base)+len(args))
-			copy(out, base)
-			copy(out[len(base):], args)
-			return NewArray(out), nil
+			if len(args) == 0 {
+				return receiver, nil
+			}
+			if err := arrayReserveInPlaceGrowth(exec, receiver, args, kwargs, block, len(args)); err != nil {
+				return NewNil(), err
+			}
+			setArrayElems(receiver, append(receiver.Array(), args...))
+			return receiver, nil
 		}), nil
 	case "prepend", "unshift":
 		// Ruby exposes Array#unshift as an alias for Array#prepend, inserting the
-		// arguments, in order, at the front of the array. Vibescript's collections
-		// are non-mutating, so both return a new array.
+		// arguments, in order, at the front of the array in place and returning
+		// the receiver.
 		name := "array." + property
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
 			}
+			if len(args) == 0 {
+				return receiver, nil
+			}
 			base := receiver.Array()
-			out := make([]Value, len(args)+len(base))
+			newLen := saturatingAdd(len(args), len(base))
+			if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(newLen); err != nil {
+				return NewNil(), err
+			}
+			out := make([]Value, newLen)
 			copy(out, args)
 			copy(out[len(args):], base)
-			return NewArray(out), nil
+			setArrayElems(receiver, out)
+			return receiver, nil
 		}), nil
 	case "pop":
+		// Ruby's Array#pop removes elements from the end of the receiver in
+		// place. Bare pop removes and returns the last element (nil on an empty
+		// array); pop(n) removes up to n elements and returns them as an array
+		// in receiver order.
 		return NewAutoBuiltin("array.pop", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.pop does not take keyword arguments")
+			}
 			if len(args) > 1 {
 				return NewNil(), fmt.Errorf("array.pop accepts at most one argument")
 			}
@@ -3455,55 +3481,26 @@ func arrayMemberTransforms(property string) (Value, error) {
 				count = n
 			}
 			arr := receiver.Array()
-			if count == 0 {
-				if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(len(arr)); err != nil {
-					return NewNil(), err
-				}
-				// Return a copy of the receiver rather than wrapping its backing
-				// slice, so mutating the returned array through index assignment
-				// cannot reach the source.
-				remaining := make([]Value, len(arr))
-				copy(remaining, arr)
-				return NewHash(map[string]Value{
-					"array":  NewArray(remaining),
-					"popped": NewNil(),
-				}), nil
-			}
-			if len(arr) == 0 {
-				popped := NewNil()
-				if len(args) == 1 {
-					popped = NewArray([]Value{})
-				}
-				return NewHash(map[string]Value{
-					"array":  NewArray([]Value{}),
-					"popped": popped,
-				}), nil
-			}
 			if count > len(arr) {
 				count = len(arr)
 			}
-			remainingLen := len(arr) - count
-			returnsRemovedArray := count != 1 || len(args) != 0
-			if returnsRemovedArray {
-				if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(remainingLen, count); err != nil {
-					return NewNil(), err
+			if len(args) == 0 {
+				if len(arr) == 0 {
+					return NewNil(), nil
 				}
-			} else if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(remainingLen); err != nil {
+				popped := arr[len(arr)-1]
+				setArrayElems(receiver, arr[:len(arr)-1])
+				return popped, nil
+			}
+			// pop(n) copies the removed tail out so the returned array does not
+			// share backing storage with the receiver.
+			if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(count); err != nil {
 				return NewNil(), err
 			}
-			remaining := make([]Value, remainingLen)
-			copy(remaining, arr[:len(arr)-count])
-			result := map[string]Value{
-				"array": NewArray(remaining),
-			}
-			if returnsRemovedArray {
-				removed := make([]Value, count)
-				copy(removed, arr[len(arr)-count:])
-				result["popped"] = NewArray(removed)
-			} else {
-				result["popped"] = arr[len(arr)-1]
-			}
-			return NewHash(result), nil
+			removed := make([]Value, count)
+			copy(removed, arr[len(arr)-count:])
+			setArrayElems(receiver, arr[:len(arr)-count])
+			return NewArray(removed), nil
 		}), nil
 	case "shift":
 		return NewAutoBuiltin("array.shift", arrayShift), nil
@@ -3512,6 +3509,10 @@ func arrayMemberTransforms(property string) (Value, error) {
 	case "insert":
 		return NewAutoBuiltin("array.insert", arrayInsert), nil
 	case "clear":
+		// Ruby's Array#clear removes every element from the receiver in place
+		// and returns the receiver. The old backing is dropped (not resliced) so
+		// a later push allocates fresh storage instead of overwriting elements a
+		// snapshot iterator may still be walking.
 		return NewAutoBuiltin("array.clear", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.clear does not take arguments")
@@ -3522,7 +3523,8 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if valueBlock(block) != nil {
 				return NewNil(), fmt.Errorf("array.clear does not accept a block")
 			}
-			return NewArray([]Value{}), nil
+			setArrayElems(receiver, []Value{})
+			return receiver, nil
 		}), nil
 	case "delete_if", "keep_if":
 		name := "array." + property
@@ -3536,6 +3538,8 @@ func arrayMemberTransforms(property string) (Value, error) {
 			return result, err
 		}), nil
 	case "uniq!":
+		// Ruby's Array#uniq! deduplicates the receiver in place, returning the
+		// receiver when duplicates were removed and nil when nothing changed.
 		return NewAutoBuiltin("array.uniq!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			result, changed, err := arrayUniq(exec, receiver, args, kwargs, block, "array.uniq!")
 			if err != nil {
@@ -3544,7 +3548,8 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if !changed {
 				return NewNil(), nil
 			}
-			return result, nil
+			setArrayElems(receiver, result.Array())
+			return receiver, nil
 		}), nil
 	case "union":
 		return NewAutoBuiltin("array.union", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -3638,6 +3643,8 @@ func arrayMemberTransforms(property string) (Value, error) {
 			return result, err
 		}), nil
 	case "compact!":
+		// Ruby's Array#compact! removes nil elements from the receiver in
+		// place, returning the receiver when any were removed and nil otherwise.
 		return NewAutoBuiltin("array.compact!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			result, changed, err := arrayCompact(exec, receiver, args, kwargs, block, "array.compact!")
 			if err != nil {
@@ -3646,7 +3653,8 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if !changed {
 				return NewNil(), nil
 			}
-			return result, nil
+			setArrayElems(receiver, result.Array())
+			return receiver, nil
 		}), nil
 	case "flatten":
 		return NewAutoBuiltin("array.flatten", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -3784,8 +3792,26 @@ func arrayMemberTransforms(property string) (Value, error) {
 			return arrayReverseCopy(exec, receiver, args, kwargs, block, "array.reverse")
 		}), nil
 	case "reverse!":
+		// Ruby's Array#reverse! reverses the receiver's elements in place (no
+		// new backing is allocated) and always returns the receiver.
 		return NewAutoBuiltin("array.reverse!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return arrayReverseCopy(exec, receiver, args, kwargs, block, "array.reverse!")
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.reverse! does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.reverse! does not take keyword arguments")
+			}
+			if valueBlock(block) != nil {
+				return NewNil(), fmt.Errorf("array.reverse! does not accept a block")
+			}
+			arr := receiver.Array()
+			for i, j := 0, len(arr)-1; i < j; i, j = i+1, j-1 {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				arr[i], arr[j] = arr[j], arr[i]
+			}
+			return receiver, nil
 		}), nil
 	case "take":
 		return NewAutoBuiltin("array.take", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -3905,11 +3931,9 @@ func arrayMemberTransforms(property string) (Value, error) {
 	}
 }
 
-// arrayShift implements Ruby's Array#shift, removing element(s) from the front.
-// Vibescript collections are non-mutating, so it returns both halves of the
-// result as the hash { array:, shifted: }, mirroring Array#pop's
-// { array:, popped: } convention. Bare shift removes one element and reports it
-// (or nil on an empty array); shift(n) removes up to n elements and reports them
+// arrayShift implements Ruby's Array#shift, removing element(s) from the front
+// of the receiver in place. Bare shift removes and returns the first element
+// (nil on an empty array); shift(n) removes up to n elements and returns them
 // as an array. n must be a non-negative integer.
 func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) > 1 {
@@ -3927,69 +3951,35 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 		count = n
 	}
 	arr := receiver.Array()
-	if count == 0 {
-		if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(len(arr)); err != nil {
-			return NewNil(), err
-		}
-		// count == 0 is only reachable through the explicit-count form shift(0);
-		// bare shift() defaults count to 1. Ruby's [1, 2].shift(0) returns [], so
-		// report an empty array, keeping shifted typed as an array for every
-		// explicit-count call rather than nil only in the zero case. Return a copy
-		// of the receiver rather than wrapping its backing slice, so mutating the
-		// returned array through index assignment cannot reach the source.
-		remaining := make([]Value, len(arr))
-		copy(remaining, arr)
-		return NewHash(map[string]Value{
-			"array":   NewArray(remaining),
-			"shifted": NewArray([]Value{}),
-		}), nil
-	}
-	if len(arr) == 0 {
-		shifted := NewNil()
-		if len(args) == 1 {
-			shifted = NewArray([]Value{})
-		}
-		return NewHash(map[string]Value{
-			"array":   NewArray([]Value{}),
-			"shifted": shifted,
-		}), nil
-	}
 	if count > len(arr) {
 		count = len(arr)
 	}
-	remainingLen := len(arr) - count
-	returnsShiftedArray := count != 1 || len(args) != 0
-	if returnsShiftedArray {
-		if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(remainingLen, count); err != nil {
-			return NewNil(), err
+	if len(args) == 0 {
+		if len(arr) == 0 {
+			return NewNil(), nil
 		}
-	} else if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(remainingLen); err != nil {
+		shifted := arr[0]
+		setArrayElems(receiver, arr[1:])
+		return shifted, nil
+	}
+	// shift(n) copies the removed head out so the returned array does not share
+	// backing storage with the receiver.
+	if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(count); err != nil {
 		return NewNil(), err
 	}
-	remaining := make([]Value, remainingLen)
-	copy(remaining, arr[count:])
-	result := map[string]Value{
-		"array": NewArray(remaining),
-	}
-	if returnsShiftedArray {
-		removed := make([]Value, count)
-		copy(removed, arr[:count])
-		result["shifted"] = NewArray(removed)
-	} else {
-		result["shifted"] = arr[0]
-	}
-	return NewHash(result), nil
+	removed := make([]Value, count)
+	copy(removed, arr[:count])
+	setArrayElems(receiver, arr[count:])
+	return NewArray(removed), nil
 }
 
-// arrayDelete implements Ruby's Array#delete, removing every element equal to the
-// given value. Vibescript collections are non-mutating, so it returns both the
-// pruned array and the deleted value as the hash { array:, deleted: }, mirroring
-// Array#pop's { array:, popped: } convention. Following Ruby, deleted is the last
-// removed element itself when at least one match was removed and nil otherwise;
-// reporting the stored element (rather than the search argument) lets callers
-// recover a removed value that is Equal to but distinct from the argument. An
-// attached block is invoked with the searched-for value on a miss and its result
-// reported instead, matching `arr.delete(obj) { |o| default }`.
+// arrayDelete implements Ruby's Array#delete, removing every element equal to
+// the given value from the receiver in place. Following Ruby, it returns the
+// last removed element itself when at least one match was removed and nil
+// otherwise; reporting the stored element (rather than the search argument)
+// lets callers recover a removed value that is Equal to but distinct from the
+// argument. An attached block is invoked with the searched-for value on a miss
+// and its result returned instead, matching `arr.delete(obj) { |o| default }`.
 func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(kwargs) > 0 {
 		return NewNil(), fmt.Errorf("array.delete does not take keyword arguments")
@@ -4021,40 +4011,32 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 			return NewNil(), err
 		}
 	}
-	deleted := NewNil()
 	if found {
-		// Report the actual element removed (the last match), mirroring Ruby's
-		// Array#delete which returns the deleted object, not the search argument.
-		deleted = matched
-	} else if valueBlock(block) != nil {
-		// On a miss Ruby invokes the block with the searched-for value and returns
-		// its result, matching `arr.delete(obj) { |o| default }`.
+		setArrayElems(receiver, out)
+		return matched, nil
+	}
+	// On a miss the receiver is left untouched. Ruby invokes the block with the
+	// searched-for value and returns its result, matching
+	// `arr.delete(obj) { |o| default }`; without a block the result is nil.
+	if valueBlock(block) != nil {
 		runner, err := newBlockCallRunner(exec, block, "array.delete", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
-		result, err := runner.call([]Value{target})
-		if err != nil {
-			return NewNil(), err
-		}
-		deleted = result
+		return runner.call([]Value{target})
 	}
-	return NewHash(map[string]Value{
-		"array":   NewArray(out),
-		"deleted": deleted,
-	}), nil
+	return NewNil(), nil
 }
 
-// arrayInsert implements Ruby's Array#insert, returning a new array with the
-// given values inserted before the element at index. Vibescript's collections are
-// non-mutating, so it returns the new array rather than the receiver.
+// arrayInsert implements Ruby's Array#insert, splicing the given values into
+// the receiver in place before the element at index and returning the receiver.
 //
 // A non-negative index inserts before that position, padding with nil when the
 // index lies past the end (Ruby's [1].insert(3, "x") yields [1, nil, nil, "x"]).
 // A negative index counts back from the end and inserts after that element, so
 // insert(-1, x) appends and insert(-2, x) inserts before the last element,
 // matching Ruby. A negative index whose magnitude exceeds the length is rejected,
-// as Ruby raises IndexError for it. Inserting no values returns the array
+// as Ruby raises IndexError for it. Inserting no values returns the receiver
 // unchanged, mirroring Ruby.
 func arrayInsert(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(kwargs) > 0 {
@@ -4073,9 +4055,7 @@ func arrayInsert(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	values := args[1:]
 	arr := receiver.Array()
 	if len(values) == 0 {
-		return arrayInsertBuildResult(exec, receiver, args, kwargs, block, len(arr), func(i int) Value {
-			return arr[i]
-		})
+		return receiver, nil
 	}
 	// Resolve the insertion point. A negative index inserts after the element it
 	// names, so it normalizes to (index + len + 1); Ruby rejects a negative index
@@ -4131,7 +4111,29 @@ func arrayInsertBuildResult(exec *Execution, receiver Value, args []Value, kwarg
 			return NewNil(), err
 		}
 	}
-	return NewArray(out), nil
+	// Splice the built elements into the receiver and return it, matching
+	// Ruby's in-place Array#insert.
+	setArrayElems(receiver, out)
+	return receiver, nil
+}
+
+// arrayReserveInPlaceGrowth charges the backing reallocation an in-place append
+// of extra elements may perform, before anything is allocated. When the
+// receiver's existing capacity already fits the new length no reallocation will
+// happen and nothing is charged beyond the baseline the caller roots already
+// cover. Growth models Go's append doubling so the charge covers the capacity
+// the runtime actually realizes.
+func arrayReserveInPlaceGrowth(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, extra int) error {
+	base := receiver.Array()
+	newLen := saturatingAdd(len(base), extra)
+	if newLen <= cap(base) {
+		return nil
+	}
+	grownCap := saturatingMul(cap(base), 2)
+	if grownCap < newLen {
+		grownCap = newLen
+	}
+	return newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(grownCap)
 }
 
 func arraySample(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -4813,7 +4815,11 @@ func arraySortBang(exec *Execution, receiver Value, args []Value, kwargs map[str
 	if sortErr != nil {
 		return NewNil(), sortErr
 	}
-	return NewArray(out), nil
+	// Sorting works on a copy so a comparator block never observes a
+	// half-sorted receiver; the sorted elements are swapped in afterwards and
+	// the receiver is returned, matching Ruby's Array#sort!.
+	setArrayElems(receiver, out)
+	return receiver, nil
 }
 
 func arrayMapBang(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -4848,5 +4854,9 @@ func arrayMapBang(exec *Execution, receiver Value, args []Value, kwargs map[stri
 			return NewNil(), err
 		}
 	}
-	return NewArray(out), nil
+	// The mapped elements are swapped into the receiver only after the block
+	// has visited every (snapshot) element, so the block never observes a
+	// half-mapped receiver. Returns the receiver, matching Ruby's Array#map!.
+	setArrayElems(receiver, out)
+	return receiver, nil
 }

@@ -791,21 +791,18 @@ func addValues(left, right Value) (Value, error) {
 	}
 }
 
-// shovelValues implements the array shovel operator `array << value`. Ruby
-// mutates the receiver in place and returns it, but Vibescript collections are
-// non-mutating, so this returns a new array with the single value appended,
-// matching how Array#push and `array + [value]` behave. The idiomatic
-// accumulator pattern is reassignment (`values = values << x`), which the
-// runtime routes through the same backing-buffer fast path as those forms.
+// shovelValues implements the array shovel operator `array << value`,
+// appending the single value to the receiver in place and returning the
+// receiver, exactly as Ruby's Array#<< (and Array#push) do. Every alias of the
+// array observes the growth, so `values << x` as a bare statement accumulates;
+// reassignment is no longer required. Callers with an Execution charge the
+// potential backing reallocation first via arrayReserveInPlaceGrowth.
 func shovelValues(left, right Value) (Value, error) {
 	if left.Kind() != KindArray {
 		return NewNil(), fmt.Errorf("unsupported shovel operands")
 	}
-	base := left.Array()
-	out := make([]Value, len(base)+1)
-	copy(out, base)
-	out[len(base)] = right
-	return NewArray(out), nil
+	left.SetArrayElems(append(left.Array(), right))
+	return left, nil
 }
 
 // intersectValues implements the array intersection operator `array & other`,

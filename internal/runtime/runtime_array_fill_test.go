@@ -453,19 +453,24 @@ func TestArrayFillNilSelectors(t *testing.T) {
 // TestArrayFillDoesNotMutateReceiver confirms fill returns a new array and
 // leaves the receiver untouched, consistent with the immutable collection
 // helpers it sits beside.
-func TestArrayFillDoesNotMutateReceiver(t *testing.T) {
+func TestArrayFillMutatesReceiver(t *testing.T) {
 	t.Parallel()
+	// fill overwrites the receiver in place and returns the receiver itself,
+	// matching Ruby's Array#fill.
 	script := compileScript(t, `
-    def fill_keeps_original()
+    def fill_mutates_original()
       original = [1, 2, 3]
       filled = original.fill(0)
-      { original: original, filled: filled }
+      { original: original, filled: filled, same: filled.equal?(original) }
     end
     `)
 
-	result := callFunc(t, script, "fill_keeps_original", nil).Hash()
-	compareArrays(t, result["original"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	result := callFunc(t, script, "fill_mutates_original", nil).Hash()
+	compareArrays(t, result["original"], []Value{NewInt(0), NewInt(0), NewInt(0)})
 	compareArrays(t, result["filled"], []Value{NewInt(0), NewInt(0), NewInt(0)})
+	if !result["same"].Bool() {
+		t.Fatal("fill must return the receiver itself")
+	}
 }
 
 // TestArrayFillArgumentRejection covers the error paths: missing value and
