@@ -240,7 +240,6 @@ func compileClassDef(stmt *ClassStmt) (*ClassDef, error) {
 		if member.Alias != nil {
 			if err := compileClassAlias(classDef, member.Alias, stmt.Name); err != nil {
 				return nil, err
-
 			}
 		}
 	}

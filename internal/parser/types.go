@@ -67,7 +67,6 @@ func (p *parser) parseTypeAtom() *ast.TypeExpr {
 		return nil
 	}
 
-
 	if p.peekToken.Type == ast.TokenLT {
 		if ty.Kind != ast.TypeArray && ty.Kind != ast.TypeHash {
 			p.addParseError(p.curToken.Pos, fmt.Sprintf("type %s does not accept type arguments", ty.Name))

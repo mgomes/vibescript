@@ -3748,7 +3748,12 @@ func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *En
 		if current, exists := env.getOwn(ident.Name); exists {
 			return compoundAssignmentTarget{current: current, assign: assignLocal}, nil
 		}
-		if env.parent != nil && env.parent.hasEnclosingLocalBinding(ident.Name) {
+		// Enclosing locals win only within the class-body boundary: a method
+		// parameter or block local named LIMIT is the ||= target, but a
+		// same-named local OUTSIDE the class body is not, so DEFAULT ||= x in
+		// a class body creates the class constant (matching = and +=) instead
+		// of clobbering a top-level DEFAULT.
+		if env.hasCallLocalBinding(ident.Name) {
 			current, exists := env.Get(ident.Name)
 			if !exists {
 				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)
@@ -3758,6 +3763,13 @@ func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *En
 		if self, ok := classConstantAssignmentSelf(ident.Name, env); ok {
 			current, _ := classConstant(self, ident.Name)
 			return compoundAssignmentTarget{current: current, assign: assignClassConstant}, nil
+		}
+		if env.parent != nil && env.parent.hasEnclosingLocalBinding(ident.Name) {
+			current, exists := env.Get(ident.Name)
+			if !exists {
+				return compoundAssignmentTarget{}, exec.errorAt(ident.Pos(), "undefined variable %s", ident.Name)
+			}
+			return compoundAssignmentTarget{current: current, assign: assignLocal}, nil
 		}
 		if env.parent != nil && env.parent.hasAmbientAssignmentBinding(ident.Name) {
 			current, exists := env.Get(ident.Name)

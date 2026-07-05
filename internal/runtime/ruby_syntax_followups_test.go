@@ -490,16 +490,12 @@ def echo_upper(status: Types.Status) -> Types.Status
   status
 end
 
-def echo_upper_caps(status: Types.STATUS) -> Types.STATUS
-  status
-end
-
 def echo_nullable(status: status_mod.Status? = nil) -> status_mod.Status?
   status
 end
 
 def run()
-  [echo(:draft).name, echo_upper(:published).name, echo_upper_caps(:draft).name, echo_nullable()]
+  [echo(:draft).name, echo_upper(:published).name, echo_nullable()]
 end
 run()
 `, "__main")
@@ -510,9 +506,31 @@ run()
 	compareArrays(t, callScript(t, t.Context(), script, "__main", nil, CallOptions{}), []Value{
 		NewString("Draft"),
 		NewString("Published"),
-		NewString("Draft"),
 		NewNil(),
 	})
+}
+
+// TestDottedScreamingCaseMemberStaysKeywordDefault pins the annotation
+// discriminator: a SCREAMING_CASE dotted member after a parameter colon is a
+// constant default expression by convention, never a qualified type
+// annotation, so the parameter stays a callable keyword. Qualified type
+// annotations require the canonical PascalCase member (Types.Status).
+func TestDottedScreamingCaseMemberStaysKeywordDefault(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def f(cap: Data.RESULT)
+  cap
+end
+
+def run()
+  f(cap: 5)
+end
+`)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(5)) {
+		t.Fatalf("run() = %#v, want 5", got)
+	}
 }
 
 func TestParenlessCallBinaryExpressionOperand(t *testing.T) {
@@ -595,5 +613,34 @@ end
 		NewInt(4),
 		NewInt(5),
 		NewInt(6),
+	})
+}
+
+// TestClassBodyLogicalAssignmentTargetsConstants pins ||=/&&= scoping in class
+// bodies: a constant-shaped target binds the class constant (creating it for
+// ||= on unset, reassigning for &&= on set) and never clobbers a same-named
+// local outside the class body, matching = and the arithmetic compound forms.
+func TestClassBodyLogicalAssignmentTargetsConstants(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	script, err := engine.CompileSnippet(`
+DEFAULT = 42
+
+class C
+  DEFAULT &&= 9
+  MODE ||= "on"
+  MODE &&= "off"
+end
+
+[DEFAULT, C::MODE]
+`, "__main")
+	if err != nil {
+		t.Fatalf("compile snippet: %v", err)
+	}
+
+	compareArrays(t, callScript(t, context.Background(), script, "__main", nil, CallOptions{}), []Value{
+		NewInt(42),
+		NewString("off"),
 	})
 }

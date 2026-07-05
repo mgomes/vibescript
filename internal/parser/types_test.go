@@ -144,9 +144,15 @@ end`
 		t.Fatalf("uppercase alias return type = %#v, want nullable Types.Status enum", got)
 	}
 
+	// A SCREAMING_CASE dotted member in parameter position is a constant
+	// default by convention, not a type annotation; return position has no
+	// such ambiguity, so the same spelling stays a (fold-resolved) type there.
 	allCapsFn := got.Statements[3].(*ast.FunctionStmt)
-	if got := allCapsFn.Params[0].Type; got.Name != "Types.STATUS" || got.Kind != ast.TypeEnum {
-		t.Fatalf("all-caps qualified param type = %#v, want Types.STATUS enum", got)
+	if got := allCapsFn.Params[0].Type; got != nil {
+		t.Fatalf("all-caps qualified param type = %#v, want none (constant default)", got)
+	}
+	if allCapsFn.Params[0].DefaultVal == nil {
+		t.Fatalf("all-caps qualified param default = nil, want Types.STATUS member expression")
 	}
 	if got := allCapsFn.ReturnTy; got.Name != "Types.STATUS" || got.Kind != ast.TypeEnum {
 		t.Fatalf("all-caps qualified return type = %#v, want Types.STATUS enum", got)

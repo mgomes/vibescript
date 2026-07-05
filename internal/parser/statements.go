@@ -186,7 +186,10 @@ func (p *parser) parseRaiseStatement() ast.Statement {
 	if value == nil {
 		return nil
 	}
-	if p.peekToken.Type == ast.TokenComma && p.peekToken.Pos.Line == pos.Line {
+	if p.peekToken.Type == ast.TokenComma && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		// The comma introducing a message must sit on the line the first
+		// argument ENDS on (like return's list detection), so a multiline
+		// first argument keeps its message.
 		p.nextToken()
 		p.nextToken()
 		message := p.parseLineExpression(lowestPrec)
@@ -1604,7 +1607,7 @@ func (p *parser) dottedTypeAnnotationFollows(options paramParseOptions) bool {
 		return false
 	}
 	p.nextToken()
-	if !startsUppercaseIdentifier(p.curToken.Literal) {
+	if !dottedMemberLooksLikeTypeName(p.curToken.Literal) {
 		return false
 	}
 	if dottedDefaultConstant(namespace, p.curToken.Literal) {
@@ -1621,6 +1624,24 @@ func (p *parser) dottedTypeAnnotationFollows(options paramParseOptions) bool {
 
 func startsUppercaseIdentifier(name string) bool {
 	return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
+}
+
+// dottedMemberLooksLikeTypeName reports whether the member of a dotted name in
+// annotation position is shaped like a type: PascalCase (Statuses.Status).
+// A SCREAMING_CASE member (Data.RESULT, settings.MAX) is a constant by
+// convention, so `name: obj.CONST` stays a keyword default expression rather
+// than an unresolvable qualified type annotation.
+func dottedMemberLooksLikeTypeName(name string) bool {
+	name = strings.TrimSuffix(name, "?")
+	if !startsUppercaseIdentifier(name) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if name[i] >= 'a' && name[i] <= 'z' {
+			return true
+		}
+	}
+	return false
 }
 
 func dottedDefaultConstant(namespace, member string) bool {
