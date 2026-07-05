@@ -17,12 +17,19 @@ in depth; this page favors compact signatures and one-line descriptions.
 - `{ |item| }` marks a method that takes a block, written
   `do |item| ... end` in Vibescript.
 - `a | b` in a return type means the method returns either type.
-- No method mutates its receiver. Every transform returns a new value,
-  including Ruby-style bang methods. (Index and member assignment —
-  `arr[0] = x`, `hash[:k] = v` — do mutate in place and are visible
-  through aliases; only the method surface is copy-on-transform.)
-- Bang variants (`strip!`, `gsub!`, ...) return the transformed value, or
-  `nil` when nothing changed.
+- Collection methods with Ruby mutator names mutate their receiver in place,
+  matching Ruby: the array splicers (`push`/`append`, `prepend`/`unshift`,
+  `<<`, `insert`, `fill`, `clear`), the removers (`pop`, `shift`, `delete`,
+  `delete_if`/`keep_if`), the array bang forms (`map!`, `sort!`, `reverse!`,
+  `select!`, `reject!`, `uniq!`, `compact!`), and the hash mutators
+  (`update`/`merge!`, `store`, `delete`, `clear`, `delete_if`/`keep_if`,
+  `replace`). Every alias of the collection observes the mutation, exactly as
+  with index assignment (`arr[0] = x`, `hash[:k] = v`). Non-mutator names
+  (`map`, `select`, `sort`, `merge`, `+`, ...) return a new value and leave
+  the receiver untouched, as in Ruby.
+- Strings are immutable values: string bang variants (`strip!`, `gsub!`, ...)
+  return the transformed string — or `nil` when nothing changed — rather than
+  rewriting the receiver in place.
 
 ```vibe
 "hello".strip!    # nil (nothing to strip)
@@ -430,8 +437,11 @@ no match). See [Strings](strings.md) for examples.
 
 Each of the following returns the transformed string, or `nil` when the
 transform changed nothing: `strip!`, `lstrip!`, `rstrip!`, `squish!`,
-`chomp!`, `chop!`, `delete_prefix!`, `delete_suffix!`, `upcase!`, `downcase!`,
-`capitalize!`, `swapcase!`, `reverse!`, `sub!`, `gsub!`.
+`chomp!`, `chop!`, `delete!`, `delete_prefix!`, `delete_suffix!`, `tr!`,
+`squeeze!`, `upcase!`, `downcase!`, `capitalize!`, `swapcase!`, `reverse!`.
+`sub!` and `gsub!` key their result off the match instead: they return the
+rewritten string whenever the pattern matched (even when the replacement
+reproduces the original text) and `nil` only when it never matched.
 
 ## Arrays
 
@@ -534,28 +544,38 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 
 ### Building and Slicing
 
-- `push(*values) -> array` – new array with `values` appended. Accepts zero
-  values: bare `push` and `push()` are no-ops that return the array unchanged,
-  matching Ruby.
+- `push(*values) -> array` – appends `values` to the receiver in place and
+  returns the receiver. Accepts zero values: bare `push` and `push()` are
+  no-ops returning the receiver, matching Ruby.
 - `append(*values) -> array` – Ruby-style alias for `push`.
-- `prepend(*values) -> array` – new array with `values` inserted at the front in
-  order, so `[3].prepend(1, 2)` is `[1, 2, 3]`. Bare `prepend` and `prepend()`
-  return the array unchanged.
+- `prepend(*values) -> array` – inserts `values` at the front of the receiver
+  in place and returns it, so `[3].prepend(1, 2)` is `[1, 2, 3]`.
 - `unshift(*values) -> array` – Ruby-style alias for `prepend`.
-- `pop(n = nil) -> hash` – returns `{ array:, popped: }`; bare `pop` pops one
-  element (`popped` is the value or `nil`), `pop(n)` pops up to `n` elements
-  (`popped` is an array).
-- `shift(n = nil) -> hash` – returns `{ array:, shifted: }`; bare `shift` removes
-  one leading element (`shifted` is the value or `nil`), `shift(n)` removes up to
-  `n` (`shifted` is an array). `n` must be a non-negative integer.
-- `delete(value) -> hash` / `delete(value) { default } -> hash` – removes every
-  element equal to `value`, returning `{ array:, deleted: }`. `deleted` is the
-  value when at least one match was removed and `nil` otherwise; the block result
-  is reported on a miss instead.
-- `insert(index, *values) -> array` – new array with `values` inserted before the
-  element at `index`. A negative index inserts after that element (`insert(-1, x)`
-  appends); an index past the end pads with `nil`; a negative index past the start
-  raises. Inserting no values returns the array unchanged.
+- `pop -> value | nil` / `pop(n) -> array` – removes element(s) from the end of
+  the receiver in place; bare `pop` returns the removed element (`nil` on an
+  empty array), `pop(n)` removes up to `n` and returns them as an array.
+- `shift -> value | nil` / `shift(n) -> array` – removes element(s) from the
+  front of the receiver in place, mirroring `pop`. `n` must be a non-negative
+  integer.
+- `delete(value) -> value | nil` / `delete(value) { default } -> value` –
+  removes every element equal to `value` from the receiver in place, returning
+  the last removed element, or `nil` on a miss (the block result instead when a
+  block is given).
+- `insert(index, *values) -> array` – splices `values` into the receiver before
+  the element at `index` and returns the receiver. A negative index inserts
+  after that element (`insert(-1, x)` appends); an index past the end pads with
+  `nil`; a negative index past the start raises. Inserting no values returns
+  the receiver unchanged.
+- `clear -> array` – removes every element from the receiver in place and
+  returns it.
+- `delete_if { |item| } -> array` / `keep_if { |item| } -> array` – prune the
+  receiver in place against the block (drop accepted / keep accepted) and
+  return it. `select!` and `reject!` are the bang twins that return `nil` when
+  nothing was removed.
+- `map! { |item| } -> array`, `sort! -> array` (optional comparator block),
+  `reverse! -> array` – transform the receiver in place and return it.
+- `uniq! -> array | nil` / `compact! -> array | nil` – dedupe / drop `nil`s in
+  place, returning the receiver when something was removed and `nil` otherwise.
 - `first -> value | nil` / `first(n) -> array` – leading element(s).
 - `last -> value | nil` / `last(n) -> array` – trailing element(s).
 - `uniq -> array` – distinct values, keeping first occurrences.
@@ -577,16 +597,16 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   last pair; the block form maps each element to its pair. A non-array element,
   a pair that is not exactly two elements, or an unsupported key raises.
 
-Because array methods never mutate the receiver, the removal helpers `pop`,
-`shift`, and `delete` each hand back both halves of the result:
+The removal helpers mutate the receiver and hand back what they removed,
+exactly as in Ruby:
 
 ```vibe
-items = [1, 2, 3]
-items.pop       # {array: [1, 2], popped: 3}
-items.pop(2)    # {array: [1], popped: [2, 3]}
-items.shift     # {array: [2, 3], shifted: 1}
-items.shift(2)  # {array: [3], shifted: [1, 2]}
-[1, 2, 2].delete(2) # {array: [1], deleted: 2}
+items = [1, 2, 3, 4, 5]
+items.pop       # 5    (items is now [1, 2, 3, 4])
+items.pop(2)    # [3, 4]
+items.shift     # 1
+items.shift(2)  # [2] (clamped to the remaining length)
+[1, 2, 2].delete(2) # 2
 ```
 
 ### Aggregation, Ordering, and Grouping
@@ -697,25 +717,29 @@ methods.
   keys present in both hashes the block resolves the conflict and its result is
   stored, folding through each argument in turn. Keys present on only one side are
   copied without invoking the block, and the conflict key is yielded as a symbol.
-- `update(*others) -> hash` / `merge!(*others) -> hash` – aliases of `merge`. Ruby
-  mutates the receiver in place; Vibescript returns a new merged hash and leaves
-  the receiver unchanged (immutable-style). Both accept the same optional conflict
-  block.
-- `replace(other) -> hash` – new hash holding `other`'s entries, discarding the
-  receiver's own. Ruby mutates the receiver in place; this immutable-style version
-  leaves it unchanged.
+- `update(*others) -> hash` / `merge!(*others) -> hash` – Ruby's in-place
+  merge: fold the argument hashes into the receiver itself and return it. Both
+  accept the same optional conflict block as `merge`; with no arguments they
+  are no-ops returning the receiver.
+- `replace(other) -> hash` – discards the receiver's entries and adopts
+  `other`'s entries and default metadata in place, returning the receiver.
 - `flatten(depth = 1) -> array` – flat array built from the `[key, value]` pairs,
   flattened to `depth`. The default depth produces `[key, value, ...]`; array
   values stay nested unless a deeper `depth` is given. A `depth` of `0` keeps the
   pairs nested, a negative `depth` flattens completely, and a `Float` depth is
   truncated. Entries are emitted in insertion order.
-- `store(key, value) -> hash` – new hash with `key` assigned to `value`; the
-  receiver is left unchanged (immutable-style, unlike Ruby's mutating `store`).
-- `delete(key) -> hash` / `delete(key) { |key| default } -> hash` – returns
-  `{ hash:, deleted: }`, where `hash` is a new hash with `key` removed and the
-  receiver is left unchanged (immutable-style, unlike Ruby's mutating `delete`).
-  `deleted` is the removed value, or `nil` on a miss; with a block, the block is
-  invoked with the requested key on a miss and its result reported instead.
+- `store(key, value) -> value` – Ruby's method spelling of index assignment:
+  writes the entry into the receiver in place and returns the stored value. An
+  existing key keeps its position in the insertion order.
+- `delete(key) -> value | nil` / `delete(key) { |key| default } -> value` –
+  removes the entry from the receiver in place and returns the removed value.
+  On a miss it returns `nil` — or the block result for the requested key — and
+  leaves the receiver untouched.
+- `clear -> hash` – empties the receiver in place and returns it, keeping its
+  identity and any `Hash.new` default.
+- `delete_if { |key, value| } -> hash` / `keep_if { |key, value| } -> hash` –
+  prune the receiver in place against the block (drop accepted / keep accepted
+  entries) and return it; survivors keep their insertion order.
 - `slice(*keys) -> hash` – only the listed keys; missing keys are skipped.
   Unsupported key types (anything other than a symbol or string) are ignored as
   Ruby misses, so a candidate that cannot match an entry is dropped rather than

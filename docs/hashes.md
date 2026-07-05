@@ -150,13 +150,14 @@ Hash.new(0).dig(:missing)       # 0  (the default value)
 Hash.new(0).values_at(:a, :b)   # [0, 0]
 ```
 
-The default travels with the hash object: index assignment (`hash[key] = ...`)
-keeps it, and `merge` (with its `update` / `merge!` aliases) copies the
-receiver's default onto the merged hash. Every other transform that returns a new
-hash (`select`, `reject`, `slice`, `except`, `transform_keys`,
-`transform_values`, `compact`, `store`, `delete`, `replace`, ...) returns a plain
-hash with no default, so derived hashes do not silently inherit missing-key
-behavior.
+The default travels with the hash object: the in-place mutators (index
+assignment, `store`, `delete`, `clear`, `delete_if`/`keep_if`, and
+`update`/`merge!`) keep the receiver's default, `merge` copies the receiver's
+default onto the merged hash, and `replace` adopts the replacement's default.
+Every transform that returns a new hash (`select`, `reject`, `slice`,
+`except`, `transform_keys`, `transform_values`, `compact`, ...) returns a
+plain hash with no default, so derived hashes do not silently inherit
+missing-key behavior.
 
 ```vibe
 base = Hash.new(0)
@@ -263,24 +264,31 @@ end
   hash. Later hashes win on key conflicts, and an optional block resolves
   conflicts by yielding `(key, old_value, new_value)`. Called with no arguments
   it returns a copy of the receiver.
-- `update(*others)` / `merge!(*others)` are aliases of `merge`. Ruby mutates the
-  receiver in place; Vibescript's method-based helpers are immutable-style, so
-  all three return a new merged hash and leave the receiver unchanged.
-- `replace(other)` returns a new hash holding `other`'s entries, discarding the
-  receiver's own. Ruby mutates the receiver in place; this immutable-style
-  version leaves it unchanged.
+- `update(*others)` / `merge!(*others)` are Ruby's in-place merge: they fold
+  the argument hashes into the receiver itself (later hashes and the optional
+  conflict block win exactly as with `merge`) and return the receiver, so every
+  alias of the hash observes the merge. Called with no arguments they are
+  no-ops returning the receiver.
+- `replace(other)` discards the receiver's entries and adopts `other`'s entries
+  and default metadata in place, returning the receiver, matching Ruby's
+  mutating `Hash#replace`.
 - `flatten(depth = 1)` returns a flat array of the entries. At the default depth
   the result is `[key, value, ...]`; values that are arrays are kept nested
   unless a deeper `depth` is given. A `depth` of `0` returns the `[key, value]`
   pairs nested, and a negative `depth` flattens completely.
-- `store(key, value)` returns a new hash with the key assigned, leaving the
-  receiver unchanged. Like the other method-based helpers it is immutable-style;
-  use index assignment (`hash[key] = value`) when you want to mutate in place.
-- `delete(key)` / `delete(key) { |key| default }` returns a `{ hash:, deleted: }`
-  pair: `hash` is a new hash with `key` removed (the receiver is left unchanged,
-  immutable-style, unlike Ruby's mutating `delete`) and `deleted` is the removed
-  value, or `nil` on a miss. With a block, the block is invoked with the requested
-  key on a miss and its result reported as `deleted` instead.
+- `store(key, value)` is Ruby's method spelling of index assignment: it writes
+  the entry into the receiver in place and returns the stored value. An
+  existing key keeps its position in the insertion order.
+- `delete(key)` / `delete(key) { |key| default }` removes the entry from the
+  receiver in place and returns the removed value, matching Ruby's mutating
+  `delete`. On a miss it returns `nil` — or, with a block, the block's result
+  for the requested key — and leaves the receiver untouched.
+- `clear` empties the receiver in place and returns it. The hash keeps its
+  object identity and any `Hash.new` default value or proc.
+- `delete_if { |key, value| }` removes every entry the block accepts and
+  returns the receiver; `keep_if { |key, value| }` keeps only accepted entries.
+  The block sees a snapshot of the entries, so the receiver is pruned only
+  after the walk completes; surviving entries keep their insertion order.
 - `compact` removes `nil` values.
 - `slice(*keys)` keeps only selected keys. Candidate keys that are absent are
   omitted, and keys whose type cannot be a hash key (anything other than a symbol
@@ -295,13 +303,15 @@ end
 - `remap_keys(mapping_hash)` for direct key rename maps.
 
 The map-producing transforms run inside the sandbox. Before building a derived
-map they project its size against the memory quota, so a transform over a large
+map (or growing the receiver, for the in-place `update` / `merge!` / `replace`)
+they project its size against the memory quota, so a transform over a large
 hash is rejected up front rather than after the backing map is allocated. While
-walking the receiver they charge the step quota per entry and honor context
+walking entries they charge the step quota per entry and honor context
 cancellation, so large materializations stay bounded. This applies to `merge`
-(and its `update` / `merge!` aliases), `replace`, `store`, `delete`, `compact`,
-`slice`, `except`, `select`, `reject`, `transform_keys`, `transform_values`, and
-`remap_keys`.
+(and its in-place `update` / `merge!` forms), `replace`, `compact`, `slice`,
+`except`, `select`, `reject`, `transform_keys`, `transform_values`, and
+`remap_keys`. The in-place `store`, `delete`, and `clear` allocate nothing
+beyond the single written entry, so they carry no per-entry walk.
 
 The block-driven transforms (`transform_keys`, `transform_values`, and the
 `merge` conflict block) also charge what a block produces against the memory quota
@@ -396,13 +406,13 @@ unpacks the pair:
 ```vibe
 pairs = []
 { a: 1, b: 2 }.each do |pair|
-  pairs = pairs.push(pair)
+  pairs.push(pair)
 end
 # pairs == [[:a, 1], [:b, 2]]
 
 entries = []
 { a: 1, b: 2 }.each do |key, value|
-  entries = entries.push([key, value])
+  entries.push([key, value])
 end
 # entries == [[:a, 1], [:b, 2]]
 ```
