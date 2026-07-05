@@ -319,6 +319,10 @@ end
 `protected method balance` error. A protected class method is callable only
 from other class methods of the same class. Operator and index methods
 (`def +`, `def []`) honor `private` and `protected` like any other method.
+Protected access is scoped to the exact class definition: two classes that
+include the same module are not a family, so an instance of one cannot call
+protected methods on an instance of the other (in Ruby, the shared module
+ancestor would grant that access).
 
 One documented divergence from Ruby: a visibility section also covers
 `def self.` class methods declared after it, whereas Ruby scopes sections to
@@ -430,7 +434,10 @@ What carries over:
 
 - **Visibility** — a module's private/protected methods stay private/protected
   in the including class, and the class may retarget them
-  (`public :name`) without affecting the module.
+  (`public :name`) without affecting the module. Protected access stays
+  scoped to each including class: two classes that include the same module
+  cannot call each other's protected methods (unlike Ruby, where the shared
+  module ancestor grants access).
 - **Operator and index methods** — `def +`, `def []`, `def []=` defined in a
   module dispatch on instances of the including class.
 - **Accessors** — `property`/`getter`/`setter` declared in a module generate
@@ -444,10 +451,13 @@ What carries over:
   contract (`def describe(thing: Named)`) accepts instances of any class that
   includes it.
 
-Modules can `include` other modules; the composed method set and constants
-flow through transitively. `extend` copies the module's instance-style
-methods to the class surface only — it does not adopt constants and does not
-affect `is_a?`.
+Modules can `include` other modules; the composed method set, constants, and
+ancestry all flow through transitively — a class including the outer module
+also `is_a?` every module that module includes, and matches them as type
+contracts. Re-including a module that is already in the ancestry is a no-op,
+as in Ruby: it does not restore the module's methods or constants over a
+later include's. `extend` copies the module's instance-style methods to the
+class surface only — it does not adopt constants and does not affect `is_a?`.
 
 Not supported (each fails with a targeted diagnostic): `extend self` (define
 module functions with `def self.name` instead), including a class, and
@@ -468,8 +478,12 @@ user.instance_of?(User)     # true
 user.respond_to?(:greet)    # false  (no such method)
 ```
 
-`is_a?`/`kind_of?`/`instance_of?` currently test direct class identity (there is
-no inheritance yet), so all three agree. `respond_to?` reports public methods;
+`is_a?` and `kind_of?` test the instance's own class plus its module ancestry:
+they report `true` for the exact class and for any module the class includes,
+directly or through another module's `include` (see
+[Mixins](#mixins-include-and-extend)). `instance_of?` tests the exact class
+only, so it disagrees with `is_a?` precisely when the argument is an included
+module. There is no class inheritance yet. `respond_to?` reports public methods;
 private and protected methods report `false` externally but `true` when the
 receiver checks itself (or when called with `respond_to?(name, true)`). Instance variables are
 attributes, not methods, so they never respond. These predicates are documented
