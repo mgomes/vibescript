@@ -159,7 +159,13 @@ func TestEnvResetForBlockCallClearsPerCallState(t *testing.T) {
 	}
 }
 
-func TestEnvClearArrayAppendBufferDetachesBinding(t *testing.T) {
+// TestEnvClearArrayAppendBufferSettlesBinding pins the settle contract of the
+// concat accumulator: clearing on a read only unregisters the hidden buffer.
+// The binding keeps the exact wrapper the reader received (one Ruby object, so
+// later in-place mutations stay visible through both handles), and the
+// wrapper's elements stay clamped to length so nothing can ever grow the
+// escaped backing in place.
+func TestEnvClearArrayAppendBufferSettlesBinding(t *testing.T) {
 	t.Parallel()
 
 	env := newEnv(nil)
@@ -178,15 +184,44 @@ func TestEnvClearArrayAppendBufferDetachesBinding(t *testing.T) {
 	if !ok {
 		t.Fatalf("Get(items) missing after clear")
 	}
+	if arrayIdentity(got) != arrayIdentity(val) {
+		t.Fatalf("clear rebound items to a different wrapper; the binding and the reader must stay one object")
+	}
 	items := got.Array()
 	if len(items) != 2 || cap(items) != 2 {
-		t.Fatalf("detached items len/cap = %d/%d, want 2/2", len(items), cap(items))
+		t.Fatalf("settled items len/cap = %d/%d, want 2/2 (clamped to length)", len(items), cap(items))
 	}
-	if len(buffer) != 2 || cap(buffer) != 8 {
-		t.Fatalf("source buffer len/cap = %d/%d, want 2/8", len(buffer), cap(buffer))
+}
+
+// TestEnvSettleArrayAppendResultUnregistersBuffer pins the escape-time settle:
+// the escaping value keeps its wrapper identity while the matching buffer
+// registration is dropped, so no later fast-path concat can append into the
+// escaped backing.
+func TestEnvSettleArrayAppendResultUnregistersBuffer(t *testing.T) {
+	t.Parallel()
+
+	env := newEnv(nil)
+	buffer := make([]Value, 2, 8)
+	buffer[0] = NewInt(1)
+	buffer[1] = NewInt(2)
+	val := arrayValueFromAppendBuffer(buffer)
+	env.assignArrayAppendBuffer("items", val, buffer)
+
+	settled := env.settleArrayAppendResult(val)
+
+	if arrayIdentity(settled) != arrayIdentity(val) {
+		t.Fatalf("settle returned a different wrapper; escaping results must keep identity")
 	}
-	items[0] = NewInt(99)
-	if buffer[0].Equal(NewInt(99)) {
-		t.Fatalf("detached binding still aliases the append buffer")
+	if _, ok := env.arrayAppendBuffer("items"); ok {
+		t.Fatalf("arrayAppendBuffer(items) survived settle of its wrapper")
+	}
+
+	other := NewArray([]Value{NewInt(1), NewInt(2)})
+	env.assignArrayAppendBuffer("items", val, buffer)
+	if got := env.settleArrayAppendResult(other); arrayIdentity(got) != arrayIdentity(other) {
+		t.Fatalf("settle of an unrelated array changed its wrapper")
+	}
+	if _, ok := env.arrayAppendBuffer("items"); !ok {
+		t.Fatalf("settle of an unrelated array dropped the registered buffer")
 	}
 }

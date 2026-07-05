@@ -1416,11 +1416,11 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 			return NewNil(), exec.localJumpErrorAt(blockBodyPos(blk), "unexpected return")
 		}
 		return NewNil(), &nonLocalReturnSignal{
-			value: blockEnv.detachArrayAppendResult(val),
+			value: blockEnv.settleArrayAppendResult(val),
 			token: blk.homeReturnToken,
 		}
 	}
-	return blockEnv.detachArrayAppendResult(val), nil
+	return blockEnv.settleArrayAppendResult(val), nil
 }
 
 // blockBodyPos anchors a block-level diagnostic to the block's first
@@ -2321,7 +2321,7 @@ func (exec *Execution) evalArrayLiteralElements(literal *ArrayLiteral, env *Env)
 
 func (exec *Execution) assignArrayAppendResult(name string, base, extras []Value, env *Env) Value {
 	buffer, ok := env.arrayAppendBuffer(name)
-	if !ok {
+	if !ok || !sameArrayBacking(buffer, base) {
 		buffer = make([]Value, len(base), len(base)+len(extras))
 		copy(buffer, base)
 	}
@@ -2329,6 +2329,21 @@ func (exec *Execution) assignArrayAppendResult(name string, base, extras []Value
 	result := arrayValueFromAppendBuffer(buffer)
 	env.assignArrayAppendBuffer(name, result, buffer)
 	return result
+}
+
+// sameArrayBacking reports whether the registered accumulator buffer still is
+// the receiver's exact element backing: same length, same first-element
+// address. A mismatch means the binding's elements changed since registration
+// (an in-place mutator replaced or resliced them), so the fast path must copy
+// into a fresh buffer instead of appending onto stale contents.
+func sameArrayBacking(buffer, base []Value) bool {
+	if len(buffer) != len(base) {
+		return false
+	}
+	if len(base) == 0 {
+		return true
+	}
+	return &buffer[0] == &base[0]
 }
 
 func arrayValueFromAppendBuffer(buffer []Value) Value {

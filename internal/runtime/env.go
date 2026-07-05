@@ -413,32 +413,17 @@ func (e *Env) arrayAppendBuffer(name string) ([]Value, bool) {
 	return buffer, ok
 }
 
+// clearArrayAppendBuffer settles the hidden concat accumulator for name when
+// its wrapper escapes through a variable read. Settling only unregisters the
+// buffer -- the binding keeps the exact wrapper the reader received, so both
+// handles stay the same Ruby object and later in-place mutations remain
+// visible through every alias. Once unregistered, the next `x = x + [...]`
+// takes the copy path into a fresh buffer, so nothing ever appends into the
+// escaped wrapper's backing again.
 func (e *Env) clearArrayAppendBuffer(name string) {
 	if scope, ok := e.lookupBindingScope(name); ok {
-		scope.detachArrayAppendBinding(name)
 		scope.dropArrayAppendBuffer(name)
 	}
-}
-
-func (e *Env) detachArrayAppendBinding(name string) {
-	if e.arrayAppendBuffers == nil {
-		return
-	}
-	buffer, ok := e.arrayAppendBuffers[name]
-	if !ok {
-		return
-	}
-	val, ok := e.Get(name)
-	if !ok || val.Kind() != KindArray {
-		return
-	}
-	items := val.Array()
-	if len(items) == 0 || len(items) != len(buffer) || reflect.ValueOf(items).Pointer() != reflect.ValueOf(buffer).Pointer() {
-		return
-	}
-	detached := make([]Value, len(items))
-	copy(detached, items)
-	e.assignValue(name, NewArray(detached))
 }
 
 func (e *Env) lookupBindingScope(name string) (*Env, bool) {
@@ -460,7 +445,12 @@ func (e *Env) setArrayAppendBuffer(name string, buffer []Value) {
 	e.arrayAppendBuffers[name] = buffer
 }
 
-func (e *Env) detachArrayAppendResult(val Value) Value {
+// settleArrayAppendResult settles a hidden concat accumulator whose wrapper
+// escapes as a function or block result. It unregisters the matching buffer
+// and returns the same wrapper, so the escaping result and the variable stay
+// one Ruby object while no later fast-path concat can append into the
+// escaped backing (the next `x = x + [...]` copies into a fresh buffer).
+func (e *Env) settleArrayAppendResult(val Value) Value {
 	if val.Kind() != KindArray {
 		return val
 	}
@@ -473,13 +463,12 @@ func (e *Env) detachArrayAppendResult(val Value) Value {
 		return val
 	}
 	for scope := e; scope != nil; scope = scope.parent {
-		for _, buffer := range scope.arrayAppendBuffers {
+		for name, buffer := range scope.arrayAppendBuffers {
 			if len(buffer) != len(items) || reflect.ValueOf(buffer).Pointer() != ptr {
 				continue
 			}
-			detached := make([]Value, len(items))
-			copy(detached, items)
-			return NewArray(detached)
+			scope.dropArrayAppendBuffer(name)
+			return val
 		}
 	}
 	return val

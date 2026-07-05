@@ -265,6 +265,264 @@ func TestArrayMutatorAliasVisibility(t *testing.T) {
 		[]Value{NewInt(1), NewInt(2)})
 }
 
+// TestArrayConcatAccumulatorPreservesIdentity pins that the `x = x + [...]`
+// accumulator fast path never forks array identity: reading the variable
+// settles the hidden buffer but keeps the same wrapper, so an alias taken
+// after a concat-reassignment observes every later in-place mutation, exactly
+// like an alias of a literal-built array. Expectations verified against Ruby
+// 3.4 (`a = a + [x]` rebinds to a new object; aliases of the pre-rebind object
+// keep its state).
+func TestArrayConcatAccumulatorPreservesIdentity(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def direct_alias()
+      a = [1]
+      a = a + [2]
+      b = a
+      a << 3
+      { a: a, b: b, same: a.equal?(b) }
+    end
+
+    def hash_value_alias()
+      a = [1]
+      a = a + [2]
+      h = { list: a }
+      a << 3
+      { a: a, via_hash: h[:list] }
+    end
+
+    def element_alias()
+      a = [1]
+      a = a + [2]
+      outer = [a]
+      a << 3
+      { a: a, via_element: outer[0] }
+    end
+
+    def interleaved()
+      a = []
+      a = a + [1]
+      b = a
+      a = a + [2]
+      a << 3
+      { a: a, b: b }
+    end
+
+    def element_write_after_rebind()
+      a = [1]
+      a = a + [2]
+      b = a
+      a = a + [3]
+      a[0] = 9
+      { a: a, b: b }
+    end
+
+    def loop_alias()
+      a = []
+      b = nil
+      for i in 1..4
+        a = a + [i]
+        if i == 2
+          b = a
+        end
+      end
+      a << 9
+      { a: a, b: b }
+    end
+    `)
+
+	direct := callFunc(t, script, "direct_alias", nil).Hash()
+	compareArrays(t, direct["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, direct["b"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	if !direct["same"].Bool() {
+		t.Fatal("alias of a concat-built array must be the same object")
+	}
+
+	hashAlias := callFunc(t, script, "hash_value_alias", nil).Hash()
+	compareArrays(t, hashAlias["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, hashAlias["via_hash"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+
+	element := callFunc(t, script, "element_alias", nil).Hash()
+	compareArrays(t, element["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, element["via_element"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+
+	// Ruby: b aliases the [1] object; the later a = a + [2] rebinds a to a
+	// fresh object, so b keeps [1] while a accumulates [1, 2, 3].
+	interleaved := callFunc(t, script, "interleaved", nil).Hash()
+	compareArrays(t, interleaved["a"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, interleaved["b"], []Value{NewInt(1)})
+
+	// Ruby: the rebound a is a fresh copy, so a[0] = 9 must not reach b even
+	// though the fast path built both from one backing buffer.
+	written := callFunc(t, script, "element_write_after_rebind", nil).Hash()
+	compareArrays(t, written["a"], []Value{NewInt(9), NewInt(2), NewInt(3)})
+	compareArrays(t, written["b"], []Value{NewInt(1), NewInt(2)})
+
+	loop := callFunc(t, script, "loop_alias", nil).Hash()
+	compareArrays(t, loop["a"], []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4), NewInt(9)})
+	compareArrays(t, loop["b"], []Value{NewInt(1), NewInt(2)})
+}
+
+// TestArrayConcatBuiltArraysMutateLikeLiterals pins that an array grown via
+// the concat fast path is indistinguishable from a push-built or literal one
+// when passed to a function that mutates its argument (Ruby reference
+// semantics: the callee mutates the caller's object).
+func TestArrayConcatBuiltArraysMutateLikeLiterals(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def addto(t)
+      t << 100
+    end
+
+    def via_concat()
+      a = [1]
+      a = a + [2]
+      addto(a)
+      a
+    end
+
+    def via_push()
+      a = [1]
+      a.push(2)
+      addto(a)
+      a
+    end
+
+    def via_literal()
+      a = [1, 2]
+      addto(a)
+      a
+    end
+    `)
+
+	want := []Value{NewInt(1), NewInt(2), NewInt(100)}
+	for _, fn := range []string{"via_concat", "via_push", "via_literal"} {
+		compareArrays(t, callFunc(t, script, fn, nil), want)
+	}
+}
+
+// TestArrayConcatAccumulatorEscapeSettles pins the two non-read escape routes
+// of a live accumulator. A block whose last statement is the concat
+// reassignment hands the accumulator itself out as the block value (Ruby: the
+// assignment's value is the new object bound to the variable), and a method
+// whose implicit return is the reassignment hands it to the caller while a
+// closure keeps the method scope alive. In both cases the escaping value and
+// the variable must stay one object, and later concats through the variable
+// or closure must never share backing with the escaped value.
+func TestArrayConcatAccumulatorEscapeSettles(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    class Accumulator
+      def build()
+        x = [1]
+        @defaults = Hash.new do |hash, key|
+          x = x + [3]
+          x
+        end
+        x = x + [2]
+      end
+
+      def bump()
+        @defaults["miss"]
+      end
+    end
+
+    def block_result_identity()
+      a = [0]
+      r = [1, 2].map { |i| a = a + [i] }
+      a << 99
+      { last_same: r[1].equal?(a), last: r[1], first: r[0] }
+    end
+
+    def closure_escape()
+      acc = Accumulator.new
+      r = acc.build
+      x2 = acc.bump
+      x2[0] = 9
+      { r: r, x2: x2 }
+    end
+    `)
+
+	block := callFunc(t, script, "block_result_identity", nil).Hash()
+	if !block["last_same"].Bool() {
+		t.Fatal("last block result must be the accumulator object itself")
+	}
+	compareArrays(t, block["last"], []Value{NewInt(0), NewInt(1), NewInt(2), NewInt(99)})
+	compareArrays(t, block["first"], []Value{NewInt(0), NewInt(1)})
+
+	// Ruby: r is the object x held when build returned; the closure's later
+	// x = x + [3] rebinds x to a fresh copy, so x2[0] = 9 must not reach r.
+	closure := callFunc(t, script, "closure_escape", nil).Hash()
+	compareArrays(t, closure["r"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, closure["x2"], []Value{NewInt(9), NewInt(2), NewInt(3)})
+}
+
+// TestArrayConcatAccumulatorSurvivesInterleavedMutators pins the fast path's
+// staleness guard: an in-place mutator that replaces the binding's element
+// backing between two concat-reassignments must not resurrect the stale
+// buffer contents.
+func TestArrayConcatAccumulatorSurvivesInterleavedMutators(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def pop_between_concats()
+      a = [1]
+      a = a + [2]
+      a.pop
+      a = a + [7]
+      a
+    end
+
+    def shift_between_concats()
+      a = [1]
+      a = a + [2]
+      a = a + [3]
+      a.shift
+      a = a + [8]
+      a
+    end
+    `)
+
+	compareArrays(t, callFunc(t, script, "pop_between_concats", nil),
+		[]Value{NewInt(1), NewInt(7)})
+	compareArrays(t, callFunc(t, script, "shift_between_concats", nil),
+		[]Value{NewInt(2), NewInt(3), NewInt(8)})
+}
+
+// TestArrayConcatHostIsolation re-pins the host boundary through the concat
+// fast path: growing a host-provided argument or global with x = x + [...]
+// and then mutating in place must never leak back into the host's value.
+func TestArrayConcatHostIsolation(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def concat_arg(values)
+      values = values + [10]
+      values << 11
+      values
+    end
+
+    def concat_global()
+      items = items + [10]
+      items << 11
+      items
+    end
+    `)
+
+	original := NewArray([]Value{NewInt(1), NewInt(2)})
+	got := callFunc(t, script, "concat_arg", []Value{original})
+	compareArrays(t, got, []Value{NewInt(1), NewInt(2), NewInt(10), NewInt(11)})
+	compareArrays(t, original, []Value{NewInt(1), NewInt(2)})
+
+	global := NewArray([]Value{NewInt(1)})
+	result, err := script.Call(context.Background(), "concat_global", nil, CallOptions{
+		Globals: map[string]Value{"items": global},
+	})
+	if err != nil {
+		t.Fatalf("concat_global: %v", err)
+	}
+	compareArrays(t, result, []Value{NewInt(1), NewInt(10), NewInt(11)})
+	compareArrays(t, global, []Value{NewInt(1)})
+}
+
 // TestArrayMutationDuringIteration pins the iteration convention for the
 // mutable-collection era: iteration helpers walk the elements captured when
 // iteration began. Structural changes (push/pop) made by the block take effect
