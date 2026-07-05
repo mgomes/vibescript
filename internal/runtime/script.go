@@ -39,6 +39,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		root.DefineStatic(n, NewEnum(enumDef))
 	}
 	rebinder := newCallFunctionRebinder(s, root, callClasses, callEnums)
+	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
 
@@ -139,6 +140,11 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 		root.DefineStatic(n, NewEnum(enumDef))
 	}
 	rebinder := newCallFunctionRebinder(s, root, callClasses, callEnums)
+	// Lazy task-global sources are excluded from the inbound scan and always
+	// materialize through the slow rebind walk; the fast-path verdict here
+	// covers only the task-cloned args and keywords, whose graphs are
+	// disjoint from those sources.
+	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
 

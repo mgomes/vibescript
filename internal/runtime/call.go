@@ -514,6 +514,11 @@ type callFunctionRebinder struct {
 	// on the source builtin pointer, so an escaped alias reachable through
 	// several inbound paths keeps builtin identity after rebinding.
 	seenDirectCallAliases map[*Builtin]Value
+	// inboundDataFast marks a call whose positional and keyword arguments were
+	// verified data-only and alias-free by scanInboundCallValues, so top-level
+	// inbound composites may deep-copy through the tight data copier instead
+	// of the full rebind walk. See rebindInboundValue.
+	inboundDataFast bool
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -857,13 +862,64 @@ func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
 	return clone
 }
 
+// rebindInboundValue rebinds one top-level inbound host value (a positional
+// or keyword argument). When the pre-scan proved the argument set data-only
+// and alias-free, composites skip the rebinder walk and deep-copy through the
+// tight data copier — the copy is still a full deep copy, so script-side
+// mutators never write into host memory. A value the slow path already
+// rebound (a capability adapter published the same composite during binding)
+// falls back to the rebinder so aliases keep deduplicating to one shared
+// clone.
+func (r *callFunctionRebinder) rebindInboundValue(val Value) Value {
+	if r.inboundDataFast && r.inboundValueUnseen(val) {
+		return copyInboundDataValue(val)
+	}
+	return r.rebindValue(val)
+}
+
+// inboundValueUnseen reports whether the slow rebind walk has not already
+// cloned this composite, in which case the tight copier may build a fresh
+// clone without breaking alias dedup.
+func (r *callFunctionRebinder) inboundValueUnseen(val Value) bool {
+	switch val.Kind() {
+	case KindArray:
+		_, seen := r.seenArrays[arrayIdentity(val)]
+		return !seen
+	case KindHash:
+		return r.inboundHashUnseen(val)
+	case KindObject:
+		_, seen := r.seenMaps[reflect.ValueOf(val.Hash()).Pointer()]
+		return !seen
+	default:
+		return false
+	}
+}
+
+// inboundHashUnseen reports whether the slow path has rebound neither this
+// hash wrapper nor its entry map. The scan admitted only legacy-keyed hashes,
+// so the entry map is always materialized; fail safe to the slow path if not.
+func (r *callFunctionRebinder) inboundHashUnseen(val Value) bool {
+	if _, seen := r.seenHashes[hashIdentity(val)]; seen {
+		return false
+	}
+	entries, ok := hashStringMapIfMaterialized(val)
+	if !ok {
+		return false
+	}
+	if entries == nil {
+		return true
+	}
+	_, shared := r.seenHashEntries[reflect.ValueOf(entries).Pointer()]
+	return !shared
+}
+
 func (r *callFunctionRebinder) rebindValues(values []Value) []Value {
 	if len(values) == 0 {
 		return values
 	}
 	out := make([]Value, len(values))
 	for i, val := range values {
-		out[i] = r.rebindValue(val)
+		out[i] = r.rebindInboundValue(val)
 	}
 	return out
 }
@@ -874,7 +930,7 @@ func (r *callFunctionRebinder) rebindKeywords(kwargs map[string]Value) map[strin
 	}
 	out := make(map[string]Value, len(kwargs))
 	for name, val := range kwargs {
-		out[name] = r.rebindValue(val)
+		out[name] = r.rebindInboundValue(val)
 	}
 	return out
 }

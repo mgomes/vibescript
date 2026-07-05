@@ -715,6 +715,14 @@ func (globals *taskLazyGlobals) materialize(name string) Value {
 	source := globals.values[name]
 	var cloned Value
 	if globals.rebinder != nil {
+		// Always take the full rebind walk here, never the inbound data-only
+		// fast path. Task-global sources can be the parent call's materialized
+		// clones, which parent script code may mutate concurrently with a
+		// spawned task (tasks.spawn does not block the parent), so a
+		// call-entry data-only verdict for these sources could go stale before
+		// this materialization runs. The rebinder walk classifies every value
+		// as it visits it, so a block or capability inserted after entry is
+		// still re-rooted and revoked correctly.
 		cloned = globals.rebinder.rebindValue(source)
 	} else {
 		cloned = globals.cloner.clone(source)
