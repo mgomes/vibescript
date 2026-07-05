@@ -28,6 +28,15 @@ type fileStamp struct {
 
 type watchSnapshot map[string]fileStamp
 
+// watchTargetState owns the current snapshot plus a scratch map so each
+// rescan refills the previous scan's storage instead of allocating a
+// fresh map for large module roots. The watch loop is single-goroutine
+// (one select loop per mode), so the state needs no locking.
+type watchTargetState struct {
+	snapshot watchSnapshot
+	scratch  watchSnapshot
+}
+
 // watchScript runs the script once, then re-runs it whenever the script
 // file or any .vibe file in its module directories changes. Run failures
 // are reported to status without ending the watch; the loop exits only
@@ -36,26 +45,26 @@ func watchScript(ctx context.Context, inv runInvocation, interval time.Duration,
 	if interval <= 0 {
 		interval = defaultWatchInterval
 	}
-	snapshot := snapshotWatchTargets(inv)
-	fmt.Fprintf(status, "watching %d file(s); press ctrl-c to stop\n", len(snapshot))
+	state := &watchTargetState{snapshot: snapshotWatchTargets(inv)}
+	fmt.Fprintf(status, "watching %d file(s); press ctrl-c to stop\n", len(state.snapshot))
 	runWatched(ctx, inv, out, status)
 
 	notifier, err := newWatchNotifier(inv)
 	if err != nil {
 		fmt.Fprintf(status, "filesystem notifications unavailable: %v; falling back to polling\n", err)
-		return watchScriptPolling(ctx, inv, interval, snapshot, out, status)
+		return watchScriptPolling(ctx, inv, interval, state, out, status)
 	}
-	snapshot, fallback, err := watchScriptNotifications(ctx, inv, interval, snapshot, notifier, out, status)
+	fallback, err := watchScriptNotifications(ctx, inv, interval, state, notifier, out, status)
 	if err != nil {
 		return err
 	}
 	if fallback {
-		return watchScriptPolling(ctx, inv, interval, snapshot, out, status)
+		return watchScriptPolling(ctx, inv, interval, state, out, status)
 	}
 	return nil
 }
 
-func watchScriptNotifications(ctx context.Context, inv runInvocation, interval time.Duration, snapshot watchSnapshot, notifier *watchNotifier, out, status io.Writer) (watchSnapshot, bool, error) {
+func watchScriptNotifications(ctx context.Context, inv runInvocation, interval time.Duration, state *watchTargetState, notifier *watchNotifier, out, status io.Writer) (bool, error) {
 	defer func() {
 		_ = notifier.Close()
 	}()
@@ -70,11 +79,11 @@ func watchScriptNotifications(ctx context.Context, inv runInvocation, interval t
 		select {
 		case <-ctx.Done():
 			fmt.Fprintln(status, "watch stopped")
-			return snapshot, false, nil
+			return false, nil
 		case event, ok := <-notifier.Events():
 			if !ok {
 				fmt.Fprintln(status, "filesystem notifications stopped; falling back to polling")
-				return snapshot, true, nil
+				return true, nil
 			}
 			if notifier.handleEvent(event) {
 				pendingChange = true
@@ -89,14 +98,14 @@ func watchScriptNotifications(ctx context.Context, inv runInvocation, interval t
 				continue
 			}
 			pendingChange = false
-			rerunIfWatchTargetsChanged(ctx, inv, &snapshot, out, status)
+			rerunIfWatchTargetsChanged(ctx, inv, state, out, status)
 		case <-rescanTicker.C:
-			rerunIfWatchTargetsChanged(ctx, inv, &snapshot, out, status)
+			rerunIfWatchTargetsChanged(ctx, inv, state, out, status)
 		}
 	}
 }
 
-func watchScriptPolling(ctx context.Context, inv runInvocation, interval time.Duration, snapshot watchSnapshot, out, status io.Writer) error {
+func watchScriptPolling(ctx context.Context, inv runInvocation, interval time.Duration, state *watchTargetState, out, status io.Writer) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	rescanTicker := time.NewTicker(watchFullScanInterval(interval))
@@ -108,12 +117,12 @@ func watchScriptPolling(ctx context.Context, inv runInvocation, interval time.Du
 			fmt.Fprintln(status, "watch stopped")
 			return nil
 		case <-ticker.C:
-			if !watchKnownSnapshotChanged(snapshot) {
+			if !watchKnownSnapshotChanged(state.snapshot) {
 				continue
 			}
-			rerunIfWatchTargetsChanged(ctx, inv, &snapshot, out, status)
+			rerunIfWatchTargetsChanged(ctx, inv, state, out, status)
 		case <-rescanTicker.C:
-			rerunIfWatchTargetsChanged(ctx, inv, &snapshot, out, status)
+			rerunIfWatchTargetsChanged(ctx, inv, state, out, status)
 		}
 	}
 }
@@ -124,12 +133,12 @@ func runWatched(ctx context.Context, inv runInvocation, out, status io.Writer) {
 	}
 }
 
-func rerunIfWatchTargetsChanged(ctx context.Context, inv runInvocation, snapshot *watchSnapshot, out, status io.Writer) {
-	current := snapshotWatchTargets(inv)
-	if maps.Equal(*snapshot, current) {
+func rerunIfWatchTargetsChanged(ctx context.Context, inv runInvocation, state *watchTargetState, out, status io.Writer) {
+	state.scratch = snapshotWatchTargetsInto(state.scratch, inv)
+	if maps.Equal(state.snapshot, state.scratch) {
 		return
 	}
-	*snapshot = current
+	state.snapshot, state.scratch = state.scratch, state.snapshot
 	fmt.Fprintf(status, "change detected, re-running %s\n", filepath.Base(inv.scriptPath))
 	runWatched(ctx, inv, out, status)
 }
@@ -137,32 +146,36 @@ func rerunIfWatchTargetsChanged(ctx context.Context, inv runInvocation, snapshot
 // snapshotWatchTargets stamps the script file plus every .vibe file under
 // the module directories. The walk is recursive because require requests
 // resolve nested paths (require "sub/helper") below each module root.
-// Files that fail to stat (mid-save renames, deletions) get a zero stamp,
-// so their later reappearance registers as a change and triggers a re-run.
+// Files that fail to stat (mid-save renames, dangling symlinks) get a
+// zero stamp, so their later reappearance registers as a change and
+// triggers a re-run.
 func snapshotWatchTargets(inv runInvocation) watchSnapshot {
-	snapshot := watchSnapshot{}
-	stamp := func(path string) {
-		snapshot[path] = stampWatchTarget(path)
-	}
-	stampInfo := func(path string, info os.FileInfo) {
-		if info.Mode()&os.ModeSymlink != 0 {
-			stamp(path)
-			return
-		}
-		snapshot[path] = fileStamp{modTime: info.ModTime(), size: info.Size()}
-	}
+	return snapshotWatchTargetsInto(nil, inv)
+}
 
-	stamp(resolveWatchPath(inv.scriptPath))
+// snapshotWatchTargetsInto refills dst (allocating it when nil) so
+// steady-state rescans reuse the previous scan's map storage. WalkDir
+// distinguishes files from directories by dirent type, so only .vibe
+// entries pay a stat; stampWatchTarget follows symlinks the way the
+// symlink branch of the old FileInfo walk did.
+func snapshotWatchTargetsInto(dst watchSnapshot, inv runInvocation) watchSnapshot {
+	if dst == nil {
+		dst = watchSnapshot{}
+	} else {
+		clear(dst)
+	}
+	scriptPath := resolveWatchPath(inv.scriptPath)
+	dst[scriptPath] = stampWatchTarget(scriptPath)
 	for _, dir := range inv.moduleDirs {
-		_ = filepath.Walk(resolveWatchPath(dir), func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil || info.IsDir() || filepath.Ext(info.Name()) != ".vibe" {
+		_ = filepath.WalkDir(resolveWatchPath(dir), func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry == nil || entry.IsDir() || filepath.Ext(entry.Name()) != ".vibe" {
 				return nil
 			}
-			stampInfo(path, info)
+			dst[path] = stampWatchTarget(path)
 			return nil
 		})
 	}
-	return snapshot
+	return dst
 }
 
 func watchKnownSnapshotChanged(snapshot watchSnapshot) bool {
@@ -172,14 +185,6 @@ func watchKnownSnapshotChanged(snapshot watchSnapshot) bool {
 		}
 	}
 	return false
-}
-
-func stampWatchTarget(path string) fileStamp {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fileStamp{}
-	}
-	return fileStamp{modTime: info.ModTime(), size: info.Size()}
 }
 
 func watchFullScanInterval(interval time.Duration) time.Duration {

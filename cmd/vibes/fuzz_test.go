@@ -217,12 +217,11 @@ func FuzzLSPPayloadAndMessageHandling(f *testing.F) {
 		}
 
 		for _, diag := range diagnosticsForSource(server.engine, source) {
-			if diag["severity"] != 1 {
-				t.Fatalf("diagnosticsForSource(%q) severity = %#v, want 1", source, diag["severity"])
+			if diag.Severity != 1 {
+				t.Fatalf("diagnosticsForSource(%q) severity = %#v, want 1", source, diag.Severity)
 			}
-			message, ok := diag["message"].(string)
-			if !ok || message == "" {
-				t.Fatalf("diagnosticsForSource(%q) message = %#v, want non-empty string", source, diag["message"])
+			if diag.Message == "" {
+				t.Fatalf("diagnosticsForSource(%q) message = %#v, want non-empty string", source, diag.Message)
 			}
 		}
 

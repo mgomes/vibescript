@@ -294,6 +294,90 @@ func TestSnapshotWatchTargetsStampsVibeFilesRecursively(t *testing.T) {
 	}
 }
 
+func TestStampWatchTargetMatchesOsStat(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.vibe")
+	writeScriptFile(t, path, "def run()\n  nil\nend\n")
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	// The platform Stat_t shims must produce stamps identical to the
+	// os.Stat-derived form so snapshots stay comparable across builds.
+	want := fileStamp{modTime: info.ModTime(), size: info.Size()}
+	if got := stampWatchTarget(path); got != want {
+		t.Fatalf("stampWatchTarget = %#v, want os.Stat-derived %#v", got, want)
+	}
+	if got := stampWatchTarget(filepath.Join(dir, "missing.vibe")); got != (fileStamp{}) {
+		t.Fatalf("stampWatchTarget(missing) = %#v, want zero stamp", got)
+	}
+}
+
+func TestSnapshotWatchTargetsIntoReusesStorage(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "main.vibe")
+	writeScriptFile(t, scriptPath, "def run()\n  nil\nend\n")
+	stalePath := filepath.Join(dir, "stale.vibe")
+	writeScriptFile(t, stalePath, "def stale()\n  1\nend\n")
+
+	inv := runInvocation{scriptPath: scriptPath, moduleDirs: []string{dir}}
+	snapshot := snapshotWatchTargets(inv)
+	resolvedStale := filepath.Join(resolveWatchPath(dir), "stale.vibe")
+	if _, ok := snapshot[resolvedStale]; !ok {
+		t.Fatalf("snapshot missing %s: %v", resolvedStale, snapshot)
+	}
+
+	if err := os.Remove(stalePath); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	writeScriptFile(t, filepath.Join(dir, "added.vibe"), "def added()\n  2\nend\n")
+
+	refilled := snapshotWatchTargetsInto(snapshot, inv)
+	if _, ok := refilled[resolvedStale]; ok {
+		t.Fatal("refilled snapshot kept the deleted file's stale entry")
+	}
+	resolvedAdded := filepath.Join(resolveWatchPath(dir), "added.vibe")
+	if _, ok := refilled[resolvedAdded]; !ok {
+		t.Fatalf("refilled snapshot missing added file: %v", refilled)
+	}
+	if _, ok := snapshot[resolvedAdded]; !ok {
+		t.Fatal("refill allocated a fresh map instead of reusing the passed-in storage")
+	}
+}
+
+func TestSnapshotWatchTargetsStampsDanglingSymlink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "main.vibe")
+	writeScriptFile(t, scriptPath, "def run()\n  nil\nend\n")
+	targetPath := filepath.Join(dir, "missing-target.vibe")
+	linkPath := filepath.Join(dir, "ghost.vibe")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	inv := runInvocation{scriptPath: scriptPath, moduleDirs: []string{dir}}
+	snapshot := snapshotWatchTargets(inv)
+	resolvedLink := filepath.Join(resolveWatchPath(dir), "ghost.vibe")
+	stamp, ok := snapshot[resolvedLink]
+	if !ok {
+		t.Fatalf("snapshot missing dangling symlink %s: %v", resolvedLink, snapshot)
+	}
+	if stamp != (fileStamp{}) {
+		t.Fatalf("dangling symlink stamp = %#v, want zero stamp", stamp)
+	}
+
+	// The target appearing must register as a known-file change so the
+	// watch loop re-runs without waiting for a full rescan.
+	writeScriptFile(t, targetPath, "def helper()\n  1\nend\n")
+	if !watchKnownSnapshotChanged(snapshot) {
+		t.Fatal("dangling symlink target appearing did not report a change")
+	}
+}
+
 func TestWatchKnownSnapshotChangedDetectsEditsAndDeletes(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

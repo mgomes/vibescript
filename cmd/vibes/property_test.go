@@ -448,8 +448,8 @@ func validateRapidLSPMessages(rt *rapid.T, step int, action rapidLSPAction, inco
 		if messages[0].Method != "textDocument/publishDiagnostics" {
 			rt.Fatalf("lsp step %d %s message method = %q, want textDocument/publishDiagnostics", step, action.kind, messages[0].Method)
 		}
-		params, ok := messages[0].Params.(map[string]any)
-		if !ok || params["uri"] != action.uri {
+		params, ok := messages[0].Params.(lspPublishDiagnosticsParams)
+		if !ok || params.URI != action.uri {
 			rt.Fatalf("lsp step %d %s diagnostic params = %#v, want uri %q", step, action.kind, messages[0].Params, action.uri)
 		}
 	case "initialized", "exit":
