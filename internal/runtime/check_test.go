@@ -3917,6 +3917,68 @@ end
 `))
 }
 
+func TestCheckWarningsResolveModuleAndDirectiveNames(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+module Named
+  def display_name
+    "named"
+  end
+end
+
+module Billing
+  LIMIT = 100
+
+  module Codes
+    PREFIX = "B"
+  end
+
+  def self.code
+    "B-1"
+  end
+end
+
+class Invoice
+  include Named
+  extend Billing
+
+  protected def guard
+    1
+  end
+
+  def total
+    Billing::LIMIT
+  end
+
+  private :guard
+end
+
+def run
+  handle = Billing
+  [handle.code(), Billing::LIMIT, Billing::Codes::PREFIX, Invoice.new.total]
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+}
+
+func TestCheckWarningsStillFlagUndefinedNamesAlongsideModules(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+module Billing
+  LIMIT = 100
+end
+
+def run
+  Billing::LIMIT + missing_name
+end
+`)
+
+	requireCheckWarningContains(t, script, "undefined variable missing_name")
+}
+
 func requireNoCheckWarnings(t *testing.T, script *Script) {
 	t.Helper()
 
