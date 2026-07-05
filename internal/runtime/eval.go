@@ -94,7 +94,18 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *CaseExpr:
 		return exec.evalCaseExpr(e, env)
 	case *MemberExpr:
-		obj, err := exec.evalExpressionWithAuto(e.Object, env, memberReceiverAutoInvokes(e.Object, e.Property, env))
+		var obj Value
+		var err error
+		if _, objIsMember := e.Object.(*MemberExpr); e.Property == "call" && objIsMember {
+			// Resolve a member-of-member receiver exactly like the
+			// parenthesized call form so c.cb.call (no parens) sees the stored
+			// callable or invoked getter value, not the raw getter builtin.
+			// Non-member objects keep the plain no-auto-invoke path so a bare
+			// stored callable (cb.call) is not invoked early.
+			obj, err = exec.evalMemberCallReceiver(e, env, memberCallReceiverAutoInvokes)
+		} else {
+			obj, err = exec.evalExpressionWithAuto(e.Object, env, memberReceiverAutoInvokes(e.Object, e.Property, env))
+		}
 		if err != nil {
 			return NewNil(), err
 		}
@@ -3198,6 +3209,56 @@ func memberAssignmentReceiverValue(expr Expression, env *Env) (Value, bool) {
 		default:
 			return NewNil(), false
 		}
+	case *IndexExpr:
+		// A literal-indexed element of an already-bound container resolves
+		// without side effects, so arr[0].cb = five infers the same callable
+		// setter expectation as c.cb = five. Dynamic indices stay uninferred.
+		return literalIndexReceiverValue(e, env)
+	default:
+		return NewNil(), false
+	}
+}
+
+func literalIndexReceiverValue(e *IndexExpr, env *Env) (Value, bool) {
+	if len(e.Indices) != 1 {
+		return NewNil(), false
+	}
+	base, ok := memberAssignmentReceiverValue(e.Object, env)
+	if !ok {
+		return NewNil(), false
+	}
+	switch idx := e.Indices[0].(type) {
+	case *IntegerLiteral:
+		if base.Kind() != KindArray {
+			return NewNil(), false
+		}
+		arr := base.Array()
+		i := int(idx.Value)
+		if i < 0 {
+			i += len(arr)
+		}
+		if i < 0 || i >= len(arr) {
+			return NewNil(), false
+		}
+		return arr[i], true
+	case *StringLiteral:
+		if base.Kind() != KindHash && base.Kind() != KindObject {
+			return NewNil(), false
+		}
+		val, ok, err := hashGet(base, NewString(idx.Value))
+		if err != nil || !ok {
+			return NewNil(), false
+		}
+		return val, true
+	case *SymbolLiteral:
+		if base.Kind() != KindHash && base.Kind() != KindObject {
+			return NewNil(), false
+		}
+		val, ok, err := hashGet(base, NewSymbol(idx.Name))
+		if err != nil || !ok {
+			return NewNil(), false
+		}
+		return val, true
 	default:
 		return NewNil(), false
 	}

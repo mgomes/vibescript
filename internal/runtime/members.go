@@ -193,6 +193,8 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		return exec.functionMember(obj, property, pos)
 	case KindBlock:
 		return exec.blockMember(obj, property, pos)
+	case KindBuiltin:
+		return exec.builtinCallableMember(obj, property, pos)
 	case KindSymbol:
 		return exec.symbolMember(obj, property, pos)
 	case KindNil:
@@ -266,6 +268,24 @@ func (exec *Execution) blockMember(obj Value, property string, pos Position) (Va
 		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, blockMemberNames))
 	}
 	return newBlockCallAlias(obj, pos), nil
+}
+
+// builtinCallableMember resolves member access on a raw builtin value — a
+// bound method reference captured under a callable type contract. Only `call`
+// is supported, mirroring Ruby's Method#call and the function/block aliases,
+// so f.call and f.call(...) route through the same invocation as f(...).
+func (exec *Execution) builtinCallableMember(obj Value, property string, pos Position) (Value, error) {
+	if property != "call" {
+		return NewNil(), exec.errorAt(pos, "unsupported member access on builtin")
+	}
+	caller := NewCapturingBuiltin("method.call", func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
+	}, obj)
+	callerBuiltin := valueBuiltin(caller)
+	callerBuiltin.AutoInvoke = true
+	callerBuiltin.DirectCallAlias = true
+	callerBuiltin.DirectCallAliasPos = pos
+	return caller, nil
 }
 
 func newBlockCallAlias(obj Value, pos Position) Value {

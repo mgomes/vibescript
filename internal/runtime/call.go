@@ -1281,11 +1281,20 @@ func (exec *Execution) evalGeneratedGetterArgument(arg Expression, env *Env) (Va
 	if err != nil {
 		return NewNil(), true, err
 	}
-	if generatedAccessorKind(member) != functionAccessorGetter {
-		return member, true, nil
+	if generatedAccessorKind(member) == functionAccessorGetter {
+		val, err := exec.autoInvokeIfNeeded(memberExpr, member, obj)
+		return val, true, err
 	}
-	val, err := exec.autoInvokeIfNeeded(memberExpr, member, obj)
-	return val, true, err
+	if builtin := valueBuiltin(member); builtin != nil && builtin.OptionsHashTarget == nil {
+		// A universal or type-dispatch builtin (list.size, s.upcase) is not a
+		// bindable script callable: evaluate it like a normal member argument
+		// so its value reaches the callee, not the raw builtin, which would
+		// later run against a nil receiver. Bound script methods carry their
+		// target in OptionsHashTarget and stay referencable.
+		val, err := exec.autoInvokeIfNeeded(memberExpr, member, obj)
+		return val, true, err
+	}
+	return member, true, nil
 }
 
 func (exec *Execution) evalCallableMemberArgumentReceiver(memberExpr *MemberExpr, env *Env) (Value, error) {
