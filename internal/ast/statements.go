@@ -228,14 +228,20 @@ type ClassMemberDecl struct {
 	Visibility *VisibilityDecl
 }
 
-// ClassStmt represents a class definition.
+// ClassStmt represents a class or module definition. Module declarations
+// (`module Name ... end`) share the class statement shape: IsModule is set,
+// instance-style methods land in Methods (mixed into classes via include),
+// `def self.` module functions land in ClassMethods, and nested module
+// declarations are collected in Modules.
 type ClassStmt struct {
 	Name         string
+	IsModule     bool
 	Members      []ClassMemberDecl
 	Methods      []*FunctionStmt
 	ClassMethods []*FunctionStmt
 	Aliases      []*AliasStmt
 	Properties   []PropertyDecl
+	Modules      []*ClassStmt
 	Body         []Statement
 	Position     Position
 }

@@ -301,7 +301,7 @@ func newBlockCallAlias(obj Value, pos Position) Value {
 
 func (exec *Execution) classMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	cl := valueClass(obj)
-	if property == "new" {
+	if property == "new" && !cl.IsModule {
 		constructor := NewAutoBuiltin(cl.Name+".new", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			inst := &Instance{Class: cl, Ivars: make(map[string]Value)}
 			instVal := NewInstance(inst)
@@ -341,8 +341,13 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 			return val, nil
 		}
 	}
+	if property == "new" && cl.IsModule {
+		return NewNil(), exec.errorAt(pos, "module %s cannot be instantiated", cl.Name)
+	}
 	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1+len(universalMemberNames))
-	candidates = append(candidates, "new")
+	if !cl.IsModule {
+		candidates = append(candidates, "new")
+	}
 	candidates = appendAccessibleMethodNames(candidates, cl.ClassMethods, callerIsReceiver)
 	candidates = slices.AppendSeq(candidates, maps.Keys(cl.ClassVars))
 	candidates = append(candidates, universalMemberNames...)

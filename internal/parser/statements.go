@@ -61,6 +61,8 @@ func (p *parser) parseStatementOperand() ast.Statement {
 			} else {
 				stmt = p.parseUnsupportedAliasStatement()
 			}
+		} else if p.curToken.Literal == "module" && p.peekStartsModuleDeclaration() {
+			stmt = p.parseModuleDeclarationStatement()
 		} else {
 			stmt = p.parseExpressionOrAssignStatement()
 		}
@@ -842,11 +844,54 @@ func (p *parser) parseClassStatement() ast.Statement {
 	if !p.expectPeek(ast.TokenIdent) {
 		return nil
 	}
+	return p.parseClassLikeBody(pos, false)
+}
+
+// parseModuleStatement parses a `module Name ... end` declaration with
+// curToken on the contextual `module` keyword. Module names are constants, so
+// they must start with an uppercase letter.
+func (p *parser) parseModuleStatement() ast.Statement {
+	pos := p.curToken.Pos
+	if !p.expectPeek(ast.TokenIdent) {
+		return nil
+	}
+	if !startsUppercaseIdentifier(p.curToken.Literal) {
+		p.addParseError(p.curToken.Pos, "module name must start with an uppercase letter")
+		return nil
+	}
+	return p.parseClassLikeBody(pos, true)
+}
+
+// peekStartsModuleDeclaration reports whether a `module` identifier at
+// curToken is followed by a declaration name on the same line, i.e. the token
+// sequence reads as a module declaration rather than an unrelated expression
+// (`module = require(...)`, `module.helper`).
+func (p *parser) peekStartsModuleDeclaration() bool {
+	return p.peekToken.Type == ast.TokenIdent && p.peekToken.Pos.Line == p.curToken.Pos.Line
+}
+
+// parseModuleDeclarationStatement handles a module declaration recognized in
+// general statement position. Declarations are only legal at the top level
+// (module bodies parse their nested declarations directly), so class bodies,
+// function bodies, and other nested contexts get a targeted diagnostic.
+func (p *parser) parseModuleDeclarationStatement() ast.Statement {
+	if p.insideClass || p.statementNesting > 0 {
+		p.addParseError(p.curToken.Pos, "module declarations are only supported at the top level and nested in module bodies")
+		return nil
+	}
+	return p.parseModuleStatement()
+}
+
+// parseClassLikeBody parses the shared class/module body with curToken on the
+// declaration name. Module bodies additionally accept nested module
+// declarations and reject class declarations.
+func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Statement {
 	name := p.curToken.Literal
 	p.nextToken()
 
 	stmt := &ast.ClassStmt{
 		Name:     name,
+		IsModule: isModule,
 		Position: pos,
 	}
 
@@ -865,6 +910,15 @@ func (p *parser) parseClassStatement() ast.Statement {
 			break
 		}
 		switch p.curToken.Type {
+		case ast.TokenClass:
+			if isModule {
+				p.addParseError(p.curToken.Pos, "class declarations are not supported in module bodies")
+				return nil
+			}
+			s := p.parseStatement()
+			if s != nil {
+				stmt.Body = append(stmt.Body, s)
+			}
 		case ast.TokenDef:
 			fnStmt := p.parseFunctionStatement()
 			if fnStmt == nil {
@@ -908,6 +962,22 @@ func (p *parser) parseClassStatement() ast.Statement {
 						continue
 					}
 				} else {
+					s := p.parseStatement()
+					if s != nil {
+						stmt.Body = append(stmt.Body, s)
+					}
+				}
+			case "module":
+				if isModule && p.peekStartsModuleDeclaration() {
+					nested := p.parseModuleStatement()
+					if nested == nil {
+						return nil
+					}
+					stmt.Modules = append(stmt.Modules, nested.(*ast.ClassStmt))
+				} else {
+					// Class bodies (and non-declaration uses) route through the
+					// general statement path, which reports the targeted
+					// module-placement diagnostic for declaration-shaped input.
 					s := p.parseStatement()
 					if s != nil {
 						stmt.Body = append(stmt.Body, s)

@@ -324,6 +324,65 @@ One documented divergence from Ruby: a visibility section also covers
 `def self.` class methods declared after it, whereas Ruby scopes sections to
 instance methods only.
 
+## Module Declarations
+
+`module Name ... end` declares a namespace in source, alongside the file-based
+modules that `require` loads. A module groups module functions (`def self.`)
+and constants:
+
+```vibe
+module Billing
+  LIMIT = 5
+
+  def self.code
+    "ok"
+  end
+
+  def self.limit
+    LIMIT
+  end
+end
+
+Billing.code       # "ok"
+Billing.limit      # 5
+Billing::LIMIT     # 5
+```
+
+Constants are visible inside the module's methods by bare name and outside
+via `Module::CONST` (or `Module.CONST`). Like class bodies, module bodies run
+once per script invocation and module state is isolated between invocations —
+one call's constant mutations never leak into the next.
+
+Modules nest, and nested modules resolve through the scope operator:
+
+```vibe
+module Outer
+  module Inner
+    BASE = 2
+
+    def self.double
+      BASE * 2
+    end
+  end
+end
+
+Outer::Inner.double    # 4
+Outer::Inner::BASE     # 2
+```
+
+Rules and limits:
+
+- `module` is contextual, not a reserved keyword: it starts a declaration only
+  when followed by a name on the same line. Module names must start with an
+  uppercase letter.
+- Declarations are allowed at the top level and nested inside module bodies.
+  A module declaration inside a class or function body is a parse error, as is
+  a class declaration inside a module body.
+- Modules cannot be instantiated: `Billing.new` raises
+  `module Billing cannot be instantiated`.
+- A module may also declare instance-style methods (plain `def`); they are not
+  callable on the module itself.
+
 ## Introspection
 
 Instances respond to the Ruby-style introspection predicates `is_a?`,

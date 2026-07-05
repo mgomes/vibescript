@@ -767,12 +767,14 @@ func cloneClassForHostWithState(classDef *ClassDef, state hostValueCloneState) *
 		return clone
 	}
 	classClone := &ClassDef{
-		Name:         classDef.Name,
-		Methods:      make(map[string]*ScriptFunction, len(classDef.Methods)),
-		ClassMethods: make(map[string]*ScriptFunction, len(classDef.ClassMethods)),
-		ClassVars:    make(map[string]Value, len(classDef.ClassVars)),
-		Body:         cloneStatements(classDef.Body),
-		owner:        classDef.owner,
+		Name:          classDef.Name,
+		IsModule:      classDef.IsModule,
+		Methods:       make(map[string]*ScriptFunction, len(classDef.Methods)),
+		ClassMethods:  make(map[string]*ScriptFunction, len(classDef.ClassMethods)),
+		ClassVars:     make(map[string]Value, len(classDef.ClassVars)),
+		NestedModules: classDef.NestedModules,
+		Body:          cloneStatements(classDef.Body),
+		owner:         classDef.owner,
 	}
 	state.classes[classDef] = classClone
 	for name, val := range classDef.ClassVars {

@@ -261,8 +261,28 @@ end
 
 Inheritance is not supported.
 
+Module declarations group module functions and constants under a namespace:
+
+```vibe
+module Billing
+  LIMIT = 5
+
+  def self.code
+    "ok"
+  end
+end
+
+Billing.code       # "ok"
+Billing::LIMIT     # 5
+```
+
+`module` is contextual, not a reserved keyword: it starts a declaration only
+when followed by a constant name. Declarations are allowed at the top level
+and nested inside other module bodies (`Outer::Inner`); modules cannot be
+instantiated.
+
 See `docs/classes.md` for class methods, `@`/`@@` variables, accessors, and
-privacy semantics.
+visibility semantics.
 
 ## Enums
 
@@ -539,7 +559,7 @@ See `docs/errors.md` for parser/runtime error formats and stack traces.
 
 ## Modules
 
-Load shared code with `require`:
+Load shared code from other files with `require`:
 
 ```vibe
 helpers = require("public/helpers", as: "helpers")
@@ -547,6 +567,8 @@ helpers.normalize(input)
 ```
 
 Module resolution is governed by host `Config.ModulePaths` and policy lists.
+File-based modules are distinct from in-source `module Name ... end`
+declarations (see the Classes section and `docs/classes.md`).
 
 ## Typing
 

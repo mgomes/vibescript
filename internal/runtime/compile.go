@@ -144,21 +144,11 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 			}
 			functions[s.Name] = compileFunctionDef(s)
 		case *ClassStmt:
-			if _, exists := classes[s.Name]; exists {
-				return nil, fmt.Errorf("duplicate class %s", s.Name)
-			}
-			if _, exists := functions[s.Name]; exists {
-				return nil, fmt.Errorf("duplicate top-level name %s", s.Name)
-			}
-			if _, exists := enums[s.Name]; exists {
-				return nil, fmt.Errorf("duplicate top-level name %s", s.Name)
-			}
-			classDef, err := compileClassDef(s)
+			var err error
+			classOrder, err = registerClassStmt(s, "", functions, classes, enums, classOrder)
 			if err != nil {
 				return nil, err
 			}
-			classes[s.Name] = classDef
-			classOrder = append(classOrder, s.Name)
 		case *EnumStmt:
 			if _, exists := enums[s.Name]; exists {
 				return nil, fmt.Errorf("duplicate enum %s", s.Name)
@@ -217,9 +207,53 @@ func countTopLevelDeclarations(statements []ast.Statement) (functions, classes, 
 	return functions, classes, enums
 }
 
+// registerClassStmt compiles a class or module declaration into the classes
+// map. Nested module declarations register first, under their qualified name
+// (Outer::Inner), so the enclosing body can reference them; the enclosing
+// definition records their short names for per-call constant linking. The
+// updated class order (nested definitions before their parent, so nested
+// bodies initialize first) is returned.
+func registerClassStmt(stmt *ClassStmt, qualifier string, functions map[string]*ScriptFunction, classes map[string]*ClassDef, enums map[string]*EnumDef, classOrder []string) ([]string, error) {
+	name := stmt.Name
+	if qualifier != "" {
+		name = qualifier + "::" + stmt.Name
+	}
+	kind := "class"
+	if stmt.IsModule {
+		kind = "module"
+	}
+	if _, exists := classes[name]; exists {
+		return nil, fmt.Errorf("duplicate %s %s", kind, name)
+	}
+	if _, exists := functions[name]; exists {
+		return nil, fmt.Errorf("duplicate top-level name %s", name)
+	}
+	if _, exists := enums[name]; exists {
+		return nil, fmt.Errorf("duplicate top-level name %s", name)
+	}
+	var err error
+	for _, nested := range stmt.Modules {
+		classOrder, err = registerClassStmt(nested, name, functions, classes, enums, classOrder)
+		if err != nil {
+			return nil, err
+		}
+	}
+	classDef, err := compileClassDef(stmt)
+	if err != nil {
+		return nil, err
+	}
+	classDef.Name = name
+	for _, nested := range stmt.Modules {
+		classDef.NestedModules = append(classDef.NestedModules, nested.Name)
+	}
+	classes[name] = classDef
+	return append(classOrder, name), nil
+}
+
 func compileClassDef(stmt *ClassStmt) (*ClassDef, error) {
 	classDef := &ClassDef{
 		Name:         stmt.Name,
+		IsModule:     stmt.IsModule,
 		Methods:      make(map[string]*ScriptFunction),
 		ClassMethods: make(map[string]*ScriptFunction),
 		ClassVars:    make(map[string]Value),

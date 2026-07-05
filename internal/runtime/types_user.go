@@ -1,14 +1,25 @@
 package runtime
 
-// ClassDef represents a user-defined class with its methods and class-level state.
+// ClassDef represents a user-defined class or module with its methods and
+// class-level state. Module declarations (`module Name ... end`) compile to a
+// ClassDef with IsModule set: Methods holds instance-style methods that
+// include copies into classes, ClassMethods holds `def self.` module
+// functions (`Billing.code`), and ClassVars holds module constants
+// (`Billing::LIMIT`). Modules cannot be instantiated.
 type ClassDef struct {
 	Name         string
+	IsModule     bool
 	Methods      map[string]*ScriptFunction
 	ClassMethods map[string]*ScriptFunction
 	ClassVars    map[string]Value
-	Body         []Statement
-	bodyRan      bool
-	owner        *Script
+	// NestedModules lists the short names of module declarations nested in
+	// this definition's body. The compiled definitions are registered under
+	// the qualified name (Name + "::" + short) and linked into ClassVars per
+	// call so Outer::Inner resolves like any other scoped constant.
+	NestedModules []string
+	Body          []Statement
+	bodyRan       bool
+	owner         *Script
 }
 
 // Instance represents a runtime instance of a ClassDef with its own instance variables.

@@ -258,7 +258,7 @@ func instanceRespondsTo(inst *Instance, method string, allowPrivate bool) bool {
 // non-callable class var: dispatch returns that class var, so the class does not
 // respond.
 func classRespondsTo(cl *ClassDef, method string, allowPrivate bool) bool {
-	if method == "new" {
+	if method == "new" && !cl.IsModule {
 		return true
 	}
 	if fn, ok := cl.ClassMethods[method]; ok {
