@@ -1908,6 +1908,27 @@ func BenchmarkLSPPublishDiagnosticsLargeDocument(b *testing.B) {
 	}
 }
 
+// BenchmarkLSPPublishDiagnosticsLargeDocumentCacheMiss alternates two sources
+// so every publish recompiles, keeping the compile-path cost measurable now
+// that identical-text republishes are served from the per-URI cache.
+func BenchmarkLSPPublishDiagnosticsLargeDocumentCacheMiss(b *testing.B) {
+	server := newCompletionTestServer()
+	uri := "file:///tmp/diagnostics-large-miss.vibe"
+	source, _ := largeLSPNavigationSource(2_000)
+	sources := [2]string{source, source + "\ndef cache_miss_extra()\n  1\nend\n"}
+
+	b.ReportAllocs()
+	for i := range b.N {
+		text := sources[i%2]
+		server.setDocument(uri, text)
+		message := server.publishDiagnostics(uri, text)
+		diagnostics := message.Params.(lspPublishDiagnosticsParams).Diagnostics
+		if len(diagnostics) != 0 {
+			b.Fatalf("publishDiagnostics diagnostics = %#v, want none", diagnostics)
+		}
+	}
+}
+
 func BenchmarkLSPCompletionLargeDocument(b *testing.B) {
 	server := newCompletionTestServer()
 	uri := "file:///tmp/completion-large.vibe"
@@ -1966,6 +1987,45 @@ func BenchmarkLSPDocumentSymbolLargeDocument(b *testing.B) {
 
 	b.ReportAllocs()
 	for range b.N {
+		messages := server.handleMessage(message)
+		if len(messages) != 1 {
+			b.Fatalf("documentSymbol responses = %d, want 1", len(messages))
+		}
+		symbols, ok := messages[0].Result.([]lspDocumentSymbol)
+		if !ok || len(symbols) != 2_001 {
+			b.Fatalf("documentSymbol result = %#v, want 2001 symbols", messages[0].Result)
+		}
+	}
+}
+
+// BenchmarkLSPDocumentSymbolLargeDocumentCacheMiss re-sets the document each
+// iteration so the outline cache never serves the request, keeping the
+// outline-render cost measurable.
+func BenchmarkLSPDocumentSymbolLargeDocumentCacheMiss(b *testing.B) {
+	server := newCompletionTestServer()
+	uri := "file:///tmp/symbols-large-miss.vibe"
+	source, _ := largeLSPNavigationSource(2_000)
+	server.setDocument(uri, source)
+	diagnostics := server.publishDiagnostics(uri, source).Params.(lspPublishDiagnosticsParams).Diagnostics
+	if len(diagnostics) != 0 {
+		b.Fatalf("large symbol source diagnostics = %#v, want none", diagnostics)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+	})
+	if err != nil {
+		b.Fatalf("marshal documentSymbol params: %v", err)
+	}
+	message := lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("104"),
+		Method:  "textDocument/documentSymbol",
+		Params:  payload,
+	}
+
+	b.ReportAllocs()
+	for range b.N {
+		server.setDocument(uri, source)
 		messages := server.handleMessage(message)
 		if len(messages) != 1 {
 			b.Fatalf("documentSymbol responses = %d, want 1", len(messages))
