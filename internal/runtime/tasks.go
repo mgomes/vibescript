@@ -195,8 +195,15 @@ func taskGlobalsFromRoot(root *Env, globals map[string]Value) map[string]Value {
 	out := make(map[string]Value, len(globals))
 	for name, original := range globals {
 		if val, ok := rootBindingValue(root, name); ok {
-			out[name] = val
-			continue
+			// A still-lazy host global has not been read (let alone written) by
+			// the parent, so the pristine host value is its current state. Hand
+			// tasks the original source instead of forcing a materialization the
+			// parent never needed; the task-side lazy machinery still deep-copies
+			// it before any task code can touch it.
+			if _, lazy := lazyValue(val); !lazy {
+				out[name] = val
+				continue
+			}
 		}
 		out[name] = original
 	}

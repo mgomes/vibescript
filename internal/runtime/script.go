@@ -7,6 +7,14 @@ import (
 )
 
 func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallOptions) (Value, error) {
+	// Composite globals bind lazily, and the lazy binding stores the per-call
+	// rebinder, which would force it onto the heap for every call if the
+	// store were reachable from this function. Route those calls through the
+	// variant that already pays that cost, keeping the common no-globals /
+	// scalar-globals path allocation-free at this layer.
+	if globalsBindLazily(opts.Globals) {
+		return s.callWithLazyTaskGlobals(ctx, name, args, opts, nil)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -100,7 +108,10 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	return val, nil
 }
 
-// callWithLazyTaskGlobals keeps task-only lazy global binding off the public Call hot path.
+// callWithLazyTaskGlobals keeps lazy global binding — both task-inherited
+// lazy globals and lazily bound composite host globals — off the public Call
+// hot path, so the per-call rebinder stays stack-allocated for calls that
+// bind no deferred globals.
 func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args []Value, opts CallOptions, lazyTaskGlobals *taskLazyGlobals) (Value, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -152,7 +163,7 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 		return NewNil(), err
 	}
 
-	if err := bindGlobalsForCall(exec, root, rebinder, opts.Globals); err != nil {
+	if err := bindGlobalsForCallLazy(exec, root, rebinder, opts.Globals); err != nil {
 		return NewNil(), err
 	}
 	if lazyTaskGlobals != nil {

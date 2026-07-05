@@ -18,8 +18,8 @@ import (
 // the other, exactly as the rebinder's seen-maps guarantee.
 //
 // Instead of tracking per-value alias state during the copy, the scanner
-// verifies up front that the whole inbound argument set (positional and
-// keyword arguments) is data-only and alias-free: every
+// verifies up front that the whole inbound set (positional args, keyword args,
+// globals, and lazy task-global sources) is data-only and alias-free: every
 // composite wrapper — and every legacy hash entry map, which two distinct
 // wrappers may intentionally share — appears exactly once. Then the copier
 // needs no dedup state at all. Anything else (a runtime value anywhere, a
@@ -29,6 +29,13 @@ import (
 // dedup, and block re-rooting behave exactly as before.
 type inboundDataScanner struct {
 	seen map[uintptr]struct{}
+	// rebinder, when set, extends repeat detection to composites the slow
+	// rebind walk has already visited in this call. The deferred global scan
+	// (see rebindGlobalValue) uses it so a global source aliasing an argument
+	// — whether that argument was slow-path rebound or fast-copied with
+	// registration — counts as a repeat and sends every global through the
+	// slow path, which deduplicates against the registered clone.
+	rebinder *callFunctionRebinder
 }
 
 // admit records one composite identity and reports whether it was new. A zero
@@ -37,6 +44,20 @@ type inboundDataScanner struct {
 func (s *inboundDataScanner) admit(id uintptr) bool {
 	if id == 0 {
 		return true
+	}
+	if r := s.rebinder; r != nil {
+		if _, ok := r.seenArrays[id]; ok {
+			return false
+		}
+		if _, ok := r.seenHashes[id]; ok {
+			return false
+		}
+		if _, ok := r.seenHashEntries[id]; ok {
+			return false
+		}
+		if _, ok := r.seenMaps[id]; ok {
+			return false
+		}
 	}
 	if s.seen == nil {
 		s.seen = make(map[uintptr]struct{})
@@ -135,11 +156,11 @@ func (s *inboundDataScanner) scanTopLevel(val Value) bool {
 // aliasing between top-level values is detected as a repeat and disables the
 // fast path, preserving the rebinder's shared-clone semantics.
 //
-// CallOptions.Globals are deliberately NOT part of this scan: they bind
-// through the slow rebind walk before the arguments rebind, so a global
-// aliasing an argument is already registered in the rebinder's seen-maps by
-// the time the argument's fast-path check consults them. Lazy task-global
-// sources always materialize through the slow rebind walk (see
+// CallOptions.Globals are deliberately NOT part of this scan: composite
+// globals bind lazily, so their sources are scanned only if one is actually
+// read (see rebindGlobalValue), and cross-aliasing between a global source
+// and an argument is caught there through the rebinder's seen-maps. Lazy
+// task-global sources always materialize through the slow rebind walk (see
 // taskLazyGlobals.materialize), so they need no entry-time scan; their graphs
 // cannot alias a task call's arguments or keywords because those are freshly
 // built task clones.
@@ -200,6 +221,82 @@ func copyInboundDataEntries(entries map[string]Value) map[string]Value {
 				switch entry.Kind() {
 				case KindArray, KindHash, KindObject:
 					cloned[key] = copyInboundDataValue(entry)
+				default:
+					cloned[key] = entry
+				}
+			}
+			return cloned
+		}
+	}
+	return maps.Clone(entries)
+}
+
+// copyAndRegisterInboundValue is copyInboundDataValue plus registration of
+// every source composite in the rebinder's seen-maps, exactly as the slow
+// path would record it. It runs only when the call defers composite globals:
+// a global source read later might alias an argument composite, and the
+// deferred global scan plus the slow rebind walk resolve that alias through
+// these registrations, deduplicating to the clones made here.
+func (r *callFunctionRebinder) copyAndRegisterInboundValue(val Value) Value {
+	switch val.Kind() {
+	case KindArray:
+		items := val.Array()
+		cloned := make([]Value, len(items))
+		copy(cloned, items)
+		clonedVal := NewArray(cloned)
+		if r.seenArrays == nil {
+			r.seenArrays = make(map[uintptr]Value)
+		}
+		r.seenArrays[arrayIdentity(val)] = clonedVal
+		for i, item := range items {
+			switch item.Kind() {
+			case KindArray, KindHash, KindObject:
+				cloned[i] = r.copyAndRegisterInboundValue(item)
+			}
+		}
+		return clonedVal
+	case KindHash:
+		entries := val.Hash()
+		clonedEntries := r.copyAndRegisterInboundEntries(entries)
+		clonedVal := NewHash(clonedEntries)
+		if r.seenHashes == nil {
+			r.seenHashes = make(map[uintptr]Value)
+		}
+		r.seenHashes[hashIdentity(val)] = clonedVal
+		if entries != nil {
+			if r.seenHashEntries == nil {
+				r.seenHashEntries = make(map[uintptr]map[string]Value)
+			}
+			r.seenHashEntries[reflect.ValueOf(entries).Pointer()] = clonedEntries
+		}
+		return clonedVal
+	case KindObject:
+		entries := val.Hash()
+		clonedEntries := r.copyAndRegisterInboundEntries(entries)
+		if entries != nil {
+			if r.seenMaps == nil {
+				r.seenMaps = make(map[uintptr]map[string]Value)
+			}
+			r.seenMaps[reflect.ValueOf(entries).Pointer()] = clonedEntries
+		}
+		return NewObject(clonedEntries)
+	default:
+		return val
+	}
+}
+
+func (r *callFunctionRebinder) copyAndRegisterInboundEntries(entries map[string]Value) map[string]Value {
+	if entries == nil {
+		return make(map[string]Value)
+	}
+	for _, item := range entries {
+		switch item.Kind() {
+		case KindArray, KindHash, KindObject:
+			cloned := make(map[string]Value, len(entries))
+			for key, entry := range entries {
+				switch entry.Kind() {
+				case KindArray, KindHash, KindObject:
+					cloned[key] = r.copyAndRegisterInboundValue(entry)
 				default:
 					cloned[key] = entry
 				}
