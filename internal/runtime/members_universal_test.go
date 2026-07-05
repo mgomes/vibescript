@@ -954,16 +954,17 @@ end`,
 			want: []Value{NewBool(true), NewBool(false), NewBool(true)},
 		},
 		{
-			// All empty arrays are equal? to one another. array.select preallocates
-			// its result with make([]Value, 0, len(arr)), so filtering everything
-			// out yields an empty array with spare capacity and a non-zerobase
-			// backing pointer; it must still be equal? to a literal empty array.
+			// Arrays are mutable objects with wrapper identity: two independently
+			// constructed empties (a select result and a literal) are distinct
+			// objects even though they are eql? by content — pushing onto one
+			// never grows the other, mirroring Ruby's [].equal?([]) == false.
 			name: "empty array from select",
 			script: `def run()
   a = [1].select { |x| false }
-  [a.equal?([]), a.eql?([]), [].equal?([])]
+  b = a
+  [a.equal?(b), a.equal?([]), a.eql?([]), [].equal?([])]
 end`,
-			want: []Value{NewBool(true), NewBool(true), NewBool(true)},
+			want: []Value{NewBool(true), NewBool(false), NewBool(true), NewBool(false)},
 		},
 	}
 	for _, tc := range cases {

@@ -100,7 +100,7 @@ func (v Value) appendInspect(buf *strings.Builder, state *valueStringState, limi
 }
 
 func (v Value) appendInspectArray(buf *strings.Builder, state *valueStringState, limit int) error {
-	elems := v.data.([]Value)
+	elems := v.Array()
 	id := SliceIdentity{
 		Ptr: reflect.ValueOf(elems).Pointer(),
 		Len: len(elems),
@@ -223,7 +223,7 @@ func (v Value) inspectByteLenWithState(state *valueStringState) int {
 	case KindNil:
 		return len("nil")
 	case KindArray:
-		elems := v.data.([]Value)
+		elems := v.Array()
 		id := SliceIdentity{
 			Ptr: reflect.ValueOf(elems).Pointer(),
 			Len: len(elems),
@@ -290,7 +290,7 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 	case KindNil:
 		return len("nil"), nil
 	case KindArray:
-		elems := v.data.([]Value)
+		elems := v.Array()
 		id := SliceIdentity{
 			Ptr: reflect.ValueOf(elems).Pointer(),
 			Len: len(elems),

@@ -223,7 +223,7 @@ func (v Value) WriteStringTo(buf *strings.Builder) {
 func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit int) error {
 	switch v.kind {
 	case KindArray:
-		elems := v.data.([]Value)
+		elems := v.Array()
 		id := SliceIdentity{
 			Ptr: reflect.ValueOf(elems).Pointer(),
 			Len: len(elems),
@@ -430,7 +430,7 @@ func (v Value) StringRuneLen() int {
 func (v Value) stringByteLenWithState(state *valueStringState) int {
 	switch v.kind {
 	case KindArray:
-		elems := v.data.([]Value)
+		elems := v.Array()
 		id := SliceIdentity{
 			Ptr: reflect.ValueOf(elems).Pointer(),
 			Len: len(elems),
@@ -512,7 +512,7 @@ func hashStringEntryKeyByteLenWithState(key Value, state *valueStringState) int 
 func (v Value) stringRuneLenWithState(state *valueStringState) int {
 	switch v.kind {
 	case KindArray:
-		elems := v.data.([]Value)
+		elems := v.Array()
 		id := SliceIdentity{
 			Ptr: reflect.ValueOf(elems).Pointer(),
 			Len: len(elems),
@@ -654,7 +654,7 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 	}
 	switch v.kind {
 	case KindArray:
-		elems := v.data.([]Value)
+		elems := v.Array()
 		id := SliceIdentity{
 			Ptr: reflect.ValueOf(elems).Pointer(),
 			Len: len(elems),
@@ -758,7 +758,7 @@ func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func(
 	}
 	switch v.kind {
 	case KindArray:
-		elems := v.data.([]Value)
+		elems := v.Array()
 		id := SliceIdentity{
 			Ptr: reflect.ValueOf(elems).Pointer(),
 			Len: len(elems),
@@ -863,7 +863,7 @@ func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit 
 	}
 	switch v.kind {
 	case KindArray:
-		elems := v.data.([]Value)
+		elems := v.Array()
 		id := SliceIdentity{
 			Ptr: reflect.ValueOf(elems).Pointer(),
 			Len: len(elems),
@@ -1074,19 +1074,13 @@ func (v Value) Identical(other Value) bool {
 		}
 		return v.Float() == other.Float()
 	case KindArray:
-		left := v.data.([]Value)
-		right := other.data.([]Value)
-		// All empty arrays are identical: an empty array has no element storage
-		// to alias, so appending to one never affects another, and they behave as
-		// a single value-like empty. Comparing backing pointers is not enough,
-		// because an empty result preallocated with spare capacity (for example
-		// array.select starting from make([]Value, 0, len(arr))) carries its own
-		// non-zerobase pointer and a different capacity than a literal [].
-		if len(left) == 0 && len(right) == 0 {
-			return true
-		}
-		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer() &&
-			len(left) == len(right) && cap(left) == cap(right)
+		// A KindArray payload is a *arrayData wrapper, so identity is the
+		// wrapper's pointer rather than the current element backing. Identity
+		// must survive in-place mutators (push may reallocate the element slice)
+		// and must distinguish two independently constructed empty arrays:
+		// mutating one never affects the other, so they are distinct objects,
+		// exactly as two empty hashes are.
+		return v.data.(*arrayData) == other.data.(*arrayData)
 	case KindHash:
 		// A KindHash payload is a *hashData wrapper, so identity is the wrapper's
 		// pointer rather than its entry map. Two hashes that share an entry map but

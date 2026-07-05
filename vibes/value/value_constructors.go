@@ -26,8 +26,46 @@ func NewFloat(f float64) Value { return Value{kind: KindFloat, scalar: math.Floa
 // NewString returns a string Value.
 func NewString(s string) Value { return Value{kind: KindString, data: s} }
 
+// arrayData backs a KindArray value. Boxing the element slice behind a pointer
+// gives every array a stable object identity and lets Ruby-style mutators
+// (push, pop, clear, map!, ...) grow or shrink the array in place: every Value
+// copy that aliases the same wrapper observes the mutation, matching Ruby's
+// reference semantics for collections. (KindHash gets the same sharing from its
+// *hashData wrapper.)
+type arrayData struct {
+	elems []Value
+}
+
 // NewArray returns an array Value.
-func NewArray(a []Value) Value { return Value{kind: KindArray, data: a} }
+func NewArray(a []Value) Value { return Value{kind: KindArray, data: &arrayData{elems: a}} }
+
+// SetArrayElems replaces the element slice of an existing array wrapper in
+// place. It is the primitive behind the runtime's Ruby-style mutators: because
+// the wrapper is shared by every Value that aliases the array, the new elements
+// are visible through all of them. It is a no-op when v is not an array.
+func (v Value) SetArrayElems(elems []Value) {
+	if v.kind != KindArray {
+		return
+	}
+	if ad, ok := v.data.(*arrayData); ok {
+		ad.elems = elems
+	}
+}
+
+// ArrayIdentity returns a stable identity for an array wrapper, or 0 when v is
+// not an array. It identifies the shared mutable wrapper itself rather than the
+// current element backing, so identity survives in-place growth that reallocates
+// the element slice. Two Values are the same array object exactly when their
+// identities match.
+func ArrayIdentity(v Value) uintptr {
+	if v.kind != KindArray {
+		return 0
+	}
+	if ad, ok := v.data.(*arrayData); ok {
+		return uintptr(unsafe.Pointer(ad))
+	}
+	return 0
+}
 
 // hashData backs a KindHash value. It pairs the entry map with optional
 // Ruby-style default metadata consulted on missing-key lookup: either a default

@@ -846,14 +846,17 @@ func taskLazyGlobalsFromContext(ctx context.Context) *taskLazyGlobals {
 }
 
 type taskGlobalCloner struct {
-	seenArrays    map[sliceIdentity]Value
+	// seenArrays is keyed on the source array's wrapper identity so aliases of
+	// one mutable array clone to one shared object while distinct arrays
+	// (including independent empties) clone to distinct objects.
+	seenArrays    map[uintptr]Value
 	seenMaps      map[uintptr]map[string]Value
 	seenInstances map[*Instance]Value
 }
 
 func newTaskGlobalCloner() *taskGlobalCloner {
 	return &taskGlobalCloner{
-		seenArrays:    make(map[sliceIdentity]Value),
+		seenArrays:    make(map[uintptr]Value),
 		seenMaps:      make(map[uintptr]map[string]Value),
 		seenInstances: make(map[*Instance]Value),
 	}
@@ -863,11 +866,7 @@ func (cloner *taskGlobalCloner) clone(val Value) Value {
 	switch val.Kind() {
 	case KindArray:
 		items := val.Array()
-		id := sliceIdentity{
-			Ptr: reflect.ValueOf(items).Pointer(),
-			Len: len(items),
-			Cap: cap(items),
-		}
+		id := arrayIdentity(val)
 		if clone, seen := cloner.seenArrays[id]; seen {
 			return clone
 		}
