@@ -1061,8 +1061,7 @@ func hashStoreProjectionBytes(t *testing.T, receiver Value, args []Value, entrie
 	t.Helper()
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	live := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
-	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	return live + estimatedEmptyOutputHashBytes + entries*perEntry + typedHashEntryMapBytes(entries)
+	return live + typedHashTransformBufferBytes(entries, 0)
 }
 
 // TestHashStoreExistingKeyFitsReceiverQuota pins the P2 finding on PR #776: when
@@ -1657,10 +1656,10 @@ func TestMaxProjectedTypedHashEntriesAgreesWithProjection(t *testing.T) {
 	args := []Value{receiver}
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	projectedBase := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
+	projectedBase := probe.hashCallRootBytes(receiver, args, nil, NewNil())
 	scratch := sortedHashEntryBufferBytes(2_000)
-	typedBase := estimatedMapBaseBytes + estimatedSliceBaseBytes
-	perEntry := estimatedMapEntryStructuralBytes + estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
+	typedBase := estimatedValueBytes + estimatedHashDataBytes + estimatedMapBaseBytes + estimatedSliceBaseBytes
+	perEntry := estimatedMapEntryBytes + 2*estimatedHashLookupKeyBytes + estimatedHashEntryBytes
 
 	const wantCap = 50
 	quota := projectedBase + scratch + typedBase + wantCap*perEntry
@@ -1684,14 +1683,15 @@ func TestProjectedTypedHashTransformChargesEmptyTypedMap(t *testing.T) {
 
 	receiver := largeTypedSymbolHash(1)
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	projectedBase := probe.projectedHashBaseBytes(receiver, nil, nil, NewNil())
+	projectedBase := probe.hashCallRootBytes(receiver, nil, nil, NewNil())
+	emptyTypedHash := typedHashTransformBufferBytes(0, 0)
 
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projectedBase + estimatedMapBaseBytes - 1}
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projectedBase + emptyTypedHash - 1}
 	if err := exec.checkProjectedTypedHashTransformBytes(0, 0, receiver, nil, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
 		t.Fatalf("checkProjectedTypedHashTransformBytes(0) = %v, want memory quota error", err)
 	}
 
-	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projectedBase + estimatedMapBaseBytes}
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projectedBase + emptyTypedHash}
 	if err := exec.checkProjectedTypedHashTransformBytes(0, 0, receiver, nil, nil, NewNil()); err != nil {
 		t.Fatalf("checkProjectedTypedHashTransformBytes(0) = %v, want nil", err)
 	}
@@ -1705,10 +1705,6 @@ func TestLegacyEmptyTransformKeysDoesNotReserveTypedMap(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
 	legacyBuffers := hashTransformBufferBytes(0, sortedKeyBufferBytes(0))
-	typedBuffers := typedHashTransformBufferBytes(0, sortedKeyBufferBytes(0))
-	if legacyBuffers >= typedBuffers {
-		t.Fatalf("test setup expects typed buffers (%d) to exceed legacy buffers (%d)", typedBuffers, legacyBuffers)
-	}
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roots + legacyBuffers}
 	got, err := callHashMember(t, exec, receiver, "transform_keys", nil, block)

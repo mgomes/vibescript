@@ -149,10 +149,7 @@ func CloneHashValue(label string, val value.Value) (map[string]value.Value, erro
 
 // CloneDataOnlyValue validates and deep-copies val in one graph walk.
 func CloneDataOnlyValue(label string, val value.Value) (value.Value, error) {
-	if err := validateTraversalDepth(label, val); err != nil {
-		return value.NewNil(), err
-	}
-	cloned, issue := cloneDataOnlyValue(val, newSeenSet())
+	cloned, issue := cloneDataOnlyValue(val, newSeenSet(), 0)
 	if err := dataOnlyIssueError(label, issue); err != nil {
 		return value.NewNil(), err
 	}
@@ -343,6 +340,7 @@ const (
 	dataOnlyOK dataOnlyResult = iota
 	dataOnlyCallable
 	dataOnlyCycle
+	dataOnlyDepth
 )
 
 func dataOnlyIssueError(label string, issue dataOnlyResult) error {
@@ -351,6 +349,8 @@ func dataOnlyIssueError(label string, issue dataOnlyResult) error {
 		return fmt.Errorf("%s must be data-only", label)
 	case dataOnlyCycle:
 		return fmt.Errorf("%s must not contain cyclic references", label)
+	case dataOnlyDepth:
+		return limitErrorf("%s exceeds maximum depth %d", label, MaxDataOnlyTraversalDepth)
 	default:
 		return nil
 	}
@@ -438,7 +438,10 @@ func validateDataOnly(val value.Value, visiting, seen *seenSet) dataOnlyResult {
 	}
 }
 
-func cloneDataOnlyValue(val value.Value, visiting *seenSet) (value.Value, dataOnlyResult) {
+func cloneDataOnlyValue(val value.Value, visiting *seenSet, depth int) (value.Value, dataOnlyResult) {
+	if depth > MaxDataOnlyTraversalDepth {
+		return value.NewNil(), dataOnlyDepth
+	}
 	switch val.Kind() {
 	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass, value.KindInstance:
 		return value.NewNil(), dataOnlyCallable
@@ -452,10 +455,12 @@ func cloneDataOnlyValue(val value.Value, visiting *seenSet) (value.Value, dataOn
 		cloned := make([]value.Value, len(values))
 		issue := dataOnlyOK
 		for i, item := range values {
-			next, result := cloneDataOnlyValue(item, visiting)
+			next, result := cloneDataOnlyValue(item, visiting, depth+1)
 			switch result {
 			case dataOnlyCallable:
 				return value.NewNil(), dataOnlyCallable
+			case dataOnlyDepth:
+				return value.NewNil(), dataOnlyDepth
 			case dataOnlyCycle:
 				issue = dataOnlyCycle
 			default:
@@ -468,9 +473,9 @@ func cloneDataOnlyValue(val value.Value, visiting *seenSet) (value.Value, dataOn
 		}
 		return value.NewArray(cloned), dataOnlyOK
 	case value.KindHash:
-		return cloneDataOnlyHash(val, visiting)
+		return cloneDataOnlyHash(val, visiting, depth)
 	case value.KindObject:
-		return cloneDataOnlyMap(val.Hash(), visiting, value.NewObject)
+		return cloneDataOnlyMap(val.Hash(), visiting, value.NewObject, depth)
 	default:
 		return val, dataOnlyOK
 	}
@@ -481,7 +486,7 @@ func cloneDataOnlyValue(val value.Value, visiting *seenSet) (value.Value, dataOn
 // one is rejected just like any other embedded callable; a data-only default
 // value is cloned and preserved on the result so the isolated copy keeps the
 // same missing-key behavior.
-func cloneDataOnlyHash(val value.Value, visiting *seenSet) (value.Value, dataOnlyResult) {
+func cloneDataOnlyHash(val value.Value, visiting *seenSet, depth int) (value.Value, dataOnlyResult) {
 	entries := val.Hash()
 	// Track the whole hash wrapper, not just the entry map: two wrappers can
 	// share one entry map yet carry distinct defaults, and the cycle check must
@@ -499,10 +504,12 @@ func cloneDataOnlyHash(val value.Value, visiting *seenSet) (value.Value, dataOnl
 	cloned := make(map[string]value.Value, len(entries))
 	issue := dataOnlyOK
 	for key, item := range entries {
-		next, result := cloneDataOnlyValue(item, visiting)
+		next, result := cloneDataOnlyValue(item, visiting, depth+1)
 		switch result {
 		case dataOnlyCallable:
 			return value.NewNil(), dataOnlyCallable
+		case dataOnlyDepth:
+			return value.NewNil(), dataOnlyDepth
 		case dataOnlyCycle:
 			issue = dataOnlyCycle
 		default:
@@ -516,10 +523,12 @@ func cloneDataOnlyHash(val value.Value, visiting *seenSet) (value.Value, dataOnl
 		// retain a callable.
 		return value.NewNil(), dataOnlyCallable
 	}
-	clonedDefault, result := cloneDataOnlyValue(value.HashDefaultValue(val), visiting)
+	clonedDefault, result := cloneDataOnlyValue(value.HashDefaultValue(val), visiting, depth+1)
 	switch result {
 	case dataOnlyCallable:
 		return value.NewNil(), dataOnlyCallable
+	case dataOnlyDepth:
+		return value.NewNil(), dataOnlyDepth
 	case dataOnlyCycle:
 		issue = dataOnlyCycle
 	}
@@ -537,6 +546,7 @@ func cloneDataOnlyMap(
 	entries map[string]value.Value,
 	visiting *seenSet,
 	construct func(map[string]value.Value) value.Value,
+	depth int,
 ) (value.Value, dataOnlyResult) {
 	ptr := reflect.ValueOf(entries).Pointer()
 	if _, ok := visiting.maps[ptr]; ok {
@@ -546,10 +556,12 @@ func cloneDataOnlyMap(
 	cloned := make(map[string]value.Value, len(entries))
 	issue := dataOnlyOK
 	for key, item := range entries {
-		next, result := cloneDataOnlyValue(item, visiting)
+		next, result := cloneDataOnlyValue(item, visiting, depth+1)
 		switch result {
 		case dataOnlyCallable:
 			return value.NewNil(), dataOnlyCallable
+		case dataOnlyDepth:
+			return value.NewNil(), dataOnlyDepth
 		case dataOnlyCycle:
 			issue = dataOnlyCycle
 		default:

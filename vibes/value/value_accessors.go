@@ -77,8 +77,15 @@ func (v Value) Hash() map[string]Value {
 		hd := v.data.(*hashData)
 		if hd.entries == nil && hd.typedEntries != nil {
 			hd.entries = make(map[string]Value, len(hd.typedEntries))
-			for _, entry := range hd.typedEntries {
-				hd.entries[HashDisplayKey(entry.Key)] = entry.Value
+			if len(hd.order) == len(hd.typedEntries) {
+				for _, lookupKey := range hd.order {
+					entry := hd.typedEntries[lookupKey]
+					hd.entries[HashDisplayKey(entry.Key)] = entry.Value
+				}
+			} else {
+				for _, entry := range hd.typedEntries {
+					hd.entries[HashDisplayKey(entry.Key)] = entry.Value
+				}
 			}
 		}
 		return hd.entries

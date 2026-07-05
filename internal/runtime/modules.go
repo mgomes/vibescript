@@ -306,7 +306,7 @@ func formatModuleCycle(cycle []string) string {
 }
 
 func (e *Engine) loadModule(name string, caller *moduleContext) (moduleEntry, error) {
-	request, err := parseModuleRequest(name)
+	request, err := e.parseCachedModuleRequest(name)
 	if err != nil {
 		return moduleEntry{}, err
 	}
@@ -319,6 +319,26 @@ func (e *Engine) loadModule(name string, caller *moduleContext) (moduleEntry, er
 	}
 
 	return e.loadSearchPathModule(request)
+}
+
+func (e *Engine) parseCachedModuleRequest(name string) (moduleRequest, error) {
+	e.modMu.RLock()
+	request, ok := e.modRequests[name]
+	e.modMu.RUnlock()
+	if ok {
+		return request, nil
+	}
+
+	request, err := parseModuleRequest(name)
+	if err != nil {
+		return moduleRequest{}, err
+	}
+	e.modMu.Lock()
+	if len(e.modRequests) < e.config.MaxCachedModules {
+		e.modRequests[name] = request
+	}
+	e.modMu.Unlock()
+	return request, nil
 }
 
 func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext) (moduleEntry, error) {
@@ -360,12 +380,16 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 	if suggestion, ok := e.cachedSearchPathMiss(request.normalized); ok {
 		return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, suggestion)
 	}
+	if entry, ok := e.cachedSearchPathHit(request.normalized); ok {
+		return entry, nil
+	}
 
 	for _, root := range e.modPaths {
 		key := moduleCacheKey(root, request.normalized)
 		candidate := filepath.Join(root, request.normalized)
 
 		if entry, ok := e.getCachedModule(key); ok {
+			e.cacheSearchPathHit(request.normalized, entry)
 			return entry, nil
 		}
 
@@ -380,12 +404,32 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 			return moduleEntry{}, fmt.Errorf("require: reading %s: %w", candidate, readErr)
 		}
 
-		return e.compileAndCacheModule(key, root, request.normalized, candidate, data)
+		entry, err := e.compileAndCacheModule(key, root, request.normalized, candidate, data)
+		if err != nil {
+			return moduleEntry{}, err
+		}
+		e.cacheSearchPathHit(request.normalized, entry)
+		return entry, nil
 	}
 
 	suggestion := e.searchPathModuleSuggestion(request)
 	e.cacheSearchPathMiss(request.normalized, suggestion)
 	return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, suggestion)
+}
+
+func (e *Engine) cachedSearchPathHit(normalized string) (moduleEntry, bool) {
+	e.modMu.RLock()
+	entry, ok := e.modSearchHits[normalized]
+	e.modMu.RUnlock()
+	return entry, ok
+}
+
+func (e *Engine) cacheSearchPathHit(normalized string, entry moduleEntry) {
+	e.modMu.Lock()
+	if len(e.modSearchHits) < e.config.MaxCachedModules {
+		e.modSearchHits[normalized] = entry
+	}
+	e.modMu.Unlock()
 }
 
 func (e *Engine) cachedSearchPathMiss(normalized string) (string, bool) {
