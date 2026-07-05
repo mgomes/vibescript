@@ -63,6 +63,103 @@ func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) 
 	return val, nil
 }
 
+func memberReceiverAutoInvokes(object Expression, property string, env *Env) bool {
+	if property == "call" {
+		return false
+	}
+	return !isDynamicCallableMemberReceiver(object, env)
+}
+
+func memberCallReceiverAutoInvokes(object Expression, env *Env) bool {
+	return !isDynamicCallableMemberReceiver(object, env)
+}
+
+func callMemberCallReceiverAutoInvokes(call *CallExpr, object Expression, env *Env) bool {
+	if isStoredDataCallReceiver(object, env) {
+		return false
+	}
+	if callHasNoValueArguments(call) && isStaticZeroArityFunctionReceiver(object, env) {
+		return false
+	}
+	return memberCallReceiverAutoInvokes(object, env)
+}
+
+func callHasNoValueArguments(call *CallExpr) bool {
+	return len(call.Args) == 0 && len(call.KwArgs) == 0
+}
+
+func isStaticZeroArityFunctionReceiver(object Expression, env *Env) bool {
+	ident, ok := object.(*Identifier)
+	if !ok {
+		return false
+	}
+	scope, ok := env.lookupBindingScope(ident.Name)
+	if !ok || scope.hasDynamic(ident.Name) {
+		return false
+	}
+	val, ok := env.Get(ident.Name)
+	if !ok {
+		return false
+	}
+	fn := valueFunction(val)
+	return fn != nil && len(fn.Params) == 0
+}
+
+func isStoredDataCallReceiver(object Expression, env *Env) bool {
+	switch expr := object.(type) {
+	case *IvarExpr, *ClassVarExpr:
+		return true
+	case *Identifier:
+		return isImplicitSelfDataCallReceiver(expr.Name, env)
+	default:
+		return false
+	}
+}
+
+func isImplicitSelfDataCallReceiver(name string, env *Env) bool {
+	if _, ok := env.lookupBindingScope(name); ok {
+		return false
+	}
+	self, ok := env.Get("self")
+	if !ok {
+		return false
+	}
+	switch self.Kind() {
+	case KindInstance:
+		inst := valueInstance(self)
+		if _, ok := inst.Class.Methods[name]; ok || isUniversalDataSafe(name) {
+			return false
+		}
+		_, ok := inst.Ivars[name]
+		return ok
+	case KindClass:
+		classDef := valueClass(self)
+		if name == "new" || isUniversalDataSafe(name) {
+			return false
+		}
+		if _, ok := classDef.ClassMethods[name]; ok {
+			return false
+		}
+		_, ok := classDef.ClassVars[name]
+		return ok
+	default:
+		return false
+	}
+}
+
+func isDynamicCallableMemberReceiver(object Expression, env *Env) bool {
+	ident, ok := object.(*Identifier)
+	if !ok {
+		return false
+	}
+	scope, ok := env.lookupBindingScope(ident.Name)
+	if !ok || !scope.hasDynamic(ident.Name) {
+		return false
+	}
+	val, ok := env.Get(ident.Name)
+	return ok && isInvocable(val)
+}
+
 func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
@@ -71,6 +168,26 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 	switch callee.Kind() {
 	case KindFunction:
 		result, err := exec.callFunction(valueFunction(callee), receiver, args, kwargs, block, pos)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
+			}
+			if errors.Is(err, errLoopNext) {
+				return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+			}
+			return NewNil(), err
+		}
+		return result, nil
+	case KindBlock:
+		if len(kwargs) > 0 {
+			for name := range kwargs {
+				return NewNil(), exec.errorAt(pos, "unexpected keyword argument %s", name)
+			}
+		}
+		if !block.IsNil() {
+			return NewNil(), exec.errorAt(pos, "block.call does not accept a block")
+		}
+		result, err := exec.CallBlock(callee, args)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
 				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
@@ -254,6 +371,17 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 	exec.pushReceiver(receiver)
 	var err error
 	if !bindReturned {
+		if fn.Accessor == functionAccessorSetter {
+			val, err := exec.executeGeneratedSetter(fn, callEnv)
+			exec.popReturnToken()
+			exec.popReceiver()
+			exec.popModuleContext()
+			exec.popFrame()
+			if err != nil {
+				return NewNil(), err
+			}
+			return val, nil
+		}
 		val, returned, err = exec.evalLocalScopeStatements(fn.Body, callEnv)
 	}
 	exec.popReturnToken()
@@ -335,6 +463,10 @@ type callFunctionRebinder struct {
 	// caching the clone keeps aliases of one bound predicate identical across the
 	// host boundary.
 	seenBoundBuiltins map[*Builtin]Value
+	// seenDirectCallAliases caches rebuilt function.call/block.call aliases keyed
+	// on the source builtin pointer, so an escaped alias reachable through
+	// several inbound paths keeps builtin identity after rebinding.
+	seenDirectCallAliases map[*Builtin]Value
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -376,6 +508,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			r.seenBoundBuiltins[builtin] = clone
 			reboundReceiver := r.rebindValue(builtin.BoundReceiver.receiver.value)
 			setBoundReceiver(valueBuiltin(clone), clonedCell, reboundReceiver)
+			return clone
+		}
+		if clone, ok := r.rebindDirectCallAlias(builtin); ok {
 			return clone
 		}
 		// A capability copied into a local (for example `cap = jobs` captured by a
@@ -600,6 +735,36 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	default:
 		return val
 	}
+}
+
+func (r *callFunctionRebinder) rebindDirectCallAlias(builtin *Builtin) (Value, bool) {
+	if !builtin.DirectCallAlias || len(builtin.CapturedValues) != 1 {
+		return NewNil(), false
+	}
+	if clone, ok := r.seenDirectCallAliases[builtin]; ok {
+		return clone, true
+	}
+	reboundTarget := r.rebindValue(builtin.CapturedValues[0])
+	var clone Value
+	switch builtin.Name {
+	case functionCallBuiltinName:
+		if reboundTarget.Kind() != KindFunction {
+			return NewNil(), false
+		}
+		clone = newFunctionCallAlias(reboundTarget, builtin.DirectCallAliasPos)
+	case blockCallBuiltinName:
+		if reboundTarget.Kind() != KindBlock {
+			return NewNil(), false
+		}
+		clone = newBlockCallAlias(reboundTarget, builtin.DirectCallAliasPos)
+	default:
+		return NewNil(), false
+	}
+	if r.seenDirectCallAliases == nil {
+		r.seenDirectCallAliases = make(map[*Builtin]Value)
+	}
+	r.seenDirectCallAliases[builtin] = clone
+	return clone, true
 }
 
 // rebindCapturedEnv re-roots the captured environment of an escaped closure onto
@@ -850,7 +1015,7 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 
 func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, error) {
 	if member, ok := call.Callee.(*MemberExpr); ok {
-		receiver, err := exec.evalExpression(member.Object, env)
+		receiver, err := exec.evalExpressionWithAuto(member.Object, env, memberReceiverAutoInvokes(member.Object, member.Property, env))
 		if err != nil {
 			return NewNil(), NewNil(), err
 		}
@@ -960,10 +1125,24 @@ func (exec *Execution) evalDirectPublicMemberMethodCall(receiver Value, property
 }
 
 func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
+	return exec.evalCallArgsForCallee(call, env, NewNil())
+}
+
+func (exec *Execution) evalCallArgsForCallee(call *CallExpr, env *Env, callee Value) ([]Value, error) {
+	paramInfo, hasParams := callableParamTypes(callee)
 	args := make([]Value, len(call.Args))
 	for i, arg := range call.Args {
-		val, err := exec.evalCallArg(arg, env)
+		expectation := expressionExpectation{}
+		if hasParams {
+			if candidate, ok := callableArgumentExpectation(paramInfo, i, len(call.Args)); ok {
+				expectation = candidate
+			}
+		}
+		val, err := exec.evalCallArgumentForExpectation(arg, env, expectation)
 		if err != nil {
+			return nil, err
+		}
+		if err := exec.checkMemoryWith(val); err != nil {
 			return nil, err
 		}
 		args[i] = val
@@ -983,12 +1162,25 @@ func (exec *Execution) evalCallArg(arg Expression, env *Env) (Value, error) {
 }
 
 func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Value, error) {
+	return exec.evalCallKwArgsForCallee(call, env, NewNil(), calleeDirect)
+}
+
+func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee Value, resolution calleeResolution) (map[string]Value, error) {
 	if len(call.KwArgs) == 0 {
 		return nil, nil
 	}
+	paramInfo, hasParams := callableParamTypes(callee)
+	optionsHashType, hasOptionsHashTarget := callOptionsHashArgumentType(call, callee, resolution)
 	kwargs := make(map[string]Value, len(call.KwArgs))
 	for _, kw := range call.KwArgs {
-		val, err := exec.evalExpressionWithAuto(kw.Value, env, true)
+		var expectedType *TypeExpr
+		if hasParams {
+			expectedType = keywordArgumentExpectedType(paramInfo.params, kw.Name)
+			if expectedType == nil && hasOptionsHashTarget {
+				expectedType = optionsHashArgumentValueType(optionsHashType, kw.Name)
+			}
+		}
+		val, err := exec.evalCallArgumentForType(kw.Value, env, expectedType)
 		if err != nil {
 			return nil, err
 		}
@@ -998,6 +1190,526 @@ func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Valu
 		kwargs[kw.Name] = val
 	}
 	return kwargs, nil
+}
+
+func (exec *Execution) evalCallArgumentForType(arg Expression, env *Env, ty *TypeExpr) (Value, error) {
+	return exec.evalCallArgumentForExpectation(arg, env, typeExpressionExpectation(ty))
+}
+
+func (exec *Execution) evalCallArgumentForExpectation(arg Expression, env *Env, expectation expressionExpectation) (Value, error) {
+	if !expectation.empty() {
+		switch e := arg.(type) {
+		case *ConditionalExpr:
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			return exec.evalConditionalExprWithExpectation(e, env, expectation)
+		case *IfExpr:
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			return exec.evalIfExprWithExpectation(e, env, expectation)
+		case *CaseExpr:
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			return exec.evalCaseExprWithExpectation(e, env, expectation)
+		}
+	}
+	if val, ok, err := exec.evalTypedContainerCallArgument(arg, env, expectation); ok || err != nil {
+		return val, err
+	}
+	return exec.evalCallArgument(arg, env, expectation.includesCallable())
+}
+
+func (exec *Execution) evalTypedContainerCallArgument(arg Expression, env *Env, expectation expressionExpectation) (Value, bool, error) {
+	switch e := arg.(type) {
+	case *ArrayLiteral:
+		elementExpectation, ok := expectation.arrayElementExpectation()
+		if !ok {
+			return NewNil(), false, nil
+		}
+		if err := exec.step(); err != nil {
+			return NewNil(), true, err
+		}
+		val, err := exec.evalArrayLiteralWithElementExpectation(e, env, elementExpectation)
+		return val, true, err
+	case *HashLiteral:
+		if !hashLiteralTypeHasValueSlots(expectation.ty) {
+			return NewNil(), false, nil
+		}
+		if err := exec.step(); err != nil {
+			return NewNil(), true, err
+		}
+		val, err := exec.evalHashLiteralWithValueTypes(e, env, func(key Value) *TypeExpr {
+			return hashLiteralValueType(expectation.ty, key)
+		})
+		return val, true, err
+	default:
+		return NewNil(), false, nil
+	}
+}
+
+func (exec *Execution) evalCallArgument(arg Expression, env *Env, expectsCallable bool) (Value, error) {
+	if !expectsCallable {
+		return exec.evalExpressionWithAuto(arg, env, true)
+	}
+	if val, ok, err := exec.evalBareCallableArgument(arg, env); ok || err != nil {
+		return val, err
+	}
+	if val, ok, err := exec.evalGeneratedGetterArgument(arg, env); ok || err != nil {
+		return val, err
+	}
+	return exec.evalExpressionWithAuto(arg, env, false)
+}
+
+func (exec *Execution) evalGeneratedGetterArgument(arg Expression, env *Env) (Value, bool, error) {
+	memberExpr, ok := arg.(*MemberExpr)
+	if !ok {
+		return NewNil(), false, nil
+	}
+	obj, err := exec.evalCallableMemberArgumentReceiver(memberExpr, env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if memberExpr.Safe && obj.Kind() == KindNil {
+		return NewNil(), true, nil
+	}
+	if err := exec.checkMemoryWith(obj); err != nil {
+		return NewNil(), true, err
+	}
+	member, err := exec.getPublicMember(obj, memberExpr.Property, memberExpr.Pos())
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if generatedAccessorKind(member) == functionAccessorGetter {
+		val, err := exec.autoInvokeIfNeeded(memberExpr, member, obj)
+		return val, true, err
+	}
+	if builtin := valueBuiltin(member); builtin != nil && builtin.OptionsHashTarget == nil {
+		// A universal or type-dispatch builtin (list.size, s.upcase) is not a
+		// bindable script callable: evaluate it like a normal member argument
+		// so its value reaches the callee, not the raw builtin, which would
+		// later run against a nil receiver. Bound script methods carry their
+		// target in OptionsHashTarget and stay referencable.
+		val, err := exec.autoInvokeIfNeeded(memberExpr, member, obj)
+		return val, true, err
+	}
+	return member, true, nil
+}
+
+func (exec *Execution) evalCallableMemberArgumentReceiver(memberExpr *MemberExpr, env *Env) (Value, error) {
+	if memberExpr.Property == "call" {
+		return exec.evalMemberCallReceiver(memberExpr, env, memberCallReceiverAutoInvokes)
+	}
+	return exec.evalExpressionWithAuto(memberExpr.Object, env, memberReceiverAutoInvokes(memberExpr.Object, memberExpr.Property, env))
+}
+
+func generatedAccessorKind(member Value) functionAccessorKind {
+	if member.Kind() != KindBuiltin {
+		return functionAccessorNone
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil || builtin.OptionsHashTarget == nil {
+		return functionAccessorNone
+	}
+	return builtin.OptionsHashTarget.Accessor
+}
+
+func (exec *Execution) evalBareCallableArgument(arg Expression, env *Env) (Value, bool, error) {
+	call, ok := arg.(*CallExpr)
+	if !ok || call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil {
+		return NewNil(), false, nil
+	}
+	if _, ok := call.Callee.(*Identifier); !ok {
+		return NewNil(), false, nil
+	}
+	callee, _, err := exec.evalCallTarget(call, env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	return callee, true, nil
+}
+
+type callableParamInfo struct {
+	params               []Param
+	usesRubyBlockBinding bool
+}
+
+func callableParamTypes(callee Value) (callableParamInfo, bool) {
+	switch callee.Kind() {
+	case KindFunction:
+		fn := valueFunction(callee)
+		if fn == nil {
+			return callableParamInfo{}, false
+		}
+		return callableParamInfo{params: fn.Params}, true
+	case KindBlock:
+		blk := valueBlock(callee)
+		if blk == nil {
+			return callableParamInfo{}, false
+		}
+		return callableParamInfo{params: blk.Params, usesRubyBlockBinding: true}, true
+	case KindBuiltin:
+		builtin := valueBuiltin(callee)
+		if builtin == nil {
+			return callableParamInfo{}, false
+		}
+		if builtin.OptionsHashTarget != nil {
+			return callableParamInfo{params: builtin.OptionsHashTarget.Params}, true
+		}
+		if builtin.Name == blockCallBuiltinName && len(builtin.CapturedValues) == 1 && builtin.CapturedValues[0].Kind() == KindBlock {
+			blk := valueBlock(builtin.CapturedValues[0])
+			if blk != nil {
+				return callableParamInfo{params: blk.Params, usesRubyBlockBinding: true}, true
+			}
+		}
+	}
+	return callableParamInfo{}, false
+}
+
+func callableArgumentExpectation(info callableParamInfo, argIndex, argCount int) (expressionExpectation, bool) {
+	if info.usesRubyBlockBinding {
+		expectation := blockArgumentExpectation(info.params, argIndex, argCount)
+		return expectation, !expectation.empty()
+	}
+	param, ok := positionalCallableParam(info.params, argIndex)
+	if !ok {
+		return expressionExpectation{}, false
+	}
+	return positionalArgumentExpectation(param), true
+}
+
+func positionalCallableParam(params []Param, argIndex int) (Param, bool) {
+	positional := 0
+	for _, param := range params {
+		switch param.Kind {
+		case ParamNormal:
+			if positional == argIndex {
+				return param, true
+			}
+			positional++
+		case ParamRest:
+			if argIndex >= positional {
+				return param, true
+			}
+		}
+	}
+	return Param{}, false
+}
+
+func positionalArgumentExpectation(param Param) expressionExpectation {
+	switch param.Kind {
+	case ParamRest:
+		return typeExpressionExpectation(restParamElementType(param.Type))
+	default:
+		expectation := typeExpressionExpectation(param.Type)
+		if target, ok := param.Target.(*DestructureTarget); ok {
+			expectation.arrayElement = destructureTargetElementExpectation(target)
+		}
+		return expectation
+	}
+}
+
+type expressionExpectation struct {
+	ty           *TypeExpr
+	arrayElement func(int, int) expressionExpectation
+}
+
+func typeExpressionExpectation(ty *TypeExpr) expressionExpectation {
+	if ty == nil {
+		return expressionExpectation{}
+	}
+	return expressionExpectation{ty: ty}
+}
+
+func (expectation expressionExpectation) empty() bool {
+	return expectation.ty == nil && expectation.arrayElement == nil
+}
+
+func (expectation expressionExpectation) includesCallable() bool {
+	if typeExprIncludesCallable(expectation.ty) {
+		return true
+	}
+	if expectation.arrayElement != nil {
+		return expectation.arrayElement(0, 1).includesCallable()
+	}
+	return false
+}
+
+func (expectation expressionExpectation) arrayElementExpectation() (func(int, int) expressionExpectation, bool) {
+	if expectation.arrayElement != nil {
+		return expectation.arrayElement, true
+	}
+	elementType, ok := arrayLiteralElementType(expectation.ty)
+	if !ok {
+		return nil, false
+	}
+	return func(_, _ int) expressionExpectation {
+		return typeExpressionExpectation(elementType)
+	}, true
+}
+
+func destructureTargetElementExpectation(target *DestructureTarget) func(int, int) expressionExpectation {
+	return func(index, count int) expressionExpectation {
+		restIndex := destructureRestElementIndex(target)
+		if restIndex == -1 {
+			if index >= len(target.Elements) {
+				return expressionExpectation{}
+			}
+			return destructureElementSingleValueExpectation(target.Elements[index])
+		}
+		trailing := len(target.Elements) - restIndex - 1
+		restStart := min(restIndex, count)
+		restEnd := max(restStart, count-trailing)
+		switch {
+		case index < restIndex:
+			return destructureElementSingleValueExpectation(target.Elements[index])
+		case index < restEnd:
+			return destructureElementRestValueExpectation(target.Elements[restIndex], index-restStart, restEnd-restStart)
+		default:
+			elementIndex := restIndex + 1 + (index - restEnd)
+			if elementIndex >= len(target.Elements) {
+				return expressionExpectation{}
+			}
+			return destructureElementSingleValueExpectation(target.Elements[elementIndex])
+		}
+	}
+}
+
+func destructureRestElementIndex(target *DestructureTarget) int {
+	for i, element := range target.Elements {
+		if element.Rest {
+			return i
+		}
+	}
+	return -1
+}
+
+func destructureElementSingleValueExpectation(element DestructureElement) expressionExpectation {
+	expectation := typeExpressionExpectation(element.Type)
+	if target, ok := element.Target.(*DestructureTarget); ok {
+		expectation.arrayElement = destructureTargetElementExpectation(target)
+	}
+	return expectation
+}
+
+func destructureElementRestValueExpectation(element DestructureElement, index, count int) expressionExpectation {
+	if target, ok := element.Target.(*DestructureTarget); ok {
+		return destructureTargetElementExpectation(target)(index, count)
+	}
+	return typeExpressionExpectation(restParamElementType(element.Type))
+}
+
+func keywordArgumentExpectedType(params []Param, name string) *TypeExpr {
+	for _, param := range params {
+		switch param.Kind {
+		case ParamKeyword, ParamNormal:
+			if param.Name == name {
+				return param.Type
+			}
+		case ParamKeywordRest:
+			return keywordRestParamValueType(param.Type, name)
+		}
+	}
+	return nil
+}
+
+func restParamElementType(ty *TypeExpr) *TypeExpr {
+	if ty == nil {
+		return nil
+	}
+	switch ty.Kind {
+	case TypeArray:
+		if len(ty.TypeArgs) > 0 {
+			return ty.TypeArgs[0]
+		}
+		return nil
+	case TypeUnion:
+		elements := restParamUnionElementTypes(ty)
+		switch len(elements) {
+		case 0:
+			return nil
+		case 1:
+			return elements[0]
+		default:
+			return &TypeExpr{Kind: TypeUnion, Union: elements}
+		}
+	case TypeAny:
+		return ty
+	default:
+		return nil
+	}
+}
+
+func restParamUnionElementTypes(ty *TypeExpr) []*TypeExpr {
+	switch ty.Kind {
+	case TypeAny:
+		return []*TypeExpr{ty}
+	case TypeArray:
+		if len(ty.TypeArgs) > 0 {
+			return []*TypeExpr{ty.TypeArgs[0]}
+		}
+	case TypeUnion:
+		var elements []*TypeExpr
+		for _, option := range ty.Union {
+			elements = append(elements, restParamUnionElementTypes(option)...)
+		}
+		return elements
+	}
+	return nil
+}
+
+func keywordRestParamValueType(ty *TypeExpr, name string) *TypeExpr {
+	if ty == nil {
+		return nil
+	}
+	switch ty.Kind {
+	case TypeAny:
+		return ty
+	case TypeHash:
+		if len(ty.TypeArgs) > 1 {
+			return ty.TypeArgs[1]
+		}
+		return nil
+	case TypeShape:
+		field, ok := ty.Shape[name]
+		if !ok {
+			return nil
+		}
+		return field
+	case TypeUnion:
+		return unionOfValueTypes(ty.Union, func(option *TypeExpr) *TypeExpr {
+			return keywordRestParamValueType(option, name)
+		})
+	default:
+		return nil
+	}
+}
+
+func optionsHashArgumentValueType(ty *TypeExpr, name string) *TypeExpr {
+	if ty == nil {
+		return nil
+	}
+	switch ty.Kind {
+	case TypeHash:
+		if len(ty.TypeArgs) > 1 {
+			return ty.TypeArgs[1]
+		}
+		return nil
+	case TypeShape:
+		field, ok := ty.Shape[name]
+		if !ok {
+			return nil
+		}
+		return field
+	case TypeUnion:
+		return unionOfValueTypes(ty.Union, func(option *TypeExpr) *TypeExpr {
+			return optionsHashArgumentValueType(option, name)
+		})
+	default:
+		return nil
+	}
+}
+
+func arrayLiteralElementType(ty *TypeExpr) (*TypeExpr, bool) {
+	if ty == nil {
+		return nil, false
+	}
+	switch ty.Kind {
+	case TypeArray:
+		if len(ty.TypeArgs) > 0 {
+			return ty.TypeArgs[0], true
+		}
+		return nil, false
+	case TypeUnion:
+		elementType := unionOfValueTypes(ty.Union, func(option *TypeExpr) *TypeExpr {
+			if element, ok := arrayLiteralElementType(option); ok {
+				return element
+			}
+			return nil
+		})
+		return elementType, elementType != nil
+	default:
+		return nil, false
+	}
+}
+
+func hashLiteralTypeHasValueSlots(ty *TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	switch ty.Kind {
+	case TypeHash, TypeShape:
+		return true
+	case TypeUnion:
+		for _, option := range ty.Union {
+			if hashLiteralTypeHasValueSlots(option) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hashLiteralValueType(ty *TypeExpr, key Value) *TypeExpr {
+	if ty == nil {
+		return nil
+	}
+	switch ty.Kind {
+	case TypeHash:
+		if len(ty.TypeArgs) > 1 {
+			return ty.TypeArgs[1]
+		}
+		return nil
+	case TypeShape:
+		field, ok := ty.Shape[hashDisplayKey(key)]
+		if !ok {
+			return nil
+		}
+		return field
+	case TypeUnion:
+		return unionOfValueTypes(ty.Union, func(option *TypeExpr) *TypeExpr {
+			return hashLiteralValueType(option, key)
+		})
+	default:
+		return nil
+	}
+}
+
+func unionOfValueTypes(options []*TypeExpr, valueType func(*TypeExpr) *TypeExpr) *TypeExpr {
+	var types []*TypeExpr
+	for _, option := range options {
+		ty := valueType(option)
+		if ty != nil {
+			types = append(types, ty)
+		}
+	}
+	switch len(types) {
+	case 0:
+		return nil
+	case 1:
+		return types[0]
+	default:
+		return &TypeExpr{Kind: TypeUnion, Union: types}
+	}
+}
+
+func typeExprIncludesCallable(ty *TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	switch ty.Kind {
+	case TypeFunction:
+		return true
+	case TypeUnion:
+		for _, option := range ty.Union {
+			if typeExprIncludesCallable(option) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // calleeResolution records how a call's callee was resolved, which decides
@@ -1041,7 +1753,10 @@ func resolveKeywordOptionsHash(call *CallExpr, callee Value, resolution calleeRe
 		return args, kwargs
 	}
 	fn := optionsHashTarget(callee)
-	if fn == nil || !functionCanReceiveOptionsHash(fn, len(args), kwargs) {
+	if fn == nil || !functionCanReceiveOptionsHash(fn, len(args), func(name string) bool {
+		_, ok := kwargs[name]
+		return ok
+	}) {
 		return args, kwargs
 	}
 	hash := make(map[string]Value, len(kwargs))
@@ -1102,10 +1817,36 @@ func optionsHashTarget(callee Value) *ScriptFunction {
 	}
 }
 
-func functionCanReceiveOptionsHash(fn *ScriptFunction, positionalCount int, kwargs map[string]Value) bool {
+func callOptionsHashArgumentType(call *CallExpr, callee Value, resolution calleeResolution) (*TypeExpr, bool) {
+	if !call.KeywordOptionsHash || len(call.KwArgs) == 0 {
+		return nil, false
+	}
+	if !calleeCollapsesOptionsHash(call, callee, resolution) {
+		return nil, false
+	}
+	fn := optionsHashTarget(callee)
+	if fn == nil {
+		return nil, false
+	}
+	return optionsHashArgumentType(fn, len(call.Args), func(name string) bool {
+		for _, kw := range call.KwArgs {
+			if kw.Name == name {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func functionCanReceiveOptionsHash(fn *ScriptFunction, positionalCount int, hasKeyword func(string) bool) bool {
+	_, ok := optionsHashArgumentType(fn, positionalCount, hasKeyword)
+	return ok
+}
+
+func optionsHashArgumentType(fn *ScriptFunction, positionalCount int, hasKeyword func(string) bool) (*TypeExpr, bool) {
 	for _, param := range fn.Params {
 		if param.Kind == ParamKeyword || param.Kind == ParamKeywordRest {
-			return false
+			return nil, false
 		}
 	}
 	for _, param := range fn.Params {
@@ -1115,13 +1856,15 @@ func functionCanReceiveOptionsHash(fn *ScriptFunction, positionalCount int, kwar
 				positionalCount--
 				continue
 			}
-			_, keywordTargetsThisParam := kwargs[param.Name]
-			return !keywordTargetsThisParam
+			if hasKeyword(param.Name) {
+				return nil, false
+			}
+			return param.Type, true
 		case ParamRest:
-			return true
+			return restParamElementType(param.Type), true
 		}
 	}
-	return false
+	return nil, false
 }
 
 func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
@@ -1146,17 +1889,14 @@ func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs
 // receiver, arguments, keyword arguments, and block — against the memory quota
 // before the call runs.
 //
-// The callee is included because a bound predicate builtin captures its receiver
-// (see universalMember): the captured payload is reachable only through the
-// callee value, not through the call's own receiver. A stored probe such as
-// `probe = huge.eql?` is charged because the variable keeps the builtin in the
-// environment, but an immediately invoked temporary callee such as
-// `make_probe()(huge_arg)` lives only on the Go call stack, so without charging
-// it here the captured receiver plus the outer arguments could exceed the quota
-// unseen. Passing the callee through the same estimator deduplicates it against
-// the environment, so a callee that is also reachable from a variable is counted
-// once and the common static callee — a function, or a builtin with no captures —
-// adds nothing.
+// The callee is included when it carries captured roots: a bound predicate
+// builtin captures its receiver (see universalMember), and a block captures its
+// environment. In both cases the captured payload can be reachable only through
+// a temporary callee on the Go call stack, not through the call receiver,
+// arguments, or block argument. Passing the callee through the same estimator
+// deduplicates it against the environment, so a callee that is also reachable
+// from a variable is counted once and the common static callee — a function, or a
+// builtin with no captures — adds nothing.
 func (exec *Execution) checkCallMemoryRootsWithCallee(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if !calleeCapturesRoots(callee) {
 		if receiver.Kind() == KindNil && len(kwargs) == 0 && block.IsNil() {
@@ -1171,16 +1911,20 @@ func (exec *Execution) checkCallMemoryRootsWithCallee(callee, receiver Value, ar
 }
 
 // calleeCapturesRoots reports whether a callee value carries captured runtime
-// values that the call roots must charge — that is, a bound builtin (such as a
-// stored or temporary eql?/equal? predicate) whose Fn closes over a receiver.
-// Static callees (functions, or builtins without captures) carry no extra
-// payload, so the common call path skips charging them.
+// values that the call roots must charge — that is, a block with an environment
+// or a bound builtin (such as a stored or temporary eql?/equal? predicate) whose
+// Fn closes over a receiver. Static callees (functions, or builtins without
+// captures) carry no extra payload, so the common call path skips charging them.
 func calleeCapturesRoots(callee Value) bool {
-	if callee.Kind() != KindBuiltin {
+	switch callee.Kind() {
+	case KindBlock:
+		return valueBlock(callee) != nil
+	case KindBuiltin:
+		builtin := valueBuiltin(callee)
+		return builtin != nil && len(builtin.CapturedValues) > 0
+	default:
 		return false
 	}
-	builtin := valueBuiltin(callee)
-	return builtin != nil && len(builtin.CapturedValues) > 0
 }
 
 func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
@@ -1196,11 +1940,11 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	args, err := exec.evalCallArgs(call, env)
+	args, err := exec.evalCallArgsForCallee(call, env, callee)
 	if err != nil {
 		return NewNil(), err
 	}
-	kwargs, err := exec.evalCallKwArgs(call, env)
+	kwargs, err := exec.evalCallKwArgsForCallee(call, env, callee, calleeDirect)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1240,7 +1984,9 @@ func (exec *Execution) evalBlockGivenCall(call *CallExpr, env *Env) (Value, erro
 }
 
 func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, env *Env) (Value, error) {
-	receiver, err := exec.evalExpression(member.Object, env)
+	receiver, err := exec.evalMemberCallReceiver(member, env, func(object Expression, env *Env) bool {
+		return callMemberCallReceiverAutoInvokes(call, object, env)
+	})
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1283,11 +2029,11 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		}
 	}
 
-	args, err := exec.evalCallArgs(call, env)
+	args, err := exec.evalCallArgsForCallee(call, env, callee)
 	if err != nil {
 		return NewNil(), err
 	}
-	kwargs, err := exec.evalCallKwArgs(call, env)
+	kwargs, err := exec.evalCallKwArgsForCallee(call, env, callee, resolution)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1311,6 +2057,56 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		return NewNil(), err
 	}
 	return result, nil
+}
+
+func (exec *Execution) evalMemberCallReceiver(member *MemberExpr, env *Env, objectAutoInvokes func(Expression, *Env) bool) (Value, error) {
+	if member.Property != "call" {
+		return exec.evalExpressionWithAuto(member.Object, env, memberCallReceiverAutoInvokes(member.Object, env))
+	}
+	objectMember, ok := member.Object.(*MemberExpr)
+	if !ok {
+		return exec.evalExpressionWithAuto(member.Object, env, objectAutoInvokes(member.Object, env))
+	}
+	receiver, err := exec.evalExpressionWithAuto(objectMember.Object, env, memberReceiverAutoInvokes(objectMember.Object, objectMember.Property, env))
+	if err != nil {
+		return NewNil(), err
+	}
+	if objectMember.Safe && receiver.Kind() == KindNil {
+		return NewNil(), nil
+	}
+	if err := exec.checkMemoryWith(receiver); err != nil {
+		return NewNil(), err
+	}
+	callee, err := exec.getPublicMember(receiver, objectMember.Property, objectMember.Pos())
+	if err != nil {
+		return NewNil(), err
+	}
+	if memberDataCallable(receiver, objectMember.Property, callee) {
+		return callee, nil
+	}
+	return exec.autoInvokeIfNeeded(objectMember, callee, receiver)
+}
+
+func memberDataCallable(receiver Value, property string, member Value) bool {
+	if !isInvocable(member) {
+		return false
+	}
+	switch receiver.Kind() {
+	case KindHash:
+		data, ok := hashMemberData(receiver, property)
+		return ok && data.Identical(member)
+	case KindObject:
+		data, ok := receiver.Hash()[property]
+		return ok && data.Identical(member)
+	case KindInstance:
+		data, ok := valueInstance(receiver).Ivars[property]
+		return ok && data.Identical(member)
+	case KindClass:
+		data, ok := valueClass(receiver).ClassVars[property]
+		return ok && data.Identical(member)
+	default:
+		return false
+	}
 }
 
 func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, error) {
@@ -1758,6 +2554,14 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env, t
 	if err := exec.pushFrame(fn.Name, fn.Pos, fn.owner, fn.owner); err != nil {
 		return NewNil(), err
 	}
+	if fn.Accessor == functionAccessorSetter {
+		val, err := exec.executeGeneratedSetter(fn, callEnv)
+		exec.popFrame()
+		if err != nil {
+			return NewNil(), err
+		}
+		return val, nil
+	}
 	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
 	if sig := matchNonLocalReturn(err, token); sig != nil {
 		val = sig.value
@@ -1813,6 +2617,26 @@ func finishFunctionForCall(exec *Execution, fn *ScriptFunction, val Value) (Valu
 			return NewNil(), exec.errorAt(fn.Pos, "%s", formatReturnTypeMismatch(fn.Name, err))
 		}
 		val = normalized
+	}
+	if err := exec.checkMemoryWith(val); err != nil {
+		return NewNil(), exec.wrapError(err, fn.Pos)
+	}
+	return val, nil
+}
+
+func (exec *Execution) executeGeneratedSetter(fn *ScriptFunction, callEnv *Env) (Value, error) {
+	self, ok := callEnv.Get("self")
+	if !ok || self.Kind() != KindInstance {
+		return NewNil(), exec.errorAt(fn.Pos, "no instance context for property setter")
+	}
+	val, ok := callEnv.Get("value")
+	if !ok {
+		return NewNil(), exec.errorAt(fn.Pos, "missing property setter value")
+	}
+	valueInstance(self).Ivars[fn.AccessorName] = val
+	val = callEnv.detachArrayAppendResult(val)
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
 	}
 	if err := exec.checkMemoryWith(val); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
@@ -1911,7 +2735,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 					usedKw[param.Name] = true
 				}
 			} else if param.DefaultVal != nil {
-				defaultVal, err := exec.evalExpressionWithAuto(param.DefaultVal, env, true)
+				defaultVal, err := exec.evalExpressionWithExpectation(param.DefaultVal, env, typeExpressionExpectation(param.Type))
 				if err != nil {
 					return err
 				}
@@ -1951,7 +2775,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 					usedKw[param.Name] = true
 				}
 			} else if param.DefaultVal != nil {
-				defaultVal, err := exec.evalExpressionWithAuto(param.DefaultVal, env, true)
+				defaultVal, err := exec.evalExpressionWithExpectation(param.DefaultVal, env, positionalArgumentExpectation(param))
 				if err != nil {
 					return err
 				}

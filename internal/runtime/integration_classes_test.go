@@ -184,3 +184,145 @@ func TestClassErrorCases(t *testing.T) {
 		t.Fatalf("run: writeonly mismatch: %v", h["writeonly"])
 	}
 }
+
+func TestClassPropertyAndNominalTypeAnnotations(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+class User
+  property name: string
+  property friend: User
+
+  def initialize(@name: string)
+  end
+
+  def corrupt_name
+    @name = 1
+    name
+  end
+end
+
+def user_name(user: User) -> string
+  user.name
+end
+
+def set_friend
+  ada = User.new("Ada")
+  lin = User.new("Lin")
+  ada.friend = lin
+  user_name(ada.friend)
+end
+
+def bad_name_setter
+  user = User.new("Ada")
+  user.name = 1
+end
+
+def bad_friend_setter
+  user = User.new("Ada")
+  user.friend = "Lin"
+end
+
+def bad_nominal_arg
+  user_name("Ada")
+end
+
+def bad_getter_return
+  User.new("Ada").corrupt_name
+end
+`)
+
+	if got := callFunc(t, script, "set_friend", nil); !got.Equal(NewString("Lin")) {
+		t.Fatalf("set_friend() = %#v, want Lin", got)
+	}
+	requireCallErrorContains(t, script, "bad_name_setter", nil, CallOptions{}, "argument value expected string, got int")
+	requireCallErrorContains(t, script, "bad_friend_setter", nil, CallOptions{}, "argument value expected User, got string")
+	requireCallErrorContains(t, script, "bad_nominal_arg", nil, CallOptions{}, "argument user expected User, got string")
+	requireCallErrorContains(t, script, "bad_getter_return", nil, CallOptions{}, "return value for name expected string, got int")
+}
+
+func TestExactClassTypeWinsOverCaseInsensitiveEnumFallback(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+class User
+  def label
+    "User"
+  end
+end
+
+enum user
+  Draft
+end
+
+def accept(user: User)
+  user.label
+end
+
+def run()
+  accept(User.new)
+end
+`)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewString("User")) {
+		t.Fatalf("run() = %#v, want User", got)
+	}
+}
+
+func TestExactNamedTypeLookupRespectsLexicalScopeOrder(t *testing.T) {
+	t.Parallel()
+
+	enumDef, err := compileEnumDef(&EnumStmt{
+		Name: "Status",
+		Members: []EnumMemberStmt{
+			{Name: "Draft"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile enum: %v", err)
+	}
+	classDef := &ClassDef{
+		Name:         "Status",
+		Methods:      map[string]*ScriptFunction{},
+		ClassMethods: map[string]*ScriptFunction{},
+		ClassVars:    map[string]Value{},
+	}
+
+	outer := newEnv(nil)
+	outer.DefineStatic("Status", NewEnum(enumDef))
+	inner := newEnv(outer)
+	inner.Define("Status", NewClass(classDef))
+
+	match, ok, err := lookupNamedTypeForType(&TypeExpr{Kind: TypeEnum, Name: "Status"}, typeContext{
+		env:      inner,
+		fallback: inner,
+	})
+	if err != nil {
+		t.Fatalf("lookup Status: %v", err)
+	}
+	if !ok || match.class != classDef || match.enum != nil {
+		t.Fatalf("lookup Status = %#v, ok=%v; want inner class", match, ok)
+	}
+}
+
+func TestCaseInsensitiveClassEnumTypeFallbackIsAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+class User
+end
+
+enum user
+  Draft
+end
+
+def accept(value: USER)
+  value
+end
+
+def run()
+  accept(User.new)
+end
+`)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "ambiguous type USER matches enum user, class User")
+}

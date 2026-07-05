@@ -83,3 +83,41 @@ end
 		t.Fatalf("unexpected parse error: %v", errs[0])
 	}
 }
+
+func TestParserClassPropertyTypeAnnotations(t *testing.T) {
+	t.Parallel()
+	source := `class User
+  property name: string
+  getter age: int
+  setter friend: User, manager: User
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	classStmt, ok := got.Statements[0].(*ast.ClassStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.ClassStmt", got.Statements[0])
+	}
+	want := []ast.PropertyDecl{
+		{
+			Kind:  "property",
+			Names: []ast.PropertyName{{Name: "name", Type: &ast.TypeExpr{Name: "string", Kind: ast.TypeString}}},
+		},
+		{
+			Kind:  "getter",
+			Names: []ast.PropertyName{{Name: "age", Type: &ast.TypeExpr{Name: "int", Kind: ast.TypeInt}}},
+		},
+		{
+			Kind: "setter",
+			Names: []ast.PropertyName{
+				{Name: "friend", Type: &ast.TypeExpr{Name: "User", Kind: ast.TypeEnum}},
+				{Name: "manager", Type: &ast.TypeExpr{Name: "User", Kind: ast.TypeEnum}},
+			},
+		},
+	}
+	if diff := cmp.Diff(want, classStmt.Properties, astCmpOpts); diff != "" {
+		t.Fatalf("properties mismatch (-want +got):\n%s", diff)
+	}
+}

@@ -50,6 +50,72 @@ end`
 	}
 }
 
+func TestParserBlockParameterDestructuringTypeAnnotations(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  rows.map do |(id: int, name: string), (head: int, *tail: array<int>)|
+    name
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	stmt := body[0].(*ast.ExprStmt)
+	call := stmt.Expr.(*ast.CallExpr)
+	if call.Block == nil {
+		t.Fatal("call block = nil, want block")
+	}
+
+	want := []ast.Param{
+		{
+			Target: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "id"}, Type: &ast.TypeExpr{Name: "int", Kind: ast.TypeInt}},
+				{Target: &ast.Identifier{Name: "name"}, Type: &ast.TypeExpr{Name: "string", Kind: ast.TypeString}},
+			}},
+		},
+		{
+			Target: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "head"}, Type: &ast.TypeExpr{Name: "int", Kind: ast.TypeInt}},
+				{
+					Target: &ast.Identifier{Name: "tail"},
+					Rest:   true,
+					Type: &ast.TypeExpr{
+						Name:     "array",
+						Kind:     ast.TypeArray,
+						TypeArgs: []*ast.TypeExpr{{Name: "int", Kind: ast.TypeInt}},
+					},
+				},
+			}},
+		},
+	}
+	if diff := cmp.Diff(want, call.Block.Params, astCmpOpts); diff != "" {
+		t.Fatalf("block params mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserBlockParameterDestructuringRejectsScalarRestType(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  rows.map do |(*tail: int)|
+    tail
+  end
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = nil, want rest destructuring type diagnostic", source)
+	}
+	if got := errs[0].Error(); !strings.Contains(got, "captures an array") {
+		t.Fatalf("parseSource(%q) error = %q, want captures an array diagnostic", source, got)
+	}
+}
+
 func TestParserBlockParameterDestructuringAnonymousRest(t *testing.T) {
 	t.Parallel()
 

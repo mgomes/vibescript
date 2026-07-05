@@ -2208,10 +2208,22 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 
 	for _, param := range block.Params {
 		c.checkRuntimeTypeAnnotation(function, param.Type)
+		c.checkDestructureTargetTypeAnnotations(function, param.Target)
 		c.checkExpression(function, param.DefaultVal)
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
 	c.checkStatements(label, nil, block.Body)
+}
+
+func (c *scriptChecker) checkDestructureTargetTypeAnnotations(function string, target Expression) {
+	destructure, ok := target.(*DestructureTarget)
+	if !ok {
+		return
+	}
+	for _, element := range destructure.Elements {
+		c.checkRuntimeTypeAnnotation(function, element.Type)
+		c.checkDestructureTargetTypeAnnotations(function, element.Target)
+	}
 }
 
 func (c *scriptChecker) callMayEvaluateBlock(call *CallExpr) bool {
@@ -3313,15 +3325,14 @@ func staticCallCollapsesOptionsHash(call *CallExpr, target staticCallable, view 
 	if call.Parenthesized && !target.constructor && target.resolution == calleeMemberMethod {
 		return false
 	}
-	return functionCanReceiveOptionsHash(target.fn, len(view.args), staticKeywordNames(view.kwargs))
-}
-
-func staticKeywordNames(kwargs []KeywordArg) map[string]Value {
-	out := make(map[string]Value, len(kwargs))
-	for _, kwarg := range kwargs {
-		out[kwarg.Name] = NewNil()
-	}
-	return out
+	return functionCanReceiveOptionsHash(target.fn, len(view.args), func(name string) bool {
+		for _, kwarg := range view.kwargs {
+			if kwarg.Name == name {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 func sortedValueKeywordNames(kwargs map[string]Value) []string {

@@ -959,6 +959,10 @@ type Builtin struct {
 	// keyword options hash just like `fn(...)`. Method and constructor wrappers
 	// leave this false to keep parenthesized keyword binding strict.
 	DirectCallAlias bool
+	// DirectCallAliasPos is the source position attached to the member access
+	// that created a direct-call alias. Rebinding an escaped alias rebuilds its
+	// closure around the live callable and preserves this position for diagnostics.
+	DirectCallAliasPos Position
 	// CapturedValues holds runtime values the builtin's Fn closes over and keeps
 	// alive for as long as the builtin is reachable. The memory estimator charges
 	// their payloads so a stored bound builtin (for example `probe = big.eql?`,
