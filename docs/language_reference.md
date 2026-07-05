@@ -377,6 +377,16 @@ keyword-splatting a non-hash raises. In parenless calls the splat uses the
 same spacing rule as block passing: `f *args` splats, while `a * b`,
 `a*b`, and any form whose callee is a known local stay multiplication.
 
+A regex literal can be a parenless command argument, matching Ruby:
+`match /ID-[0-9]+/` is `match(/ID-[0-9]+/)`, flags and further arguments
+included (`scan /a+/, text`). The slash follows the same spacing rule as the
+splat and block-pass sigils — a space before the `/` with none after it opens
+a regex when the callee is not a known local variable — so division is
+unaffected: `total /2`, `total / 2`, and `total/2` all divide when `total` is
+a local, and `f / 2` or `f/2` keep dividing a call's result. Only `f /2`
+(space before the slash, none after, non-local callee) reads as a regex
+argument; write `f() / 2`, `f / 2`, or `f/2` for the division.
+
 Ruby-style ampersand block arguments forward a callable as the call's block:
 `m(&blk)` passes a captured block, function value, or bound method along, and
 `m(&:name)` is the symbol-to-proc shorthand that sends `name` to each yielded

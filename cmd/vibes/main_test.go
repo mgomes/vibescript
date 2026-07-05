@@ -292,6 +292,20 @@ end`},
 			wantErr: "argument value expected int, got string",
 		},
 		{
+			name: "check_only_accepts_command_argument_regex",
+			args: []string{"-check", "-e", `def describe(re)
+  re.source
+end
+describe /id/i`},
+		},
+		{
+			name: "check_only_reports_unterminated_command_argument_regex",
+			args: []string{"-check", "-e", `def run
+  match /abc
+end`},
+			wantErr: "unterminated regex literal",
+		},
+		{
 			name: "check_only_uses_inline_entrypoint_order",
 			args: []string{
 				"-check",

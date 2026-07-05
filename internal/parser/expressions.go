@@ -195,6 +195,21 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 		}
 		return p.peekSigilStartsPrefixArgument()
 	}
+	if p.peekToken.Type == ast.TokenSlash {
+		// "/" is both the division operator and the regex-literal delimiter;
+		// the same spacing shape as the sigils above applies — "match /id/"
+		// is a command-argument regex while "f / 2", "f/2", and a trailing
+		// "/" are division — and a known local callee keeps the division
+		// reading in every spacing ("total /2" divides), mirroring the
+		// local-variable table Ruby's parser feeds back to its lexer. A "/="
+		// after the callee stays a compound assignment (TokenSlashAssign
+		// never reaches here), also matching Ruby, which gives op-assign
+		// priority over a regex whose pattern would begin with "=".
+		if ident, ok := left.(*ast.Identifier); ok && p.isLocalName(ident.Name) {
+			return false
+		}
+		return p.peekSlashStartsRegexArgument()
+	}
 	return isParenlessArgumentStart(p.peekToken.Type)
 }
 
@@ -230,6 +245,31 @@ func (p *parser) peekSigilStartsPrefixArgument() bool {
 	operandFlush := p.peekPeek.Pos.Line == p.peekToken.Pos.Line &&
 		p.peekPeek.Pos.Column == p.peekToken.End.Column
 	return operandFlush
+}
+
+// peekSlashStartsRegexArgument reports whether the lookahead "/" has the
+// spacing Ruby reads as a command-argument regex literal ("match /id/")
+// rather than division: detached from the callee yet flush against pattern
+// text on the same line. Unlike the token-based sigil check above, the flush
+// side must consult the raw source: the lexer tokenized past the slash under
+// the division reading, so the following token's position is unreliable (a
+// "#" directly after the slash, for example, swallowed the rest of the line
+// as a comment while filling the lookahead).
+func (p *parser) peekSlashStartsRegexArgument() bool {
+	calleeFlush := p.peekToken.Pos.Line == p.curToken.End.Line &&
+		p.peekToken.Pos.Column == p.curToken.End.Column
+	if calleeFlush {
+		return false
+	}
+	offset, ok := sourceOffsetForPosition(p.l.input, p.peekToken.Pos)
+	if !ok || offset+1 >= len(p.l.input) {
+		return false
+	}
+	switch p.l.input[offset+1] {
+	case ' ', '\t', '\r', '\n':
+		return false
+	}
+	return true
 }
 
 // peekStartsParenlessKeywordLabel reports whether the lookahead begins a
@@ -1094,6 +1134,28 @@ func (p *parser) parsePercentWordsLiteral() ast.Expression {
 		elements[i] = &ast.StringLiteral{Value: entry, Position: p.curToken.Pos}
 	}
 	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
+}
+
+// parseRegexCommandArgument re-reads a command-argument regex literal whose
+// opening slash the lexer scanned as division (canParseParenlessCall has
+// already validated the callee and spacing). The lexer decides regex-vs-
+// division from the token preceding the slash, so the parser repositions it
+// at the slash behind a synthetic comma — a token that cannot end an
+// expression — and the ordinary prefix-position regex rule takes over. That
+// reuses the one regex scanner and its diagnostics: an unterminated literal
+// surfaces as the lexer's "unterminated regex literal" error, and the token
+// then flows through the normal argument path so flags, trailing postfixes,
+// and following arguments behave exactly like the parenthesized form.
+func (p *parser) parseRegexCommandArgument() ast.Expression {
+	offset, ok := sourceOffsetForPosition(p.l.input, p.curToken.Pos)
+	if !ok {
+		p.errorUnexpected(p.curToken)
+		return nil
+	}
+	pos := p.curToken.Pos
+	p.reprimeAt(offset, ast.Token{Type: ast.TokenComma, Literal: ",", Pos: pos, End: pos})
+	p.nextToken()
+	return p.parseParenlessArgumentExpression()
 }
 
 func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
@@ -2241,6 +2303,14 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, keywordOptionsHash *bool, blockArg *ast.Expression) {
 	if p.curToken.Type == ast.TokenPercent {
 		expr := p.parsePercentArrayLiteralArgument()
+		if expr != nil {
+			*args = append(*args, expr)
+		}
+		return
+	}
+
+	if p.curToken.Type == ast.TokenSlash {
+		expr := p.parseRegexCommandArgument()
 		if expr != nil {
 			*args = append(*args, expr)
 		}

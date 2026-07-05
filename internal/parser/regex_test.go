@@ -270,12 +270,23 @@ func TestParserSlashDisambiguation(t *testing.T) {
 		"def run\n  (1 + 3) / 2\nend",
 		"def run\n  xs = [8]\n  xs[0] / 2\nend",
 		"def run\n  a = 8.0\n  a /= 2\n  a\nend",
-		// A slash after an identifier stays division even when only the left side
-		// has a space: the lexer can't tell a local from a method, so it must not
-		// read these as a command-argument regex.
+		// A slash after a known local stays division in every spacing: the
+		// parser's local table keeps the command-argument regex reading for
+		// non-local callees only, so these #882 shapes must never regress.
 		"def run\n  total = 4\n  total /2\nend",
 		"def run\n  total = 4\n  n = 1\n  total /(n + 1)\nend",
 		"def run\n  total = 4\n  n = 1\n  total /-n\nend",
+		// Parameters and assigned uppercase constants are locals too.
+		"def run(total)\n  total /2\nend",
+		"def run\n  Total = 4\n  Total /2\nend",
+		// A non-local callee keeps division when the slash is spaced on both
+		// sides or flush: only the space-before/none-after shape opens a
+		// command-argument regex.
+		"def run\n  f / 2\nend",
+		"def run\n  f/2\nend",
+		// "/=" keeps compound-assignment priority even after a non-local
+		// name, matching Ruby's op-assign rule.
+		"def run\n  f /= 2\nend",
 	}
 	for _, source := range divisions {
 		program, errs := parseSource(t, source)
@@ -308,6 +319,244 @@ func TestParserSlashDisambiguation(t *testing.T) {
 		})
 		if count == 0 {
 			t.Fatalf("parseSource(%q) produced no regex literal", source)
+		}
+	}
+}
+
+// callWithRegexArgument returns the CallExpr whose argument list contains
+// (possibly nested inside a postfix such as `.source`) the program's regex
+// literal, preferring the innermost such call when commands nest.
+func callWithRegexArgument(t *testing.T, program *ast.Program) *ast.CallExpr {
+	t.Helper()
+	var found *ast.CallExpr
+	walkASTNodes(program, func(node any) {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return
+		}
+		for _, arg := range call.Args {
+			hasRegex := false
+			walkASTNodes(arg, func(inner any) {
+				if _, ok := inner.(*ast.RegexLiteral); ok {
+					hasRegex = true
+				}
+			})
+			if hasRegex {
+				// Later matches are deeper in the walk, so the innermost
+				// enclosing command call wins.
+				found = call
+			}
+		}
+	})
+	if found == nil {
+		t.Fatal("no call has a regex literal argument")
+	}
+	return found
+}
+
+// TestParserCommandArgumentRegex pins Ruby's parenless command-argument regex
+// form: after a non-local callee, a slash detached from the callee but flush
+// against its pattern opens a regex literal, so `match /id/` == `match(/id/)`.
+func TestParserCommandArgumentRegex(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		source   string
+		pattern  string
+		flags    string
+		wantArgs int
+	}{
+		{
+			name:     "function callee",
+			source:   "def run\n  match /id/\nend",
+			pattern:  "id",
+			wantArgs: 1,
+		},
+		{
+			name:     "builtin callee",
+			source:   "def run\n  puts /id/\nend",
+			pattern:  "id",
+			wantArgs: 1,
+		},
+		{
+			name:     "member callee",
+			source:   "def run(text)\n  text.scan /id/\nend",
+			pattern:  "id",
+			wantArgs: 1,
+		},
+		{
+			name:     "flags normalize like the parenthesized form",
+			source:   "def run\n  match /id/mi\nend",
+			pattern:  "id",
+			flags:    "im",
+			wantArgs: 1,
+		},
+		{
+			name:     "escaped slash",
+			source:   "def run\n  match /a\\/b/\nend",
+			pattern:  `a\/b`,
+			wantArgs: 1,
+		},
+		{
+			name:     "slash in character class",
+			source:   "def run\n  match /[a/b]/\nend",
+			pattern:  "[a/b]",
+			wantArgs: 1,
+		},
+		{
+			name: "hash mark in pattern is not a comment",
+			// The lexer's speculative division reading swallowed "#b/" as a
+			// comment while filling the lookahead; the raw-source spacing
+			// check and the re-scan must not trust those tokens.
+			source:   "def run\n  match /a#b/\nend",
+			pattern:  "a#b",
+			wantArgs: 1,
+		},
+		{
+			name:     "regex plus further arguments",
+			source:   "def run(text)\n  scan /a+/, text\nend",
+			pattern:  "a+",
+			wantArgs: 2,
+		},
+		{
+			name:     "inside a condition",
+			source:   "def run\n  if match /id/\n    1\n  end\nend",
+			pattern:  "id",
+			wantArgs: 1,
+		},
+		{
+			name:     "inside a brace block",
+			source:   "def run(xs)\n  xs.each { |x| match /id/ }\nend",
+			pattern:  "id",
+			wantArgs: 1,
+		},
+		{
+			name:     "nested command argument",
+			source:   "def run\n  puts match /id/\nend",
+			pattern:  "id",
+			wantArgs: 1,
+		},
+		{
+			name:     "postfix binds to the literal",
+			source:   "def run\n  match /id/.source\nend",
+			pattern:  "id",
+			wantArgs: 1,
+		},
+		{
+			name:     "statement modifier stays outside the call",
+			source:   "def run\n  match /id/ if true\nend",
+			pattern:  "id",
+			wantArgs: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			program, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+			var found *ast.RegexLiteral
+			count := 0
+			walkASTNodes(program, func(node any) {
+				if re, ok := node.(*ast.RegexLiteral); ok {
+					found = re
+					count++
+				}
+			})
+			if count != 1 {
+				t.Fatalf("parseSource(%q) produced %d regex literals, want 1", tc.source, count)
+			}
+			if found.Pattern != tc.pattern || found.Flags != tc.flags {
+				t.Fatalf("regex literal = /%s/%s, want /%s/%s", found.Pattern, found.Flags, tc.pattern, tc.flags)
+			}
+			call := callWithRegexArgument(t, program)
+			if len(call.Args) != tc.wantArgs {
+				t.Fatalf("call args = %d, want %d", len(call.Args), tc.wantArgs)
+			}
+		})
+	}
+}
+
+// TestParserCommandArgumentRegexErrors pins the loud failure mode: once the
+// command-argument spacing commits to a regex, a missing closing slash or a
+// bad flag reports the same diagnostics as the parenthesized form.
+func TestParserCommandArgumentRegexErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name:   "unterminated command argument",
+			source: "def run\n  match /abc\nend",
+			want:   "unterminated regex literal",
+		},
+		{
+			// The pre-#883 division reading of `f /2` (dividing a zero-arg
+			// function's result) now fails loudly rather than silently
+			// changing meaning; `f / 2`, `f/2`, and `f() / 2` keep division.
+			name:   "former division of a call result",
+			source: "def run\n  f /2\nend",
+			want:   "unterminated regex literal",
+		},
+		{
+			name:   "unsupported flag",
+			source: "def run\n  match /id/x\nend",
+			want:   `unsupported regex flag "x"; supported flags are i and m`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, errs := parseSource(t, tc.source)
+			if len(errs) == 0 {
+				t.Fatalf("parseSource(%q) errors = none, want %q", tc.source, tc.want)
+			}
+			if got := errs[0].Error(); !strings.Contains(got, tc.want) {
+				t.Fatalf("parseSource(%q) error = %q, want substring %q", tc.source, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParserCommandArgumentRegexMeaningChange documents the Ruby-inherited
+// hazard the changelog calls out: with a non-local callee and command
+// spacing, a second slash later on the line closes the literal, so a former
+// division chain parses cleanly with a new meaning instead of erroring.
+func TestParserCommandArgumentRegexMeaningChange(t *testing.T) {
+	t.Parallel()
+
+	sources := []string{
+		// Previously ((f / 2) + g) / i; now f(/2 + g/i).
+		"def run\n  x = f /2 + g/i\nend",
+		// Previously ((f / 2) + g) / 3; now f(/2 + g/) followed by a bare 3.
+		"def run\n  x = f /2 + g/ 3\nend",
+		// Previously a division continued onto the next line; now f(/2 + g/)
+		// followed by a bare 1.
+		"def run\n  x = f /2 + g/\n  1\nend",
+	}
+	for _, source := range sources {
+		program, errs := parseSource(t, source)
+		if len(errs) > 0 {
+			t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+		}
+		var found *ast.RegexLiteral
+		walkASTNodes(program, func(node any) {
+			if re, ok := node.(*ast.RegexLiteral); ok {
+				found = re
+			}
+		})
+		if found == nil {
+			t.Fatalf("parseSource(%q) produced no regex literal", source)
+		}
+		if found.Pattern != "2 + g" {
+			t.Fatalf("parseSource(%q) regex pattern = %q, want %q", source, found.Pattern, "2 + g")
 		}
 	}
 }

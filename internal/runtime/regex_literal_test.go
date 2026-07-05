@@ -233,6 +233,63 @@ func TestRegexLiteralBehavior(t *testing.T) {
 	}
 }
 
+// TestRegexCommandArgument pins that the parenless command-argument form
+// delivers a first-class regex value: `helper /id/i` calls helper with the
+// same regex `helper(/id/i)` would, while a slash after a local keeps
+// dividing.
+func TestRegexCommandArgument(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def describe(re)
+      re.source + ":" + re.flags
+    end
+
+    def first_match(re, text)
+      text.match(re)[0]
+    end
+
+    def command_regex()
+      describe /id/i
+    end
+
+    def command_regex_extra_argument()
+      first_match /a+/, "xaay"
+    end
+
+    def member_command_regex()
+      m = "ID-12".match /id-([0-9]+)/i
+      m[1]
+    end
+
+    def local_slash_still_divides()
+      total = 8
+      total /2
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{name: "command_regex", fn: "command_regex", want: NewString("id:i")},
+		{name: "command_regex_extra_argument", fn: "command_regex_extra_argument", want: NewString("aa")},
+		{name: "member_command_regex", fn: "member_command_regex", want: NewString("12")},
+		{name: "local_slash_still_divides", fn: "local_slash_still_divides", want: NewInt(4)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, nil)
+			if diff := valuesDiff([]Value{tc.want}, []Value{got}); diff != "" {
+				t.Fatalf("%s mismatch (-want +got):\n%s", tc.fn, diff)
+			}
+		})
+	}
+}
+
 // TestRegexLiteralErrors pins the diagnostics for regex misuse: unsupported
 // operand kinds, invalid patterns, guarded sizes, and non-hashable keys.
 func TestRegexLiteralErrors(t *testing.T) {
