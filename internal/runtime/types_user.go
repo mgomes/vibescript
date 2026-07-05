@@ -18,11 +18,14 @@ type ClassDef struct {
 	// call so Outer::Inner resolves like any other scoped constant.
 	NestedModules []string
 	// IncludedModules lists the qualified names of modules mixed in with
-	// include, in precedence order from lowest to highest (earlier include
-	// directives before later ones; within one directive, later arguments
-	// before earlier ones, matching Ruby's ancestor ordering). Their
-	// constants are adopted into ClassVars in this order before the class
-	// body runs, and is_a? reports instances as belonging to them.
+	// include — the full transitive closure, so a module reached through
+	// another include is listed too — in precedence order from lowest to
+	// highest (earlier include directives before later ones; within one
+	// directive, later arguments before earlier ones; a module's own
+	// includes before the module itself, matching Ruby's ancestor
+	// ordering). Their constants are adopted into ClassVars in this order
+	// before the class body runs, and is_a? reports instances as belonging
+	// to them.
 	IncludedModules []string
 	Body            []Statement
 	bodyRan         bool

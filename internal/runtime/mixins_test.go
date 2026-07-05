@@ -577,3 +577,153 @@ module Outer
 end
 `, "include in module Wrapper is a mixin directive, but this script also defines a function named include; rename the function")
 }
+
+func TestIsAReportsTransitivelyIncludedModules(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+module Base
+end
+
+module Middle
+  include Base
+end
+
+class Uses
+  include Middle
+end
+
+def run
+  u = Uses.new
+  [u.is_a?(Base), u.is_a?(Middle), u.kind_of?(Base), u.instance_of?(Base), u.instance_of?(Uses)]
+end
+`)
+
+	got := callFunc(t, script, "run", nil).Array()
+	want := []bool{true, true, true, false, true}
+	for i, expect := range want {
+		if !got[i].Equal(NewBool(expect)) {
+			t.Fatalf("predicate %d = %v, want %v", i, got[i], expect)
+		}
+	}
+}
+
+func TestModuleTypeContractAcceptsTransitivelyIncludingClass(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+module Base
+  def tag
+    "b"
+  end
+end
+
+module Middle
+  include Base
+end
+
+class Uses
+  include Middle
+end
+
+class Robot
+end
+
+def describe(thing: Base)
+  thing.tag
+end
+
+def accepted
+  describe(Uses.new)
+end
+
+def rejected
+  describe(Robot.new)
+end
+`)
+
+	if got := callFunc(t, script, "accepted", nil); !got.Equal(NewString("b")) {
+		t.Fatalf("accepted = %v", got)
+	}
+	requireCallErrorContains(t, script, "rejected", nil, CallOptions{}, "expected Base")
+}
+
+func TestReincludeIsANoOpForMethodsAndConstants(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+module A
+  WHO = "A"
+
+  def who
+    "A"
+  end
+end
+
+module B
+  WHO = "B"
+
+  def who
+    "B"
+  end
+end
+
+class Uses
+  include A
+  include B
+  include A
+end
+
+def run
+  [Uses.new.who, Uses::WHO]
+end
+`)
+
+	got := callFunc(t, script, "run", nil).Array()
+	if !got[0].Equal(NewString("B")) {
+		t.Fatalf("method winner = %v, want B (re-include must not restore A)", got[0])
+	}
+	if !got[1].Equal(NewString("B")) {
+		t.Fatalf("constant winner = %v, want B (re-include must not restore A)", got[1])
+	}
+}
+
+func TestTransitiveIncludeKeepsDirectModulePrecedence(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+module Base
+  WHO = "base"
+
+  def who
+    "base"
+  end
+end
+
+module Middle
+  include Base
+
+  WHO = "middle"
+
+  def who
+    "middle"
+  end
+end
+
+class Uses
+  include Middle
+  include Base
+end
+
+def run
+  [Uses.new.who, Uses::WHO, Uses.new.is_a?(Base)]
+end
+`)
+
+	got := callFunc(t, script, "run", nil).Array()
+	if !got[0].Equal(NewString("middle")) {
+		t.Fatalf("method winner = %v, want middle (Base is already an ancestor)", got[0])
+	}
+	if !got[1].Equal(NewString("middle")) {
+		t.Fatalf("constant winner = %v, want middle (Base is already an ancestor)", got[1])
+	}
+	if !got[2].Equal(NewBool(true)) {
+		t.Fatalf("is_a?(Base) = %v, want true", got[2])
+	}
+}

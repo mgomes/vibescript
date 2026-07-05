@@ -436,7 +436,9 @@ type mixinOwnNames struct {
 // Later include/extend directives overwrite copies made by earlier ones, and
 // within one directive earlier arguments win (`include A, B` behaves as if B
 // were included first), matching Ruby's ancestor ordering as closely as a
-// copy model can. The class's own definitions always take precedence.
+// copy model can. Re-including a module that is already an ancestor is a full
+// no-op, as in Ruby: neither its methods nor its constants regain precedence.
+// The class's own definitions always take precedence.
 func applyMixin(classDef *ClassDef, mixin *ast.MixinDecl, qualifiedName string, classes map[string]*ClassDef, own mixinOwnNames) error {
 	for i := len(mixin.Modules) - 1; i >= 0; i-- {
 		ref := mixin.Modules[i]
@@ -446,10 +448,22 @@ func applyMixin(classDef *ClassDef, mixin *ast.MixinDecl, qualifiedName string, 
 		}
 		switch mixin.Kind {
 		case ast.MixinInclude:
-			copyMixinMethods(classDef.Methods, moduleDef.Methods, own.instance)
-			if !slices.Contains(classDef.IncludedModules, moduleName) {
-				classDef.IncludedModules = append(classDef.IncludedModules, moduleName)
+			if slices.Contains(classDef.IncludedModules, moduleName) {
+				continue
 			}
+			copyMixinMethods(classDef.Methods, moduleDef.Methods, own.instance)
+			// The module's own ancestry joins the includer's ahead of the
+			// module itself, so a directly included module keeps precedence
+			// over what it pulled in, and is_a?/type contracts see the whole
+			// transitive chain. Modules resolve only when declared earlier in
+			// source, so moduleDef's list is already transitively complete,
+			// and self/mutual includes are rejected before this point.
+			for _, transitive := range moduleDef.IncludedModules {
+				if !slices.Contains(classDef.IncludedModules, transitive) {
+					classDef.IncludedModules = append(classDef.IncludedModules, transitive)
+				}
+			}
+			classDef.IncludedModules = append(classDef.IncludedModules, moduleName)
 		case ast.MixinExtend:
 			copyMixinMethods(classDef.ClassMethods, moduleDef.Methods, own.class)
 		default:
