@@ -383,9 +383,16 @@ func compileClassDef(stmt *ClassStmt, qualifiedName string, classes map[string]*
 	for _, member := range stmt.Members {
 		if member.Property != nil {
 			compileClassProperty(classDef, *member.Property, sectionVisibility)
+			// Register only the methods the declaration kind actually
+			// defines (mirroring compileClassProperty), so `getter x` still
+			// adopts a module's `x=` and `setter x` a module's `x`.
 			for _, entry := range member.Property.Names {
-				own.instance[entry.Name] = struct{}{}
-				own.instance[entry.Name+"="] = struct{}{}
+				if member.Property.Kind == "property" || member.Property.Kind == "getter" {
+					own.instance[entry.Name] = struct{}{}
+				}
+				if member.Property.Kind == "property" || member.Property.Kind == "setter" {
+					own.instance[entry.Name+"="] = struct{}{}
+				}
 			}
 			continue
 		}

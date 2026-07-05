@@ -727,3 +727,92 @@ end
 		t.Fatalf("is_a?(Base) = %v, want true", got[2])
 	}
 }
+
+func TestModuleSetterCopiesThroughClassGetterOnly(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+module Clamped
+  def level=(value)
+    @level = value.clamp(0, 10)
+  end
+end
+
+class Dial
+  include Clamped
+
+  getter level
+
+  def initialize
+    @level = 0
+  end
+end
+
+def run
+  d = Dial.new
+  d.level = 99
+  d.level
+end
+`)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(10)) {
+		t.Fatalf("run = %v, want 10 (module setter must clamp)", got)
+	}
+}
+
+func TestModuleGetterCopiesThroughClassSetterOnly(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+module Loud
+  def label
+    @label.upcase
+  end
+end
+
+class Sign
+  include Loud
+
+  setter label
+end
+
+def run
+  s = Sign.new
+  s.label = "quiet"
+  s.label
+end
+`)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewString("QUIET")) {
+		t.Fatalf("run = %v, want QUIET (module getter must win over the raw ivar)", got)
+	}
+}
+
+func TestPropertyStillBlocksBothModuleAccessorHalves(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+module Meddling
+  def size
+    -1
+  end
+
+  def size=(value)
+    @size = -1
+  end
+end
+
+class Box
+  include Meddling
+
+  property size
+end
+
+def run
+  b = Box.new
+  b.size = 4
+  b.size
+end
+`)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(4)) {
+		t.Fatalf("run = %v, want 4 (property must own both accessor halves)", got)
+	}
+}
