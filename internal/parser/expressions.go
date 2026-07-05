@@ -296,7 +296,13 @@ func (p *parser) peekStartsPercentArrayArgument(callee ast.Expression) bool {
 	if p.peekToken.Type != ast.TokenPercent || !p.percentArrayLiteralArgumentAt(p.peekToken.Pos) {
 		return false
 	}
-	if ident, ok := callee.(*ast.Identifier); ok && p.isLocalName(ident.Name) {
+	// Only explicitly declared locals suppress the percent-array argument
+	// reading. The wider isLocalName view would break two pinned callee
+	// shapes: `it %w[a b]` must keep calling a user-defined `it` function
+	// (the implicit-`it` candidate does not make `it` a modulo operand
+	// here), and a class constant callee keeps the argument reading it has
+	// always had rather than flipping to modulo.
+	if ident, ok := callee.(*ast.Identifier); ok && p.isDeclaredLocal(ident.Name) {
 		return false
 	}
 	return true
@@ -1874,10 +1880,10 @@ func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 		p.nextToken()
 	}
 
-	inferImplicitIt := !p.isLocalName("it")
+	inferImplicitIt := !p.isDeclaredLocal("it")
 	p.pushLocalScope(params, false)
 	if !hasExplicitParams {
-		p.declareNumberedImplicitBlockParamCandidates()
+		p.declareImplicitBlockParamCandidates()
 	}
 	body := p.parseBlock(stopToken)
 	p.popLocalScope()
@@ -1961,10 +1967,10 @@ func (p *parser) parseLambdaLiteral() ast.Expression {
 	p.nextToken()
 	p.nextToken()
 
-	inferImplicitIt := !p.isLocalName("it")
+	inferImplicitIt := !p.isDeclaredLocal("it")
 	p.pushLocalScope(params, false)
 	if !hasExplicitParams {
-		p.declareNumberedImplicitBlockParamCandidates()
+		p.declareImplicitBlockParamCandidates()
 	}
 	body := p.parseBlock(stopToken)
 	p.popLocalScope()

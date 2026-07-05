@@ -266,6 +266,32 @@ func TestRegexCommandArgument(t *testing.T) {
       total = 8
       total /2
     end
+
+    class Halver
+      LIMIT = 8
+      def half
+        LIMIT /2
+      end
+      def chain
+        LIMIT /2/ 2
+      end
+    end
+
+    def implicit_it_slash_divides()
+      [8, 4].map { it /2 }.join(",")
+    end
+
+    def implicit_it_star_multiplies()
+      [8, 4].map { it *2 }.join(",")
+    end
+
+    def class_constant_slash_divides()
+      Halver.new().half()
+    end
+
+    def class_constant_slash_chain_divides()
+      Halver.new().chain()
+    end
     `)
 
 	tests := []struct {
@@ -277,6 +303,16 @@ func TestRegexCommandArgument(t *testing.T) {
 		{name: "command_regex_extra_argument", fn: "command_regex_extra_argument", want: NewString("aa")},
 		{name: "member_command_regex", fn: "member_command_regex", want: NewString("12")},
 		{name: "local_slash_still_divides", fn: "local_slash_still_divides", want: NewInt(4)},
+		// The implicit `it` block parameter is a local for the slash and
+		// sigil arms: `it /2` divides and `it *2` multiplies (before the
+		// shared locality view the splat reading failed at runtime with
+		// "undefined variable it").
+		{name: "implicit_it_slash_divides", fn: "implicit_it_slash_divides", want: NewString("4,2")},
+		{name: "implicit_it_star_multiplies", fn: "implicit_it_star_multiplies", want: NewString("16,8")},
+		// Class constants resolve from method bodies, so they divide across
+		// the def boundary too — including with a second slash on the line.
+		{name: "class_constant_slash_divides", fn: "class_constant_slash_divides", want: NewInt(4)},
+		{name: "class_constant_slash_chain_divides", fn: "class_constant_slash_chain_divides", want: NewInt(2)},
 	}
 
 	for _, tc := range tests {

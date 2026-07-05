@@ -279,6 +279,25 @@ func TestParserSlashDisambiguation(t *testing.T) {
 		// Parameters and assigned uppercase constants are locals too.
 		"def run(total)\n  total /2\nend",
 		"def run\n  Total = 4\n  Total /2\nend",
+		// The implicit `it` block parameter is pre-declared like the
+		// numbered candidates, so a slash after either divides in brace,
+		// do/end, and lambda bodies alike, and a nested block still infers
+		// its own `it`.
+		"def run\n  [8, 4].map { it /2 }\nend",
+		"def run\n  [8, 4].map do\n    it /2\n  end\nend",
+		"def run\n  f = -> { it /2 }\n  f\nend",
+		"def run\n  [8, 4].map { _1 /2 }\nend",
+		"def run\n  x = 2\n  [8, 4].map { it /2/ x }\nend",
+		"def run\n  [[8]].map { it.map { it /2 } }\nend",
+		// Class and module body assignments are the class's constants,
+		// which method bodies (and blocks inside them) resolve at runtime,
+		// so they divide across the def boundary — including when a second
+		// slash follows on the same line.
+		"class C\n  X = 4\n  def m\n    X /2\n  end\nend",
+		"class C\n  X = 8\n  def m\n    X /2/ 2\n  end\nend",
+		"class C\n  X = 8\n  def m\n    [1].map { X /2 }\n  end\nend",
+		"class C\n  x = 4\n  def m\n    x /2\n  end\nend",
+		"module A\n  Y = 6\n  def self.m\n    Y /2\n  end\nend",
 		// A non-local callee keeps division when the slash is spaced on both
 		// sides or flush: only the space-before/none-after shape opens a
 		// command-argument regex.
@@ -305,6 +324,21 @@ func TestParserSlashDisambiguation(t *testing.T) {
 		"def run\n  [/a/, /b/]\nend",
 		"def run\n  return /a/\nend",
 		"def run\n  f(/a/)\nend",
+		// Names the runtime cannot resolve as variables keep the
+		// command-argument regex reading: locals stop at the def boundary
+		// (top-level and enclosing-def locals are invisible inside a def),
+		// and a class's constants are not visible outside its body, in a
+		// lexically outer module's, or before their body-level assignment
+		// parses.
+		"total = 4\nclass C\n  def m\n    total /2/i\n  end\nend",
+		"def outer\n  total = 4\n  def inner\n    total /2/i\n  end\nend",
+		"class C\n  X = 4\nend\ndef run\n  X /2/i\nend",
+		"module A\n  Y = 6\n  module B\n    def self.m\n      Y /2/i\n    end\n  end\nend",
+		"class C\n  def m\n    X /2/i\n  end\n  X = 4\nend",
+		// Accessor names are method calls, not locals, so command spacing
+		// opens a regex after them, exactly as Ruby reads an attr_reader
+		// name in the same position.
+		"class Cart\n  getter total\n  def half\n    total /2/i\n  end\nend",
 	}
 	for _, source := range regexes {
 		program, errs := parseSource(t, source)
@@ -509,6 +543,16 @@ func TestParserCommandArgumentRegexErrors(t *testing.T) {
 			source: "def run\n  match /id/x\nend",
 			want:   `unsupported regex flag "x"; supported flags are i and m`,
 		},
+		{
+			// A block with explicit parameters never binds the implicit
+			// `it`, so the name keeps the method-call reading there and
+			// command spacing opens a regex, matching Ruby. (The former
+			// division parsed but always failed at runtime with
+			// "undefined variable it".)
+			name:   "explicit-params block keeps it a callee",
+			source: "def run\n  [8].map { |x| it /2 }\nend",
+			want:   "unterminated regex literal",
+		},
 	}
 
 	for _, tc := range tests {
@@ -557,6 +601,52 @@ func TestParserCommandArgumentRegexMeaningChange(t *testing.T) {
 		}
 		if found.Pattern != "2 + g" {
 			t.Fatalf("parseSource(%q) regex pattern = %q, want %q", source, found.Pattern, "2 + g")
+		}
+	}
+}
+
+// TestParserSigilArmsShareSlashLocality pins that the splat, double-splat,
+// and block-pass sigil arms share the slash arm's locality view: the
+// implicit `it` block parameter and the enclosing class's constants read as
+// locals, so command spacing keeps the operator meaning (multiplication,
+// exponentiation, intersection) instead of opening a call argument. Before
+// the shared view these shapes parsed as calls that always failed at
+// runtime ("undefined variable it", "unknown member X").
+func TestParserSigilArmsShareSlashLocality(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		source   string
+		operator ast.TokenType
+	}{
+		{"def run\n  [8, 4].map { it *2 }\nend", ast.TokenAsterisk},
+		{"def run\n  [3, 4].map { it **2 }\nend", ast.TokenPower},
+		{"def run\n  b = 2\n  [8].map { it &b }\nend", ast.TokenAmpersand},
+		{"class C\n  X = [4, 6]\n  def m\n    X *2\n  end\nend", ast.TokenAsterisk},
+		{"class C\n  X = 4\n  def m\n    X **2\n  end\nend", ast.TokenPower},
+		{"class C\n  X = 4\n  def m\n    y = 6\n    X &y\n  end\nend", ast.TokenAmpersand},
+	}
+	for _, tc := range tests {
+		program, errs := parseSource(t, tc.source)
+		if len(errs) > 0 {
+			t.Fatalf("parseSource(%q) errors = %v, want operator parse", tc.source, errs)
+		}
+		found := false
+		walkASTNodes(program, func(node any) {
+			if bin, ok := node.(*ast.BinaryExpr); ok && bin.Operator == tc.operator {
+				found = true
+			}
+			if _, ok := node.(*ast.SplatArg); ok {
+				t.Fatalf("parseSource(%q) produced a splat argument, want operator %v", tc.source, tc.operator)
+			}
+			if call, ok := node.(*ast.CallExpr); ok {
+				if _, isIdent := call.BlockArg.(*ast.Identifier); isIdent {
+					t.Fatalf("parseSource(%q) produced a block-pass argument, want operator %v", tc.source, tc.operator)
+				}
+			}
+		})
+		if !found {
+			t.Fatalf("parseSource(%q) produced no %v binary expression", tc.source, tc.operator)
 		}
 	}
 }

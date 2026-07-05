@@ -385,7 +385,12 @@ a regex when the callee is not a known local variable — so division is
 unaffected: `total /2`, `total / 2`, and `total/2` all divide when `total` is
 a local, and `f / 2` or `f/2` keep dividing a call's result. Only `f /2`
 (space before the slash, none after, non-local callee) reads as a regex
-argument; write `f() / 2`, `f / 2`, or `f/2` for the division.
+argument; write `f() / 2`, `f / 2`, or `f/2` for the division. Known locals
+include the implicit `it` parameter of a parameterless block and the
+enclosing class's or module's constants, so `it /2` and `LIMIT /2` inside a
+method of the class that assigns `LIMIT` divide. Accessor names declared
+with `getter`/`property` are method calls, not locals, so they follow the
+non-local rule.
 
 Ruby-style ampersand block arguments forward a callable as the call's block:
 `m(&blk)` passes a captured block, function value, or bound method along, and

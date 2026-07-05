@@ -253,8 +253,16 @@ func isNumberedBlockParamName(name string) bool {
 	return len(name) == 2 && name[0] == '_' && name[1] >= '1' && name[1] <= '9'
 }
 
-func (p *parser) declareNumberedImplicitBlockParamCandidates() {
+// declareImplicitBlockParamCandidates marks the just-pushed scope of a block
+// or lambda without explicit parameters as one that may bind implicit
+// parameters. The numbered names `_1`..`_9` are declared as ordinary locals;
+// `it` is only flagged on the scope (see localScope.implicitIt) so that
+// isLocalName treats it as a local for slash/sigil disambiguation while the
+// implicit-parameter inference gate, which must only see real enclosing `it`
+// variables, remains unaffected.
+func (p *parser) declareImplicitBlockParamCandidates() {
 	for i := range 9 {
 		p.declareLocal("_" + string(rune('1'+i)))
 	}
+	p.localScopes[len(p.localScopes)-1].implicitIt = true
 }
