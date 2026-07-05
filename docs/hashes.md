@@ -275,7 +275,11 @@ end
 - `flatten(depth = 1)` returns a flat array of the entries. At the default depth
   the result is `[key, value, ...]`; values that are arrays are kept nested
   unless a deeper `depth` is given. A `depth` of `0` returns the `[key, value]`
-  pairs nested, and a negative `depth` flattens completely.
+  pairs nested, and a negative `depth` flattens completely. Because a deep
+  flatten's output length cannot be bounded before walking the values, both the
+  `[key, value]` pair materialization and the flattened result are charged
+  against the step and memory quotas as they are built, so an oversized flatten
+  is rejected mid-build instead of after the full result materializes.
 - `store(key, value)` is Ruby's method spelling of index assignment: it writes
   the entry into the receiver in place and returns the stored value. An
   existing key keeps its position in the insertion order.

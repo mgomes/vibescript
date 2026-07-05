@@ -194,6 +194,91 @@ func sortedHashEntryBufferBytes(entryCount int) int {
 	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(entryCount, 2*estimatedValueBytes))
 }
 
+// hashFlattenBounded materializes Hash#flatten under sandbox accounting. Ruby's
+// Hash#flatten first materializes the receiver's [key, value] pairs and then
+// flattens that array to the requested depth; both phases previously ran as
+// unmetered native loops, so a small receiver whose values expand into a huge
+// flattened output allocated the whole result before the post-call quota check
+// could reject it. The pairs pre-build follows hash.to_a's containment: a
+// cheap step-budget bound, the entry/key scratch and the pairs backing charged
+// before the sort or any pair allocation, and one step plus an accumulator
+// charge per appended pair. The flatten phase then mirrors
+// arrayFlattenBounded: the pairs slice stays live while the output accumulates
+// on top of it, so its backing is folded into the baseline, every element
+// examined charges a step (whose slow path runs the periodic memory and
+// context checks), and the output backing's doubling is charged before append
+// allocates it. Every leaf the output retains was already walked — values
+// through the receiver in the baseline, keys and pair structures through the
+// per-pair charges — so leaf payloads deduplicate to zero and slot growth is
+// the only new memory the flatten phase has to meter.
+func hashFlattenBounded(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, depth int) ([]Value, error) {
+	typed := hashHasTypedEntries(receiver)
+	count := receiver.HashLen()
+	if err := exec.checkStepBudgetFor(count); err != nil {
+		return nil, err
+	}
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	scratch := sortedKeyBufferBytes(count)
+	if typed {
+		scratch = sortedHashEntryBufferBytes(count)
+	}
+	if err := acc.reserveScratch(scratch); err != nil {
+		return nil, err
+	}
+	if err := acc.reserveSlots(count); err != nil {
+		return nil, err
+	}
+	pairs := make([]Value, 0, count)
+	appendPair := func(key, value Value) error {
+		if err := exec.step(); err != nil {
+			return err
+		}
+		pairs = append(pairs, NewArray([]Value{key, value}))
+		return acc.add(pairs[len(pairs)-1], cap(pairs))
+	}
+	if typed {
+		var entryBuf [smallHashKeyBufferSize]HashEntry
+		for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
+			if err := appendPair(entry.Key, entry.Value); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		entries := receiver.Hash()
+		var keyBuf [smallHashKeyBufferSize]string
+		for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+			if err := appendPair(NewSymbol(key), entries[key]); err != nil {
+				return nil, err
+			}
+		}
+	}
+	// Fold the pairs backing into the baseline: the per-pair charges above
+	// projected it through their slotCount argument, but from here the output
+	// slice takes that argument over while the pairs stay live until the
+	// flatten completes.
+	if err := acc.reserveScratch(arraySlotBackingBytes(cap(pairs))); err != nil {
+		return nil, err
+	}
+	if err := acc.reserveSlots(len(pairs)); err != nil {
+		return nil, err
+	}
+	out := make([]Value, 0, len(pairs))
+	state := &flattenState{
+		arrays: make(map[sliceIdentity]struct{}),
+		method: "hash.flatten",
+		visit:  exec.step,
+		appendLeaf: func(out []Value, v Value) ([]Value, error) {
+			if len(out) == cap(out) {
+				if err := acc.checkSlotArrays(projectedAppendCap(len(out), cap(out))); err != nil {
+					return nil, err
+				}
+			}
+			return append(out, v), nil
+		},
+	}
+	return flattenValuesInto(out, pairs, depth, state)
+}
+
 // exclusionSetBytes returns the live heap footprint of a map[string]struct{} set
 // holding count entries. Hash#except builds such a set of the candidate keys that
 // appear in the receiver and holds it alongside the freshly copied output map, so
@@ -1983,27 +2068,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				depth = n
 			}
-			if hashHasTypedEntries(receiver) {
-				var entryBuf [smallHashKeyBufferSize]HashEntry
-				entries := orderedTypedHashEntriesInto(receiver, entryBuf[:])
-				pairs := make([]Value, len(entries))
-				for i, entry := range entries {
-					pairs[i] = NewArray([]Value{entry.Key, entry.Value})
-				}
-				out, err := flattenValues(pairs, depth, "hash.flatten")
-				if err != nil {
-					return NewNil(), err
-				}
-				return NewArray(out), nil
-			}
-			entries := receiver.Hash()
-			var keyBuf [smallHashKeyBufferSize]string
-			keys := sortedHashKeysInto(entries, keyBuf[:])
-			pairs := make([]Value, len(keys))
-			for i, key := range keys {
-				pairs[i] = NewArray([]Value{NewSymbol(key), entries[key]})
-			}
-			out, err := flattenValues(pairs, depth, "hash.flatten")
+			out, err := hashFlattenBounded(exec, receiver, args, kwargs, block, depth)
 			if err != nil {
 				return NewNil(), err
 			}

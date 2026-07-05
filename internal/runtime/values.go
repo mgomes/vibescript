@@ -369,7 +369,8 @@ func arraySortCompareValues(left, right Value) (int, error) {
 	}
 }
 
-// flattenValues recursively flattens nested arrays up to the specified depth.
+// flattenState carries the guards and quota hooks for flattenValuesInto, which
+// recursively flattens nested arrays up to the specified depth.
 // depth=-1 means flatten completely (no limit).
 // depth=0 means don't flatten at all.
 // depth=1 means flatten one level, etc.
@@ -389,18 +390,12 @@ type flattenState struct {
 	appendLeaf func(out []Value, v Value) ([]Value, error)
 }
 
-func flattenValues(values []Value, depth int, method string) ([]Value, error) {
-	return flattenValuesInto(make([]Value, 0, len(values)), values, depth, &flattenState{
-		arrays: make(map[sliceIdentity]struct{}),
-		method: method,
-	})
-}
-
 // flattenValuesInto appends the flattened elements of values onto out, sharing
 // a single output slice across every recursion level. Building into one shared
 // slice (instead of a fresh slice per level merged upward) keeps the transient
 // footprint at one backing array, so the quota hooks on flattenState observe
-// the build's true peak as it grows.
+// the build's true peak as it grows. Array#flatten and Hash#flatten drive it
+// through arrayFlattenBounded and hashFlattenBounded respectively.
 func flattenValuesInto(out, values []Value, depth int, state *flattenState) ([]Value, error) {
 	if state.depth >= maxFlattenDepth {
 		return nil, guardLimitErrorf("%s exceeded maximum depth", state.method)

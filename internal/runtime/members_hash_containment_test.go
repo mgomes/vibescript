@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	runtimemetrics "runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -4126,5 +4127,171 @@ func TestHashSelectEmptyBodyValueRestFitsQuota(t *testing.T) {
 	// walk completes within the quota rather than over-rejecting.
 	if got.Kind() != KindHash {
 		t.Fatalf("select returned %v, want a hash", got.Kind())
+	}
+}
+
+func TestHashFlattenChargesResultDuringBuild(t *testing.T) {
+	t.Parallel()
+
+	// A tiny receiver whose single value expands into a huge flattened output:
+	// one key holding 50 references to one shared 200-int array, so a full
+	// flatten yields 1 + 50*200 = 10,001 leaves while the receiver itself
+	// estimates as roughly one inner array.
+	const refs = 50
+	const innerLen = 200
+	const leaves = 1 + refs*innerLen
+	inner := make([]Value, innerLen)
+	for i := range inner {
+		inner[i] = NewInt(int64(i))
+	}
+	innerValue := NewArray(inner)
+	outerRefs := make([]Value, refs)
+	for i := range outerRefs {
+		outerRefs[i] = innerValue
+	}
+	receiver := NewHash(map[string]Value{"k": NewArray(outerRefs)})
+	depthArg := NewInt(-1)
+
+	want := make([]Value, 0, leaves)
+	want = append(want, NewSymbol("k"))
+	for range refs {
+		want = append(want, inner...)
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, []Value{depthArg}, nil, NewNil())
+
+	t.Run("under_quota", func(t *testing.T) {
+		t.Parallel()
+
+		// The growth checks charge the doubled backing before each append grows
+		// it, so a successful build never projects more than twice the largest
+		// capacity the append schedule reaches; four times the leaf count bounds
+		// that projection, and the slack covers the single pair's structures.
+		quota := base + arraySlotBackingBytes(4*leaves) + 8192
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		got, err := callHashMember(t, exec, receiver, "flatten", []Value{depthArg}, NewNil())
+		if err != nil {
+			t.Fatalf("hash.flatten under quota %d: %v", quota, err)
+		}
+		compareArrays(t, got, want)
+	})
+
+	t.Run("over_quota", func(t *testing.T) {
+		t.Parallel()
+
+		quota := base + arraySlotBackingBytes(leaves/2)
+		fitsCallRoots := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		if err := fitsCallRoots.checkCallMemoryRoots(receiver, []Value{depthArg}, nil, NewNil()); err != nil {
+			t.Fatalf("receiver and depth should fit under quota %d: %v", quota, err)
+		}
+
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		_, err := callHashMember(t, exec, receiver, "flatten", []Value{depthArg}, NewNil())
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+		if exec.steps >= leaves {
+			t.Fatalf("hash.flatten examined %d elements before rejecting; want rejection before the %d-leaf result materializes", exec.steps, leaves)
+		}
+	})
+}
+
+func TestHashFlattenPreflightsPairsBacking(t *testing.T) {
+	t.Parallel()
+
+	const count = 4000
+	receiver := largeTypedSymbolHash(count)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
+	scratch := sortedHashEntryBufferBytes(count)
+
+	t.Run("under_quota", func(t *testing.T) {
+		t.Parallel()
+
+		// Mirror the build's charges: the entry scratch, the pairs backing (live
+		// through the whole flatten), each pair's structures beyond the
+		// receiver-deduplicated key and value payloads, and the flattened output
+		// backing bounded by the growth projections.
+		est := newMemoryEstimator()
+		est.value(receiver)
+		var entryBuf [smallHashKeyBufferSize]HashEntry
+		entries := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+		pairPayload := 0
+		want := make([]Value, 0, 2*count)
+		for _, entry := range entries {
+			pairPayload += est.valuePayload(NewArray([]Value{entry.Key, entry.Value}))
+			want = append(want, entry.Key, entry.Value)
+		}
+		const leaves = 2 * count
+		quota := base + scratch + arraySlotBackingBytes(count) + pairPayload + arraySlotBackingBytes(4*leaves) + 8192
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		got, err := callHashMember(t, exec, receiver, "flatten", nil, NewNil())
+		if err != nil {
+			t.Fatalf("hash.flatten under quota %d: %v", quota, err)
+		}
+		compareArrays(t, got, want)
+	})
+
+	t.Run("over_quota", func(t *testing.T) {
+		t.Parallel()
+
+		quota := base + scratch + arraySlotBackingBytes(count)/2
+		fitsCallRoots := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		if err := fitsCallRoots.checkCallMemoryRoots(receiver, nil, nil, NewNil()); err != nil {
+			t.Fatalf("receiver should fit under quota %d: %v", quota, err)
+		}
+
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		_, err := callHashMember(t, exec, receiver, "flatten", nil, NewNil())
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+		if exec.steps != 0 {
+			t.Fatalf("hash.flatten stepped %d times before rejecting the pairs backing; want 0", exec.steps)
+		}
+	})
+}
+
+// TestHashFlattenRejectsHugeExpansionEarly reproduces the review escape at its
+// original scale: a hash whose one value holds 1000 references to a shared
+// 10,000-int array, so a full flatten would materialize 10,000,001 leaves
+// (hundreds of megabytes of slot backing) from a receiver that estimates as one
+// inner array. The build must reject within the quota-sized prefix — bounded
+// steps and bounded cumulative allocation — rather than after the native result
+// exists. It stays sequential so the allocation bracket is not polluted by
+// parallel tests.
+func TestHashFlattenRejectsHugeExpansionEarly(t *testing.T) {
+	const refs = 1000
+	const innerLen = 10000
+	inner := make([]Value, innerLen)
+	for i := range inner {
+		inner[i] = NewInt(int64(i))
+	}
+	innerValue := NewArray(inner)
+	outerRefs := make([]Value, refs)
+	for i := range outerRefs {
+		outerRefs[i] = innerValue
+	}
+	receiver := NewHash(map[string]Value{"k": NewArray(outerRefs)})
+	depthArg := NewInt(-1)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, []Value{depthArg}, nil, NewNil())
+	quota := base + arraySlotBackingBytes(4096)
+
+	var before, after runtimemetrics.MemStats
+	runtimemetrics.ReadMemStats(&before)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "flatten", []Value{depthArg}, NewNil())
+	runtimemetrics.ReadMemStats(&after)
+
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps >= 100000 {
+		t.Fatalf("hash.flatten charged %d steps before rejecting; want work bounded by the quota, not the 10M-leaf result", exec.steps)
+	}
+	// The full result's slot backing alone would exceed 240MB (10M slots), with
+	// append doublings pushing cumulative allocation past twice that. A rejected
+	// build must stay orders of magnitude below it; 64MB leaves generous room
+	// for estimator scratch and unrelated runtime noise.
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 64<<20 {
+		t.Fatalf("hash.flatten allocated %d cumulative bytes before rejecting; want it bounded by the quota, not the full result", allocated)
 	}
 }
