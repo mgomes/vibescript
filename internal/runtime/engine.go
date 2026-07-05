@@ -428,6 +428,7 @@ func cloneBuiltinValue(val Value) Value {
 		clonedBuiltin := valueBuiltin(cloned)
 		clonedBuiltin.OptionsHashTarget = builtin.OptionsHashTarget
 		clonedBuiltin.DirectCallAlias = builtin.DirectCallAlias
+		clonedBuiltin.DirectCallAliasPos = builtin.DirectCallAliasPos
 		clonedBuiltin.CapturedValues = builtin.CapturedValues
 		clonedBuiltin.Capability = builtin.Capability
 		// A bound predicate's BoundReceiver and Fn both read one mutable cell, so a

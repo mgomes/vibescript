@@ -208,10 +208,12 @@ func compileClassDef(stmt *ClassStmt) *ClassDef {
 			name := entry.Name
 			if prop.Kind == "property" || prop.Kind == "getter" {
 				getter := &ScriptFunction{
-					Name:     name,
-					ReturnTy: entry.Type,
-					Body:     []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position}},
-					Pos:      prop.Position,
+					Name:         name,
+					ReturnTy:     entry.Type,
+					Body:         []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position}},
+					Pos:          prop.Position,
+					Accessor:     functionAccessorGetter,
+					AccessorName: name,
 				}
 				classDef.Methods[name] = getter
 			}
@@ -223,14 +225,11 @@ func compileClassDef(stmt *ClassStmt) *ClassDef {
 						Type: entry.Type,
 					}},
 					Body: []Statement{
-						&AssignStmt{
-							Target:   &IvarExpr{Name: name, Position: prop.Position},
-							Value:    &Identifier{Name: "value", Position: prop.Position},
-							Position: prop.Position,
-						},
-						&ReturnStmt{Value: &Identifier{Name: "value", Position: prop.Position}, Position: prop.Position},
+						&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position},
 					},
-					Pos: prop.Position,
+					Pos:          prop.Position,
+					Accessor:     functionAccessorSetter,
+					AccessorName: name,
 				}
 				classDef.Methods[name+"="] = setter
 			}

@@ -1956,6 +1956,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// insertion order, so a bare receiver is copied in sorted key order to
 			// keep a documented-sorted host map deterministic after the store.
 			typedReceiver := hashHasTypedEntries(receiver)
+			storeReplaced := false
 			var entryBuf [smallHashKeyBufferSize]HashEntry
 			for _, entry := range deterministicHashEntriesInto(receiver, entryBuf[:]) {
 				if err := exec.step(); err != nil {
@@ -1967,13 +1968,23 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), fmt.Errorf("hash.store stored key is unsupported hash key: %w", err)
 					}
 					if entryDisplayKey == storeDisplayKey {
+						// Store the new value at the entry's position so an
+						// existing key keeps its place in the result order,
+						// matching the typed-receiver path and Ruby's
+						// position-preserving Hash#store.
+						if err := hashSet(out, args[0], args[1]); err != nil {
+							return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
+						}
+						storeReplaced = true
 						continue
 					}
 				}
 				setClonedHashEntry(out, entry.Key, entry.Value)
 			}
-			if err := hashSet(out, args[0], args[1]); err != nil {
-				return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
+			if !storeReplaced {
+				if err := hashSet(out, args[0], args[1]); err != nil {
+					return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
+				}
 			}
 			return out, nil
 		}), nil

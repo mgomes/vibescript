@@ -222,6 +222,20 @@ end`,
 end`,
 			wantErr: "capture parameters cannot have default values",
 		},
+		{
+			name: "rest_scalar_annotation",
+			source: `def bad(*items: int)
+  nil
+end`,
+			wantErr: "rest parameter items captures an array",
+		},
+		{
+			name: "keyword_rest_scalar_annotation",
+			source: `def bad(**opts: string)
+  nil
+end`,
+			wantErr: "keyword rest parameter opts captures a hash",
+		},
 	}
 
 	for _, tt := range tests {
