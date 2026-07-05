@@ -14,3 +14,13 @@
   `Call`; those names then resolve and are never reported. `vibes analyze`
   deliberately does not surface these warnings: it runs over documentation
   fragments and host-embedded scripts whose free names are legal at runtime.
+- **Added: check mode rejects typed block parameters contradicted by literal
+  receivers.** When a literal array of scalar literals flows through a builtin
+  element iterator (`each`, `map`, `select`, `reject`, `find`, and
+  `each_with_index` with its integer index parameter), a block parameter type
+  annotation that any yielded element misses is now a check warning —
+  `argument NAME expected TYPE, got KIND` at the annotation, exactly the error
+  the first mismatching yield raises at runtime. The check stays silent for
+  non-literal or empty receivers, hash receivers, destructured or extra block
+  parameters, untyped parameters, user-defined iterators, and iterators
+  outside the covered set, leaving those shapes to runtime enforcement.

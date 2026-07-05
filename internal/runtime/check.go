@@ -1966,6 +1966,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkExpressionWithAuto(function, kwarg.Value, true)
 		}
 		if c.callMayEvaluateBlock(typed) {
+			c.checkLiteralArrayBlockParamTypes(function, typed)
 			c.checkBlockLiteral(function, typed.Block)
 		}
 		if argumentsMayBeSkipped {
@@ -2241,6 +2242,106 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
 	c.checkStatements(label, nil, block.Body)
+}
+
+// literalArrayElementYieldMethods are the builtin array iterators that yield
+// each element as the block's single argument, in element order, so a typed
+// block parameter can be validated against a literal receiver's elements.
+var literalArrayElementYieldMethods = map[string]struct{}{
+	"each":   {},
+	"map":    {},
+	"select": {},
+	"reject": {},
+	"find":   {},
+}
+
+// checkLiteralArrayBlockParamTypes validates typed block parameters against a
+// literal array receiver of a builtin element iterator: ["x"].map do |v: int|
+// fails on the first yield at runtime, so the contradiction is statically
+// known. The check stays silent unless the receiver is an array literal whose
+// elements are all scalar literals and the block declares exactly the plain
+// named parameters the iterator yields (one element parameter, plus an index
+// parameter for each_with_index); destructuring, rest parameters, implicit
+// parameters, and every other receiver or method shape are left to runtime
+// enforcement.
+func (c *scriptChecker) checkLiteralArrayBlockParamTypes(function string, call *CallExpr) {
+	if call == nil || call.Block == nil {
+		return
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok {
+		return
+	}
+	withIndex := member.Property == "each_with_index"
+	if !withIndex {
+		if _, ok := literalArrayElementYieldMethods[member.Property]; !ok {
+			return
+		}
+	}
+	arrayLit, ok := member.Object.(*ArrayLiteral)
+	if !ok {
+		return
+	}
+	elements := make([]Value, 0, len(arrayLit.Elements))
+	for _, elem := range arrayLit.Elements {
+		val, ok := staticLiteralValue(elem)
+		if !ok || !scalarLiteralElementKind(val.Kind()) {
+			return
+		}
+		elements = append(elements, val)
+	}
+	block := call.Block
+	wantParams := 1
+	if withIndex {
+		wantParams = 2
+	}
+	if len(block.Params) != wantParams || len(block.ImplicitParams) > 0 {
+		return
+	}
+	for _, param := range block.Params {
+		if param.Kind != ParamNormal || param.Name == "" || param.Target != nil {
+			return
+		}
+	}
+	// The runtime rejects the first yielded value that misses its annotation,
+	// so report only the first contradicting element in iteration order.
+	for index, element := range elements {
+		if c.addLiteralBlockParamMismatch(function, block.Params[0], element) {
+			return
+		}
+		if withIndex && c.addLiteralBlockParamMismatch(function, block.Params[1], NewInt(int64(index))) {
+			return
+		}
+	}
+}
+
+func scalarLiteralElementKind(kind ValueKind) bool {
+	switch kind {
+	case KindInt, KindFloat, KindString, KindBool, KindSymbol, KindNil:
+		return true
+	default:
+		return false
+	}
+}
+
+// addLiteralBlockParamMismatch reports whether the yielded value misses the
+// block parameter's annotation, recording a warning that mirrors the runtime
+// failure ("argument NAME expected TYPE, got KIND" at the annotation).
+func (c *scriptChecker) addLiteralBlockParamMismatch(function string, param Param, val Value) bool {
+	if param.Type == nil || !c.checkRuntimeTypeAnnotation(function, param.Type) {
+		return false
+	}
+	err := c.checkRuntimeStaticValueType(val, param.Type)
+	if err == nil {
+		return false
+	}
+	var mismatch *typeMismatchError
+	if errors.As(err, &mismatch) {
+		c.addOrderIndependent(function, param.Type.Position, "argument %s expected %s, got %s", param.Name, mismatch.Expected, mismatch.Actual)
+	} else {
+		c.addOrderIndependent(function, param.Type.Position, "argument %s type check failed: %s", param.Name, err)
+	}
+	return true
 }
 
 func (c *scriptChecker) checkDestructureTargetTypeAnnotations(function string, target Expression) {
@@ -3989,8 +4090,8 @@ func (c *scriptChecker) add(function string, pos Position, format string, args .
 
 // addOrderIndependent records a warning that holds no matter which function
 // runs first or what state earlier calls established, so it survives
-// order-independent-only mode. Undefined-name warnings use it directly;
-// every state-sensitive warning goes through add.
+// order-independent-only mode. Undefined-name and literal block parameter
+// warnings use it directly; every state-sensitive warning goes through add.
 func (c *scriptChecker) addOrderIndependent(function string, pos Position, format string, args ...any) {
 	c.warnings = append(c.warnings, CheckWarning{
 		Function: function,

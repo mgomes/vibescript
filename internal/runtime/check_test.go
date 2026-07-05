@@ -3553,6 +3553,224 @@ end
 	})
 }
 
+func TestCheckWarningsFlagLiteralArrayBlockParamTypeMismatch(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  ["x"].map do |value: int|
+    value
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "argument value expected int, got string")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "argument value expected int, got string")
+}
+
+func TestCheckWarningsFlagLiteralArrayBlockParamMismatchOnAnyElement(t *testing.T) {
+	t.Parallel()
+
+	// The runtime fails on the first yielded element that misses the
+	// annotation, so one contradicting element is enough.
+	script := compileScript(t, `
+def run()
+  [1, "x"].each do |v: int|
+    v
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "argument v expected int, got string")
+}
+
+func TestCheckWarningsFlagLiteralArrayBlockParamMismatchAcrossIterators(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{"each", "map", "select", "reject", "find"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+def run()
+  ["x"].`+method+` do |v: int|
+    v
+  end
+end
+`)
+			requireCheckWarningContains(t, script, "argument v expected int, got string")
+		})
+	}
+}
+
+func TestCheckWarningsFlagLiteralArrayBlockParamFloatIntMismatch(t *testing.T) {
+	t.Parallel()
+
+	// Block parameter contracts do not coerce int to float, so the checker
+	// mirrors the runtime rejection.
+	script := compileScript(t, `
+def run()
+  [1].map do |v: float|
+    v
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "argument v expected float, got int")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "argument v expected float, got int")
+}
+
+func TestCheckWarningsFlagEachWithIndexBlockParamMismatches(t *testing.T) {
+	t.Parallel()
+
+	element := compileScript(t, `
+def run()
+  ["x"].each_with_index do |v: int, i: int|
+    [v, i]
+  end
+end
+`)
+	requireCheckWarningContains(t, element, "argument v expected int, got string")
+
+	index := compileScript(t, `
+def run()
+  [1].each_with_index do |v: int, i: string|
+    [v, i]
+  end
+end
+`)
+	requireCheckWarningContains(t, index, "argument i expected string, got int")
+	requireCallErrorContains(t, index, "run", nil, CallOptions{}, "argument i expected string, got int")
+}
+
+func TestCheckWarningsSkipBlockParamTypesForNonLiteralReceivers(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run(xs)
+  xs.map do |v: int|
+    v
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForCompatibleUnions(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1, "x"].each do |v: int | string|
+    v
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForDestructuredParams(t *testing.T) {
+	t.Parallel()
+
+	// Array elements destructure into the parenthesized targets, so the
+	// element parameter shape no longer matches a single scalar yield.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [[1, 2]].map do |(a: int, b: int)|
+    a + b
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForUntypedParams(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  ["x"].map do |v|
+    v
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForUserDefinedIterators(t *testing.T) {
+	t.Parallel()
+
+	// Yield sites inside user functions are runtime-enforced; the literal
+	// receiver check only covers builtin array iterators.
+	requireNoCheckWarnings(t, compileScript(t, `
+def my_each(items)
+  yield items[0]
+end
+
+def run()
+  my_each(["x"]) do |v: int|
+    v
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForHashReceivers(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  {a: 1}.each do |k: string, v: int|
+    [k, v]
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForEmptyLiteralReceivers(t *testing.T) {
+	t.Parallel()
+
+	// An empty literal never yields, so the runtime never rejects the block.
+	script := compileScript(t, `
+def run()
+  [].each do |v: int|
+    v
+  end
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("Call() over empty literal returned error: %v", err)
+	}
+}
+
+func TestCheckWarningsSkipBlockParamTypesForExtraParams(t *testing.T) {
+	t.Parallel()
+
+	// A second parameter on a single-yield iterator binds nil at runtime;
+	// the checker stays silent rather than model that shape.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1].each do |v: int, extra: string|
+    [v, extra]
+  end
+end
+`))
+}
+
+func TestCheckWarningsSkipBlockParamTypesForUncoveredIterators(t *testing.T) {
+	t.Parallel()
+
+	// reverse_each yields in reverse order and each_slice yields arrays;
+	// both stay outside the covered iterator set.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  ["x"].reverse_each do |v: int|
+    v
+  end
+  [1, 2].each_slice(2) do |pair: int|
+    pair
+  end
+end
+`))
+}
+
 func requireNoCheckWarnings(t *testing.T, script *Script) {
 	t.Helper()
 

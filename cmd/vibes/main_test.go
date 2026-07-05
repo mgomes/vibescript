@@ -283,6 +283,15 @@ end`},
 			wantErr: "undefined variable helper",
 		},
 		{
+			name: "check_only_reports_literal_block_param_mismatch_in_uncalled_function",
+			args: []string{"-check", "-e", `def run
+  ["x"].map do |value: int|
+    value
+  end
+end`},
+			wantErr: "argument value expected int, got string",
+		},
+		{
 			name: "check_only_uses_inline_entrypoint_order",
 			args: []string{
 				"-check",

@@ -220,10 +220,10 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, chec
 // checkSnippetScript validates a -e snippet: first the entrypoint execution
 // path (matching what run would execute, including state established by
 // top-level requires), then the order-independent whole-snippet warnings so
-// functions the snippet never calls still surface undefined names. Snippets
-// are self-contained — no host injects globals or capabilities into vibes
-// run -e — so the supplemental warnings cannot be resolved by call-time
-// state.
+// functions the snippet never calls still surface undefined names and typed
+// block parameters contradicted by literal receivers. Snippets are
+// self-contained — no host injects globals or capabilities into vibes run -e
+// — so the supplemental warnings cannot be resolved by call-time state.
 func checkSnippetScript(script *vibes.Script) error {
 	warnings := script.CheckWarningsForCall(evalSnippetFunction, nil, vibes.CallOptions{})
 	seen := make(map[string]struct{}, len(warnings))
