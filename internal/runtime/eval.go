@@ -1498,7 +1498,7 @@ func (exec *Execution) finishLambdaCall(blockEnv *Env, val Value, returned bool,
 		return NewNil(), err
 	}
 	_ = returned // an explicit return in a lambda body is a local return
-	return blockEnv.detachArrayAppendResult(val), nil
+	return blockEnv.settleArrayAppendResult(val), nil
 }
 
 // checkLambdaArity enforces the strict positional arity of a lambda call.
