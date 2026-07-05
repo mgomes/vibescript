@@ -317,6 +317,10 @@ func cloneExpression(expr Expression) Expression {
 		clone.Block = cloneBlockLiteral(e.Block)
 		clone.BlockArg = cloneExpression(e.BlockArg)
 		return &clone
+	case *SplatArg:
+		clone := *e
+		clone.Value = cloneExpression(e.Value)
+		return &clone
 	case *MemberExpr:
 		clone := *e
 		clone.Object = cloneExpression(e.Object)
@@ -452,6 +456,7 @@ func cloneKeywordArgs(args []KeywordArg) []KeywordArg {
 		out[i] = KeywordArg{
 			Name:  arg.Name,
 			Value: cloneExpression(arg.Value),
+			Splat: arg.Splat,
 		}
 	}
 	return out

@@ -63,6 +63,7 @@ type (
 	HashLiteral        = ast.HashLiteral
 	CallExpr           = ast.CallExpr
 	KeywordArg         = ast.KeywordArg
+	SplatArg           = ast.SplatArg
 	MemberExpr         = ast.MemberExpr
 	ScopeExpr          = ast.ScopeExpr
 	IndexExpr          = ast.IndexExpr

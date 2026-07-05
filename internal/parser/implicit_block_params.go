@@ -137,6 +137,8 @@ func (u *implicitBlockParamUsage) visitExpression(expr ast.Expression, callCalle
 		}
 	case *ast.DestructureTarget:
 		return
+	case *ast.SplatArg:
+		u.visitExpression(e.Value, false)
 	case *ast.UnaryExpr:
 		u.visitExpression(e.Right, false)
 	case *ast.BinaryExpr:

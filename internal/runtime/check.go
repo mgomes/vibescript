@@ -438,6 +438,8 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		for _, element := range typed.Elements {
 			c.collectRequiredModuleExportsFromExpression(element.Target)
 		}
+	case *SplatArg:
+		c.collectRequiredModuleExportsFromExpression(typed.Value)
 	case *UnaryExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Right)
 	case *BinaryExpr:
@@ -1994,6 +1996,8 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		for _, element := range typed.Elements {
 			c.checkExpressionWithAuto(function, element.Target, true)
 		}
+	case *SplatArg:
+		c.checkExpressionWithAuto(function, typed.Value, true)
 	case *UnaryExpr:
 		c.checkExpressionWithAuto(function, typed.Right, true)
 	case *BinaryExpr:
@@ -2801,6 +2805,8 @@ func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map
 			}
 		}
 		return false
+	case *SplatArg:
+		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
 	case *UnaryExpr:
 		return c.expressionMayEvaluateCallBlock(typed.Right, seen)
 	case *BinaryExpr:
@@ -3275,6 +3281,15 @@ func (c *scriptChecker) checkCall(function string, call *CallExpr) {
 	if !ok {
 		return
 	}
+	if callExpandsArguments(call) {
+		// Splat expansion makes the argument shape dynamic: the runtime
+		// validates the expanded call with the same binding errors a literal
+		// spelling would raise, so static shape checks step aside.
+		if target.fn != nil {
+			c.enqueueReachableFunction(target.name, target.fn)
+		}
+		return
+	}
 	if target.fn != nil {
 		view := staticCallViewFor(call, target)
 		c.checkCallShape(function, view, target.name, target.fn)
@@ -3283,6 +3298,17 @@ func (c *scriptChecker) checkCall(function string, call *CallExpr) {
 		return
 	}
 	c.checkBuiltinCallShape(function, staticCallViewFor(call, target), target.name, target.spec)
+}
+
+// callExpandsArguments reports whether a call carries a positional or
+// keyword splat, so its final argument shape is only known at runtime.
+func callExpandsArguments(call *CallExpr) bool {
+	for _, kw := range call.KwArgs {
+		if kw.Splat {
+			return true
+		}
+	}
+	return callHasSplatArg(call)
 }
 
 func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {

@@ -139,7 +139,22 @@ func (e *CallExpr) Pos() Position { return e.Position }
 type KeywordArg struct {
 	Name  string
 	Value Expression
+	// Splat marks a keyword splat argument (`f(**opts)`): Name is empty and
+	// Value evaluates to a hash whose entries expand into the call's keyword
+	// arguments in source order, later entries winning on duplicate keys.
+	Splat bool
 }
+
+// SplatArg represents a positional splat argument in a call (`f(*args)`).
+// Value evaluates to an array whose elements expand into the call's
+// positional arguments in place. It only ever appears inside CallExpr.Args.
+type SplatArg struct {
+	Value    Expression
+	Position Position
+}
+
+func (e *SplatArg) exprNode()     {}
+func (e *SplatArg) Pos() Position { return e.Position }
 
 // MemberExpr represents a dot-access property lookup (e.g. obj.prop).
 type MemberExpr struct {

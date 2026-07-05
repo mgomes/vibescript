@@ -185,6 +185,16 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 		}
 		return p.peekAmpersandStartsBlockPass()
 	}
+	if p.peekToken.Type == ast.TokenAsterisk || p.peekToken.Type == ast.TokenPower {
+		// "*" (and "**") is both a binary operator and the splat sigil; the
+		// same spacing shape Ruby uses for the ampersand applies — "foo *args"
+		// splats while "foo * args", "foo*args", and a trailing "*" are the
+		// operator — and a known local callee keeps the operator reading.
+		if ident, ok := left.(*ast.Identifier); ok && p.isLocalName(ident.Name) {
+			return false
+		}
+		return p.peekSigilStartsPrefixArgument()
+	}
 	return isParenlessArgumentStart(p.peekToken.Type)
 }
 
@@ -205,6 +215,13 @@ func (p *parser) peekAmpersandStartsBlockPass() bool {
 	if p.peekToken.Type != ast.TokenAmpersand {
 		return false
 	}
+	return p.peekSigilStartsPrefixArgument()
+}
+
+// peekSigilStartsPrefixArgument reports whether the lookahead sigil (&, *,
+// or **) has the argument-prefix spacing: detached from the callee yet flush
+// against its operand on the same line.
+func (p *parser) peekSigilStartsPrefixArgument() bool {
 	calleeFlush := p.peekToken.Pos.Line == p.curToken.End.Line &&
 		p.peekToken.Pos.Column == p.curToken.End.Column
 	if calleeFlush {
@@ -2077,7 +2094,7 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 			p.addParseError(p.peekToken.Pos, "block argument must be the last argument")
 		}
 		p.nextToken()
-		if len(kwargs) > 0 && (!isLabelNameToken(p.curToken) || p.peekToken.Type != ast.TokenColon) {
+		if len(kwargs) > 0 && !argumentMayFollowKeywords(p.curToken, p.peekToken) {
 			p.addParseError(p.curToken.Pos, "positional arguments cannot follow keyword arguments")
 		}
 		p.parseCallArgument(&args, &kwargs, &expr.BlockArg)
@@ -2124,13 +2141,14 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 	for p.peekToken.Type == ast.TokenComma &&
 		p.peekToken.Pos.Line == p.curToken.Pos.Line &&
 		p.peekPeek.Pos.Line == p.curToken.Pos.Line &&
-		(isParenlessArgumentStart(p.peekPeek.Type) || isLabelNameToken(p.peekPeek)) {
+		(isParenlessArgumentStart(p.peekPeek.Type) || isLabelNameToken(p.peekPeek) ||
+			p.peekPeek.Type == ast.TokenAsterisk || p.peekPeek.Type == ast.TokenPower) {
 		if expr.BlockArg != nil {
 			p.addParseError(p.peekPeek.Pos, "block argument must be the last argument")
 		}
 		p.nextToken()
 		p.nextToken()
-		if keywordOptionsHash && (!isLabelNameToken(p.curToken) || p.peekToken.Type != ast.TokenColon) {
+		if keywordOptionsHash && !argumentMayFollowKeywords(p.curToken, p.peekToken) {
 			p.addParseError(p.curToken.Pos, "positional arguments cannot follow bare keyword arguments in parenless calls")
 		}
 		p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash, &expr.BlockArg)
@@ -2176,10 +2194,19 @@ func (p *parser) canAttachPeekBlock() bool {
 func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, blockArg *ast.Expression) {
 	switch p.curToken.Type {
 	case ast.TokenAsterisk:
-		p.recoverUnsupportedCallExpansion("call splat is not supported; pass positional arguments explicitly")
+		pos := p.curToken.Pos
+		p.nextToken()
+		value := p.parseExpression(lowestPrec)
+		if value != nil {
+			*args = append(*args, &ast.SplatArg{Value: value, Position: pos})
+		}
 		return
 	case ast.TokenPower:
-		p.recoverUnsupportedCallExpansion("keyword splat is not supported; pass keyword arguments explicitly")
+		p.nextToken()
+		value := p.parseExpression(lowestPrec)
+		if value != nil {
+			*kwargs = append(*kwargs, ast.KeywordArg{Value: value, Splat: true})
+		}
 		return
 	}
 
@@ -2222,10 +2249,20 @@ func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]as
 
 	switch p.curToken.Type {
 	case ast.TokenAsterisk:
-		p.recoverUnsupportedCallExpansion("call splat is not supported; pass positional arguments explicitly")
+		pos := p.curToken.Pos
+		p.nextToken()
+		value := p.parseParenlessArgumentExpression()
+		if value != nil {
+			*args = append(*args, &ast.SplatArg{Value: value, Position: pos})
+		}
 		return
 	case ast.TokenPower:
-		p.recoverUnsupportedCallExpansion("keyword splat is not supported; pass keyword arguments explicitly")
+		p.nextToken()
+		value := p.parseParenlessArgumentExpression()
+		if value != nil {
+			*kwargs = append(*kwargs, ast.KeywordArg{Value: value, Splat: true})
+			*keywordOptionsHash = true
+		}
 		return
 	}
 
@@ -2258,16 +2295,22 @@ func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]as
 	}
 }
 
+// argumentMayFollowKeywords reports whether the argument starting at cur may
+// legally follow keyword arguments in a call: another keyword label, a
+// keyword splat (`**opts`), or the trailing block argument (`&blk`). Only
+// plain positional arguments (including `*splat`) must precede keywords.
+func argumentMayFollowKeywords(cur, peek ast.Token) bool {
+	if cur.Type == ast.TokenPower || cur.Type == ast.TokenAmpersand {
+		return true
+	}
+	return isLabelNameToken(cur) && peek.Type == ast.TokenColon
+}
+
 func (p *parser) parenlessKeywordArgumentCanUseShorthand() bool {
 	if p.peekToken.Type == ast.TokenEOF || p.peekToken.Type == ast.TokenComma {
 		return true
 	}
 	return p.peekToken.Pos.Line != p.curToken.Pos.Line
-}
-
-func (p *parser) recoverUnsupportedCallExpansion(message string) {
-	p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), message)
-	p.recoverUnsupportedCallArgument()
 }
 
 // parseBlockPassArgument parses a Ruby-style ampersand block argument in call
@@ -2290,26 +2333,6 @@ func (p *parser) parseBlockPassArgument(blockArg *ast.Expression, parenless bool
 		return
 	}
 	*blockArg = value
-}
-
-func (p *parser) recoverUnsupportedCallArgument() {
-	startLine := p.curToken.Pos.Line
-	nesting := 0
-	for p.peekToken.Type != ast.TokenEOF &&
-		p.peekToken.Pos.Line == startLine {
-		if nesting == 0 && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRParen) {
-			return
-		}
-		p.nextToken()
-		switch p.curToken.Type {
-		case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace:
-			nesting++
-		case ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
-			if nesting > 0 {
-				nesting--
-			}
-		}
-	}
 }
 
 // isLabelNameToken reports whether a token may appear immediately before a

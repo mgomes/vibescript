@@ -101,6 +101,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalArrayLiteral(e, env)
 	case *HashLiteral:
 		return exec.evalHashLiteral(e, env)
+	case *SplatArg:
+		return NewNil(), exec.errorAt(e.Pos(), "splat argument is only allowed in call arguments")
 	case *UnaryExpr:
 		return exec.evalUnaryExpr(e, env)
 	case *BinaryExpr:
@@ -1662,7 +1664,12 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 				return true
 			}
 		}
+		if e.BlockArg != nil && expressionCapturesCurrentEnv(e.BlockArg) {
+			return true
+		}
 		return false
+	case *SplatArg:
+		return expressionCapturesCurrentEnv(e.Value)
 	case *MemberExpr:
 		return expressionCapturesCurrentEnv(e.Object)
 	case *ScopeExpr:
@@ -3650,6 +3657,8 @@ func expressionContainsBypassableIdentifierCall(expr Expression, name string) bo
 			}
 		}
 		return false
+	case *SplatArg:
+		return expressionContainsBypassableIdentifierCall(t.Value, name)
 	case *UnaryExpr:
 		return expressionContainsBypassableIdentifierCall(t.Right, name)
 	case *BinaryExpr:

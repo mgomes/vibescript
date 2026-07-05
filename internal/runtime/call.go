@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -1217,6 +1218,9 @@ func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
 
 func (exec *Execution) evalCallArgsForCallee(call *CallExpr, env *Env, callee Value) ([]Value, error) {
 	paramInfo, hasParams := callableParamTypes(callee)
+	if callHasSplatArg(call) {
+		return exec.evalCallArgsWithSplats(call, env, paramInfo, hasParams)
+	}
 	args := make([]Value, len(call.Args))
 	for i, arg := range call.Args {
 		expectation := expressionExpectation{}
@@ -1233,6 +1237,68 @@ func (exec *Execution) evalCallArgsForCallee(call *CallExpr, env *Env, callee Va
 			return nil, err
 		}
 		args[i] = val
+	}
+	return args, nil
+}
+
+func callHasSplatArg(call *CallExpr) bool {
+	for _, arg := range call.Args {
+		if _, ok := arg.(*SplatArg); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// evalCallArgsWithSplats evaluates a positional argument list containing at
+// least one `*array` splat, expanding each splatted array in place so the
+// existing arity, keyword-binding, and type validation see exactly the shape
+// the equivalent literal call would produce. Expansion is sandboxed like the
+// literal equivalent: each expanded element charges a step, and the growing
+// argument backing is charged against the memory quota after every splat so
+// a huge splatted array trips the quota just as its literal spelling would.
+// Positional type expectations apply only to arguments before the first
+// splat, whose final positions are still known statically.
+func (exec *Execution) evalCallArgsWithSplats(call *CallExpr, env *Env, paramInfo callableParamInfo, hasParams bool) ([]Value, error) {
+	args := make([]Value, 0, len(call.Args))
+	splatSeen := false
+	for i, arg := range call.Args {
+		if splat, ok := arg.(*SplatArg); ok {
+			splatSeen = true
+			val, err := exec.evalCallArg(splat.Value, env)
+			if err != nil {
+				return nil, err
+			}
+			if val.Kind() != KindArray {
+				return nil, exec.errorAt(splat.Pos(), "splat argument must be an array, got %s", val.Kind())
+			}
+			items := val.Array()
+			args = slices.Grow(args, len(items))
+			for _, item := range items {
+				if err := exec.step(); err != nil {
+					return nil, err
+				}
+				args = append(args, item)
+			}
+			if err := exec.checkMemoryWith(NewArray(args)); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		expectation := expressionExpectation{}
+		if hasParams && !splatSeen {
+			if candidate, ok := callableArgumentExpectation(paramInfo, i, len(call.Args)); ok {
+				expectation = candidate
+			}
+		}
+		val, err := exec.evalCallArgumentForExpectation(arg, env, expectation)
+		if err != nil {
+			return nil, err
+		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return nil, err
+		}
+		args = append(args, val)
 	}
 	return args, nil
 }
@@ -1260,6 +1326,12 @@ func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee 
 	optionsHashType, hasOptionsHashTarget := callOptionsHashArgumentType(call, callee, resolution)
 	kwargs := make(map[string]Value, len(call.KwArgs))
 	for _, kw := range call.KwArgs {
+		if kw.Splat {
+			if err := exec.expandKeywordSplat(kw.Value, env, kwargs); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		var expectedType *TypeExpr
 		if hasParams {
 			expectedType = keywordArgumentExpectedType(paramInfo.params, kw.Name)
@@ -1277,6 +1349,35 @@ func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee 
 		kwargs[kw.Name] = val
 	}
 	return kwargs, nil
+}
+
+// expandKeywordSplat evaluates one `**hash` keyword splat and merges its
+// entries into the call's keyword arguments. Entries expand in the hash's
+// insertion order and later arguments (splat or named, processed in source
+// order) win on duplicate keys, matching Ruby's merge semantics. Every entry
+// charges a step, and the accumulated keyword map is charged against the
+// memory quota after the splat so a huge options hash trips it exactly like
+// the literal keyword spelling.
+func (exec *Execution) expandKeywordSplat(expr Expression, env *Env, kwargs map[string]Value) error {
+	val, err := exec.evalCallArg(expr, env)
+	if err != nil {
+		return err
+	}
+	if val.Kind() != KindHash {
+		return exec.errorAt(expr.Pos(), "keyword splat argument must be a hash, got %s", val.Kind())
+	}
+	for _, entry := range val.HashEntries() {
+		if err := exec.step(); err != nil {
+			return err
+		}
+		switch entry.Key.Kind() {
+		case KindString, KindSymbol:
+		default:
+			return exec.errorAt(expr.Pos(), "keyword splat keys must be strings or symbols, got %s", entry.Key.Kind())
+		}
+		kwargs[entry.Key.String()] = entry.Value
+	}
+	return exec.checkMemoryWith(NewHash(kwargs))
 }
 
 func (exec *Execution) evalCallArgumentForType(arg Expression, env *Env, ty *TypeExpr) (Value, error) {
@@ -2136,7 +2237,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		}
 	}
 
-	if fn := singleNormalArgFunction(callee); fn != nil && len(call.Args) == 1 && len(call.KwArgs) == 0 && call.Block == nil && call.BlockArg == nil {
+	if fn := singleNormalArgFunction(callee); fn != nil && len(call.Args) == 1 && len(call.KwArgs) == 0 && call.Block == nil && call.BlockArg == nil && !callHasSplatArg(call) {
 		return exec.evalSingleNormalArgFunctionMemberCallExpr(call, receiver, fn, env)
 	}
 
@@ -2305,7 +2406,7 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 }
 
 func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindString || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil {
+	if receiver.Kind() != KindString || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil || callHasSplatArg(call) {
 		return NewNil(), false, nil
 	}
 
@@ -2393,7 +2494,7 @@ func (exec *Execution) evalDirectStringSplitCall(call *CallExpr, receiver Value,
 }
 
 func (exec *Execution) evalDirectArrayMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindArray || property != "join" || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil {
+	if receiver.Kind() != KindArray || property != "join" || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil || callHasSplatArg(call) {
 		return NewNil(), false, nil
 	}
 	if len(call.Args) > 1 {
@@ -2576,7 +2677,7 @@ func checkDirectStringMemberCallRoots(exec *Execution, receiver, first, second V
 }
 
 func (exec *Execution) evalDirectCoreObjectMemberCallExpr(call *CallExpr, receiver Value, member *MemberExpr, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindObject || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil {
+	if receiver.Kind() != KindObject || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil || callHasSplatArg(call) {
 		return NewNil(), false, nil
 	}
 
@@ -2695,7 +2796,7 @@ func (exec *Execution) evalDirectTimeParseCall(call *CallExpr, receiver Value, e
 }
 
 func (exec *Execution) evalDirectTimeMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, bool, error) {
-	if receiver.Kind() != KindTime || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil {
+	if receiver.Kind() != KindTime || len(call.KwArgs) != 0 || call.Block != nil || call.BlockArg != nil || callHasSplatArg(call) {
 		return NewNil(), false, nil
 	}
 	switch property {
