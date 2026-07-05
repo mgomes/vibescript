@@ -236,7 +236,16 @@ syntax, exactly like quoted string patterns.
 "ID-12" !~ /x/                # true
 /id-([0-9]+)/i.match("ID-12") # match data: m[0] "ID-12", m[1] "12"
 "ID-12 ID-34".gsub(/ID-/, "") # "12 34"
+"ID-12".match /id-([0-9]+)/i  # parenless command argument, same as match(...)
 ```
+
+A regex literal also works as a parenless command argument, matching Ruby:
+after a callee that is not a local variable, a space before the slash with
+none after it opens the literal, so `text.scan /a+/` is `text.scan(/a+/)`. A
+slash after a local variable always divides (`total /2`), as does a slash
+spaced on both sides or flush (`f / 2`, `f/2`). See the
+[language reference](language_reference.md#method-calls) for the full spacing
+rule.
 
 ### `Regex.match(pattern, text)`
 

@@ -908,7 +908,13 @@ func (p *parser) parseClassLikeBody(pos ast.Position, isModule bool) ast.Stateme
 	p.insideClass = true
 	p.pendingVisibility = ""
 	p.statementNesting++
+	// Body-level assignments are the class's constants: scope them to the
+	// body so they stay visible inside method definitions (isLocalName
+	// crosses the funcDef boundary into class-body scopes) without leaking
+	// into the enclosing scope after `end`.
+	p.pushClassBodyScope()
 	defer func() {
+		p.popLocalScope()
 		p.statementNesting--
 	}()
 

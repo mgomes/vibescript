@@ -53,9 +53,20 @@ type lineLimitedForcedStop struct {
 // act as a lookup boundary: name resolution does not see locals declared
 // in scopes enclosing a function. Block scopes leave funcDef false so
 // they continue to close over their surrounding locals.
+//
+// classBody marks the scope a class or module body pushes. It is the one
+// scope kind whose names stay visible across a funcDef boundary: the
+// runtime resolves body-level assignments (class constants) from method
+// bodies, so isLocalName must too. implicitIt marks a block scope that
+// may bind the implicit `it` parameter; isLocalName treats `it` as a
+// local there so `it /2` divides like the pre-declared `_1`..`_9`
+// candidates, while isDeclaredLocal ignores the mark so implicit-param
+// inference still distinguishes a real enclosing `it` variable.
 type localScope struct {
-	names   map[string]struct{}
-	funcDef bool
+	names      map[string]struct{}
+	funcDef    bool
+	classBody  bool
+	implicitIt bool
 }
 
 func newParser(input string) *parser {
@@ -75,6 +86,13 @@ func (p *parser) pushLocalScope(params []ast.Param, funcDef bool) {
 	for _, param := range params {
 		p.declareParamLocal(param)
 	}
+}
+
+// pushClassBodyScope opens the scope a class or module body declares its
+// body-level names (class constants) into, so they neither leak into the
+// enclosing scope after `end` nor hide from method bodies (see isLocalName).
+func (p *parser) pushClassBodyScope() {
+	p.localScopes = append(p.localScopes, localScope{classBody: true})
 }
 
 func (p *parser) popLocalScope() {
@@ -136,14 +154,54 @@ func (p *parser) undeclareLocal(name string) {
 	delete(p.localScopes[len(p.localScopes)-1].names, name)
 }
 
+// isLocalName reports whether name resolves as a variable-like local at
+// the current position. It drives name-sensitive disambiguation (division
+// vs command-argument regex, splat and block-pass sigils, percent
+// literals), so it mirrors what the runtime can resolve: locals up to the
+// enclosing function definition, the implicit `it` block parameter, and —
+// uniquely across the funcDef boundary — the body-level names of the
+// method's own class or module, which the runtime reaches as class
+// constants. Outer classes' bodies stay invisible, as at runtime.
 func (p *parser) isLocalName(name string) bool {
 	for i := len(p.localScopes) - 1; i >= 0; i-- {
-		if _, ok := p.localScopes[i].names[name]; ok {
+		scope := &p.localScopes[i]
+		if _, ok := scope.names[name]; ok {
+			return true
+		}
+		if name == "it" && scope.implicitIt {
 			return true
 		}
 		// A function definition is a lookup boundary: locals declared in
 		// scopes enclosing the function (including snippet top-level
-		// locals) are not visible inside the function body.
+		// locals) are not visible inside the function body. The nearest
+		// enclosing class/module body is the one exception: its
+		// assignments are the class's constants, which method bodies
+		// resolve at runtime.
+		if scope.funcDef {
+			for j := i - 1; j >= 0; j-- {
+				if !p.localScopes[j].classBody {
+					continue
+				}
+				_, ok := p.localScopes[j].names[name]
+				return ok
+			}
+			break
+		}
+	}
+	return false
+}
+
+// isDeclaredLocal reports whether name was explicitly declared (as an
+// assignment target, parameter, or binding) in a scope reachable without
+// crossing a function-definition boundary. Unlike isLocalName it ignores
+// implicit-`it` candidacy and class-body names beyond the boundary; the
+// implicit-parameter inference gate uses it so only a real enclosing `it`
+// variable suppresses inferring the implicit block parameter.
+func (p *parser) isDeclaredLocal(name string) bool {
+	for i := len(p.localScopes) - 1; i >= 0; i-- {
+		if _, ok := p.localScopes[i].names[name]; ok {
+			return true
+		}
 		if p.localScopes[i].funcDef {
 			break
 		}

@@ -1446,9 +1446,10 @@ func isPercentLiteralDelimiter(r rune) bool {
 // space, a slash, and no trailing space) is intentionally not handled here: the
 // lexer cannot tell a method name from a local variable, so treating that
 // spacing as a regex would misread ordinary division such as `total /2` or
-// `sum /n`. Disambiguating it correctly needs the local-variable tracking Ruby's
-// parser feeds back to its lexer; until then the parenless form requires
-// parentheses (`method(/re/)`).
+// `sum /n`. The parser, which tracks locals, makes that call instead: when a
+// non-local callee is followed by a slash with command-argument spacing it
+// repositions the lexer at the slash (see parseRegexCommandArgument) so the
+// prefix-position rule above scans the literal.
 func (l *lexer) canStartRegexLiteral() bool {
 	// A slash directly after `def` is the division operator-method name
 	// (def /(other)), never a regex literal, so it must lex as TokenSlash for
