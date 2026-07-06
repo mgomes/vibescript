@@ -123,9 +123,9 @@ vibes lsp
 ```
 
 This command is meant to be launched by your editor's language-server client.
-It currently tracks in-memory document updates from `didOpen`/`didChange`.
-Editor setup and the full feature/limitation list are documented in
-[lsp.md](lsp.md).
+It currently tracks in-memory document updates from `didOpen`/`didChange` and
+releases a document's state on `didClose`. Editor setup and the full
+feature/limitation list are documented in [lsp.md](lsp.md).
 
 ## `vibes repl`
 

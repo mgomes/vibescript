@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -2255,5 +2256,204 @@ func TestDefinitionResolvesModulesAndVisibilityPrefixedDefs(t *testing.T) {
 		if start["line"] != wantLine {
 			t.Fatalf("definition line for %s = %#v, want %d", word, start["line"], wantLine)
 		}
+	}
+}
+
+func closeDoc(t *testing.T, server *lspServer, uri string) []lspOutboundMessage {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+	})
+	if err != nil {
+		t.Fatalf("marshal didClose: %v", err)
+	}
+	return server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didClose", Params: payload})
+}
+
+func openDocDiagnostics(t *testing.T, server *lspServer, uri, text string) []lspDiagnostic {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri, "text": text},
+	})
+	if err != nil {
+		t.Fatalf("marshal didOpen: %v", err)
+	}
+	messages := server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didOpen", Params: payload})
+	if len(messages) != 1 {
+		t.Fatalf("didOpen responses = %d, want one publishDiagnostics notification", len(messages))
+	}
+	params, ok := messages[0].Params.(lspPublishDiagnosticsParams)
+	if !ok {
+		t.Fatalf("didOpen params = %#v, want lspPublishDiagnosticsParams", messages[0].Params)
+	}
+	return params.Diagnostics
+}
+
+// perURIMaps returns every string-keyed map field on lspServer by name,
+// so the eviction test fails automatically when a new per-document map
+// is added without being wired into evictDocument.
+func perURIMaps(server *lspServer) map[string]reflect.Value {
+	fields := make(map[string]reflect.Value)
+	value := reflect.ValueOf(server).Elem()
+	for i := range value.NumField() {
+		field := value.Type().Field(i)
+		if field.Type.Kind() == reflect.Map && field.Type.Key().Kind() == reflect.String {
+			fields[field.Name] = value.Field(i)
+		}
+	}
+	return fields
+}
+
+func TestHandleMessageDidCloseEvictsEveryPerDocumentMap(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/close-evict.vibe"
+	openDoc(t, server, uri, "def helper(n)\n  n\nend\n\ndef run()\n  helper(1)\nend\n")
+	// didOpen fills docs, lines, compiled, programs, and published; the
+	// completion index and outline are built lazily, so request both to
+	// make eviction observable for every map.
+	completionLabels(t, server, uri, 5, 2)
+	documentSymbolsResult(t, server, uri)
+
+	maps := perURIMaps(server)
+	if len(maps) != 7 {
+		t.Fatalf("lspServer has %d per-URI maps, want 7; wire new per-document state into evictDocument and this test", len(maps))
+	}
+	key := reflect.ValueOf(uri)
+	for name, field := range maps {
+		if !field.MapIndex(key).IsValid() {
+			t.Fatalf("per-URI map %q not populated before didClose; adjust the test setup", name)
+		}
+	}
+
+	closeDoc(t, server, uri)
+	for name, field := range maps {
+		if entries := field.Len(); entries != 0 {
+			t.Errorf("per-URI map %q still has %d entries after didClose", name, entries)
+		}
+	}
+}
+
+func TestHandleMessageDidClosePublishesEmptyDiagnostics(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/close-clear.vibe"
+	if diags := openDocDiagnostics(t, server, uri, "def run(\n  1\nend\n"); len(diags) == 0 {
+		t.Fatal("expected diagnostics for the broken source")
+	}
+
+	messages := closeDoc(t, server, uri)
+	if len(messages) != 1 {
+		t.Fatalf("didClose responses = %d, want one publishDiagnostics notification", len(messages))
+	}
+	if messages[0].Method != "textDocument/publishDiagnostics" {
+		t.Fatalf("didClose notification method = %q, want textDocument/publishDiagnostics", messages[0].Method)
+	}
+	params, ok := messages[0].Params.(lspPublishDiagnosticsParams)
+	if !ok {
+		t.Fatalf("didClose params = %#v, want lspPublishDiagnosticsParams", messages[0].Params)
+	}
+	if params.URI != uri {
+		t.Fatalf("didClose diagnostics uri = %q, want %q", params.URI, uri)
+	}
+	if len(params.Diagnostics) != 0 {
+		t.Fatalf("didClose diagnostics = %#v, want an empty set clearing stale squiggles", params.Diagnostics)
+	}
+	payload, err := json.Marshal(messages[0])
+	if err != nil {
+		t.Fatalf("marshal didClose notification: %v", err)
+	}
+	if !strings.Contains(string(payload), `"diagnostics":[]`) {
+		t.Fatalf("didClose notification %s, want an empty diagnostics array, not null", payload)
+	}
+}
+
+func TestDidCloseThenReopenIdenticalTextRecomputesDiagnostics(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/reopen-same.vibe"
+	source := "def run(\n  1\nend\n"
+
+	first := openDocDiagnostics(t, server, uri, source)
+	if len(first) == 0 {
+		t.Fatal("expected diagnostics for the broken source")
+	}
+	closeDoc(t, server, uri)
+
+	// The published cache keyed on source text was evicted, so the
+	// reopen recompiles from scratch; the result must match what the
+	// first open produced.
+	reopened := openDocDiagnostics(t, server, uri, source)
+	if len(reopened) != len(first) {
+		t.Fatalf("reopened diagnostics = %d, want %d as before the close", len(reopened), len(first))
+	}
+	for i := range first {
+		if reopened[i] != first[i] {
+			t.Fatalf("reopened diagnostic %d = %#v, want %#v", i, reopened[i], first[i])
+		}
+	}
+}
+
+func TestDidCloseThenReopenDifferentTextDropsStaleState(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/reopen-different.vibe"
+	openDoc(t, server, uri, "def alpha()\n  1\nend\n")
+	if names := symbolNames(documentSymbolsResult(t, server, uri)); !slices.Equal(names, []string{"alpha"}) {
+		t.Fatalf("initial outline = %v, want [alpha]", names)
+	}
+
+	closeDoc(t, server, uri)
+
+	// Reopening with different, broken text must produce fresh
+	// diagnostics and an outline with no trace of the closed buffer.
+	if diags := openDocDiagnostics(t, server, uri, "def beta(\n  2\nend\n"); len(diags) == 0 {
+		t.Fatal("expected diagnostics for the broken reopened text")
+	}
+	if names := symbolNames(documentSymbolsResult(t, server, uri)); slices.Contains(names, "alpha") {
+		t.Fatalf("outline after reopen = %v, must not resurrect symbols from the closed buffer", names)
+	}
+
+	closeDoc(t, server, uri)
+
+	if diags := openDocDiagnostics(t, server, uri, "def beta()\n  2\nend\n"); len(diags) != 0 {
+		t.Fatalf("clean reopened text diagnostics = %#v, want none", diags)
+	}
+	if names := symbolNames(documentSymbolsResult(t, server, uri)); !slices.Equal(names, []string{"beta"}) {
+		t.Fatalf("outline after clean reopen = %v, want [beta]", names)
+	}
+}
+
+func TestHandleMessageDidCloseUnknownURIIsNoOp(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	kept := "file:///tmp/kept.vibe"
+	openDoc(t, server, kept, "def run()\n  1\nend\n")
+
+	messages := closeDoc(t, server, "file:///tmp/never-opened.vibe")
+	if len(messages) != 0 {
+		t.Fatalf("didClose for unknown uri produced %d messages, want none", len(messages))
+	}
+	if _, ok := server.docs[kept]; !ok {
+		t.Fatal("didClose for unknown uri evicted an unrelated document")
+	}
+}
+
+func TestDidCloseToleratesSparseServerState(t *testing.T) {
+	t.Parallel()
+	// Mirror the fuzz harness construction: only docs is allocated, so
+	// eviction must tolerate every other per-URI map being nil.
+	uri := "file:///tmp/sparse.vibe"
+	server := &lspServer{
+		engine: vibes.MustNewEngine(vibes.Config{}),
+		docs:   map[string]string{uri: "def run()\n  1\nend\n"},
+	}
+
+	messages := closeDoc(t, server, uri)
+	if len(messages) != 1 {
+		t.Fatalf("didClose responses = %d, want the clearing notification", len(messages))
+	}
+	if len(server.docs) != 0 {
+		t.Fatal("didClose did not evict the document text")
 	}
 }
