@@ -3151,13 +3151,20 @@ func statementAlwaysExits(stmt Statement) bool {
 	}
 }
 
-// blockAlwaysExits reports whether a block always terminates, determined by its
-// last reachable statement.
+// blockAlwaysExits reports whether a block always terminates, i.e. whether any
+// reachable statement always exits. This is equivalent to testing the block's
+// effective final statement (the first always-exiting statement, or the
+// syntactic last one), but evaluates statementAlwaysExits once per statement:
+// re-testing the statement effectiveFinalStatement returns would double the
+// recursion at every nesting level and made deeply nested conditionals take
+// exponential time to check.
 func blockAlwaysExits(statements []Statement) bool {
-	if len(statements) == 0 {
-		return false
+	for _, stmt := range statements {
+		if statementAlwaysExits(stmt) {
+			return true
+		}
 	}
-	return statementAlwaysExits(effectiveFinalStatement(statements))
+	return false
 }
 
 func blockMayReturn(statements []Statement) bool {
