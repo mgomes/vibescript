@@ -967,6 +967,54 @@ func (exec *Execution) checkCollapsedPairBytesWithLiveBase(receiver, block Value
 	return nil
 }
 
+// beginAccumulatorMeteredSection opens an accumulator-metered section and
+// returns the closure that ends it; callers invoke it as
+// `defer exec.beginAccumulatorMeteredSection()()` around a blockless native
+// build loop. While a section is active, step()'s periodic slow path skips the
+// full reachable-graph memory walk and keeps only the step-quota and
+// context-cancellation checks.
+//
+// A loop may open a section only when both invariants hold for everything the
+// section spans:
+//
+//  1. No script re-entry: the loop never yields to a block, invokes a hash
+//     default proc, calls a capability callback, or otherwise evaluates script
+//     code, and it does not mutate any container reachable from an execution
+//     root. The reachable graph the periodic walk measures therefore cannot
+//     change while the section is active — the walk would re-measure the same
+//     answer every period.
+//  2. Pre-charged allocation: every allocation the loop performs is charged
+//     against the memory quota before it happens, through an
+//     arrayBuildAccumulator/hashBuildAccumulator reservation
+//     (reserveSlots/reserveScratch/checkSlotArrays/add) or a projected-growth
+//     charge. The accumulator baselines include the same scalar-plus-graph
+//     base the periodic walk measures (estimateMemoryUsageBase) plus the call
+//     roots, so any quota the skipped walk would have rejected is rejected by
+//     the loop's own accumulator checks at the same threshold.
+//
+// Together the invariants make the skipped walk provably redundant, so
+// removing it must not move any acceptance threshold; it only removes the
+// O(reachable graph) re-walk the slow path paid every stepSlowPathMask+1
+// steps, which made large blockless materializations quadratic.
+//
+// The section must never remain in force across code that does not satisfy
+// the invariants. Rather than trusting every future call path, the runtime
+// auto-degrades: block invocation (callBlock), script function invocation
+// (callFunctionWithBoundEnv), and builtin dispatch (invokeCallable) all
+// suspend the counter for the duration of the nested call, restoring it on
+// return. A section leaked across a re-entry point therefore never weakens
+// the nested code's checks — the degradation is strictly conservative, which
+// is why this is a silent suspend rather than a dev-build assertion.
+//
+// Sections nest (the counter increments) and the returned end closure is
+// safe under defer-based unwinding. The #903 base-walk memo is unaffected:
+// inside builtins the memo stays bypassed exactly as before, this only skips
+// the redundant bypass walks themselves.
+func (exec *Execution) beginAccumulatorMeteredSection() func() {
+	exec.accumMeteredSections++
+	return func() { exec.accumMeteredSections-- }
+}
+
 // arrayBuildAccumulator charges the memory of an array assembled element by
 // element against the quota without re-walking the whole prefix on each append.
 // Builtins that grow a Go-local result slice from values they cannot bound up

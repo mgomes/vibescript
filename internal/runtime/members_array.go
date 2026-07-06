@@ -2257,6 +2257,12 @@ func arrayJoinPayload(exec *Execution, receiver Value, sep string) (int, error) 
 	if len(arr) == 0 {
 		return 0, nil
 	}
+	// The byte-length walk is a pure projection: it allocates nothing beyond
+	// transient scalar renderings and never re-enters script code, so it runs
+	// as an accumulator-metered section (see beginAccumulatorMeteredSection);
+	// the projected-string check that follows it still charges the full
+	// payload before the result is built.
+	defer exec.beginAccumulatorMeteredSection()()
 	return arrayJoinByteLenBounded(arr, sep, exec.step)
 }
 
@@ -3705,6 +3711,10 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if len(arr)%size != 0 {
 				chunkCapacity++
 			}
+			// Blockless build: every chunk backing is charged through the
+			// accumulator before it is allocated, so the loop runs as an
+			// accumulator-metered section (see beginAccumulatorMeteredSection).
+			defer exec.beginAccumulatorMeteredSection()()
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			if err := acc.reserveSlots(chunkCapacity); err != nil {
 				return NewNil(), err
@@ -3744,6 +3754,10 @@ func arrayMemberTransforms(property string) (Value, error) {
 				return NewArray([]Value{}), nil
 			}
 			windowCount := len(arr) - size + 1
+			// Blockless build: every window backing is charged through the
+			// accumulator before it is allocated, so the loop runs as an
+			// accumulator-metered section (see beginAccumulatorMeteredSection).
+			defer exec.beginAccumulatorMeteredSection()()
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			if err := acc.reserveSlots(windowCount); err != nil {
 				return NewNil(), err
@@ -4741,6 +4755,10 @@ func arrayReverseCopy(exec *Execution, receiver Value, args []Value, kwargs map[
 		return NewNil(), fmt.Errorf("%s does not accept a block", method)
 	}
 	arr := receiver.Array()
+	// Blockless build: the reservation and per-element accumulator charges
+	// below bound all allocation before it happens, so the loop runs as an
+	// accumulator-metered section (see beginAccumulatorMeteredSection).
+	defer exec.beginAccumulatorMeteredSection()()
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	if err := acc.reserveSlots(len(arr)); err != nil {
 		return NewNil(), err
@@ -4774,6 +4792,11 @@ func arrayReverseCopy(exec *Execution, receiver Value, args []Value, kwargs map[
 // materialized natively.
 func arrayFlattenBounded(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, depth int) ([]Value, error) {
 	arr := receiver.Array()
+	// Blockless build: flattenValuesInto never re-enters script code and
+	// every backing growth is charged through the accumulator before append
+	// allocates it, so the whole flatten runs as an accumulator-metered
+	// section (see beginAccumulatorMeteredSection).
+	defer exec.beginAccumulatorMeteredSection()()
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	if err := acc.reserveSlots(len(arr)); err != nil {
 		return nil, err

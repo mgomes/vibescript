@@ -217,6 +217,11 @@ func hashFlattenBounded(exec *Execution, receiver Value, args []Value, kwargs ma
 	if err := exec.checkStepBudgetFor(count); err != nil {
 		return nil, err
 	}
+	// Blockless build: both the pairs pre-build and the flatten phase charge
+	// every allocation through the accumulator before performing it and never
+	// re-enter script code, so the whole materialization runs as an
+	// accumulator-metered section (see beginAccumulatorMeteredSection).
+	defer exec.beginAccumulatorMeteredSection()()
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	scratch := sortedKeyBufferBytes(count)
 	if typed {
@@ -1232,6 +1237,11 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.to_a does not take keyword arguments")
 			}
+			// Blockless build: both branches below charge every allocation
+			// through the accumulator before performing it and never re-enter
+			// script code, so the materialization runs as an
+			// accumulator-metered section (see beginAccumulatorMeteredSection).
+			defer exec.beginAccumulatorMeteredSection()()
 			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
 				if err := exec.checkStepBudgetFor(count); err != nil {

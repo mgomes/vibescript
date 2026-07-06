@@ -285,7 +285,13 @@ func (exec *Execution) step() error {
 	}
 	onSlowPath := (exec.steps & stepSlowPathMask) == 0
 	if onSlowPath {
-		if exec.memoryQuota > 0 {
+		// Inside an accumulator-metered section the periodic reachable-graph
+		// walk is skipped: the section's build loop charges all of its
+		// allocation before performing it and never re-enters script code, so
+		// the walk would re-measure an unchanged graph (see
+		// beginAccumulatorMeteredSection). The step quota above and the
+		// context check below still run every period.
+		if exec.memoryQuota > 0 && exec.accumMeteredSections == 0 {
 			if err := exec.checkMemory(); err != nil {
 				return err
 			}

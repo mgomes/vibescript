@@ -659,6 +659,130 @@ func TestArrayJoinQuotaCoversRenderedPayload(t *testing.T) {
 	})
 }
 
+// TestArrayChunkBlocklessChargesResultDuringBuild pins the blockless
+// Array#chunk(n) quota thresholds: the outer slot reservation rejects before
+// the loop starts, a quota covering the whole build succeeds, and a quota that
+// admits the reservation but not every chunk's payload is rejected mid-build
+// by the accumulator. The mid-build case is the guard for the
+// accumulator-metered section: the loop skips the periodic reachable-graph
+// walk, so the accumulator's own charges must remain the binding constraint at
+// exactly the same thresholds.
+func TestArrayChunkBlocklessChargesResultDuringBuild(t *testing.T) {
+	t.Parallel()
+
+	const elements = 4096
+	const size = 16
+	const chunkCount = elements / size
+	receiver := largeIntArray(elements)
+	sizeArg := NewInt(size)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, []Value{sizeArg}, nil, NewNil())
+
+	arr := receiver.Array()
+	est := newMemoryEstimator()
+	payload := 0
+	want := make([]Value, 0, chunkCount)
+	for i := 0; i < elements; i += size {
+		part := make([]Value, size)
+		copy(part, arr[i:i+size])
+		want = append(want, NewArray(part))
+		payload += est.valuePayload(want[len(want)-1])
+	}
+
+	t.Run("under_quota", func(t *testing.T) {
+		t.Parallel()
+
+		// Mirror the build's peak projection: the outer slot reservation, one
+		// in-flight chunk backing, and every retained chunk payload.
+		quota := base + arraySlotBackingBytes(chunkCount) + arraySlotBackingBytes(size) + payload + 4096
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		got, err := callArrayMember(t, exec, receiver, "chunk", []Value{sizeArg}, NewNil())
+		if err != nil {
+			t.Fatalf("array.chunk under quota %d: %v", quota, err)
+		}
+		compareArrays(t, got, want)
+	})
+
+	t.Run("over_quota_preflight", func(t *testing.T) {
+		t.Parallel()
+
+		quota := base + arraySlotBackingBytes(chunkCount)/2
+		fitsCallRoots := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		if err := fitsCallRoots.checkCallMemoryRoots(receiver, []Value{sizeArg}, nil, NewNil()); err != nil {
+			t.Fatalf("receiver and size should fit under quota %d: %v", quota, err)
+		}
+
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		_, err := callArrayMember(t, exec, receiver, "chunk", []Value{sizeArg}, NewNil())
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+		if exec.steps != 0 {
+			t.Fatalf("array.chunk stepped %d times before rejecting the outer backing; want 0", exec.steps)
+		}
+	})
+
+	t.Run("over_quota_midbuild", func(t *testing.T) {
+		t.Parallel()
+
+		quota := base + arraySlotBackingBytes(chunkCount) + payload/2
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		_, err := callArrayMember(t, exec, receiver, "chunk", []Value{sizeArg}, NewNil())
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+		if exec.steps == 0 || exec.steps >= chunkCount {
+			t.Fatalf("array.chunk rejected after %d steps; want a mid-build rejection in (0, %d)", exec.steps, chunkCount)
+		}
+	})
+}
+
+// TestArrayReverseCopyPreflightsResultBacking pins Array#reverse's quota
+// thresholds around its up-front slot reservation. Every retained element
+// aliases the receiver already charged in the accumulator baseline, so the
+// reservation is the whole threshold: a quota that covers it succeeds and one
+// that does not is rejected before the loop allocates or steps.
+func TestArrayReverseCopyPreflightsResultBacking(t *testing.T) {
+	t.Parallel()
+
+	const elements = 4000
+	receiver := largeIntArray(elements)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
+
+	t.Run("under_quota", func(t *testing.T) {
+		t.Parallel()
+
+		quota := base + arraySlotBackingBytes(elements) + 4096
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		got, err := callArrayMember(t, exec, receiver, "reverse", nil, NewNil())
+		if err != nil {
+			t.Fatalf("array.reverse under quota %d: %v", quota, err)
+		}
+		arr := receiver.Array()
+		want := make([]Value, elements)
+		for i, item := range arr {
+			want[elements-1-i] = item
+		}
+		compareArrays(t, got, want)
+	})
+
+	t.Run("over_quota", func(t *testing.T) {
+		t.Parallel()
+
+		quota := base + arraySlotBackingBytes(elements)/2
+		fitsCallRoots := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		if err := fitsCallRoots.checkCallMemoryRoots(receiver, nil, nil, NewNil()); err != nil {
+			t.Fatalf("receiver should fit under quota %d: %v", quota, err)
+		}
+
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		_, err := callArrayMember(t, exec, receiver, "reverse", nil, NewNil())
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+		if exec.steps != 0 {
+			t.Fatalf("array.reverse stepped %d times before rejecting the backing; want 0", exec.steps)
+		}
+	})
+}
+
 func constantSymbolBlockValue(name string) Value {
 	pos := Position{Line: 1, Column: 1}
 	body := []Statement{&ExprStmt{Position: pos, Expr: &SymbolLiteral{Name: name, Position: pos}}}
