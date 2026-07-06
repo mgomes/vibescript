@@ -78,7 +78,9 @@ func (s *Script) checkWarningsMode(opts CallOptions, target checkTarget, orderIn
 		orderIndependentOnly:  orderIndependentOnly,
 	}
 	checker.moduleExportRoot = checker.typeRoot
-	if target.Function == "" {
+	if depthWarnings := checker.nestingDepthWarnings(); len(depthWarnings) > 0 {
+		checker.warnings = depthWarnings
+	} else if target.Function == "" {
 		checker.checkScript()
 	} else {
 		checker.checkFunctionExecution(target)
@@ -3098,6 +3100,314 @@ func (c *scriptChecker) checkImplicitFinalBlock(function string, ty *TypeExpr, s
 	c.checkImplicitFinalStatement(function, ty, effectiveFinalStatement(statements))
 }
 
+// maxCheckNestingDepth caps how deeply control flow may nest in a checked
+// script. Check mode deliberately runs without step or memory quotas, and the
+// checker re-walks enclosing bodies while descending (exit analysis,
+// local-binding collection, branch state merges), so check time grows
+// quadratically with nesting depth. The parser and the runtime accept nesting
+// far past this cap (depth 50000 executes in well under a second), so the cap
+// never rejects realistic scripts; it is purely an anti-hang backstop for
+// hosts that check untrusted sources.
+const maxCheckNestingDepth = 512
+
+// nestingDepthWarnings scans every checkable body for control-flow nesting
+// beyond maxCheckNestingDepth. Any hit yields one deterministic warning per
+// offending callable and the caller skips the main check pass, so pathological
+// nesting reports a diagnostic instead of stalling the checker.
+func (c *scriptChecker) nestingDepthWarnings() []CheckWarning {
+	var warnings []CheckWarning
+	exceeded := func(label string, pos Position) {
+		warnings = append(warnings, CheckWarning{
+			Function: label,
+			Pos:      pos,
+			Message:  fmt.Sprintf("check exceeded maximum nesting depth of %d", maxCheckNestingDepth),
+		})
+	}
+	for _, fn := range c.sortedScriptFunctions() {
+		if functionExceedsCheckDepth(fn) {
+			exceeded(fn.Name, fn.Pos)
+		}
+	}
+	for _, classDef := range c.sortedClasses() {
+		if len(classDef.Body) > 0 && statementsExceedCheckDepth(classDef.Body, maxCheckNestingDepth) {
+			exceeded(classDef.Name+".<class body>", classDef.Body[0].Pos())
+		}
+		for _, method := range sortedCheckFunctions(classDef.Methods) {
+			if functionExceedsCheckDepth(method) {
+				exceeded(classDef.Name+"#"+method.Name, method.Pos)
+			}
+		}
+		for _, method := range sortedCheckFunctions(classDef.ClassMethods) {
+			if functionExceedsCheckDepth(method) {
+				exceeded(classDef.Name+"."+method.Name, method.Pos)
+			}
+		}
+	}
+	return warnings
+}
+
+func functionExceedsCheckDepth(fn *ScriptFunction) bool {
+	if fn == nil {
+		return false
+	}
+	for _, param := range fn.Params {
+		if expressionExceedsCheckDepth(param.DefaultVal, maxCheckNestingDepth) {
+			return true
+		}
+	}
+	return statementsExceedCheckDepth(fn.Body, maxCheckNestingDepth)
+}
+
+// statementsExceedCheckDepth reports whether any construct in the statements
+// nests more than remaining levels deep. Only constructs the checker descends
+// with per-level state (conditionals, loops, begin/rescue, class bodies,
+// block literals, and expression-level control flow) count as a level;
+// ordinary expression nesting is traversed without charging depth. Descent
+// stops at the first construct past the budget, so the scan itself recurses
+// at most remaining levels through counted constructs.
+func statementsExceedCheckDepth(statements []Statement, remaining int) bool {
+	for _, stmt := range statements {
+		if statementExceedsCheckDepth(stmt, remaining) {
+			return true
+		}
+	}
+	return false
+}
+
+func statementExceedsCheckDepth(stmt Statement, remaining int) bool {
+	switch typed := stmt.(type) {
+	case nil:
+		return false
+	case *ReturnStmt:
+		return expressionExceedsCheckDepth(typed.Value, remaining)
+	case *RaiseStmt:
+		return expressionExceedsCheckDepth(typed.Value, remaining) ||
+			expressionExceedsCheckDepth(typed.Message, remaining)
+	case *BreakStmt:
+		return expressionExceedsCheckDepth(typed.Value, remaining)
+	case *NextStmt:
+		return expressionExceedsCheckDepth(typed.Value, remaining)
+	case *AssignStmt:
+		return expressionExceedsCheckDepth(typed.Target, remaining) ||
+			expressionExceedsCheckDepth(typed.Value, remaining)
+	case *ExprStmt:
+		return expressionExceedsCheckDepth(typed.Expr, remaining)
+	case *LogicalStmt:
+		if remaining <= 0 {
+			return true
+		}
+		return statementExceedsCheckDepth(typed.Left, remaining-1) ||
+			statementExceedsCheckDepth(typed.Right, remaining-1)
+	case *IfStmt:
+		if remaining <= 0 {
+			return true
+		}
+		if expressionExceedsCheckDepth(typed.Condition, remaining-1) ||
+			statementsExceedCheckDepth(typed.Consequent, remaining-1) {
+			return true
+		}
+		for _, elseIf := range typed.ElseIf {
+			if expressionExceedsCheckDepth(elseIf.Condition, remaining-1) ||
+				statementsExceedCheckDepth(elseIf.Consequent, remaining-1) {
+				return true
+			}
+		}
+		return statementsExceedCheckDepth(typed.Alternate, remaining-1)
+	case *ForStmt:
+		if remaining <= 0 {
+			return true
+		}
+		return expressionExceedsCheckDepth(typed.Target, remaining-1) ||
+			expressionExceedsCheckDepth(typed.Iterable, remaining-1) ||
+			statementsExceedCheckDepth(typed.Body, remaining-1)
+	case *WhileStmt:
+		if remaining <= 0 {
+			return true
+		}
+		return expressionExceedsCheckDepth(typed.Condition, remaining-1) ||
+			statementsExceedCheckDepth(typed.Body, remaining-1)
+	case *UntilStmt:
+		if remaining <= 0 {
+			return true
+		}
+		return expressionExceedsCheckDepth(typed.Condition, remaining-1) ||
+			statementsExceedCheckDepth(typed.Body, remaining-1)
+	case *TryStmt:
+		if remaining <= 0 {
+			return true
+		}
+		if statementsExceedCheckDepth(typed.Body, remaining-1) ||
+			statementsExceedCheckDepth(typed.Else, remaining-1) ||
+			statementsExceedCheckDepth(typed.Ensure, remaining-1) {
+			return true
+		}
+		for i := range typed.Rescues {
+			if statementsExceedCheckDepth(typed.Rescues[i].Body, remaining-1) {
+				return true
+			}
+		}
+		return false
+	case *ClassStmt:
+		if remaining <= 0 {
+			return true
+		}
+		return statementsExceedCheckDepth(typed.Body, remaining-1)
+	}
+	return false
+}
+
+func expressionExceedsCheckDepth(expr Expression, remaining int) bool {
+	switch typed := expr.(type) {
+	case nil:
+		return false
+	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:
+		return statementExceedsCheckDepth(typed.(Statement), remaining)
+	case *ArrayLiteral:
+		for _, elem := range typed.Elements {
+			if expressionExceedsCheckDepth(elem, remaining) {
+				return true
+			}
+		}
+	case *HashLiteral:
+		for _, pair := range typed.Pairs {
+			if expressionExceedsCheckDepth(pair.Key, remaining) ||
+				expressionExceedsCheckDepth(pair.Value, remaining) {
+				return true
+			}
+		}
+	case *CallExpr:
+		if expressionExceedsCheckDepth(typed.Callee, remaining) ||
+			expressionExceedsCheckDepth(typed.BlockArg, remaining) {
+			return true
+		}
+		for _, arg := range typed.Args {
+			if expressionExceedsCheckDepth(arg, remaining) {
+				return true
+			}
+		}
+		for _, kwarg := range typed.KwArgs {
+			if expressionExceedsCheckDepth(kwarg.Value, remaining) {
+				return true
+			}
+		}
+		return blockLiteralExceedsCheckDepth(typed.Block, remaining)
+	case *SplatArg:
+		return expressionExceedsCheckDepth(typed.Value, remaining)
+	case *MemberExpr:
+		return expressionExceedsCheckDepth(typed.Object, remaining)
+	case *ScopeExpr:
+		return expressionExceedsCheckDepth(typed.Object, remaining)
+	case *IndexExpr:
+		if expressionExceedsCheckDepth(typed.Object, remaining) {
+			return true
+		}
+		for _, index := range typed.Indices {
+			if expressionExceedsCheckDepth(index, remaining) {
+				return true
+			}
+		}
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			if expressionExceedsCheckDepth(element.Target, remaining) {
+				return true
+			}
+		}
+	case *UnaryExpr:
+		return expressionExceedsCheckDepth(typed.Right, remaining)
+	case *BinaryExpr:
+		return expressionExceedsCheckDepth(typed.Left, remaining) ||
+			expressionExceedsCheckDepth(typed.Right, remaining)
+	case *RangeExpr:
+		return expressionExceedsCheckDepth(typed.Start, remaining) ||
+			expressionExceedsCheckDepth(typed.End, remaining)
+	case *YieldExpr:
+		for _, arg := range typed.Args {
+			if expressionExceedsCheckDepth(arg, remaining) {
+				return true
+			}
+		}
+	case *InterpolatedString:
+		return stringPartsExceedCheckDepth(typed.Parts, remaining)
+	case *InterpolatedSymbol:
+		return stringPartsExceedCheckDepth(typed.Parts, remaining)
+	case *ConditionalExpr:
+		if remaining <= 0 {
+			return true
+		}
+		return expressionExceedsCheckDepth(typed.Condition, remaining-1) ||
+			expressionExceedsCheckDepth(typed.Consequent, remaining-1) ||
+			expressionExceedsCheckDepth(typed.Alternate, remaining-1)
+	case *RescueExpr:
+		if remaining <= 0 {
+			return true
+		}
+		return expressionExceedsCheckDepth(typed.Body, remaining-1) ||
+			expressionExceedsCheckDepth(typed.Fallback, remaining-1)
+	case *IfExpr:
+		if remaining <= 0 {
+			return true
+		}
+		if expressionExceedsCheckDepth(typed.Condition, remaining-1) ||
+			expressionExceedsCheckDepth(typed.Consequent, remaining-1) {
+			return true
+		}
+		for _, branch := range typed.ElseIf {
+			if expressionExceedsCheckDepth(branch.Condition, remaining-1) ||
+				expressionExceedsCheckDepth(branch.Result, remaining-1) {
+				return true
+			}
+		}
+		return expressionExceedsCheckDepth(typed.Alternate, remaining-1)
+	case *CaseExpr:
+		if remaining <= 0 {
+			return true
+		}
+		if expressionExceedsCheckDepth(typed.Target, remaining-1) {
+			return true
+		}
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				if expressionExceedsCheckDepth(value.Expr, remaining-1) {
+					return true
+				}
+			}
+			if expressionExceedsCheckDepth(clause.Result, remaining-1) {
+				return true
+			}
+		}
+		return expressionExceedsCheckDepth(typed.ElseExpr, remaining-1)
+	case *BlockLiteral:
+		return blockLiteralExceedsCheckDepth(typed, remaining)
+	}
+	return false
+}
+
+func blockLiteralExceedsCheckDepth(block *BlockLiteral, remaining int) bool {
+	if block == nil {
+		return false
+	}
+	if remaining <= 0 {
+		return true
+	}
+	for _, param := range block.Params {
+		if expressionExceedsCheckDepth(param.DefaultVal, remaining-1) {
+			return true
+		}
+	}
+	return statementsExceedCheckDepth(block.Body, remaining-1)
+}
+
+func stringPartsExceedCheckDepth(parts []StringPart, remaining int) bool {
+	for _, part := range parts {
+		if exprPart, ok := part.(StringExpr); ok {
+			if expressionExceedsCheckDepth(exprPart.Expr, remaining) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // statementAlwaysExits reports whether evaluating stmt always terminates the
 // current statement list, mirroring the runtime's "returned"/error signals. It
 // lets the implicit-return check tell when a begin/else's else branch is
@@ -3151,13 +3461,20 @@ func statementAlwaysExits(stmt Statement) bool {
 	}
 }
 
-// blockAlwaysExits reports whether a block always terminates, determined by its
-// last reachable statement.
+// blockAlwaysExits reports whether a block always terminates, i.e. whether any
+// reachable statement always exits. This is equivalent to testing the block's
+// effective final statement (the first always-exiting statement, or the
+// syntactic last one), but evaluates statementAlwaysExits once per statement:
+// re-testing the statement effectiveFinalStatement returns would double the
+// recursion at every nesting level and made deeply nested conditionals take
+// exponential time to check.
 func blockAlwaysExits(statements []Statement) bool {
-	if len(statements) == 0 {
-		return false
+	for _, stmt := range statements {
+		if statementAlwaysExits(stmt) {
+			return true
+		}
 	}
-	return statementAlwaysExits(effectiveFinalStatement(statements))
+	return false
 }
 
 func blockMayReturn(statements []Statement) bool {
