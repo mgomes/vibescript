@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"math"
 	"testing"
 )
 
@@ -90,8 +91,10 @@ end`)
 	})
 }
 
-// TestOpenRangeIterationGuards pins that every enumeration path rejects open
-// ranges up front instead of running into the sandbox quotas.
+// TestOpenRangeIterationGuards pins that every genuinely unbounded
+// enumeration path rejects open ranges up front instead of running into the
+// sandbox quotas. Bounded windows anchored at the known endpoint — first(n)
+// on an endless range — are allowed and covered by TestEndlessRangeFirstN.
 func TestOpenRangeIterationGuards(t *testing.T) {
 	t.Parallel()
 
@@ -127,12 +130,20 @@ def beginless_first
   (..5).first
 end
 
+def beginless_first_n
+  (..5).first(3)
+end
+
 def endless_last
   (1..).last
 end
 
-def endless_first_n
-  (1..).first(3)
+def endless_last_n
+  (1..).last(3)
+end
+
+def beginless_last_n
+  (..5).last(3)
 end
 
 def endless_step
@@ -142,20 +153,66 @@ def endless_step
 end`)
 
 	cases := map[string]string{
-		"endless_to_a":    "cannot iterate an endless range",
-		"endless_each":    "cannot iterate an endless range",
-		"beginless_size":  "cannot iterate a beginless range",
-		"endless_for":     "cannot iterate an endless range",
-		"endless_rand":    "rand range must be bounded",
-		"endless_min":     "cannot iterate an endless range",
-		"beginless_first": "cannot get the first element of a beginless range",
-		"endless_last":    "cannot get the last element of an endless range",
-		"endless_first_n": "cannot iterate an endless range",
-		"endless_step":    "cannot iterate an endless range",
+		"endless_to_a":      "cannot iterate an endless range",
+		"endless_each":      "cannot iterate an endless range",
+		"beginless_size":    "cannot iterate a beginless range",
+		"endless_for":       "cannot iterate an endless range",
+		"endless_rand":      "rand range must be bounded",
+		"endless_min":       "cannot iterate an endless range",
+		"beginless_first":   "cannot get the first element of a beginless range",
+		"beginless_first_n": "cannot get the first element of a beginless range",
+		"endless_last":      "cannot get the last element of an endless range",
+		"endless_last_n":    "cannot get the last element of an endless range",
+		"beginless_last_n":  "cannot iterate a beginless range",
+		"endless_step":      "cannot iterate an endless range",
 	}
 	for fn, want := range cases {
 		requireCallErrorContains(t, script, fn, nil, CallOptions{}, want)
 	}
+}
+
+// TestEndlessRangeFirstN pins that first(n) on an endless range is bounded
+// work and succeeds: the leading window starts at the known endpoint, so the
+// open end never matters. Exclusivity refers to the missing end and is
+// irrelevant, and n = 0 returns an empty array, both matching Ruby.
+func TestEndlessRangeFirstN(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  [(1..).first(3), (1...).first(3), (1..).first(0), (-2..).first(4), (5..).first]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{
+		NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)}),
+		NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)}),
+		NewArray([]Value{}),
+		NewArray([]Value{NewInt(-2), NewInt(-1), NewInt(0), NewInt(1)}),
+		NewInt(5),
+	})
+}
+
+// TestEndlessRangeFirstNClampsAtInt64Ceiling pins the int64 edge: an endless
+// range starting near MaxInt64 yields only the remaining representable
+// integers rather than wrapping past MaxInt64, mirroring the clean
+// terminal-value stop bounded iteration uses at the ceiling. (Ruby's bignums
+// keep counting past 2^63-1; a 64-bit-integer runtime cannot.)
+func TestEndlessRangeFirstNClampsAtInt64Ceiling(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  (9223372036854775800..).first(20)
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	want := make([]Value, 0, 8)
+	for v := int64(9223372036854775800); ; v++ {
+		want = append(want, NewInt(v))
+		if v == math.MaxInt64 {
+			break
+		}
+	}
+	compareArrays(t, got, want)
 }
 
 // TestOpenRangeHashKeys pins that open ranges are distinct hash keys from any
