@@ -536,34 +536,34 @@ func TestTimeFromCalendarParts(t *testing.T) {
 	})
 }
 
-func TestTimeFromEpoch(t *testing.T) {
+func TestTimeFromEpochSecondsOnly(t *testing.T) {
 	t.Parallel()
 
 	t.Run("int_seconds", func(t *testing.T) {
 		t.Parallel()
-		got, err := value.TimeFromEpoch(value.NewInt(1_700_000_000), time.UTC)
+		got, err := value.TimeFromEpochParts(value.NewInt(1_700_000_000), nil, nil, time.UTC)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got.Unix() != 1_700_000_000 || got.Location() != time.UTC {
-			t.Fatalf("TimeFromEpoch = %v (%v), want unix 1700000000 in UTC", got, got.Location())
+			t.Fatalf("TimeFromEpochParts = %v (%v), want unix 1700000000 in UTC", got, got.Location())
 		}
 	})
 
 	t.Run("float_carries_fraction", func(t *testing.T) {
 		t.Parallel()
-		got, err := value.TimeFromEpoch(value.NewFloat(1_700_000_000.5), time.UTC)
+		got, err := value.TimeFromEpochParts(value.NewFloat(1_700_000_000.5), nil, nil, time.UTC)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got.Unix() != 1_700_000_000 || got.Nanosecond() != 500_000_000 {
-			t.Fatalf("TimeFromEpoch = %v, want .5s fraction", got)
+			t.Fatalf("TimeFromEpochParts = %v, want .5s fraction", got)
 		}
 	})
 
 	t.Run("nil_location_uses_local", func(t *testing.T) {
 		t.Parallel()
-		got, err := value.TimeFromEpoch(value.NewInt(0), nil)
+		got, err := value.TimeFromEpochParts(value.NewInt(0), nil, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -574,9 +574,9 @@ func TestTimeFromEpoch(t *testing.T) {
 
 	t.Run("non_numeric", func(t *testing.T) {
 		t.Parallel()
-		_, err := value.TimeFromEpoch(value.NewString("soon"), time.UTC)
+		_, err := value.TimeFromEpochParts(value.NewString("soon"), nil, nil, time.UTC)
 		if err == nil || err.Error() != "Time.at expects numeric seconds" {
-			t.Fatalf("TimeFromEpoch error = %v, want %q", err, "Time.at expects numeric seconds")
+			t.Fatalf("TimeFromEpochParts error = %v, want %q", err, "Time.at expects numeric seconds")
 		}
 	})
 }

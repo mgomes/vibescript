@@ -57,7 +57,7 @@ func newInspectBuiltin(typeName string) Value {
 		if err := exec.checkProjectedValueRendering(receiver, projectedBuilderCap(&builder, payload)); err != nil {
 			return NewNil(), err
 		}
-		// Grow only on a positive payload: InspectByteLen sums byte counts without
+		// Grow only on a positive payload: the inspect byte-length projection sums byte counts without
 		// saturating, so a rendering larger than the int range (physically
 		// unreachable but not statically excluded) could wrap negative, and Grow
 		// panics on a negative count. WriteInspectTo then streams the rendering

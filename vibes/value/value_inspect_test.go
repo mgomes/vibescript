@@ -121,10 +121,14 @@ func TestValueInspect(t *testing.T) {
 			if got := tc.val.Inspect(); got != tc.want {
 				t.Fatalf("Inspect() = %q, want %q", got, tc.want)
 			}
-			// InspectByteLen must match the rendered length exactly so callers
-			// can project an allocation before building the string.
-			if got, want := tc.val.InspectByteLen(), len(tc.val.Inspect()); got != want {
-				t.Fatalf("InspectByteLen() = %d, want len(Inspect()) = %d", got, want)
+			// The projected byte length must match the rendered length exactly
+			// so callers can size an allocation before building the string.
+			projected, err := tc.val.InspectByteLenBounded(func() error { return nil })
+			if err != nil {
+				t.Fatalf("InspectByteLenBounded() error = %v, want nil", err)
+			}
+			if want := len(tc.val.Inspect()); projected != want {
+				t.Fatalf("InspectByteLenBounded() = %d, want len(Inspect()) = %d", projected, want)
 			}
 		})
 	}
@@ -333,8 +337,8 @@ func TestValueInspectByteLenBounded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("InspectByteLenBounded() error = %v, want nil", err)
 		}
-		if want := v.InspectByteLen(); got != want {
-			t.Fatalf("InspectByteLenBounded() = %d, want %d", got, want)
+		if want := len(v.Inspect()); got != want {
+			t.Fatalf("InspectByteLenBounded() = %d, want len(Inspect()) = %d", got, want)
 		}
 	})
 

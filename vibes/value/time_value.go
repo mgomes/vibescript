@@ -268,12 +268,6 @@ func microsecondRangeError() error {
 	return fmt.Errorf("Time constructor microsecond argument out of range (must be within one second)")
 }
 
-// TimeFromEpoch converts a numeric epoch value into a time.Time anchored
-// to the supplied (or local) location.
-func TimeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
-	return TimeFromEpochParts(val, nil, nil, loc)
-}
-
 // subsecUnitNanos maps the unit symbols accepted by Time.at's three-argument
 // form to the number of nanoseconds each subsecond unit represents. Ruby spells
 // these as the symbols :microsecond/:usec, :millisecond, and :nanosecond/:nsec.
