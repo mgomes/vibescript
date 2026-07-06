@@ -191,7 +191,7 @@ func populateValue(v reflect.Value, depth int) {
 		populateValue(val, depth-1)
 		m.SetMapIndex(key, val)
 		v.Set(m)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if depth <= 0 {
 			return
 		}
@@ -267,7 +267,7 @@ func assertNoSharedMutableState(t *testing.T, path string, original, clone refle
 		return // DeepEqual already reported the divergence.
 	}
 	switch original.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if original.IsNil() || clone.IsNil() {
 			return
 		}
