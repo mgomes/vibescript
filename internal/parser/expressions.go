@@ -164,6 +164,13 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 	if !isParenlessCallCallee(left) {
 		return false
 	}
+	// self parses as an identifier but can never be a command callee in
+	// Ruby: "self [0]" always indexes through a user-defined [], and
+	// "self *2" / "self /2" are the binary operators. Classify it like a
+	// known local so every sigil arm below keeps the operator reading.
+	if ident, ok := left.(*ast.Identifier); ok && ident.Name == "self" {
+		return false
+	}
 	if p.peekToken.Pos.Line != p.curToken.Pos.Line {
 		return false
 	}

@@ -87,3 +87,90 @@ func TestBracketFlushAgainstBuiltinStaysIndexing(t *testing.T) {
     `)
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "cannot index builtin")
 }
+
+// TestBracketSelfStaysIndexing pins that self is never a command callee: a
+// spaced bracket after self indexes through a user-defined [] exactly like
+// the flush form, and the sigil arms keep their operator readings on self.
+func TestBracketSelfStaysIndexing(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    class Grid
+      def [](i)
+        i * 10
+      end
+
+      def *(n)
+        n + 100
+      end
+
+      def spaced()
+        self [2]
+      end
+
+      def flush()
+        self[2]
+      end
+
+      def star()
+        self *3
+      end
+    end
+
+    def run_spaced()
+      Grid.new().spaced()
+    end
+
+    def run_flush()
+      Grid.new().flush()
+    end
+
+    def run_star()
+      Grid.new().star()
+    end
+    `)
+	for name, want := range map[string]int64{"run_spaced": 20, "run_flush": 20, "run_star": 103} {
+		if got := callFunc(t, script, name, nil); got.Kind() != KindInt || got.Int() != want {
+			t.Fatalf("%s = %s, want %d", name, got.String(), want)
+		}
+	}
+}
+
+// TestBracketAccessorNamesAreCommandCallees pins the intended breaking edge
+// of the bracket rule: accessor names are runtime members the parser cannot
+// see, so a spaced bracket after a bare getter name reads as an argument and
+// fails with the same arity error Ruby raises. Indexing the accessor value
+// needs a receiver (self.items[0]) or a flush bracket after a local.
+func TestBracketAccessorNamesAreCommandCallees(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    class Box
+      property items
+
+      def initialize()
+        @items = [10, 20]
+      end
+
+      def spaced_read()
+        items [0]
+      end
+
+      def receiver_read()
+        self.items[0]
+      end
+    end
+
+    def run_spaced()
+      Box.new().spaced_read()
+    end
+
+    def run_receiver()
+      Box.new().receiver_read()
+    end
+    `)
+	requireCallErrorContains(t, script, "run_spaced", nil, CallOptions{}, "unexpected positional arguments")
+	if got := callFunc(t, script, "run_receiver", nil); got.Kind() != KindInt || got.Int() != 10 {
+		t.Fatalf("run_receiver = %s, want 10", got.String())
+	}
+}

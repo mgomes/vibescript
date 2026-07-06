@@ -395,7 +395,48 @@ text = "ID-42"
 text.match /ID-[0-9]+/
 ```
 
-## 13. A same-line `do` block after a parenless call argument binds to the outer call
+## 13. Parenless `f [0]` passes an array argument
+
+**What changed.** Following the same spacing rule as the splat and regex
+forms, a bracket detached from a non-local callee now opens an array-literal
+command argument: `puts [3, 1, 2].sort` is `puts([3, 1, 2].sort)`. A flush
+bracket keeps indexing (`puts[1]` still tries to index the callee), and a
+known local indexes in every spacing, so `a [0]` and `a [0] = 1` are
+unchanged when `a` is a local. `self [0]` also keeps indexing: `self` is
+never a command callee.
+
+**What breaks.** Bare accessor names inside method bodies are non-local
+callees, so with `getter items` (or `property items`) a method body that
+indexed the accessor value with a spaced bracket now passes an argument
+instead and fails — the same error Ruby raises for `items [0]` in a method:
+
+```
+class Box
+  property items
+
+  def first_item()
+    items [0]    # 1.0: arity error — parses as items([0]), as in Ruby
+  end
+end
+```
+
+**The fix.** Index through a receiver or keep the bracket flush:
+
+```vibe
+class Box
+  property items
+
+  def initialize()
+    @items = [10, 20]
+  end
+
+  def first_item()
+    self.items[0]
+  end
+end
+```
+
+## 14. A same-line `do` block after a parenless call argument binds to the outer call
 
 **What changed.** `puts arr.map do |x| ... end` now passes the block to `puts`
 (which ignores it), matching Ruby, so `map` raises "requires a block".
@@ -416,7 +457,7 @@ end)
 puts values.map { |v| v * 2 }
 ```
 
-## 14. A newline ends a range at statement level
+## 15. A newline ends a range at statement level
 
 **What changed.** `x = 1..` at the end of a line is now an endless range (new
 in 1.0), and the next line parses as a separate statement. Bounded endpoints
@@ -440,7 +481,7 @@ span = 1..10
 open_ended = 5..
 ```
 
-## 15. String behavior alignments
+## 16. String behavior alignments
 
 Several string methods changed results to match Ruby exactly.
 
@@ -492,7 +533,7 @@ is `"STRASSE"`). Pass `:ascii` to restrict mapping to ASCII letters, or
 "Straße".downcase(:fold)  # => "strasse"
 ```
 
-## 16. `time - time` returns a `Float` of seconds
+## 17. `time - time` returns a `Float` of seconds
 
 **What changed.** Subtracting two times returns a `Float` number of seconds —
 preserving sub-second precision and matching Ruby's `Time#-` — instead of a
@@ -510,7 +551,7 @@ elapsed              # => 86400.0
 elapsed / 3600.0     # hours as a float
 ```
 
-## 17. Comparison and float-arithmetic edge cases
+## 18. Comparison and float-arithmetic edge cases
 
 **`<=>` returns `nil` for incomparable operands** instead of raising: mixed
 kinds (`1 <=> "a"`), money in different currencies, and `Time#<=>` against a
@@ -533,7 +574,7 @@ the result with `finite?`/`nan?`:
 Coercing a non-finite float to an integer raises rather than yielding a
 garbage value.
 
-## 18. Sandbox quota timing
+## 19. Sandbox quota timing
 
 Two quota-accounting changes can alter when (not whether) resource limits
 fire; scripts running close to their configured quotas may be affected.
@@ -559,7 +600,7 @@ destructuring windows, ephemeral block receivers) escaped the memory quota.
 Workloads that only fit because of that under-counting now fail with a quota
 error; the fix is to size quotas for the real peak.
 
-## 19. Smaller behavioral alignments
+## 20. Smaller behavioral alignments
 
 - **`Array#sum` honors its initial value and block** (previously silently
   ignored), and each addition must operate on compatible operands — summing
