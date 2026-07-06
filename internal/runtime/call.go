@@ -263,6 +263,11 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// any active sections for the duration of the call: the callee runs
 		// with full periodic memory checks and the caller's sections resume on
 		// return (see beginAccumulatorMeteredSection).
+		// The plain (non-deferred) restores below rely on there being no
+		// recover() around builtin dispatch: a panicking builtin tears down
+		// the whole Execution, so no code observes the unrestored counters.
+		// If a recover-and-continue path is ever added here, both restores
+		// must move into defers or the counters leak.
 		savedSections := exec.accumMeteredSections
 		exec.accumMeteredSections = 0
 		exec.builtinDepth++
