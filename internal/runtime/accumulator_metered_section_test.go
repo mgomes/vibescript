@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // TestAccumulatorMeteredSectionSkipsPeriodicWalk pins the core mechanic:
@@ -138,5 +139,49 @@ end`)
 	}
 	if afterBlock != 1 {
 		t.Fatalf("section counter = %d after block returned, want 1 (restored)", afterBlock)
+	}
+}
+
+// TestBlocklessFlattenLargeBuildWallTime pins the wall-time fix for the #604
+// adversarial finding: a 1M-leaf blockless flatten under raised quotas used to
+// re-walk the whole reachable heap every 16 steps (O(N * heap / 16), minutes
+// of CPU); with the accumulator-metered section it completes in well under a
+// second of interpreter time. The bound is deliberately generous so slow or
+// instrumented CI hosts never flake, while still failing by a wide margin if
+// the quadratic periodic walk ever returns.
+func TestBlocklessFlattenLargeBuildWallTime(t *testing.T) {
+	if testing.Short() {
+		t.Skip("wall-time pin, skipped in -short")
+	}
+	t.Parallel()
+
+	const groups = 1000
+	const perGroup = 1000
+	const leaves = groups * perGroup
+	nested := make([]Value, groups)
+	for i := range nested {
+		inner := make([]Value, perGroup)
+		for j := range inner {
+			inner[j] = NewInt(int64(i*perGroup + j))
+		}
+		nested[i] = NewArray(inner)
+	}
+
+	engine := MustNewEngine(Config{StepQuota: 64 << 20, MemoryQuotaBytes: 1 << 30})
+	script := compileScriptWithEngine(t, engine, `def run(values)
+  values.flatten.size
+end`)
+
+	start := time.Now()
+	got, err := script.Call(context.Background(), "run", []Value{NewArray(nested)}, CallOptions{})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("flatten of %d leaves failed after %v: %v", leaves, elapsed, err)
+	}
+	if got.Kind() != KindInt || got.Int() != leaves {
+		t.Fatalf("flatten size = %v, want %d", got, leaves)
+	}
+	if elapsed > 30*time.Second {
+		t.Fatalf("flatten of %d leaves took %v, want well under 30s (quadratic periodic walk regression)", leaves, elapsed)
 	}
 }
