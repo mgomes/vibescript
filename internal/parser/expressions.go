@@ -164,6 +164,13 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 	if !isParenlessCallCallee(left) {
 		return false
 	}
+	// self parses as an identifier but can never be a command callee in
+	// Ruby: "self [0]" always indexes through a user-defined [], and
+	// "self *2" / "self /2" are the binary operators. Classify it like a
+	// known local so every sigil arm below keeps the operator reading.
+	if ident, ok := left.(*ast.Identifier); ok && ident.Name == "self" {
+		return false
+	}
 	if p.peekToken.Pos.Line != p.curToken.Pos.Line {
 		return false
 	}
@@ -209,6 +216,23 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 			return false
 		}
 		return p.peekSlashStartsRegexArgument()
+	}
+	if p.peekToken.Type == ast.TokenLBracket {
+		// "[" is both the index postfix and the opener of an array-literal
+		// command argument. Ruby disambiguates by callee spacing alone:
+		// "puts [1]" (and "puts [ 1 ]") passes an array argument while
+		// "puts[1]" indexes the callee. Unlike the sigil arms there is no
+		// flush-operand requirement — the elements may sit apart from the
+		// bracket or continue on later lines. A known local callee keeps the
+		// indexing reading in every spacing ("a [0]" reads and "a [0] = 1"
+		// assigns through the index), matching Ruby's local-variable rule
+		// and the sigil arms above.
+		if ident, ok := left.(*ast.Identifier); ok && p.isLocalName(ident.Name) {
+			return false
+		}
+		calleeFlush := p.peekToken.Pos.Line == p.curToken.End.Line &&
+			p.peekToken.Pos.Column == p.curToken.End.Column
+		return !calleeFlush
 	}
 	return isParenlessArgumentStart(p.peekToken.Type)
 }
@@ -2206,11 +2230,16 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 	p.nextToken()
 	p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash, &expr.BlockArg)
 
+	// TokenLBracket is excluded from isParenlessArgumentStart because a
+	// bracket after the callee is spacing-sensitive (indexing vs argument),
+	// but after a comma there is no indexing reading: "f x, [1]" can only
+	// continue the argument list with an array literal.
 	for p.peekToken.Type == ast.TokenComma &&
 		p.peekToken.Pos.Line == p.curToken.Pos.Line &&
 		p.peekPeek.Pos.Line == p.curToken.Pos.Line &&
 		(isParenlessArgumentStart(p.peekPeek.Type) || isLabelNameToken(p.peekPeek) ||
-			p.peekPeek.Type == ast.TokenAsterisk || p.peekPeek.Type == ast.TokenPower) {
+			p.peekPeek.Type == ast.TokenAsterisk || p.peekPeek.Type == ast.TokenPower ||
+			p.peekPeek.Type == ast.TokenLBracket) {
 		if expr.BlockArg != nil {
 			p.addParseError(p.peekPeek.Pos, "block argument must be the last argument")
 		}

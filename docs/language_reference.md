@@ -392,6 +392,18 @@ method of the class that assigns `LIMIT` divide. Accessor names declared
 with `getter`/`property` are method calls, not locals, so they follow the
 non-local rule.
 
+An array literal can be a parenless command argument under the same
+local-variable rule, matching Ruby: `puts [3, 1, 2].sort` is
+`puts([3, 1, 2].sort)`. Only the callee-side spacing decides — a bracket
+detached from a non-local callee opens an array argument (`puts [ 1 ]` and a
+multiline `puts [` work too, and further arguments may follow:
+`concat [1], [2]`), while a flush bracket keeps indexing, so `puts[1]` still
+tries to index `puts` and fails at runtime. A known local indexes in every
+spacing: when `a` is a local array, `a [0]` reads and `a [0] = 1` assigns
+through the index exactly like `a[0]`. Member callees have no local reading,
+so `xs.first [0]` passes `[0]` as an argument to `first`; write
+`xs.first[0]` to index the result.
+
 Ruby-style ampersand block arguments forward a callable as the call's block:
 `m(&blk)` passes a captured block, function value, or bound method along, and
 `m(&:name)` is the symbol-to-proc shorthand that sends `name` to each yielded
