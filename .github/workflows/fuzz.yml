@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "17 7 * * *"
   workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Per-target fuzz budget (Go -fuzztime syntax)"
+        required: false
+        default: "3m"
 
 permissions:
   contents: read
@@ -11,7 +16,7 @@ permissions:
 jobs:
   fuzz:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -29,4 +34,15 @@ jobs:
           tool: just
 
       - name: Run fuzz suite
-        run: just fuzz
+        run: just fuzz "${{ github.event.inputs.fuzztime || '3m' }}"
+
+      - name: Upload new failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failing-inputs
+          path: |
+            cmd/vibes/testdata/fuzz/**
+            internal/runtime/testdata/fuzz/**
+          if-no-files-found: ignore
+          retention-days: 30

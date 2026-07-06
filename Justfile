@@ -14,9 +14,17 @@ leakcheck:
 # failing the nightly with "context deadline exceeded" (golang/go#48591).
 fuzz fuzztime='25000x':
 	#!/usr/bin/env bash
-	set -euo pipefail
+	set -uo pipefail
 
 	fuzztime="{{fuzztime}}"
+	failed=()
+
+	run_target() {
+		local pkg="$1" target="$2"
+		if ! go test "$pkg" -run=^$ -fuzz="$target" -fuzztime="$fuzztime"; then
+			failed+=("$target")
+		fi
+	}
 
 	for target in \
 		FuzzFormatVibeSource \
@@ -24,7 +32,7 @@ fuzz fuzztime='25000x':
 		FuzzREPLInputFlow \
 		FuzzLSPPayloadAndMessageHandling
 	do
-		go test ./cmd/vibes -run=^$ -fuzz="$target" -fuzztime="$fuzztime"
+		run_target ./cmd/vibes "$target"
 	done
 
 	for target in \
@@ -41,8 +49,13 @@ fuzz fuzztime='25000x':
 		FuzzModulePolicyValidation \
 		FuzzCapabilityInputValidation
 	do
-		go test ./internal/runtime -run=^$ -fuzz="$target" -fuzztime="$fuzztime"
+		run_target ./internal/runtime "$target"
 	done
+
+	if [ "${#failed[@]}" -gt 0 ]; then
+		echo "fuzz targets with new failing inputs: ${failed[*]}" >&2
+		exit 1
+	fi
 
 bench:
 	scripts/bench_runtime.sh
