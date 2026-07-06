@@ -24,6 +24,8 @@ dives on specific topics.
 - `classes.md` – class syntax, class/instance methods, variables, and privacy.
 - `language_reference.md` – consolidated language syntax and semantics reference.
 - `syntax_compatibility.md` – core syntax freeze baseline and compatibility guarantees.
+- `migrating-to-1.0.md` – breaking changes in the 1.0 release with
+  before/after examples and fixes.
 - `control-flow.md` – conditionals, loops, and ranges.
 - `blocks.md` – using block literals for map/select/reduce style patterns.
 - `tasks.md` – structured concurrency with `Tasks.map`, `Tasks.run`, and

@@ -4,11 +4,1505 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-- Ongoing work toward the next pre-1.0 release.
+- Ongoing work toward the next release.
 
 <!-- Unreleased entries are tracked as individual files in changelog.d/ so
      pull requests never conflict on this file. They are compiled into a
      versioned section by scripts/build_changelog.sh at release time. -->
+## v1.0.0 - 2026-07-05
+
+Vibescript 1.0 aligns the language, the class system, and the collection
+standard library with Ruby semantics. Several behaviors changed incompatibly
+since v0.50.0; every breaking change is collected with before/after examples
+and fixes in [docs/migrating-to-1.0.md](docs/migrating-to-1.0.md).
+
+### Language and syntax
+
+- **Added: Ruby-style control-flow values and rescue forms.** `begin`, `unless`,
+  `while`, `until`, and `for` can be used as value expressions; rescue modifiers,
+  multiple rescue clauses, rescue `retry`, comma-separated destructuring RHS
+  values, leaf statement modifiers, contextual `then`, and `next value` in
+  iterator blocks now follow Ruby-compatible behavior.
+- **Added: multiple ordered `rescue` clauses.** A `begin` block (and a
+  function-level rescue tail) may now carry several `rescue` clauses, each with
+  its own error type and `=> binding`. The first clause whose type matches the
+  raised error handles it, so handlers order from specific to general exactly
+  as in Ruby. Previously only a single clause parsed, forcing handlers to
+  collapse error types into one union and losing ordered fallback behavior.
+- **Added: Ruby-style rescue modifier expressions.** Expression-position
+  `rescue` now works as a fallback form, so code such as
+  `x = risky_call rescue fallback` evaluates the fallback when the guarded
+  expression raises a recoverable runtime error. The modifier follows the same
+  catchability rules as structured `begin`/`rescue`, so sandbox and limit errors
+  remain unrescuable.
+- **Added: Ruby syntax follow-up batch.** Comma-separated `return` values,
+  double-quoted hex/unicode escapes, typed `raise Type, "message"`, multiline
+  bounded range endpoints, order-independent enum union normalization, scoped
+  class constants (`Config::LIMIT`), `alias`/`alias_method`, qualified module
+  enum type annotations (`mod.Status`), and parenless operand/block forms.
+- **Added: quoted symbol literals.** Symbols can now be written with double or
+  single quotes (`:"foo-bar"`, `:'foo bar'`, `:""`) so they can hold
+  punctuation, spaces, or be empty, matching Ruby. Quoted symbols use the same
+  escapes as the matching string quote and are accepted anywhere a symbol
+  literal is, including type-shape field names. A quoted-string hash key such as
+  `"foo-bar":` is the same symbol as `:"foo-bar"`. Interpolation inside symbol
+  literals is not supported, so `:"a#{b}"` is a parse error.
+- **Added: uppercase `%W` and `%I` percent arrays.** These are the
+  interpolating companions to `%w` and `%i`: each entry is processed with
+  double-quoted string semantics, so `#{...}` is expanded and the usual escape
+  sequences (`\t`, `\n`, and so on) apply, while entries still split on
+  whitespace that is neither escaped nor inside an interpolation. `%W` builds an
+  array of strings and `%I` builds an array of symbols, matching Ruby. The
+  lowercase `%w`/`%i` forms keep their literal behavior unchanged.
+- **Added: Ruby-style exponent (scientific) notation numeric literals.** Float
+  literals may now carry an `e`/`E` exponent marker with an optional sign and
+  one or more exponent digits (`1e3`, `1.5e-2`, `1E6`, `1e1_0`). Any literal
+  with an exponent is a float even without a decimal point, so `1e3` is
+  `1000.0`, matching Ruby. Underscores remain visual separators between exponent
+  digits, and an exponent that overflows the 64-bit float range saturates to
+  `Infinity` as in Ruby. A numeric literal that directly abuts an identifier
+  (`1e3foo`, `123abc`, `1.5x`, `1e`, `1e_3`) now reports a clear parse error
+  instead of silently splitting into a number followed by an identifier, and
+  committed-but-malformed exponents (`1e+`, `1e3_`, `1e3__4`) are rejected the
+  same way. Keyword suffixes stay valid so Ruby modifier forms like `5if cond`
+  and `1e3if cond` continue to parse.
+- **Added: Ruby-style numeric base prefix literals.** Integer literals now
+  accept `0x`/`0X` hexadecimal, `0b`/`0B` binary, `0o`/`0O` octal, and `0d`/`0D`
+  explicit decimal prefixes, with underscores permitted between digits in any
+  base (`0xDEAD_BEEF`). A prefix must be followed by at least one valid digit,
+  and a prefixed literal may not carry a fractional part or trailing letters;
+  such malformed literals now fail at parse time with an `invalid numeric
+  literal` diagnostic instead of leaving a stray identifier that produced a
+  confusing undefined-variable error. A bare leading zero (`010`) remains
+  decimal rather than legacy octal.
+- **Added: Ruby-style hash value omission shorthand.** A label key followed
+  immediately by `,`, `}`, or end-of-input now reads the local variable of the
+  same name, so `{ name: }` is shorthand for `{ name: name }`, matching the
+  call-site keyword shorthand (`greet name:`). Omission applies only to label
+  keys; quoted keys such as `{ "name": }` are still rejected, and an undefined
+  local reports the usual undefined-variable error.
+- **Added: Ruby-style optional keyword-only parameters.** `def f(a: 0)` now
+  declares an optional keyword-only parameter whose default applies when the
+  label is omitted, distinct from the required keyword form `a:` and the typed
+  positional form `a: int`. A later default may reference an earlier parameter
+  (`def g(a:, b: a + 1)`), keyword-only parameters still reject positional
+  arguments, and `a: nil` reads as the keyword default `nil` while a nil-leading
+  union annotation (`a: nil | int`) stays a typed positional parameter. Defaults
+  evaluate under the sandbox step and memory quotas. The token after the colon
+  disambiguates the forms: a bare type name stays a typed positional parameter,
+  so wrap a bare-identifier default in parentheses (`a: (other)`) to force the
+  keyword form. Expression defaults are supported, including a comparison against
+  an earlier parameter (`def f(limit:, ok: limit < 10)`) and a hash literal
+  (`def f(opts: { retry: 3 })`, `def f(opts: {})`, one with `nil` values like
+  `def f(opts: { previous: nil })`, or one with a nested empty hash like
+  `def f(opts: { headers: {} })`); the `name: { field: Type }` shape-type
+  spelling stays a typed positional parameter, and a built-in generic container
+  type (`def f(array, values: array<int>)`) is never shadowed by a value local
+  of the same name. A brace group whose field values all parse as types but whose
+  shape is structurally invalid, whether a duplicate field
+  (`def run(payload: { id: string, id: int })`) or a missing field separator
+  (`def run payload: { id: string name: int }`), surfaces its shape diagnostic
+  instead of being silently reinterpreted as a hash default. A keyword default is
+  never evaluated when the call shape can never bind: a missing required keyword
+  or a leftover positional argument is reported before any default runs, so a
+  default's side effects, errors, or quota cost cannot mask the real arity or
+  keyword mismatch.
+- **Added: Ruby-style anonymous rest targets in destructuring assignment.** A
+  bare `*` may now appear as a rest target, discarding the values it captures
+  without binding a name, as in `first, * = values`, `*, last = values`, and
+  `first, *, last = values`. This matches Ruby's `*` discard target and joins
+  the existing named `*rest` support.
+- **Added: Ruby-style `for` iteration over hashes.** A `for` loop may now
+  iterate a hash directly, mirroring Ruby's loop over `each`. Each iteration
+  binds a two-element `[key, value]` pair (keys exposed as symbols), visited in
+  insertion order (see the hash-ordering change below), and participates in the
+  sandbox step and memory quotas like array and range iteration.
+- **Added: Ruby-style negative indexes and bracket slicing for arrays and
+  strings.** Bracket access now mirrors `Array#[]` and `String#[]`: a single
+  index counts a negative value back from the end and returns `nil` when out of
+  range rather than raising (`[10, 20, 30][-1]` is `30`, `[1][5]` is `nil`),
+  `value[start, length]` returns a subarray or substring, and `value[range]`
+  slices by an integer range. Array assignment accepts a negative index
+  (`array[-1] = value` updates the last element) but still raises when the index
+  falls outside the array. String indexing remains rune-aware.
+- **Added: Ruby-style safe navigation operator (`receiver&.member`).** A safe
+  navigation read or method call short-circuits to `nil` when the receiver is
+  `nil`, and otherwise dispatches exactly like the corresponding `.` access. A
+  short-circuited call evaluates neither its arguments nor its block, matching
+  Ruby. The operator guards only its immediate access, so `user&.profile.name`
+  still dispatches the trailing `.name` on whatever `user&.profile` returns. Safe
+  navigation cannot appear anywhere in an assignment target, so `user&.name`,
+  `user&.profile.name`, and `user&.items[0]` are all parse errors on the left of
+  an assignment rather than silently assigning through `nil`.
+- **Added: Ruby-style regex literals and match operators.** `/pattern/flags`
+  literals now parse and produce first-class regex values with `source`,
+  `flags`, `match`, and `match?` members. The `=~` operator returns the
+  character index of the first match or `nil` and `!~` returns whether the
+  pattern misses, with string and regex operands accepted in either order. Regex
+  values work as `case`/`when` and `===` matchers, are accepted by the string
+  pattern helpers (`match`, `match?`, `scan`, `sub`, `gsub`), and
+  `Regexp.new`/`Regexp.union` now return them. Supported flags are `i`
+  (case-insensitive) and `m` (`.` matches newlines); patterns keep Go's RE2
+  syntax and the existing regex guard limits. A slash after a value still
+  divides (`10 / 2`), so existing arithmetic is unchanged.
+- **Added: parenless command-argument regex literals.** A regex literal can
+  now be a parenless call argument, matching Ruby: `match /ID-[0-9]+/` parses
+  as `match(/ID-[0-9]+/)`, with flags, escapes, and further arguments working
+  exactly like the parenthesized form (`scan /a+/, text`). The parser feeds
+  its local-variable table into the decision, so a slash after a known local
+  keeps dividing in every spacing — `total /2`, `total /(n + 1)`, and
+  `total /-n` stay arithmetic. The implicit `it` block parameter and the
+  enclosing class's or module's constants count as locals here, so `it /2`
+  in a parameterless block and `LIMIT /2` inside a method of the class that
+  assigns `LIMIT` divide too. The splat and block-pass sigils share that
+  view, so `it *2` in a parameterless block now multiplies (it previously
+  parsed as a splat call that always failed at runtime).
+- **Added: Ruby-style beginless and endless ranges.** `start..`, `start...`,
+  `..finish`, and `...finish` are supported for slicing (`arr[1..]`, `s[..2]`,
+  `values_at`, `fill`, `byteslice`), case/`===` membership (`when 3..`),
+  `cover?`/`include?`, one-sided `clamp`, hash keys, and rendering. Every
+  iterating helper (`each`, `map`, `to_a`, `size`, `step`, `for`, `min`/`max`,
+  `first(n)`/`last(n)`, `rand`) rejects open ranges up front instead of running
+  into the sandbox quotas.
+- **Added: Ruby-style case equality operator `===`.** Vibescript now parses and
+  evaluates `===`, treating its left operand as a matcher and its right operand
+  as the value being tested, mirroring `case`/`when` matching. Range matchers
+  check membership (`(1..3) === 2` is `true`, `(1...3) === 3` is `false`) and
+  every other matcher falls back to `==` (`1 === 1` is `true`, `2 === (1..3)` is
+  `false`). Because the scalar path reuses `==`, integers and floats stay
+  distinct kinds, so `1 === 1.0` is `false`, unlike Ruby.
+- **Added: Ruby-style unary plus.** Prefix `+` is now a valid expression: it
+  returns integers, floats, and strings unchanged and raises a clear runtime
+  error on any other operand. Strings are immutable values, so `+"x"` yields the
+  same string, matching Ruby's observable behavior. A `+` (or `-`) written flush
+  against its operand at the start of a line begins a new statement, matching
+  Ruby. A sign separated from its operand by surrounding whitespace continues the
+  previous line as a binary operator, reusing Vibescript's existing
+  indented-continuation rule; this spaced form intentionally differs from Ruby,
+  which would start a new statement instead.
+- **Removed: hash rocket (`=>`) literal syntax.** Hash literals only accept
+  colon-style keys: shorthand labels (`name:`) and quoted string keys
+  (`"name":`). Ruby's `=>` syntax is no longer part of the hash grammar, so write
+  `{ name: "Ada" }` instead of `{ :name => "Ada" }`. To key a hash on a value
+  computed at runtime, assign into the hash with index access after building it.
+- **Changed: a newline ends a range at statement level.** `x = 1..` is now an
+  endless range and the next line parses as a separate statement, matching
+  Ruby; bounded endpoints may still continue onto the next line inside parens,
+  brackets, and call arguments.
+- **Changed: a same-line `do` block after a parenless call argument now binds
+  to the outer call, matching Ruby.** `puts arr.map do |x| ... end` passes the
+  block to `puts` (which ignores it), so `map` raises "requires a block";
+  parenthesize the receiver call (`puts(arr.map do |x| ... end)`) or use a
+  brace block, which keeps binding to the nearest call.
+- **Changed: `f /2` where `f` is a zero-arg function or member call now opens
+  a regex literal.** Following Ruby's spacing rule (space before the slash,
+  none after, non-local callee), the slash starts a command-argument regex
+  instead of dividing the call's result. Without a second slash on the line
+  this fails loudly with "unterminated regex literal"; with one (for example
+  `f /2 + g/i`) the line parses as `f(/2 + g/i)`, silently changing a former
+  division chain, so audit division written in this spacing. To keep the
+  division reading, space the slash on both sides (`f / 2`), remove the space
+  (`f/2`), or call explicitly (`f() / 2`). Locals — including the implicit
+  `it` parameter and the enclosing class's constants — are unaffected, and
+  `f /= 2` remains a compound assignment. Accessor names (`getter total`)
+  are method calls, not locals, so `total /2` inside a method reads as a
+  regex argument, exactly as Ruby reads an attr_reader name there.
+- **Fixed: double-quoted strings work inside interpolation expressions.** An
+  interpolation now extends to its matching `}` even when the embedded expression
+  contains its own double-quoted strings or nested interpolations, so common
+  fallback and helper shapes such as `"#{name || "guest"}"` and
+  `"#{["a", "b"].join(", ")}"` parse instead of reporting an unterminated string
+  interpolation, matching Ruby. The lexer no longer guesses where the outer
+  string ends by scanning the rest of the input, so an unterminated string now
+  reports a clear lexer error and a stray character reports `unexpected character`
+  instead of a generic `invalid token`.
+- **Fixed: parenthesized function calls bind keyword labels to a positional
+  options hash like the parenless form.** When a plain function has no matching
+  keyword parameter and exposes a positional options parameter,
+  `configure(retries: 3)` now collapses its keyword labels into the options hash
+  just as `configure retries: 3` already did, and a typed options parameter is
+  validated against the synthesized hash so `configure(retries: "slow")` is
+  rejected with the shape mismatch instead of `missing argument`. The same
+  binding now applies when invoking a function value through its `call` alias
+  and when calling a function value held in a member such as a module function.
+  Constructor and method calls keep strict parenthesized keyword binding,
+  including an instance method named `call`. A positional argument that follows a
+  keyword label inside parentheses, such as `collect(first: 1, "tail")`, is now
+  rejected with a parse error matching Ruby (which treats it as a syntax error)
+  and the parenless form, rather than silently appending the synthesized options
+  hash after the trailing positional.
+- **Fixed: anonymous rest targets now parse in block parameter
+  destructuring.** A bare `*` discard rest is accepted inside destructured block
+  parameters, as in `values.map do |(head, *)| ... end` and
+  `do |(head, *, tail)| ... end`, matching assignment destructuring instead of
+  being rejected as an invalid block parameter target.
+- **Fixed: rest destructuring no longer panics on short right-hand sides.**
+  Assignments such as `first, *rest = []` or `first, *, last = [1]` now bind the
+  rest target to an empty array (and missing fixed targets to `nil`) instead of
+  crashing on an out-of-range slice.
+- **Fixed: trailing targets after a rest now bind left-to-right on short
+  inputs.** When the right-hand side is shorter than the fixed targets, the
+  targets after the rest fill from left to right and pad with `nil` on the
+  right, matching Ruby. For example, `a, *, y, z = [1, 2]` now yields `a = 1`,
+  `y = 2`, `z = nil` instead of reversing the trailing values.
+- **Fixed: destructuring now snapshots the right-hand side before assigning.**
+  When a target writes back into the source array, later targets read the
+  original values rather than the mutated ones, matching Ruby's whole-RHS
+  evaluation. For example, `values = [1, 2, 3]; values[1], *rest = values` now
+  binds `rest` to `[2, 3]` (the original snapshot) instead of `[1, 3]`.
+- **Fixed: a splat-assignment that begins a line after a continuable
+  expression now parses as its own statement.** A line that opens with `*` and
+  forms a destructuring left-hand side, such as `*, last = values` or
+  `*rest, last = values`, is no longer misread as a multiplication continuation
+  of the previous line. This holds even when the `=` lands on the next line via
+  the newline-before-`=` continuation (for example `*rest` followed by an
+  indented `= values`), and when the target list itself is split across lines
+  after a trailing comma (for example `*rest,` followed by an indented
+  `last = values`). Genuine multiline multiplication (a line ending or
+  beginning with a spaced `*`) still continues as before. The lookahead also
+  accepts reserved-word member names, so targets such as `*rest, record.end =
+  values` start a new statement instead of failing to parse.
+- **Fixed: reserved-word hash labels are accepted consistently.** Hash labels
+  and keyword arguments now accept every keyword token that can precede a colon,
+  including `begin:`, `rescue:`, `ensure:`, `raise:`, and `export:`. Previously
+  these labels failed to parse while other reserved words such as `class:` and
+  `return:` were already allowed, so keyword-shaped payload keys worked or failed
+  depending on which word they happened to use. This matches Ruby's uniform
+  treatment of keyword-shaped labels.
+- **Fixed: reject misplaced nullable generic type syntax.** The parser no longer
+  accepts a `?` on a generic container name before its type arguments, so
+  `array?<int>` and `hash?<string, int>` now raise a parse error pointing to the
+  documented spelling (`array<int> | nil`) instead of silently parsing as a
+  nullable `array<int>` / `hash<string, int>`. Untyped nullable containers such
+  as `array?` and `hash?` (without type arguments) are still accepted.
+
+### Classes, modules, and visibility
+
+- **Added: Ruby visibility directives in class bodies.** `public`, `private`,
+  and `protected` work as section directives, inline modifiers (including on
+  `property`/`getter`/`setter` declarations), and retroactive symbol
+  directives (`private :hidden, :other`). Protected methods allow explicit
+  receivers when the caller's `self` is an instance of the same class,
+  enforced across member, operator, index, and setter dispatch.
+- **Added: Ruby-style module namespace declarations.** `module Name ... end`
+  declares an in-source namespace: `def self.` module functions dispatch as
+  `Billing.code`, constants resolve as `Billing::LIMIT`, modules nest
+  (`Outer::Inner`), and module state is isolated per script invocation.
+  Modules cannot be instantiated, and misplaced declarations get targeted
+  parse errors.
+- **Added: `include`/`extend` mixins in class and module bodies.** `include`
+  mixes a module's instance methods (visibility, operator/index methods, and
+  accessors included) into a class and surfaces its constants as class
+  constants; `extend` adds them as class methods. Collisions follow Ruby's
+  ancestor order: own definitions win, later includes beat earlier ones,
+  `include A, B` prefers `A`, and re-including a module already in the
+  ancestry is a no-op. `is_a?`/`kind_of?` and class type contracts recognize
+  included modules, including transitively included ones; `extend self`,
+  including a class, and referencing an undeclared module fail with targeted
+  diagnostics.
+- **Added: Ruby-style operator and index method definitions.** Classes can now
+  define `+`, `-`, `*`, `/`, `%`, `**`, `<<`, `&`, `==`, `!=`, `<`, `<=`, `>`,
+  `>=`, `<=>`, `[]`, and `[]=` as instance methods, and operator, indexing, and
+  index-assignment syntax dispatches to them on the receiver. A user `==`
+  defines both `==` and (absent an explicit method) `!=`; compound index
+  assignment (`c[k] += 1`) composes `[]` and `[]=`. Operator methods are
+  instance-only: a top-level operator definition is a compile error.
+- **Added: type annotations on generated class accessors.** `property`,
+  `getter`, and `setter` declarations now accept a type annotation, and the
+  generated methods enforce the same runtime boundary checks as handwritten
+  getters and setters. `property name: string` generates a `name -> string`
+  getter and a `name=(value: string)` setter, `getter`/`setter` generate the
+  matching half, and the type binds per name so a comma-separated declaration
+  (`property x: int, y: string`) can mix types while bare accessors stay
+  untyped.
+- **Changed: a bare `private` section now covers every following definition
+  until another section directive, matching Ruby.** Previously it applied
+  only to the next method definition.
+- **Changed: `private :name` in a class body now retroactively makes the
+  named method private.** Previously the symbol argument was accepted but
+  inert, so code that relied on it kept the method public; the same code now
+  dispatches the method as private.
+- **Changed: `module`, `public`, `protected`, `include`, and `extend` are
+  contextual keywords in declaration and directive positions.** Previously
+  they were plain identifiers everywhere, so a parenless call to a user
+  function of the same name could occupy those positions (`protected :b` in
+  a class body called `def protected(...)`; `module Config` called
+  `def module(...)`). Such scripts no longer run under the old meaning: a
+  bare visibility or mixin directive that collides with a same-named script
+  function is now a compile error naming the collision, and reinterpreted
+  `module` shapes fail with targeted parse or resolution errors.
+  Parenthesized calls (`public(:b)`) keep working, assignments
+  (`public = 1`) still bind locals, and a bare word naming a local in scope
+  still reads the local.
+
+### Procs, lambdas, and blocks
+
+- **Added: Ruby-style callable literals, block forwarding, and call splats.**
+  `Proc.new { }`, `proc { }`, `lambda { }`, and the stabby lambda
+  `->(args) { ... }` (brace or `do ... end` body) build first-class callables
+  invoked with `.call`. Procs keep block semantics — padded arguments,
+  single-array auto-splat, and non-local `return` that unwinds the defining
+  method (raising `unexpected return`, a rescuable `LocalJumpError`, once
+  that frame is gone) — while lambdas
+  enforce strict arity (`lambda expects 2 arguments, got 1`) and treat
+  `return`, `break`, and `next` as local to the lambda; `fn.lambda?` reports
+  which semantics a callable carries. Ampersand block arguments forward
+  callables as a call's block: `m(&blk)` passes a captured block through
+  (preserving non-local return across the hop), `&fn` forwards a function or
+  bound method with its own arity checking, `&:name` is symbol-to-proc with
+  public-only dispatch (private methods raise) and operator symbols routed
+  through the arithmetic helpers, and `&nil` means no block. Call splats
+  expand prepared argument lists in place — `f(*args)`, `f(**opts)`, and
+  combined forms with regular arguments and blocks — before binding, so
+  arity, keyword, and type errors match the literal spelling and the expanded
+  arguments are charged against the step and memory quotas exactly like
+  literal arguments; `tasks.spawn(:name, *args, **opts)` forwarding now works.
+- **Added: Ruby-style `block_given?`.** Functions and methods can now ask
+  `block_given?` whether the current call was supplied a block, returning `true`
+  when one was given and `false` otherwise, so optional block APIs branch with
+  `if block_given?` instead of letting `yield` raise. It is reserved (it cannot
+  be shadowed by a local), reports the enclosing method's block when used inside
+  a block, and the parenthesized `block_given?()` form takes no arguments.
+- **Changed: `return` inside a block returns from the enclosing method.**
+  Matching Ruby's non-local return, an explicit `return` in a normal block now
+  returns from the method whose body created the block — ending iteration
+  immediately — instead of acting as a block-local return that let the method
+  continue. The unwind runs `ensure` blocks, cannot be intercepted by `rescue`,
+  and validates typed returns as usual; a block invoked after its method has
+  already returned raises `LocalJumpError`. Blocks that relied on `return` for
+  an early block-local value should make the value the block's last expression.
+- **Changed: parenless `callee *expr` / `callee **expr` is now a splat call,
+  and the `-> Type` annotation must sit on the signature line.** Following
+  Ruby's spacing rule, `f *n` and `f **n` — a space before the star, none
+  after — where the callee is a zero-arg function or member call now parse as
+  a call with a splat argument (raising `splat argument must be an array` /
+  `keyword splat argument must be a hash` when the operand is not one)
+  instead of multiplying or exponentiating the call's value. To keep the
+  arithmetic reading, call explicitly (`f() * n`, `b.size() * n`),
+  parenthesize the callee (`(f) * n`), or space the operator on both sides
+  (`f * n`, `b.size * n`) — all of which evaluate exactly as before. Local
+  variables are unaffected: `x *n` is still multiplication. Relatedly, the
+  `-> Type` return annotation on `def` must now sit on the signature line: a
+  `->` opening the following line parses as a stabby lambda literal instead
+  of the previous line's return annotation.
+
+### Collection semantics
+
+- **Changed: Ruby-named collection mutators now mutate their receiver in
+  place.** Arrays and hashes are mutable objects with Ruby's reference
+  semantics: two variables bound to the same collection observe each other's
+  mutations, `equal?` reports object identity (independently constructed empty
+  arrays are now distinct objects), and `dup`/`clone` still detach a deep copy.
+  Array `push`/`append`, `prepend`/`unshift`, `<<`, `insert`, `fill`, `clear`,
+  and `delete_if`/`keep_if` mutate and return the receiver; `pop`, `shift`, and
+  `delete` mutate and return the removed value(s) instead of the former
+  `{ array:, popped: }`-style result hashes; `map!`, `sort!`, and `reverse!`
+  transform in place and always return the receiver, while `select!`,
+  `reject!`, `uniq!`, and `compact!` return `nil` when nothing changed. Hash
+  `update`/`merge!` fold their arguments (and optional conflict block) into the
+  receiver, `store` becomes true index assignment returning the stored value,
+  `delete` returns the removed value, `clear` empties in place keeping the
+  hash's default and identity, `delete_if`/`keep_if` prune in place, and
+  `replace` adopts the argument's entries and default — all preserving
+  Ruby-style insertion order. The non-mutating helpers (`map`, `select`,
+  `merge`, `sort`, `+`, ...) are unchanged, string bang helpers keep their
+  documented value-or-`nil` contract (strings remain immutable values), and
+  host isolation is unchanged: arguments and globals are still deep-cloned per
+  call, so in-script mutation never leaks into host originals. Iteration
+  helpers walk the elements captured at entry, so structural mutation inside a
+  block never extends or shortens the in-flight loop, and in-place growth is
+  charged against the memory quota before it is allocated.
+- **Changed: hashes preserve Ruby-style insertion order.** `keys`, `values`,
+  `each`/`each_key`/`each_value`/`each_with_index`, `to_a`, `flatten`,
+  `for ... in`, and hash transforms (`merge`, `select`, `reject`,
+  `transform_keys`/`transform_values`, `except`, `compact`, and friends) now
+  visit entries in the order they were inserted, matching Ruby's hash contract,
+  instead of sorted key order. An overwritten key keeps its original position,
+  hash literals with duplicate keys keep the first occurrence's position with
+  the last value, `array.group_by` and `array.tally` list keys in
+  first-encounter order, `JSON.parse` preserves document order, and
+  `JSON.stringify` emits members in insertion order. Hash `inspect`, `to_s`, and
+  string interpolation now render entries in the same stable insertion order
+  (previously unspecified Go map order). Hashes that reach the runtime as bare
+  Go maps (host-provided values and keyword-argument splats) carry no insertion
+  record and keep the previous sorted-key iteration.
+- **Changed: `Array#fetch` and `Hash#fetch` now follow Ruby's strict
+  missing-value contract.** A missing index or key with no fallback raises
+  (`array.fetch index N outside of array bounds: ...` and `hash.fetch key not
+  found: KEY`) instead of returning `nil`. Both forms now evaluate a Ruby-style
+  block default, calling it with the requested index or key when the value is
+  absent (`[1, 2, 3].fetch(9) { |i| i + 10 }` returns `19`). When both a default
+  argument and a block are supplied, the block supersedes the default and is
+  evaluated on a miss, matching Ruby (`[].fetch(0, 7) { 9 }` returns `9`).
+  `Array#fetch` also accepts negative indices, counting from the end like `at`.
+  For nil-on-miss array lookups use `[]`, `at`, `slice`, or `dig` (array `[]`
+  counts negative indices from the end and returns `nil` out of range, like
+  Ruby's `Array#[]`); for hashes use `[]` or `dig`. Use `fetch` when a miss
+  should raise instead.
+- **Added: Ruby-style `eql?` and `equal?` equality predicates.** Every value now
+  answers `eql?` (hash-key equality, so `1.eql?(1.0)` is `false`) and `equal?`
+  (object identity, so `1.equal?(1)` is `true` while two independently built
+  arrays with equal contents are not `equal?`). The predicates report `false`
+  rather than raising when the operands' kinds differ, and a class may override
+  them with its own methods of the same name. A stored hash/object data field,
+  instance ivar, or class var keyed `eql?`/`equal?` is treated as data and never
+  shadows the predicate, so `box.equal? = 1` does not stop `box.equal?(box)` from
+  answering identity and a data object's `eql?` field stays readable through index
+  access. A required module's `eql?`/`equal?` export is a callable member and still
+  overrides the predicate, just like a class method. Every empty hash and object
+  carries its own backing storage, so two independently built empties (including
+  `{}` from `JSON.parse("{}")`) are distinct objects under `equal?`; with the
+  collection-mutator alignment above, independently constructed empty arrays are
+  distinct objects too.
+
+### Objects and dynamic dispatch
+
+- **Added: Ruby-style dynamic dispatch, comparable, collection, and string
+  helper coverage.** Values now answer `send` and `public_send`, with
+  `public_send` preserving public visibility while `send` can reach private
+  methods; instance `initialize` methods are private constructor hooks by
+  default. Comparable scalar families now support `between?`. Arrays and hashes
+  gain Ruby-shaped filtering, clearing, bang-transform, sampling, shuffling,
+  rotation, product, combination, permutation, and adjacent chunking helpers
+  (the Ruby-named mutators among them mutate in place under the 1.0 collection
+  model, while the copy-returning helpers keep their non-mutating contract).
+  Strings now support Ruby character-set helpers `count`, `delete`, `tr`, and
+  `squeeze` including ranges and leading-complement sets.
+- **Added: Ruby-style `call` on function values.** A function value now exposes
+  a `call` member so `fn.call(...)` mirrors direct `fn(...)` invocation,
+  forwarding positional arguments, keyword arguments, and an optional block.
+  Arity and type errors stay anchored at the call site, and `call` is the only
+  member offered (with a "did you mean" hint for typos).
+- **Added: Ruby-style scalar conversion methods and the `nil?` predicate on
+  core values.** Every value now answers `nil?` (true only for `nil`),
+  including script class instances, classes, function values, and enum values;
+  it resolves through the universal `Object#nil?` fallback, so a user-defined
+  `nil?` keeps precedence. The scalar kinds whose display form is
+  bounded by their own footprint (`nil`, booleans, integers, floats, strings,
+  symbols, money, durations, and times) also answer `to_s` and the documented
+  `.string` conversion idiom from `docs/typing.md`. Arrays, hashes, and ranges
+  deliberately do not gain `to_s`/`string` because their rendering can be
+  arbitrarily large; they continue to expose `inspect`, which projects the
+  rendered length against the memory quota before allocating. Integers and
+  floats convert between numeric kinds with `to_i`/`to_f` (`Float#to_i`
+  truncates toward zero like Ruby and raises on a non-finite or out-of-range
+  value). Strings parse numeric text with `to_i`/`to_f`; unlike Ruby's lenient
+  `String#to_i`/`String#to_f`, these are strict like the global
+  `to_int`/`to_float` and raise on an empty, non-numeric, or non-finite string
+  so a malformed value never silently becomes zero at a typed boundary.
+- **Added: Ruby-style object introspection predicates.** Every value now
+  responds to `respond_to?`, `is_a?`, `kind_of?`, and `instance_of?`.
+  `respond_to?(name)` reports whether the receiver has a callable member of that
+  name (a symbol or string), excluding data such as hash keys, namespace
+  constants, and instance variables, and honoring privacy (with the optional
+  `include_all` second argument). `is_a?`/`kind_of?`/`instance_of?` test whether
+  the receiver is an instance of a given script class; without inheritance they
+  test direct class identity. A script class may override any of these with its
+  own method definition.
+- **Added: Ruby-style `Object#tap` and `Object#yield_self`.** Every core value
+  kind now responds to these block-yielding helpers. `tap` yields the receiver
+  and returns the receiver (so block results are discarded), while `yield_self`
+  yields the receiver and returns the block's result. Both require a block, take
+  no other arguments, and resolve only when the receiver does not already define
+  a member of the same name, so a hash key, instance variable, or user-defined
+  method named `tap`/`yield_self` keeps precedence.
+- **Added: Ruby-style `Object#itself`.** `itself` is now available on every
+  value kind, including scalars, collections, ranges, temporal values, `nil`,
+  and script instances, and returns the receiver unchanged so it preserves
+  value ownership and host-boundary isolation. It is handy as an identity step
+  in pipelines and block callbacks; it takes no arguments and rejects any
+  positional or keyword argument.
+- **Added: Ruby-style `inspect` debug representations.** Every core value kind
+  (`nil`, booleans, integers, floats, strings, symbols, arrays, and hashes) now
+  responds to `inspect`, returning a parseable debug string. Unlike the
+  interpolation/`to_s` rendering, `inspect` keeps quotes and escaping for strings
+  (`"a\nb".inspect` is `"\"a\\nb\""`), renders symbols with their leading colon
+  (`:ok.inspect` is `":ok"`), and recurses into arrays and hashes
+  (`[1, "x", nil].inspect` is `"[1, \"x\", nil]"`). Hashes render in Vibescript's
+  colon-label key form rather than Ruby's unsupported hash-rocket syntax, so the
+  output round-trips as a Vibescript literal. `inspect` takes no arguments, and
+  the rendered size is charged against the memory quota before the string is
+  built so inspecting a huge composite fails with a quota error instead of
+  allocating an oversized result.
+
+### Strings
+
+- **Added: Ruby-style `String#chop` and `String#chop!`.** `chop` removes the
+  last character, treating a trailing `"\r\n"` as a single record separator and
+  otherwise removing one full Unicode character rather than one byte; an empty
+  string is returned unchanged. `chop!` returns the chopped string and returns
+  `nil` when there is nothing to remove (the empty-string case), matching the
+  existing copy-on-transform bang helper convention.
+- **Added: Ruby-style string padding helpers.** `String#center`, `String#ljust`,
+  and `String#rjust` pad a string to a requested width, defaulting to a single
+  space and accepting a custom pad string that is repeated and truncated to fill
+  the span. Width is measured in characters (Unicode code points) like
+  Vibescript's other string methods, a `Float` width is truncated toward zero as
+  Ruby does, a width at or below the receiver's length returns it unchanged, and
+  an empty pad string is rejected. Oversized widths are checked against the
+  memory quota before any buffer is allocated, so they fail fast instead of
+  materializing a huge string.
+- **Added: Ruby-style `String#casecmp` and `String#casecmp?`.** `casecmp`
+  case-insensitively compares two strings (folding only ASCII letters and
+  comparing other bytes ordinally) and returns `-1`, `0`, `1`, or `nil` for a
+  non-string argument, matching Ruby. `casecmp?` returns a boolean using Unicode
+  simple case folding (consistent with `upcase`/`downcase`) or `nil` for a
+  non-string argument; full-fold expansions such as `ß` matching `SS` are not
+  applied. When either operand contains invalid UTF-8, `casecmp?` folds
+  byte-wise over ASCII letters so distinct byte sequences stay distinct,
+  preserving byte identity like Ruby's binary-string path.
+- **Added: Ruby-style `String#partition` and `String#rpartition`.** Both split a
+  string into a three-element `[head, separator, tail]` triple around the first
+  (`partition`) or last (`rpartition`) occurrence of the separator. A missing
+  separator keeps the whole string on the head (`partition`) or tail
+  (`rpartition`) with empty surrounding segments, and an empty separator matches
+  at the start or end respectively, matching Ruby. The separator must be a
+  string.
+- **Added: Ruby-style `String#chars` and `String#lines`.** `chars` returns an
+  array of the string's Unicode characters using the existing rune-aware
+  semantics, and `lines` splits on `"\n"` while retaining the trailing newline
+  on each line, leaving carriage returns attached so `"\r\n"` endings round-trip.
+- **Added: Ruby-style `String#each_char` and `String#each_line`.** `each_char`
+  yields each Unicode character (whole code points, matching `chars`, `length`,
+  and `slice`), and `each_line` yields each line with Ruby-compatible newline
+  retention (matching `lines`: only `\n` ends a line, a trailing newline does not
+  produce a final empty line, and `\r\n` keeps the `\r` attached). Both ignore
+  the block's return value and return the receiver string. Vibescript has no
+  `Enumerator`, so calling either without a block reports a deliberate
+  `requires a block` error instead of falling through as an unknown method.
+- **Added: Ruby-style `String#bytes` and `String#each_byte`.** `bytes` returns an
+  array of the string's bytes as integers in `0..255`, and `each_byte` streams
+  each byte to a block and returns the receiver. Both are byte-level, so a
+  multibyte character expands to one entry per UTF-8 byte, and raw bytes are
+  returned verbatim without normalizing invalid UTF-8. As with `each_char`,
+  `each_byte` requires a block because Vibescript has no `Enumerator`.
+- **Added: Ruby-style `String` byte and code-point helpers.** `getbyte(index)`
+  returns the byte at a byte offset (or `nil` when out of range), `byteslice`
+  extracts a substring by byte offset (single index, `start`/`length`, or range
+  forms, returning raw bytes verbatim like Ruby), `codepoints` returns the
+  string's Unicode code points as an integer array, and `each_codepoint` yields
+  each code point to a block. Negative offsets count back from the end, the
+  byte-array helpers honor the sandbox memory quota, and the streaming
+  `each_codepoint` participates in block cancellation and quotas. This
+  complements the existing `bytes` and `each_byte`.
+- **Added: Ruby-style `String#prepend` and `String#insert`.** `prepend` returns
+  a copy of the receiver with one or more string arguments prepended in order,
+  mirroring `concat`. `insert` returns a copy with a string inserted at a
+  character index: a non-negative index inserts before the character at that
+  position (a value equal to the length appends), while a negative index inserts
+  after the character it selects (`-1` appends). The index counts characters
+  rather than bytes, so it behaves the same way for multibyte text, a `Float`
+  index is truncated toward zero as Ruby does, and an out-of-range index raises
+  an error.
+- **Added: Ruby-style string/symbol conversion helpers.** `String#to_sym` and
+  its alias `String#intern` return the symbol named by the receiver, accepting
+  any contents verbatim (including whitespace, punctuation, and the empty
+  string). `Symbol#id2name` and `Symbol#to_s` return the symbol's name as a
+  string, and `Symbol#to_sym` returns the receiver. The pair round-trips between
+  the two representations, and symbol/string equality stays kind-sensitive so
+  `:name == "name"` is `false`.
+- **Added: Ruby-style `String#match?`.** `match?(pattern, offset = 0)` is the
+  allocation-light boolean counterpart to `match`, returning `true` when the
+  pattern has a match at or after the given character offset and `false`
+  otherwise without materializing match arrays. It shares the same regex engine
+  and size guards as `match`, so anchors such as `\A`, `^`, and `\b` keep the
+  full-string context even when an offset is supplied. The offset is a character
+  (codepoint) position; an offset past the end of the string yields `false`
+  rather than an error, and negative offsets are rejected to match `index` and
+  `rindex`.
+- **Added: Ruby-style `String#hex` and `String#oct`.** `hex` reads a string as a
+  hexadecimal integer and `oct` reads it using a base inferred from a
+  `0x`/`0b`/`0o`/`0d` prefix (defaulting to octal). Both skip leading whitespace
+  and an optional sign, accept underscore digit separators, stop at the first
+  invalid digit, and return `0` for unparseable input, matching Ruby. Because
+  Vibescript has only 64-bit integers rather than Ruby's `Bignum`, a value
+  outside the `int64` range raises an `integer out of range` error. Overflow is
+  now detected exactly before each digit is accumulated, so magnitudes that wrap
+  past `uint64` (for example 17-or-more hexadecimal digits) raise the error
+  instead of silently returning wrapped garbage.
+- **Added: Ruby-style `String#split` limit argument.** `split(separator, limit)`
+  now accepts the optional second `limit` argument. A positive limit returns at
+  most that many fields with the remainder left unsplit in the final field (a
+  limit of `1` returns the whole string), and a negative limit preserves every
+  field including trailing empties. The limit applies to every separator mode,
+  including the whitespace default and the empty separator that splits a string
+  into its characters. Splitting on the empty separator walks UTF-8 character
+  boundaries, so invalid bytes in a binary string are preserved as single-byte
+  fields rather than rewritten as the U+FFFD replacement character. A
+  non-integer limit is rejected.
+- **Added: Ruby-style block forms for `String#sub`, `String#gsub`, `String#scan`,
+  and `String#match`.** `sub`/`gsub` (and their `!` variants) now accept a block
+  instead of a replacement argument: the block receives each matched substring
+  and its result (coerced to a string) replaces the match, honoring the same
+  `regex` keyword as the value-replacement forms (defaulting to literal
+  matching). `scan` with a block yields each match using its array result shape
+  and returns the receiver string. `match` with a block yields the match data and
+  returns the block's result, returning `nil` without invoking the block when
+  there is no match. Supplying both a replacement argument and a block is
+  rejected. Literal (non-`regex`) block replacements bypass the regex-only
+  pattern- and input-size guards, matching the literal value-replacement forms,
+  while the regex form keeps them; every block form still enforces the shared
+  output-size and step guards. The `sub!`/`gsub!` variants return the receiver
+  whenever the pattern matched — even when the replacement reproduces the
+  original text — and `nil` only when the pattern never matched, matching Ruby.
+- **Improved: Ruby-style `String#start_with?` and `String#end_with?`.** Both
+  predicates now accept one or more string candidates and return true when any
+  matches. Candidates are checked left to right and matching short-circuits like
+  Ruby, so a non-string candidate is only rejected if reached before a match.
+- **Improved: Ruby-style `String#slice` selectors.** `slice` now accepts the
+  same selector shapes as Ruby beyond the previous non-negative integer start
+  with optional length. A negative integer index counts back from the end; a
+  range returns the matching substring with Ruby-compatible negative bounds; and
+  a substring argument returns that substring when it is contained, otherwise
+  `nil`. The `slice(start, length)` form now also supports a negative start.
+  Selectors that fall outside the string return `nil`, and indexing stays
+  rune-aware.
+- **Changed: `String#upcase`, `downcase`, `capitalize`, and `swapcase` now use
+  full Unicode case mapping.** Characters that expand or use special mappings
+  follow Ruby, so `"Straße".upcase` is `"STRASSE"`, `"İ".downcase` is `"i̇"`,
+  `"ﬁ".upcase` is `"FI"`, and `"ǆ".capitalize` titlecases the digraph to
+  `"ǅ"`. The Greek final-sigma rule is not applied, matching Ruby's default
+  (`"ΟΔΟΣ".downcase` is `"οδοσ"`). Strings that are not valid UTF-8 fall back to
+  ASCII-only mapping, mirroring Ruby's binary-string path.
+- **Added: case-mapping options for the string case methods.** `upcase`,
+  `downcase`, `capitalize`, and `swapcase` accept `:ascii` to restrict mapping
+  to ASCII letters, and `downcase` additionally accepts `:fold` for Unicode case
+  folding (so `"Straße".downcase(:fold)` is `"strasse"`). Supplying `:fold` to a
+  method other than `downcase`, an unknown option symbol, a non-symbol argument,
+  or more than one option raises a clear error. The bang variants accept the
+  same options and continue to return `nil` when the value is unchanged.
+  `swapcase` toggles every cased character, including cased non-letters such as
+  circled letters (`"Ⓐ".swapcase` is `"ⓐ"`) and Roman numerals (`"Ⅰ".swapcase`
+  is `"ⅰ"`). Swapcase of a titlecase digraph (such as `ǅ`) is lowercased rather
+  than split into its component letters, a deliberate divergence from Ruby for
+  those rare codepoints.
+- **Changed: `String#strip`, `String#lstrip`, and `String#rstrip` now match
+  Ruby's whitespace set.** They remove only the ASCII whitespace bytes
+  `\0 \t \n \v \f \r " "`, with NUL (`\0`) trimmed from both edges just like
+  Ruby. Unicode spaces such as NBSP (`U+00A0`), the Ogham space mark (`U+1680`),
+  em space (`U+2003`), and the byte order mark (`U+FEFF`) are now preserved
+  instead of stripped. The bang variants still return `nil` when nothing is
+  removed.
+- **Changed: default `String#split` now uses Ruby's ASCII whitespace set.**
+  The no-separator form previously delegated to Go's `strings.Fields`, which
+  treats wider Unicode whitespace such as the non-breaking space (`U+00A0`) and
+  the em space (`U+2003`) as separators. It now splits only on the six ASCII
+  whitespace bytes Ruby recognizes (space, tab, newline, vertical tab, form
+  feed, and carriage return), keeping other Unicode whitespace inside the field
+  so `"a b".split` returns `["a b"]` instead of `["a", "b"]`. Leading
+  and trailing whitespace is still discarded and runs collapse, matching Ruby's
+  default `String#split`.
+- **Changed: `String#split` now trims trailing empty fields by default.** With
+  the default limit of `0`, `"a,b,".split(",")` returns `["a", "b"]` instead of
+  `["a", "b", ""]`, matching Ruby. Use a negative limit to keep trailing empty
+  fields.
+- **Changed: a single space separator triggers whitespace splitting.** A
+  separator of exactly `" "` is Ruby's AWK whitespace mode, so it collapses
+  whitespace runs and discards leading whitespace instead of splitting literally.
+  `" a  b ".split(" ", 2)` returns `["a", "b "]` rather than `["", "a  b "]`.
+- **Changed: `String#split(nil)` now matches Ruby.** An explicit `nil`
+  separator behaves like the no-argument form, splitting on runs of ASCII
+  whitespace instead of raising a type error. Any other non-string separator
+  still raises an error.
+- **Changed: `String#scan` returns Ruby-compatible capture results.** When the
+  pattern has no capture groups `scan` still returns the full match strings, but
+  with one or more groups it now returns a nested array per match holding each
+  captured substring (`nil` for an optional group that did not participate),
+  matching Ruby instead of always returning the full matches. `scan` charges its
+  growing result against the step and memory quotas and bounds the regex engine's
+  submatch-index allocation against a fixed 256 MiB host cap, so a pattern with
+  many capture groups over a large subject errors instead of exhausting host
+  memory. The host cap is derived from the subject length and the pattern's
+  minimum match length, so ordinary sparse scans — a pattern that matches little
+  or nothing over a modest string — run regardless of the configured memory quota
+  instead of being rejected on a pessimistic worst case.
+- **Changed: `String#sub`/`gsub` regex replacements use Ruby backreferences.**
+  With `regex: true`, `sub`, `sub!`, `gsub`, and `gsub!` now expand
+  replacement strings using Ruby's substitution syntax instead of Go's. `\1`–`\9`
+  insert capture groups, `\&` (or `\0`) the whole match, `` \` `` and `\'` the
+  pre/post-match, `\+` the last participating group, `\k<name>` a named group,
+  and `\\` a literal backslash; `$1` and `$&` are now literal text. This makes
+  Ruby replacement strings copied into Vibescript produce the same output, so
+  `"abc123".sub("([a-z]+)([0-9]+)", "\\2-\\1", regex: true)` yields `"123-abc"`.
+  As in Ruby, once a pattern defines any named capture group the numbered refs
+  `\1`–`\9` expand to the empty string (use `\k<name>` instead), so
+  `"John Smith".sub("(?<first>\\w+) (?<last>\\w+)", "\\2, \\1", regex: true)`
+  yields `", "`; the whole-match, pre/post-match, and `\k<name>` refs keep
+  working in that mode. An unterminated `\k<name` or a `\k<name>` that names an
+  undefined group raises an error, matching Ruby. (`Regex.replace`/
+  `Regex.replace_all` keep their existing `$1` syntax.)
+- **Changed: `String#match` now accepts Ruby's optional offset.**
+  `match(pattern, offset = 0)` searches for the first match starting at or after
+  the given character (codepoint) position, so callers can scan from a known
+  point without slicing the receiver first. A non-negative offset searches
+  forward from that position; a negative offset counts back from the end (with an
+  offset before the start returning `nil`); a positive offset greater than the
+  receiver length is clamped to the length and the search runs from the end, so a
+  zero-width-capable pattern matches the empty string there while a pattern that
+  needs a character returns `nil`. The offset accepts an integer or a float
+  (truncated toward zero, as in Ruby); any other type is rejected. Anchors such
+  as `^`, `\b`, and `\B` keep the full-string context across the offset while
+  `\A` only matches at the absolute start, and an invalid regex is still
+  reported regardless of the offset.
+- **Fixed: `String#chr` returns an empty string for an empty receiver like Ruby.**
+  `"".chr` now returns `""` instead of `nil`, so `String#chr` always returns a
+  string. Non-empty receivers are unchanged, so `"abc".chr` still returns `"a"`.
+- **Fixed: `String#chomp` and `String#chomp!` treat a `nil` separator as "do not
+  chomp".** Passing `nil` now returns the string unchanged (`chomp`) or `nil`
+  because no change occurs (`chomp!`), matching Ruby, instead of raising
+  `separator must be string`. The default separator, empty-string separator, and
+  explicit string separator behaviors are unchanged.
+- **Fixed: `String#index` and `String#rindex` accept negative offsets like
+  Ruby.** A negative offset now counts back from the end of the string, so the
+  search starts at `size + offset`, and the call returns `nil` when that
+  effective offset falls before the start of the string. Previously both methods
+  rejected negative offsets with an error. For example, `"hello".index("l", -3)`
+  returns `2` and `"hello".rindex("l", -2)` returns `3`.
+
+### Arrays
+
+- **Added: Ruby-style `Array#transpose`.** `transpose` swaps the rows and
+  columns of a matrix made of equal-length array rows, so
+  `[[1, 2], [3, 4]].transpose` returns `[[1, 3], [2, 4]]`. An empty array
+  transposes to `[]`, and rows of zero length collapse to no columns. It
+  rejects extra arguments, raises when any element is not an array, and
+  raises when the rows differ in length, reporting the offending index.
+- **Added: Ruby-style `Array#each_slice`, `each_cons`, `reverse_each`, and
+  `cycle`.** `each_slice(n)` yields non-overlapping slices (including a shorter
+  trailing slice) and `each_cons(n)` yields sliding windows; both require a
+  positive integer size and yield freshly copied arrays that do not alias the
+  receiver. `reverse_each` yields values in reverse index order and returns the
+  receiver. `cycle(n)` repeats the array `n` times (a non-positive count is a
+  no-op like Ruby), while omitting the count or passing `nil` cycles forever; the
+  cycle charges a step per yield so the step quota and context cancellation bound
+  even an empty block body. The slice/window/cycle forms return `nil` to match
+  Ruby.
+- **Added: Ruby-style `Array#reject`, `take_while`, `drop_while`, `grep`, and
+  `grep_v`.** `reject` is the inverse of `select`; `take_while` and `drop_while`
+  split on the first block miss with early-stop semantics; `grep` and `grep_v`
+  filter using the language's case-equality direction (`pattern === element`,
+  the same matcher as `case`/`when`), so a `Range` matches by membership and
+  other values by equality, with an optional block transforming each kept
+  element.
+- **Added: Ruby-style `values_at`, `zip`, `take`, and `drop` collection helpers.**
+  `Hash#values_at(*keys)` returns values in requested key order with `nil` for
+  missing keys. `Array#zip(*arrays)` combines arrays element-wise into rows keyed
+  to the receiver's length, padding short arrays with `nil` and rejecting
+  non-array arguments. `Array#take(n)` and `Array#drop(n)` return prefix and
+  suffix slices without mutating the receiver, truncating fractional counts like
+  Ruby's `to_int` conversion and rejecting negative counts.
+- **Added: Ruby-style `Array#min`, `#max`, `#minmax`, `#min_by`, and `#max_by`.**
+  The extrema helpers reuse the comparison semantics of `sort`/`sort_by`, return
+  `nil` (or `[nil, nil]` for `minmax`) on empty arrays, resolve ties to the first
+  matching element, participate in step/cancellation accounting for the block
+  forms, and raise clear errors on incomparable mixed values.
+- **Added: Ruby-style index-aware iteration helpers.** Arrays gain
+  `each_with_index { |item, index| }` (returns the receiver) and
+  `map_with_index { |item, index| }` (returns a new array of block results),
+  both passing each element's 0-based index to the block. Hashes gain matching
+  `each_with_index { |pair, index| }` and `map_with_index { |pair, index| }`
+  helpers that yield each `[key, value]` pair plus its index, mirroring Ruby's
+  `Hash#each_with_index`. All four take no arguments, require a block, and run
+  under the sandbox step and memory quotas.
+- **Added: Ruby-style array `<<` (shovel) and `&` (intersection) operators.**
+  `array << value` appends a single value to the receiver in place and returns
+  it (`[1, 2] << 3` is `[1, 2, 3]`; see the collection-mutator alignment
+  above), reusing the same backing-buffer fast path as `push` and `+`.
+  `array & other` returns the elements common to
+  both arrays with duplicates removed and the left array's order preserved
+  (`[1, 1, 2, 3] & [1, 3, 4]` is `[1, 3]`). Following Ruby, `+` binds tighter
+  than `<<`, which binds tighter than `&`. Mirroring Ruby's spacing rule, only an
+  `&` detached from the callee yet flush against its operand (`call &block`) is
+  a block pass; every other shape is the intersection
+  operator, including the spaced `items & others`, the flush `items&others`, and
+  a trailing `&` line continuation. Both operators require array operands and the
+  reduce shorthand accepts `"<<"` and `"&"`.
+- **Added: Ruby-style collection deletion and insertion helpers.** Arrays gain
+  `delete`, `shift`, `unshift`, and `insert`, and hashes gain `delete`. Under
+  the 1.0 mutator model these operate on the receiver in place:
+  `Array#delete(value)` returns the removed element when found (`nil`
+  otherwise, or a block result on a miss), `Array#shift` / `shift(n)` returns
+  the removed value(s), and `Hash#delete(key)` returns the removed value (with
+  the same block form for misses). `Array#unshift` is a Ruby-style alias for
+  `prepend`, and `Array#insert(index, *values)` inserts the values before
+  `index`, following Ruby's negative-index and past-the-end padding rules.
+- **Added: Ruby-style `Array#append` and `Array#prepend`.** `append` is an alias
+  for `push`, adding the given values to the end in order, and `prepend` inserts
+  the values at the front in order, so `[3].prepend(1, 2)` is `[1, 2, 3]`. Both
+  mutate the receiver in place and return it under the 1.0 mutator model, and
+  both reject keyword arguments.
+- **Added: Ruby-style `Array#dig` and mixed hash/array `dig` paths.** `dig`
+  now descends one level per path component across both collection kinds: an
+  integer index into an array or a symbol/string key into a hash, so a single
+  `dig` can walk JSON-shaped data, e.g. `[[1, 2], [3, 4]].dig(1, 0)` returns
+  `3` and `{ a: [10, 20] }.dig(:a, 1)` returns `20`. Missing keys and
+  out-of-range indexes yield `nil` rather than raising, while indexing an array
+  with a non-integer component raises, matching how arrays reject non-integer
+  indexes elsewhere.
+- **Added: Ruby-style `Array#one?`.** `one?` is true only when exactly one
+  element is truthy, or with a block, when exactly one block result is truthy.
+  It stops scanning once a second match is found and respects the existing step
+  quota and cancellation checks during block iteration.
+- **Added: Ruby-style `Array#at` and `Array#slice`.** `at(index)` returns the
+  single element at `index`, counting a negative index back from the end and
+  returning `nil` out of range, so `[10, 20, 30].at(-1)` is `30`. `slice(index)`
+  mirrors `at`, while `slice(start, length)` and `slice(range)` return a fresh
+  subarray with Ruby-compatible handling of negative starts and bounds, a start
+  exactly at the length (yielding `[]`), oversized lengths (clamped to the
+  remaining elements), and negative lengths or out-of-range starts (returning
+  `nil`). The range form aligns with the range slicing already available for
+  strings. Indexes and lengths accept `Float` values truncated toward zero like
+  Ruby's `to_int`, and the subarray forms never alias the receiver.
+- **Added: Ruby-style `Array#values_at`.** `values_at(*selectors)` reads several
+  elements at once, returning a new array in the order the selectors were
+  requested. An integer selector reads one element: negative indexes count back
+  from the end, out-of-bounds indexes yield `nil`, and duplicate indexes repeat
+  their values. A range selector reads a window and flattens its elements into
+  the result in place, so `values_at(0..1)` is `[a[0], a[1]]` and integer and
+  range selectors can be interleaved (`values_at(0..1, -1)`); a range whose end
+  extends past the array pads the missing positions with `nil`, while a range
+  whose negative start counts back before the beginning raises. Float indexes and
+  float range bounds truncate toward zero like Ruby's `to_int` conversion;
+  non-numeric selectors and keyword arguments raise.
+- **Added: Ruby-style pattern arguments for `Array#any?`, `Array#all?`, and
+  `Array#none?`.** These predicates now accept an optional `pattern` argument
+  alongside their existing no-argument and block forms: `any?(pattern)` is true
+  when any element matches, `all?(pattern)` when every element matches, and
+  `none?(pattern)` when no element matches. As in Ruby, the argument is tested
+  with case equality (`===`), so range patterns such as `any?(1..3)` test
+  membership rather than object identity. As with `count(value)`, a `pattern`
+  argument takes precedence over an attached block, which is then ignored.
+- **Added: Ruby-style symbol shorthand for `Array#reduce`.** `reduce(operation)`
+  and `reduce(initial, operation)` fold by sending `operation` to the
+  accumulator with each element, matching Ruby's
+  `["a", "b"].reduce(:concat)`. `operation` is a symbol naming a method on the
+  accumulator (`["a", "b"].reduce(:concat)`) or a string naming a method or a
+  binary operator (`[1, 2, 3].reduce("+")`, also `"-"`, `"*"`, `"/"`, `"%"`,
+  `"**"`). A block still takes precedence, so a lone argument alongside a block
+  is treated as the initial value. An empty array now folds to `nil` (or to the
+  supplied `initial`) instead of raising, matching Ruby's `[].reduce { ... }`.
+  Method dispatch is public-only, mirroring Ruby's
+  `accumulator.public_send(operation, item)`: a private method cannot be reached
+  through the shorthand even when the accumulator is the current `self`.
+  Operator-symbol literals such as `:+` are not yet accepted here because the
+  lexer cannot tokenize them; that shorthand is tracked in #801.
+- **Added: Ruby-style `Array#filter_map`.** `filter_map` fuses `map` with a
+  truthiness filter, calling the block once per element and collecting each
+  truthy result while dropping falsy ones. Like Ruby, only `nil` and `false`
+  are falsy, so `0`, `""`, and empty collections are retained. It requires a
+  block, takes no arguments, and materializes its result under the sandbox step
+  and memory quotas so large inputs fail safely and long iterations honor
+  cancellation.
+- **Added: Ruby-style `Array#union` and `Array#difference`.** `union(*others)`
+  concatenates the receiver with every argument array and removes duplicates,
+  keeping the first occurrence of each value (with no arguments it deduplicates
+  the receiver). `difference(*others)` returns the receiver's elements that do
+  not appear in any argument array while preserving the receiver's own
+  duplicates. Both compare values by content (so nested arrays and hashes match
+  like `uniq`), return a new array without mutating the receiver, and raise when
+  handed a non-array argument.
+- **Added: Ruby-style `Array#fill`.** `fill` replaces all or part of an array
+  with a value (`fill(value)`, `fill(value, start, length)`, `fill(value,
+  range)`) or with values computed from each index by a block (`fill { |i|
+  ... }`, optionally narrowed by a `start`/`length` or range). It follows Ruby's
+  indexing rules: a negative `start` counts back from the end, a `length` or
+  range that runs past the end grows the result and pads any gap with `nil`, a
+  `nil` `start` is read as `0` and a `nil` `length` as omitted (filling to the
+  end), and the value and block forms are mutually exclusive. Under the 1.0
+  mutator model `fill` mutates the receiver in place and returns it, and it
+  builds the result under the sandbox step and memory quotas so a growth larger
+  than the limits fails safely instead of exhausting memory.
+- **Changed: `Array#sum` now honors a Ruby-style initial value and block.**
+  `sum(initial)` seeds the accumulator instead of starting from `0`
+  (`[1, 2, 3].sum(10)` is `16`, `["a", "b"].sum("")` is `"ab"`), and a block
+  transforms each element before it is added (`[1, 2, 3].sum { |n| n * 2 }` is
+  `12`, with `sum(initial) { ... }` combining both). Previously the argument and
+  block were silently ignored. Each addition must operate on compatible operands,
+  mirroring Ruby's `+`, so summing a string with a non-string (such as the
+  default `0` accumulator against string elements) raises instead of silently
+  coercing the operands.
+- **Fixed: `Array#index`, `Array#find_index`, and `Array#rindex` accept both a
+  value and a block like Ruby.** `[1, 2, 3].index { |x| x > 1 }` and
+  `[1, 2, 3, 2].rindex { |x| x == 2 }` now return the matching index instead of
+  raising, and `find_index(value)` now accepts a value argument. Each method
+  takes either a value (with Vibescript's optional non-negative offset) or a
+  block, never both; passing both now raises. The nil-on-miss behavior is
+  unchanged.
+- **Fixed: `Array#join` joins nested arrays recursively like Ruby.** `join` now
+  flattens nested arrays into the output using the active separator instead of
+  rendering their inspect form, so `[1, [2, 3], 4].join("-")` is `"1-2-3-4"` and
+  `[1, [2, [3, 4]], 5].join("-")` is `"1-2-3-4-5"`. Scalar elements are unchanged:
+  `nil` still contributes an empty segment (`[1, nil, "x"].join(",")` is `"1,,x"`)
+  and an empty array still joins to `""`.
+- **Fixed: `Array#flatten` accepts `nil` and negative depths like Ruby.**
+  `[1, [2, [3]]].flatten(nil)` and `[1, [2, [3]]].flatten(-1)` now flatten fully
+  instead of raising, matching the no-argument form. A depth of `0` still returns
+  a shallow copy, positive integers flatten that many levels, a `Float` depth is
+  truncated to an integer, and a nonnumeric depth raises.
+- **Fixed: `Array#count(value)` ignores an attached block like Ruby.**
+  `[1, 2, 1].count(1) { |x| x > 1 }` now returns `2` instead of raising. A value
+  argument takes precedence: matching elements are counted and the block is
+  never invoked. The block-only form `count { ... }` and the no-argument form
+  `count` are unchanged.
+- **Fixed: `Array#first` and `Array#last` reject extra arguments like Ruby.**
+  `[1, 2, 3].first(1, 2)` and `[1, 2, 3].last(1, 2)` now raise instead of
+  silently ignoring the extra argument and returning `[1]` or `[3]`, and
+  keyword arguments such as `first(n: 2)` or `last(1, n: 2)` raise instead of
+  being silently ignored. The optional count is still the only accepted
+  argument, so the no-argument forms and the single-count forms (including
+  `first(0)` / `last(0)`) are unchanged.
+- **Fixed: zero-argument `Array#push` returns the array like Ruby.** A bare
+  `array.push` now reads as a zero-argument call that returns the array instead
+  of leaking the unbound method value, and `array.push()` no longer raises
+  "expects at least one argument". This matches Ruby, where the call has no
+  parentheses distinction, so `[1, 2].push` and `[1, 2].push()` both return
+  `[1, 2]` while `[1, 2].push(3)` still returns `[1, 2, 3]`. A keyword-only
+  call such as `[1, 2].push(foo: 1)` now raises rather than silently dropping
+  the keyword map, since `Array#push` does not accept keyword arguments.
+
+### Hashes
+
+- **Added: Ruby-style `Hash#fetch_values`.** `Hash#fetch_values(*keys)` returns
+  the values for several keys at once, in the requested order. Unlike
+  `values_at`, it raises a `key not found` error for any missing key; pass a
+  block to compute a replacement value for each missing key instead of raising.
+- **Added: Ruby-style hash member, value, and store helpers.** `Hash#member?`
+  joins `key?`/`has_key?`/`include?` as a key-membership alias, and
+  `Hash#value?` and `Hash#has_value?` report value membership using the same
+  `==` equality as the rest of the language. `Hash#store(key, value)` assigns
+  the key; under the 1.0 mutator model it is true index assignment on the
+  receiver, returning the stored value.
+- **Added: Ruby-style conflict blocks for `Hash#merge`.** `Hash#merge` now
+  honors an optional block to resolve key conflicts: for keys present in both
+  hashes the block is yielded `(key, old_value, new_value)` and its result is
+  stored, while keys present on only one side are copied without invoking the
+  block. Without a block the incoming hash still wins on conflicts. The conflict
+  key is yielded as a symbol, matching the other hash helpers, and the block was
+  previously accepted but silently ignored.
+- **Added: Ruby-style `Hash#update`, `Hash#merge!`, `Hash#replace`,
+  `Hash#flatten`, and multi-hash `Hash#merge`.** `Hash#merge` now accepts any
+  number of hashes (applied left to right, so later hashes win on conflicts)
+  and returns a copy of the receiver when called with no arguments; the
+  optional conflict block folds through each argument in turn. `Hash#update`
+  and `Hash#merge!` apply the same multi-hash merge to the receiver in place,
+  and `Hash#replace` adopts another hash's entries — both mutate under the 1.0
+  collection model. `Hash#flatten(depth = 1)` returns the entries as a flat
+  array, defaulting to `[key, value, ...]`, with `0` keeping the `[key, value]`
+  pairs nested and a negative depth flattening completely, in insertion order.
+- **Added: Ruby-style `Hash#to_a` and `Array#to_h` conversion helpers.**
+  `Hash#to_a` returns the `[key, value]` pairs in insertion order (the inverse
+  of `Array#to_h`, equivalent to `flatten(0)`). `Array#to_h` builds a hash from
+  an array of two-element `[key, value]` pairs, converting keys through the
+  same symbol/string hash-key rules used elsewhere and keeping the last pair on
+  duplicate keys. A block form `to_h { |element| [key, value] }` maps each
+  element to its pair. Malformed input raises: a non-array element, a pair that
+  is not exactly two elements, or a key that is not a symbol or string.
+- **Added: Ruby-style `Hash.new` defaults and `Hash#default` / `Hash#default_proc` readers.**
+  `Hash.new(default)` builds a hash that returns `default` for a missing `[]`
+  lookup without inserting it, and `Hash.new { |hash, key| ... }` installs a
+  default proc invoked on a missing-key lookup (which inserts only if its body
+  assigns one). The value and block forms are mutually exclusive, and bare
+  `Hash.new` matches a `{}` literal with a `nil` default. `default` returns the
+  configured default value (never running the proc, matching Ruby) and
+  `default_proc` returns the configured proc. `[]` access, `dig`, and
+  `values_at` all consult the default for a missing key (each is a `[]` lookup in
+  Ruby), so `Hash.new(0).dig(:missing)` is `0` and a default proc fires per miss;
+  `fetch` keeps ignoring the default, matching Ruby. The default travels with
+  the hash through index assignment and is copied onto the result of `merge`,
+  while the in-place `update`/`merge!` keep the receiver's default; every other
+  transform returns a plain hash with no default. A default proc that escapes
+  one `Script.Call` and is passed back into another (as an argument, global, or
+  task-inherited hash) is re-rooted onto the current call, so a missing-key
+  lookup resolves globals, capabilities, and functions against the current
+  invocation rather than the stale environment it was created in, while still
+  keeping any local variables the proc legitimately closed over (such as a
+  parameter of the function that built the hash). A capability copied into a
+  local that the proc captured (for example `cap = jobs`) is revoked on
+  re-entry rather than preserved, so a missing-key lookup cannot invoke a
+  capability the re-entering call never granted; a free reference to the live
+  capability global still resolves through the re-rooted ambient root. Because
+  a missing-key lookup returns the default, the default is part of a typed
+  hash's value type: validating a hash against `hash<key, value>` requires the
+  default value to match `value` (the validated default travels with the
+  normalized hash) and rejects a hash carrying a default proc, whose result
+  cannot be type-checked.
+- **Fixed: `Hash#except` ignores unsupported key types like Ruby misses.**
+  `Hash#except` no longer raises when given an argument whose type cannot be a
+  hash key (anything other than a symbol or string). Because Vibescript hash keys
+  are only symbols or strings, such an argument can never match an entry, so it is
+  now treated as a Ruby-style miss and ignored. Mixed argument lists still exclude
+  the supported keys, so `{ a: 1 }.except(1)` returns `{ a: 1 }` while
+  `{ a: 1 }.except(1, :a)` returns `{}`.
+- **Fixed: `Hash#slice` omits unsupported candidate keys like Ruby misses.**
+  `Hash#slice` no longer raises when given a candidate key whose type cannot be a
+  hash key (anything other than a symbol or string). Such a candidate can never
+  match an entry, so it is treated as a Ruby-style miss and dropped from the
+  result instead of failing. Mixed argument lists still keep the supported keys,
+  so `{ a: 1, b: 2 }.slice(:a, 1)` returns `{ a: 1 }` while
+  `{ a: 1 }.slice(1)` and `{ a: 1 }.slice` both return `{}`.
+- **Fixed: Hash membership predicates align with Ruby.** `Hash#key?`,
+  `Hash#has_key?`, and `Hash#include?` now return `false` for candidate keys of
+  unsupported types instead of raising, matching Ruby's predicate semantics.
+- **Fixed: `Hash#each` yields the key/value pair to single-parameter blocks like
+  Ruby.** A block declaring one positional parameter now receives each entry as a
+  two-element `[key, value]` array instead of only the key, so
+  `{ a: 1 }.each { |pair| pair }` yields `[:a, 1]`. Blocks with two parameters
+  still receive the key and value separately, extra parameters still receive
+  `nil`, and a single destructuring parameter such as `|(key, value)|` unpacks the
+  pair.
+- **Fixed: parenless `Hash#merge` returns a copy of the receiver like Ruby.**
+  A bare `hash.merge` now reads as a zero-argument call that returns a copy of
+  the receiver instead of leaking the unbound method value. This matches Ruby,
+  where the call has no parentheses distinction, so `{ a: 1 }.merge` and
+  `{ a: 1 }.merge()` both return `{ a: 1 }`.
+
+### Numbers, ranges, and Math
+
+- **Added: Ruby-style range query and conversion helpers.** Ranges now answer
+  `cover?`, `include?`, and `member?` membership predicates (numeric arguments
+  are tested against the range bounds, exclusivity, and direction; any other
+  type is never a member and returns `false` rather than raising), the metadata
+  helpers `first`, `last`, `size`, and `exclude_end?`, and the `to_a`
+  materialization. Because Vibescript iterates descending ranges such as `5..1`,
+  `size`, `to_a`, `first(n)`, and `last(n)` report that descending sequence
+  rather than the empty result Ruby produces; the remaining helpers match Ruby.
+  `to_a` and the counted `first(n)`/`last(n)` forms build their arrays under the
+  sandbox step and memory quotas so large ranges fail safely instead of
+  exhausting memory.
+- **Added: Ruby-style range and numeric enumeration helpers.** Integers now
+  answer `upto(limit)`, `downto(limit)`, and `step(limit, by = 1)`, each yielding
+  the relevant integers to the block and returning the receiver. Ranges gained
+  Enumerable-style iteration helpers `each`, `step(n)`, `map`, `select`,
+  `reject`, `find`, `reduce`, `count`, `sum`, `min`, and `max`. The iteration
+  follows Vibescript's range direction (ascending for `1..5`, descending for
+  `5..1`) and charges one sandbox step per element so a wide span fails on the
+  step quota rather than running unbounded; the array-building helpers (`map`,
+  `select`, `reject`) honor the memory quota as the result grows. `step` advances
+  by its stride directly, so a sparse step over a wide span only charges the step
+  quota for the values it yields. `step` arguments must be nonzero (integers) and
+  positive (ranges), `sum` errors on 64-bit overflow, and the terminal value is
+  detected before each increment so a span reaching the 64-bit bounds stops
+  cleanly instead of wrapping.
+- **Added: Ruby-style float special values and division-by-zero behavior.** Float
+  division by zero with the `/` operator (and `Float#fdiv`/`Integer#fdiv`) now
+  follows IEEE 754 like Ruby instead of raising: a finite nonzero numerator
+  yields `Infinity` or `-Infinity` and a zero numerator yields `NaN`. Integer
+  division by zero (`1 / 0`) still raises, matching Ruby's `ZeroDivisionError`.
+  Floats gained `nan?` (true only for `NaN`), `infinite?` (`1` for `Infinity`,
+  `-1` for `-Infinity`, `nil` otherwise), and `finite?` (true when neither
+  infinite nor `NaN`). Special values print as `Infinity`, `-Infinity`, and
+  `NaN`, and `JSON.stringify` continues to reject non-finite floats because JSON
+  has no representation for them. `div`, `divmod`, `modulo`, and `remainder` keep
+  raising on a zero divisor, matching Ruby. Comparisons follow IEEE 754:
+  comparisons against `NaN` are unordered, so `<`, `<=`, `>`, and `>=` return
+  `false` and the spaceship operator `<=>` returns `nil`. Coercing a non-finite
+  float to an integer now raises rather than silently yielding a garbage value,
+  so a `NaN`/`Infinity` range endpoint, `money_cents` amount, or duration operand
+  reports a clear error.
+- **Added: Ruby-style numeric rounding precision.** `Float#round`, `Float#floor`,
+  and `Float#ceil` now accept an optional Integer precision: positive `ndigits`
+  keep the value a float rounded to that many fractional digits, while zero or
+  negative `ndigits` return an integer bucketed to a power of ten. `Integer#round`,
+  `Integer#floor`, and `Integer#ceil` gained the same precision argument, leaving
+  the value unchanged for non-negative precision and bucketing for negative
+  precision. Float rounding matches Ruby's half-away-from-zero correction, and
+  any conversion back to an integer keeps the existing 64-bit overflow checks
+  instead of widening like Ruby's bignums.
+- **Added: Ruby-style numeric division helpers.** Integers and floats now expose
+  `div` (floored division returning an integer), `divmod` (the floored quotient
+  paired with the divisor-signed modulo), `fdiv` (floating division), and
+  `remainder` (truncated-division remainder whose sign follows the receiver, so
+  it differs from `%` for mixed-sign operands). A zero divisor errors for all
+  four, and quotients outside the 64-bit range error rather than wrapping. Ruby's
+  `fdiv` infinity result is intentionally an error instead, matching the `/`
+  operator, and `quo` is intentionally omitted because Vibescript has no rational
+  number type.
+- **Added: Ruby-style numeric predicate and successor helpers.** Integers and
+  floats gain `zero?`, `positive?`, `negative?`, and `nonzero?` (returning the
+  receiver or `nil`), and integers gain `next`/`succ` and `pred`.
+- **Added: Ruby-style `Math` module.** The new `Math` namespace exposes the
+  constants `Math::PI` and `Math::E` (readable with `::` or `.`) and the pure
+  numeric helpers `sqrt`, `cbrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,
+  `atan2`, `exp`, `log`, `log2`, `log10`, and `hypot`. Integer arguments are
+  promoted to floats and every helper returns a `float`, matching Ruby.
+  Arguments outside a function's domain (e.g. `Math.sqrt(-1)`, `Math.asin(2)`,
+  or `Math.sin`'s well-defined relatives applied beyond their range) raise a
+  domain error like Ruby's `Math::DomainError`. In-domain special values follow
+  Ruby and IEEE 754: `Math.log(0)` returns `-Infinity`, `Math.sin`/`cos`/`tan`
+  of `Infinity` return `NaN`, and a `NaN` argument propagates unchanged.
+- **Changed: the spaceship operator `<=>` now returns `nil` for incomparable
+  operands** instead of raising, matching Ruby. Mixed-kind pairs such as
+  `1 <=> "a"`, money values in different currencies, and `Time#<=>` against a
+  non-`Time` now yield `nil`, while comparable pairs still return `-1`/`0`/`1`.
+  The relational operators `<`, `<=`, `>`, `>=` keep raising on incomparable
+  operands, matching Ruby's `ArgumentError`.
+
+### Time
+
+- **Added: Ruby-style `Time` HTTP/XML/RFC date helpers.** `Time#xmlschema` is an
+  alias for `Time#iso8601` (including its optional `ndigits` precision argument).
+  `Time#httpdate` renders the HTTP-date / IMF-fixdate form (RFC 7231), always in
+  GMT, e.g. `"Tue, 02 Jan 2024 03:04:05 GMT"`. `Time#rfc2822` and its alias
+  `Time#rfc822` render the RFC 2822 mail date preserving the receiver's zone
+  offset; a genuine UTC receiver uses the `-0000` zone Ruby reserves for
+  timestamps without real zone information while an explicit zero offset uses
+  `+0000`. `httpdate`, `rfc2822`, and `rfc822` drop sub-second precision and take
+  no arguments, raising on any positional or keyword argument.
+- **Added: Ruby-style `Time#iso8601(ndigits)` precision.** `Time#iso8601` and its
+  `Time#rfc3339` alias now accept an optional non-negative `ndigits` argument that
+  appends fractional-second digits, truncated toward zero like Ruby. No argument
+  keeps whole-second RFC3339 output, the timezone offset is preserved, and digits
+  beyond nanosecond resolution are zero-padded (capped at 100 digits to bound
+  allocations). Negative, non-integer, out-of-range, or extra arguments raise a
+  clear runtime error.
+- **Added: Ruby-style subsecond parts for `Time.local`, `mktime`, `utc`, and
+  `gm`.** These calendar constructors now read their seventh positional argument
+  as microseconds-with-fraction instead of routing it through timezone parsing.
+  Integer microseconds are exact and floats carry sub-microsecond precision down
+  to the nanosecond, while a non-numeric microsecond argument raises a runtime
+  error. `Time.new` keeps its Ruby distinction of accepting a zone/offset in the
+  seventh position. Unlike Ruby, a string microsecond argument is rejected rather
+  than coerced via leading-digit parsing.
+- **Added: Ruby-style subsecond arguments for `Time.at`.** `Time.at` now accepts
+  an optional second positional subsecond value and an optional third positional
+  unit symbol in addition to int/float epoch seconds. The subsecond value
+  defaults to microseconds, and the unit may be `:microsecond`/`:usec`,
+  `:millisecond`, or `:nanosecond`/`:nsec` (e.g. `Time.at(0, 123456)` and
+  `Time.at(0, 123456789, :nsec)`). The `in:` zone keyword composes with every
+  form. A unit symbol without a subsecond value, an unknown unit, or a
+  non-numeric subsecond value raises a runtime error. Unlike the calendar
+  constructors (`Time.utc`/`Time.local`), `Time.at` does not treat an explicit
+  `nil` subsecond as omitted: `Time.at(0, nil)` raises just as Ruby does.
+  Subsecond values are floored toward negative infinity at nanosecond
+  resolution rather than retaining Ruby's arbitrary-precision rationals, so a
+  negative fractional offset rounds the way Ruby exposes it
+  (`Time.at(0, -1.9, :nsec).nsec == 999999998`). A subsecond magnitude too large
+  to express within that nanosecond range is rejected with `Time.at subsecond
+  value out of range` instead of silently wrapping into a bogus instant.
+- **Added: Ruby-style default date parts for `Time` calendar constructors.**
+  `Time.new`, `Time.utc`, `Time.gm`, `Time.local`, and `Time.mktime` now require
+  only a year. As in Ruby, an omitted month or day defaults to `1` and omitted
+  time fields default to midnight, so forms such as `Time.new(2024)`,
+  `Time.utc(2024)`, and `Time.utc(2024, 2)` build January 1 (or the first of the
+  given month) at the start of the day instead of raising an arity error. An
+  explicit `nil` in an optional position is treated the same as omitting it, so
+  `Time.utc(2024, nil)` builds January 1 rather than normalizing month `0` into
+  the prior year. The year itself remains required: a `nil` (or any other
+  non-numeric) year raises instead of coercing to year `0`.
+- **Added: Ruby-style offset arguments for `Time#getlocal` and
+  `Time#localtime`.** Both now accept an optional timezone offset (for example
+  `"+05:30"`, `"-04:00"`, a named zone, or `"UTC"`) and return the same instant
+  in that zone, falling back to the host's local zone when the argument is
+  omitted or `nil`. The offset uses the shared zone-parsing rules, and the
+  receiver is never mutated, so `localtime` fits Vibescript's immutable value
+  model while matching Ruby's non-mutating `getlocal(offset)` result.
+- **Added: Ruby-style `Time#to_a` tuple conversion.** `Time#to_a` returns the
+  positional field tuple `[sec, min, hour, mday, month, year, wday, yday, isdst,
+  zone]`, matching Ruby for compatibility with positional field processing. Field
+  values reuse the existing `Time` accessors, so UTC, local, and offset receivers
+  stay consistent across both forms.
+- **Added: `Time#round` precision argument.** `Time#round` now accepts an
+  optional Ruby-style `ndigits` (defaulting to `0`) so `round(3)` and `round(6)`
+  produce millisecond and microsecond precision, with non-negative `Integer`
+  validation and clear errors on misuse.
+- **Added: Ruby-style `Time#strftime` formatting.** `Time#strftime` accepts a
+  Ruby percent format string so Ruby date-formatting code runs unchanged, sitting
+  alongside the existing Go-layout `Time#format`. The supported directive subset
+  covers year/month/day, 12- and 24-hour time, minute/second, sub-second
+  (`%L`, `%N`, and widths like `%6N`), weekday and month names, weekday numbers
+  (`%w`/`%u`), epoch seconds (`%s`), UTC offset (`%z`, `%:z`, `%::z`, and the
+  `%:::z` compact form), zone name
+  (`%Z`), the `%n`/`%t`/`%%` escapes, and the compound shortcuts
+  `%F`/`%T`/`%X`/`%R`/`%D`/`%x`/`%r`/`%c`. Directives honor Ruby's flags and
+  width between the `%` and the letter: `-` (no padding), `_` (space padding),
+  `0` (zero padding), `^` (uppercase), and `#` (toggle case), with an optional
+  width applied to every numeric and name directive (so `%-d` is `2`, `%6Y` is
+  `002024`, and `%^B` is `JANUARY`). Unknown directives pass through verbatim
+  like Ruby (`%Q` stays `%Q`), `%Z` mirrors `Time#zone` (so fixed-offset
+  receivers render their offset name rather than Ruby's empty string), and a
+  trailing `%` (or a modifier with no directive) raises a clear runtime error. A
+  script-controlled width is bounded by the sandbox memory quota, so a format like
+  `%1000000000N` is rejected before allocating its padding rather than risking an
+  out-of-memory crash.
+- **Added: Ruby-style numeric-second `Time` arithmetic.** `time + number` and
+  `time - number` now treat the number as seconds, matching Ruby. Integers shift
+  by whole seconds, floats carry sub-second precision down to the nanosecond, and
+  negative values shift backward. Numeric addition commutes (`number + time`),
+  and an out-of-range or non-finite offset raises a runtime error.
+- **Changed: `time - time` now returns a `Float` number of seconds** instead of a
+  whole-second `Duration`, matching Ruby's `Time#-` and preserving sub-second
+  precision.
+- **Fixed: `Time#eql?` and `Duration#eql?` now behave like Ruby predicates for
+  wrong-type operands.** Both methods return `false` when given an operand of the
+  wrong kind (for example `time.eql?(1)` or `duration.eql?(Time.utc(2024, 1,
+  1))`) instead of raising a type error, matching Ruby's `Time#eql?`. Equal
+  same-kind operands still return `true`, unequal ones `false`, and only the
+  wrong number of arguments raises an argument-count error.
+
+### Checker, CLI, and embedding
+
+- **Added: check mode flags unresolved value and function names.** `vibes run
+  -check` and the `CheckWarnings*` APIs now report `undefined variable NAME`
+  for bare value/function references that cannot resolve to any binding the
+  checker can see, matching the error the reference raises at runtime. The
+  resolution model deliberately over-approximates the defined-name set —
+  locals any branch can bind, exports of any statically resolvable `require`
+  anywhere in the script, builtins, host globals and capabilities supplied
+  through `CallOptions`, and implicit-self scopes in methods and class bodies
+  — so a warning means the reference is guaranteed to fail. A `require` whose
+  module name is not a literal suppresses the check for the whole script.
+  `-e` snippets additionally run an order-independent whole-snippet pass so
+  functions the snippet never calls are covered. Hosts that inject globals or
+  capabilities must check with the same `CallOptions` they later pass to
+  `Call`; those names then resolve and are never reported. `vibes analyze`
+  deliberately does not surface these warnings: it runs over documentation
+  fragments and host-embedded scripts whose free names are legal at runtime.
+- **Added: check mode rejects typed block parameters contradicted by literal
+  receivers.** When a literal array of scalar literals flows through a builtin
+  element iterator (`each`, `map`, `select`, `reject`, `find`, and
+  `each_with_index` with its integer index parameter), a block parameter type
+  annotation that any yielded element misses is now a check warning —
+  `argument NAME expected TYPE, got KIND` at the annotation, exactly the error
+  the first mismatching yield raises at runtime. The check stays silent for
+  non-literal or empty receivers, hash receivers, destructured or extra block
+  parameters, untyped parameters, user-defined iterators, and iterators
+  outside the covered set, leaving those shapes to runtime enforcement.
+- **Hardened CLI source-size enforcement.** `vibes run`, `vibes analyze`, and
+  `vibes test` now read each script through a single size-checked descriptor,
+  bounded at the engine's configured source-size limit, so an oversized file
+  (even one swapped or grown after the check) is rejected before it is loaded
+  fully into memory.
+- **Fixed: bounded result rendering for large composite return values.**
+  `Value.String` now streams array and hash rendering directly into one growing
+  buffer instead of building a `[]string` per element and a `fmt.Sprintf` per
+  hash entry before joining, so formatting no longer allocates O(n) intermediate
+  strings. The new `Value.StringBounded(limit)` renders a value while stopping
+  at a byte budget and reporting `ErrStringRenderTruncated`, and the `vibes run`
+  CLI uses it with a 1 MiB cap so a script that returns a huge nested array or
+  hash fails with `result rendering exceeds …` instead of allocating the whole
+  formatted string in host memory after the runtime quotas have already
+  released. Cycle detection is unchanged.
+- **Hardened the public jobqueue option parser.** `jobqueue.ParseEnqueueOptions`
+  now rejects extra enqueue keywords that are not data-only or that contain
+  cyclic references instead of cloning them through to the host, closing a
+  contract gap for embedders that call it directly. A new
+  `jobqueue.ParseEnqueueOptionsValidated` fast path lets the runtime adapter skip
+  the redundant walk when it has already enforced the contract, and the carved
+  package gained direct unit tests for constructor validation, retry detection,
+  option parsing, cloning, and invalid/cyclic values.
+
+### Tooling: LSP and watch mode
+
+- **Improved: LSP large-document response cost.** Diagnostics publishes now
+  skip the recompile when the buffer text is byte-identical to the last
+  compile, diagnostics payloads use typed structs instead of nested maps, and
+  document-symbol outlines are cached per document and invalidated on every
+  edit and fresh compile, keeping large buffers responsive on each keystroke.
+- **Improved: watch-mode overhead on large module roots.** Full rescans reuse
+  the previous snapshot's map storage and walk directory entries without
+  per-file `FileInfo` allocations, and the polling loop's per-tick known-file
+  check stats through a platform shim that avoids `os.Stat` allocations on
+  macOS and Linux; symlink handling, added/deleted `.vibe` detection, and
+  periodic full scans are unchanged.
+- **Performance: reduced large-document LSP diagnostics and symbol allocation
+  churn.** `textDocument/documentSymbol` now builds the outline from typed
+  structs instead of nested `map[string]any` values, and the script-local
+  completion index is built lazily on the first completion request rather than
+  on every diagnostics publish. Repeated edits in large files no longer pay to
+  clone every compiled function or to allocate per-symbol range maps when no
+  completion is requested. The wire output for diagnostics, document symbols,
+  and completions is unchanged.
+
+### Performance and sandbox accounting
+
+- **Fixed: typed hash boundaries no longer copy conforming payloads.** Passing
+  a hash through a `hash<K, V>` parameter or return annotation used to build a
+  full output copy before discovering that no value needed coercion, roughly
+  doubling the allocation cost of a no-op boundary crossing (a conforming
+  10,000-entry `hash<string, int>` argument paid for two hashes instead of
+  one). Normalization now validates in place and returns the original
+  container when nothing changes; small symbol-keyed hashes also skip the
+  temporary entry materialization during validation. When a value does need
+  coercion (for example a symbol against an enum-valued hash), the copy still
+  carries every already-validated entry in insertion order, normalizes the
+  Ruby-style default value, and preserves the hash-versus-object receiver
+  kind, exactly as before.
+- **Improved runtime allocation behavior for string splitting and array
+  aggregation.** `String#split` now builds its result values directly instead
+  of staging an intermediate `[]string`, and `Array#group_by`,
+  `Array#group_by_stable`, and `Array#tally` avoid parallel key-value maps while
+  preserving first-encounter result ordering.
+- **Improved: call-boundary copying for large host data payloads.** Data-only
+  host argument graphs (scalars plus alias-free arrays, hashes, and objects)
+  now deep-copy through a tight copier instead of the full rebind walk at
+  `Script.Call` entry, composite `CallOptions.Globals` bind lazily and are
+  cloned only when the script (or an inheriting task) actually reads them, and
+  the contracted capability boundary clones scalar-only row maps wholesale.
+  Isolation is unchanged: every host value a script can reach is still a
+  per-call deep copy, capability grants captured by escaped closures are still
+  revoked on re-entry, and `StrictEffects` still validates globals eagerly at
+  bind time. An unused large global no longer pays its full clone (~24x less
+  wall time in `BenchmarkTasksMapUnusedLargeGlobal`); large payload calls
+  spend less on rebind bookkeeping and capability-boundary cloning. (#422,
+  #366, #353)
+- **Changed: memory-quota timing for unread composite globals.** A
+  `Script.Call` carrying a composite global that would exceed the memory
+  quota no longer fails at bind time when the script never reads it: the
+  quota is charged when (and only when) the global is materialized on first
+  read, at which point the call fails exactly as before. Hosts using the
+  memory quota as inbound-payload admission control should size-check
+  payloads before the call instead of relying on the bind-time rejection.
+  (#366)
+- **Performance: memory-quota checks memoize the estimator's base walk.** The
+  estimator's reachable-graph walk is now memoized per execution and reused by
+  consecutive checks while a process-wide mutation epoch (bumped by every value
+  wrapper mutator, environment write, and builtin dispatch) and the execution's
+  root-set topology prove the graph unchanged, so per-statement, argument, and
+  call-boundary checks around a large stable payload no longer each re-pay a
+  full graph walk. Estimates are byte-identical to the unmemoized walk — the
+  memoized check resumes the exact same deduplicated computation — so quota
+  pass/fail thresholds do not move; large capability payload calls
+  (`BenchmarkCapabilityContractLargeArgs/rows_10000`) run about 2x faster.
+- **Hardened `for`-loop sandbox accounting.** Each `for` iteration over an array
+  or range now charges a step before evaluating the body, matching `while` and
+  `until`. A large `for` loop therefore still respects the step quota and still
+  surfaces `context.Canceled` once a host callback cancels the context, even when
+  the loop body is empty.
+- **Fixed: `Array#flatten` and `Hash#flatten` now participate in sandbox
+  accounting while their results are being built.** Flatten's output length
+  cannot be cheaply bounded up front (each receiver slot can expand into
+  arbitrarily many leaves), so both builds now charge one step per element
+  examined — running the periodic memory and context checks — and charge the
+  output backing's growth before each doubling is allocated. `Hash#flatten`
+  additionally meters its `[key, value]` pair pre-build the way `Hash#to_a`
+  does. Both methods previously charged ~0 steps, so large flattens now
+  consume step quota proportional to the elements they examine. An oversized
+  flatten is rejected before the over-quota backing exists, instead of after
+  the full result was allocated natively, and a canceled context stops the walk
+  mid-build. The recursion also builds into a single shared output slice,
+  replacing the per-nesting-level slices the old merge-upward implementation
+  allocated. Results are unchanged for in-quota calls. Focused quota coverage
+  now pins `Array#join`, fixed-size `Array#window`, `Array#flatten`, and
+  `Hash#flatten` in both directions: an in-quota call succeeds byte-identically
+  and an oversized call fails with the quota error before the result
+  materializes.
+- **Hardened hash transform sandbox accounting.** `Hash#merge`, `Hash#update`,
+  `Hash#merge!`, `Hash#replace`, `Hash#store`, `Hash#except`, `Hash#slice`,
+  `Hash#compact`, `Hash#remap_keys`, `Hash#select`, `Hash#reject`,
+  `Hash#transform_keys`, and `Hash#transform_values` now project the size of the
+  derived map against the memory quota before reserving it, so a transform over a
+  large hash is rejected up front instead of after a full output map has already
+  been allocated. The blockless transforms charge the step quota per entry and
+  honor context cancellation while walking their entries, and `Hash#replace`
+  charges a step per copied entry as it adopts the replacement's contents.
+  Block-driven transforms (`Hash#transform_keys`, `Hash#transform_values`, and
+  the `Hash#merge` conflict block) additionally charge each block result against
+  the quota as it is produced. That block-result charge is deliberately
+  conservative: each result is counted at its full current size, deduplicated
+  only against other block results and never against the receiver or other call
+  roots, because deduplicating against the baseline would let a block that
+  mutates a receiver-owned container in place escape the quota; a block that
+  returns a receiver-shared value unchanged is therefore over-counted rather
+  than under-counted, keeping the bound sound (the array-side equivalent of
+  this accounting is tracked in #787). The sorted key scratch these transforms
+  iterate with, the preallocated output backing, and `Hash#except`'s exclusion
+  set are all reserved against the quota for as long as they are live, so the
+  combined output-plus-scratch peak stays bounded; `Hash#merge` with a conflict
+  block reserves the exact distinct key union rather than a loose sum, so an
+  overlapping merge that genuinely fits is not falsely rejected. `Hash#each`,
+  `Hash#each_key`, and `Hash#each_value` build no derived map and no longer
+  reserve one, they charge the step quota per entry directly so an empty block
+  still observes cancellation, and a bare `Hash#merge { ... }` with no argument
+  hashes returns a copy of the receiver without running the block or charging
+  scratch it never allocates. The charge is cycle-safe: a cyclic block result is
+  charged a finite amount once. `Hash#store` sizes its projection by the
+  existing-key case so replacing a key no longer over-reports the result size.
+  `Hash#deep_transform_keys` is intentionally left unbounded for now; bounding
+  its recursive materialization is tracked separately in #786.
+- **Hardened interpolated string materialization under sandbox limits.**
+  Double-quoted interpolation now builds its result incrementally, charging a
+  step and checking the projected byte length against the memory quota before
+  appending each segment. The projection for an interpolated expression is
+  computed without rendering the value, so an aggregate whose representation
+  expands far beyond its own footprint (for example an array or hash holding
+  many references to one large string) is rejected before the oversized join is
+  materialized rather than after. A script that grows a string through repeated
+  or large interpolation (for example `"#{text}#{text}"` in a loop) now fails
+  with a memory quota error before the oversized result is materialized, and a
+  canceled context stops construction promptly. Small interpolations are
+  unchanged.
+- **Fixed: `Array#reduce` charges its accumulator against the memory quota
+  without double counting.** A fold whose block destructures the accumulator with
+  a rest target, such as `reduce(big) do |(head, *tail), item| ... end`, copies
+  part of the live accumulator into a fresh backing. The accumulator lives only on
+  the runtime's Go stack and evolves every call, so it was missing from the
+  per-call memory accounting; the fold now charges the current accumulator on each
+  call, closing a path that could allocate past the sandbox quota. A reduce with no
+  initial value makes the accumulator the receiver's first element, which is already
+  counted in the receiver, so the accumulator charge now deduplicates against the
+  receiver: a large first element is charged once, not twice, so a quota that fits
+  the real peak is no longer wrongly rejected.
+- **Fixed: rest-collecting block parameters reject an over-quota tail before
+  allocating it.** A block such as `[[huge...]].each { |(head, *tail)| }` copies the
+  collected tail into a fresh backing slice when it binds `tail`. The bind charge now
+  preflights that window against the memory quota before the copy, so a quota smaller
+  than a single copied tail rejects the walk before the backing is materialized
+  instead of allocating the whole tail first and only then reporting the overflow. The
+  charge applies only to a named rest: a bare anonymous rest such as
+  `|(head, *)|` discards its window without allocating a backing, so it keeps the
+  no-allocation fast path instead of seeding the estimator with the whole yielded value
+  on every iteration.
+- **Fixed: block-driven hash transforms count their output map in the rest-bind
+  charge.** `Hash#select`, `#reject`, `#transform_keys`, `#transform_values`, and a
+  block-conflict `#merge` hold their preallocated output map and sorted-key scratch
+  while the block binds a rest-collecting destructure parameter such as
+  `|k, (head, *tail)|`. Those buffers are now reserved against the memory quota before
+  the block runs, so the rest-bind charge measures the fresh tail copy on top of them
+  rather than against a baseline that omitted them, closing a path where the combined
+  peak could exceed the quota.
+- **Fixed: rest destructuring now charges its captured window and live
+  right-hand side against the memory quota.** When a destructuring assignment
+  builds a named rest array (for example `values[1], *rest = values` or
+  `a, *rest = build_large_array()`), the captured window is now metered before
+  it is allocated, alongside both the right-hand-side snapshot it may coexist
+  with and the evaluated right-hand side itself when that value is held only on
+  the call stack (a function or capability return, or an array literal). A
+  sandboxed script can no longer exceed `MemoryQuotaBytes` by roughly the size
+  of the right-hand side by routing a large off-stack array through a rest
+  target.
+- **Fixed: block bodies now charge an ephemeral receiver against the memory
+  quota alongside what they retain.** Iterating a receiver held only by the
+  builtin's call frame (for example `make_hash().each do |(k, (head, *tail))|`)
+  with a rest-collecting destructure used to count the receiver only in the
+  one-time bind-charge snapshot while the body's checks counted only the
+  environment, so a loop copying tails into a retained accumulator could
+  transiently hold roughly twice `MemoryQuotaBytes` without either view
+  noticing. The bind charge now measures those Go-frame-only roots once and
+  reserves them into the live baseline for each block call, so per-statement
+  and mutator-growth checks bound the combined peak and reject it mid-loop at
+  the quota. Receivers reachable from the environment deduplicate to a ~zero
+  reservation, and the reservation itself is O(1) per call, so existing
+  workloads are unaffected.
+
+### Fixes
+
+- **Fixed: a host-crashing panic in destructuring assignment.** A destructuring
+  target with more fixed targets than the value provides plus a rest target (for
+  example a block parameter `|(a, b, c, *rest)|` applied to a two-element value)
+  sliced out of range and panicked the interpreter, which a sandboxed script
+  could trigger as a denial of service. The missing fixed targets now bind to
+  `nil` and the rest is empty, matching Ruby.
+- **Fixed: AST cloner dropped mixin and visibility class members.** The
+  definition cloner in `internal/ast` silently omitted `include`/`extend`
+  and visibility declarations from cloned class member lists and shared
+  nested module declarations with the original. The parser fuzz target's
+  completeness invariant also lagged the last several syntax additions,
+  rejecting valid parses of endless/beginless ranges, splat and keyword-splat
+  arguments, block-pass arguments, mixin and visibility members, empty quoted
+  symbols, and bare rest-discard assignments; each form is now accepted,
+  seeded into the fuzz corpus, and pinned by a coverage test that fails
+  deterministically when a new AST shape is missed. (#902)
+
 ## v0.50.0 - 2026-06-11
 
 - **Added: stronger CLI workflows.** `vibes run` now supports inline `-e`

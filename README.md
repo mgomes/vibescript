@@ -191,6 +191,7 @@ Long-form guides live in `docs/`:
 - `docs/enums.md` – nominal enums, `::` member access, and typed symbol coercion.
 - `docs/language_reference.md` – consolidated language syntax and semantics reference.
 - `docs/syntax_compatibility.md` – core syntax freeze baseline and compatibility guarantees.
+- `docs/migrating-to-1.0.md` – breaking changes in the 1.0 release with before/after examples and fixes.
 - `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, module usage, and more).
 - `docs/releasing.md` – GoReleaser workflow for changelog and GitHub release automation.
 - `docs/compatibility.md` – supported Go versions and CI coverage notes.
