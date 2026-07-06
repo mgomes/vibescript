@@ -202,6 +202,12 @@ func collectOwnScopeNamesFromStatement(stmt Statement, out map[string]struct{}) 
 	switch typed := stmt.(type) {
 	case nil:
 		return
+	case *FunctionStmt, *ClassStmt, *AliasStmt, *EnumStmt, *RetryStmt:
+		// None of these bind locals in the enclosing scope: nested def and
+		// class statements parse but never bind (the runtime rejects them
+		// before any binding could happen), alias and enum declarations are
+		// parser-rejected outside the top level, and retry has no operands.
+		return
 	case *AssignStmt:
 		collectBindingTarget(typed.Target, out)
 		collectOwnScopeNamesFromExpression(typed.Target, out)
@@ -256,6 +262,21 @@ func collectOwnScopeNamesFromExpression(expr Expression, out map[string]struct{}
 	switch typed := expr.(type) {
 	case nil:
 		return
+	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral,
+		*BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+		// Leaves: no embedded statement-expressions to descend into.
+		return
+	case *BlockLiteral:
+		// Block bodies bind into their own child scope, never the enclosing
+		// one, so nothing here contributes to the current scope's names.
+		return
+	case *DestructureTarget:
+		// Element targets can embed statement-expressions (an index selector
+		// holding a begin/end body, for example) whose assignments bind in
+		// the enclosing scope.
+		for _, element := range typed.Elements {
+			collectOwnScopeNamesFromExpression(element.Target, out)
+		}
 	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:
 		collectOwnScopeNamesFromStatement(typed.(Statement), out)
 	case *ArrayLiteral:
@@ -433,6 +454,17 @@ func visitCallExprsInStatement(stmt Statement, visit func(*CallExpr)) {
 	switch typed := stmt.(type) {
 	case nil:
 		return
+	case *FunctionStmt:
+		// Nested defs parse (the runtime rejects them at execution), so walk
+		// them for completeness: over-approximating the visited calls can
+		// only suppress undefined-name warnings, never add them.
+		for _, param := range typed.Params {
+			visitCallExprsInExpression(param.DefaultVal, visit)
+		}
+		visitCallExprsInStatements(typed.Body, visit)
+	case *AliasStmt, *EnumStmt, *RetryStmt:
+		// No expression operands, so no calls to visit.
+		return
 	case *ReturnStmt:
 		visitCallExprsInExpression(typed.Value, visit)
 	case *RaiseStmt:
@@ -482,6 +514,10 @@ func visitCallExprsInStatement(stmt Statement, visit func(*CallExpr)) {
 func visitCallExprsInExpression(expr Expression, visit func(*CallExpr)) {
 	switch typed := expr.(type) {
 	case nil:
+		return
+	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral,
+		*BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+		// Leaves: no nested expressions, so no calls to visit.
 		return
 	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:
 		visitCallExprsInStatement(typed.(Statement), visit)

@@ -1423,21 +1423,27 @@ func validateFuzzExpression(context string, expr Expression) error {
 		}
 		return nil
 	case *InterpolatedString:
-		for i, part := range e.Parts {
-			switch p := part.(type) {
-			case StringText:
-			case StringExpr:
-				if err := validateFuzzExpression(fmt.Sprintf("%s.parts[%d].expr", context, i), p.Expr); err != nil {
-					return err
-				}
-			default:
-				return fmt.Errorf("%s.parts[%d] has unknown string part type %T", context, i, part)
-			}
-		}
-		return nil
+		return validateFuzzStringParts(context, e.Parts)
+	case *InterpolatedSymbol:
+		return validateFuzzStringParts(context, e.Parts)
 	default:
 		return fmt.Errorf("%s has unknown expression type %T", context, expr)
 	}
+}
+
+func validateFuzzStringParts(context string, parts []StringPart) error {
+	for i, part := range parts {
+		switch p := part.(type) {
+		case StringText:
+		case StringExpr:
+			if err := validateFuzzExpression(fmt.Sprintf("%s.parts[%d].expr", context, i), p.Expr); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%s.parts[%d] has unknown string part type %T", context, i, part)
+		}
+	}
+	return nil
 }
 
 func validateFuzzBlockLiteral(context string, block *BlockLiteral) error {
@@ -1538,4 +1544,18 @@ func fuzzSnippet(source string) string {
 		return source
 	}
 	return source[:160] + "..."
+}
+
+func TestValidateFuzzProgramAcceptsInterpolatedSymbols(t *testing.T) {
+	t.Parallel()
+
+	program, parseErrors := parser.Parse(`def run(name)
+  %I[alpha #{name}]
+end`)
+	if len(parseErrors) > 0 {
+		t.Fatalf("Parse() errors = %v, want none", parseErrors)
+	}
+	if err := validateFuzzProgram(program); err != nil {
+		t.Fatalf("validateFuzzProgram() error = %v, want nil", err)
+	}
 }
