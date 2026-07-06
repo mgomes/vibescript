@@ -278,7 +278,7 @@ func FuzzLSPPayloadAndMessageHandling(f *testing.F) {
 
 func fuzzLSPMessage(selector int, uri, source string) lspInboundMessage {
 	idRaw := json.RawMessage(`"fuzz"`)
-	switch positiveMod(selector, 7) {
+	switch positiveMod(selector, 8) {
 	case 0:
 		return lspInboundMessage{JSONRPC: "2.0", ID: &idRaw, Method: "initialize"}
 	case 1:
@@ -302,6 +302,11 @@ func fuzzLSPMessage(selector int, uri, source string) lspInboundMessage {
 		return lspInboundMessage{JSONRPC: "2.0", ID: &idRaw, Method: "textDocument/hover", Params: params}
 	case 5:
 		return lspInboundMessage{JSONRPC: "2.0", ID: &idRaw, Method: "shutdown"}
+	case 6:
+		params := mustMarshalFuzzJSON(map[string]any{
+			"textDocument": map[string]any{"uri": uri},
+		})
+		return lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didClose", Params: params}
 	default:
 		return lspInboundMessage{JSONRPC: "2.0", ID: &idRaw, Method: uri}
 	}

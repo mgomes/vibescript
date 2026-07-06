@@ -94,6 +94,12 @@ type lspDidChangeParams struct {
 	} `json:"contentChanges"`
 }
 
+type lspDidCloseParams struct {
+	TextDocument struct {
+		URI string `json:"uri"`
+	} `json:"textDocument"`
+}
+
 type lspDocumentFormattingParams struct {
 	TextDocument struct {
 		URI string `json:"uri"`
@@ -251,6 +257,26 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 		return []lspOutboundMessage{
 			s.publishDiagnostics(params.TextDocument.URI, latest),
 		}
+	case "textDocument/didClose":
+		var params lspDidCloseParams
+		if err := json.Unmarshal(incoming.Params, &params); err != nil {
+			return nil
+		}
+		uri := params.TextDocument.URI
+		if _, known := s.docs[uri]; !known {
+			// Nothing was ever tracked for this document, so there is
+			// neither state to evict nor diagnostics to clear.
+			return nil
+		}
+		s.evictDocument(uri)
+		// Documents live only in memory (the server never reads the
+		// filesystem), so after a close there is no source of truth left
+		// to validate against and any previously published diagnostics
+		// would go stale. Diagnostics are server-owned per the LSP spec,
+		// and clearing them on close is the convention mainstream servers
+		// follow and clients like Zed expect, so publish an empty set. A
+		// later didOpen re-establishes all state from the client's text.
+		return []lspOutboundMessage{diagnosticsNotification(uri, []lspDiagnostic{})}
 	case "textDocument/formatting":
 		if incoming.ID == nil {
 			return nil
@@ -441,6 +467,21 @@ func (s *lspServer) setDocument(uri, source string) {
 	if s.symbols != nil {
 		delete(s.symbols, uri)
 	}
+}
+
+// evictDocument drops every per-URI map entry for uri so closed
+// documents do not accumulate memory over a long editor session. Keep
+// this in sync with the per-document maps on lspServer; the didClose
+// eviction test walks the struct's string-keyed map fields to enforce
+// completeness.
+func (s *lspServer) evictDocument(uri string) {
+	delete(s.docs, uri)
+	delete(s.lines, uri)
+	delete(s.compiled, uri)
+	delete(s.completions, uri)
+	delete(s.programs, uri)
+	delete(s.published, uri)
+	delete(s.symbols, uri)
 }
 
 func (s *lspServer) documentLines(uri string) []string {

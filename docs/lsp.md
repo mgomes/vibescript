@@ -24,7 +24,9 @@ vibes lsp
 
 Every `didOpen` and `didChange` notification recompiles the document and
 publishes parse errors with line/column positions. Errors that cannot be
-mapped to a position are reported at the start of the document.
+mapped to a position are reported at the start of the document. A
+`didClose` notification publishes an empty diagnostics set so editors
+clear stale squiggles for the closed document.
 
 ### Hover
 
@@ -55,6 +57,10 @@ build it.
 - Inbound payloads are capped at 8 MiB; larger messages are rejected.
 - Documents live only in memory. The server never reads or writes the
   filesystem, so unsaved editor buffers are analyzed as-is.
+- `didClose` drops all server state for the document (text, compiled
+  script, navigation, completion, diagnostics, and outline caches), so
+  long editor sessions do not accumulate memory for closed files. A
+  later `didOpen` re-establishes state from the client's text.
 
 ## Editor setup
 
