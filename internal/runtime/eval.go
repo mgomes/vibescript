@@ -1622,7 +1622,7 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 		return expressionCapturesCurrentEnv(s.Value)
 	case *NextStmt:
 		return expressionCapturesCurrentEnv(s.Value)
-	case *RetryStmt, *EnumStmt:
+	case *AliasStmt, *RetryStmt, *EnumStmt:
 		return false
 	case *TryStmt:
 		for i := range s.Rescues {
@@ -1644,7 +1644,7 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		return false
 	case *BlockLiteral:
 		return true
-	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		return false
 	case *ArrayLiteral:
 		for _, elem := range e.Elements {

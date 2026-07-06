@@ -93,6 +93,25 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		lintExpression(function, typed.Value, warnings)
 		lintExpression(function, typed.Message, warnings)
 		return true
+	case *ast.BreakStmt:
+		lintExpression(function, typed.Value, warnings)
+		return true
+	case *ast.NextStmt:
+		lintExpression(function, typed.Value, warnings)
+		return true
+	case *ast.RetryStmt:
+		return true
+	case *ast.FunctionStmt:
+		for _, param := range typed.Params {
+			lintExpression(function, param.DefaultVal, warnings)
+		}
+		lintStatements(function, typed.Body, warnings)
+		return false
+	case *ast.ClassStmt:
+		lintStatements(function, typed.Body, warnings)
+		return false
+	case *ast.AliasStmt, *ast.EnumStmt:
+		return false
 	case *ast.AssignStmt:
 		lintExpression(function, typed.Target, warnings)
 		lintExpression(function, typed.Value, warnings)
@@ -180,6 +199,11 @@ func ifStatementTerminates(function string, stmt *ast.IfStmt, warnings *[]Warnin
 func lintExpression(function string, expr ast.Expression, warnings *[]Warning) {
 	switch typed := expr.(type) {
 	case nil:
+		return
+	case *ast.Identifier, *ast.IntegerLiteral, *ast.FloatLiteral, *ast.StringLiteral,
+		*ast.RegexLiteral, *ast.BoolLiteral, *ast.NilLiteral, *ast.SymbolLiteral,
+		*ast.IvarExpr, *ast.ClassVarExpr:
+		// Leaves: nothing nested to lint.
 		return
 	case *ast.ArrayLiteral:
 		for _, elem := range typed.Elements {

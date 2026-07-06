@@ -2,6 +2,31 @@ package runtime
 
 import "testing"
 
+func TestCompileCachesSymbolLiteralsInNextValuesAndStatementExpressions(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  for x in [1, 2]
+    next :skip
+  end
+  y = begin
+    :ok
+  rescue
+    :fallback
+  end
+  y
+end`)
+	names := make(map[string]bool, len(script.symbolLiterals))
+	for lit := range script.symbolLiterals {
+		names[lit.Name] = true
+	}
+	for _, want := range []string{"skip", "ok", "fallback"} {
+		if !names[want] {
+			t.Fatalf("symbol literal cache = %v, missing %q", names, want)
+		}
+	}
+}
+
 func TestCompileCachesSymbolLiteralValues(t *testing.T) {
 	t.Parallel()
 

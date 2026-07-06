@@ -123,6 +123,11 @@ func (c *symbolLiteralCollector) collectStatement(stmt Statement) {
 		c.collectStatements(typed.Body)
 	case *BreakStmt:
 		c.collectExpression(typed.Value)
+	case *NextStmt:
+		c.collectExpression(typed.Value)
+	case *AliasStmt, *EnumStmt, *RetryStmt:
+		// No expression operands, so no symbol literals to collect.
+		return
 	case *TryStmt:
 		c.collectStatements(typed.Body)
 		for i := range typed.Rescues {
@@ -143,10 +148,14 @@ func (c *symbolLiteralCollector) collectStatement(stmt Statement) {
 
 func (c *symbolLiteralCollector) collectExpression(expr Expression) {
 	switch typed := expr.(type) {
-	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *IvarExpr, *ClassVarExpr:
+	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral, *BoolLiteral, *NilLiteral, *IvarExpr, *ClassVarExpr:
 		return
 	case *SymbolLiteral:
 		c.add(typed)
+	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+		// Statement-expressions (if/while/until/for/begin used as values)
+		// carry full statement bodies whose symbol literals must intern too.
+		c.collectStatement(typed.(Statement))
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
 			c.collectExpression(elem)

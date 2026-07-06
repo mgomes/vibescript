@@ -2361,6 +2361,15 @@ func statementMayEscapeIteration(stmt Statement) bool {
 		return false
 	case *BreakStmt, *ReturnStmt, *RaiseStmt:
 		return true
+	case *RetryStmt:
+		// A retry in a block body either unwinds to a rescue outside the
+		// block or fails at the yield boundary with a local-jump error;
+		// both stop the receiver's iteration early.
+		return true
+	case *AliasStmt, *EnumStmt:
+		// Declarations without expression operands cannot escape (the
+		// parser also rejects both inside block bodies).
+		return false
 	case *NextStmt:
 		return expressionMayEscapeIteration(typed.Value)
 	case *AssignStmt:
@@ -2407,6 +2416,19 @@ func statementMayEscapeIteration(stmt Statement) bool {
 func expressionMayEscapeIteration(expr Expression) bool {
 	switch typed := expr.(type) {
 	case nil:
+		return false
+	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral,
+		*BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+		// Leaves: no nested expressions that could escape.
+		return false
+	case *DestructureTarget:
+		// Element targets can embed escaping expressions through index
+		// selectors (a begin/end selector that raises, for example).
+		for _, element := range typed.Elements {
+			if expressionMayEscapeIteration(element.Target) {
+				return true
+			}
+		}
 		return false
 	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:
 		return statementMayEscapeIteration(typed.(Statement))

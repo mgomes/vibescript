@@ -3807,6 +3807,17 @@ def run()
 end
 `))
 
+	// A retry unwinds out of the block (to an enclosing rescue, or as a
+	// local-jump error at the yield boundary), so it can also end the
+	// iteration before a later mismatched element is yielded.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  [1, "x"].each do |v: int|
+    retry
+  end
+end
+`))
+
 	// The first element is always yielded, so a mismatch there still warns
 	// even when the body can escape.
 	script := compileScript(t, `
@@ -4063,6 +4074,23 @@ end
 `)
 
 	requireCheckWarningContains(t, script, "undefined variable missing_name")
+}
+
+func TestCheckWarningsResolveLocalsBoundInsideDestructureIndexTargets(t *testing.T) {
+	t.Parallel()
+
+	// The index selector's begin/end body runs in the enclosing scope, so c
+	// is bound by the time the trailing reference evaluates.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  b = [0]
+  a, b[begin
+    c = 1
+    0
+  end] = [1, 2]
+  c
+end
+`))
 }
 
 func requireNoCheckWarnings(t *testing.T, script *Script) {
