@@ -18,10 +18,16 @@ import "sync/atomic"
 var mutationEpoch atomic.Uint64
 
 // MutationEpoch returns the current process-wide mutation epoch.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func MutationEpoch() uint64 { return mutationEpoch.Load() }
 
 // BumpMutationEpoch advances the process-wide mutation epoch, invalidating
 // every memoized estimator walk. Every code path that mutates state reachable
 // by a memory-quota walk -- in this package's wrapper mutators and in the
 // runtime -- must call it before the mutated state can be observed by a check.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func BumpMutationEpoch() { mutationEpoch.Add(1) }

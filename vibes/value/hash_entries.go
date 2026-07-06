@@ -16,6 +16,9 @@ type HashEntry struct {
 }
 
 // TypedHashEntry is a typed hash entry paired with its stored lookup key.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 type TypedHashEntry struct {
 	LookupKey HashLookupKey
 	Entry     HashEntry
@@ -24,6 +27,9 @@ type TypedHashEntry struct {
 // HashLookupKey is a comparable hash-key identity used for hash table lookups.
 // It preserves Ruby-style key identity without materializing canonical strings
 // for scalar keys on hot paths.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 type HashLookupKey struct {
 	kind           ValueKind
 	text           string
@@ -37,6 +43,9 @@ type HashLookupKey struct {
 }
 
 // NewHashLookupKey returns the comparable lookup key for a hash key value.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func NewHashLookupKey(key Value) (HashLookupKey, error) {
 	switch key.kind {
 	case KindNil:
@@ -83,6 +92,9 @@ func NewHashLookupKey(key Value) (HashLookupKey, error) {
 // the fixed HashLookupKey struct itself. Scalar lookup keys either keep their
 // payload in numeric fields or alias the original key value's string payload;
 // array keys retain a canonical lookup string that is not reachable otherwise.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (k HashLookupKey) ExtraPayloadBytes() int {
 	if k.kind != KindArray {
 		return 0
@@ -90,7 +102,11 @@ func (k HashLookupKey) ExtraPayloadBytes() int {
 	return len(k.text)
 }
 
-// HashKey returns the canonical lookup key for a hash key value.
+// HashKey returns the canonical lookup key for a hash key value. The encoding
+// is an internal detail of the hash tables; hosts look entries up with HashGet
+// and read original keys from HashEntries. It is intended for the interpreter's
+// internal use; hosts should not call it, and it carries no compatibility
+// promise (see docs/embedding-api-stability.md).
 func HashKey(key Value) (string, error) {
 	return hashKey(key, make(map[SliceIdentity]struct{}))
 }
@@ -169,7 +185,11 @@ func encodeHashKeyString(s string) string {
 }
 
 // HashDisplayKey returns the legacy string-map key used by Hash() for callers
-// that inspect ordinary hashes through the public map API.
+// that inspect ordinary hashes through the public map API. The encoding is not
+// frozen; hosts that need original keys or reliable lookups use HashEntries and
+// HashGet. It is intended for the interpreter's internal use; hosts should not
+// call it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func HashDisplayKey(key Value) string {
 	switch key.kind {
 	case KindString, KindSymbol:
@@ -197,6 +217,9 @@ func (v Value) HashLen() int {
 
 // HashHasTypedEntries reports whether a hash carries canonical typed-key
 // entries in addition to the legacy string-key map exposed by Hash().
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) HashHasTypedEntries() bool {
 	if v.kind != KindHash {
 		return false
@@ -215,6 +238,9 @@ func (v Value) HashEntries() []HashEntry {
 // when it has enough capacity. Typed entries appear in Ruby-style insertion
 // order; legacy string-map entries appear in Go map order (callers that need
 // determinism for legacy hashes sort by key themselves).
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) HashEntriesInto(buf []HashEntry) []HashEntry {
 	switch v.kind {
 	case KindHash:
@@ -261,6 +287,9 @@ func (v Value) HashEntriesInto(buf []HashEntry) []HashEntry {
 // TypedHashEntriesInto appends typed hash entries and their stored lookup keys
 // into buf. It returns nil for non-hash values and hashes that still use only
 // the legacy string-key map.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) TypedHashEntriesInto(buf []TypedHashEntry) []TypedHashEntry {
 	if v.kind != KindHash {
 		return nil
@@ -497,6 +526,9 @@ func (hd *hashData) forEachTypedEntry(fn func(HashEntry) error) error {
 // retains alongside its typed entries, or 0 when v is not a hash or tracks no
 // order. Memory-quota accounting charges the backing's structural bytes; the
 // lookup keys inside it alias strings the entry storage already charges.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func HashOrderCapacity(v Value) int {
 	if v.kind != KindHash {
 		return 0
@@ -512,6 +544,9 @@ func HashOrderCapacity(v Value) int {
 // tracks explicit reservations plus the live entry count reached through
 // HashSet. Memory-quota estimation uses it to charge reserved typed buckets
 // that may exceed len(typedEntries).
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func HashTypedEntryCapacity(v Value) int {
 	if v.kind != KindHash {
 		return 0
@@ -533,6 +568,9 @@ func HashTypedEntryCapacity(v Value) int {
 // reserve order capacity without allocating typed buckets before their
 // per-entry accounting runs. It is a no-op when v is not a hash, n is
 // non-positive, or the backing already has at least n slots.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) ReserveHashOrder(n int) {
 	if v.kind != KindHash || n <= 0 {
 		return
@@ -552,6 +590,9 @@ func (v Value) ReserveHashOrder(n int) {
 // when one already exists, which keeps Hash() callers synchronized as HashSet
 // populates typed entries. It is a no-op for non-hashes, negative capacities, or
 // legacy hashes that already contain entries.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) ReserveTypedHashOrder(n int) {
 	if v.kind != KindHash || n < 0 {
 		return

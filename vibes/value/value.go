@@ -8,25 +8,55 @@ type ValueKind int
 const (
 	// KindNil is the nil value kind.
 	KindNil ValueKind = iota
+	// KindBool tags a boolean payload (Bool).
 	KindBool
+	// KindInt tags a 64-bit integer payload (Int).
 	KindInt
+	// KindFloat tags a 64-bit floating-point payload (Float).
 	KindFloat
+	// KindString tags a string payload (String).
 	KindString
+	// KindArray tags a mutable array payload (Array). The payload is a
+	// shared wrapper, so Value copies alias the same elements.
 	KindArray
+	// KindHash tags a mutable hash payload (Hash, HashGet, HashSet, ...).
+	// Like arrays, the payload is a shared wrapper.
 	KindHash
+	// KindFunction tags a script-defined function (Function). The concrete
+	// payload type lives in the runtime.
 	KindFunction
+	// KindBuiltin tags a Go-implemented builtin function (Builtin).
 	KindBuiltin
+	// KindMoney tags a Money payload (Money).
 	KindMoney
+	// KindDuration tags a Duration payload (Duration).
 	KindDuration
+	// KindTime tags a time.Time payload (Time).
 	KindTime
+	// KindSymbol tags a Ruby-style symbol; String returns its name without
+	// the leading colon.
 	KindSymbol
+	// KindObject tags a string-keyed attribute bag (Hash exposes the map).
+	// Unlike KindHash it never carries default metadata.
 	KindObject
+	// KindRange tags a Range payload (Range).
 	KindRange
+	// KindBlock tags a script block (Block). The concrete payload type
+	// lives in the runtime.
 	KindBlock
+	// KindEnum tags an enum definition (Enum). The concrete payload type
+	// lives in the runtime.
 	KindEnum
+	// KindEnumValue tags one member of an enum (EnumValue). The concrete
+	// payload type lives in the runtime.
 	KindEnumValue
+	// KindClass tags a script-defined class (Class). The concrete payload
+	// type lives in the runtime.
 	KindClass
+	// KindInstance tags an instance of a script-defined class (Instance).
+	// The concrete payload type lives in the runtime.
 	KindInstance
+	// KindRegex tags a compiled regex literal payload (Regex).
 	KindRegex
 )
 
@@ -56,7 +86,9 @@ type Range struct {
 // NewValue constructs a Value with the given kind and underlying data.
 // It is intended for use by the vibes package when wrapping runtime
 // payloads (blocks, classes, instances, enums, functions, builtins)
-// whose types live outside this package.
+// whose types live outside this package. Hosts should use the typed
+// constructors (NewInt, NewArray, ...); NewValue carries no compatibility
+// promise for payload shapes (see docs/embedding-api-stability.md).
 func NewValue(kind ValueKind, data any) Value {
 	switch kind {
 	case KindBool:
@@ -96,6 +128,10 @@ func NewValue(kind ValueKind, data any) Value {
 
 // Data returns the underlying payload stored in v. Callers are expected
 // to type-assert against the payload type associated with v.Kind().
+// Prefer the typed accessors (Int, Array, Hash, ...): they cover every kind,
+// and for the runtime-only kinds (functions, blocks, classes, instances,
+// enums) the concrete payload type behind Data is internal to the interpreter
+// and carries no compatibility promise.
 func (v Value) Data() any {
 	switch v.kind {
 	case KindHash:

@@ -21,5 +21,8 @@
 // policies).
 //
 // See ../README.md for the language reference and
-// ../docs/architecture.md for the runtime design.
+// ../docs/architecture.md for the runtime design. The stability tiers of
+// the embedding API — which exported symbols are supported and which are
+// internal plumbing with no compatibility promise — are declared in
+// ../docs/embedding-api-stability.md.
 package vibes

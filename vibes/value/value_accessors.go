@@ -106,6 +106,9 @@ func (v Value) Hash() map[string]Value {
 
 // HashStringMapIfMaterialized returns the legacy string-key map when one already
 // exists, without forcing typed hashes to allocate that lossy compatibility view.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) HashStringMapIfMaterialized() (map[string]Value, bool) {
 	switch v.kind {
 	case KindHash:

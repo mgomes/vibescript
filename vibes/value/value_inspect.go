@@ -49,6 +49,9 @@ func (v Value) InspectBounded(limit int) (string, error) {
 // single backing array the quota already charged rather than the doubling growth
 // a fresh zero-capacity builder would take. It delegates to the unbounded inspect
 // renderer, so writing into a strings.Builder never fails.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) WriteInspectTo(buf *strings.Builder) {
 	_ = v.appendInspect(buf, newValueStringState(), 0)
 }
@@ -66,6 +69,9 @@ func (v Value) InspectByteLen() int {
 // first error step reports stops the walk and is returned alongside the partial
 // count. See StringByteLenBounded for why driving step from inside the walk
 // matters for shared-but-acyclic graphs.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) InspectByteLenBounded(step func() error) (int, error) {
 	return v.inspectByteLenBoundedWithState(newValueStringState(), step)
 }
