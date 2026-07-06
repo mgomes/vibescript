@@ -97,6 +97,17 @@ type Execution struct {
 	baseTopoVersion uint64
 	builtinDepth    int
 
+	// accumMeteredSections counts the accumulator-metered sections currently
+	// active (see beginAccumulatorMeteredSection). While non-zero, step()'s
+	// periodic slow path skips the full reachable-graph memory walk: an
+	// active section is a blockless native build loop that charges every
+	// allocation against the quota before performing it, so the walk's answer
+	// cannot change while one runs. Script re-entry and nested builtin
+	// dispatch suspend the counter (see callBlock, callFunctionWithBoundEnv,
+	// and the builtin dispatch in invokeCallable), so a section can never
+	// weaken checks across code it does not meter.
+	accumMeteredSections int
+
 	// Inline backing storage for the always-used per-call stacks, so a
 	// fresh Execution costs one allocation instead of one per stack.
 	// Appends beyond these capacities spill to the heap as usual.

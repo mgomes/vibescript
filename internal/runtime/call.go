@@ -258,9 +258,17 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// before the call survives the bump, and no memo can be recorded while
 		// the builtin's unobserved writes may still be in progress.
 		bumpMutationEpoch()
+		// An accumulator-metered section only vouches for the loop that opened
+		// it, never for a nested builtin's allocations, so dispatch suspends
+		// any active sections for the duration of the call: the callee runs
+		// with full periodic memory checks and the caller's sections resume on
+		// return (see beginAccumulatorMeteredSection).
+		savedSections := exec.accumMeteredSections
+		exec.accumMeteredSections = 0
 		exec.builtinDepth++
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		exec.builtinDepth--
+		exec.accumMeteredSections = savedSections
 		if popValidatedArgs != nil {
 			popValidatedArgs()
 		}
@@ -384,6 +392,14 @@ func (exec *Execution) callFunctionWithSingleNormalArg(fn *ScriptFunction, recei
 }
 
 func (exec *Execution) callFunctionWithBoundEnv(fn *ScriptFunction, receiver Value, callEnv *Env, pos Position, validateReturn bool, token uint64, val Value, returned, skipBody bool) (Value, error) {
+	// Script re-entry runs with full periodic memory checks: suspend any
+	// accumulator-metered sections a calling builtin left active for the
+	// duration of the body (see beginAccumulatorMeteredSection).
+	if exec.accumMeteredSections != 0 {
+		savedSections := exec.accumMeteredSections
+		exec.accumMeteredSections = 0
+		defer func() { exec.accumMeteredSections = savedSections }()
+	}
 	if !skipBody {
 		exec.pushEnv(callEnv)
 		if err := exec.checkMemory(); err != nil {

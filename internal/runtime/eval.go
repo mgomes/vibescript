@@ -1345,6 +1345,14 @@ func (exec *Execution) callBlockValue(block Value, args []Value, pos Position) (
 }
 
 func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge, pos Position, chargedRoots ...Value) (Value, error) {
+	// Script re-entry runs with full periodic memory checks: suspend any
+	// accumulator-metered sections the driving builtin left active for the
+	// duration of the block body (see beginAccumulatorMeteredSection).
+	if exec.accumMeteredSections != 0 {
+		savedSections := exec.accumMeteredSections
+		exec.accumMeteredSections = 0
+		defer func() { exec.accumMeteredSections = savedSections }()
+	}
 	if isInvocable(blk.forward) {
 		if err := charge.begin(args, chargedRoots...); err != nil {
 			return NewNil(), err
