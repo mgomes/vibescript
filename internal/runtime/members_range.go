@@ -546,7 +546,10 @@ func rangeMemberPredicate(property string) Value {
 
 // rangeMemberFirst returns the range's start endpoint with no argument, or
 // the first n iterated elements as an array with a non-negative count. The
-// endpoint result ignores exclusivity, matching Ruby's Range#first.
+// endpoint result ignores exclusivity, matching Ruby's Range#first. Both
+// forms work on endless ranges — the leading window starts at the known
+// endpoint, so first(n) is bounded work despite the open end — while a
+// beginless range rejects both, matching Ruby's Range#first behavior.
 func rangeMemberFirst() Value {
 	return NewAutoBuiltin("range.first", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if len(kwargs) > 0 {
@@ -561,9 +564,6 @@ func rangeMemberFirst() Value {
 		}
 		if len(args) != 1 {
 			return NewNil(), fmt.Errorf("range.first expects at most one argument")
-		}
-		if rng.Endless {
-			return NewNil(), rangeOpenIterationError(rng)
 		}
 		count, err := rangeCountArg(args[0], "range.first")
 		if err != nil {
@@ -717,6 +717,13 @@ func rangeLastElement(rng Range) int64 {
 // and memory quotas are enforced per element so large materializations are
 // bounded by the sandbox.
 //
+// An endless range is valid for a leading window (first(n)): it iterates
+// ascending from Start, and the window is clamped to the int64 ceiling so a
+// start near MaxInt64 yields only the remaining representable integers rather
+// than wrapping — the same clean terminal-value stop rangeForEach uses.
+// Callers must reject endless ranges when fromEnd is true and beginless
+// ranges entirely; those windows depend on the missing endpoint.
+//
 // A range whose total element count overflows int64 (the inclusive full
 // 64-bit span) is still valid for a bounded first(n)/last(n): the count is
 // only clamped to the range length when that length is representable, and the
@@ -726,12 +733,24 @@ func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (V
 	if limit <= 0 {
 		return NewArray([]Value{}), nil
 	}
-	// Only clamp to the element count when it fits in int64. An overflowing
-	// length is strictly greater than any limit (limit <= MaxInt < length), so
-	// the requested window always fits without clamping.
-	length, overflow := rangeLength(rng)
-	if !overflow && limit > length {
-		limit = length
+	if rng.Endless {
+		// The leading window of an endless range ends at the int64 ceiling: at
+		// most MaxInt64 - Start + 1 elements exist before the values would wrap.
+		// A non-positive Start leaves that count above MaxInt64, so any limit
+		// already fits without clamping (and the subtraction would overflow).
+		if rng.Start > 0 {
+			if available := math.MaxInt64 - rng.Start + 1; limit > available {
+				limit = available
+			}
+		}
+	} else {
+		// Only clamp to the element count when it fits in int64. An overflowing
+		// length is strictly greater than any limit (limit <= MaxInt < length), so
+		// the requested window always fits without clamping.
+		length, overflow := rangeLength(rng)
+		if !overflow && limit > length {
+			limit = length
+		}
 	}
 	if limit <= 0 {
 		return NewArray([]Value{}), nil
@@ -740,7 +759,8 @@ func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (V
 		return NewNil(), guardLimitErrorf("range materialization result too large")
 	}
 
-	ascending := rng.Start <= rng.End
+	// An endless range has no meaningful End, and it always iterates ascending.
+	ascending := rng.Endless || rng.Start <= rng.End
 
 	// Compute the first value of the window directly from the endpoint nearest
 	// to the start of the window. For last(n) this avoids both materializing

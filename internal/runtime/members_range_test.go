@@ -195,8 +195,10 @@ func TestRangeHelperArgumentRejection(t *testing.T) {
 		{"first with kwarg", "(1..5).first(2, limit: 10)", "does not take keyword arguments"},
 		{"last with kwarg", "(1..5).last(2, limit: 10)", "does not take keyword arguments"},
 		{"first negative", "(1..5).first(-1)", "non-negative"},
+		{"first negative endless", "(1..).first(-1)", "non-negative"},
 		{"last negative", "(1..5).last(-1)", "non-negative"},
 		{"first non-int", "(1..5).first(\"2\")", "integer count"},
+		{"first non-int endless", "(1..).first(2.5)", "integer count"},
 		{"last non-int", "(1..5).last(2.5)", "integer count"},
 		{"unknown method", "(1..3).reverse", "unknown range method"},
 	}
@@ -221,6 +223,32 @@ func TestRangeToArrayMemoryQuota(t *testing.T) {
 end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 4096}, source)
 	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
+}
+
+func TestEndlessRangeFirstNQuotaAccounting(t *testing.T) {
+	t.Parallel()
+
+	// first(n) on an endless range flows through the same materializer as
+	// bounded first(n)/to_a, so its quota accounting must match in both
+	// directions: a large window under a generous memory quota materializes
+	// fully, while the same window under a small quota is rejected by the
+	// up-front projected check before the backing array is allocated.
+	source := `def run()
+  (1..).first(100000)
+end`
+
+	generous := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 64 << 20}, source)
+	got := callFunc(t, generous, "run", nil)
+	arr := got.Array()
+	if len(arr) != 100000 {
+		t.Fatalf("len = %d, want 100000", len(arr))
+	}
+	if arr[0].Int() != 1 || arr[len(arr)-1].Int() != 100000 {
+		t.Fatalf("endpoints = (%d, %d), want (1, 100000)", arr[0].Int(), arr[len(arr)-1].Int())
+	}
+
+	small := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 4096}, source)
+	requireRunMemoryQuotaError(t, small, nil, CallOptions{})
 }
 
 func TestRangeMaterializeLargeIsLinear(t *testing.T) {
@@ -302,6 +330,7 @@ func TestRangeMaterializeRejectsHugePreallocation(t *testing.T) {
 		{"to_a", "(0...9223372036854775807).to_a"},
 		{"first", "(0...9223372036854775807).first(9000000000000000000)"},
 		{"last", "(0...9223372036854775807).last(9000000000000000000)"},
+		{"endless first", "(0..).first(9000000000000000000)"},
 	}
 
 	for _, tc := range tests {
