@@ -31,7 +31,9 @@ After `v1.0.0`:
 This contract applies to:
 
 - Vibescript syntax and runtime behavior.
-- Public Go embedding APIs in the `vibes` module.
+- Public Go embedding APIs in the `vibes` module. Which exported symbols
+  are supported versus internal plumbing with no compatibility promise is
+  declared in `docs/embedding-api-stability.md`.
 - CLI command surface (`vibes run`, `vibes fmt`, `vibes analyze`, `vibes lsp`, `vibes repl`).
 
 Go toolchain support follows `docs/compatibility.md`.

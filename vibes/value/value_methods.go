@@ -66,12 +66,18 @@ func (k ValueKind) String() string {
 // payload types live in the vibes package. The vibes package installs this
 // hook during initialization. If unset, those kinds fall back to a generic
 // rendering of the underlying payload.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 var RuntimeStringer func(v Value) (string, bool)
 
 // RuntimeEqualer is the hook used by Value.Equal to compare runtime-only
 // kinds whose payload types live in the vibes package. The vibes package
 // installs this hook during initialization. If unset, equality for those
 // kinds falls back to pointer identity of the underlying payload.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 var RuntimeEqualer func(left, right Value) (bool, bool)
 
 // RuntimeIdenticaler is the hook used by Value.Identical to compare
@@ -82,6 +88,9 @@ var RuntimeEqualer func(left, right Value) (bool, bool)
 // share storage and so must not be Identical. The vibes package installs this
 // hook during initialization. If unset, identity for those kinds falls back to
 // the same comparison Value.Equal uses.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 var RuntimeIdenticaler func(left, right Value) (bool, bool)
 
 // String returns the string representation of v.
@@ -207,6 +216,9 @@ func newValueStringState() *valueStringState {
 // would transiently hold both the temporary and the destination copy and could
 // exceed a memory limit the projected length already passed. It delegates to the
 // unified unbounded renderer, so writing into a strings.Builder never fails.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) WriteStringTo(buf *strings.Builder) {
 	_ = v.appendString(buf, newValueStringState(), 0)
 }
@@ -406,6 +418,9 @@ func appendBounded(buf *strings.Builder, s string, limit int) error {
 // first and only then observing that it exceeded a quota. The byte count walks
 // arrays and hashes with the same cycle detection String uses, so the projection
 // matches the eventual output exactly.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) StringByteLen() int {
 	switch v.kind {
 	case KindArray, KindHash:
@@ -418,6 +433,9 @@ func (v Value) StringByteLen() int {
 // StringRuneLen returns the number of runes String would produce for v without
 // materializing the rendered representation. It mirrors StringByteLen but counts
 // display width in the unit fmt uses for string precision and padding.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) StringRuneLen() int {
 	switch v.kind {
 	case KindArray, KindHash:
@@ -608,6 +626,9 @@ func hashStringEntryKeyRuneLenWithState(key Value, state *valueStringState) int 
 // alone cannot bound that work because it is checked only after the walk
 // completes. Driving step from inside the walk lets the step quota trip during
 // the traversal instead of letting it run unbounded.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) StringByteLenBounded(step func() error) (int, error) {
 	switch v.kind {
 	case KindArray, KindHash:
@@ -623,6 +644,9 @@ func (v Value) StringByteLenBounded(step func() error) (int, error) {
 // StringRuneLenBounded reports the same rune count as StringRuneLen but invokes
 // step once per node visited during the projection walk, matching
 // StringByteLenBounded's sandbox accounting.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) StringRuneLenBounded(step func() error) (int, error) {
 	switch v.kind {
 	case KindArray, KindHash:
@@ -640,6 +664,9 @@ func (v Value) StringRuneLenBounded(step func() error) (int, error) {
 // truncated as true and limit+1 as the count. Like StringByteLenBounded, it
 // invokes step during aggregate walks so callers can charge sandbox work before
 // materializing any rendering.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) StringByteLenBoundedUpTo(limit int, step func() error) (count int, truncated bool, err error) {
 	if limit < 0 {
 		n, err := v.StringByteLenBounded(step)
@@ -1116,6 +1143,9 @@ func (v Value) Identical(other Value) bool {
 
 // EqualityContext reuses the cycle-detection scratch used by Value equality.
 // The zero value is ready to use. It is not safe for concurrent use.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 type EqualityContext struct {
 	seen map[valueEqualityPair]struct{}
 }

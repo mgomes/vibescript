@@ -49,23 +49,24 @@ func (v Value) InspectBounded(limit int) (string, error) {
 // single backing array the quota already charged rather than the doubling growth
 // a fresh zero-capacity builder would take. It delegates to the unbounded inspect
 // renderer, so writing into a strings.Builder never fails.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) WriteInspectTo(buf *strings.Builder) {
 	_ = v.appendInspect(buf, newValueStringState(), 0)
 }
 
-// InspectByteLen returns the number of bytes Inspect would produce for v without
-// materializing the rendering, so callers can bound an allocation before it
-// happens. It walks composites with the same cycle detection Inspect uses.
-func (v Value) InspectByteLen() int {
-	return v.inspectByteLenWithState(newValueStringState())
-}
-
-// InspectByteLenBounded reports the same byte count as InspectByteLen but
-// invokes step once per node visited, so a caller can charge a sandbox step
-// budget against the traversal and abort it when step returns an error. The
+// InspectByteLenBounded reports the number of bytes Inspect would produce for
+// v without materializing the rendering, so callers can bound an allocation
+// before it happens. It walks composites with the same cycle detection Inspect
+// uses and invokes step once per node visited, so a caller can charge a sandbox
+// step budget against the traversal and abort it when step returns an error. The
 // first error step reports stops the walk and is returned alongside the partial
 // count. See StringByteLenBounded for why driving step from inside the walk
 // matters for shared-but-acyclic graphs.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) InspectByteLenBounded(step func() error) (int, error) {
 	return v.inspectByteLenBoundedWithState(newValueStringState(), step)
 }

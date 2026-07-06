@@ -43,6 +43,9 @@ func NewArray(a []Value) Value { return Value{kind: KindArray, data: &arrayData{
 // place. It is the primitive behind the runtime's Ruby-style mutators: because
 // the wrapper is shared by every Value that aliases the array, the new elements
 // are visible through all of them. It is a no-op when v is not an array.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) SetArrayElems(elems []Value) {
 	if v.kind != KindArray {
 		return
@@ -53,11 +56,21 @@ func (v Value) SetArrayElems(elems []Value) {
 	}
 }
 
-// ArrayIdentity returns a stable identity for an array wrapper, or 0 when v is
-// not an array. It identifies the shared mutable wrapper itself rather than the
+// ArrayIdentity returns an identity for an array wrapper, or 0 when v is not
+// an array. It identifies the shared mutable wrapper itself rather than the
 // current element backing, so identity survives in-place growth that reallocates
 // the element slice. Two Values are the same array object exactly when their
 // identities match.
+//
+// The identity is the wrapper's address as a bare uintptr, so it is only
+// meaningful between captures taken while the address cannot move: Go may
+// stack-allocate a wrapper that never escapes its function, and a goroutine
+// stack growth then relocates it, changing the identity of a still-live array.
+// The runtime only compares identities captured within a single traversal of a
+// heap-reachable graph, where this cannot happen. It is intended for the
+// interpreter's internal use; hosts should use Value.Identical, which compares
+// live wrapper pointers, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func ArrayIdentity(v Value) uintptr {
 	if v.kind != KindArray {
 		return 0
@@ -93,6 +106,9 @@ type hashData struct {
 // value allocates, excluding the entry map and default payloads it points at.
 // Memory-quota accounting charges it once per distinct hash so an array of many
 // small hashes cannot retain the per-hash wrapper cost uncharged.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 const HashDataBytes = int(unsafe.Sizeof(hashData{}))
 
 // NewHash returns a hash (map) Value with no default.
@@ -132,6 +148,9 @@ func NewHashWithDefault(h map[string]Value, defaultValue, defaultProc Value) Val
 // already-registered wrapper instead of cloning a second one whose defaults
 // would close over the wrong object. v must be a hash whose wrapper is not yet
 // shared; mutating a hash that other Values observe would change their defaults.
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func (v Value) SetHashDefaults(defaultValue, defaultProc Value) {
 	if v.kind != KindHash {
 		return
@@ -169,12 +188,18 @@ func HashDefaultProc(v Value) Value {
 	return NewNil()
 }
 
-// HashIdentity returns a stable identity for a hash wrapper, or 0 when v is not
+// HashIdentity returns an identity for a hash wrapper, or 0 when v is not
 // a hash. Unlike the entry-map pointer, this identifies the whole hashData
 // wrapper, so two KindHash values that share an entry map but carry different
 // default metadata are distinct. Cycle-detecting scanners that must also visit
 // hash defaults key their seen-set on this value rather than the bare entry map,
 // which would otherwise hide a second wrapper's distinct default payload.
+//
+// Like ArrayIdentity, the identity is a bare uintptr wrapper address and is
+// only meaningful between captures taken while the address cannot move (see
+// ArrayIdentity for the stack-allocation caveat). It is intended for the
+// interpreter's internal use; hosts should use Value.Identical, and it carries
+// no compatibility promise (see docs/embedding-api-stability.md).
 func HashIdentity(v Value) uintptr {
 	if v.kind != KindHash {
 		return 0
