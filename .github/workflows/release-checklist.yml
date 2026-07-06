@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (vMAJOR.MINOR.PATCH)"
+        description: "Release version (vMAJOR.MINOR.PATCH, optionally -rcN)"
         required: true
         type: string
 

@@ -9,7 +9,7 @@ All notable changes to this project will be documented in this file.
 <!-- Unreleased entries are tracked as individual files in changelog.d/ so
      pull requests never conflict on this file. They are compiled into a
      versioned section by scripts/build_changelog.sh at release time. -->
-## v1.0.0 - 2026-07-05
+## v1.0.0-rc1 - 2026-07-06
 
 Vibescript 1.0 aligns the language, the class system, and the collection
 standard library with Ruby semantics. Several behaviors changed incompatibly
@@ -1290,6 +1290,29 @@ and fixes in [docs/migrating-to-1.0.md](docs/migrating-to-1.0.md).
   the redundant walk when it has already enforced the contract, and the carved
   package gained direct unit tests for constructor validation, retry detection,
   option parsing, cloning, and invalid/cyclic values.
+- **Fixed: static check no longer takes exponential time on deeply nested
+  conditionals.** `vibes run -check` and the `CheckWarnings*` API used to grow
+  ~4x per two levels of nested `if`/`elsif` and hung near depth 300; deep
+  nesting now checks in milliseconds. As a backstop, the checker also rejects
+  control flow nested beyond 512 levels with a deterministic
+  `check exceeded maximum nesting depth of 512` diagnostic instead of
+  stalling. The cap applies only to check mode: the parser and runtime accept
+  and execute such scripts unchanged.
+- **Fixed: check-mode false positives from incomplete AST walkers.** `vibes
+  run -check` now resolves locals bound inside destructuring index selectors
+  and no longer flags later literal elements when a block body contains
+  `retry`, which ends the iteration early just like `break`.
+- **Improved: `vibes analyze` unreachable-statement coverage.** Statements
+  following an unconditional `break`, `next`, or `retry` are now reported as
+  unreachable, and nested definition bodies are linted.
+- **Changed: the embedding API is tiered and documented for 1.0.** Every
+  exported symbol in `vibes`, `vibes/value`, `vibes/source`, and the
+  capability packages now carries documentation; the internal-plumbing
+  exports the runtime needs from `vibes/value` are explicitly marked as
+  carrying no compatibility promise; and two orphaned helpers
+  (`value.TimeFromEpoch`, `value.InspectByteLen`) were removed. The supported
+  surface, host ownership model, and concurrency hazards are declared in
+  `docs/embedding-api-stability.md`.
 
 ### Tooling: LSP and watch mode
 
@@ -1312,6 +1335,12 @@ and fixes in [docs/migrating-to-1.0.md](docs/migrating-to-1.0.md).
   clone every compiled function or to allocate per-symbol range maps when no
   completion is requested. The wire output for diagnostics, document symbols,
   and completions is unchanged.
+- **Fixed: `vibes lsp` releases per-document state on `textDocument/didClose`.**
+  Closing a file now evicts its document text, compiled-script, navigation,
+  completion, diagnostics, and outline caches and publishes an empty
+  diagnostics set so editors clear stale squiggles. Previously the server kept
+  every document's state for the life of the process, so long editor sessions
+  touching many files grew memory unboundedly.
 
 ### Performance and sandbox accounting
 
@@ -1483,6 +1512,18 @@ and fixes in [docs/migrating-to-1.0.md](docs/migrating-to-1.0.md).
   the quota. Receivers reachable from the environment deduplicate to a ~zero
   reservation, and the reservation itself is O(1) per call, so existing
   workloads are unaffected.
+- **Fixed: large blockless materializations no longer re-walk the whole heap
+  every 16 steps.** Blockless `Array#flatten`, `chunk(n)`, `window`, `join`,
+  and `reverse`, plus `Hash#to_a` and `Hash#flatten`, already charge every
+  allocation against the memory quota before performing it, yet their
+  per-element step accounting also re-ran the full reachable-graph memory walk
+  each period, making big builds quadratic — a 1M-leaf `flatten` under raised
+  quotas took minutes of CPU for a sub-second build. These loops now run as
+  accumulator-metered sections that skip the redundant periodic walk while
+  keeping the step-quota and context-cancellation checks on the same schedule.
+  Quota acceptance thresholds are unchanged, and any script re-entry or nested
+  builtin dispatch suspends the section so full checks always apply outside
+  the metered loop.
 
 ### Fixes
 
@@ -1502,6 +1543,11 @@ and fixes in [docs/migrating-to-1.0.md](docs/migrating-to-1.0.md).
   symbols, and bare rest-discard assignments; each form is now accepted,
   seeded into the fuzz corpus, and pinned by a coverage test that fails
   deterministically when a new AST shape is missed. (#902)
+- **Internal: AST walker completeness gates.** New tests enumerate every AST
+  node type from source and fail when a hand-maintained walker (cloner,
+  checker collectors, escape analysis, symbol interning, evaluator dispatch,
+  analyzer) misses a type, and a reflection gate proves the AST cloner copies
+  every field of every node without sharing state.
 
 ## v0.50.0 - 2026-06-11
 
