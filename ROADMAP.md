@@ -731,3 +731,37 @@ as a coherent pre-1.0 release.
 - [x] Release notes are documented in `CHANGELOG.md`.
 - [x] Full tests pass.
 - [x] Release checklist passes for `v0.50.0`.
+
+## v1.0.0-rc1 - Ruby Alignment and 1.0 Hardening (completed 2026-07-06)
+
+Goal: ship the 1.0 release candidate — Ruby-aligned language, class system,
+and collection semantics, with the checker, sandbox accounting, tooling, and
+embedding API hardened and frozen for GA.
+
+### Language and Semantics
+
+- [x] Modules, mixins, and visibility directives.
+- [x] Procs, lambdas, block forwarding, and call splats.
+- [x] Beginless/endless ranges and parenless command-argument regex literals.
+- [x] Ruby reference semantics for array and hash mutators.
+- [x] Hash insertion order and multi-clause rescue.
+
+### Hardening and Performance
+
+- [x] Undefined-name and typed-block-parameter check warnings.
+- [x] Linear checker exit analysis with a nesting-depth backstop.
+- [x] Estimator base-walk memoization and metered blockless builtins.
+- [x] Call-boundary copy reductions and lazy composite globals.
+- [x] AST walker completeness gates and a full-budget nightly fuzz job.
+
+### Release Readiness
+
+- [x] Compiled changelog and the migrating-to-1.0 guide.
+- [x] Embedding API tiers documented in docs/embedding-api-stability.md.
+- [x] tree-sitter grammar and Zed extension synced to 1.0 syntax.
+
+### v1.0.0-rc1 Definition of Done
+
+- [x] Release notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v1.0.0-rc1`.
