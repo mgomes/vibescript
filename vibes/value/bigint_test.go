@@ -211,8 +211,8 @@ func TestBigIntHashKeys(t *testing.T) {
 	if keyA == keyZero {
 		t.Fatalf("big lookup key collided with compact 0")
 	}
-	if got := keyA.ExtraPayloadBytes(); got != len("18446744073709551616") {
-		t.Fatalf("ExtraPayloadBytes = %d; want decimal length", got)
+	if got := keyA.ExtraPayloadBytes(); got != len("10000000000000000") {
+		t.Fatalf("ExtraPayloadBytes = %d; want canonical hex length", got)
 	}
 	if got := keyZero.ExtraPayloadBytes(); got != 0 {
 		t.Fatalf("compact key ExtraPayloadBytes = %d; want 0", got)
@@ -222,7 +222,9 @@ func TestBigIntHashKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashKey(big): %v", err)
 	}
-	if canonA != "int:18446744073709551616" {
+	// Big keys canonicalize in hexadecimal (linear in words, unlike decimal)
+	// under their own prefix, which no other key space produces.
+	if canonA != "bigint:10000000000000000" {
 		t.Fatalf("HashKey(big) = %q", canonA)
 	}
 
@@ -236,6 +238,28 @@ func TestBigIntHashKeys(t *testing.T) {
 	}
 	if _, ok, _ := h.HashGet(zero); ok {
 		t.Fatalf("compact 0 must not find the big key's entry")
+	}
+
+	// Crafted probes: no other key space may reach the big key's entry or
+	// canonical form. A string spelling the canonical text (or the old
+	// decimal spelling), the hex digits as a string, and a compact int whose
+	// decimal matches the hex text must all stay distinct.
+	for _, probe := range []value.Value{
+		value.NewString("bigint:10000000000000000"),
+		value.NewString("int:18446744073709551616"),
+		value.NewString("10000000000000000"),
+		value.NewInt(10000000000000000),
+	} {
+		if _, ok, _ := h.HashGet(probe); ok {
+			t.Fatalf("crafted probe %s reached the big key's entry", probe.Inspect())
+		}
+		canonProbe, err := value.HashKey(probe)
+		if err != nil {
+			t.Fatalf("HashKey(probe): %v", err)
+		}
+		if canonProbe == canonA {
+			t.Fatalf("crafted probe %s collided with the big canonical form %q", probe.Inspect(), canonA)
+		}
 	}
 }
 

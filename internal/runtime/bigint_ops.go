@@ -345,3 +345,36 @@ func bigIntDecimalDigitsUpperBound(bi *big.Int) int {
 	}
 	return digits
 }
+
+// chargeBigIntKeySteps scales the step cost of canonicalizing one hash key
+// with the key's word count when it carries a big payload (hash set/get/
+// delete, membership probes, aggregation keys), matching the arithmetic
+// convention of 1 + words/8. The canonical hex conversion is linear in words,
+// so the charge bounds its CPU under the step quota; compact keys are a no-op.
+func (exec *Execution) chargeBigIntKeySteps(key Value) error {
+	bi, ok := value.BigIntPayload(key)
+	if !ok {
+		return nil
+	}
+	return exec.stepN(1 + len(bi.Bits())/bigIntStepWordsPerStep)
+}
+
+// chargeBigIntElementKeySteps charges up front for canonicalizing every
+// big-integer element of the given slices. The set-building helpers (uniq,
+// union, difference, & and array -) canonicalize each element at least once,
+// so their entry points charge the summed word count before any conversion
+// runs; slices of compact values charge nothing beyond the scan.
+func (exec *Execution) chargeBigIntElementKeySteps(slices ...[]Value) error {
+	words := 0
+	for _, values := range slices {
+		for _, v := range values {
+			if bi, ok := value.BigIntPayload(v); ok {
+				words += len(bi.Bits())
+			}
+		}
+	}
+	if words == 0 {
+		return nil
+	}
+	return exec.stepN(1 + words/bigIntStepWordsPerStep)
+}

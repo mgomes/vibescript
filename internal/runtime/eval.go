@@ -789,6 +789,11 @@ func (exec *Execution) indexHash(e *IndexExpr, obj Value, indices []Value) (Valu
 		return NewNil(), exec.errorAt(e.Position, "%s index expects a single key", obj.Kind())
 	}
 	idx := indices[0]
+	// Canonicalizing a big-integer key is linear in its words; charge before
+	// the lookup so key-heavy loops stay inside the step quota.
+	if err := exec.chargeBigIntKeySteps(idx); err != nil {
+		return NewNil(), err
+	}
 	if obj.Kind() == KindObject {
 		if val, handled, err := matchDataIndex(obj, idx); handled || err != nil {
 			if err != nil {
@@ -914,6 +919,13 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 				return NewNil(), exec.wrapError(err, pos)
 			}
 		}
+		if left.Kind() == KindArray && right.Kind() == KindArray {
+			// Array difference canonicalizes every element as a set key;
+			// charge big elements' words before the build.
+			if err := exec.chargeBigIntElementKeySteps(left.Array(), right.Array()); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = subtractValues(left, right)
 	case tokenAsterisk:
 		if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
@@ -966,6 +978,13 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		}
 		result, err = shovelValues(left, right)
 	case tokenAmpersand:
+		if left.Kind() == KindArray && right.Kind() == KindArray {
+			// Array intersection canonicalizes every element as a set key;
+			// charge big elements' words before the build.
+			if err := exec.chargeBigIntElementKeySteps(left.Array(), right.Array()); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = intersectValues(left, right)
 	case tokenEQ:
 		return NewBool(left.Equal(right)), nil
@@ -2144,6 +2163,11 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 	case KindHash, KindObject:
 		if len(indices) != 1 {
 			return exec.errorAt(target.Position, "%s index assignment expects a single key", obj.Kind())
+		}
+		// Canonicalizing a big-integer key is linear in its words; charge
+		// before the write so key-heavy loops stay inside the step quota.
+		if err := exec.chargeBigIntKeySteps(indices[0]); err != nil {
+			return err
 		}
 		if err := hashSet(obj, indices[0], value); err != nil {
 			return exec.errorAt(target.IndexPos(0), "%s", err.Error())

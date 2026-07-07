@@ -300,6 +300,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				if err := exec.chargeBigIntKeySteps(groupValue); err != nil {
+					return NewNil(), err
+				}
 				key, err := newHashAggregationKey(groupValue)
 				if err != nil {
 					return NewNil(), fmt.Errorf("array.group_by block returned unsupported hash key: %w", err)
@@ -383,6 +386,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 				blockArg[0] = item
 				groupValue, err := runner.call(blockArg[:])
 				if err != nil {
+					return NewNil(), err
+				}
+				if err := exec.chargeBigIntKeySteps(groupValue); err != nil {
 					return NewNil(), err
 				}
 				key, err := newHashAggregationKey(groupValue)
@@ -482,6 +488,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 						return NewNil(), err
 					}
 					keyValue = mapped
+				}
+				if err := exec.chargeBigIntKeySteps(keyValue); err != nil {
+					return NewNil(), err
 				}
 				key, err := newHashAggregationKey(keyValue)
 				if err != nil {
@@ -833,9 +842,11 @@ func newHashAggregationKey(val Value) (hashAggregationKey, error) {
 		return hashAggregationKey{kind: KindBool}, nil
 	case KindInt:
 		if bi, ok := value.BigIntPayload(val); ok {
-			// Big integers aggregate by decimal text, disjoint from compact
-			// keys (numeric field, empty text) by the canonical invariant.
-			return hashAggregationKey{kind: KindInt, text: bi.Text(10)}, nil
+			// Big integers aggregate by hexadecimal text (linear in words,
+			// unlike superlinear decimal), disjoint from compact keys (numeric
+			// field, empty text) by the canonical invariant. Callers charge
+			// steps per key word before building.
+			return hashAggregationKey{kind: KindInt, text: bi.Text(16)}, nil
 		}
 		return hashAggregationKey{kind: KindInt, number: val.Int()}, nil
 	case KindFloat:
@@ -2638,6 +2649,11 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	}
 	arr := receiver.Array()
 	if valueBlock(block) == nil {
+		// Deduplication canonicalizes every element as a set key; charge big
+		// elements' words before the build.
+		if err := exec.chargeBigIntElementKeySteps(arr); err != nil {
+			return NewNil(), false, err
+		}
 		unique, err := uniqueValuesChecked(arr, exec.checkContext)
 		if err != nil {
 			return NewNil(), false, err
@@ -3125,6 +3141,9 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		if len(elements) != 2 {
 			return NewNil(), fmt.Errorf("array.to_h pair must have exactly two elements")
 		}
+		if err := exec.chargeBigIntKeySteps(elements[0]); err != nil {
+			return NewNil(), err
+		}
 		key, err := canonicalHashKey(elements[0])
 		if err != nil {
 			return NewNil(), fmt.Errorf("array.to_h pair key is unsupported hash key: %w", err)
@@ -3599,12 +3618,18 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			if err := exec.chargeBigIntElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
+				return NewNil(), err
+			}
 			return NewArray(unionArrayValues(receiver.Array(), others)), nil
 		}), nil
 	case "difference":
 		return NewAutoBuiltin("array.difference", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			others, err := arrayArgsToSlices("array.difference", args, kwargs)
 			if err != nil {
+				return NewNil(), err
+			}
+			if err := exec.chargeBigIntElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
 				return NewNil(), err
 			}
 			return NewArray(differenceArrayValues(receiver.Array(), others)), nil

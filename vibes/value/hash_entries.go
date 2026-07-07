@@ -53,12 +53,15 @@ func NewHashLookupKey(key Value) (HashLookupKey, error) {
 	case KindBool:
 		return HashLookupKey{kind: KindBool, flag: key.Bool()}, nil
 	case KindInt:
-		// A big integer canonicalizes to its decimal text. The canonical
-		// invariant (big payloads never fit int64) keeps the text form disjoint
-		// from compact keys, which stay in the numeric field with empty text,
-		// so the two encodings can never collide.
+		// A big integer canonicalizes to its hexadecimal text: hex conversion
+		// is linear in the payload's words, where decimal is superlinear, so a
+		// hostile key cannot hide unbounded conversion CPU here (runtime
+		// callers also charge steps per key word). The canonical invariant
+		// (big payloads never fit int64) keeps the text form disjoint from
+		// compact keys, which stay in the numeric field with empty text, so
+		// the two encodings can never collide.
 		if bi, ok := BigIntPayload(key); ok {
-			return HashLookupKey{kind: KindInt, text: bi.Text(10)}, nil
+			return HashLookupKey{kind: KindInt, text: bi.Text(16)}, nil
 		}
 		return HashLookupKey{kind: KindInt, number: key.Int()}, nil
 	case KindFloat:
@@ -135,11 +138,13 @@ func hashKey(key Value, arrays map[SliceIdentity]struct{}) (string, error) {
 		}
 		return "bool:false", nil
 	case KindInt:
-		// Big integers share the "int:" prefix: the canonical invariant keeps
-		// their decimal forms disjoint from every compact key's, so equal big
-		// values collide exactly with each other and never with a compact int.
+		// Big integers canonicalize under their own "bigint:" prefix in
+		// hexadecimal: hex conversion is linear in the payload's words, where
+		// decimal is superlinear, and no other key space produces the prefix.
+		// The canonical invariant keeps big and compact int keys in disjoint
+		// value spaces, so splitting the prefixes never separates equal values.
 		if bi, ok := BigIntPayload(key); ok {
-			return "int:" + bi.Text(10), nil
+			return "bigint:" + bi.Text(16), nil
 		}
 		return "int:" + strconv.FormatInt(key.Int(), 10), nil
 	case KindFloat:

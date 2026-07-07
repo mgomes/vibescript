@@ -48,10 +48,12 @@ func scalarValueKey(v Value) (scalarValueSetKey, bool) {
 		key.boolVal = v.Bool()
 	case KindInt:
 		if bi, ok := value.BigIntPayload(v); ok {
-			// Big integers key by their decimal text; the canonical invariant
-			// keeps that disjoint from compact keys (which leave textVal empty),
-			// and the kind tag separates it from string/symbol text.
-			key.textVal = bi.Text(10)
+			// Big integers key by their hexadecimal text (linear in the
+			// payload's words, unlike superlinear decimal); the canonical
+			// invariant keeps that disjoint from compact keys (which leave
+			// textVal empty), and the kind tag separates it from string/symbol
+			// text. Runtime callers charge steps per key word before building.
+			key.textVal = bi.Text(16)
 		} else {
 			key.intVal = v.Int()
 		}
