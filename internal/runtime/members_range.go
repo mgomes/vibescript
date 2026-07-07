@@ -1,6 +1,9 @@
 package runtime
 
 import (
+	"math/big"
+
+	"github.com/mgomes/vibescript/vibes/value"
 	"fmt"
 	"math"
 )
@@ -177,6 +180,9 @@ func rangeMemberStep() Value {
 		}
 		if args[0].Kind() != KindInt {
 			return NewNil(), fmt.Errorf("range.step expects an integer step")
+		}
+		if args[0].IsBigInt() {
+			return NewNil(), guardLimitErrorf("range.step step must fit in a 64-bit integer")
 		}
 		stride := args[0].Int()
 		if stride <= 0 {
@@ -454,22 +460,41 @@ func rangeMemberSum() Value {
 			return NewNil(), fmt.Errorf("range.sum does not take a block")
 		}
 		total := int64(0)
+		// bigTotal spills the fold into arbitrary precision the moment the
+		// int64 accumulator would overflow (issue #919; this used to be the
+		// "range.sum overflow" error). It is a Go-local big.Int, never shared,
+		// so mutating it in place is safe; it is only wrapped (and normalized)
+		// once the fold finishes. Growth per element is a single int64, so the
+		// accumulator stays within a few words of the largest element.
+		var bigTotal *big.Int
 		if len(args) == 1 {
 			if args[0].Kind() != KindInt {
 				return NewNil(), fmt.Errorf("range.sum expects an integer initial value")
 			}
-			total = args[0].Int()
+			if args[0].IsBigInt() {
+				bigTotal = args[0].BigInt()
+			} else {
+				total = args[0].Int()
+			}
 		}
 		err := exec.rangeForEach(receiver.Range(), func(value int64) (bool, error) {
+			if bigTotal != nil {
+				bigTotal.Add(bigTotal, big.NewInt(value))
+				return false, nil
+			}
 			next, ok := addInt64Checked(total, value)
 			if !ok {
-				return false, fmt.Errorf("range.sum overflow")
+				bigTotal = new(big.Int).Add(big.NewInt(total), big.NewInt(value))
+				return false, nil
 			}
 			total = next
 			return false, nil
 		})
 		if err != nil {
 			return NewNil(), err
+		}
+		if bigTotal != nil {
+			return value.AdoptBigInt(bigTotal), nil
 		}
 		return NewInt(total), nil
 	})
@@ -670,7 +695,10 @@ func rangeCountArg(arg Value, method string) (int64, error) {
 	if arg.Kind() != KindInt {
 		return 0, fmt.Errorf("%s expects an integer count", method)
 	}
-	count := arg.Int()
+	count, compact := arg.CompactInt()
+	if !compact {
+		return 0, fmt.Errorf("%s count must fit in a 64-bit integer", method)
+	}
 	if count < 0 {
 		return 0, fmt.Errorf("%s count must be non-negative", method)
 	}

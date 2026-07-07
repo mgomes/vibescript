@@ -3,6 +3,7 @@ package runtime
 import (
 	"math/big"
 	"testing"
+	"unsafe"
 
 	"github.com/mgomes/vibescript/vibes/value"
 )
@@ -66,7 +67,7 @@ func TestMemoryEstimatorJournalRollsBackBigIntPayload(t *testing.T) {
 	journal.clear()
 	est.journal = nil
 
-	if _, seen := est.seenBigInts[bi]; seen {
+	if _, seen := est.seenSlices[uintptr(unsafe.Pointer(bi))]; seen {
 		t.Fatalf("rollback left the big payload committed")
 	}
 	if again := est.value(val); again != full {

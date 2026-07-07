@@ -969,6 +969,9 @@ func arrayCycleCount(args []Value, method string) (count int, infinite bool, err
 	if countValue.Kind() != KindInt {
 		return 0, false, fmt.Errorf("%s count must be an integer", method)
 	}
+	if countValue.IsBigInt() {
+		return 0, false, fmt.Errorf("%s count is out of range", method)
+	}
 	if countValue.Int() <= 0 {
 		return 0, false, nil
 	}
@@ -2453,6 +2456,14 @@ func arraySum(exec *Execution, receiver Value, args []Value, kwargs map[string]V
 			}
 			contribution = result
 		}
+		if total.Kind() == KindInt && contribution.Kind() == KindInt &&
+			(total.IsBigInt() || contribution.IsBigInt()) {
+			// Big-integer additions charge steps proportional to operand size,
+			// matching the operator path's scaling.
+			if err := exec.checkBigIntOperationGuards(tokenPlus, total, contribution); err != nil {
+				return NewNil(), err
+			}
+		}
 		next, err := arraySumAdd(total, contribution)
 		if err != nil {
 			return NewNil(), err
@@ -2533,6 +2544,24 @@ var reduceArithmeticOps = map[string]func(left, right Value) (Value, error){
 // matching public_send's privacy guarantee.
 func (exec *Execution) reduceSendOperation(accumulator Value, operation string, item Value) (Value, error) {
 	if op, ok := reduceArithmeticOps[operation]; ok {
+		if accumulator.Kind() == KindInt && item.Kind() == KindInt {
+			// Mirror the operator guards: big operands charge scaled steps and
+			// exponentiation preflights its projected result size.
+			if accumulator.IsBigInt() || item.IsBigInt() {
+				operatorToken := tokenPlus
+				if operation == "*" {
+					operatorToken = tokenAsterisk
+				}
+				if err := exec.checkBigIntOperationGuards(operatorToken, accumulator, item); err != nil {
+					return NewNil(), err
+				}
+			}
+			if operation == "**" {
+				if err := exec.checkIntPowerGuards(accumulator, item); err != nil {
+					return NewNil(), err
+				}
+			}
+		}
 		return op(accumulator, item)
 	}
 	member, err := exec.getPublicMember(accumulator, operation, Position{})

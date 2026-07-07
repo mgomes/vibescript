@@ -4,12 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 type jsonStringifyState struct {
@@ -39,6 +42,10 @@ type jsonSeenSlot struct {
 const (
 	jsonInitialObjectCapacity = 4
 	jsonInlineSeenCapacity    = 8
+	// jsonBigIntStepDigits is the number of big-integer decimal digits one
+	// sandbox step covers during JSON conversion, matching the rendering
+	// projections' scaling.
+	jsonBigIntStepDigits = 8
 )
 
 type jsonInvalidNumberError string
@@ -249,6 +256,23 @@ func (p *jsonValueParser) parseNumber() (Value, error) {
 	if !floatLike {
 		if i, err := strconv.ParseInt(literal, 10, 64); err == nil {
 			return NewInt(i), nil
+		}
+		// An integer token beyond int64 parses as a big integer, matching
+		// Ruby's JSON (it used to degrade silently to a float). The literal's
+		// length is bounded by the payload input guard; charge steps for the
+		// conversion before running it and the materialized value against the
+		// memory quota after, like the container paths do.
+		if p.exec != nil {
+			if err := p.exec.stepN(1 + len(literal)/jsonBigIntStepDigits); err != nil {
+				return NewNil(), err
+			}
+		}
+		if bi, ok := new(big.Int).SetString(literal, 10); ok {
+			val := value.AdoptBigInt(bi)
+			if err := p.checkMaterialized(val); err != nil {
+				return NewNil(), err
+			}
+			return val, nil
 		}
 	}
 
@@ -482,6 +506,22 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 		}
 		return append(buf, "false"...), nil
 	case KindInt:
+		if bi, ok := value.BigIntPayload(val); ok {
+			// Ruby's JSON emits bignums as bare decimals (no float collapse,
+			// no quotes). Reject an output that provably exceeds the payload
+			// cap before paying for the base conversion, and charge steps for
+			// the conversion like the parse path does.
+			digits := value.BigIntDecimalLenUpperBound(val)
+			if len(buf)+digits-1 > maxJSONPayloadBytes {
+				return nil, guardLimitErrorf("JSON.stringify output exceeds limit %d bytes", maxJSONPayloadBytes)
+			}
+			if state.exec != nil {
+				if err := state.exec.stepN(1 + digits/jsonBigIntStepDigits); err != nil {
+					return nil, err
+				}
+			}
+			return bi.Append(buf, 10), nil
+		}
 		return strconv.AppendInt(buf, val.Int(), 10), nil
 	case KindFloat:
 		f := val.Float()

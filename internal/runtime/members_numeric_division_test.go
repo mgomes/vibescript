@@ -401,16 +401,23 @@ func TestNumericDivisionArgumentDiagnostics(t *testing.T) {
 func TestNumericDivisionOverflow(t *testing.T) {
 	t.Parallel()
 
-	// Vibescript integers are 64-bit, so the single quotient that escapes that
-	// range (MinInt64 / -1) errors instead of wrapping, like abs and succ.
+	// Quotients that escape the int64 range promote to big integers (issue
+	// #919); these cases previously pinned "result out of int64 range" errors.
 	divScript := compileScript(t, "def run(n)\n  n.div(-1)\nend")
-	requireCallErrorContains(t, divScript, "run", []Value{NewInt(math.MinInt64)}, CallOptions{}, "int.div result out of int64 range")
+	if got := callFunc(t, divScript, "run", []Value{NewInt(math.MinInt64)}); !got.IsBigInt() || got.String() != "9223372036854775808" {
+		t.Fatalf("MinInt64.div(-1) = %s (big=%v), want promoted 9223372036854775808", got, got.IsBigInt())
+	}
 
 	divmodScript := compileScript(t, "def run(n)\n  n.divmod(-1)\nend")
-	requireCallErrorContains(t, divmodScript, "run", []Value{NewInt(math.MinInt64)}, CallOptions{}, "int.divmod result out of int64 range")
+	if got := callFunc(t, divmodScript, "run", []Value{NewInt(math.MinInt64)}); got.String() != "[9223372036854775808, 0]" {
+		t.Fatalf("MinInt64.divmod(-1) = %s, want [9223372036854775808, 0]", got)
+	}
 
-	// A float quotient outside the int64 range also errors rather than
-	// truncating to an arbitrary value.
+	// A float quotient outside the int64 range also promotes, matching Ruby's
+	// Numeric#div returning bignums.
 	floatDivScript := compileScript(t, "def run(n)\n  n.div(1)\nend")
-	requireCallErrorContains(t, floatDivScript, "run", []Value{NewFloat(1e300)}, CallOptions{}, "float.div result out of int64 range")
+	got := callFunc(t, floatDivScript, "run", []Value{NewFloat(1e300)})
+	if !got.IsBigInt() {
+		t.Fatalf("(1e300).div(1) = %s, want a big integer", got)
+	}
 }

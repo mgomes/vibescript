@@ -317,6 +317,18 @@ func (exec *Execution) checkContext() error {
 	}
 }
 
+// stepN charges n steps at once, observing the same quota and running step's
+// periodic slow-path checks a single time. Big-integer operations use it to
+// scale their cost with operand size (one step per 8 words by convention)
+// without paying n separate slow-path polls; the quota still trips at exactly
+// the same total step count it would for n individual step calls.
+func (exec *Execution) stepN(n int) error {
+	if n > 1 {
+		exec.steps += n - 1
+	}
+	return exec.step()
+}
+
 // checkStepBudgetFor reports whether at least n more steps may be charged
 // without exhausting the step quota, and whether the context is still live. It
 // is used by builtins that will charge one step per element of a known-size

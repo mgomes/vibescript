@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // The *MemberNames lists below mirror the names dispatched by the member
@@ -49,9 +51,12 @@ var (
 
 func (exec *Execution) intMember(obj Value, property string, pos Position) (Value, error) {
 	switch property {
-	case "seconds", "second", "minutes", "minute", "hours", "hour", "days", "day":
-		return NewDuration(secondsDuration(obj.Int(), property)), nil
-	case "weeks", "week":
+	case "seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week":
+		// Duration's domain stays int64; a big receiver reports the duration
+		// family's existing overflow convention instead of truncating.
+		if obj.IsBigInt() {
+			return NewNil(), int64RangeError("int." + property)
+		}
 		return NewDuration(secondsDuration(obj.Int(), property)), nil
 	default:
 		if member, ok := intBuiltinMembers.lookup(property, intMemberBuiltin); ok {
@@ -68,9 +73,17 @@ func intMemberBuiltin(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("int.abs does not take arguments")
 			}
+			if receiver.IsBigInt() {
+				if err := exec.chargeBigIntReceiverSteps(receiver); err != nil {
+					return NewNil(), err
+				}
+				return absIntValueBig(receiver), nil
+			}
 			n := receiver.Int()
 			if n == math.MinInt64 {
-				return NewNil(), fmt.Errorf("int.abs overflow")
+				// |MinInt64| does not fit int64; promote instead of the old
+				// "int.abs overflow" error.
+				return absIntValueBig(receiver), nil
 			}
 			if n < 0 {
 				return NewInt(-n), nil
@@ -90,12 +103,18 @@ func intMemberBuiltin(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("int.even? does not take arguments")
 			}
+			if bi, ok := value.BigIntPayload(receiver); ok {
+				return NewBool(bi.Bit(0) == 0), nil
+			}
 			return NewBool(receiver.Int()%2 == 0), nil
 		}), nil
 	case "odd?":
 		return NewAutoBuiltin("int.odd?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("int.odd? does not take arguments")
+			}
+			if bi, ok := value.BigIntPayload(receiver); ok {
+				return NewBool(bi.Bit(0) == 1), nil
 			}
 			return NewBool(receiver.Int()%2 != 0), nil
 		}), nil
@@ -106,6 +125,11 @@ func intMemberBuiltin(property string) (Value, error) {
 			}
 			if valueBlock(block) == nil {
 				return NewNil(), fmt.Errorf("int.times requires a block")
+			}
+			if receiver.IsBigInt() {
+				// Iteration counts stay int64: Ruby would loop for years here,
+				// but the sandbox rejects the count outright.
+				return NewNil(), guardLimitErrorf("int.times count must fit in a 64-bit integer")
 			}
 			count := receiver.Int()
 			if count <= 0 {
@@ -142,12 +166,17 @@ func intMemberBuiltin(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("int.zero? does not take arguments")
 			}
-			return NewBool(receiver.Int() == 0), nil
+			// A big payload is never zero: the canonical invariant keeps every
+			// int64-range value (zero included) in the compact form.
+			return NewBool(!receiver.IsBigInt() && receiver.Int() == 0), nil
 		}), nil
 	case "positive?":
 		return NewAutoBuiltin("int.positive?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("int.positive? does not take arguments")
+			}
+			if bi, ok := value.BigIntPayload(receiver); ok {
+				return NewBool(bi.Sign() > 0), nil
 			}
 			return NewBool(receiver.Int() > 0), nil
 		}), nil
@@ -155,6 +184,9 @@ func intMemberBuiltin(property string) (Value, error) {
 		return NewAutoBuiltin("int.negative?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("int.negative? does not take arguments")
+			}
+			if bi, ok := value.BigIntPayload(receiver); ok {
+				return NewBool(bi.Sign() < 0), nil
 			}
 			return NewBool(receiver.Int() < 0), nil
 		}), nil
@@ -165,7 +197,7 @@ func intMemberBuiltin(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("int.nonzero? does not take arguments")
 			}
-			if receiver.Int() == 0 {
+			if !receiver.IsBigInt() && receiver.Int() == 0 {
 				return NewNil(), nil
 			}
 			return receiver, nil
@@ -176,9 +208,16 @@ func intMemberBuiltin(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("%s does not take arguments", name)
 			}
+			if receiver.IsBigInt() {
+				if err := exec.chargeBigIntReceiverSteps(receiver); err != nil {
+					return NewNil(), err
+				}
+				return addIntValuesBig(receiver, NewInt(1)), nil
+			}
 			n := receiver.Int()
 			if n == math.MaxInt64 {
-				return NewNil(), fmt.Errorf("%s overflow", name)
+				// MaxInt64.succ promotes instead of the old overflow error.
+				return addIntValuesBig(receiver, NewInt(1)), nil
 			}
 			return NewInt(n + 1), nil
 		}), nil
@@ -187,9 +226,16 @@ func intMemberBuiltin(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("int.pred does not take arguments")
 			}
+			if receiver.IsBigInt() {
+				if err := exec.chargeBigIntReceiverSteps(receiver); err != nil {
+					return NewNil(), err
+				}
+				return subIntValuesBig(receiver, NewInt(1)), nil
+			}
 			n := receiver.Int()
 			if n == math.MinInt64 {
-				return NewNil(), fmt.Errorf("int.pred overflow")
+				// MinInt64.pred promotes instead of the old overflow error.
+				return subIntValuesBig(receiver, NewInt(1)), nil
 			}
 			return NewInt(n - 1), nil
 		}), nil
@@ -201,11 +247,7 @@ func intMemberBuiltin(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			result, err := intRound(receiver.Int(), ndigits, mode, name)
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewInt(result), nil
+			return intRoundPromoting(exec, receiver, ndigits, mode, name)
 		}), nil
 	case "div":
 		return NewAutoBuiltin("int.div", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -256,7 +298,9 @@ func intMemberBuiltin(property string) (Value, error) {
 			if err := requireNullaryCall("int.to_f", args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			return NewFloat(float64(receiver.Int())), nil
+			// Value.Float converts big receivers best-effort (Ruby's Integer#to_f,
+			// saturating to +/-Infinity beyond the float range).
+			return NewFloat(receiver.Float()), nil
 		}), nil
 	case "inspect":
 		return newInspectBuiltin("int"), nil
@@ -309,7 +353,7 @@ func floatMemberBuiltin(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			return floatRound(receiver.Float(), ndigits, mode, name)
+			return floatRound(exec, receiver.Float(), ndigits, mode, name)
 		}), nil
 	case "zero?":
 		return NewAutoBuiltin("float.zero?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -424,14 +468,10 @@ func floatMemberBuiltin(property string) (Value, error) {
 				return NewNil(), err
 			}
 			// Ruby's Float#to_i truncates toward zero, unlike the strict global
-			// to_int which rejects a fractional float. floatToInt64Checked
-			// truncates after rejecting NaN, Infinity, and out-of-range
-			// magnitudes, matching Ruby's FloatDomainError for those cases.
-			n, err := floatToInt64Checked(receiver.Float(), "float.to_i")
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewInt(n), nil
+			// to_int which rejects a fractional float. Finite magnitudes beyond
+			// int64 promote to big integers (Ruby returns bignums here); only
+			// NaN and Infinity keep the FloatDomainError-style rejection.
+			return floatWholeToIntValue(math.Trunc(receiver.Float()), "float.to_i")
 		}), nil
 	case "to_f":
 		return NewAutoBuiltin("float.to_f", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -602,6 +642,9 @@ func cmpInt(left, right int) int {
 func numericValueRat(val Value, method string) (*big.Rat, error) {
 	switch val.Kind() {
 	case KindInt:
+		if bi, ok := value.BigIntPayload(val); ok {
+			return new(big.Rat).SetInt(bi), nil
+		}
 		return new(big.Rat).SetInt64(val.Int()), nil
 	case KindFloat:
 		f := val.Float()
@@ -648,23 +691,24 @@ func numericFdiv(receiver, divisor Value) (Value, error) {
 // matching Ruby's ZeroDivisionError rather than yielding infinity.
 func numericDiv(method string, receiver, divisor Value) (Value, error) {
 	if receiver.Kind() == KindInt && divisor.Kind() == KindInt {
-		if divisor.Int() == 0 {
+		if intValueIsZero(divisor) {
 			return NewNil(), zeroDivisionErrorf("%s by zero", method)
 		}
-		quotient, ok := floorDivIntChecked(receiver.Int(), divisor.Int())
-		if !ok {
-			return NewNil(), int64RangeError(method)
+		r, rok := receiver.CompactInt()
+		d, dok := divisor.CompactInt()
+		if rok && dok {
+			if quotient, ok := floorDivIntChecked(r, d); ok {
+				return NewInt(quotient), nil
+			}
 		}
-		return NewInt(quotient), nil
+		return floorDivIntValuesBig(receiver, divisor), nil
 	}
 	if divisor.Float() == 0 {
 		return NewNil(), zeroDivisionErrorf("%s by zero", method)
 	}
-	quotient, err := floatToInt64Checked(math.Floor(receiver.Float()/divisor.Float()), method)
-	if err != nil {
-		return NewNil(), err
-	}
-	return NewInt(quotient), nil
+	// A floored float quotient beyond int64 promotes to a big integer, exactly
+	// as Ruby's Numeric#div returns bignums (e.g. (10**25).div(3.0)).
+	return floatWholeToIntValue(math.Floor(receiver.Float()/divisor.Float()), method)
 }
 
 // numericDivmod implements Ruby's Numeric#divmod, returning a two-element array
@@ -673,15 +717,18 @@ func numericDiv(method string, receiver, divisor Value) (Value, error) {
 // modulo a float computed as `self - quotient * divisor`.
 func numericDivmod(method string, receiver, divisor Value) (Value, error) {
 	if receiver.Kind() == KindInt && divisor.Kind() == KindInt {
-		if divisor.Int() == 0 {
+		if intValueIsZero(divisor) {
 			return NewNil(), zeroDivisionErrorf("%s by zero", method)
 		}
-		quotient, ok := floorDivIntChecked(receiver.Int(), divisor.Int())
-		if !ok {
-			return NewNil(), int64RangeError(method)
+		r, rok := receiver.CompactInt()
+		d, dok := divisor.CompactInt()
+		if rok && dok {
+			if quotient, ok := floorDivIntChecked(r, d); ok {
+				return NewArray([]Value{NewInt(quotient), NewInt(floorModInt(r, d))}), nil
+			}
 		}
-		modulo := floorModInt(receiver.Int(), divisor.Int())
-		return NewArray([]Value{NewInt(quotient), NewInt(modulo)}), nil
+		q, m := bigFloorDivMod(bigIntOperand(receiver), bigIntOperand(divisor))
+		return NewArray([]Value{value.AdoptBigInt(q), value.AdoptBigInt(m)}), nil
 	}
 	d := divisor.Float()
 	if d == 0 {
@@ -705,11 +752,12 @@ func numericDivmod(method string, receiver, divisor Value) (Value, error) {
 		return NewArray([]Value{NewInt(quotient), NewFloat(modulo)}), nil
 	}
 	// Recover the quotient from the modulo so divmod and modulo stay consistent.
-	quotient, err := floatToInt64Checked(math.Round((r-modulo)/d), method)
+	// A quotient beyond int64 promotes to a big integer like Numeric#div.
+	quotient, err := floatWholeToIntValue(math.Round((r-modulo)/d), method)
 	if err != nil {
 		return NewNil(), err
 	}
-	return NewArray([]Value{NewInt(quotient), NewFloat(modulo)}), nil
+	return NewArray([]Value{quotient, NewFloat(modulo)}), nil
 }
 
 // numericRemainder implements Ruby's Numeric#remainder, whose sign follows the
@@ -717,10 +765,15 @@ func numericDivmod(method string, receiver, divisor Value) (Value, error) {
 // which differs from `%` for operands of opposite sign. A zero divisor errors.
 func numericRemainder(method string, receiver, divisor Value) (Value, error) {
 	if receiver.Kind() == KindInt && divisor.Kind() == KindInt {
-		if divisor.Int() == 0 {
+		if intValueIsZero(divisor) {
 			return NewNil(), zeroDivisionErrorf("%s by zero", method)
 		}
-		return NewInt(receiver.Int() % divisor.Int()), nil
+		r, rok := receiver.CompactInt()
+		d, dok := divisor.CompactInt()
+		if rok && dok {
+			return NewInt(r % d), nil
+		}
+		return remainderIntValuesBig(receiver, divisor), nil
 	}
 	d := divisor.Float()
 	if d == 0 {
@@ -746,10 +799,15 @@ func numericRemainder(method string, receiver, divisor Value) (Value, error) {
 // yields a float.
 func numericModulo(method string, receiver, divisor Value) (Value, error) {
 	if receiver.Kind() == KindInt && divisor.Kind() == KindInt {
-		if divisor.Int() == 0 {
+		if intValueIsZero(divisor) {
 			return NewNil(), zeroDivisionErrorf("%s by zero", method)
 		}
-		return NewInt(floorModInt(receiver.Int(), divisor.Int())), nil
+		r, rok := receiver.CompactInt()
+		d, dok := divisor.CompactInt()
+		if rok && dok {
+			return NewInt(floorModInt(r, d)), nil
+		}
+		return floorModIntValuesBig(receiver, divisor), nil
 	}
 	d := divisor.Float()
 	if d == 0 {
@@ -789,6 +847,9 @@ func intUptoDownto(exec *Execution, receiver Value, args []Value, kwargs map[str
 	}
 	if valueBlock(block) == nil {
 		return NewNil(), fmt.Errorf("%s requires a block", name)
+	}
+	if receiver.IsBigInt() || args[0].IsBigInt() {
+		return NewNil(), guardLimitErrorf("%s bounds must fit in a 64-bit integer", name)
 	}
 	limit := args[0].Int()
 	runner, err := newBlockCallRunner(exec, block, name, receiver, args, kwargs)
@@ -837,6 +898,9 @@ func intStep(exec *Execution, receiver Value, args []Value, kwargs map[string]Va
 	}
 	if args[0].Kind() != KindInt {
 		return NewNil(), fmt.Errorf("int.step expects an integer limit")
+	}
+	if receiver.IsBigInt() || args[0].IsBigInt() || (len(args) == 2 && args[1].IsBigInt()) {
+		return NewNil(), guardLimitErrorf("int.step bounds must fit in a 64-bit integer")
 	}
 	limit := args[0].Int()
 	stride := int64(1)

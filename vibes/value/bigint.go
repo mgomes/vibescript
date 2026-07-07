@@ -61,7 +61,7 @@ func AdoptBigInt(i *big.Int) Value {
 // always use the compact representation, so IsBigInt is equivalent to "this
 // integer does not fit in an int64".
 func (v Value) IsBigInt() bool {
-	if v.kind != KindInt {
+	if v.kind != KindInt || v.data == nil {
 		return false
 	}
 	_, ok := v.data.(*big.Int)
@@ -101,13 +101,28 @@ func (v Value) CompactInt() (int64, bool) {
 	return 0, false
 }
 
+// EitherIntPayload reports whether either operand carries any payload beyond
+// the compact scalar. Callers have already established both are KindInt, so a
+// nil payload means the compact representation; the test is two nil compares,
+// keeping the interpreter's compact arithmetic fast path free of type
+// assertions. A true result sends the caller to the full big-integer probes.
+// It is intended for the interpreter's internal use; hosts should use
+// IsBigInt, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func EitherIntPayload(a, b Value) bool {
+	return a.data != nil || b.data != nil
+}
+
 // BigIntPayload returns the big-integer payload of v without copying, and
 // whether v carries one. Callers must treat the result as immutable.
 // It is intended for the interpreter's internal use; hosts should use BigInt,
 // and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
 func BigIntPayload(v Value) (*big.Int, bool) {
-	if v.kind != KindInt {
+	// The nil probe short-circuits the compact representation (data is always
+	// nil there) before the type assertion, keeping hot walks over compact
+	// ints payload-free.
+	if v.kind != KindInt || v.data == nil {
 		return nil, false
 	}
 	bi, ok := v.data.(*big.Int)

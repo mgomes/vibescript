@@ -279,6 +279,9 @@ func TestFloatFloorCeilHighPrecisionKeepsValue(t *testing.T) {
 func TestNumericRoundingOverflow(t *testing.T) {
 	t.Parallel()
 
+	// Results beyond int64 promote to big integers (issue #919); these cases
+	// previously pinned "result out of int64 range" errors. Every expectation
+	// is Ruby 3.4's answer.
 	tests := []struct {
 		name string
 		expr string
@@ -286,56 +289,58 @@ func TestNumericRoundingOverflow(t *testing.T) {
 		want string
 	}{
 		{
-			name: "float round to int overflow",
+			name: "float round to int promotes",
 			expr: "n.round",
 			args: []Value{NewFloat(1e30)},
-			want: "float.round result out of int64 range",
+			want: "1000000000000000019884624838656",
 		},
 		{
-			name: "float floor to int overflow",
+			name: "float floor to int promotes",
 			expr: "n.floor",
 			args: []Value{NewFloat(1e30)},
-			want: "float.floor result out of int64 range",
+			want: "1000000000000000019884624838656",
 		},
 		{
-			name: "float round negative precision overflow",
+			name: "float round negative precision promotes",
 			expr: "n.round(-2)",
 			args: []Value{NewFloat(1e30)},
-			want: "float.round result out of int64 range",
+			want: "1000000000000000019884624838700",
 		},
 		{
-			name: "int round negative precision overflow",
+			name: "int round negative precision promotes",
 			expr: "n.round(-1)",
 			args: []Value{NewInt(math.MaxInt64)},
-			want: "int.round result out of int64 range",
+			want: "9223372036854775810",
 		},
 		{
-			name: "int ceil negative precision overflow",
+			name: "int ceil negative precision promotes",
 			expr: "n.ceil(-1)",
 			args: []Value{NewInt(math.MaxInt64)},
-			want: "int.ceil result out of int64 range",
+			want: "9223372036854775810",
 		},
 		{
-			name: "int floor negative precision overflow",
+			name: "int floor negative precision promotes",
 			expr: "n.floor(-1)",
 			args: []Value{NewInt(math.MinInt64)},
-			want: "int.floor result out of int64 range",
+			want: "-9223372036854775810",
 		},
 		{
 			// 10^19 exceeds int64, and |MinInt64| reaches half the bucket, so
-			// rounding away from zero lands on -10^19 and reports overflow
-			// instead of widening like Ruby's bignums.
+			// rounding away from zero lands on -10^19, widening like Ruby.
 			name: "int round bucket beyond int64",
 			expr: "n.round(-19)",
 			args: []Value{NewInt(math.MinInt64)},
-			want: "int.round result out of int64 range",
+			want: "-10000000000000000000",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, "def run(n)\n  "+tc.expr+"\nend")
-			requireCallErrorContains(t, script, "run", tc.args, CallOptions{}, tc.want)
+			got := callFunc(t, script, "run", tc.args)
+			if !got.IsBigInt() || got.String() != tc.want {
+				t.Fatalf("%s = %s (big=%v), want promoted %s", tc.expr, got, got.IsBigInt(), tc.want)
+			}
 		})
 	}
 }
@@ -456,22 +461,25 @@ func TestFloatNegativePrecisionBucketsBeyondInt64(t *testing.T) {
 		})
 	}
 
-	overflow := []struct {
+	// 9.3e18 ceils up to 10**20 and -9.3e18 floors down to -10**20; both
+	// promote to big integers exactly as Ruby widens (issue #919; these cases
+	// previously pinned overflow errors).
+	promoted := []struct {
 		expr string
 		arg  float64
 		want string
 	}{
-		// 9.3e18 ceils up to 10**20 and -9.3e18 floors down to -10**20, both of
-		// which exceed int64, so they report an overflow rather than widening
-		// like Ruby's bignums.
-		{"n.ceil(-20)", 9.3e18, "float.ceil result out of int64 range"},
-		{"n.floor(-20)", -9.3e18, "float.floor result out of int64 range"},
+		{"n.ceil(-20)", 9.3e18, "100000000000000000000"},
+		{"n.floor(-20)", -9.3e18, "-100000000000000000000"},
 	}
-	for _, tc := range overflow {
-		t.Run(tc.expr+" overflow", func(t *testing.T) {
+	for _, tc := range promoted {
+		t.Run(tc.expr+" promotes", func(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, "def run(n)\n  "+tc.expr+"\nend")
-			requireCallErrorContains(t, script, "run", []Value{NewFloat(tc.arg)}, CallOptions{}, tc.want)
+			got := callFunc(t, script, "run", []Value{NewFloat(tc.arg)})
+			if !got.IsBigInt() || got.String() != tc.want {
+				t.Fatalf("%s = %s, want promoted %s", tc.expr, got, tc.want)
+			}
 		})
 	}
 }
@@ -517,24 +525,43 @@ func TestFloatNegativePrecisionExtremeDigits(t *testing.T) {
 		})
 	}
 
-	overflow := []struct {
+	// Away-from-zero buckets of 10**19 and beyond now widen to big integers
+	// like Ruby (issue #919; these previously pinned overflow errors)...
+	promoted := []struct {
 		expr string
 		arg  float64
 		want string
 	}{
-		// Away-from-zero buckets of 10**19 or larger exceed int64, so they report
-		// an overflow instead of widening like Ruby's bignums. The billion-digit
-		// cases must reach this error without materializing the bucket.
-		{"n.ceil(-1000000000)", 1.5, "float.ceil result out of int64 range"},
-		{"n.floor(-1000000000)", -1.5, "float.floor result out of int64 range"},
-		{"n.ceil(-19)", 1.5, "float.ceil result out of int64 range"},
-		{"n.floor(-19)", -1.5, "float.floor result out of int64 range"},
+		{"n.ceil(-19)", 1.5, "10000000000000000000"},
+		{"n.floor(-19)", -1.5, "-10000000000000000000"},
 	}
-	for _, tc := range overflow {
-		t.Run(tc.expr+" overflow", func(t *testing.T) {
+	for _, tc := range promoted {
+		t.Run(tc.expr+" promotes", func(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, "def run(n)\n  "+tc.expr+"\nend")
-			requireCallErrorContains(t, script, "run", []Value{NewFloat(tc.arg)}, CallOptions{}, tc.want)
+			got := callFunc(t, script, "run", []Value{NewFloat(tc.arg)})
+			if !got.IsBigInt() || got.String() != tc.want {
+				t.Fatalf("%s = %s, want promoted %s", tc.expr, got, tc.want)
+			}
+		})
+	}
+
+	// ...but a bucket sized by an astronomical precision is preflighted against
+	// the memory quota before 10**digits is materialized, so the billion-digit
+	// cases reject in O(1) under the default quota instead of allocating a
+	// billion-digit number.
+	quotaRejected := []struct {
+		expr string
+		arg  float64
+	}{
+		{"n.ceil(-1000000000)", 1.5},
+		{"n.floor(-1000000000)", -1.5},
+	}
+	for _, tc := range quotaRejected {
+		t.Run(tc.expr+" quota rejected", func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run(n)\n  "+tc.expr+"\nend")
+			requireCallErrorContains(t, script, "run", []Value{NewFloat(tc.arg)}, CallOptions{}, "memory quota exceeded")
 		})
 	}
 }

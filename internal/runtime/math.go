@@ -151,7 +151,9 @@ func builtinMathLog(_ *Execution, _ Value, args []Value, kwargs map[string]Value
 func mathFloatArg(name string, arg Value) (float64, error) {
 	switch arg.Kind() {
 	case KindInt:
-		return float64(arg.Int()), nil
+		// Value.Float converts big integers best-effort (saturating to the
+		// infinities), identical to float64(Int()) for compact values.
+		return arg.Float(), nil
 	case KindFloat:
 		return arg.Float(), nil
 	default:

@@ -895,16 +895,51 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 	}
 	var result Value
 	var err error
+	// Big-operand arithmetic charges steps proportional to operand size, and
+	// multiplication/exponentiation preflight their projected result against
+	// the memory quota before computing (see checkBigIntOperationGuards /
+	// checkIntPowerGuards). Compact operands skip everything behind
+	// EitherIntPayload's two nil compares, keeping the hot path branch-cheap.
 	switch operator {
 	case tokenPlus:
+		if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
+			if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = addValues(left, right)
 	case tokenMinus:
+		if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
+			if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = subtractValues(left, right)
 	case tokenAsterisk:
+		if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
+			if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = multiplyValues(left, right)
 	case tokenPower:
+		if left.Kind() == KindInt && right.Kind() == KindInt {
+			if eitherIntPayload(left, right) {
+				if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+					return NewNil(), exec.wrapError(err, pos)
+				}
+			}
+			if err := exec.checkIntPowerGuards(left, right); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = powerValues(left, right)
 	case tokenSlash:
+		if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
+			if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = divideValues(left, right)
 	case tokenPercent:
 		if left.Kind() == KindString {
@@ -914,6 +949,11 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 			}
 			result, err = exec.formatStringValues(left.String(), values, left, []Value{right}, nil, NewNil())
 		} else {
+			if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
+				if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+					return NewNil(), exec.wrapError(err, pos)
+				}
+			}
 			result, err = moduloValues(left, right)
 		}
 	case tokenShovel:

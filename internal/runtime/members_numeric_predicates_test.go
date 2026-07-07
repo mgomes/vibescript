@@ -117,14 +117,21 @@ func TestNumericHelperArgumentRejection(t *testing.T) {
 func TestIntegerSuccessorOverflow(t *testing.T) {
 	t.Parallel()
 
-	// succ/pred cannot grow beyond int64, unlike Ruby's arbitrary-precision
-	// integers, so the boundary cases report an overflow rather than wrapping.
+	// succ/pred promote past the int64 boundary (issue #919), matching Ruby's
+	// arbitrary-precision integers; these cases previously pinned the
+	// "int.succ/int.pred overflow" errors.
 	succScript := compileScript(t, "def run(n)\n  n.succ\nend")
-	requireCallErrorContains(t, succScript, "run", []Value{NewInt(math.MaxInt64)}, CallOptions{}, "int.succ overflow")
+	if got := callFunc(t, succScript, "run", []Value{NewInt(math.MaxInt64)}); !got.IsBigInt() || got.String() != "9223372036854775808" {
+		t.Fatalf("MaxInt64.succ = %s (big=%v), want promoted 9223372036854775808", got, got.IsBigInt())
+	}
 
 	nextScript := compileScript(t, "def run(n)\n  n.next\nend")
-	requireCallErrorContains(t, nextScript, "run", []Value{NewInt(math.MaxInt64)}, CallOptions{}, "int.next overflow")
+	if got := callFunc(t, nextScript, "run", []Value{NewInt(math.MaxInt64)}); got.String() != "9223372036854775808" {
+		t.Fatalf("MaxInt64.next = %s, want promoted 9223372036854775808", got)
+	}
 
 	predScript := compileScript(t, "def run(n)\n  n.pred\nend")
-	requireCallErrorContains(t, predScript, "run", []Value{NewInt(math.MinInt64)}, CallOptions{}, "int.pred overflow")
+	if got := callFunc(t, predScript, "run", []Value{NewInt(math.MinInt64)}); !got.IsBigInt() || got.String() != "-9223372036854775809" {
+		t.Fatalf("MinInt64.pred = %s (big=%v), want promoted -9223372036854775809", got, got.IsBigInt())
+	}
 }

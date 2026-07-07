@@ -577,7 +577,10 @@ func taskConcurrency(exec *Execution, method string, kwargs map[string]Value, al
 		if rawMax.Kind() != KindInt {
 			return 0, fmt.Errorf("%s max must be an integer", method)
 		}
-		requested := rawMax.Int()
+		requested, compact := rawMax.CompactInt()
+		if !compact {
+			return 0, fmt.Errorf("%s max must fit in a 64-bit integer", method)
+		}
 		if requested < 1 {
 			return 0, fmt.Errorf("%s max must be at least 1", method)
 		}

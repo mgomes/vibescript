@@ -275,6 +275,10 @@ func NewInt(i int64) Value { return value.NewInt(i) }
 // and normalizing to the compact representation when it fits int64.
 func newBigIntValue(i *big.Int) Value { return value.NewBigInt(i) }
 
+// eitherIntPayload reports whether either int operand carries a payload beyond
+// the compact scalar (two nil compares; see value.EitherIntPayload).
+func eitherIntPayload(a, b Value) bool { return value.EitherIntPayload(a, b) }
+
 // NewFloat returns a floating-point Value.
 func NewFloat(f float64) Value { return value.NewFloat(f) }
 

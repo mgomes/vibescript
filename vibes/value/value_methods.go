@@ -1239,13 +1239,15 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 	case KindBool:
 		return v.Bool() == other.Bool()
 	case KindInt:
-		vBig, vOK := v.data.(*big.Int)
-		oBig, oOK := other.data.(*big.Int)
-		if vOK || oOK {
-			// The canonical invariant keeps the compact and big value spaces
-			// disjoint (a big payload never fits int64), so a mixed pair is
-			// never equal and two big payloads compare by exact value.
-			return vOK && oOK && vBig.Cmp(oBig) == 0
+		if v.data != nil || other.data != nil {
+			vBig, vOK := v.data.(*big.Int)
+			oBig, oOK := other.data.(*big.Int)
+			if vOK || oOK {
+				// The canonical invariant keeps the compact and big value
+				// spaces disjoint (a big payload never fits int64), so a mixed
+				// pair is never equal and two big payloads compare exactly.
+				return vOK && oOK && vBig.Cmp(oBig) == 0
+			}
 		}
 		return v.Int() == other.Int()
 	case KindFloat:

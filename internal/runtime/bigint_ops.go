@@ -234,3 +234,114 @@ func moneyIntOperand(val Value) (int64, error) {
 	}
 	return 0, value.ErrMoneyOverflow
 }
+
+// bigIntStepWordsPerStep is the number of big-integer payload words one
+// sandbox step covers when an arithmetic operation charges for big operands.
+// Under the conventional 50k step quota this stops a chain of roughly 400k
+// words (~25M bits) of operand traffic — million-bit multiplications cost
+// thousands of steps instead of hiding as O(1) ops.
+const bigIntStepWordsPerStep = 8
+
+// bigIntMulPreflightWords is the projected product size (in words) above which
+// a multiplication preflights the result allocation against the memory quota
+// before computing. Small promotions skip the base-walk so ordinary
+// slightly-over-int64 arithmetic stays cheap.
+const bigIntMulPreflightWords = 64
+
+// checkBigIntOperationGuards scales the sandbox cost of an integer operation
+// with its big operands: steps proportional to the operands' total word count,
+// plus (for multiplication) a memory preflight of the product's projected word
+// count, which is bounded by lwords+rwords. Callers invoke it only when at
+// least one operand carries a big payload, keeping the compact path free of
+// extra work.
+func (exec *Execution) checkBigIntOperationGuards(operator TokenType, left, right Value) error {
+	words := 0
+	if bi, ok := value.BigIntPayload(left); ok {
+		words += len(bi.Bits())
+	}
+	if bi, ok := value.BigIntPayload(right); ok {
+		words += len(bi.Bits())
+	}
+	if words == 0 {
+		return nil
+	}
+	if operator == tokenAsterisk && words > bigIntMulPreflightWords {
+		// A product's size is at most the sum of its factors' sizes (+1 word).
+		if err := exec.checkProjectedBigIntBytes(words + 1); err != nil {
+			return err
+		}
+	}
+	return exec.stepN(1 + words/bigIntStepWordsPerStep)
+}
+
+// checkIntPowerGuards preflights an integer exponentiation before it runs
+// (#604 convention): the projected result size — roughly exp x bits(base) —
+// is charged against the memory quota and the step quota in O(1), so
+// `2 ** 10_000_000_000` rejects immediately instead of attempting the
+// allocation. Bases -1, 0, and 1 never grow and skip the guards; negative and
+// big exponents resolve inside powerValues (float fallthrough or Ruby's
+// "exponent is too large").
+func (exec *Execution) checkIntPowerGuards(base, exp Value) error {
+	e, ok := exp.CompactInt()
+	if !ok || e <= 0 {
+		return nil
+	}
+	// Projected result bits: exp x log2(|base|), rounded up. Using the exact
+	// log2 for compact bases (rather than the bit length) keeps the common
+	// power-of-two bases from projecting twice their true size; big bases use
+	// the bit length, an upper bound within one bit per multiplication.
+	var baseLog2 float64
+	if bi, bok := value.BigIntPayload(base); bok {
+		baseLog2 = float64(bi.BitLen())
+	} else {
+		b, _ := base.CompactInt()
+		if b >= -1 && b <= 1 {
+			return nil
+		}
+		mag := uint64(b)
+		if b < 0 {
+			mag = -mag
+		}
+		baseLog2 = math.Log2(float64(mag))
+	}
+	projWords := math.MaxInt / (estimatedBigIntWordBytes * 2)
+	if projBits := float64(e) * baseLog2; projBits < float64(math.MaxInt/16) {
+		projWords = int(projBits)/64 + 2
+	}
+	if projWords <= bigIntMulPreflightWords {
+		// Small projected results (a few thousand bits) stay near-free, so
+		// ordinary compact exponentiation charges nothing extra here.
+		return nil
+	}
+	if err := exec.checkProjectedBigIntBytes(projWords); err != nil {
+		return err
+	}
+	return exec.stepN(1 + projWords/bigIntStepWordsPerStep)
+}
+
+// chargeBigIntReceiverSteps scales the step cost of a unary big-integer
+// member operation (abs, succ, pred, rounding) with the receiver's word
+// count, mirroring checkBigIntOperationGuards for single-operand work. It is
+// a no-op for compact receivers.
+func (exec *Execution) chargeBigIntReceiverSteps(v Value) error {
+	bi, ok := value.BigIntPayload(v)
+	if !ok {
+		return nil
+	}
+	return exec.stepN(1 + len(bi.Bits())/bigIntStepWordsPerStep)
+}
+
+// bigIntDecimalDigitsUpperBound is the runtime-side twin of the value
+// package's decimal-length upper bound, used by format projections that
+// already hold the payload.
+func bigIntDecimalDigitsUpperBound(bi *big.Int) int {
+	bits := bi.BitLen()
+	if bits == 0 {
+		return 1
+	}
+	digits := bits*30103/100000 + 1
+	if bi.Sign() < 0 {
+		digits++
+	}
+	return digits
+}
