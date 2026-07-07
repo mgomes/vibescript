@@ -1,0 +1,3 @@
+out = []
+"a\nb\n".each_line { |l| out = out + [l] }
+out # ["a\n", "b\n"]

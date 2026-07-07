@@ -1,0 +1,5 @@
+# modules/pricing/tax.vibe
+def compute(amount)
+  rates = require("./rates")
+  amount * rates.current
+end

@@ -1,0 +1,4 @@
+reminder = 5.minutes
+timeout = 2.hours
+delay = 30.seconds
+long_wait = 7.days

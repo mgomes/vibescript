@@ -1,0 +1,2 @@
+"one two  three".split  # ["one", "two", "three"]
+"  a  b  ".split        # ["a", "b"]

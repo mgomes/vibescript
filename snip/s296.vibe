@@ -1,0 +1,4 @@
+def validate_amount(amount)
+  assert amount > 0, "amount must be positive"
+  amount
+end

@@ -1,0 +1,3 @@
+Status::Draft.name   # "Draft"
+Status::Draft.symbol # :draft
+Status::Draft.enum   # <Enum Status>

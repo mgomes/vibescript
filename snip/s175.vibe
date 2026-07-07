@@ -1,0 +1,5 @@
+def public_profile(record)
+  record
+    .slice(:name, :raised, :goal)
+    .reject { |key, value| value == nil }
+end

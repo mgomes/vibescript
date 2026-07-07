@@ -1,0 +1,4 @@
+"abc".codepoints # [97, 98, 99]
+"Aé".codepoints  # [65, 233]
+"😀".codepoints   # [128512]
+"".codepoints    # []

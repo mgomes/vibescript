@@ -1,0 +1,5 @@
+def clean_input(text)
+  text.strip
+end
+
+clean_input("  hello  ")  # "hello"

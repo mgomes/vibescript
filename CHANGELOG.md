@@ -9,6 +9,60 @@ All notable changes to this project will be documented in this file.
 <!-- Unreleased entries are tracked as individual files in changelog.d/ so
      pull requests never conflict on this file. They are compiled into a
      versioned section by scripts/build_changelog.sh at release time. -->
+## v1.0.0-rc2 - 2026-07-07
+
+Second release candidate: arbitrary-precision integers land, and the two
+gaps the rc1 artifact smoke test surfaced are fixed. Integer overflow
+errors are replaced by promotion — see the migration guide
+([docs/migrating-to-1.0.md](docs/migrating-to-1.0.md)) for that and the
+parenless-bracket rule's accessor edge.
+
+- **Added: array literals as parenless command arguments.** A bracket
+  detached from a non-local callee now opens an array-literal argument,
+  matching Ruby's spacing rule: `puts [3, 1, 2].sort` is
+  `puts([3, 1, 2].sort)`, and further arguments may follow
+  (`concat [1], [2]`). A flush bracket keeps the indexing reading —
+  `puts[1]` still tries to index the callee — and a known local indexes in
+  every spacing, so `a [0]` and `a [0] = 1` are unchanged when `a` is a
+  local.
+  Breaking edge: bare accessor names in method bodies are non-local callees,
+  so `items [0]` with `getter items` now passes an array argument (an arity
+  error at runtime, exactly as in Ruby) instead of indexing the accessor
+  value — index through a receiver (`self.items[0]`) or a flush bracket.
+  `self [0]` is pinned to keep indexing: `self` is never a command callee.
+- **Fixed: `first(n)` works on endless ranges.** `(1..).first(3)` returns
+  `[1, 2, 3]` instead of rejecting with `cannot iterate an endless range`: the
+  leading window starts at the known endpoint, so it is bounded work despite
+  the open end, and it charges the sandbox step and memory quotas like any
+  materializer. Genuinely unbounded operations (`each`, `to_a`, `last` on the
+  open side) still reject up front, and beginless ranges still reject `first`
+  entirely, matching Ruby. A window reaching the integer ceiling stops at the
+  largest representable integer rather than wrapping.
+- **Changed: integers are arbitrary precision with Ruby-style transparent
+  promotion (#919).** Arithmetic (`+ - * / % **`, unary minus), `abs`,
+  `succ`/`pred`, `div`/`divmod`/`modulo`/`remainder`, rounding,
+  `sum`/`reduce`, and `Float`→`int` conversions promote past the signed
+  64-bit range instead of raising `... result out of int64 range`; integer
+  literals of any length now parse (previously `invalid integer literal`);
+  and `JSON.parse` reads oversized integer tokens as exact integers
+  (previously degraded to floats) while `JSON.stringify` emits full
+  decimals. Division and modulo keep floor semantics for big operands, big
+  vs float comparisons are exact, big values work as hash keys, and typed
+  `int` contracts accept them. Hosts get `value.NewBigInt`, `Value.BigInt`,
+  and `Value.IsBigInt`; integer literals parse up to a 100,000-digit parser
+  guard (larger values remain constructible through charged arithmetic);
+  `Value.Int` still returns `0` for out-of-range
+  integers (never a truncation), and `ValueToInt64` rejects them. Scripts
+  or hosts relying on the old overflow errors as range guards must validate
+  magnitudes explicitly (see the migration guide). Deliberate 64-bit
+  boundaries error loudly: range endpoints, `times`/`upto`/`downto`/`step`
+  iteration bounds, `Money`/`Duration`/`Time` arithmetic, string
+  `hex`/`oct`, and index/count/size/precision argument positions. The
+  sandbox charges big payloads by size, scales step costs with operand
+  words, preflights `**` and oversized products in O(1)
+  (`2 ** 10_000_000_000` rejects instantly), and preflights digit counts
+  before any base conversion renders.
+
 ## v1.0.0-rc1 - 2026-07-06
 
 Vibescript 1.0 aligns the language, the class system, and the collection

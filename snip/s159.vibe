@@ -1,0 +1,7 @@
+player = {
+  "first-name": "Ada",
+  "last name": "Lovelace"
+}
+
+player["first-name"]  # "Ada"
+player[:"first-name"] # nil

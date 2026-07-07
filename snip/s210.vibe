@@ -1,0 +1,10 @@
+def shout(words)
+  words.map(&:upcase)
+end
+
+def total(numbers)
+  numbers.reduce(&:+)
+end
+
+shout(["a", "b"]) # => ["A", "B"]
+total([1, 2, 3])  # => 6

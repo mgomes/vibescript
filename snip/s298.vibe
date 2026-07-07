@@ -1,0 +1,1 @@
+price = money_cents(2550, "USD")  # $25.50 USD

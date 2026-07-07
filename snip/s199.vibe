@@ -1,0 +1,7 @@
+class User
+end
+
+user = User.new
+user.is_a?(User)            # true
+user.instance_of?(User)     # true
+user.respond_to?(:greet)    # false  (no such method)

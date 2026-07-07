@@ -1,0 +1,8 @@
+def m(x = nil)
+  if x
+    x
+  else
+    [5, 6]
+  end
+end
+puts m [0]

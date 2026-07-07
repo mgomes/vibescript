@@ -1,0 +1,4 @@
+"x".itself     # "x"
+3.itself       # 3
+[1, 2].itself  # [1, 2]
+nil.itself     # nil

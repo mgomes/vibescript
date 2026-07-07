@@ -1,0 +1,17 @@
+class Secret
+  private
+
+  def hidden
+    "hidden"
+  end
+
+  def also_hidden
+    "hidden too"
+  end
+
+  public
+
+  def shown
+    hidden
+  end
+end

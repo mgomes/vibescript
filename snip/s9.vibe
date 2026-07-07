@@ -1,0 +1,15 @@
+def schedule_reminder(event, advance_notice)
+  event_time = event[:scheduled_at]
+  reminder_time = event_time - advance_notice
+
+  {
+    event_id: event[:id],
+    reminder_at: reminder_time,
+    advance_seconds: advance_notice.seconds
+  }
+end
+
+schedule_reminder(
+  { id: 123, scheduled_at: "2025-01-15T10:00:00Z" },
+  30.minutes
+)

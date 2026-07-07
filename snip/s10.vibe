@@ -1,0 +1,3 @@
+def apply_fee(amount)
+  amount + 1
+end

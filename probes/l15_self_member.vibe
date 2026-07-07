@@ -1,0 +1,10 @@
+class C
+  getter items
+  def initialize
+    @items = [10, 20]
+  end
+  def m
+    self.items [0]
+  end
+end
+puts C.new.m

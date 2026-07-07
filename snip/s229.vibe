@@ -1,0 +1,5 @@
+name = "Ada"
+greeting = %W[hello #{name} world]      # ["hello", "Ada", "world"]
+labels   = %I[hello #{name} world]      # [:hello, :Ada, :world]
+spaced   = %W[a #{1 + 2} d]             # ["a", "3", "d"]
+escaped  = %W[tab\there a\ b]           # ["tab\there", "a b"]

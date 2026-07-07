@@ -1,0 +1,5 @@
+def calculate_total(items)
+  items.reduce(0) do |acc, item|
+    acc + item[:amount]
+  end
+end

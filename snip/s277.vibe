@@ -1,0 +1,11 @@
+1 == 1        # true
+1.eql?(1)     # true
+1.eql?(1.0)   # false (Int never eql-matches a Float)
+1.equal?(1)   # true
+
+a = [1, 2, 3]
+b = a
+c = [1, 2, 3]
+a.eql?(c)     # true  (same contents)
+a.equal?(b)   # true  (same object)
+a.equal?(c)   # false (distinct objects)

@@ -1,0 +1,5 @@
+status = if active
+  "open"
+else
+  "closed"
+end

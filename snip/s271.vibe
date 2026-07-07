@@ -1,0 +1,3 @@
+def publish(status: Status) -> Status
+  status
+end

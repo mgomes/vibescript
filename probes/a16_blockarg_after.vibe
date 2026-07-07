@@ -1,0 +1,5 @@
+def f(x)
+  yield x
+end
+blk = ->(v) { puts v }
+f [1], &blk

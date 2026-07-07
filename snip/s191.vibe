@@ -1,0 +1,11 @@
+class Helper
+  private def secret
+    42
+  end
+
+  private property token: string
+
+  def call_internal
+    secret
+  end
+end

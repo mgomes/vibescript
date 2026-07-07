@@ -1,0 +1,1 @@
+"vibescript".include?("script") # true

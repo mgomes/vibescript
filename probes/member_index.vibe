@@ -1,0 +1,4 @@
+def run(xs)
+  xs.first [0]
+end
+puts run([[7, 8], [9]])

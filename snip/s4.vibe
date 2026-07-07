@@ -1,0 +1,2 @@
+(2.hours).format    # "7200s"
+(30.seconds).format # "30s"

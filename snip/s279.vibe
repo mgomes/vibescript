@@ -1,0 +1,5 @@
+42.nil?     # false
+nil.nil?    # true
+[1, 2].nil? # false
+42.string   # "42"
+:ok.to_s    # "ok"

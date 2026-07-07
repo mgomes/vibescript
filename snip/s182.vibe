@@ -1,0 +1,13 @@
+class Counter
+  def initialize(start)
+    @count = start
+  end
+
+  def value
+    @count
+  end
+
+  def increment
+    @count = @count + 1
+  end
+end

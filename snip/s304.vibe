@@ -1,0 +1,2 @@
+short = random_id(8)
+token = random_id()

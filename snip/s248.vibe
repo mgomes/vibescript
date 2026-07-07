@@ -1,0 +1,3 @@
+def start_of_year
+  Time.utc(2024).iso8601 # "2024-01-01T00:00:00Z"
+end

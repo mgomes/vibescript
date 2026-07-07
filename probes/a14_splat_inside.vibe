@@ -1,0 +1,5 @@
+def f(x)
+  x
+end
+a = [1, 2]
+puts f [*a, 3]

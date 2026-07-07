@@ -1,0 +1,8 @@
+"abc".byteslice(1)       # "b"
+"Aé".byteslice(1, 2)     # "é" (the two bytes of é)
+"abc".byteslice(1, 10)   # "bc" (length clamps to what is available)
+"abc".byteslice(1..3)    # "bc"
+"abc".byteslice(-2, 1)   # "b"
+"abc".byteslice(3, 2)    # ""
+"abc".byteslice(4, 1)    # nil
+"abc".byteslice(0, -1)   # nil

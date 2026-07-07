@@ -1,0 +1,2 @@
+"hi".ljust(5, ".") # "hi..."
+"hi".ljust(7, "ab") # "hiababa"

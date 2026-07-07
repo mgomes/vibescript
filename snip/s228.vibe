@@ -1,0 +1,2 @@
+words = %w[alpha beta gamma]
+statuses = %i[draft published archived]

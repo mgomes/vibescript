@@ -1,0 +1,6 @@
+"abc".casecmp("ABC") # 0
+"abc".casecmp("ABD") # -1
+"abd".casecmp("ABC") # 1
+"[".casecmp("A")     # -1
+"z".casecmp("[")     # 1
+"abc".casecmp(1)     # nil

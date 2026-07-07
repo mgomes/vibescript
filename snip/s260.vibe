@@ -1,0 +1,8 @@
+def entries
+  out = []
+  for pair in { b: 2, a: 1 }
+    out = out + [pair]
+  end
+  out
+end
+# entries => [[:a, 1], [:b, 2]]

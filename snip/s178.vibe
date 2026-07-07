@@ -1,0 +1,11 @@
+pairs = []
+{ a: 1, b: 2 }.each do |pair|
+  pairs.push(pair)
+end
+# pairs == [[:a, 1], [:b, 2]]
+
+entries = []
+{ a: 1, b: 2 }.each do |key, value|
+  entries.push([key, value])
+end
+# entries == [[:a, 1], [:b, 2]]

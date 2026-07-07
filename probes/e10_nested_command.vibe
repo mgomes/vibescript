@@ -1,0 +1,7 @@
+def f(x)
+  x
+end
+def g(x)
+  x
+end
+puts f g [1]

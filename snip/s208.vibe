@@ -1,0 +1,7 @@
+def run
+  double = ->(n) { n * 2 }
+  add = lambda do |a, b|
+    a + b
+  end
+  add.call(double.call(20), 2) # => 42
+end

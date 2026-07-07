@@ -1,0 +1,10 @@
+def safe_div(a, b)
+  begin
+    a / b
+  rescue RuntimeError => err
+    audit(err.message)
+    "fallback"
+  ensure
+    audit("safe_div attempted")
+  end
+end

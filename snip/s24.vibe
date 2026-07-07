@@ -1,0 +1,2 @@
+h = {}
+h[computed_key] = 1

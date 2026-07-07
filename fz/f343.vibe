@@ -1,0 +1,4 @@
+def fn(x)
+  x
+end
+fn	[1, 2] if true

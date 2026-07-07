@@ -1,0 +1,7 @@
+x = 0
+value = loop do
+  x = x + 1
+  if x == 3
+    break :done
+  end
+end

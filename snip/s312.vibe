@@ -1,0 +1,4 @@
+Regex.match("ID-[0-9]+", "ID-12 ID-34")                  # "ID-12"
+Regex.replace("ID-12 ID-34", "ID-[0-9]+", "X")           # "X ID-34"
+Regex.replace_all("ID-12 ID-34", "ID-[0-9]+", "X")       # "X X"
+Regex.replace("ID-12", "ID-([0-9]+)", "X-$1")            # "X-12"

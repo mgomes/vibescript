@@ -1,0 +1,11 @@
+def inc(n)
+  n + 1
+end
+
+def twice_direct(fn)
+  fn(2)
+end
+
+def twice_call(fn)
+  fn.call(2)
+end

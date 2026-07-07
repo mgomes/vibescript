@@ -1,0 +1,6 @@
+def f(*xs)
+  xs.size
+end
+rest = [3, 4]
+blk = ->(v) { v }
+puts f [1], *rest, &blk

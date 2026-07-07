@@ -1,0 +1,8 @@
+def entries(hash)
+  out = []
+  for pair in hash
+    out = out + [pair]
+  end
+  out
+end
+# entries({ b: 2, a: 1 }) => [[:b, 2], [:a, 1]]

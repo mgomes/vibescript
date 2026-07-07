@@ -1,0 +1,5 @@
+def f
+  99
+end
+f
+[1].each { |v| puts v }

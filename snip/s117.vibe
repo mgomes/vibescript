@@ -1,0 +1,2 @@
+"no-sep".partition("=") # ["no-sep", "", ""]
+"abc".partition("")     # ["", "", "abc"]

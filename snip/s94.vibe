@@ -1,0 +1,2 @@
+"hello".sub("l") do |m| m.upcase end                 # "heLlo"
+"abc".sub("[bc]", regex: true) do |m| m.upcase end   # "aBc"

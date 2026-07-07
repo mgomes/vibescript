@@ -1,0 +1,5 @@
+class User
+  property name: string
+  getter age: int?
+  property x: int, y: int
+end

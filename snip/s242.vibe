@@ -1,0 +1,11 @@
+def unique_participants(core, late)
+  (core + late).uniq.compact
+end
+
+def without_dropouts(participants, dropouts)
+  participants - dropouts
+end
+
+def shared(left, right)
+  left & right
+end

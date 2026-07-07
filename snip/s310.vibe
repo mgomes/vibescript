@@ -1,0 +1,1 @@
+raw = JSON.stringify({ id: "p-1", score: 10, tags: ["a", "b"] })

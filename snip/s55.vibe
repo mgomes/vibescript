@@ -1,0 +1,5 @@
+"ff".hex      # 255
+"0xff".hex    # 255
+"-1A".hex     # -26
+"ff zoo".hex  # 255
+"garbage".hex # 0
