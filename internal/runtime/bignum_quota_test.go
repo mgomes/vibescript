@@ -280,8 +280,6 @@ func TestBignumStringBoundedTruncationPathIsSane(t *testing.T) {
 	t.Parallel()
 	// ErrStringRenderTruncated behavior for big values: the CLI-facing bounded
 	// renderer refuses fast and returns an empty partial rather than digits.
-	v := NewInt(0)
-	_ = v
 	script := compileScript(t, `
     def build
       2 ** 200_000

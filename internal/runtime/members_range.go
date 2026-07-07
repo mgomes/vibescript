@@ -1,11 +1,11 @@
 package runtime
 
 import (
+	"fmt"
+	"math"
 	"math/big"
 
 	"github.com/mgomes/vibescript/vibes/value"
-	"fmt"
-	"math"
 )
 
 // rangeMaterializeInitialCap bounds the capacity reserved up front when
