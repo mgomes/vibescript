@@ -119,6 +119,15 @@ program (see the `vibes/value` package doc for the host-facing wording):
 
 - Results of `Script.Call` are independent copies; mutating them through
   any Tier 1 or Tier 2 primitive never changes what a later Call observes.
+  One sharing note: an out-of-int64-range integer's `*big.Int` payload is
+  shared, not copied, across the clone boundary. This is safe because big
+  payloads are immutable by contract — nothing on either side mutates a
+  wrapped `*big.Int`, and `Value.BigInt` copies on the way out — so the
+  sharing is unobservable through the supported surface. `Value.Data` is
+  the one escape hatch that exposes the live pointer; mutating it corrupts
+  the value (its doc says so) and, for a value that came out of a Call, can
+  corrupt what a later Call observes. Treat `Data`'s big payload as
+  read-only and use `BigInt` for an owned copy.
 - Arguments and `CallOptions.Globals` are never mutated by the script;
   mutating them **between** calls is safe and the next call sees the new
   contents.

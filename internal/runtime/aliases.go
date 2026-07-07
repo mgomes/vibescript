@@ -638,6 +638,15 @@ func cloneValueForHost(val Value) Value {
 }
 
 func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
+	// Scalars fall through the default arm unchanged. That includes a big
+	// integer, whose *big.Int payload is deliberately SHARED with the clone
+	// rather than copied: big payloads are immutable by construction (see
+	// vibes/value/bigint.go — no code mutates a wrapped *big.Int, and the
+	// host-facing accessors copy on the way out), so sharing is
+	// indistinguishable from copying while keeping host clones O(1) per
+	// scalar. A host that digs the live pointer out through Value.Data and
+	// mutates it violates that documented contract; Value.BigInt is the safe
+	// accessor.
 	switch val.Kind() {
 	case KindArray:
 		items := val.Array()
