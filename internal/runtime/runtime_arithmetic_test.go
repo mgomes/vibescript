@@ -258,22 +258,31 @@ func TestIntegerArithmeticOverflowErrors(t *testing.T) {
     end
     `)
 
+	// Results that overflow int64 promote to arbitrary-precision integers
+	// (issue #919); these cases previously pinned "out of int64 range" errors.
 	cases := []struct {
 		name string
 		fn   string
 		args []Value
+		want string
 	}{
-		{name: "addition_overflow", fn: "add", args: []Value{NewInt(math.MaxInt64), NewInt(1)}},
-		{name: "subtraction_underflow", fn: "subtract", args: []Value{NewInt(math.MinInt64), NewInt(1)}},
-		{name: "multiplication_overflow", fn: "multiply", args: []Value{NewInt(math.MaxInt64/2 + 1), NewInt(2)}},
-		{name: "division_overflow", fn: "divide", args: []Value{NewInt(math.MinInt64), NewInt(-1)}},
-		{name: "exponentiation_overflow", fn: "exponent", args: []Value{NewInt(math.MaxInt64), NewInt(2)}},
+		{name: "addition_overflow", fn: "add", args: []Value{NewInt(math.MaxInt64), NewInt(1)}, want: "9223372036854775808"},
+		{name: "subtraction_underflow", fn: "subtract", args: []Value{NewInt(math.MinInt64), NewInt(1)}, want: "-9223372036854775809"},
+		{name: "multiplication_overflow", fn: "multiply", args: []Value{NewInt(math.MaxInt64/2 + 1), NewInt(2)}, want: "9223372036854775808"},
+		{name: "division_overflow", fn: "divide", args: []Value{NewInt(math.MinInt64), NewInt(-1)}, want: "9223372036854775808"},
+		{name: "exponentiation_overflow", fn: "exponent", args: []Value{NewInt(math.MaxInt64), NewInt(2)}, want: "85070591730234615847396907784232501249"},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			requireCallErrorContains(t, script, tc.fn, tc.args, CallOptions{}, "out of int64 range")
+			got := callFunc(t, script, tc.fn, tc.args)
+			if got.Kind() != KindInt || !got.IsBigInt() {
+				t.Fatalf("%s = %v (kind %v, big %v); want a promoted big integer", tc.fn, got, got.Kind(), got.IsBigInt())
+			}
+			if got.String() != tc.want {
+				t.Fatalf("%s = %s; want %s", tc.fn, got.String(), tc.want)
+			}
 		})
 	}
 

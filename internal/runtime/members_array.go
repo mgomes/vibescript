@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"unsafe"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // arrayMemberNames mirrors the names dispatched by arrayMember and feeds
@@ -830,6 +832,11 @@ func newHashAggregationKey(val Value) (hashAggregationKey, error) {
 		}
 		return hashAggregationKey{kind: KindBool}, nil
 	case KindInt:
+		if bi, ok := value.BigIntPayload(val); ok {
+			// Big integers aggregate by decimal text, disjoint from compact
+			// keys (numeric field, empty text) by the canonical invariant.
+			return hashAggregationKey{kind: KindInt, text: bi.Text(10)}, nil
+		}
 		return hashAggregationKey{kind: KindInt, number: val.Int()}, nil
 	case KindFloat:
 		f := val.Float()

@@ -4337,6 +4337,11 @@ func keywordIndex(call staticCallView, name string) int {
 func staticLiteralValue(expr Expression) (Value, bool) {
 	switch typed := expr.(type) {
 	case *IntegerLiteral:
+		if typed.Big != nil {
+			// Big literals stay non-static: every folding consumer reads the
+			// int64 field, and treating the literal as dynamic is always safe.
+			return NewNil(), false
+		}
 		return NewInt(typed.Value), true
 	case *FloatLiteral:
 		return NewFloat(typed.Value), true

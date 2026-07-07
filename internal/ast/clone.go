@@ -1,5 +1,7 @@
 package ast
 
+import "math/big"
+
 // CloneParams returns a deep copy of the given parameter list.
 func CloneParams(params []Param) []Param {
 	return cloneParams(params)
@@ -313,6 +315,9 @@ func cloneExpression(expr Expression) Expression {
 		return &clone
 	case *IntegerLiteral:
 		clone := *e
+		if e.Big != nil {
+			clone.Big = new(big.Int).Set(e.Big)
+		}
 		return &clone
 	case *FloatLiteral:
 		clone := *e

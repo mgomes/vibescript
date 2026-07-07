@@ -3,6 +3,7 @@ package parser
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -847,6 +848,13 @@ func (p *parser) parseIdentifier() ast.Expression {
 func (p *parser) parseIntegerLiteral() ast.Expression {
 	value, err := parseIntegerToken(p.curToken.Literal)
 	if err != nil {
+		// A literal that overflows int64 is still a valid integer: it promotes
+		// to an arbitrary-precision value. Anything else stays a parse error.
+		if errors.Is(err, strconv.ErrRange) {
+			if big, ok := parseBigIntegerToken(p.curToken.Literal); ok {
+				return &ast.IntegerLiteral{Big: big, Position: p.curToken.Pos}
+			}
+		}
 		p.addParseError(p.curToken.Pos, "invalid integer literal")
 		return nil
 	}
@@ -868,6 +876,25 @@ func parseIntegerToken(literal string) (int64, error) {
 		}
 	}
 	return strconv.ParseInt(literal, 10, 64)
+}
+
+// parseBigIntegerToken converts an out-of-int64-range integer literal into a
+// big.Int, honoring the same radix prefixes as parseIntegerToken. The result
+// never fits int64 (parseIntegerToken already accepted everything that does),
+// so the literal always evaluates to a big-integer value. The literal's length
+// is bounded by the engine's source-size guard, which bounds this conversion's
+// cost at parse time.
+func parseBigIntegerToken(literal string) (*big.Int, bool) {
+	if len(literal) >= 2 && literal[0] == '0' {
+		switch literal[1] {
+		case 'd', 'D':
+			return new(big.Int).SetString(literal[2:], 10)
+		case 'x', 'X', 'b', 'B', 'o', 'O':
+			// Base 0 decodes the 0x/0b/0o prefixes like strconv.ParseInt.
+			return new(big.Int).SetString(literal, 0)
+		}
+	}
+	return new(big.Int).SetString(literal, 10)
 }
 
 func (p *parser) parseFloatLiteral() ast.Expression {

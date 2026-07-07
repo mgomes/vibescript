@@ -76,6 +76,12 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		}
 		return val, nil
 	case *IntegerLiteral:
+		if e.Big != nil {
+			// Copy per evaluation so each occurrence yields a distinct object,
+			// matching Ruby, where every bignum literal evaluation allocates
+			// (equal? distinguishes them; == does not).
+			return newBigIntValue(e.Big), nil
+		}
 		return NewInt(e.Value), nil
 	case *FloatLiteral:
 		return NewFloat(e.Value), nil
@@ -508,7 +514,15 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 	case tokenMinus:
 		switch right.Kind() {
 		case KindInt:
-			return NewInt(-right.Int()), nil
+			if n, ok := right.CompactInt(); ok {
+				if n == math.MinInt64 {
+					// -MinInt64 does not fit int64; promote instead of the
+					// silent two's-complement wrap the unchecked negation had.
+					return negIntValueBig(right), nil
+				}
+				return NewInt(-n), nil
+			}
+			return negIntValueBig(right), nil
 		case KindFloat:
 			return NewFloat(-right.Float()), nil
 		default:
@@ -2484,6 +2498,9 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
+		if startVal.IsBigInt() {
+			return NewNil(), exec.errorAt(expr.Start.Pos(), "range endpoints must fit in a 64-bit integer")
+		}
 		start, err := valueToInt64(startVal)
 		if err != nil {
 			return NewNil(), exec.errorAt(expr.Start.Pos(), "%s", err.Error())
@@ -2494,6 +2511,9 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 		endVal, err := exec.evalExpression(expr.End, env)
 		if err != nil {
 			return NewNil(), err
+		}
+		if endVal.IsBigInt() {
+			return NewNil(), exec.errorAt(expr.End.Pos(), "range endpoints must fit in a 64-bit integer")
 		}
 		end, err := valueToInt64(endVal)
 		if err != nil {
@@ -2616,7 +2636,10 @@ func caseCandidateMatches(target, candidate Value) (bool, error) {
 
 	switch target.Kind() {
 	case KindInt:
-		return rangeContainsInt(candidate.Range(), target.Int()), nil
+		if n, ok := target.CompactInt(); ok {
+			return rangeContainsInt(candidate.Range(), n), nil
+		}
+		return rangeContainsBigInt(candidate.Range(), target), nil
 	case KindFloat:
 		return rangeContainsFloat(candidate.Range(), target.Float()), nil
 	default:
@@ -3518,6 +3541,11 @@ func literalIndexReceiverValue(e *IndexExpr, env *Env) (Value, bool) {
 	}
 	switch idx := e.Indices[0].(type) {
 	case *IntegerLiteral:
+		if idx.Big != nil {
+			// A big index can never resolve; fall to the slow path, which
+			// reports the index conversion error.
+			return NewNil(), false
+		}
 		if base.Kind() != KindArray {
 			return NewNil(), false
 		}

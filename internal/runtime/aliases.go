@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"math/big"
 	"fmt"
 	"reflect"
 	"time"
@@ -269,6 +270,10 @@ func NewBool(b bool) Value { return value.NewBool(b) }
 
 // NewInt returns an integer Value.
 func NewInt(i int64) Value { return value.NewInt(i) }
+
+// newBigIntValue returns an integer Value from a big.Int, copying the input
+// and normalizing to the compact representation when it fits int64.
+func newBigIntValue(i *big.Int) Value { return value.NewBigInt(i) }
 
 // NewFloat returns a floating-point Value.
 func NewFloat(f float64) Value { return value.NewFloat(f) }

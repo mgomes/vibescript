@@ -1,5 +1,7 @@
 package ast
 
+import "math/big"
+
 // Identifier represents a named reference in an expression.
 type Identifier struct {
 	Name     string
@@ -11,7 +13,11 @@ func (e *Identifier) Pos() Position { return e.Position }
 
 // IntegerLiteral represents an integer constant.
 type IntegerLiteral struct {
-	Value    int64
+	Value int64
+	// Big carries the literal's value when it does not fit in int64 (Value is
+	// then 0 and meaningless). It is immutable after parsing: consumers wrap
+	// it with value.NewBigInt, which copies, and clones share the pointer.
+	Big      *big.Int
 	Position Position
 }
 

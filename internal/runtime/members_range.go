@@ -535,7 +535,10 @@ func rangeMemberPredicate(property string) Value {
 		rng := receiver.Range()
 		switch args[0].Kind() {
 		case KindInt:
-			return NewBool(rangeContainsInt(rng, args[0].Int())), nil
+			if n, ok := args[0].CompactInt(); ok {
+				return NewBool(rangeContainsInt(rng, n)), nil
+			}
+			return NewBool(rangeContainsBigInt(rng, args[0])), nil
 		case KindFloat:
 			return NewBool(rangeContainsFloat(rng, args[0].Float())), nil
 		default:
