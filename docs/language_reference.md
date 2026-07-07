@@ -26,6 +26,15 @@ Vibescript supports these literal/value categories:
 - ranges (`1..5`, `1...5`)
 - duration literals (`5.minutes`, `2.days`)
 
+Integers are arbitrary precision, as in Ruby: literals of any length parse,
+arithmetic that leaves the signed 64-bit range promotes transparently, and a
+result that fits 64 bits again returns to the compact fast representation.
+There is a single `int` type; scripts never observe a separate "bignum" kind.
+A few surfaces deliberately stay within 64 bits and raise a clear error for
+larger values: range endpoints, iteration counts (`times`, `upto`, `downto`,
+`step`), `Money`/`Duration`/`Time` arithmetic, and argument positions that
+denote indexes, counts, sizes, or precisions.
+
 Numeric literals accept underscores as visual separators between digits
 (`1_000`, `1_000.50`). Floats may use scientific notation with an `e`/`E`
 marker, an optional sign, and one or more exponent digits (`1e3`, `1.5e-2`,
@@ -486,11 +495,14 @@ expression onto the next line. See
 Operator precedence follows conventional arithmetic/boolean ordering.
 Exponentiation with `**` is right-associative and binds more tightly than
 unary `-`, so `-2 ** 2` is parsed as `-(2 ** 2)`. Integer powers stay `int`
-when the exponent is non-negative and the result fits in 64 bits; mixed
-numeric powers and negative integer exponents return `float`. Integer
-overflow and non-finite float powers raise runtime errors. Division follows
-Ruby: integer division by zero (`1 / 0`) raises, while float division by zero
-(`1.0 / 0`) follows IEEE 754 and yields `Infinity`, `-Infinity`, or `NaN`.
+for non-negative exponents, promoting to arbitrary precision past 64 bits
+(`2 ** 100` is exact); mixed numeric powers and negative integer exponents
+return `float`. Non-finite float powers raise runtime errors, and an integer
+exponent so large that the result could not exist in memory raises
+`exponent is too large` (Ruby's ArgumentError) or trips the sandbox quotas.
+Division follows Ruby: integer division by zero (`1 / 0`) raises, while float
+division by zero (`1.0 / 0`) follows IEEE 754 and yields `Infinity`,
+`-Infinity`, or `NaN`.
 Inspect those special values with `Float#nan?`, `Float#infinite?`, and
 `Float#finite?`. `!` is a prefix operator, `&&` binds tighter than `||`, and
 ternary conditionals have lower precedence than `||`, associate to the right,

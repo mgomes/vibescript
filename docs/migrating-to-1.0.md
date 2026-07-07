@@ -574,7 +574,59 @@ the result with `finite?`/`nan?`:
 Coercing a non-finite float to an integer raises rather than yielding a
 garbage value.
 
-## 19. Sandbox quota timing
+## 19. Integer overflow errors are replaced by arbitrary-precision promotion
+
+Integers are now arbitrary precision, matching Ruby. In v0.50.x, arithmetic
+whose result left the signed 64-bit range raised `... result out of int64
+range`, a 20-plus-digit literal was an `invalid integer literal` parse error,
+and `JSON.parse` silently degraded oversized integer tokens to floats. All
+three now promote:
+
+```vibe
+9223372036854775807 + 1   # => 9223372036854775808 (previously raised)
+2 ** 100                  # => 1267650600228229401496703205376 (previously raised)
+340282366920938463463374607431768211456  # parses (previously a parse error)
+JSON.parse("[9223372036854775808]")[0]   # exact int (previously 9.223372036854776e+18)
+```
+
+There is still a single `int` type: values fitting 64 bits keep the compact
+representation, larger values carry an arbitrary-precision payload, and any
+result that fits 64 bits again returns to the compact form, so equality, hash
+keys, and `case`/`when` behave uniformly. Comparisons between huge integers
+and floats are exact (`(10 ** 20 + 1) > 1e20` is `true`; float conversion
+would have called them equal). `equal?` follows Ruby's object model: 64-bit
+integers stay value-identical, while two separately computed big integers are
+equal but not `equal?`.
+
+**What breaks.** Scripts (or hosts inspecting error text) that relied on the
+overflow errors as implicit range guards no longer get them: the arithmetic
+succeeds and produces a larger integer. Members that previously erred at the
+boundary now promote too: `abs` on the minimum integer, `succ`/`pred` at the
+boundaries, `div`/`divmod` of `min_int / -1`, negative-precision
+`round`/`floor`/`ceil` buckets, `Float#to_i`/`floor`/`ceil`/`round` of huge
+finite floats, and `Range#sum` totals. Fix: validate magnitudes explicitly
+where a domain requires 64-bit values, e.g. `raise("too large") if n >
+9223372036854775807` — or simply let the wider value flow.
+
+**What stays 64-bit (and errors loudly).** Range endpoints
+(`range endpoints must fit in a 64-bit integer`), the iteration members
+`times`/`upto`/`downto`/`step` (the sandbox will not schedule more than 2^63
+iterations), `Money`/`Duration`/`Time` arithmetic (their domains keep their
+existing overflow errors), string `hex`/`oct` parsing, and argument positions
+denoting indexes, counts, sizes, seeds, and precisions. A big integer at such
+a position raises a "must fit in a 64-bit integer"-family error instead of
+being truncated.
+
+**Sandbox interaction.** Big values are charged against the memory quota by
+size; arithmetic on them charges the step quota in proportion to operand
+size; `**` and oversized multiplications preflight their projected result
+before computing (`2 ** 10_000_000_000` rejects in O(1)); and rendering
+(`to_s`, interpolation, `puts`, `inspect`, JSON, `format`) preflights the
+digit count before the base conversion runs. Scripts running near their
+quotas may hit them at new points; size quotas for the real cost of the
+numbers involved.
+
+## 20. Sandbox quota timing
 
 Two quota-accounting changes can alter when (not whether) resource limits
 fire; scripts running close to their configured quotas may be affected.
@@ -600,7 +652,7 @@ destructuring windows, ephemeral block receivers) escaped the memory quota.
 Workloads that only fit because of that under-counting now fail with a quota
 error; the fix is to size quotas for the real peak.
 
-## 20. Smaller behavioral alignments
+## 21. Smaller behavioral alignments
 
 - **`Array#sum` honors its initial value and block** (previously silently
   ignored), and each addition must operate on compatible operands — summing

@@ -761,6 +761,17 @@ methods.
 
 ## Integers
 
+Integers are arbitrary precision: arithmetic, literals, comparisons, hash
+keys, string conversion, and JSON promote transparently past the signed
+64-bit range, and results that fit again return to the compact 64-bit
+representation. Two values of the same integer are always `==` and `eql?`;
+`equal?` follows Ruby's object model, where small (64-bit) integers are
+value-identical but two separately produced big integers are distinct
+objects. The deliberate 64-bit boundaries — each raising a clear error for a
+larger value — are range endpoints, the iteration members (`times`, `upto`,
+`downto`, `step`), `Money`/`Duration`/`Time` arithmetic, and argument
+positions denoting indexes, counts, sizes, or precisions.
+
 ### Duration Constructors
 
 Each returns a `duration` spanning that many units. Singular forms are
@@ -774,7 +785,8 @@ aliases, so `1.second` reads naturally.
 
 ### Numeric Helpers
 
-- `abs -> int` – absolute value; errors on the minimum 64-bit integer.
+- `abs -> int` – absolute value; the minimum 64-bit integer promotes to
+  `9223372036854775808` rather than erroring.
 - `clamp(min, max) -> int | float` / `clamp(range) -> int` – receiver bounded
   to the given bounds; integer and float bounds may be mixed, `nil` leaves one
   side open, and range form accepts inclusive integer ranges.
@@ -796,10 +808,10 @@ aliases, so `1.second` reads naturally.
 - `negative? -> bool` – true when less than `0`.
 - `nonzero? -> int?` – the receiver when nonzero, otherwise `nil`, matching
   Ruby (the result is truthy exactly when the number is nonzero).
-- `next -> int` / `succ -> int` – the next integer (`self + 1`); errors on
-  64-bit overflow rather than wrapping.
-- `pred -> int` – the previous integer (`self - 1`); errors on 64-bit
-  underflow rather than wrapping.
+- `next -> int` / `succ -> int` – the next integer (`self + 1`), promoting
+  past the 64-bit boundary.
+- `pred -> int` – the previous integer (`self - 1`), promoting past the
+  64-bit boundary.
 - `round(ndigits = 0) -> int` – non-negative `ndigits` return the receiver
   unchanged; negative `ndigits` round to the matching power of ten (e.g.
   `1234.round(-2)` is `1200`) half away from zero.
@@ -810,8 +822,7 @@ aliases, so `1.second` reads naturally.
   toward positive infinity (`1234.ceil(-2)` is `1300`).
 - `div(n) -> int` – floored division; the quotient rounds toward negative
   infinity, so mixed-sign operands round down (`(-5).div(2)` is `-3`). A zero
-  divisor errors, and the one quotient outside the 64-bit range
-  (`min_int.div(-1)`) errors rather than wrapping.
+  divisor errors; quotients outside the 64-bit range promote.
 - `divmod(n) -> [quotient, modulo]` – the floored quotient and the modulo whose
   sign follows the divisor. With integer arguments both elements are integers;
   a float argument makes the modulo a float.
@@ -835,8 +846,10 @@ aliases, so `1.second` reads naturally.
 `round`, `floor`, and `ceil` accept an optional Integer precision. As in Ruby,
 the precision must fit a 32-bit signed integer (Ruby reads it through `NUM2INT`),
 so a magnitude beyond that range raises rather than acting as a no-op. Results
-that leave the 64-bit integer range raise an error rather than widening like
-Ruby's arbitrary-precision integers.
+that leave the 64-bit integer range widen to arbitrary precision exactly like
+Ruby's; a bucket sized by an astronomical precision (for example
+`1.ceil(-1000000000)`, whose result is `10 ** 1000000000`) is preflighted
+against the sandbox's memory quota rather than materialized blindly.
 
 ## Floats
 
@@ -864,7 +877,7 @@ Ruby's arbitrary-precision integers.
   the value is infinite.
 - `finite? -> bool` – true when the value is neither infinite nor `NaN`.
 - `div(n) -> int` – floored division returning an integer; a zero divisor
-  errors, as does a quotient outside the 64-bit range.
+  errors; quotients outside the 64-bit range promote.
 - `divmod(n) -> [int, float]` – the floored quotient (an integer) and the
   float modulo whose sign follows the divisor. A zero divisor errors.
 - `fdiv(n) -> float` – floating division. As in Ruby, a zero divisor follows
@@ -876,8 +889,9 @@ Ruby's arbitrary-precision integers.
   follows the divisor (floored division); a zero divisor errors.
 - `to_s -> string` – the float's display text (Ruby's `Float#to_s`).
 - `string -> string` – alias for `to_s`.
-- `to_i -> int` – truncate toward zero (Ruby's `Float#to_i`); a non-finite or
-  out-of-range value raises rather than producing garbage.
+- `to_i -> int` – truncate toward zero (Ruby's `Float#to_i`); finite values
+  beyond 64 bits promote to exact integers, and a non-finite value raises
+  rather than producing garbage.
 - `to_f -> float` – the receiver itself.
 - `nil? -> bool` – always `false`.
 - `inspect -> string` – the float's debug rendering (same text as `to_s`,
@@ -903,8 +917,9 @@ non-finite duration arithmetic reports a clear error.
 `round`, `floor`, and `ceil` accept an optional Integer precision that defaults
 to `0`. As in Ruby, the precision must fit a 32-bit signed integer, so a
 magnitude beyond that range raises rather than acting as a no-op. Whenever the
-result is converted back to an `int` (zero or negative precision), values outside
-the 64-bit integer range raise an error.
+result is converted back to an `int` (zero or negative precision), finite
+values outside the 64-bit integer range promote to exact integers, matching
+Ruby; only `NaN` and the infinities raise.
 
 Vibescript has no rational number type, so Ruby's `quo` (which returns a
 `Rational` for integer operands) is intentionally not provided; use `fdiv` for
@@ -1152,7 +1167,7 @@ grows.
 - `count -> int` / `count { |i| } -> int` – the number of integers in the
   range, or, with a block, how many the block keeps.
 - `sum(initial = 0) -> int` – the sum of the range's integers plus `initial`;
-  errors on 64-bit overflow rather than wrapping.
+  totals past the 64-bit boundary promote to arbitrary precision.
 - `min -> int?` / `max -> int?` – the smallest or largest integer the range
   iterates over, or `nil` for an empty range.
 
@@ -1199,9 +1214,13 @@ Global functions and namespaces available in every script. See
 ### JSON
 
 - `JSON.parse(string) -> value` – parse JSON into hashes, arrays, strings,
-  ints, floats, bools, and nils; rejects trailing data.
+  ints, floats, bools, and nils; rejects trailing data. Integer tokens beyond
+  64 bits parse as exact integers (they previously degraded to floats);
+  float-looking tokens stay floats.
 - `JSON.stringify(value) -> string` – serialize hashes/objects, arrays, and
   scalars; symbols and enum values become strings; rejects cyclic structures.
+  Integers of any size emit their full decimal form (no float collapse, no
+  quotes), matching Ruby's JSON.
 
 Both directions enforce a 1 MiB payload limit and reject more than 10,000
 nested arrays/objects.
