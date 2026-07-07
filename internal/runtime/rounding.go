@@ -416,12 +416,36 @@ func pow10ValueChecked(exec *Execution, digits int) (Value, error) {
 }
 
 // decimalDigitCount returns the number of base-10 digits in |n|, treating zero
-// as a single digit.
+// as a single digit. It derives the count from the bit length in O(1): the
+// digit count of x is floor(log10 x) + 1, and log10 x lies in
+// [(bits-1)·log10 2, bits·log10 2), so the bit-length bounds pin the count
+// exactly for almost every value. When the bounds straddle a power of ten (a
+// band the float epsilons keep at most a few candidates wide), the count is
+// resolved with direct comparisons against 10^k instead of rendering the full
+// decimal text — the base conversion is superlinear and used to run on every
+// negative-precision rounding of a big receiver.
 func decimalDigitCount(n *big.Int) int {
 	if n.Sign() == 0 {
 		return 1
 	}
-	return len(new(big.Int).Abs(n).Text(10))
+	bits := n.BitLen()
+	const log10of2 = 0.30102999566398119
+	// Loosen each bound by a hair so float rounding can only widen the band,
+	// never exclude the true count.
+	low := int(float64(bits-1)*log10of2-1e-9) + 1
+	high := int(float64(bits)*log10of2+1e-9) + 1
+	if low == high {
+		return low
+	}
+	digits := low
+	for digits < high {
+		// |n| >= 10^digits means the count is at least digits+1.
+		if n.CmpAbs(pow10BigInt(digits)) < 0 {
+			break
+		}
+		digits++
+	}
+	return digits
 }
 
 // bigToInt64Checked converts n to an int64, reporting an overflow error when it
