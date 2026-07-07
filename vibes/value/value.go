@@ -1,6 +1,9 @@
 package value
 
-import "strconv"
+import (
+	"math/big"
+	"strconv"
+)
 
 // ValueKind identifies the type of a runtime Value.
 type ValueKind int
@@ -99,6 +102,12 @@ func NewValue(kind ValueKind, data any) Value {
 		if i, ok := data.(int64); ok {
 			return NewInt(i)
 		}
+		// A big-integer payload round-tripped through Data/NewValue is copied
+		// and re-normalized so the canonical invariant (big payloads never fit
+		// int64) holds even for hosts that mutate the payload between calls.
+		if bi, ok := data.(*big.Int); ok {
+			return NewBigInt(bi)
+		}
 	case KindFloat:
 		if f, ok := data.(float64); ok {
 			return NewFloat(f)
@@ -132,6 +141,11 @@ func NewValue(kind ValueKind, data any) Value {
 // and for the runtime-only kinds (functions, blocks, classes, instances,
 // enums) the concrete payload type behind Data is internal to the interpreter
 // and carries no compatibility promise.
+//
+// An integer outside the int64 range exposes its live *big.Int payload, like
+// arrays and hashes expose their live backing. Mutating it corrupts the value
+// (big payloads are immutable by contract); callers that need an owned copy
+// use BigInt instead.
 func (v Value) Data() any {
 	switch v.kind {
 	case KindHash:

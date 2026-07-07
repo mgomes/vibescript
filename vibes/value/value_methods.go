@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -106,6 +107,12 @@ func (v Value) String() string {
 		}
 		return "false"
 	case KindInt:
+		if bi, ok := v.data.(*big.Int); ok {
+			// Base conversion is superlinear in the value's size; sandboxed
+			// rendering paths preflight the digit count before reaching here
+			// (see the bounded renderers and the runtime's rendering guards).
+			return bi.Text(10)
+		}
 		return strconv.FormatInt(v.Int(), 10)
 	case KindFloat:
 		return FormatFloat(v.Float())
@@ -187,6 +194,12 @@ func (v Value) StringBounded(limit int) (string, error) {
 		}
 		return buf.String(), nil
 	default:
+		// A big integer whose rendering provably exceeds the budget is refused
+		// before the (superlinear) base conversion runs; the partial output is
+		// empty because no digits were ever materialized.
+		if bigIntRenderExceedsLimit(v, limit) {
+			return "", ErrStringRenderTruncated
+		}
 		s := v.String()
 		if len(s) > limit {
 			return s[:limit], ErrStringRenderTruncated
@@ -326,7 +339,12 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 	default:
 		// A scalar element may be an arbitrarily large string, so cap its write
 		// to the remaining budget instead of materializing the whole value in
-		// the buffer before checking the limit.
+		// the buffer before checking the limit. A big integer that provably
+		// cannot fit the remaining budget is refused before the (superlinear)
+		// base conversion ever runs.
+		if limit > 0 && bigIntRenderExceedsLimit(v, limit-buf.Len()) {
+			return ErrStringRenderTruncated
+		}
 		return appendBounded(buf, v.String(), limit)
 	}
 }
@@ -637,6 +655,12 @@ func (v Value) StringByteLenBounded(step func() error) (int, error) {
 		if err := step(); err != nil {
 			return 0, err
 		}
+		// A big integer's projection performs the same superlinear base
+		// conversion the rendering will; charge steps for it up front so the
+		// step quota trips before the conversion runs.
+		if err := chargeBigIntRenderSteps(v, step); err != nil {
+			return 0, err
+		}
 		return len(v.String()), nil
 	}
 }
@@ -653,6 +677,9 @@ func (v Value) StringRuneLenBounded(step func() error) (int, error) {
 		return v.stringRuneLenBoundedWithState(newValueStringState(), step)
 	default:
 		if err := step(); err != nil {
+			return 0, err
+		}
+		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
 		}
 		return utf8.RuneCountInString(v.String()), nil
@@ -734,6 +761,9 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 		}
 		return total, nil
 	default:
+		if err := chargeBigIntRenderSteps(v, step); err != nil {
+			return 0, err
+		}
 		return len(v.String()), nil
 	}
 }
@@ -836,6 +866,9 @@ func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func(
 		}
 		return total, nil
 	default:
+		if err := chargeBigIntRenderSteps(v, step); err != nil {
+			return 0, err
+		}
 		return utf8.RuneCountInString(v.String()), nil
 	}
 }
@@ -960,6 +993,15 @@ func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit 
 		}
 		return total, false, nil
 	default:
+		// A big integer that provably exceeds the limit reports truncation
+		// without paying for the base conversion; anything else is measured
+		// exactly after charging steps for the conversion work.
+		if bigIntRenderExceedsLimit(v, limit) {
+			return limit + 1, true, nil
+		}
+		if err := chargeBigIntRenderSteps(v, step); err != nil {
+			return 0, false, err
+		}
 		total, truncated := stringByteLenCappedAdd(0, len(v.String()), limit)
 		return total, truncated, nil
 	}
@@ -1062,7 +1104,9 @@ func (v Value) Eql(other Value) bool {
 // Ruby-style `equal?` predicate. Immutable value kinds (nil, bool, int, float,
 // string, symbol, money, duration, time, range) are identical when they share
 // the same kind and value, since the language exposes no distinct identities
-// for equal immutables. Mutable composites (array, hash, object) and
+// for equal immutables. Integers outside the int64 range are the exception:
+// they are heap objects and compare by payload identity, matching Ruby, where
+// bignums are separate objects. Mutable composites (array, hash, object) and
 // runtime-only kinds (function, builtin, block, class, instance, enum, enum
 // value) are identical only when they share the same backing storage, so two
 // independently constructed composites with equal contents are not identical.
@@ -1090,6 +1134,19 @@ func (v Value) Identical(other Value) bool {
 		return false
 	}
 	switch v.kind {
+	case KindInt:
+		// Compact integers keep value identity like every immutable scalar. A
+		// big integer is a heap object, so identity is the payload pointer:
+		// two independently produced big values with equal contents are equal
+		// but not identical, matching Ruby, where bignums are separate objects
+		// while fixnums are value-identical. A mixed pair is never identical
+		// (the canonical invariant keeps the value spaces disjoint).
+		vBig, vOK := v.data.(*big.Int)
+		oBig, oOK := other.data.(*big.Int)
+		if vOK || oOK {
+			return vOK && oOK && vBig == oBig
+		}
+		return v.Int() == other.Int()
 	case KindFloat:
 		// Float identity is value identity in Vibescript: the language exposes no
 		// distinct object for two floats with the same value, so 1.5.equal?(1.5)
@@ -1182,6 +1239,14 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 	case KindBool:
 		return v.Bool() == other.Bool()
 	case KindInt:
+		vBig, vOK := v.data.(*big.Int)
+		oBig, oOK := other.data.(*big.Int)
+		if vOK || oOK {
+			// The canonical invariant keeps the compact and big value spaces
+			// disjoint (a big payload never fits int64), so a mixed pair is
+			// never equal and two big payloads compare by exact value.
+			return vOK && oOK && vBig.Cmp(oBig) == 0
+		}
 		return v.Int() == other.Int()
 	case KindFloat:
 		return v.Float() == other.Float()

@@ -53,6 +53,13 @@ func NewHashLookupKey(key Value) (HashLookupKey, error) {
 	case KindBool:
 		return HashLookupKey{kind: KindBool, flag: key.Bool()}, nil
 	case KindInt:
+		// A big integer canonicalizes to its decimal text. The canonical
+		// invariant (big payloads never fit int64) keeps the text form disjoint
+		// from compact keys, which stay in the numeric field with empty text,
+		// so the two encodings can never collide.
+		if bi, ok := BigIntPayload(key); ok {
+			return HashLookupKey{kind: KindInt, text: bi.Text(10)}, nil
+		}
 		return HashLookupKey{kind: KindInt, number: key.Int()}, nil
 	case KindFloat:
 		f := key.Float()
@@ -91,15 +98,22 @@ func NewHashLookupKey(key Value) (HashLookupKey, error) {
 // ExtraPayloadBytes returns heap bytes stored only by this lookup key, excluding
 // the fixed HashLookupKey struct itself. Scalar lookup keys either keep their
 // payload in numeric fields or alias the original key value's string payload;
-// array keys retain a canonical lookup string that is not reachable otherwise.
+// array keys and big-integer keys retain a canonical lookup string that is not
+// reachable otherwise.
 // It is intended for the interpreter's internal use; hosts should not call
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
 func (k HashLookupKey) ExtraPayloadBytes() int {
-	if k.kind != KindArray {
+	switch k.kind {
+	case KindArray:
+		return len(k.text)
+	case KindInt:
+		// Only big-integer keys carry text (compact keys ride in the numeric
+		// field), so this charges exactly the materialized decimal form.
+		return len(k.text)
+	default:
 		return 0
 	}
-	return len(k.text)
 }
 
 // HashKey returns the canonical lookup key for a hash key value. The encoding
@@ -121,6 +135,12 @@ func hashKey(key Value, arrays map[SliceIdentity]struct{}) (string, error) {
 		}
 		return "bool:false", nil
 	case KindInt:
+		// Big integers share the "int:" prefix: the canonical invariant keeps
+		// their decimal forms disjoint from every compact key's, so equal big
+		// values collide exactly with each other and never with a compact int.
+		if bi, ok := BigIntPayload(key); ok {
+			return "int:" + bi.Text(10), nil
+		}
 		return "int:" + strconv.FormatInt(key.Int(), 10), nil
 	case KindFloat:
 		f := key.Float()

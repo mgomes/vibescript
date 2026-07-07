@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"sync/atomic"
 	"unsafe"
@@ -39,6 +40,16 @@ const (
 	estimatedHashEntryBytes     = int(unsafe.Sizeof(HashEntry{}))
 )
 
+// estimatedBigIntStructBytes is the heap footprint of the big.Int struct a
+// big-integer payload allocates around its word backing (sign flag plus the
+// word slice header). The words themselves are charged per allocated slot on
+// top of this.
+const estimatedBigIntStructBytes = int(unsafe.Sizeof(big.Int{}))
+
+// estimatedBigIntWordBytes is the size of one big.Word in a big-integer
+// payload's backing array.
+const estimatedBigIntWordBytes = int(unsafe.Sizeof(big.Word(0)))
+
 const inlineSeenEnvs = 8
 
 // estimatedMapEntryStructuralBytes is the per-entry structural footprint a
@@ -60,6 +71,7 @@ type memoryEstimator struct {
 	seenHashData     map[uintptr]struct{}
 	seenSlices       map[uintptr]struct{}
 	seenStrings      map[stringIdentity]struct{}
+	seenBigInts      map[*big.Int]struct{}
 	seenClasses      map[*ClassDef]struct{}
 	seenInstances    map[*Instance]struct{}
 	seenBlocks       map[*Block]struct{}
@@ -89,6 +101,7 @@ type estimatorJournal struct {
 	hashData  []uintptr
 	slices    []uintptr
 	strings   []stringIdentity
+	bigInts   []*big.Int
 	classes   []*ClassDef
 	instances []*Instance
 	blocks    []*Block
@@ -138,8 +151,8 @@ func sessionJournalBudget(baseIdentities int) int {
 func (est *memoryEstimator) identityCount() int {
 	return est.seenEnvInlineLen + len(est.seenEnvs) + len(est.seenMaps) +
 		len(est.seenHashData) + len(est.seenSlices) + len(est.seenStrings) +
-		len(est.seenClasses) + len(est.seenInstances) + len(est.seenBlocks) +
-		len(est.seenBuiltins)
+		len(est.seenBigInts) + len(est.seenClasses) + len(est.seenInstances) +
+		len(est.seenBlocks) + len(est.seenBuiltins)
 }
 
 // record reports whether the journal should record one more insertion,
@@ -172,6 +185,7 @@ func (est *memoryEstimator) reset() {
 	clear(est.seenHashData)
 	clear(est.seenSlices)
 	clear(est.seenStrings)
+	clear(est.seenBigInts)
 	clear(est.seenClasses)
 	clear(est.seenInstances)
 	clear(est.seenBlocks)
@@ -222,6 +236,9 @@ func (j *estimatorJournal) rollback(est *memoryEstimator, prevFrozen *Env) {
 	for _, key := range j.strings {
 		delete(est.seenStrings, key)
 	}
+	for _, bi := range j.bigInts {
+		delete(est.seenBigInts, bi)
+	}
 	for _, cl := range j.classes {
 		delete(est.seenClasses, cl)
 	}
@@ -247,6 +264,8 @@ func (j *estimatorJournal) clear() {
 	j.hashData = j.hashData[:0]
 	j.slices = j.slices[:0]
 	j.strings = j.strings[:0]
+	clear(j.bigInts)
+	j.bigInts = j.bigInts[:0]
 	clear(j.classes)
 	j.classes = j.classes[:0]
 	clear(j.instances)
@@ -2441,6 +2460,13 @@ func (est *memoryEstimator) value(val Value) int {
 	size := estimatedValueBytes
 
 	switch val.Kind() {
+	case KindInt:
+		// Compact integers live entirely in the Value struct; only a
+		// big-integer payload adds heap footprint, deduplicated by payload
+		// identity so aliased copies of one bignum are charged once.
+		if bi, ok := value.BigIntPayload(val); ok {
+			size += est.bigIntPayloadSize(bi)
+		}
 	case KindString, KindSymbol:
 		str := val.String()
 		size += estimatedStringHeaderBytes
@@ -2600,6 +2626,25 @@ func estimatedParamTargetBytes(target Expression) int {
 	default:
 		return 0
 	}
+}
+
+// bigIntPayloadSize charges a big-integer payload's heap footprint: the
+// big.Int struct plus its allocated word backing (capacity, not length, since
+// arithmetic may leave spare allocated words). Payloads are deduplicated by
+// pointer identity, mirroring stringPayloadSize, so every Value aliasing the
+// same immutable bignum charges it once per walk.
+func (est *memoryEstimator) bigIntPayloadSize(bi *big.Int) int {
+	if _, seen := est.seenBigInts[bi]; seen {
+		return 0
+	}
+	if est.seenBigInts == nil {
+		est.seenBigInts = make(map[*big.Int]struct{})
+	}
+	est.seenBigInts[bi] = struct{}{}
+	if est.journal != nil && est.journal.record() {
+		est.journal.bigInts = append(est.journal.bigInts, bi)
+	}
+	return saturatingAdd(estimatedBigIntStructBytes, saturatingMul(cap(bi.Bits()), estimatedBigIntWordBytes))
 }
 
 func (est *memoryEstimator) stringPayloadSize(str string) int {

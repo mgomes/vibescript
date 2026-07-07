@@ -46,11 +46,11 @@ Tier 2 below. Concretely:
   (`CapabilityAdapter`, `CapabilityBinding`, `CapabilityContractProvider`,
   `CapabilityMethodContract`, `New*Capability`, `MustNew*Capability`).
 - **`vibes/value`**: `Value`, `ValueKind` and the `Kind*` constants; the
-  typed constructors (`NewNil` ... `NewRegex`, `NewTypedHash`,
+  typed constructors (`NewNil` ... `NewRegex`, `NewBigInt`, `NewTypedHash`,
   `NewHashWithDefault`, `NewMoneyFromCents`); the typed accessors
-  (`Kind`, `IsNil`, `Truthy`, `Bool`, `Int`, `Float`, `String`,
-  `Inspect`, `Array`, `Money`, `Duration`, `Time`, `Range`, `Regex`,
-  `Data`); the hash surface (`Hash`, `HashGet`, `HashSet`, `HashLen`,
+  (`Kind`, `IsNil`, `Truthy`, `Bool`, `Int`, `Float`, `BigInt`, `IsBigInt`,
+  `String`, `Inspect`, `Array`, `Money`, `Duration`, `Time`, `Range`,
+  `Regex`, `Data`); the hash surface (`Hash`, `HashGet`, `HashSet`, `HashLen`,
   `HashEntries`, `HashDeleteKey`, `HashClearEntries`, `HashEntry`,
   `HashDefaultValue`, `HashDefaultProc`); equality (`Equal`, `Eql`,
   `Identical`, `Truthy`); the opaque payload markers (`BlockPayload`,
@@ -100,6 +100,7 @@ during the 2026-06/07 mutator, hash-order, and estimator-memoization work
 | Wrapper mutation | `SetArrayElems`, `SetHashDefaults`, `ReserveHashOrder`, `ReserveTypedHashOrder` | primitives behind Ruby-style in-place mutators and clone bookkeeping (#873, #895) |
 | Typed-hash plumbing | `HashKey`, `HashDisplayKey`, `HashLookupKey`, `NewHashLookupKey`, `TypedHashEntry`, `TypedHashEntriesInto`, `HashEntriesInto`, `HashHasTypedEntries`, `HashStringMapIfMaterialized` | Ruby-ordered typed-key storage introduced by #867 |
 | Rendering projections | `StringByteLen`, `StringRuneLen`, `StringByteLenBounded`, `StringRuneLenBounded`, `StringByteLenBoundedUpTo`, `InspectByteLenBounded`, `WriteStringTo`, `WriteInspectTo` | sandbox interpolation/inspect memory guards project output size before allocating |
+| Big-integer plumbing | `AdoptBigInt`, `Value.CompactInt`, `BigIntPayload`, `BigIntDecimalLenUpperBound` | copy-free promotion in arithmetic, quota accounting, and rendering preflight for big-integer payloads (#919); hosts use `NewBigInt`/`BigInt`/`IsBigInt` |
 
 `HashDeleteKey` and `HashClearEntries` were exported in the same #895 batch
 but are kept in Tier 1 deliberately: they complete the host-facing hash
