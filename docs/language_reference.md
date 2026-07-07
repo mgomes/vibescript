@@ -26,14 +26,16 @@ Vibescript supports these literal/value categories:
 - ranges (`1..5`, `1...5`)
 - duration literals (`5.minutes`, `2.days`)
 
-Integers are arbitrary precision, as in Ruby: literals of any length parse,
-arithmetic that leaves the signed 64-bit range promotes transparently, and a
-result that fits 64 bits again returns to the compact fast representation.
-There is a single `int` type; scripts never observe a separate "bignum" kind.
-A few surfaces deliberately stay within 64 bits and raise a clear error for
-larger values: range endpoints, iteration counts (`times`, `upto`, `downto`,
-`step`), `Money`/`Duration`/`Time` arithmetic, and argument positions that
-denote indexes, counts, sizes, or precisions.
+Integers are arbitrary precision, as in Ruby: literals parse up to a
+100,000-digit parser guard (`integer literal exceeds 100000 digits`; larger
+values remain constructible through arithmetic), arithmetic that leaves the
+signed 64-bit range promotes transparently, and a result that fits 64 bits
+again returns to the compact fast representation. There is a single `int`
+type; scripts never observe a separate "bignum" kind. A few surfaces
+deliberately stay within 64 bits and raise a clear error for larger values:
+range endpoints, iteration counts (`times`, `upto`, `downto`, `step`),
+`Money`/`Duration`/`Time` arithmetic, and argument positions that denote
+indexes, counts, sizes, or precisions.
 
 Numeric literals accept underscores as visual separators between digits
 (`1_000`, `1_000.50`). Floats may use scientific notation with an `e`/`E`

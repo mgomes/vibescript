@@ -9,7 +9,9 @@
   decimals. Division and modulo keep floor semantics for big operands, big
   vs float comparisons are exact, big values work as hash keys, and typed
   `int` contracts accept them. Hosts get `value.NewBigInt`, `Value.BigInt`,
-  and `Value.IsBigInt`; `Value.Int` still returns `0` for out-of-range
+  and `Value.IsBigInt`; integer literals parse up to a 100,000-digit parser
+  guard (larger values remain constructible through charged arithmetic);
+  `Value.Int` still returns `0` for out-of-range
   integers (never a truncation), and `ValueToInt64` rejects them. Scripts
   or hosts relying on the old overflow errors as range guards must validate
   magnitudes explicitly (see the migration guide). Deliberate 64-bit

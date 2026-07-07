@@ -770,7 +770,9 @@ value-identical but two separately produced big integers are distinct
 objects. The deliberate 64-bit boundaries — each raising a clear error for a
 larger value — are range endpoints, the iteration members (`times`, `upto`,
 `downto`, `step`), `Money`/`Duration`/`Time` arithmetic, and argument
-positions denoting indexes, counts, sizes, or precisions.
+positions denoting indexes, counts, sizes, or precisions. Integer literals
+parse up to 100,000 digits (a parser cost guard; larger values remain
+constructible through arithmetic).
 
 ### Duration Constructors
 

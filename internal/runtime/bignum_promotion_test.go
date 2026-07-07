@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The expectations in this file are pinned against Ruby 3.4 (the semantics
@@ -362,5 +363,45 @@ func TestBignumParserRejectsMalformedBigLiteral(t *testing.T) {
 	_, err := engine.Compile(`x = 0x`)
 	if err == nil || !strings.Contains(err.Error(), "numeric literal") {
 		t.Fatalf("malformed literal error = %v", err)
+	}
+}
+
+func TestBignumLiteralDigitGuard(t *testing.T) {
+	t.Parallel()
+	// The two 100k-digit operands hold ~41KB each, past the default 64KB
+	// memory quota; the guard under test is the parser's, so give execution
+	// room.
+	engine := MustNewEngine(Config{MemoryQuotaBytes: 4 << 20})
+
+	// Just under the guard parses to the exact value (and fast: the guard
+	// exists because the big conversion is superlinear and runs pre-quota).
+	atLimit := "9" + strings.Repeat("0", 99_999)
+	start := time.Now()
+	script, err := engine.Compile("def run()\n  " + atLimit + " - " + atLimit + "\nend")
+	if err != nil {
+		t.Fatalf("100k-digit literal should parse: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("100k-digit literal took %v to compile", elapsed)
+	}
+	if got := callFunc(t, script, "run", nil); got.IsBigInt() || got.Int() != 0 {
+		t.Fatalf("at-limit literal arithmetic = %v; want compact 0", got)
+	}
+
+	// Just over the guard is a fast parse error naming the limit.
+	overLimit := "9" + strings.Repeat("0", 100_000)
+	start = time.Now()
+	_, err = engine.Compile("x = " + overLimit)
+	if err == nil || !strings.Contains(err.Error(), "integer literal exceeds 100000 digits") {
+		t.Fatalf("over-limit literal error = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("over-limit literal rejection took %v; want fast failure", elapsed)
+	}
+
+	// In-range literals are unaffected by the guard (it only applies past
+	// int64, where the big conversion would run).
+	if _, err := engine.Compile("def run()\n  123\nend"); err != nil {
+		t.Fatalf("small literal: %v", err)
 	}
 }

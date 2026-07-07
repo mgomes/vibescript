@@ -608,6 +608,11 @@ finite floats, and `Range#sum` totals. Fix: validate magnitudes explicitly
 where a domain requires 64-bit values, e.g. `raise("too large") if n >
 9223372036854775807` — or simply let the wider value flow.
 
+Integer literals parse up to a 100,000-digit guard (`integer literal exceeds
+100000 digits`): the big conversion runs at parse time, before any execution
+quota applies, so its cost is bounded there; larger values remain
+constructible through quota-charged arithmetic.
+
 **What stays 64-bit (and errors loudly).** Range endpoints
 (`range endpoints must fit in a 64-bit integer`), the iteration members
 `times`/`upto`/`downto`/`step` (the sandbox will not schedule more than 2^63
