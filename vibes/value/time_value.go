@@ -128,6 +128,9 @@ func TimeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 	if len(args) < 1 {
 		return time.Time{}, fmt.Errorf("Time.new expects at least a year")
 	}
+	if err := rejectBigIntTimeParts(args, "Time.new"); err != nil {
+		return time.Time{}, err
+	}
 	getOptional := optionalDatePartReader(args)
 
 	year, err := requiredYear(args[0])
@@ -170,6 +173,9 @@ func TimeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 func TimeFromCalendarParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 	if len(args) < 1 {
 		return time.Time{}, fmt.Errorf("Time constructor expects at least a year")
+	}
+	if err := rejectBigIntTimeParts(args, "Time constructor"); err != nil {
+		return time.Time{}, err
 	}
 	if len(args) > 7 {
 		return time.Time{}, fmt.Errorf("Time constructor expects at most year, month, day, hour, minute, second, microsecond")
@@ -222,9 +228,10 @@ func microsecondsArgNanos(val Value) (int, error) {
 	switch val.Kind() {
 	case KindInt:
 		// Validate the microsecond magnitude before scaling so an extreme
-		// integer cannot overflow int64 and wrap into the valid range.
-		usec := val.Int()
-		if usec < 0 || usec >= microsPerSecond {
+		// integer cannot overflow int64 and wrap into the valid range. A big
+		// payload is out of range by construction.
+		usec, compact := val.CompactInt()
+		if !compact || usec < 0 || usec >= microsPerSecond {
 			return 0, microsecondRangeError()
 		}
 		return int(usec * 1000), nil
@@ -359,13 +366,30 @@ func normalizeUnixParts(seconds, nanos int64) (int64, int64, error) {
 	return seconds, nanos, nil
 }
 
+// rejectBigIntTimeParts rejects any big-integer part in a Time constructor's
+// arguments. The calendar fields all live in int ranges, and coercing a big
+// payload through Value.Int would silently build a bogus timestamp from zeros,
+// so the whole argument list is validated before any field is read.
+func rejectBigIntTimeParts(args []Value, context string) error {
+	for _, arg := range args {
+		if arg.IsBigInt() {
+			return fmt.Errorf("%s parts must fit in a 64-bit integer", context)
+		}
+	}
+	return nil
+}
+
 // epochSecondsToParts decomposes the seconds argument of Time.at into whole
 // seconds and a nanosecond remainder. Float seconds carry their fractional part
 // into the nanosecond component.
 func epochSecondsToParts(val Value) (seconds, nanos int64, err error) {
 	switch val.Kind() {
 	case KindInt:
-		return val.Int(), 0, nil
+		if secs, ok := val.CompactInt(); ok {
+			return secs, 0, nil
+		}
+		// An epoch beyond int64 seconds is outside time.Time's range entirely.
+		return 0, 0, fmt.Errorf("Time.at seconds must fit in a 64-bit integer")
 	case KindFloat:
 		f := val.Float()
 		// Reject non-finite epochs: int64() of Infinity/NaN is
@@ -393,7 +417,12 @@ func epochSecondsToParts(val Value) (seconds, nanos int64, err error) {
 func subsecToNanos(val Value, unitNanos int64) (int64, error) {
 	switch val.Kind() {
 	case KindInt:
-		nanos, ok := mulInt64Checked(val.Int(), unitNanos)
+		subsec, compact := val.CompactInt()
+		if !compact {
+			// A big subsecond magnitude cannot scale into int64 nanoseconds.
+			return 0, subsecondOverflowError()
+		}
+		nanos, ok := mulInt64Checked(subsec, unitNanos)
 		if !ok {
 			return 0, subsecondOverflowError()
 		}

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"unsafe"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // arrayMemberNames mirrors the names dispatched by arrayMember and feeds
@@ -298,6 +300,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				if err := exec.chargeBigIntKeySteps(groupValue); err != nil {
+					return NewNil(), err
+				}
 				key, err := newHashAggregationKey(groupValue)
 				if err != nil {
 					return NewNil(), fmt.Errorf("array.group_by block returned unsupported hash key: %w", err)
@@ -381,6 +386,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 				blockArg[0] = item
 				groupValue, err := runner.call(blockArg[:])
 				if err != nil {
+					return NewNil(), err
+				}
+				if err := exec.chargeBigIntKeySteps(groupValue); err != nil {
 					return NewNil(), err
 				}
 				key, err := newHashAggregationKey(groupValue)
@@ -480,6 +488,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 						return NewNil(), err
 					}
 					keyValue = mapped
+				}
+				if err := exec.chargeBigIntKeySteps(keyValue); err != nil {
+					return NewNil(), err
 				}
 				key, err := newHashAggregationKey(keyValue)
 				if err != nil {
@@ -830,6 +841,13 @@ func newHashAggregationKey(val Value) (hashAggregationKey, error) {
 		}
 		return hashAggregationKey{kind: KindBool}, nil
 	case KindInt:
+		if bi, ok := value.BigIntPayload(val); ok {
+			// Big integers aggregate by hexadecimal text (linear in words,
+			// unlike superlinear decimal), disjoint from compact keys (numeric
+			// field, empty text) by the canonical invariant. Callers charge
+			// steps per key word before building.
+			return hashAggregationKey{kind: KindInt, text: bi.Text(16)}, nil
+		}
 		return hashAggregationKey{kind: KindInt, number: val.Int()}, nil
 	case KindFloat:
 		f := val.Float()
@@ -961,6 +979,9 @@ func arrayCycleCount(args []Value, method string) (count int, infinite bool, err
 	}
 	if countValue.Kind() != KindInt {
 		return 0, false, fmt.Errorf("%s count must be an integer", method)
+	}
+	if countValue.IsBigInt() {
+		return 0, false, fmt.Errorf("%s count is out of range", method)
 	}
 	if countValue.Int() <= 0 {
 		return 0, false, nil
@@ -2446,6 +2467,14 @@ func arraySum(exec *Execution, receiver Value, args []Value, kwargs map[string]V
 			}
 			contribution = result
 		}
+		if total.Kind() == KindInt && contribution.Kind() == KindInt &&
+			(total.IsBigInt() || contribution.IsBigInt()) {
+			// Big-integer additions charge steps proportional to operand size,
+			// matching the operator path's scaling.
+			if err := exec.checkBigIntOperationGuards(tokenPlus, total, contribution); err != nil {
+				return NewNil(), err
+			}
+		}
 		next, err := arraySumAdd(total, contribution)
 		if err != nil {
 			return NewNil(), err
@@ -2526,6 +2555,24 @@ var reduceArithmeticOps = map[string]func(left, right Value) (Value, error){
 // matching public_send's privacy guarantee.
 func (exec *Execution) reduceSendOperation(accumulator Value, operation string, item Value) (Value, error) {
 	if op, ok := reduceArithmeticOps[operation]; ok {
+		if accumulator.Kind() == KindInt && item.Kind() == KindInt {
+			// Mirror the operator guards: big operands charge scaled steps and
+			// exponentiation preflights its projected result size.
+			if accumulator.IsBigInt() || item.IsBigInt() {
+				operatorToken := tokenPlus
+				if operation == "*" {
+					operatorToken = tokenAsterisk
+				}
+				if err := exec.checkBigIntOperationGuards(operatorToken, accumulator, item); err != nil {
+					return NewNil(), err
+				}
+			}
+			if operation == "**" {
+				if err := exec.checkIntPowerGuards(accumulator, item); err != nil {
+					return NewNil(), err
+				}
+			}
+		}
 		return op(accumulator, item)
 	}
 	member, err := exec.getPublicMember(accumulator, operation, Position{})
@@ -2602,6 +2649,11 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	}
 	arr := receiver.Array()
 	if valueBlock(block) == nil {
+		// Deduplication canonicalizes every element as a set key; charge big
+		// elements' words before the build.
+		if err := exec.chargeBigIntElementKeySteps(arr); err != nil {
+			return NewNil(), false, err
+		}
 		unique, err := uniqueValuesChecked(arr, exec.checkContext)
 		if err != nil {
 			return NewNil(), false, err
@@ -3089,6 +3141,9 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		if len(elements) != 2 {
 			return NewNil(), fmt.Errorf("array.to_h pair must have exactly two elements")
 		}
+		if err := exec.chargeBigIntKeySteps(elements[0]); err != nil {
+			return NewNil(), err
+		}
 		key, err := canonicalHashKey(elements[0])
 		if err != nil {
 			return NewNil(), fmt.Errorf("array.to_h pair key is unsupported hash key: %w", err)
@@ -3563,12 +3618,18 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			if err := exec.chargeBigIntElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
+				return NewNil(), err
+			}
 			return NewArray(unionArrayValues(receiver.Array(), others)), nil
 		}), nil
 	case "difference":
 		return NewAutoBuiltin("array.difference", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			others, err := arrayArgsToSlices("array.difference", args, kwargs)
 			if err != nil {
+				return NewNil(), err
+			}
+			if err := exec.chargeBigIntElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
 				return NewNil(), err
 			}
 			return NewArray(differenceArrayValues(receiver.Array(), others)), nil

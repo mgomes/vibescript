@@ -458,6 +458,10 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 					exec.releaseLoopScratch(prefixDelta)
 					return NewNil(), err
 				}
+				if err := exec.chargeBigIntKeySteps(nextKeyValue); err != nil {
+					exec.releaseLoopScratch(prefixDelta)
+					return NewNil(), err
+				}
 				lookupKey, err := hashLookupKey(nextKeyValue)
 				if err != nil {
 					exec.releaseLoopScratch(prefixDelta)
@@ -521,6 +525,10 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 				return NewNil(), err
 			}
 			if err := exec.checkContext(); err != nil {
+				exec.releaseLoopScratch(prefixDelta)
+				return NewNil(), err
+			}
+			if err := exec.chargeBigIntKeySteps(nextKeyValue); err != nil {
 				exec.releaseLoopScratch(prefixDelta)
 				return NewNil(), err
 			}
@@ -626,6 +634,9 @@ func hashMemberQuery(property string) (Value, error) {
 		return NewAutoBuiltin("hash."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("hash.%s expects exactly one key", name)
+			}
+			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+				return NewNil(), err
 			}
 			_, ok, err := hashGet(receiver, args[0])
 			if err != nil {
@@ -803,6 +814,9 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			out := make([]Value, len(args))
 			for i, arg := range args {
+				if err := exec.chargeBigIntKeySteps(arg); err != nil {
+					return NewNil(), err
+				}
 				value, ok, err := hashGet(receiver, arg)
 				if err != nil {
 					return NewNil(), fmt.Errorf("hash.values_at key is unsupported hash key: %w", err)
@@ -829,6 +843,9 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("hash.fetch expects key and optional default")
 			}
+			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+				return NewNil(), err
+			}
 			value, ok, err := hashGet(receiver, args[0])
 			if err != nil {
 				return NewNil(), fmt.Errorf("hash.fetch key is unsupported hash key: %w", err)
@@ -852,6 +869,9 @@ func hashMemberQuery(property string) (Value, error) {
 		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			out := make([]Value, len(args))
 			for i, arg := range args {
+				if err := exec.chargeBigIntKeySteps(arg); err != nil {
+					return NewNil(), err
+				}
 				value, ok, err := hashGet(receiver, arg)
 				if err != nil {
 					return NewNil(), fmt.Errorf("hash.fetch_values key is unsupported hash key: %w", err)
@@ -1635,6 +1655,9 @@ func hashMergeInPlace(exec *Execution, receiver Value, args []Value, kwargs map[
 			if err := exec.step(); err != nil {
 				return NewNil(), err
 			}
+			if err := exec.chargeBigIntKeySteps(entry.Key); err != nil {
+				return NewNil(), err
+			}
 			val := entry.Value
 			if runner != nil {
 				oldValue, conflict, err := hashGet(receiver, entry.Key)
@@ -1776,6 +1799,9 @@ func hashMemberTransforms(property string) (Value, error) {
 					// merged result nondeterministic.
 					for _, entry := range deterministicHashEntriesInto(arg, entryBuf[:]) {
 						if err := exec.step(); err != nil {
+							return NewNil(), err
+						}
+						if err := exec.chargeBigIntKeySteps(entry.Key); err != nil {
 							return NewNil(), err
 						}
 						oldValue, conflict, err := hashGet(out, entry.Key)
@@ -2092,6 +2118,9 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) != 2 {
 				return NewNil(), fmt.Errorf("hash.store expects a key and a value")
 			}
+			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+				return NewNil(), err
+			}
 			if _, err := canonicalHashKey(args[0]); err != nil {
 				return NewNil(), fmt.Errorf("hash.store key is unsupported hash key: %w", err)
 			}
@@ -2120,6 +2149,9 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("hash.delete expects a key")
+			}
+			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+				return NewNil(), err
 			}
 			if _, err := canonicalHashKey(args[0]); err != nil {
 				return NewNil(), fmt.Errorf("hash.delete key is unsupported hash key: %w", err)
@@ -2178,6 +2210,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := newTypedResultHash(projected)
 				for _, arg := range args {
 					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					if err := exec.chargeBigIntKeySteps(arg); err != nil {
 						return NewNil(), err
 					}
 					value, ok, err := hashGet(receiver, arg)
@@ -2244,6 +2279,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				var excluded map[HashLookupKey]struct{}
 				for _, arg := range args {
 					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					if err := exec.chargeBigIntKeySteps(arg); err != nil {
 						return NewNil(), err
 					}
 					if _, ok, err := hashGet(receiver, arg); err != nil || !ok {
@@ -2666,6 +2704,9 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.checkContext(); err != nil {
 						return NewNil(), err
 					}
+					if err := exec.chargeBigIntKeySteps(nextKey); err != nil {
+						return NewNil(), err
+					}
 					lookupKey, err := hashLookupKey(nextKey)
 					if err != nil {
 						return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
@@ -2733,6 +2774,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.checkContext(); err != nil {
 					return NewNil(), err
 				}
+				if err := exec.chargeBigIntKeySteps(nextKey); err != nil {
+					return NewNil(), err
+				}
 				lookupKey, err := hashLookupKey(nextKey)
 				if err != nil {
 					return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
@@ -2776,6 +2820,9 @@ func hashMemberTransforms(property string) (Value, error) {
 					if mapped, ok, err := hashGet(args[0], entry.Key); err != nil {
 						return NewNil(), fmt.Errorf("hash.remap_keys mapping key is unsupported hash key: %w", err)
 					} else if ok {
+						if err := exec.chargeBigIntKeySteps(mapped); err != nil {
+							return NewNil(), err
+						}
 						if _, err := valueToHashKey(mapped); err != nil {
 							return NewNil(), fmt.Errorf("hash.remap_keys mapping value is unsupported hash key: %w", err)
 						}
@@ -2808,6 +2855,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				value := entries[key]
 				if mapped, ok := mapping[key]; ok {
+					if err := exec.chargeBigIntKeySteps(mapped); err != nil {
+						return NewNil(), err
+					}
 					if _, err := valueToHashKey(mapped); err != nil {
 						return NewNil(), fmt.Errorf("hash.remap_keys mapping value is unsupported hash key: %w", err)
 					}

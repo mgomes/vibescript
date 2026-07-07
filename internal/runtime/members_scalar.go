@@ -88,6 +88,21 @@ func newToStringBuiltin(typeName, property string) Value {
 		if err := requireNullaryCall(name, args, kwargs, block); err != nil {
 			return NewNil(), err
 		}
+		// A big integer's decimal rendering can dwarf the receiver, and the
+		// base conversion is superlinear, so it is preflighted like aggregate
+		// interpolation: the projection charges digit-scaled steps before any
+		// conversion runs and the projected bytes are checked against the
+		// memory quota before the string materializes. Every other scalar this
+		// serves stays on the unguarded fast path.
+		if receiver.IsBigInt() {
+			payload, err := receiver.StringByteLenBounded(exec.step)
+			if err != nil {
+				return NewNil(), err
+			}
+			if err := exec.checkProjectedValueRendering(receiver, payload); err != nil {
+				return NewNil(), err
+			}
+		}
 		return NewString(receiver.String()), nil
 	})
 }

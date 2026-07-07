@@ -14,8 +14,8 @@ import (
 func TestRoundMinIntPrecisionDoesNotOverflow(t *testing.T) {
 	t.Parallel()
 
-	if got, err := bigIntRound(big.NewInt(123), math.MinInt, roundNearest, "int.round"); err != nil || got != 0 {
-		t.Fatalf("bigIntRound(123, MinInt, round) = (%d, %v), want (0, nil)", got, err)
+	if got, err := bigIntRoundValue(nil, big.NewInt(123), math.MinInt, roundNearest); err != nil || got.IsBigInt() || got.Int() != 0 {
+		t.Fatalf("bigIntRoundValue(123, MinInt, round) = (%v, %v), want (0, nil)", got, err)
 	}
 	if got, err := intRound(123, math.MinInt, roundNearest, "int.round"); err != nil || got != 0 {
 		t.Fatalf("intRound(123, MinInt, round) = (%d, %v), want (0, nil)", got, err)

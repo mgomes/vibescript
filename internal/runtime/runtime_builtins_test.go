@@ -1343,8 +1343,10 @@ func TestJSONParseEscapesAndNumbers(t *testing.T) {
 	if got, want := obj["bad"], NewString(string(utf8.RuneError)); !got.Equal(want) {
 		t.Fatalf("bad surrogate = %q, want %q", got.String(), want.String())
 	}
-	if got, want := obj["int"], NewFloat(9223372036854775808); !got.Equal(want) {
-		t.Fatalf("overflow integer = %s, want %s", got, want)
+	// Integer tokens beyond int64 parse as big integers (issue #919); this
+	// previously pinned the silent degradation to a float.
+	if got := obj["int"]; !got.IsBigInt() || got.String() != "9223372036854775808" {
+		t.Fatalf("overflow integer = %s (big=%v), want big 9223372036854775808", got, got.IsBigInt())
 	}
 	if got, want := obj["float"], NewFloat(100); !got.Equal(want) {
 		t.Fatalf("float = %s, want %s", got, want)

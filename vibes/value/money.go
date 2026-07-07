@@ -21,6 +21,14 @@ import (
 // guard in ParseMoneyLiteral and the error-returning Add/Sub/DivInt.)
 var errMoneyOverflow = errors.New("money arithmetic overflow")
 
+// ErrMoneyOverflow exposes the money-overflow sentinel so the runtime can
+// report the same convention when an operand (for example a big integer
+// factor) cannot fit money's int64 cents domain at all.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+var ErrMoneyOverflow = errMoneyOverflow
+
 // addInt64Checked returns a+b, or false if the signed addition overflows int64.
 func addInt64Checked(a, b int64) (int64, bool) {
 	sum := a + b

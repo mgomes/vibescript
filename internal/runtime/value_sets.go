@@ -1,6 +1,10 @@
 package runtime
 
-import "math"
+import (
+	"math"
+
+	"github.com/mgomes/vibescript/vibes/value"
+)
 
 // setOpInitialCap bounds the capacity reserved up front by the array set
 // helpers (union, difference, and uniq). The result and the membership set are
@@ -43,7 +47,16 @@ func scalarValueKey(v Value) (scalarValueSetKey, bool) {
 	case KindBool:
 		key.boolVal = v.Bool()
 	case KindInt:
-		key.intVal = v.Int()
+		if bi, ok := value.BigIntPayload(v); ok {
+			// Big integers key by their hexadecimal text (linear in the
+			// payload's words, unlike superlinear decimal); the canonical
+			// invariant keeps that disjoint from compact keys (which leave
+			// textVal empty), and the kind tag separates it from string/symbol
+			// text. Runtime callers charge steps per key word before building.
+			key.textVal = bi.Text(16)
+		} else {
+			key.intVal = v.Int()
+		}
 	case KindFloat:
 		if f := v.Float(); math.IsNaN(f) {
 			key.floatNaN = true

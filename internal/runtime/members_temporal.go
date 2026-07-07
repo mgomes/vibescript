@@ -465,7 +465,10 @@ func timeISO8601Precision(method string, args []Value, kwargs map[string]Value) 
 	if arg.Kind() != KindInt {
 		return 0, fmt.Errorf("%s precision must be an Integer", method)
 	}
-	ndigits := arg.Int()
+	ndigits, compact := arg.CompactInt()
+	if !compact {
+		return 0, fmt.Errorf("%s precision must fit in a 64-bit integer", method)
+	}
 	if ndigits < 0 {
 		return 0, fmt.Errorf("%s precision must be non-negative", method)
 	}
@@ -660,7 +663,10 @@ func timeRoundingUnit(method string, args []Value, kwargs map[string]Value) (tim
 	if arg.Kind() != KindInt {
 		return 0, fmt.Errorf("%s precision must be an Integer", method)
 	}
-	ndigits := arg.Int()
+	ndigits, compact := arg.CompactInt()
+	if !compact {
+		return 0, fmt.Errorf("%s precision must fit in a 64-bit integer", method)
+	}
 	if ndigits < 0 {
 		return 0, fmt.Errorf("%s precision must be non-negative", method)
 	}

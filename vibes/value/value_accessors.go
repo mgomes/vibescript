@@ -2,6 +2,7 @@ package value
 
 import (
 	"math"
+	"math/big"
 	"time"
 )
 
@@ -25,6 +26,9 @@ func (v Value) Bool() bool {
 }
 
 // Int returns the integer content of v, coercing from float if needed.
+// An integer outside the int64 range (IsBigInt) returns 0, the same fallback a
+// wrong-kind value gets — never a truncated or wrapped result. Callers that
+// must handle big integers use BigInt (or IsBigInt to detect them first).
 func (v Value) Int() int64 {
 	switch v.kind {
 	case KindInt:
@@ -42,7 +46,10 @@ func (v Value) Int() int64 {
 	}
 }
 
-// Float returns the float content of v, coercing from int if needed.
+// Float returns the float content of v, coercing from int if needed. An
+// integer outside the int64 range converts best-effort to the nearest float64;
+// magnitudes beyond the float64 range yield +/-Infinity, matching Ruby's
+// Integer#to_f.
 func (v Value) Float() float64 {
 	switch v.kind {
 	case KindFloat:
@@ -54,6 +61,13 @@ func (v Value) Float() float64 {
 		}
 		return 0
 	case KindInt:
+		if bi, ok := v.data.(*big.Int); ok {
+			// SetInt is exact (precision grows to the integer's bit length), so
+			// Float64 performs a single correct rounding; overflow saturates to
+			// the matching infinity rather than an arbitrary value.
+			f, _ := new(big.Float).SetInt(bi).Float64()
+			return f
+		}
 		return float64(v.Int())
 	default:
 		return 0

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"math/big"
 	"reflect"
 	"time"
 
@@ -269,6 +270,14 @@ func NewBool(b bool) Value { return value.NewBool(b) }
 
 // NewInt returns an integer Value.
 func NewInt(i int64) Value { return value.NewInt(i) }
+
+// newBigIntValue returns an integer Value from a big.Int, copying the input
+// and normalizing to the compact representation when it fits int64.
+func newBigIntValue(i *big.Int) Value { return value.NewBigInt(i) }
+
+// eitherIntPayload reports whether either int operand carries a payload beyond
+// the compact scalar (two nil compares; see value.EitherIntPayload).
+func eitherIntPayload(a, b Value) bool { return value.EitherIntPayload(a, b) }
 
 // NewFloat returns a floating-point Value.
 func NewFloat(f float64) Value { return value.NewFloat(f) }
@@ -629,6 +638,15 @@ func cloneValueForHost(val Value) Value {
 }
 
 func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
+	// Scalars fall through the default arm unchanged. That includes a big
+	// integer, whose *big.Int payload is deliberately SHARED with the clone
+	// rather than copied: big payloads are immutable by construction (see
+	// vibes/value/bigint.go — no code mutates a wrapped *big.Int, and the
+	// host-facing accessors copy on the way out), so sharing is
+	// indistinguishable from copying while keeping host clones O(1) per
+	// scalar. A host that digs the live pointer out through Value.Data and
+	// mutates it violates that documented contract; Value.BigInt is the safe
+	// accessor.
 	switch val.Kind() {
 	case KindArray:
 		items := val.Array()

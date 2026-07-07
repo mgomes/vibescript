@@ -324,13 +324,16 @@ func TestRangeEnumerationArgumentRejection(t *testing.T) {
 func TestRangeSumOverflow(t *testing.T) {
 	t.Parallel()
 
-	// A range whose total overflows int64 must raise rather than wrap. The
-	// near-MaxInt64 span is injected as a data-only argument because the literal
-	// would be unwieldy; sum iterates one step per element, so cap the step quota
-	// to keep the test fast while still reaching the overflow.
+	// A range whose total overflows int64 spills into an arbitrary-precision
+	// accumulator (issue #919; this used to pin the "range.sum overflow"
+	// error). Seeding with MaxInt64 forces the spill on the first element:
+	// MaxInt64 + sum(1..100000) = 9223372036854775807 + 5000050000.
 	source := "def run()\n  (1..100000).sum(9223372036854775807)\nend"
 	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 64 << 20}, source)
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "overflow")
+	got := callFunc(t, script, "run", nil)
+	if !got.IsBigInt() || got.String() != "9223372041854825807" {
+		t.Fatalf("range.sum spill = %s (big=%v), want 9223372041854825807", got, got.IsBigInt())
+	}
 }
 
 func TestRangeEnumerationStepQuota(t *testing.T) {

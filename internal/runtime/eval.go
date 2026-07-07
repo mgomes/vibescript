@@ -76,6 +76,12 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		}
 		return val, nil
 	case *IntegerLiteral:
+		if e.Big != nil {
+			// Copy per evaluation so each occurrence yields a distinct object,
+			// matching Ruby, where every bignum literal evaluation allocates
+			// (equal? distinguishes them; == does not).
+			return newBigIntValue(e.Big), nil
+		}
 		return NewInt(e.Value), nil
 	case *FloatLiteral:
 		return NewFloat(e.Value), nil
@@ -508,7 +514,15 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 	case tokenMinus:
 		switch right.Kind() {
 		case KindInt:
-			return NewInt(-right.Int()), nil
+			if n, ok := right.CompactInt(); ok {
+				if n == math.MinInt64 {
+					// -MinInt64 does not fit int64; promote instead of the
+					// silent two's-complement wrap the unchecked negation had.
+					return negIntValueBig(right), nil
+				}
+				return NewInt(-n), nil
+			}
+			return negIntValueBig(right), nil
 		case KindFloat:
 			return NewFloat(-right.Float()), nil
 		default:
@@ -775,6 +789,11 @@ func (exec *Execution) indexHash(e *IndexExpr, obj Value, indices []Value) (Valu
 		return NewNil(), exec.errorAt(e.Position, "%s index expects a single key", obj.Kind())
 	}
 	idx := indices[0]
+	// Canonicalizing a big-integer key is linear in its words; charge before
+	// the lookup so key-heavy loops stay inside the step quota.
+	if err := exec.chargeBigIntKeySteps(idx); err != nil {
+		return NewNil(), err
+	}
 	if obj.Kind() == KindObject {
 		if val, handled, err := matchDataIndex(obj, idx); handled || err != nil {
 			if err != nil {
@@ -881,16 +900,58 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 	}
 	var result Value
 	var err error
+	// Big-operand arithmetic charges steps proportional to operand size, and
+	// multiplication/exponentiation preflight their projected result against
+	// the memory quota before computing (see checkBigIntOperationGuards /
+	// checkIntPowerGuards). Compact operands skip everything behind
+	// EitherIntPayload's two nil compares, keeping the hot path branch-cheap.
 	switch operator {
 	case tokenPlus:
+		if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
+			if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = addValues(left, right)
 	case tokenMinus:
+		if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
+			if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
+		if left.Kind() == KindArray && right.Kind() == KindArray {
+			// Array difference canonicalizes every element as a set key;
+			// charge big elements' words before the build.
+			if err := exec.chargeBigIntElementKeySteps(left.Array(), right.Array()); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = subtractValues(left, right)
 	case tokenAsterisk:
+		if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
+			if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = multiplyValues(left, right)
 	case tokenPower:
+		if left.Kind() == KindInt && right.Kind() == KindInt {
+			if eitherIntPayload(left, right) {
+				if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+					return NewNil(), exec.wrapError(err, pos)
+				}
+			}
+			if err := exec.checkIntPowerGuards(left, right); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = powerValues(left, right)
 	case tokenSlash:
+		if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
+			if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = divideValues(left, right)
 	case tokenPercent:
 		if left.Kind() == KindString {
@@ -900,6 +961,11 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 			}
 			result, err = exec.formatStringValues(left.String(), values, left, []Value{right}, nil, NewNil())
 		} else {
+			if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
+				if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
+					return NewNil(), exec.wrapError(err, pos)
+				}
+			}
 			result, err = moduloValues(left, right)
 		}
 	case tokenShovel:
@@ -912,6 +978,13 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		}
 		result, err = shovelValues(left, right)
 	case tokenAmpersand:
+		if left.Kind() == KindArray && right.Kind() == KindArray {
+			// Array intersection canonicalizes every element as a set key;
+			// charge big elements' words before the build.
+			if err := exec.chargeBigIntElementKeySteps(left.Array(), right.Array()); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
 		result, err = intersectValues(left, right)
 	case tokenEQ:
 		return NewBool(left.Equal(right)), nil
@@ -2091,6 +2164,11 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		if len(indices) != 1 {
 			return exec.errorAt(target.Position, "%s index assignment expects a single key", obj.Kind())
 		}
+		// Canonicalizing a big-integer key is linear in its words; charge
+		// before the write so key-heavy loops stay inside the step quota.
+		if err := exec.chargeBigIntKeySteps(indices[0]); err != nil {
+			return err
+		}
 		if err := hashSet(obj, indices[0], value); err != nil {
 			return exec.errorAt(target.IndexPos(0), "%s", err.Error())
 		}
@@ -2484,6 +2562,9 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
+		if startVal.IsBigInt() {
+			return NewNil(), exec.errorAt(expr.Start.Pos(), "range endpoints must fit in a 64-bit integer")
+		}
 		start, err := valueToInt64(startVal)
 		if err != nil {
 			return NewNil(), exec.errorAt(expr.Start.Pos(), "%s", err.Error())
@@ -2494,6 +2575,9 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 		endVal, err := exec.evalExpression(expr.End, env)
 		if err != nil {
 			return NewNil(), err
+		}
+		if endVal.IsBigInt() {
+			return NewNil(), exec.errorAt(expr.End.Pos(), "range endpoints must fit in a 64-bit integer")
 		}
 		end, err := valueToInt64(endVal)
 		if err != nil {
@@ -2616,7 +2700,10 @@ func caseCandidateMatches(target, candidate Value) (bool, error) {
 
 	switch target.Kind() {
 	case KindInt:
-		return rangeContainsInt(candidate.Range(), target.Int()), nil
+		if n, ok := target.CompactInt(); ok {
+			return rangeContainsInt(candidate.Range(), n), nil
+		}
+		return rangeContainsBigInt(candidate.Range(), target), nil
 	case KindFloat:
 		return rangeContainsFloat(candidate.Range(), target.Float()), nil
 	default:
@@ -3518,6 +3605,11 @@ func literalIndexReceiverValue(e *IndexExpr, env *Env) (Value, bool) {
 	}
 	switch idx := e.Indices[0].(type) {
 	case *IntegerLiteral:
+		if idx.Big != nil {
+			// A big index can never resolve; fall to the slow path, which
+			// reports the index conversion error.
+			return NewNil(), false
+		}
 		if base.Kind() != KindArray {
 			return NewNil(), false
 		}

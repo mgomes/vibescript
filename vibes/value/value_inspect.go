@@ -95,7 +95,11 @@ func (v Value) appendInspect(buf *strings.Builder, state *valueStringState, limi
 		// Scalars without a distinct debug form (bool, int, float, money,
 		// duration, time, range, and runtime kinds) render the same bytes as
 		// String. Cap the write to the remaining budget for the same reason
-		// appendString does.
+		// appendString does, and refuse a big integer that provably cannot fit
+		// before its (superlinear) base conversion runs.
+		if limit > 0 && bigIntRenderExceedsLimit(v, limit-buf.Len()) {
+			return ErrStringRenderTruncated
+		}
 		return appendBounded(buf, v.String(), limit)
 	}
 }
@@ -358,6 +362,12 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 		}
 		return total, nil
 	default:
+		// A big integer's projection performs the same superlinear base
+		// conversion the rendering will; charge steps for it up front so the
+		// step quota trips before the conversion runs.
+		if err := chargeBigIntRenderSteps(v, step); err != nil {
+			return 0, err
+		}
 		return len(v.String()), nil
 	}
 }

@@ -617,6 +617,9 @@ func planStringSplitCall(receiver, arg0, arg1 Value, argCount int) (stringSplitC
 		if arg1.Kind() != KindInt {
 			return stringSplitCall{}, fmt.Errorf("string.split limit must be integer")
 		}
+		if arg1.IsBigInt() {
+			return stringSplitCall{}, fmt.Errorf("string.split limit must fit in a 64-bit integer")
+		}
 		limit = int(arg1.Int())
 	}
 	text := receiver.String()

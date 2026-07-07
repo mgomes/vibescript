@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"math/rand"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 const (
@@ -239,7 +242,10 @@ func builtinRand(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		}
 		return NewFloat(f), nil
 	case KindInt:
-		limit := arg.Int()
+		limit, compact := arg.CompactInt()
+		if !compact {
+			return NewNil(), fmt.Errorf("rand integer bound must fit in a 64-bit integer")
+		}
 		if limit <= 0 {
 			return NewNil(), fmt.Errorf("rand integer bound must be positive")
 		}
@@ -279,7 +285,11 @@ func builtinSrand(exec *Execution, receiver Value, args []Value, kwargs map[stri
 		}
 		seed = int64(raw)
 	} else if args[0].Kind() == KindInt {
-		seed = args[0].Int()
+		var compact bool
+		seed, compact = args[0].CompactInt()
+		if !compact {
+			return NewNil(), fmt.Errorf("srand seed must fit in a 64-bit integer")
+		}
 	} else {
 		return NewNil(), fmt.Errorf("srand seed must be integer or nil")
 	}
@@ -932,14 +942,14 @@ func projectedFormatArgumentBytes(projection formatProjection, val Value, verb b
 			return field, nil
 		}
 		if val.Kind() == KindInt {
-			return projectedIntegerFormatBytes(val, verb, hasPrecision, precision, flags)
+			return projectedIntegerFormatBytes(projection, val, verb, hasPrecision, precision, flags)
 		}
 		if val.Kind() == KindFloat && hasPrecision {
 			return saturatingAdd(precision, 32), nil
 		}
 		return 64, nil
 	case 'd', 'b', 'o', 'O', 'U':
-		return projectedIntegerFormatBytes(val, verb, hasPrecision, precision, flags)
+		return projectedIntegerFormatBytes(projection, val, verb, hasPrecision, precision, flags)
 	case 'c':
 		return 64, nil
 	case 'f', 'F', 'e', 'E', 'g', 'G':
@@ -980,7 +990,10 @@ func projectedFormatArgumentBytes(projection formatProjection, val Value, verb b
 	}
 }
 
-func projectedIntegerFormatBytes(val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) (int, error) {
+func projectedIntegerFormatBytes(projection formatProjection, val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) (int, error) {
+	if bi, ok := value.BigIntPayload(val); ok {
+		return projectedBigIntFormatBytes(projection, bi, verb, hasPrecision, precision, flags)
+	}
 	n, err := valueToInt64(val)
 	if err != nil {
 		return 0, err
@@ -1029,6 +1042,52 @@ func projectedIntegerFormatBytes(val Value, verb byte, hasPrecision bool, precis
 	return saturatingAdd(saturatingAdd(projectedNumericSignBytes(n < 0, flags), prefix), digits), nil
 }
 
+// projectedBigIntFormatBytes projects the formatted size of a big integer for
+// the integer verbs, charging digit-scaled steps before the (superlinear) base
+// conversion runs, mirroring the rendering projections. %c and %U need a code
+// point, which a big integer can never be, so they keep the int64 conversion
+// error.
+func projectedBigIntFormatBytes(projection formatProjection, bi *big.Int, verb byte, hasPrecision bool, precision int, flags formatFlags) (int, error) {
+	var digits, prefix int
+	switch verb {
+	case 'U', 'c':
+		_, err := valueToInt64(value.AdoptBigInt(new(big.Int).Set(bi)))
+		return 0, err
+	case 'b':
+		digits = bi.BitLen()
+		if flags.alternate {
+			prefix = 2
+		}
+	case 'o':
+		digits = bi.BitLen()/3 + 1
+		if flags.alternate {
+			prefix = 1
+		}
+	case 'O':
+		digits = bi.BitLen()/3 + 1
+		prefix = 2
+		if flags.alternate {
+			prefix = 3
+		}
+	case 'x', 'X':
+		digits = bi.BitLen()/4 + 1
+		if flags.alternate {
+			prefix = 2
+		}
+	default:
+		digits = bigIntDecimalDigitsUpperBound(bi)
+	}
+	if hasPrecision {
+		digits = max(digits, precision)
+	}
+	if projection.exec != nil {
+		if err := projection.exec.stepN(1 + digits/bigIntStepWordsPerStep); err != nil {
+			return 0, err
+		}
+	}
+	return saturatingAdd(saturatingAdd(projectedNumericSignBytes(bi.Sign() < 0, flags), prefix), digits), nil
+}
+
 func projectedFixedFloatFormatBytes(val Value, hasPrecision bool, precision int, flags formatFlags) int {
 	sign := projectedNumericSignBytes(formatFloatIsNegative(val), flags)
 	if val.Kind() == KindFloat && (math.IsInf(val.Float(), 0) || math.IsNaN(val.Float())) {
@@ -1049,6 +1108,9 @@ func projectedFixedFloatFormatBytes(val Value, hasPrecision bool, precision int,
 func projectedFixedFloatIntegerDigits(val Value) int {
 	switch val.Kind() {
 	case KindInt:
+		if bi, ok := value.BigIntPayload(val); ok {
+			return bigIntDecimalDigitsUpperBound(bi)
+		}
 		return signedIntegerDigitBytes(val.Int(), 10)
 	case KindFloat:
 		f := math.Abs(val.Float())
@@ -1103,6 +1165,9 @@ func projectedNumericSignBytes(negative bool, flags formatFlags) int {
 func formatFloatIsNegative(val Value) bool {
 	switch val.Kind() {
 	case KindInt:
+		if bi, ok := value.BigIntPayload(val); ok {
+			return bi.Sign() < 0
+		}
 		return val.Int() < 0
 	case KindFloat:
 		return math.Signbit(val.Float())
@@ -1143,6 +1208,11 @@ func prepareFormatArgument(projection formatProjection, val Value, verb byte, ha
 			return preparedFormatArgument{}, fmt.Errorf("format %%%c expects string or numeric operand", verb)
 		}
 	case 'd', 'b', 'o', 'O', 'U', 'c':
+		// %d/%b/%o/%O format big integers natively; only the code-point verbs
+		// genuinely need an int64.
+		if val.IsBigInt() && verb != 'U' && verb != 'c' {
+			break
+		}
 		if _, err := valueToInt64(val); err != nil {
 			return preparedFormatArgument{}, fmt.Errorf("format %%%c expects integer operand", verb)
 		}
@@ -1218,16 +1288,29 @@ func (a preparedFormatArgument) format() (any, error) {
 		case KindString, KindSymbol:
 			return a.value.String(), nil
 		case KindInt:
+			if bi, ok := value.BigIntPayload(a.value); ok {
+				// fmt formats *big.Int natively for the integer verbs.
+				return bi, nil
+			}
 			return a.value.Int(), nil
 		case KindFloat:
 			return a.value.Float(), nil
 		}
-	case 'd', 'b', 'o', 'O', 'U', 'c':
+	case 'd', 'b', 'o', 'O':
+		if bi, ok := value.BigIntPayload(a.value); ok {
+			return bi, nil
+		}
+		return valueToInt64(a.value)
+	case 'U', 'c':
+		// Code-point verbs genuinely need an int64; a big integer keeps the
+		// conversion error rather than truncating.
 		return valueToInt64(a.value)
 	case 'f', 'F', 'e', 'E', 'g', 'G':
 		switch a.value.Kind() {
 		case KindInt:
-			return float64(a.value.Int()), nil
+			// Value.Float converts big receivers best-effort (saturating to
+			// the infinities), identical to float64(Int()) for compact values.
+			return a.value.Float(), nil
 		case KindFloat:
 			return a.value.Float(), nil
 		}
@@ -1284,6 +1367,9 @@ func formatArgumentNeedsRenderedString(val Value) bool {
 func formatStringArgument(val Value) any {
 	switch val.Kind() {
 	case KindInt:
+		if bi, ok := value.BigIntPayload(val); ok {
+			return bi
+		}
 		return val.Int()
 	case KindFloat:
 		return val.Float()
@@ -1333,7 +1419,10 @@ func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[stri
 func valueToSleepDuration(val Value) (time.Duration, error) {
 	switch val.Kind() {
 	case KindInt:
-		seconds := val.Int()
+		seconds, compact := val.CompactInt()
+		if !compact {
+			return 0, fmt.Errorf("sleep duration must fit in a 64-bit integer")
+		}
 		if seconds < 0 {
 			return 0, fmt.Errorf("sleep duration must be non-negative")
 		}
@@ -1407,6 +1496,9 @@ func builtinRandomID(exec *Execution, receiver Value, args []Value, kwargs map[s
 	if len(args) == 1 {
 		if args[0].Kind() != KindInt {
 			return NewNil(), fmt.Errorf("random_id length must be integer")
+		}
+		if args[0].IsBigInt() {
+			return NewNil(), fmt.Errorf("random_id length must fit in a 64-bit integer")
 		}
 		length = args[0].Int()
 	}
@@ -1614,11 +1706,9 @@ func builtinToInt(exec *Execution, receiver Value, args []Value, kwargs map[stri
 		if math.Trunc(f) != f {
 			return NewNil(), fmt.Errorf("to_int cannot convert non-integer float")
 		}
-		n, err := floatToInt64Checked(f, "to_int")
-		if err != nil {
-			return NewNil(), err
-		}
-		return NewInt(n), nil
+		// Finite whole floats beyond int64 promote to big integers; NaN and
+		// the infinities keep the historical rejection.
+		return floatWholeToIntValue(f, "to_int")
 	case KindString:
 		s := strings.TrimSpace(args[0].String())
 		if s == "" {
@@ -1647,7 +1737,9 @@ func builtinToFloat(exec *Execution, receiver Value, args []Value, kwargs map[st
 
 	switch args[0].Kind() {
 	case KindInt:
-		return NewFloat(float64(args[0].Int())), nil
+		// Value.Float converts big integers best-effort (saturating to the
+		// infinities), identical to float64(Int()) for compact values.
+		return NewFloat(args[0].Float()), nil
 	case KindFloat:
 		return args[0], nil
 	case KindString:

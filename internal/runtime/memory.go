@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"sync/atomic"
 	"unsafe"
@@ -38,6 +39,16 @@ const (
 	estimatedHashLookupKeyBytes = int(unsafe.Sizeof(value.HashLookupKey{}))
 	estimatedHashEntryBytes     = int(unsafe.Sizeof(HashEntry{}))
 )
+
+// estimatedBigIntStructBytes is the heap footprint of the big.Int struct a
+// big-integer payload allocates around its word backing (sign flag plus the
+// word slice header). The words themselves are charged per allocated slot on
+// top of this.
+const estimatedBigIntStructBytes = int(unsafe.Sizeof(big.Int{}))
+
+// estimatedBigIntWordBytes is the size of one big.Word in a big-integer
+// payload's backing array.
+const estimatedBigIntWordBytes = int(unsafe.Sizeof(big.Word(0)))
 
 const inlineSeenEnvs = 8
 
@@ -620,6 +631,28 @@ func (exec *Execution) checkProjectedStringBytesAndScratchWithCallRoots(payloadB
 	used = saturatingAdd(used, scratchBytes)
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
+// checkProjectedBigIntBytes rejects a big-integer allocation of the given word
+// count before it happens, following the #604 preflight convention the string
+// builders use: integer exponentiation and large multiplications project their
+// result's word count and fail fast instead of materializing a payload the
+// post-op check would only catch after the allocation.
+func (exec *Execution) checkProjectedBigIntBytes(words int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	s := exec.beginBaseWalk()
+	used := s.base
+	s.close()
+
+	used = saturatingAdd(used, estimatedValueBytes+estimatedBigIntStructBytes)
+	used = saturatingAdd(used, saturatingMul(words, estimatedBigIntWordBytes))
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
@@ -2441,6 +2474,13 @@ func (est *memoryEstimator) value(val Value) int {
 	size := estimatedValueBytes
 
 	switch val.Kind() {
+	case KindInt:
+		// Compact integers live entirely in the Value struct; only a
+		// big-integer payload adds heap footprint, deduplicated by payload
+		// identity so aliased copies of one bignum are charged once.
+		if bi, ok := value.BigIntPayload(val); ok {
+			size += est.bigIntPayloadSize(bi)
+		}
 	case KindString, KindSymbol:
 		str := val.String()
 		size += estimatedStringHeaderBytes
@@ -2600,6 +2640,29 @@ func estimatedParamTargetBytes(target Expression) int {
 	default:
 		return 0
 	}
+}
+
+// bigIntPayloadSize charges a big-integer payload's heap footprint: the
+// big.Int struct plus its allocated word backing (capacity, not length, since
+// arithmetic may leave spare allocated words). Payloads are deduplicated by
+// pointer identity through the shared seenSlices identity space (an address of
+// a live heap object never collides with a distinct live slice backing, and the
+// walk-local stability caveat matches ArrayIdentity's). Reusing that set keeps
+// the estimator and journal structs at their pre-bignum sizes, which keeps the
+// per-check journal clear/rollback on the memoized walk path inlinable.
+func (est *memoryEstimator) bigIntPayloadSize(bi *big.Int) int {
+	id := uintptr(unsafe.Pointer(bi))
+	if _, seen := est.seenSlices[id]; seen {
+		return 0
+	}
+	if est.seenSlices == nil {
+		est.seenSlices = make(map[uintptr]struct{})
+	}
+	est.seenSlices[id] = struct{}{}
+	if est.journal != nil && est.journal.record() {
+		est.journal.slices = append(est.journal.slices, id)
+	}
+	return saturatingAdd(estimatedBigIntStructBytes, saturatingMul(cap(bi.Bits()), estimatedBigIntWordBytes))
 }
 
 func (est *memoryEstimator) stringPayloadSize(str string) int {

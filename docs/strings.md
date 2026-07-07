@@ -132,9 +132,11 @@ digit, and a string with no leading hex digit returns `0`:
 "garbage".hex # 0
 ```
 
-Unlike Ruby, which promotes to an arbitrary-precision `Bignum`, Vibescript only
-has 64-bit integers, so a value outside the `int64` range raises an
-`integer out of range` error rather than silently growing.
+Unlike Ruby, which promotes here as everywhere, Vibescript's lenient
+string-to-integer helpers keep their 64-bit domain, so a value outside the
+`int64` range raises an `integer out of range` error rather than growing.
+(Integer literals and arithmetic do promote to arbitrary precision; see the
+[language reference](language_reference.md#values-and-literals).)
 
 ### `oct`
 
@@ -156,7 +158,7 @@ first byte invalid for the chosen base, and an unparseable string returns `0`:
 ```
 
 Like `hex`, a value outside the `int64` range raises an `integer out of range`
-error instead of promoting to a `Bignum`.
+error instead of promoting.
 
 ### `empty?`
 

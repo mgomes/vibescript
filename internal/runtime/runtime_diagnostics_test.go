@@ -512,36 +512,6 @@ end`,
 			script: `def run() 1.5.clamp("a", 2.0) end`,
 			errMsg: "bounds must be numeric or nil",
 		},
-		{
-			name:   "float.round overflow",
-			script: `def run() 100000000000000000000.0.round end`,
-			errMsg: "out of int64 range",
-		},
-		{
-			name:   "float.floor overflow",
-			script: `def run() 100000000000000000000.0.floor end`,
-			errMsg: "out of int64 range",
-		},
-		{
-			name:   "float.ceil overflow",
-			script: `def run() 100000000000000000000.0.ceil end`,
-			errMsg: "out of int64 range",
-		},
-		{
-			name:   "float.round int64 boundary overflow",
-			script: `def run() 9223372036854775808.0.round end`,
-			errMsg: "out of int64 range",
-		},
-		{
-			name:   "float.floor int64 boundary overflow",
-			script: `def run() 9223372036854775808.0.floor end`,
-			errMsg: "out of int64 range",
-		},
-		{
-			name:   "float.ceil int64 boundary overflow",
-			script: `def run() 9223372036854775808.0.ceil end`,
-			errMsg: "out of int64 range",
-		},
 	}
 
 	for _, tt := range tests {
@@ -615,5 +585,36 @@ func TestRuntimeErrorNoCallStack(t *testing.T) {
 	// Should have at least the error location
 	if len(rtErr.Frames) == 0 {
 		t.Fatalf("expected at least one frame")
+	}
+}
+
+// TestFloatRoundingBeyondInt64Promotes pins the promotion that replaced the
+// old "result out of int64 range" errors for float rounding (issue #919):
+// whole values beyond int64 widen to big integers, matching Ruby 3.4.
+func TestFloatRoundingBeyondInt64Promotes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{"float.round overflow", `def run() 100000000000000000000.0.round end`, "100000000000000000000"},
+		{"float.floor overflow", `def run() 100000000000000000000.0.floor end`, "100000000000000000000"},
+		{"float.ceil overflow", `def run() 100000000000000000000.0.ceil end`, "100000000000000000000"},
+		{"float.round int64 boundary", `def run() 9223372036854775808.0.round end`, "9223372036854775808"},
+		{"float.floor int64 boundary", `def run() 9223372036854775808.0.floor end`, "9223372036854775808"},
+		{"float.ceil int64 boundary", `def run() 9223372036854775808.0.ceil end`, "9223372036854775808"},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.script)
+			got := callFunc(t, script, "run", nil)
+			if !got.IsBigInt() || got.String() != tt.want {
+				t.Fatalf("%s = %s (big=%v), want promoted %s", tt.name, got, got.IsBigInt(), tt.want)
+			}
+		})
 	}
 }

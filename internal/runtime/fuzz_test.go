@@ -62,6 +62,7 @@ func FuzzLexerTokenStreamTerminates(f *testing.F) {
 func FuzzParserSuccessfulProgramsHaveCompleteAST(f *testing.F) {
 	for _, seed := range []string{
 		"",
+		"def run()\n  340282366920938463463374607431768211456 + 2 ** 100\nend",
 		"def run()\n  1\nend",
 		"def run(value)\n  if value\n    value\n  else\n    nil\n  end\nend",
 		"class Point\n  property x, y\n  def initialize(@x, @y)\n  end\nend",
@@ -101,6 +102,7 @@ func FuzzParserSuccessfulProgramsHaveCompleteAST(f *testing.F) {
 
 func FuzzCompileScriptDoesNotPanic(f *testing.F) {
 	f.Add([]byte(""))
+	f.Add([]byte("x = 340282366920938463463374607431768211456\ny = 0x100000000000000000 ** 2"))
 	f.Add([]byte("def run() 1 end"))
 	f.Add([]byte("def broken("))
 	f.Add([]byte("begin\n  raise(\"boom\")\nrescue\n  1\nend"))

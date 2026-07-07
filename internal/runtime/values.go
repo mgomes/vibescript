@@ -66,7 +66,12 @@ func setClonedHashEntry(hash, key, val Value) {
 func valueToInt(val Value) (int, error) {
 	switch val.Kind() {
 	case KindInt:
-		return int(val.Int()), nil
+		if n, ok := val.CompactInt(); ok {
+			return int(n), nil
+		}
+		// A big integer can never be a valid index; reject it cleanly rather
+		// than truncating (Value.Int would silently yield 0).
+		return 0, fmt.Errorf("index must fit in a 64-bit integer")
 	case KindFloat:
 		f := val.Float()
 		// Reject non-finite and out-of-range floats so the new Infinity/NaN
@@ -112,6 +117,9 @@ func (exec *Execution) digPath(name string, current Value, args []Value) (Value,
 	for _, arg := range args {
 		switch current.Kind() {
 		case KindHash, KindObject:
+			if err := exec.chargeBigIntKeySteps(arg); err != nil {
+				return NewNil(), err
+			}
 			next, ok, err := hashGet(current, arg)
 			if err != nil {
 				if current.Kind() == KindObject {
@@ -201,7 +209,12 @@ func isIncomparable(err error) bool {
 func valueToPadWidth(val Value) (int, error) {
 	switch val.Kind() {
 	case KindInt:
-		return int(val.Int()), nil
+		if n, ok := val.CompactInt(); ok {
+			return int(n), nil
+		}
+		// A big integer behaves like a float width beyond the int range: out
+		// of range rather than silently wrapped.
+		return 0, errWidthOutOfRange
 	case KindFloat:
 		f := val.Float()
 		if math.IsNaN(f) || math.IsInf(f, 0) {
@@ -231,10 +244,17 @@ func valueToPadWidth(val Value) (int, error) {
 func valueToCount(val Value) (int, error) {
 	switch val.Kind() {
 	case KindInt:
-		if val.Int() < 0 {
+		n, ok := val.CompactInt()
+		if !ok {
+			if bi, big := value.BigIntPayload(val); big && bi.Sign() < 0 {
+				return 0, errNegativeCount
+			}
+			return 0, fmt.Errorf("count must fit in a 64-bit integer")
+		}
+		if n < 0 {
 			return 0, errNegativeCount
 		}
-		return int(val.Int()), nil
+		return int(n), nil
 	case KindFloat:
 		f := val.Float()
 		if math.IsNaN(f) || math.IsInf(f, 0) || f > math.MaxInt || f < math.MinInt {
@@ -256,6 +276,9 @@ func valueToCount(val Value) (int, error) {
 func sortComparisonResult(val Value) (int, error) {
 	switch val.Kind() {
 	case KindInt:
+		if bi, ok := value.BigIntPayload(val); ok {
+			return bi.Sign(), nil
+		}
 		switch {
 		case val.Int() < 0:
 			return -1, nil
@@ -281,15 +304,36 @@ func sortComparisonResult(val Value) (int, error) {
 func arraySortCompareValues(left, right Value) (int, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
+		l, lok := left.CompactInt()
+		r, rok := right.CompactInt()
+		if !lok || !rok {
+			return compareIntValuesBig(left, right), nil
+		}
 		switch {
-		case left.Int() < right.Int():
+		case l < r:
 			return -1, nil
-		case left.Int() > right.Int():
+		case l > r:
 			return 1, nil
 		default:
 			return 0, nil
 		}
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		// Exactly one operand is an int here. A big integer orders against the
+		// float exactly (see compareIntFloatValues); NaN stays incomparable.
+		if left.Kind() == KindInt && left.IsBigInt() {
+			order, ordered := compareIntFloatValues(left, right.Float(), true)
+			if !ordered {
+				return 0, fmt.Errorf("cannot compare NaN")
+			}
+			return order, nil
+		}
+		if right.Kind() == KindInt && right.IsBigInt() {
+			order, ordered := compareIntFloatValues(right, left.Float(), false)
+			if !ordered {
+				return 0, fmt.Errorf("cannot compare NaN")
+			}
+			return order, nil
+		}
 		lf, rf := left.Float(), right.Float()
 		// NaN is unordered: returning 0 (equal) here would let sort/min/max
 		// treat NaN as equal to every element. Report it as incomparable so
@@ -661,7 +705,11 @@ func durationSecondsToTimeDuration(seconds int64, method string) (time.Duration,
 func numericSecondsToTimeDuration(val Value, method string) (time.Duration, error) {
 	switch val.Kind() {
 	case KindInt:
-		return durationSecondsToTimeDuration(val.Int(), method)
+		secs, err := int64OperandForDomain(val, method)
+		if err != nil {
+			return 0, err
+		}
+		return durationSecondsToTimeDuration(secs, method)
 	case KindFloat:
 		// Ruby floors the scaled nanosecond offset, so negative fractional
 		// nanoseconds move further from zero rather than truncating toward it.
@@ -706,7 +754,11 @@ func floatSecondsToFlooredNanos(seconds float64, negate bool, method string) (in
 func negatedNumericSecondsToTimeDuration(val Value, method string) (time.Duration, error) {
 	switch val.Kind() {
 	case KindInt:
-		neg, ok := subInt64Checked(0, val.Int())
+		secs, err := int64OperandForDomain(val, method)
+		if err != nil {
+			return 0, err
+		}
+		neg, ok := subInt64Checked(0, secs)
 		if !ok {
 			return 0, int64RangeError(method)
 		}
@@ -742,11 +794,15 @@ func timeDifferenceSeconds(left, right time.Time) (float64, error) {
 func addValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
-		sum, ok := addInt64Checked(left.Int(), right.Int())
-		if !ok {
-			return NewNil(), int64RangeError("integer addition")
+		if l, lok := left.CompactInt(); lok {
+			if r, rok := right.CompactInt(); rok {
+				if sum, ok := addInt64Checked(l, r); ok {
+					return NewInt(sum), nil
+				}
+			}
 		}
-		return NewInt(sum), nil
+		// Compact overflow or a big operand: promote to arbitrary precision.
+		return addIntValuesBig(left, right), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() + right.Float()), nil
 	case left.Kind() == KindTime && right.Kind() == KindDuration:
@@ -780,7 +836,7 @@ func addValues(left, right Value) (Value, error) {
 		}
 		return NewDuration(durationFromSeconds(sum)), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
-		secs, err := valueToInt64(right)
+		secs, err := int64OperandForDomain(right, "duration addition")
 		if err != nil {
 			return NewNil(), err
 		}
@@ -790,7 +846,7 @@ func addValues(left, right Value) (Value, error) {
 		}
 		return NewDuration(durationFromSeconds(sum)), nil
 	case right.Kind() == KindDuration && (left.Kind() == KindInt || left.Kind() == KindFloat):
-		secs, err := valueToInt64(left)
+		secs, err := int64OperandForDomain(left, "duration addition")
 		if err != nil {
 			return NewNil(), err
 		}
@@ -846,11 +902,14 @@ func intersectValues(left, right Value) (Value, error) {
 func subtractValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
-		diff, ok := subInt64Checked(left.Int(), right.Int())
-		if !ok {
-			return NewNil(), int64RangeError("integer subtraction")
+		if l, lok := left.CompactInt(); lok {
+			if r, rok := right.CompactInt(); rok {
+				if diff, ok := subInt64Checked(l, r); ok {
+					return NewInt(diff), nil
+				}
+			}
 		}
-		return NewInt(diff), nil
+		return subIntValuesBig(left, right), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() - right.Float()), nil
 	case left.Kind() == KindTime && right.Kind() == KindDuration:
@@ -878,7 +937,7 @@ func subtractValues(left, right Value) (Value, error) {
 		}
 		return NewDuration(durationFromSeconds(diff)), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
-		secs, err := valueToInt64(right)
+		secs, err := int64OperandForDomain(right, "duration subtraction")
 		if err != nil {
 			return NewNil(), err
 		}
@@ -905,15 +964,18 @@ func subtractValues(left, right Value) (Value, error) {
 func multiplyValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
-		product, ok := mulInt64Checked(left.Int(), right.Int())
-		if !ok {
-			return NewNil(), int64RangeError("integer multiplication")
+		if l, lok := left.CompactInt(); lok {
+			if r, rok := right.CompactInt(); rok {
+				if product, ok := mulInt64Checked(l, r); ok {
+					return NewInt(product), nil
+				}
+			}
 		}
-		return NewInt(product), nil
+		return mulIntValuesBig(left, right), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() * right.Float()), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
-		secs, err := valueToInt64(right)
+		secs, err := int64OperandForDomain(right, "duration multiplication")
 		if err != nil {
 			return NewNil(), err
 		}
@@ -923,7 +985,7 @@ func multiplyValues(left, right Value) (Value, error) {
 		}
 		return NewDuration(durationFromSeconds(product)), nil
 	case right.Kind() == KindDuration && (left.Kind() == KindInt || left.Kind() == KindFloat):
-		secs, err := valueToInt64(left)
+		secs, err := int64OperandForDomain(left, "duration multiplication")
 		if err != nil {
 			return NewNil(), err
 		}
@@ -933,13 +995,21 @@ func multiplyValues(left, right Value) (Value, error) {
 		}
 		return NewDuration(durationFromSeconds(product)), nil
 	case left.Kind() == KindMoney && right.Kind() == KindInt:
-		product, err := left.Money().MulInt(right.Int())
+		factor, err := moneyIntOperand(right)
+		if err != nil {
+			return NewNil(), err
+		}
+		product, err := left.Money().MulInt(factor)
 		if err != nil {
 			return NewNil(), err
 		}
 		return NewMoney(product), nil
 	case left.Kind() == KindInt && right.Kind() == KindMoney:
-		product, err := right.Money().MulInt(left.Int())
+		factor, err := moneyIntOperand(left)
+		if err != nil {
+			return NewNil(), err
+		}
+		product, err := right.Money().MulInt(factor)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -950,13 +1020,25 @@ func multiplyValues(left, right Value) (Value, error) {
 }
 
 func powerValues(left, right Value) (Value, error) {
-	switch {
-	case left.Kind() == KindInt && right.Kind() == KindInt && right.Int() >= 0:
-		result, ok := powInt64Checked(left.Int(), right.Int())
-		if !ok {
-			return NewNil(), int64RangeError("integer exponentiation")
+	if left.Kind() == KindInt && right.Kind() == KindInt {
+		if exp, expOK := right.CompactInt(); expOK {
+			if exp >= 0 {
+				if base, baseOK := left.CompactInt(); baseOK {
+					if result, ok := powInt64Checked(base, exp); ok {
+						return NewInt(result), nil
+					}
+				}
+				// Compact overflow or a big base: promote. Callers with an
+				// execution context preflight the projected result size before
+				// dispatching here (see checkIntPowerGuards).
+				return powIntValuesBig(left, exp), nil
+			}
+			// Negative exponents keep the historical float fallthrough below.
+		} else if result, handled, err := powerBigExponent(left, right); handled {
+			return result, err
 		}
-		return NewInt(result), nil
+	}
+	switch {
 	case isNumericValue(left) && isNumericValue(right):
 		result := math.Pow(left.Float(), right.Float())
 		if math.IsInf(result, 0) || math.IsNaN(result) {
@@ -999,14 +1081,18 @@ func isNumericValue(val Value) bool {
 func divideValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
-		if right.Int() == 0 {
+		if intValueIsZero(right) {
 			return NewNil(), newTypedRuntimeError(runtimeErrorTypeZeroDiv, errors.New("division by zero"))
 		}
-		quotient, ok := floorDivIntChecked(left.Int(), right.Int())
-		if !ok {
-			return NewNil(), int64RangeError("integer division")
+		if l, lok := left.CompactInt(); lok {
+			if r, rok := right.CompactInt(); rok {
+				if quotient, ok := floorDivIntChecked(l, r); ok {
+					return NewInt(quotient), nil
+				}
+			}
 		}
-		return NewInt(quotient), nil
+		// MinInt64 / -1 or a big operand: promote, keeping floor semantics.
+		return floorDivIntValuesBig(left, right), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		// Float division by zero follows IEEE 754 and Ruby: a finite nonzero
 		// numerator yields +/-Infinity and a zero numerator yields NaN, rather
@@ -1019,7 +1105,7 @@ func divideValues(left, right Value) (Value, error) {
 		}
 		return NewFloat(float64(left.Duration().Seconds()) / float64(right.Duration().Seconds())), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
-		secs, err := valueToInt64(right)
+		secs, err := int64OperandForDomain(right, "duration division")
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1032,7 +1118,11 @@ func divideValues(left, right Value) (Value, error) {
 		}
 		return NewDuration(durationFromSeconds(quotient)), nil
 	case left.Kind() == KindMoney && right.Kind() == KindInt:
-		res, err := left.Money().DivInt(right.Int())
+		divisor, err := moneyIntOperand(right)
+		if err != nil {
+			return NewNil(), err
+		}
+		res, err := left.Money().DivInt(divisor)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1051,10 +1141,15 @@ func moduloValues(left, right Value) (Value, error) {
 		return formatStringValues(left.String(), values)
 	}
 	if left.Kind() == KindInt && right.Kind() == KindInt {
-		if right.Int() == 0 {
+		if intValueIsZero(right) {
 			return NewNil(), zeroDivisionErrorf("modulo by zero")
 		}
-		return NewInt(floorModInt(left.Int(), right.Int())), nil
+		l, lok := left.CompactInt()
+		r, rok := right.CompactInt()
+		if lok && rok {
+			return NewInt(floorModInt(l, r)), nil
+		}
+		return floorModIntValuesBig(left, right), nil
 	}
 	if left.Kind() == KindDuration && right.Kind() == KindDuration {
 		if right.Duration().Seconds() == 0 {
@@ -1129,15 +1224,31 @@ func comparableBetween(method string, receiver Value, args []Value, kwargs map[s
 func compareValueOrder(left, right Value) (order int, ordered bool, err error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
+		l, lok := left.CompactInt()
+		r, rok := right.CompactInt()
+		if !lok || !rok {
+			return compareIntValuesBig(left, right), true, nil
+		}
 		switch {
-		case left.Int() < right.Int():
+		case l < r:
 			return -1, true, nil
-		case left.Int() > right.Int():
+		case l > r:
 			return 1, true, nil
 		default:
 			return 0, true, nil
 		}
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		// Exactly one operand is an int here (int/int is handled above). A big
+		// integer compares against the float exactly via big.Float, matching
+		// Ruby; compact ints keep the historical float64 conversion.
+		if left.Kind() == KindInt && left.IsBigInt() {
+			order, ordered = compareIntFloatValues(left, right.Float(), true)
+			return order, ordered, nil
+		}
+		if right.Kind() == KindInt && right.IsBigInt() {
+			order, ordered = compareIntFloatValues(right, left.Float(), false)
+			return order, ordered, nil
+		}
 		lf, rf := left.Float(), right.Float()
 		switch {
 		case math.IsNaN(lf) || math.IsNaN(rf):

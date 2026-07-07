@@ -8,12 +8,16 @@ import (
 // ValueToInt64 coerces an integer or floating-point Value to int64, truncating
 // fractional floats toward zero. Non-finite floats (Infinity/-Infinity/NaN) are
 // rejected rather than coerced to a garbage int64, mirroring Ruby's
-// FloatDomainError. Finite floats outside the int64 range are likewise rejected.
+// FloatDomainError. Finite floats outside the int64 range are likewise rejected,
+// as are integers outside the int64 range (IsBigInt) — never truncated.
 // Any non-numeric kind returns an error.
 func ValueToInt64(val Value) (int64, error) {
 	switch val.Kind() {
 	case KindInt:
-		return val.Int(), nil
+		if i, ok := val.CompactInt(); ok {
+			return i, nil
+		}
+		return 0, fmt.Errorf("integer must fit in a 64-bit integer")
 	case KindFloat:
 		f := val.Float()
 		if math.IsNaN(f) || math.IsInf(f, 0) {

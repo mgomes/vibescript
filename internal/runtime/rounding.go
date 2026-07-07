@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // roundMode selects the direction used by the numeric round/floor/ceil
@@ -45,7 +47,15 @@ func roundDigitsArg(method string, args []Value) (int, error) {
 		if args[0].Kind() != KindInt {
 			return 0, fmt.Errorf("%s precision must be an Integer", method)
 		}
-		n := args[0].Int()
+		n, compact := args[0].CompactInt()
+		if !compact {
+			// A big precision is out of NUM2INT range either way; report the
+			// matching RangeError direction without rendering the value.
+			if args[0].BigInt().Sign() > 0 {
+				return 0, fmt.Errorf("%s precision too big to convert to int", method)
+			}
+			return 0, fmt.Errorf("%s precision too small to convert to int", method)
+		}
 		if n > math.MaxInt32 {
 			return 0, fmt.Errorf("%s precision %d too big to convert to int", method, n)
 		}
@@ -122,31 +132,40 @@ func roundHalfUp(x, s float64) float64 {
 // floatRound implements Ruby's Float#round/#floor/#ceil. Positive ndigits keep
 // the value a Float; zero or negative ndigits return an Integer, preserving the
 // int64 overflow checks when converting the rounded value back to an integer.
-func floatRound(num float64, ndigits int, mode roundMode, method string) (Value, error) {
+func floatRound(exec *Execution, num float64, ndigits int, mode roundMode, method string) (Value, error) {
 	if ndigits > 0 {
 		return NewFloat(floatRoundDigits(num, ndigits, mode)), nil
 	}
 	if ndigits == 0 {
-		whole, err := floatRoundToInt(num, mode, method)
-		if err != nil {
-			return NewNil(), err
+		if math.IsNaN(num) || math.IsInf(num, 0) {
+			return NewNil(), int64RangeError(method)
 		}
-		return NewInt(whole), nil
+		var whole float64
+		switch mode {
+		case roundFloor:
+			whole = math.Floor(num)
+		case roundCeil:
+			whole = math.Ceil(num)
+		default:
+			whole = roundHalfUp(num, 1.0)
+		}
+		// Whole values beyond int64 promote to big integers, matching Ruby's
+		// Float#round/#floor/#ceil returning bignums.
+		return floatWholeToIntValue(whole, method)
 	}
 
-	return floatBucketNegative(num, ndigits, mode, method)
+	return floatBucketNegative(exec, num, ndigits, mode, method)
 }
 
 // floatBucketNegative implements Ruby's Float#round/#floor/#ceil for negative
 // ndigits. Ruby first collapses the float to an (arbitrary precision) integer
 // and then buckets that integer to the requested power of ten: round truncates
 // toward zero (Float#to_i), floor takes the lower whole value, and ceil takes
-// the upper one. Vibescript integers are int64, so the *final* bucket must fit
-// int64, but the intermediate whole value need not: a huge float such as 9.3e18
-// floors to 0 at precision -20 even though the whole value exceeds int64.
-// Routing through math/big keeps the intermediate value exact and avoids the
-// binary scaling error that direct float bucketing injects for large magnitudes.
-func floatBucketNegative(num float64, ndigits int, mode roundMode, method string) (Value, error) {
+// the upper one. Buckets beyond int64 promote to big integers (Ruby's results
+// are bignums there). Routing through math/big keeps the intermediate value
+// exact and avoids the binary scaling error that direct float bucketing
+// injects for large magnitudes.
+func floatBucketNegative(exec *Execution, num float64, ndigits int, mode roundMode, method string) (Value, error) {
 	if math.IsNaN(num) || math.IsInf(num, 0) {
 		return NewNil(), int64RangeError(method)
 	}
@@ -166,11 +185,7 @@ func floatBucketNegative(num float64, ndigits int, mode roundMode, method string
 		// dropping a fractional part.
 		return NewNil(), int64RangeError(method)
 	}
-	result, err := bigIntRound(bigWhole, ndigits, mode, method)
-	if err != nil {
-		return NewNil(), err
-	}
-	return NewInt(result), nil
+	return bigIntRoundValue(exec, bigWhole, ndigits, mode)
 }
 
 // floatRoundDigits rounds a float to ndigits fractional digits (ndigits > 0),
@@ -288,31 +303,31 @@ func ratRoundHalfAwayFromZero(r *big.Rat) *big.Int {
 	return q
 }
 
-// bigIntRound buckets an arbitrary-precision integer to a power of ten for
-// negative ndigits, mirroring Ruby's rb_int_floor/rb_int_ceil/rb_int_round, then
-// converts the exact result to an int64. Vibescript integers are int64, so a
-// bucket that lands outside that range reports an overflow instead of widening
-// like Ruby's bignums; the intermediate value, however, may exceed int64.
-func bigIntRound(n *big.Int, ndigits int, mode roundMode, method string) (int64, error) {
+// bigIntRoundValue buckets an arbitrary-precision integer to a power of ten
+// for negative ndigits, mirroring Ruby's rb_int_floor/rb_int_ceil/rb_int_round.
+// Results promote to big-integer Values (normalizing back to compact when they
+// fit int64), matching Ruby's widening. exec, when non-nil, preflights a
+// bucket materialization whose size is driven by ndigits rather than by the
+// receiver (see bigIntRoundBeyondMagnitudeValue).
+func bigIntRoundValue(exec *Execution, n *big.Int, ndigits int, mode roundMode) (Value, error) {
 	if ndigits >= 0 || n.Sign() == 0 {
-		return bigToInt64Checked(n, method)
+		return value.NewBigInt(n), nil
 	}
 
 	if ndigits == math.MinInt {
 		// -ndigits would overflow where int is 32-bit (ndigits == math.MinInt32).
 		// The magnitude dwarfs any representable value, so resolve it via the
 		// beyond-magnitude path instead of negating.
-		return bigIntRoundBeyondMagnitude(n, math.MaxInt, mode, method)
+		return bigIntRoundBeyondMagnitudeValue(exec, n, math.MaxInt, mode)
 	}
 	digits := -ndigits
 	// When 10^digits has strictly more decimal digits than |n|, it exceeds |n|,
 	// so the toward-zero quotient is 0 and the result is fully determined by the
 	// rounding direction. Resolving it here avoids materializing 10^digits with
-	// math/big, which for an extreme precision such as round(-1000000000) would
-	// allocate a billion-digit number and hang or exhaust memory before any
-	// normal limit applied.
+	// math/big unless the rounding direction genuinely produces it, and that
+	// path preflights the allocation (see bigIntRoundBeyondMagnitudeValue).
 	if digits > decimalDigitCount(n) {
-		return bigIntRoundBeyondMagnitude(n, digits, mode, method)
+		return bigIntRoundBeyondMagnitudeValue(exec, n, digits, mode)
 	}
 
 	p := pow10BigInt(digits)
@@ -341,61 +356,96 @@ func bigIntRound(n *big.Int, ndigits int, mode roundMode, method string) (int64,
 			}
 		}
 	}
-	return bigToInt64Checked(base, method)
+	return value.AdoptBigInt(base), nil
 }
 
-// bigIntRoundBeyondMagnitude buckets n to 10^digits when that bucket strictly
-// exceeds |n|, so the toward-zero base is 0 and only the away-from-zero target
-// (+/-10^digits) can be nonzero. The caller guarantees digits >
-// decimalDigitCount(n), which also means a half-way value can never reach the
-// bucket, so round-to-nearest collapses to zero. This avoids ever building
-// 10^digits when digits is astronomically large.
-func bigIntRoundBeyondMagnitude(n *big.Int, digits int, mode roundMode, method string) (int64, error) {
+// bigIntRoundBeyondMagnitudeValue buckets n to 10^digits when that bucket
+// strictly exceeds |n|, so the toward-zero base is 0 and only the
+// away-from-zero target (+/-10^digits) can be nonzero. The caller guarantees
+// digits > decimalDigitCount(n), which also means a half-way value can never
+// reach the bucket, so round-to-nearest collapses to zero. 10^digits is sized
+// by the caller-supplied precision rather than by any existing value, so its
+// materialization is preflighted against the quotas before it is built: a
+// ceil(-1000000000) rejects in O(1) instead of allocating a billion-digit
+// number.
+func bigIntRoundBeyondMagnitudeValue(exec *Execution, n *big.Int, digits int, mode roundMode) (Value, error) {
 	switch mode {
 	case roundFloor:
 		if n.Sign() > 0 {
-			return 0, nil
+			return NewInt(0), nil
 		}
-		return negPow10Int64Checked(digits, method)
+		p, err := pow10ValueChecked(exec, digits)
+		if err != nil {
+			return NewNil(), err
+		}
+		return negIntValueBig(p), nil
 	case roundCeil:
 		if n.Sign() < 0 {
-			return 0, nil
+			return NewInt(0), nil
 		}
-		return posPow10Int64Checked(digits, method)
+		return pow10ValueChecked(exec, digits)
 	default:
 		// 10^digits > 10*|n| > 2*|n|, so n never reaches the half-way mark and
 		// rounds toward zero.
-		return 0, nil
+		return NewInt(0), nil
 	}
 }
 
-// posPow10Int64Checked returns 10^digits as an int64, reporting an overflow when
-// the bucket exceeds the int64 range.
-func posPow10Int64Checked(digits int, method string) (int64, error) {
-	p, ok := pow10Int64(digits)
-	if !ok {
-		return 0, int64RangeError(method)
+// pow10ValueChecked materializes 10^digits as an integer Value after
+// preflighting its projected size (roughly digits x log2(10) bits) against the
+// memory quota and charging steps proportional to its word count.
+func pow10ValueChecked(exec *Execution, digits int) (Value, error) {
+	if p, ok := pow10Int64(digits); ok {
+		return NewInt(p), nil
 	}
-	return p, nil
-}
-
-// negPow10Int64Checked returns -10^digits as an int64, reporting an overflow
-// when the bucket exceeds the int64 range.
-func negPow10Int64Checked(digits int, method string) (int64, error) {
-	p, ok := pow10Int64(digits)
-	if !ok {
-		return 0, int64RangeError(method)
+	projWords := math.MaxInt / (estimatedBigIntWordBytes * 2)
+	if digits < math.MaxInt/4 {
+		projWords = (digits*10/3)/64 + 1
 	}
-	return -p, nil
+	if exec != nil {
+		if projWords > bigIntMulPreflightWords {
+			if err := exec.checkProjectedBigIntBytes(projWords); err != nil {
+				return NewNil(), err
+			}
+		}
+		if err := exec.stepN(1 + projWords/bigIntStepWordsPerStep); err != nil {
+			return NewNil(), err
+		}
+	}
+	return value.AdoptBigInt(pow10BigInt(digits)), nil
 }
 
 // decimalDigitCount returns the number of base-10 digits in |n|, treating zero
-// as a single digit.
+// as a single digit. It derives the count from the bit length in O(1): the
+// digit count of x is floor(log10 x) + 1, and log10 x lies in
+// [(bits-1)·log10 2, bits·log10 2), so the bit-length bounds pin the count
+// exactly for almost every value. When the bounds straddle a power of ten (a
+// band the float epsilons keep at most a few candidates wide), the count is
+// resolved with direct comparisons against 10^k instead of rendering the full
+// decimal text — the base conversion is superlinear and used to run on every
+// negative-precision rounding of a big receiver.
 func decimalDigitCount(n *big.Int) int {
 	if n.Sign() == 0 {
 		return 1
 	}
-	return len(new(big.Int).Abs(n).Text(10))
+	bits := n.BitLen()
+	const log10of2 = 0.30102999566398119
+	// Loosen each bound by a hair so float rounding can only widen the band,
+	// never exclude the true count.
+	low := int(float64(bits-1)*log10of2-1e-9) + 1
+	high := int(float64(bits)*log10of2+1e-9) + 1
+	if low == high {
+		return low
+	}
+	digits := low
+	for digits < high {
+		// |n| >= 10^digits means the count is at least digits+1.
+		if n.CmpAbs(pow10BigInt(digits)) < 0 {
+			break
+		}
+		digits++
+	}
+	return digits
 }
 
 // bigToInt64Checked converts n to an int64, reporting an overflow error when it
@@ -427,25 +477,50 @@ func pow10Float(n int) float64 {
 	return f
 }
 
-// floatRoundToInt rounds a float to the nearest whole number in the requested
-// direction and converts it to an int64, applying the shared overflow check.
-func floatRoundToInt(num float64, mode roundMode, method string) (int64, error) {
-	var whole float64
-	switch mode {
-	case roundFloor:
-		whole = math.Floor(num)
-	case roundCeil:
-		whole = math.Ceil(num)
-	default:
-		whole = roundHalfUp(num, 1.0)
+// floatWholeToIntValue converts an integral float into an integer Value,
+// promoting finite magnitudes beyond int64 to big integers exactly as Ruby's
+// Float#to_i/#floor/#ceil/#round return bignums. NaN and the infinities keep
+// the historical rejection (Ruby raises FloatDomainError for them).
+func floatWholeToIntValue(whole float64, method string) (Value, error) {
+	if n, err := floatToInt64Checked(whole, method); err == nil {
+		return NewInt(n), nil
 	}
-	return floatToInt64Checked(whole, method)
+	if math.IsNaN(whole) || math.IsInf(whole, 0) {
+		return NewNil(), int64RangeError(method)
+	}
+	bi, acc := big.NewFloat(whole).Int(nil)
+	if acc != big.Exact {
+		// The caller passes an integral value, so the conversion is always
+		// exact; guard defensively rather than silently dropping a fraction.
+		return NewNil(), int64RangeError(method)
+	}
+	return value.AdoptBigInt(bi), nil
 }
 
-// intRound implements Ruby's Integer#round/#floor/#ceil. Non-negative ndigits
-// leave the value unchanged; negative ndigits bucket it to the matching power
-// of ten. Unlike Ruby's arbitrary-precision integers, results that exceed the
-// int64 range report an overflow rather than widening.
+// intRoundPromoting implements Ruby's Integer#round/#floor/#ceil for both
+// integer representations: compact receivers take the exact int64 bucketing
+// fast path, and results or receivers beyond int64 route through the
+// arbitrary-precision bucketing, widening exactly as Ruby does.
+func intRoundPromoting(exec *Execution, receiver Value, ndigits int, mode roundMode, method string) (Value, error) {
+	if ndigits >= 0 {
+		return receiver, nil
+	}
+	if n, ok := receiver.CompactInt(); ok {
+		if result, err := intRound(n, ndigits, mode, method); err == nil {
+			return NewInt(result), nil
+		}
+		// The bucket landed outside int64; recompute in arbitrary precision.
+	}
+	if err := exec.chargeBigIntReceiverSteps(receiver); err != nil {
+		return NewNil(), err
+	}
+	return bigIntRoundValue(exec, bigIntOperand(receiver), ndigits, mode)
+}
+
+// intRound implements Ruby's Integer#round/#floor/#ceil for int64 receivers.
+// Non-negative ndigits leave the value unchanged; negative ndigits bucket it
+// to the matching power of ten. Results that exceed the int64 range report an
+// overflow, which intRoundPromoting turns into an arbitrary-precision retry.
 func intRound(n int64, ndigits int, mode roundMode, method string) (int64, error) {
 	if ndigits >= 0 {
 		return n, nil
