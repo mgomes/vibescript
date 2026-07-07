@@ -2821,9 +2821,9 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), fmt.Errorf("hash.remap_keys mapping key is unsupported hash key: %w", err)
 					} else if ok {
 						if err := exec.chargeBigIntKeySteps(mapped); err != nil {
-						return NewNil(), err
-					}
-					if _, err := valueToHashKey(mapped); err != nil {
+							return NewNil(), err
+						}
+						if _, err := valueToHashKey(mapped); err != nil {
 							return NewNil(), fmt.Errorf("hash.remap_keys mapping value is unsupported hash key: %w", err)
 						}
 						if err := hashSet(out, mapped, entry.Value); err != nil {
