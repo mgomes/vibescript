@@ -1,0 +1,2 @@
+JSON.stringify({ status: Status::Draft }) # {"status":"draft"}
+"status={{value}}".template({ value: Status::Draft }) # "status=draft"

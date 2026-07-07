@@ -1,0 +1,3 @@
+def label(active)
+  active ? "active" : "inactive"
+end

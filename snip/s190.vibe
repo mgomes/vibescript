@@ -1,0 +1,34 @@
+class Vec
+  def initialize(x)
+    @x = x
+  end
+  def x
+    @x
+  end
+  def +(other)
+    Vec.new(x + other.x)
+  end
+  def ==(other)
+    x == other.x
+  end
+end
+
+class Counter
+  def initialize
+    @slots = {}
+  end
+  def [](key)
+    @slots.fetch(key, 0)
+  end
+  def []=(key, value)
+    @slots[key] = value
+  end
+end
+
+(Vec.new(1) + Vec.new(2)).x  # => 3
+Vec.new(1) == Vec.new(1)     # => true
+
+c = Counter.new
+c["a"] = 1
+c["a"] += 5
+c["a"]                       # => 6

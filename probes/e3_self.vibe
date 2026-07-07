@@ -1,0 +1,6 @@
+class C
+  def m
+    self [0]
+  end
+end
+C.new.m

@@ -1,0 +1,3 @@
+def reward(payload: { id: string, points: int }) -> { id: string, points: int }
+  { id: payload[:id], points: payload[:points] + 10 }
+end

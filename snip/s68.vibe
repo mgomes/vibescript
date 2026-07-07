@@ -1,0 +1,4 @@
+"abc".chop      # "ab"
+"abc\n".chop    # "abc"
+"héllo".chop    # "héll"
+"".chop         # ""

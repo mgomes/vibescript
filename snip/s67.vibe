@@ -1,0 +1,4 @@
+"line\n".chomp       # "line"
+"path///".chomp("/") # "path//"
+"line\n\n".chomp("") # "line"
+"abc\n".chomp(nil)   # "abc\n"

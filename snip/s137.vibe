@@ -1,0 +1,3 @@
+def charge(amount: int, currency: string = "USD") -> hash
+  {amount: amount, currency: currency}
+end

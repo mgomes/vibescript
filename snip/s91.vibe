@@ -1,0 +1,2 @@
+"bananas".sub("na", "NA") # "baNAnas"
+"ID-12 ID-34".sub("ID-[0-9]+", "X", regex: true) # "X ID-34"

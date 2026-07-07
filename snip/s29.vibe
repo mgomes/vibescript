@@ -1,0 +1,11 @@
+class Report
+  def helper_b
+    2
+  end
+
+  private
+
+  def helper_a
+    1
+  end
+end

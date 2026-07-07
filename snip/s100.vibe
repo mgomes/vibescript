@@ -1,0 +1,3 @@
+"hi".center(6, "-")     # "--hi--"
+"hi".center(5)          # " hi  "
+"hi".center(10, "12345") # "1234hi1234"

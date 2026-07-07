@@ -1,0 +1,9 @@
+# modules/billing/fees.vibe
+def apply(amount)
+  amount + shared_rate
+end
+
+private def shared_rate
+  rates = require("../shared/math", as: "math")
+  math.double(1)
+end

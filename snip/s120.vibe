@@ -1,0 +1,3 @@
+"abc".chars # ["a", "b", "c"]
+"héllo".chars # ["h", "é", "l", "l", "o"]
+"".chars # []

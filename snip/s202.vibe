@@ -1,0 +1,6 @@
+begin
+  risky_call
+rescue(AssertionError)
+  audit("recovering assertion")
+  raise
+end

@@ -1,0 +1,6 @@
+def f(x)
+  yield x
+end
+f [1] do |v|
+  puts v
+end

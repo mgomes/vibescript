@@ -1,0 +1,7 @@
+def shout(message)
+  message.upcase
+end
+
+shout("hello")   # "HELLO"
+"Straße".upcase  # "STRASSE"
+"ﬁle".upcase     # "FILE"

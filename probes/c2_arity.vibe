@@ -1,0 +1,4 @@
+def f(a, b)
+  a + b
+end
+f [1]

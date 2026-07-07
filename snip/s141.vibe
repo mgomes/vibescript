@@ -1,0 +1,10 @@
+module Billing
+  LIMIT = 5
+
+  def self.code
+    "ok"
+  end
+end
+
+Billing.code       # "ok"
+Billing::LIMIT     # 5

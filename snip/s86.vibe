@@ -1,0 +1,3 @@
+out = []
+"a1 b2".scan("[a-z][0-9]") do |m| out.push(m) end # returns "a1 b2"
+out                                                # ["a1", "b2"]

@@ -1,0 +1,4 @@
+def merge_defaults(player)
+  defaults = { goal: 5000, raised: money("0.00 USD") }
+  defaults.merge(player)
+end

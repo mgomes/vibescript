@@ -1,0 +1,11 @@
+def parse_config(raw)
+  begin
+    decode(raw)
+  rescue TypeError => err
+    audit("bad shape: " + err.message)
+    default_config
+  rescue RuntimeError => err
+    audit("unexpected: " + err.message)
+    raise
+  end
+end

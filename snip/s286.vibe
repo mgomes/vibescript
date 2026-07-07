@@ -1,0 +1,4 @@
+sizes = { size: "XL" }
+sizes.size            # 1
+sizes[:size]          # "XL"
+{ color: "red" }.size # 1

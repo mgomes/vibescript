@@ -1,0 +1,19 @@
+def pick_second(n: int, m: int) -> int
+  m
+end
+
+def pick_optional(label: string? = nil) -> string?
+  label
+end
+
+def normalize_id(id: int | string) -> string
+  id.string
+end
+
+def apply_bonus(payload: { id: string, points: int }) -> { id: string, points: int }
+  { id: payload[:id], points: payload[:points] + 5 }
+end
+
+def nil_result -> nil
+  nil
+end

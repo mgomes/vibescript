@@ -765,3 +765,21 @@ embedding API hardened and frozen for GA.
 - [x] Release notes are documented in `CHANGELOG.md`.
 - [x] Full tests pass.
 - [x] Release checklist passes for `v1.0.0-rc1`.
+
+## v1.0.0-rc2 - Bignums and Candidate Fixes (completed 2026-07-07)
+
+Goal: second release candidate — arbitrary-precision integers with sandbox
+accounting, plus the parenless bracket-argument and endless-range first(n)
+gaps found smoke-testing the rc1 artifact.
+
+- [x] Arbitrary-precision integers with transparent promotion and quota
+  charging (estimator payloads, pow/multiply preflights, step scaling,
+  render and literal guards).
+- [x] Spaced brackets after command callees parse as array arguments.
+- [x] Bounded first(n) on endless ranges.
+
+### v1.0.0-rc2 Definition of Done
+
+- [x] Release notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v1.0.0-rc2`.

@@ -1,0 +1,4 @@
+limit = (1..
+  10)
+span = 1..10
+open_ended = 5..

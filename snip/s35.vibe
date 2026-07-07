@@ -1,0 +1,3 @@
+def total(a, b) -> int
+  a + b
+end

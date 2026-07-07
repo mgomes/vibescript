@@ -1,0 +1,3 @@
+"Straße".upcase           # => "STRASSE"
+"Straße".upcase(:ascii)   # => "STRAßE"
+"Straße".downcase(:fold)  # => "strasse"

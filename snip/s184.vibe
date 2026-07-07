@@ -1,0 +1,9 @@
+class Mathy
+  def self.twice(n)
+    n * 2
+  end
+
+  def call_twice(n)
+    self.class.twice(n)
+  end
+end

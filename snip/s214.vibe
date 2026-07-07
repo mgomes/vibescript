@@ -1,0 +1,5 @@
+def configure(opts)
+  opts[:retries]
+end
+
+configure retries: 3

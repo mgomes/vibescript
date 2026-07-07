@@ -1,0 +1,2 @@
+"STRAßE".downcase(:ascii) # "straße"
+"Straße".downcase(:fold)  # "strasse"

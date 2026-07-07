@@ -1,0 +1,4 @@
+def f(a, b)
+  [a, b]
+end
+puts f [1],[2]

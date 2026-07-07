@@ -1,0 +1,9 @@
+def strftime_timestamp
+  t = Time.utc(2024, 1, 2, 3, 4, 5)
+  {
+    iso:      t.strftime("%Y-%m-%d %H:%M:%S"), # "2024-01-02 03:04:05"
+    weekday:  t.strftime("%A, %B %e"),         # "Tuesday, January  2"
+    clock:    t.strftime("%I:%M %p"),          # "03:04 AM"
+    escaped:  t.strftime("100%% done")         # "100% done"
+  }
+end

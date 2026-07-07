@@ -1,0 +1,2 @@
+(14.days).weeks   # 2
+(20.days).weeks   # 2 (truncated from 2.857)

@@ -1,0 +1,3 @@
+"a,b,c".split(",")        # ["a", "b", "c"]
+"path/to/file".split("/") # ["path", "to", "file"]
+"a,b,".split(",")         # ["a", "b"] (trailing empty removed)

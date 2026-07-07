@@ -1,0 +1,4 @@
+tpl = "Player {{user.name}} scored {{user.score}}"
+ctx = { user: { name: "Alex", score: 42 } }
+
+tpl.template(ctx) # "Player Alex scored 42"

@@ -1,0 +1,9 @@
+def time_seconds_math
+  t = Time.utc(2024, 1, 1, 0, 0, 0)
+  {
+    one_minute_later:   (t + 60).iso8601,    # "2024-01-01T00:01:00Z"
+    one_minute_earlier: (t - 60).iso8601,    # "2023-12-31T23:59:00Z"
+    half_second_later:  (t + 0.5).iso8601(3),# "2024-01-01T00:00:00.500Z"
+    span_seconds:       (t + 90) - t         # 90.0
+  }
+end

@@ -1,0 +1,2 @@
+srand(1234)
+[rand, rand(10), rand(1..3)]

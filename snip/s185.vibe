@@ -1,0 +1,10 @@
+class Person
+  def initialize(name)
+    @name = name
+    @age = 0
+  end
+
+  def birthday
+    @age = @age + 1
+  end
+end

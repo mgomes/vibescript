@@ -1,0 +1,5 @@
+player = {
+  id: "p1",
+  name: "Alex",
+  raised: money("25.00 USD"),
+}

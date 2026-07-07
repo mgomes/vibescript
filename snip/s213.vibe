@@ -1,0 +1,7 @@
+def greet(name:)
+  "hello " + name
+end
+
+name = "Ada"
+greet(name:)
+greet name:

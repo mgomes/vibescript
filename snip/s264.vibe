@@ -1,0 +1,10 @@
+def label(score)
+  result = if score >= 90
+    "great"
+  elsif score >= 80
+    "passing"
+  else
+    "retry"
+  end
+  result
+end

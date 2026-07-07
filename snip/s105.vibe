@@ -1,0 +1,3 @@
+"abc".prepend("z")      # "zabc"
+"abc".prepend("y", "z") # "yzabc"
+"abc".prepend           # "abc"

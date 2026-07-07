@@ -1,0 +1,7 @@
+def f(x)
+  x
+end
+def g
+  return f [1]
+end
+puts g

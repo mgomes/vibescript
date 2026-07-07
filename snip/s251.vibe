@@ -1,0 +1,8 @@
+def formatted_timestamp
+  t = Time.utc(2000, 1, 1, 20, 15, 1)
+  {
+    short_date: t.format("2006-01-02"),
+    long_time: t.format("15:04:05"),
+    rfc3339:   t.format("2006-01-02T15:04:05Z07:00")
+  }
+end

@@ -1,0 +1,10 @@
+def fetch(default)
+  if block_given?
+    yield
+  else
+    default
+  end
+end
+
+fetch("none")            # => "none"
+fetch("none") { "value" } # => "value"

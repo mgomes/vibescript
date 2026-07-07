@@ -1,0 +1,9 @@
+class Grid
+  def [](i)
+    i * 10
+  end
+  def m
+    self [2]
+  end
+end
+puts Grid.new.m

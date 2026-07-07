@@ -1,0 +1,9 @@
+class A
+  X = [1, 2]
+end
+class B
+  def m
+    A::X [0]
+  end
+end
+puts B.new.m

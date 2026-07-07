@@ -1,0 +1,5 @@
+"abc".insert(1, "X")   # "aXbc"
+"abc".insert(3, "X")   # "abcX"
+"abc".insert(-1, "X")  # "abcX"
+"abc".insert(-2, "X")  # "abXc"
+"café".insert(2, "Z")  # "caZfé"

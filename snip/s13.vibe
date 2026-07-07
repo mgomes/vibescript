@@ -1,0 +1,2 @@
+require("fees", as: "fees")
+fees.apply_fee(amount)

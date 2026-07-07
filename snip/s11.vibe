@@ -1,0 +1,7 @@
+private def helper_fee(amount)
+  amount + 1
+end
+
+def apply_fee(amount)
+  helper_fee(amount)
+end

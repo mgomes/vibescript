@@ -1,0 +1,7 @@
+def rate
+  4
+end
+
+rate / 2    # spaced on both sides
+rate/2      # flush
+rate() / 2  # explicit call

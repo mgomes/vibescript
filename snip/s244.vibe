@@ -1,0 +1,7 @@
+def attendees(core, late, extra)
+  core.union(late, extra)
+end
+
+def remaining(roster, departed)
+  roster.difference(departed)
+end

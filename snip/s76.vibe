@@ -1,0 +1,3 @@
+"vibescript".start_with?("vibe")        # true
+"vibescript".start_with?("x", "vibe")   # true
+"vibescript".start_with?("x", "script") # false

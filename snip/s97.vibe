@@ -1,0 +1,3 @@
+"abc".sub("b", "<\\&>", regex: true)   # "a<b>c"
+"abc".sub("b", "<$&>", regex: true)    # "a<$&>c" ($& is literal)
+"John Smith".sub("(?<first>\\w+) (?<last>\\w+)", "\\k<last>, \\k<first>", regex: true) # "Smith, John"

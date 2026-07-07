@@ -1,0 +1,5 @@
+def run
+  a = [10, 20]
+  [1].each { puts a [0] }
+end
+run

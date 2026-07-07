@@ -1,0 +1,4 @@
+def valid?(x)
+  x
+end
+puts valid?[0]

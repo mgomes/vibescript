@@ -1,0 +1,6 @@
+Tasks.run(max: 4) do |tasks|
+  tasks.spawn(:warm_cache)
+  tasks.wait
+
+  use_cache()
+end

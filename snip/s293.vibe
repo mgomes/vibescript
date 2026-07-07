@@ -1,0 +1,2 @@
+Duration.parse("1h30m").seconds # 5400
+Duration.parse("P2W").days      # 14

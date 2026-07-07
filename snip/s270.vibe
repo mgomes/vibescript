@@ -1,0 +1,3 @@
+Status::Draft == Status::Draft      # true
+Status::Draft == :draft             # false
+Status::Draft == ReviewState::Draft # false

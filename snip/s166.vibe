@@ -1,0 +1,7 @@
+Hash.new(0).default                 # 0
+Hash.new(0).default(:any)           # 0
+Hash.new { |h, k| 1 }.default       # nil
+Hash.new { |h, k| k }.default(:x)   # :x  (proc invoked with the key)
+Hash.new { |h, k| 1 }.default_proc  # the proc
+{}.default                          # nil
+{}.default_proc                     # nil

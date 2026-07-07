@@ -1,0 +1,2 @@
+base = [1, 2]
+extended = base.push(3)   # old: base stayed [1, 2]

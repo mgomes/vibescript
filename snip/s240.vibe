@@ -1,0 +1,9 @@
+def summarize(players)
+  grouped = players.group_by { |p| p[:status] }
+  counts = players.map { |p| p[:status] }.tally
+
+  {
+    by_status: grouped,
+    totals: counts
+  }
+end

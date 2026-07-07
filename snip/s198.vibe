@@ -1,0 +1,19 @@
+module Named
+  def display_name
+    "I am " + name
+  end
+end
+
+class Person
+  include Named
+
+  def initialize(name)
+    @name = name
+  end
+
+  def name
+    @name
+  end
+end
+
+Person.new("Ada").display_name    # "I am Ada"

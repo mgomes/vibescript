@@ -1,0 +1,10 @@
+# modules/shared/currency.vibe
+def cents(value)
+  value * 100
+end
+
+# modules/billing/taxes.vibe
+def apply(amount)
+  require("../shared/currency", as: "currency")
+  amount + currency.cents(1)
+end

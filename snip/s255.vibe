@@ -1,0 +1,11 @@
+def mail_and_http_dates
+  utc = Time.utc(2024, 1, 2, 3, 4, 5)
+  offset = Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "+05:30")
+  {
+    httpdate:     utc.httpdate,     # "Tue, 02 Jan 2024 03:04:05 GMT"
+    rfc2822:      utc.rfc2822,      # "Tue, 02 Jan 2024 03:04:05 -0000"
+    rfc822:       utc.rfc822,       # "Tue, 02 Jan 2024 03:04:05 -0000"
+    http_offset:  offset.httpdate,  # "Mon, 01 Jan 2024 21:34:05 GMT"
+    mail_offset:  offset.rfc2822    # "Tue, 02 Jan 2024 03:04:05 +0530"
+  }
+end

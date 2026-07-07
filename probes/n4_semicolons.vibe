@@ -1,0 +1,4 @@
+def f(x)
+  x
+end
+puts f [1]; puts f [2]

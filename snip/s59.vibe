@@ -1,0 +1,3 @@
+"name".to_sym  # :name
+"name".intern  # :name
+"a b!".to_sym  # :"a b!"

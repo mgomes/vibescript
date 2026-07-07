@@ -1,0 +1,18 @@
+def countdown(n)
+  out = []
+  while n > 0 do
+    out = out + [n]
+    n = n - 1
+  end
+  out
+end
+
+def count_up(limit)
+  out = []
+  n = 0
+  until n >= limit do
+    out = out + [n]
+    n = n + 1
+  end
+  out
+end

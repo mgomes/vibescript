@@ -1,0 +1,3 @@
+out = []
+"Aé".each_codepoint { |c| out = out + [c] }
+out # [65, 233]

@@ -1,0 +1,4 @@
+def calculate_total(amount)
+  require("fee_calculator", as: "helpers")
+  amount + helpers.calculate_fee(amount)
+end

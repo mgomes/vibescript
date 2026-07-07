@@ -1,0 +1,3 @@
+"hello".inspect   # "\"hello\""
+"a\nb".inspect    # "\"a\\nb\""
+"say \"hi\"".inspect # "\"say \\\"hi\\\"\""

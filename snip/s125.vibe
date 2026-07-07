@@ -1,0 +1,3 @@
+out = []
+"é".each_byte { |b| out = out + [b] }
+out # [195, 169]

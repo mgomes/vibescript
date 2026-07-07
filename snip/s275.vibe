@@ -1,0 +1,2 @@
+"hello".strip!    # nil (nothing to strip)
+"  hello ".strip! # "hello"

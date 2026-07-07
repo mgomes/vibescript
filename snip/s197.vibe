@@ -1,0 +1,12 @@
+module Outer
+  module Inner
+    BASE = 2
+
+    def self.double
+      BASE * 2
+    end
+  end
+end
+
+Outer::Inner.double    # 4
+Outer::Inner::BASE     # 2

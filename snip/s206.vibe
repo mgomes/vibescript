@@ -1,0 +1,10 @@
+def first_even(values)
+  values.each do |value|
+    if value % 2 == 0
+      return value
+    end
+  end
+  "none"
+end
+
+first_even([1, 2, 3]) # => 2
