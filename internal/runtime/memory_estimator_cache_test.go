@@ -517,6 +517,22 @@ def run()
     %q
   end
 end`, payloadA, regionPeak),
+		// A closure created in the block body captures the block scope and escapes
+		// into an outer (prefix) binding, then a block-local it closes over grows.
+		// Once the scope is reachable from the memoized prefix its later writes must
+		// still be charged; if capture failed to revoke the scope's epoch neutrality
+		// the suffix walk would deduplicate it against the prefix and miss the
+		// growth, undercounting here.
+		"region_each_escaping_closure": fmt.Sprintf(`def run()
+  holder = nil
+  [1, 2, 3, 4].each do |v|
+    x = "s"
+    holder = -> { x }
+    x = %q
+    %q
+  end
+  holder.call.size
+end`, payloadA, regionPeak),
 	}
 	for name, source := range regionScripts {
 		scripts[name] = source
