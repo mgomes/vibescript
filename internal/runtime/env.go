@@ -152,16 +152,41 @@ func (e *Env) resetForReuse(parent *Env) {
 
 // Get looks up a variable by name, traversing parent scopes if needed.
 func (e *Env) Get(name string) (Value, bool) {
+	val, _, ok := e.getWithScope(name)
+	return val, ok
+}
+
+// getWithScope resolves name and also returns the scope that holds the binding,
+// so a caller can act on that exact scope without walking the chain a second
+// time. The scope is where any hidden array-append accumulator for name lives
+// (buffers are only ever registered on a binding's own scope), which is what
+// getEscaping uses to settle in a single walk.
+func (e *Env) getWithScope(name string) (Value, *Env, bool) {
 	var lastMutable *Env
 	for scope := e; scope != nil; scope = scope.parent {
 		if !scope.frozen {
 			lastMutable = scope
 		}
 		if val, ok := scope.getBoundValue(name, lastMutable); ok {
-			return val, true
+			return val, scope, true
 		}
 	}
-	return Value{}, false
+	return Value{}, nil, false
+}
+
+// getEscaping resolves name as an escaping variable reference, settling any
+// hidden array-append accumulator on the binding scope in the same walk. It
+// replaces a Get followed by clearArrayAppendBuffer, which walked the chain
+// twice — once to read, once to relocate the binding scope to settle it. The
+// settle is byte-for-byte the same: getWithScope returns the nearest binding
+// scope, exactly the scope clearArrayAppendBuffer's lookupBindingScope would
+// find, and dropArrayAppendBuffer on a scope with no buffer is a nil-map no-op.
+func (e *Env) getEscaping(name string) (Value, bool) {
+	val, scope, ok := e.getWithScope(name)
+	if ok {
+		scope.dropArrayAppendBuffer(name)
+	}
+	return val, ok
 }
 
 func (e *Env) getCallLocal(name string) (Value, bool) {
