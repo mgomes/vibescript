@@ -86,35 +86,124 @@ func TestAcquireRecycleCallEnvPooling(t *testing.T) {
 	}
 }
 
+// withEnvRecycleVerify runs fn with verification enabled and restores the prior
+// value afterward. It must be called only from non-parallel tests: sequential
+// top-level tests never run concurrently with any other test, so toggling the
+// package global here does not race even under -race.
+func withEnvRecycleVerify(t *testing.T, fn func()) {
+	t.Helper()
+	prev := envRecycleVerify
+	envRecycleVerify = true
+	defer func() { envRecycleVerify = prev }()
+	fn()
+}
+
 // TestRecycleCallEnvPoisonsUnderVerify pins the verification-mode contract: a
 // recycled frame is poisoned and dropped rather than pooled, and touching it
-// afterward panics. It runs only under VIBES_ENV_RECYCLE_VERIFY=1, where the
-// global has already been set by TestMain (write-once, so reading it here does
-// not race).
+// afterward panics.
 func TestRecycleCallEnvPoisonsUnderVerify(t *testing.T) {
-	if !envRecycleVerify {
-		t.Skip("requires VIBES_ENV_RECYCLE_VERIFY=1")
-	}
+	withEnvRecycleVerify(t, func() {
+		exec := &Execution{}
+		fn := &ScriptFunction{Env: newEnv(nil), reuseCallEnv: true}
+		env := exec.acquireCallEnv(fn, 1)
+		env.Define("x", NewInt(1))
 
-	exec := &Execution{}
-	fn := &ScriptFunction{Env: newEnv(nil), reuseCallEnv: true}
-	env := exec.acquireCallEnv(fn, 1)
-	env.Define("x", NewInt(1))
-
-	exec.recycleCallEnv(env)
-	if len(exec.callEnvFreeList) != 0 {
-		t.Fatalf("verification mode pooled a frame; free list = %d, want 0", len(exec.callEnvFreeList))
-	}
-	if !env.poisoned {
-		t.Fatalf("recycled frame was not poisoned under verification")
-	}
-
-	defer func() {
-		if recover() == nil {
-			t.Fatalf("accessing a poisoned frame did not panic")
+		exec.recycleCallEnv(env)
+		if len(exec.callEnvFreeList) != 0 {
+			t.Fatalf("verification mode pooled a frame; free list = %d, want 0", len(exec.callEnvFreeList))
 		}
-	}()
-	env.Define("y", NewInt(2))
+		if !env.poisoned {
+			t.Fatalf("recycled frame was not poisoned under verification")
+		}
+
+		defer func() {
+			if recover() == nil {
+				t.Fatalf("accessing a poisoned frame did not panic")
+			}
+		}()
+		env.Define("y", NewInt(2))
+	})
+}
+
+// TestPoisonedEnvGuardsAllAccessPaths verifies the poison tripwire fires no
+// matter how a stale reference to a recycled frame is used. Every access path a
+// running program can take to a scope's own storage must route through a guarded
+// primitive; this pins that so a newly added accessor that forgets the guard is
+// caught. A missed path would let a wrongly recycled capturing frame be read or
+// mutated in verification mode without panicking, defeating the whole safety net.
+func TestPoisonedEnvGuardsAllAccessPaths(t *testing.T) {
+	withEnvRecycleVerify(t, func() {
+		cases := []struct {
+			name   string
+			access func(*Env)
+		}{
+			{"Get", func(e *Env) { e.Get("x") }},
+			{"getBoundValue", func(e *Env) { e.getBoundValue("x", nil) }},
+			{"getCallLocal", func(e *Env) { e.getCallLocal("x") }},
+			{"getSkipping", func(e *Env) { e.getSkipping("x", nil) }},
+			{"Define", func(e *Env) { e.Define("y", NewInt(2)) }},
+			{"Assign", func(e *Env) { e.Assign("x", NewInt(2)) }},
+			{"getOwn", func(e *Env) { e.getOwn("x") }},
+			{"hasOwnBinding", func(e *Env) { e.hasOwnBinding("x") }},
+			{"hasDynamic", func(e *Env) { e.hasDynamic("x") }},
+			{"setDynamic", func(e *Env) { e.setDynamic("x", NewInt(3)) }},
+			{"setExistingDynamic", func(e *Env) { e.setExistingDynamic("x", NewInt(3)) }},
+			{"deleteDynamic", func(e *Env) { e.deleteDynamic("x") }},
+			{"lookupBindingScope", func(e *Env) { e.lookupBindingScope("x") }},
+			{"arrayAppendBuffer", func(e *Env) { e.arrayAppendBuffer("x") }},
+			{"setArrayAppendBuffer", func(e *Env) { e.setArrayAppendBuffer("x", nil) }},
+			{"lookupCallBlock", func(e *Env) { e.lookupCallBlock() }},
+			{"setCallBlock", func(e *Env) { e.setCallBlock(NewNil()) }},
+			{"rangeDynamicBindings", func(e *Env) { e.rangeDynamicBindings(func(string, Value) {}) }},
+			{"rangeStaticBindings", func(e *Env) { e.rangeStaticBindings(func(string, Value) {}) }},
+			{"visibleNames", func(e *Env) { e.visibleNames() }},
+			{"CloneShallow", func(e *Env) { e.CloneShallow() }},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				env := newEnv(nil)
+				env.Define("x", NewInt(1))
+				env.poisoned = true
+				defer func() {
+					if recover() == nil {
+						t.Fatalf("%s did not panic on a poisoned env", tc.name)
+					}
+				}()
+				tc.access(env)
+			})
+		}
+	})
+}
+
+// TestPoisonedParentEnvGuarded pins that chain walks catch a poisoned *ancestor*,
+// not just the entry scope — the case where a closure captured a wrongly recycled
+// frame as a parent and then reads a variable, yields, or settles an array. The
+// entry scope is live; the poison sits one level up.
+func TestPoisonedParentEnvGuarded(t *testing.T) {
+	withEnvRecycleVerify(t, func() {
+		cases := []struct {
+			name   string
+			access func(child *Env)
+		}{
+			{"Get", func(child *Env) { child.Get("x") }},
+			{"Assign", func(child *Env) { child.Assign("x", NewInt(9)) }},
+			{"lookupCallBlock", func(child *Env) { child.lookupCallBlock() }},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				parent := newEnv(nil)
+				parent.Define("x", NewInt(1))
+				parent.poisoned = true
+				child := newEnv(parent)
+				defer func() {
+					if recover() == nil {
+						t.Fatalf("%s did not panic on a poisoned parent env", tc.name)
+					}
+				}()
+				tc.access(child)
+			})
+		}
+	})
 }
 
 // TestEnvRecycleBattery runs a spread of programs that exercise every call-frame
