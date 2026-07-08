@@ -334,6 +334,28 @@ func (v Value) TypedHashEntriesInto(buf []TypedHashEntry) []TypedHashEntry {
 	return entries
 }
 
+// RangeTypedHashEntries calls visit for each typed entry of v in place, without
+// materializing an intermediate slice. It is a no-op for non-hash values and
+// for hashes still using the legacy string-key map. Callers that only need a
+// read-only pass over entries (memory estimation) use it to avoid the
+// per-call slice TypedHashEntriesInto allocates for a hash larger than the
+// caller's buffer. Because it holds no shared state it is safe to nest, which a
+// buffer-reusing variant would not be.
+// It is intended for the interpreter's internal use; hosts should not call it,
+// and it carries no compatibility promise (see docs/embedding-api-stability.md).
+func (v Value) RangeTypedHashEntries(visit func(lookupKey HashLookupKey, entry HashEntry)) {
+	if v.kind != KindHash {
+		return
+	}
+	hd := v.data.(*hashData)
+	if hd.typedEntries == nil {
+		return
+	}
+	for lookupKey, entry := range hd.typedEntries {
+		visit(lookupKey, entry)
+	}
+}
+
 // HashGet returns the value for key from a hash or object.
 func (v Value) HashGet(key Value) (Value, bool, error) {
 	switch v.kind {
