@@ -9,9 +9,19 @@ import (
 	"github.com/mgomes/vibescript/vibes/value"
 )
 
+// replTestQuota returns the REPL's default production quota (xhigh) so tests
+// construct models the same way runREPL does.
+func replTestQuota() quotaConfig {
+	return quotaConfig{
+		stepQuota:      vibes.ProfileXHigh.StepQuota,
+		memoryQuota:    vibes.ProfileXHigh.MemoryQuotaBytes,
+		recursionLimit: vibes.ProfileXHigh.RecursionLimit,
+	}
+}
+
 func TestUpdateQuitCommandReturnsQuit(t *testing.T) {
 	t.Parallel()
-	m, err := newREPLModel()
+	m, err := newREPLModel(replTestQuota())
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
@@ -41,7 +51,7 @@ func TestUpdateQuitCommandReturnsQuit(t *testing.T) {
 
 func TestUpdateNonQuitCommandDoesNotReturnCmd(t *testing.T) {
 	t.Parallel()
-	m, err := newREPLModel()
+	m, err := newREPLModel(replTestQuota())
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
@@ -196,7 +206,7 @@ func TestEvaluate(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			m, err := newREPLModel()
+			m, err := newREPLModel(replTestQuota())
 			if err != nil {
 				t.Fatalf("newREPLModel failed: %v", err)
 			}
@@ -252,7 +262,7 @@ func TestEvaluateErrorsUseREPLSource(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			m, err := newREPLModel()
+			m, err := newREPLModel(replTestQuota())
 			if err != nil {
 				t.Fatalf("newREPLModel failed: %v", err)
 			}
@@ -277,9 +287,44 @@ func TestEvaluateErrorsUseREPLSource(t *testing.T) {
 	}
 }
 
+func TestRunREPLRejectsUnknownProfile(t *testing.T) {
+	t.Parallel()
+	err := runREPL([]string{"-profile", "bogus"})
+	if err == nil {
+		t.Fatal("runREPL with unknown profile err = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "unknown quota profile") {
+		t.Fatalf("err = %v, want unknown-profile message", err)
+	}
+}
+
+// TestREPLQuotaIsConfigurable proves the REPL honors a finite quota rather than
+// always running unlimited: a runaway loop under a low step budget must fail
+// fast instead of freezing the session.
+func TestREPLQuotaIsConfigurable(t *testing.T) {
+	t.Parallel()
+	lowQuota := quotaConfig{
+		stepQuota:      vibes.ProfileLow.StepQuota,
+		memoryQuota:    vibes.ProfileLow.MemoryQuotaBytes,
+		recursionLimit: vibes.ProfileLow.RecursionLimit,
+	}
+	m, err := newREPLModel(lowQuota)
+	if err != nil {
+		t.Fatalf("newREPLModel failed: %v", err)
+	}
+
+	out, isErr := m.evaluate("i = 0\nwhile i < 100000000\n  i = i + 1\nend\ni")
+	if !isErr {
+		t.Fatalf("runaway loop under low quota should error, got %q", out)
+	}
+	if !strings.Contains(out, "step quota exceeded") {
+		t.Fatalf("expected step quota error, got %q", out)
+	}
+}
+
 func TestLastErrorCommandShowsPreviousError(t *testing.T) {
 	t.Parallel()
-	m, err := newREPLModel()
+	m, err := newREPLModel(replTestQuota())
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
@@ -304,7 +349,7 @@ func TestLastErrorCommandShowsPreviousError(t *testing.T) {
 
 func TestLastErrorCommandWhenNoError(t *testing.T) {
 	t.Parallel()
-	m, err := newREPLModel()
+	m, err := newREPLModel(replTestQuota())
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
@@ -324,7 +369,7 @@ func TestLastErrorCommandWhenNoError(t *testing.T) {
 
 func TestGlobalsCommandPrintsSortedGlobals(t *testing.T) {
 	t.Parallel()
-	m, err := newREPLModel()
+	m, err := newREPLModel(replTestQuota())
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
@@ -346,7 +391,7 @@ func TestGlobalsCommandPrintsSortedGlobals(t *testing.T) {
 
 func TestFunctionsCommandListsBuiltinsAndEnvCallables(t *testing.T) {
 	t.Parallel()
-	m, err := newREPLModel()
+	m, err := newREPLModel(replTestQuota())
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
@@ -376,7 +421,7 @@ func TestFunctionsCommandListsBuiltinsAndEnvCallables(t *testing.T) {
 
 func TestTypesCommandShowsKinds(t *testing.T) {
 	t.Parallel()
-	m, err := newREPLModel()
+	m, err := newREPLModel(replTestQuota())
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
@@ -433,7 +478,7 @@ func TestAutocomplete(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			m, err := newREPLModel()
+			m, err := newREPLModel(replTestQuota())
 			if err != nil {
 				t.Fatalf("newREPLModel failed: %v", err)
 			}

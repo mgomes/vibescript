@@ -152,7 +152,7 @@ func FuzzREPLInputFlow(f *testing.F) {
 	f.Fuzz(func(t *testing.T, input string) {
 		input = limitFormatFuzzString(input, 512)
 
-		model, err := newREPLModel()
+		model, err := newREPLModel(replTestQuota())
 		if err != nil {
 			t.Fatalf("newREPLModel failed: %v", err)
 		}

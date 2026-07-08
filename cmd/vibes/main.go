@@ -40,7 +40,7 @@ func runCLI(args []string) error {
 	case "lsp":
 		return runLSP()
 	case "repl":
-		return runREPL()
+		return runREPL(args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
