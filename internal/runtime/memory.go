@@ -256,10 +256,15 @@ func (j *estimatorJournal) rollback(est *memoryEstimator, prevFrozen *Env) {
 	}
 }
 
-// clear truncates the journal's records while keeping their backing capacity so
-// a memoized base-walk session can reuse one journal across checks without
-// re-allocating. Pointer-typed records are zeroed first so a rolled-back probe
-// value cannot be retained by the truncated backing array.
+// clear resets the journal to empty while keeping its backing capacity so a
+// memoized base-walk session can reuse one journal across checks without
+// re-allocating. The insertion count and overflow flag are the journal's
+// per-session budget accounting (see record and sessionJournalBudget), so they
+// reset alongside the records: without this the count would accumulate across
+// every check in a call and spuriously trip the limit — permanently disabling
+// the memo for the rest of the call once tripped. Pointer-typed records are
+// zeroed first so a rolled-back probe value cannot be retained by the truncated
+// backing array.
 func (j *estimatorJournal) clear() {
 	clear(j.envs)
 	j.envs = j.envs[:0]
@@ -275,6 +280,8 @@ func (j *estimatorJournal) clear() {
 	j.blocks = j.blocks[:0]
 	clear(j.builtins)
 	j.builtins = j.builtins[:0]
+	j.entries = 0
+	j.overflowed = false
 }
 
 // memoryEstimatorForCheck returns the shared per-execution estimator reset to
