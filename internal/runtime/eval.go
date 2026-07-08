@@ -143,7 +143,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if e.Safe && obj.Kind() == KindNil {
 			return NewNil(), nil
 		}
-		if err := exec.checkMemoryWith(obj); err != nil {
+		if err := exec.checkMemoryValue(obj); err != nil {
 			return NewNil(), err
 		}
 		member, err := exec.getPublicMember(obj, e.Property, e.Pos())
@@ -506,7 +506,7 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(right); err != nil {
+	if err := exec.checkMemoryValue(right); err != nil {
 		return NewNil(), err
 	}
 	switch e.Operator {
@@ -549,7 +549,7 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(obj); err != nil {
+	if err := exec.checkMemoryValue(obj); err != nil {
 		return NewNil(), err
 	}
 	if len(e.Indices) == 1 {
@@ -839,7 +839,7 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(left); err != nil {
+	if err := exec.checkMemoryValue(left); err != nil {
 		return NewNil(), err
 	}
 	switch expr.Operator {
@@ -1123,7 +1123,7 @@ func (exec *Execution) evalConditionalExprWithExpectation(expr *ConditionalExpr,
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(condition); err != nil {
+	if err := exec.checkMemoryValue(condition); err != nil {
 		return NewNil(), err
 	}
 
@@ -1135,7 +1135,7 @@ func (exec *Execution) evalConditionalExprWithExpectation(expr *ConditionalExpr,
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), err
 	}
 	return result, nil
@@ -1145,7 +1145,7 @@ func (exec *Execution) evalRescueExpr(expr *RescueExpr, env *Env, autoCall bool)
 	for {
 		result, err := exec.evalExpressionWithAuto(expr.Body, env, autoCall)
 		if err == nil {
-			if err := exec.checkMemoryWith(result); err != nil {
+			if err := exec.checkMemoryValue(result); err != nil {
 				return NewNil(), err
 			}
 			return result, nil
@@ -1166,7 +1166,7 @@ func (exec *Execution) evalRescueExpr(expr *RescueExpr, env *Env, autoCall bool)
 		if fallbackErr != nil {
 			return NewNil(), fallbackErr
 		}
-		if err := exec.checkMemoryWith(fallback); err != nil {
+		if err := exec.checkMemoryValue(fallback); err != nil {
 			return NewNil(), err
 		}
 		return fallback, nil
@@ -1199,7 +1199,7 @@ func (exec *Execution) evalIfExprWithExpectation(expr *IfExpr, env *Env, expecta
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), err
 	}
 	return result, nil
@@ -1210,7 +1210,7 @@ func (exec *Execution) matchIfExpressionBranch(expr *IfExpr, env *Env) (Expressi
 	if err != nil {
 		return nil, err
 	}
-	if err := exec.checkMemoryWith(condition); err != nil {
+	if err := exec.checkMemoryValue(condition); err != nil {
 		return nil, err
 	}
 	if condition.Truthy() {
@@ -1222,7 +1222,7 @@ func (exec *Execution) matchIfExpressionBranch(expr *IfExpr, env *Env) (Expressi
 		if err != nil {
 			return nil, err
 		}
-		if err := exec.checkMemoryWith(condition); err != nil {
+		if err := exec.checkMemoryValue(condition); err != nil {
 			return nil, err
 		}
 		if condition.Truthy() {
@@ -1940,7 +1940,7 @@ func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
-		if err := exec.checkMemoryWith(val); err != nil {
+		if err := exec.checkMemoryValue(val); err != nil {
 			return NewNil(), err
 		}
 		args = append(args, val)
@@ -2052,7 +2052,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err != nil {
 			return err
 		}
-		if err := exec.checkMemoryWith(obj); err != nil {
+		if err := exec.checkMemoryValue(obj); err != nil {
 			return err
 		}
 		return exec.assignToEvaluatedMember(t, obj, value)
@@ -2086,7 +2086,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err != nil {
 			return err
 		}
-		if err := exec.checkMemoryWith(obj); err != nil {
+		if err := exec.checkMemoryValue(obj); err != nil {
 			return err
 		}
 		indices, err := exec.evalIndexSelectors(t, obj, env)
@@ -2510,7 +2510,7 @@ func (exec *Execution) evalArrayConcatAppendAssignment(name string, expr *Binary
 	if !ok || receiver.Kind() != KindArray {
 		return NewNil(), false, nil
 	}
-	if err := exec.checkMemoryWith(receiver); err != nil {
+	if err := exec.checkMemoryValue(receiver); err != nil {
 		return NewNil(), true, err
 	}
 
@@ -2524,7 +2524,7 @@ func (exec *Execution) evalArrayConcatAppendAssignment(name string, expr *Binary
 	}
 
 	result := exec.assignArrayAppendResult(name, receiver.Array(), values, env)
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), true, exec.wrapError(err, expr.Pos())
 	}
 	return result, true, nil
@@ -2537,7 +2537,7 @@ func (exec *Execution) evalArrayLiteralElements(literal *ArrayLiteral, env *Env)
 		if err != nil {
 			return nil, err
 		}
-		if err := exec.checkMemoryWith(val); err != nil {
+		if err := exec.checkMemoryValue(val); err != nil {
 			return nil, err
 		}
 		values[i] = val
@@ -2622,7 +2622,7 @@ func (exec *Execution) evalCaseExprWithExpectation(expr *CaseExpr, env *Env, exp
 		if err != nil {
 			return NewNil(), err
 		}
-		if err := exec.checkMemoryWith(target); err != nil {
+		if err := exec.checkMemoryValue(target); err != nil {
 			return NewNil(), err
 		}
 	}
@@ -2634,7 +2634,7 @@ func (exec *Execution) evalCaseExprWithExpectation(expr *CaseExpr, env *Env, exp
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := exec.checkMemoryWith(candidate); err != nil {
+			if err := exec.checkMemoryValue(candidate); err != nil {
 				return NewNil(), err
 			}
 			candidateMatched, err := exec.caseWhenValueMatches(hasTarget, target, candidate, candidateExpr.Splat, expr.Pos())
@@ -2653,7 +2653,7 @@ func (exec *Execution) evalCaseExprWithExpectation(expr *CaseExpr, env *Env, exp
 		if err != nil {
 			return NewNil(), err
 		}
-		if err := exec.checkMemoryWith(result); err != nil {
+		if err := exec.checkMemoryValue(result); err != nil {
 			return NewNil(), err
 		}
 		return result, nil
@@ -2664,7 +2664,7 @@ func (exec *Execution) evalCaseExprWithExpectation(expr *CaseExpr, env *Env, exp
 		if err != nil {
 			return NewNil(), err
 		}
-		if err := exec.checkMemoryWith(result); err != nil {
+		if err := exec.checkMemoryValue(result); err != nil {
 			return NewNil(), err
 		}
 		return result, nil
@@ -2688,7 +2688,7 @@ func (exec *Execution) caseWhenValueMatches(hasTarget bool, target, candidate Va
 		if err := exec.step(); err != nil {
 			return false, err
 		}
-		if err := exec.checkMemoryWith(item); err != nil {
+		if err := exec.checkMemoryValue(item); err != nil {
 			return false, err
 		}
 		matched, err := caseWhenMatches(hasTarget, target, item)
@@ -2874,7 +2874,7 @@ func (exec *Execution) evalForLoop(stmt *ForStmt, env *Env, mode loopResultMode)
 	if err != nil {
 		return NewNil(), false, err
 	}
-	if err := exec.checkMemoryWith(iterable); err != nil {
+	if err := exec.checkMemoryValue(iterable); err != nil {
 		return NewNil(), false, err
 	}
 	predeclareTargetBindingNames(stmt.Target, env)
@@ -3097,7 +3097,7 @@ func (exec *Execution) evalWhileLoop(stmt *WhileStmt, env *Env, mode loopResultM
 		if err != nil {
 			return NewNil(), false, err
 		}
-		if err := exec.checkMemoryWith(condition); err != nil {
+		if err := exec.checkMemoryValue(condition); err != nil {
 			return NewNil(), false, err
 		}
 		if !condition.Truthy() {
@@ -3147,7 +3147,7 @@ func (exec *Execution) evalUntilLoop(stmt *UntilStmt, env *Env, mode loopResultM
 		if err != nil {
 			return NewNil(), false, err
 		}
-		if err := exec.checkMemoryWith(condition); err != nil {
+		if err := exec.checkMemoryValue(condition); err != nil {
 			return NewNil(), false, err
 		}
 		if condition.Truthy() {
@@ -3317,7 +3317,7 @@ func (exec *Execution) evalMemberAssignment(stmt *AssignStmt, env *Env) (Value, 
 	if err != nil {
 		return NewNil(), true, err
 	}
-	if err := exec.checkMemoryWith(val); err != nil {
+	if err := exec.checkMemoryValue(val); err != nil {
 		return NewNil(), true, err
 	}
 	if err := exec.assign(stmt.Target, val, env); err != nil {
@@ -3966,7 +3966,7 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())
 			}
 		} else {
-			if err := exec.checkMemoryWith(val); err != nil {
+			if err := exec.checkMemoryValue(val); err != nil {
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())
 			}
 		}
@@ -3999,7 +3999,7 @@ func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(target.current); err != nil {
+	if err := exec.checkMemoryValue(target.current); err != nil {
 		return NewNil(), err
 	}
 
@@ -4015,7 +4015,7 @@ func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), err
 	}
 	if err := target.assign(result); err != nil {
@@ -4029,7 +4029,7 @@ func (exec *Execution) evalLogicalAssignment(stmt *AssignStmt, env *Env) (Value,
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(target.current); err != nil {
+	if err := exec.checkMemoryValue(target.current); err != nil {
 		return NewNil(), err
 	}
 	switch stmt.Operator {
@@ -4129,7 +4129,7 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 		if err != nil {
 			return compoundAssignmentTarget{}, err
 		}
-		if err := exec.checkMemoryWith(obj); err != nil {
+		if err := exec.checkMemoryValue(obj); err != nil {
 			return compoundAssignmentTarget{}, err
 		}
 		member, err := exec.getPublicMember(obj, t.Property, t.Pos())
@@ -4153,7 +4153,7 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 		if err != nil {
 			return compoundAssignmentTarget{}, err
 		}
-		if err := exec.checkMemoryWith(obj); err != nil {
+		if err := exec.checkMemoryValue(obj); err != nil {
 			return compoundAssignmentTarget{}, err
 		}
 		indices, err := exec.evalIndexSelectors(t, obj, env)
@@ -4200,7 +4200,7 @@ func (exec *Execution) evalIfStatement(stmt *IfStmt, env *Env) (Value, bool, err
 	if err != nil {
 		return NewNil(), false, err
 	}
-	if err := exec.checkMemoryWith(val); err != nil {
+	if err := exec.checkMemoryValue(val); err != nil {
 		return NewNil(), false, err
 	}
 	if val.Truthy() {
@@ -4220,7 +4220,7 @@ func (exec *Execution) evalIfStatement(stmt *IfStmt, env *Env) (Value, bool, err
 		if err != nil {
 			return NewNil(), false, err
 		}
-		if err := exec.checkMemoryWith(condVal); err != nil {
+		if err := exec.checkMemoryValue(condVal); err != nil {
 			return NewNil(), false, err
 		}
 		if condVal.Truthy() {
@@ -4282,7 +4282,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		if err != nil {
 			return NewNil(), false, err
 		}
-		if err := exec.checkMemoryWith(val); err != nil {
+		if err := exec.checkMemoryValue(val); err != nil {
 			return NewNil(), false, err
 		}
 		if err := exec.assign(s.Target, val, env); err != nil {
@@ -4316,7 +4316,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			if err != nil {
 				return NewNil(), false, err
 			}
-			if err := exec.checkMemoryWith(val); err != nil {
+			if err := exec.checkMemoryValue(val); err != nil {
 				return NewNil(), false, err
 			}
 			return NewNil(), false, newLoopBreakValue(val)
@@ -4334,7 +4334,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			if err != nil {
 				return NewNil(), false, err
 			}
-			if err := exec.checkMemoryWith(val); err != nil {
+			if err := exec.checkMemoryValue(val); err != nil {
 				return NewNil(), false, err
 			}
 			return NewNil(), false, newLoopNextValue(val)
@@ -4386,7 +4386,7 @@ func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value,
 	if err != nil || returned {
 		return left, returned, err
 	}
-	if err := exec.checkMemoryWith(left); err != nil {
+	if err := exec.checkMemoryValue(left); err != nil {
 		return NewNil(), false, exec.wrapError(err, stmt.Left.Pos())
 	}
 	switch stmt.Operator {

@@ -1250,7 +1250,7 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 		if err != nil {
 			return NewNil(), NewNil(), err
 		}
-		if err := exec.checkMemoryWith(receiver); err != nil {
+		if err := exec.checkMemoryValue(receiver); err != nil {
 			return NewNil(), NewNil(), err
 		}
 		if directCallee, handled, err := exec.evalDirectPublicMemberMethodCall(receiver, member.Property, member.Pos()); handled || err != nil {
@@ -1400,7 +1400,7 @@ func (exec *Execution) evalCallArgsForCalleeInto(call *CallExpr, env *Env, calle
 		if err != nil {
 			return nil, err
 		}
-		if err := exec.checkMemoryWith(val); err != nil {
+		if err := exec.checkMemoryValue(val); err != nil {
 			return nil, err
 		}
 		args[i] = val
@@ -1535,7 +1535,7 @@ func (exec *Execution) evalCallArgsWithSplats(call *CallExpr, env *Env, paramInf
 				}
 				args = append(args, item)
 			}
-			if err := exec.checkMemoryWith(NewArray(args)); err != nil {
+			if err := exec.checkMemoryValue(NewArray(args)); err != nil {
 				return nil, err
 			}
 			continue
@@ -1550,7 +1550,7 @@ func (exec *Execution) evalCallArgsWithSplats(call *CallExpr, env *Env, paramInf
 		if err != nil {
 			return nil, err
 		}
-		if err := exec.checkMemoryWith(val); err != nil {
+		if err := exec.checkMemoryValue(val); err != nil {
 			return nil, err
 		}
 		args = append(args, val)
@@ -1563,7 +1563,7 @@ func (exec *Execution) evalCallArg(arg Expression, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(val); err != nil {
+	if err := exec.checkMemoryValue(val); err != nil {
 		return NewNil(), err
 	}
 	return val, nil
@@ -1598,7 +1598,7 @@ func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee 
 		if err != nil {
 			return nil, err
 		}
-		if err := exec.checkMemoryWith(val); err != nil {
+		if err := exec.checkMemoryValue(val); err != nil {
 			return nil, err
 		}
 		kwargs[kw.Name] = val
@@ -1632,7 +1632,7 @@ func (exec *Execution) expandKeywordSplat(expr Expression, env *Env, kwargs map[
 		}
 		kwargs[entry.Key.String()] = entry.Value
 	}
-	return exec.checkMemoryWith(NewHash(kwargs))
+	return exec.checkMemoryValue(NewHash(kwargs))
 }
 
 func (exec *Execution) evalCallArgumentForType(arg Expression, env *Env, ty *TypeExpr) (Value, error) {
@@ -1718,7 +1718,7 @@ func (exec *Execution) evalGeneratedGetterArgument(arg Expression, env *Env) (Va
 	if memberExpr.Safe && obj.Kind() == KindNil {
 		return NewNil(), true, nil
 	}
-	if err := exec.checkMemoryWith(obj); err != nil {
+	if err := exec.checkMemoryValue(obj); err != nil {
 		return NewNil(), true, err
 	}
 	member, err := exec.getPublicMember(obj, memberExpr.Property, memberExpr.Pos())
@@ -2316,7 +2316,7 @@ func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
-		if err := exec.checkMemoryWith(block); err != nil {
+		if err := exec.checkMemoryValue(block); err != nil {
 			return NewNil(), err
 		}
 		return block, nil
@@ -2334,7 +2334,7 @@ func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(block); err != nil {
+	if err := exec.checkMemoryValue(block); err != nil {
 		return NewNil(), err
 	}
 	return block, nil
@@ -2432,7 +2432,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if callErr != nil {
 		return NewNil(), callErr
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), err
 	}
 	return result, nil
@@ -2461,7 +2461,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if call.Safe && receiver.Kind() == KindNil {
 		return NewNil(), nil
 	}
-	if err := exec.checkMemoryWith(receiver); err != nil {
+	if err := exec.checkMemoryValue(receiver); err != nil {
 		return NewNil(), err
 	}
 
@@ -2529,7 +2529,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if callErr != nil {
 		return NewNil(), callErr
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), err
 	}
 	return result, nil
@@ -2574,7 +2574,7 @@ func (exec *Execution) evalSingleNormalArgFunctionMemberCallExpr(call *CallExpr,
 		}
 		return NewNil(), callErr
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), err
 	}
 	return result, nil
@@ -2595,7 +2595,7 @@ func (exec *Execution) evalMemberCallReceiver(member *MemberExpr, env *Env, obje
 	if objectMember.Safe && receiver.Kind() == KindNil {
 		return NewNil(), nil
 	}
-	if err := exec.checkMemoryWith(receiver); err != nil {
+	if err := exec.checkMemoryValue(receiver); err != nil {
 		return NewNil(), err
 	}
 	callee, err := exec.getPublicMember(receiver, objectMember.Property, objectMember.Pos())
@@ -2663,7 +2663,7 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), err
 	}
 	return result, nil
@@ -2686,7 +2686,7 @@ func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver V
 			return NewNil(), true, err
 		}
 		result := NewInt(int64(stringRuneLen(receiver.String())))
-		if err := exec.checkMemoryWith(result); err != nil {
+		if err := exec.checkMemoryValue(result); err != nil {
 			return NewNil(), true, err
 		}
 		return result, true, nil
@@ -2701,7 +2701,7 @@ func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver V
 			return NewNil(), true, err
 		}
 		result := NewInt(int64(len(receiver.String())))
-		if err := exec.checkMemoryWith(result); err != nil {
+		if err := exec.checkMemoryValue(result); err != nil {
 			return NewNil(), true, err
 		}
 		return result, true, nil
@@ -2751,7 +2751,7 @@ func (exec *Execution) evalDirectStringSplitCall(call *CallExpr, receiver Value,
 		}
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), true, err
 	}
 	return result, true, nil
@@ -2806,7 +2806,7 @@ func (exec *Execution) evalDirectArrayMemberCallExpr(call *CallExpr, receiver Va
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), true, err
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), true, err
 	}
 	return result, true, nil
@@ -2847,7 +2847,7 @@ func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value,
 	if err != nil {
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), true, err
 	}
 	return result, true, nil
@@ -2885,7 +2885,7 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 		effective, ok := stringEffectiveOffset(receiver.String(), i)
 		if !ok {
 			result := NewNil()
-			if err := exec.checkMemoryWith(result); err != nil {
+			if err := exec.checkMemoryValue(result); err != nil {
 				return NewNil(), true, err
 			}
 			return result, true, nil
@@ -2896,7 +2896,7 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 	if err != nil {
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), true, err
 	}
 	return result, true, nil
@@ -2927,7 +2927,7 @@ func (exec *Execution) evalDirectStringSliceCall(call *CallExpr, receiver Value,
 	if err != nil {
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), true, err
 	}
 	return result, true, nil
@@ -3016,7 +3016,7 @@ func (exec *Execution) evalDirectRegexReplaceCall(call *CallExpr, receiver Value
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), true, err
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), true, err
 	}
 	return result, true, nil
@@ -3053,7 +3053,7 @@ func (exec *Execution) evalDirectTimeParseCall(call *CallExpr, receiver Value, e
 	if err != nil {
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), true, err
 	}
 	return result, true, nil
@@ -3089,7 +3089,7 @@ func (exec *Execution) evalDirectTimeFormatCall(call *CallExpr, receiver Value, 
 	if err != nil {
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), true, err
 	}
 	return result, true, nil
@@ -3310,7 +3310,7 @@ func finishFunctionForCall(exec *Execution, fn *ScriptFunction, val Value) (Valu
 		}
 		val = normalized
 	}
-	if err := exec.checkMemoryWith(val); err != nil {
+	if err := exec.checkMemoryValue(val); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 	return val, nil
@@ -3331,7 +3331,7 @@ func (exec *Execution) executeGeneratedSetter(fn *ScriptFunction, callEnv *Env) 
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(val); err != nil {
+	if err := exec.checkMemoryValue(val); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 	return val, nil

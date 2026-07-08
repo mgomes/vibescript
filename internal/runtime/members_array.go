@@ -2388,7 +2388,7 @@ func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[strin
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := exec.checkMemoryWith(next); err != nil {
+			if err := exec.checkMemoryValue(next); err != nil {
 				return NewNil(), err
 			}
 			acc = next

@@ -45,7 +45,7 @@ func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[s
 	if err := group.closeAndWait(); err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), err
 	}
 	return result, nil
@@ -107,7 +107,7 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 		results[i] = result
 	}
 	result := NewArray(results)
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemoryValue(result); err != nil {
 		return NewNil(), err
 	}
 	return result, nil

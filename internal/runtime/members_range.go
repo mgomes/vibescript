@@ -386,7 +386,7 @@ func rangeMemberReduce() Value {
 			if err != nil {
 				return false, err
 			}
-			if err := exec.checkMemoryWith(next); err != nil {
+			if err := exec.checkMemoryValue(next); err != nil {
 				return false, err
 			}
 			acc = next
