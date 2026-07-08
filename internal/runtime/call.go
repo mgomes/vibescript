@@ -353,7 +353,7 @@ func (exec *Execution) callFunctionIgnoringReturn(fn *ScriptFunction, receiver V
 }
 
 func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position, validateReturn bool) (Value, error) {
-	callEnv := newEnvWithCapacity(fn.Env, len(fn.Params)+1)
+	callEnv := exec.acquireCallEnv(fn, len(fn.Params)+1)
 	if receiver.Kind() != KindNil {
 		callEnv.Define("self", receiver)
 	}
@@ -381,7 +381,7 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 
 func (exec *Execution) callFunctionWithSingleNormalArg(fn *ScriptFunction, receiver, arg Value, pos Position, validateReturn bool) (Value, error) {
 	param := fn.Params[0]
-	callEnv := newEnvWithCapacity(fn.Env, len(fn.Params)+1)
+	callEnv := exec.acquireCallEnv(fn, len(fn.Params)+1)
 	if receiver.Kind() != KindNil {
 		callEnv.Define("self", receiver)
 	}
@@ -441,6 +441,12 @@ func (exec *Execution) callFunctionWithBoundEnv(fn *ScriptFunction, receiver Val
 			if err != nil {
 				return NewNil(), err
 			}
+			// The setter body assigns an ivar on the receiver and returns the
+			// value; it never captures callEnv, so a reuse-eligible frame can be
+			// pooled here just as on the main return path below.
+			if fn.reuseCallEnv {
+				exec.recycleCallEnv(callEnv)
+			}
 			return val, nil
 		}
 		val, returned, err = exec.evalLocalScopeStatements(fn.Body, callEnv)
@@ -467,6 +473,12 @@ func (exec *Execution) callFunctionWithBoundEnv(fn *ScriptFunction, receiver Val
 	// can keep callEnv (and the accumulator registration) alive after return,
 	// and a later fast-path concat must not append into the escaped backing.
 	val = callEnv.settleArrayAppendResult(val)
+	// The frame is dead once its result has settled: nothing below reads callEnv
+	// (return-type normalization uses fn.Env), so a reuse-eligible frame can go
+	// back to the pool. reuseCallEnv guarantees the body could not capture it.
+	if fn.reuseCallEnv {
+		exec.recycleCallEnv(callEnv)
+	}
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
@@ -1413,6 +1425,50 @@ func (exec *Execution) borrowArgBuffer(n int) []Value {
 func (exec *Execution) returnArgBuffer(buf []Value) {
 	clear(buf)
 	exec.argBufferPool = append(exec.argBufferPool, buf[:0])
+}
+
+// acquireCallEnv returns a call-frame environment parented to fn.Env with room
+// for capacity bindings. When fn.reuseCallEnv is set — its body and parameter
+// defaults provably cannot capture the frame (see functionCanReuseCallEnv) — a
+// recycled frame is reused if one is available; recycleCallEnv already cleared
+// it, so acquire only rebinds its parent (and bumps the mutation epoch, exactly
+// as resetForReuse does) before it is filled. Otherwise a fresh Env is
+// allocated.
+func (exec *Execution) acquireCallEnv(fn *ScriptFunction, capacity int) *Env {
+	if fn.reuseCallEnv {
+		if n := len(exec.callEnvFreeList); n > 0 {
+			env := exec.callEnvFreeList[n-1]
+			exec.callEnvFreeList[n-1] = nil
+			exec.callEnvFreeList = exec.callEnvFreeList[:n-1]
+			env.resetForReuse(fn.Env)
+			return env
+		}
+	}
+	return newEnvWithCapacity(fn.Env, capacity)
+}
+
+// recycleCallEnv returns a dead call frame to the free list for a later call to
+// reuse. Callers must invoke it only when fn.reuseCallEnv holds and the call has
+// fully unwound with its return value settled (settleArrayAppendResult), so no
+// live reference to the frame survives.
+//
+// The frame is cleared here rather than at acquire time so pooled frames never
+// pin the heap payloads of their former locals: a function that builds a large
+// local and returns something small must not keep that local alive until the
+// frame is next used (which may be never). This mirrors returnArgBuffer, which
+// clears an argument backing on return for the same reason.
+//
+// When env-recycle verification is enabled the frame is poisoned and dropped
+// instead of pooled: any reference the recycler wrongly judged dead panics on
+// its next access (see Env.assertNotPoisoned) rather than silently reading a
+// rebound frame, turning a missed capture site into a loud test failure.
+func (exec *Execution) recycleCallEnv(env *Env) {
+	if envRecycleVerify {
+		env.poisoned = true
+		return
+	}
+	env.resetForReuse(nil)
+	exec.callEnvFreeList = append(exec.callEnvFreeList, env)
 }
 
 func callHasSplatArg(call *CallExpr) bool {

@@ -1315,7 +1315,7 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 	if env == nil {
 		env = newBlockAssignmentEnv(runner.blk.Env)
 	} else {
-		env.resetForBlockCall(runner.blk.Env)
+		env.resetForReuse(runner.blk.Env)
 		env.assignBoundary = true
 		env.rebindOuter = true
 	}
@@ -1656,6 +1656,22 @@ func implicitBlockParamIndex(name string) int {
 
 func blockCanReuseEnv(blk *Block) bool {
 	return !statementsCaptureCurrentEnv(blk.Body)
+}
+
+// functionCanReuseCallEnv reports whether a function's call frame can be safely
+// recycled after the call returns: its body must not capture the current env
+// (into a closure, nested def, or class) and no parameter default expression may
+// either. The body check mirrors blockCanReuseEnv; the parameter-defaults check
+// is additional because defaults are evaluated in the call frame during binding
+// yet are not part of the body the statement walk sees, so a default like
+// `def f(g = -> { ... })` would otherwise escape the frame undetected.
+func functionCanReuseCallEnv(fn *ScriptFunction) bool {
+	for i := range fn.Params {
+		if fn.Params[i].DefaultVal != nil && expressionCapturesCurrentEnv(fn.Params[i].DefaultVal) {
+			return false
+		}
+	}
+	return !statementsCaptureCurrentEnv(fn.Body)
 }
 
 func statementsCaptureCurrentEnv(stmts []Statement) bool {

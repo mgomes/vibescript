@@ -100,7 +100,7 @@ func TestEnvGetSkippingDoesNotCloneFrozenBindingIntoSkippedScope(t *testing.T) {
 	}
 }
 
-func TestEnvResetForBlockCallClearsPerCallState(t *testing.T) {
+func TestEnvResetForReuseClearsPerCallState(t *testing.T) {
 	t.Parallel()
 
 	oldParent := newEnv(nil)
@@ -118,8 +118,13 @@ func TestEnvResetForBlockCallClearsPerCallState(t *testing.T) {
 	env.assignBoundary = true
 	env.rebindOuter = true
 	env.frozen = true
+	env.poisoned = true
 
-	env.resetForBlockCall(parent)
+	env.resetForReuse(parent)
+
+	if env.poisoned {
+		t.Fatalf("poisoned after reset = true, want false")
+	}
 
 	if env.parent != parent {
 		t.Fatalf("parent after reset = %p, want %p", env.parent, parent)

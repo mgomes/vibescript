@@ -61,6 +61,28 @@ type Env struct {
 	// transparently chain to it.
 	callBlock    Value
 	hasCallBlock bool
+
+	// poisoned marks a recycled call frame in env-recycle verification builds
+	// (envRecycleVerify). Production leaves it false. When verification is on, a
+	// recycled env is poisoned and retained instead of reused, so any access to a
+	// frame the recycler wrongly judged dead panics loudly instead of silently
+	// reading stale bindings — turning a missed capture site into a test failure.
+	poisoned bool
+}
+
+// envRecycleVerify enables env-recycle verification: recycled call frames are
+// poisoned and never reused, and accessing one panics. It is enabled only by
+// tests (see the env-recycle verification test), so production pays a single
+// predictable branch on the false path.
+var envRecycleVerify = false
+
+// assertNotPoisoned panics if e is a poisoned (recycled) env while verification
+// is enabled. It guards the binding accessors so a stale reference to a recycled
+// frame is caught at the point of use.
+func (e *Env) assertNotPoisoned() {
+	if envRecycleVerify && e.poisoned {
+		panic("runtime: access to recycled environment")
+	}
 }
 
 func newEnv(parent *Env) *Env {
@@ -92,7 +114,12 @@ func newBlockAssignmentEnv(parent *Env) *Env {
 	return env
 }
 
-func (e *Env) resetForBlockCall(parent *Env) {
+// resetForReuse clears every binding and flag and rebinds the scope to parent so
+// the Env struct can back a fresh block invocation or function call without a new
+// allocation. It is the reuse path for both block-iteration scopes (see
+// blockCallRunner) and recyclable function call frames (see acquireCallEnv); a
+// scope is only reused when static analysis proves its body cannot capture it.
+func (e *Env) resetForReuse(parent *Env) {
 	value.BumpMutationEpoch()
 	e.parent = parent
 	for i := range int(e.inlineLen) {
@@ -110,6 +137,7 @@ func (e *Env) resetForBlockCall(parent *Env) {
 	e.callRoot = false
 	e.callBlock = Value{}
 	e.hasCallBlock = false
+	e.poisoned = false
 }
 
 // Get looks up a variable by name, traversing parent scopes if needed.
@@ -157,6 +185,7 @@ func (e *Env) hasCallLocalBinding(name string) bool {
 }
 
 func (e *Env) getBoundValue(name string, lastMutable *Env) (Value, bool) {
+	e.assertNotPoisoned()
 	if idx, ok := e.inlineIndex(name); ok {
 		val := e.inline[idx].value
 		if lazy, ok := lazyValue(val); ok {
@@ -255,6 +284,7 @@ func (e *Env) lookupCallBlock() (Value, bool) {
 
 // Define binds a new variable in the current scope.
 func (e *Env) Define(name string, val Value) {
+	e.assertNotPoisoned()
 	e.setDynamic(name, val)
 	e.dropStatic(name)
 	e.dropArrayAppendBuffer(name)

@@ -28,6 +28,17 @@ type ScriptFunction struct {
 	Accessor     functionAccessorKind
 	AccessorName string
 	owner        *Script
+
+	// reuseCallEnv records whether this function's call frame may be recycled
+	// after the call returns (see functionCanReuseCallEnv). It is a pure function
+	// of Params and Body, computed once at construction (compileFunctionDef and
+	// the accessor builders) and never mutated afterward, so it is read lock-free
+	// during calls without racing a ScriptFunction shared across goroutines.
+	// Struct-copy clones (cloneFunctionForEnv, cloneFunctionForHostWithState)
+	// inherit the flag; a body clone preserves capture structure, so the flag
+	// stays valid. The zero value is false, which disables reuse — the safe
+	// default for any construction site that forgets to set it.
+	reuseCallEnv bool
 }
 
 // Script represents a parsed Vibescript module ready for execution.
@@ -138,6 +149,16 @@ type Execution struct {
 	// Only KindFunction calls pool: builtins and capabilities can retain the
 	// args slice they are handed.
 	argBufferPool [][]Value
+
+	// callEnvFreeList is a free list of call-frame environments, reused across
+	// script-function calls whose bodies provably cannot capture the frame
+	// (ScriptFunction.reuseCallEnv). acquireCallEnv borrows a frame and
+	// recycleCallEnv returns it once the call has fully unwound and any escaping
+	// array-append result has settled. Like argBufferPool it lives on the
+	// Execution, which is single-goroutine (each task job builds its own via
+	// newExecutionForCall), so the pool never needs synchronization. The memory
+	// estimator does not walk it, so pooled dead frames never inflate the quota.
+	callEnvFreeList []*Env
 }
 
 type localCallBypass struct {
