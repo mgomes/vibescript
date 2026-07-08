@@ -138,15 +138,19 @@ func TestAcquireCallEnvNormalizesMapShape(t *testing.T) {
 		t.Fatalf("expected one inline binding, inlineLen = %d", reused.inlineLen)
 	}
 
-	// A frame reused by another large function keeps a map to bind into.
+	// A large-capacity function reusing that now map-less frame gets a map
+	// allocated up front, exactly as a fresh newEnvWithCapacity would, so its
+	// binding layout and quota charge do not depend on the small call before it.
 	exec.recycleCallEnv(reused)
+	if reused.values != nil {
+		t.Fatalf("recycled frame retained an allocated map")
+	}
 	big2 := exec.acquireCallEnv(big, inlineEnvBindingCapacity+2)
-	big2.Define("a", NewInt(1))
-	big2.Define("b", NewInt(2))
-	big2.Define("c", NewInt(3))
-	big2.Define("d", NewInt(4))
+	if big2 != reused {
+		t.Fatalf("large acquire did not reuse the pooled frame")
+	}
 	if big2.values == nil {
-		t.Fatalf("large reuse did not bind into a values map")
+		t.Fatalf("large reuse of a map-less frame did not allocate a map to match a fresh frame")
 	}
 }
 

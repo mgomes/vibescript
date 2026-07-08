@@ -1435,15 +1435,15 @@ func (exec *Execution) returnArgBuffer(buf []Value) {
 // as resetForReuse does) before it is filled. Otherwise a fresh Env is
 // allocated.
 //
-// A reused frame's storage is normalized to match what newEnvWithCapacity would
-// build for this capacity: resetForReuse only clears (does not free) the values
-// map, so a frame that a larger prior tenant promoted to a map would otherwise
-// bind a small function's locals into that map instead of the inline slots. That
-// would make the frame's footprint — and therefore its memory-quota charge, which
-// counts a non-nil values map even when empty — depend on which functions ran
-// earlier in the execution. Dropping the map for an inline-sized capacity keeps
-// each call's cost history-independent; larger frames keep the cleared map to
-// reuse rather than reallocate.
+// A reused frame's storage is normalized to exactly what newEnvWithCapacity would
+// build for this capacity, in both directions. resetForReuse only clears (does
+// not free) the values map, so whether a reused frame carries a map depends on
+// its prior tenant. That matters because the memory estimator charges a fixed
+// base for any non-nil values map even when empty, and setDynamic binds into a
+// non-nil map instead of the inline slots: without normalization a call's binding
+// layout and quota charge would depend on which function ran just before it. A
+// fresh frame has a map iff capacity exceeds the inline capacity, so a small
+// reuse drops any inherited map and a large reuse allocates one when missing.
 func (exec *Execution) acquireCallEnv(fn *ScriptFunction, capacity int) *Env {
 	if fn.reuseCallEnv {
 		if n := len(exec.callEnvFreeList); n > 0 {
@@ -1451,7 +1451,11 @@ func (exec *Execution) acquireCallEnv(fn *ScriptFunction, capacity int) *Env {
 			exec.callEnvFreeList[n-1] = nil
 			exec.callEnvFreeList = exec.callEnvFreeList[:n-1]
 			env.resetForReuse(fn.Env)
-			if capacity <= inlineEnvBindingCapacity {
+			if capacity > inlineEnvBindingCapacity {
+				if env.values == nil {
+					env.values = make(map[string]Value, capacity)
+				}
+			} else {
 				env.values = nil
 			}
 			return env
