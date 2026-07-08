@@ -20,5 +20,6 @@ import (
 // toggle; the build tags keep the two from colliding.
 func TestMain(m *testing.M) {
 	maybeEnableEnvRecycleVerify()
+	maybeEnableEstimatorVerify()
 	os.Exit(m.Run())
 }

@@ -85,6 +85,14 @@ type memoryEstimator struct {
 	// under-count that could escape the memory quota. A walk records nothing when
 	// journal is nil, which is the common path.
 	journal *estimatorJournal
+
+	// dormant, when non-nil, is the execution's committed dormant-frame set (see
+	// memory_dormant.go). env returns zero for any env in it: those frames are
+	// already charged in exec.dormantBytes, so this deduplicates them out of the
+	// root walk, module walk, and extras walk without double counting. It is a
+	// borrowed pointer to exec.dormantSet, so it stays current as the set is
+	// reconciled; reset clears it.
+	dormant map[*Env]struct{}
 }
 
 // estimatorJournal records the seen-set keys a single probe walk inserts so the
@@ -176,6 +184,7 @@ func newMemoryEstimator() *memoryEstimator {
 func (est *memoryEstimator) reset() {
 	est.seenFrozen = nil
 	est.journal = nil
+	est.dormant = nil
 	clear(est.seenEnvInline[:est.seenEnvInlineLen])
 	est.seenEnvInlineLen = 0
 	clear(est.seenEnvs)
@@ -411,6 +420,12 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		exec.baseWalkOpen = true
 		est.journal = nil
 		est.reset()
+		// The bypass path runs while builtin Go code, concurrent task jobs, or
+		// lazily cloned task globals can mutate reachable state, so it uses the
+		// full reference walk rather than the dormant optimization: the fast path
+		// is reserved for the memoized path below, where the graph is stable and
+		// single-goroutine. popEnv still keeps the committed prefix consistent here
+		// (it retracts on every pop), so the next memoized check resumes correctly.
 		return baseWalkSession{exec: exec, est: est, base: scalars + exec.estimateGraphBase(est, globals)}
 	}
 	c := exec.baseWalkCache
@@ -434,7 +449,7 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 		est.reset()
 		c.epoch = epoch
 		c.topo = exec.baseTopoVersion
-		c.graphBytes = exec.estimateGraphBase(est, nil)
+		c.graphBytes = exec.estimateGraphBaseFast(est, nil)
 		c.journalBudget = sessionJournalBudget(est.identityCount())
 		c.valid = true
 	}
@@ -443,6 +458,11 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	c.journal.clear()
 	c.journal.limit = c.journalBudget
 	est.journal = &c.journal
+	// Point the estimator at the committed dormant set so the session's extras
+	// walk deduplicates against it. On a memo hit estimateGraphBaseFast did not run
+	// this check, but the memo is valid only while the topology is unchanged, so
+	// the set still matches the stack. See memory_dormant.go.
+	est.dormant = exec.currentDormantSet()
 	return baseWalkSession{exec: exec, est: est, base: scalars + c.graphBytes, cached: true}
 }
 
@@ -2235,15 +2255,59 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	return exec.estimateScalarBase() + exec.estimateGraphBase(est, taskLazyGlobalsFromContext(exec.Context()))
 }
 
-// estimateGraphBase walks the reachable value graph rooted at the execution:
-// the env chain, the env stack, loaded modules, and any active task-group or
-// lazily cloned global retention. It is the expensive, memoizable portion of
-// the base walk; estimateScalarBase covers the rest.
+// estimateGraphBase is the reference walk: the root, every env-stack frame, and
+// the graph tail, with no dormant-frame optimization. It is used by the one-shot
+// and persistent-estimator base computations (the accumulator and charged-root
+// probes), which retain their estimator across env-stack changes and so must see
+// every frame committed in their seen-set, and by estimateGraphBaseFast as the
+// oracle's reference. The per-check memoized and bypass walks use the faster
+// estimateGraphBaseFast instead.
 func (exec *Execution) estimateGraphBase(est *memoryEstimator, globals *taskLazyGlobals) int {
 	total := est.env(exec.root)
 	for _, env := range exec.envStack {
 		total += est.env(env)
 	}
+	total += exec.estimateGraphTail(est, globals)
+	return total
+}
+
+// estimateGraphBaseFast is the dormant-optimized base walk: it charges the
+// committed dormant prefix from a running byte sum and walks only the root, the
+// active suffix, and the tail (see memory_dormant.go). It is sound only for a
+// fresh-each-check computation that never retains the estimator across stack
+// changes — the per-check memoized and bypass walks. Under the oracle it recomputes
+// the reference and panics on any divergence.
+func (exec *Execution) estimateGraphBaseFast(est *memoryEstimator, globals *taskLazyGlobals) int {
+	total := est.env(exec.root)
+	total += exec.envStackGraphBytes(est)
+	total += exec.estimateGraphTail(est, globals)
+	if estimatorVerify && len(exec.activeTaskGroups) == 0 && globals == nil {
+		// The oracle compares this fast walk against a second, sequential reference
+		// walk, so it is meaningful only while the graph is stable between them.
+		// The caller (the memoized base walk) already guarantees that: it is
+		// reached only when no task groups or lazily cloned globals are live, so
+		// no concurrent job goroutine can mutate the tail under our feet. The guard
+		// restates that invariant defensively so a future caller on the unstable
+		// bypass path cannot turn concurrent tail churn into a spurious panic.
+		refEst := newMemoryEstimator()
+		if ref := exec.estimateGraphBase(refEst, globals); ref != total {
+			panic(fmt.Sprintf(
+				"vibescript: dormant-frame estimator mismatch: fast=%d reference=%d "+
+					"(stackDepth=%d dormantSlots=%d dormantBytes=%d nonBaseParentDepth=%d)",
+				total, ref, len(exec.envStack), exec.dormantSlots, exec.dormantBytes,
+				exec.nonBaseParentDepth))
+		}
+	}
+	return total
+}
+
+// estimateGraphTail charges the reachable graph beyond the root and env stack:
+// loaded modules and any active task-group or lazily cloned global retention. It
+// is shared by the fast walk and the differential-verification reference walk so
+// the two can never drift on anything but the env-stack portion they are meant to
+// compare.
+func (exec *Execution) estimateGraphTail(est *memoryEstimator, globals *taskLazyGlobals) int {
+	total := 0
 	for _, mod := range exec.modules {
 		total += est.value(mod)
 	}
@@ -2358,6 +2422,14 @@ func (est *memoryEstimator) env(env *Env) int {
 		}
 		est.seenFrozen = env
 		return estimatedEnvBytes + staticBindingsBytes(env)
+	}
+	if est.dormant != nil {
+		if _, ok := est.dormant[env]; ok {
+			// Already charged in exec.dormantBytes; skipping the recursion here is
+			// exact because a committed dormant frame's parent is a base env the
+			// root walk always charges. See memory_dormant.go.
+			return 0
+		}
 	}
 	if est.rememberEnv(env) {
 		return 0
