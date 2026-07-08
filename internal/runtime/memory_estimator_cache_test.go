@@ -501,6 +501,22 @@ end`, payloadA),
     %q
   end
 end`, payloadA, regionPeak),
+		// Block body calls a script helper that cumulatively grows an outer local.
+		// The helper's call frame is pushed inside the region, so acquireCallEnv
+		// must mark it epoch-neutral before its pre-push argument binding; a peak
+		// check follows so a stale prefix (or an undercharged grow) drifts the
+		// threshold.
+		"region_each_calls_helper": fmt.Sprintf(`def grow(acc)
+  acc + %q
+end
+
+def run()
+  acc = "seed"
+  [1, 2, 3, 4].each do |v|
+    acc = grow(acc)
+    %q
+  end
+end`, payloadA, regionPeak),
 	}
 	for name, source := range regionScripts {
 		scripts[name] = source

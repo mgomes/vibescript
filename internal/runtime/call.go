@@ -1194,6 +1194,11 @@ func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctio
 	}
 
 	callEnv := newEnvWithCapacity(root, len(fn.Params))
+	// A capability callback can re-enter a script function from inside an active
+	// block-iteration region; mark the frame neutral before its pre-push binding
+	// so those writes stay inside the region's incremental walk (see acquireCallEnv
+	// and memory_blockregion.go).
+	callEnv.epochNeutral = exec.blockRegionActive
 	// The host entry call never supplies a block, but the frame is still a call
 	// frame: mark it with a nil block so block_given? reports false, yield
 	// raises, and a &block parameter binds nil, keeping the invariant that every
@@ -1440,8 +1445,10 @@ func (exec *Execution) returnArgBuffer(buf []Value) {
 // defaults provably cannot capture the frame (see functionCanReuseCallEnv) — a
 // recycled frame is reused if one is available; recycleCallEnv already cleared
 // it, so acquire only rebinds its parent (and bumps the mutation epoch, exactly
-// as resetForReuse does) before it is filled. Otherwise a fresh Env is
-// allocated.
+// as resetForReuse does — unless the call is inside a block-iteration region,
+// where the frame is epoch-neutral) before it is filled. Otherwise a fresh Env
+// is allocated. Either way the frame is marked neutral iff a region is active,
+// so its pre-push binding stays inside the region's incremental walk.
 //
 // A reused frame's storage is normalized to exactly what newEnvWithCapacity would
 // build for this capacity, in both directions. resetForReuse only clears (does
@@ -1458,6 +1465,15 @@ func (exec *Execution) acquireCallEnv(fn *ScriptFunction, capacity int) *Env {
 			env := exec.callEnvFreeList[n-1]
 			exec.callEnvFreeList[n-1] = nil
 			exec.callEnvFreeList = exec.callEnvFreeList[:n-1]
+			// A call made from inside an active block-iteration region pushes its
+			// frame into the region's active suffix, which every check re-walks
+			// fresh, so mark it epoch-neutral before the reset and the pre-push
+			// argument/block binding below. Without this those writes bump the
+			// epoch and force the next region check to re-walk the whole prefix,
+			// leaving a block body that calls a script helper quadratic (see
+			// memory_blockregion.go). popEnv clears the flag when the frame leaves
+			// the stack.
+			env.epochNeutral = exec.blockRegionActive
 			env.resetForReuse(fn.Env)
 			if capacity > inlineEnvBindingCapacity {
 				if env.values == nil {
@@ -1469,7 +1485,9 @@ func (exec *Execution) acquireCallEnv(fn *ScriptFunction, capacity int) *Env {
 			return env
 		}
 	}
-	return newEnvWithCapacity(fn.Env, capacity)
+	env := newEnvWithCapacity(fn.Env, capacity)
+	env.epochNeutral = exec.blockRegionActive
+	return env
 }
 
 // recycleCallEnv returns a dead call frame to the free list for a later call to
@@ -1492,6 +1510,13 @@ func (exec *Execution) recycleCallEnv(env *Env) {
 		env.poisoned = true
 		return
 	}
+	// A frame recycled while a block-iteration region is active has just left the
+	// region's active suffix; it is off the stack and provably uncapturable, so
+	// clearing it changes nothing a memory check can observe. Mark it neutral so
+	// the reset skips the epoch bump that would otherwise invalidate the region
+	// memo on every helper call from a block body. acquireCallEnv re-marks the
+	// frame from the region state live when it is next taken from the free list.
+	env.epochNeutral = exec.blockRegionActive
 	env.resetForReuse(nil)
 	exec.callEnvFreeList = append(exec.callEnvFreeList, env)
 }
