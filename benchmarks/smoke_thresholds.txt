@@ -20,7 +20,10 @@
 
 BenchmarkExecutionArithmeticLoop 5000000 30 6000
 BenchmarkExecutionStepLoop 16000000 25 6000
-BenchmarkExecutionArrayPipeline 40000000 100 150000
+# The ns cap sits well above the ~42ms this benchmark takes on the shared CI
+# runner (about 3x a dev laptop): the old 40ms cap straddled the runner's floor
+# and flaked. Its alloc and byte caps stay tight — those are the stable signals.
+BenchmarkExecutionArrayPipeline 64000000 100 150000
 BenchmarkExecutionArrayPushAccumulation 3600000 900 120000
 BenchmarkExecutionArrayConcatAccumulation 4200000 2400 150000
 BenchmarkExecutionMethodDispatchLoop 8000000 1000 130000
