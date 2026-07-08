@@ -464,7 +464,7 @@ func builtinLoop(exec *Execution, receiver Value, args []Value, kwargs map[strin
 			}
 			return NewNil(), err
 		}
-		if err := exec.checkMemoryWith(val); err != nil {
+		if err := exec.checkMemoryValue(val); err != nil {
 			return NewNil(), err
 		}
 	}

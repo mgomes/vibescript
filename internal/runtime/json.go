@@ -472,7 +472,7 @@ func (p *jsonValueParser) checkMaterialized(value Value) error {
 	if p.exec == nil {
 		return nil
 	}
-	return p.exec.checkMemoryWith(value)
+	return p.exec.checkMemoryValue(value)
 }
 
 func isJSONDigit(c byte) bool {

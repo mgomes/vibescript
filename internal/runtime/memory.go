@@ -494,7 +494,31 @@ func (s *baseWalkSession) close() {
 }
 
 func (exec *Execution) checkMemory() error {
-	return exec.checkMemoryWith()
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	return exec.checkMemoryMetered()
+}
+
+// checkMemoryValue charges a single just-produced value against the memory
+// quota. The quota guard is kept small and inlinable so unlimited-quota
+// execution (the CLI default) pays only a field load and branch rather than a
+// variadic call into the estimator.
+func (exec *Execution) checkMemoryValue(val Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	return exec.checkMemoryWith(val)
+}
+
+// checkMemoryMetered runs the no-extras estimator check. Callers reach it only
+// after the inlinable quota guard has confirmed metering is active.
+func (exec *Execution) checkMemoryMetered() error {
+	used := exec.estimateMemoryUsage()
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
 }
 
 func (exec *Execution) checkMemoryWith(extras ...Value) error {

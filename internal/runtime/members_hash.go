@@ -1051,7 +1051,7 @@ func hashMemberQuery(property string) (Value, error) {
 						return NewNil(), err
 					}
 					pair := NewArray([]Value{entry.Key, entry.Value})
-					if err := exec.checkMemoryWith(pair); err != nil {
+					if err := exec.checkMemoryValue(pair); err != nil {
 						return NewNil(), err
 					}
 					blockArgs[0] = pair
@@ -1089,7 +1089,7 @@ func hashMemberQuery(property string) (Value, error) {
 				// Ruby's Hash#each_with_index yields the [key, value] pair as the first
 				// block parameter and the index as the second.
 				pair := NewArray([]Value{NewSymbol(key), entries[key]})
-				if err := exec.checkMemoryWith(pair); err != nil {
+				if err := exec.checkMemoryValue(pair); err != nil {
 					return NewNil(), err
 				}
 				blockArgs[0] = pair
