@@ -24,3 +24,6 @@ coverage.out
 
 # Local binaries
 /vibes-cli
+
+# Local worktrees
+/wt-*
