@@ -19,6 +19,17 @@ func maybeEnableEnvRecycleVerify() {
 	}
 }
 
+// maybeEnableEstimatorVerify turns on the dormant-frame differential oracle when
+// VIBES_ESTIMATOR_VERIFY=1 is set. Like maybeEnableEnvRecycleVerify it is called
+// from TestMain before any test runs, so the flag is write-once and race-free.
+// Running `VIBES_ESTIMATOR_VERIFY=1 go test` then checks every memory-quota base
+// walk against the reference full-stack estimate and panics on any divergence.
+func maybeEnableEstimatorVerify() {
+	if os.Getenv("VIBES_ESTIMATOR_VERIFY") == "1" {
+		estimatorVerify = true
+	}
+}
+
 // TestAcquireRecycleCallEnvPooling pins the production pooling contract of
 // acquireCallEnv / recycleCallEnv directly: a reuse-eligible function's frame is
 // returned to the free list and handed back to the next acquire (same pointer,

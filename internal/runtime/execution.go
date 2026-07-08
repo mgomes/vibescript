@@ -108,6 +108,21 @@ type Execution struct {
 	baseTopoVersion uint64
 	builtinDepth    int
 
+	// Dormant-frame accounting (see memory_dormant.go) makes the estimator's
+	// env-stack walk incremental for block-free function recursion. dormant holds
+	// the committed dormant prefix, dormantSet the same frames for O(1) dedup
+	// during a walk, dormantBytes their cached byte sum, and dormantSlots the
+	// number of leading env-stack slots they cover. nonBaseParentDepth counts the
+	// active scopes whose parent is not a base env (blocks, closures, nested
+	// lexical scopes); while it is non-zero the optimization disengages because
+	// such a scope could rebind a dormant frame. All are maintained only under a
+	// positive memory quota, since an unlimited quota skips the estimator walk.
+	dormant            []dormantFrame
+	dormantSet         map[*Env]struct{}
+	dormantBytes       int
+	dormantSlots       int
+	nonBaseParentDepth int
+
 	// accumMeteredSections counts the accumulator-metered sections currently
 	// active (see beginAccumulatorMeteredSection). While non-zero, step()'s
 	// periodic slow path skips the full reachable-graph memory walk: an
@@ -286,6 +301,9 @@ func (exec *Execution) capabilityArgsValidated(method string) bool {
 
 func (exec *Execution) pushEnv(env *Env) {
 	exec.baseTopoVersion++
+	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
+		exec.nonBaseParentDepth++
+	}
 	exec.envStack = append(exec.envStack, env)
 }
 
@@ -301,7 +319,14 @@ func (exec *Execution) popEnv() {
 		return
 	}
 	exec.baseTopoVersion++
+	env := exec.envStack[len(exec.envStack)-1]
+	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
+		exec.nonBaseParentDepth--
+	}
 	exec.envStack = exec.envStack[:len(exec.envStack)-1]
+	if len(exec.dormant) > 0 {
+		exec.retractDormantBeyond(len(exec.envStack))
+	}
 }
 
 func (exec *Execution) pushTaskGroup(group *taskGroup) {
