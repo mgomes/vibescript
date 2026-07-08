@@ -129,6 +129,15 @@ type Execution struct {
 	strictEffects              bool
 	allowRequire               bool
 	callOptions                CallOptions
+
+	// argBufferPool is a free list of positional-argument backing slices,
+	// reused across script-function calls. A call to a script function borrows
+	// a buffer to evaluate its arguments into and returns it once the call has
+	// fully unwound; bindFunctionArgs copies every element into the callee's
+	// environment and never retains the slice, so the backing is free to reuse.
+	// Only KindFunction calls pool: builtins and capabilities can retain the
+	// args slice they are handed.
+	argBufferPool [][]Value
 }
 
 type localCallBypass struct {

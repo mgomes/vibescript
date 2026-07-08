@@ -44,4 +44,4 @@ BenchmarkModuleRequireCacheHit 120000 60 10000
 # xhigh profile, so the estimator walk is out of the measurement. The paired
 # BenchmarkExecutionRecursiveFibQuota (estimator-heavy, deliberately noisy) is
 # left out of the smoke gate; it exists for profiling the memory-quota path.
-BenchmarkExecutionRecursiveFib 30000000 66000 6500000
+BenchmarkExecutionRecursiveFib 30000000 23000 5600000
