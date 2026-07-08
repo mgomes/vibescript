@@ -383,3 +383,49 @@ end`)
 		}
 	}
 }
+
+const recursiveFibSource = `def fib(n)
+  if n < 2
+    n
+  else
+    fib(n - 1) + fib(n - 2)
+  end
+end`
+
+// BenchmarkExecutionRecursiveFib exercises the deep-recursion call path with a
+// naive fib. Unlike the loop-shaped benchmarks, it grows the env stack with call
+// depth, so it is the suite's gate against call-setup allocation churn (per-call
+// environments, argument slices, non-local-return signals). It runs under an
+// unlimited memory quota, matching the CLI's default xhigh profile, so the
+// measurement reflects the pure call path rather than memory-estimator cost.
+func BenchmarkExecutionRecursiveFib(b *testing.B) {
+	engine := MustNewEngine(Config{StepQuota: Unlimited, MemoryQuotaBytes: Unlimited, RecursionLimit: 10_000})
+	script := compileScriptWithEngine(b, engine, recursiveFibSource)
+
+	args := []Value{NewInt(20)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "fib", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+// BenchmarkExecutionRecursiveFibQuota runs the same recursion under a positive
+// memory quota, so every step pays the reachable-graph estimator walk. It is the
+// gate for memory-quota estimator cost on call-heavy workloads: the estimator
+// re-walks the whole env stack per check, which scales with recursion depth.
+func BenchmarkExecutionRecursiveFibQuota(b *testing.B) {
+	engine := MustNewEngine(Config{StepQuota: 100_000_000, MemoryQuotaBytes: 16 << 20, RecursionLimit: 10_000})
+	script := compileScriptWithEngine(b, engine, recursiveFibSource)
+
+	args := []Value{NewInt(20)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "fib", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}

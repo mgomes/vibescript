@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"flag"
 	"fmt"
 	"sort"
 	"strings"
@@ -214,7 +215,7 @@ var replBuiltinFunctionNames = []string{
 	"Time.parse",
 }
 
-func newREPLModel() (replModel, error) {
+func newREPLModel(quota quotaConfig) (replModel, error) {
 	ti := textinput.New()
 	ti.Placeholder = "type an expression..."
 	ti.Focus()
@@ -228,10 +229,18 @@ func newREPLModel() (replModel, error) {
 
 	stdout := new(bytes.Buffer)
 	stderr := new(bytes.Buffer)
-	engine, err := vibes.NewEngine(vibes.Config{
+	// The REPL evaluates the developer's own expressions interactively, so it
+	// defaults to the same generous xhigh profile as `vibes run` rather than the
+	// embedding sandbox floor. The quota is configurable via flags: because the
+	// REPL evaluates on an uncancelable context, an interactive session that
+	// wants a runaway loop to fail fast can select a finite budget with
+	// `vibes repl -profile low` or `-step-quota`.
+	cfg := vibes.Config{
 		OutputWriter: stdout,
 		ErrorWriter:  stderr,
-	})
+	}
+	quota.applyTo(&cfg)
+	engine, err := vibes.NewEngine(cfg)
 	if err != nil {
 		return replModel{}, fmt.Errorf("init engine: %w", err)
 	}
@@ -739,8 +748,19 @@ func renderHelpPanel(width int) string {
 	return borderStyle.Render(strings.Join(lines, "\n"))
 }
 
-func runREPL() error {
-	model, err := newREPLModel()
+func runREPL(args []string) error {
+	fs := flag.NewFlagSet("repl", flag.ContinueOnError)
+	fs.SetOutput(new(flagErrorSink))
+	quotaFlags := registerQuotaFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	quota, err := quotaFlags.resolve()
+	if err != nil {
+		return fmt.Errorf("vibes repl: %w", err)
+	}
+
+	model, err := newREPLModel(quota)
 	if err != nil {
 		return fmt.Errorf("init repl: %w", err)
 	}

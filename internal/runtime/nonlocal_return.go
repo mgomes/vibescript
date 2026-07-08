@@ -30,17 +30,36 @@ func (s *nonLocalReturnSignal) Error() string {
 	return "unexpected return (LocalJumpError)"
 }
 
-func isNonLocalReturnSignal(err error) bool {
+// asNonLocalReturnSignal returns the non-local return signal carried by err, or
+// nil if err carries none. It runs on every function return, so it fast-paths
+// the two common cases without allocating: a nil error (a normal return) and an
+// unwrapped signal (a block return). Both avoid the heap allocation errors.As
+// forces by taking the address of a local; the errors.As fallback runs only for
+// a non-nil error that is not directly a signal, covering a wrapped signal
+// should any path ever wrap one.
+func asNonLocalReturnSignal(err error) *nonLocalReturnSignal {
+	if err == nil {
+		return nil
+	}
+	if sig, ok := err.(*nonLocalReturnSignal); ok { //nolint:errorlint // fast path for the common unwrapped signal; the errors.As fallback below covers a wrapped one
+		return sig
+	}
 	var sig *nonLocalReturnSignal
-	return errors.As(err, &sig)
+	if errors.As(err, &sig) {
+		return sig
+	}
+	return nil
+}
+
+func isNonLocalReturnSignal(err error) bool {
+	return asNonLocalReturnSignal(err) != nil
 }
 
 // matchNonLocalReturn extracts the signal when err is a non-local return
 // targeted at the invocation identified by token; any other error (including
 // a signal for an outer invocation) returns nil so it keeps propagating.
 func matchNonLocalReturn(err error, token uint64) *nonLocalReturnSignal {
-	var sig *nonLocalReturnSignal
-	if errors.As(err, &sig) && sig.token == token {
+	if sig := asNonLocalReturnSignal(err); sig != nil && sig.token == token {
 		return sig
 	}
 	return nil

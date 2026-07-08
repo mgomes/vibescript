@@ -37,3 +37,11 @@ BenchmarkExecutionRegexReplaceAllLoop 4000000 1200 30000
 BenchmarkExecutionTallyLoop 12000000 1200 550000
 BenchmarkCallShortScript 5000 12 3500
 BenchmarkModuleRequireCacheHit 120000 60 10000
+# Deep-recursion call path (naive fib(20), ~13.5k nested calls). The loop-shaped
+# benchmarks never grow the env stack, so this is the only gate on call-setup
+# allocation churn (per-call environments, argument slices, non-local-return
+# signals). Runs under an unlimited memory quota, matching the CLI's default
+# xhigh profile, so the estimator walk is out of the measurement. The paired
+# BenchmarkExecutionRecursiveFibQuota (estimator-heavy, deliberately noisy) is
+# left out of the smoke gate; it exists for profiling the memory-quota path.
+BenchmarkExecutionRecursiveFib 30000000 23000 5600000

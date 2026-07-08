@@ -17,7 +17,35 @@ const (
 	defaultMaxSourceBytes     = 1 << 20
 	defaultTaskConcurrency    = 4
 	defaultMaxTaskConcurrency = 64
+
+	defaultStepQuota        = 50_000
+	defaultMemoryQuotaBytes = 64 * 1024
+	defaultRecursionLimit   = 64
 )
+
+// Unlimited disables a quota when supplied as a Config quota value
+// (StepQuota, MemoryQuotaBytes, or RecursionLimit). The runtime treats any
+// non-positive quota as unbounded; Unlimited is the explicit spelling callers
+// use to request that, distinct from a zero value, which selects the built-in
+// default. Disabling RecursionLimit lets deep recursion grow the host Go stack
+// until it overflows the process — no named quota profile does this; it is an
+// at-your-own-risk escape hatch for trusted workloads.
+const Unlimited = -1
+
+// resolveQuota maps a Config quota field to its effective runtime value: zero
+// selects def, a negative value (Unlimited) disables the quota by resolving to
+// zero — which every enforcement site reads as unbounded — and a positive value
+// is used as-is.
+func resolveQuota(value, def int) int {
+	switch {
+	case value == 0:
+		return def
+	case value < 0:
+		return 0
+	default:
+		return value
+	}
+}
 
 // Config controls interpreter execution bounds and enforcement modes.
 type Config struct {
@@ -69,15 +97,9 @@ type Engine struct {
 
 // NewEngine constructs an Engine with sane defaults and registers built-ins.
 func NewEngine(cfg Config) (*Engine, error) {
-	if cfg.StepQuota <= 0 {
-		cfg.StepQuota = 50000
-	}
-	if cfg.MemoryQuotaBytes <= 0 {
-		cfg.MemoryQuotaBytes = 64 * 1024
-	}
-	if cfg.RecursionLimit <= 0 {
-		cfg.RecursionLimit = 64
-	}
+	cfg.StepQuota = resolveQuota(cfg.StepQuota, defaultStepQuota)
+	cfg.MemoryQuotaBytes = resolveQuota(cfg.MemoryQuotaBytes, defaultMemoryQuotaBytes)
+	cfg.RecursionLimit = resolveQuota(cfg.RecursionLimit, defaultRecursionLimit)
 	if cfg.MaxCachedModules == 0 {
 		cfg.MaxCachedModules = 1000
 	}
@@ -514,7 +536,17 @@ func (e *Engine) Execute(ctx context.Context, script string) error {
 
 // ConfigSummary provides a human-readable description of the interpreter limits.
 func (e *Engine) ConfigSummary() string {
-	return fmt.Sprintf("steps=%d memory=%dB recursion=%d strict_effects=%t tasks=%d/%d", e.config.StepQuota, e.config.MemoryQuotaBytes, e.config.RecursionLimit, e.config.StrictEffects, e.config.DefaultTaskConcurrency, e.config.MaxTaskConcurrency)
+	return fmt.Sprintf("steps=%s memory=%s recursion=%s strict_effects=%t tasks=%d/%d", quotaSummary(e.config.StepQuota, ""), quotaSummary(e.config.MemoryQuotaBytes, "B"), quotaSummary(e.config.RecursionLimit, ""), e.config.StrictEffects, e.config.DefaultTaskConcurrency, e.config.MaxTaskConcurrency)
+}
+
+// quotaSummary renders a resolved quota for ConfigSummary: a positive quota
+// prints as its value with the given unit suffix, and a disabled quota (zero
+// after resolution) prints as "unlimited".
+func quotaSummary(value int, unit string) string {
+	if value <= 0 {
+		return "unlimited"
+	}
+	return fmt.Sprintf("%d%s", value, unit)
 }
 
 // MaxSourceBytes reports the effective source-size limit, in bytes, applied

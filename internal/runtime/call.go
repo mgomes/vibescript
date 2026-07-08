@@ -1354,11 +1354,21 @@ func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
 }
 
 func (exec *Execution) evalCallArgsForCallee(call *CallExpr, env *Env, callee Value) ([]Value, error) {
+	return exec.evalCallArgsForCalleeInto(call, env, callee, nil)
+}
+
+// evalCallArgsForCalleeInto evaluates positional arguments into buf when it is
+// non-nil (a pooled backing sized to len(call.Args)), or a fresh slice
+// otherwise. A splat call ignores buf and builds its own growing slice.
+func (exec *Execution) evalCallArgsForCalleeInto(call *CallExpr, env *Env, callee Value, buf []Value) ([]Value, error) {
 	paramInfo, hasParams := callableParamTypes(callee)
 	if callHasSplatArg(call) {
 		return exec.evalCallArgsWithSplats(call, env, paramInfo, hasParams)
 	}
-	args := make([]Value, len(call.Args))
+	args := buf
+	if args == nil {
+		args = make([]Value, len(call.Args))
+	}
 	for i, arg := range call.Args {
 		expectation := expressionExpectation{}
 		if hasParams {
@@ -1376,6 +1386,33 @@ func (exec *Execution) evalCallArgsForCallee(call *CallExpr, env *Env, callee Va
 		args[i] = val
 	}
 	return args, nil
+}
+
+// borrowArgBuffer returns a positional-argument backing of length n, reusing a
+// pooled slice when the most recently freed one is large enough. The caller
+// must return it with returnArgBuffer once the call that consumed it has fully
+// unwound. See argBufferPool for why only script-function calls may pool.
+func (exec *Execution) borrowArgBuffer(n int) []Value {
+	if pool := exec.argBufferPool; len(pool) > 0 {
+		last := len(pool) - 1
+		if buf := pool[last]; cap(buf) >= n {
+			exec.argBufferPool = pool[:last]
+			// Cap the returned slice at n so an append by a later consumer
+			// (resolveKeywordOptionsHash collapsing keywords into an options
+			// hash) reallocates instead of writing past n into the pooled
+			// backing, keeping every write within the range returnArgBuffer clears.
+			return buf[:n:n]
+		}
+	}
+	return make([]Value, n)
+}
+
+// returnArgBuffer clears buf and returns it to the free list for reuse. Clearing
+// drops references to the argument Values so a pooled buffer never pins their
+// heap payloads between calls.
+func (exec *Execution) returnArgBuffer(buf []Value) {
+	clear(buf)
+	exec.argBufferPool = append(exec.argBufferPool, buf[:0])
 }
 
 func callHasSplatArg(call *CallExpr) bool {
@@ -2281,7 +2318,16 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	args, err := exec.evalCallArgsForCallee(call, env, callee)
+	// A call to a script function evaluates its positional arguments into a
+	// pooled backing: bindFunctionArgs copies each element into the callee's
+	// environment, so the slice is dead once the call unwinds. The buffer is
+	// returned after invokeCallable, covering every early return in between.
+	var argBuf []Value
+	if callee.Kind() == KindFunction && len(call.Args) > 0 && !callHasSplatArg(call) {
+		argBuf = exec.borrowArgBuffer(len(call.Args))
+		defer exec.returnArgBuffer(argBuf)
+	}
+	args, err := exec.evalCallArgsForCalleeInto(call, env, callee, argBuf)
 	if err != nil {
 		return NewNil(), err
 	}

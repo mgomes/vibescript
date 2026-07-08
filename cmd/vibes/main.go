@@ -40,7 +40,7 @@ func runCLI(args []string) error {
 	case "lsp":
 		return runLSP()
 	case "repl":
-		return runREPL()
+		return runREPL(args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -58,8 +58,14 @@ func runCommand(args []string) error {
 	watch := fs.Bool("watch", false, "re-run whenever the script or its modules change")
 	var modulePaths pathList
 	fs.Var(&modulePaths, "module-path", "add a module search directory (repeatable)")
+	quotaFlags := registerQuotaFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	quota, err := quotaFlags.resolve()
+	if err != nil {
+		return fmt.Errorf("vibes run: %w", err)
 	}
 
 	functionSet := flagWasSet(fs, "function")
@@ -72,7 +78,7 @@ func runCommand(args []string) error {
 		case len(fs.Args()) > 0:
 			return errors.New("vibes run: -e does not accept positional arguments")
 		}
-		return evalSnippet(context.Background(), *snippet, modulePaths, *checkOnly, os.Stdout)
+		return evalSnippet(context.Background(), *snippet, modulePaths, quota, *checkOnly, os.Stdout)
 	}
 
 	remaining := fs.Args()
@@ -94,6 +100,7 @@ func runCommand(args []string) error {
 		checkOnly:   *checkOnly,
 		moduleDirs:  moduleDirs,
 		callArgs:    stringArgs(remaining[1:]),
+		quota:       quota,
 	}
 
 	if *watch {
@@ -113,10 +120,13 @@ type runInvocation struct {
 	checkOnly   bool
 	moduleDirs  []string
 	callArgs    []value.Value
+	quota       quotaConfig
 }
 
 func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error {
-	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: inv.moduleDirs, OutputWriter: out, ErrorWriter: os.Stderr})
+	cfg := vibes.Config{ModulePaths: inv.moduleDirs, OutputWriter: out, ErrorWriter: os.Stderr}
+	inv.quota.applyTo(&cfg)
+	engine, err := vibes.NewEngine(cfg)
 	if err != nil {
 		return fmt.Errorf("create engine: %w", err)
 	}
@@ -187,7 +197,7 @@ var evalSnippetSourceMap = snippetSourceMap{
 	displayFunction:   "<snippet>",
 }
 
-func evalSnippet(ctx context.Context, snippet string, modulePaths []string, checkOnly bool, out io.Writer) error {
+func evalSnippet(ctx context.Context, snippet string, modulePaths []string, quota quotaConfig, checkOnly bool, out io.Writer) error {
 	if strings.TrimSpace(snippet) == "" {
 		return errors.New("vibes run: -e requires a non-empty snippet")
 	}
@@ -199,7 +209,9 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, chec
 	if err != nil {
 		return fmt.Errorf("compute module paths: %w", err)
 	}
-	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs, OutputWriter: out, ErrorWriter: os.Stderr})
+	cfg := vibes.Config{ModulePaths: moduleDirs, OutputWriter: out, ErrorWriter: os.Stderr}
+	quota.applyTo(&cfg)
+	engine, err := vibes.NewEngine(cfg)
 	if err != nil {
 		return fmt.Errorf("create engine: %w", err)
 	}
@@ -345,6 +357,10 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "    re-run whenever the script or its modules change")
 	fmt.Fprintln(os.Stderr, "  -module-path <dir>")
 	fmt.Fprintln(os.Stderr, "    add a directory to module search paths (repeatable)")
+	fmt.Fprintln(os.Stderr, "  -profile <name>")
+	fmt.Fprintf(os.Stderr, "    execution quota profile: %s (default %q)\n", strings.Join(vibes.QuotaProfileNames(), ", "), defaultQuotaProfile)
+	fmt.Fprintln(os.Stderr, "  -step-quota / -memory-quota / -recursion-limit <n>")
+	fmt.Fprintln(os.Stderr, "    override a profile quota (-1 = unlimited)")
 }
 
 type flagErrorSink struct{}
