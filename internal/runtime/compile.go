@@ -579,6 +579,7 @@ func compileClassProperty(classDef *ClassDef, prop PropertyDecl, sectionVisibili
 				Accessor:     functionAccessorGetter,
 				AccessorName: name,
 			}
+			getter.reuseCallEnv = functionCanReuseCallEnv(getter)
 			setFunctionVisibility(getter, visibility)
 			classDef.Methods[name] = getter
 		}
@@ -596,6 +597,7 @@ func compileClassProperty(classDef *ClassDef, prop PropertyDecl, sectionVisibili
 				Accessor:     functionAccessorSetter,
 				AccessorName: name,
 			}
+			setter.reuseCallEnv = functionCanReuseCallEnv(setter)
 			setFunctionVisibility(setter, visibility)
 			classDef.Methods[name+"="] = setter
 		}
@@ -710,7 +712,7 @@ func enumMemberSymbol(name string) string {
 }
 
 func compileFunctionDef(stmt *FunctionStmt) *ScriptFunction {
-	return &ScriptFunction{
+	fn := &ScriptFunction{
 		Name:     stmt.Name,
 		Params:   stmt.Params,
 		ReturnTy: stmt.ReturnTy,
@@ -719,6 +721,8 @@ func compileFunctionDef(stmt *FunctionStmt) *ScriptFunction {
 		Exported: stmt.Exported,
 		Private:  stmt.Private,
 	}
+	fn.reuseCallEnv = functionCanReuseCallEnv(fn)
+	return fn
 }
 
 func combineErrors(errs []error) error {

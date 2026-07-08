@@ -61,6 +61,38 @@ type Env struct {
 	// transparently chain to it.
 	callBlock    Value
 	hasCallBlock bool
+
+	// poisoned marks a recycled call frame in env-recycle verification builds
+	// (envRecycleVerify). Production leaves it false. When verification is on, a
+	// recycled env is poisoned and retained instead of reused, so any access to a
+	// frame the recycler wrongly judged dead panics loudly instead of silently
+	// reading stale bindings — turning a missed capture site into a test failure.
+	poisoned bool
+}
+
+// envRecycleVerify enables env-recycle verification: recycled call frames are
+// poisoned and never reused, and accessing one panics. It is enabled only by
+// tests (see the env-recycle verification test), so production pays a single
+// predictable branch on the false path.
+var envRecycleVerify = false
+
+// assertNotPoisoned panics if e is a poisoned (recycled) env while verification
+// is enabled, so a stale reference to a recycled frame is caught at the point of
+// use instead of silently reading or writing a dead scope.
+//
+// For the tripwire to be sound it must guard every path that touches a scope's
+// own storage. Rather than annotate all ~40 Env methods, the guard sits on the
+// few primitives every access funnels through: inlineIndex for all name-keyed
+// inline/values reads and writes (Get, Assign, has-checks, define, delete all
+// route through it), rangeDynamicBindings and rangeStaticBindings for whole-scope
+// iteration, setArrayAppendBuffer and settleArrayAppendResult for the concat
+// accumulator map, and setCallBlock/lookupCallBlock for the call-block slot.
+// Every other accessor reaches one of these before it can observe a binding, so
+// a poisoned scope trips the guard no matter how it is reached.
+func (e *Env) assertNotPoisoned() {
+	if envRecycleVerify && e.poisoned {
+		panic("runtime: access to recycled environment")
+	}
 }
 
 func newEnv(parent *Env) *Env {
@@ -92,7 +124,12 @@ func newBlockAssignmentEnv(parent *Env) *Env {
 	return env
 }
 
-func (e *Env) resetForBlockCall(parent *Env) {
+// resetForReuse clears every binding and flag and rebinds the scope to parent so
+// the Env struct can back a fresh block invocation or function call without a new
+// allocation. It is the reuse path for both block-iteration scopes (see
+// blockCallRunner) and recyclable function call frames (see acquireCallEnv); a
+// scope is only reused when static analysis proves its body cannot capture it.
+func (e *Env) resetForReuse(parent *Env) {
 	value.BumpMutationEpoch()
 	e.parent = parent
 	for i := range int(e.inlineLen) {
@@ -110,6 +147,7 @@ func (e *Env) resetForBlockCall(parent *Env) {
 	e.callRoot = false
 	e.callBlock = Value{}
 	e.hasCallBlock = false
+	e.poisoned = false
 }
 
 // Get looks up a variable by name, traversing parent scopes if needed.
@@ -233,6 +271,7 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 // to the call (nil when none was given). It must be set on the call
 // environment so lookupCallBlock can find it from any nested scope.
 func (e *Env) setCallBlock(block Value) {
+	e.assertNotPoisoned()
 	value.BumpMutationEpoch()
 	e.callBlock = block
 	e.hasCallBlock = true
@@ -246,6 +285,7 @@ func (e *Env) setCallBlock(block Value) {
 // script binding cannot intercept it.
 func (e *Env) lookupCallBlock() (Value, bool) {
 	for scope := e; scope != nil; scope = scope.parent {
+		scope.assertNotPoisoned()
 		if scope.hasCallBlock {
 			return scope.callBlock, true
 		}
@@ -447,6 +487,7 @@ func (e *Env) lookupBindingScope(name string) (*Env, bool) {
 }
 
 func (e *Env) setArrayAppendBuffer(name string, buffer []Value) {
+	e.assertNotPoisoned()
 	value.BumpMutationEpoch()
 	if e.arrayAppendBuffers == nil {
 		e.arrayAppendBuffers = make(map[string][]Value)
@@ -472,6 +513,7 @@ func (e *Env) settleArrayAppendResult(val Value) Value {
 		return val
 	}
 	for scope := e; scope != nil; scope = scope.parent {
+		scope.assertNotPoisoned()
 		for name, buffer := range scope.arrayAppendBuffers {
 			if len(buffer) != len(items) || reflect.ValueOf(buffer).Pointer() != ptr {
 				continue
@@ -541,6 +583,7 @@ func (e *Env) dynamicLen() int {
 }
 
 func (e *Env) inlineIndex(name string) (int, bool) {
+	e.assertNotPoisoned()
 	for i := range int(e.inlineLen) {
 		if e.inline[i].name == name {
 			return i, true
@@ -671,6 +714,7 @@ func (e *Env) promoteInlineBindings(capacity int) {
 }
 
 func (e *Env) rangeDynamicBindings(visit func(string, Value)) {
+	e.assertNotPoisoned()
 	for i := range int(e.inlineLen) {
 		binding := e.inline[i]
 		visit(binding.name, binding.value)
@@ -681,6 +725,7 @@ func (e *Env) rangeDynamicBindings(visit func(string, Value)) {
 }
 
 func (e *Env) rangeStaticBindings(visit func(string, Value)) {
+	e.assertNotPoisoned()
 	for name, val := range e.statics {
 		visit(name, e.materializeStatic(name, val))
 	}

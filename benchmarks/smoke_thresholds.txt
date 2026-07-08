@@ -20,7 +20,10 @@
 
 BenchmarkExecutionArithmeticLoop 5000000 30 6000
 BenchmarkExecutionStepLoop 16000000 25 6000
-BenchmarkExecutionArrayPipeline 40000000 100 150000
+# The ns cap sits well above the ~42ms this benchmark takes on the shared CI
+# runner (about 3x a dev laptop): the old 40ms cap straddled the runner's floor
+# and flaked. Its alloc and byte caps stay tight — those are the stable signals.
+BenchmarkExecutionArrayPipeline 64000000 100 150000
 BenchmarkExecutionArrayPushAccumulation 3600000 900 120000
 BenchmarkExecutionArrayConcatAccumulation 4200000 2400 150000
 BenchmarkExecutionMethodDispatchLoop 8000000 1000 130000
@@ -39,9 +42,14 @@ BenchmarkCallShortScript 5000 12 3500
 BenchmarkModuleRequireCacheHit 120000 60 10000
 # Deep-recursion call path (naive fib(20), ~13.5k nested calls). The loop-shaped
 # benchmarks never grow the env stack, so this is the only gate on call-setup
-# allocation churn (per-call environments, argument slices, non-local-return
-# signals). Runs under an unlimited memory quota, matching the CLI's default
-# xhigh profile, so the estimator walk is out of the measurement. The paired
-# BenchmarkExecutionRecursiveFibQuota (estimator-heavy, deliberately noisy) is
-# left out of the smoke gate; it exists for profiling the memory-quota path.
-BenchmarkExecutionRecursiveFib 30000000 23000 5600000
+# allocation churn (argument slices, non-local-return signals) and, above all,
+# the call-frame environment recycler: reuse-eligible frames are pooled and
+# reused instead of allocated per call, so the alloc/byte floors sit near zero
+# (a bounded free list plus the returned values) rather than one env per call.
+# The caps are tight on purpose -- a regression that stopped recycling frames
+# would restore ~22k allocs/op and must fail here. Runs under an unlimited memory
+# quota, matching the CLI's default xhigh profile, so the estimator walk is out
+# of the measurement. The paired BenchmarkExecutionRecursiveFibQuota
+# (estimator-heavy, deliberately noisy) is left out of the smoke gate; it exists
+# for profiling the memory-quota path.
+BenchmarkExecutionRecursiveFib 30000000 200 40000
