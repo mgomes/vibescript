@@ -1091,6 +1091,12 @@ func newBlock(params []Param, implicitParams []string, body []Statement, env *En
 func revokeBlockRegionNeutrality(env *Env) {
 	for scope := env; scope != nil && scope.epochNeutral; scope = scope.parent {
 		scope.epochNeutral = false
+		// Sticky for the frame's lifetime so a capture during a call frame's
+		// pre-push binding survives both the push (which must not restore the
+		// neutrality just revoked) and the pre-body memory check's push/pop, after
+		// which the same frame is pushed again for the body. Reset per lifetime at
+		// frame acquisition (markRegionNeutral), not at pop.
+		scope.neutralityRevoked = true
 	}
 }
 

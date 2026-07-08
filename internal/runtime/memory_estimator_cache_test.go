@@ -533,6 +533,28 @@ end`, payloadA, regionPeak),
   end
   holder.call.size
 end`, payloadA, regionPeak),
+		// A helper called from the block binds a closure default that captures the
+		// helper's own call frame during pre-push argument binding, then escapes it
+		// into an outer (prefix) array before growing another frame local. The
+		// capture must revoke the frame's neutrality AND survive the push: if
+		// pushEnv re-neutralized the frame after the pre-push revocation, the later
+		// local growth would skip its epoch bump while the frame is reachable from
+		// the memoized prefix, so the suffix walk would deduplicate it and miss the
+		// growth — undercounting here.
+		"region_helper_closure_default_escape": fmt.Sprintf(`def helper(sink, seed, f = -> { seed })
+  sink.push(f)
+  grown = seed + %q
+  %q
+end
+
+def run()
+  sink = []
+  [1, 2, 3, 4].each do |v|
+    helper(sink, "seed")
+    %q
+  end
+  sink.size
+end`, payloadA, regionPeak, regionPeak),
 	}
 	for name, source := range regionScripts {
 		scripts[name] = source

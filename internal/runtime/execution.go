@@ -324,9 +324,19 @@ func (exec *Execution) pushEnv(env *Env) {
 		// (see memory_blockregion.go), so its binding writes are epoch-neutral
 		// and its push neither changes the memoized prefix nor the dormant
 		// prefix's shape. Skipping the topo bump keeps the prefix memo valid
-		// across every iteration; the symmetric skip in popEnv keeps the
-		// counters balanced.
-		env.epochNeutral = true
+		// across every iteration; popEnv skips it symmetrically under the same
+		// blockRegionActive condition, so the counters stay balanced regardless
+		// of a mid-region capture stripping neutrality.
+		//
+		// Restore neutrality unless a closure already captured this frame during
+		// pre-push argument or default binding: revokeBlockRegionNeutrality
+		// cleared it so the escaped frame's later writes stay charged, and
+		// blindly re-neutralizing here would undercount them (a security-boundary
+		// escape). The scope was marked neutral at acquisition, so this only
+		// re-asserts it for the common uncaptured case.
+		if !env.neutralityRevoked {
+			env.epochNeutral = true
+		}
 		exec.envStack = append(exec.envStack, env)
 		return
 	}
@@ -349,18 +359,39 @@ func (exec *Execution) popEnv() {
 		return
 	}
 	env := exec.envStack[len(exec.envStack)-1]
-	if env != nil && env.epochNeutral {
+	if exec.blockRegionActive && env != nil {
 		// A block-iteration region scope: its push skipped the topo and
-		// non-base-parent bookkeeping (see pushEnv), so its pop must too. Clear
-		// the flag so a scope that escapes the region (captured by a closure and
-		// re-pushed later) does not carry epoch neutrality past the region that
-		// justified it.
+		// non-base-parent bookkeeping (see pushEnv), so its pop must too. The
+		// decision is keyed on blockRegionActive, not the scope's epochNeutral
+		// flag, so it holds even when a mid-region capture revoked neutrality —
+		// push and pop of one scope always see the same region state, so the
+		// skips stay balanced. Clear the transient neutrality so a scope that
+		// escapes the region (captured by a closure and re-pushed later, perhaps
+		// outside any region) does not carry it past the region that justified it.
+		//
+		// Do NOT clear neutralityRevoked here: a capture is a property of the frame
+		// for its whole lifetime, not of a single push. A call frame is pushed
+		// twice — once for the pre-body memory check, once for the body — and the
+		// revocation, which happens during pre-push binding, must survive the
+		// intervening pop or the body push would re-neutralize the escaped frame
+		// and undercount its later writes. The flag is reset per lifetime at frame
+		// acquisition (markRegionNeutral). Leaving it set at worst over-charges a
+		// reused scope, never undercounts.
 		env.epochNeutral = false
 		exec.envStack = exec.envStack[:len(exec.envStack)-1]
 		return
 	}
 	exec.baseTopoVersion++
 	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
+		if estimatorVerify && exec.nonBaseParentDepth <= 0 {
+			// This decrement must pair with an increment from the same scope's
+			// push. An underflow means a scope was pushed and popped through
+			// asymmetric branches — the failure mode when the region skip was keyed
+			// on a flag a mid-region capture could revoke — which can later drive
+			// the counter back to zero while a non-base scope is live and wrongly
+			// re-engage the dormant-frame memo. Trip loudly under the oracle.
+			panic("runtime: nonBaseParentDepth underflow on env pop")
+		}
 		exec.nonBaseParentDepth--
 	}
 	exec.envStack = exec.envStack[:len(exec.envStack)-1]

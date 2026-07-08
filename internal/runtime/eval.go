@@ -1320,9 +1320,9 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 	// leaves the stack.
 	if env == nil {
 		env = newBlockAssignmentEnv(runner.blk.Env)
-		env.epochNeutral = runner.exec.blockRegionActive
+		env.markRegionNeutral(runner.exec.blockRegionActive)
 	} else {
-		env.epochNeutral = runner.exec.blockRegionActive
+		env.markRegionNeutral(runner.exec.blockRegionActive)
 		env.resetForReuse(runner.blk.Env)
 		env.assignBoundary = true
 		env.rebindOuter = true

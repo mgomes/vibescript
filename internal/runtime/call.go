@@ -1198,7 +1198,7 @@ func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctio
 	// block-iteration region; mark the frame neutral before its pre-push binding
 	// so those writes stay inside the region's incremental walk (see acquireCallEnv
 	// and memory_blockregion.go).
-	callEnv.epochNeutral = exec.blockRegionActive
+	callEnv.markRegionNeutral(exec.blockRegionActive)
 	// The host entry call never supplies a block, but the frame is still a call
 	// frame: mark it with a nil block so block_given? reports false, yield
 	// raises, and a &block parameter binds nil, keeping the invariant that every
@@ -1473,7 +1473,7 @@ func (exec *Execution) acquireCallEnv(fn *ScriptFunction, capacity int) *Env {
 			// leaving a block body that calls a script helper quadratic (see
 			// memory_blockregion.go). popEnv clears the flag when the frame leaves
 			// the stack.
-			env.epochNeutral = exec.blockRegionActive
+			env.markRegionNeutral(exec.blockRegionActive)
 			env.resetForReuse(fn.Env)
 			if capacity > inlineEnvBindingCapacity {
 				if env.values == nil {
@@ -1486,7 +1486,7 @@ func (exec *Execution) acquireCallEnv(fn *ScriptFunction, capacity int) *Env {
 		}
 	}
 	env := newEnvWithCapacity(fn.Env, capacity)
-	env.epochNeutral = exec.blockRegionActive
+	env.markRegionNeutral(exec.blockRegionActive)
 	return env
 }
 
@@ -1516,7 +1516,7 @@ func (exec *Execution) recycleCallEnv(env *Env) {
 	// the reset skips the epoch bump that would otherwise invalidate the region
 	// memo on every helper call from a block body. acquireCallEnv re-marks the
 	// frame from the region state live when it is next taken from the free list.
-	env.epochNeutral = exec.blockRegionActive
+	env.markRegionNeutral(exec.blockRegionActive)
 	env.resetForReuse(nil)
 	exec.callEnvFreeList = append(exec.callEnvFreeList, env)
 }

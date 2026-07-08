@@ -180,10 +180,23 @@ func (exec *Execution) beginRegionBaseWalk(est *memoryEstimator, scalars int) ba
 		refEst := newMemoryEstimator()
 		ref := exec.estimateGraphBase(refEst, nil)
 		if got := c.graphBytes + suffix; ref != got {
+			// On divergence, recompute the prefix and suffix fresh so the panic can
+			// attribute the gap: a cachedPrefix below freshPrefix means the memo went
+			// stale (a prefix-reachable mutation skipped its epoch bump), while a
+			// suffix that differs from freshSuffix points at the re-walk itself. This
+			// runs only on the failure path, so it costs nothing in a passing run.
+			freshEst := newMemoryEstimator()
+			freshPrefix := exec.estimateGraphBasePrefix(freshEst, boundary, nil)
+			freshSuffix := 0
+			for _, env := range exec.envStack[boundary:] {
+				freshSuffix += freshEst.env(env)
+			}
 			panic(fmt.Sprintf(
 				"vibescript: block-region estimator mismatch: prefix+suffix=%d reference=%d "+
+					"(cachedPrefix=%d freshPrefix=%d suffix=%d freshSuffix=%d freshTotal=%d) "+
 					"(stackDepth=%d boundary=%d builtinDepth=%d regionBuiltinDepth=%d)",
-				got, ref, len(exec.envStack), boundary, exec.builtinDepth,
+				got, ref, c.graphBytes, freshPrefix, suffix, freshSuffix, freshPrefix+freshSuffix,
+				len(exec.envStack), boundary, exec.builtinDepth,
 				exec.blockRegionBuiltinDepth))
 		}
 	}

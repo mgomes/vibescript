@@ -79,11 +79,27 @@ type Env struct {
 	// the scope — an outer-variable rebind resolved up the parent chain, or a
 	// mutation of a container reachable from the prefix — land on a non-neutral
 	// scope (or go through the value package) and still bump, so the prefix is
-	// invalidated exactly when it truly changes. The flag is set when the scope
-	// is pushed under an active region and cleared when it is popped, so a scope
-	// that escapes the region (captured by a closure) never carries it past the
-	// region's lifetime.
+	// invalidated exactly when it truly changes.
+	//
+	// This flag governs mutation neutrality only. The structural push/pop
+	// bookkeeping a region scope skips (baseTopoVersion and nonBaseParentDepth)
+	// is keyed on exec.blockRegionActive, not on this flag, because push and pop
+	// of any one scope always observe the same region state (regions nest fully
+	// within env scopes). Keeping the two concerns separate lets a capture strip
+	// neutrality mid-region (see revokeBlockRegionNeutrality) without unbalancing
+	// the counters the pop must mirror.
 	epochNeutral bool
+
+	// neutralityRevoked records that a closure captured this scope while it was
+	// epoch-neutral, so revokeBlockRegionNeutrality stripped neutrality to keep
+	// its later writes charged. A capture is a property of the frame for its
+	// whole lifetime, so the flag is sticky: it survives the frame's push/pop
+	// cycles (a call frame is pushed once for its pre-body memory check and again
+	// for its body, and the revocation happens during pre-push binding before
+	// either), and pushEnv must not restore neutrality it sees revoked. It is
+	// reset only per frame lifetime, at acquisition (markRegionNeutral) — never at
+	// pop — so a body push cannot re-neutralize an escaped frame.
+	neutralityRevoked bool
 }
 
 // bumpEpochUnlessNeutral advances the process-wide mutation epoch for a binding
@@ -97,6 +113,18 @@ func (e *Env) bumpEpochUnlessNeutral() {
 	if !e.epochNeutral {
 		value.BumpMutationEpoch()
 	}
+}
+
+// markRegionNeutral initializes a freshly acquired or created call frame's
+// region-neutrality state before it is pushed. Inside an active block-iteration
+// region the frame's pre-push argument and default binding writes are
+// epoch-neutral (the region walk re-measures the frame every check); outside one
+// they are not. It clears any stale revocation inherited from a prior tenant of
+// a recycled frame, so pushEnv's neutrality restore is governed only by a
+// capture that happens after this point (see neutralityRevoked and pushEnv).
+func (e *Env) markRegionNeutral(active bool) {
+	e.epochNeutral = active
+	e.neutralityRevoked = false
 }
 
 // envRecycleVerify enables env-recycle verification: recycled call frames are
