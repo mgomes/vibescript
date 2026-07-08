@@ -52,7 +52,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 				}
 			}
 		}
-		val, ok := env.Get(e.Name)
+		val, ok := env.getEscaping(e.Name)
 		if !ok {
 			// allow implicit self method lookup
 			if !hasSelf {
@@ -70,7 +70,6 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 			}
 			return NewNil(), exec.errorAt(e.Pos(), "undefined variable %s%s", e.Name, didYouMean(e.Name, env.visibleNames()))
 		}
-		env.clearArrayAppendBuffer(e.Name)
 		if autoCall {
 			return exec.autoInvokeIfNeeded(e, val, NewNil())
 		}

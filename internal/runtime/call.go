@@ -1290,7 +1290,6 @@ func (exec *Execution) evalIdentifierCallTarget(ident *Identifier, env *Env, byp
 		return NewNil(), NewNil(), err
 	}
 	if val, ok := exec.identifierCallBinding(ident.Name, env, bypassableCall); ok {
-		env.clearArrayAppendBuffer(ident.Name)
 		return val, NewNil(), nil
 	}
 	if self, hasSelf := env.Get("self"); hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
@@ -1303,9 +1302,14 @@ func (exec *Execution) evalIdentifierCallTarget(ident *Identifier, env *Env, byp
 	return NewNil(), NewNil(), exec.errorAt(ident.Pos(), "undefined variable %s%s", ident.Name, didYouMean(ident.Name, env.visibleNames()))
 }
 
+// identifierCallBinding resolves an identifier callee and settles any hidden
+// array-append accumulator on its binding scope, since reading the callee is an
+// escaping variable reference. The common (non-bypass) resolution settles in the
+// same walk via getEscaping; only the rare local-call-bypass path, which resolves
+// through getSkipping, falls back to a separate settle.
 func (exec *Execution) identifierCallBinding(name string, env *Env, bypassableCall bool) (Value, bool) {
 	if !bypassableCall || len(exec.localCallBypassStack) == 0 {
-		return env.Get(name)
+		return env.getEscaping(name)
 	}
 	var skip map[*Env]struct{}
 	for i := len(exec.localCallBypassStack) - 1; i >= 0; i-- {
@@ -1320,9 +1324,13 @@ func (exec *Execution) identifierCallBinding(name string, env *Env, bypassableCa
 		skip[binding] = struct{}{}
 	}
 	if len(skip) == 0 {
-		return env.Get(name)
+		return env.getEscaping(name)
 	}
-	return env.getSkipping(name, skip)
+	val, ok := env.getSkipping(name, skip)
+	if ok {
+		env.clearArrayAppendBuffer(name)
+	}
+	return val, ok
 }
 
 func (exec *Execution) evalDirectPublicMemberMethodCall(receiver Value, property string, pos Position) (Value, bool, error) {
