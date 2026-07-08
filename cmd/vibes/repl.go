@@ -228,10 +228,15 @@ func newREPLModel() (replModel, error) {
 
 	stdout := new(bytes.Buffer)
 	stderr := new(bytes.Buffer)
-	engine, err := vibes.NewEngine(vibes.Config{
+	// The REPL evaluates the developer's own expressions interactively, so it
+	// runs under the same generous default as `vibes run` rather than the
+	// embedding sandbox floor.
+	cfg := vibes.Config{
 		OutputWriter: stdout,
 		ErrorWriter:  stderr,
-	})
+	}
+	vibes.ProfileXHigh.ApplyTo(&cfg)
+	engine, err := vibes.NewEngine(cfg)
 	if err != nil {
 		return replModel{}, fmt.Errorf("init engine: %w", err)
 	}
