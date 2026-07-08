@@ -41,7 +41,7 @@ func asNonLocalReturnSignal(err error) *nonLocalReturnSignal {
 	if err == nil {
 		return nil
 	}
-	if sig, ok := err.(*nonLocalReturnSignal); ok {
+	if sig, ok := err.(*nonLocalReturnSignal); ok { //nolint:errorlint // fast path for the common unwrapped signal; the errors.As fallback below covers a wrapped one
 		return sig
 	}
 	var sig *nonLocalReturnSignal
