@@ -134,6 +134,24 @@ type Execution struct {
 	// weaken checks across code it does not meter.
 	accumMeteredSections int
 
+	// Block-iteration region accounting (see memory_blockregion.go). A pure
+	// block driver (map/select/group_by/reduce/each and kin) marks the
+	// env-stack prefix beneath its block scopes as stable for the duration of
+	// its iteration. While a region is active the per-check base walk memoizes
+	// that prefix once and re-walks only the block's own scopes (the active
+	// suffix) each check, instead of re-charging the whole — often large —
+	// input collection every periodic check. That turns quota-metered block
+	// iteration from O(n^2) back to O(n). blockRegionActive is the switch;
+	// blockRegionBoundary is the env-stack length at the outermost active
+	// region's start (scopes at or above it are the region, walked fresh);
+	// blockRegionBuiltinDepth is builtinDepth at the innermost active region's
+	// driver, so the memo is engaged only in the block body that region drives
+	// and not inside a deeper builtin whose raw writes the epoch cannot
+	// observe. All are maintained only under a positive memory quota.
+	blockRegionActive       bool
+	blockRegionBoundary     int
+	blockRegionBuiltinDepth int
+
 	// Inline backing storage for the always-used per-call stacks, so a
 	// fresh Execution costs one allocation instead of one per stack.
 	// Appends beyond these capacities spill to the heap as usual.
@@ -300,6 +318,18 @@ func (exec *Execution) capabilityArgsValidated(method string) bool {
 }
 
 func (exec *Execution) pushEnv(env *Env) {
+	if exec.blockRegionActive && env != nil {
+		// Every scope pushed inside an active block-iteration region is part of
+		// the region's active suffix: the base walk re-walks it fresh each check
+		// (see memory_blockregion.go), so its binding writes are epoch-neutral
+		// and its push neither changes the memoized prefix nor the dormant
+		// prefix's shape. Skipping the topo bump keeps the prefix memo valid
+		// across every iteration; the symmetric skip in popEnv keeps the
+		// counters balanced.
+		env.epochNeutral = true
+		exec.envStack = append(exec.envStack, env)
+		return
+	}
 	exec.baseTopoVersion++
 	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
 		exec.nonBaseParentDepth++
@@ -318,8 +348,18 @@ func (exec *Execution) popEnv() {
 	if len(exec.envStack) == 0 {
 		return
 	}
-	exec.baseTopoVersion++
 	env := exec.envStack[len(exec.envStack)-1]
+	if env != nil && env.epochNeutral {
+		// A block-iteration region scope: its push skipped the topo and
+		// non-base-parent bookkeeping (see pushEnv), so its pop must too. Clear
+		// the flag so a scope that escapes the region (captured by a closure and
+		// re-pushed later) does not carry epoch neutrality past the region that
+		// justified it.
+		env.epochNeutral = false
+		exec.envStack = exec.envStack[:len(exec.envStack)-1]
+		return
+	}
+	exec.baseTopoVersion++
 	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
 		exec.nonBaseParentDepth--
 	}
