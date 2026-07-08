@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"os"
 	"testing"
 )
@@ -96,6 +97,57 @@ func withEnvRecycleVerify(t *testing.T, fn func()) {
 	envRecycleVerify = true
 	defer func() { envRecycleVerify = prev }()
 	fn()
+}
+
+// TestAcquireCallEnvNormalizesMapShape pins that a reused frame's storage shape
+// matches a fresh one for the acquiring arity: a frame a larger function promoted
+// to a values map is handed to a smaller function with the map dropped, so the
+// small call binds inline and is not charged for a leftover empty map. Otherwise
+// a call's memory footprint would depend on which functions ran before it.
+func TestAcquireCallEnvNormalizesMapShape(t *testing.T) {
+	if envRecycleVerify {
+		t.Skip("pool is bypassed under env-recycle verification")
+	}
+
+	exec := &Execution{}
+	parent := newEnv(nil)
+	big := &ScriptFunction{Env: parent, reuseCallEnv: true}
+
+	frame := exec.acquireCallEnv(big, inlineEnvBindingCapacity+2)
+	for i := range inlineEnvBindingCapacity + 2 {
+		frame.Define(fmt.Sprintf("v%d", i), NewInt(int64(i)))
+	}
+	if frame.values == nil {
+		t.Fatalf("frame did not promote to a values map")
+	}
+	exec.recycleCallEnv(frame)
+
+	small := &ScriptFunction{Env: parent, reuseCallEnv: true}
+	reused := exec.acquireCallEnv(small, 2)
+	if reused != frame {
+		t.Fatalf("small acquire did not reuse the pooled frame")
+	}
+	if reused.values != nil {
+		t.Fatalf("reused small frame kept a values map; its charge would depend on call history")
+	}
+	reused.Define("only", NewInt(1))
+	if reused.values != nil {
+		t.Fatalf("small function bound into a map instead of inline slots")
+	}
+	if reused.inlineLen != 1 {
+		t.Fatalf("expected one inline binding, inlineLen = %d", reused.inlineLen)
+	}
+
+	// A frame reused by another large function keeps a map to bind into.
+	exec.recycleCallEnv(reused)
+	big2 := exec.acquireCallEnv(big, inlineEnvBindingCapacity+2)
+	big2.Define("a", NewInt(1))
+	big2.Define("b", NewInt(2))
+	big2.Define("c", NewInt(3))
+	big2.Define("d", NewInt(4))
+	if big2.values == nil {
+		t.Fatalf("large reuse did not bind into a values map")
+	}
 }
 
 // TestRecycleCallEnvPoisonsUnderVerify pins the verification-mode contract: a

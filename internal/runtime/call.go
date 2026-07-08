@@ -1434,6 +1434,16 @@ func (exec *Execution) returnArgBuffer(buf []Value) {
 // it, so acquire only rebinds its parent (and bumps the mutation epoch, exactly
 // as resetForReuse does) before it is filled. Otherwise a fresh Env is
 // allocated.
+//
+// A reused frame's storage is normalized to match what newEnvWithCapacity would
+// build for this capacity: resetForReuse only clears (does not free) the values
+// map, so a frame that a larger prior tenant promoted to a map would otherwise
+// bind a small function's locals into that map instead of the inline slots. That
+// would make the frame's footprint — and therefore its memory-quota charge, which
+// counts a non-nil values map even when empty — depend on which functions ran
+// earlier in the execution. Dropping the map for an inline-sized capacity keeps
+// each call's cost history-independent; larger frames keep the cleared map to
+// reuse rather than reallocate.
 func (exec *Execution) acquireCallEnv(fn *ScriptFunction, capacity int) *Env {
 	if fn.reuseCallEnv {
 		if n := len(exec.callEnvFreeList); n > 0 {
@@ -1441,6 +1451,9 @@ func (exec *Execution) acquireCallEnv(fn *ScriptFunction, capacity int) *Env {
 			exec.callEnvFreeList[n-1] = nil
 			exec.callEnvFreeList = exec.callEnvFreeList[:n-1]
 			env.resetForReuse(fn.Env)
+			if capacity <= inlineEnvBindingCapacity {
+				env.values = nil
+			}
 			return env
 		}
 	}
