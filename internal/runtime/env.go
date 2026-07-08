@@ -68,6 +68,63 @@ type Env struct {
 	// frame the recycler wrongly judged dead panics loudly instead of silently
 	// reading stale bindings — turning a missed capture site into a test failure.
 	poisoned bool
+
+	// epochNeutral marks a scope that sits inside an active block-iteration
+	// region (see memory_blockregion.go): the block's own parameter and local
+	// scopes, which the region's per-check base walk re-walks fresh every time
+	// rather than folding into the memoized prefix. Because such a scope is
+	// always re-measured, a binding write confined to it cannot make the
+	// memoized prefix stale, so those writes skip the mutation-epoch bump that
+	// would otherwise invalidate the memo every iteration. Writes that escape
+	// the scope — an outer-variable rebind resolved up the parent chain, or a
+	// mutation of a container reachable from the prefix — land on a non-neutral
+	// scope (or go through the value package) and still bump, so the prefix is
+	// invalidated exactly when it truly changes.
+	//
+	// This flag governs mutation neutrality only. The structural push/pop
+	// bookkeeping a region scope skips (baseTopoVersion and nonBaseParentDepth)
+	// is keyed on exec.blockRegionActive, not on this flag, because push and pop
+	// of any one scope always observe the same region state (regions nest fully
+	// within env scopes). Keeping the two concerns separate lets a capture strip
+	// neutrality mid-region (see revokeBlockRegionNeutrality) without unbalancing
+	// the counters the pop must mirror.
+	epochNeutral bool
+
+	// neutralityRevoked records that a closure captured this scope while it was
+	// epoch-neutral, so revokeBlockRegionNeutrality stripped neutrality to keep
+	// its later writes charged. A capture is a property of the frame for its
+	// whole lifetime, so the flag is sticky: it survives the frame's push/pop
+	// cycles (a call frame is pushed once for its pre-body memory check and again
+	// for its body, and the revocation happens during pre-push binding before
+	// either), and pushEnv must not restore neutrality it sees revoked. It is
+	// reset only per frame lifetime, at acquisition (markRegionNeutral) — never at
+	// pop — so a body push cannot re-neutralize an escaped frame.
+	neutralityRevoked bool
+}
+
+// bumpEpochUnlessNeutral advances the process-wide mutation epoch for a binding
+// write to this scope, unless the scope is epoch-neutral — inside an active
+// block-iteration region, where every check re-walks the scope fresh so its own
+// binding writes cannot stale the memoized prefix (see the epochNeutral field
+// and memory_blockregion.go). Only writes whose target is this scope may use it;
+// writes that mutate shared value state (through the value package) or resolve
+// to an outer scope bump unconditionally.
+func (e *Env) bumpEpochUnlessNeutral() {
+	if !e.epochNeutral {
+		value.BumpMutationEpoch()
+	}
+}
+
+// markRegionNeutral initializes a freshly acquired or created call frame's
+// region-neutrality state before it is pushed. Inside an active block-iteration
+// region the frame's pre-push argument and default binding writes are
+// epoch-neutral (the region walk re-measures the frame every check); outside one
+// they are not. It clears any stale revocation inherited from a prior tenant of
+// a recycled frame, so pushEnv's neutrality restore is governed only by a
+// capture that happens after this point (see neutralityRevoked and pushEnv).
+func (e *Env) markRegionNeutral(active bool) {
+	e.epochNeutral = active
+	e.neutralityRevoked = false
 }
 
 // envRecycleVerify enables env-recycle verification: recycled call frames are
@@ -130,7 +187,14 @@ func newBlockAssignmentEnv(parent *Env) *Env {
 // blockCallRunner) and recyclable function call frames (see acquireCallEnv); a
 // scope is only reused when static analysis proves its body cannot capture it.
 func (e *Env) resetForReuse(parent *Env) {
-	value.BumpMutationEpoch()
+	// A reused scope is one static analysis proved its body cannot capture, so
+	// while it is being prepared here it is off the env stack and unreachable
+	// from any root; clearing it changes nothing a memory check can observe.
+	// The bump is therefore only meaningful once the scope is pushed, and it is
+	// skipped for an epoch-neutral block-iteration scope the caller has already
+	// marked (see blockCallRunner and memory_blockregion.go), whose every check
+	// re-walks it fresh regardless.
+	e.bumpEpochUnlessNeutral()
 	e.parent = parent
 	for i := range int(e.inlineLen) {
 		e.inline[i] = envBinding{}
@@ -297,7 +361,7 @@ func (e *Env) getSkipping(name string, skip map[*Env]struct{}) (Value, bool) {
 // environment so lookupCallBlock can find it from any nested scope.
 func (e *Env) setCallBlock(block Value) {
 	e.assertNotPoisoned()
-	value.BumpMutationEpoch()
+	e.bumpEpochUnlessNeutral()
 	e.callBlock = block
 	e.hasCallBlock = true
 }
@@ -352,7 +416,7 @@ func (e *Env) PredeclareAssignmentLocal(name string) {
 // rehash repeatedly.
 func (e *Env) growStatics(n int) {
 	if e.statics == nil {
-		value.BumpMutationEpoch()
+		e.bumpEpochUnlessNeutral()
 		e.statics = make(map[string]Value, n)
 	}
 }
@@ -360,7 +424,7 @@ func (e *Env) growStatics(n int) {
 // DefineStatic binds a variable whose deep size is fixed at definition
 // time, keeping it out of the per-check estimation walk.
 func (e *Env) DefineStatic(name string, val Value) {
-	value.BumpMutationEpoch()
+	e.bumpEpochUnlessNeutral()
 	e.deleteDynamic(name)
 	if e.statics == nil {
 		e.statics = make(map[string]Value)
@@ -513,7 +577,7 @@ func (e *Env) lookupBindingScope(name string) (*Env, bool) {
 
 func (e *Env) setArrayAppendBuffer(name string, buffer []Value) {
 	e.assertNotPoisoned()
-	value.BumpMutationEpoch()
+	e.bumpEpochUnlessNeutral()
 	if e.arrayAppendBuffers == nil {
 		e.arrayAppendBuffers = make(map[string][]Value)
 	}
@@ -681,12 +745,12 @@ func (e *Env) getOwn(name string) (Value, bool) {
 
 func (e *Env) setExistingDynamic(name string, val Value) bool {
 	if idx, ok := e.inlineIndex(name); ok {
-		value.BumpMutationEpoch()
+		e.bumpEpochUnlessNeutral()
 		e.inline[idx].value = val
 		return true
 	}
 	if _, ok := e.values[name]; ok {
-		value.BumpMutationEpoch()
+		e.bumpEpochUnlessNeutral()
 		e.values[name] = val
 		return true
 	}
@@ -697,7 +761,7 @@ func (e *Env) setDynamic(name string, val Value) {
 	if e.setExistingDynamic(name, val) {
 		return
 	}
-	value.BumpMutationEpoch()
+	e.bumpEpochUnlessNeutral()
 	if e.values != nil {
 		e.values[name] = val
 		return
@@ -712,7 +776,7 @@ func (e *Env) setDynamic(name string, val Value) {
 }
 
 func (e *Env) deleteDynamic(name string) {
-	value.BumpMutationEpoch()
+	e.bumpEpochUnlessNeutral()
 	if idx, ok := e.inlineIndex(name); ok {
 		last := int(e.inlineLen) - 1
 		copy(e.inline[idx:last], e.inline[idx+1:int(e.inlineLen)])
@@ -774,7 +838,7 @@ func (e *Env) dropStatic(name string) {
 	if _, ok := e.statics[name]; !ok {
 		return
 	}
-	value.BumpMutationEpoch()
+	e.bumpEpochUnlessNeutral()
 	delete(e.statics, name)
 	e.staticBytes -= int32(staticEntryBytes(name))
 	if len(e.statics) == 0 {
@@ -786,7 +850,7 @@ func (e *Env) dropArrayAppendBuffer(name string) {
 	if e.arrayAppendBuffers == nil {
 		return
 	}
-	value.BumpMutationEpoch()
+	e.bumpEpochUnlessNeutral()
 	delete(e.arrayAppendBuffers, name)
 	if len(e.arrayAppendBuffers) == 0 {
 		e.arrayAppendBuffers = nil

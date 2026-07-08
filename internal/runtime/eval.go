@@ -1311,9 +1311,18 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 	}
 
 	env := runner.env
+	// Inside an active block-iteration region the block's own scope is walked
+	// fresh on every memory check (see memory_blockregion.go), so its parameter
+	// and local binding writes are epoch-neutral. The flag is set before
+	// resetForReuse and before param binding so both this iteration's reset and
+	// its parameter binds skip the epoch bump that would otherwise invalidate
+	// the memoized prefix every iteration; popEnv clears it when the scope
+	// leaves the stack.
 	if env == nil {
 		env = newBlockAssignmentEnv(runner.blk.Env)
+		env.markRegionNeutral(runner.exec.blockRegionActive)
 	} else {
+		env.markRegionNeutral(runner.exec.blockRegionActive)
 		env.resetForReuse(runner.blk.Env)
 		env.assignBoundary = true
 		env.rebindOuter = true

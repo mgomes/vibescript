@@ -926,6 +926,7 @@ func hashMemberQuery(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				defer exec.beginBlockIterationRegion().end()
 				if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
@@ -1037,6 +1038,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
 				delta := exec.reserveLoopScratch(sortedHashEntryBufferBytes(count))
@@ -1119,6 +1121,7 @@ func hashMemberQuery(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				defer exec.beginBlockIterationRegion().end()
 				if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
@@ -1192,6 +1195,7 @@ func hashMemberQuery(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				defer exec.beginBlockIterationRegion().end()
 				if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
@@ -2398,6 +2402,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				defer exec.beginBlockIterationRegion().end()
 				if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
@@ -2484,6 +2489,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				defer exec.beginBlockIterationRegion().end()
 				if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
@@ -2569,6 +2575,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
 				acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
@@ -2688,6 +2695,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				defer exec.beginBlockIterationRegion().end()
 				acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				out := newTypedResultHash(count)
 				var blockArg [1]Value
@@ -2890,6 +2898,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				defer exec.beginBlockIterationRegion().end()
 				acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				out := newTypedResultHash(count)
 				var blockArg [1]Value

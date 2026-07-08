@@ -225,6 +225,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			left := make([]Value, 0, initialCapacity)
 			right := make([]Value, 0, initialCapacity)
 			leftCap := initialCapacity
@@ -290,6 +291,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if exec.memoryQuota > 0 {
 				keyValueEst = newMemoryEstimator()
 			}
+			defer exec.beginBlockIterationRegion().end()
 			var blockArg [1]Value
 			for _, item := range arr {
 				if err := exec.step(); err != nil {
@@ -378,6 +380,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if exec.memoryQuota > 0 {
 				keyValueEst = newMemoryEstimator()
 			}
+			defer exec.beginBlockIterationRegion().end()
 			var blockArg [1]Value
 			for _, item := range arr {
 				if err := exec.step(); err != nil {
@@ -1016,6 +1019,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
 				if err := exec.step(); err != nil {
@@ -1043,6 +1047,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			var blockArgs [2]Value
 			for i, item := range receiver.Array() {
 				// Charge a step per yield so an empty block body cannot starve
@@ -1175,6 +1180,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			result := make([]Value, len(arr))
 			var blockArg [1]Value
@@ -1213,6 +1219,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			arr := receiver.Array()
 			// map_with_index keeps an arbitrary block result per element, so charge
 			// the growing result incrementally rather than only after the call: a
@@ -1268,6 +1275,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			arr := receiver.Array()
 			// Only reserve a modest initial capacity and let append grow the
 			// backing array as truthy results accumulate. Reserving len(arr) up
@@ -1343,6 +1351,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			out := make([]Value, 0, len(arr))
 			var blockArg [1]Value
 			for _, item := range arr {
@@ -1382,6 +1391,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			out := make([]Value, 0, len(arr))
 			var blockArg [1]Value
 			for _, item := range arr {
@@ -1409,6 +1419,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			arr := receiver.Array()
 			out := make([]Value, 0, len(arr))
 			var blockArg [1]Value
@@ -1441,6 +1452,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			arr := receiver.Array()
 			start := len(arr)
 			var blockArg [1]Value
@@ -1481,6 +1493,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
 				blockArg[0] = item
@@ -1698,6 +1711,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			total := int64(0)
 			var blockArg [1]Value
 			for _, item := range arr {
@@ -2357,6 +2371,7 @@ func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		if err != nil {
 			return NewNil(), err
 		}
+		defer exec.beginBlockIterationRegion().end()
 	}
 
 	arr := receiver.Array()
@@ -2450,6 +2465,7 @@ func arraySum(exec *Execution, receiver Value, args []Value, kwargs map[string]V
 		if err != nil {
 			return NewNil(), err
 		}
+		defer exec.beginBlockIterationRegion().end()
 	}
 
 	arr := receiver.Array()

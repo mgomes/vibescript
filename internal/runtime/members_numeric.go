@@ -142,6 +142,7 @@ func intMemberBuiltin(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			defer exec.beginBlockIterationRegion().end()
 			var blockArg [1]Value
 			for i := range int(count) {
 				blockArg[0] = NewInt(int64(i))
@@ -920,6 +921,7 @@ func intStep(exec *Execution, receiver Value, args []Value, kwargs map[string]Va
 	if err != nil {
 		return NewNil(), err
 	}
+	defer exec.beginBlockIterationRegion().end()
 	current := receiver.Int()
 	var blockArg [1]Value
 	for {

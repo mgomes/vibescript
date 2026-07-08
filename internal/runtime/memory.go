@@ -256,10 +256,15 @@ func (j *estimatorJournal) rollback(est *memoryEstimator, prevFrozen *Env) {
 	}
 }
 
-// clear truncates the journal's records while keeping their backing capacity so
-// a memoized base-walk session can reuse one journal across checks without
-// re-allocating. Pointer-typed records are zeroed first so a rolled-back probe
-// value cannot be retained by the truncated backing array.
+// clear resets the journal to empty while keeping its backing capacity so a
+// memoized base-walk session can reuse one journal across checks without
+// re-allocating. The insertion count and overflow flag are the journal's
+// per-session budget accounting (see record and sessionJournalBudget), so they
+// reset alongside the records: without this the count would accumulate across
+// every check in a call and spuriously trip the limit — permanently disabling
+// the memo for the rest of the call once tripped. Pointer-typed records are
+// zeroed first so a rolled-back probe value cannot be retained by the truncated
+// backing array.
 func (j *estimatorJournal) clear() {
 	clear(j.envs)
 	j.envs = j.envs[:0]
@@ -275,6 +280,8 @@ func (j *estimatorJournal) clear() {
 	j.blocks = j.blocks[:0]
 	clear(j.builtins)
 	j.builtins = j.builtins[:0]
+	j.entries = 0
+	j.overflowed = false
 }
 
 // memoryEstimatorForCheck returns the shared per-execution estimator reset to
@@ -336,8 +343,19 @@ type baseWalkCache struct {
 	journalBudget int
 	epoch         uint64
 	topo          uint64
-	valid         bool
+	// regionBoundary records which walk shape the memoized graphBytes holds: a
+	// block-iteration region's prefix boundary (see memory_blockregion.go), or
+	// noBlockRegion for the ordinary whole-stack walk. A check whose boundary
+	// differs from the cached one re-walks, so the memo never serves a
+	// prefix-only total to a whole-stack check or vice versa.
+	regionBoundary int
+	valid          bool
 }
+
+// noBlockRegion is the regionBoundary sentinel for a memo recorded by an
+// ordinary (non-region) base walk, whose graphBytes covers the entire env
+// stack rather than a block-iteration prefix.
+const noBlockRegion = -1
 
 // releaseBaseWalkCache parks the execution's memo struct in the owning
 // engine's single spare slot once the call that owned it finishes, so the next
@@ -410,6 +428,9 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	globals := taskLazyGlobalsFromContext(exec.Context())
 	scalars := exec.estimateScalarBase()
 	est := &exec.memoryEst
+	if exec.blockRegionBaseWalkEngaged(globals) {
+		return exec.beginRegionBaseWalk(est, scalars)
+	}
 	if exec.builtinDepth > 0 || len(exec.activeTaskGroups) > 0 || globals != nil || baseWalkCacheDisabled.Load() {
 		// The bypass walk clobbers whatever committed state the shared
 		// estimator held, so an existing memo is discarded; a cache that was
@@ -445,10 +466,11 @@ func (exec *Execution) beginBaseWalk() baseWalkSession {
 	// Snapshot the epoch before walking: a bump that lands mid-walk then fails
 	// the equality check on the next session, forcing a conservative re-walk.
 	epoch := value.MutationEpoch()
-	if !c.valid || c.epoch != epoch || c.topo != exec.baseTopoVersion {
+	if !c.valid || c.epoch != epoch || c.topo != exec.baseTopoVersion || c.regionBoundary != noBlockRegion {
 		est.reset()
 		c.epoch = epoch
 		c.topo = exec.baseTopoVersion
+		c.regionBoundary = noBlockRegion
 		c.graphBytes = exec.estimateGraphBaseFast(est, nil)
 		c.journalBudget = sessionJournalBudget(est.identityCount())
 		c.valid = true

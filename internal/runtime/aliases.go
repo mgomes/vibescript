@@ -1068,7 +1068,36 @@ func NewBlock(params []Param, body []Statement, env *Env) Value {
 }
 
 func newBlock(params []Param, implicitParams []string, body []Statement, env *Env) Value {
+	revokeBlockRegionNeutrality(env)
 	return value.NewValue(KindBlock, &Block{Params: params, ImplicitParams: implicitParams, Body: body, Env: env})
+}
+
+// revokeBlockRegionNeutrality strips epoch neutrality from a scope a closure
+// captures, and its enclosing neutral scopes, when the closure is created inside
+// an active block-iteration region (see memory_blockregion.go). A neutral scope
+// is treated as reachable only through the region's active suffix, which every
+// check re-walks fresh — that is what lets its binding writes skip the epoch
+// bump. But a closure over it can escape into the memoized prefix (stored in an
+// outer binding), after which the scope is reachable from the prefix too: the
+// prefix walk folds it into the cached bytes, and the suffix walk then
+// deduplicates it against the prefix instead of re-measuring it, so a later
+// neutral write to its locals would neither bump the prefix memo nor be
+// recharged — undercounting the growth, which on this security boundary is a
+// memory-exhaustion escape. Revoking neutrality at capture makes every later
+// write to the escapable scope bump, so the prefix is invalidated whenever the
+// escaped scope changes. Neutral scopes form a contiguous chain from the
+// captured scope up to the region boundary, so the walk stops at the first
+// non-neutral (prefix) scope; it is a no-op outside a region.
+func revokeBlockRegionNeutrality(env *Env) {
+	for scope := env; scope != nil && scope.epochNeutral; scope = scope.parent {
+		scope.epochNeutral = false
+		// Sticky for the frame's lifetime so a capture during a call frame's
+		// pre-push binding survives both the push (which must not restore the
+		// neutrality just revoked) and the pre-body memory check's push/pop, after
+		// which the same frame is pushed again for the body. Reset per lifetime at
+		// frame acquisition (markRegionNeutral), not at pop.
+		scope.neutralityRevoked = true
+	}
 }
 
 // wrapBlock returns a block Value over an existing *Block, used by the inbound

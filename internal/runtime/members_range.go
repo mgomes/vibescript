@@ -143,6 +143,7 @@ func rangeMemberEach() Value {
 		if err != nil {
 			return NewNil(), err
 		}
+		defer exec.beginBlockIterationRegion().end()
 		var blockArg [1]Value
 		err = exec.rangeForEach(receiver.Range(), func(value int64) (bool, error) {
 			blockArg[0] = NewInt(value)
@@ -192,6 +193,7 @@ func rangeMemberStep() Value {
 		if err != nil {
 			return NewNil(), err
 		}
+		defer exec.beginBlockIterationRegion().end()
 		rng := receiver.Range()
 		if rangeIsOpen(rng) {
 			return NewNil(), rangeOpenIterationError(rng)
@@ -248,6 +250,7 @@ func rangeMemberMap() Value {
 		if err != nil {
 			return NewNil(), err
 		}
+		defer exec.beginBlockIterationRegion().end()
 		acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 		out := make([]Value, 0, rangeBuildInitialCap)
 		var blockArg [1]Value
@@ -328,6 +331,7 @@ func rangeMemberFind() Value {
 		if err != nil {
 			return NewNil(), err
 		}
+		defer exec.beginBlockIterationRegion().end()
 		found := NewNil()
 		var blockArg [1]Value
 		err = exec.rangeForEach(receiver.Range(), func(value int64) (bool, error) {
@@ -366,6 +370,7 @@ func rangeMemberReduce() Value {
 		if err != nil {
 			return NewNil(), err
 		}
+		defer exec.beginBlockIterationRegion().end()
 		acc := NewNil()
 		hasAcc := false
 		if len(args) == 1 {
@@ -425,6 +430,7 @@ func rangeMemberCount() Value {
 		if err != nil {
 			return NewNil(), err
 		}
+		defer exec.beginBlockIterationRegion().end()
 		count := int64(0)
 		var blockArg [1]Value
 		err = exec.rangeForEach(rng, func(value int64) (bool, error) {

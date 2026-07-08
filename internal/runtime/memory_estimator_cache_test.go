@@ -404,6 +404,161 @@ def run()
   b.payload = %q
   %q
 end`, payloadA, peak)
+
+	// Block-iteration region battery (see memory_blockregion.go). Each script
+	// runs a block-driving builtin whose block body BOTH mutates state and
+	// allocates the peak literal, so the peak's per-statement check runs on the
+	// region base walk while a memoized prefix is live. A region that wrongly
+	// suppressed the epoch bump for a write that escaped the block — an
+	// outer-variable rebind, or a mutation of a prefix-reachable container —
+	// would leave that prefix stale, shifting the memoized threshold below the
+	// unmemoized run's and failing here. Writes confined to the block's own
+	// scope are re-walked fresh every check, so they must NOT drift either.
+	//
+	// The peak sits inside the block, unlike the mutator battery above, because
+	// the region base walk is engaged only while a block body drives the check.
+	regionPeak := strings.Repeat("z", 3000)
+	regionScripts := map[string]string{
+		// Cumulatively grow an outer local from inside the block: resolves up the
+		// parent chain to a prefix scope, which must bump so each later iteration's
+		// checks see the grown binding. Cumulative growth (not a constant rebind)
+		// makes a stale prefix detectably wrong: iteration k's correct prefix is
+		// strictly larger than iteration k-1's.
+		"region_each_outer_rebind": fmt.Sprintf(`def run()
+  acc = "seed"
+  [1, 2, 3, 4].each do |v|
+    acc = acc + %q
+    %q
+  end
+end`, payloadA, regionPeak),
+		// Mutate an outer array captured by the block: the append goes through the
+		// value package and must bump the prefix memo.
+		"region_each_outer_push": fmt.Sprintf(`def run()
+  buf = []
+  [1, 2, 3, 4].each do |v|
+    buf.push(%q)
+    %q
+  end
+end`, payloadA, regionPeak),
+		// Grow a block-local each iteration: confined to the block scope, which the
+		// region re-walks fresh, so the estimate must track it without any bump.
+		"region_each_block_local": fmt.Sprintf(`def run()
+  [1, 2, 3, 4].each do |v|
+    local = %q
+    %q
+  end
+end`, payloadA, regionPeak),
+		// map building a result while the block body allocates a peak transient.
+		"region_map_peak": fmt.Sprintf(`def run()
+  [1, 2, 3, 4].map do |v|
+    tmp = %q
+    %q
+  end
+end`, payloadA, regionPeak),
+		// select filtering while the block allocates and reads an outer.
+		"region_select_outer": fmt.Sprintf(`def run()
+  outer = %q
+  [1, 2, 3, 4].select do |v|
+    combined = outer + %q
+    combined.size > 0
+  end
+end`, payloadA, regionPeak),
+		// reduce whose block cumulatively grows an outer alongside the accumulator.
+		"region_reduce_outer_rebind": fmt.Sprintf(`def run()
+  side = "s"
+  [1, 2, 3, 4].reduce(0) do |accum, v|
+    side = side + %q
+    accum + v
+  end
+  %q
+end`, payloadA, regionPeak),
+		// Nested regions: a map inside an each, mutating an outer from the inner
+		// block. The inner region's suffix must re-walk while the outer prefix
+		// (including the outer collection) stays memoized.
+		"region_nested_map_in_each": fmt.Sprintf(`def run()
+  sink = []
+  [[1, 2], [3, 4]].each do |row|
+    row.map do |v|
+      sink.push(%q)
+      %q
+    end
+  end
+end`, payloadA, regionPeak),
+		// group_by whose block cumulatively grows an outer var while keying.
+		"region_group_by_outer": fmt.Sprintf(`def run()
+  tag = "t"
+  [1, 2, 3, 4, 5, 6].group_by do |v|
+    tag = tag + %q
+    v %% 2
+  end
+  tag.size
+end`, payloadA),
+		// hash.each mutating an outer collection from the block body.
+		"region_hash_each_outer_push": fmt.Sprintf(`def run()
+  buf = []
+  {a: 1, b: 2, c: 3}.each do |k, v|
+    buf.push(%q)
+    %q
+  end
+end`, payloadA, regionPeak),
+		// Block body calls a script helper that cumulatively grows an outer local.
+		// The helper's call frame is pushed inside the region, so acquireCallEnv
+		// must mark it epoch-neutral before its pre-push argument binding; a peak
+		// check follows so a stale prefix (or an undercharged grow) drifts the
+		// threshold.
+		"region_each_calls_helper": fmt.Sprintf(`def grow(acc)
+  acc + %q
+end
+
+def run()
+  acc = "seed"
+  [1, 2, 3, 4].each do |v|
+    acc = grow(acc)
+    %q
+  end
+end`, payloadA, regionPeak),
+		// A closure created in the block body captures the block scope and escapes
+		// into an outer (prefix) binding, then a block-local it closes over grows.
+		// Once the scope is reachable from the memoized prefix its later writes must
+		// still be charged; if capture failed to revoke the scope's epoch neutrality
+		// the suffix walk would deduplicate it against the prefix and miss the
+		// growth, undercounting here.
+		"region_each_escaping_closure": fmt.Sprintf(`def run()
+  holder = nil
+  [1, 2, 3, 4].each do |v|
+    x = "s"
+    holder = -> { x }
+    x = %q
+    %q
+  end
+  holder.call.size
+end`, payloadA, regionPeak),
+		// A helper called from the block binds a closure default that captures the
+		// helper's own call frame during pre-push argument binding, then escapes it
+		// into an outer (prefix) array before growing another frame local. The
+		// capture must revoke the frame's neutrality AND survive the push: if
+		// pushEnv re-neutralized the frame after the pre-push revocation, the later
+		// local growth would skip its epoch bump while the frame is reachable from
+		// the memoized prefix, so the suffix walk would deduplicate it and miss the
+		// growth — undercounting here.
+		"region_helper_closure_default_escape": fmt.Sprintf(`def helper(sink, seed, f = -> { seed })
+  sink.push(f)
+  grown = seed + %q
+  %q
+end
+
+def run()
+  sink = []
+  [1, 2, 3, 4].each do |v|
+    helper(sink, "seed")
+    %q
+  end
+  sink.size
+end`, payloadA, regionPeak, regionPeak),
+	}
+	for name, source := range regionScripts {
+		scripts[name] = source
+	}
 	return scripts
 }()
 
