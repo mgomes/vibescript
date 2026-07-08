@@ -1,9 +1,12 @@
 package runtime
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unsafe"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 func TestMemoryEstimatorLayoutConstantsMatchRuntimeTypes(t *testing.T) {
@@ -132,6 +135,52 @@ func TestMemoryEstimatorChargesStoredTypedHashArrayLookupKey(t *testing.T) {
 
 	if got := newMemoryEstimator().typedHashEntriesBytes(hash); got < wantStoredPayload {
 		t.Fatalf("typed hash entry estimate = %d, want at least stored lookup payload %d", got, wantStoredPayload)
+	}
+}
+
+// TestMemoryEstimatorLargeTypedHashMatchesMaterializedSum locks the in-place
+// visitor path typedHashEntriesBytes takes for a hash larger than the small-hash
+// stack buffer. The visitor avoids allocating an O(entries) slice per check, and
+// its per-entry charge must stay byte-identical to summing the materialized
+// entries directly (the small-hash path). A hash with more than
+// smallHashKeyBufferSize entries exercises the visitor branch.
+func TestMemoryEstimatorLargeTypedHashMatchesMaterializedSum(t *testing.T) {
+	t.Parallel()
+
+	const entryCount = smallHashKeyBufferSize + 8
+	hash := NewTypedHash(entryCount)
+	for i := range entryCount {
+		if err := hashSet(hash, NewString(fmt.Sprintf("key-%02d", i)), NewInt(int64(i))); err != nil {
+			t.Fatalf("hashSet(%d) error = %v", i, err)
+		}
+	}
+
+	got := newMemoryEstimator().typedHashEntriesBytes(hash)
+
+	// Independently sum the charge over every materialized entry plus the
+	// capacity and insertion-order overhead, exactly as the small-hash path
+	// does. The visitor path must agree.
+	entries := hash.TypedHashEntriesInto(nil)
+	if len(entries) != entryCount {
+		t.Fatalf("materialized %d entries, want %d", len(entries), entryCount)
+	}
+	est := newMemoryEstimator()
+	want := estimatedMapBaseBytes
+	for _, entry := range entries {
+		want += estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes
+		want += entry.LookupKey.ExtraPayloadBytes()
+		want += est.valuePayload(entry.Entry.Key)
+		want += est.valuePayload(entry.Entry.Value)
+	}
+	if capacity := value.HashTypedEntryCapacity(hash); capacity > len(entries) {
+		want += (capacity - len(entries)) * (estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes)
+	}
+	if orderCap := value.HashOrderCapacity(hash); orderCap > 0 {
+		want += estimatedSliceBaseBytes + orderCap*estimatedHashLookupKeyBytes
+	}
+
+	if got != want {
+		t.Fatalf("large typed hash estimate = %d, want %d (materialized per-entry sum)", got, want)
 	}
 }
 

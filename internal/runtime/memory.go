@@ -2886,17 +2886,45 @@ func (est *memoryEstimator) typedHashEntriesBytes(val Value) int {
 		return 0
 	}
 
-	var entryBuf [smallHashKeyBufferSize]TypedHashEntry
-	entries := val.TypedHashEntriesInto(entryBuf[:])
+	// The two branches charge every entry identically and differ only in how the
+	// entries are traversed; keep the per-entry charge in sync when editing. The
+	// branch keys on capacity (already needed below), which bounds the entry
+	// count, so a hash that fits the stack buffer takes the direct path and no
+	// extra size query is issued beyond what the unbranched walk already made.
 	size := estimatedMapBaseBytes
-	for _, entry := range entries {
-		size = saturatingAdd(size, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
-		size = saturatingAdd(size, entry.LookupKey.ExtraPayloadBytes())
-		size = saturatingAdd(size, est.valuePayload(entry.Entry.Key))
-		size = saturatingAdd(size, est.valuePayload(entry.Entry.Value))
+	capacity := value.HashTypedEntryCapacity(val)
+	count := 0
+	if capacity <= smallHashKeyBufferSize {
+		// A small hash fits a stack buffer, so materialize and iterate it
+		// directly with no allocation. This is the hot path for the frequently
+		// rewalked low-cardinality hashes typical of group_by/partition results,
+		// and the inlined loop stays cheaper than an indirect per-entry call.
+		var entryBuf [smallHashKeyBufferSize]TypedHashEntry
+		entries := val.TypedHashEntriesInto(entryBuf[:])
+		count = len(entries)
+		for _, entry := range entries {
+			size = saturatingAdd(size, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
+			size = saturatingAdd(size, entry.LookupKey.ExtraPayloadBytes())
+			size = saturatingAdd(size, est.valuePayload(entry.Entry.Key))
+			size = saturatingAdd(size, est.valuePayload(entry.Entry.Value))
+		}
+	} else {
+		// A large hash would force TypedHashEntriesInto to allocate an
+		// O(entries) slice, and this walk runs on every memory check while the
+		// hash is reachable, so a large hash under a positive quota paid that
+		// allocation per check. Walk it in place instead. The visitor keeps its
+		// accumulator on the stack, which stays correct under the valuePayload
+		// recursion that a hash-of-hashes triggers.
+		val.RangeTypedHashEntries(func(lookupKey HashLookupKey, entry HashEntry) {
+			count++
+			size = saturatingAdd(size, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
+			size = saturatingAdd(size, lookupKey.ExtraPayloadBytes())
+			size = saturatingAdd(size, est.valuePayload(entry.Key))
+			size = saturatingAdd(size, est.valuePayload(entry.Value))
+		})
 	}
-	if capacity := value.HashTypedEntryCapacity(val); capacity > len(entries) {
-		extraSlots := capacity - len(entries)
+	if capacity > count {
+		extraSlots := capacity - count
 		extraSlotBytes := estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes
 		size = saturatingAdd(size, saturatingMul(extraSlots, extraSlotBytes))
 	}
