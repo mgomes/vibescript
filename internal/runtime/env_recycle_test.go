@@ -393,6 +393,33 @@ c.value`,
 			want: 44850,
 		},
 		{
+			// Ivar-assignment parameters (`def initialize(@x)`) bind through the
+			// param Target, which the body walk never sees. The frame is still
+			// reuse-eligible (assigning an ivar does not capture), and heavy
+			// construction cycles the pool.
+			name: "ivar_params",
+			source: `
+class Point
+  property x
+  property y
+  def initialize(@x, @y)
+  end
+  def dist_sq
+    @x * @x + @y * @y
+  end
+end
+total = 0
+i = 0
+while i < 200
+  p = Point.new(i, i + 1)
+  total = total + p.dist_sq
+  i = i + 1
+end
+total`,
+			// sum over i in 0..199 of (i^2 + (i+1)^2).
+			want: 5333400,
+		},
+		{
 			// Recursion whose body passes a block to a method (a capture): the
 			// function is NOT reuse-eligible, verifying the analysis excludes it
 			// while still producing the right answer.
