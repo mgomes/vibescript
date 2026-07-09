@@ -451,6 +451,45 @@ end
 `))
 }
 
+func TestCheckInferEscapedNestedContainerPoisonsRoot(t *testing.T) {
+	t.Parallel()
+
+	// Passing a nested container by reference lets the callee mutate it, so
+	// the root's field facts stop holding.
+	requireNoCheckWarnings(t, compileScript(t, `
+def mutate(profile)
+  profile["name"] = 1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(user: { profile: { name: string } })
+  mutate(user["profile"])
+  takes_int(user["profile"]["name"])
+end
+`))
+
+	// A projected scalar cannot be mutated in place, so the root keeps its
+	// facts and the boundary check still fires.
+	script := compileScript(t, `
+def consume(value)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string })
+  consume(user["name"])
+  takes_int(user["name"])
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+}
+
 func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
 	t.Parallel()
 

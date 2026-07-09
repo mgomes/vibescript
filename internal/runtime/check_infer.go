@@ -674,17 +674,26 @@ func (c *scriptChecker) checkUnaryOperandTypes(function string, expr *UnaryExpr)
 
 // poisonEscapedIdentifier drops tracking for a mutable container local whose
 // value escapes into code the checker cannot follow: a member call that may
-// mutate it in place, or a by-reference argument position.
+// mutate it in place, or a by-reference argument position. An indexed or
+// member projection (user["profile"]) escapes the root's interior, so the
+// root local is poisoned too whenever the projected value may itself be a
+// mutable container.
 func (c *scriptChecker) poisonEscapedIdentifier(expr Expression) {
-	ident, ok := expr.(*Identifier)
+	name, ok := rootIdentifierName(expr)
 	if !ok {
 		return
 	}
-	ty := c.localTypeFor(ident.Name)
-	if ty == nil || !typeExprHasContainerArm(ty) {
+	rootType := c.localTypeFor(name)
+	if rootType == nil || !typeExprHasContainerArm(rootType) {
 		return
 	}
-	c.poisonLocalType(ident.Name)
+	if _, isIdent := expr.(*Identifier); !isIdent {
+		projected := c.inferExpressionType(expr)
+		if projected != nil && !typeExprHasContainerArm(projected) {
+			return
+		}
+	}
+	c.poisonLocalType(name)
 }
 
 func typeExprHasContainerArm(ty *TypeExpr) bool {
