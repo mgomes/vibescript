@@ -401,7 +401,7 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 	case *HashLiteral:
 		return c.inferHashLiteralType(typed)
 	case *ShapeLiteral:
-		return nil
+		return shapeValueType(typed.Type)
 	case *BlockLiteral:
 		return checkTypeFunction
 	case *Identifier:
@@ -529,8 +529,33 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 		if shape, ok := call.Args[1].(*ShapeLiteral); ok {
 			return shape.Type
 		}
+		if shape, ok := shapeValuePayload(c.inferExpressionType(call.Args[1])); ok {
+			return shape
+		}
 	}
 	return nil
+}
+
+// shapeValueMarkerName tags the synthetic type that carries a first-class
+// shape value through the local type environment.
+const shapeValueMarkerName = "shape"
+
+// shapeValueType wraps a shape used as a first-class value so the fact can
+// flow through locals into JSON.parse_as (schema = { ... } then
+// JSON.parse_as(raw, schema)). Kind TypeUnknown keeps the marker inert
+// everywhere else: unknowns never participate in contradictions or operand
+// checks, so only the parse_as resolution above looks inside. The parser
+// never produces this spelling — an annotation naming an unknown type
+// resolves to TypeEnum, not TypeUnknown.
+func shapeValueType(shape *TypeExpr) *TypeExpr {
+	return &TypeExpr{Kind: TypeUnknown, Name: shapeValueMarkerName, TypeArgs: []*TypeExpr{shape}}
+}
+
+func shapeValuePayload(ty *TypeExpr) (*TypeExpr, bool) {
+	if ty == nil || ty.Kind != TypeUnknown || ty.Name != shapeValueMarkerName || len(ty.TypeArgs) != 1 {
+		return nil, false
+	}
+	return ty.TypeArgs[0], true
 }
 
 // inferIndexExprType propagates field-level facts out of shape-typed values:

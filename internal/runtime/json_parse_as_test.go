@@ -184,6 +184,26 @@ end
 `))
 }
 
+func TestCheckInferJSONParseAsShapeThroughLocal(t *testing.T) {
+	t.Parallel()
+
+	// A shape stored in a local keeps the static checking promise: the
+	// parse_as result is still typed as the schema.
+	script := compileScript(t, `
+def create_user(name: string)
+  name
+end
+
+def run(raw: string)
+  schema = { name: string, age: int }
+  body = JSON.parse_as(raw, schema)
+  create_user(body["age"])
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to create_user argument name expected string, got int")
+}
+
 func TestCheckJSONParseAsArity(t *testing.T) {
 	t.Parallel()
 
