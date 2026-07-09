@@ -60,9 +60,10 @@ Each execution runs under three quotas set on `Config`: `StepQuota` (aborts
 runaway loops), `MemoryQuotaBytes` (bounds retained heap, enforced by the
 reachable-graph accounting), and `RecursionLimit` (bounds call depth). For each
 field a **positive** value is an explicit limit, `vibes.Unlimited` disables that
-quota, and a **zero** value selects the engine's conservative built-in default
-(50,000 steps / 64 KiB / 64). An unlimited memory quota skips the accounting
-walk entirely.
+quota, and a **zero** value selects the engine's conservative built-in default —
+the `low` profile (1,000,000 steps / 16 MiB / 256), so `low` is the reproducible
+name for the default sandbox budget. An unlimited memory quota skips the
+accounting walk entirely.
 
 Rather than tune the three fields by hand, select a coherent bundle with a named
 profile:

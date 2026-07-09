@@ -17,10 +17,16 @@ const (
 	defaultMaxSourceBytes     = 1 << 20
 	defaultTaskConcurrency    = 4
 	defaultMaxTaskConcurrency = 64
+)
 
-	defaultStepQuota        = 50_000
-	defaultMemoryQuotaBytes = 64 * 1024
-	defaultRecursionLimit   = 64
+// The zero-value Config quota default is the low profile: an embedder that sets
+// no step, memory, or recursion quota gets the lowest named sandbox budget — a
+// conservative, coherent floor rather than a hand-tuned trio. Deriving these
+// from ProfileLow keeps the default and the profile in lockstep.
+var (
+	defaultStepQuota        = ProfileLow.StepQuota
+	defaultMemoryQuotaBytes = ProfileLow.MemoryQuotaBytes
+	defaultRecursionLimit   = ProfileLow.RecursionLimit
 )
 
 // Unlimited disables a quota when supplied as a Config quota value

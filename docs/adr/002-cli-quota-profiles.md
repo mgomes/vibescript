@@ -16,6 +16,10 @@ and the REPL) will default to `xhigh` — unlimited steps and memory — so it r
 the developer's own scripts like a normal interpreter. No profile leaves
 recursion uncapped: even `xhigh` keeps a finite recursion limit.
 
+The zero-value `Config` default resolves to the `low` profile, so an embedder
+that sets no quotas gets the bottom rung of the ladder as its budget, and `low`
+is the reproducible name for the default embedding sandbox.
+
 ## Context
 
 The embedding `Config` exposes the three quotas as independent integer knobs.
@@ -27,15 +31,15 @@ but bounded" run has to pick three correlated numbers, and a mismatched trio
 vocabulary for "a normal sandbox budget" versus "run it wide open."
 
 Second, zero was overloaded. A zero quota means "use the engine's conservative
-built-in default" (50,000 steps / 64 KiB / 64 recursion) — the safe posture for
-an untrusted embedding. That left no way to express "explicitly unbounded." A
-host could only tighten a ceiling, never lift one.
+built-in default" — the `low` profile (1,000,000 steps / 16 MiB / 256
+recursion), the lowest named sandbox budget. That left no way to express
+"explicitly unbounded." A host could only tighten a ceiling, never lift one.
 
 Those defaults are correct for an embedded sandbox but wrong for the CLI. The
 CLI runs the developer's own scripts on the developer's own machine; it is not a
 sandbox. CPU-heavy scripts — deep recursion, long loops, `fib(35)` — tripped the
-small embedding defaults out of the box, which is a poor first-run experience for
-a tool that is supposed to just run your code.
+bounded embedding defaults out of the box, which is a poor first-run experience
+for a tool that is supposed to just run your code.
 
 ## API Shape
 
@@ -102,17 +106,23 @@ derive from it, so the ladder and its lookups cannot drift.
   must be reproducible across machines.
 - Profiles do not touch non-quota `Config` fields (module policy, strict
   effects, source-size limits); `ApplyTo` writes only the three quota fields.
-- No change to the conservative embedding default: an unset `Config` quota still
-  selects the safe built-in default, so embedders are unaffected unless they opt
-  into a profile.
+- Profiles do not silently override a host's explicit quotas: an embedder that
+  sets `StepQuota`/`MemoryQuotaBytes`/`RecursionLimit` keeps those values.
+  Selecting or applying a profile is opt-in; only an unset (zero) quota resolves
+  to the default budget (the `low` profile — see Decision).
 
 ## Consequences
 
-The CLI runs CPU-heavy scripts out of the box while embedders keep a safe,
-conservative default. A host now has a short vocabulary — `low`/`medium`/`high`/
-`xhigh` — for a coherent budget, plus the ability to lift a ceiling, not only
-tighten it. Adding a profile or tuning its values is a one-line change in a
-single slice.
+The CLI runs CPU-heavy scripts out of the box while embedders get a safe,
+conservative default — the `low` profile. A host now has a short vocabulary —
+`low`/`medium`/`high`/`xhigh` — for a coherent budget, plus the ability to lift a
+ceiling, not only tighten it. Adding a profile or tuning its values is a one-line
+change in a single slice.
+
+Because the zero-value default was raised to the `low` profile, a host that
+relied on the previous tighter default (50,000 steps / 64 KiB / 64 recursion)
+must now set those quotas explicitly; the migration is a one-line `Config` change
+or a lower explicit value.
 
 The main tradeoff is that `xhigh` disables memory accounting, so the default CLI
 run does not enforce the memory boundary. This is documented and intentional,
