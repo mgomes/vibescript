@@ -19,8 +19,13 @@ coverage.out
 .DS_Store
 .idea/
 .vscode/
+.zed/
 *.swp
 *.swo
+
+# Local tool state (Claude Code)
+.claude/settings.local.json
+.claude/*.lock
 
 # Local binaries
 /vibes-cli
