@@ -61,6 +61,10 @@ const (
 	KindInstance
 	// KindRegex tags a compiled regex literal payload (Regex).
 	KindRegex
+	// KindShape tags a shape type used as a first-class value (the shape
+	// argument of JSON.parse_as). The concrete payload type lives in the
+	// runtime.
+	KindShape
 )
 
 // Value is a tagged union holding any Vibescript runtime value.

@@ -404,7 +404,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromClassBody(body []Stateme
 
 func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expression) {
 	switch typed := expr.(type) {
-	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
 		return
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
@@ -1964,7 +1964,7 @@ func (c *scriptChecker) checkExpression(function string, expr Expression) {
 
 func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression, autoCall bool) {
 	switch typed := expr.(type) {
-	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
 		return
 	case *Identifier:
 		c.checkIdentifierResolved(function, typed)
@@ -2466,7 +2466,7 @@ func expressionMayEscapeIteration(expr Expression) bool {
 	case nil:
 		return false
 	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral,
-		*BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+		*BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
 		// Leaves: no nested expressions that could escape.
 		return false
 	case *DestructureTarget:
@@ -2821,7 +2821,7 @@ func (c *scriptChecker) statementMayEvaluateCallBlock(stmt Statement, seen map[*
 
 func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map[*ScriptFunction]struct{}) bool {
 	switch typed := expr.(type) {
-	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
 		return false
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
@@ -3993,6 +3993,7 @@ var staticBuiltinSpecs = map[string]staticCallSpec{
 	"uuid":              {minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true},
 	"random_id":         {minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
 	"JSON.parse":        {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
+	"JSON.parse_as":     {minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true},
 	"JSON.stringify":    {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
 	"Regex.match":       {minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true},
 	"Regex.replace":     {minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true},

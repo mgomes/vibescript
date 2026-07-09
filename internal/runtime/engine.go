@@ -565,6 +565,7 @@ func (e *Engine) MaxSourceBytes() int {
 func registerDataBuiltins(engine *Engine) {
 	engine.builtins["JSON"] = NewObject(map[string]Value{
 		"parse":     NewBuiltin("JSON.parse", builtinJSONParse),
+		"parse_as":  NewBuiltin("JSON.parse_as", builtinJSONParseAs),
 		"stringify": NewBuiltin("JSON.stringify", builtinJSONStringify),
 	})
 	engine.builtins["Proc"] = NewObject(map[string]Value{

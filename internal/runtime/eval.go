@@ -106,6 +106,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalArrayLiteral(e, env)
 	case *HashLiteral:
 		return exec.evalHashLiteral(e, env)
+	case *ShapeLiteral:
+		return NewShape(e.Type), nil
 	case *SplatArg:
 		return NewNil(), exec.errorAt(e.Pos(), "splat argument is only allowed in call arguments")
 	case *UnaryExpr:
@@ -1755,7 +1757,7 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		return false
 	case *BlockLiteral:
 		return true
-	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
 		return false
 	case *ArrayLiteral:
 		for _, elem := range e.Elements {

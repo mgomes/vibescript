@@ -148,7 +148,7 @@ func (c *symbolLiteralCollector) collectStatement(stmt Statement) {
 
 func (c *symbolLiteralCollector) collectExpression(expr Expression) {
 	switch typed := expr.(type) {
-	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral, *BoolLiteral, *NilLiteral, *IvarExpr, *ClassVarExpr:
+	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral, *BoolLiteral, *NilLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
 		return
 	case *SymbolLiteral:
 		c.add(typed)

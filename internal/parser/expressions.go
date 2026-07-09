@@ -1763,6 +1763,9 @@ func (p *parser) parseArrayLiteral() ast.Expression {
 }
 
 func (p *parser) parseHashLiteral() ast.Expression {
+	if shape, ok := p.tryParseShapeLiteral(); ok {
+		return shape
+	}
 	p.groupDepth++
 	defer func() { p.groupDepth-- }()
 	pos := p.curToken.Pos
@@ -1798,6 +1801,68 @@ func (p *parser) parseHashLiteral() ast.Expression {
 	}
 
 	return &ast.HashLiteral{Pairs: pairs, Position: pos}
+}
+
+// tryParseShapeLiteral speculatively parses a braced group in expression
+// position as a shape literal (ADR-004: shapes become legal in expression
+// position, e.g. JSON.parse_as(raw, { name: string })). The group is a shape
+// only when it parses cleanly under the type grammar, every named leaf
+// resolves to a built-in type, no field names a local value, and none of the
+// hash-default degeneracies apply; anything else restores the parser and
+// parses as a hash literal. Requiring built-in leaves keeps hashes with
+// identifier values (`{ status: pending }`) on the value path, so their
+// undefined-name diagnostics are unchanged, and it makes every accepted
+// shape resolvable without an environment. Nullable outer shapes are
+// rejected so `{ ... }?` never swallows the `?` of a ternary.
+func (p *parser) tryParseShapeLiteral() (ast.Expression, bool) {
+	if p.peekToken.Type == ast.TokenRBrace {
+		return nil, false
+	}
+
+	saved := p.snapshot()
+	pos := p.curToken.Pos
+	shape := p.parseTypeShape()
+	if shape == nil || shape.Kind != ast.TypeShape || shape.Nullable ||
+		len(p.errors) != saved.errorCount ||
+		p.peekToken.Type == ast.TokenQuestion ||
+		shapeHasDegenerateNilField(shape) ||
+		shapeHasEmptyNestedShape(shape) ||
+		p.shapeFieldNamesLocalValue(shape) ||
+		!shapeLeafTypesAllBuiltin(shape) {
+		p.restore(saved)
+		return nil, false
+	}
+	shape.Position = pos
+	return &ast.ShapeLiteral{Type: shape, Position: pos}, true
+}
+
+// shapeLeafTypesAllBuiltin reports whether every named leaf of the type
+// resolves to a built-in type. A leaf left as an enum or unknown type names
+// an identifier the expression grammar should treat as a value reference.
+func shapeLeafTypesAllBuiltin(ty *ast.TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	switch ty.Kind {
+	case ast.TypeEnum, ast.TypeUnknown:
+		return false
+	}
+	for _, option := range ty.Union {
+		if !shapeLeafTypesAllBuiltin(option) {
+			return false
+		}
+	}
+	for _, arg := range ty.TypeArgs {
+		if !shapeLeafTypesAllBuiltin(arg) {
+			return false
+		}
+	}
+	for _, field := range ty.Shape {
+		if !shapeLeafTypesAllBuiltin(field) {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *parser) parseHashPair() ast.HashPair {

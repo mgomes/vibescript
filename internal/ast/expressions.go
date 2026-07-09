@@ -407,3 +407,14 @@ type InterpolatedSymbol struct {
 
 func (s *InterpolatedSymbol) exprNode()     {}
 func (s *InterpolatedSymbol) Pos() Position { return s.Position }
+
+// ShapeLiteral represents a shape type in expression position, such as the
+// shape argument of JSON.parse_as (ADR-004). The payload reuses the
+// annotation TypeExpr representation and always has Kind TypeShape.
+type ShapeLiteral struct {
+	Type     *TypeExpr
+	Position Position
+}
+
+func (s *ShapeLiteral) exprNode()     {}
+func (s *ShapeLiteral) Pos() Position { return s.Position }

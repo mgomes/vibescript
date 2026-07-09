@@ -57,6 +57,8 @@ func (k ValueKind) String() string {
 		return "instance"
 	case KindRegex:
 		return "regex"
+	case KindShape:
+		return "shape"
 	default:
 		return fmt.Sprintf("kind(%d)", int(k))
 	}

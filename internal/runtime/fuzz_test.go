@@ -1219,7 +1219,7 @@ func validateFuzzExpression(context string, expr Expression) error {
 			return fmt.Errorf("%s identifier name is empty", context)
 		}
 		return nil
-	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *RegexLiteral:
+	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *RegexLiteral, *ShapeLiteral:
 		return nil
 	case *SymbolLiteral:
 		// The quoted form :"" is a legal empty symbol, matching Ruby, so an

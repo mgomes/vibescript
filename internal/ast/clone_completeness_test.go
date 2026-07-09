@@ -79,6 +79,7 @@ func clonePrototypes() []Node {
 		&YieldExpr{},
 		&InterpolatedString{},
 		&InterpolatedSymbol{},
+		&ShapeLiteral{},
 	}
 }
 

@@ -392,6 +392,8 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		return checkTypeArray
 	case *HashLiteral:
 		return c.inferHashLiteralType(typed)
+	case *ShapeLiteral:
+		return nil
 	case *BlockLiteral:
 		return checkTypeFunction
 	case *Identifier:
@@ -498,25 +500,29 @@ func (c *scriptChecker) inferUnaryExprType(expr *UnaryExpr) *TypeExpr {
 }
 
 // inferCallExprType exposes a known callee's annotated return type to the
-// caller. Safe navigation, splats, constructors, and builtins stay unknown.
+// caller. Safe navigation, splats, and constructors stay unknown. Among
+// builtins the checker models only JSON.parse_as, whose result is the
+// validated shape (ADR-004).
 func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 	if member, ok := call.Callee.(*MemberExpr); ok && member.Safe {
 		return nil
 	}
-	if ty, ok := c.inferBuiltinCallType(call); ok {
-		return ty
-	}
 	target, ok := c.resolveCallable(call)
-	if !ok || target.fn == nil || target.constructor {
+	if !ok || callExpandsArguments(call) {
 		return nil
 	}
-	return target.fn.ReturnTy
-}
-
-// inferBuiltinCallType covers builtins whose result type the checker models.
-// It currently only knows JSON.parse_as, whose result is the validated shape.
-func (c *scriptChecker) inferBuiltinCallType(call *CallExpr) (*TypeExpr, bool) {
-	return nil, false
+	if target.fn != nil {
+		if target.constructor {
+			return nil
+		}
+		return target.fn.ReturnTy
+	}
+	if target.name == "JSON.parse_as" && len(call.Args) == 2 {
+		if shape, ok := call.Args[1].(*ShapeLiteral); ok {
+			return shape.Type
+		}
+	}
+	return nil
 }
 
 // inferIndexExprType propagates field-level facts out of shape-typed values:

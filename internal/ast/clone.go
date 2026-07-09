@@ -432,6 +432,10 @@ func cloneExpression(expr Expression) Expression {
 		clone := *e
 		clone.Parts = cloneStringParts(e.Parts)
 		return &clone
+	case *ShapeLiteral:
+		clone := *e
+		clone.Type = CloneTypeExpr(e.Type)
+		return &clone
 	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
 		return cloneStatement(e.(Statement)).(Expression)
 	default:
