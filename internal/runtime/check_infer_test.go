@@ -324,6 +324,37 @@ end
 	requireCheckWarningContains(t, condition, "unsupported comparison operands nil and int")
 }
 
+func TestCheckInferDeferredEnsureReturnsUseBranchTypes(t *testing.T) {
+	t.Parallel()
+
+	// A return value is evaluated before the ensure runs, so the deferred
+	// re-walk must not see the ensure's reassignments.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run -> int
+  begin
+    x = 1
+    return x
+  ensure
+    x = "cleanup"
+  end
+end
+`))
+
+	// The inverse still errors: the branch's own type contradicts the
+	// annotated return even though the ensure would retype it.
+	script := compileScript(t, `
+def run -> int
+  begin
+    x = "value"
+    return x
+  ensure
+    x = 1
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "return value expected int, got string")
+}
+
 func TestCheckInferForLoopElementTypes(t *testing.T) {
 	t.Parallel()
 

@@ -1783,6 +1783,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if deferReturnType && blockMayReturn(typed.Body) {
 			deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
 				runtimeState: c.snapshotRuntimeState(),
+				scopeState:   c.snapshotScopeState(),
 				statements:   typed.Body,
 			})
 		}
@@ -1791,6 +1792,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			if deferReturnType && blockMayReturn(typed.Else) {
 				deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
 					runtimeState: c.snapshotRuntimeState(),
+					scopeState:   c.snapshotScopeState(),
 					statements:   typed.Else,
 				})
 			}
@@ -1834,6 +1836,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			if deferReturnType && blockMayReturn(clause.Body) {
 				deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
 					runtimeState: c.snapshotRuntimeState(),
+					scopeState:   c.snapshotScopeState(),
 					statements:   clause.Body,
 				})
 			}
@@ -1862,6 +1865,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 
 type deferredReturnCheck struct {
 	runtimeState checkRuntimeState
+	scopeState   checkScopeState
 	statements   []Statement
 }
 
@@ -1875,6 +1879,10 @@ func (c *scriptChecker) checkDeferredReturnsAfterEnsure(function string, returnT
 
 	for _, check := range checks {
 		c.restoreRuntimeState(check.runtimeState)
+		// A deferred return expression evaluated before the ensure ran, so
+		// its inferred types come from the branch's own snapshot, not from
+		// whatever the ensure walk left behind.
+		c.restoreScopeState(check.scopeState)
 		c.withSuppressedWarnings(func() {
 			c.withRuntimeModuleCollection(func() {
 				c.collectRequiredModuleExportsFromStatements(ensure)
