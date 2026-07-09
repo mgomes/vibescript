@@ -141,6 +141,33 @@ jobs:
       - name: Run goroutine leak profile
         run: GOEXPERIMENT=goroutineleakprofile go test ./internal/runtime
 
+  estimator-oracle:
+    # The memory-quota estimator is a sandboxing boundary: an under-count is a
+    # memory-exhaustion escape. Its incremental optimizations (base-walk memo,
+    # dormant frames, block-iteration region) ship always-on and must be
+    # byte-identical to the exact reference walk. This job runs the runtime suite
+    # (which replays the committed fuzz corpus and the differential battery) with
+    # the per-check differential oracle and env-recycle poison enabled, so any
+    # regression that under-counts or misuses a recycled frame fails the PR.
+    runs-on: ubuntu-latest
+    env:
+      VIBES_ESTIMATOR_VERIFY: "1"
+      VIBES_ENV_RECYCLE_VERIFY: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Runtime suite under estimator oracle + env-recycle poison
+        run: go test -timeout 20m ./internal/runtime -count=1
+
+      - name: Oracle fuzz gate (estimator-exercising target)
+        run: go test ./internal/runtime -run '^$' -fuzz=FuzzGeneratedScriptSemantics -fuzztime=20000x
+
   quality-gates:
     runs-on: ubuntu-latest
     steps:
