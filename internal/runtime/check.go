@@ -2002,7 +2002,10 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			argumentState = c.snapshotRuntimeState()
 		}
 		c.collectRuntimeCallArgumentEffects(typed)
-		c.checkCall(function, typed)
+		// Arguments evaluate left to right before the call dispatches, so
+		// they are walked before checkCall validates their types: a mutating
+		// earlier argument (h.delete(:name)) poisons its container's facts,
+		// and a later argument's check must not use the stale shape.
 		for _, arg := range typed.Args {
 			c.checkExpressionWithAuto(function, arg, true)
 		}
@@ -2012,6 +2015,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		if typed.BlockArg != nil {
 			c.checkExpressionWithAuto(function, typed.BlockArg, false)
 		}
+		c.checkCall(function, typed)
 		if c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
 			c.checkBlockLiteral(function, typed.Block)

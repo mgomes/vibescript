@@ -433,6 +433,24 @@ end
 	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got nil")
 }
 
+func TestCheckInferMutatingArgumentPoisonsSiblingArguments(t *testing.T) {
+	t.Parallel()
+
+	// Arguments evaluate left to right before the call dispatches, so a
+	// mutating earlier argument invalidates the container's facts for the
+	// later arguments' checks.
+	requireNoCheckWarnings(t, compileScript(t, `
+def accept(a, b: int)
+  [a, b]
+end
+
+def run()
+  h = { name: "x" }
+  accept(h.delete(:name), h[:name])
+end
+`))
+}
+
 func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
 	t.Parallel()
 
