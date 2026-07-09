@@ -105,9 +105,10 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *ArrayLiteral:
 		return exec.evalArrayLiteral(e, env)
 	case *HashLiteral:
+		if e.ShapeType != nil && !exec.hashShapeShadowed(e, env) {
+			return NewShape(e.ShapeType), nil
+		}
 		return exec.evalHashLiteral(e, env)
-	case *ShapeLiteral:
-		return NewShape(e.Type), nil
 	case *SplatArg:
 		return NewNil(), exec.errorAt(e.Pos(), "splat argument is only allowed in call arguments")
 	case *UnaryExpr:
@@ -544,6 +545,27 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 	default:
 		return NewNil(), exec.errorAt(e.Pos(), "unsupported unary operator")
 	}
+}
+
+// hashShapeShadowed reports whether any type name of a dual-reading braced
+// group resolves to a runtime binding, in which case the group keeps its
+// pre-existing hash semantics (a host-provided global named string, for
+// example). A group with no hash reading (ShapeType without pairs) is always
+// a shape.
+func (exec *Execution) hashShapeShadowed(lit *HashLiteral, env *Env) bool {
+	if len(lit.Pairs) == 0 {
+		return false
+	}
+	shadowed := false
+	walkShapeTypeNames(lit.ShapeType, func(name string) {
+		if shadowed {
+			return
+		}
+		if _, ok := env.Get(name); ok {
+			shadowed = true
+		}
+	})
+	return shadowed
 }
 
 func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
@@ -1757,7 +1779,7 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		return false
 	case *BlockLiteral:
 		return true
-	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
+	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		return false
 	case *ArrayLiteral:
 		for _, elem := range e.Elements {

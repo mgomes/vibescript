@@ -344,6 +344,7 @@ func cloneExpression(expr Expression) Expression {
 	case *HashLiteral:
 		clone := *e
 		clone.Pairs = cloneHashPairs(e.Pairs)
+		clone.ShapeType = CloneTypeExpr(e.ShapeType)
 		return &clone
 	case *CallExpr:
 		clone := *e
@@ -431,10 +432,6 @@ func cloneExpression(expr Expression) Expression {
 	case *InterpolatedSymbol:
 		clone := *e
 		clone.Parts = cloneStringParts(e.Parts)
-		return &clone
-	case *ShapeLiteral:
-		clone := *e
-		clone.Type = CloneTypeExpr(e.Type)
 		return &clone
 	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
 		return cloneStatement(e.(Statement)).(Expression)

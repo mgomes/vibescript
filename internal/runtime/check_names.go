@@ -263,7 +263,7 @@ func collectOwnScopeNamesFromExpression(expr Expression, out map[string]struct{}
 	case nil:
 		return
 	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral,
-		*BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
+		*BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		// Leaves: no embedded statement-expressions to descend into.
 		return
 	case *BlockLiteral:
@@ -516,7 +516,7 @@ func visitCallExprsInExpression(expr Expression, visit func(*CallExpr)) {
 	case nil:
 		return
 	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral,
-		*BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
+		*BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		// Leaves: no nested expressions, so no calls to visit.
 		return
 	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:

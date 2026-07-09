@@ -404,7 +404,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromClassBody(body []Stateme
 
 func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expression) {
 	switch typed := expr.(type) {
-	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
+	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		return
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
@@ -1978,7 +1978,7 @@ func (c *scriptChecker) checkExpression(function string, expr Expression) {
 
 func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression, autoCall bool) {
 	switch typed := expr.(type) {
-	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
+	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		return
 	case *Identifier:
 		c.checkIdentifierResolved(function, typed)
@@ -1987,6 +1987,12 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkExpressionWithAuto(function, elem, true)
 		}
 	case *HashLiteral:
+		// A dual-reading braced group evaluates as a shape unless one of its
+		// type names is shadowed, so its identifier values are type spellings
+		// rather than variable reads and must not warn as undefined.
+		if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
+			return
+		}
 		for _, pair := range typed.Pairs {
 			c.checkExpressionWithAuto(function, pair.Key, true)
 			c.checkExpressionWithAuto(function, pair.Value, true)
@@ -2484,7 +2490,7 @@ func expressionMayEscapeIteration(expr Expression) bool {
 	case nil:
 		return false
 	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral,
-		*BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
+		*BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		// Leaves: no nested expressions that could escape.
 		return false
 	case *DestructureTarget:
@@ -2839,7 +2845,7 @@ func (c *scriptChecker) statementMayEvaluateCallBlock(stmt Statement, seen map[*
 
 func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map[*ScriptFunction]struct{}) bool {
 	switch typed := expr.(type) {
-	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *ShapeLiteral, *IvarExpr, *ClassVarExpr:
+	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		return false
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
@@ -4436,6 +4442,11 @@ func staticLiteralValue(expr Expression) (Value, bool) {
 		}
 		return NewArray(items), true
 	case *HashLiteral:
+		if typed.ShapeType != nil {
+			// The group may evaluate as a first-class shape value, so it has
+			// no static hash reading.
+			return NewNil(), false
+		}
 		entries := make(map[string]Value, len(typed.Pairs))
 		for _, pair := range typed.Pairs {
 			key, ok := staticLiteralHashKey(pair.Key)

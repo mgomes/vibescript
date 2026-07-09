@@ -1,5 +1,7 @@
 package runtime
 
+import "strings"
+
 // Implicit local type inference for the check path (ADR-004).
 //
 // The checker binds locals to the inferred *TypeExpr of the expressions
@@ -400,8 +402,6 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		return checkTypeArray
 	case *HashLiteral:
 		return c.inferHashLiteralType(typed)
-	case *ShapeLiteral:
-		return shapeValueType(typed.Type)
 	case *BlockLiteral:
 		return checkTypeFunction
 	case *Identifier:
@@ -463,6 +463,9 @@ func (c *scriptChecker) inferBranchUnionType(branches ...Expression) *TypeExpr {
 // and field types are all statically known, giving downstream indexing
 // field-level facts. Anything less certain degrades to a plain hash.
 func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
+	if lit.ShapeType != nil && !c.hashShapeStaticallyShadowed(lit) {
+		return shapeValueType(lit.ShapeType)
+	}
 	shape := make(map[string]*TypeExpr, len(lit.Pairs))
 	for _, pair := range lit.Pairs {
 		key, ok := staticLiteralHashKey(pair.Key)
@@ -526,9 +529,6 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 		return target.fn.ReturnTy
 	}
 	if target.name == "JSON.parse_as" && len(call.Args) == 2 {
-		if shape, ok := call.Args[1].(*ShapeLiteral); ok {
-			return shape.Type
-		}
 		if shape, ok := shapeValuePayload(c.inferExpressionType(call.Args[1])); ok {
 			return shape
 		}
@@ -556,6 +556,58 @@ func shapeValuePayload(ty *TypeExpr) (*TypeExpr, bool) {
 		return nil, false
 	}
 	return ty.TypeArgs[0], true
+}
+
+// walkShapeTypeNames visits the identifier spelling of every named leaf in a
+// shape type: built-in atoms (string, array<...>), including nested shape
+// fields, union arms, and generic arguments. nil atoms and structural nodes
+// carry no identifier.
+func walkShapeTypeNames(ty *TypeExpr, visit func(string)) {
+	if ty == nil {
+		return
+	}
+	switch ty.Kind {
+	case TypeShape:
+		for _, field := range ty.Shape {
+			walkShapeTypeNames(field, visit)
+		}
+		return
+	case TypeUnion:
+		for _, option := range ty.Union {
+			walkShapeTypeNames(option, visit)
+		}
+		return
+	case TypeNil:
+		return
+	}
+	if name := strings.TrimSuffix(ty.Name, "?"); name != "" {
+		visit(name)
+	}
+	for _, arg := range ty.TypeArgs {
+		walkShapeTypeNames(arg, visit)
+	}
+}
+
+// hashShapeStaticallyShadowed mirrors the runtime's shape-versus-hash choice
+// for a dual-reading braced group: when any of its type names resolves to a
+// known binding (a local, host global, script definition, or host builtin),
+// the group keeps hash semantics. A group without a hash reading is always a
+// shape.
+func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
+	if len(lit.Pairs) == 0 {
+		return false
+	}
+	shadowed := false
+	walkShapeTypeNames(lit.ShapeType, func(name string) {
+		if shadowed {
+			return
+		}
+		if c.identifierShadowed(name) || c.hostGlobalShadows(name) ||
+			c.typeRootHasBinding(name) || c.hostBuiltinOverrides(name) {
+			shadowed = true
+		}
+	})
+	return shadowed
 }
 
 // inferIndexExprType propagates field-level facts out of shape-typed values:

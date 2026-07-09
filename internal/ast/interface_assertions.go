@@ -9,7 +9,6 @@ var (
 	_ Expression = (*RescueExpr)(nil)
 	_ Expression = (*ConditionalExpr)(nil)
 	_ Expression = (*InterpolatedSymbol)(nil)
-	_ Expression = (*ShapeLiteral)(nil)
 	_ StringPart = StringText{}
 	_ StringPart = StringExpr{}
 )

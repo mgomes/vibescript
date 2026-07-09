@@ -154,8 +154,11 @@ Shape literals are legal in expression position: a braced group whose field
 values all name built-in types (including unions, `array<T>`/`hash<K, V>`
 arguments, and nested shapes) is a first-class shape value, assignable and
 reusable. A braced group with value expressions, unknown identifiers, or
-fields naming locals in scope stays an ordinary hash literal. Validation
-failures raise the standard typed-boundary error, e.g.
+fields naming locals in scope stays an ordinary hash literal, and a group
+whose type names are shadowed at runtime — a host-provided global named
+`string`, for example — also keeps its hash semantics, so existing embedded
+scripts read the host value exactly as before. Validation failures raise the
+standard typed-boundary error, e.g.
 `JSON.parse_as value expected { name: string }, got { name: int }`.
 
 ## Migration examples

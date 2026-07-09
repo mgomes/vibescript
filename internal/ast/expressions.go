@@ -96,9 +96,20 @@ type HashPair struct {
 }
 
 // HashLiteral represents a hash/map literal expression.
+//
+// ShapeType is set when the braced group also reads cleanly as a shape under
+// the type grammar with built-in leaf types (ADR-004 expression-position
+// shapes, e.g. the schema argument of JSON.parse_as). The choice between the
+// two readings is deferred to evaluation: the group is a first-class shape
+// value unless one of its type names is shadowed by a runtime binding (a
+// host-provided global such as `string`), in which case it keeps the
+// pre-existing hash semantics and Pairs evaluate normally. A group that
+// parses only as a shape (e.g. `{ note: string | nil }`) carries ShapeType
+// with no Pairs and always evaluates as a shape.
 type HashLiteral struct {
-	Pairs    []HashPair
-	Position Position
+	Pairs     []HashPair
+	ShapeType *TypeExpr
+	Position  Position
 }
 
 func (e *HashLiteral) exprNode()     {}
@@ -407,14 +418,3 @@ type InterpolatedSymbol struct {
 
 func (s *InterpolatedSymbol) exprNode()     {}
 func (s *InterpolatedSymbol) Pos() Position { return s.Position }
-
-// ShapeLiteral represents a shape type in expression position, such as the
-// shape argument of JSON.parse_as (ADR-004). The payload reuses the
-// annotation TypeExpr representation and always has Kind TypeShape.
-type ShapeLiteral struct {
-	Type     *TypeExpr
-	Position Position
-}
-
-func (s *ShapeLiteral) exprNode()     {}
-func (s *ShapeLiteral) Pos() Position { return s.Position }

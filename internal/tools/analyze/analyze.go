@@ -202,7 +202,7 @@ func lintExpression(function string, expr ast.Expression, warnings *[]Warning) {
 		return
 	case *ast.Identifier, *ast.IntegerLiteral, *ast.FloatLiteral, *ast.StringLiteral,
 		*ast.RegexLiteral, *ast.BoolLiteral, *ast.NilLiteral, *ast.SymbolLiteral,
-		*ast.ShapeLiteral, *ast.IvarExpr, *ast.ClassVarExpr:
+		*ast.IvarExpr, *ast.ClassVarExpr:
 		// Leaves: nothing nested to lint.
 		return
 	case *ast.ArrayLiteral:

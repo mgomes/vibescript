@@ -1763,9 +1763,28 @@ func (p *parser) parseArrayLiteral() ast.Expression {
 }
 
 func (p *parser) parseHashLiteral() ast.Expression {
-	if shape, ok := p.tryParseShapeLiteral(); ok {
-		return shape
+	pos := p.curToken.Pos
+	shapeType := p.speculativeShapeLiteralType()
+	if shapeType == nil {
+		return p.parseHashLiteralGroup()
 	}
+	hashSnapshot := p.snapshot()
+	hash := p.parseHashLiteralGroup()
+	if hashLit, ok := hash.(*ast.HashLiteral); ok && len(p.errors) == hashSnapshot.errorCount {
+		// The group reads both ways; evaluation picks the shape unless a
+		// runtime binding shadows one of the type names.
+		hashLit.ShapeType = shapeType
+		return hashLit
+	}
+	// The group reads only as a shape (e.g. { note: string | nil }): drop
+	// the failed hash parse and re-consume the group under the type
+	// grammar, which is known to parse cleanly.
+	p.restore(hashSnapshot)
+	p.parseTypeShape()
+	return &ast.HashLiteral{ShapeType: shapeType, Position: pos}
+}
+
+func (p *parser) parseHashLiteralGroup() ast.Expression {
 	p.groupDepth++
 	defer func() { p.groupDepth-- }()
 	pos := p.curToken.Pos
@@ -1803,23 +1822,26 @@ func (p *parser) parseHashLiteral() ast.Expression {
 	return &ast.HashLiteral{Pairs: pairs, Position: pos}
 }
 
-// tryParseShapeLiteral speculatively parses a braced group in expression
-// position as a shape literal (ADR-004: shapes become legal in expression
-// position, e.g. JSON.parse_as(raw, { name: string })). The group is a shape
-// only when it parses cleanly under the type grammar, every named leaf
-// resolves to a built-in type, no field names a local value, and none of the
-// hash-default degeneracies apply; anything else restores the parser and
-// parses as a hash literal. Requiring built-in leaves keeps hashes with
-// identifier values (`{ status: pending }`) on the value path, so their
-// undefined-name diagnostics are unchanged, and it makes every accepted
-// shape resolvable without an environment. Nullable outer shapes are
-// rejected so `{ ... }?` never swallows the `?` of a ternary.
-func (p *parser) tryParseShapeLiteral() (ast.Expression, bool) {
+// speculativeShapeLiteralType parses a braced group in expression position
+// under the type grammar (ADR-004: shapes become legal in expression
+// position, e.g. JSON.parse_as(raw, { name: string })) and always restores
+// the parser. The group qualifies as a shape only when it parses cleanly,
+// every named leaf resolves to a built-in type, no field names a local
+// value, and none of the hash-default degeneracies apply. Requiring
+// built-in leaves keeps hashes with identifier values (`{ status: pending }`)
+// on the value path, so their undefined-name diagnostics are unchanged, and
+// it makes every accepted shape resolvable without an environment. Nullable
+// outer shapes are rejected so `{ ... }?` never swallows the `?` of a
+// ternary. Host-provided globals that reuse a type name cannot be seen at
+// parse time, so the caller keeps the hash reading alongside and evaluation
+// decides between the two.
+func (p *parser) speculativeShapeLiteralType() *ast.TypeExpr {
 	if p.peekToken.Type == ast.TokenRBrace {
-		return nil, false
+		return nil
 	}
 
 	saved := p.snapshot()
+	defer p.restore(saved)
 	pos := p.curToken.Pos
 	shape := p.parseTypeShape()
 	if shape == nil || shape.Kind != ast.TypeShape || shape.Nullable ||
@@ -1829,11 +1851,10 @@ func (p *parser) tryParseShapeLiteral() (ast.Expression, bool) {
 		shapeHasEmptyNestedShape(shape) ||
 		p.shapeFieldNamesLocalValue(shape) ||
 		!shapeLeafTypesAllBuiltin(shape) {
-		p.restore(saved)
-		return nil, false
+		return nil
 	}
 	shape.Position = pos
-	return &ast.ShapeLiteral{Type: shape, Position: pos}, true
+	return shape
 }
 
 // shapeLeafTypesAllBuiltin reports whether every named leaf of the type

@@ -184,6 +184,47 @@ end
 `))
 }
 
+func TestShapeLiteralHostGlobalShadowKeepsHashSemantics(t *testing.T) {
+	t.Parallel()
+
+	// A host-provided global that reuses a type name shadows the shape
+	// reading, so the braced group keeps its pre-existing hash semantics
+	// and reads the host value.
+	script := compileScript(t, `
+def run()
+  h = { name: string }
+  h[:name]
+end
+`)
+	opts := CallOptions{Globals: map[string]Value{"string": NewString("Ada")}}
+	got := callScript(t, context.Background(), script, "run", nil, opts)
+	if got.Kind() != KindString || got.String() != "Ada" {
+		t.Fatalf("run() with host global = %#v, want \"Ada\"", got)
+	}
+
+	// Without the global the same group is a first-class shape value, which
+	// does not support indexing.
+	err := callScriptErr(t, context.Background(), script, "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "cannot index shape") {
+		t.Fatalf("run() without host global err = %v, want cannot index shape", err)
+	}
+
+	// The checker mirrors the choice: with the global the parse_as schema
+	// is a host hash, so no shape facts flow and nothing is claimed.
+	checked := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string })
+  takes_int(body["name"])
+end
+`)
+	requireCheckWarningContains(t, checked, "call to takes_int argument value expected int, got string")
+	requireNoCheckWarningsWithOptions(t, checked, opts)
+}
+
 func TestCheckInferJSONParseAsShapeThroughLocal(t *testing.T) {
 	t.Parallel()
 

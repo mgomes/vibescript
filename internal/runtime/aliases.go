@@ -62,7 +62,6 @@ type (
 	ArrayLiteral       = ast.ArrayLiteral
 	HashPair           = ast.HashPair
 	HashLiteral        = ast.HashLiteral
-	ShapeLiteral       = ast.ShapeLiteral
 	CallExpr           = ast.CallExpr
 	KeywordArg         = ast.KeywordArg
 	SplatArg           = ast.SplatArg
