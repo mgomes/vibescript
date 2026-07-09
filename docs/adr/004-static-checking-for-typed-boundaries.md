@@ -79,7 +79,7 @@ Typed boundaries remain optional:
 
 ```vibe
 def create_user(name: string) -> User
-  ...
+  User.new(name)
 end
 ```
 
