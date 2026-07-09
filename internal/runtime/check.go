@@ -107,6 +107,8 @@ type scriptChecker struct {
 	hostGlobals             map[string]struct{}
 	warnings                []CheckWarning
 	scopes                  []map[string]struct{}
+	localTypes              []checkTypeFrame
+	typePoison              map[string]struct{}
 	requiredModules         map[string]struct{}
 	runtimeModules          map[string]struct{}
 	runtimeNamespaceMembers map[string]struct{}
@@ -951,11 +953,14 @@ func (c *scriptChecker) collectRequiredModuleExportsFromModuleInitialization(ent
 	caller := moduleContextForEntry(entry)
 	previousCaller := c.moduleCaller
 	previousScopes := c.scopes
+	previousLocalTypes := c.localTypes
 	c.moduleCaller = &caller
 	c.scopes = nil
+	c.localTypes = nil
 	defer func() {
 		c.moduleCaller = previousCaller
 		c.scopes = previousScopes
+		c.localTypes = previousLocalTypes
 	}()
 
 	c.collectRequiredModuleExportsFromModuleClassBodies(entry)
@@ -1055,6 +1060,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 	if fn == nil || !c.checkCallValueShape(label, fn.Name, fn.Pos, fn, args, kwargs) {
 		return
 	}
+	defer c.withFreshLocalInferenceScope()()
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 	popNameScope := c.pushFunctionNameScope(fn)
@@ -1180,6 +1186,7 @@ func (c *scriptChecker) checkReachableFunctions() {
 		scopeState := c.snapshotScopeState()
 		c.restoreRuntimeState(next.runtimeState)
 		c.scopes = nil
+		c.localTypes = nil
 		c.checkFunction(next.label, next.fn)
 		c.restoreScopeState(scopeState)
 	}
@@ -1225,6 +1232,7 @@ func (c *scriptChecker) checkRuntimeClassBodies(skip map[string]struct{}, suppre
 
 func (c *scriptChecker) checkRuntimeClassBody(classDef *ClassDef, suppressWarnings bool) {
 	check := func() {
+		defer c.withFreshLocalInferenceScope()()
 		popScope := c.pushScope(make(map[string]struct{}))
 		defer popScope()
 		// Class bodies run with self bound to the class, so bare identifiers
@@ -1263,7 +1271,10 @@ type checkModuleCollectionState struct {
 	modules map[string]struct{}
 }
 
-type checkScopeState []map[string]struct{}
+type checkScopeState struct {
+	defined []map[string]struct{}
+	types   []checkTypeFrame
+}
 
 func (c *scriptChecker) snapshotRuntimeState() checkRuntimeState {
 	state := checkRuntimeState{
@@ -1454,23 +1465,24 @@ func commonObjectAliasBindings(base *Env, roots []*Env) map[string]Value {
 }
 
 func (c *scriptChecker) snapshotScopeState() checkScopeState {
-	if len(c.scopes) == 0 {
-		return nil
-	}
-	state := make(checkScopeState, len(c.scopes))
-	for i, scope := range c.scopes {
-		state[i] = cloneCheckScope(scope)
+	state := checkScopeState{types: c.snapshotLocalTypes()}
+	if len(c.scopes) > 0 {
+		state.defined = make([]map[string]struct{}, len(c.scopes))
+		for i, scope := range c.scopes {
+			state.defined[i] = cloneCheckScope(scope)
+		}
 	}
 	return state
 }
 
 func (c *scriptChecker) restoreScopeState(state checkScopeState) {
-	if len(state) == 0 {
+	c.restoreLocalTypes(state.types)
+	if len(state.defined) == 0 {
 		c.scopes = nil
 		return
 	}
-	c.scopes = make([]map[string]struct{}, len(state))
-	for i, scope := range state {
+	c.scopes = make([]map[string]struct{}, len(state.defined))
+	for i, scope := range state.defined {
 		c.scopes[i] = cloneCheckScope(scope)
 	}
 }
@@ -1492,23 +1504,23 @@ func (c *scriptChecker) mergeScopeStates(base checkScopeState, states []checkSco
 		return
 	}
 	for i := range c.scopes {
-		if i >= len(states[0]) {
+		if i >= len(states[0].defined) {
 			continue
 		}
-		common := cloneCheckScope(states[0][i])
+		common := cloneCheckScope(states[0].defined[i])
 		for _, state := range states[1:] {
-			if i >= len(state) {
+			if i >= len(state.defined) {
 				clear(common)
 				break
 			}
 			for key := range common {
-				if _, ok := state[i][key]; !ok {
+				if _, ok := state.defined[i][key]; !ok {
 					delete(common, key)
 				}
 			}
 		}
-		if i < len(base) {
-			for key := range base[i] {
+		if i < len(base.defined) {
+			for key := range base.defined[i] {
 				delete(common, key)
 			}
 		}
@@ -1522,6 +1534,7 @@ func (c *scriptChecker) mergeScopeStates(base checkScopeState, states []checkSco
 			c.scopes[i][key] = struct{}{}
 		}
 	}
+	c.mergeLocalTypeStates(base, states)
 }
 
 func (c *scriptChecker) sortedScriptFunctions() []*ScriptFunction {
@@ -1567,26 +1580,28 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 	if fn == nil {
 		return
 	}
-	popScope := c.pushScope(make(map[string]struct{}))
-	defer popScope()
-	popNameScope := c.pushFunctionNameScope(fn)
-	defer popNameScope()
+	c.withFreshLocalInference(func() {
+		popScope := c.pushScope(make(map[string]struct{}))
+		defer popScope()
+		popNameScope := c.pushFunctionNameScope(fn)
+		defer popNameScope()
 
-	for _, param := range fn.Params {
-		c.checkExpression(label, param.DefaultVal)
-		c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
-		if param.Type != nil {
-			c.checkRuntimeTypeAnnotation(label, param.Type)
-			if param.DefaultVal != nil {
-				c.checkRuntimeExpressionAgainstType(label, param.DefaultVal, param.Type, fmt.Sprintf("default value for %s", param.Name))
+		for _, param := range fn.Params {
+			c.checkExpression(label, param.DefaultVal)
+			c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
+			if param.Type != nil {
+				c.checkRuntimeTypeAnnotation(label, param.Type)
+				if param.DefaultVal != nil {
+					c.checkRuntimeExpressionAgainstType(label, param.DefaultVal, param.Type, fmt.Sprintf("default value for %s", param.Name))
+				}
 			}
+			c.recordParamBinding(param)
 		}
-		c.recordParamBinding(param)
-	}
-	c.checkStatements(label, fn.ReturnTy, fn.Body)
-	if fn.ReturnTy != nil {
-		c.checkImplicitReturn(label, fn.ReturnTy, fn.Body, fn.Pos)
-	}
+		c.checkStatements(label, fn.ReturnTy, fn.Body)
+		if fn.ReturnTy != nil {
+			c.checkImplicitReturn(label, fn.ReturnTy, fn.Body, fn.Pos)
+		}
+	})
 }
 
 func (c *scriptChecker) checkStatements(function string, returnType *TypeExpr, statements []Statement) {
@@ -1623,6 +1638,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkExpression(function, typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
+		c.inferAssignStatementTypes(function, typed)
 		c.recordRuntimeBindingTarget(typed.Target)
 		c.recordBindingTarget(typed.Target)
 	case *ExprStmt:
@@ -1711,16 +1727,22 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
 	case *ForStmt:
+		// A loop body may run zero or many times, so locals it assigns lose
+		// their pre-loop facts before the walk and stay unknown after it.
+		c.degradeLocalTypesForBindings(typed.Body, typed.Target)
 		c.checkExpression(function, typed.Iterable)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Iterable)
 		c.recordBindingTarget(typed.Target)
+		c.bindForTargetType(typed)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
 		c.checkStatements(function, returnType, typed.Body)
 		c.restoreRuntimeState(bodyRuntimeState)
 		c.restoreScopeState(bodyScopeState)
+		c.degradeLocalTypesForBindings(nil, typed.Target)
 		c.recordLocalBindings(typed.Body)
 	case *WhileStmt:
+		c.degradeLocalTypesForBindings(typed.Body)
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
 		bodyRuntimeState := c.snapshotRuntimeState()
@@ -1730,6 +1752,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
 	case *UntilStmt:
+		c.degradeLocalTypesForBindings(typed.Body)
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
 		bodyRuntimeState := c.snapshotRuntimeState()
@@ -1982,11 +2005,22 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		if argumentsMayBeSkipped {
 			c.restoreRuntimeState(argumentState)
 		}
+		// Containers pass by reference, so a callee may mutate an argument
+		// in place; the caller's structural facts stop holding.
+		for _, arg := range typed.Args {
+			c.poisonEscapedIdentifier(arg)
+		}
+		for _, kwarg := range typed.KwArgs {
+			c.poisonEscapedIdentifier(kwarg.Value)
+		}
 	case *MemberExpr:
 		c.checkExpressionWithAuto(function, typed.Object, true)
 		if autoCall {
 			c.checkMemberAutoCall(function, typed)
 		}
+		// Member dispatch on a container may mutate it in place (push,
+		// delete, ...), so the receiver's structural facts stop holding.
+		c.poisonEscapedIdentifier(typed.Object)
 	case *ScopeExpr:
 		c.checkExpressionWithAuto(function, typed.Object, true)
 	case *IndexExpr:
@@ -2002,6 +2036,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkExpressionWithAuto(function, typed.Value, true)
 	case *UnaryExpr:
 		c.checkExpressionWithAuto(function, typed.Right, true)
+		c.checkUnaryOperandTypes(function, typed)
 	case *BinaryExpr:
 		c.checkExpressionWithAuto(function, typed.Left, true)
 		if binaryRightMayEvaluate(typed) {
@@ -2010,6 +2045,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkExpressionWithAuto(function, typed.Right, true)
 			c.restoreRuntimeState(state)
 		}
+		c.checkBinaryOperandTypes(function, typed)
 	case *ConditionalExpr:
 		c.checkConditionalExpression(function, typed)
 	case *RescueExpr:
@@ -2088,6 +2124,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 	case *YieldExpr:
 		for _, arg := range typed.Args {
 			c.checkExpressionWithAuto(function, arg, true)
+			c.poisonEscapedIdentifier(arg)
 		}
 	case *InterpolatedString:
 		c.checkStringParts(function, typed.Parts)
@@ -2247,6 +2284,14 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	runtimeState := c.snapshotRuntimeState()
 	defer c.restoreRuntimeState(runtimeState)
 
+	// A block may run zero or many times, so outer locals its body assigns
+	// lose their facts before the walk, and the walk's own bindings are
+	// rolled back afterwards (the degraded state is the correct post-call
+	// truth for those locals).
+	c.degradeLocalTypesForBindings(block.Body)
+	typesState := c.snapshotLocalTypes()
+	defer c.restoreLocalTypes(typesState)
+
 	popScope := c.pushBlockCheckScope(block)
 	defer popScope()
 	popNameScope := c.pushBlockNameScope(block)
@@ -2256,6 +2301,7 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 		c.checkRuntimeTypeAnnotation(function, param.Type)
 		c.checkDestructureTargetTypeAnnotations(function, param.Target)
 		c.checkExpression(function, param.DefaultVal)
+		c.bindParamLocalType(param)
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
 	c.checkStatements(label, nil, block.Body)
@@ -2947,6 +2993,7 @@ func (c *scriptChecker) checkTypeAnnotationWithContext(function string, ty *Type
 func (c *scriptChecker) checkRuntimeExpressionAgainstType(function string, expr Expression, ty *TypeExpr, subject string) {
 	val, ok := staticLiteralValue(expr)
 	if !ok {
+		c.checkInferredExpressionAgainstType(function, expr, ty, subject)
 		return
 	}
 	c.checkRuntimeValueAgainstType(function, expr.Pos(), val, ty, subject)
@@ -4312,7 +4359,11 @@ func (c *scriptChecker) addArgumentValueWarning(function string, pos Position, c
 
 func (c *scriptChecker) checkArgumentExpression(function string, expr Expression, ty *TypeExpr, callName, paramName string) {
 	val, ok := staticLiteralValue(expr)
-	if !ok || ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
+	if !ok {
+		c.checkInferredArgument(function, expr, ty, callName, paramName)
+		return
+	}
+	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
 		return
 	}
 	if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
@@ -4516,8 +4567,10 @@ func (c *scriptChecker) pushRescueScope(clause *RescueClause) func() {
 
 func (c *scriptChecker) pushScope(scope map[string]struct{}) func() {
 	c.scopes = append(c.scopes, scope)
+	c.localTypes = append(c.localTypes, nil)
 	return func() {
 		c.scopes = c.scopes[:len(c.scopes)-1]
+		c.localTypes = c.localTypes[:len(c.localTypes)-1]
 	}
 }
 
@@ -4561,6 +4614,7 @@ func (c *scriptChecker) recordParamBinding(param Param) {
 		c.recordBindingName(param.Name)
 	}
 	c.recordBindingTarget(param.Target)
+	c.bindParamLocalType(param)
 }
 
 func (c *scriptChecker) recordLocalBindings(statements []Statement) {

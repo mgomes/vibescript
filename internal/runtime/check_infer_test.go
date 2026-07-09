@@ -1,0 +1,444 @@
+package runtime
+
+import (
+	"context"
+	"testing"
+)
+
+// ADR-004: locals take the types of the expressions assigned to them, and the
+// checker errors wherever known types contradict a typed boundary.
+
+func TestCheckInferLocalBindingFlowsToTypedArgument(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  value = "1"
+  takes_int(value)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+}
+
+func TestCheckInferAnnotatedParamFlowsToTypedArgument(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(name: string)
+  takes_int(name)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+}
+
+func TestCheckInferUnknownValuesArePermitted(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(input)
+  body = JSON.parse(input)
+  takes_int(body["count"])
+  value = body["count"]
+  takes_int(value)
+end
+`))
+}
+
+func TestCheckInferReassignmentConflict(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  name = "Mauricio"
+  count = 1
+  count = name
+end
+`)
+
+	requireCheckWarningContains(t, script, "reassignment of count expected int, got string")
+}
+
+func TestCheckInferReassignmentAllowances(t *testing.T) {
+	t.Parallel()
+
+	// nil is the neutral initializer, numeric retyping widens, container
+	// re-initialization stays legal, and unknowns never conflict.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run(input)
+  a = nil
+  a = "fresh"
+  a = nil
+  b = 1
+  b = 2.5
+  c = {}
+  c = { name: "x" }
+  d = JSON.parse(input)
+  d = 1
+end
+`))
+}
+
+func TestCheckInferCompoundAssignment(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run()
+  total = 0
+  total += 1
+  total += 2.5
+  greeting = "hi"
+  greeting += " there"
+end
+`))
+
+	script := compileScript(t, `
+def run()
+  greeting = "hi"
+  greeting -= 1
+end
+`)
+	requireCheckWarningContains(t, script, "unsupported subtraction operands string and int")
+}
+
+func TestCheckInferBranchAssignmentsMergeIntoUnions(t *testing.T) {
+	t.Parallel()
+
+	// x is int | string after the branches, which overlaps both int and
+	// string boundaries, so neither call is a known contradiction.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag)
+  if flag
+    x = 1
+  else
+    x = "s"
+  end
+  takes_int(x)
+end
+`))
+}
+
+func TestCheckInferBranchOnlyAssignmentJoinsWithNil(t *testing.T) {
+	t.Parallel()
+
+	// x is int | nil after the if (branch locals predeclare as nil), which
+	// is disjoint from string.
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(flag)
+  if flag
+    x = 1
+  end
+  takes_string(x)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int | nil")
+}
+
+func TestCheckInferReturnTypeContradiction(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run(x: int) -> string
+  x + 1
+end
+`)
+	requireCheckWarningContains(t, script, "return value expected string, got int")
+
+	explicit := compileScript(t, `
+def run(x: int) -> string
+  return x + 1
+end
+`)
+	requireCheckWarningContains(t, explicit, "return value expected string, got int")
+}
+
+func TestCheckInferKnownCallReturnTypeFlows(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def build_count() -> int
+  1
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  count = build_count()
+  takes_string(count)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int")
+}
+
+func TestCheckInferOperatorRejections(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		source  string
+		warning string
+	}{
+		{
+			name: "addition int and nil",
+			source: `
+def run()
+  x = 1
+  x + nil
+end
+`,
+			warning: "unsupported addition operands int and nil",
+		},
+		{
+			name: "subtraction on strings",
+			source: `
+def run()
+  a = "x"
+  a - "y"
+end
+`,
+			warning: "unsupported subtraction operands string and string",
+		},
+		{
+			name: "comparison across kinds",
+			source: `
+def run()
+  a = "x"
+  a < 1
+end
+`,
+			warning: "unsupported comparison operands string and int",
+		},
+		{
+			name: "unary minus on string",
+			source: `
+def run()
+  a = "x"
+  -a
+end
+`,
+			warning: "unsupported unary - operand string",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCheckWarningContains(t, compileScript(t, tc.source), tc.warning)
+		})
+	}
+}
+
+func TestCheckInferOperatorAllowances(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors the runtime kind matrix: string concatenation coerces either
+	// side, logical operators pass values through, equality is universal,
+	// and unknown operands stay silent.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run(input)
+  a = "n=" + 1
+  b = 1 == "1"
+  c = input || "default"
+  d = [1] + [2]
+  e = 2 ** -1
+  f = input + 1
+  [a, b, c, d, e, f]
+end
+`))
+}
+
+func TestCheckInferLoopBodiesDegradeAssignedLocals(t *testing.T) {
+	t.Parallel()
+
+	// x changes type across iterations; the checker must not pin the
+	// first-iteration type inside or after the loop.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag)
+  x = 1
+  while flag
+    x = "s"
+    flag = false
+  end
+  takes_int(x)
+end
+`))
+}
+
+func TestCheckInferForLoopElementTypes(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(items: array<int>)
+  for item in items
+    takes_string(item)
+  end
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int")
+}
+
+func TestCheckInferBlockBodiesDegradeAssignedOuterLocals(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  x = 1
+  [1, 2].each do |item|
+    x = "s"
+  end
+  takes_int(x)
+end
+`))
+}
+
+func TestCheckInferShapeParamFieldTypes(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string, age: int })
+  takes_int(user["name"])
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string, age: int })
+  takes_int(user["age"])
+end
+`))
+}
+
+func TestCheckInferShapeUnknownFieldReadsNil(t *testing.T) {
+	t.Parallel()
+
+	// Shapes are exact, so a key outside the shape is known to read nil.
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(user: { name: string })
+  takes_string(user["nmae"])
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got nil")
+}
+
+func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
+	t.Parallel()
+
+	// An index write or member call may restructure the container, so its
+	// shape facts must stop holding (no stale-field diagnostics afterwards).
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string })
+  user["name"] = 42
+  takes_int(user["name"])
+end
+`))
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string })
+  user.delete("name")
+  takes_int(user["name"])
+end
+`))
+}
+
+func TestCheckInferHashLiteralShapes(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def create_user(user: { name: string })
+  user
+end
+
+def run()
+  create_user({ nmae: "typo" })
+end
+`)
+	requireCheckWarningContains(t, script, "call to create_user argument user expected { name: string }, got { nmae: string }")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def create_user(user: { name: string })
+  user
+end
+
+def run(name)
+  create_user({ name: name })
+end
+`))
+}
+
+func TestCheckInferConflictsStillExecuteDynamically(t *testing.T) {
+	t.Parallel()
+
+	// The reassignment rule is a check-path contract only: the same program
+	// still runs under the dynamic runtime semantics.
+	script := compileScript(t, `
+def run()
+  count = 1
+  count = "one"
+  count
+end
+`)
+
+	requireCheckWarningContains(t, script, "reassignment of count expected int, got string")
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindString || got.String() != "one" {
+		t.Fatalf("run() = %#v, want \"one\"", got)
+	}
+}
