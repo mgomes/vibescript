@@ -1727,13 +1727,17 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
 	case *ForStmt:
-		// A loop body may run zero or many times, so locals it assigns lose
-		// their pre-loop facts before the walk and stay unknown after it.
-		c.degradeLocalTypesForBindings(typed.Body, typed.Target)
+		// The iterable evaluates once with pre-loop facts before any body
+		// iteration, so it is checked (and the element type captured) before
+		// body-assigned locals degrade; the body itself may run zero or many
+		// times, so those locals lose their facts for the walk and stay
+		// unknown after it.
 		c.checkExpression(function, typed.Iterable)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Iterable)
+		elemType := c.forTargetElementType(typed)
+		c.degradeLocalTypesForBindings(typed.Body, typed.Target)
 		c.recordBindingTarget(typed.Target)
-		c.bindForTargetType(typed)
+		c.bindForTargetType(typed, elemType)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
 		c.checkStatements(function, returnType, typed.Body)
@@ -1742,9 +1746,11 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.degradeLocalTypesForBindings(nil, typed.Target)
 		c.recordLocalBindings(typed.Body)
 	case *WhileStmt:
-		c.degradeLocalTypesForBindings(typed.Body)
+		// The condition's first evaluation sees pre-loop facts, so it is
+		// checked before body-assigned locals degrade to unknown.
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
+		c.degradeLocalTypesForBindings(typed.Body)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
 		c.checkStatements(function, returnType, typed.Body)
@@ -1752,9 +1758,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
 	case *UntilStmt:
-		c.degradeLocalTypesForBindings(typed.Body)
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
+		c.degradeLocalTypesForBindings(typed.Body)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
 		c.checkStatements(function, returnType, typed.Body)

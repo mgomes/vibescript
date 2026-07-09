@@ -121,25 +121,33 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	return func() { c.typePoison = previousPoison }
 }
 
-// bindForTargetType binds a for-loop target to the iterable's element type
-// when it is statically known (typed arrays and ranges); anything else stays
-// unknown.
-func (c *scriptChecker) bindForTargetType(stmt *ForStmt) {
-	target, ok := stmt.Target.(*Identifier)
-	if !ok {
-		return
-	}
+// forTargetElementType resolves a for-loop iterable to its element type when
+// it is statically known (typed arrays and ranges). It runs before the loop
+// degrades body-assigned locals, because the iterable evaluates once with
+// pre-loop facts.
+func (c *scriptChecker) forTargetElementType(stmt *ForStmt) *TypeExpr {
 	iterable := c.inferExpressionType(stmt.Iterable)
 	if iterable == nil || iterable.Nullable {
-		return
+		return nil
 	}
 	switch iterable.Kind {
 	case TypeArray:
 		if len(iterable.TypeArgs) == 1 {
-			c.bindLocalType(target.Name, iterable.TypeArgs[0])
+			return iterable.TypeArgs[0]
 		}
 	case TypeRange:
-		c.bindLocalType(target.Name, checkTypeInt)
+		return checkTypeInt
+	}
+	return nil
+}
+
+// bindForTargetType binds a for-loop target to the pre-computed element type.
+func (c *scriptChecker) bindForTargetType(stmt *ForStmt, elemType *TypeExpr) {
+	if elemType == nil {
+		return
+	}
+	if target, ok := stmt.Target.(*Identifier); ok {
+		c.bindLocalType(target.Name, elemType)
 	}
 }
 

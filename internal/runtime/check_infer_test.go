@@ -292,6 +292,38 @@ end
 `))
 }
 
+func TestCheckInferLoopHeadersSeePreLoopFacts(t *testing.T) {
+	t.Parallel()
+
+	// The iterable evaluates once before any body iteration, so its facts
+	// (and the element type they yield) survive a body reassignment of the
+	// iterable local.
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(items: array<int>)
+  for item in items
+    items = []
+    takes_string(item)
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int")
+
+	// A while condition's first evaluation also sees pre-loop facts.
+	condition := compileScript(t, `
+def run()
+  x = nil
+  while x > 1
+    x = 1
+  end
+end
+`)
+	requireCheckWarningContains(t, condition, "unsupported comparison operands nil and int")
+}
+
 func TestCheckInferForLoopElementTypes(t *testing.T) {
 	t.Parallel()
 
