@@ -106,17 +106,23 @@ derive from it, so the ladder and its lookups cannot drift.
   must be reproducible across machines.
 - Profiles do not touch non-quota `Config` fields (module policy, strict
   effects, source-size limits); `ApplyTo` writes only the three quota fields.
-- No change to the conservative embedding default: an unset `Config` quota still
-  selects the safe built-in default, so embedders are unaffected unless they opt
-  into a profile.
+- Profiles do not silently override a host's explicit quotas: an embedder that
+  sets `StepQuota`/`MemoryQuotaBytes`/`RecursionLimit` keeps those values.
+  Selecting or applying a profile is opt-in; only an unset (zero) quota resolves
+  to the default budget (the `low` profile — see Decision).
 
 ## Consequences
 
-The CLI runs CPU-heavy scripts out of the box while embedders keep a safe,
-conservative default. A host now has a short vocabulary — `low`/`medium`/`high`/
-`xhigh` — for a coherent budget, plus the ability to lift a ceiling, not only
-tighten it. Adding a profile or tuning its values is a one-line change in a
-single slice.
+The CLI runs CPU-heavy scripts out of the box while embedders get a safe,
+conservative default — the `low` profile. A host now has a short vocabulary —
+`low`/`medium`/`high`/`xhigh` — for a coherent budget, plus the ability to lift a
+ceiling, not only tighten it. Adding a profile or tuning its values is a one-line
+change in a single slice.
+
+Because the zero-value default was raised to the `low` profile, a host that
+relied on the previous tighter default (50,000 steps / 64 KiB / 64 recursion)
+must now set those quotas explicitly; the migration is a one-line `Config` change
+or a lower explicit value.
 
 The main tradeoff is that `xhigh` disables memory accounting, so the default CLI
 run does not enforce the memory boundary. This is documented and intentional,
