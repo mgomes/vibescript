@@ -12,11 +12,19 @@ leakcheck:
 # Iteration-based (Nx) rather than time-based: a duration makes Go's fuzz
 # coordinator set a context deadline whose teardown races, intermittently
 # failing the nightly with "context deadline exceeded" (golang/go#48591).
-fuzz fuzztime='25000x':
+#
+# scope selects which targets run: 'all' (default) fuzzes both the ./cmd/vibes
+# tooling targets and the ./internal/runtime targets; 'runtime' fuzzes only the
+# runtime targets. Use 'runtime' when running under VIBES_ESTIMATOR_VERIFY /
+# VIBES_ENV_RECYCLE_VERIFY: those toggles are read only by the runtime package's
+# test TestMain, so the ./cmd/vibes targets (a separate test binary) would run
+# with the oracle off — duplicate coverage rather than verification.
+fuzz fuzztime='25000x' scope='all':
 	#!/usr/bin/env bash
 	set -uo pipefail
 
 	fuzztime="{{fuzztime}}"
+	scope="{{scope}}"
 	failed=()
 
 	run_target() {
@@ -26,14 +34,16 @@ fuzz fuzztime='25000x':
 		fi
 	}
 
-	for target in \
-		FuzzFormatVibeSource \
-		FuzzCLIArgumentAndPathInputs \
-		FuzzREPLInputFlow \
-		FuzzLSPPayloadAndMessageHandling
-	do
-		run_target ./cmd/vibes "$target"
-	done
+	if [ "$scope" = "all" ]; then
+		for target in \
+			FuzzFormatVibeSource \
+			FuzzCLIArgumentAndPathInputs \
+			FuzzREPLInputFlow \
+			FuzzLSPPayloadAndMessageHandling
+		do
+			run_target ./cmd/vibes "$target"
+		done
+	fi
 
 	for target in \
 		FuzzLexerTokenStreamTerminates \
