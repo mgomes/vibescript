@@ -9,6 +9,68 @@ All notable changes to this project will be documented in this file.
 <!-- Unreleased entries are tracked as individual files in changelog.d/ so
      pull requests never conflict on this file. They are compiled into a
      versioned section by scripts/build_changelog.sh at release time. -->
+## v1.0.0-rc3 - 2026-07-09
+
+Third release candidate: a performance and ergonomics pass on the sandbox. Named
+quota profiles (`low`/`medium`/`high`/`xhigh`) bundle the step, memory, and
+recursion quotas into one budget you select by name, and the `vibes` CLI now
+defaults to `xhigh` — unlimited steps and memory — so it runs your scripts like a
+normal interpreter. The memory-quota estimator is substantially faster, so
+enforcing a cap costs far less. One breaking change: the zero-value embedding
+default was raised to the `low` profile, so hosts that relied on the previous
+tighter default must now set the quotas explicitly (see the entry below).
+
+- **Performance: script-function calls reuse their argument backing.** Each call
+  evaluated its positional arguments into a freshly allocated slice. Calls to
+  script functions now borrow the backing from a per-execution free list and
+  return it once the call unwinds — safe because argument binding copies every
+  value into the callee's environment and never retains the slice. Combined with
+  the non-local-return change, this cuts recursive fib(20) from 65,704 to 21,947
+  allocations per call. Calls to builtins and capabilities, which may retain the
+  slice, are unaffected.
+- **Performance: function returns no longer heap-allocate.** The non-local
+  return check ran on every function return through `errors.As`, whose
+  address-of-local argument escaped to the heap — one allocation per return even
+  on the common path where no block return was in flight. It now fast-paths a
+  nil error and an unwrapped signal without allocating, cutting roughly a third
+  of the allocations on deep-recursion workloads.
+- **Added: a deep-recursion call-path benchmark and CI smoke gate.**
+  `BenchmarkExecutionRecursiveFib` exercises naive recursive `fib`, which grows
+  the environment stack with call depth — a shape none of the existing
+  loop-based benchmarks covered — so call-setup allocation regressions are now
+  caught in CI. A paired `BenchmarkExecutionRecursiveFibQuota` measures the same
+  recursion under a memory quota for profiling the estimator path.
+- **Changed: `vibes run`, `vibes test`, and the REPL now default to the
+  `xhigh` quota profile** — unlimited steps and memory with a high finite
+  recursion cap — so CPU-heavy scripts (deep recursion, long loops) run out of
+  the box instead of tripping the embedding sandbox's small default quotas. Pass
+  `-profile low|medium|high|xhigh` to simulate a constrained sandbox budget, or
+  `-step-quota` / `-memory-quota` / `-recursion-limit` (with `-1` for unlimited)
+  to override an individual quota on top of the selected profile.
+- **Added: an explicit `Unlimited` quota spelling and named quota profiles.**
+  `Config` now distinguishes an unset quota (zero, which selects the built-in
+  default) from an explicitly unbounded one (`Unlimited`), so a host can lift a
+  step, memory, or recursion ceiling instead of only tightening it. The named
+  profiles `ProfileLow`, `ProfileMedium`, `ProfileHigh`, and `ProfileXHigh`
+  bundle the three quotas into a single coherent budget; `xhigh` runs a script
+  like a normal interpreter (unlimited steps and memory) while keeping a finite
+  recursion cap so runaway recursion still fails with a clean error.
+- **Performance: running under a memory quota is far cheaper.** Enforcing the
+  memory quota re-walked the whole reachable object graph on every check. The
+  estimator now skips immutable dormant frames, charges block iteration
+  incrementally by memoizing the reachable-graph prefix beneath a block scope
+  (O(block) per check rather than O(collection)), inlines the per-value guard on
+  the hot path, and stops reallocating large hash entries on every check.
+  Quota-bounded workloads — deep recursion and large-collection loops — now run
+  much closer to their unmetered speed, and the incremental block-scope path is
+  cross-checked against an exact reference oracle in CI.
+- **Changed: the zero-value `Config` quota default is now the `low` profile**
+  (1,000,000 steps / 16 MiB / 256 recursion) instead of the previous
+  50,000 steps / 64 KiB / 64. An embedder that sets no quotas now gets the
+  lowest named profile as its budget, so `low` is the reproducible name for the
+  default embedding sandbox. Hosts that relied on the previous tighter default
+  should set the quota fields (or lower explicit values) explicitly.
+
 ## v1.0.0-rc2 - 2026-07-07
 
 Second release candidate: arbitrary-precision integers land, and the two

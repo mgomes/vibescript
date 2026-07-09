@@ -783,3 +783,22 @@ gaps found smoke-testing the rc1 artifact.
 - [x] Release notes are documented in `CHANGELOG.md`.
 - [x] Full tests pass.
 - [x] Release checklist passes for `v1.0.0-rc2`.
+
+## v1.0.0-rc3 - Sandbox Performance and Quota Profiles (completed 2026-07-09)
+
+Goal: third release candidate — a performance and ergonomics pass on the
+sandbox: named quota profiles, a much faster memory-quota estimator, and the
+zero-value embedding default raised to the `low` profile.
+
+- [x] Named quota profiles (low/medium/high/xhigh) with an `xhigh` CLI default.
+- [x] Incremental memory-quota accounting: dormant-frame skipping, block-scope
+  prefix memoization, inlined per-value guard, and per-check reallocation
+  removal, cross-checked by a differential oracle in CI.
+- [x] Zero-value embedding default resolves to the `low` profile.
+- [x] ADRs recorded for the quota profiles and arbitrary-precision integers.
+
+### v1.0.0-rc3 Definition of Done
+
+- [x] Release notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v1.0.0-rc3`.
