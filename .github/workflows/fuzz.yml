@@ -15,8 +15,17 @@ permissions:
 
 jobs:
   fuzz:
+    name: fuzz (${{ matrix.mode }})
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        # coverage: maximum raw exec throughput to find crashes/panics.
+        # oracle: every memory-estimator check is verified against the exact
+        # reference walk and every recycled call frame is poisoned, so an
+        # under-count (a sandbox escape) or a missed frame reuse panics.
+        mode: [coverage, oracle]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -34,13 +43,16 @@ jobs:
           tool: just
 
       - name: Run fuzz suite
+        env:
+          VIBES_ESTIMATOR_VERIFY: ${{ matrix.mode == 'oracle' && '1' || '' }}
+          VIBES_ENV_RECYCLE_VERIFY: ${{ matrix.mode == 'oracle' && '1' || '' }}
         run: just fuzz "${{ github.event.inputs.fuzztime || '3m' }}"
 
       - name: Upload new failing inputs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-failing-inputs
+          name: fuzz-failing-inputs-${{ matrix.mode }}
           path: |
             cmd/vibes/testdata/fuzz/**
             internal/runtime/testdata/fuzz/**
