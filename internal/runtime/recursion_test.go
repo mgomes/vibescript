@@ -85,7 +85,7 @@ end`
 			cfg:     Config{},
 			source:  simpleRecurse,
 			fn:      "recurse",
-			args:    []Value{NewInt(100)},
+			args:    []Value{NewInt(500)},
 			wantErr: "recursion depth exceeded",
 		},
 		{

@@ -78,7 +78,7 @@ end
 func TestBignumPowerPreflightRejectsInConstantSpace(t *testing.T) {
 	t.Parallel()
 	// The projected result of 2 ** 10_000_000_000 is ~1.25GB; the preflight
-	// must reject it against the default 64KB quota before any allocation.
+	// must reject it against the default 16MiB quota before any allocation.
 	// (If the preflight regressed, this test would OOM or hang rather than
 	// fail an assertion.)
 	script := compileScriptWithConfig(t, Config{}, `

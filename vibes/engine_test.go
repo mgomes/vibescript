@@ -109,7 +109,7 @@ func TestEngineConfigSummaryDefaults(t *testing.T) {
 	t.Parallel()
 
 	engine := vibes.MustNewEngine(vibes.Config{})
-	want := "steps=50000 memory=65536B recursion=64 strict_effects=false tasks=4/64"
+	want := "steps=1000000 memory=16777216B recursion=256 strict_effects=false tasks=4/64"
 	if got := engine.ConfigSummary(); got != want {
 		t.Fatalf("ConfigSummary() = %q, want %q", got, want)
 	}

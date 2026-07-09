@@ -16,6 +16,10 @@ and the REPL) will default to `xhigh` — unlimited steps and memory — so it r
 the developer's own scripts like a normal interpreter. No profile leaves
 recursion uncapped: even `xhigh` keeps a finite recursion limit.
 
+The zero-value `Config` default resolves to the `low` profile, so an embedder
+that sets no quotas gets the bottom rung of the ladder as its budget, and `low`
+is the reproducible name for the default embedding sandbox.
+
 ## Context
 
 The embedding `Config` exposes the three quotas as independent integer knobs.
@@ -27,15 +31,15 @@ but bounded" run has to pick three correlated numbers, and a mismatched trio
 vocabulary for "a normal sandbox budget" versus "run it wide open."
 
 Second, zero was overloaded. A zero quota means "use the engine's conservative
-built-in default" (50,000 steps / 64 KiB / 64 recursion) — the safe posture for
-an untrusted embedding. That left no way to express "explicitly unbounded." A
-host could only tighten a ceiling, never lift one.
+built-in default" — the `low` profile (1,000,000 steps / 16 MiB / 256
+recursion), the lowest named sandbox budget. That left no way to express
+"explicitly unbounded." A host could only tighten a ceiling, never lift one.
 
 Those defaults are correct for an embedded sandbox but wrong for the CLI. The
 CLI runs the developer's own scripts on the developer's own machine; it is not a
 sandbox. CPU-heavy scripts — deep recursion, long loops, `fib(35)` — tripped the
-small embedding defaults out of the box, which is a poor first-run experience for
-a tool that is supposed to just run your code.
+bounded embedding defaults out of the box, which is a poor first-run experience
+for a tool that is supposed to just run your code.
 
 ## API Shape
 

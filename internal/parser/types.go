@@ -14,8 +14,8 @@ func resolveType(name string) (ast.TypeKind, bool) { return ast.ResolveType(name
 // and parseTypeShape. Without it, a deeply nested type annotation (e.g.
 // array<array<...>>) overflows the goroutine stack at parse time, an
 // uncatchable fatal that crashes the host. The cap is generous for real code
-// yet far below the stack-overflow threshold; it mirrors the runtime's default
-// RecursionLimit of 64.
+// yet far below the stack-overflow threshold. It guards parse-time type nesting
+// only, independent of the runtime's call-depth RecursionLimit.
 const maxTypeDepth = 64
 
 func (p *parser) parseTypeExpr() *ast.TypeExpr {
