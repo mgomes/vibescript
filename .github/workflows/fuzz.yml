@@ -46,7 +46,11 @@ jobs:
         env:
           VIBES_ESTIMATOR_VERIFY: ${{ matrix.mode == 'oracle' && '1' || '' }}
           VIBES_ENV_RECYCLE_VERIFY: ${{ matrix.mode == 'oracle' && '1' || '' }}
-        run: just fuzz "${{ github.event.inputs.fuzztime || '3m' }}"
+        # The oracle toggles are read only by the runtime package's test TestMain,
+        # so the oracle leg fuzzes only the runtime targets (scope=runtime); the
+        # ./cmd/vibes targets, a separate test binary, are covered by the coverage
+        # leg where the oracle would be off anyway.
+        run: just fuzz "${{ github.event.inputs.fuzztime || '3m' }}" "${{ matrix.mode == 'oracle' && 'runtime' || 'all' }}"
 
       - name: Upload new failing inputs
         if: failure()
