@@ -18,6 +18,42 @@ Useful flags:
 - `-module-path <dir>`: add module search paths for `require`.
 - `-e '<snippet>'`: evaluate an inline snippet without a script file.
 - `-watch`: re-run the script whenever it or its modules change.
+- `-profile <name>`: select a quota profile (see below; default `xhigh`).
+- `-step-quota` / `-memory-quota` / `-recursion-limit <n>`: override a single
+  profile quota (`-1` = unlimited; memory quota is in bytes).
+
+### Quota profiles
+
+Every execution runs under three quotas — a **step** quota (aborts runaway
+loops), a **memory** quota (bounds retained heap, enforced by the reachable-graph
+accounting), and a **recursion** limit (bounds call depth). The CLI selects a
+coherent bundle of all three with `-profile`:
+
+| Profile  | Step quota    | Memory quota | Recursion | Intended use                                  |
+| -------- | ------------- | ------------ | --------- | --------------------------------------------- |
+| `low`    | 1,000,000     | 16 MiB       | 256       | tight, untrusted embedded budget              |
+| `medium` | 20,000,000    | 128 MiB      | 1,000     | moderate embedded budget                      |
+| `high`   | 200,000,000   | 512 MiB      | 4,000     | generous embedded budget                      |
+| `xhigh`  | unlimited     | unlimited    | 10,000    | run like a normal interpreter (CLI default)   |
+
+`vibes run` and `vibes test` default to **`xhigh`**: the CLI runs your own
+scripts on your own machine, so it is not a sandbox — steps and memory are
+unlimited and only a finite recursion cap remains to catch infinite recursion.
+An unlimited memory quota skips the accounting walk entirely, so `xhigh` also
+avoids the sandbox's per-check cost.
+
+Layer `-step-quota`, `-memory-quota`, or `-recursion-limit` on top of a profile
+to override just that quota; unset overrides keep the profile's value. To
+measure or reproduce sandbox behaviour, for example, run under `xhigh` but with
+a real memory cap:
+
+```bash
+vibes run -memory-quota=$((512 * 1024 * 1024)) ./script.vibe
+```
+
+Hosts embedding the engine select the same bundles through the `vibes`
+package (`vibes.ProfileLow`/`Medium`/`High`/`XHigh`, `vibes.QuotaProfileByName`);
+see [Integrating Vibescript in Go](integration.md#quota-profiles).
 
 ### Inline evaluation (`-e`)
 
