@@ -54,6 +54,45 @@ typed adapters via `CallOptions.Capabilities`. Review
 `examples/capabilities/` and the test harness in `vibes/examples_test.go` for
 mocks you can repurpose.
 
+### Quota Profiles
+
+Each execution runs under three quotas set on `Config`: `StepQuota` (aborts
+runaway loops), `MemoryQuotaBytes` (bounds retained heap, enforced by the
+reachable-graph accounting), and `RecursionLimit` (bounds call depth). For each
+field a **positive** value is an explicit limit, `vibes.Unlimited` disables that
+quota, and a **zero** value selects the engine's conservative built-in default
+(50,000 steps / 64 KiB / 64). An unlimited memory quota skips the accounting
+walk entirely.
+
+Rather than tune the three fields by hand, select a coherent bundle with a named
+profile:
+
+| Profile              | Step quota  | Memory quota | Recursion |
+| -------------------- | ----------- | ------------ | --------- |
+| `vibes.ProfileLow`   | 1,000,000   | 16 MiB       | 256       |
+| `vibes.ProfileMedium`| 20,000,000  | 128 MiB      | 1,000     |
+| `vibes.ProfileHigh`  | 200,000,000 | 512 MiB      | 4,000     |
+| `vibes.ProfileXHigh` | unlimited   | unlimited    | 10,000    |
+
+Apply one to a `Config` with `ApplyTo` (it writes only the three quota fields,
+leaving the rest untouched), or resolve one from a user-supplied name:
+
+```go
+cfg := vibes.Config{StrictEffects: true}
+vibes.ProfileHigh.ApplyTo(&cfg)
+engine, err := vibes.NewEngine(cfg)
+
+// Or select by name (e.g. from a config file or flag):
+if p, ok := vibes.QuotaProfileByName(userChoice); ok {
+    p.ApplyTo(&cfg)
+}
+```
+
+`vibes.QuotaProfileNames()` returns the names in ascending order of generosity
+(`low`, `medium`, `high`, `xhigh`) for building help text or validation. The
+`vibes` CLI is built on the same profiles and defaults to `xhigh`; see
+[Tooling Commands](tooling.md#quota-profiles).
+
 ### Module Search Paths
 
 Set `Config.ModulePaths` to the directories that contain re-usable `.vibe`
