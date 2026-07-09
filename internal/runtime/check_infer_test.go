@@ -363,7 +363,7 @@ def takes_string(value: string)
 end
 
 def run(user: { name: string })
-  takes_string(user["nmae"])
+  takes_string(user["username"])
 end
 `)
 
@@ -407,10 +407,10 @@ def create_user(user: { name: string })
 end
 
 def run()
-  create_user({ nmae: "typo" })
+  create_user({ username: "typo" })
 end
 `)
-	requireCheckWarningContains(t, script, "call to create_user argument user expected { name: string }, got { nmae: string }")
+	requireCheckWarningContains(t, script, "call to create_user argument user expected { name: string }, got { username: string }")
 
 	requireNoCheckWarnings(t, compileScript(t, `
 def create_user(user: { name: string })
