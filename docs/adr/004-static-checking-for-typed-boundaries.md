@@ -20,7 +20,7 @@ To make boundary validation ergonomic, Vibescript will also add
 shape in one step, and the checker treats its result as that shape type.
 
 This is still gradual typing, with a substantially better inference engine. It
-is not a switch to Crystal's whole-program static model.
+is not a switch to whole-program static model.
 
 ## Context
 
