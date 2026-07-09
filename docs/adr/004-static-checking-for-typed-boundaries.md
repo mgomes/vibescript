@@ -165,7 +165,7 @@ known mismatches are static errors; unknowns defer to runtime contracts.
 
 ## Consequences
 
-Typed annotations become deployment-time contracts, not only runtime guards.
+Typed annotations become deployment-time contracts rather than runtime guards.
 Local contradictions that a user reasonably expects a type checker to catch are
 caught before execution, and AI-generated scripts get a tighter correction loop:
 wrong operators, wrong argument types, wrong return types, and shape mismatches
