@@ -664,6 +664,71 @@ end
 `))
 }
 
+func TestCheckInferDecidedExitsGateBlockLevelPaths(t *testing.T) {
+	t.Parallel()
+
+	// A begin body that provably exits never runs its else branch, so the
+	// dead branch must not report.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  flag = "yes"
+  begin
+    if flag
+      return 1
+    end
+  rescue
+    nil
+  else
+    takes_int("bad")
+  end
+end
+`))
+
+	// Branch fallthrough decisions propagate: when both arms exit (one by
+	// inferred decision), the statement after the if is unreachable.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(cond)
+  flag = "yes"
+  if cond
+    if flag
+      return 1
+    end
+  else
+    return 2
+  end
+  takes_int("bad")
+end
+`))
+
+	// An undecided body keeps the else branch reachable.
+	undecided := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  begin
+    if flag
+      return 1
+    end
+  rescue
+    nil
+  else
+    takes_int("bad")
+  end
+end
+`)
+	requireCheckWarningContains(t, undecided, "call to takes_int argument value expected int, got string")
+}
+
 func TestCheckInferDecidedExitsStopStatementLists(t *testing.T) {
 	t.Parallel()
 

@@ -281,15 +281,19 @@ func (c *scriptChecker) collectAssignLocalTypes(stmt *AssignStmt) {
 	})
 }
 
-func (c *scriptChecker) collectRequiredModuleExportsFromStatements(statements []Statement) {
+// collectRequiredModuleExportsFromStatements walks a statement list for
+// module collection and reports whether it can fall through, mirroring
+// checkStatements so unreachable requires stay unbound.
+func (c *scriptChecker) collectRequiredModuleExportsFromStatements(statements []Statement) bool {
 	for _, stmt := range statements {
 		c.collectRequiredModuleExportsFromStatement(stmt)
 		noFallthrough := c.stmtNoFallthroughInferred
 		c.stmtNoFallthroughInferred = false
 		if statementAlwaysExits(stmt) || noFallthrough {
-			return
+			return false
 		}
 	}
+	return true
 }
 
 func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement) {
@@ -338,8 +342,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 
 		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
 		if !conditionKnown || conditionTruthy {
-			c.collectRequiredModuleExportsFromStatements(typed.Consequent)
-			if !blockAlwaysExits(typed.Consequent) {
+			if c.collectRequiredModuleExportsFromStatements(typed.Consequent) {
 				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -358,8 +361,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			falseScopeState = c.snapshotScopeState()
 			branchTruthy, branchKnown := c.inferredConditionTruthiness(elseIf.Condition)
 			if !branchKnown || branchTruthy {
-				c.collectRequiredModuleExportsFromStatements(elseIf.Consequent)
-				if !blockAlwaysExits(elseIf.Consequent) {
+				if c.collectRequiredModuleExportsFromStatements(elseIf.Consequent) {
 					fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 					fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 				}
@@ -373,8 +375,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		}
 		c.restoreModuleCollectionState(falseState)
 		c.restoreScopeState(falseScopeState)
-		c.collectRequiredModuleExportsFromStatements(typed.Alternate)
-		if len(typed.Alternate) == 0 || !blockAlwaysExits(typed.Alternate) {
+		if c.collectRequiredModuleExportsFromStatements(typed.Alternate) {
 			fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 			fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 		}
@@ -430,10 +431,8 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		fallthroughStates := make([]checkModuleCollectionState, 0, 2)
 		fallthroughScopeStates := make([]checkScopeState, 0, 2)
 
-		c.collectRequiredModuleExportsFromStatements(typed.Body)
-		if !blockAlwaysExits(typed.Body) {
-			c.collectRequiredModuleExportsFromStatements(typed.Else)
-			if len(typed.Else) == 0 || !blockAlwaysExits(typed.Else) {
+		if c.collectRequiredModuleExportsFromStatements(typed.Body) {
+			if c.collectRequiredModuleExportsFromStatements(typed.Else) {
 				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -449,9 +448,9 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			c.restoreModuleCollectionState(baseState)
 			c.restoreScopeState(baseScopeState)
 			popScope := c.pushRescueScope(clause)
-			c.collectRequiredModuleExportsFromStatements(clause.Body)
+			clauseFallsThrough := c.collectRequiredModuleExportsFromStatements(clause.Body)
 			popScope()
-			if !blockAlwaysExits(clause.Body) {
+			if clauseFallsThrough {
 				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -459,6 +458,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.mergeModuleCollectionStates(baseState, fallthroughStates)
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
 		c.collectRequiredModuleExportsFromStatements(typed.Ensure)
+		c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
 	case *ClassStmt:
 		c.collectRequiredModuleExportsFromClassBody(typed.Body)
 	}
@@ -1859,15 +1859,20 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 	})
 }
 
-func (c *scriptChecker) checkStatements(function string, returnType *TypeExpr, statements []Statement) {
+// checkStatements walks a statement list and reports whether it can fall
+// through: false when some statement provably exits, statically or from
+// inferred branch decisions, so block-level callers gate dead paths the
+// same way the list itself stops.
+func (c *scriptChecker) checkStatements(function string, returnType *TypeExpr, statements []Statement) bool {
 	for _, stmt := range statements {
 		c.checkStatement(function, returnType, stmt)
 		noFallthrough := c.stmtNoFallthroughInferred
 		c.stmtNoFallthroughInferred = false
 		if statementAlwaysExits(stmt) || noFallthrough {
-			return
+			return false
 		}
 	}
+	return true
 }
 
 func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, stmt Statement) {
@@ -1954,8 +1959,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
 		if !conditionKnown || conditionTruthy {
 			c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
-			c.checkStatements(function, returnType, typed.Consequent)
-			if !blockAlwaysExits(typed.Consequent) {
+			if c.checkStatements(function, returnType, typed.Consequent) {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -1981,8 +1985,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			branchTruthy, branchKnown := c.inferredConditionTruthiness(elseIf.Condition)
 			if !branchKnown || branchTruthy {
 				c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, true)
-				c.checkStatements(function, returnType, elseIf.Consequent)
-				if !blockAlwaysExits(elseIf.Consequent) {
+				if c.checkStatements(function, returnType, elseIf.Consequent) {
 					fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 					fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 				}
@@ -2001,8 +2004,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		c.restoreRuntimeState(falseRuntimeState)
 		c.restoreScopeState(falseScopeState)
-		c.checkStatements(function, returnType, typed.Alternate)
-		if len(typed.Alternate) == 0 || !blockAlwaysExits(typed.Alternate) {
+		if c.checkStatements(function, returnType, typed.Alternate) {
 			fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 			fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 		}
@@ -2081,10 +2083,8 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.deferredReturnSites = &deferredSites
 		}
 
-		c.checkStatements(function, branchReturnType, typed.Body)
-		if !blockAlwaysExits(typed.Body) {
-			c.checkStatements(function, branchReturnType, typed.Else)
-			if len(typed.Else) == 0 || !blockAlwaysExits(typed.Else) {
+		if c.checkStatements(function, branchReturnType, typed.Body) {
+			if c.checkStatements(function, branchReturnType, typed.Else) {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -2112,7 +2112,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				popEarlier = c.pushScope(scope)
 			}
 			popScope := c.pushRescueScope(clause)
-			c.checkStatements(function, branchReturnType, clause.Body)
+			clauseFallsThrough := c.checkStatements(function, branchReturnType, clause.Body)
 			popScope()
 			popEarlier()
 			clauseLocals := map[string]struct{}{}
@@ -2121,7 +2121,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			for name := range clauseLocals {
 				earlierClauseLocals[name] = struct{}{}
 			}
-			if !blockAlwaysExits(clause.Body) {
+			if clauseFallsThrough {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -2147,6 +2147,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if armCapture && previousSites != nil {
 			*previousSites = append(*previousSites, deferredSites...)
 		}
+		// No fallthrough path means the code after the block is
+		// unreachable: deferred returns exit through the ensure.
+		c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
 	}
 }
 
@@ -2384,6 +2387,9 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		}
 		if typed.BlockArg != nil {
 			c.checkExpressionWithAuto(function, typed.BlockArg, false)
+			// A block argument evaluates with the other arguments, before
+			// dispatch, so its require effects are live for the call checks.
+			c.collectRuntimeRequireCallExportsFromExpression(typed.BlockArg)
 		}
 		previousFacts := c.callArgumentFacts
 		c.callArgumentFacts = argumentFacts

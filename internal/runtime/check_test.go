@@ -1421,6 +1421,55 @@ shout(1)`, "main")
 	}
 }
 
+func TestCheckCallBlockArgumentRequireEffectsApply(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "status_helpers.vibe"), []byte(`
+enum Status
+  Draft
+end
+
+def cb
+  nil
+end
+`), 0o644); err != nil {
+		t.Fatalf("write status_helpers module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{root}})
+
+	// The block argument's require binds its exports with the other
+	// arguments, before dispatch, so the call site's annotation resolves.
+	// use's own definition walk stays unseeded (the require is not
+	// top-level), so only the call-site diagnostics in run matter here.
+	script := compileScriptWithEngine(t, engine, `
+def use(value: Status, &blk)
+  value
+end
+
+def run
+  use(:draft, &require("status_helpers").cb)
+end
+`)
+	for _, warning := range script.CheckWarnings() {
+		if warning.Function == "run" {
+			t.Fatalf("CheckWarnings() = %#v, want none in run", warning)
+		}
+	}
+
+	// And the resolved annotation validates the argument at the call.
+	invalid := compileScriptWithEngine(t, engine, `
+def use(value: Status, &blk)
+  value
+end
+
+def run
+  use(:bogus, &require("status_helpers").cb)
+end
+`)
+	requireCheckWarningContains(t, invalid, "call to use argument value expected Status")
+}
+
 func TestCheckCallArgumentRequireEffectsApplyInOrder(t *testing.T) {
 	t.Parallel()
 
