@@ -542,6 +542,27 @@ end
 `))
 }
 
+func TestCheckInferReturnSeesExpressionSideEffects(t *testing.T) {
+	t.Parallel()
+
+	// The returned expression's own append applies before the value leaves
+	// the function.
+	script := compileScript(t, `
+def run -> array<int>
+  values = [1]
+  return values << "x"
+end
+`)
+	requireCheckWarningContains(t, script, "return value expected array<int>, got array<int | string>")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run -> array<int>
+  values = [1]
+  return values << 2
+end
+`))
+}
+
 func TestCheckInferRestArgumentsUseInferredFacts(t *testing.T) {
 	t.Parallel()
 

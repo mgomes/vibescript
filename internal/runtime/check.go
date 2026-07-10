@@ -1619,10 +1619,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case nil:
 		return
 	case *ReturnStmt:
+		// The return value's own side effects (a shovel append, for example)
+		// apply before the value leaves the function, so the expression is
+		// walked before the annotation check reads its inferred type.
+		c.checkExpression(function, typed.Value)
 		if returnType != nil {
 			c.checkReturnStatementType(function, returnType, typed)
 		}
-		c.checkExpression(function, typed.Value)
 	case *RaiseStmt:
 		// raise RuntimeError, "boom" resolves a bare canonical error class
 		// name without an env binding, so it is not an identifier reference.
