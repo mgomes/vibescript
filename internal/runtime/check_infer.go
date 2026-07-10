@@ -422,8 +422,22 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 				target.Name, formatTypeExpr(current), formatTypeExpr(next))
 		}
 		c.bindLocalType(target.Name, next)
-		if source, isIdent := stmt.Value.(*Identifier); isIdent && next != nil && typeExprHasContainerArm(next) {
-			c.linkContainerAlias(target.Name, source.Name)
+		switch stmt.Value.(type) {
+		case *Identifier:
+			if next != nil && typeExprHasContainerArm(next) {
+				if root, ok := rootIdentifierName(stmt.Value); ok {
+					c.linkContainerAlias(target.Name, root)
+				}
+			}
+		case *IndexExpr, *MemberExpr:
+			// A projection may hand out a nested mutable container, so the
+			// root's structural facts share its fate; unknown projections
+			// link conservatively.
+			if next == nil || typeExprHasContainerArm(next) {
+				if root, ok := rootIdentifierName(stmt.Value); ok {
+					c.linkContainerAlias(target.Name, root)
+				}
+			}
 		}
 	case *DestructureTarget:
 		for _, element := range target.Elements {

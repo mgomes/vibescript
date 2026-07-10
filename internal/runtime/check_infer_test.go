@@ -1506,6 +1506,40 @@ end
 	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int")
 }
 
+func TestCheckInferProjectedContainerAliases(t *testing.T) {
+	t.Parallel()
+
+	// child shares the nested container inside user, so mutating through
+	// child drops user's stale nested field claim (which would otherwise
+	// contradict a boundary the runtime accepts).
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  user = JSON.parse_as(raw, { child: { name: string } })
+  child = user["child"]
+  child["name"] = 1
+  takes_int(user["child"]["name"])
+end
+`))
+
+	// Without the mutation the nested claim stays checkable.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  user = JSON.parse_as(raw, { child: { name: string } })
+  child = user["child"]
+  takes_int(user["child"]["name"])
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+}
+
 func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
 	t.Parallel()
 
