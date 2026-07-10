@@ -286,6 +286,48 @@ shout(1)`)
 	}
 }
 
+func TestCheckCommandChecksEntrypointCalleesInCallOrder(t *testing.T) {
+	t.Parallel()
+	moduleDir := t.TempDir()
+	module := `def shout(value: string)
+  value
+end`
+	if err := os.WriteFile(filepath.Join(moduleDir, "helpers.vibe"), []byte(module+"\n"), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+
+	// A callee invoked before the require runs without the exports, so the
+	// export's contract must not resolve early — matching the direct
+	// top-level call semantics.
+	before := writeVibeScript(t, `def run
+  shout(1)
+end
+
+run
+require "helpers"`)
+	out, err := captureStdout(t, func() error {
+		return checkCommand([]string{"-module-path", moduleDir, before})
+	})
+	if err != nil {
+		t.Fatalf("checkCommand callee-before-require err = %v (out %q), want nil", err, out)
+	}
+
+	// The same callee after the require checks under the loaded exports.
+	after := writeVibeScriptNamed(t, "after.vibe", `require "helpers"
+
+def run
+  shout(1)
+end
+
+run`)
+	out, err = captureStdout(t, func() error {
+		return checkCommand([]string{"-module-path", moduleDir, after})
+	})
+	if err == nil || !strings.Contains(out, "call to shout argument value expected string, got int") {
+		t.Fatalf("checkCommand callee-after-require = %v (out %q), want argument warning", err, out)
+	}
+}
+
 func TestCheckCommandSeedsInferredGuaranteedEntrypointRequires(t *testing.T) {
 	t.Parallel()
 	moduleDir := t.TempDir()

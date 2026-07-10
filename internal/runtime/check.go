@@ -1121,14 +1121,26 @@ func (c *scriptChecker) checkScript() {
 	// must not resolve the exports early. Its own walk binds each require
 	// as it reaches it.
 	entrypoint := c.script.entrypoint
+	entrypointReached := make(map[*ScriptFunction]struct{})
 	if entry := c.script.functions[entrypoint]; entrypoint != "" && entry != nil {
 		c.withFreshRuntimeTypeRootForCallable(entry, func() {
-			c.checkFunction(entrypoint, entry)
+			// Functions the top-level code calls run under the runtime root
+			// as it exists at each call, so they are checked reachably here
+			// with that root — a callee invoked before a later require must
+			// not resolve its exports — and skipped in the seeded pass.
+			c.withReachableCallChecks(func() {
+				c.markReachableFunctionChecked(entry)
+				c.checkFunction(entrypoint, entry)
+				c.drainReachableFunctions(entrypointReached)
+			})
 		})
 	}
 	c.seedEntrypointRequireExports()
 	for _, fn := range c.sortedScriptFunctions() {
 		if entrypoint != "" && fn.Name == entrypoint {
+			continue
+		}
+		if _, reached := entrypointReached[fn]; reached {
 			continue
 		}
 		c.withFreshRuntimeTypeRootForCallable(fn, func() {
@@ -1347,6 +1359,21 @@ func (c *scriptChecker) enqueueReachableFunction(label string, fn *ScriptFunctio
 	})
 }
 
+// enqueueReachableIdentifierCall covers bare auto-calls: a top-level `run`
+// dispatches like run(), so the callee checks under the call-time runtime
+// root exactly as a spelled-out call does.
+func (c *scriptChecker) enqueueReachableIdentifierCall(ident *Identifier) {
+	if !c.checkReachableCalls || ident == nil {
+		return
+	}
+	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		return
+	}
+	if fn, ok := c.script.functions[ident.Name]; ok {
+		c.enqueueReachableFunction(ident.Name, fn)
+	}
+}
+
 func (c *scriptChecker) markReachableFunctionChecked(fn *ScriptFunction) bool {
 	if fn == nil {
 		return false
@@ -1371,9 +1398,19 @@ func (c *scriptChecker) reachableFunctionCheckKey(fn *ScriptFunction) string {
 }
 
 func (c *scriptChecker) checkReachableFunctions() {
+	c.drainReachableFunctions(nil)
+}
+
+// drainReachableFunctions checks every enqueued reachable callee under its
+// call-time runtime state, recording the drained functions when the caller
+// needs to know which ones were covered.
+func (c *scriptChecker) drainReachableFunctions(reached map[*ScriptFunction]struct{}) {
 	for len(c.reachableFuncQueue) > 0 {
 		next := c.reachableFuncQueue[0]
 		c.reachableFuncQueue = c.reachableFuncQueue[1:]
+		if reached != nil {
+			reached[next.fn] = struct{}{}
+		}
 		scopeState := c.snapshotScopeState()
 		c.restoreRuntimeState(next.runtimeState)
 		c.scopes = nil
@@ -2258,6 +2295,9 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		return
 	case *Identifier:
 		c.checkIdentifierResolved(function, typed)
+		if autoCall {
+			c.enqueueReachableIdentifierCall(typed)
+		}
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
 			c.checkExpressionWithAuto(function, elem, true)
