@@ -302,6 +302,32 @@ end
 	requireCheckWarningContains(t, script, "call to create_user argument name expected string, got int")
 }
 
+func TestCheckJSONParseAsRejectsKnownNonShapeArguments(t *testing.T) {
+	t.Parallel()
+
+	scalar := compileScript(t, `
+def run(raw: string)
+  JSON.parse_as(raw, 1)
+end
+`)
+	requireCheckWarningContains(t, scalar, "call to JSON.parse_as expects a shape literal as its second argument, got int")
+
+	// A hash of data values is a hash at runtime, not a shape.
+	dataHash := compileScript(t, `
+def run(raw: string)
+  JSON.parse_as(raw, { name: "Ada" })
+end
+`)
+	requireCheckWarningContains(t, dataHash, "call to JSON.parse_as expects a shape literal as its second argument")
+
+	// Dynamic schemas stay a runtime concern.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run(raw: string, schema)
+  JSON.parse_as(raw, schema)
+end
+`))
+}
+
 func TestCheckJSONParseAsArity(t *testing.T) {
 	t.Parallel()
 

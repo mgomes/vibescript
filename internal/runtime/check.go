@@ -3681,6 +3681,33 @@ func (c *scriptChecker) checkCall(function string, call *CallExpr) {
 		return
 	}
 	c.checkBuiltinCallShape(function, staticCallViewFor(call, target), target.name, target.spec)
+	if target.name == "JSON.parse_as" {
+		c.checkParseAsShapeArgument(function, call)
+	}
+}
+
+// checkParseAsShapeArgument reports a JSON.parse_as call whose second
+// argument is provably not a shape value — a scalar, a data hash, or any
+// other fully known non-shape type — since the runtime always rejects it.
+func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExpr) {
+	if len(call.Args) != 2 || callExpandsArguments(call) {
+		return
+	}
+	arg := call.Args[1]
+	inferred, captured := c.callArgumentFacts[arg]
+	if !captured {
+		inferred = c.inferExpressionType(arg)
+	}
+	if inferred == nil {
+		return
+	}
+	if _, isShape := shapeValuePayload(inferred); isShape {
+		return
+	}
+	if arms, ok := typeExprArms(inferred, 0); !ok || len(arms) == 0 {
+		return
+	}
+	c.add(function, arg.Pos(), "call to JSON.parse_as expects a shape literal as its second argument, got %s", formatTypeExpr(inferred))
 }
 
 // callExpandsArguments reports whether a call carries a positional or
