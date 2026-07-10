@@ -284,6 +284,29 @@ end
 	}
 }
 
+func TestCheckInferClassBodyPredeclareShadowsShapeLeaves(t *testing.T) {
+	t.Parallel()
+
+	// A class-body assignment target predeclares before the body runs, so
+	// a target named after a type shadows the leaf: the braces stay a hash
+	// at runtime and the checker must not bind a shape-value fact that
+	// contradicts hash-typed boundaries.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_hash(value: hash<symbol, any>)
+  value
+end
+
+class Api
+  string = { name: string }
+  takes_hash(string)
+end
+
+def run
+  Api.new
+end
+`))
+}
+
 func TestCheckInferSelfShadowDistinguishesMemberKind(t *testing.T) {
 	t.Parallel()
 

@@ -450,6 +450,10 @@ func (c *scriptChecker) collectRequiredModuleExportsFromClassBody(body []Stateme
 	}
 	restoreInference := c.withIsolatedLocalInference()
 	defer restoreInference()
+	names := make(map[string]struct{})
+	collectOwnScopeNames(body, names)
+	popUnion := c.pushLocalNameUnion(names)
+	defer popUnion()
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 	c.collectRequiredModuleExportsFromStatements(body)
@@ -1401,6 +1405,13 @@ func (c *scriptChecker) checkRuntimeClassBody(classDef *ClassDef, suppressWarnin
 		defer c.withFreshLocalInferenceScope()()
 		popScope := c.pushScope(make(map[string]struct{}))
 		defer popScope()
+		// Class-body assignment targets predeclare before any statement
+		// evaluates, so a target named after a type shadows that leaf for
+		// the whole body, exactly like function locals.
+		names := make(map[string]struct{})
+		collectOwnScopeNames(classDef.Body, names)
+		popUnion := c.pushLocalNameUnion(names)
+		defer popUnion()
 		// Class bodies run with self bound to the class, so bare identifiers
 		// can resolve through implicit self class members.
 		previousSelf := c.selfScope
