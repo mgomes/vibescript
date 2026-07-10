@@ -3830,11 +3830,14 @@ func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExp
 	if inferred == nil {
 		return
 	}
-	if _, isShape := shapeValuePayload(inferred); isShape {
+	arms, ok := typeExprArms(inferred, 0)
+	if !ok || len(arms) == 0 {
 		return
 	}
-	if arms, ok := typeExprArms(inferred, 0); !ok || len(arms) == 0 {
-		return
+	for _, arm := range arms {
+		if _, isShape := shapeValuePayload(arm); isShape {
+			return
+		}
 	}
 	c.add(function, arg.Pos(), "call to JSON.parse_as expects a shape literal as its second argument, got %s", formatTypeExpr(inferred))
 }

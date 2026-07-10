@@ -470,6 +470,58 @@ build`, "<script>")
 	}
 }
 
+func TestCheckShapeFactsContradictTypedBoundaries(t *testing.T) {
+	t.Parallel()
+
+	// A first-class shape value satisfies no annotation but any, so a
+	// typed parameter rejects it statically like the runtime does.
+	script := compileScript(t, `
+def wants_hash(x: hash<symbol, any>)
+  x
+end
+
+def run()
+  wants_hash({ name: string })
+end
+`)
+	requireCheckWarningContains(t, script, "call to wants_hash argument x expected hash<symbol, any>")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def wants_any(x: any)
+  x
+end
+
+def run()
+  wants_any({ name: string })
+end
+`))
+
+	// Known key representations contradict disjoint hash key types: a
+	// parse_as result is string-keyed.
+	keys := compileScript(t, `
+def sym_hash(x: hash<symbol, any>)
+  x
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string })
+  sym_hash(body)
+end
+`)
+	requireCheckWarningContains(t, keys, "call to sym_hash argument x expected hash<symbol, any>, got { name: string }")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def str_hash(x: hash<string, string>)
+  x
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string })
+  str_hash(body)
+end
+`))
+}
+
 func TestCheckJSONParseAsArity(t *testing.T) {
 	t.Parallel()
 

@@ -774,6 +774,20 @@ func shapeVsTypedHashDisjoint(shape, hash *TypeExpr) bool {
 	if len(hash.TypeArgs) != 2 {
 		return false
 	}
+	// A known key representation contradicts a disjoint hash key type: a
+	// string-keyed store never satisfies hash<symbol, ...> and vice versa.
+	if len(shape.Shape) > 0 {
+		var keyType *TypeExpr
+		switch shape.Name {
+		case shapeKeysStringMarker:
+			keyType = checkTypeString
+		case shapeKeysSymbolMarker:
+			keyType = checkTypeSymbol
+		}
+		if keyType != nil && typeExprsDisjoint(keyType, hash.TypeArgs[0]) {
+			return true
+		}
+	}
 	valueType := hash.TypeArgs[1]
 	for _, field := range shape.Shape {
 		if typeExprsDisjoint(field, valueType) {
@@ -1467,7 +1481,12 @@ func typeExprArms(ty *TypeExpr, depth int) ([]*TypeExpr, bool) {
 	var arms []*TypeExpr
 	switch ty.Kind {
 	case TypeAny, TypeUnknown:
-		return nil, false
+		if _, isShapeValue := shapeValuePayload(ty); !isShapeValue {
+			return nil, false
+		}
+		// A first-class shape value is a concrete runtime kind and takes
+		// part in disjointness like any other arm.
+		arms = append(arms, ty)
 	case TypeUnion:
 		for _, option := range ty.Union {
 			sub, ok := typeExprArms(option, depth+1)
@@ -1492,6 +1511,15 @@ func typeExprArms(ty *TypeExpr, depth int) ([]*TypeExpr, bool) {
 }
 
 func typeArmPairDisjoint(x, y *TypeExpr) bool {
+	// A first-class shape value satisfies no annotation but any (the
+	// runtime has no kind that matches it), and overlaps another shape
+	// value.
+	if _, isShapeValue := shapeValuePayload(x); isShapeValue {
+		return shapeValueArmDisjoint(y)
+	}
+	if _, isShapeValue := shapeValuePayload(y); isShapeValue {
+		return shapeValueArmDisjoint(x)
+	}
 	kx, ky := x.Kind, y.Kind
 	if kx == TypeEnum || ky == TypeEnum || kx == TypeAny || ky == TypeAny ||
 		kx == TypeUnknown || ky == TypeUnknown {
@@ -1522,6 +1550,17 @@ func typeArmPairDisjoint(x, y *TypeExpr) bool {
 		return literalArrayDisjoint(x, y) || literalArrayDisjoint(y, x)
 	}
 	return kx != ky
+}
+
+func shapeValueArmDisjoint(other *TypeExpr) bool {
+	if _, isShapeValue := shapeValuePayload(other); isShapeValue {
+		return false
+	}
+	switch other.Kind {
+	case TypeAny, TypeUnknown, TypeEnum:
+		return false
+	}
+	return true
 }
 
 // shapeTypesDisjoint compares two exact shapes: differing key sets or any

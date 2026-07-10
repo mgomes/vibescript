@@ -1022,13 +1022,16 @@ end
 `)
 	requireCheckWarningContains(t, script, "call to configure argument opts expected hash<string, int>, got { limit: string }")
 
+	// A string-keyed literal with compatible values satisfies the boundary;
+	// a label-keyed literal is symbol-keyed and now contradicts the string
+	// key type just as the runtime does.
 	requireNoCheckWarnings(t, compileScript(t, `
 def configure(opts: hash<string, int>)
   opts
 end
 
 def run()
-  opts = { limit: 3 }
+  opts = { "limit" => 3 }
   configure(opts)
   configure({})
 end
