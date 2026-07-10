@@ -255,6 +255,37 @@ end`
 	}
 }
 
+func TestCheckCommandRespectsEntrypointRequireOrder(t *testing.T) {
+	t.Parallel()
+	moduleDir := t.TempDir()
+	module := `def shout(value: string)
+  value
+end`
+	if err := os.WriteFile(filepath.Join(moduleDir, "helpers.vibe"), []byte(module+"\n"), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+	// A top-level call before the require runs without the exports, so the
+	// export's contract must not resolve early (matching run -check); the
+	// same bad call after the require reports.
+	before := writeVibeScript(t, `shout(1)
+require "helpers"`)
+	out, err := captureStdout(t, func() error {
+		return checkCommand([]string{"-module-path", moduleDir, before})
+	})
+	if err != nil {
+		t.Fatalf("checkCommand before-require err = %v (out %q), want nil", err, out)
+	}
+
+	after := writeVibeScriptNamed(t, "after.vibe", `require "helpers"
+shout(1)`)
+	out, err = captureStdout(t, func() error {
+		return checkCommand([]string{"-module-path", moduleDir, after})
+	})
+	if err == nil || !strings.Contains(out, "call to shout argument value expected string, got int") {
+		t.Fatalf("checkCommand after-require = %v (out %q), want argument warning", err, out)
+	}
+}
+
 func TestCheckCommandRejectsOversizedScript(t *testing.T) {
 	t.Parallel()
 	path := writeOversizedScript(t, "script.vibe")

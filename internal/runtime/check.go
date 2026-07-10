@@ -1029,8 +1029,21 @@ func (c *scriptChecker) withRuntimeModuleCollection(collect func()) {
 }
 
 func (c *scriptChecker) checkScript() {
+	// The entrypoint executes its statements in order, so it is checked
+	// before the require-export seed: a top-level call before its require
+	// must not resolve the exports early. Its own walk binds each require
+	// as it reaches it.
+	entrypoint := c.script.entrypoint
+	if entry := c.script.functions[entrypoint]; entrypoint != "" && entry != nil {
+		c.withFreshRuntimeTypeRootForCallable(entry, func() {
+			c.checkFunction(entrypoint, entry)
+		})
+	}
 	c.seedEntrypointRequireExports()
 	for _, fn := range c.sortedScriptFunctions() {
+		if entrypoint != "" && fn.Name == entrypoint {
+			continue
+		}
 		c.withFreshRuntimeTypeRootForCallable(fn, func() {
 			c.checkFunction(fn.Name, fn)
 		})
