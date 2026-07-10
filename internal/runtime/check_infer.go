@@ -1338,11 +1338,6 @@ func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 	if len(lit.Pairs) == 0 {
 		return false
 	}
-	// Inside a method or class body a bare identifier may resolve through
-	// implicit self, which the checker cannot rule out statically.
-	if c.selfScope {
-		return true
-	}
 	shadowed := false
 	walkShapeTypeNames(lit.ShapeType, func(name string) {
 		if shadowed {
@@ -1350,11 +1345,31 @@ func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 		}
 		if c.identifierShadowed(name) || c.localNameUnionHas(name) ||
 			c.hostGlobalShadows(name) || c.typeRootResolvesName(name) ||
-			c.hostBuiltinOverrides(name) {
+			c.hostBuiltinOverrides(name) || c.implicitSelfShadows(name) {
 			shadowed = true
 		}
 	})
 	return shadowed
+}
+
+// implicitSelfShadows reports whether a bare identifier would resolve
+// through implicit self in the current context: only members the receiver
+// class actually defines shadow, so shape literals in unrelated methods keep
+// their facts. An unknown receiver context stays conservative.
+func (c *scriptChecker) implicitSelfShadows(name string) bool {
+	if !c.selfScope {
+		return false
+	}
+	if c.selfClass == nil {
+		return true
+	}
+	if _, ok := c.selfClass.Methods[name]; ok {
+		return true
+	}
+	if _, ok := c.selfClass.ClassMethods[name]; ok {
+		return true
+	}
+	return false
 }
 
 // typeRootResolvesName mirrors the runtime's env.Get chain walk: engine

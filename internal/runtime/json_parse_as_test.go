@@ -284,6 +284,31 @@ end
 	}
 }
 
+func TestCheckInferParseAsShapesInsideMethods(t *testing.T) {
+	t.Parallel()
+
+	// A method whose class defines no colliding member keeps the shape
+	// facts, so parse_as flows are checked inside methods too.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+class Api
+  def load(raw: string)
+    body = JSON.parse_as(raw, { age: string })
+    takes_int(body["age"])
+  end
+end
+
+def run(raw: string)
+  Api.new.load(raw)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+}
+
 func TestCheckInferJSONParseAsShapeThroughLocal(t *testing.T) {
 	t.Parallel()
 

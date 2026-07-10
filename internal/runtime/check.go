@@ -132,6 +132,8 @@ type scriptChecker struct {
 	checkedReachableFuncs   map[string]struct{}
 	reachableFuncQueue      []reachableFunction
 	selfScope               bool
+	selfClass               *ClassDef
+	selfScopeFnClasses      map[*ScriptFunction]*ClassDef
 	localNameUnions         []map[string]struct{}
 	nameFactsCache          *checkNameFacts
 	selfScopeFns            map[*ScriptFunction]struct{}
@@ -1317,8 +1319,13 @@ func (c *scriptChecker) checkRuntimeClassBody(classDef *ClassDef, suppressWarnin
 		// Class bodies run with self bound to the class, so bare identifiers
 		// can resolve through implicit self members the checker cannot see.
 		previousSelf := c.selfScope
+		previousClass := c.selfClass
 		c.selfScope = true
-		defer func() { c.selfScope = previousSelf }()
+		c.selfClass = classDef
+		defer func() {
+			c.selfScope = previousSelf
+			c.selfClass = previousClass
+		}()
 		c.checkStatements(classDef.Name+".<class body>", nil, classDef.Body)
 	}
 	if !suppressWarnings {
