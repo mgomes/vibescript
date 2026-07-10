@@ -1054,6 +1054,10 @@ func (c *scriptChecker) seedEntrypointRequireExports() {
 	c.withSuppressedWarnings(func() {
 		c.collectFunctionRequiredModuleExports(entry)
 	})
+	// Annotation validation resolves against each function's fresh runtime
+	// root, so the seeded exports (required enums used in annotations, for
+	// example) chain in as that root's parent.
+	c.runtimeTypeRootParent = cloneCheckRoot(c.typeRoot)
 }
 
 func (c *scriptChecker) checkFunctionExecution(target checkTarget) {

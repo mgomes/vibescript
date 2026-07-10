@@ -175,6 +175,36 @@ end`
 	}
 }
 
+func TestCheckCommandResolvesRequiredTypesInAnnotations(t *testing.T) {
+	t.Parallel()
+	moduleDir := t.TempDir()
+	module := `enum Status
+  Draft
+end`
+	if err := os.WriteFile(filepath.Join(moduleDir, "helpers.vibe"), []byte(module+"\n"), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+	// The annotation lives in a function nothing invokes: the required
+	// enum must resolve in the per-function runtime roots too, not warn as
+	// an unknown type.
+	script := `require "helpers"
+
+def advance(status: Status) -> Status
+  status
+end`
+	scriptPath := writeVibeScript(t, script)
+
+	out, err := captureStdout(t, func() error {
+		return checkCommand([]string{"-module-path", moduleDir, scriptPath})
+	})
+	if err != nil {
+		t.Fatalf("checkCommand err = %v, want nil", err)
+	}
+	if !strings.Contains(out, "No issues found") {
+		t.Fatalf("checkCommand stdout = %q, want no issues", out)
+	}
+}
+
 func TestCheckCommandRejectsOversizedScript(t *testing.T) {
 	t.Parallel()
 	path := writeOversizedScript(t, "script.vibe")
