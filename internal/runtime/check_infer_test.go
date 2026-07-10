@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -1261,6 +1262,71 @@ def run()
   configure({})
 end
 `))
+}
+
+func TestCheckInferPartialArrayWitnesses(t *testing.T) {
+	t.Parallel()
+
+	// A known bad element stays a witness even when siblings are unknown.
+	script := compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run(dynamic)
+  ints([dynamic, "bad"])
+end
+`)
+	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>")
+
+	// The partial union is not an element bound: indexing and iteration
+	// make no claims about the unknown members.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def ints(values: array<int>)
+  values
+end
+
+def run(dynamic)
+  xs = [dynamic, 1]
+  takes_string(xs[0])
+  ints([dynamic, 2])
+end
+`))
+}
+
+func TestCheckInferHostArgumentsSeedParams(t *testing.T) {
+	t.Parallel()
+
+	// A concrete host argument gives an unannotated parameter a fact, so
+	// per-call checks catch the guaranteed failure.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(x)
+  takes_int(x)
+end
+`)
+	warnings := script.CheckWarningsForCall("run", []Value{NewString("bad")}, CallOptions{})
+	found := false
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CheckWarningsForCall() = %v, want host-argument contradiction", warnings)
+	}
+
+	// A compatible argument stays silent.
+	if warnings := script.CheckWarningsForCall("run", []Value{NewInt(3)}, CallOptions{}); len(warnings) != 0 {
+		t.Fatalf("CheckWarningsForCall() = %v, want none", warnings)
+	}
 }
 
 func TestCheckInferShapeFactsRespectKeyKinds(t *testing.T) {

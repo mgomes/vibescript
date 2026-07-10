@@ -172,7 +172,7 @@ func (c *scriptChecker) forTargetElementType(stmt *ForStmt) *TypeExpr {
 	}
 	switch iterable.Kind {
 	case TypeArray:
-		if len(iterable.TypeArgs) == 1 {
+		if len(iterable.TypeArgs) == 1 && iterable.Name != literalPartialElementsMarker {
 			return iterable.TypeArgs[0]
 		}
 	case TypeRange:
@@ -472,6 +472,71 @@ func (c *scriptChecker) bindDestructureParamElementType(element DestructureEleme
 		for _, nested := range target.Elements {
 			c.bindDestructureParamElementType(nested)
 		}
+	}
+}
+
+// typeFactForValue derives a static fact from a concrete host-supplied
+// argument value, so per-call checks treat CLI and host arguments like local
+// literals. Kinds the inference does not model stay unknown.
+func typeFactForValue(val Value) *TypeExpr {
+	switch val.Kind() {
+	case KindNil:
+		return checkTypeNil
+	case KindBool:
+		return checkTypeBool
+	case KindInt:
+		return checkTypeInt
+	case KindFloat:
+		return checkTypeFloat
+	case KindString:
+		return checkTypeString
+	case KindSymbol:
+		return checkTypeSymbol
+	case KindRange:
+		return checkTypeRange
+	case KindDuration:
+		return checkTypeDuration
+	case KindTime:
+		return checkTypeTime
+	case KindMoney:
+		return checkTypeMoney
+	case KindArray:
+		elements := val.Array()
+		if len(elements) == 0 {
+			return checkTypeArray
+		}
+		arms := make([]*TypeExpr, 0, len(elements))
+		for _, element := range elements {
+			arm := typeFactForValue(element)
+			if arm == nil {
+				return checkTypeArray
+			}
+			arms = append(arms, arm)
+		}
+		union := unionTypeExprs(arms...)
+		if union == nil {
+			return checkTypeArray
+		}
+		return &TypeExpr{Kind: TypeArray, Name: literalElementsMarker, TypeArgs: []*TypeExpr{union}}
+	case KindHash, KindObject:
+		return checkTypeHash
+	case KindShape:
+		if shape := valueShape(val); shape != nil {
+			return shapeValueType(shape)
+		}
+	}
+	return nil
+}
+
+// bindParamValueFact refines an unannotated parameter with the concrete
+// argument value a per-call check received; annotated parameters keep their
+// declared seed (the value was validated against it already).
+func (c *scriptChecker) bindParamValueFact(param Param, val Value, present bool) {
+	if !present || param.Name == "" || param.Type != nil {
+		return
+	}
+	if fact := typeFactForValue(val); fact != nil {
+		c.bindLocalTypeInCurrentFrame(param.Name, fact)
 	}
 }
 
@@ -789,6 +854,11 @@ const (
 // does. It lives in the Name field, which TypeArray formatting ignores.
 const literalElementsMarker = "\x00literal-elements"
 
+// literalPartialElementsMarker tags an inferred array whose witnessed arms
+// are real elements but do not cover the whole literal (some elements were
+// unknown): sound for disjointness, unusable as an element bound.
+const literalPartialElementsMarker = "\x00literal-partial-elements"
+
 // inferArrayLiteralType infers a witnessed element union for an array
 // literal. Empty literals and literals with unknown elements stay a bare
 // array.
@@ -797,21 +867,33 @@ func (c *scriptChecker) inferArrayLiteralType(lit *ArrayLiteral) *TypeExpr {
 		return checkTypeArray
 	}
 	elements := make([]*TypeExpr, 0, len(lit.Elements))
+	sawUnknown := false
 	for _, element := range lit.Elements {
 		if _, splat := element.(*SplatArg); splat {
-			return checkTypeArray
+			sawUnknown = true
+			continue
 		}
 		elementType := c.inferExpressionType(element)
 		if elementType == nil {
-			return checkTypeArray
+			sawUnknown = true
+			continue
 		}
 		elements = append(elements, elementType)
+	}
+	if len(elements) == 0 {
+		return checkTypeArray
 	}
 	union := unionTypeExprs(elements...)
 	if union == nil {
 		return checkTypeArray
 	}
-	return &TypeExpr{Kind: TypeArray, Name: literalElementsMarker, TypeArgs: []*TypeExpr{union}}
+	marker := literalElementsMarker
+	if sawUnknown {
+		// Known elements stay witnesses even when others are unknown, but
+		// the union no longer bounds every element.
+		marker = literalPartialElementsMarker
+	}
+	return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
 }
 
 // applyShovelMutationFacts accounts for the in-place append the shovel
@@ -847,12 +929,13 @@ func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
 	// receiver likewise poisons, since the refinement cannot reach the
 	// other names sharing the array.
 	if c.mutationRegionDepth == 0 && len(c.typeAliases[ident.Name]) == 0 &&
-		current.Kind == TypeArray && current.Name == literalElementsMarker && len(current.TypeArgs) == 1 {
+		current.Kind == TypeArray && len(current.TypeArgs) == 1 &&
+		(current.Name == literalElementsMarker || current.Name == literalPartialElementsMarker) {
 		if appended := c.inferExpressionType(expr.Right); appended != nil {
 			if union := unionTypeExprs(current.TypeArgs[0], appended); union != nil {
 				c.bindLocalType(ident.Name, &TypeExpr{
 					Kind:     TypeArray,
-					Name:     literalElementsMarker,
+					Name:     current.Name,
 					TypeArgs: []*TypeExpr{union},
 				})
 				return
@@ -878,7 +961,10 @@ func unwrapShovelChain(expr Expression) Expression {
 // satisfy another array type: some witnessed element arm is disjoint from
 // the other side's declared element type.
 func literalArrayDisjoint(lit, other *TypeExpr) bool {
-	if lit.Name != literalElementsMarker || len(lit.TypeArgs) != 1 || len(other.TypeArgs) != 1 {
+	if lit.Name != literalElementsMarker && lit.Name != literalPartialElementsMarker {
+		return false
+	}
+	if len(lit.TypeArgs) != 1 || len(other.TypeArgs) != 1 {
 		return false
 	}
 	arms, ok := typeExprArms(lit.TypeArgs[0], 0)
@@ -1071,7 +1157,7 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 		}
 		return checkTypeNil
 	case TypeArray:
-		if len(objectType.TypeArgs) != 1 {
+		if len(objectType.TypeArgs) != 1 || objectType.Name == literalPartialElementsMarker {
 			return nil
 		}
 		indexKind, ok := staticOperandKind(c.inferExpressionType(index))
@@ -1255,11 +1341,12 @@ func (c *scriptChecker) binaryOperationOutcome(op TokenType, left, right *TypeEx
 		// The shovel operator returns its receiver with the element
 		// appended, so a witnessed-element receiver joins the appended
 		// type; anything less certain degrades to a bare array.
-		if left.Kind == TypeArray && left.Name == literalElementsMarker && len(left.TypeArgs) == 1 && right != nil {
+		if left.Kind == TypeArray && len(left.TypeArgs) == 1 && right != nil &&
+			(left.Name == literalElementsMarker || left.Name == literalPartialElementsMarker) {
 			if union := unionTypeExprs(left.TypeArgs[0], right); union != nil {
 				return binaryOutcome{result: &TypeExpr{
 					Kind:     TypeArray,
-					Name:     literalElementsMarker,
+					Name:     left.Name,
 					TypeArgs: []*TypeExpr{union},
 				}}
 			}
