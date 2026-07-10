@@ -2104,9 +2104,11 @@ func shapeValueArmDisjoint(other *TypeExpr) bool {
 		return false
 	}
 	switch other.Kind {
-	case TypeAny, TypeUnknown, TypeEnum:
+	case TypeAny, TypeUnknown:
 		return false
 	}
+	// Named annotations (TypeEnum) included: runtime named normalization
+	// admits only enum values and class instances, never a shape value.
 	return true
 }
 

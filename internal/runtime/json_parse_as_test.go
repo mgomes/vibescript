@@ -495,6 +495,44 @@ build`, "<script>")
 	}
 }
 
+func TestCheckShapeFactsContradictNamedAnnotations(t *testing.T) {
+	t.Parallel()
+
+	// Named annotations admit only enum values and class instances at
+	// runtime, so a first-class shape value is a known mismatch for both.
+	enumScript := compileScript(t, `
+enum Status
+  Draft
+end
+
+def takes_status(value: Status)
+  value
+end
+
+def run()
+  takes_status({ name: string })
+end
+`)
+	requireCheckWarningContains(t, enumScript, "call to takes_status argument value expected Status")
+
+	classScript := compileScript(t, `
+class User
+  def initialize(name: string)
+    @name = name
+  end
+end
+
+def takes_user(value: User)
+  value
+end
+
+def run()
+  takes_user({ name: string })
+end
+`)
+	requireCheckWarningContains(t, classScript, "call to takes_user argument value expected User")
+}
+
 func TestCheckShapeFactsContradictTypedBoundaries(t *testing.T) {
 	t.Parallel()
 
