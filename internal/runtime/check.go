@@ -2073,7 +2073,7 @@ func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, t
 	switch typed := expr.(type) {
 	case *BinaryExpr:
 		switch typed.Operator {
-		case tokenAnd:
+		case tokenAnd, tokenWordAnd:
 			if truthy {
 				c.collectRuntimeRequireCallExportsFromExpression(typed.Right)
 				c.collectRuntimeConditionOutcomeEffects(typed.Left, true)
@@ -2081,7 +2081,7 @@ func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, t
 			} else if binaryRightAlwaysEvaluates(typed) {
 				c.collectRuntimeConditionOutcomeEffects(typed.Right, false)
 			}
-		case tokenOr:
+		case tokenOr, tokenWordOr:
 			if !truthy {
 				c.collectRuntimeRequireCallExportsFromExpression(typed.Right)
 				c.collectRuntimeConditionOutcomeEffects(typed.Left, false)

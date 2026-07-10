@@ -540,6 +540,53 @@ end
 `))
 }
 
+func TestShapeLiteralAssignmentTargetPredeclarationShadows(t *testing.T) {
+	t.Parallel()
+
+	// Runtime predeclares the assignment target before the RHS runs, so
+	// string resolves as a (nil) local and the group keeps hash semantics;
+	// the checker must not claim shape facts for it.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  string = { name: string }
+  body = JSON.parse_as(raw, string)
+  takes_int(body["name"])
+end
+`)
+	requireNoCheckWarnings(t, script)
+
+	err := callScriptErr(t, context.Background(), script, "run", []Value{NewString("{}")}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expects a shape literal as its second argument") {
+		t.Fatalf("run() err = %v, want non-shape schema rejection", err)
+	}
+}
+
+func TestCheckConditionRequiresCarryIntoWordOperatorBranches(t *testing.T) {
+	t.Parallel()
+
+	moduleDir := t.TempDir()
+	module := `def shout(value: string)
+  value
+end`
+	if err := os.WriteFile(filepath.Join(moduleDir, "helpers.vibe"), []byte(module+"\n"), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleDir}})
+	script, err := engine.CompileSnippet(`def run(flag)
+  if flag and require("helpers")
+    shout("x")
+  end
+end`, "<script>")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	requireNoCheckWarnings(t, script)
+}
+
 func TestCheckJSONParseAsArity(t *testing.T) {
 	t.Parallel()
 

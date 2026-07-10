@@ -1069,9 +1069,10 @@ func walkShapeTypeNames(ty *TypeExpr, visit func(string)) {
 
 // hashShapeStaticallyShadowed mirrors the runtime's shape-versus-hash choice
 // for a dual-reading braced group: when any of its type names resolves to a
-// known binding (a local, host global, script definition, or host builtin),
-// the group keeps hash semantics. A group without a hash reading is always a
-// shape.
+// known binding (a local — including one the function predeclares by
+// assigning it anywhere, matching runtime predeclaration — a host global,
+// script definition, or host builtin), the group keeps hash semantics. A
+// group without a hash reading is always a shape.
 func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 	if len(lit.Pairs) == 0 {
 		return false
@@ -1086,8 +1087,9 @@ func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 		if shadowed {
 			return
 		}
-		if c.identifierShadowed(name) || c.hostGlobalShadows(name) ||
-			c.typeRootResolvesName(name) || c.hostBuiltinOverrides(name) {
+		if c.identifierShadowed(name) || c.localNameUnionHas(name) ||
+			c.hostGlobalShadows(name) || c.typeRootResolvesName(name) ||
+			c.hostBuiltinOverrides(name) {
 			shadowed = true
 		}
 	})
