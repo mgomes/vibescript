@@ -21,6 +21,11 @@
   globals, implicit self members, engine builtins) keep their existing hash
   semantics. The checker also validates `parse_as` calls statically — a
   provably non-string input or non-shape schema reports before runtime.
+- **Changed: whole-script checks follow the entrypoint's execution order.**
+  Top-level requires seed their exports for later function checks, and
+  functions the top-level code calls are checked under the runtime state at
+  each call site — a call before a `require` neither resolves nor validates
+  the module's contracts, exactly as `vibes run` executes it.
 - **Changed: `vibes check` diagnostics carry their source file.** Warnings
   that originate in a required module print the module's own path, so CI
   annotations and editors jump to the right file. Per-call checks
