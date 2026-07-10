@@ -1764,7 +1764,15 @@ func (p *parser) parseArrayLiteral() ast.Expression {
 
 func (p *parser) parseHashLiteral() ast.Expression {
 	pos := p.curToken.Pos
-	shapeType := p.speculativeShapeLiteralType()
+	shapeType, structuralError := p.speculativeShapeLiteralType()
+	if structuralError {
+		// The braces read as a shape with a structural error (a duplicate
+		// field, for example): re-parse under the type grammar so the
+		// diagnostic surfaces instead of silently degrading to a hash whose
+		// values are undefined identifiers.
+		p.parseTypeShape()
+		return nil
+	}
 	if shapeType == nil {
 		return p.parseHashLiteralGroup()
 	}
@@ -1835,26 +1843,32 @@ func (p *parser) parseHashLiteralGroup() ast.Expression {
 // ternary. Host-provided globals that reuse a type name cannot be seen at
 // parse time, so the caller keeps the hash reading alongside and evaluation
 // decides between the two.
-func (p *parser) speculativeShapeLiteralType() *ast.TypeExpr {
+func (p *parser) speculativeShapeLiteralType() (*ast.TypeExpr, bool) {
 	if p.peekToken.Type == ast.TokenRBrace {
-		return nil
+		return nil, false
 	}
 
 	saved := p.snapshot()
 	defer p.restore(saved)
 	pos := p.curToken.Pos
 	shape := p.parseTypeShape()
-	if shape == nil || shape.Kind != ast.TypeShape || shape.Nullable ||
+	if shape == nil {
+		// A structural shape error (duplicate field) means the field values
+		// all parsed as types, so the braces are a malformed shape rather
+		// than a hash; mirror bracedGroupIsShapeType and keep the diagnostic.
+		return nil, p.shapeStructurallyInvalid
+	}
+	if shape.Kind != ast.TypeShape || shape.Nullable ||
 		len(p.errors) != saved.errorCount ||
 		p.peekToken.Type == ast.TokenQuestion ||
 		shapeHasDegenerateNilField(shape) ||
 		shapeHasEmptyNestedShape(shape) ||
 		p.shapeFieldNamesLocalValue(shape) ||
 		!shapeLeafTypesAllBuiltin(shape) {
-		return nil
+		return nil, false
 	}
 	shape.Position = pos
-	return shape
+	return shape, false
 }
 
 // shapeLeafTypesAllBuiltin reports whether every named leaf of the type

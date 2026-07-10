@@ -360,6 +360,33 @@ end
 	}
 }
 
+func TestShapeLiteralStructuralErrorsSurface(t *testing.T) {
+	t.Parallel()
+
+	// A braced group whose fields all parse as types but is structurally
+	// invalid is a malformed shape, not a hash of undefined identifiers.
+	err := compileScriptErrorDefault(t, `
+def run(raw: string)
+  JSON.parse_as(raw, { name: string, name: int })
+end
+`)
+	if err == nil || !strings.Contains(err.Error(), "duplicate shape field name") {
+		t.Fatalf("compile error = %v, want duplicate shape field diagnostic", err)
+	}
+
+	// Duplicate data keys keep their hash reading.
+	script := compileScript(t, `
+def run()
+  h = { a: 1, a: 2 }
+  h[:a]
+end
+`)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt {
+		t.Fatalf("run() = %#v, want int", got)
+	}
+}
+
 func TestCheckJSONParseAsArity(t *testing.T) {
 	t.Parallel()
 
