@@ -3334,6 +3334,26 @@ func (c *scriptChecker) checkImplicitFinalLogicalStatement(function string, ty *
 	default:
 		return
 	}
+	// Inferred truthiness decides reachability too: branch merges only
+	// widen types, so a definitely-truthy or definitely-nil verdict here
+	// holds for the actual value.
+	inferred := c.inferLogicalLeftType(stmt.Left)
+	if typeExprDefinitelyTruthy(inferred) {
+		if stmt.Operator == tokenWordAnd {
+			c.checkImplicitFinalStatement(function, ty, stmt.Right)
+		} else {
+			c.checkImplicitFinalStatement(function, ty, stmt.Left)
+		}
+		return
+	}
+	if typeExprIsNilOnly(inferred) {
+		if stmt.Operator == tokenWordAnd {
+			c.checkImplicitFinalStatement(function, ty, stmt.Left)
+		} else {
+			c.checkImplicitFinalStatement(function, ty, stmt.Right)
+		}
+		return
+	}
 	c.checkImplicitFinalStatement(function, ty, stmt.Left)
 	c.checkImplicitFinalStatement(function, ty, stmt.Right)
 }

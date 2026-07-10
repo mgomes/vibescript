@@ -187,6 +187,28 @@ end
 `))
 }
 
+func TestCheckInferImplicitReturnHonorsInferredShortCircuit(t *testing.T) {
+	t.Parallel()
+
+	// x is a known string, so `x or 1` always returns x and the unreachable
+	// int alternative must not report.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run -> string
+  x = "ok"
+  x or 1
+end
+`))
+
+	// An undecided left keeps both sides checked.
+	script := compileScript(t, `
+def run(flag) -> string
+  x = flag
+  x or 1
+end
+`)
+	requireCheckWarningContains(t, script, "return value expected string, got int")
+}
+
 func TestCheckInferReturnTypeContradiction(t *testing.T) {
 	t.Parallel()
 
