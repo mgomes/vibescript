@@ -4316,6 +4316,14 @@ func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Positi
 	for _, arg := range args {
 		val, ok := staticLiteralValue(arg)
 		if !ok {
+			// The collected values are no longer fully static: fall back to
+			// checking each argument's inferred type against the rest
+			// annotation's element type.
+			if ty.Kind == TypeArray && len(ty.TypeArgs) == 1 {
+				for _, rest := range args {
+					c.checkInferredArgument(function, rest, ty.TypeArgs[0], callName, paramName)
+				}
+			}
 			return
 		}
 		values = append(values, val)
@@ -4349,6 +4357,17 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 		}
 		val, ok := staticLiteralValue(kwarg.Value)
 		if !ok {
+			// The collected keyword values are no longer fully static: fall
+			// back to checking each remaining value's inferred type against
+			// the keyword-rest annotation's value type.
+			if ty.Kind == TypeHash && len(ty.TypeArgs) == 2 {
+				for _, rest := range kwargs {
+					if usedKw != nil && usedKw[rest.Name] {
+						continue
+					}
+					c.checkInferredArgument(function, rest.Value, ty.TypeArgs[1], callName, paramName)
+				}
+			}
 			return
 		}
 		values[kwarg.Name] = val

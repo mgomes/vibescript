@@ -467,6 +467,53 @@ end
 `))
 }
 
+func TestCheckInferRestArgumentsUseInferredFacts(t *testing.T) {
+	t.Parallel()
+
+	rest := compileScript(t, `
+def collect(*items: array<int>)
+  items
+end
+
+def run()
+  x = "bad"
+  collect(1, x)
+end
+`)
+	requireCheckWarningContains(t, rest, "call to collect argument items expected int, got string")
+
+	kwrest := compileScript(t, `
+def accept(**opts: hash<string, int>)
+  opts
+end
+
+def run()
+  value = "bad"
+  accept(limit: value)
+end
+`)
+	requireCheckWarningContains(t, kwrest, "call to accept argument opts expected int, got string")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def collect(*items: array<int>)
+  items
+end
+
+def accept(**opts: hash<string, int>)
+  opts
+end
+
+def run(dynamic)
+  n = 2
+  collect(1, n)
+  collect(1, dynamic)
+  limit = 3
+  accept(limit: limit)
+  accept(limit: dynamic)
+end
+`))
+}
+
 func TestCheckInferEarlierArgumentsKeepPreMutationFacts(t *testing.T) {
 	t.Parallel()
 
