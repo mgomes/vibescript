@@ -1029,16 +1029,16 @@ func (c *scriptChecker) binaryOperationOutcome(op TokenType, left, right *TypeEx
 
 	leftKind, leftOK := staticOperandKind(left)
 	rightKind, rightOK := staticOperandKind(right)
+	if op == tokenShovel && leftOK && leftKind == TypeArray {
+		// The shovel operator returns its receiver, so the result carries
+		// the receiver's own array fact (including witnessed elements).
+		return binaryOutcome{result: left}
+	}
 	if !leftOK || !rightOK {
 		// Partial knowledge decides a couple of left-driven results but never
 		// an invalidity.
-		if leftOK {
-			switch {
-			case op == tokenPercent && leftKind == TypeString:
-				return binaryOutcome{result: checkTypeString}
-			case op == tokenShovel && leftKind == TypeArray:
-				return binaryOutcome{result: checkTypeArray}
-			}
+		if leftOK && op == tokenPercent && leftKind == TypeString {
+			return binaryOutcome{result: checkTypeString}
 		}
 		return binaryOutcome{}
 	}

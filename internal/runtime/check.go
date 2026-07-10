@@ -2019,12 +2019,15 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// under. checkCall consumes the captured facts afterwards.
 		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
 		for _, arg := range typed.Args {
-			argumentFacts[arg] = c.inferExpressionType(arg)
 			c.checkExpressionWithAuto(function, arg, true)
+			// The argument's value materializes once its own evaluation (and
+			// its own mutations, such as a shovel append) completes, before
+			// the next argument runs.
+			argumentFacts[arg] = c.inferExpressionType(arg)
 		}
 		for _, kwarg := range typed.KwArgs {
-			argumentFacts[kwarg.Value] = c.inferExpressionType(kwarg.Value)
 			c.checkExpressionWithAuto(function, kwarg.Value, true)
+			argumentFacts[kwarg.Value] = c.inferExpressionType(kwarg.Value)
 		}
 		if typed.BlockArg != nil {
 			c.checkExpressionWithAuto(function, typed.BlockArg, false)

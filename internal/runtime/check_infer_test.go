@@ -513,6 +513,35 @@ end
 	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<int | string>")
 }
 
+func TestCheckInferShovelArgumentCarriesMutatedFact(t *testing.T) {
+	t.Parallel()
+
+	// The shovel expression returns its mutated receiver, so passing it
+	// directly as an argument carries the post-append witnesses.
+	script := compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run()
+  values = [1]
+  ints(values << "bad")
+end
+`)
+	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<int | string>")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run()
+  values = [1]
+  ints(values << 2)
+end
+`))
+}
+
 func TestCheckInferRestArgumentsUseInferredFacts(t *testing.T) {
 	t.Parallel()
 
