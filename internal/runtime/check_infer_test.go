@@ -467,6 +467,52 @@ end
 `))
 }
 
+func TestCheckInferConditionalEvaluationJoinsMutationFacts(t *testing.T) {
+	t.Parallel()
+
+	// A safe-navigation receiver may skip the arguments entirely, so an
+	// append inside them holds on only one path and is not a known
+	// contradiction afterwards.
+	requireNoCheckWarnings(t, compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run(obj)
+  values = [1]
+  obj&.record(values << "bad")
+  ints(values)
+end
+`))
+
+	// A short-circuited right operand may not run at all.
+	requireNoCheckWarnings(t, compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run(flag)
+  values = [1]
+  flag && (values << "bad")
+  ints(values)
+end
+`))
+
+	// An unconditional append still contradicts the boundary.
+	script := compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run(obj)
+  values = [1]
+  obj.record(values << "bad")
+  ints(values)
+end
+`)
+	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<int | string>")
+}
+
 func TestCheckInferRestArgumentsUseInferredFacts(t *testing.T) {
 	t.Parallel()
 

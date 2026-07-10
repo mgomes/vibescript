@@ -2005,8 +2005,10 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		}
 		argumentsMayBeSkipped := safeNavigationCallMaySkipArguments(typed)
 		var argumentState checkRuntimeState
+		var argumentScopeState checkScopeState
 		if argumentsMayBeSkipped {
 			argumentState = c.snapshotRuntimeState()
+			argumentScopeState = c.snapshotScopeState()
 		}
 		c.collectRuntimeCallArgumentEffects(typed)
 		// Arguments evaluate left to right before the call dispatches, so
@@ -2037,6 +2039,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		}
 		if argumentsMayBeSkipped {
 			c.restoreRuntimeState(argumentState)
+			// A nil receiver skips the arguments entirely, so type facts the
+			// argument walk established (a shovel append, for example) hold
+			// on only one of the two paths and must merge as a branch join.
+			evaluatedScopeState := c.snapshotScopeState()
+			c.mergeScopeStates(argumentScopeState, []checkScopeState{argumentScopeState, evaluatedScopeState})
 		}
 		// Containers pass by reference, so a callee may mutate an argument
 		// in place; the caller's structural facts stop holding.
@@ -2074,9 +2081,17 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkExpressionWithAuto(function, typed.Left, true)
 		if binaryRightMayEvaluate(typed) {
 			state := c.snapshotRuntimeState()
+			scopeState := c.snapshotScopeState()
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Left)
 			c.checkExpressionWithAuto(function, typed.Right, true)
 			c.restoreRuntimeState(state)
+			if !binaryRightAlwaysEvaluates(typed) {
+				// A short-circuited right operand may not run, so its type
+				// facts (a shovel append, for example) merge as a branch join
+				// instead of surviving unconditionally.
+				evaluatedScopeState := c.snapshotScopeState()
+				c.mergeScopeStates(scopeState, []checkScopeState{scopeState, evaluatedScopeState})
+			}
 		}
 		c.checkBinaryOperandTypes(function, typed)
 		c.applyShovelMutationFacts(typed)
