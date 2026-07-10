@@ -2079,6 +2079,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.restoreRuntimeState(state)
 		}
 		c.checkBinaryOperandTypes(function, typed)
+		c.applyShovelMutationFacts(typed)
 	case *ConditionalExpr:
 		c.checkConditionalExpression(function, typed)
 	case *RescueExpr:

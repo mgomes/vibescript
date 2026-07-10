@@ -628,6 +628,60 @@ func (c *scriptChecker) inferArrayLiteralType(lit *ArrayLiteral) *TypeExpr {
 	return &TypeExpr{Kind: TypeArray, Name: literalElementsMarker, TypeArgs: []*TypeExpr{union}}
 }
 
+// applyShovelMutationFacts accounts for the in-place append the shovel
+// operator performs on its receiver: a witnessed-element array gains the
+// appended element's type as a new witness, and any other container fact is
+// poisoned since the checker no longer describes the mutated value.
+func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
+	if expr.Operator != tokenShovel {
+		return
+	}
+	if _, chained := expr.Left.(*BinaryExpr); chained {
+		// A chained shovel ((values << a) << b) appends through the returned
+		// receiver; the outer appends are not retyped, so drop the root fact.
+		if name, ok := rootIdentifierName(unwrapShovelChain(expr.Left)); ok {
+			c.poisonLocalType(name)
+		}
+		return
+	}
+	ident, ok := expr.Left.(*Identifier)
+	if !ok {
+		if name, ok := rootIdentifierName(expr.Left); ok {
+			c.poisonLocalType(name)
+		}
+		return
+	}
+	current := c.localTypeFor(ident.Name)
+	if current == nil {
+		return
+	}
+	if current.Kind == TypeArray && current.Name == literalElementsMarker && len(current.TypeArgs) == 1 {
+		if appended := c.inferExpressionType(expr.Right); appended != nil {
+			if union := unionTypeExprs(current.TypeArgs[0], appended); union != nil {
+				c.bindLocalType(ident.Name, &TypeExpr{
+					Kind:     TypeArray,
+					Name:     literalElementsMarker,
+					TypeArgs: []*TypeExpr{union},
+				})
+				return
+			}
+		}
+	}
+	if typeExprHasContainerArm(current) {
+		c.poisonLocalType(ident.Name)
+	}
+}
+
+func unwrapShovelChain(expr Expression) Expression {
+	for {
+		binary, ok := expr.(*BinaryExpr)
+		if !ok || binary.Operator != tokenShovel {
+			return expr
+		}
+		expr = binary.Left
+	}
+}
+
 // literalArrayDisjoint reports whether a witnessed-element array can never
 // satisfy another array type: some witnessed element arm is disjoint from
 // the other side's declared element type.

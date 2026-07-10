@@ -433,6 +433,40 @@ end
 	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got nil")
 }
 
+func TestCheckInferShovelAppendsWitnessElements(t *testing.T) {
+	t.Parallel()
+
+	// The shovel operator appends in place, so the appended element joins
+	// the array's witnessed elements.
+	script := compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run()
+  values = [1]
+  values << "bad"
+  ints(values)
+end
+`)
+	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<int | string>")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run(extra)
+  values = [1]
+  values << 2
+  ints(values)
+  mixed = [1]
+  mixed << extra
+  ints(mixed)
+end
+`))
+}
+
 func TestCheckInferEarlierArgumentsKeepPreMutationFacts(t *testing.T) {
 	t.Parallel()
 
