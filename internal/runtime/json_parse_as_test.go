@@ -565,6 +565,28 @@ end
 	}
 }
 
+func TestCheckInferredForcedRequireRetainsExports(t *testing.T) {
+	t.Parallel()
+
+	moduleDir := t.TempDir()
+	module := `def shout(value: string)
+  value
+end`
+	if err := os.WriteFile(filepath.Join(moduleDir, "helpers.vibe"), []byte(module+"\n"), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleDir}})
+	// A nil left forces || to evaluate the require, so its exports hold for
+	// the statements after it.
+	script, err := engine.CompileSnippet(`x = nil
+x || require("helpers")
+shout(1)`, "<script>")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	requireCheckWarningContains(t, script, "call to shout argument value expected string, got int")
+}
+
 func TestCheckConditionRequiresCarryIntoWordOperatorBranches(t *testing.T) {
 	t.Parallel()
 

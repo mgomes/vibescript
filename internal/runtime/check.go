@@ -457,7 +457,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		c.collectRequiredModuleExportsFromExpression(typed.Right)
 	case *BinaryExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Left)
-		if binaryRightAlwaysEvaluates(typed) {
+		if binaryRightAlwaysEvaluates(typed) || c.binaryRightAlwaysEvaluatesInferred(typed) {
 			c.collectRequiredModuleExportsFromExpression(typed.Right)
 		}
 	case *ConditionalExpr:
@@ -2237,11 +2237,14 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			scopeState := c.snapshotScopeState()
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Left)
 			c.checkExpressionWithAuto(function, typed.Right, true)
-			c.restoreRuntimeState(state)
 			if !binaryRightAlwaysEvaluates(typed) && !c.binaryRightAlwaysEvaluatesInferred(typed) {
-				// A short-circuited right operand may not run, so its type
-				// facts (a shovel append, for example) merge as a branch join
-				// instead of surviving unconditionally.
+				// A short-circuited right operand may not run, so its
+				// runtime effects roll back and its type facts (a shovel
+				// append, for example) merge as a branch join instead of
+				// surviving unconditionally. A right side that provably
+				// always runs keeps both — including exports from a
+				// guaranteed require.
+				c.restoreRuntimeState(state)
 				evaluatedScopeState := c.snapshotScopeState()
 				c.mergeScopeStates(scopeState, []checkScopeState{scopeState, evaluatedScopeState})
 			}
