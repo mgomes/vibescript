@@ -358,14 +358,15 @@ func TestCheckInferDeferredEnsureReturnsUseBranchTypes(t *testing.T) {
 	t.Parallel()
 
 	// A return value is evaluated before the ensure runs, so the deferred
-	// re-walk must not see the ensure's reassignments.
+	// check must not see the ensure's reassignment (nil keeps the ensure
+	// itself free of reassignment diagnostics).
 	requireNoCheckWarnings(t, compileScript(t, `
 def run -> int
   begin
     x = 1
     return x
   ensure
-    x = "cleanup"
+    x = nil
   end
 end
 `))
@@ -420,6 +421,43 @@ def run(flag) -> int
     end
   ensure
     puts "done"
+  end
+end
+`))
+}
+
+func TestCheckInferEnsureSeesReturningBranchFacts(t *testing.T) {
+	t.Parallel()
+
+	// The ensure block runs in the returning branch's environment, so its
+	// boundary checks use the facts captured at the return site.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run -> int
+  begin
+    x = "s"
+    return 1
+  ensure
+    takes_int(x)
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run -> int
+  begin
+    x = 2
+    return 1
+  ensure
+    takes_int(x)
   end
 end
 `))

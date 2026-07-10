@@ -1881,12 +1881,12 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		mergeRuntimeStates := fallthroughRuntimeStates
 		mergeScopeStates := fallthroughScopeStates
-		if deferReturnType && len(mergeRuntimeStates) == 0 && len(deferredSites) > 0 {
-			mergeRuntimeStates = make([]checkRuntimeState, 0, len(deferredSites))
-			mergeScopeStates = nil
-			for _, site := range deferredSites {
-				mergeRuntimeStates = append(mergeRuntimeStates, site.runtimeState)
-			}
+		// The ensure block runs on every path into it — fallthrough or
+		// deferred return — so the return sites' states join the merge the
+		// ensure walk (and the code after the block) sees.
+		for _, site := range deferredSites {
+			mergeRuntimeStates = append(mergeRuntimeStates, site.runtimeState)
+			mergeScopeStates = append(mergeScopeStates, site.scopeState)
 		}
 		c.mergeRuntimeStates(baseRuntimeState, mergeRuntimeStates)
 		c.mergeScopeStates(baseScopeState, mergeScopeStates)
