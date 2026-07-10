@@ -800,7 +800,11 @@ func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
 	if current == nil {
 		return
 	}
-	if current.Kind == TypeArray && current.Name == literalElementsMarker && len(current.TypeArgs) == 1 {
+	// Inside a loop or block body the walk's retypes are rolled back by the
+	// region's state restore, so an in-place append there must poison
+	// (monotone, survives the restore) rather than refine.
+	if c.mutationRegionDepth == 0 &&
+		current.Kind == TypeArray && current.Name == literalElementsMarker && len(current.TypeArgs) == 1 {
 		if appended := c.inferExpressionType(expr.Right); appended != nil {
 			if union := unionTypeExprs(current.TypeArgs[0], appended); union != nil {
 				c.bindLocalType(ident.Name, &TypeExpr{

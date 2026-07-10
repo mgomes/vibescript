@@ -112,6 +112,7 @@ type scriptChecker struct {
 	scopes                  []map[string]struct{}
 	localTypes              []checkTypeFrame
 	typePoison              map[string]struct{}
+	mutationRegionDepth     int
 	callArgumentFacts       map[Expression]*TypeExpr
 	deferredReturnSites     *[]deferredReturnSite
 	implicitReturnLeaves    map[Statement]struct{}
@@ -1811,7 +1812,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.bindForTargetType(typed, elemType)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.checkStatements(function, returnType, typed.Body)
+		c.mutationRegionDepth--
 		c.restoreRuntimeState(bodyRuntimeState)
 		c.restoreScopeState(bodyScopeState)
 		c.degradeLocalTypesForBindings(nil, typed.Target)
@@ -1824,7 +1827,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.degradeLocalTypesForBindings(typed.Body)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.checkStatements(function, returnType, typed.Body)
+		c.mutationRegionDepth--
 		c.restoreRuntimeState(bodyRuntimeState)
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
@@ -1834,7 +1839,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.degradeLocalTypesForBindings(typed.Body)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.checkStatements(function, returnType, typed.Body)
+		c.mutationRegionDepth--
 		c.restoreRuntimeState(bodyRuntimeState)
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
@@ -2481,7 +2488,9 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 		c.bindParamLocalType(param)
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
+	c.mutationRegionDepth++
 	c.checkStatements(label, nil, block.Body)
+	c.mutationRegionDepth--
 }
 
 // literalArrayElementYieldMethods are the builtin array iterators that yield

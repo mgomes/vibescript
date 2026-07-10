@@ -850,6 +850,40 @@ end
 `))
 }
 
+func TestCheckInferRegionShovelsPoisonReceivers(t *testing.T) {
+	t.Parallel()
+
+	// An append inside a block or loop body survives the region's state
+	// restore as a poison: the outer witnessed fact no longer holds in
+	// either direction.
+	requireNoCheckWarnings(t, compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def strings(values: array<string>)
+  values
+end
+
+def run(flag)
+  a = [1]
+  [0].each do |i|
+    a << "bad"
+  end
+  ints(a)
+  strings(a)
+
+  b = [1]
+  while flag
+    b << "bad"
+    flag = false
+  end
+  ints(b)
+  strings(b)
+end
+`))
+}
+
 func TestCheckInferShovelOnLiteralReceiversCarriesAppend(t *testing.T) {
 	t.Parallel()
 
