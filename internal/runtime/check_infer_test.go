@@ -494,6 +494,51 @@ end
 `))
 }
 
+func TestCheckInferNestedEnsuresSeeReturnPathFacts(t *testing.T) {
+	t.Parallel()
+
+	// A return escaping through both ensures carries its facts to the
+	// outer ensure walk too.
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(flag) -> int
+  begin
+    begin
+      x = 1
+      return 2
+    ensure
+      puts "inner"
+    end
+  ensure
+    takes_string(x)
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(flag) -> int
+  begin
+    begin
+      x = "ok"
+      return 2
+    ensure
+      puts "inner"
+    end
+  ensure
+    takes_string(x)
+  end
+end
+`))
+}
+
 func TestCheckInferForLoopElementTypes(t *testing.T) {
 	t.Parallel()
 

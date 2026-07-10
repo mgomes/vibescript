@@ -1848,9 +1848,14 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		baseScopeState := c.snapshotScopeState()
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, 2)
 		fallthroughScopeStates := make([]checkScopeState, 0, 2)
+		// Every non-exiting ensure collects the returns escaping through it,
+		// whether or not this level owns the deferred annotation check: the
+		// ensure walk merges their states, and the sites hand up to any
+		// enclosing ensure the same returns continue through.
+		armCapture := len(typed.Ensure) > 0 && !blockAlwaysExits(typed.Ensure)
 		var deferredSites []deferredReturnSite
 		var previousSites *[]deferredReturnSite
-		if deferReturnType {
+		if armCapture {
 			previousSites = c.deferredReturnSites
 			c.deferredReturnSites = &deferredSites
 		}
@@ -1900,7 +1905,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 		}
-		if deferReturnType {
+		if armCapture {
 			c.deferredReturnSites = previousSites
 		}
 		mergeRuntimeStates := fallthroughRuntimeStates
@@ -1917,6 +1922,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkStatements(function, returnType, typed.Ensure)
 		if deferReturnType {
 			c.checkDeferredReturnSitesAfterEnsure(function, returnType, typed.Ensure, deferredSites)
+		}
+		if armCapture && previousSites != nil {
+			*previousSites = append(*previousSites, deferredSites...)
 		}
 	}
 }
