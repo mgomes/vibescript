@@ -1216,12 +1216,14 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 		switch param.Kind {
 		case ParamNormal:
 			if argIdx < len(args) {
-				c.checkArgumentValue(label, fn.Pos, args[argIdx], param.Type, fn.Name, param.Name)
-				boundValue, boundPresent = args[argIdx], true
+				if normalized, ok := c.checkArgumentValue(label, fn.Pos, args[argIdx], param.Type, fn.Name, param.Name); ok {
+					boundValue, boundPresent = normalized, true
+				}
 				argIdx++
 			} else if val, ok := kwargs[param.Name]; ok {
-				c.checkArgumentValue(label, fn.Pos, val, param.Type, fn.Name, param.Name)
-				boundValue, boundPresent = val, true
+				if normalized, ok := c.checkArgumentValue(label, fn.Pos, val, param.Type, fn.Name, param.Name); ok {
+					boundValue, boundPresent = normalized, true
+				}
 				if usedKw != nil {
 					usedKw[param.Name] = true
 				}
@@ -1231,8 +1233,9 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 			}
 		case ParamKeyword:
 			if val, ok := kwargs[param.Name]; ok {
-				c.checkArgumentValue(label, fn.Pos, val, param.Type, fn.Name, param.Name)
-				boundValue, boundPresent = val, true
+				if normalized, ok := c.checkArgumentValue(label, fn.Pos, val, param.Type, fn.Name, param.Name); ok {
+					boundValue, boundPresent = normalized, true
+				}
 				if usedKw != nil {
 					usedKw[param.Name] = true
 				}
@@ -1256,8 +1259,14 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 		}
 		c.recordParamBinding(param)
 		c.bindParamValueFact(param, boundValue, boundPresent)
+		if boundPresent {
+			c.refineAnnotatedParamFact(param, typeFactForValue(boundValue))
+		}
 		if usedDefault {
 			c.bindParamDefaultFact(param)
+			if param.DefaultVal != nil {
+				c.refineAnnotatedParamFact(param, c.inferExpressionType(param.DefaultVal))
+			}
 		}
 	}
 	if len(c.warnings) > warningsBeforeBinding {
@@ -4697,13 +4706,22 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 	}
 }
 
-func (c *scriptChecker) checkArgumentValue(function string, pos Position, val Value, ty *TypeExpr, callName, paramName string) {
-	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
-		return
+// checkArgumentValue validates val against ty and returns the value the
+// runtime would bind: normalization may coerce (a symbol into an enum
+// member, for example), so the bound value is the per-call fact source.
+func (c *scriptChecker) checkArgumentValue(function string, pos Position, val Value, ty *TypeExpr, callName, paramName string) (Value, bool) {
+	if ty == nil {
+		return val, true
 	}
-	if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
+	if !c.checkRuntimeTypeAnnotation(function, ty) {
+		return val, false
+	}
+	normalized, err := normalizeValueForType(val, ty, c.runtimeTypeContext())
+	if err != nil {
 		c.addArgumentValueWarning(function, pos, callName, paramName, err)
+		return val, false
 	}
+	return normalized, true
 }
 
 func (c *scriptChecker) checkBlockArgumentValue(function string, pos Position, block *BlockLiteral, ty *TypeExpr, callName, paramName string) {

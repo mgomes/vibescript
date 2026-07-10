@@ -1647,6 +1647,65 @@ end
 `))
 }
 
+func TestCheckInferPerCallRefinesUnionAnnotations(t *testing.T) {
+	t.Parallel()
+
+	// The concrete argument picks its union arm, so the impossible arm no
+	// longer masks the body contradiction.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(v: int | string)
+  takes_int(v)
+end
+`)
+	warnings := script.CheckWarningsForCall("run", []Value{NewString("s")}, CallOptions{})
+	found := false
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CheckWarningsForCall() = %v, want refined union contradiction", warnings)
+	}
+
+	// The compatible arm stays silent.
+	if warnings := script.CheckWarningsForCall("run", []Value{NewInt(1)}, CallOptions{}); len(warnings) != 0 {
+		t.Fatalf("CheckWarningsForCall() = %v, want none", warnings)
+	}
+
+	// Whole-script checks keep the full annotation: no call picks an arm.
+	requireNoCheckWarnings(t, script)
+
+	// An omitted argument binds the default, whose type picks the arm the
+	// same way.
+	defaulted := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(v: int | string = "x")
+  takes_int(v)
+end
+`)
+	defaultWarnings := defaulted.CheckWarningsForCall("run", nil, CallOptions{})
+	found = false
+	for _, warning := range defaultWarnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CheckWarningsForCall() = %v, want refined default contradiction", defaultWarnings)
+	}
+	if warnings := defaulted.CheckWarningsForCall("run", []Value{NewInt(1)}, CallOptions{}); len(warnings) != 0 {
+		t.Fatalf("CheckWarningsForCall() = %v, want none", warnings)
+	}
+}
+
 func TestCheckWarningsForCallSkipsBodyAfterBindingFailure(t *testing.T) {
 	t.Parallel()
 

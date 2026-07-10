@@ -817,6 +817,34 @@ func (c *scriptChecker) bindParamDefaultFact(param Param) {
 	}
 }
 
+// refineAnnotatedParamFact narrows an annotated parameter's declared seed
+// with the concrete fact a per-call binding established: the runtime bound
+// exactly one annotation arm, so arms the fact contradicts cannot be this
+// call's value. Coercing arms survive (a named type is never disjoint from
+// the fact that coerces into it), and a fact that eliminates nothing or
+// everything keeps the declared seed.
+func (c *scriptChecker) refineAnnotatedParamFact(param Param, fact *TypeExpr) {
+	if param.Name == "" || param.Type == nil || fact == nil {
+		return
+	}
+	arms, ok := typeExprArms(param.Type, 0)
+	if !ok || len(arms) < 2 {
+		return
+	}
+	kept := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		if !typeExprsDisjoint(fact, arm) {
+			kept = append(kept, arm)
+		}
+	}
+	if len(kept) == 0 || len(kept) == len(arms) {
+		return
+	}
+	if refined := unionTypeExprs(kept...); refined != nil {
+		c.bindLocalTypeInCurrentFrame(param.Name, refined)
+	}
+}
+
 // reassignmentConflicts reports whether rebinding a local of type current to
 // a value of type next is a known contradiction. Unknowns never conflict, nil
 // acts as the neutral initializer in both directions, numeric retyping widens
