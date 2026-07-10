@@ -526,6 +526,36 @@ end
 `))
 }
 
+func TestCheckInferShapeContradictsGenericHashBoundary(t *testing.T) {
+	t.Parallel()
+
+	// Shapes witness every field, so a field type that contradicts a
+	// generic hash's value type cannot hide behind a binding.
+	script := compileScript(t, `
+def configure(opts: hash<string, int>)
+  opts
+end
+
+def run()
+  opts = { limit: "slow" }
+  configure(opts)
+end
+`)
+	requireCheckWarningContains(t, script, "call to configure argument opts expected hash<string, int>, got { limit: string }")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def configure(opts: hash<string, int>)
+  opts
+end
+
+def run()
+  opts = { limit: 3 }
+  configure(opts)
+  configure({})
+end
+`))
+}
+
 func TestCheckInferShapeFactsRespectKeyKinds(t *testing.T) {
 	t.Parallel()
 

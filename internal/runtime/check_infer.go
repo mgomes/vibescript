@@ -647,6 +647,23 @@ func literalArrayDisjoint(lit, other *TypeExpr) bool {
 	return false
 }
 
+// shapeVsTypedHashDisjoint reports whether an exact shape can never satisfy
+// a generic hash type: shapes witness every field, so a field type disjoint
+// from the hash's value type contradicts it. Key types are left to runtime
+// (key representation is not always known statically).
+func shapeVsTypedHashDisjoint(shape, hash *TypeExpr) bool {
+	if len(hash.TypeArgs) != 2 {
+		return false
+	}
+	valueType := hash.TypeArgs[1]
+	for _, field := range shape.Shape {
+		if typeExprsDisjoint(field, valueType) {
+			return true
+		}
+	}
+	return false
+}
+
 // stringKeyedShapeFact clones a shape and marks it (and every nested shape)
 // as a string-keyed store, so literal string indexing yields exact field
 // facts and symbol indexing is known to miss.
@@ -1278,8 +1295,13 @@ func typeArmPairDisjoint(x, y *TypeExpr) bool {
 	}
 	hashLike := func(kind TypeKind) bool { return kind == TypeHash || kind == TypeShape }
 	if hashLike(kx) && hashLike(ky) {
-		if kx == TypeShape && ky == TypeShape {
+		switch {
+		case kx == TypeShape && ky == TypeShape:
 			return shapeTypesDisjoint(x, y)
+		case kx == TypeShape && ky == TypeHash:
+			return shapeVsTypedHashDisjoint(x, y)
+		case kx == TypeHash && ky == TypeShape:
+			return shapeVsTypedHashDisjoint(y, x)
 		}
 		return false
 	}
