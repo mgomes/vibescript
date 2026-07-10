@@ -943,6 +943,44 @@ end
 	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<int | string>")
 }
 
+func TestCheckInferAnnotatedArrayAppendsKeepWitnesses(t *testing.T) {
+	t.Parallel()
+
+	// The appended string is witnessed even though the receiver's prior
+	// elements come from an annotation.
+	script := compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run(values: array<int>)
+  values << "bad"
+  ints(values)
+end
+`)
+	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<string>")
+
+	// A compatible append stays silent, and prior unwitnessed elements
+	// never count as witnesses (an empty receiver makes [\"bad\"] a valid
+	// array<string>).
+	requireNoCheckWarnings(t, compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def strings(values: array<string>)
+  values
+end
+
+def run(a: array<int>, b: array<int>)
+  a << 1
+  ints(a)
+  b << "bad"
+  strings(b)
+end
+`))
+}
+
 func TestCheckInferRegionShovelsPoisonReceivers(t *testing.T) {
 	t.Parallel()
 

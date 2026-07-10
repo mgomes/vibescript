@@ -1174,15 +1174,10 @@ func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
 	// receiver likewise poisons, since the refinement cannot reach the
 	// other names sharing the array.
 	if c.mutationRegionDepth == 0 && len(c.typeAliases[ident.Name]) == 0 &&
-		current.Kind == TypeArray && len(current.TypeArgs) == 1 &&
-		(current.Name == literalElementsMarker || current.Name == literalPartialElementsMarker) {
+		current.Kind == TypeArray && !current.Nullable {
 		if appended := c.inferExpressionType(expr.Right); appended != nil {
-			if union := unionTypeExprs(current.TypeArgs[0], appended); union != nil {
-				c.bindLocalType(ident.Name, &TypeExpr{
-					Kind:     TypeArray,
-					Name:     current.Name,
-					TypeArgs: []*TypeExpr{union},
-				})
+			if refined := appendedArrayFact(current, appended); refined != nil {
+				c.bindLocalType(ident.Name, refined)
 				return
 			}
 		}
@@ -1199,6 +1194,27 @@ func unwrapShovelChain(expr Expression) Expression {
 			return expr
 		}
 		expr = binary.Left
+	}
+}
+
+// appendedArrayFact derives the array fact after appending a value of a
+// known type: witnessed receivers join the new arm, while annotation-typed
+// and bare arrays start a partial witness set with just the appended arm —
+// their prior elements were never witnessed (the array may have been
+// empty), so only the append may prove a contradiction.
+func appendedArrayFact(current, appended *TypeExpr) *TypeExpr {
+	switch current.Name {
+	case literalElementsMarker, literalPartialElementsMarker:
+		if len(current.TypeArgs) != 1 {
+			return nil
+		}
+		union := unionTypeExprs(current.TypeArgs[0], appended)
+		if union == nil {
+			return nil
+		}
+		return &TypeExpr{Kind: TypeArray, Name: current.Name, TypeArgs: []*TypeExpr{union}}
+	default:
+		return &TypeExpr{Kind: TypeArray, Name: literalPartialElementsMarker, TypeArgs: []*TypeExpr{appended}}
 	}
 }
 
@@ -1595,16 +1611,11 @@ func (c *scriptChecker) binaryOperationOutcome(op TokenType, left, right *TypeEx
 	rightKind, rightOK := staticOperandKind(right)
 	if op == tokenShovel && leftOK && leftKind == TypeArray {
 		// The shovel operator returns its receiver with the element
-		// appended, so a witnessed-element receiver joins the appended
-		// type; anything less certain degrades to a bare array.
-		if left.Kind == TypeArray && len(left.TypeArgs) == 1 && right != nil &&
-			(left.Name == literalElementsMarker || left.Name == literalPartialElementsMarker) {
-			if union := unionTypeExprs(left.TypeArgs[0], right); union != nil {
-				return binaryOutcome{result: &TypeExpr{
-					Kind:     TypeArray,
-					Name:     left.Name,
-					TypeArgs: []*TypeExpr{union},
-				}}
+		// appended, so the appended type joins (or seeds) the witnessed
+		// arms; anything less certain degrades to a bare array.
+		if right != nil {
+			if refined := appendedArrayFact(left, right); refined != nil {
+				return binaryOutcome{result: refined}
 			}
 		}
 		return binaryOutcome{result: checkTypeArray}
