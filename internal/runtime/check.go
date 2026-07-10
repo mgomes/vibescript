@@ -1749,7 +1749,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		leftScopeState := c.snapshotScopeState()
 		if logicalStatementRightMayEvaluate(typed) && !c.logicalStatementRightUnreachable(typed) {
 			c.checkStatement(function, returnType, typed.Right)
-			if !logicalStatementRightAlwaysEvaluates(typed) {
+			if !logicalStatementRightAlwaysEvaluates(typed) && !c.logicalStatementRightAlwaysEvaluatesInferred(typed) {
 				c.restoreRuntimeState(leftRuntimeState)
 				// The right-hand side may be skipped, so its type facts join
 				// with the skipped path (a local bound only there becomes
@@ -2238,7 +2238,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Left)
 			c.checkExpressionWithAuto(function, typed.Right, true)
 			c.restoreRuntimeState(state)
-			if !binaryRightAlwaysEvaluates(typed) {
+			if !binaryRightAlwaysEvaluates(typed) && !c.binaryRightAlwaysEvaluatesInferred(typed) {
 				// A short-circuited right operand may not run, so its type
 				// facts (a shovel append, for example) merge as a branch join
 				// instead of surviving unconditionally.
@@ -3347,10 +3347,10 @@ func (c *scriptChecker) checkImplicitFinalLogicalStatement(function string, ty *
 	default:
 		return
 	}
-	// Inferred truthiness decides reachability too: branch merges only
-	// widen types, so a definitely-truthy or definitely-nil verdict here
-	// holds for the actual value.
-	inferred := c.inferLogicalLeftType(stmt.Left)
+	// Inferred truthiness decides reachability too, evaluated under the
+	// left side's own captured state (its facts at evaluation time, before
+	// the right side or later merges rebind them).
+	inferred := c.implicitLogicalLeftType(stmt.Left)
 	if typeExprDefinitelyTruthy(inferred) {
 		if stmt.Operator == tokenWordAnd {
 			c.checkImplicitFinalStatement(function, ty, stmt.Right)

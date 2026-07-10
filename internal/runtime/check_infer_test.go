@@ -209,6 +209,28 @@ end
 	requireCheckWarningContains(t, script, "return value expected string, got int")
 }
 
+func TestCheckInferForcedLogicalRightSkipsImpossiblePath(t *testing.T) {
+	t.Parallel()
+
+	// A nil left forces `or` to evaluate the right side, so the impossible
+	// skipped path (x still nil) must not corrupt the implicit return.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run -> int
+  x = nil
+  x or x = 1
+end
+`))
+
+	// The forced right side's own contradiction still reports.
+	script := compileScript(t, `
+def run -> int
+  x = nil
+  x or x = "s"
+end
+`)
+	requireCheckWarningContains(t, script, "return value expected int, got string")
+}
+
 func TestCheckInferReturnTypeContradiction(t *testing.T) {
 	t.Parallel()
 

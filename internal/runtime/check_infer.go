@@ -234,6 +234,33 @@ func (c *scriptChecker) binaryRightUnreachable(expr *BinaryExpr) bool {
 	return false
 }
 
+// binaryRightAlwaysEvaluatesInferred reports whether inferred facts prove a
+// short-circuit right operand always evaluates (a definitely-truthy left for
+// &&, a definitely-nil left for ||), so the impossible skipped path must not
+// join the merge.
+func (c *scriptChecker) binaryRightAlwaysEvaluatesInferred(expr *BinaryExpr) bool {
+	switch expr.Operator {
+	case tokenAnd, tokenWordAnd:
+		return typeExprDefinitelyTruthy(c.inferExpressionType(expr.Left))
+	case tokenOr, tokenWordOr:
+		return typeExprIsNilOnly(c.inferExpressionType(expr.Left))
+	}
+	return false
+}
+
+// logicalStatementRightAlwaysEvaluatesInferred is the statement-level twin
+// of binaryRightAlwaysEvaluatesInferred.
+func (c *scriptChecker) logicalStatementRightAlwaysEvaluatesInferred(stmt *LogicalStmt) bool {
+	left := c.inferLogicalLeftType(stmt.Left)
+	switch stmt.Operator {
+	case tokenWordAnd:
+		return typeExprDefinitelyTruthy(left)
+	case tokenWordOr:
+		return typeExprIsNilOnly(left)
+	}
+	return false
+}
+
 // logicalStatementRightUnreachable is the statement-level twin of
 // binaryRightUnreachable for `left and right` / `left or right`.
 func (c *scriptChecker) logicalStatementRightUnreachable(stmt *LogicalStmt) bool {
@@ -245,6 +272,25 @@ func (c *scriptChecker) logicalStatementRightUnreachable(stmt *LogicalStmt) bool
 		return typeExprIsNilOnly(left)
 	}
 	return false
+}
+
+// implicitLogicalLeftType infers a logical statement's left value type under
+// the left leaf's captured walk state when available, so the implicit-return
+// reachability decision uses the facts that held when the left side actually
+// evaluated.
+func (c *scriptChecker) implicitLogicalLeftType(stmt Statement) *TypeExpr {
+	state, ok := c.implicitReturnStates[stmt]
+	if !ok {
+		return c.inferLogicalLeftType(stmt)
+	}
+	currentRuntime := c.snapshotRuntimeState()
+	currentScope := c.snapshotScopeState()
+	c.restoreRuntimeState(state.runtimeState)
+	c.restoreScopeState(state.scopeState)
+	left := c.inferLogicalLeftType(stmt)
+	c.restoreRuntimeState(currentRuntime)
+	c.restoreScopeState(currentScope)
+	return left
 }
 
 func (c *scriptChecker) inferLogicalLeftType(stmt Statement) *TypeExpr {
