@@ -293,6 +293,24 @@ end`)
 	requireErrorContains(t, err, "strict effects: global hooks must be data-only")
 }
 
+// TestLazyGlobalStrictEffectsRejectsShapeValues pins that runtime shape
+// values count as non-data at the strict-effects global boundary just like
+// callables: their payload is an opaque type expression, not plain data.
+func TestLazyGlobalStrictEffectsRejectsShapeValues(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
+  1
+end`)
+
+	poison := NewHash(map[string]Value{
+		"schema": NewShape(&TypeExpr{Kind: TypeShape}),
+	})
+	err := callScriptErr(t, context.Background(), script, "run", nil,
+		CallOptions{Globals: map[string]Value{"hooks": poison}})
+	requireErrorContains(t, err, "strict effects: global hooks must be data-only")
+}
+
 // TestLazyGlobalInheritedByTasks pins the task boundary: a global the parent
 // never reads is still inherited by tasks with the correct value, and a
 // global the parent mutates before spawning is inherited in its mutated

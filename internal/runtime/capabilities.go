@@ -338,7 +338,7 @@ func cloneCapabilityDataOnlyValue(label string, val Value) (Value, error) {
 
 func (s *capabilityDataCloneScanner) clone(val Value) (Value, error) {
 	switch val.Kind() {
-	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance:
+	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance, KindShape:
 		return NewNil(), fmt.Errorf("%s must be data-only", s.label)
 	case KindArray:
 		return s.cloneArray(val)
@@ -706,7 +706,7 @@ func (s *capabilityCycleScanner) containsCycle(val Value) bool {
 
 func (s *capabilityContractScanner) containsCallable(val Value) bool {
 	switch val.Kind() {
-	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance:
+	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance, KindShape:
 		return true
 	case KindArray:
 		values := val.Array()
@@ -1012,7 +1012,7 @@ func validateStrictGlobals(globals map[string]Value) error {
 
 func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 	switch val.Kind() {
-	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance:
+	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance, KindShape:
 		return true
 	case KindArray:
 		values := val.Array()
