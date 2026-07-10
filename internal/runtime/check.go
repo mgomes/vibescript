@@ -141,6 +141,12 @@ type scriptChecker struct {
 	nameFactsCache          *checkNameFacts
 	selfScopeFns            map[*ScriptFunction]struct{}
 	orderIndependentOnly    bool
+	// stmtNoFallthroughInferred reports that the statement just walked
+	// provably never falls through — every reachable branch exits under
+	// inferred conditions — so the enclosing statement list stops like it
+	// does for statically exiting statements. Statement-list loops consume
+	// and reset it after every statement.
+	stmtNoFallthroughInferred bool
 	// isolatedCollectInference marks a module collection pass running on its
 	// own walled-off type-fact environment (seedEntrypointRequireExports,
 	// module entrypoints). The pass then maintains facts itself; the runtime
@@ -278,7 +284,9 @@ func (c *scriptChecker) collectAssignLocalTypes(stmt *AssignStmt) {
 func (c *scriptChecker) collectRequiredModuleExportsFromStatements(statements []Statement) {
 	for _, stmt := range statements {
 		c.collectRequiredModuleExportsFromStatement(stmt)
-		if statementAlwaysExits(stmt) {
+		noFallthrough := c.stmtNoFallthroughInferred
+		c.stmtNoFallthroughInferred = false
+		if statementAlwaysExits(stmt) || noFallthrough {
 			return
 		}
 	}
@@ -318,6 +326,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 				c.recordLocalBindings([]Statement{typed})
 			}
 		}
+		c.stmtNoFallthroughInferred = false
 	case *IfStmt:
 		baseState := c.snapshotModuleCollectionState()
 		baseScopeState := c.snapshotScopeState()
@@ -337,6 +346,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			if conditionKnown {
 				c.mergeModuleCollectionStates(baseState, fallthroughStates)
 				c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+				c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
 				return
 			}
 		}
@@ -356,6 +366,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 				if branchKnown {
 					c.mergeModuleCollectionStates(baseState, fallthroughStates)
 					c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+					c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
 					return
 				}
 			}
@@ -369,6 +380,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		}
 		c.mergeModuleCollectionStates(baseState, fallthroughStates)
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+		c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
 	case *ForStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Iterable)
 		if c.isolatedCollectInference {
@@ -1850,7 +1862,9 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 func (c *scriptChecker) checkStatements(function string, returnType *TypeExpr, statements []Statement) {
 	for _, stmt := range statements {
 		c.checkStatement(function, returnType, stmt)
-		if statementAlwaysExits(stmt) {
+		noFallthrough := c.stmtNoFallthroughInferred
+		c.stmtNoFallthroughInferred = false
+		if statementAlwaysExits(stmt) || noFallthrough {
 			return
 		}
 	}
@@ -1924,6 +1938,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				c.recordLocalBindings([]Statement{typed})
 			}
 		}
+		// The children set the no-fallthrough flag for themselves, not for
+		// this statement: a conditionally evaluated side never proves it.
+		c.stmtNoFallthroughInferred = false
 	case *IfStmt:
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
@@ -1945,6 +1962,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			if conditionKnown {
 				c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
 				c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+				c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
 				return
 			}
 		}
@@ -1971,6 +1989,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				if branchKnown {
 					c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
 					c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+					c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
 					return
 				}
 			}
@@ -1989,6 +2008,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+		c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
 	case *ForStmt:
 		// The iterable evaluates once with pre-loop facts before any body
 		// iteration, so it is checked (and the element type captured) before

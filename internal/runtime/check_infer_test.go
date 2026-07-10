@@ -664,6 +664,75 @@ end
 `))
 }
 
+func TestCheckInferDecidedExitsStopStatementLists(t *testing.T) {
+	t.Parallel()
+
+	// A decided condition whose branch always exits ends the enclosing
+	// list: the dead tail must not report.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  flag = "yes"
+  if flag
+    return 1
+  end
+  takes_int("bad")
+end
+`))
+
+	// A decided elsif ends an undecided chain the same way when every
+	// reachable branch exits.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(other)
+  flag = "yes"
+  if other
+    return 2
+  elsif flag
+    return 1
+  end
+  takes_int("bad")
+end
+`))
+
+	// An undecided condition keeps the tail reachable.
+	undecided := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  if flag
+    return 1
+  end
+  takes_int("bad")
+end
+`)
+	requireCheckWarningContains(t, undecided, "call to takes_int argument value expected int, got string")
+
+	// A decided branch that falls through keeps the tail reachable too.
+	openBranch := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  flag = "yes"
+  if flag
+    x = 1
+  end
+  takes_int("bad")
+end
+`)
+	requireCheckWarningContains(t, openBranch, "call to takes_int argument value expected int, got string")
+}
+
 func TestCheckInferStatementBranchesPruneByInferredTruthiness(t *testing.T) {
 	t.Parallel()
 
