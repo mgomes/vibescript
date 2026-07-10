@@ -284,6 +284,80 @@ end
 	}
 }
 
+func TestCheckInferSelfShadowDistinguishesMemberKind(t *testing.T) {
+	t.Parallel()
+
+	// A class method dispatches implicit self through class members only,
+	// so an instance method named string does not shadow: the shape fact
+	// holds and the parse_as contradiction reports.
+	classMethod := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+class Api
+  def string
+    "instance"
+  end
+
+  def self.load(raw: string)
+    body = JSON.parse_as(raw, { age: string })
+    takes_int(body["age"])
+  end
+end
+
+def run(raw: string)
+  Api.load(raw)
+end
+`)
+	requireCheckWarningContains(t, classMethod, "call to takes_int argument value expected int, got string")
+
+	// The converse: an instance method sees only instance members, so a
+	// class method named string does not shadow.
+	instanceMethod := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+class Api
+  def self.string
+    "class"
+  end
+
+  def load(raw: string)
+    body = JSON.parse_as(raw, { age: string })
+    takes_int(body["age"])
+  end
+end
+
+def run(raw: string)
+  Api.new.load(raw)
+end
+`)
+	requireCheckWarningContains(t, instanceMethod, "call to takes_int argument value expected int, got string")
+
+	// A class body is a class context too: an instance method named string
+	// does not shadow a shape literal evaluated in the body.
+	classBody := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+class Api
+  def string
+    "instance"
+  end
+
+  takes_int({ age: string })
+end
+
+def run
+  Api.new
+end
+`)
+	requireCheckWarningContains(t, classBody, "call to takes_int argument value expected int, got shape")
+}
+
 func TestCheckInferParseAsShapesInsideMethods(t *testing.T) {
 	t.Parallel()
 

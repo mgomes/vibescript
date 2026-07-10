@@ -1425,9 +1425,10 @@ func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 }
 
 // implicitSelfShadows reports whether a bare identifier would resolve
-// through implicit self in the current context: only members the receiver
-// class actually defines shadow, so shape literals in unrelated methods keep
-// their facts. An unknown receiver context stays conservative.
+// through implicit self in the current context, mirroring the runtime probe:
+// instance methods dispatch through the class's instance methods, class
+// methods and class bodies through its class methods, so only the matching
+// member kind shadows. An unknown receiver context stays conservative.
 func (c *scriptChecker) implicitSelfShadows(name string) bool {
 	if !c.selfScope {
 		return false
@@ -1435,13 +1436,12 @@ func (c *scriptChecker) implicitSelfShadows(name string) bool {
 	if c.selfClass == nil {
 		return true
 	}
-	if _, ok := c.selfClass.Methods[name]; ok {
-		return true
+	if c.selfClassContext {
+		_, ok := c.selfClass.ClassMethods[name]
+		return ok
 	}
-	if _, ok := c.selfClass.ClassMethods[name]; ok {
-		return true
-	}
-	return false
+	_, ok := c.selfClass.Methods[name]
+	return ok
 }
 
 // typeRootResolvesName mirrors the runtime's env.Get chain walk: engine

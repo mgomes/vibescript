@@ -125,14 +125,18 @@ func (c *scriptChecker) pushFunctionNameScope(fn *ScriptFunction) func() {
 	popUnion := c.pushLocalNameUnion(names)
 	previousSelf := c.selfScope
 	previousClass := c.selfClass
+	previousClassContext := c.selfClassContext
 	c.selfScope = c.functionHasSelfScope(fn)
 	c.selfClass = nil
+	c.selfClassContext = false
 	if c.selfScope {
 		c.selfClass = c.selfScopeFnClasses[fn]
+		_, c.selfClassContext = c.selfScopeClassFns[fn]
 	}
 	return func() {
 		c.selfScope = previousSelf
 		c.selfClass = previousClass
+		c.selfClassContext = previousClassContext
 		popUnion()
 	}
 }
@@ -180,6 +184,7 @@ func (c *scriptChecker) functionHasSelfScope(fn *ScriptFunction) bool {
 	if c.selfScopeFns == nil {
 		c.selfScopeFns = make(map[*ScriptFunction]struct{})
 		c.selfScopeFnClasses = make(map[*ScriptFunction]*ClassDef)
+		c.selfScopeClassFns = make(map[*ScriptFunction]struct{})
 		for _, classDef := range c.script.classes {
 			for _, method := range classDef.Methods {
 				c.selfScopeFns[method] = struct{}{}
@@ -188,6 +193,7 @@ func (c *scriptChecker) functionHasSelfScope(fn *ScriptFunction) bool {
 			for _, method := range classDef.ClassMethods {
 				c.selfScopeFns[method] = struct{}{}
 				c.selfScopeFnClasses[method] = classDef
+				c.selfScopeClassFns[method] = struct{}{}
 			}
 		}
 	}
