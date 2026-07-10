@@ -467,6 +467,10 @@ func reassignmentConflicts(current, next *TypeExpr) bool {
 // be nil or bool (or is unknown) stays undecided.
 func typeExprDefinitelyTruthy(ty *TypeExpr) bool {
 	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
+		if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+			// Runtime shape values are always truthy.
+			return true
+		}
 		return arm.Kind != TypeNil && arm.Kind != TypeBool &&
 			arm.Kind != TypeAny && arm.Kind != TypeUnknown
 	})

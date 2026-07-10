@@ -4484,14 +4484,34 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 		val, ok := staticLiteralValue(kwarg.Value)
 		if !ok {
 			// The collected keyword values are no longer fully static: fall
-			// back to checking each remaining value's inferred type against
-			// the keyword-rest annotation's value type.
-			if ty.Kind == TypeHash && len(ty.TypeArgs) == 2 {
+			// back to inferred checks. Rest keywords bind as a string-keyed
+			// hash at runtime, so a disjoint declared key type always fails
+			// at call binding, and an exact shape checks per field.
+			switch {
+			case ty.Kind == TypeHash && len(ty.TypeArgs) == 2:
+				if typeExprsDisjoint(checkTypeString, ty.TypeArgs[0]) {
+					c.add(function, kwarg.Value.Pos(), "call to %s argument %s expected %s, got string-keyed keywords",
+						callName, paramName, formatTypeExpr(ty))
+					return
+				}
 				for _, rest := range kwargs {
 					if usedKw != nil && usedKw[rest.Name] {
 						continue
 					}
 					c.checkInferredArgument(function, rest.Value, ty.TypeArgs[1], callName, paramName)
+				}
+			case ty.Kind == TypeShape:
+				for _, rest := range kwargs {
+					if usedKw != nil && usedKw[rest.Name] {
+						continue
+					}
+					fieldType, known := ty.Shape[rest.Name]
+					if !known {
+						c.add(function, rest.Value.Pos(), "call to %s argument %s expected %s, got keyword %s",
+							callName, paramName, formatTypeExpr(ty), rest.Name)
+						continue
+					}
+					c.checkInferredArgument(function, rest.Value, fieldType, callName, paramName)
 				}
 			}
 			return

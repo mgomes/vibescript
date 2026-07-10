@@ -960,6 +960,84 @@ end
 `))
 }
 
+func TestCheckInferShapeValuesAreTruthy(t *testing.T) {
+	t.Parallel()
+
+	// Shape values are always truthy, so || short-circuits and the right
+	// side never produces diagnostics.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  schema = { name: string }
+  schema || takes_int("bad")
+end
+`))
+}
+
+func TestCheckInferKeywordRestKeyKinds(t *testing.T) {
+	t.Parallel()
+
+	// Rest keywords bind as a string-keyed hash, so a symbol key type
+	// always fails at call binding even with compatible values.
+	script := compileScript(t, `
+def accept(**opts: hash<symbol, int>)
+  opts
+end
+
+def run()
+  v = 1
+  accept(limit: v)
+end
+`)
+	requireCheckWarningContains(t, script, "call to accept argument opts expected hash<symbol, int>, got string-keyed keywords")
+
+	// Shape-annotated keyword rests check per field: unknown keywords fail
+	// the exact shape, known ones check their field types.
+	extra := compileScript(t, `
+def accept(**opts: { limit: int })
+  opts
+end
+
+def run()
+  v = 1
+  accept(limit: v, extra: v)
+end
+`)
+	requireCheckWarningContains(t, extra, "call to accept argument opts expected { limit: int }, got keyword extra")
+
+	field := compileScript(t, `
+def accept(**opts: { limit: int })
+  opts
+end
+
+def run()
+  v = "slow"
+  accept(limit: v)
+end
+`)
+	requireCheckWarningContains(t, field, "call to accept argument opts expected int, got string")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def accept(**opts: { limit: int })
+  opts
+end
+
+def strings(**opts: hash<string, int>)
+  opts
+end
+
+def run(dynamic)
+  v = 1
+  accept(limit: v)
+  strings(limit: v)
+  strings(limit: dynamic)
+end
+`))
+}
+
 func TestCheckInferRestArgumentsUseInferredFacts(t *testing.T) {
 	t.Parallel()
 
