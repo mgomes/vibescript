@@ -44,6 +44,7 @@ type ScriptFunction struct {
 // Script represents a parsed Vibescript module ready for execution.
 type Script struct {
 	engine              *Engine
+	entrypoint          string
 	functions           map[string]*ScriptFunction
 	classes             map[string]*ClassDef
 	classOrder          []string

@@ -349,6 +349,17 @@ func TestCloneDataOnlyValue(t *testing.T) {
 		}
 	})
 
+	t.Run("shape_rejected", func(t *testing.T) {
+		val := value.NewHash(map[string]value.Value{"schema": runtimeKind(value.KindShape)})
+		_, err := CloneDataOnlyValue("payload", val)
+		if err == nil {
+			t.Fatal("CloneDataOnlyValue err = nil, want data-only error for shape value")
+		}
+		if want := "payload must be data-only"; err.Error() != want {
+			t.Fatalf("CloneDataOnlyValue err = %q, want %q", err.Error(), want)
+		}
+	})
+
 	t.Run("default_proc_rejected", func(t *testing.T) {
 		val := value.NewHashWithDefault(
 			map[string]value.Value{"k": value.NewInt(1)},
@@ -683,6 +694,16 @@ func TestValidateDataOnlyValue(t *testing.T) {
 		{
 			name: "shared_hash_diamond_is_acyclic",
 			val:  value.NewHash(map[string]value.Value{"a": sharedHash, "b": sharedHash}),
+		},
+		{
+			name:    "shape",
+			val:     runtimeKind(value.KindShape),
+			wantErr: "payload must be data-only",
+		},
+		{
+			name:    "nested_shape",
+			val:     value.NewArray([]value.Value{runtimeKind(value.KindShape)}),
+			wantErr: "payload must be data-only",
 		},
 		{
 			name:    "function",

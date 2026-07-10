@@ -93,6 +93,30 @@ value. Reduce the returned value or have the script stream output itself.
 The cap matches the other stdlib output guards (see
 [Runtime Sandbox & Limits](../README.md#runtime-sandbox--limits)).
 
+## `vibes check <script>`
+
+Compiles a script and reports every statically checkable contract issue —
+across all functions, class methods, and top-level code — without executing
+anything. It applies the same semantic contract as `vibes run -check`
+(ADR-004): locals take the types of the expressions assigned to them,
+annotations are compile-time facts, known contradictions are errors, and
+unknown values are always permitted and left to the runtime checks.
+
+```bash
+vibes check ./examples/strings/operations.vibe
+```
+
+Flags:
+
+- `-module-path <dir>`: add module search paths for `require` (repeatable).
+
+Issues print one per line as `path:line:column: message (function)` and the
+exit code is non-zero when any issue is found, so the command slots directly
+into CI and deployment gates. Scripts relying on host-injected globals or
+capabilities report them as undefined here, because the CLI checks without a
+host context; embedding hosts get the same checks with their bindings applied
+through the `CheckWarnings*` API.
+
 ## `vibes fmt <path>`
 
 Applies canonical formatting for `.vibe` files.
@@ -142,8 +166,8 @@ into CI.
 
 ## Source-size limits
 
-The commands that compile a script file (`vibes run`, `vibes analyze`, and
-`vibes test`) stat each file and reject inputs larger than the engine's
+The commands that compile a script file (`vibes run`, `vibes check`,
+`vibes analyze`, and `vibes test`) stat each file and reject inputs larger than the engine's
 source-size limit *before* reading the file into memory. This mirrors how
 `require` guards module loading, so an oversized file fails fast with
 `source exceeds maximum size (<size> > <limit> bytes)` instead of being read

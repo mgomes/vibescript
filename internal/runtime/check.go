@@ -14,6 +14,9 @@ type CheckWarning struct {
 	Function string
 	Pos      Position
 	Message  string
+	// Source is the file path of the required module the warning originates
+	// in; empty for warnings in the checked script itself.
+	Source string
 }
 
 // CheckWarnings returns statically checkable contract issues for the compiled
@@ -107,6 +110,14 @@ type scriptChecker struct {
 	hostGlobals             map[string]struct{}
 	warnings                []CheckWarning
 	scopes                  []map[string]struct{}
+	localTypes              []checkTypeFrame
+	typePoison              map[string]struct{}
+	typeAliases             map[string]map[string]struct{}
+	mutationRegionDepth     int
+	callArgumentFacts       map[Expression]*TypeExpr
+	deferredReturnSites     *[]deferredReturnSite
+	implicitReturnLeaves    map[Statement]struct{}
+	implicitReturnStates    map[Statement]checkStateSnapshot
 	requiredModules         map[string]struct{}
 	runtimeModules          map[string]struct{}
 	runtimeNamespaceMembers map[string]struct{}
@@ -121,10 +132,41 @@ type scriptChecker struct {
 	checkedReachableFuncs   map[string]struct{}
 	reachableFuncQueue      []reachableFunction
 	selfScope               bool
+	selfClass               *ClassDef
+	selfClassContext        bool
+	selfScopeFnClasses      map[*ScriptFunction]*ClassDef
+	selfScopeClassFns       map[*ScriptFunction]struct{}
 	localNameUnions         []map[string]struct{}
+	liveLocalNames          []map[string]struct{}
 	nameFactsCache          *checkNameFacts
 	selfScopeFns            map[*ScriptFunction]struct{}
 	orderIndependentOnly    bool
+	// implicitIfDecisions records, per if statement of an armed
+	// implicit-return walk, the branch reachability the walker decided at
+	// each condition's own evaluation point (index 0 the main condition,
+	// then the elsifs in order), so the post-walk implicit-return pass
+	// prunes the same unreachable arms without re-inferring under merged
+	// state.
+	implicitIfDecisions map[*IfStmt][]conditionDecision
+	// stmtNoFallthroughInferred reports that the statement just walked
+	// provably never falls through — every reachable branch exits under
+	// inferred conditions — so the enclosing statement list stops like it
+	// does for statically exiting statements. Statement-list loops consume
+	// and reset it after every statement.
+	stmtNoFallthroughInferred bool
+	// isolatedCollectInference marks a module collection pass running on its
+	// own walled-off type-fact environment (seedEntrypointRequireExports,
+	// module entrypoints). The pass then maintains facts itself; the runtime
+	// collection path stays read-only because it shares the live walk's facts,
+	// which the real walk already updates at the correct evaluation points.
+	isolatedCollectInference bool
+}
+
+// conditionDecision is a walker's reachability verdict for one branch
+// condition, captured at that condition's evaluation point.
+type conditionDecision struct {
+	truthy bool
+	known  bool
 }
 
 type reachableFunction struct {
@@ -227,26 +269,52 @@ func (c *scriptChecker) collectFunctionRequiredModuleExports(fn *ScriptFunction)
 	if fn == nil {
 		return
 	}
+	restoreInference := c.withIsolatedLocalInference()
+	defer restoreInference()
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 
 	for _, param := range fn.Params {
 		c.collectRequiredModuleExportsFromExpression(param.DefaultVal)
 		c.recordParamBinding(param)
+		c.bindParamLocalType(param)
 	}
 	c.collectRequiredModuleExportsFromStatements(fn.Body)
 }
 
-func (c *scriptChecker) collectRequiredModuleExportsFromStatements(statements []Statement) {
+// collectAssignLocalTypes mirrors the real walk's assignment inference during
+// a module collection pass so guaranteed-evaluation gating sees the same
+// local facts. Diagnostics stay suppressed: the pass only collects, and the
+// real walks report assignment warnings themselves.
+func (c *scriptChecker) collectAssignLocalTypes(stmt *AssignStmt) {
+	if !c.isolatedCollectInference {
+		return
+	}
+	c.withSuppressedWarnings(func() {
+		c.inferAssignStatementTypes("", stmt)
+	})
+}
+
+// collectRequiredModuleExportsFromStatements walks a statement list for
+// module collection and reports whether it can fall through, mirroring
+// checkStatements so unreachable requires stay unbound.
+func (c *scriptChecker) collectRequiredModuleExportsFromStatements(statements []Statement) bool {
 	for _, stmt := range statements {
 		c.collectRequiredModuleExportsFromStatement(stmt)
-		if statementAlwaysExits(stmt) {
-			return
+		noFallthrough := c.stmtNoFallthroughInferred
+		c.stmtNoFallthroughInferred = false
+		if statementAlwaysExits(stmt) || noFallthrough {
+			return false
 		}
 	}
+	return true
 }
 
 func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement) {
+	if c.isolatedCollectInference {
+		c.predeclareStatementLiveNames(stmt)
+		defer c.postdeclareStatementLiveNames(stmt)
+	}
 	switch typed := stmt.(type) {
 	case nil:
 		return
@@ -260,6 +328,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 	case *AssignStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Target)
 		c.collectRequiredModuleExportsFromExpression(typed.Value)
+		c.collectAssignLocalTypes(typed)
 		c.recordBindingTarget(typed.Target)
 	case *ExprStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Expr)
@@ -267,14 +336,15 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.collectRequiredModuleExportsFromStatement(typed.Left)
 		leftState := c.snapshotModuleCollectionState()
 		leftScopeState := c.snapshotScopeState()
-		if logicalStatementRightMayEvaluate(typed) {
+		if logicalStatementRightMayEvaluate(typed) && !c.logicalStatementRightUnreachable(typed) {
 			c.collectRequiredModuleExportsFromStatement(typed.Right)
-			if !logicalStatementRightAlwaysEvaluates(typed) {
+			if !logicalStatementRightAlwaysEvaluates(typed) && !c.logicalStatementRightAlwaysEvaluatesInferred(typed) {
 				c.restoreModuleCollectionState(leftState)
 				c.restoreScopeState(leftScopeState)
 				c.recordLocalBindings([]Statement{typed})
 			}
 		}
+		c.stmtNoFallthroughInferred = false
 	case *IfStmt:
 		baseState := c.snapshotModuleCollectionState()
 		baseScopeState := c.snapshotScopeState()
@@ -284,16 +354,16 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		fallthroughStates := make([]checkModuleCollectionState, 0, len(typed.ElseIf)+2)
 		fallthroughScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
-		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
 		if !conditionKnown || conditionTruthy {
-			c.collectRequiredModuleExportsFromStatements(typed.Consequent)
-			if !blockAlwaysExits(typed.Consequent) {
+			if c.collectRequiredModuleExportsFromStatements(typed.Consequent) {
 				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 			if conditionKnown {
 				c.mergeModuleCollectionStates(baseState, fallthroughStates)
 				c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+				c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
 				return
 			}
 		}
@@ -303,51 +373,69 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			c.collectRequiredModuleExportsFromExpression(elseIf.Condition)
 			falseState = c.snapshotModuleCollectionState()
 			falseScopeState = c.snapshotScopeState()
-			branchTruthy, branchKnown := staticExpressionTruthiness(elseIf.Condition)
+			branchTruthy, branchKnown := c.inferredConditionTruthiness(elseIf.Condition)
 			if !branchKnown || branchTruthy {
-				c.collectRequiredModuleExportsFromStatements(elseIf.Consequent)
-				if !blockAlwaysExits(elseIf.Consequent) {
+				if c.collectRequiredModuleExportsFromStatements(elseIf.Consequent) {
 					fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 					fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 				}
 				if branchKnown {
 					c.mergeModuleCollectionStates(baseState, fallthroughStates)
 					c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+					c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
 					return
 				}
 			}
 		}
 		c.restoreModuleCollectionState(falseState)
 		c.restoreScopeState(falseScopeState)
-		c.collectRequiredModuleExportsFromStatements(typed.Alternate)
-		if len(typed.Alternate) == 0 || !blockAlwaysExits(typed.Alternate) {
+		if c.collectRequiredModuleExportsFromStatements(typed.Alternate) {
 			fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 			fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 		}
 		c.mergeModuleCollectionStates(baseState, fallthroughStates)
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+		c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
 	case *ForStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Iterable)
+		if c.isolatedCollectInference {
+			c.recordLiveStatementNames(typed.Body)
+			c.degradeLocalTypesForBindings(typed.Body, typed.Target)
+		}
 		c.recordBindingTarget(typed.Target)
 		bodyState := c.snapshotModuleCollectionState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.collectRequiredModuleExportsFromStatements(typed.Body)
+		c.mutationRegionDepth--
 		c.restoreModuleCollectionState(bodyState)
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
 	case *WhileStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		if c.isolatedCollectInference {
+			c.recordLiveStatementNames(typed.Body)
+			c.degradeLocalTypesForBindings(typed.Body)
+		}
 		bodyState := c.snapshotModuleCollectionState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.collectRequiredModuleExportsFromStatements(typed.Body)
+		c.mutationRegionDepth--
 		c.restoreModuleCollectionState(bodyState)
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
 	case *UntilStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		if c.isolatedCollectInference {
+			c.recordLiveStatementNames(typed.Body)
+			c.degradeLocalTypesForBindings(typed.Body)
+		}
 		bodyState := c.snapshotModuleCollectionState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.collectRequiredModuleExportsFromStatements(typed.Body)
+		c.mutationRegionDepth--
 		c.restoreModuleCollectionState(bodyState)
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
@@ -357,10 +445,8 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		fallthroughStates := make([]checkModuleCollectionState, 0, 2)
 		fallthroughScopeStates := make([]checkScopeState, 0, 2)
 
-		c.collectRequiredModuleExportsFromStatements(typed.Body)
-		if !blockAlwaysExits(typed.Body) {
-			c.collectRequiredModuleExportsFromStatements(typed.Else)
-			if len(typed.Else) == 0 || !blockAlwaysExits(typed.Else) {
+		if c.collectRequiredModuleExportsFromStatements(typed.Body) {
+			if c.collectRequiredModuleExportsFromStatements(typed.Else) {
 				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -376,9 +462,9 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			c.restoreModuleCollectionState(baseState)
 			c.restoreScopeState(baseScopeState)
 			popScope := c.pushRescueScope(clause)
-			c.collectRequiredModuleExportsFromStatements(clause.Body)
+			clauseFallsThrough := c.collectRequiredModuleExportsFromStatements(clause.Body)
 			popScope()
-			if !blockAlwaysExits(clause.Body) {
+			if clauseFallsThrough {
 				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -386,6 +472,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.mergeModuleCollectionStates(baseState, fallthroughStates)
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
 		c.collectRequiredModuleExportsFromStatements(typed.Ensure)
+		c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
 	case *ClassStmt:
 		c.collectRequiredModuleExportsFromClassBody(typed.Body)
 	}
@@ -395,6 +482,8 @@ func (c *scriptChecker) collectRequiredModuleExportsFromClassBody(body []Stateme
 	if len(body) == 0 {
 		return
 	}
+	restoreInference := c.withIsolatedLocalInference()
+	defer restoreInference()
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 	c.collectRequiredModuleExportsFromStatements(body)
@@ -415,20 +504,50 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		}
 	case *CallExpr:
 		c.collectRequireCallExports(typed)
-		c.collectRequiredModuleExportsFromExpression(typed.Callee)
-		if staticNilSafeNavigationCall(typed) {
+		callSkipsInferred := c.safeNavigationCallSkipsInferred(typed)
+		argumentsAlwaysEvaluate := c.safeNavigationArgumentsAlwaysEvaluateInferred(typed)
+		if member, ok := typed.Callee.(*MemberExpr); ok {
+			// The callee's receiver walks directly so its facts survive
+			// until dispatch, mirroring the real walk's poison ordering.
+			c.collectRequiredModuleExportsFromExpression(member.Object)
+		} else {
+			c.collectRequiredModuleExportsFromExpression(typed.Callee)
+		}
+		if staticNilSafeNavigationCall(typed) || callSkipsInferred {
 			return
 		}
-		if safeNavigationCallMaySkipArguments(typed) {
+		if safeNavigationCallMaySkipArguments(typed) && !argumentsAlwaysEvaluate {
 			baseState := c.snapshotModuleCollectionState()
+			baseScopeState := c.snapshotScopeState()
 			c.collectRequiredModuleExportsFromCallArguments(typed)
 			callState := c.snapshotModuleCollectionState()
 			c.mergeModuleCollectionStates(baseState, []checkModuleCollectionState{baseState, callState})
+			if c.isolatedCollectInference {
+				callScopeState := c.snapshotScopeState()
+				c.mergeScopeStates(baseScopeState, []checkScopeState{baseScopeState, callScopeState})
+			}
 		} else {
 			c.collectRequiredModuleExportsFromCallArguments(typed)
 		}
+		if c.isolatedCollectInference {
+			if typed.Block != nil {
+				c.degradeBlockBodyBindings(typed.Block)
+			}
+			if member, ok := typed.Callee.(*MemberExpr); ok {
+				c.poisonEscapedIdentifier(member.Object)
+			}
+			for _, arg := range typed.Args {
+				c.poisonEscapedIdentifier(arg)
+			}
+			for _, kwarg := range typed.KwArgs {
+				c.poisonEscapedIdentifier(kwarg.Value)
+			}
+		}
 	case *MemberExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
+		if c.isolatedCollectInference {
+			c.poisonEscapedIdentifier(typed.Object)
+		}
 	case *ScopeExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
 	case *IndexExpr:
@@ -446,8 +565,13 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		c.collectRequiredModuleExportsFromExpression(typed.Right)
 	case *BinaryExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Left)
-		if binaryRightAlwaysEvaluates(typed) {
+		if binaryRightAlwaysEvaluates(typed) || c.binaryRightAlwaysEvaluatesInferred(typed) {
 			c.collectRequiredModuleExportsFromExpression(typed.Right)
+		} else if c.isolatedCollectInference && binaryRightMayEvaluate(typed) && !c.binaryRightUnreachable(typed) {
+			c.poisonSkippedMutationFacts(typed.Right)
+		}
+		if c.isolatedCollectInference {
+			c.applyShovelMutationFacts(typed)
 		}
 	case *ConditionalExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
@@ -475,7 +599,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		falseState := c.snapshotModuleCollectionState()
 		branchStates := make([]checkModuleCollectionState, 0, len(typed.ElseIf)+2)
 
-		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
 		if !conditionKnown || conditionTruthy {
 			c.collectRequiredModuleExportsFromExpression(typed.Consequent)
 			branchStates = append(branchStates, c.snapshotModuleCollectionState())
@@ -488,7 +612,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 			c.restoreModuleCollectionState(falseState)
 			c.collectRequiredModuleExportsFromExpression(branch.Condition)
 			falseState = c.snapshotModuleCollectionState()
-			branchTruthy, branchKnown := staticExpressionTruthiness(branch.Condition)
+			branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
 			if !branchKnown || branchTruthy {
 				c.collectRequiredModuleExportsFromExpression(branch.Result)
 				branchStates = append(branchStates, c.snapshotModuleCollectionState())
@@ -576,10 +700,10 @@ func (c *scriptChecker) collectStringPartRequiredModuleExports(parts []StringPar
 
 func binaryRightAlwaysEvaluates(expr *BinaryExpr) bool {
 	switch expr.Operator {
-	case tokenAnd:
+	case tokenAnd, tokenWordAnd:
 		val, ok := staticLiteralValue(expr.Left)
 		return ok && val.Truthy()
-	case tokenOr:
+	case tokenOr, tokenWordOr:
 		val, ok := staticLiteralValue(expr.Left)
 		return ok && !val.Truthy()
 	default:
@@ -589,10 +713,10 @@ func binaryRightAlwaysEvaluates(expr *BinaryExpr) bool {
 
 func binaryRightMayEvaluate(expr *BinaryExpr) bool {
 	switch expr.Operator {
-	case tokenAnd:
+	case tokenAnd, tokenWordAnd:
 		val, ok := staticLiteralValue(expr.Left)
 		return !ok || val.Truthy()
-	case tokenOr:
+	case tokenOr, tokenWordOr:
 		val, ok := staticLiteralValue(expr.Left)
 		return !ok || !val.Truthy()
 	default:
@@ -799,6 +923,14 @@ func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) 
 		}
 	})
 
+	for i := range checker.warnings {
+		// Attribute module diagnostics to the module's own file so callers
+		// printing path-prefixed warnings point at the right source; nested
+		// modules keep the source their own sub-checker recorded.
+		if checker.warnings[i].Source == "" {
+			checker.warnings[i].Source = entry.script.modulePath
+		}
+	}
 	c.warnings = append(c.warnings, checker.warnings...)
 	c.moduleEntries = checker.moduleEntries
 	c.moduleExportValues = checker.moduleExportValues
@@ -951,11 +1083,14 @@ func (c *scriptChecker) collectRequiredModuleExportsFromModuleInitialization(ent
 	caller := moduleContextForEntry(entry)
 	previousCaller := c.moduleCaller
 	previousScopes := c.scopes
+	previousLocalTypes := c.localTypes
 	c.moduleCaller = &caller
 	c.scopes = nil
+	c.localTypes = nil
 	defer func() {
 		c.moduleCaller = previousCaller
 		c.scopes = previousScopes
+		c.localTypes = previousLocalTypes
 	}()
 
 	c.collectRequiredModuleExportsFromModuleClassBodies(entry)
@@ -1007,7 +1142,33 @@ func (c *scriptChecker) withRuntimeModuleCollection(collect func()) {
 }
 
 func (c *scriptChecker) checkScript() {
+	// The entrypoint executes its statements in order, so it is checked
+	// before the require-export seed: a top-level call before its require
+	// must not resolve the exports early. Its own walk binds each require
+	// as it reaches it.
+	entrypoint := c.script.entrypoint
+	entrypointReached := make(map[*ScriptFunction]struct{})
+	if entry := c.script.functions[entrypoint]; entrypoint != "" && entry != nil {
+		c.withFreshRuntimeTypeRootForCallable(entry, func() {
+			// Functions the top-level code calls run under the runtime root
+			// as it exists at each call, so they are checked reachably here
+			// with that root — a callee invoked before a later require must
+			// not resolve its exports — and skipped in the seeded pass.
+			c.withReachableCallChecks(func() {
+				c.markReachableFunctionChecked(entry)
+				c.checkFunction(entrypoint, entry)
+				c.drainReachableFunctions(entrypointReached)
+			})
+		})
+	}
+	c.seedEntrypointRequireExports()
 	for _, fn := range c.sortedScriptFunctions() {
+		if entrypoint != "" && fn.Name == entrypoint {
+			continue
+		}
+		if _, reached := entrypointReached[fn]; reached {
+			continue
+		}
 		c.withFreshRuntimeTypeRootForCallable(fn, func() {
 			c.checkFunction(fn.Name, fn)
 		})
@@ -1017,16 +1178,57 @@ func (c *scriptChecker) checkScript() {
 	})
 	for _, classDef := range c.sortedClasses() {
 		for _, method := range sortedCheckFunctions(classDef.Methods) {
+			if _, reached := entrypointReached[method]; reached {
+				continue
+			}
 			c.withFreshRuntimeTypeRootForCallable(method, func() {
 				c.checkFunction(classDef.Name+"#"+method.Name, method)
 			})
 		}
 		for _, method := range sortedCheckFunctions(classDef.ClassMethods) {
+			if _, reached := entrypointReached[method]; reached {
+				continue
+			}
 			c.withFreshRuntimeTypeRootForCallable(method, func() {
 				c.checkFunction(classDef.Name+"."+method.Name, method)
 			})
 		}
 	}
+}
+
+// seedEntrypointRequireExports binds the module exports required by the
+// script's top-level code into the shared type root before the per-function
+// walks. This encodes program semantics: whole-script checking (vibes check,
+// CheckWarnings) validates the script as vibes run executes it, where the
+// entrypoint's top-level requires run before any function can be invoked. A
+// host that calls a named function directly without running the entrypoint
+// must use the per-call APIs (CheckWarningsForCall / CheckWarningsForFunction,
+// the run -check -function path), which deliberately stay unseeded and still
+// report exports and their types as unresolved.
+// Warnings stay suppressed here; the per-function walks re-collect and
+// report module diagnostics exactly as before.
+func (c *scriptChecker) seedEntrypointRequireExports() {
+	if c.script == nil || c.script.entrypoint == "" {
+		return
+	}
+	entry := c.script.functions[c.script.entrypoint]
+	if entry == nil {
+		return
+	}
+	// The seed's collection dedup state is restored afterwards so the real
+	// walks re-collect and report module diagnostics themselves; only the
+	// bindings in the type root persist. (withSuppressedWarnings already
+	// restores moduleCheckedFunctions, which gates the module function
+	// checks.)
+	previousModules := cloneCheckModuleSet(c.requiredModules)
+	c.withSuppressedWarnings(func() {
+		c.collectFunctionRequiredModuleExports(entry)
+	})
+	c.requiredModules = previousModules
+	// Annotation validation resolves against each function's fresh runtime
+	// root, so the seeded exports (required enums used in annotations, for
+	// example) chain in as that root's parent.
+	c.runtimeTypeRootParent = cloneCheckRoot(c.typeRoot)
 }
 
 func (c *scriptChecker) checkFunctionExecution(target checkTarget) {
@@ -1055,6 +1257,8 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 	if fn == nil || !c.checkCallValueShape(label, fn.Name, fn.Pos, fn, args, kwargs) {
 		return
 	}
+	defer c.withFreshLocalInferenceScope()()
+	defer c.withImplicitReturnCapture(fn)()
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 	popNameScope := c.pushFunctionNameScope(fn)
@@ -1065,43 +1269,80 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 		usedKw = make(map[string]bool, len(kwargs))
 	}
 	argIdx := 0
+	warningsBeforeBinding := len(c.warnings)
 	for _, param := range fn.Params {
+		var boundValue Value
+		boundPresent := false
+		usedDefault := false
 		switch param.Kind {
 		case ParamNormal:
 			if argIdx < len(args) {
-				c.checkArgumentValue(label, fn.Pos, args[argIdx], param.Type, fn.Name, param.Name)
+				if normalized, ok := c.checkArgumentValue(label, fn.Pos, args[argIdx], param.Type, fn.Name, param.Name); ok {
+					boundValue, boundPresent = normalized, true
+				}
 				argIdx++
 			} else if val, ok := kwargs[param.Name]; ok {
-				c.checkArgumentValue(label, fn.Pos, val, param.Type, fn.Name, param.Name)
+				if normalized, ok := c.checkArgumentValue(label, fn.Pos, val, param.Type, fn.Name, param.Name); ok {
+					boundValue, boundPresent = normalized, true
+				}
 				if usedKw != nil {
 					usedKw[param.Name] = true
 				}
 			} else {
 				c.checkParamDefault(label, param)
+				usedDefault = true
 			}
 		case ParamKeyword:
 			if val, ok := kwargs[param.Name]; ok {
-				c.checkArgumentValue(label, fn.Pos, val, param.Type, fn.Name, param.Name)
+				if normalized, ok := c.checkArgumentValue(label, fn.Pos, val, param.Type, fn.Name, param.Name); ok {
+					boundValue, boundPresent = normalized, true
+				}
 				if usedKw != nil {
 					usedKw[param.Name] = true
 				}
 			} else {
 				c.checkParamDefault(label, param)
+				usedDefault = true
 			}
 		case ParamRest:
 			c.checkRestArgumentValues(label, fn.Pos, args[argIdx:], param.Type, fn.Name, param.Name)
+			boundValue, boundPresent = NewArray(append([]Value(nil), args[argIdx:]...)), true
 			argIdx = len(args)
 		case ParamKeywordRest:
 			c.checkKeywordRestArgumentValues(label, fn.Pos, kwargs, usedKw, param.Type, fn.Name, param.Name)
+			rest := make(map[string]Value)
+			for _, name := range sortedValueKeywordNames(kwargs) {
+				if usedKw != nil && usedKw[name] {
+					continue
+				}
+				rest[name] = kwargs[name]
+			}
 			for _, name := range sortedValueKeywordNames(kwargs) {
 				if usedKw != nil {
 					usedKw[name] = true
 				}
 			}
+			boundValue, boundPresent = NewHash(rest), true
 		case ParamBlock:
 			c.checkBlockArgumentValue(label, fn.Pos, nil, param.Type, fn.Name, param.Name)
 		}
 		c.recordParamBinding(param)
+		c.bindParamValueFact(param, boundValue, boundPresent)
+		if boundPresent {
+			c.refineAnnotatedParamFact(param, typeFactForValue(boundValue))
+		}
+		if usedDefault {
+			c.bindParamDefaultFact(param)
+			if param.DefaultVal != nil {
+				c.refineAnnotatedParamFact(param, c.inferExpressionType(param.DefaultVal))
+			}
+		}
+	}
+	if len(c.warnings) > warningsBeforeBinding {
+		// The runtime stops at the failed binding, so the body never runs
+		// under this call; its diagnostics would describe executions that
+		// cannot happen.
+		return
 	}
 	c.checkStatements(label, fn.ReturnTy, fn.Body)
 	if fn.ReturnTy != nil {
@@ -1150,6 +1391,21 @@ func (c *scriptChecker) enqueueReachableFunction(label string, fn *ScriptFunctio
 	})
 }
 
+// enqueueReachableIdentifierCall covers bare auto-calls: a top-level `run`
+// dispatches like run(), so the callee checks under the call-time runtime
+// root exactly as a spelled-out call does.
+func (c *scriptChecker) enqueueReachableIdentifierCall(ident *Identifier) {
+	if !c.checkReachableCalls || ident == nil {
+		return
+	}
+	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		return
+	}
+	if fn, ok := c.script.functions[ident.Name]; ok {
+		c.enqueueReachableFunction(ident.Name, fn)
+	}
+}
+
 func (c *scriptChecker) markReachableFunctionChecked(fn *ScriptFunction) bool {
 	if fn == nil {
 		return false
@@ -1174,12 +1430,23 @@ func (c *scriptChecker) reachableFunctionCheckKey(fn *ScriptFunction) string {
 }
 
 func (c *scriptChecker) checkReachableFunctions() {
+	c.drainReachableFunctions(nil)
+}
+
+// drainReachableFunctions checks every enqueued reachable callee under its
+// call-time runtime state, recording the drained functions when the caller
+// needs to know which ones were covered.
+func (c *scriptChecker) drainReachableFunctions(reached map[*ScriptFunction]struct{}) {
 	for len(c.reachableFuncQueue) > 0 {
 		next := c.reachableFuncQueue[0]
 		c.reachableFuncQueue = c.reachableFuncQueue[1:]
+		if reached != nil {
+			reached[next.fn] = struct{}{}
+		}
 		scopeState := c.snapshotScopeState()
 		c.restoreRuntimeState(next.runtimeState)
 		c.scopes = nil
+		c.localTypes = nil
 		c.checkFunction(next.label, next.fn)
 		c.restoreScopeState(scopeState)
 	}
@@ -1225,13 +1492,22 @@ func (c *scriptChecker) checkRuntimeClassBodies(skip map[string]struct{}, suppre
 
 func (c *scriptChecker) checkRuntimeClassBody(classDef *ClassDef, suppressWarnings bool) {
 	check := func() {
+		defer c.withFreshLocalInferenceScope()()
 		popScope := c.pushScope(make(map[string]struct{}))
 		defer popScope()
 		// Class bodies run with self bound to the class, so bare identifiers
-		// can resolve through implicit self members the checker cannot see.
+		// can resolve through implicit self class members.
 		previousSelf := c.selfScope
+		previousClass := c.selfClass
+		previousClassContext := c.selfClassContext
 		c.selfScope = true
-		defer func() { c.selfScope = previousSelf }()
+		c.selfClass = classDef
+		c.selfClassContext = true
+		defer func() {
+			c.selfScope = previousSelf
+			c.selfClass = previousClass
+			c.selfClassContext = previousClassContext
+		}()
 		c.checkStatements(classDef.Name+".<class body>", nil, classDef.Body)
 	}
 	if !suppressWarnings {
@@ -1263,7 +1539,10 @@ type checkModuleCollectionState struct {
 	modules map[string]struct{}
 }
 
-type checkScopeState []map[string]struct{}
+type checkScopeState struct {
+	defined []map[string]struct{}
+	types   []checkTypeFrame
+}
 
 func (c *scriptChecker) snapshotRuntimeState() checkRuntimeState {
 	state := checkRuntimeState{
@@ -1454,23 +1733,24 @@ func commonObjectAliasBindings(base *Env, roots []*Env) map[string]Value {
 }
 
 func (c *scriptChecker) snapshotScopeState() checkScopeState {
-	if len(c.scopes) == 0 {
-		return nil
-	}
-	state := make(checkScopeState, len(c.scopes))
-	for i, scope := range c.scopes {
-		state[i] = cloneCheckScope(scope)
+	state := checkScopeState{types: c.snapshotLocalTypes()}
+	if len(c.scopes) > 0 {
+		state.defined = make([]map[string]struct{}, len(c.scopes))
+		for i, scope := range c.scopes {
+			state.defined[i] = cloneCheckScope(scope)
+		}
 	}
 	return state
 }
 
 func (c *scriptChecker) restoreScopeState(state checkScopeState) {
-	if len(state) == 0 {
+	c.restoreLocalTypes(state.types)
+	if len(state.defined) == 0 {
 		c.scopes = nil
 		return
 	}
-	c.scopes = make([]map[string]struct{}, len(state))
-	for i, scope := range state {
+	c.scopes = make([]map[string]struct{}, len(state.defined))
+	for i, scope := range state.defined {
 		c.scopes[i] = cloneCheckScope(scope)
 	}
 }
@@ -1492,23 +1772,23 @@ func (c *scriptChecker) mergeScopeStates(base checkScopeState, states []checkSco
 		return
 	}
 	for i := range c.scopes {
-		if i >= len(states[0]) {
+		if i >= len(states[0].defined) {
 			continue
 		}
-		common := cloneCheckScope(states[0][i])
+		common := cloneCheckScope(states[0].defined[i])
 		for _, state := range states[1:] {
-			if i >= len(state) {
+			if i >= len(state.defined) {
 				clear(common)
 				break
 			}
 			for key := range common {
-				if _, ok := state[i][key]; !ok {
+				if _, ok := state.defined[i][key]; !ok {
 					delete(common, key)
 				}
 			}
 		}
-		if i < len(base) {
-			for key := range base[i] {
+		if i < len(base.defined) {
+			for key := range base.defined[i] {
 				delete(common, key)
 			}
 		}
@@ -1522,6 +1802,7 @@ func (c *scriptChecker) mergeScopeStates(base checkScopeState, states []checkSco
 			c.scopes[i][key] = struct{}{}
 		}
 	}
+	c.mergeLocalTypeStates(base, states)
 }
 
 func (c *scriptChecker) sortedScriptFunctions() []*ScriptFunction {
@@ -1567,46 +1848,70 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 	if fn == nil {
 		return
 	}
-	popScope := c.pushScope(make(map[string]struct{}))
-	defer popScope()
-	popNameScope := c.pushFunctionNameScope(fn)
-	defer popNameScope()
+	c.withFreshLocalInference(func() {
+		defer c.withImplicitReturnCapture(fn)()
+		popScope := c.pushScope(make(map[string]struct{}))
+		defer popScope()
+		popNameScope := c.pushFunctionNameScope(fn)
+		defer popNameScope()
 
-	for _, param := range fn.Params {
-		c.checkExpression(label, param.DefaultVal)
-		c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
-		if param.Type != nil {
-			c.checkRuntimeTypeAnnotation(label, param.Type)
-			if param.DefaultVal != nil {
-				c.checkRuntimeExpressionAgainstType(label, param.DefaultVal, param.Type, fmt.Sprintf("default value for %s", param.Name))
+		for _, param := range fn.Params {
+			c.checkExpression(label, param.DefaultVal)
+			c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
+			if param.Type != nil {
+				c.checkRuntimeTypeAnnotation(label, param.Type)
+				if param.DefaultVal != nil {
+					c.checkRuntimeExpressionAgainstType(label, param.DefaultVal, param.Type, fmt.Sprintf("default value for %s", param.Name))
+				}
 			}
+			c.recordParamBinding(param)
 		}
-		c.recordParamBinding(param)
-	}
-	c.checkStatements(label, fn.ReturnTy, fn.Body)
-	if fn.ReturnTy != nil {
-		c.checkImplicitReturn(label, fn.ReturnTy, fn.Body, fn.Pos)
-	}
+		c.checkStatements(label, fn.ReturnTy, fn.Body)
+		if fn.ReturnTy != nil {
+			c.checkImplicitReturn(label, fn.ReturnTy, fn.Body, fn.Pos)
+		}
+	})
 }
 
-func (c *scriptChecker) checkStatements(function string, returnType *TypeExpr, statements []Statement) {
+// checkStatements walks a statement list and reports whether it can fall
+// through: false when some statement provably exits, statically or from
+// inferred branch decisions, so block-level callers gate dead paths the
+// same way the list itself stops.
+func (c *scriptChecker) checkStatements(function string, returnType *TypeExpr, statements []Statement) bool {
 	for _, stmt := range statements {
 		c.checkStatement(function, returnType, stmt)
-		if statementAlwaysExits(stmt) {
-			return
+		noFallthrough := c.stmtNoFallthroughInferred
+		c.stmtNoFallthroughInferred = false
+		if statementAlwaysExits(stmt) || noFallthrough {
+			return false
 		}
 	}
+	return true
 }
 
 func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, stmt Statement) {
+	c.predeclareStatementLiveNames(stmt)
+	defer c.postdeclareStatementLiveNames(stmt)
 	switch typed := stmt.(type) {
 	case nil:
 		return
 	case *ReturnStmt:
+		// The return value's own side effects (a shovel append, for example)
+		// apply before the value leaves the function, so the expression is
+		// walked before the annotation check reads its inferred type.
+		c.checkExpression(function, typed.Value)
 		if returnType != nil {
 			c.checkReturnStatementType(function, returnType, typed)
+		} else if c.deferredReturnSites != nil {
+			// The enclosing begin/ensure deferred this check; capture the
+			// state at the return itself so branch-local facts survive the
+			// branch merges that run before the ensure walk.
+			*c.deferredReturnSites = append(*c.deferredReturnSites, deferredReturnSite{
+				runtimeState: c.snapshotRuntimeState(),
+				scopeState:   c.snapshotScopeState(),
+				stmt:         typed,
+			})
 		}
-		c.checkExpression(function, typed.Value)
 	case *RaiseStmt:
 		// raise RuntimeError, "boom" resolves a bare canonical error class
 		// name without an env binding, so it is not an identifier reference.
@@ -1623,11 +1928,14 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkExpression(function, typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
+		c.inferAssignStatementTypes(function, typed)
 		c.recordRuntimeBindingTarget(typed.Target)
 		c.recordBindingTarget(typed.Target)
+		c.captureImplicitReturnState(typed)
 	case *ExprStmt:
 		c.checkExpression(function, typed.Expr)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Expr)
+		c.captureImplicitReturnState(typed)
 	case *ClassStmt:
 		classDef := c.script.classes[typed.Name]
 		if classDef != nil {
@@ -1637,14 +1945,21 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkStatement(function, returnType, typed.Left)
 		leftRuntimeState := c.snapshotRuntimeState()
 		leftScopeState := c.snapshotScopeState()
-		if logicalStatementRightMayEvaluate(typed) {
+		if logicalStatementRightMayEvaluate(typed) && !c.logicalStatementRightUnreachable(typed) {
 			c.checkStatement(function, returnType, typed.Right)
-			if !logicalStatementRightAlwaysEvaluates(typed) {
+			if !logicalStatementRightAlwaysEvaluates(typed) && !c.logicalStatementRightAlwaysEvaluatesInferred(typed) {
 				c.restoreRuntimeState(leftRuntimeState)
-				c.restoreScopeState(leftScopeState)
+				// The right-hand side may be skipped, so its type facts join
+				// with the skipped path (a local bound only there becomes
+				// type-or-nil) instead of being discarded.
+				evaluatedScopeState := c.snapshotScopeState()
+				c.mergeScopeStates(leftScopeState, []checkScopeState{evaluatedScopeState, leftScopeState})
 				c.recordLocalBindings([]Statement{typed})
 			}
 		}
+		// The children set the no-fallthrough flag for themselves, not for
+		// this statement: a conditionally evaluated side never proves it.
+		c.stmtNoFallthroughInferred = false
 	case *IfStmt:
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
@@ -1655,17 +1970,21 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
 		fallthroughScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
-		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
+		if c.implicitIfDecisions != nil {
+			c.implicitIfDecisions[typed] = append(c.implicitIfDecisions[typed][:0],
+				conditionDecision{truthy: conditionTruthy, known: conditionKnown})
+		}
 		if !conditionKnown || conditionTruthy {
 			c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
-			c.checkStatements(function, returnType, typed.Consequent)
-			if !blockAlwaysExits(typed.Consequent) {
+			if c.checkStatements(function, returnType, typed.Consequent) {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 			if conditionKnown {
 				c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
 				c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+				c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
 				return
 			}
 		}
@@ -1681,17 +2000,21 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.collectRuntimeRequireCallExportsFromExpression(elseIf.Condition)
 			conditionRuntimeState = c.snapshotRuntimeState()
 			conditionScopeState = c.snapshotScopeState()
-			branchTruthy, branchKnown := staticExpressionTruthiness(elseIf.Condition)
+			branchTruthy, branchKnown := c.inferredConditionTruthiness(elseIf.Condition)
+			if c.implicitIfDecisions != nil {
+				c.implicitIfDecisions[typed] = append(c.implicitIfDecisions[typed],
+					conditionDecision{truthy: branchTruthy, known: branchKnown})
+			}
 			if !branchKnown || branchTruthy {
 				c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, true)
-				c.checkStatements(function, returnType, elseIf.Consequent)
-				if !blockAlwaysExits(elseIf.Consequent) {
+				if c.checkStatements(function, returnType, elseIf.Consequent) {
 					fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 					fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 				}
 				if branchKnown {
 					c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
 					c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+					c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
 					return
 				}
 			}
@@ -1703,38 +2026,60 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		c.restoreRuntimeState(falseRuntimeState)
 		c.restoreScopeState(falseScopeState)
-		c.checkStatements(function, returnType, typed.Alternate)
-		if len(typed.Alternate) == 0 || !blockAlwaysExits(typed.Alternate) {
+		if c.checkStatements(function, returnType, typed.Alternate) {
 			fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 			fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 		}
 		c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+		c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
 	case *ForStmt:
+		// The iterable evaluates once with pre-loop facts before any body
+		// iteration, so it is checked (and the element type captured) before
+		// body-assigned locals degrade; the body itself may run zero or many
+		// times, so those locals lose their facts for the walk and stay
+		// unknown after it.
 		c.checkExpression(function, typed.Iterable)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Iterable)
+		elemType := c.forTargetElementType(typed)
+		c.recordLiveStatementNames(typed.Body)
+		c.degradeLocalTypesForBindings(typed.Body, typed.Target)
 		c.recordBindingTarget(typed.Target)
+		c.bindForTargetType(typed, elemType)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.checkStatements(function, returnType, typed.Body)
+		c.mutationRegionDepth--
 		c.restoreRuntimeState(bodyRuntimeState)
 		c.restoreScopeState(bodyScopeState)
+		c.degradeLocalTypesForBindings(nil, typed.Target)
 		c.recordLocalBindings(typed.Body)
 	case *WhileStmt:
+		// The condition's first evaluation sees pre-loop facts, so it is
+		// checked before body-assigned locals degrade to unknown.
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
+		c.recordLiveStatementNames(typed.Body)
+		c.degradeLocalTypesForBindings(typed.Body)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.checkStatements(function, returnType, typed.Body)
+		c.mutationRegionDepth--
 		c.restoreRuntimeState(bodyRuntimeState)
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
 	case *UntilStmt:
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
+		c.recordLiveStatementNames(typed.Body)
+		c.degradeLocalTypesForBindings(typed.Body)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.checkStatements(function, returnType, typed.Body)
+		c.mutationRegionDepth--
 		c.restoreRuntimeState(bodyRuntimeState)
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
@@ -1748,24 +2093,20 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		baseScopeState := c.snapshotScopeState()
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, 2)
 		fallthroughScopeStates := make([]checkScopeState, 0, 2)
-		deferredReturnChecks := make([]deferredReturnCheck, 0, 2)
-
-		c.checkStatements(function, branchReturnType, typed.Body)
-		if deferReturnType && blockMayReturn(typed.Body) {
-			deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
-				runtimeState: c.snapshotRuntimeState(),
-				statements:   typed.Body,
-			})
+		// Every non-exiting ensure collects the returns escaping through it,
+		// whether or not this level owns the deferred annotation check: the
+		// ensure walk merges their states, and the sites hand up to any
+		// enclosing ensure the same returns continue through.
+		armCapture := len(typed.Ensure) > 0 && !blockAlwaysExits(typed.Ensure)
+		var deferredSites []deferredReturnSite
+		var previousSites *[]deferredReturnSite
+		if armCapture {
+			previousSites = c.deferredReturnSites
+			c.deferredReturnSites = &deferredSites
 		}
-		if !blockAlwaysExits(typed.Body) {
-			c.checkStatements(function, branchReturnType, typed.Else)
-			if deferReturnType && blockMayReturn(typed.Else) {
-				deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
-					runtimeState: c.snapshotRuntimeState(),
-					statements:   typed.Else,
-				})
-			}
-			if len(typed.Else) == 0 || !blockAlwaysExits(typed.Else) {
+
+		if c.checkStatements(function, branchReturnType, typed.Body) {
+			if c.checkStatements(function, branchReturnType, typed.Else) {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -1793,7 +2134,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				popEarlier = c.pushScope(scope)
 			}
 			popScope := c.pushRescueScope(clause)
-			c.checkStatements(function, branchReturnType, clause.Body)
+			clauseFallsThrough := c.checkStatements(function, branchReturnType, clause.Body)
 			popScope()
 			popEarlier()
 			clauseLocals := map[string]struct{}{}
@@ -1802,41 +2143,149 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			for name := range clauseLocals {
 				earlierClauseLocals[name] = struct{}{}
 			}
-			if deferReturnType && blockMayReturn(clause.Body) {
-				deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
-					runtimeState: c.snapshotRuntimeState(),
-					statements:   clause.Body,
-				})
-			}
-			if !blockAlwaysExits(clause.Body) {
+			if clauseFallsThrough {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 		}
+		if armCapture {
+			c.deferredReturnSites = previousSites
+		}
 		mergeRuntimeStates := fallthroughRuntimeStates
 		mergeScopeStates := fallthroughScopeStates
-		if deferReturnType && len(mergeRuntimeStates) == 0 && len(deferredReturnChecks) > 0 {
-			mergeRuntimeStates = make([]checkRuntimeState, 0, len(deferredReturnChecks))
-			mergeScopeStates = nil
-			for _, check := range deferredReturnChecks {
-				mergeRuntimeStates = append(mergeRuntimeStates, check.runtimeState)
-			}
+		// The ensure block runs on every path into it — fallthrough or
+		// deferred return — so the return sites' states join the merge the
+		// ensure walk (and the code after the block) sees.
+		for _, site := range deferredSites {
+			mergeRuntimeStates = append(mergeRuntimeStates, site.runtimeState)
+			mergeScopeStates = append(mergeScopeStates, site.scopeState)
 		}
 		c.mergeRuntimeStates(baseRuntimeState, mergeRuntimeStates)
 		c.mergeScopeStates(baseScopeState, mergeScopeStates)
 		c.checkStatements(function, returnType, typed.Ensure)
 		if deferReturnType {
-			c.checkDeferredReturnsAfterEnsure(function, returnType, typed.Ensure, deferredReturnChecks)
+			c.checkDeferredReturnSitesAfterEnsure(function, returnType, typed.Ensure, deferredSites)
+		}
+		if armCapture && previousSites != nil {
+			*previousSites = append(*previousSites, deferredSites...)
+		}
+		// No fallthrough path means the code after the block is
+		// unreachable: deferred returns exit through the ensure.
+		c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
+	}
+}
+
+// withImplicitReturnCapture arms leaf-state capture for a function whose
+// return annotation the implicit-return pass will check, and returns the
+// restore for the previous capture maps.
+func (c *scriptChecker) withImplicitReturnCapture(fn *ScriptFunction) func() {
+	previousLeaves := c.implicitReturnLeaves
+	previousStates := c.implicitReturnStates
+	previousDecisions := c.implicitIfDecisions
+	c.implicitReturnLeaves = nil
+	c.implicitReturnStates = nil
+	c.implicitIfDecisions = nil
+	if fn != nil && fn.ReturnTy != nil && len(fn.Body) > 0 {
+		leaves := make(map[Statement]struct{})
+		collectImplicitReturnLeaves(fn.Body, leaves)
+		if len(leaves) > 0 {
+			c.implicitReturnLeaves = leaves
+			c.implicitReturnStates = make(map[Statement]checkStateSnapshot, len(leaves))
+			c.implicitIfDecisions = make(map[*IfStmt][]conditionDecision)
+		}
+	}
+	return func() {
+		c.implicitReturnLeaves = previousLeaves
+		c.implicitReturnStates = previousStates
+		c.implicitIfDecisions = previousDecisions
+	}
+}
+
+// checkStateSnapshot pairs the runtime and scope state at a point of the
+// walk so a later, out-of-order check can run under the facts that held
+// there.
+type checkStateSnapshot struct {
+	runtimeState checkRuntimeState
+	scopeState   checkScopeState
+}
+
+// collectImplicitReturnLeaves gathers the statements whose expressions the
+// implicit-return pass will check (the effective final statement's yielding
+// leaves across branches), so the walk can capture their branch-local state
+// before the branch merges run.
+func collectImplicitReturnLeaves(statements []Statement, out map[Statement]struct{}) {
+	if len(statements) == 0 {
+		return
+	}
+	collectImplicitReturnLeafStatement(effectiveFinalStatement(statements), out)
+}
+
+func collectImplicitReturnLeafStatement(stmt Statement, out map[Statement]struct{}) {
+	switch typed := stmt.(type) {
+	case *ExprStmt, *AssignStmt:
+		out[stmt] = struct{}{}
+	case *LogicalStmt:
+		collectImplicitReturnLeafStatement(typed.Left, out)
+		collectImplicitReturnLeafStatement(typed.Right, out)
+	case *IfStmt:
+		collectImplicitReturnLeaves(typed.Consequent, out)
+		for _, elseIf := range typed.ElseIf {
+			collectImplicitReturnLeaves(elseIf.Consequent, out)
+		}
+		collectImplicitReturnLeaves(typed.Alternate, out)
+	case *TryStmt:
+		collectImplicitReturnLeaves(typed.Body, out)
+		collectImplicitReturnLeaves(typed.Else, out)
+		for i := range typed.Rescues {
+			collectImplicitReturnLeaves(typed.Rescues[i].Body, out)
 		}
 	}
 }
 
-type deferredReturnCheck struct {
-	runtimeState checkRuntimeState
-	statements   []Statement
+// captureImplicitReturnState snapshots the state right after an
+// implicit-return leaf's own walk, before enclosing branch merges dilute its
+// branch-local facts.
+func (c *scriptChecker) captureImplicitReturnState(stmt Statement) {
+	if c.implicitReturnLeaves == nil {
+		return
+	}
+	if _, ok := c.implicitReturnLeaves[stmt]; !ok {
+		return
+	}
+	c.implicitReturnStates[stmt] = checkStateSnapshot{
+		runtimeState: c.snapshotRuntimeState(),
+		scopeState:   c.snapshotScopeState(),
+	}
 }
 
-func (c *scriptChecker) checkDeferredReturnsAfterEnsure(function string, returnType *TypeExpr, ensure []Statement, checks []deferredReturnCheck) {
+// checkImplicitLeafAgainstType checks an implicit return expression under the
+// state captured at its own walk when available.
+func (c *scriptChecker) checkImplicitLeafAgainstType(function string, stmt Statement, expr Expression, ty *TypeExpr) {
+	state, ok := c.implicitReturnStates[stmt]
+	if !ok {
+		c.checkRuntimeExpressionAgainstType(function, expr, ty, "return value")
+		return
+	}
+	currentRuntime := c.snapshotRuntimeState()
+	currentScope := c.snapshotScopeState()
+	c.restoreRuntimeState(state.runtimeState)
+	c.restoreScopeState(state.scopeState)
+	c.checkRuntimeExpressionAgainstType(function, expr, ty, "return value")
+	c.restoreRuntimeState(currentRuntime)
+	c.restoreScopeState(currentScope)
+}
+
+// deferredReturnSite records the state at a return statement whose type
+// check the enclosing begin/ensure deferred, so the check runs against the
+// facts the return expression was actually evaluated under — including
+// branch-local facts that the branch merges discard before the ensure walk.
+type deferredReturnSite struct {
+	runtimeState checkRuntimeState
+	scopeState   checkScopeState
+	stmt         *ReturnStmt
+}
+
+func (c *scriptChecker) checkDeferredReturnSitesAfterEnsure(function string, returnType *TypeExpr, ensure []Statement, sites []deferredReturnSite) {
 	runtimeState := c.snapshotRuntimeState()
 	scopeState := c.snapshotScopeState()
 	defer func() {
@@ -1844,14 +2293,15 @@ func (c *scriptChecker) checkDeferredReturnsAfterEnsure(function string, returnT
 		c.restoreScopeState(scopeState)
 	}()
 
-	for _, check := range checks {
-		c.restoreRuntimeState(check.runtimeState)
+	for _, site := range sites {
+		c.restoreRuntimeState(site.runtimeState)
+		c.restoreScopeState(site.scopeState)
 		c.withSuppressedWarnings(func() {
 			c.withRuntimeModuleCollection(func() {
 				c.collectRequiredModuleExportsFromStatements(ensure)
 			})
 		})
-		c.checkDeferredReturnTypes(function, returnType, check.statements)
+		c.checkReturnStatementType(function, returnType, site.stmt)
 	}
 }
 
@@ -1859,7 +2309,7 @@ func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, t
 	switch typed := expr.(type) {
 	case *BinaryExpr:
 		switch typed.Operator {
-		case tokenAnd:
+		case tokenAnd, tokenWordAnd:
 			if truthy {
 				c.collectRuntimeRequireCallExportsFromExpression(typed.Right)
 				c.collectRuntimeConditionOutcomeEffects(typed.Left, true)
@@ -1867,7 +2317,7 @@ func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, t
 			} else if binaryRightAlwaysEvaluates(typed) {
 				c.collectRuntimeConditionOutcomeEffects(typed.Right, false)
 			}
-		case tokenOr:
+		case tokenOr, tokenWordOr:
 			if !truthy {
 				c.collectRuntimeRequireCallExportsFromExpression(typed.Right)
 				c.collectRuntimeConditionOutcomeEffects(typed.Left, false)
@@ -1876,51 +2326,6 @@ func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, t
 				c.collectRuntimeConditionOutcomeEffects(typed.Right, true)
 			}
 		}
-	}
-}
-
-func (c *scriptChecker) checkDeferredReturnTypes(function string, returnType *TypeExpr, statements []Statement) {
-	if returnType == nil {
-		return
-	}
-	for _, stmt := range statements {
-		c.checkDeferredReturnTypeStatement(function, returnType, stmt)
-		if statementAlwaysExits(stmt) {
-			return
-		}
-	}
-}
-
-func (c *scriptChecker) checkDeferredReturnTypeStatement(function string, returnType *TypeExpr, stmt Statement) {
-	switch typed := stmt.(type) {
-	case nil:
-		return
-	case *ReturnStmt:
-		c.checkReturnStatementType(function, returnType, typed)
-	case *LogicalStmt:
-		c.checkDeferredReturnTypeStatement(function, returnType, typed.Left)
-		if logicalStatementRightMayEvaluate(typed) {
-			c.checkDeferredReturnTypeStatement(function, returnType, typed.Right)
-		}
-	case *IfStmt:
-		c.checkDeferredReturnTypes(function, returnType, typed.Consequent)
-		for _, elseIf := range typed.ElseIf {
-			c.checkDeferredReturnTypes(function, returnType, elseIf.Consequent)
-		}
-		c.checkDeferredReturnTypes(function, returnType, typed.Alternate)
-	case *ForStmt:
-		c.checkDeferredReturnTypes(function, returnType, typed.Body)
-	case *WhileStmt:
-		c.checkDeferredReturnTypes(function, returnType, typed.Body)
-	case *UntilStmt:
-		c.checkDeferredReturnTypes(function, returnType, typed.Body)
-	case *TryStmt:
-		c.checkDeferredReturnTypes(function, returnType, typed.Body)
-		c.checkDeferredReturnTypes(function, returnType, typed.Else)
-		for i := range typed.Rescues {
-			c.checkDeferredReturnTypes(function, returnType, typed.Rescues[i].Body)
-		}
-		c.checkDeferredReturnTypes(function, returnType, typed.Ensure)
 	}
 }
 
@@ -1945,47 +2350,114 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		return
 	case *Identifier:
 		c.checkIdentifierResolved(function, typed)
+		if autoCall {
+			c.enqueueReachableIdentifierCall(typed)
+		}
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
 			c.checkExpressionWithAuto(function, elem, true)
 		}
 	case *HashLiteral:
+		// A dual-reading braced group evaluates as a shape unless one of its
+		// type names is shadowed, so its identifier values are type spellings
+		// rather than variable reads and must not warn as undefined.
+		if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
+			return
+		}
 		for _, pair := range typed.Pairs {
 			c.checkExpressionWithAuto(function, pair.Key, true)
 			c.checkExpressionWithAuto(function, pair.Value, true)
 		}
 	case *CallExpr:
+		// The receiver's nil-ness resolves from the facts at its evaluation
+		// point, before member dispatch poisons the receiver's own facts.
+		callSkipsInferred := c.safeNavigationCallSkipsInferred(typed)
+		argumentsAlwaysEvaluate := c.safeNavigationArgumentsAlwaysEvaluateInferred(typed)
 		c.checkExpressionWithAuto(function, typed.Callee, false)
-		if staticNilSafeNavigationCall(typed) {
+		if staticNilSafeNavigationCall(typed) || callSkipsInferred {
 			return
 		}
-		argumentsMayBeSkipped := safeNavigationCallMaySkipArguments(typed)
+		argumentsMayBeSkipped := safeNavigationCallMaySkipArguments(typed) && !argumentsAlwaysEvaluate
 		var argumentState checkRuntimeState
+		var argumentScopeState checkScopeState
 		if argumentsMayBeSkipped {
 			argumentState = c.snapshotRuntimeState()
+			argumentScopeState = c.snapshotScopeState()
 		}
-		c.collectRuntimeCallArgumentEffects(typed)
-		c.checkCall(function, typed)
+		// The runtime resolves the call target when the callee evaluates,
+		// before any argument runs, so a require inside an argument must
+		// not make the callee's contract visible to this same call. The
+		// callee body still checks under the post-argument state: dispatch
+		// happens after the arguments (and their requires) evaluate.
+		target, targetResolved := c.resolveCallable(typed)
+		// Arguments evaluate left to right before the call dispatches, so
+		// each argument's inferred type is captured at its own evaluation
+		// point: a mutating earlier argument (h.delete(:name)) poisons its
+		// container's facts for later arguments, while a mutating later
+		// argument cannot erase the facts an earlier argument was evaluated
+		// under. checkCall consumes the captured facts afterwards.
+		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
 		for _, arg := range typed.Args {
 			c.checkExpressionWithAuto(function, arg, true)
+			// The argument's value and effects materialize once its own
+			// evaluation completes, before the next argument runs: a shovel
+			// append lands in the facts, and a require binds its exports
+			// for the arguments after it, never the ones before.
+			c.collectRuntimeRequireCallExportsFromExpression(arg)
+			argumentFacts[arg] = c.inferExpressionType(arg)
 		}
 		for _, kwarg := range typed.KwArgs {
 			c.checkExpressionWithAuto(function, kwarg.Value, true)
+			c.collectRuntimeRequireCallExportsFromExpression(kwarg.Value)
+			argumentFacts[kwarg.Value] = c.inferExpressionType(kwarg.Value)
 		}
 		if typed.BlockArg != nil {
 			c.checkExpressionWithAuto(function, typed.BlockArg, false)
+			// A block argument evaluates with the other arguments, before
+			// dispatch, so its require effects are live for the call checks.
+			c.collectRuntimeRequireCallExportsFromExpression(typed.BlockArg)
 		}
+		previousFacts := c.callArgumentFacts
+		c.callArgumentFacts = argumentFacts
+		c.checkCallResolved(function, typed, target, targetResolved)
+		c.callArgumentFacts = previousFacts
 		if c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
 			c.checkBlockLiteral(function, typed.Block)
 		}
 		if argumentsMayBeSkipped {
 			c.restoreRuntimeState(argumentState)
+			// A nil receiver skips the arguments entirely, so type facts the
+			// argument walk established (a shovel append, for example) hold
+			// on only one of the two paths and must merge as a branch join.
+			evaluatedScopeState := c.snapshotScopeState()
+			c.mergeScopeStates(argumentScopeState, []checkScopeState{argumentScopeState, evaluatedScopeState})
+		}
+		// Containers pass by reference, so a callee may mutate an argument
+		// in place; the caller's structural facts stop holding. Dispatch
+		// happens after the arguments evaluate, so the receiver's facts
+		// stop holding here too, not during the callee walk.
+		if member, ok := typed.Callee.(*MemberExpr); ok {
+			c.poisonEscapedIdentifier(member.Object)
+		}
+		if member, ok := typed.BlockArg.(*MemberExpr); ok {
+			c.poisonEscapedIdentifier(member.Object)
+		}
+		for _, arg := range typed.Args {
+			c.poisonEscapedIdentifier(arg)
+		}
+		for _, kwarg := range typed.KwArgs {
+			c.poisonEscapedIdentifier(kwarg.Value)
 		}
 	case *MemberExpr:
 		c.checkExpressionWithAuto(function, typed.Object, true)
 		if autoCall {
 			c.checkMemberAutoCall(function, typed)
+			// Member dispatch on a container may mutate it in place (push,
+			// delete, ...), so the receiver's structural facts stop
+			// holding. A call callee poisons after its arguments instead:
+			// they evaluate before dispatch and still see the facts.
+			c.poisonEscapedIdentifier(typed.Object)
 		}
 	case *ScopeExpr:
 		c.checkExpressionWithAuto(function, typed.Object, true)
@@ -2002,14 +2474,28 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkExpressionWithAuto(function, typed.Value, true)
 	case *UnaryExpr:
 		c.checkExpressionWithAuto(function, typed.Right, true)
+		c.checkUnaryOperandTypes(function, typed)
 	case *BinaryExpr:
 		c.checkExpressionWithAuto(function, typed.Left, true)
-		if binaryRightMayEvaluate(typed) {
+		if binaryRightMayEvaluate(typed) && !c.binaryRightUnreachable(typed) {
 			state := c.snapshotRuntimeState()
+			scopeState := c.snapshotScopeState()
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Left)
 			c.checkExpressionWithAuto(function, typed.Right, true)
-			c.restoreRuntimeState(state)
+			if !binaryRightAlwaysEvaluates(typed) && !c.binaryRightAlwaysEvaluatesInferred(typed) {
+				// A short-circuited right operand may not run, so its
+				// runtime effects roll back and its type facts (a shovel
+				// append, for example) merge as a branch join instead of
+				// surviving unconditionally. A right side that provably
+				// always runs keeps both — including exports from a
+				// guaranteed require.
+				c.restoreRuntimeState(state)
+				evaluatedScopeState := c.snapshotScopeState()
+				c.mergeScopeStates(scopeState, []checkScopeState{scopeState, evaluatedScopeState})
+			}
 		}
+		c.checkBinaryOperandTypes(function, typed)
+		c.applyShovelMutationFacts(typed)
 	case *ConditionalExpr:
 		c.checkConditionalExpression(function, typed)
 	case *RescueExpr:
@@ -2024,7 +2510,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		branchRuntimeStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
 		branchScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
-		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
 		if !conditionKnown || conditionTruthy {
 			c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
 			c.checkExpressionWithAuto(function, typed.Consequent, true)
@@ -2048,7 +2534,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.collectRuntimeRequireCallExportsFromExpression(branch.Condition)
 			conditionRuntimeState = c.snapshotRuntimeState()
 			conditionScopeState = c.snapshotScopeState()
-			branchTruthy, branchKnown := staticExpressionTruthiness(branch.Condition)
+			branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
 			if !branchKnown || branchTruthy {
 				c.collectRuntimeConditionOutcomeEffects(branch.Condition, true)
 				c.checkExpressionWithAuto(function, branch.Result, true)
@@ -2088,6 +2574,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 	case *YieldExpr:
 		for _, arg := range typed.Args {
 			c.checkExpressionWithAuto(function, arg, true)
+			c.poisonEscapedIdentifier(arg)
 		}
 	case *InterpolatedString:
 		c.checkStringParts(function, typed.Parts)
@@ -2106,7 +2593,7 @@ func (c *scriptChecker) checkConditionalExpression(function string, expr *Condit
 	branchRuntimeStates := make([]checkRuntimeState, 0, 2)
 	branchScopeStates := make([]checkScopeState, 0, 2)
 
-	conditionTruthy, conditionKnown := staticExpressionTruthiness(expr.Condition)
+	conditionTruthy, conditionKnown := c.inferredConditionTruthiness(expr.Condition)
 	if !conditionKnown || conditionTruthy {
 		c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
 		c.checkExpressionWithAuto(function, expr.Consequent, true)
@@ -2190,15 +2677,6 @@ func (c *scriptChecker) checkCaseExpression(function string, expr *CaseExpr) {
 	c.mergeScopeStates(baseScopeState, branchScopeStates)
 }
 
-func (c *scriptChecker) collectRuntimeCallArgumentEffects(call *CallExpr) {
-	for _, arg := range call.Args {
-		c.collectRuntimeRequireCallExportsFromExpression(arg)
-	}
-	for _, kwarg := range call.KwArgs {
-		c.collectRuntimeRequireCallExportsFromExpression(kwarg.Value)
-	}
-}
-
 func staticNilSafeNavigationCall(call *CallExpr) bool {
 	if call == nil || !call.Safe {
 		return false
@@ -2233,6 +2711,9 @@ func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr)
 		if target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0 {
 			c.checkCallShape(function, view, target.name, target.fn)
 		}
+		// A bare member read dispatches like a call, so the callee checks
+		// under the call-time runtime root.
+		c.enqueueReachableFunction(target.name, target.fn)
 		return
 	}
 	if target.spec.autoInvoke {
@@ -2247,18 +2728,40 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	runtimeState := c.snapshotRuntimeState()
 	defer c.restoreRuntimeState(runtimeState)
 
+	// Block and lambda returns are not checked against the enclosing
+	// function's annotation today, so an active begin/ensure deferral must
+	// not capture them either (a lambda return is local to the lambda).
+	previousSites := c.deferredReturnSites
+	c.deferredReturnSites = nil
+	defer func() { c.deferredReturnSites = previousSites }()
+
+	// A block may run zero or many times, so outer locals its body assigns
+	// lose their facts before the walk, and the walk's own bindings are
+	// rolled back afterwards (the degraded state is the correct post-call
+	// truth for those locals). Names the block binds itself (parameters,
+	// implicit parameters) shadow the outer locals and never write through.
+	c.degradeBlockBodyBindings(block)
+	typesState := c.snapshotLocalTypes()
+	defer c.restoreLocalTypes(typesState)
+
 	popScope := c.pushBlockCheckScope(block)
 	defer popScope()
 	popNameScope := c.pushBlockNameScope(block)
 	defer popNameScope()
+	// A block may run many times, so every body binding is live for shape
+	// shadowing from the first walk on, like a loop body.
+	c.recordLiveStatementNames(block.Body)
 
 	for _, param := range block.Params {
 		c.checkRuntimeTypeAnnotation(function, param.Type)
 		c.checkDestructureTargetTypeAnnotations(function, param.Target)
 		c.checkExpression(function, param.DefaultVal)
+		c.bindParamLocalType(param)
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
+	c.mutationRegionDepth++
 	c.checkStatements(label, nil, block.Body)
+	c.mutationRegionDepth--
 }
 
 // literalArrayElementYieldMethods are the builtin array iterators that yield
@@ -2947,6 +3450,7 @@ func (c *scriptChecker) checkTypeAnnotationWithContext(function string, ty *Type
 func (c *scriptChecker) checkRuntimeExpressionAgainstType(function string, expr Expression, ty *TypeExpr, subject string) {
 	val, ok := staticLiteralValue(expr)
 	if !ok {
+		c.checkInferredExpressionAgainstType(function, expr, ty, subject)
 		return
 	}
 	c.checkRuntimeValueAgainstType(function, expr.Pos(), val, ty, subject)
@@ -2995,13 +3499,13 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 			return
 		}
-		c.checkRuntimeExpressionAgainstType(function, typed.Expr, ty, "return value")
+		c.checkImplicitLeafAgainstType(function, typed, typed.Expr, ty)
 	case *AssignStmt:
 		if expressionCanImplicitlyYieldNil(typed.Value) {
 			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 			return
 		}
-		c.checkRuntimeExpressionAgainstType(function, typed.Value, ty, "return value")
+		c.checkImplicitLeafAgainstType(function, typed, typed.Value, ty)
 	case *LogicalStmt:
 		c.checkImplicitFinalLogicalStatement(function, ty, typed)
 	case *IfStmt:
@@ -3037,15 +3541,15 @@ func (c *scriptChecker) checkImplicitFinalIfStatement(function string, ty *TypeE
 		c.add(function, Position{}, "typed return %s can implicitly return nil", formatTypeExpr(ty))
 		return
 	}
-	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	truthy, known := c.implicitConditionDecision(stmt, 0, stmt.Condition)
 	if !known || truthy {
 		c.checkImplicitFinalBlock(function, ty, stmt.Consequent, stmt.Pos())
 		if known {
 			return
 		}
 	}
-	for _, elseIf := range stmt.ElseIf {
-		truthy, known = staticExpressionTruthiness(elseIf.Condition)
+	for i, elseIf := range stmt.ElseIf {
+		truthy, known = c.implicitConditionDecision(stmt, i+1, elseIf.Condition)
 		if known && !truthy {
 			continue
 		}
@@ -3059,6 +3563,17 @@ func (c *scriptChecker) checkImplicitFinalIfStatement(function string, ty *TypeE
 		return
 	}
 	c.checkImplicitFinalBlock(function, ty, stmt.Alternate, stmt.Pos())
+}
+
+// implicitConditionDecision resolves a final if statement's branch
+// reachability from the walker's recorded verdict — decided at the
+// condition's own evaluation point — falling back to literal truthiness
+// when the walk did not reach the condition.
+func (c *scriptChecker) implicitConditionDecision(stmt *IfStmt, index int, condition Expression) (bool, bool) {
+	if decisions, ok := c.implicitIfDecisions[stmt]; ok && index < len(decisions) {
+		return decisions[index].truthy, decisions[index].known
+	}
+	return staticExpressionTruthiness(condition)
 }
 
 func (c *scriptChecker) checkImplicitFinalLogicalStatement(function string, ty *TypeExpr, stmt *LogicalStmt) {
@@ -3086,6 +3601,26 @@ func (c *scriptChecker) checkImplicitFinalLogicalStatement(function string, ty *
 			return
 		}
 	default:
+		return
+	}
+	// Inferred truthiness decides reachability too, evaluated under the
+	// left side's own captured state (its facts at evaluation time, before
+	// the right side or later merges rebind them).
+	inferred := c.implicitLogicalLeftType(stmt.Left)
+	if typeExprDefinitelyTruthy(inferred) {
+		if stmt.Operator == tokenWordAnd {
+			c.checkImplicitFinalStatement(function, ty, stmt.Right)
+		} else {
+			c.checkImplicitFinalStatement(function, ty, stmt.Left)
+		}
+		return
+	}
+	if typeExprIsNilOnly(inferred) {
+		if stmt.Operator == tokenWordAnd {
+			c.checkImplicitFinalStatement(function, ty, stmt.Left)
+		} else {
+			c.checkImplicitFinalStatement(function, ty, stmt.Right)
+		}
 		return
 	}
 	c.checkImplicitFinalStatement(function, ty, stmt.Left)
@@ -3477,62 +4012,6 @@ func blockAlwaysExits(statements []Statement) bool {
 	return false
 }
 
-func blockMayReturn(statements []Statement) bool {
-	for _, stmt := range statements {
-		if statementMayReturn(stmt) {
-			return true
-		}
-		if statementAlwaysExits(stmt) {
-			return false
-		}
-	}
-	return false
-}
-
-func statementMayReturn(stmt Statement) bool {
-	switch typed := stmt.(type) {
-	case *ReturnStmt:
-		return true
-	case *LogicalStmt:
-		return statementMayReturn(typed.Left) ||
-			(logicalStatementRightMayEvaluate(typed) && statementMayReturn(typed.Right))
-	case *IfStmt:
-		if blockMayReturn(typed.Consequent) || blockMayReturn(typed.Alternate) {
-			return true
-		}
-		for _, elseIf := range typed.ElseIf {
-			if blockMayReturn(elseIf.Consequent) {
-				return true
-			}
-		}
-	case *ForStmt:
-		return blockMayReturn(typed.Body)
-	case *WhileStmt:
-		return blockMayReturn(typed.Body)
-	case *UntilStmt:
-		return blockMayReturn(typed.Body)
-	case *TryStmt:
-		if blockMayReturn(typed.Ensure) {
-			return true
-		}
-		if blockAlwaysExits(typed.Ensure) {
-			return false
-		}
-		for i := range typed.Rescues {
-			if blockMayReturn(typed.Rescues[i].Body) {
-				return true
-			}
-		}
-		return blockMayReturn(typed.Body) ||
-			blockMayReturn(typed.Else)
-	}
-	return false
-}
-
-// effectiveFinalStatement returns the last statement that can actually run in a
-// non-empty block. The first statement that always exits makes every later
-// statement unreachable, so it becomes the terminal statement;
-// otherwise the syntactic last statement is the block's result.
 func effectiveFinalStatement(statements []Statement) Statement {
 	for _, stmt := range statements {
 		if statementAlwaysExits(stmt) {
@@ -3620,8 +4099,7 @@ type staticCallSpec struct {
 	usesBlock       bool
 }
 
-func (c *scriptChecker) checkCall(function string, call *CallExpr) {
-	target, ok := c.resolveCallable(call)
+func (c *scriptChecker) checkCallResolved(function string, call *CallExpr, target staticCallable, ok bool) {
 	if !ok {
 		return
 	}
@@ -3642,6 +4120,44 @@ func (c *scriptChecker) checkCall(function string, call *CallExpr) {
 		return
 	}
 	c.checkBuiltinCallShape(function, staticCallViewFor(call, target), target.name, target.spec)
+	if target.name == "JSON.parse_as" {
+		c.checkParseAsShapeArgument(function, call)
+	}
+}
+
+// checkParseAsShapeArgument reports a JSON.parse_as call whose second
+// argument is provably not a shape value — a scalar, a data hash, or any
+// other fully known non-shape type — since the runtime always rejects it.
+func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExpr) {
+	if len(call.Args) != 2 || callExpandsArguments(call) {
+		return
+	}
+	raw := call.Args[0]
+	rawType, rawCaptured := c.callArgumentFacts[raw]
+	if !rawCaptured {
+		rawType = c.inferExpressionType(raw)
+	}
+	if rawType != nil && typeExprsDisjoint(rawType, checkTypeString) {
+		c.add(function, raw.Pos(), "call to JSON.parse_as expects a JSON string as its first argument, got %s", formatTypeExpr(rawType))
+	}
+	arg := call.Args[1]
+	inferred, captured := c.callArgumentFacts[arg]
+	if !captured {
+		inferred = c.inferExpressionType(arg)
+	}
+	if inferred == nil {
+		return
+	}
+	arms, ok := typeExprArms(inferred, 0)
+	if !ok || len(arms) == 0 {
+		return
+	}
+	for _, arm := range arms {
+		if _, isShape := shapeValuePayload(arm); isShape {
+			return
+		}
+	}
+	c.add(function, arg.Pos(), "call to JSON.parse_as expects a shape literal as its second argument, got %s", formatTypeExpr(inferred))
 }
 
 // callExpandsArguments reports whether a call carries a positional or
@@ -3946,6 +4462,7 @@ var staticBuiltinSpecs = map[string]staticCallSpec{
 	"uuid":              {minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true},
 	"random_id":         {minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
 	"JSON.parse":        {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
+	"JSON.parse_as":     {minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true},
 	"JSON.stringify":    {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
 	"Regex.match":       {minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true},
 	"Regex.replace":     {minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true},
@@ -4234,6 +4751,14 @@ func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Positi
 	for _, arg := range args {
 		val, ok := staticLiteralValue(arg)
 		if !ok {
+			// The collected values are no longer fully static: fall back to
+			// checking each argument's inferred type against the rest
+			// annotation's element type.
+			if ty.Kind == TypeArray && len(ty.TypeArgs) == 1 {
+				for _, rest := range args {
+					c.checkInferredArgument(function, rest, ty.TypeArgs[0], callName, paramName)
+				}
+			}
 			return
 		}
 		values = append(values, val)
@@ -4267,6 +4792,56 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 		}
 		val, ok := staticLiteralValue(kwarg.Value)
 		if !ok {
+			// The collected keyword values are no longer fully static: fall
+			// back to inferred checks. Rest keywords bind as a string-keyed
+			// hash at runtime, so a disjoint declared key type always fails
+			// at call binding, and an exact shape checks per field.
+			switch {
+			case ty.Kind == TypeHash && len(ty.TypeArgs) == 2:
+				if typeExprsDisjoint(checkTypeString, ty.TypeArgs[0]) {
+					c.add(function, kwarg.Value.Pos(), "call to %s argument %s expected %s, got string-keyed keywords",
+						callName, paramName, formatTypeExpr(ty))
+					return
+				}
+				for _, rest := range kwargs {
+					if usedKw != nil && usedKw[rest.Name] {
+						continue
+					}
+					c.checkInferredArgument(function, rest.Value, ty.TypeArgs[1], callName, paramName)
+				}
+			case ty.Kind == TypeShape:
+				supplied := make(map[string]struct{}, len(kwargs))
+				for _, rest := range kwargs {
+					if usedKw != nil && usedKw[rest.Name] {
+						continue
+					}
+					supplied[rest.Name] = struct{}{}
+					fieldType, known := ty.Shape[rest.Name]
+					if !known {
+						c.add(function, rest.Value.Pos(), "call to %s argument %s expected %s, got keyword %s",
+							callName, paramName, formatTypeExpr(ty), rest.Name)
+						continue
+					}
+					c.checkInferredArgument(function, rest.Value, fieldType, callName, paramName)
+				}
+				// Exact shapes require every field, so an absent keyword is a
+				// known normalization failure.
+				missingPos := warningPos
+				if missingPos == (Position{}) {
+					missingPos = pos
+				}
+				fields := make([]string, 0, len(ty.Shape))
+				for field := range ty.Shape {
+					fields = append(fields, field)
+				}
+				sort.Strings(fields)
+				for _, field := range fields {
+					if _, ok := supplied[field]; !ok {
+						c.add(function, missingPos, "call to %s argument %s expected %s, missing keyword %s",
+							callName, paramName, formatTypeExpr(ty), field)
+					}
+				}
+			}
 			return
 		}
 		values[kwarg.Name] = val
@@ -4284,13 +4859,22 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 	}
 }
 
-func (c *scriptChecker) checkArgumentValue(function string, pos Position, val Value, ty *TypeExpr, callName, paramName string) {
-	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
-		return
+// checkArgumentValue validates val against ty and returns the value the
+// runtime would bind: normalization may coerce (a symbol into an enum
+// member, for example), so the bound value is the per-call fact source.
+func (c *scriptChecker) checkArgumentValue(function string, pos Position, val Value, ty *TypeExpr, callName, paramName string) (Value, bool) {
+	if ty == nil {
+		return val, true
 	}
-	if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
+	if !c.checkRuntimeTypeAnnotation(function, ty) {
+		return val, false
+	}
+	normalized, err := normalizeValueForType(val, ty, c.runtimeTypeContext())
+	if err != nil {
 		c.addArgumentValueWarning(function, pos, callName, paramName, err)
+		return val, false
 	}
+	return normalized, true
 }
 
 func (c *scriptChecker) checkBlockArgumentValue(function string, pos Position, block *BlockLiteral, ty *TypeExpr, callName, paramName string) {
@@ -4312,7 +4896,11 @@ func (c *scriptChecker) addArgumentValueWarning(function string, pos Position, c
 
 func (c *scriptChecker) checkArgumentExpression(function string, expr Expression, ty *TypeExpr, callName, paramName string) {
 	val, ok := staticLiteralValue(expr)
-	if !ok || ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
+	if !ok {
+		c.checkInferredArgument(function, expr, ty, callName, paramName)
+		return
+	}
+	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
 		return
 	}
 	if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
@@ -4366,6 +4954,11 @@ func staticLiteralValue(expr Expression) (Value, bool) {
 		}
 		return NewArray(items), true
 	case *HashLiteral:
+		if typed.ShapeType != nil {
+			// The group may evaluate as a first-class shape value, so it has
+			// no static hash reading.
+			return NewNil(), false
+		}
 		entries := make(map[string]Value, len(typed.Pairs))
 		for _, pair := range typed.Pairs {
 			key, ok := staticLiteralHashKey(pair.Key)
@@ -4516,8 +5109,12 @@ func (c *scriptChecker) pushRescueScope(clause *RescueClause) func() {
 
 func (c *scriptChecker) pushScope(scope map[string]struct{}) func() {
 	c.scopes = append(c.scopes, scope)
+	c.localTypes = append(c.localTypes, nil)
+	c.liveLocalNames = append(c.liveLocalNames, nil)
 	return func() {
 		c.scopes = c.scopes[:len(c.scopes)-1]
+		c.localTypes = c.localTypes[:len(c.localTypes)-1]
+		c.liveLocalNames = c.liveLocalNames[:len(c.liveLocalNames)-1]
 	}
 }
 
@@ -4561,6 +5158,7 @@ func (c *scriptChecker) recordParamBinding(param Param) {
 		c.recordBindingName(param.Name)
 	}
 	c.recordBindingTarget(param.Target)
+	c.bindParamLocalType(param)
 }
 
 func (c *scriptChecker) recordLocalBindings(statements []Statement) {

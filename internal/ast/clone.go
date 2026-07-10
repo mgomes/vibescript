@@ -344,6 +344,7 @@ func cloneExpression(expr Expression) Expression {
 	case *HashLiteral:
 		clone := *e
 		clone.Pairs = cloneHashPairs(e.Pairs)
+		clone.ShapeType = CloneTypeExpr(e.ShapeType)
 		return &clone
 	case *CallExpr:
 		clone := *e

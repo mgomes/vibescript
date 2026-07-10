@@ -1573,6 +1573,56 @@ func builtinJSONParse(exec *Execution, receiver Value, args []Value, kwargs map[
 	return value, nil
 }
 
+// builtinJSONParseAs parses JSON and validates the result against a shape in
+// one step (ADR-004). The parsed value flows through normalizeValueForType,
+// so validation failures carry the same semantics and message shape as the
+// existing typed-boundary errors.
+func builtinJSONParseAs(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("JSON.parse_as does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("JSON.parse_as does not accept blocks")
+	}
+	if len(args) != 2 || args[0].Kind() != KindString {
+		return NewNil(), fmt.Errorf("JSON.parse_as expects a JSON string and a shape literal")
+	}
+	shape := valueShape(args[1])
+	if shape == nil {
+		return NewNil(), fmt.Errorf("JSON.parse_as expects a shape literal as its second argument")
+	}
+
+	raw := args[0].String()
+	if len(raw) > maxJSONPayloadBytes {
+		return NewNil(), guardLimitErrorf("JSON.parse_as input exceeds limit %d bytes", maxJSONPayloadBytes)
+	}
+	parser := jsonValueParser{raw: raw, exec: exec}
+	parsed, err := parser.parse()
+	if err != nil {
+		var invalidNumber jsonInvalidNumberError
+		if errors.As(err, &invalidNumber) {
+			// The parser's error spells JSON.parse; rewrap under this
+			// builtin's name.
+			return NewNil(), fmt.Errorf("JSON.parse_as invalid number %q", string(invalidNumber))
+		}
+		return NewNil(), fmt.Errorf("JSON.parse_as invalid JSON: %w", err)
+	}
+
+	normalized, err := normalizeValueForType(parsed, shape, typeContext{
+		owner:    exec.script,
+		fallback: exec.root,
+		exec:     exec,
+	})
+	if err != nil {
+		var mismatch *typeMismatchError
+		if errors.As(err, &mismatch) {
+			return NewNil(), fmt.Errorf("JSON.parse_as value expected %s, got %s", mismatch.Expected, mismatch.Actual)
+		}
+		return NewNil(), err
+	}
+	return normalized, nil
+}
+
 func builtinJSONStringify(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) != 1 {
 		return NewNil(), fmt.Errorf("JSON.stringify expects a single value argument")

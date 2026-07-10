@@ -73,6 +73,19 @@ end`)
 	requireErrorContains(t, err, "events.publish payload must be data-only")
 }
 
+func TestEventsCapabilityRejectsShapePayload(t *testing.T) {
+	t.Parallel()
+	stub := &eventsCapabilityStub{}
+	script := compileScriptDefault(t, `def run()
+  events.publish("topic", { id: "p-1", schema: { name: string } })
+end`)
+
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewEventsCapability("events", stub),
+	))
+	requireErrorContains(t, err, "events.publish payload must be data-only")
+}
+
 func TestEventsCapabilityRejectsNonHashPayload(t *testing.T) {
 	t.Parallel()
 	stub := &eventsCapabilityStub{}
@@ -93,6 +106,23 @@ func TestEventsCapabilityRejectsCallableReturn(t *testing.T) {
 			"fn": NewBuiltin("leak.fn", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 				return NewNil(), nil
 			}),
+		}),
+	}
+	script := compileScriptDefault(t, `def run()
+  events.publish("topic", { id: "p-1" })
+end`)
+
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewEventsCapability("events", stub),
+	))
+	requireErrorContains(t, err, "events.publish return value must be data-only")
+}
+
+func TestEventsCapabilityRejectsShapeReturn(t *testing.T) {
+	t.Parallel()
+	stub := &eventsCapabilityStub{
+		publishResult: NewObject(map[string]Value{
+			"schema": NewShape(&TypeExpr{Kind: TypeShape}),
 		}),
 	}
 	script := compileScriptDefault(t, `def run()

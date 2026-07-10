@@ -1391,6 +1391,170 @@ end
 	}
 }
 
+func TestCheckCallTargetResolvesBeforeArgumentRequires(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "helpers.vibe"), []byte(`
+def shout(value: string)
+  value
+end
+`), 0o644); err != nil {
+		t.Fatalf("write helpers module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{root}})
+	script, _, _, err := CompileSnippetWithProgram(engine, `shout(1, require("helpers"))
+shout(1)`, "main")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	// The first call's target resolves before its own argument's require
+	// runs, so no contract is visible there; the next statement sees the
+	// loaded exports and reports.
+	warnings := script.CheckWarnings()
+	if len(warnings) != 1 {
+		t.Fatalf("CheckWarnings() = %#v, want exactly the second call's warning", warnings)
+	}
+	if warnings[0].Pos.Line != 2 || !strings.Contains(warnings[0].Message, "call to shout argument value expected string, got int") {
+		t.Fatalf("CheckWarnings() = %#v, want line-2 argument warning", warnings)
+	}
+}
+
+func TestCheckCallBlockArgumentRequireEffectsApply(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "status_helpers.vibe"), []byte(`
+enum Status
+  Draft
+end
+
+def cb
+  nil
+end
+`), 0o644); err != nil {
+		t.Fatalf("write status_helpers module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{root}})
+
+	// The block argument's require binds its exports with the other
+	// arguments, before dispatch, so the call site's annotation resolves.
+	// use's own definition walk stays unseeded (the require is not
+	// top-level), so only the call-site diagnostics in run matter here.
+	script := compileScriptWithEngine(t, engine, `
+def use(value: Status, &blk)
+  value
+end
+
+def run
+  use(:draft, &require("status_helpers").cb)
+end
+`)
+	for _, warning := range script.CheckWarnings() {
+		if warning.Function == "run" {
+			t.Fatalf("CheckWarnings() = %#v, want none in run", warning)
+		}
+	}
+
+	// And the resolved annotation validates the argument at the call.
+	invalid := compileScriptWithEngine(t, engine, `
+def use(value: Status, &blk)
+  value
+end
+
+def run
+  use(:bogus, &require("status_helpers").cb)
+end
+`)
+	requireCheckWarningContains(t, invalid, "call to use argument value expected Status")
+}
+
+func TestCheckCallArgumentRequireEffectsApplyInOrder(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "helpers.vibe"), []byte(`
+def shout(value: string)
+  value
+end
+`), 0o644); err != nil {
+		t.Fatalf("write helpers module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{root}})
+
+	// An earlier argument evaluates before a later argument's require, so
+	// its nested call must not resolve the later exports.
+	before, _, _, err := CompileSnippetWithProgram(engine, `def pair(a, b)
+  a
+end
+
+pair(shout(1), require("helpers"))`, "main")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if warnings := before.CheckWarnings(); len(warnings) != 0 {
+		t.Fatalf("CheckWarnings() = %#v, want none for a call before the later require", warnings)
+	}
+
+	// A require in an earlier argument is live for the arguments after it.
+	after, _, _, err := CompileSnippetWithProgram(engine, `def pair(a, b)
+  a
+end
+
+pair(require("helpers"), shout(1))`, "main")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	requireCheckWarningContains(t, after, "call to shout argument value expected string, got int")
+}
+
+func TestCheckWarningsSkipReachedMethodsInSeededPass(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "helpers.vibe"), []byte(`
+def shout(value: string)
+  value
+end
+`), 0o644); err != nil {
+		t.Fatalf("write helpers module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{root}})
+
+	// A method invoked from top level before the require checks under the
+	// pre-require root only: no second pass with the later exports.
+	before, _, _, err := CompileSnippetWithProgram(engine, `class Api
+  def self.load
+    shout(1)
+  end
+end
+
+Api.load
+require "helpers"`, "main")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if warnings := before.CheckWarnings(); len(warnings) != 0 {
+		t.Fatalf("CheckWarnings() = %#v, want none for pre-require method call", warnings)
+	}
+
+	// The same call after the require checks under the loaded exports.
+	after, _, _, err := CompileSnippetWithProgram(engine, `require "helpers"
+
+class Api
+  def self.load
+    shout(1)
+  end
+end
+
+Api.load`, "main")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	requireCheckWarningContains(t, after, "call to shout argument value expected string, got int")
+}
+
 func TestCheckWarningsDoNotHoistConditionalModuleEntrypointRequires(t *testing.T) {
 	t.Parallel()
 

@@ -260,7 +260,23 @@ const (
 	KindClass     = value.KindClass
 	KindInstance  = value.KindInstance
 	KindRegex     = value.KindRegex
+	KindShape     = value.KindShape
 )
+
+// NewShape returns a first-class shape value wrapping an annotation type
+// (ADR-004 expression-position shape literals). The payload is the shared,
+// immutable *TypeExpr from the AST.
+func NewShape(ty *TypeExpr) Value { return value.NewValue(KindShape, ty) }
+
+// valueShape returns the shape type stored in v, or nil if v is not a shape
+// value.
+func valueShape(v Value) *TypeExpr {
+	if v.Kind() != KindShape {
+		return nil
+	}
+	ty, _ := v.Data().(*TypeExpr)
+	return ty
+}
 
 // NewNil returns a nil Value.
 func NewNil() Value { return value.NewNil() }
@@ -1230,6 +1246,10 @@ func runtimeValueString(v Value) (string, bool) {
 		if inst := valueInstance(v); inst != nil && inst.Class != nil {
 			return fmt.Sprintf("<%s instance>", inst.Class.Name), true
 		}
+	case KindShape:
+		if ty := valueShape(v); ty != nil {
+			return fmt.Sprintf("<Shape %s>", ast.FormatTypeExpr(ty)), true
+		}
 	}
 	return "", false
 }
@@ -1252,6 +1272,8 @@ func runtimeValueEqual(left, right Value) (bool, bool) {
 		return enumDefsEqual(valueEnum(left), valueEnum(right)), true
 	case KindEnumValue:
 		return enumValueDefsEqual(valueEnumValue(left), valueEnumValue(right)), true
+	case KindShape:
+		return ast.FormatTypeExpr(valueShape(left)) == ast.FormatTypeExpr(valueShape(right)), true
 	}
 	return false, false
 }

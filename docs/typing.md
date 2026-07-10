@@ -1,6 +1,6 @@
 # Gradual Typing
 
-Vibescript supports optional type annotations on parameters and return values. Unannotated code is not type-checked; annotations opt you into runtime checks.
+Vibescript supports optional type annotations on parameters and return values. Unannotated code is not type-checked at runtime; annotations opt you into runtime checks, and the static check path (`vibes check` or `vibes run -check`) additionally infers local types to catch known contradictions before execution (see [Static checking](#static-checking) below).
 
 ## Supported types
 
@@ -103,6 +103,63 @@ configure retries: 3
 ## Returns
 
 If a return type is annotated, the returned value is checked. If omitted, no return check is enforced.
+
+## Static checking
+
+`vibes check` (and `vibes run -check`) validates typed boundaries before
+execution. Locals implicitly take the types of the expressions assigned to
+them, and the checker reports an error wherever known types contradict
+(ADR-004):
+
+```vibe
+def takes_int(value: int)
+  value
+end
+
+value = "1"
+takes_int(value)   # check error: argument value expected int, got string
+```
+
+The governing rule is: **error on known contradictions, permit unknowns**.
+
+- Assignments bind the inferred type of the right-hand side to the local;
+  reassigning a local to a conflicting type is an error, while `nil`
+  re-initialization and numeric widening stay legal.
+- Assignments in sibling branches merge into unions.
+- Annotated parameters enter the function body with their declared type, and
+  known calls check argument types and expose their annotated return type.
+- Operators reject operands known to be invalid at runtime (`1 + nil`).
+- Shape-typed values carry field-level facts, so indexing with a known key
+  yields the field's type.
+- Values the checker cannot prove (JSON payloads, host globals, dynamic
+  dispatch) are never rejected; the runtime checks remain the final guard.
+
+### `JSON.parse_as`
+
+`JSON.parse_as(raw, shape)` parses JSON and validates the result against a
+shape in one step, with the same semantics as typed parameter boundaries. The
+checker treats its result as that shape, so everything downstream is inferred
+and checked without further annotations:
+
+```vibe
+body = JSON.parse_as(raw, {
+  name: string,
+  email: string
+})
+
+create_user(body["name"])   # body["name"] is a known string
+```
+
+Shape literals are legal in expression position: a braced group whose field
+values all name built-in types (including unions, `array<T>`/`hash<K, V>`
+arguments, and nested shapes) is a first-class shape value, assignable and
+reusable. A braced group with value expressions, unknown identifiers, or
+fields naming locals in scope stays an ordinary hash literal, and a group
+whose type names are shadowed at runtime — a host-provided global named
+`string`, for example — also keeps its hash semantics, so existing embedded
+scripts read the host value exactly as before. Validation failures raise the
+standard typed-boundary error, e.g.
+`JSON.parse_as value expected { name: string }, got { name: int }`.
 
 ## Migration examples
 

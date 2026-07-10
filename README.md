@@ -210,6 +210,7 @@ This repository uses [Just](https://github.com/casey/just) for common tasks:
 - `just bench` runs the core execution benchmarks (`go test ./vibes -run '^$' -bench '^BenchmarkExecution' -benchmem`).
 - `just lint` checks formatting (`gofmt`) and runs `golangci-lint` with a generous timeout.
 - `just install` installs the `vibes` binary to `$GOBIN` (or `$GOPATH/bin` when `GOBIN` is unset); pass a custom directory with `just install /usr/local/bin`.
+- `vibes check <script.vibe>` statically checks typed boundaries across the whole script without executing it.
 - `vibes fmt <path>` applies canonical formatting to `.vibe` files (`-check` for CI, `-w` to write).
 - `vibes analyze <script.vibe>` runs script-level lint checks (e.g., unreachable statements).
 - `vibes test [path...]` discovers and runs `*_test.vibe` files (assert-based, `-run` to filter).

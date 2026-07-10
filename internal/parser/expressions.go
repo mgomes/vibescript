@@ -1763,6 +1763,38 @@ func (p *parser) parseArrayLiteral() ast.Expression {
 }
 
 func (p *parser) parseHashLiteral() ast.Expression {
+	pos := p.curToken.Pos
+	shapeType, structuralError := p.speculativeShapeLiteralType()
+	if shapeType == nil && !structuralError {
+		return p.parseHashLiteralGroup()
+	}
+	hashSnapshot := p.snapshot()
+	hash := p.parseHashLiteralGroup()
+	if hashLit, ok := hash.(*ast.HashLiteral); ok && len(p.errors) == hashSnapshot.errorCount {
+		if shapeType != nil {
+			// The group reads both ways; evaluation picks the shape unless a
+			// runtime binding shadows one of the type names.
+			hashLit.ShapeType = shapeType
+		}
+		// A structurally invalid shape that still reads cleanly as a hash
+		// (duplicate label keys) keeps the hash reading: duplicate data keys
+		// are legal, and host globals may shadow the type names at runtime.
+		// An unshadowed schema typo still fails the check path through its
+		// undefined identifiers.
+		return hashLit
+	}
+	// The group reads only under the type grammar (e.g. { note: string |
+	// nil }): drop the failed hash parse and re-consume it as a shape, which
+	// either yields the shape or surfaces its structural diagnostic.
+	p.restore(hashSnapshot)
+	p.parseTypeShape()
+	if shapeType == nil {
+		return nil
+	}
+	return &ast.HashLiteral{ShapeType: shapeType, Position: pos}
+}
+
+func (p *parser) parseHashLiteralGroup() ast.Expression {
 	p.groupDepth++
 	defer func() { p.groupDepth-- }()
 	pos := p.curToken.Pos
@@ -1798,6 +1830,76 @@ func (p *parser) parseHashLiteral() ast.Expression {
 	}
 
 	return &ast.HashLiteral{Pairs: pairs, Position: pos}
+}
+
+// speculativeShapeLiteralType parses a braced group in expression position
+// under the type grammar (ADR-004: shapes become legal in expression
+// position, e.g. JSON.parse_as(raw, { name: string })) and always restores
+// the parser. The group qualifies as a shape only when it parses cleanly,
+// every named leaf resolves to a built-in type, no field names a local
+// value, and none of the hash-default degeneracies apply. Requiring
+// built-in leaves keeps hashes with identifier values (`{ status: pending }`)
+// on the value path, so their undefined-name diagnostics are unchanged, and
+// it makes every accepted shape resolvable without an environment. Nullable
+// outer shapes are rejected so `{ ... }?` never swallows the `?` of a
+// ternary. Host-provided globals that reuse a type name cannot be seen at
+// parse time, so the caller keeps the hash reading alongside and evaluation
+// decides between the two.
+func (p *parser) speculativeShapeLiteralType() (*ast.TypeExpr, bool) {
+	if p.peekToken.Type == ast.TokenRBrace {
+		return nil, false
+	}
+
+	saved := p.snapshot()
+	defer p.restore(saved)
+	pos := p.curToken.Pos
+	shape := p.parseTypeShape()
+	if shape == nil {
+		// A structural shape error (duplicate field) means the field values
+		// all parsed as types, so the braces are a malformed shape rather
+		// than a hash; mirror bracedGroupIsShapeType and keep the diagnostic.
+		return nil, p.shapeStructurallyInvalid
+	}
+	if shape.Kind != ast.TypeShape || shape.Nullable ||
+		len(p.errors) != saved.errorCount ||
+		p.peekToken.Type == ast.TokenQuestion ||
+		shapeHasDegenerateNilField(shape) ||
+		shapeHasEmptyNestedShape(shape) ||
+		p.shapeFieldNamesLocalValue(shape) ||
+		!shapeLeafTypesAllBuiltin(shape) {
+		return nil, false
+	}
+	shape.Position = pos
+	return shape, false
+}
+
+// shapeLeafTypesAllBuiltin reports whether every named leaf of the type
+// resolves to a built-in type. A leaf left as an enum or unknown type names
+// an identifier the expression grammar should treat as a value reference.
+func shapeLeafTypesAllBuiltin(ty *ast.TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	switch ty.Kind {
+	case ast.TypeEnum, ast.TypeUnknown:
+		return false
+	}
+	for _, option := range ty.Union {
+		if !shapeLeafTypesAllBuiltin(option) {
+			return false
+		}
+	}
+	for _, arg := range ty.TypeArgs {
+		if !shapeLeafTypesAllBuiltin(arg) {
+			return false
+		}
+	}
+	for _, field := range ty.Shape {
+		if !shapeLeafTypesAllBuiltin(field) {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *parser) parseHashPair() ast.HashPair {

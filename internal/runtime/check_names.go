@@ -124,9 +124,19 @@ func (c *scriptChecker) pushFunctionNameScope(fn *ScriptFunction) func() {
 	collectOwnScopeNames(fn.Body, names)
 	popUnion := c.pushLocalNameUnion(names)
 	previousSelf := c.selfScope
+	previousClass := c.selfClass
+	previousClassContext := c.selfClassContext
 	c.selfScope = c.functionHasSelfScope(fn)
+	c.selfClass = nil
+	c.selfClassContext = false
+	if c.selfScope {
+		c.selfClass = c.selfScopeFnClasses[fn]
+		_, c.selfClassContext = c.selfScopeClassFns[fn]
+	}
 	return func() {
 		c.selfScope = previousSelf
+		c.selfClass = previousClass
+		c.selfClassContext = previousClassContext
 		popUnion()
 	}
 }
@@ -159,6 +169,71 @@ func (c *scriptChecker) pushLocalNameUnion(names map[string]struct{}) func() {
 	}
 }
 
+// Live local names mirror the runtime's predeclaration timeline: an
+// assignment's own targets go live before its value evaluates, compound
+// statements post-declare their bindings when they complete, and loop and
+// block bodies go live at region entry because later iterations see every
+// body binding. Shape shadowing consults this instead of the whole-body
+// name union, which exists for undefined-name checks and deliberately
+// includes names bound only later.
+
+// predeclareStatementLiveNames records the names the runtime predeclares
+// when stmt starts: only an assignment's own targets go live before the
+// statement body runs.
+func (c *scriptChecker) predeclareStatementLiveNames(stmt Statement) {
+	assign, ok := stmt.(*AssignStmt)
+	if !ok {
+		return
+	}
+	names := make(map[string]struct{})
+	collectBindingTarget(assign.Target, names)
+	c.recordLiveLocalNames(names)
+}
+
+// postdeclareStatementLiveNames records the bindings the runtime
+// predeclares after a compound statement completes, whichever paths ran.
+func (c *scriptChecker) postdeclareStatementLiveNames(stmt Statement) {
+	switch stmt.(type) {
+	case *LogicalStmt, *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+	default:
+		return
+	}
+	names := make(map[string]struct{})
+	collectOwnScopeNamesFromStatement(stmt, names)
+	c.recordLiveLocalNames(names)
+}
+
+// recordLiveStatementNames marks every binding of a multi-run region's body
+// live at region entry: from the second iteration on, all of them exist.
+func (c *scriptChecker) recordLiveStatementNames(statements []Statement) {
+	names := make(map[string]struct{})
+	collectOwnScopeNames(statements, names)
+	c.recordLiveLocalNames(names)
+}
+
+func (c *scriptChecker) recordLiveLocalNames(names map[string]struct{}) {
+	if len(names) == 0 || len(c.liveLocalNames) == 0 {
+		return
+	}
+	frame := c.liveLocalNames[len(c.liveLocalNames)-1]
+	if frame == nil {
+		frame = make(map[string]struct{}, len(names))
+		c.liveLocalNames[len(c.liveLocalNames)-1] = frame
+	}
+	for name := range names {
+		frame[name] = struct{}{}
+	}
+}
+
+func (c *scriptChecker) liveLocalNameHas(name string) bool {
+	for i := len(c.liveLocalNames) - 1; i >= 0; i-- {
+		if _, ok := c.liveLocalNames[i][name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *scriptChecker) localNameUnionHas(name string) bool {
 	for i := len(c.localNameUnions) - 1; i >= 0; i-- {
 		if _, ok := c.localNameUnions[i][name]; ok {
@@ -173,12 +248,17 @@ func (c *scriptChecker) localNameUnionHas(name string) bool {
 func (c *scriptChecker) functionHasSelfScope(fn *ScriptFunction) bool {
 	if c.selfScopeFns == nil {
 		c.selfScopeFns = make(map[*ScriptFunction]struct{})
+		c.selfScopeFnClasses = make(map[*ScriptFunction]*ClassDef)
+		c.selfScopeClassFns = make(map[*ScriptFunction]struct{})
 		for _, classDef := range c.script.classes {
 			for _, method := range classDef.Methods {
 				c.selfScopeFns[method] = struct{}{}
+				c.selfScopeFnClasses[method] = classDef
 			}
 			for _, method := range classDef.ClassMethods {
 				c.selfScopeFns[method] = struct{}{}
+				c.selfScopeFnClasses[method] = classDef
+				c.selfScopeClassFns[method] = struct{}{}
 			}
 		}
 	}

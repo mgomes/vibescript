@@ -105,6 +105,9 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *ArrayLiteral:
 		return exec.evalArrayLiteral(e, env)
 	case *HashLiteral:
+		if e.ShapeType != nil && !exec.hashShapeShadowed(e, env) {
+			return NewShape(e.ShapeType), nil
+		}
 		return exec.evalHashLiteral(e, env)
 	case *SplatArg:
 		return NewNil(), exec.errorAt(e.Pos(), "splat argument is only allowed in call arguments")
@@ -542,6 +545,36 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 	default:
 		return NewNil(), exec.errorAt(e.Pos(), "unsupported unary operator")
 	}
+}
+
+// hashShapeShadowed reports whether any type name of a dual-reading braced
+// group resolves to a runtime binding, in which case the group keeps its
+// pre-existing hash semantics (a host-provided global named string, for
+// example). A group with no hash reading (ShapeType without pairs) is always
+// a shape.
+func (exec *Execution) hashShapeShadowed(lit *HashLiteral, env *Env) bool {
+	if len(lit.Pairs) == 0 {
+		return false
+	}
+	self, hasSelf := env.Get("self")
+	selfReceiver := hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass)
+	shadowed := false
+	walkShapeTypeNames(lit.ShapeType, func(name string) {
+		if shadowed {
+			return
+		}
+		if _, ok := env.Get(name); ok {
+			shadowed = true
+			return
+		}
+		// Bare identifiers also resolve through implicit self (a zero-arity
+		// method named string, for example), matching evalExpression's
+		// identifier fallback.
+		if selfReceiver && exec.respondsTo(self, name, true) {
+			shadowed = true
+		}
+	})
+	return shadowed
 }
 
 func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
