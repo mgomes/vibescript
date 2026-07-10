@@ -138,6 +138,12 @@ type scriptChecker struct {
 	nameFactsCache          *checkNameFacts
 	selfScopeFns            map[*ScriptFunction]struct{}
 	orderIndependentOnly    bool
+	// isolatedCollectInference marks a module collection pass running on its
+	// own walled-off type-fact environment (seedEntrypointRequireExports,
+	// module entrypoints). The pass then maintains facts itself; the runtime
+	// collection path stays read-only because it shares the live walk's facts,
+	// which the real walk already updates at the correct evaluation points.
+	isolatedCollectInference bool
 }
 
 type reachableFunction struct {
@@ -240,14 +246,30 @@ func (c *scriptChecker) collectFunctionRequiredModuleExports(fn *ScriptFunction)
 	if fn == nil {
 		return
 	}
+	restoreInference := c.withIsolatedLocalInference()
+	defer restoreInference()
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 
 	for _, param := range fn.Params {
 		c.collectRequiredModuleExportsFromExpression(param.DefaultVal)
 		c.recordParamBinding(param)
+		c.bindParamLocalType(param)
 	}
 	c.collectRequiredModuleExportsFromStatements(fn.Body)
+}
+
+// collectAssignLocalTypes mirrors the real walk's assignment inference during
+// a module collection pass so guaranteed-evaluation gating sees the same
+// local facts. Diagnostics stay suppressed: the pass only collects, and the
+// real walks report assignment warnings themselves.
+func (c *scriptChecker) collectAssignLocalTypes(stmt *AssignStmt) {
+	if !c.isolatedCollectInference {
+		return
+	}
+	c.withSuppressedWarnings(func() {
+		c.inferAssignStatementTypes("", stmt)
+	})
 }
 
 func (c *scriptChecker) collectRequiredModuleExportsFromStatements(statements []Statement) {
@@ -273,6 +295,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 	case *AssignStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Target)
 		c.collectRequiredModuleExportsFromExpression(typed.Value)
+		c.collectAssignLocalTypes(typed)
 		c.recordBindingTarget(typed.Target)
 	case *ExprStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Expr)
@@ -280,9 +303,9 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.collectRequiredModuleExportsFromStatement(typed.Left)
 		leftState := c.snapshotModuleCollectionState()
 		leftScopeState := c.snapshotScopeState()
-		if logicalStatementRightMayEvaluate(typed) {
+		if logicalStatementRightMayEvaluate(typed) && !c.logicalStatementRightUnreachable(typed) {
 			c.collectRequiredModuleExportsFromStatement(typed.Right)
-			if !logicalStatementRightAlwaysEvaluates(typed) {
+			if !logicalStatementRightAlwaysEvaluates(typed) && !c.logicalStatementRightAlwaysEvaluatesInferred(typed) {
 				c.restoreModuleCollectionState(leftState)
 				c.restoreScopeState(leftScopeState)
 				c.recordLocalBindings([]Statement{typed})
@@ -341,26 +364,41 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
 	case *ForStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Iterable)
+		if c.isolatedCollectInference {
+			c.degradeLocalTypesForBindings(typed.Body, typed.Target)
+		}
 		c.recordBindingTarget(typed.Target)
 		bodyState := c.snapshotModuleCollectionState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.collectRequiredModuleExportsFromStatements(typed.Body)
+		c.mutationRegionDepth--
 		c.restoreModuleCollectionState(bodyState)
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
 	case *WhileStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		if c.isolatedCollectInference {
+			c.degradeLocalTypesForBindings(typed.Body)
+		}
 		bodyState := c.snapshotModuleCollectionState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.collectRequiredModuleExportsFromStatements(typed.Body)
+		c.mutationRegionDepth--
 		c.restoreModuleCollectionState(bodyState)
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
 	case *UntilStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
+		if c.isolatedCollectInference {
+			c.degradeLocalTypesForBindings(typed.Body)
+		}
 		bodyState := c.snapshotModuleCollectionState()
 		bodyScopeState := c.snapshotScopeState()
+		c.mutationRegionDepth++
 		c.collectRequiredModuleExportsFromStatements(typed.Body)
+		c.mutationRegionDepth--
 		c.restoreModuleCollectionState(bodyState)
 		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
@@ -408,6 +446,8 @@ func (c *scriptChecker) collectRequiredModuleExportsFromClassBody(body []Stateme
 	if len(body) == 0 {
 		return
 	}
+	restoreInference := c.withIsolatedLocalInference()
+	defer restoreInference()
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 	c.collectRequiredModuleExportsFromStatements(body)
@@ -434,14 +474,33 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		}
 		if safeNavigationCallMaySkipArguments(typed) {
 			baseState := c.snapshotModuleCollectionState()
+			baseScopeState := c.snapshotScopeState()
 			c.collectRequiredModuleExportsFromCallArguments(typed)
 			callState := c.snapshotModuleCollectionState()
 			c.mergeModuleCollectionStates(baseState, []checkModuleCollectionState{baseState, callState})
+			if c.isolatedCollectInference {
+				callScopeState := c.snapshotScopeState()
+				c.mergeScopeStates(baseScopeState, []checkScopeState{baseScopeState, callScopeState})
+			}
 		} else {
 			c.collectRequiredModuleExportsFromCallArguments(typed)
 		}
+		if c.isolatedCollectInference {
+			if typed.Block != nil {
+				c.degradeBlockBodyBindings(typed.Block)
+			}
+			for _, arg := range typed.Args {
+				c.poisonEscapedIdentifier(arg)
+			}
+			for _, kwarg := range typed.KwArgs {
+				c.poisonEscapedIdentifier(kwarg.Value)
+			}
+		}
 	case *MemberExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
+		if c.isolatedCollectInference {
+			c.poisonEscapedIdentifier(typed.Object)
+		}
 	case *ScopeExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
 	case *IndexExpr:
@@ -461,6 +520,11 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		c.collectRequiredModuleExportsFromExpression(typed.Left)
 		if binaryRightAlwaysEvaluates(typed) || c.binaryRightAlwaysEvaluatesInferred(typed) {
 			c.collectRequiredModuleExportsFromExpression(typed.Right)
+		} else if c.isolatedCollectInference && binaryRightMayEvaluate(typed) && !c.binaryRightUnreachable(typed) {
+			c.poisonSkippedMutationFacts(typed.Right)
+		}
+		if c.isolatedCollectInference {
+			c.applyShovelMutationFacts(typed)
 		}
 	case *ConditionalExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)

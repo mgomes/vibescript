@@ -286,6 +286,60 @@ shout(1)`)
 	}
 }
 
+func TestCheckCommandSeedsInferredGuaranteedEntrypointRequires(t *testing.T) {
+	t.Parallel()
+	moduleDir := t.TempDir()
+	module := `def shout(value: string)
+  value
+end`
+	if err := os.WriteFile(filepath.Join(moduleDir, "helpers.vibe"), []byte(module+"\n"), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+
+	// The guard is a local whose inferred type proves the require always
+	// runs, so the exports seed for later functions exactly as at runtime.
+	wordAnd := writeVibeScript(t, `flag = "yes"
+flag and require "helpers"
+
+def run
+  shout(1)
+end`)
+	out, err := captureStdout(t, func() error {
+		return checkCommand([]string{"-module-path", moduleDir, wordAnd})
+	})
+	if err == nil || !strings.Contains(out, "call to shout argument value expected string, got int") {
+		t.Fatalf("checkCommand word-and guard = %v (out %q), want argument warning", err, out)
+	}
+
+	symbolAnd := writeVibeScriptNamed(t, "symbol.vibe", `flag = "yes"
+flag && require "helpers"
+
+def run
+  shout(1)
+end`)
+	out, err = captureStdout(t, func() error {
+		return checkCommand([]string{"-module-path", moduleDir, symbolAnd})
+	})
+	if err == nil || !strings.Contains(out, "call to shout argument value expected string, got int") {
+		t.Fatalf("checkCommand symbol-and guard = %v (out %q), want argument warning", err, out)
+	}
+
+	// A guard the checker cannot prove keeps the seed conservative: the
+	// module may never load, so the unknown callee stays permitted.
+	unknown := writeVibeScriptNamed(t, "unknown.vibe", `flag = JSON.parse("true")
+flag and require "helpers"
+
+def run
+  shout(1)
+end`)
+	out, err = captureStdout(t, func() error {
+		return checkCommand([]string{"-module-path", moduleDir, unknown})
+	})
+	if err != nil {
+		t.Fatalf("checkCommand unknown guard err = %v (out %q), want nil", err, out)
+	}
+}
+
 func TestCheckCommandRejectsOversizedScript(t *testing.T) {
 	t.Parallel()
 	path := writeOversizedScript(t, "script.vibe")

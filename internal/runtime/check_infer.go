@@ -161,6 +161,38 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	}
 }
 
+// withIsolatedLocalInference walls off the local type-fact environment so a
+// module collection pass can run assignment inference without reading or
+// corrupting the facts of whatever function walk is in flight.
+func (c *scriptChecker) withIsolatedLocalInference() func() {
+	previousTypes := c.localTypes
+	previousDepth := c.mutationRegionDepth
+	previousIsolated := c.isolatedCollectInference
+	c.localTypes = nil
+	c.mutationRegionDepth = 0
+	c.isolatedCollectInference = true
+	restoreScope := c.withFreshLocalInferenceScope()
+	return func() {
+		restoreScope()
+		c.localTypes = previousTypes
+		c.mutationRegionDepth = previousDepth
+		c.isolatedCollectInference = previousIsolated
+	}
+}
+
+// poisonSkippedMutationFacts drops the container facts a subexpression the
+// collection pass does not walk may invalidate: a maybe-evaluated operand is
+// skipped entirely, but any mutation inside it must still degrade facts.
+func (c *scriptChecker) poisonSkippedMutationFacts(expr Expression) {
+	var sites []Expression
+	collectMutationCandidateRootsFromExpression(expr, &sites)
+	for _, site := range sites {
+		if name, ok := c.escapePoisonTarget(site); ok {
+			c.poisonLocalType(name)
+		}
+	}
+}
+
 // forTargetElementType resolves a for-loop iterable to its element type when
 // it is statically known (typed arrays and ranges). It runs before the loop
 // degrades body-assigned locals, because the iterable evaluates once with
