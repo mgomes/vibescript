@@ -9,9 +9,14 @@ test-race:
 leakcheck:
 	GOEXPERIMENT=goroutineleakprofile go test ./internal/runtime
 
-# Iteration-based (Nx) rather than time-based: a duration makes Go's fuzz
-# coordinator set a context deadline whose teardown races, intermittently
-# failing the nightly with "context deadline exceeded" (golang/go#48591).
+# The default budget is iteration-based (Nx) rather than time-based: a duration
+# makes Go's fuzz coordinator set a context deadline whose teardown races,
+# intermittently failing with a bare "context deadline exceeded" and no crasher
+# file (golang/go#48591). Duration budgets (used by the nightly for real
+# coverage) are still safe because run_target retries a target once when a
+# failure matches that exact signature — deadline error, no new corpus file. A
+# real finding always writes a file under testdata/fuzz/<target>/, so it is
+# never retried away; a double flake stays red.
 #
 # scope selects which targets run: 'all' (default) fuzzes both the ./cmd/vibes
 # tooling targets and the ./internal/runtime targets; 'runtime' fuzzes only the
@@ -27,11 +32,30 @@ fuzz fuzztime='25000x' scope='all':
 	scope="{{scope}}"
 	failed=()
 
+	shutdown_flake() {
+		local log="$1" corpus="$2"
+		grep -q "context deadline exceeded" "$log" \
+			&& [ -z "$(git status --porcelain -- "$corpus")" ]
+	}
+
 	run_target() {
 		local pkg="$1" target="$2"
-		if ! go test "$pkg" -run=^$ -fuzz="$target" -fuzztime="$fuzztime"; then
-			failed+=("$target")
+		local corpus="${pkg#./}/testdata/fuzz/$target"
+		local log
+		log=$(mktemp)
+		if go test "$pkg" -run=^$ -fuzz="$target" -fuzztime="$fuzztime" 2>&1 | tee "$log"; then
+			rm -f "$log"
+			return
 		fi
+		if shutdown_flake "$log" "$corpus"; then
+			echo "retrying $target after shutdown flake (golang/go#48591)" >&2
+			if go test "$pkg" -run=^$ -fuzz="$target" -fuzztime="$fuzztime"; then
+				rm -f "$log"
+				return
+			fi
+		fi
+		rm -f "$log"
+		failed+=("$target")
 	}
 
 	if [ "$scope" = "all" ]; then
@@ -63,7 +87,7 @@ fuzz fuzztime='25000x' scope='all':
 	done
 
 	if [ "${#failed[@]}" -gt 0 ]; then
-		echo "fuzz targets with new failing inputs: ${failed[*]}" >&2
+		echo "fuzz targets failed: ${failed[*]}" >&2
 		exit 1
 	fi
 
