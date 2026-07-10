@@ -1208,6 +1208,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 		usedKw = make(map[string]bool, len(kwargs))
 	}
 	argIdx := 0
+	warningsBeforeBinding := len(c.warnings)
 	for _, param := range fn.Params {
 		var boundValue Value
 		boundPresent := false
@@ -1258,6 +1259,12 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 		if usedDefault {
 			c.bindParamDefaultFact(param)
 		}
+	}
+	if len(c.warnings) > warningsBeforeBinding {
+		// The runtime stops at the failed binding, so the body never runs
+		// under this call; its diagnostics would describe executions that
+		// cannot happen.
+		return
 	}
 	c.checkStatements(label, fn.ReturnTy, fn.Body)
 	if fn.ReturnTy != nil {

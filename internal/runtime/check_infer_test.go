@@ -1647,6 +1647,48 @@ end
 `))
 }
 
+func TestCheckWarningsForCallSkipsBodyAfterBindingFailure(t *testing.T) {
+	t.Parallel()
+
+	// The runtime rejects the call at argument binding, so per-call checks
+	// must report the binding mismatch alone: body diagnostics would
+	// describe an execution that cannot happen.
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(x: int)
+  takes_string(x)
+end
+`)
+	warnings := script.CheckWarningsForCall("run", []Value{NewString("s")}, CallOptions{})
+	foundBinding := false
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "argument x expected int, got string") {
+			foundBinding = true
+		}
+		if strings.Contains(warning.Message, "takes_string") {
+			t.Fatalf("CheckWarningsForCall() = %v, body diagnostic reported after binding failure", warnings)
+		}
+	}
+	if !foundBinding {
+		t.Fatalf("CheckWarningsForCall() = %v, want binding mismatch", warnings)
+	}
+
+	// A call that binds still checks the body.
+	bodyWarnings := script.CheckWarningsForCall("run", []Value{NewInt(1)}, CallOptions{})
+	foundBody := false
+	for _, warning := range bodyWarnings {
+		if strings.Contains(warning.Message, "call to takes_string argument value expected string, got int") {
+			foundBody = true
+		}
+	}
+	if !foundBody {
+		t.Fatalf("CheckWarningsForCall() = %v, want body diagnostic for a binding call", bodyWarnings)
+	}
+}
+
 func TestCheckInferHostArgumentsSeedRestParams(t *testing.T) {
 	t.Parallel()
 
