@@ -1765,30 +1765,32 @@ func (p *parser) parseArrayLiteral() ast.Expression {
 func (p *parser) parseHashLiteral() ast.Expression {
 	pos := p.curToken.Pos
 	shapeType, structuralError := p.speculativeShapeLiteralType()
-	if structuralError {
-		// The braces read as a shape with a structural error (a duplicate
-		// field, for example): re-parse under the type grammar so the
-		// diagnostic surfaces instead of silently degrading to a hash whose
-		// values are undefined identifiers.
-		p.parseTypeShape()
-		return nil
-	}
-	if shapeType == nil {
+	if shapeType == nil && !structuralError {
 		return p.parseHashLiteralGroup()
 	}
 	hashSnapshot := p.snapshot()
 	hash := p.parseHashLiteralGroup()
 	if hashLit, ok := hash.(*ast.HashLiteral); ok && len(p.errors) == hashSnapshot.errorCount {
-		// The group reads both ways; evaluation picks the shape unless a
-		// runtime binding shadows one of the type names.
-		hashLit.ShapeType = shapeType
+		if shapeType != nil {
+			// The group reads both ways; evaluation picks the shape unless a
+			// runtime binding shadows one of the type names.
+			hashLit.ShapeType = shapeType
+		}
+		// A structurally invalid shape that still reads cleanly as a hash
+		// (duplicate label keys) keeps the hash reading: duplicate data keys
+		// are legal, and host globals may shadow the type names at runtime.
+		// An unshadowed schema typo still fails the check path through its
+		// undefined identifiers.
 		return hashLit
 	}
-	// The group reads only as a shape (e.g. { note: string | nil }): drop
-	// the failed hash parse and re-consume the group under the type
-	// grammar, which is known to parse cleanly.
+	// The group reads only under the type grammar (e.g. { note: string |
+	// nil }): drop the failed hash parse and re-consume it as a shape, which
+	// either yields the shape or surfaces its structural diagnostic.
 	p.restore(hashSnapshot)
 	p.parseTypeShape()
+	if shapeType == nil {
+		return nil
+	}
 	return &ast.HashLiteral{ShapeType: shapeType, Position: pos}
 }
 

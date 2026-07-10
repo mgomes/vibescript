@@ -363,15 +363,34 @@ end
 func TestShapeLiteralStructuralErrorsSurface(t *testing.T) {
 	t.Parallel()
 
-	// A braced group whose fields all parse as types but is structurally
-	// invalid is a malformed shape, not a hash of undefined identifiers.
+	// A group that reads only under the type grammar surfaces its
+	// structural shape diagnostic instead of a confusing expression error.
 	err := compileScriptErrorDefault(t, `
 def run(raw: string)
-  JSON.parse_as(raw, { name: string, name: int })
+  JSON.parse_as(raw, { name: string | nil, name: int })
 end
 `)
 	if err == nil || !strings.Contains(err.Error(), "duplicate shape field name") {
 		t.Fatalf("compile error = %v, want duplicate shape field diagnostic", err)
+	}
+
+	// A duplicate-key group that still reads as a hash keeps the hash
+	// reading: host globals may shadow the type names, and the unshadowed
+	// typo still fails the check path through its undefined identifiers.
+	dup := compileScript(t, `
+def run()
+  h = { name: string, name: int }
+  h[:name]
+end
+`)
+	requireCheckWarningContains(t, dup, "undefined variable")
+	opts := CallOptions{Globals: map[string]Value{
+		"string": NewString("A"),
+		"int":    NewString("B"),
+	}}
+	got := callScript(t, context.Background(), dup, "run", nil, opts)
+	if got.Kind() != KindString {
+		t.Fatalf("run() with shadowing globals = %#v, want a host string value", got)
 	}
 
 	// Duplicate data keys keep their hash reading.
@@ -381,9 +400,9 @@ def run()
   h[:a]
 end
 `)
-	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
-	if got.Kind() != KindInt {
-		t.Fatalf("run() = %#v, want int", got)
+	data := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if data.Kind() != KindInt {
+		t.Fatalf("run() = %#v, want int", data)
 	}
 }
 
