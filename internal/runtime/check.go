@@ -320,7 +320,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		fallthroughStates := make([]checkModuleCollectionState, 0, len(typed.ElseIf)+2)
 		fallthroughScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
-		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
 		if !conditionKnown || conditionTruthy {
 			c.collectRequiredModuleExportsFromStatements(typed.Consequent)
 			if !blockAlwaysExits(typed.Consequent) {
@@ -339,7 +339,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			c.collectRequiredModuleExportsFromExpression(elseIf.Condition)
 			falseState = c.snapshotModuleCollectionState()
 			falseScopeState = c.snapshotScopeState()
-			branchTruthy, branchKnown := staticExpressionTruthiness(elseIf.Condition)
+			branchTruthy, branchKnown := c.inferredConditionTruthiness(elseIf.Condition)
 			if !branchKnown || branchTruthy {
 				c.collectRequiredModuleExportsFromStatements(elseIf.Consequent)
 				if !blockAlwaysExits(elseIf.Consequent) {
@@ -552,7 +552,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		falseState := c.snapshotModuleCollectionState()
 		branchStates := make([]checkModuleCollectionState, 0, len(typed.ElseIf)+2)
 
-		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
 		if !conditionKnown || conditionTruthy {
 			c.collectRequiredModuleExportsFromExpression(typed.Consequent)
 			branchStates = append(branchStates, c.snapshotModuleCollectionState())
@@ -565,7 +565,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 			c.restoreModuleCollectionState(falseState)
 			c.collectRequiredModuleExportsFromExpression(branch.Condition)
 			falseState = c.snapshotModuleCollectionState()
-			branchTruthy, branchKnown := staticExpressionTruthiness(branch.Condition)
+			branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
 			if !branchKnown || branchTruthy {
 				c.collectRequiredModuleExportsFromExpression(branch.Result)
 				branchStates = append(branchStates, c.snapshotModuleCollectionState())
@@ -1840,7 +1840,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
 		fallthroughScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
-		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
 		if !conditionKnown || conditionTruthy {
 			c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
 			c.checkStatements(function, returnType, typed.Consequent)
@@ -1866,7 +1866,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.collectRuntimeRequireCallExportsFromExpression(elseIf.Condition)
 			conditionRuntimeState = c.snapshotRuntimeState()
 			conditionScopeState = c.snapshotScopeState()
-			branchTruthy, branchKnown := staticExpressionTruthiness(elseIf.Condition)
+			branchTruthy, branchKnown := c.inferredConditionTruthiness(elseIf.Condition)
 			if !branchKnown || branchTruthy {
 				c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, true)
 				c.checkStatements(function, returnType, elseIf.Consequent)
@@ -2336,7 +2336,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		branchRuntimeStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
 		branchScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
-		conditionTruthy, conditionKnown := staticExpressionTruthiness(typed.Condition)
+		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
 		if !conditionKnown || conditionTruthy {
 			c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
 			c.checkExpressionWithAuto(function, typed.Consequent, true)
@@ -2360,7 +2360,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.collectRuntimeRequireCallExportsFromExpression(branch.Condition)
 			conditionRuntimeState = c.snapshotRuntimeState()
 			conditionScopeState = c.snapshotScopeState()
-			branchTruthy, branchKnown := staticExpressionTruthiness(branch.Condition)
+			branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
 			if !branchKnown || branchTruthy {
 				c.collectRuntimeConditionOutcomeEffects(branch.Condition, true)
 				c.checkExpressionWithAuto(function, branch.Result, true)
@@ -2419,7 +2419,7 @@ func (c *scriptChecker) checkConditionalExpression(function string, expr *Condit
 	branchRuntimeStates := make([]checkRuntimeState, 0, 2)
 	branchScopeStates := make([]checkScopeState, 0, 2)
 
-	conditionTruthy, conditionKnown := staticExpressionTruthiness(expr.Condition)
+	conditionTruthy, conditionKnown := c.inferredConditionTruthiness(expr.Condition)
 	if !conditionKnown || conditionTruthy {
 		c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
 		c.checkExpressionWithAuto(function, expr.Consequent, true)

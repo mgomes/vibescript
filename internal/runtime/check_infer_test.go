@@ -664,6 +664,76 @@ end
 `))
 }
 
+func TestCheckInferStatementBranchesPruneByInferredTruthiness(t *testing.T) {
+	t.Parallel()
+
+	// A definitely-truthy condition makes the else branch unreachable, so
+	// its contradictions (bad reassignment, bad return) must not report.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run(flag: bool) -> int
+  guard = "yes"
+  x = 1
+  if guard
+    x = 2
+    return x
+  else
+    x = "bad"
+    return "bad"
+  end
+end
+`))
+
+	// The unreachable arm also stays out of the branch merge, so the
+	// post-if fact keeps its precision.
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run
+  guard = "yes"
+  x = 1
+  if guard
+    x = 2
+  else
+    x = "bad"
+  end
+  takes_string(x)
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int")
+
+	// A nil-only condition proves the consequent never runs.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run -> int
+  guard = nil
+  x = 1
+  if guard
+    x = "bad"
+  end
+  x
+end
+`))
+
+	// If-expression arms prune at the walk level too: an unreachable arm
+	// must not produce call diagnostics.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  guard = "yes"
+  value = if guard
+    1
+  else
+    takes_int("bad")
+  end
+  value
+end
+`))
+}
+
 func TestCheckInferDeferredEnsureReturnsUseBranchTypes(t *testing.T) {
 	t.Parallel()
 
