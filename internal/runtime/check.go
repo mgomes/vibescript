@@ -1152,11 +1152,17 @@ func (c *scriptChecker) checkScript() {
 	})
 	for _, classDef := range c.sortedClasses() {
 		for _, method := range sortedCheckFunctions(classDef.Methods) {
+			if _, reached := entrypointReached[method]; reached {
+				continue
+			}
 			c.withFreshRuntimeTypeRootForCallable(method, func() {
 				c.checkFunction(classDef.Name+"#"+method.Name, method)
 			})
 		}
 		for _, method := range sortedCheckFunctions(classDef.ClassMethods) {
+			if _, reached := entrypointReached[method]; reached {
+				continue
+			}
 			c.withFreshRuntimeTypeRootForCallable(method, func() {
 				c.checkFunction(classDef.Name+"."+method.Name, method)
 			})
@@ -2329,6 +2335,12 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			argumentState = c.snapshotRuntimeState()
 			argumentScopeState = c.snapshotScopeState()
 		}
+		// The runtime resolves the call target when the callee evaluates,
+		// before any argument runs, so a require inside an argument must
+		// not make the callee's contract visible to this same call. The
+		// callee body still checks under the post-argument state: dispatch
+		// happens after the arguments (and their requires) evaluate.
+		target, targetResolved := c.resolveCallable(typed)
 		c.collectRuntimeCallArgumentEffects(typed)
 		// Arguments evaluate left to right before the call dispatches, so
 		// each argument's inferred type is captured at its own evaluation
@@ -2353,7 +2365,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		}
 		previousFacts := c.callArgumentFacts
 		c.callArgumentFacts = argumentFacts
-		c.checkCall(function, typed)
+		c.checkCallResolved(function, typed, target, targetResolved)
 		c.callArgumentFacts = previousFacts
 		if c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
@@ -2654,6 +2666,9 @@ func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr)
 		if target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0 {
 			c.checkCallShape(function, view, target.name, target.fn)
 		}
+		// A bare member read dispatches like a call, so the callee checks
+		// under the call-time runtime root.
+		c.enqueueReachableFunction(target.name, target.fn)
 		return
 	}
 	if target.spec.autoInvoke {
@@ -4028,8 +4043,7 @@ type staticCallSpec struct {
 	usesBlock       bool
 }
 
-func (c *scriptChecker) checkCall(function string, call *CallExpr) {
-	target, ok := c.resolveCallable(call)
+func (c *scriptChecker) checkCallResolved(function string, call *CallExpr, target staticCallable, ok bool) {
 	if !ok {
 		return
 	}
