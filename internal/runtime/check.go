@@ -2341,7 +2341,6 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// callee body still checks under the post-argument state: dispatch
 		// happens after the arguments (and their requires) evaluate.
 		target, targetResolved := c.resolveCallable(typed)
-		c.collectRuntimeCallArgumentEffects(typed)
 		// Arguments evaluate left to right before the call dispatches, so
 		// each argument's inferred type is captured at its own evaluation
 		// point: a mutating earlier argument (h.delete(:name)) poisons its
@@ -2351,13 +2350,16 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
 		for _, arg := range typed.Args {
 			c.checkExpressionWithAuto(function, arg, true)
-			// The argument's value materializes once its own evaluation (and
-			// its own mutations, such as a shovel append) completes, before
-			// the next argument runs.
+			// The argument's value and effects materialize once its own
+			// evaluation completes, before the next argument runs: a shovel
+			// append lands in the facts, and a require binds its exports
+			// for the arguments after it, never the ones before.
+			c.collectRuntimeRequireCallExportsFromExpression(arg)
 			argumentFacts[arg] = c.inferExpressionType(arg)
 		}
 		for _, kwarg := range typed.KwArgs {
 			c.checkExpressionWithAuto(function, kwarg.Value, true)
+			c.collectRuntimeRequireCallExportsFromExpression(kwarg.Value)
 			argumentFacts[kwarg.Value] = c.inferExpressionType(kwarg.Value)
 		}
 		if typed.BlockArg != nil {
@@ -2621,15 +2623,6 @@ func (c *scriptChecker) checkCaseExpression(function string, expr *CaseExpr) {
 
 	c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
 	c.mergeScopeStates(baseScopeState, branchScopeStates)
-}
-
-func (c *scriptChecker) collectRuntimeCallArgumentEffects(call *CallExpr) {
-	for _, arg := range call.Args {
-		c.collectRuntimeRequireCallExportsFromExpression(arg)
-	}
-	for _, kwarg := range call.KwArgs {
-		c.collectRuntimeRequireCallExportsFromExpression(kwarg.Value)
-	}
 }
 
 func staticNilSafeNavigationCall(call *CallExpr) bool {

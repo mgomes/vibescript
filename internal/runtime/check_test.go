@@ -1421,6 +1421,45 @@ shout(1)`, "main")
 	}
 }
 
+func TestCheckCallArgumentRequireEffectsApplyInOrder(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "helpers.vibe"), []byte(`
+def shout(value: string)
+  value
+end
+`), 0o644); err != nil {
+		t.Fatalf("write helpers module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{root}})
+
+	// An earlier argument evaluates before a later argument's require, so
+	// its nested call must not resolve the later exports.
+	before, _, _, err := CompileSnippetWithProgram(engine, `def pair(a, b)
+  a
+end
+
+pair(shout(1), require("helpers"))`, "main")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if warnings := before.CheckWarnings(); len(warnings) != 0 {
+		t.Fatalf("CheckWarnings() = %#v, want none for a call before the later require", warnings)
+	}
+
+	// A require in an earlier argument is live for the arguments after it.
+	after, _, _, err := CompileSnippetWithProgram(engine, `def pair(a, b)
+  a
+end
+
+pair(require("helpers"), shout(1))`, "main")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	requireCheckWarningContains(t, after, "call to shout argument value expected string, got int")
+}
+
 func TestCheckWarningsSkipReachedMethodsInSeededPass(t *testing.T) {
 	t.Parallel()
 
