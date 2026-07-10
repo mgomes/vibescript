@@ -1253,11 +1253,19 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 			argIdx = len(args)
 		case ParamKeywordRest:
 			c.checkKeywordRestArgumentValues(label, fn.Pos, kwargs, usedKw, param.Type, fn.Name, param.Name)
+			rest := make(map[string]Value)
+			for _, name := range sortedValueKeywordNames(kwargs) {
+				if usedKw != nil && usedKw[name] {
+					continue
+				}
+				rest[name] = kwargs[name]
+			}
 			for _, name := range sortedValueKeywordNames(kwargs) {
 				if usedKw != nil {
 					usedKw[name] = true
 				}
 			}
+			boundValue, boundPresent = NewHash(rest), true
 		case ParamBlock:
 			c.checkBlockArgumentValue(label, fn.Pos, nil, param.Type, fn.Name, param.Name)
 		}

@@ -1647,6 +1647,126 @@ end
 `))
 }
 
+func TestCheckInferLogicalCompoundAssignments(t *testing.T) {
+	t.Parallel()
+
+	// A nil-only current means ||= definitely binds the right side.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  x = nil
+  x ||= "bad"
+  takes_int(x)
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+
+	// A definitely-truthy current short-circuits ||=: the right side never
+	// binds, so the fact stays the current type.
+	truthy := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run
+  x = 1
+  x ||= "s"
+  takes_string(x)
+end
+`)
+	requireCheckWarningContains(t, truthy, "call to takes_string argument value expected string, got int")
+
+	// &&= binds the right side only for a truthy current.
+	andAssign := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  x = 1
+  x &&= "bad"
+  takes_int(x)
+end
+`)
+	requireCheckWarningContains(t, andAssign, "call to takes_int argument value expected int, got string")
+
+	// A nil-only current short-circuits &&=: x stays nil.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run
+  x = nil
+  x &&= "s"
+  x
+end
+`))
+
+	// An unknown current keeps the compound result unknown.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(v)
+  v ||= "s"
+  takes_int(v)
+end
+`))
+}
+
+func TestCheckInferHostKeywordsSeedKeywordRestParams(t *testing.T) {
+	t.Parallel()
+
+	// Host keywords bind the keyword-rest hash with per-entry facts, so
+	// string-indexed reads carry the concrete argument types.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(**opts)
+  takes_int(opts["limit"])
+end
+`)
+	warnings := script.CheckWarningsForCall("run", nil, CallOptions{Keywords: map[string]Value{"limit": NewString("x")}})
+	found := false
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CheckWarningsForCall() = %v, want keyword-rest contradiction", warnings)
+	}
+
+	// Compatible keywords stay silent.
+	if warnings := script.CheckWarningsForCall("run", nil, CallOptions{Keywords: map[string]Value{"limit": NewInt(5)}}); len(warnings) != 0 {
+		t.Fatalf("CheckWarningsForCall() = %v, want none", warnings)
+	}
+
+	// Keywords claimed by named parameters stay out of the rest hash.
+	claimed := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(limit: 0, **opts)
+  takes_int(opts["mode"])
+end
+`)
+	claimedWarnings := claimed.CheckWarningsForCall("run", nil, CallOptions{Keywords: map[string]Value{"limit": NewInt(1), "mode": NewString("fast")}})
+	found = false
+	for _, warning := range claimedWarnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CheckWarningsForCall() = %v, want unclaimed-keyword contradiction", claimedWarnings)
+	}
+}
+
 func TestCheckInferPerCallRefinesUnionAnnotations(t *testing.T) {
 	t.Parallel()
 

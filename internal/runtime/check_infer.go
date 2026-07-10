@@ -659,6 +659,10 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 	case *Identifier:
 		current := c.localTypeFor(target.Name)
 		next := c.inferExpressionType(stmt.Value)
+		if stmt.Operator == tokenOrAssign || stmt.Operator == tokenAndAssign {
+			c.bindLocalType(target.Name, logicalAssignmentFact(stmt.Operator, current, next))
+			return
+		}
 		if stmt.Operator != "" {
 			outcome := c.binaryOperationOutcome(stmt.Operator, current, next)
 			if outcome.invalid {
@@ -702,6 +706,33 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 			c.poisonLocalType(name)
 		}
 	}
+}
+
+// logicalAssignmentFact models x ||= v and x &&= v: the runtime keeps the
+// current value when the short circuit takes it and otherwise binds the
+// right-hand side directly, so a decided current picks one side and an
+// undecided one joins both.
+func logicalAssignmentFact(operator TokenType, current, next *TypeExpr) *TypeExpr {
+	switch operator {
+	case tokenOrAssign:
+		if typeExprDefinitelyTruthy(current) {
+			return current
+		}
+		if typeExprIsNilOnly(current) {
+			return next
+		}
+	case tokenAndAssign:
+		if typeExprIsNilOnly(current) {
+			return current
+		}
+		if typeExprDefinitelyTruthy(current) {
+			return next
+		}
+	}
+	if current == nil || next == nil {
+		return nil
+	}
+	return unionTypeExprs(current, next)
 }
 
 func (c *scriptChecker) bindDestructureElementType(element DestructureElement) {
@@ -800,9 +831,32 @@ func (c *scriptChecker) bindParamValueFact(param Param, val Value, present bool)
 	if !present || param.Name == "" || param.Type != nil {
 		return
 	}
-	if fact := typeFactForValue(val); fact != nil {
+	fact := typeFactForValue(val)
+	if param.Kind == ParamKeywordRest && val.Kind() == KindHash {
+		fact = keywordRestFact(val.Hash())
+	}
+	if fact != nil {
 		c.bindLocalTypeInCurrentFrame(param.Name, fact)
 	}
+}
+
+// keywordRestFact models the hash the runtime binds for a keyword-rest
+// parameter: raw keyword names make a string-keyed store, and the concrete
+// argument facts fill an exact shape. Empty or unmodeled entries degrade to
+// a plain hash fact.
+func keywordRestFact(entries map[string]Value) *TypeExpr {
+	if len(entries) == 0 {
+		return checkTypeHash
+	}
+	shape := make(map[string]*TypeExpr, len(entries))
+	for name, val := range entries {
+		fact := typeFactForValue(val)
+		if fact == nil {
+			return checkTypeHash
+		}
+		shape[name] = fact
+	}
+	return &TypeExpr{Kind: TypeShape, Name: shapeKeysStringMarker, Shape: shape}
 }
 
 // bindParamDefaultFact refines an unannotated defaulted parameter with the
