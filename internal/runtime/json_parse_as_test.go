@@ -328,6 +328,38 @@ end
 `))
 }
 
+func TestShapeLiteralKeepsShapeSemanticsUnderTypedParams(t *testing.T) {
+	t.Parallel()
+
+	// The typed-argument fast path must not force the hash reading: a shape
+	// literal passed to a hash-annotated parameter is a shape value that
+	// fails the boundary, not a hash whose values are undefined variables.
+	script := compileScript(t, `
+def wants_hash(x: hash<symbol, any>)
+  x
+end
+
+def run()
+  wants_hash({ name: string })
+end
+`)
+	err := callScriptErr(t, context.Background(), script, "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument x expected") {
+		t.Fatalf("run() err = %v, want typed-boundary mismatch", err)
+	}
+	if strings.Contains(err.Error(), "undefined variable") {
+		t.Fatalf("run() err = %v, must not evaluate type names as variables", err)
+	}
+
+	// A host global shadowing the type name keeps hash semantics on the
+	// same typed path.
+	opts := CallOptions{Globals: map[string]Value{"string": NewString("Ada")}}
+	got := callScript(t, context.Background(), script, "run", nil, opts)
+	if got.Kind() != KindHash && got.Kind() != KindObject {
+		t.Fatalf("run() with host global = %#v, want hash", got)
+	}
+}
+
 func TestCheckJSONParseAsArity(t *testing.T) {
 	t.Parallel()
 

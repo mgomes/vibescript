@@ -1703,6 +1703,12 @@ func (exec *Execution) evalTypedContainerCallArgument(arg Expression, env *Env, 
 		val, err := exec.evalArrayLiteralWithElementExpectation(e, env, elementExpectation)
 		return val, true, err
 	case *HashLiteral:
+		if e.ShapeType != nil && !exec.hashShapeShadowed(e, env) {
+			// The group evaluates as a first-class shape value regardless of
+			// the parameter annotation; the normal path produces it and the
+			// boundary check decides.
+			return NewNil(), false, nil
+		}
 		if !hashLiteralTypeHasValueSlots(expectation.ty) {
 			return NewNil(), false, nil
 		}
