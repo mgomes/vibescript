@@ -137,6 +137,7 @@ type scriptChecker struct {
 	selfScopeFnClasses      map[*ScriptFunction]*ClassDef
 	selfScopeClassFns       map[*ScriptFunction]struct{}
 	localNameUnions         []map[string]struct{}
+	liveLocalNames          []map[string]struct{}
 	nameFactsCache          *checkNameFacts
 	selfScopeFns            map[*ScriptFunction]struct{}
 	orderIndependentOnly    bool
@@ -284,6 +285,10 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatements(statements []
 }
 
 func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement) {
+	if c.isolatedCollectInference {
+		c.predeclareStatementLiveNames(stmt)
+		defer c.postdeclareStatementLiveNames(stmt)
+	}
 	switch typed := stmt.(type) {
 	case nil:
 		return
@@ -367,6 +372,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 	case *ForStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Iterable)
 		if c.isolatedCollectInference {
+			c.recordLiveStatementNames(typed.Body)
 			c.degradeLocalTypesForBindings(typed.Body, typed.Target)
 		}
 		c.recordBindingTarget(typed.Target)
@@ -381,6 +387,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 	case *WhileStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
 		if c.isolatedCollectInference {
+			c.recordLiveStatementNames(typed.Body)
 			c.degradeLocalTypesForBindings(typed.Body)
 		}
 		bodyState := c.snapshotModuleCollectionState()
@@ -394,6 +401,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 	case *UntilStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
 		if c.isolatedCollectInference {
+			c.recordLiveStatementNames(typed.Body)
 			c.degradeLocalTypesForBindings(typed.Body)
 		}
 		bodyState := c.snapshotModuleCollectionState()
@@ -450,10 +458,6 @@ func (c *scriptChecker) collectRequiredModuleExportsFromClassBody(body []Stateme
 	}
 	restoreInference := c.withIsolatedLocalInference()
 	defer restoreInference()
-	names := make(map[string]struct{})
-	collectOwnScopeNames(body, names)
-	popUnion := c.pushLocalNameUnion(names)
-	defer popUnion()
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 	c.collectRequiredModuleExportsFromStatements(body)
@@ -1422,13 +1426,6 @@ func (c *scriptChecker) checkRuntimeClassBody(classDef *ClassDef, suppressWarnin
 		defer c.withFreshLocalInferenceScope()()
 		popScope := c.pushScope(make(map[string]struct{}))
 		defer popScope()
-		// Class-body assignment targets predeclare before any statement
-		// evaluates, so a target named after a type shadows that leaf for
-		// the whole body, exactly like function locals.
-		names := make(map[string]struct{})
-		collectOwnScopeNames(classDef.Body, names)
-		popUnion := c.pushLocalNameUnion(names)
-		defer popUnion()
 		// Class bodies run with self bound to the class, so bare identifiers
 		// can resolve through implicit self class members.
 		previousSelf := c.selfScope
@@ -1817,6 +1814,8 @@ func (c *scriptChecker) checkStatements(function string, returnType *TypeExpr, s
 }
 
 func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, stmt Statement) {
+	c.predeclareStatementLiveNames(stmt)
+	defer c.postdeclareStatementLiveNames(stmt)
 	switch typed := stmt.(type) {
 	case nil:
 		return
@@ -1956,6 +1955,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkExpression(function, typed.Iterable)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Iterable)
 		elemType := c.forTargetElementType(typed)
+		c.recordLiveStatementNames(typed.Body)
 		c.degradeLocalTypesForBindings(typed.Body, typed.Target)
 		c.recordBindingTarget(typed.Target)
 		c.bindForTargetType(typed, elemType)
@@ -1973,6 +1973,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// checked before body-assigned locals degrade to unknown.
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
+		c.recordLiveStatementNames(typed.Body)
 		c.degradeLocalTypesForBindings(typed.Body)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
@@ -1985,6 +1986,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *UntilStmt:
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
+		c.recordLiveStatementNames(typed.Body)
 		c.degradeLocalTypesForBindings(typed.Body)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
@@ -2646,6 +2648,9 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	defer popScope()
 	popNameScope := c.pushBlockNameScope(block)
 	defer popNameScope()
+	// A block may run many times, so every body binding is live for shape
+	// shadowing from the first walk on, like a loop body.
+	c.recordLiveStatementNames(block.Body)
 
 	for _, param := range block.Params {
 		c.checkRuntimeTypeAnnotation(function, param.Type)
@@ -4995,9 +5000,11 @@ func (c *scriptChecker) pushRescueScope(clause *RescueClause) func() {
 func (c *scriptChecker) pushScope(scope map[string]struct{}) func() {
 	c.scopes = append(c.scopes, scope)
 	c.localTypes = append(c.localTypes, nil)
+	c.liveLocalNames = append(c.liveLocalNames, nil)
 	return func() {
 		c.scopes = c.scopes[:len(c.scopes)-1]
 		c.localTypes = c.localTypes[:len(c.localTypes)-1]
+		c.liveLocalNames = c.liveLocalNames[:len(c.liveLocalNames)-1]
 	}
 }
 

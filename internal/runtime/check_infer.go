@@ -166,15 +166,18 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 // corrupting the facts of whatever function walk is in flight.
 func (c *scriptChecker) withIsolatedLocalInference() func() {
 	previousTypes := c.localTypes
+	previousLive := c.liveLocalNames
 	previousDepth := c.mutationRegionDepth
 	previousIsolated := c.isolatedCollectInference
 	c.localTypes = nil
+	c.liveLocalNames = nil
 	c.mutationRegionDepth = 0
 	c.isolatedCollectInference = true
 	restoreScope := c.withFreshLocalInferenceScope()
 	return func() {
 		restoreScope()
 		c.localTypes = previousTypes
+		c.liveLocalNames = previousLive
 		c.mutationRegionDepth = previousDepth
 		c.isolatedCollectInference = previousIsolated
 	}
@@ -1544,7 +1547,7 @@ func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 		if shadowed {
 			return
 		}
-		if c.identifierShadowed(name) || c.localNameUnionHas(name) ||
+		if c.identifierShadowed(name) || c.liveLocalNameHas(name) ||
 			c.hostGlobalShadows(name) || c.typeRootResolvesName(name) ||
 			c.hostBuiltinOverrides(name) || c.implicitSelfShadows(name) {
 			shadowed = true

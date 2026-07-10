@@ -284,6 +284,42 @@ end
 	}
 }
 
+func TestCheckInferFutureLocalsDoNotShadowShapeLeaves(t *testing.T) {
+	t.Parallel()
+
+	// Runtime shadowing uses the live env at evaluation: a local assigned
+	// only later does not exist yet, so the literal stays a shape and its
+	// facts flow to the typed boundary.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  schema = { name: string }
+  string = "x"
+  body = JSON.parse_as(raw, schema)
+  takes_int(body["name"]) if string
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+
+	// After a compound statement completes its bindings predeclare even on
+	// skipped paths, so a later literal is shadowed into a hash.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_hash(value: hash<symbol, any>)
+  value
+end
+
+def run(flag: bool)
+  if flag
+    string = "x"
+  end
+  takes_hash({ name: string })
+end
+`))
+}
+
 func TestCheckInferClassBodyPredeclareShadowsShapeLeaves(t *testing.T) {
 	t.Parallel()
 
