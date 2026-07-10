@@ -410,6 +410,22 @@ def run(user: { name: string }, flag)
 end
 `))
 
+	// A member call later in the body may mutate the container, so an
+	// earlier read must not use the pre-region fact either.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string }, flag)
+  while flag
+    takes_int(user["name"])
+    user.delete("name")
+    flag = false
+  end
+end
+`))
+
 	// Without a mutation in the body the pre-loop fact stays checkable.
 	script := compileScript(t, `
 def takes_int(value: int)
