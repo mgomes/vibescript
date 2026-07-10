@@ -164,6 +164,7 @@ func (c *scriptChecker) bindForTargetType(stmt *ForStmt, elemType *TypeExpr) {
 func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
 	names := make(map[string]struct{})
 	collectLocalBindings(block.Body, names)
+	collectMutatedContainerRoots(block.Body, names)
 	blockBound := make(map[string]struct{})
 	for _, param := range block.Params {
 		if param.Name != "" {
@@ -184,6 +185,84 @@ func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
 	}
 }
 
+// binaryRightUnreachable reports whether inferred facts prove a
+// short-circuit right operand never evaluates: a definitely-truthy left
+// short-circuits ||, and a definitely-nil left short-circuits &&, so their
+// right sides must not produce diagnostics.
+func (c *scriptChecker) binaryRightUnreachable(expr *BinaryExpr) bool {
+	switch expr.Operator {
+	case tokenOr, tokenWordOr:
+		return typeExprDefinitelyTruthy(c.inferExpressionType(expr.Left))
+	case tokenAnd, tokenWordAnd:
+		return typeExprIsNilOnly(c.inferExpressionType(expr.Left))
+	}
+	return false
+}
+
+// logicalStatementRightUnreachable is the statement-level twin of
+// binaryRightUnreachable for `left and right` / `left or right`.
+func (c *scriptChecker) logicalStatementRightUnreachable(stmt *LogicalStmt) bool {
+	left := c.inferLogicalLeftType(stmt.Left)
+	switch stmt.Operator {
+	case tokenWordOr:
+		return typeExprDefinitelyTruthy(left)
+	case tokenWordAnd:
+		return typeExprIsNilOnly(left)
+	}
+	return false
+}
+
+func (c *scriptChecker) inferLogicalLeftType(stmt Statement) *TypeExpr {
+	switch typed := stmt.(type) {
+	case *ExprStmt:
+		return c.inferExpressionType(typed.Expr)
+	case *AssignStmt:
+		if typed.Operator == "" {
+			return c.inferExpressionType(typed.Value)
+		}
+	}
+	return nil
+}
+
+// collectMutatedContainerRoots gathers the root identifiers of index and
+// member writes so loop and block degradation clears facts about containers
+// the region mutates in place, not only locals it rebinds.
+func collectMutatedContainerRoots(statements []Statement, out map[string]struct{}) {
+	for _, stmt := range statements {
+		switch typed := stmt.(type) {
+		case *AssignStmt:
+			switch typed.Target.(type) {
+			case *IndexExpr, *MemberExpr:
+				if name, ok := rootIdentifierName(typed.Target); ok {
+					out[name] = struct{}{}
+				}
+			}
+		case *LogicalStmt:
+			collectMutatedContainerRoots([]Statement{typed.Left}, out)
+			collectMutatedContainerRoots([]Statement{typed.Right}, out)
+		case *IfStmt:
+			collectMutatedContainerRoots(typed.Consequent, out)
+			for _, elseIf := range typed.ElseIf {
+				collectMutatedContainerRoots(elseIf.Consequent, out)
+			}
+			collectMutatedContainerRoots(typed.Alternate, out)
+		case *ForStmt:
+			collectMutatedContainerRoots(typed.Body, out)
+		case *WhileStmt:
+			collectMutatedContainerRoots(typed.Body, out)
+		case *UntilStmt:
+			collectMutatedContainerRoots(typed.Body, out)
+		case *TryStmt:
+			collectMutatedContainerRoots(typed.Body, out)
+			for i := range typed.Rescues {
+				collectMutatedContainerRoots(typed.Rescues[i].Body, out)
+			}
+			collectMutatedContainerRoots(typed.Else, out)
+			collectMutatedContainerRoots(typed.Ensure, out)
+		}
+	}
+}
+
 // degradeLocalTypesForBindings resets to unknown every local the statements
 // (plus any extra binding targets) may assign. It runs before regions whose
 // execution count the checker cannot know — loop and block bodies — so a
@@ -191,6 +270,7 @@ func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
 func (c *scriptChecker) degradeLocalTypesForBindings(statements []Statement, extraTargets ...Expression) {
 	names := make(map[string]struct{})
 	collectLocalBindings(statements, names)
+	collectMutatedContainerRoots(statements, names)
 	for _, target := range extraTargets {
 		if target != nil {
 			collectBindingTarget(target, names)

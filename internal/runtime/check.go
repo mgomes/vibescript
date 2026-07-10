@@ -1720,7 +1720,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkStatement(function, returnType, typed.Left)
 		leftRuntimeState := c.snapshotRuntimeState()
 		leftScopeState := c.snapshotScopeState()
-		if logicalStatementRightMayEvaluate(typed) {
+		if logicalStatementRightMayEvaluate(typed) && !c.logicalStatementRightUnreachable(typed) {
 			c.checkStatement(function, returnType, typed.Right)
 			if !logicalStatementRightAlwaysEvaluates(typed) {
 				c.restoreRuntimeState(leftRuntimeState)
@@ -2199,7 +2199,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkUnaryOperandTypes(function, typed)
 	case *BinaryExpr:
 		c.checkExpressionWithAuto(function, typed.Left, true)
-		if binaryRightMayEvaluate(typed) {
+		if binaryRightMayEvaluate(typed) && !c.binaryRightUnreachable(typed) {
 			state := c.snapshotRuntimeState()
 			scopeState := c.snapshotScopeState()
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Left)

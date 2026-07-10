@@ -322,6 +322,87 @@ end
 `))
 }
 
+func TestCheckInferUnreachableShortCircuitRightIsNotChecked(t *testing.T) {
+	t.Parallel()
+
+	// An annotated always-truthy left short-circuits ||, so the right side
+	// never runs and must not produce diagnostics.
+	requireNoCheckWarnings(t, compileScript(t, `
+def name -> string
+  "n"
+end
+
+def str -> string
+  "s"
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  name() || takes_int(str())
+end
+`))
+
+	// With && the truthy left makes the right side always run, so its
+	// contradiction still reports.
+	script := compileScript(t, `
+def name -> string
+  "n"
+end
+
+def str -> string
+  "s"
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  name() && takes_int(str())
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+}
+
+func TestCheckInferLoopBodiesDegradeMutatedContainers(t *testing.T) {
+	t.Parallel()
+
+	// The body mutates the container in place, so a read earlier in the
+	// body must not use the pre-loop field fact (a later iteration observes
+	// the mutation).
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string }, flag)
+  while flag
+    takes_int(user["name"])
+    user["name"] = 1
+    flag = false
+  end
+end
+`))
+
+	// Without a mutation in the body the pre-loop fact stays checkable.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string }, flag)
+  while flag
+    takes_int(user["name"])
+    flag = false
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string | nil")
+}
+
 func TestCheckInferLoopHeadersSeePreLoopFacts(t *testing.T) {
 	t.Parallel()
 
