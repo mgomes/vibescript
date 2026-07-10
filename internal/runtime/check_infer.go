@@ -826,11 +826,27 @@ func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 			return
 		}
 		if c.identifierShadowed(name) || c.hostGlobalShadows(name) ||
-			c.typeRootHasBinding(name) || c.hostBuiltinOverrides(name) {
+			c.typeRootResolvesName(name) || c.hostBuiltinOverrides(name) {
 			shadowed = true
 		}
 	})
 	return shadowed
+}
+
+// typeRootResolvesName mirrors the runtime's env.Get chain walk: engine
+// builtins (a lowercase money, for example) resolve in every environment,
+// and an exported module function invoked by its caller executes under the
+// caller's root, so caller-context parent roots shadow too.
+func (c *scriptChecker) typeRootResolvesName(name string) bool {
+	for _, root := range []*Env{c.runtimeTypeRoot, c.typeRoot} {
+		if root == nil {
+			continue
+		}
+		if _, ok := root.Get(name); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // inferIndexExprType propagates field-level facts out of shape-typed values:

@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -403,6 +405,68 @@ end
 	data := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	if data.Kind() != KindInt {
 		t.Fatalf("run() = %#v, want int", data)
+	}
+}
+
+func TestShapeLiteralEngineBuiltinShadowMatchesRuntime(t *testing.T) {
+	t.Parallel()
+
+	// The lowercase money builtin resolves in every runtime env, so
+	// { price: money } keeps hash semantics; the checker must not claim
+	// shape facts (a stale claim would report a nil field read the runtime
+	// never performs).
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { price: money })
+  takes_string(body[:price])
+end
+`)
+	requireNoCheckWarnings(t, script)
+
+	// And at runtime the shadowed group really is a hash, which parse_as
+	// rejects as a schema.
+	err := callScriptErr(t, context.Background(), script, "run", []Value{NewString("{}")}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expects a shape literal as its second argument") {
+		t.Fatalf("run() err = %v, want non-shape schema rejection", err)
+	}
+}
+
+func TestShapeLiteralModuleContextSeesCallerBindings(t *testing.T) {
+	t.Parallel()
+
+	// An exported module function invoked by its caller executes under the
+	// caller's root, so a caller function named string shadows the module's
+	// shape literal into hash semantics; the checker mirrors that and makes
+	// no shape claims.
+	moduleDir := t.TempDir()
+	module := `def build
+  { name: string }
+end`
+	if err := os.WriteFile(filepath.Join(moduleDir, "shaper.vibe"), []byte(module+"\n"), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleDir}})
+	script, err := engine.CompileSnippet(`def string
+  "CALLER"
+end
+
+require "shaper"
+
+build`, "<script>")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "<script>", nil, CallOptions{})
+	if got.Kind() != KindHash && got.Kind() != KindObject {
+		t.Fatalf("build inside module = %#v, want hash semantics", got)
+	}
+	if entry, ok := got.Hash()["name"]; !ok || entry.Kind() != KindString || entry.String() != "CALLER" {
+		t.Fatalf("build inside module = %#v, want name => CALLER", got)
 	}
 }
 
