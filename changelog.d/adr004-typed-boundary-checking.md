@@ -16,5 +16,16 @@
   mismatch; the checker treats its result as that shape, so downstream field
   access is inferred and checked. Shape literals are now legal in expression
   position: a braced group whose field values all name built-in types is a
-  first-class shape value, while hashes with value expressions or unknown
-  identifiers keep their existing semantics.
+  first-class shape value, while hashes with value expressions, unknown
+  identifiers, or type names shadowed by any runtime binding (locals, host
+  globals, implicit self members, engine builtins) keep their existing hash
+  semantics. The checker also validates `parse_as` calls statically — a
+  provably non-string input or non-shape schema reports before runtime.
+- **Changed: `vibes check` diagnostics carry their source file.** Warnings
+  that originate in a required module print the module's own path, so CI
+  annotations and editors jump to the right file. Per-call checks
+  (`vibes run -check`, `CheckWarningsForCall`) also bind concrete host
+  argument and default values into unannotated parameters, and inferred facts
+  track key representations (symbol- versus string-keyed stores), container
+  aliasing, and in-place mutation so reported contradictions match what the
+  runtime rejects.
