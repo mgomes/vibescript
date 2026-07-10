@@ -729,6 +729,46 @@ end
 	requireCheckWarningContains(t, undecided, "call to takes_int argument value expected int, got string")
 }
 
+func TestCheckInferImplicitReturnsPruneDecidedArms(t *testing.T) {
+	t.Parallel()
+
+	// A nil-only condition proves the else arm is the implicit return, so
+	// the dead string arm must not report against the annotation.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run -> int
+  x = nil
+  if x
+    "bad"
+  else
+    1
+  end
+end
+`))
+
+	// A definitely-truthy condition proves the consequent, and the missing
+	// else is unreachable: no implicit-nil report.
+	requireNoCheckWarnings(t, compileScript(t, `
+def run -> int
+  flag = "yes"
+  if flag
+    1
+  end
+end
+`))
+
+	// An undecided condition keeps both arms in the implicit return.
+	undecided := compileScript(t, `
+def run(flag: bool) -> int
+  if flag
+    "bad"
+  else
+    1
+  end
+end
+`)
+	requireCheckWarningContains(t, undecided, "return value expected int, got string")
+}
+
 func TestCheckInferDecidedExitsStopStatementLists(t *testing.T) {
 	t.Parallel()
 

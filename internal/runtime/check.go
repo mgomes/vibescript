@@ -141,6 +141,13 @@ type scriptChecker struct {
 	nameFactsCache          *checkNameFacts
 	selfScopeFns            map[*ScriptFunction]struct{}
 	orderIndependentOnly    bool
+	// implicitIfDecisions records, per if statement of an armed
+	// implicit-return walk, the branch reachability the walker decided at
+	// each condition's own evaluation point (index 0 the main condition,
+	// then the elsifs in order), so the post-walk implicit-return pass
+	// prunes the same unreachable arms without re-inferring under merged
+	// state.
+	implicitIfDecisions map[*IfStmt][]conditionDecision
 	// stmtNoFallthroughInferred reports that the statement just walked
 	// provably never falls through — every reachable branch exits under
 	// inferred conditions — so the enclosing statement list stops like it
@@ -153,6 +160,13 @@ type scriptChecker struct {
 	// collection path stays read-only because it shares the live walk's facts,
 	// which the real walk already updates at the correct evaluation points.
 	isolatedCollectInference bool
+}
+
+// conditionDecision is a walker's reachability verdict for one branch
+// condition, captured at that condition's evaluation point.
+type conditionDecision struct {
+	truthy bool
+	known  bool
 }
 
 type reachableFunction struct {
@@ -1957,6 +1971,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		fallthroughScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
 
 		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
+		if c.implicitIfDecisions != nil {
+			c.implicitIfDecisions[typed] = append(c.implicitIfDecisions[typed][:0],
+				conditionDecision{truthy: conditionTruthy, known: conditionKnown})
+		}
 		if !conditionKnown || conditionTruthy {
 			c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
 			if c.checkStatements(function, returnType, typed.Consequent) {
@@ -1983,6 +2001,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			conditionRuntimeState = c.snapshotRuntimeState()
 			conditionScopeState = c.snapshotScopeState()
 			branchTruthy, branchKnown := c.inferredConditionTruthiness(elseIf.Condition)
+			if c.implicitIfDecisions != nil {
+				c.implicitIfDecisions[typed] = append(c.implicitIfDecisions[typed],
+					conditionDecision{truthy: branchTruthy, known: branchKnown})
+			}
 			if !branchKnown || branchTruthy {
 				c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, true)
 				if c.checkStatements(function, returnType, elseIf.Consequent) {
@@ -2159,19 +2181,23 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 func (c *scriptChecker) withImplicitReturnCapture(fn *ScriptFunction) func() {
 	previousLeaves := c.implicitReturnLeaves
 	previousStates := c.implicitReturnStates
+	previousDecisions := c.implicitIfDecisions
 	c.implicitReturnLeaves = nil
 	c.implicitReturnStates = nil
+	c.implicitIfDecisions = nil
 	if fn != nil && fn.ReturnTy != nil && len(fn.Body) > 0 {
 		leaves := make(map[Statement]struct{})
 		collectImplicitReturnLeaves(fn.Body, leaves)
 		if len(leaves) > 0 {
 			c.implicitReturnLeaves = leaves
 			c.implicitReturnStates = make(map[Statement]checkStateSnapshot, len(leaves))
+			c.implicitIfDecisions = make(map[*IfStmt][]conditionDecision)
 		}
 	}
 	return func() {
 		c.implicitReturnLeaves = previousLeaves
 		c.implicitReturnStates = previousStates
+		c.implicitIfDecisions = previousDecisions
 	}
 }
 
@@ -3515,15 +3541,15 @@ func (c *scriptChecker) checkImplicitFinalIfStatement(function string, ty *TypeE
 		c.add(function, Position{}, "typed return %s can implicitly return nil", formatTypeExpr(ty))
 		return
 	}
-	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	truthy, known := c.implicitConditionDecision(stmt, 0, stmt.Condition)
 	if !known || truthy {
 		c.checkImplicitFinalBlock(function, ty, stmt.Consequent, stmt.Pos())
 		if known {
 			return
 		}
 	}
-	for _, elseIf := range stmt.ElseIf {
-		truthy, known = staticExpressionTruthiness(elseIf.Condition)
+	for i, elseIf := range stmt.ElseIf {
+		truthy, known = c.implicitConditionDecision(stmt, i+1, elseIf.Condition)
 		if known && !truthy {
 			continue
 		}
@@ -3537,6 +3563,17 @@ func (c *scriptChecker) checkImplicitFinalIfStatement(function string, ty *TypeE
 		return
 	}
 	c.checkImplicitFinalBlock(function, ty, stmt.Alternate, stmt.Pos())
+}
+
+// implicitConditionDecision resolves a final if statement's branch
+// reachability from the walker's recorded verdict — decided at the
+// condition's own evaluation point — falling back to literal truthiness
+// when the walk did not reach the condition.
+func (c *scriptChecker) implicitConditionDecision(stmt *IfStmt, index int, condition Expression) (bool, bool) {
+	if decisions, ok := c.implicitIfDecisions[stmt]; ok && index < len(decisions) {
+		return decisions[index].truthy, decisions[index].known
+	}
+	return staticExpressionTruthiness(condition)
 }
 
 func (c *scriptChecker) checkImplicitFinalLogicalStatement(function string, ty *TypeExpr, stmt *LogicalStmt) {
