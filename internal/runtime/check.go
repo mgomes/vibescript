@@ -1128,6 +1128,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 	for _, param := range fn.Params {
 		var boundValue Value
 		boundPresent := false
+		usedDefault := false
 		switch param.Kind {
 		case ParamNormal:
 			if argIdx < len(args) {
@@ -1142,6 +1143,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 				}
 			} else {
 				c.checkParamDefault(label, param)
+				usedDefault = true
 			}
 		case ParamKeyword:
 			if val, ok := kwargs[param.Name]; ok {
@@ -1152,6 +1154,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 				}
 			} else {
 				c.checkParamDefault(label, param)
+				usedDefault = true
 			}
 		case ParamRest:
 			c.checkRestArgumentValues(label, fn.Pos, args[argIdx:], param.Type, fn.Name, param.Name)
@@ -1168,6 +1171,9 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 		}
 		c.recordParamBinding(param)
 		c.bindParamValueFact(param, boundValue, boundPresent)
+		if usedDefault {
+			c.bindParamDefaultFact(param)
+		}
 	}
 	c.checkStatements(label, fn.ReturnTy, fn.Body)
 	if fn.ReturnTy != nil {

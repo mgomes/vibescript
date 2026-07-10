@@ -554,6 +554,18 @@ func (c *scriptChecker) bindParamValueFact(param Param, val Value, present bool)
 	}
 }
 
+// bindParamDefaultFact refines an unannotated defaulted parameter with the
+// default expression's inferred type when a per-call check omits the
+// argument: the default is exactly the value the runtime binds.
+func (c *scriptChecker) bindParamDefaultFact(param Param) {
+	if param.Name == "" || param.Type != nil || param.DefaultVal == nil {
+		return
+	}
+	if fact := c.inferExpressionType(param.DefaultVal); fact != nil {
+		c.bindLocalTypeInCurrentFrame(param.Name, fact)
+	}
+}
+
 // reassignmentConflicts reports whether rebinding a local of type current to
 // a value of type next is a known contradiction. Unknowns never conflict, nil
 // acts as the neutral initializer in both directions, numeric retyping widens

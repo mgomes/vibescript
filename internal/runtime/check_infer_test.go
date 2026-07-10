@@ -1340,6 +1340,31 @@ end
 	if warnings := script.CheckWarningsForCall("run", []Value{NewInt(3)}, CallOptions{}); len(warnings) != 0 {
 		t.Fatalf("CheckWarningsForCall() = %v, want none", warnings)
 	}
+
+	// An omitted argument binds the default's inferred type: that is the
+	// value the runtime will use.
+	defaulted := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(x = "bad")
+  takes_int(x)
+end
+`)
+	warnings = defaulted.CheckWarningsForCall("run", nil, CallOptions{})
+	found = false
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CheckWarningsForCall() = %v, want default-value contradiction", warnings)
+	}
+	if warnings := defaulted.CheckWarningsForCall("run", []Value{NewInt(3)}, CallOptions{}); len(warnings) != 0 {
+		t.Fatalf("CheckWarningsForCall() with argument = %v, want none", warnings)
+	}
 }
 
 func TestCheckInferShapeFactsRespectKeyKinds(t *testing.T) {
