@@ -1,6 +1,10 @@
 package runtime
 
-import "strings"
+import (
+	"sort"
+	"strconv"
+	"strings"
+)
 
 // Implicit local type inference for the check path (ADR-004).
 //
@@ -1248,11 +1252,12 @@ func unionTypeExprs(types ...*TypeExpr) *TypeExpr {
 	arms := make([]*TypeExpr, 0, len(types))
 	seen := make(map[string]struct{}, len(types))
 	appendArm := func(arm *TypeExpr) {
-		// The dedup key includes Name so arms that render identically but
-		// carry different internal markers (shape key kinds, witnessed array
-		// elements) stay distinct instead of collapsing to whichever branch
-		// was joined first.
-		key := formatTypeExpr(arm) + "\x00" + arm.Name
+		// The dedup key canonicalizes the whole fact, including the internal
+		// Name markers at every nesting level (shape key kinds, witnessed
+		// array elements), so arms that render identically but carry
+		// different markers stay distinct instead of collapsing to whichever
+		// branch was joined first.
+		key := typeFactKey(arm)
 		if _, duplicate := seen[key]; duplicate {
 			return
 		}
@@ -1281,6 +1286,63 @@ func unionTypeExprs(types ...*TypeExpr) *TypeExpr {
 		return arms[0]
 	}
 	return &TypeExpr{Kind: TypeUnion, Union: arms}
+}
+
+// typeFactKey canonicalizes a type fact for deduplication. Unlike
+// formatTypeExpr it includes the Name field (which carries the internal
+// key-kind and witnessed-element markers) at every nesting level.
+func typeFactKey(ty *TypeExpr) string {
+	var b strings.Builder
+	appendTypeFactKey(&b, ty, 0)
+	return b.String()
+}
+
+func appendTypeFactKey(b *strings.Builder, ty *TypeExpr, depth int) {
+	if ty == nil || depth > maxTypeArmDepth {
+		b.WriteString("?")
+		return
+	}
+	b.WriteString(strconv.Itoa(int(ty.Kind)))
+	b.WriteString(":")
+	b.WriteString(ty.Name)
+	if ty.Nullable {
+		b.WriteString("?")
+	}
+	if len(ty.TypeArgs) > 0 {
+		b.WriteString("<")
+		for i, arg := range ty.TypeArgs {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			appendTypeFactKey(b, arg, depth+1)
+		}
+		b.WriteString(">")
+	}
+	if len(ty.Shape) > 0 {
+		fields := make([]string, 0, len(ty.Shape))
+		for field := range ty.Shape {
+			fields = append(fields, field)
+		}
+		sort.Strings(fields)
+		b.WriteString("{")
+		for _, field := range fields {
+			b.WriteString(field)
+			b.WriteString(":")
+			appendTypeFactKey(b, ty.Shape[field], depth+1)
+			b.WriteString(",")
+		}
+		b.WriteString("}")
+	}
+	if len(ty.Union) > 0 {
+		b.WriteString("(")
+		for i, option := range ty.Union {
+			if i > 0 {
+				b.WriteString("|")
+			}
+			appendTypeFactKey(b, option, depth+1)
+		}
+		b.WriteString(")")
+	}
 }
 
 // typeExprsDisjoint reports whether no runtime value can satisfy both types.

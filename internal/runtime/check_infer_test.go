@@ -833,6 +833,29 @@ end
 `))
 }
 
+func TestCheckInferNestedMarkersSurviveBranchJoins(t *testing.T) {
+	t.Parallel()
+
+	// The arms render identically and share a top-level string-key marker,
+	// but their nested profile shapes differ in key representation; joining
+	// them must not collapse to the symbol-keyed arm and claim the lookup
+	// reads nil.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(raw: string, flag)
+  if flag
+    h = { "profile" => { name: "Ada" } }
+  else
+    h = JSON.parse_as(raw, { profile: { name: string } })
+  end
+  takes_string(h["profile"]["name"])
+end
+`))
+}
+
 func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
 	t.Parallel()
 
