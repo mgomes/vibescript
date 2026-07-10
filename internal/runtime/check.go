@@ -470,11 +470,13 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		}
 	case *CallExpr:
 		c.collectRequireCallExports(typed)
+		callSkipsInferred := c.safeNavigationCallSkipsInferred(typed)
+		argumentsAlwaysEvaluate := c.safeNavigationArgumentsAlwaysEvaluateInferred(typed)
 		c.collectRequiredModuleExportsFromExpression(typed.Callee)
-		if staticNilSafeNavigationCall(typed) {
+		if staticNilSafeNavigationCall(typed) || callSkipsInferred {
 			return
 		}
-		if safeNavigationCallMaySkipArguments(typed) {
+		if safeNavigationCallMaySkipArguments(typed) && !argumentsAlwaysEvaluate {
 			baseState := c.snapshotModuleCollectionState()
 			baseScopeState := c.snapshotScopeState()
 			c.collectRequiredModuleExportsFromCallArguments(typed)
@@ -1239,6 +1241,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 			}
 		case ParamRest:
 			c.checkRestArgumentValues(label, fn.Pos, args[argIdx:], param.Type, fn.Name, param.Name)
+			boundValue, boundPresent = NewArray(append([]Value(nil), args[argIdx:]...)), true
 			argIdx = len(args)
 		case ParamKeywordRest:
 			c.checkKeywordRestArgumentValues(label, fn.Pos, kwargs, usedKw, param.Type, fn.Name, param.Name)
@@ -2225,11 +2228,15 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkExpressionWithAuto(function, pair.Value, true)
 		}
 	case *CallExpr:
+		// The receiver's nil-ness resolves from the facts at its evaluation
+		// point, before member dispatch poisons the receiver's own facts.
+		callSkipsInferred := c.safeNavigationCallSkipsInferred(typed)
+		argumentsAlwaysEvaluate := c.safeNavigationArgumentsAlwaysEvaluateInferred(typed)
 		c.checkExpressionWithAuto(function, typed.Callee, false)
-		if staticNilSafeNavigationCall(typed) {
+		if staticNilSafeNavigationCall(typed) || callSkipsInferred {
 			return
 		}
-		argumentsMayBeSkipped := safeNavigationCallMaySkipArguments(typed)
+		argumentsMayBeSkipped := safeNavigationCallMaySkipArguments(typed) && !argumentsAlwaysEvaluate
 		var argumentState checkRuntimeState
 		var argumentScopeState checkScopeState
 		if argumentsMayBeSkipped {

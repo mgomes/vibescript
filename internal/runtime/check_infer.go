@@ -855,6 +855,18 @@ func typeExprDefinitelyTruthy(ty *TypeExpr) bool {
 	})
 }
 
+// typeExprNeverNil reports whether no arm can hold nil. Unlike definite
+// truthiness, bool arms qualify: false is a legal value but not nil, and
+// safe navigation skips only on nil.
+func typeExprNeverNil(ty *TypeExpr) bool {
+	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
+		if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+			return true
+		}
+		return arm.Kind != TypeNil && arm.Kind != TypeAny && arm.Kind != TypeUnknown
+	})
+}
+
 func typeExprIsNilOnly(ty *TypeExpr) bool {
 	return typeExprArmsAll(ty, func(arm *TypeExpr) bool { return arm.Kind == TypeNil })
 }
@@ -886,6 +898,41 @@ func typeExprArmsAll(ty *TypeExpr, pred func(*TypeExpr) bool) bool {
 		}
 	}
 	return true
+}
+
+// safeNavigationReceiver returns the receiver of a safe-navigation call
+// with argument-skip semantics.
+func safeNavigationReceiver(call *CallExpr) (Expression, bool) {
+	if call == nil || !call.Safe {
+		return nil, false
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || !member.Safe {
+		return nil, false
+	}
+	return member.Object, true
+}
+
+// safeNavigationCallSkipsInferred reports whether inferred facts prove a
+// safe-navigation receiver is nil, so the dispatch and its arguments never
+// evaluate.
+func (c *scriptChecker) safeNavigationCallSkipsInferred(call *CallExpr) bool {
+	obj, ok := safeNavigationReceiver(call)
+	if !ok {
+		return false
+	}
+	return typeExprIsNilOnly(c.inferExpressionType(obj))
+}
+
+// safeNavigationArgumentsAlwaysEvaluateInferred reports whether inferred
+// facts prove a safe-navigation receiver is never nil, so the skipped-
+// arguments path is impossible and must not join the merge.
+func (c *scriptChecker) safeNavigationArgumentsAlwaysEvaluateInferred(call *CallExpr) bool {
+	obj, ok := safeNavigationReceiver(call)
+	if !ok {
+		return false
+	}
+	return typeExprNeverNil(c.inferExpressionType(obj))
 }
 
 // --- expression type inference ---

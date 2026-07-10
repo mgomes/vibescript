@@ -1647,6 +1647,70 @@ end
 `))
 }
 
+func TestCheckInferHostArgumentsSeedRestParams(t *testing.T) {
+	t.Parallel()
+
+	// The rest local binds the remaining positional arguments as an array,
+	// so per-call checks see its element facts.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(*items)
+  takes_int(items[0])
+end
+`)
+	warnings := script.CheckWarningsForCall("run", []Value{NewString("x")}, CallOptions{})
+	found := false
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CheckWarningsForCall() = %v, want rest-argument contradiction", warnings)
+	}
+
+	// Compatible rest arguments stay silent.
+	if warnings := script.CheckWarningsForCall("run", []Value{NewInt(1), NewInt(2)}, CallOptions{}); len(warnings) != 0 {
+		t.Fatalf("CheckWarningsForCall() = %v, want none", warnings)
+	}
+}
+
+func TestCheckInferSafeNavigationUsesReceiverFacts(t *testing.T) {
+	t.Parallel()
+
+	// A receiver that is provably non-nil always evaluates the arguments,
+	// so the impossible skipped path must not wash out their facts.
+	script := compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run
+  obj = [1]
+  values = [1]
+  obj&.push(values << "bad")
+  ints(values)
+end
+`)
+	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>")
+
+	// A nil-only receiver skips the call and its arguments entirely: their
+	// dead contradictions must not report.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  obj = nil
+  obj&.record(takes_int("bad"))
+end
+`))
+}
+
 func TestCheckInferHostArgumentsSeedParams(t *testing.T) {
 	t.Parallel()
 
