@@ -433,6 +433,26 @@ end
 	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got nil")
 }
 
+func TestCheckInferEarlierArgumentsKeepPreMutationFacts(t *testing.T) {
+	t.Parallel()
+
+	// The first argument evaluates before the second's mutation, so its
+	// contract violation is provable even though the container's facts are
+	// poisoned afterwards.
+	script := compileScript(t, `
+def accept(a: int, b)
+  [a, b]
+end
+
+def run()
+  h = { name: "x" }
+  accept(h[:name], h.delete(:name))
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to accept argument a expected int, got string")
+}
+
 func TestCheckInferMutatingArgumentPoisonsSiblingArguments(t *testing.T) {
 	t.Parallel()
 

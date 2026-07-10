@@ -841,7 +841,13 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	if ty == nil {
 		return
 	}
-	inferred := c.inferExpressionType(expr)
+	// Prefer the fact captured at the argument's own evaluation point: a
+	// later argument's mutations must not erase (or supply) facts for an
+	// earlier one.
+	inferred, captured := c.callArgumentFacts[expr]
+	if !captured {
+		inferred = c.inferExpressionType(expr)
+	}
 	if inferred == nil {
 		return
 	}

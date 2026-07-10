@@ -109,6 +109,7 @@ type scriptChecker struct {
 	scopes                  []map[string]struct{}
 	localTypes              []checkTypeFrame
 	typePoison              map[string]struct{}
+	callArgumentFacts       map[Expression]*TypeExpr
 	requiredModules         map[string]struct{}
 	runtimeModules          map[string]struct{}
 	runtimeNamespaceMembers map[string]struct{}
@@ -2009,19 +2010,27 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		}
 		c.collectRuntimeCallArgumentEffects(typed)
 		// Arguments evaluate left to right before the call dispatches, so
-		// they are walked before checkCall validates their types: a mutating
-		// earlier argument (h.delete(:name)) poisons its container's facts,
-		// and a later argument's check must not use the stale shape.
+		// each argument's inferred type is captured at its own evaluation
+		// point: a mutating earlier argument (h.delete(:name)) poisons its
+		// container's facts for later arguments, while a mutating later
+		// argument cannot erase the facts an earlier argument was evaluated
+		// under. checkCall consumes the captured facts afterwards.
+		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
 		for _, arg := range typed.Args {
+			argumentFacts[arg] = c.inferExpressionType(arg)
 			c.checkExpressionWithAuto(function, arg, true)
 		}
 		for _, kwarg := range typed.KwArgs {
+			argumentFacts[kwarg.Value] = c.inferExpressionType(kwarg.Value)
 			c.checkExpressionWithAuto(function, kwarg.Value, true)
 		}
 		if typed.BlockArg != nil {
 			c.checkExpressionWithAuto(function, typed.BlockArg, false)
 		}
+		previousFacts := c.callArgumentFacts
+		c.callArgumentFacts = argumentFacts
 		c.checkCall(function, typed)
+		c.callArgumentFacts = previousFacts
 		if c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
 			c.checkBlockLiteral(function, typed.Block)
