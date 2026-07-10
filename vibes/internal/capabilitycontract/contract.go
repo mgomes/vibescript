@@ -187,9 +187,10 @@ func EnsureBlock(block value.Value, name string) error {
 }
 
 // ValidateDataOnlyValue rejects callable payloads (functions, blocks,
-// builtins, classes, instances) and cyclic structures anywhere inside
-// val. Capability boundaries call it so host code never receives a
-// script-side callable it cannot safely invoke.
+// builtins, classes, instances), runtime-only payloads (shape values),
+// and cyclic structures anywhere inside val. Capability boundaries call
+// it so host code never receives a script-side callable it cannot
+// safely invoke or an opaque runtime payload that is not plain data.
 func ValidateDataOnlyValue(label string, val value.Value) error {
 	if err := validateTraversalDepth(label, val); err != nil {
 		return err
@@ -367,7 +368,8 @@ func sliceIdentity(values []value.Value) value.SliceIdentity {
 
 func validateDataOnly(val value.Value, visiting, seen *seenSet) dataOnlyResult {
 	switch val.Kind() {
-	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass, value.KindInstance:
+	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass, value.KindInstance,
+		value.KindShape:
 		return dataOnlyCallable
 	case value.KindArray:
 		values := val.Array()
@@ -444,7 +446,8 @@ func cloneDataOnlyValue(val value.Value, visiting *seenSet, depth int) (value.Va
 		return value.NewNil(), dataOnlyDepth
 	}
 	switch val.Kind() {
-	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass, value.KindInstance:
+	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass, value.KindInstance,
+		value.KindShape:
 		return value.NewNil(), dataOnlyCallable
 	case value.KindArray:
 		values := val.Array()
