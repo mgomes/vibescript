@@ -14,6 +14,9 @@ type CheckWarning struct {
 	Function string
 	Pos      Position
 	Message  string
+	// Source is the file path of the required module the warning originates
+	// in; empty for warnings in the checked script itself.
+	Source string
 }
 
 // CheckWarnings returns statically checkable contract issues for the compiled
@@ -111,6 +114,8 @@ type scriptChecker struct {
 	typePoison              map[string]struct{}
 	callArgumentFacts       map[Expression]*TypeExpr
 	deferredReturnSites     *[]deferredReturnSite
+	implicitReturnLeaves    map[Statement]struct{}
+	implicitReturnStates    map[Statement]checkStateSnapshot
 	requiredModules         map[string]struct{}
 	runtimeModules          map[string]struct{}
 	runtimeNamespaceMembers map[string]struct{}
@@ -803,6 +808,14 @@ func (c *scriptChecker) checkRequiredModuleExportedFunctions(entry moduleEntry) 
 		}
 	})
 
+	for i := range checker.warnings {
+		// Attribute module diagnostics to the module's own file so callers
+		// printing path-prefixed warnings point at the right source; nested
+		// modules keep the source their own sub-checker recorded.
+		if checker.warnings[i].Source == "" {
+			checker.warnings[i].Source = entry.script.modulePath
+		}
+	}
 	c.warnings = append(c.warnings, checker.warnings...)
 	c.moduleEntries = checker.moduleEntries
 	c.moduleExportValues = checker.moduleExportValues
@@ -1092,6 +1105,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 		return
 	}
 	defer c.withFreshLocalInferenceScope()()
+	defer c.withImplicitReturnCapture(fn)()
 	popScope := c.pushScope(make(map[string]struct{}))
 	defer popScope()
 	popNameScope := c.pushFunctionNameScope(fn)
@@ -1612,6 +1626,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		return
 	}
 	c.withFreshLocalInference(func() {
+		defer c.withImplicitReturnCapture(fn)()
 		popScope := c.pushScope(make(map[string]struct{}))
 		defer popScope()
 		popNameScope := c.pushFunctionNameScope(fn)
@@ -1684,9 +1699,11 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.inferAssignStatementTypes(function, typed)
 		c.recordRuntimeBindingTarget(typed.Target)
 		c.recordBindingTarget(typed.Target)
+		c.captureImplicitReturnState(typed)
 	case *ExprStmt:
 		c.checkExpression(function, typed.Expr)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Expr)
+		c.captureImplicitReturnState(typed)
 	case *ClassStmt:
 		classDef := c.script.classes[typed.Name]
 		if classDef != nil {
@@ -1895,6 +1912,102 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.checkDeferredReturnSitesAfterEnsure(function, returnType, typed.Ensure, deferredSites)
 		}
 	}
+}
+
+// withImplicitReturnCapture arms leaf-state capture for a function whose
+// return annotation the implicit-return pass will check, and returns the
+// restore for the previous capture maps.
+func (c *scriptChecker) withImplicitReturnCapture(fn *ScriptFunction) func() {
+	previousLeaves := c.implicitReturnLeaves
+	previousStates := c.implicitReturnStates
+	c.implicitReturnLeaves = nil
+	c.implicitReturnStates = nil
+	if fn != nil && fn.ReturnTy != nil && len(fn.Body) > 0 {
+		leaves := make(map[Statement]struct{})
+		collectImplicitReturnLeaves(fn.Body, leaves)
+		if len(leaves) > 0 {
+			c.implicitReturnLeaves = leaves
+			c.implicitReturnStates = make(map[Statement]checkStateSnapshot, len(leaves))
+		}
+	}
+	return func() {
+		c.implicitReturnLeaves = previousLeaves
+		c.implicitReturnStates = previousStates
+	}
+}
+
+// checkStateSnapshot pairs the runtime and scope state at a point of the
+// walk so a later, out-of-order check can run under the facts that held
+// there.
+type checkStateSnapshot struct {
+	runtimeState checkRuntimeState
+	scopeState   checkScopeState
+}
+
+// collectImplicitReturnLeaves gathers the statements whose expressions the
+// implicit-return pass will check (the effective final statement's yielding
+// leaves across branches), so the walk can capture their branch-local state
+// before the branch merges run.
+func collectImplicitReturnLeaves(statements []Statement, out map[Statement]struct{}) {
+	if len(statements) == 0 {
+		return
+	}
+	collectImplicitReturnLeafStatement(effectiveFinalStatement(statements), out)
+}
+
+func collectImplicitReturnLeafStatement(stmt Statement, out map[Statement]struct{}) {
+	switch typed := stmt.(type) {
+	case *ExprStmt, *AssignStmt:
+		out[stmt] = struct{}{}
+	case *LogicalStmt:
+		collectImplicitReturnLeafStatement(typed.Left, out)
+		collectImplicitReturnLeafStatement(typed.Right, out)
+	case *IfStmt:
+		collectImplicitReturnLeaves(typed.Consequent, out)
+		for _, elseIf := range typed.ElseIf {
+			collectImplicitReturnLeaves(elseIf.Consequent, out)
+		}
+		collectImplicitReturnLeaves(typed.Alternate, out)
+	case *TryStmt:
+		collectImplicitReturnLeaves(typed.Body, out)
+		collectImplicitReturnLeaves(typed.Else, out)
+		for i := range typed.Rescues {
+			collectImplicitReturnLeaves(typed.Rescues[i].Body, out)
+		}
+	}
+}
+
+// captureImplicitReturnState snapshots the state right after an
+// implicit-return leaf's own walk, before enclosing branch merges dilute its
+// branch-local facts.
+func (c *scriptChecker) captureImplicitReturnState(stmt Statement) {
+	if c.implicitReturnLeaves == nil {
+		return
+	}
+	if _, ok := c.implicitReturnLeaves[stmt]; !ok {
+		return
+	}
+	c.implicitReturnStates[stmt] = checkStateSnapshot{
+		runtimeState: c.snapshotRuntimeState(),
+		scopeState:   c.snapshotScopeState(),
+	}
+}
+
+// checkImplicitLeafAgainstType checks an implicit return expression under the
+// state captured at its own walk when available.
+func (c *scriptChecker) checkImplicitLeafAgainstType(function string, stmt Statement, expr Expression, ty *TypeExpr) {
+	state, ok := c.implicitReturnStates[stmt]
+	if !ok {
+		c.checkRuntimeExpressionAgainstType(function, expr, ty, "return value")
+		return
+	}
+	currentRuntime := c.snapshotRuntimeState()
+	currentScope := c.snapshotScopeState()
+	c.restoreRuntimeState(state.runtimeState)
+	c.restoreScopeState(state.scopeState)
+	c.checkRuntimeExpressionAgainstType(function, expr, ty, "return value")
+	c.restoreRuntimeState(currentRuntime)
+	c.restoreScopeState(currentScope)
 }
 
 // deferredReturnSite records the state at a return statement whose type
@@ -3090,13 +3203,13 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 			return
 		}
-		c.checkRuntimeExpressionAgainstType(function, typed.Expr, ty, "return value")
+		c.checkImplicitLeafAgainstType(function, typed, typed.Expr, ty)
 	case *AssignStmt:
 		if expressionCanImplicitlyYieldNil(typed.Value) {
 			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 			return
 		}
-		c.checkRuntimeExpressionAgainstType(function, typed.Value, ty, "return value")
+		c.checkImplicitLeafAgainstType(function, typed, typed.Value, ty)
 	case *LogicalStmt:
 		c.checkImplicitFinalLogicalStatement(function, ty, typed)
 	case *IfStmt:

@@ -463,6 +463,37 @@ end
 `))
 }
 
+func TestCheckInferImplicitReturnsKeepBranchLocalFacts(t *testing.T) {
+	t.Parallel()
+
+	// The else branch always yields a string; the branch merge must not
+	// dilute that into int | string before the implicit-return check.
+	script := compileScript(t, `
+def run(flag) -> int
+  if flag
+    x = 1
+    x
+  else
+    x = "s"
+    x
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "return value expected int, got string")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run(flag) -> int
+  if flag
+    x = 1
+    x
+  else
+    x = 2
+    x
+  end
+end
+`))
+}
+
 func TestCheckInferForLoopElementTypes(t *testing.T) {
 	t.Parallel()
 
