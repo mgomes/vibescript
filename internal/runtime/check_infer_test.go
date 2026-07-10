@@ -156,6 +156,36 @@ end
 	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int | nil")
 }
 
+func TestCheckInferLogicalStatementJoinsRightHandFacts(t *testing.T) {
+	t.Parallel()
+
+	// The right-hand side of a statement-level and/or may be skipped, so a
+	// local bound there is type-or-nil afterwards, which still contradicts
+	// a disjoint boundary.
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(flag)
+  flag and x = 1
+  takes_string(x)
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int | nil")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(flag)
+  flag and x = "s"
+  takes_string(x)
+end
+`))
+}
+
 func TestCheckInferReturnTypeContradiction(t *testing.T) {
 	t.Parallel()
 

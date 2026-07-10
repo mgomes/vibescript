@@ -1695,7 +1695,11 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.checkStatement(function, returnType, typed.Right)
 			if !logicalStatementRightAlwaysEvaluates(typed) {
 				c.restoreRuntimeState(leftRuntimeState)
-				c.restoreScopeState(leftScopeState)
+				// The right-hand side may be skipped, so its type facts join
+				// with the skipped path (a local bound only there becomes
+				// type-or-nil) instead of being discarded.
+				evaluatedScopeState := c.snapshotScopeState()
+				c.mergeScopeStates(leftScopeState, []checkScopeState{evaluatedScopeState, leftScopeState})
 				c.recordLocalBindings([]Statement{typed})
 			}
 		}
