@@ -448,6 +448,25 @@ def run(user: { name: string }, flag)
 end
 `))
 
+	// Statement-expressions traverse too: a mutation inside a begin/end
+	// used as a value still degrades the container for the earlier read.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string }, flag)
+  while flag
+    takes_int(user["name"])
+    y = begin
+      user.delete("name")
+      1
+    end
+    flag = y == 2
+  end
+end
+`))
+
 	// Without a mutation in the body the pre-loop fact stays checkable.
 	script := compileScript(t, `
 def takes_int(value: int)
