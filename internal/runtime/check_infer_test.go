@@ -355,6 +355,46 @@ end
 	requireCheckWarningContains(t, script, "return value expected int, got string")
 }
 
+func TestCheckInferDeferredEnsureReturnsKeepBranchLocalFacts(t *testing.T) {
+	t.Parallel()
+
+	// Both branches exit, so the branch merge discards their facts before
+	// the ensure walk; the deferred check must still see the state each
+	// return was evaluated under.
+	script := compileScript(t, `
+def run(flag) -> int
+  begin
+    if flag
+      x = 1
+      return x
+    else
+      x = "s"
+      return x
+    end
+  ensure
+    puts "done"
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "return value expected int, got string")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run(flag) -> int
+  begin
+    if flag
+      x = 1
+      return x
+    else
+      x = 2
+      return x
+    end
+  ensure
+    puts "done"
+  end
+end
+`))
+}
+
 func TestCheckInferForLoopElementTypes(t *testing.T) {
 	t.Parallel()
 

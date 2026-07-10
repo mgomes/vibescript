@@ -110,6 +110,7 @@ type scriptChecker struct {
 	localTypes              []checkTypeFrame
 	typePoison              map[string]struct{}
 	callArgumentFacts       map[Expression]*TypeExpr
+	deferredReturnSites     *[]deferredReturnSite
 	requiredModules         map[string]struct{}
 	runtimeModules          map[string]struct{}
 	runtimeNamespaceMembers map[string]struct{}
@@ -1645,6 +1646,15 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkExpression(function, typed.Value)
 		if returnType != nil {
 			c.checkReturnStatementType(function, returnType, typed)
+		} else if c.deferredReturnSites != nil {
+			// The enclosing begin/ensure deferred this check; capture the
+			// state at the return itself so branch-local facts survive the
+			// branch merges that run before the ensure walk.
+			*c.deferredReturnSites = append(*c.deferredReturnSites, deferredReturnSite{
+				runtimeState: c.snapshotRuntimeState(),
+				scopeState:   c.snapshotScopeState(),
+				stmt:         typed,
+			})
 		}
 	case *RaiseStmt:
 		// raise RuntimeError, "boom" resolves a bare canonical error class
@@ -1801,25 +1811,16 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		baseScopeState := c.snapshotScopeState()
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, 2)
 		fallthroughScopeStates := make([]checkScopeState, 0, 2)
-		deferredReturnChecks := make([]deferredReturnCheck, 0, 2)
+		var deferredSites []deferredReturnSite
+		var previousSites *[]deferredReturnSite
+		if deferReturnType {
+			previousSites = c.deferredReturnSites
+			c.deferredReturnSites = &deferredSites
+		}
 
 		c.checkStatements(function, branchReturnType, typed.Body)
-		if deferReturnType && blockMayReturn(typed.Body) {
-			deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
-				runtimeState: c.snapshotRuntimeState(),
-				scopeState:   c.snapshotScopeState(),
-				statements:   typed.Body,
-			})
-		}
 		if !blockAlwaysExits(typed.Body) {
 			c.checkStatements(function, branchReturnType, typed.Else)
-			if deferReturnType && blockMayReturn(typed.Else) {
-				deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
-					runtimeState: c.snapshotRuntimeState(),
-					scopeState:   c.snapshotScopeState(),
-					statements:   typed.Else,
-				})
-			}
 			if len(typed.Else) == 0 || !blockAlwaysExits(typed.Else) {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
@@ -1857,43 +1858,43 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			for name := range clauseLocals {
 				earlierClauseLocals[name] = struct{}{}
 			}
-			if deferReturnType && blockMayReturn(clause.Body) {
-				deferredReturnChecks = append(deferredReturnChecks, deferredReturnCheck{
-					runtimeState: c.snapshotRuntimeState(),
-					scopeState:   c.snapshotScopeState(),
-					statements:   clause.Body,
-				})
-			}
 			if !blockAlwaysExits(clause.Body) {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 		}
+		if deferReturnType {
+			c.deferredReturnSites = previousSites
+		}
 		mergeRuntimeStates := fallthroughRuntimeStates
 		mergeScopeStates := fallthroughScopeStates
-		if deferReturnType && len(mergeRuntimeStates) == 0 && len(deferredReturnChecks) > 0 {
-			mergeRuntimeStates = make([]checkRuntimeState, 0, len(deferredReturnChecks))
+		if deferReturnType && len(mergeRuntimeStates) == 0 && len(deferredSites) > 0 {
+			mergeRuntimeStates = make([]checkRuntimeState, 0, len(deferredSites))
 			mergeScopeStates = nil
-			for _, check := range deferredReturnChecks {
-				mergeRuntimeStates = append(mergeRuntimeStates, check.runtimeState)
+			for _, site := range deferredSites {
+				mergeRuntimeStates = append(mergeRuntimeStates, site.runtimeState)
 			}
 		}
 		c.mergeRuntimeStates(baseRuntimeState, mergeRuntimeStates)
 		c.mergeScopeStates(baseScopeState, mergeScopeStates)
 		c.checkStatements(function, returnType, typed.Ensure)
 		if deferReturnType {
-			c.checkDeferredReturnsAfterEnsure(function, returnType, typed.Ensure, deferredReturnChecks)
+			c.checkDeferredReturnSitesAfterEnsure(function, returnType, typed.Ensure, deferredSites)
 		}
 	}
 }
 
-type deferredReturnCheck struct {
+// deferredReturnSite records the state at a return statement whose type
+// check the enclosing begin/ensure deferred, so the check runs against the
+// facts the return expression was actually evaluated under — including
+// branch-local facts that the branch merges discard before the ensure walk.
+type deferredReturnSite struct {
 	runtimeState checkRuntimeState
 	scopeState   checkScopeState
-	statements   []Statement
+	stmt         *ReturnStmt
 }
 
-func (c *scriptChecker) checkDeferredReturnsAfterEnsure(function string, returnType *TypeExpr, ensure []Statement, checks []deferredReturnCheck) {
+func (c *scriptChecker) checkDeferredReturnSitesAfterEnsure(function string, returnType *TypeExpr, ensure []Statement, sites []deferredReturnSite) {
 	runtimeState := c.snapshotRuntimeState()
 	scopeState := c.snapshotScopeState()
 	defer func() {
@@ -1901,18 +1902,15 @@ func (c *scriptChecker) checkDeferredReturnsAfterEnsure(function string, returnT
 		c.restoreScopeState(scopeState)
 	}()
 
-	for _, check := range checks {
-		c.restoreRuntimeState(check.runtimeState)
-		// A deferred return expression evaluated before the ensure ran, so
-		// its inferred types come from the branch's own snapshot, not from
-		// whatever the ensure walk left behind.
-		c.restoreScopeState(check.scopeState)
+	for _, site := range sites {
+		c.restoreRuntimeState(site.runtimeState)
+		c.restoreScopeState(site.scopeState)
 		c.withSuppressedWarnings(func() {
 			c.withRuntimeModuleCollection(func() {
 				c.collectRequiredModuleExportsFromStatements(ensure)
 			})
 		})
-		c.checkDeferredReturnTypes(function, returnType, check.statements)
+		c.checkReturnStatementType(function, returnType, site.stmt)
 	}
 }
 
@@ -1937,51 +1935,6 @@ func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, t
 				c.collectRuntimeConditionOutcomeEffects(typed.Right, true)
 			}
 		}
-	}
-}
-
-func (c *scriptChecker) checkDeferredReturnTypes(function string, returnType *TypeExpr, statements []Statement) {
-	if returnType == nil {
-		return
-	}
-	for _, stmt := range statements {
-		c.checkDeferredReturnTypeStatement(function, returnType, stmt)
-		if statementAlwaysExits(stmt) {
-			return
-		}
-	}
-}
-
-func (c *scriptChecker) checkDeferredReturnTypeStatement(function string, returnType *TypeExpr, stmt Statement) {
-	switch typed := stmt.(type) {
-	case nil:
-		return
-	case *ReturnStmt:
-		c.checkReturnStatementType(function, returnType, typed)
-	case *LogicalStmt:
-		c.checkDeferredReturnTypeStatement(function, returnType, typed.Left)
-		if logicalStatementRightMayEvaluate(typed) {
-			c.checkDeferredReturnTypeStatement(function, returnType, typed.Right)
-		}
-	case *IfStmt:
-		c.checkDeferredReturnTypes(function, returnType, typed.Consequent)
-		for _, elseIf := range typed.ElseIf {
-			c.checkDeferredReturnTypes(function, returnType, elseIf.Consequent)
-		}
-		c.checkDeferredReturnTypes(function, returnType, typed.Alternate)
-	case *ForStmt:
-		c.checkDeferredReturnTypes(function, returnType, typed.Body)
-	case *WhileStmt:
-		c.checkDeferredReturnTypes(function, returnType, typed.Body)
-	case *UntilStmt:
-		c.checkDeferredReturnTypes(function, returnType, typed.Body)
-	case *TryStmt:
-		c.checkDeferredReturnTypes(function, returnType, typed.Body)
-		c.checkDeferredReturnTypes(function, returnType, typed.Else)
-		for i := range typed.Rescues {
-			c.checkDeferredReturnTypes(function, returnType, typed.Rescues[i].Body)
-		}
-		c.checkDeferredReturnTypes(function, returnType, typed.Ensure)
 	}
 }
 
@@ -2358,6 +2311,13 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	}
 	runtimeState := c.snapshotRuntimeState()
 	defer c.restoreRuntimeState(runtimeState)
+
+	// Block and lambda returns are not checked against the enclosing
+	// function's annotation today, so an active begin/ensure deferral must
+	// not capture them either (a lambda return is local to the lambda).
+	previousSites := c.deferredReturnSites
+	c.deferredReturnSites = nil
+	defer func() { c.deferredReturnSites = previousSites }()
 
 	// A block may run zero or many times, so outer locals its body assigns
 	// lose their facts before the walk, and the walk's own bindings are
@@ -3599,62 +3559,6 @@ func blockAlwaysExits(statements []Statement) bool {
 	return false
 }
 
-func blockMayReturn(statements []Statement) bool {
-	for _, stmt := range statements {
-		if statementMayReturn(stmt) {
-			return true
-		}
-		if statementAlwaysExits(stmt) {
-			return false
-		}
-	}
-	return false
-}
-
-func statementMayReturn(stmt Statement) bool {
-	switch typed := stmt.(type) {
-	case *ReturnStmt:
-		return true
-	case *LogicalStmt:
-		return statementMayReturn(typed.Left) ||
-			(logicalStatementRightMayEvaluate(typed) && statementMayReturn(typed.Right))
-	case *IfStmt:
-		if blockMayReturn(typed.Consequent) || blockMayReturn(typed.Alternate) {
-			return true
-		}
-		for _, elseIf := range typed.ElseIf {
-			if blockMayReturn(elseIf.Consequent) {
-				return true
-			}
-		}
-	case *ForStmt:
-		return blockMayReturn(typed.Body)
-	case *WhileStmt:
-		return blockMayReturn(typed.Body)
-	case *UntilStmt:
-		return blockMayReturn(typed.Body)
-	case *TryStmt:
-		if blockMayReturn(typed.Ensure) {
-			return true
-		}
-		if blockAlwaysExits(typed.Ensure) {
-			return false
-		}
-		for i := range typed.Rescues {
-			if blockMayReturn(typed.Rescues[i].Body) {
-				return true
-			}
-		}
-		return blockMayReturn(typed.Body) ||
-			blockMayReturn(typed.Else)
-	}
-	return false
-}
-
-// effectiveFinalStatement returns the last statement that can actually run in a
-// non-empty block. The first statement that always exits makes every later
-// statement unreachable, so it becomes the terminal statement;
-// otherwise the syntactic last statement is the block's result.
 func effectiveFinalStatement(statements []Statement) Statement {
 	for _, stmt := range statements {
 		if statementAlwaysExits(stmt) {
