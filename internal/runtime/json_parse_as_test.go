@@ -71,6 +71,15 @@ end
 			wantErr: "JSON.parse_as invalid JSON",
 		},
 		{
+			name: "invalid number keeps the parse_as prefix",
+			source: `
+def run()
+  JSON.parse_as("1e999999999", { n: number })
+end
+`,
+			wantErr: "JSON.parse_as invalid number",
+		},
+		{
 			name: "non-shape second argument",
 			source: `
 def run()

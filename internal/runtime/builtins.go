@@ -1601,7 +1601,9 @@ func builtinJSONParseAs(exec *Execution, receiver Value, args []Value, kwargs ma
 	if err != nil {
 		var invalidNumber jsonInvalidNumberError
 		if errors.As(err, &invalidNumber) {
-			return NewNil(), err
+			// The parser's error spells JSON.parse; rewrap under this
+			// builtin's name.
+			return NewNil(), fmt.Errorf("JSON.parse_as invalid number %q", string(invalidNumber))
 		}
 		return NewNil(), fmt.Errorf("JSON.parse_as invalid JSON: %w", err)
 	}
