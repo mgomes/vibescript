@@ -1069,9 +1069,16 @@ func (c *scriptChecker) seedEntrypointRequireExports() {
 	if entry == nil {
 		return
 	}
+	// The seed's collection dedup state is restored afterwards so the real
+	// walks re-collect and report module diagnostics themselves; only the
+	// bindings in the type root persist. (withSuppressedWarnings already
+	// restores moduleCheckedFunctions, which gates the module function
+	// checks.)
+	previousModules := cloneCheckModuleSet(c.requiredModules)
 	c.withSuppressedWarnings(func() {
 		c.collectFunctionRequiredModuleExports(entry)
 	})
+	c.requiredModules = previousModules
 	// Annotation validation resolves against each function's fresh runtime
 	// root, so the seeded exports (required enums used in annotations, for
 	// example) chain in as that root's parent.

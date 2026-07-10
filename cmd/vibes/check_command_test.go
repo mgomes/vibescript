@@ -231,6 +231,30 @@ bad`
 	}
 }
 
+func TestCheckCommandReportsModuleDiagnosticsForRequireOnlyScripts(t *testing.T) {
+	t.Parallel()
+	moduleDir := t.TempDir()
+	module := `def bad -> int
+  "text"
+end`
+	if err := os.WriteFile(filepath.Join(moduleDir, "helpers.vibe"), []byte(module+"\n"), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+	// A script that only requires the module still surfaces the module's
+	// own diagnostics; the suppressed require seed must not consume them.
+	scriptPath := writeVibeScript(t, `require "helpers"`)
+
+	out, err := captureStdout(t, func() error {
+		return checkCommand([]string{"-module-path", moduleDir, scriptPath})
+	})
+	if err == nil || !strings.Contains(err.Error(), "check failed with") {
+		t.Fatalf("checkCommand err = %v, want check failure", err)
+	}
+	if !strings.Contains(out, "return value expected int, got string (helpers.bad)") {
+		t.Fatalf("checkCommand stdout = %q, want module diagnostic", out)
+	}
+}
+
 func TestCheckCommandRejectsOversizedScript(t *testing.T) {
 	t.Parallel()
 	path := writeOversizedScript(t, "script.vibe")
