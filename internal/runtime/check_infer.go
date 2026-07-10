@@ -467,7 +467,16 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 		return shapeValueType(lit.ShapeType)
 	}
 	shape := make(map[string]*TypeExpr, len(lit.Pairs))
+	allSymbolKeys, allStringKeys := true, true
 	for _, pair := range lit.Pairs {
+		switch pair.Key.(type) {
+		case *SymbolLiteral:
+			allStringKeys = false
+		case *StringLiteral:
+			allSymbolKeys = false
+		default:
+			allSymbolKeys, allStringKeys = false, false
+		}
 		key, ok := staticLiteralHashKey(pair.Key)
 		if !ok {
 			return checkTypeHash
@@ -481,7 +490,16 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 		}
 		shape[key] = fieldType
 	}
-	return &TypeExpr{Kind: TypeShape, Shape: shape}
+	fact := &TypeExpr{Kind: TypeShape, Shape: shape}
+	// Runtime hashes distinguish symbol keys from string keys, so an exact
+	// index fact needs the store's key representation.
+	switch {
+	case allSymbolKeys:
+		fact.Name = shapeKeysSymbolMarker
+	case allStringKeys:
+		fact.Name = shapeKeysStringMarker
+	}
+	return fact
 }
 
 func (c *scriptChecker) inferUnaryExprType(expr *UnaryExpr) *TypeExpr {
@@ -530,7 +548,9 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 	}
 	if target.name == "JSON.parse_as" && len(call.Args) == 2 {
 		if shape, ok := shapeValuePayload(c.inferExpressionType(call.Args[1])); ok {
-			return shape
+			// JSON object keys are strings, so the validated result and its
+			// nested shapes are string-keyed stores.
+			return stringKeyedShapeFact(shape)
 		}
 	}
 	return nil
@@ -556,6 +576,41 @@ func shapeValuePayload(ty *TypeExpr) (*TypeExpr, bool) {
 		return nil, false
 	}
 	return ty.TypeArgs[0], true
+}
+
+// Shape key-representation markers, stored in the Name field of inferred
+// shape facts (unused by TypeShape formatting and comparison). The leading
+// NUL keeps them disjoint from any parser-produced spelling.
+const (
+	shapeKeysStringMarker = "\x00string-keyed"
+	shapeKeysSymbolMarker = "\x00symbol-keyed"
+)
+
+// stringKeyedShapeFact clones a shape and marks it (and every nested shape)
+// as a string-keyed store, so literal string indexing yields exact field
+// facts and symbol indexing is known to miss.
+func stringKeyedShapeFact(shape *TypeExpr) *TypeExpr {
+	clone := cloneTypeExpr(shape)
+	markShapeNodesStringKeyed(clone)
+	return clone
+}
+
+func markShapeNodesStringKeyed(ty *TypeExpr) {
+	if ty == nil {
+		return
+	}
+	if ty.Kind == TypeShape {
+		ty.Name = shapeKeysStringMarker
+		for _, field := range ty.Shape {
+			markShapeNodesStringKeyed(field)
+		}
+	}
+	for _, option := range ty.Union {
+		markShapeNodesStringKeyed(option)
+	}
+	for _, arg := range ty.TypeArgs {
+		markShapeNodesStringKeyed(arg)
+	}
 }
 
 // walkShapeTypeNames visits the identifier spelling of every named leaf in a
@@ -629,8 +684,31 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 		if !ok {
 			return nil
 		}
-		if fieldType, ok := objectType.Shape[key]; ok {
-			return fieldType
+		fieldType, present := objectType.Shape[key]
+		indexKeyMarker := ""
+		switch index.(type) {
+		case *SymbolLiteral:
+			indexKeyMarker = shapeKeysSymbolMarker
+		case *StringLiteral:
+			indexKeyMarker = shapeKeysStringMarker
+		}
+		switch objectType.Name {
+		case shapeKeysStringMarker, shapeKeysSymbolMarker:
+			// Known store representation: a lookup of the other key kind
+			// (or a non-string, non-symbol key) always misses.
+			if indexKeyMarker != objectType.Name {
+				return checkTypeNil
+			}
+			if present {
+				return fieldType
+			}
+			return checkTypeNil
+		}
+		// Unknown store representation: a present display name reads as the
+		// field type or nil depending on the store's key kind; an absent one
+		// misses either store.
+		if present {
+			return unionTypeExprs(fieldType, checkTypeNil)
 		}
 		return checkTypeNil
 	case TypeArray:

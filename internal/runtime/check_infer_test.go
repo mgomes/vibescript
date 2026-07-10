@@ -490,6 +490,63 @@ end
 	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
 }
 
+func TestCheckInferShapeFactsRespectKeyKinds(t *testing.T) {
+	t.Parallel()
+
+	// A label-keyed hash literal is a symbol-keyed store: a string lookup is
+	// known to miss (reads nil), a symbol lookup yields the exact field.
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run()
+  h = { name: "Ada" }
+  takes_string(h["name"])
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got nil")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run()
+  h = { name: "Ada" }
+  takes_string(h[:name])
+end
+`))
+
+	// JSON stores are string-keyed, so a symbol lookup on a parse_as result
+	// is known to miss.
+	parseAs := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string })
+  takes_string(body[:name])
+end
+`)
+	requireCheckWarningContains(t, parseAs, "call to takes_string argument value expected string, got nil")
+
+	// An annotated shape parameter has an unknown key representation: a
+	// present field reads as field-or-nil, so it still contradicts a
+	// disjoint boundary but never over-claims the field type.
+	param := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string })
+  takes_int(user["name"])
+end
+`)
+	requireCheckWarningContains(t, param, "call to takes_int argument value expected int, got string | nil")
+}
+
 func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
 	t.Parallel()
 
