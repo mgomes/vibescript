@@ -476,7 +476,13 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		c.collectRequireCallExports(typed)
 		callSkipsInferred := c.safeNavigationCallSkipsInferred(typed)
 		argumentsAlwaysEvaluate := c.safeNavigationArgumentsAlwaysEvaluateInferred(typed)
-		c.collectRequiredModuleExportsFromExpression(typed.Callee)
+		if member, ok := typed.Callee.(*MemberExpr); ok {
+			// The callee's receiver walks directly so its facts survive
+			// until dispatch, mirroring the real walk's poison ordering.
+			c.collectRequiredModuleExportsFromExpression(member.Object)
+		} else {
+			c.collectRequiredModuleExportsFromExpression(typed.Callee)
+		}
 		if staticNilSafeNavigationCall(typed) || callSkipsInferred {
 			return
 		}
@@ -496,6 +502,9 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		if c.isolatedCollectInference {
 			if typed.Block != nil {
 				c.degradeBlockBodyBindings(typed.Block)
+			}
+			if member, ok := typed.Callee.(*MemberExpr); ok {
+				c.poisonEscapedIdentifier(member.Object)
 			}
 			for _, arg := range typed.Args {
 				c.poisonEscapedIdentifier(arg)
@@ -2317,7 +2326,15 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.mergeScopeStates(argumentScopeState, []checkScopeState{argumentScopeState, evaluatedScopeState})
 		}
 		// Containers pass by reference, so a callee may mutate an argument
-		// in place; the caller's structural facts stop holding.
+		// in place; the caller's structural facts stop holding. Dispatch
+		// happens after the arguments evaluate, so the receiver's facts
+		// stop holding here too, not during the callee walk.
+		if member, ok := typed.Callee.(*MemberExpr); ok {
+			c.poisonEscapedIdentifier(member.Object)
+		}
+		if member, ok := typed.BlockArg.(*MemberExpr); ok {
+			c.poisonEscapedIdentifier(member.Object)
+		}
 		for _, arg := range typed.Args {
 			c.poisonEscapedIdentifier(arg)
 		}
@@ -2328,10 +2345,12 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkExpressionWithAuto(function, typed.Object, true)
 		if autoCall {
 			c.checkMemberAutoCall(function, typed)
+			// Member dispatch on a container may mutate it in place (push,
+			// delete, ...), so the receiver's structural facts stop
+			// holding. A call callee poisons after its arguments instead:
+			// they evaluate before dispatch and still see the facts.
+			c.poisonEscapedIdentifier(typed.Object)
 		}
-		// Member dispatch on a container may mutate it in place (push,
-		// delete, ...), so the receiver's structural facts stop holding.
-		c.poisonEscapedIdentifier(typed.Object)
 	case *ScopeExpr:
 		c.checkExpressionWithAuto(function, typed.Object, true)
 	case *IndexExpr:

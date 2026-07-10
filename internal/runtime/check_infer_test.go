@@ -1899,6 +1899,37 @@ end
 	}
 }
 
+func TestCheckInferReceiverFactsHoldThroughCallArguments(t *testing.T) {
+	t.Parallel()
+
+	// Arguments evaluate before member dispatch, so an argument reading
+	// the receiver still sees its element facts.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  a = ["x"]
+  a.join(takes_int(a[0]))
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+
+	// Dispatch still poisons: facts read after the call stay unknown.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  a = ["x"]
+  a.clear
+  takes_int(a[0])
+end
+`))
+}
+
 func TestCheckInferSafeNavigationUsesReceiverFacts(t *testing.T) {
 	t.Parallel()
 
