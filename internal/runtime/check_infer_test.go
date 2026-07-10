@@ -1069,6 +1069,19 @@ def run(dynamic)
   strings(limit: dynamic)
 end
 `))
+
+	// Exact shapes require every field even in the inferred fallback.
+	missing := compileScript(t, `
+def accept(**opts: { a: int, b: int })
+  opts
+end
+
+def run()
+  x = 1
+  accept(a: x)
+end
+`)
+	requireCheckWarningContains(t, missing, "call to accept argument opts expected { a: int, b: int }, missing keyword b")
 }
 
 func TestCheckInferRestArgumentsUseInferredFacts(t *testing.T) {

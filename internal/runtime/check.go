@@ -4516,10 +4516,12 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 					c.checkInferredArgument(function, rest.Value, ty.TypeArgs[1], callName, paramName)
 				}
 			case ty.Kind == TypeShape:
+				supplied := make(map[string]struct{}, len(kwargs))
 				for _, rest := range kwargs {
 					if usedKw != nil && usedKw[rest.Name] {
 						continue
 					}
+					supplied[rest.Name] = struct{}{}
 					fieldType, known := ty.Shape[rest.Name]
 					if !known {
 						c.add(function, rest.Value.Pos(), "call to %s argument %s expected %s, got keyword %s",
@@ -4527,6 +4529,23 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 						continue
 					}
 					c.checkInferredArgument(function, rest.Value, fieldType, callName, paramName)
+				}
+				// Exact shapes require every field, so an absent keyword is a
+				// known normalization failure.
+				missingPos := warningPos
+				if missingPos == (Position{}) {
+					missingPos = pos
+				}
+				fields := make([]string, 0, len(ty.Shape))
+				for field := range ty.Shape {
+					fields = append(fields, field)
+				}
+				sort.Strings(fields)
+				for _, field := range fields {
+					if _, ok := supplied[field]; !ok {
+						c.add(function, missingPos, "call to %s argument %s expected %s, missing keyword %s",
+							callName, paramName, formatTypeExpr(ty), field)
+					}
 				}
 			}
 			return
