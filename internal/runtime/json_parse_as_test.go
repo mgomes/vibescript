@@ -522,6 +522,24 @@ end
 `))
 }
 
+func TestCheckJSONParseAsRejectsNonStringInput(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  raw = 1
+  JSON.parse_as(raw, { name: string })
+end
+`)
+	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a JSON string as its first argument, got int")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def run(raw)
+  JSON.parse_as(raw, { name: string })
+end
+`))
+}
+
 func TestCheckJSONParseAsArity(t *testing.T) {
 	t.Parallel()
 

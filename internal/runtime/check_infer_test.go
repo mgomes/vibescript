@@ -1387,6 +1387,46 @@ end
 `))
 }
 
+func TestCheckInferAliasMutationsPoisonTheGroup(t *testing.T) {
+	t.Parallel()
+
+	// Containers assign by reference: mutating through an alias must drop
+	// the original's precise facts too, so no stale index claim survives.
+	requireNoCheckWarnings(t, compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  values = [1]
+  alias = values
+  alias << "bad"
+  ints(values)
+  ints(alias)
+  takes_string(values[1])
+end
+`))
+
+	// A copy without mutation keeps the shared fact checkable through both
+	// names.
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { age: int })
+  body2 = body
+  takes_string(body2["age"])
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int")
+}
+
 func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
 	t.Parallel()
 

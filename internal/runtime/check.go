@@ -112,6 +112,7 @@ type scriptChecker struct {
 	scopes                  []map[string]struct{}
 	localTypes              []checkTypeFrame
 	typePoison              map[string]struct{}
+	typeAliases             map[string]map[string]struct{}
 	mutationRegionDepth     int
 	callArgumentFacts       map[Expression]*TypeExpr
 	deferredReturnSites     *[]deferredReturnSite
@@ -3830,6 +3831,14 @@ func (c *scriptChecker) checkCall(function string, call *CallExpr) {
 func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExpr) {
 	if len(call.Args) != 2 || callExpandsArguments(call) {
 		return
+	}
+	raw := call.Args[0]
+	rawType, rawCaptured := c.callArgumentFacts[raw]
+	if !rawCaptured {
+		rawType = c.inferExpressionType(raw)
+	}
+	if rawType != nil && typeExprsDisjoint(rawType, checkTypeString) {
+		c.add(function, raw.Pos(), "call to JSON.parse_as expects a JSON string as its first argument, got %s", formatTypeExpr(rawType))
 	}
 	arg := call.Args[1]
 	inferred, captured := c.callArgumentFacts[arg]

@@ -113,7 +113,36 @@ func (c *scriptChecker) poisonLocalType(name string) {
 	if c.typePoison == nil {
 		c.typePoison = make(map[string]struct{})
 	}
+	if _, done := c.typePoison[name]; done {
+		return
+	}
 	c.typePoison[name] = struct{}{}
+	// Containers assign by reference, so a mutation through any alias
+	// invalidates every name sharing the value.
+	for alias := range c.typeAliases[name] {
+		c.poisonLocalType(alias)
+	}
+}
+
+// linkContainerAlias records that two locals may share one mutable
+// container, so poisoning either cascades to the other. Links are
+// function-scoped and monotone like the poison set: branch restores never
+// unlink, which can only over-poison.
+func (c *scriptChecker) linkContainerAlias(a, b string) {
+	if a == "" || b == "" || a == b {
+		return
+	}
+	if c.typeAliases == nil {
+		c.typeAliases = make(map[string]map[string]struct{})
+	}
+	if c.typeAliases[a] == nil {
+		c.typeAliases[a] = make(map[string]struct{})
+	}
+	if c.typeAliases[b] == nil {
+		c.typeAliases[b] = make(map[string]struct{})
+	}
+	c.typeAliases[a][b] = struct{}{}
+	c.typeAliases[b][a] = struct{}{}
 }
 
 func (c *scriptChecker) withFreshLocalInference(check func()) {
@@ -123,8 +152,13 @@ func (c *scriptChecker) withFreshLocalInference(check func()) {
 
 func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousPoison := c.typePoison
+	previousAliases := c.typeAliases
 	c.typePoison = nil
-	return func() { c.typePoison = previousPoison }
+	c.typeAliases = nil
+	return func() {
+		c.typePoison = previousPoison
+		c.typeAliases = previousAliases
+	}
 }
 
 // forTargetElementType resolves a for-loop iterable to its element type when
@@ -388,6 +422,9 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 				target.Name, formatTypeExpr(current), formatTypeExpr(next))
 		}
 		c.bindLocalType(target.Name, next)
+		if source, isIdent := stmt.Value.(*Identifier); isIdent && next != nil && typeExprHasContainerArm(next) {
+			c.linkContainerAlias(target.Name, source.Name)
+		}
 	case *DestructureTarget:
 		for _, element := range target.Elements {
 			c.bindDestructureElementType(element)
@@ -806,8 +843,10 @@ func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
 	}
 	// Inside a loop or block body the walk's retypes are rolled back by the
 	// region's state restore, so an in-place append there must poison
-	// (monotone, survives the restore) rather than refine.
-	if c.mutationRegionDepth == 0 &&
+	// (monotone, survives the restore) rather than refine; an aliased
+	// receiver likewise poisons, since the refinement cannot reach the
+	// other names sharing the array.
+	if c.mutationRegionDepth == 0 && len(c.typeAliases[ident.Name]) == 0 &&
 		current.Kind == TypeArray && current.Name == literalElementsMarker && len(current.TypeArgs) == 1 {
 		if appended := c.inferExpressionType(expr.Right); appended != nil {
 			if union := unionTypeExprs(current.TypeArgs[0], appended); union != nil {
