@@ -382,6 +382,16 @@ func reassignmentConflicts(current, next *TypeExpr) bool {
 	return typeExprsDisjoint(current, next)
 }
 
+// typeExprDefinitelyTruthy reports whether every possible value of the type
+// is truthy: everything except nil and false is truthy, so any arm that can
+// be nil or bool (or is unknown) stays undecided.
+func typeExprDefinitelyTruthy(ty *TypeExpr) bool {
+	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
+		return arm.Kind != TypeNil && arm.Kind != TypeBool &&
+			arm.Kind != TypeAny && arm.Kind != TypeUnknown
+	})
+}
+
 func typeExprIsNilOnly(ty *TypeExpr) bool {
 	return typeExprArmsAll(ty, func(arm *TypeExpr) bool { return arm.Kind == TypeNil })
 }
@@ -449,6 +459,30 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 	case *BinaryExpr:
 		left := c.inferExpressionType(typed.Left)
 		right := c.inferExpressionType(typed.Right)
+		switch typed.Operator {
+		case tokenAnd, tokenOr, tokenWordAnd, tokenWordOr:
+			// `a && b` is `a ? b : a`: a left operand whose truthiness is
+			// statically known picks one side instead of the union.
+			isAnd := typed.Operator == tokenAnd || typed.Operator == tokenWordAnd
+			if val, ok := staticLiteralValue(typed.Left); ok {
+				if val.Truthy() == isAnd {
+					return right
+				}
+				return left
+			}
+			if typeExprDefinitelyTruthy(left) {
+				if isAnd {
+					return right
+				}
+				return left
+			}
+			if typeExprIsNilOnly(left) {
+				if isAnd {
+					return left
+				}
+				return right
+			}
+		}
 		return c.binaryOperationOutcome(typed.Operator, left, right).result
 	case *ConditionalExpr:
 		if branch, ok := staticConditionalExpressionBranch(typed); ok {
@@ -1077,9 +1111,19 @@ func (c *scriptChecker) binaryOperationOutcome(op TokenType, left, right *TypeEx
 	leftKind, leftOK := staticOperandKind(left)
 	rightKind, rightOK := staticOperandKind(right)
 	if op == tokenShovel && leftOK && leftKind == TypeArray {
-		// The shovel operator returns its receiver, so the result carries
-		// the receiver's own array fact (including witnessed elements).
-		return binaryOutcome{result: left}
+		// The shovel operator returns its receiver with the element
+		// appended, so a witnessed-element receiver joins the appended
+		// type; anything less certain degrades to a bare array.
+		if left.Kind == TypeArray && left.Name == literalElementsMarker && len(left.TypeArgs) == 1 && right != nil {
+			if union := unionTypeExprs(left.TypeArgs[0], right); union != nil {
+				return binaryOutcome{result: &TypeExpr{
+					Kind:     TypeArray,
+					Name:     literalElementsMarker,
+					TypeArgs: []*TypeExpr{union},
+				}}
+			}
+		}
+		return binaryOutcome{result: checkTypeArray}
 	}
 	if !leftOK || !rightOK {
 		// Partial knowledge decides a couple of left-driven results but never

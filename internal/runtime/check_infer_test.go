@@ -724,6 +724,82 @@ end
 `))
 }
 
+func TestCheckInferShovelOnLiteralReceiversCarriesAppend(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run()
+  xs = [1] << "bad"
+  ints(xs)
+end
+`)
+	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<int | string>")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run()
+  xs = [1] << 2
+  ints(xs)
+end
+`))
+}
+
+func TestCheckInferShortCircuitDecidedByKnownLeft(t *testing.T) {
+	t.Parallel()
+
+	// A truthy left operand means || always yields the left value, so the
+	// int alternative never dilutes the fact.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  x = "s" || 1
+  takes_int(x)
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+
+	// Type-level truthiness decides too: an annotated string return is
+	// always truthy.
+	typed := compileScript(t, `
+def name -> string
+  "n"
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  x = name() || "default"
+  takes_int(x)
+end
+`)
+	requireCheckWarningContains(t, typed, "call to takes_int argument value expected int, got string")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(maybe)
+  x = maybe || "default"
+  takes_string(x)
+  y = nil || "fallback"
+  takes_string(y)
+end
+`))
+}
+
 func TestCheckInferRestArgumentsUseInferredFacts(t *testing.T) {
 	t.Parallel()
 
