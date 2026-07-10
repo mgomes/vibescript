@@ -953,12 +953,31 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		}
 		return c.inferBranchUnionType(typed.Consequent, typed.Alternate)
 	case *IfExpr:
+		// Statically decided arms mirror the walk's reachability: a false
+		// condition's arm never runs, and a true condition ends the chain,
+		// so only the arms that can produce the value join the union.
 		branches := make([]Expression, 0, len(typed.ElseIf)+2)
-		branches = append(branches, typed.Consequent)
-		for _, branch := range typed.ElseIf {
-			branches = append(branches, branch.Result)
+		chainDecided := false
+		appendReachableArm := func(condition, result Expression) {
+			truthy, known := staticExpressionTruthiness(condition)
+			if known && !truthy {
+				return
+			}
+			branches = append(branches, result)
+			if known {
+				chainDecided = true
+			}
 		}
-		branches = append(branches, typed.Alternate)
+		appendReachableArm(typed.Condition, typed.Consequent)
+		for _, branch := range typed.ElseIf {
+			if chainDecided {
+				break
+			}
+			appendReachableArm(branch.Condition, branch.Result)
+		}
+		if !chainDecided {
+			branches = append(branches, typed.Alternate)
+		}
 		return c.inferBranchUnionType(branches...)
 	case *RescueExpr:
 		return c.inferBranchUnionType(typed.Body, typed.Fallback)

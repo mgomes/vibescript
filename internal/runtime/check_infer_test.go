@@ -515,6 +515,83 @@ end
 	requireCheckWarningContains(t, condition, "unsupported comparison operands nil and int")
 }
 
+func TestCheckInferIfExpressionStaticConditionsPickReachableArms(t *testing.T) {
+	t.Parallel()
+
+	// A statically true condition decides the chain, so unreachable arms
+	// must not widen the union and mask the contradiction.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  value = if true
+    "x"
+  else
+    1
+  end
+  takes_int(value)
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+
+	// A statically false arm drops out of the union entirely.
+	falseArm := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run
+  value = if false
+    "x"
+  else
+    1
+  end
+  takes_string(value)
+end
+`)
+	requireCheckWarningContains(t, falseArm, "call to takes_string argument value expected string, got int")
+
+	// A statically true elsif ends the chain: the else arm is unreachable,
+	// so the union is the open condition's arm plus the deciding arm.
+	elsifDecided := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag)
+  value = if flag
+    "a"
+  elsif true
+    :sym
+  else
+    1
+  end
+  takes_int(value)
+end
+`)
+	requireCheckWarningContains(t, elsifDecided, "call to takes_int argument value expected int, got string | symbol")
+
+	// An unknown condition keeps every arm in the union: the overlap with
+	// int stays permitted.
+	unknown := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag)
+  value = if flag
+    "x"
+  else
+    1
+  end
+  takes_int(value)
+end
+`)
+	requireNoCheckWarnings(t, unknown)
+}
+
 func TestCheckInferDeferredEnsureReturnsUseBranchTypes(t *testing.T) {
 	t.Parallel()
 
