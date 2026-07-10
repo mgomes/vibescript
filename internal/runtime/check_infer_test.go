@@ -850,6 +850,38 @@ end
 `))
 }
 
+func TestCheckInferWordOperatorsShortCircuitInExpressions(t *testing.T) {
+	t.Parallel()
+
+	// Word-form and/or short-circuit exactly like &&/||, so a conditional
+	// append inside an expression joins with the skipped path.
+	requireNoCheckWarnings(t, compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run(flag)
+  values = [1]
+  (flag and (values << "bad"))
+  ints(values)
+end
+`))
+
+	// A statically truthy left keeps the append unconditional.
+	script := compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run()
+  values = [1]
+  (true and (values << "bad"))
+  ints(values)
+end
+`)
+	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<int | string>")
+}
+
 func TestCheckInferRegionShovelsPoisonReceivers(t *testing.T) {
 	t.Parallel()
 

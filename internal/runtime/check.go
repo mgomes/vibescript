@@ -586,10 +586,10 @@ func (c *scriptChecker) collectStringPartRequiredModuleExports(parts []StringPar
 
 func binaryRightAlwaysEvaluates(expr *BinaryExpr) bool {
 	switch expr.Operator {
-	case tokenAnd:
+	case tokenAnd, tokenWordAnd:
 		val, ok := staticLiteralValue(expr.Left)
 		return ok && val.Truthy()
-	case tokenOr:
+	case tokenOr, tokenWordOr:
 		val, ok := staticLiteralValue(expr.Left)
 		return ok && !val.Truthy()
 	default:
@@ -599,10 +599,10 @@ func binaryRightAlwaysEvaluates(expr *BinaryExpr) bool {
 
 func binaryRightMayEvaluate(expr *BinaryExpr) bool {
 	switch expr.Operator {
-	case tokenAnd:
+	case tokenAnd, tokenWordAnd:
 		val, ok := staticLiteralValue(expr.Left)
 		return !ok || val.Truthy()
-	case tokenOr:
+	case tokenOr, tokenWordOr:
 		val, ok := staticLiteralValue(expr.Left)
 		return !ok || !val.Truthy()
 	default:
