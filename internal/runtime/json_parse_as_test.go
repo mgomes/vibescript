@@ -225,6 +225,54 @@ end
 	requireNoCheckWarningsWithOptions(t, checked, opts)
 }
 
+func TestShapeLiteralImplicitSelfShadowKeepsHashSemantics(t *testing.T) {
+	t.Parallel()
+
+	// A zero-arity method named like a type resolves through implicit self,
+	// so the braced group keeps its pre-existing hash semantics inside the
+	// method.
+	script := compileScript(t, `
+class Formatter
+  def string
+    "fmt"
+  end
+
+  def build
+    h = { name: string }
+    h[:name]
+  end
+end
+
+def run()
+  Formatter.new.build
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindString || got.String() != "fmt" {
+		t.Fatalf("run() = %#v, want \"fmt\"", got)
+	}
+
+	// A method without such a member still produces a shape value usable by
+	// JSON.parse_as.
+	builder := compileScript(t, `
+class Builder
+  def schema
+    { name: string }
+  end
+end
+
+def run()
+  body = JSON.parse_as("{\"name\": \"Ada\"}", Builder.new.schema)
+  body["name"]
+end
+`)
+	got = callScript(t, context.Background(), builder, "run", nil, CallOptions{})
+	if got.Kind() != KindString || got.String() != "Ada" {
+		t.Fatalf("run() = %#v, want \"Ada\"", got)
+	}
+}
+
 func TestCheckInferJSONParseAsShapeThroughLocal(t *testing.T) {
 	t.Parallel()
 

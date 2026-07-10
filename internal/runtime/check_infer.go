@@ -463,7 +463,11 @@ func (c *scriptChecker) inferBranchUnionType(branches ...Expression) *TypeExpr {
 // and field types are all statically known, giving downstream indexing
 // field-level facts. Anything less certain degrades to a plain hash.
 func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
-	if lit.ShapeType != nil && !c.hashShapeStaticallyShadowed(lit) {
+	if lit.ShapeType != nil {
+		if c.hashShapeStaticallyShadowed(lit) {
+			// The group may take either reading at runtime.
+			return nil
+		}
 		return shapeValueType(lit.ShapeType)
 	}
 	shape := make(map[string]*TypeExpr, len(lit.Pairs))
@@ -651,6 +655,11 @@ func walkShapeTypeNames(ty *TypeExpr, visit func(string)) {
 func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 	if len(lit.Pairs) == 0 {
 		return false
+	}
+	// Inside a method or class body a bare identifier may resolve through
+	// implicit self, which the checker cannot rule out statically.
+	if c.selfScope {
+		return true
 	}
 	shadowed := false
 	walkShapeTypeNames(lit.ShapeType, func(name string) {

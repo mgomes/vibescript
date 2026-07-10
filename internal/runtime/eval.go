@@ -556,12 +556,21 @@ func (exec *Execution) hashShapeShadowed(lit *HashLiteral, env *Env) bool {
 	if len(lit.Pairs) == 0 {
 		return false
 	}
+	self, hasSelf := env.Get("self")
+	selfReceiver := hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass)
 	shadowed := false
 	walkShapeTypeNames(lit.ShapeType, func(name string) {
 		if shadowed {
 			return
 		}
 		if _, ok := env.Get(name); ok {
+			shadowed = true
+			return
+		}
+		// Bare identifiers also resolve through implicit self (a zero-arity
+		// method named string, for example), matching evalExpression's
+		// identifier fallback.
+		if selfReceiver && exec.respondsTo(self, name, true) {
 			shadowed = true
 		}
 	})
