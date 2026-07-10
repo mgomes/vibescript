@@ -1013,6 +1013,7 @@ func (c *scriptChecker) withRuntimeModuleCollection(collect func()) {
 }
 
 func (c *scriptChecker) checkScript() {
+	c.seedEntrypointRequireExports()
 	for _, fn := range c.sortedScriptFunctions() {
 		c.withFreshRuntimeTypeRootForCallable(fn, func() {
 			c.checkFunction(fn.Name, fn)
@@ -1033,6 +1034,25 @@ func (c *scriptChecker) checkScript() {
 			})
 		}
 	}
+}
+
+// seedEntrypointRequireExports binds the module exports required by the
+// script's top-level code into the shared type root before the per-function
+// walks: top-level requires run before a host can call any function, so
+// their exported signatures are part of every function's static environment.
+// Warnings stay suppressed here; the per-function walks re-collect and
+// report module diagnostics exactly as before.
+func (c *scriptChecker) seedEntrypointRequireExports() {
+	if c.script == nil || c.script.entrypoint == "" {
+		return
+	}
+	entry := c.script.functions[c.script.entrypoint]
+	if entry == nil {
+		return
+	}
+	c.withSuppressedWarnings(func() {
+		c.collectFunctionRequiredModuleExports(entry)
+	})
 }
 
 func (c *scriptChecker) checkFunctionExecution(target checkTarget) {

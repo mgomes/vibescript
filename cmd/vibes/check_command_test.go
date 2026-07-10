@@ -145,6 +145,36 @@ shout(count)`
 	}
 }
 
+func TestCheckCommandSeedsTopLevelRequires(t *testing.T) {
+	t.Parallel()
+	moduleDir := t.TempDir()
+	module := `def shout(value: string)
+  value
+end`
+	if err := os.WriteFile(filepath.Join(moduleDir, "helpers.vibe"), []byte(module+"\n"), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+	// The mismatched call lives in a function nothing invokes: whole-script
+	// checking must still resolve the export's signature through the
+	// top-level require.
+	script := `require "helpers"
+
+def broken
+  shout(1)
+end`
+	scriptPath := writeVibeScript(t, script)
+
+	out, err := captureStdout(t, func() error {
+		return checkCommand([]string{"-module-path", moduleDir, scriptPath})
+	})
+	if err == nil || !strings.Contains(err.Error(), "check failed with") {
+		t.Fatalf("checkCommand err = %v, want check failure", err)
+	}
+	if !strings.Contains(out, "call to shout argument value expected string, got int") {
+		t.Fatalf("checkCommand stdout = %q, want required-export argument warning", out)
+	}
+}
+
 func TestCheckCommandRejectsOversizedScript(t *testing.T) {
 	t.Parallel()
 	path := writeOversizedScript(t, "script.vibe")

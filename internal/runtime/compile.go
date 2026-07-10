@@ -53,6 +53,7 @@ func CompileSnippetWithProgram(e *Engine, source, entrypoint string) (*Script, *
 	entrypointProgram, deferredClassBodies := snippetEntrypointProgram(program, entrypoint)
 	script, err := compileParsed(e, source, entrypointProgram)
 	if script != nil {
+		script.entrypoint = entrypoint
 		script.deferredClassBodies = deferredClassBodies
 	}
 	return script, program, nil, err
