@@ -1188,7 +1188,11 @@ func unionTypeExprs(types ...*TypeExpr) *TypeExpr {
 	arms := make([]*TypeExpr, 0, len(types))
 	seen := make(map[string]struct{}, len(types))
 	appendArm := func(arm *TypeExpr) {
-		key := formatTypeExpr(arm)
+		// The dedup key includes Name so arms that render identically but
+		// carry different internal markers (shape key kinds, witnessed array
+		// elements) stay distinct instead of collapsing to whichever branch
+		// was joined first.
+		key := formatTypeExpr(arm) + "\x00" + arm.Name
 		if _, duplicate := seen[key]; duplicate {
 			return
 		}

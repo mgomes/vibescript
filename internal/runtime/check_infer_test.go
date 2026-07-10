@@ -613,6 +613,50 @@ end
 	requireCheckWarningContains(t, param, "call to takes_int argument value expected int, got string | nil")
 }
 
+func TestCheckInferBranchJoinsKeepDistinctMarkers(t *testing.T) {
+	t.Parallel()
+
+	// Two branches assigning the same displayed shape with different key
+	// representations must not collapse to one marker: h["name"] hits in
+	// the string-keyed branch, so the call is not a known contradiction.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(flag)
+  if flag
+    h = { name: "Ada" }
+  else
+    h = { "name" => "Ada" }
+  end
+  takes_string(h["name"])
+end
+`))
+
+	// A witnessed literal array joined with an annotation-typed array keeps
+	// both arms: the second branch's value could be empty, so the boundary
+	// is not provably violated.
+	requireNoCheckWarnings(t, compileScript(t, `
+def build -> array<int>
+  []
+end
+
+def strings(values: array<string>)
+  values
+end
+
+def run(flag)
+  if flag
+    xs = [1]
+  else
+    xs = build
+  end
+  strings(xs)
+end
+`))
+}
+
 func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
 	t.Parallel()
 
