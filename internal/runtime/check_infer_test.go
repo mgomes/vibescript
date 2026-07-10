@@ -490,6 +490,42 @@ end
 	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
 }
 
+func TestCheckInferLiteralArrayElementsFlowThroughBindings(t *testing.T) {
+	t.Parallel()
+
+	// Every element of a literal is a witness, so a binding cannot hide a
+	// contradicting element from a typed array boundary.
+	script := compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run()
+  values = [1, "bad"]
+  ints(values)
+end
+`)
+	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<int | string>")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def ints(values: array<int>)
+  values
+end
+
+def run(extra)
+  values = [1, 2]
+  ints(values)
+  mixed = [1, extra]
+  ints(mixed)
+  empty = []
+  ints(empty)
+  reinit = [1]
+  reinit = ["a"]
+  reinit
+end
+`))
+}
+
 func TestCheckInferShapeFactsRespectKeyKinds(t *testing.T) {
 	t.Parallel()
 

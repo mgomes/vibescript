@@ -345,6 +345,9 @@ func reassignmentConflicts(current, next *TypeExpr) bool {
 	if typeExprHashLikeOnly(current) && typeExprHashLikeOnly(next) {
 		return false
 	}
+	if typeExprArrayOnly(current) && typeExprArrayOnly(next) {
+		return false
+	}
 	return typeExprsDisjoint(current, next)
 }
 
@@ -356,6 +359,10 @@ func typeExprNumericOnly(ty *TypeExpr) bool {
 	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
 		return arm.Kind == TypeInt || arm.Kind == TypeFloat || arm.Kind == TypeNumber
 	})
+}
+
+func typeExprArrayOnly(ty *TypeExpr) bool {
+	return typeExprArmsAll(ty, func(arm *TypeExpr) bool { return arm.Kind == TypeArray })
 }
 
 func typeExprHashLikeOnly(ty *TypeExpr) bool {
@@ -399,7 +406,7 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 	case *RangeExpr:
 		return checkTypeRange
 	case *ArrayLiteral:
-		return checkTypeArray
+		return c.inferArrayLiteralType(typed)
 	case *HashLiteral:
 		return c.inferHashLiteralType(typed)
 	case *BlockLiteral:
@@ -589,6 +596,56 @@ const (
 	shapeKeysStringMarker = "\x00string-keyed"
 	shapeKeysSymbolMarker = "\x00symbol-keyed"
 )
+
+// literalElementsMarker tags an inferred array type whose element union is
+// existential: every arm is witnessed by an actual element of a literal, so
+// an arm that contradicts a declared element type proves the whole array
+// does. It lives in the Name field, which TypeArray formatting ignores.
+const literalElementsMarker = "\x00literal-elements"
+
+// inferArrayLiteralType infers a witnessed element union for an array
+// literal. Empty literals and literals with unknown elements stay a bare
+// array.
+func (c *scriptChecker) inferArrayLiteralType(lit *ArrayLiteral) *TypeExpr {
+	if len(lit.Elements) == 0 {
+		return checkTypeArray
+	}
+	elements := make([]*TypeExpr, 0, len(lit.Elements))
+	for _, element := range lit.Elements {
+		if _, splat := element.(*SplatArg); splat {
+			return checkTypeArray
+		}
+		elementType := c.inferExpressionType(element)
+		if elementType == nil {
+			return checkTypeArray
+		}
+		elements = append(elements, elementType)
+	}
+	union := unionTypeExprs(elements...)
+	if union == nil {
+		return checkTypeArray
+	}
+	return &TypeExpr{Kind: TypeArray, Name: literalElementsMarker, TypeArgs: []*TypeExpr{union}}
+}
+
+// literalArrayDisjoint reports whether a witnessed-element array can never
+// satisfy another array type: some witnessed element arm is disjoint from
+// the other side's declared element type.
+func literalArrayDisjoint(lit, other *TypeExpr) bool {
+	if lit.Name != literalElementsMarker || len(lit.TypeArgs) != 1 || len(other.TypeArgs) != 1 {
+		return false
+	}
+	arms, ok := typeExprArms(lit.TypeArgs[0], 0)
+	if !ok {
+		return false
+	}
+	for _, arm := range arms {
+		if typeExprsDisjoint(arm, other.TypeArgs[0]) {
+			return true
+		}
+	}
+	return false
+}
 
 // stringKeyedShapeFact clones a shape and marks it (and every nested shape)
 // as a string-keyed store, so literal string indexing yields exact field
@@ -1225,6 +1282,9 @@ func typeArmPairDisjoint(x, y *TypeExpr) bool {
 			return shapeTypesDisjoint(x, y)
 		}
 		return false
+	}
+	if kx == TypeArray && ky == TypeArray {
+		return literalArrayDisjoint(x, y) || literalArrayDisjoint(y, x)
 	}
 	return kx != ky
 }
