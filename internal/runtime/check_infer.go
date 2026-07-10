@@ -948,18 +948,21 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		}
 		return c.binaryOperationOutcome(typed.Operator, left, right).result
 	case *ConditionalExpr:
-		if branch, ok := staticConditionalExpressionBranch(typed); ok {
-			return c.inferExpressionType(branch)
+		if truthy, known := c.inferredConditionTruthiness(typed.Condition); known {
+			if truthy {
+				return c.inferExpressionType(typed.Consequent)
+			}
+			return c.inferExpressionType(typed.Alternate)
 		}
 		return c.inferBranchUnionType(typed.Consequent, typed.Alternate)
 	case *IfExpr:
-		// Statically decided arms mirror the walk's reachability: a false
-		// condition's arm never runs, and a true condition ends the chain,
-		// so only the arms that can produce the value join the union.
+		// Decided arms mirror the walk's reachability: a false condition's
+		// arm never runs, and a true condition ends the chain, so only the
+		// arms that can produce the value join the union.
 		branches := make([]Expression, 0, len(typed.ElseIf)+2)
 		chainDecided := false
 		appendReachableArm := func(condition, result Expression) {
-			truthy, known := staticExpressionTruthiness(condition)
+			truthy, known := c.inferredConditionTruthiness(condition)
 			if known && !truthy {
 				return
 			}
@@ -987,6 +990,24 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		return c.inferIndexExprType(typed)
 	}
 	return nil
+}
+
+// inferredConditionTruthiness resolves a condition's truthiness from static
+// literals first, then from inferred facts, mirroring the short-circuit
+// operators: a definitely-truthy type proves the true path runs, a nil-only
+// type proves it never does.
+func (c *scriptChecker) inferredConditionTruthiness(condition Expression) (bool, bool) {
+	if truthy, known := staticExpressionTruthiness(condition); known {
+		return truthy, known
+	}
+	ty := c.inferExpressionType(condition)
+	if typeExprDefinitelyTruthy(ty) {
+		return true, true
+	}
+	if typeExprIsNilOnly(ty) {
+		return false, true
+	}
+	return false, false
 }
 
 // inferBranchUnionType joins branch result types; a missing branch (an if

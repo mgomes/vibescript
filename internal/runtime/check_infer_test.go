@@ -592,6 +592,78 @@ end
 	requireNoCheckWarnings(t, unknown)
 }
 
+func TestCheckInferConditionArmsPruneByInferredTruthiness(t *testing.T) {
+	t.Parallel()
+
+	// A local with a definitely-truthy inferred type (a shape value here)
+	// decides the if expression, so the unreachable else arm must not
+	// widen the union and mask the contradiction.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  schema = { name: string }
+  value = if schema
+    "bad"
+  else
+    1
+  end
+  takes_int(value)
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+
+	// A nil-only condition proves the else arm runs instead.
+	nilOnly := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run
+  flag = nil
+  value = if flag
+    "ok"
+  else
+    1
+  end
+  takes_string(value)
+end
+`)
+	requireCheckWarningContains(t, nilOnly, "call to takes_string argument value expected string, got int")
+
+	// Ternaries prune the same way.
+	ternary := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  name = "n"
+  takes_int(name ? "bad" : 1)
+end
+`)
+	requireCheckWarningContains(t, ternary, "call to takes_int argument value expected int, got string")
+
+	// A bool condition stays undecided: both arms join the union and the
+	// overlap with int is permitted.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  value = if flag
+    "x"
+  else
+    1
+  end
+  takes_int(value)
+end
+`))
+}
+
 func TestCheckInferDeferredEnsureReturnsUseBranchTypes(t *testing.T) {
 	t.Parallel()
 
