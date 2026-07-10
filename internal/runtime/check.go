@@ -2448,8 +2448,9 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	// A block may run zero or many times, so outer locals its body assigns
 	// lose their facts before the walk, and the walk's own bindings are
 	// rolled back afterwards (the degraded state is the correct post-call
-	// truth for those locals).
-	c.degradeLocalTypesForBindings(block.Body)
+	// truth for those locals). Names the block binds itself (parameters,
+	// implicit parameters) shadow the outer locals and never write through.
+	c.degradeBlockBodyBindings(block)
 	typesState := c.snapshotLocalTypes()
 	defer c.restoreLocalTypes(typesState)
 

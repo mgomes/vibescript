@@ -530,6 +530,28 @@ end
 `))
 }
 
+func TestCheckInferShadowingBlockParamsKeepOuterFacts(t *testing.T) {
+	t.Parallel()
+
+	// The block's x shadows the outer local, so body assignments to it never
+	// write through and the outer fact still contradicts the boundary.
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run()
+  x = 1
+  [0].each do |x|
+    x = "s"
+  end
+  takes_string(x)
+end
+`)
+
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int")
+}
+
 func TestCheckInferShapeParamFieldTypes(t *testing.T) {
 	t.Parallel()
 

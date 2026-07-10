@@ -157,6 +157,33 @@ func (c *scriptChecker) bindForTargetType(stmt *ForStmt, elemType *TypeExpr) {
 	}
 }
 
+// degradeBlockBodyBindings resets to unknown the outer locals a block body
+// may assign, excluding the names the block binds itself: a body assignment
+// to a shadowing block parameter writes the block-local, so the outer fact
+// still holds.
+func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
+	names := make(map[string]struct{})
+	collectLocalBindings(block.Body, names)
+	blockBound := make(map[string]struct{})
+	for _, param := range block.Params {
+		if param.Name != "" {
+			blockBound[param.Name] = struct{}{}
+		}
+		collectBindingTarget(param.Target, blockBound)
+	}
+	for _, name := range block.ImplicitParams {
+		if name != "" {
+			blockBound[name] = struct{}{}
+		}
+	}
+	for name := range names {
+		if _, bound := blockBound[name]; bound {
+			continue
+		}
+		c.bindLocalType(name, nil)
+	}
+}
+
 // degradeLocalTypesForBindings resets to unknown every local the statements
 // (plus any extra binding targets) may assign. It runs before regions whose
 // execution count the checker cannot know — loop and block bodies — so a
