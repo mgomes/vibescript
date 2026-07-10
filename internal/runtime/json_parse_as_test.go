@@ -221,7 +221,8 @@ end
 	}
 
 	// The checker mirrors the choice: with the global the parse_as schema
-	// is a host hash, so no shape facts flow and nothing is claimed.
+	// is a host hash, so no shape facts flow and the hash reading reports
+	// the schema misuse the runtime rejects.
 	checked := compileScript(t, `
 def takes_int(value: int)
   value
@@ -233,7 +234,7 @@ def run(raw: string)
 end
 `)
 	requireCheckWarningContains(t, checked, "call to takes_int argument value expected int, got string")
-	requireNoCheckWarningsWithOptions(t, checked, opts)
+	requireCheckWarningContainsWithOptions(t, checked, opts, "call to JSON.parse_as expects a shape literal as its second argument, got hash")
 }
 
 func TestShapeLiteralImplicitSelfShadowKeepsHashSemantics(t *testing.T) {
@@ -282,6 +283,38 @@ end
 	if got.Kind() != KindString || got.String() != "Ada" {
 		t.Fatalf("run() = %#v, want \"Ada\"", got)
 	}
+}
+
+func TestCheckInferShadowedShapeLiteralsInferAsHashes(t *testing.T) {
+	t.Parallel()
+
+	// A proven shadow forces the hash reading, so the literal carries hash
+	// facts instead of dropping to unknown.
+	script := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  string = "x"
+  takes_int({ name: string })
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got")
+
+	// The hash reading's field facts flow through indexing.
+	fields := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run
+  string = "x"
+  h = { name: string }
+  takes_int(h[:name])
+end
+`)
+	requireCheckWarningContains(t, fields, "call to takes_int argument value expected int, got string")
 }
 
 func TestCheckInferFutureLocalsDoNotShadowShapeLeaves(t *testing.T) {
@@ -571,8 +604,8 @@ func TestShapeLiteralEngineBuiltinShadowMatchesRuntime(t *testing.T) {
 
 	// The lowercase money builtin resolves in every runtime env, so
 	// { price: money } keeps hash semantics; the checker must not claim
-	// shape facts (a stale claim would report a nil field read the runtime
-	// never performs).
+	// shape facts, and the hash reading statically reports the schema
+	// misuse the runtime rejects.
 	script := compileScript(t, `
 def takes_string(value: string)
   value
@@ -583,7 +616,7 @@ def run(raw: string)
   takes_string(body[:price])
 end
 `)
-	requireNoCheckWarnings(t, script)
+	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a shape literal as its second argument, got hash")
 
 	// And at runtime the shadowed group really is a hash, which parse_as
 	// rejects as a schema.
@@ -741,7 +774,8 @@ func TestShapeLiteralAssignmentTargetPredeclarationShadows(t *testing.T) {
 
 	// Runtime predeclares the assignment target before the RHS runs, so
 	// string resolves as a (nil) local and the group keeps hash semantics;
-	// the checker must not claim shape facts for it.
+	// the checker must not claim shape facts for it, and the hash reading
+	// statically reports the schema misuse the runtime rejects.
 	script := compileScript(t, `
 def takes_int(value: int)
   value
@@ -753,7 +787,7 @@ def run(raw: string)
   takes_int(body["name"])
 end
 `)
-	requireNoCheckWarnings(t, script)
+	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a shape literal as its second argument, got hash")
 
 	err := callScriptErr(t, context.Background(), script, "run", []Value{NewString("{}")}, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "expects a shape literal as its second argument") {

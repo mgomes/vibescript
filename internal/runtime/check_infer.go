@@ -1171,11 +1171,11 @@ func (c *scriptChecker) inferBranchUnionType(branches ...Expression) *TypeExpr {
 // field-level facts. Anything less certain degrades to a plain hash.
 func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 	if lit.ShapeType != nil {
-		if c.hashShapeStaticallyShadowed(lit) {
-			// The group may take either reading at runtime.
-			return nil
+		if !c.hashShapeStaticallyShadowed(lit) {
+			return shapeValueType(lit.ShapeType)
 		}
-		return shapeValueType(lit.ShapeType)
+		// A proven shadow forces the hash reading at runtime, so the
+		// literal infers its hash facts below like any other braced group.
 	}
 	shape := make(map[string]*TypeExpr, len(lit.Pairs))
 	allSymbolKeys, allStringKeys := true, true
