@@ -66,11 +66,15 @@ func checkCommand(args []string) error {
 		if column <= 0 {
 			column = 1
 		}
+		source := warning.Source
+		if source == "" {
+			source = scriptPath
+		}
 		if warning.Function == "" {
-			fmt.Printf("%s:%d:%d: %s\n", scriptPath, line, column, warning.Message)
+			fmt.Printf("%s:%d:%d: %s\n", source, line, column, warning.Message)
 			continue
 		}
-		fmt.Printf("%s:%d:%d: %s (%s)\n", scriptPath, line, column, warning.Message, warning.Function)
+		fmt.Printf("%s:%d:%d: %s (%s)\n", source, line, column, warning.Message, warning.Function)
 	}
 	return fmt.Errorf("check failed with %d issue(s)", len(warnings))
 }

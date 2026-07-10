@@ -205,6 +205,32 @@ end`
 	}
 }
 
+func TestCheckCommandAttributesModuleDiagnosticsToModuleFiles(t *testing.T) {
+	t.Parallel()
+	moduleDir := t.TempDir()
+	module := `def bad -> int
+  "text"
+end`
+	modulePath := filepath.Join(moduleDir, "helpers.vibe")
+	if err := os.WriteFile(modulePath, []byte(module+"\n"), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+	script := `require "helpers"
+
+bad`
+	scriptPath := writeVibeScript(t, script)
+
+	out, err := captureStdout(t, func() error {
+		return checkCommand([]string{"-module-path", moduleDir, scriptPath})
+	})
+	if err == nil || !strings.Contains(err.Error(), "check failed with") {
+		t.Fatalf("checkCommand err = %v, want check failure", err)
+	}
+	if !strings.Contains(out, "helpers.vibe:2:") {
+		t.Fatalf("checkCommand stdout = %q, want module-file-prefixed warning", out)
+	}
+}
+
 func TestCheckCommandRejectsOversizedScript(t *testing.T) {
 	t.Parallel()
 	path := writeOversizedScript(t, "script.vibe")
