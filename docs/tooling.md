@@ -102,6 +102,13 @@ anything. It applies the same semantic contract as `vibes run -check`
 annotations are compile-time facts, known contradictions are errors, and
 unknown values are always permitted and left to the runtime checks.
 
+Whole-script checks follow the entrypoint's execution order. Top-level code is
+checked statement by statement, and a `require` binds its module's exports at
+the point it runs, so a call before a `require` neither resolves nor validates
+that module's contracts. Functions the top-level code calls are checked under
+the runtime state at each call site; every other function is checked as if the
+entrypoint had completed, with all of its top-level requires loaded.
+
 ```bash
 vibes check ./examples/strings/operations.vibe
 ```
