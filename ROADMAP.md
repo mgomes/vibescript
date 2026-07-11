@@ -802,3 +802,26 @@ zero-value embedding default raised to the `low` profile.
 - [x] Release notes are documented in `CHANGELOG.md`.
 - [x] Full tests pass.
 - [x] Release checklist passes for `v1.0.0-rc3`.
+
+## v1.0.0-rc4 - Static Checking for Typed Boundaries (completed 2026-07-10)
+
+Goal: fourth release candidate — static checking for typed boundaries
+(ADR-004): local type inference on the check path, a whole-script
+`vibes check` command, and `JSON.parse_as` with first-class shape literals.
+
+- [x] Static local type inference: locals take assigned expression types, and
+  known contradictions at typed boundaries error while unknowns stay permitted.
+- [x] `vibes check <script>` reports every statically checkable contract issue
+  across functions, class methods, and top-level code, exiting non-zero for CI.
+- [x] `JSON.parse_as(raw, shape)` with shape literals in expression position,
+  shadow resolution matching the runtime, and static schema validation.
+- [x] Whole-script checks follow the entrypoint's execution order: requires
+  seed exports for later checks, and top-level callees check under call-time
+  roots.
+- [x] ADR-004 recorded for typed-boundary static checking.
+
+### v1.0.0-rc4 Definition of Done
+
+- [x] Release notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v1.0.0-rc4`.
