@@ -86,7 +86,9 @@ func (e *Engine) getValidCachedModule(key string) (moduleEntry, bool) {
 // has since changed or broken. If a concurrent reload evicted the engine
 // cache entry, a key-only entry is returned: builtinRequire resolves the
 // exports from its per-execution table for pinned keys, so the entry's
-// script is never read.
+// script is never read. Callers must pass a key the execution actually
+// resolved for the request being served (the relative loader's exact key,
+// or builtinRequire's per-name search pin).
 func (e *Engine) pinnedModuleEntry(key string, pinned map[string]Value) (moduleEntry, bool) {
 	if _, ok := pinned[key]; !ok {
 		return moduleEntry{}, false
@@ -375,7 +377,10 @@ func formatModuleCycle(cycle []string) string {
 
 // loadModule resolves and compiles a module. pinned carries the calling
 // execution's already-required module keys (nil when there is no execution,
-// e.g. the static checker); see getValidCachedModule for its dev-mode role.
+// e.g. the static checker). Relative requires resolve to exactly one key, so
+// the loader serves a pinned key directly; search-path requires are pinned by
+// resolved name in builtinRequire instead, because probing every root's key
+// here would let a pin from a later root override ModulePaths precedence.
 func (e *Engine) loadModule(name string, caller *moduleContext, pinned map[string]Value) (moduleEntry, error) {
 	request, err := e.parseCachedModuleRequest(name)
 	if err != nil {
@@ -389,7 +394,7 @@ func (e *Engine) loadModule(name string, caller *moduleContext, pinned map[strin
 		return e.loadRelativeModule(request, *caller, pinned)
 	}
 
-	return e.loadSearchPathModule(request, pinned)
+	return e.loadSearchPathModule(request)
 }
 
 func (e *Engine) parseCachedModuleRequest(name string) (moduleRequest, error) {
@@ -446,21 +451,9 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext,
 	return e.compileAndCacheModule(key, caller.root, relative, candidate, data, stamp)
 }
 
-func (e *Engine) loadSearchPathModule(request moduleRequest, pinned map[string]Value) (moduleEntry, error) {
+func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error) {
 	if len(e.modPaths) == 0 {
 		return moduleEntry{}, fmt.Errorf("require: module paths not configured")
-	}
-
-	// Probe every root's key against the execution's pins before touching
-	// disk, so the root that satisfied the call's first require keeps
-	// winning even if a file shadowing the module appeared in an earlier
-	// root mid-call.
-	if len(pinned) > 0 {
-		for _, root := range e.modPaths {
-			if entry, ok := e.pinnedModuleEntry(moduleCacheKey(root, request.normalized), pinned); ok {
-				return entry, nil
-			}
-		}
 	}
 
 	if suggestion, ok := e.cachedSearchPathMiss(request.normalized); ok {
@@ -1064,9 +1057,32 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		return NewNil(), fmt.Errorf("require expects a string or symbol module name")
 	}
 
-	entry, err := exec.engine.loadModule(modNameVal.String(), exec.currentModuleContext(), exec.modules)
-	if err != nil {
-		return NewNil(), err
+	modName := modNameVal.String()
+
+	// A search-path require that this call already resolved is served from
+	// its per-call pin, keyed by normalized name, before the loader can
+	// touch the engine cache or disk: a concurrent dev-mode reload must not
+	// fail or re-resolve a module version this call has pinned.
+	var searchPinName string
+	var entry moduleEntry
+	if request, perr := exec.engine.parseCachedModuleRequest(modName); perr == nil && !request.explicitRelative {
+		searchPinName = request.normalized
+		if key, ok := exec.moduleSearchPins[searchPinName]; ok {
+			entry, _ = exec.engine.pinnedModuleEntry(key, exec.modules)
+		}
+	}
+	if entry.key == "" {
+		var err error
+		entry, err = exec.engine.loadModule(modName, exec.currentModuleContext(), exec.modules)
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+	if searchPinName != "" {
+		if exec.moduleSearchPins == nil {
+			exec.moduleSearchPins = make(map[string]string)
+		}
+		exec.moduleSearchPins[searchPinName] = entry.key
 	}
 
 	if cycle, ok := moduleCycleFromLoadStack(exec.moduleLoadStack, entry.key); ok {

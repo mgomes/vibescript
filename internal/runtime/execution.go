@@ -77,6 +77,7 @@ type Execution struct {
 	callStack                 []callFrame
 	root                      *Env
 	modules                   map[string]Value
+	moduleSearchPins          map[string]string
 	moduleLoading             map[string]bool
 	moduleLoadStack           []string
 	moduleStack               []moduleContext

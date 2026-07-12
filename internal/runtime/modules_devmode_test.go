@@ -253,6 +253,43 @@ end`)
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "require: compiling")
 }
 
+func TestRelativePinDoesNotOverrideSearchPathPrecedence(t *testing.T) {
+	t.Parallel()
+	// root2/bar.vibe pins root2::foo via a relative require; a later
+	// require("foo") in the same call must still honor ModulePaths order
+	// and load root1's foo.
+	for _, devMode := range []bool{true, false} {
+		name := "prod"
+		if devMode {
+			name = "dev"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			root1 := tempModuleTree(t, moduleFile{path: "foo.vibe", content: valueModuleSource(100)})
+			root2 := tempModuleTree(t,
+				moduleFile{path: "foo.vibe", content: valueModuleSource(2)},
+				moduleFile{path: "bar.vibe", content: `def relfoo()
+  f = require("./foo")
+  f.value()
+end
+`},
+			)
+
+			engine := MustNewEngine(Config{ModulePaths: []string{root1, root2}, DevMode: devMode})
+			script := compileScriptWithEngine(t, engine, `def run()
+  bar = require("bar")
+  a = bar.relfoo()
+  f = require("foo")
+  a + f.value()
+end`)
+
+			if got := callRunInt(t, script); got != 102 {
+				t.Fatalf("expected relative pin (2) plus search-path foo (100), got %d", got)
+			}
+		})
+	}
+}
+
 func TestDevModeConcurrentReload(t *testing.T) {
 	t.Parallel()
 	root := tempModuleTree(t, moduleFile{path: "dynamic.vibe", content: valueModuleSource(1)})
