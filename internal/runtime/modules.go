@@ -67,23 +67,34 @@ func (e *Engine) getCachedModule(key string) (moduleEntry, bool) {
 // getValidCachedModule returns the cached module for key. In dev mode the
 // entry's source stamp is revalidated first; a stale (or deleted) source
 // evicts the entry and reports a miss so the caller's normal load path
-// re-resolves and recompiles it. Keys in pinned — modules the calling
-// execution already required — skip revalidation so a repeated require
-// inside one Call keeps the version the call first loaded, even if the
-// file has since changed or broken.
-func (e *Engine) getValidCachedModule(key string, pinned map[string]Value) (moduleEntry, bool) {
+// re-resolves and recompiles it.
+func (e *Engine) getValidCachedModule(key string) (moduleEntry, bool) {
 	entry, ok := e.getCachedModule(key)
 	if !ok || !e.config.DevMode {
 		return entry, ok
-	}
-	if _, alreadyRequired := pinned[key]; alreadyRequired {
-		return entry, true
 	}
 	if current, err := statModuleStamp(entry.path); err == nil && current.equals(entry.stamp) {
 		return entry, true
 	}
 	e.invalidateStaleModule(key, entry.script)
 	return moduleEntry{}, false
+}
+
+// pinnedModuleEntry serves a module key the calling execution has already
+// required, bypassing revalidation and disk entirely so a repeated require
+// inside one Call keeps the version the call first loaded, even if the file
+// has since changed or broken. If a concurrent reload evicted the engine
+// cache entry, a key-only entry is returned: builtinRequire resolves the
+// exports from its per-execution table for pinned keys, so the entry's
+// script is never read.
+func (e *Engine) pinnedModuleEntry(key string, pinned map[string]Value) (moduleEntry, bool) {
+	if _, ok := pinned[key]; !ok {
+		return moduleEntry{}, false
+	}
+	if entry, ok := e.getCachedModule(key); ok {
+		return entry, true
+	}
+	return moduleEntry{key: key}, true
 }
 
 // invalidateStaleModule deletes key only if the cache still holds the entry
@@ -409,7 +420,10 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext,
 	}
 	key := moduleCacheKey(caller.root, relative)
 
-	if entry, ok := e.getValidCachedModule(key, pinned); ok {
+	if entry, ok := e.pinnedModuleEntry(key, pinned); ok {
+		return entry, nil
+	}
+	if entry, ok := e.getValidCachedModule(key); ok {
 		return entry, nil
 	}
 
@@ -437,6 +451,18 @@ func (e *Engine) loadSearchPathModule(request moduleRequest, pinned map[string]V
 		return moduleEntry{}, fmt.Errorf("require: module paths not configured")
 	}
 
+	// Probe every root's key against the execution's pins before touching
+	// disk, so the root that satisfied the call's first require keeps
+	// winning even if a file shadowing the module appeared in an earlier
+	// root mid-call.
+	if len(pinned) > 0 {
+		for _, root := range e.modPaths {
+			if entry, ok := e.pinnedModuleEntry(moduleCacheKey(root, request.normalized), pinned); ok {
+				return entry, nil
+			}
+		}
+	}
+
 	if suggestion, ok := e.cachedSearchPathMiss(request.normalized); ok {
 		return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, suggestion)
 	}
@@ -448,7 +474,7 @@ func (e *Engine) loadSearchPathModule(request moduleRequest, pinned map[string]V
 		key := moduleCacheKey(root, request.normalized)
 		candidate := filepath.Join(root, request.normalized)
 
-		if entry, ok := e.getValidCachedModule(key, pinned); ok {
+		if entry, ok := e.getValidCachedModule(key); ok {
 			e.cacheSearchPathHit(request.normalized, entry)
 			return entry, nil
 		}

@@ -221,6 +221,38 @@ end`)
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "require: compiling")
 }
 
+func TestDevModeRepeatedRequireSurvivesGlobalEviction(t *testing.T) {
+	t.Parallel()
+	root := tempModuleTree(t, moduleFile{path: "dynamic.vibe", content: valueModuleSource(1)})
+	modulePath := filepath.Join(root, "dynamic.vibe")
+	base := time.Now().Add(-time.Hour)
+
+	engine := devModeEngineWithRoot(t, root)
+	// Model a concurrent call's dev-mode reload evicting the engine cache
+	// entry (plus a half-written file on disk) between two requires of the
+	// same module in one call.
+	engine.RegisterBuiltin("evict_and_break", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		writeModuleStamped(t, modulePath, "def value(\n", base.Add(time.Second))
+		if cleared := engine.ClearModuleCache(); cleared != 1 {
+			return NewNil(), fmt.Errorf("expected 1 evicted module, got %d", cleared)
+		}
+		return NewNil(), nil
+	})
+	script := compileScriptWithEngine(t, engine, `def run()
+  a = require("dynamic")
+  first = a.value()
+  evict_and_break()
+  b = require("dynamic")
+  first + b.value()
+end`)
+
+	if got := callRunInt(t, script); got != 2 {
+		t.Fatalf("expected repeated require to survive global eviction (1+1), got %d", got)
+	}
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "require: compiling")
+}
+
 func TestDevModeConcurrentReload(t *testing.T) {
 	t.Parallel()
 	root := tempModuleTree(t, moduleFile{path: "dynamic.vibe", content: valueModuleSource(1)})
