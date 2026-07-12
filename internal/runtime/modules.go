@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/mgomes/vibescript/internal/ast"
 )
@@ -21,6 +22,28 @@ type moduleEntry struct {
 	name   string
 	path   string
 	script *Script
+	stamp  moduleStamp
+}
+
+// moduleStamp is the change signature for a compiled module's source file
+// (mtime+size), mirroring the fileStamp the CLI watch loop uses. Content
+// hashing is deliberately not used: it would re-read every module on every
+// require, defeating the cache dev mode exists to keep warm.
+type moduleStamp struct {
+	modTime time.Time
+	size    int64
+}
+
+func (s moduleStamp) equals(o moduleStamp) bool {
+	return s.size == o.size && s.modTime.Equal(o.modTime)
+}
+
+func statModuleStamp(path string) (moduleStamp, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return moduleStamp{}, err
+	}
+	return moduleStamp{modTime: info.ModTime(), size: info.Size()}, nil
 }
 
 type moduleRequest struct {
@@ -39,6 +62,33 @@ func (e *Engine) getCachedModule(key string) (moduleEntry, bool) {
 	entry, ok := e.modules[key]
 	e.modMu.RUnlock()
 	return entry, ok
+}
+
+// getValidCachedModule returns the cached module for key. In dev mode the
+// entry's source stamp is revalidated first; a stale (or deleted) source
+// evicts the entry and reports a miss so the caller's normal load path
+// re-resolves and recompiles it.
+func (e *Engine) getValidCachedModule(key string) (moduleEntry, bool) {
+	entry, ok := e.getCachedModule(key)
+	if !ok || !e.config.DevMode {
+		return entry, ok
+	}
+	if current, err := statModuleStamp(entry.path); err == nil && current.equals(entry.stamp) {
+		return entry, true
+	}
+	e.invalidateStaleModule(key, entry.script)
+	return moduleEntry{}, false
+}
+
+// invalidateStaleModule deletes key only if the cache still holds the entry
+// the caller observed (same *Script), so a concurrent goroutine's fresh
+// reload is never evicted.
+func (e *Engine) invalidateStaleModule(key string, seen *Script) {
+	e.modMu.Lock()
+	if cur, ok := e.modules[key]; ok && cur.script == seen {
+		delete(e.modules, key)
+	}
+	e.modMu.Unlock()
 }
 
 func shouldExportModuleFunction(fn *ScriptFunction) bool {
@@ -141,7 +191,7 @@ func bindModuleExportsWithoutOverwrite(root *Env, exports map[string]Value) {
 	}
 }
 
-func (e *Engine) compileAndCacheModule(key, root, relative, fullPath string, content []byte) (moduleEntry, error) {
+func (e *Engine) compileAndCacheModule(key, root, relative, fullPath string, content []byte, stamp moduleStamp) (moduleEntry, error) {
 	if err := e.enforceModulePolicy(relative); err != nil {
 		return moduleEntry{}, err
 	}
@@ -156,6 +206,7 @@ func (e *Engine) compileAndCacheModule(key, root, relative, fullPath string, con
 		name:   filepath.Clean(relative),
 		path:   filepath.Clean(fullPath),
 		script: script,
+		stamp:  stamp,
 	}
 	script.moduleKey = key
 	script.modulePath = entry.path
@@ -349,7 +400,7 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext)
 	}
 	key := moduleCacheKey(caller.root, relative)
 
-	if entry, ok := e.getCachedModule(key); ok {
+	if entry, ok := e.getValidCachedModule(key); ok {
 		return entry, nil
 	}
 
@@ -361,7 +412,7 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext)
 		return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
 	}
 
-	data, readErr := e.readModuleSource(candidate)
+	data, stamp, readErr := e.readModuleSource(candidate)
 	if readErr != nil {
 		if errors.Is(readErr, fs.ErrNotExist) {
 			return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, e.relativeModuleSuggestion(request, caller, candidate))
@@ -369,7 +420,7 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext)
 		return moduleEntry{}, fmt.Errorf("require: reading %s: %w", candidate, readErr)
 	}
 
-	return e.compileAndCacheModule(key, caller.root, relative, candidate, data)
+	return e.compileAndCacheModule(key, caller.root, relative, candidate, data, stamp)
 }
 
 func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error) {
@@ -388,7 +439,7 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 		key := moduleCacheKey(root, request.normalized)
 		candidate := filepath.Join(root, request.normalized)
 
-		if entry, ok := e.getCachedModule(key); ok {
+		if entry, ok := e.getValidCachedModule(key); ok {
 			e.cacheSearchPathHit(request.normalized, entry)
 			return entry, nil
 		}
@@ -396,7 +447,7 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 		if _, err := moduleRelativePath(root, candidate); err != nil {
 			return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
 		}
-		data, readErr := e.readModuleSource(candidate)
+		data, stamp, readErr := e.readModuleSource(candidate)
 		if readErr != nil {
 			if errors.Is(readErr, fs.ErrNotExist) {
 				continue
@@ -404,7 +455,7 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 			return moduleEntry{}, fmt.Errorf("require: reading %s: %w", candidate, readErr)
 		}
 
-		entry, err := e.compileAndCacheModule(key, root, request.normalized, candidate, data)
+		entry, err := e.compileAndCacheModule(key, root, request.normalized, candidate, data, stamp)
 		if err != nil {
 			return moduleEntry{}, err
 		}
@@ -417,7 +468,15 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 	return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, suggestion)
 }
 
+// The search-path hit/miss and did-you-mean caches below are perf
+// short-circuits derived from a filesystem state that dev mode expects to
+// change: a cached hit would bypass stamp revalidation, and a cached miss
+// would hide a newly created module file. Dev mode disables them.
+
 func (e *Engine) cachedSearchPathHit(normalized string) (moduleEntry, bool) {
+	if e.config.DevMode {
+		return moduleEntry{}, false
+	}
 	e.modMu.RLock()
 	entry, ok := e.modSearchHits[normalized]
 	e.modMu.RUnlock()
@@ -425,6 +484,9 @@ func (e *Engine) cachedSearchPathHit(normalized string) (moduleEntry, bool) {
 }
 
 func (e *Engine) cacheSearchPathHit(normalized string, entry moduleEntry) {
+	if e.config.DevMode {
+		return
+	}
 	e.modMu.Lock()
 	if len(e.modSearchHits) < e.config.MaxCachedModules {
 		e.modSearchHits[normalized] = entry
@@ -433,6 +495,9 @@ func (e *Engine) cacheSearchPathHit(normalized string, entry moduleEntry) {
 }
 
 func (e *Engine) cachedSearchPathMiss(normalized string) (string, bool) {
+	if e.config.DevMode {
+		return "", false
+	}
 	e.modMu.RLock()
 	suggestion, ok := e.modSearchMisses[normalized]
 	e.modMu.RUnlock()
@@ -440,6 +505,9 @@ func (e *Engine) cachedSearchPathMiss(normalized string) (string, bool) {
 }
 
 func (e *Engine) cacheSearchPathMiss(normalized, suggestion string) {
+	if e.config.DevMode {
+		return
+	}
 	e.modMu.Lock()
 	if len(e.modSearchMisses) < e.config.MaxCachedModules {
 		e.modSearchMisses[normalized] = suggestion
@@ -461,7 +529,7 @@ func (e *Engine) searchPathModuleSuggestion(request moduleRequest) string {
 	version := e.modSuggestVersion
 	suggestion, ok := e.modSuggestText[cacheKey]
 	e.modMu.RUnlock()
-	if ok {
+	if ok && !e.config.DevMode {
 		return suggestion
 	}
 
@@ -471,6 +539,9 @@ func (e *Engine) searchPathModuleSuggestion(request moduleRequest) string {
 		candidates = append(candidates, e.cachedModuleCandidatesUnderRoot(root)...)
 	}
 	suggestion = didYouMean(target, candidates)
+	if e.config.DevMode {
+		return suggestion
+	}
 
 	e.modMu.Lock()
 	if e.modSuggestText == nil {
@@ -493,11 +564,14 @@ func (e *Engine) cachedModuleCandidatesUnderRoot(root string) []string {
 	version := e.modSuggestVersion
 	candidates, ok := e.modSuggest[cleanRoot]
 	e.modMu.RUnlock()
-	if ok {
+	if ok && !e.config.DevMode {
 		return candidates
 	}
 
 	candidates = e.moduleCandidatesUnderRoot(cleanRoot)
+	if e.config.DevMode {
+		return candidates
+	}
 
 	e.modMu.Lock()
 	if e.modSuggest == nil {
@@ -605,34 +679,42 @@ func rawRelativePrefix(raw string) string {
 	return slashed[:idx]
 }
 
-func (e *Engine) readModuleSource(path string) ([]byte, error) {
+// readModuleSource returns the module's source bytes along with the stamp of
+// the file they were read from. The stamp comes from the same open file, so
+// it always describes the exact content returned.
+func (e *Engine) readModuleSource(path string) ([]byte, moduleStamp, error) {
 	f, err := openModuleSource(path)
 	if err != nil {
-		return nil, fmt.Errorf("open module source %s: %w", path, err)
+		return nil, moduleStamp{}, fmt.Errorf("open module source %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("stat module source %s: %w", path, err)
+		return nil, moduleStamp{}, fmt.Errorf("stat module source %s: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
+		return nil, moduleStamp{}, fmt.Errorf("%s is not a regular file", path)
 	}
+	stamp := moduleStamp{modTime: info.ModTime(), size: info.Size()}
 	if e.config.MaxSourceBytes > 0 && info.Size() > int64(e.config.MaxSourceBytes) {
-		return nil, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", info.Size(), e.config.MaxSourceBytes)
+		return nil, moduleStamp{}, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", info.Size(), e.config.MaxSourceBytes)
 	}
 	if e.config.MaxSourceBytes <= 0 || e.config.MaxSourceBytes == math.MaxInt {
-		return io.ReadAll(f)
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return nil, moduleStamp{}, err
+		}
+		return data, stamp, nil
 	}
 	data, err := io.ReadAll(io.LimitReader(f, int64(e.config.MaxSourceBytes)+1))
 	if err != nil {
-		return nil, err
+		return nil, moduleStamp{}, err
 	}
 	if len(data) > e.config.MaxSourceBytes {
-		return nil, fmt.Errorf("source exceeds maximum size (> %d bytes)", e.config.MaxSourceBytes)
+		return nil, moduleStamp{}, fmt.Errorf("source exceeds maximum size (> %d bytes)", e.config.MaxSourceBytes)
 	}
-	return data, nil
+	return data, stamp, nil
 }
 
 func parseModuleRequest(name string) (moduleRequest, error) {

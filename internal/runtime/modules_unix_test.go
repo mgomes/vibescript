@@ -20,7 +20,7 @@ func TestReadModuleSourceRejectsFIFOWithoutBlocking(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := engine.readModuleSource(path)
+		_, _, err := engine.readModuleSource(path)
 		done <- err
 	}()
 

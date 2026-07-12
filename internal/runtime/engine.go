@@ -70,6 +70,17 @@ type Config struct {
 	MaxSourceBytes         int
 	DefaultTaskConcurrency int
 	MaxTaskConcurrency     int
+
+	// DevMode enables development-time module reloading. When true, every
+	// require revalidates its cached module against the source file's
+	// mtime+size and recompiles it when the file changed, and require
+	// misses are re-resolved from disk instead of being negatively cached.
+	// The zero value (false) keeps production behavior: modules compile
+	// once and are served from cache until ClearModuleCache. DevMode is
+	// not intended for production: each require costs a stat, and a
+	// reload is not atomic across concurrently running Calls (each
+	// in-flight Call keeps the module version it first required).
+	DevMode bool
 }
 
 // Engine executes Vibescript programs with deterministic limits.
@@ -542,7 +553,11 @@ func (e *Engine) Execute(ctx context.Context, script string) error {
 
 // ConfigSummary provides a human-readable description of the interpreter limits.
 func (e *Engine) ConfigSummary() string {
-	return fmt.Sprintf("steps=%s memory=%s recursion=%s strict_effects=%t tasks=%d/%d", quotaSummary(e.config.StepQuota, ""), quotaSummary(e.config.MemoryQuotaBytes, "B"), quotaSummary(e.config.RecursionLimit, ""), e.config.StrictEffects, e.config.DefaultTaskConcurrency, e.config.MaxTaskConcurrency)
+	summary := fmt.Sprintf("steps=%s memory=%s recursion=%s strict_effects=%t tasks=%d/%d", quotaSummary(e.config.StepQuota, ""), quotaSummary(e.config.MemoryQuotaBytes, "B"), quotaSummary(e.config.RecursionLimit, ""), e.config.StrictEffects, e.config.DefaultTaskConcurrency, e.config.MaxTaskConcurrency)
+	if e.config.DevMode {
+		summary += " dev_mode=true"
+	}
+	return summary
 }
 
 // quotaSummary renders a resolved quota for ConfigSummary: a positive quota
