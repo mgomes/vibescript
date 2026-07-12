@@ -779,7 +779,7 @@ func (c *scriptChecker) collectRequireCallExports(call *CallExpr) {
 	if c.requiredModules == nil {
 		c.requiredModules = make(map[string]struct{})
 	}
-	entry, err := c.script.engine.loadModule(moduleName, c.moduleCaller)
+	entry, err := c.script.engine.loadModule(moduleName, c.moduleCaller, nil)
 	if err != nil {
 		return
 	}
@@ -4344,7 +4344,7 @@ func (c *scriptChecker) requiredModuleObjectFunction(expr Expression, property s
 	if !ok {
 		return "", nil, false
 	}
-	entry, err := c.script.engine.loadModule(moduleName, c.moduleCaller)
+	entry, err := c.script.engine.loadModule(moduleName, c.moduleCaller, nil)
 	if err != nil {
 		return "", nil, false
 	}

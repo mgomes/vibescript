@@ -67,11 +67,17 @@ func (e *Engine) getCachedModule(key string) (moduleEntry, bool) {
 // getValidCachedModule returns the cached module for key. In dev mode the
 // entry's source stamp is revalidated first; a stale (or deleted) source
 // evicts the entry and reports a miss so the caller's normal load path
-// re-resolves and recompiles it.
-func (e *Engine) getValidCachedModule(key string) (moduleEntry, bool) {
+// re-resolves and recompiles it. Keys in pinned — modules the calling
+// execution already required — skip revalidation so a repeated require
+// inside one Call keeps the version the call first loaded, even if the
+// file has since changed or broken.
+func (e *Engine) getValidCachedModule(key string, pinned map[string]Value) (moduleEntry, bool) {
 	entry, ok := e.getCachedModule(key)
 	if !ok || !e.config.DevMode {
 		return entry, ok
+	}
+	if _, alreadyRequired := pinned[key]; alreadyRequired {
+		return entry, true
 	}
 	if current, err := statModuleStamp(entry.path); err == nil && current.equals(entry.stamp) {
 		return entry, true
@@ -356,7 +362,10 @@ func formatModuleCycle(cycle []string) string {
 	return b.String()
 }
 
-func (e *Engine) loadModule(name string, caller *moduleContext) (moduleEntry, error) {
+// loadModule resolves and compiles a module. pinned carries the calling
+// execution's already-required module keys (nil when there is no execution,
+// e.g. the static checker); see getValidCachedModule for its dev-mode role.
+func (e *Engine) loadModule(name string, caller *moduleContext, pinned map[string]Value) (moduleEntry, error) {
 	request, err := e.parseCachedModuleRequest(name)
 	if err != nil {
 		return moduleEntry{}, err
@@ -366,10 +375,10 @@ func (e *Engine) loadModule(name string, caller *moduleContext) (moduleEntry, er
 		if caller == nil || caller.path == "" || caller.root == "" {
 			return moduleEntry{}, fmt.Errorf("require: relative module %q requires a module caller", name)
 		}
-		return e.loadRelativeModule(request, *caller)
+		return e.loadRelativeModule(request, *caller, pinned)
 	}
 
-	return e.loadSearchPathModule(request)
+	return e.loadSearchPathModule(request, pinned)
 }
 
 func (e *Engine) parseCachedModuleRequest(name string) (moduleRequest, error) {
@@ -392,7 +401,7 @@ func (e *Engine) parseCachedModuleRequest(name string) (moduleRequest, error) {
 	return request, nil
 }
 
-func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext) (moduleEntry, error) {
+func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext, pinned map[string]Value) (moduleEntry, error) {
 	candidate := filepath.Clean(filepath.Join(filepath.Dir(caller.path), request.normalized))
 	relative, err := moduleRelativePathLexical(caller.root, candidate)
 	if err != nil {
@@ -400,7 +409,7 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext)
 	}
 	key := moduleCacheKey(caller.root, relative)
 
-	if entry, ok := e.getValidCachedModule(key); ok {
+	if entry, ok := e.getValidCachedModule(key, pinned); ok {
 		return entry, nil
 	}
 
@@ -423,7 +432,7 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext)
 	return e.compileAndCacheModule(key, caller.root, relative, candidate, data, stamp)
 }
 
-func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error) {
+func (e *Engine) loadSearchPathModule(request moduleRequest, pinned map[string]Value) (moduleEntry, error) {
 	if len(e.modPaths) == 0 {
 		return moduleEntry{}, fmt.Errorf("require: module paths not configured")
 	}
@@ -439,7 +448,7 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 		key := moduleCacheKey(root, request.normalized)
 		candidate := filepath.Join(root, request.normalized)
 
-		if entry, ok := e.getValidCachedModule(key); ok {
+		if entry, ok := e.getValidCachedModule(key, pinned); ok {
 			e.cacheSearchPathHit(request.normalized, entry)
 			return entry, nil
 		}
@@ -1029,7 +1038,7 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		return NewNil(), fmt.Errorf("require expects a string or symbol module name")
 	}
 
-	entry, err := exec.engine.loadModule(modNameVal.String(), exec.currentModuleContext())
+	entry, err := exec.engine.loadModule(modNameVal.String(), exec.currentModuleContext(), exec.modules)
 	if err != nil {
 		return NewNil(), err
 	}

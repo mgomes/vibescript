@@ -51,7 +51,9 @@ top-level changes on its own.
   what makes a newly created module file loadable without restart.
 - Each `Call` still sees one consistent version of every module it requires
   (the per-execution module table already guarantees this), so a mid-call edit
-  never mixes versions within a call.
+  never mixes versions within a call. Revalidation is skipped for modules the
+  execution has already required, so a repeated require in the same call
+  neither recompiles nor fails when the file was edited — or broken — mid-call.
 - Eviction is guarded: a stale entry is deleted only if the cache still holds
   the exact entry the checker observed, so a concurrent goroutine's fresh
   reload is never evicted. Concurrent requires of a just-edited module may

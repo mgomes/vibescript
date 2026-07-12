@@ -195,6 +195,32 @@ end`)
 	}
 }
 
+func TestDevModeRepeatedRequireInSameCallKeepsFirstVersion(t *testing.T) {
+	t.Parallel()
+	root := tempModuleTree(t, moduleFile{path: "dynamic.vibe", content: valueModuleSource(1)})
+	modulePath := filepath.Join(root, "dynamic.vibe")
+	base := time.Now().Add(-time.Hour)
+
+	engine := devModeEngineWithRoot(t, root)
+	engine.RegisterBuiltin("break_module", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		writeModuleStamped(t, modulePath, "def value(\n", base.Add(time.Second))
+		return NewNil(), nil
+	})
+	script := compileScriptWithEngine(t, engine, `def run()
+  a = require("dynamic")
+  first = a.value()
+  break_module()
+  b = require("dynamic")
+  first + b.value()
+end`)
+
+	if got := callRunInt(t, script); got != 2 {
+		t.Fatalf("expected repeated require to keep the call's first version (1+1), got %d", got)
+	}
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "require: compiling")
+}
+
 func TestDevModeConcurrentReload(t *testing.T) {
 	t.Parallel()
 	root := tempModuleTree(t, moduleFile{path: "dynamic.vibe", content: valueModuleSource(1)})

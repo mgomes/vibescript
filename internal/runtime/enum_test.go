@@ -332,7 +332,7 @@ end`)
 		t.Fatalf("call failed: %v", err)
 	}
 
-	moduleEntry, err := engine.loadModule("enum_status", nil)
+	moduleEntry, err := engine.loadModule("enum_status", nil, nil)
 	if err != nil {
 		t.Fatalf("load module: %v", err)
 	}
