@@ -89,4 +89,5 @@ directory and cannot escape the configured module root.
 
 After the first load the module is cached, making subsequent `require` calls
 cheap. To refresh or hot reload modules, restart the embedding application or
-call `engine.ClearModuleCache()` between runs.
+call `engine.ClearModuleCache()` between runs. During development, enable
+`Config.DevMode` to reload edited modules automatically on the next `require`.

@@ -56,6 +56,8 @@ For long-running or multi-tenant hosts:
 
 - Configure `ModuleAllowList` and `ModuleDenyList`.
 - Use `engine.ClearModuleCache()` when module sources may change.
+- During development, enable `Config.DevMode` to reload edited modules
+  automatically; keep it off in production.
 
 ## 5. Validate with tests
 

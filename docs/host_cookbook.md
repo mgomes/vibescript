@@ -105,3 +105,64 @@ For each Vibescript version bump:
 2. Re-run docs/examples smoke checks in CI.
 3. Read release notes for deprecations and migration steps.
 4. Roll out behind feature flags if scripts are business-critical.
+
+## 7. Dev Mode: Live-Reloading Scripts and Modules
+
+During development, enable `Config.DevMode` so edits to `require`d modules are
+picked up without restarting the host or calling `ClearModuleCache()`:
+
+```go
+engine, err := vibes.NewEngine(vibes.Config{
+    ModulePaths: []string{"./modules"},
+    DevMode:     true, // development only
+})
+```
+
+In dev mode every `require` revalidates its cached module against the source
+file's mtime+size and recompiles on change, and require misses are re-resolved
+from disk so newly created module files load without a restart. Each `Call`
+still sees a single consistent version of every module it requires, even if a
+file changes mid-call. Do not enable it in production: each require costs a
+stat, and a reload is not atomic across concurrently running calls.
+
+The engine compiles top-level sources from text, not files, so reloading the
+script itself stays a host concern. The same stamp-and-recompile pattern is a
+few lines:
+
+```go
+type liveScript struct {
+    engine *vibes.Engine
+    path   string
+
+    mu     sync.Mutex
+    mtime  time.Time
+    size   int64
+    script *vibes.Script
+}
+
+func (l *liveScript) Current() (*vibes.Script, error) {
+    info, err := os.Stat(l.path)
+    if err != nil {
+        return nil, err
+    }
+    l.mu.Lock()
+    defer l.mu.Unlock()
+    if l.script != nil && info.ModTime().Equal(l.mtime) && info.Size() == l.size {
+        return l.script, nil
+    }
+    source, err := os.ReadFile(l.path)
+    if err != nil {
+        return nil, err
+    }
+    script, err := l.engine.Compile(string(source))
+    if err != nil {
+        return nil, err
+    }
+    l.mtime, l.size, l.script = info.ModTime(), info.Size(), script
+    return script, nil
+}
+```
+
+In-flight calls finish on the script they started with — the same guarantee
+dev mode gives modules. `engine.ClearModuleCache()` remains available in both
+modes as the manual, production-safe invalidation.

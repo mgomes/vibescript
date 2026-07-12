@@ -825,3 +825,11 @@ Goal: fourth release candidate — static checking for typed boundaries
 - [x] Release notes are documented in `CHANGELOG.md`.
 - [x] Full tests pass.
 - [x] Release checklist passes for `v1.0.0-rc4`.
+
+## Unreleased
+
+- [x] `Config.DevMode` reloads edited modules per require in embedding hosts
+  and re-resolves require misses so new module files load without restart
+  (ADR-005).
+- [x] Host cookbook recipe for live-reloading top-level scripts in
+  development.
