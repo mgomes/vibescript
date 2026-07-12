@@ -119,7 +119,9 @@ and caches compiled modules so subsequent calls to `require` are inexpensive.
 Executable top-level statements in a required module run as a module initializer
 before its exports are returned.
 For long-running hosts, call `engine.ClearModuleCache()` between runs when
-module sources can change.
+module sources can change. During development, set `Config.DevMode: true`
+instead to revalidate modules on every `require` and reload edited files
+automatically; keep it off in production.
 Use `Config.ModuleAllowList` / `Config.ModuleDenyList` for policy hooks over
 which modules may be loaded (`*` glob patterns against normalized module names,
 with deny-list rules taking precedence).

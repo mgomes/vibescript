@@ -21,6 +21,7 @@ func main() {
 		ModulePaths:      []string{modulesDir},
 		ModuleAllowList:  []string{"public/*"},
 		ModuleDenyList:   []string{"public/internal/*"},
+		// DevMode: true, // development only: reload edited modules per require
 	})
 	if err != nil {
 		panic(err)

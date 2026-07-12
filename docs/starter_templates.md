@@ -38,6 +38,9 @@ Use when scripts are split into reusable modules. This template shows:
 - `ModuleAllowList`/`ModuleDenyList` policy boundaries.
 - `require` usage for explicit module coupling.
 
+During development, uncomment `DevMode: true` to reload edited modules on the
+next `require` without restarting the host.
+
 ## Adoption Notes
 
 1. Copy the closest template into your host codebase.

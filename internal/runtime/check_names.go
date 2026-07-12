@@ -460,7 +460,7 @@ func (c *scriptChecker) nameFacts() *checkNameFacts {
 			facts.suppress = true
 			return
 		}
-		entry, err := c.script.engine.loadModule(moduleName, c.moduleCaller)
+		entry, err := c.script.engine.loadModule(moduleName, c.moduleCaller, nil)
 		if err != nil {
 			facts.suppress = true
 			return
