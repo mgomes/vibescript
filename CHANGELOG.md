@@ -9,6 +9,19 @@ All notable changes to this project will be documented in this file.
 <!-- Unreleased entries are tracked as individual files in changelog.d/ so
      pull requests never conflict on this file. They are compiled into a
      versioned section by scripts/build_changelog.sh at release time. -->
+## v1.0.0-rc5 - 2026-07-12
+
+Fifth release candidate: development-time module reloading for embedding hosts.
+`Config.DevMode` keeps a long-running engine in sync with edits to its required
+modules while preserving the existing production cache behavior by default.
+
+- **Added: `Config.DevMode` for development-time module reloading (ADR-005).**
+  When enabled, every `require` revalidates its cached module against the
+  source file's mtime+size and recompiles it on change, and require misses are
+  re-resolved from disk so newly created modules load without a restart. The
+  zero value keeps production behavior: modules compile once and are served
+  from cache until `ClearModuleCache`.
+
 ## v1.0.0-rc4 - 2026-07-10
 
 Fourth release candidate: static checking for typed boundaries (ADR-004). The
