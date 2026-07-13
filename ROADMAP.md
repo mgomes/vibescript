@@ -826,10 +826,24 @@ Goal: fourth release candidate — static checking for typed boundaries
 - [x] Full tests pass.
 - [x] Release checklist passes for `v1.0.0-rc4`.
 
-## Unreleased
+## v1.0.0-rc5 - Development-Time Module Reloading (completed 2026-07-12)
 
-- [x] `Config.DevMode` reloads edited modules per require in embedding hosts
-  and re-resolves require misses so new module files load without restart
-  (ADR-005).
-- [x] Host cookbook recipe for live-reloading top-level scripts in
-  development.
+Goal: fifth release candidate — make embedded development loops faster with
+opt-in, production-safe live reloading for required Vibescript modules.
+
+- [x] `Config.DevMode` revalidates cached required modules against their
+  mtime+size stamp and recompiles them when the source changes.
+- [x] Dev mode bypasses derived require caches, allowing newly created modules
+  to resolve without a restart.
+- [x] Each `Call` sees one consistent module version, including if a file
+  changes or becomes invalid while that call is running.
+- [x] ADR-005 and the host cookbook document the development-only behavior and
+  the host-owned top-level-script reload pattern.
+
+### v1.0.0-rc5 Definition of Done
+
+- [x] Release notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v1.0.0-rc5`.
+
+## Unreleased
