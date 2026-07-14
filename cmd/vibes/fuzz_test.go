@@ -81,12 +81,6 @@ func FuzzCLIArgumentAndPathInputs(f *testing.F) {
 			t.Fatalf("write non-directory: %v", err)
 		}
 
-		var modulePaths pathList
-		if err := modulePaths.Set(rawArg); err != nil {
-			t.Fatalf("pathList.Set(%q) = %v, want nil", rawArg, err)
-		}
-		_ = modulePaths.String()
-
 		extras := [][]string{
 			nil,
 			{moduleDir},

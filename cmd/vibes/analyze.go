@@ -1,25 +1,38 @@
 package main
 
 import (
+	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"path/filepath"
 
 	"github.com/mgomes/vibescript/internal/tools/analyze"
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/urfave/cli/v3"
 )
 
 func analyzeCommand(args []string) error {
-	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)
-	fs.SetOutput(new(flagErrorSink))
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	return runStandaloneCommand(context.Background(), newAnalyzeCommand(), args)
+}
 
-	remaining := fs.Args()
+func newAnalyzeCommand() *cli.Command {
+	stopAfterScript := 1
+	return configureCLICommand(&cli.Command{
+		Name:         "analyze",
+		Usage:        "analyze a script for lint issues",
+		ArgsUsage:    "<script>",
+		StopOnNthArg: &stopAfterScript,
+		Action:       analyzeAction,
+	})
+}
+
+func analyzeAction(_ context.Context, command *cli.Command) error {
+	remaining := commandPositionalArgs(command)
 	if len(remaining) == 0 {
 		return errors.New("vibes analyze: script path required")
+	}
+	if len(remaining) > 1 {
+		return errors.New("vibes analyze: expected a single script path")
 	}
 
 	scriptPath, err := filepath.Abs(remaining[0])

@@ -1,12 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"path/filepath"
 
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/urfave/cli/v3"
 )
 
 // checkCommand implements `vibes check <script>`: it compiles the script and
@@ -15,15 +16,30 @@ import (
 // contract as `vibes run -check` (ADR-004: error on known contradictions,
 // permit unknowns).
 func checkCommand(args []string) error {
-	fs := flag.NewFlagSet("check", flag.ContinueOnError)
-	fs.SetOutput(new(flagErrorSink))
-	var modulePaths pathList
-	fs.Var(&modulePaths, "module-path", "add a module search directory (repeatable)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	return runStandaloneCommand(context.Background(), newCheckCommand(), args)
+}
 
-	remaining := fs.Args()
+func newCheckCommand() *cli.Command {
+	stopAfterScript := 1
+	return configureCLICommand(&cli.Command{
+		Name:                      "check",
+		Usage:                     "statically check a script without executing it",
+		ArgsUsage:                 "<script>",
+		StopOnNthArg:              &stopAfterScript,
+		DisableSliceFlagSeparator: true,
+		Flags: []cli.Flag{
+			&cli.StringSliceFlag{
+				Name:      "module-path",
+				Usage:     "add a module search directory (repeatable)",
+				TakesFile: true,
+			},
+		},
+		Action: checkAction,
+	})
+}
+
+func checkAction(_ context.Context, command *cli.Command) error {
+	remaining := commandPositionalArgs(command)
 	if len(remaining) == 0 {
 		return errors.New("vibes check: script path required")
 	}
@@ -35,7 +51,7 @@ func checkCommand(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve script path: %w", err)
 	}
-	moduleDirs, err := computeModulePaths(filepath.Dir(scriptPath), modulePaths)
+	moduleDirs, err := computeModulePaths(filepath.Dir(scriptPath), command.StringSlice("module-path"))
 	if err != nil {
 		return fmt.Errorf("compute module paths: %w", err)
 	}

@@ -107,17 +107,7 @@ func TestRapidComputeModulePathsMatchesDirectoryModel(t *testing.T) {
 			extras[i] = choices[index]
 		}
 
-		var modulePaths pathList
-		for _, extra := range extras {
-			if err := modulePaths.Set(extra); err != nil {
-				rt.Fatalf("pathList.Set(%q) error = %v, want nil", extra, err)
-			}
-		}
-		if got, want := modulePaths.String(), strings.Join(extras, string(os.PathListSeparator)); got != want {
-			rt.Fatalf("pathList.String() after Set(%v) = %q, want %q", extras, got, want)
-		}
-
-		got, err := computeModulePaths(scriptDir, modulePaths)
+		got, err := computeModulePaths(scriptDir, extras)
 		if err != nil {
 			rt.Fatalf("computeModulePaths(%q, %v) error = %v, want nil", scriptDir, extras, err)
 		}

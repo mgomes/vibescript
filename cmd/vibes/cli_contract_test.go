@@ -22,33 +22,44 @@ const (
 	cliContractArgsEnv   = "VIBES_CLI_CONTRACT_ARGS"
 )
 
-const cliContractUsage = `Usage: vibes <command> [flags] [args...]
+const cliContractRootHelp = `NAME:
+   vibes - run Vibescript programs and development tools
 
-Commands:
-  run <script>    Execute a script file
-  check <script>  Static contract checking without executing
-  fmt <path>      Canonical formatting for .vibe files
-  analyze <script> Analyze a script for lint issues
-  test [path...]  Run *_test.vibe files (-run <regexp> to filter)
-  lsp             Start language server (stdio)
-  repl            Start interactive REPL
-  help            Show this help message
+USAGE:
+   vibes [global options] [command [command options]]
 
-Run flags:
-  -function string
-    function to invoke after compilation (default "run")
-  -check
-    compile and validate static contracts without executing
-  -e <snippet>
-    evaluate an inline snippet instead of a script file
-  -watch
-    re-run whenever the script or its modules change
-  -module-path <dir>
-    add a directory to module search paths (repeatable)
-  -profile <name>
-    execution quota profile: low, medium, high, xhigh (default "xhigh")
-  -step-quota / -memory-quota / -recursion-limit <n>
-    override a profile quota (-1 = unlimited)
+COMMANDS:
+   run      execute a script file or inline snippet
+   check    statically check a script without executing it
+   fmt      canonically format Vibescript source files
+   analyze  analyze a script for lint issues
+   test     discover and run Vibescript tests
+   lsp      start the language server over stdio
+   repl     start the interactive Vibescript REPL
+   help, h  Shows a list of commands or help for one command
+
+GLOBAL OPTIONS:
+   --help, -h  show help
+`
+
+const cliContractRunHelp = `NAME:
+   vibes run - execute a script file or inline snippet
+
+USAGE:
+   vibes run [options] <script> [args...]
+   vibes run [options] -e SNIPPET
+
+OPTIONS:
+   --function string                              function to invoke; without it, top-level statements run when present, otherwise run
+   --check                                        compile and validate static contracts without executing
+   -e string                                      evaluate an inline snippet instead of a script file
+   --watch                                        re-run whenever the script or its modules change
+   --module-path string [ --module-path string ]  add a module search directory (repeatable)
+   --profile string                               execution quota profile: low, medium, high, xhigh (default: "xhigh")
+   --step-quota int                               override the profile's step quota (-1 = unlimited)
+   --memory-quota int                             override the profile's memory quota in bytes (-1 = unlimited)
+   --recursion-limit int                          override the profile's recursion limit (-1 = unlimited, which can crash on infinite recursion)
+   --help, -h                                     show help
 `
 
 type cliContractResult struct {
@@ -81,13 +92,13 @@ func TestCLIContractRootDispatch(t *testing.T) {
 		{
 			name: "help",
 			args: []string{"--help"},
-			want: cliContractResult{Stderr: cliContractUsage},
+			want: cliContractResult{Stdout: cliContractRootHelp},
 		},
 		{
 			name: "missing command",
 			want: cliContractResult{
 				ExitCode: 1,
-				Stderr:   cliContractUsage + "invalid command\n",
+				Stderr:   cliContractRootHelp + "command required\n",
 			},
 		},
 		{
@@ -95,7 +106,47 @@ func TestCLIContractRootDispatch(t *testing.T) {
 			args: []string{"unknown"},
 			want: cliContractResult{
 				ExitCode: 1,
-				Stderr:   cliContractUsage + "invalid command\n",
+				Stderr:   cliContractRootHelp + "unknown command \"unknown\"\n",
+			},
+		},
+		{
+			name: "unknown command before help flag",
+			args: []string{"unknown", "--help"},
+			want: cliContractResult{
+				ExitCode: 1,
+				Stderr:   cliContractRootHelp + "unknown command \"unknown\"\n",
+			},
+		},
+		{
+			name: "root flag terminator is not a command escape",
+			args: []string{"--", "run"},
+			want: cliContractResult{
+				ExitCode: 1,
+				Stderr:   cliContractRootHelp + "unknown command \"--\"\n",
+			},
+		},
+		{
+			name: "unsupported single-dash help spelling",
+			args: []string{"-help"},
+			want: cliContractResult{
+				ExitCode: 1,
+				Stderr:   cliContractRootHelp + "unknown command \"-help\"\n",
+			},
+		},
+		{
+			name: "unsupported abbreviated help spelling",
+			args: []string{"--h"},
+			want: cliContractResult{
+				ExitCode: 1,
+				Stderr:   cliContractRootHelp + "unknown command \"--h\"\n",
+			},
+		},
+		{
+			name: "unknown command tail cannot resume root parsing",
+			args: []string{"unknown", "", "--help"},
+			want: cliContractResult{
+				ExitCode: 1,
+				Stderr:   cliContractRootHelp + "unknown command \"unknown\"\n",
 			},
 		},
 	}
@@ -108,6 +159,43 @@ func TestCLIContractRootDispatch(t *testing.T) {
 	}
 }
 
+func TestCLIContractRunHelp(t *testing.T) {
+	for _, args := range [][]string{{"run", "-h"}, {"run", "--help"}, {"help", "run"}} {
+		got := runCLIContractProcess(t, "", args...)
+		assertCLIContractResult(t, got, cliContractResult{Stdout: cliContractRunHelp})
+	}
+}
+
+func TestCLIContractHelpCommandHasHelp(t *testing.T) {
+	got := runCLIContractProcess(t, "", "help", "--help")
+	if got.ExitCode != 0 {
+		t.Errorf("help --help exit code = %d, want 0", got.ExitCode)
+	}
+	if got.Stderr != "" {
+		t.Errorf("help --help stderr = %q, want empty", got.Stderr)
+	}
+	if want := "NAME:\n   vibes help"; !strings.Contains(got.Stdout, want) {
+		t.Errorf("help --help stdout = %q, want substring %q", got.Stdout, want)
+	}
+}
+
+func TestCLIContractEverySubcommandHasHelp(t *testing.T) {
+	for _, name := range []string{"run", "check", "fmt", "analyze", "test", "lsp", "repl"} {
+		t.Run(name, func(t *testing.T) {
+			got := runCLIContractProcess(t, "", name, "--help")
+			if got.ExitCode != 0 {
+				t.Errorf("%s --help exit code = %d, want 0", name, got.ExitCode)
+			}
+			if got.Stderr != "" {
+				t.Errorf("%s --help stderr = %q, want empty", name, got.Stderr)
+			}
+			if want := "NAME:\n   vibes " + name; !strings.Contains(got.Stdout, want) {
+				t.Errorf("%s --help stdout = %q, want substring %q", name, got.Stdout, want)
+			}
+		})
+	}
+}
+
 func TestCLIContractSubcommandFlagErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -115,14 +203,34 @@ func TestCLIContractSubcommandFlagErrors(t *testing.T) {
 		want string
 	}{
 		{
-			name: "help",
-			args: []string{"run", "-h"},
-			want: "flag: help requested\n",
-		},
-		{
 			name: "unknown flag",
 			args: []string{"run", "-unknown"},
 			want: "flag provided but not defined: -unknown\n",
+		},
+		{
+			name: "unknown flag with inline value",
+			args: []string{"fmt", "--unknown=value"},
+			want: "flag provided but not defined: -unknown\n",
+		},
+		{
+			name: "unknown help flag",
+			args: []string{"help", "-unknown"},
+			want: "flag provided but not defined: -unknown\n",
+		},
+		{
+			name: "missing double-dash flag value",
+			args: []string{"run", "--e"},
+			want: "flag needs an argument: -e\n",
+		},
+		{
+			name: "too many flag dashes",
+			args: []string{"fmt", "---w"},
+			want: "bad flag syntax: ---w\n",
+		},
+		{
+			name: "empty flag name",
+			args: []string{"run", "--=value"},
+			want: "bad flag syntax: --=value\n",
 		},
 	}
 
@@ -137,14 +245,94 @@ func TestCLIContractSubcommandFlagErrors(t *testing.T) {
 	}
 }
 
+func TestCLIContractLeafCommandsTreatHelpAsAnArgument(t *testing.T) {
+	dir := t.TempDir()
+	writeCLIContractFile(t, dir, "help", `"script"`+"\n")
+
+	for _, args := range [][]string{{"run", "help"}, {"run", "--", "help"}} {
+		got := runCLIContractProcessInDir(t, dir, "", args...)
+		assertCLIContractResult(t, got, cliContractResult{Stdout: "script\n"})
+	}
+
+	for _, args := range [][]string{{"lsp", "help"}, {"repl", "h"}} {
+		got := runCLIContractProcess(t, "", args...)
+		assertCLIContractResult(t, got, cliContractResult{
+			ExitCode: 1,
+			Stderr:   "vibes " + args[0] + ": does not accept positional arguments\n",
+		})
+	}
+}
+
+func TestCLIContractREPLClosedInputReturns(t *testing.T) {
+	got := runCLIContractProcess(t, "", "repl")
+	if got.ExitCode != 1 {
+		t.Errorf("repl with closed input exit code = %d, want 1", got.ExitCode)
+	}
+	if got.Stdout != "" {
+		t.Errorf("repl with closed input stdout = %q, want empty", got.Stdout)
+	}
+	if !strings.Contains(got.Stderr, "repl:") {
+		t.Errorf("repl with closed input stderr = %q, want REPL error", got.Stderr)
+	}
+}
+
+func TestCLIContractVersionRemainsUnavailable(t *testing.T) {
+	got := runCLIContractProcess(t, "", "--version")
+	assertCLIContractResult(t, got, cliContractResult{
+		ExitCode: 1,
+		Stderr:   "flag provided but not defined: -version\n",
+	})
+}
+
+func TestCLIContractRejectsUndocumentedExtraArguments(t *testing.T) {
+	scriptPath := writeVibeScript(t, "1\n")
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "analyze",
+			args: []string{"analyze", scriptPath, "extra.vibe"},
+			want: "vibes analyze: expected a single script path\n",
+		},
+		{
+			name: "lsp",
+			args: []string{"lsp", "extra"},
+			want: "vibes lsp: does not accept positional arguments\n",
+		},
+		{
+			name: "repl",
+			args: []string{"repl", "extra"},
+			want: "vibes repl: does not accept positional arguments\n",
+		},
+		{
+			name: "help",
+			args: []string{"help", "run", "extra"},
+			want: "vibes help: expected at most one command\n",
+		},
+		{
+			name: "help with terminator after topic",
+			args: []string{"help", "run", "--"},
+			want: "vibes help: expected at most one command\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runCLIContractProcess(t, "", tc.args...)
+			assertCLIContractResult(t, got, cliContractResult{ExitCode: 1, Stderr: tc.want})
+		})
+	}
+}
+
 func TestCLIContractRunStopsParsingAtFirstPositional(t *testing.T) {
 	scriptPath := writeVibeScript(t, `def run(value)
   value
 end
 `)
 
-	got := runCLIContractProcess(t, "", "run", scriptPath, "-check")
-	assertCLIContractResult(t, got, cliContractResult{Stdout: "-check\n"})
+	got := runCLIContractProcess(t, "", "run", scriptPath, "-check=")
+	assertCLIContractResult(t, got, cliContractResult{Stdout: "-check=\n"})
 }
 
 func TestCLIContractRunDoubleDashTerminatesFlags(t *testing.T) {
@@ -153,8 +341,162 @@ func TestCLIContractRunDoubleDashTerminatesFlags(t *testing.T) {
 end
 `)
 
-	got := runCLIContractProcess(t, "", "run", "--", scriptPath, "-check")
-	assertCLIContractResult(t, got, cliContractResult{Stdout: "-check\n"})
+	got := runCLIContractProcess(t, "", "run", "--", scriptPath, "-check=")
+	assertCLIContractResult(t, got, cliContractResult{Stdout: "-check=\n"})
+}
+
+func TestCLIContractRunPreservesDoubleDashAfterScript(t *testing.T) {
+	scriptPath := writeVibeScript(t, `def run(first, second)
+  first + ":" + second
+end
+`)
+
+	got := runCLIContractProcess(t, "", "run", scriptPath, "--", "-check")
+	assertCLIContractResult(t, got, cliContractResult{Stdout: "--:-check\n"})
+}
+
+func TestCLIContractRunTreatsEmptyArgumentsAsOpaque(t *testing.T) {
+	scriptPath := writeVibeScript(t, `def run(first, second)
+  first + ":" + second
+end
+`)
+
+	for _, first := range []string{"", " "} {
+		got := runCLIContractProcess(t, "", "run", scriptPath, first, "-check")
+		assertCLIContractResult(t, got, cliContractResult{Stdout: first + ":-check\n"})
+	}
+}
+
+func TestCLIContractSingleDashScriptPreservesFollowingArguments(t *testing.T) {
+	dir := t.TempDir()
+	writeCLIContractFile(t, dir, "-", `def run(value)
+  value
+end
+`)
+
+	got := runCLIContractProcessInDir(t, dir, "", "run", "-", "argument")
+	assertCLIContractResult(t, got, cliContractResult{Stdout: "argument\n"})
+
+	got = runCLIContractProcessInDir(t, dir, "", "check", "-", "extra")
+	assertCLIContractResult(t, got, cliContractResult{
+		ExitCode: 1,
+		Stderr:   "vibes check: expected a single script path\n",
+	})
+}
+
+func TestCLIContractRejectsNonLetterFlagWithoutModifyingFile(t *testing.T) {
+	const source = "def run()\n1\nend\n"
+	dir := t.TempDir()
+	path := writeCLIContractFile(t, dir, "-1", source)
+
+	got := runCLIContractProcessInDir(t, dir, "", "fmt", "-w", "-1")
+	assertCLIContractResult(t, got, cliContractResult{
+		ExitCode: 1,
+		Stderr:   "flag provided but not defined: -1\n",
+	})
+	assertCLIContractFileUnchanged(t, path, source)
+}
+
+func TestCLIContractRejectsUnicodeSingleDashFlagWithoutModifyingFile(t *testing.T) {
+	const source = "def run()\n1\nend\n"
+	dir := t.TempDir()
+	path := writeCLIContractFile(t, dir, "-א.vibe", source)
+
+	got := runCLIContractProcessInDir(t, dir, "", "fmt", "-w", "-א.vibe")
+	assertCLIContractResult(t, got, cliContractResult{
+		ExitCode: 1,
+		Stderr:   "flag provided but not defined: -א.vibe\n",
+	})
+	assertCLIContractFileUnchanged(t, path, source)
+}
+
+func TestCLIContractWhitespaceWrappedFlagsDoNotChangeMeaning(t *testing.T) {
+	const source = "def run()\n1\nend\n"
+	path := writeVibeScript(t, source)
+
+	got := runCLIContractProcess(t, "", "fmt", "-w ", path)
+	assertCLIContractResult(t, got, cliContractResult{
+		ExitCode: 1,
+		Stderr:   "flag provided but not defined: -w \n",
+	})
+	assertCLIContractFileUnchanged(t, path, source)
+
+	got = runCLIContractProcess(t, "", "fmt", "-w=true ", path)
+	assertCLIContractResult(t, got, cliContractResult{
+		ExitCode: 1,
+		Stderr:   "invalid boolean value \"true \" for -w: parse error\n",
+	})
+	assertCLIContractFileUnchanged(t, path, source)
+
+	got = runCLIContractProcess(t, "", "fmt", " -w", path)
+	if got.ExitCode != 1 {
+		t.Errorf("leading-space path exit code = %d, want 1", got.ExitCode)
+	}
+	assertCLIContractFileUnchanged(t, path, source)
+}
+
+func TestCLIContractValuedHelpCannotEnableMutatingFlags(t *testing.T) {
+	const source = "def run()\n1\nend\n"
+	path := writeVibeScript(t, source)
+
+	got := runCLIContractProcess(t, "", "fmt", "-h=false", "-w", path)
+	assertCLIContractResult(t, got, cliContractResult{
+		ExitCode: 1,
+		Stderr:   "help flag does not accept a value\n",
+	})
+	assertCLIContractFileUnchanged(t, path, source)
+
+	got = runCLIContractProcess(t, "", "--help=false", "fmt", "-w", path)
+	assertCLIContractResult(t, got, cliContractResult{
+		ExitCode: 1,
+		Stderr:   cliContractRootHelp + "unknown command \"--help=false\"\n",
+	})
+	assertCLIContractFileUnchanged(t, path, source)
+}
+
+func TestCLIContractReportsFirstFlagErrorWithoutModifyingFile(t *testing.T) {
+	const source = "def run()\n1\nend\n"
+	path := writeVibeScript(t, source)
+
+	got := runCLIContractProcess(t, "", "fmt", "-w=bogus", "-check=", path)
+	assertCLIContractResult(t, got, cliContractResult{
+		ExitCode: 1,
+		Stderr:   "invalid boolean value \"bogus\" for -w: parse error\n",
+	})
+	assertCLIContractFileUnchanged(t, path, source)
+}
+
+func TestCLIContractReportsIntegerErrorsBeforeLaterFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"-step-quota=nope", "-unknown"},
+		{"-step-quota", "nope", "-unknown"},
+	} {
+		got := runCLIContractProcess(t, "", append([]string{"run"}, args...)...)
+		assertCLIContractResult(t, got, cliContractResult{
+			ExitCode: 1,
+			Stderr:   "invalid value \"nope\" for flag -step-quota: parse error\n",
+		})
+	}
+}
+
+func TestCLIContractBareHelpShortCircuitsMutatingFlags(t *testing.T) {
+	const source = "def run()\n1\nend\n"
+	for _, args := range [][]string{{"-h", "-w"}, {"-w", "--help"}} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			path := writeVibeScript(t, source)
+			got := runCLIContractProcess(t, "", append([]string{"fmt"}, append(args, path)...)...)
+			if got.ExitCode != 0 {
+				t.Errorf("vibes fmt %v exit code = %d, want 0", args, got.ExitCode)
+			}
+			if got.Stderr != "" {
+				t.Errorf("vibes fmt %v stderr = %q, want empty", args, got.Stderr)
+			}
+			if want := "NAME:\n   vibes fmt"; !strings.Contains(got.Stdout, want) {
+				t.Errorf("vibes fmt %v stdout = %q, want substring %q", args, got.Stdout, want)
+			}
+			assertCLIContractFileUnchanged(t, path, source)
+		})
+	}
 }
 
 func TestCLIContractRunExplicitEmptySnippet(t *testing.T) {
@@ -163,6 +505,38 @@ func TestCLIContractRunExplicitEmptySnippet(t *testing.T) {
 		ExitCode: 1,
 		Stderr:   "vibes run: -e requires a non-empty snippet\n",
 	})
+}
+
+func TestCLIContractRejectsExplicitEmptyBoolean(t *testing.T) {
+	scriptPath := writeVibeScript(t, "1\n")
+	got := runCLIContractProcess(t, "", "run", "-check=", scriptPath)
+	assertCLIContractResult(t, got, cliContractResult{
+		ExitCode: 1,
+		Stderr:   "invalid boolean value \"\" for -check: parse error\n",
+	})
+}
+
+func TestCLIContractEmptyWriteBooleanDoesNotModifyFile(t *testing.T) {
+	const source = "def run()\n1\nend\n"
+	path := writeVibeScript(t, source)
+
+	got := runCLIContractProcess(t, "", "fmt", "-w=", path)
+	assertCLIContractResult(t, got, cliContractResult{
+		ExitCode: 1,
+		Stderr:   "invalid boolean value \"\" for -w: parse error\n",
+	})
+	assertCLIContractFileUnchanged(t, path, source)
+}
+
+func assertCLIContractFileUnchanged(t *testing.T, path, source string) {
+	t.Helper()
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read source after rejected command: %v", err)
+	}
+	if string(after) != source {
+		t.Fatalf("source after rejected command = %q, want unchanged %q", after, source)
+	}
 }
 
 func TestCLIContractRunExplicitDefaultFunction(t *testing.T) {
@@ -209,7 +583,7 @@ puts count(2000000)
 
 func TestCLIContractRunRepeatableModulePaths(t *testing.T) {
 	root := t.TempDir()
-	firstDir := filepath.Join(root, "first-modules")
+	firstDir := filepath.Join(root, "first,modules")
 	secondDir := filepath.Join(root, "second-modules")
 	mainDir := filepath.Join(root, "main")
 	writeCLIContractFile(t, firstDir, "first.vibe", `def value
@@ -271,6 +645,11 @@ func TestCLIContractLSPPreservesStdoutFraming(t *testing.T) {
 
 func runCLIContractProcess(t *testing.T, stdin string, args ...string) cliContractResult {
 	t.Helper()
+	return runCLIContractProcessInDir(t, "", stdin, args...)
+}
+
+func runCLIContractProcessInDir(t *testing.T, dir, stdin string, args ...string) cliContractResult {
+	t.Helper()
 
 	encodedArgs, err := json.Marshal(args)
 	if err != nil {
@@ -280,6 +659,7 @@ func runCLIContractProcess(t *testing.T, stdin string, args ...string) cliContra
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCLIContractHelperProcess$")
+	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		cliContractHelperEnv+"=1",
 		cliContractArgsEnv+"="+string(encodedArgs),

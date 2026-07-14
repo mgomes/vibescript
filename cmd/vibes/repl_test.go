@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -8,6 +11,46 @@ import (
 	"github.com/mgomes/vibescript/vibes"
 	"github.com/mgomes/vibescript/vibes/value"
 )
+
+func TestREPLEvaluationUsesSessionContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	m, err := newREPLModelContext(ctx, replTestQuota())
+	if err != nil {
+		t.Fatalf("newREPLModelContext failed: %v", err)
+	}
+
+	output, isErr := m.evaluate("i = 0\nwhile i >= 0\n  i = i + 1\nend")
+	if !isErr {
+		t.Fatalf("evaluate with canceled context succeeded: %q", output)
+	}
+	if !strings.Contains(output, context.Canceled.Error()) {
+		t.Fatalf("evaluate with canceled context = %q, want context cancellation", output)
+	}
+}
+
+func TestREPLProgramUsesSessionContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	m, err := newREPLModelContext(ctx, replTestQuota())
+	if err != nil {
+		t.Fatalf("newREPLModelContext failed: %v", err)
+	}
+
+	err = runREPLProgram(
+		ctx,
+		m,
+		tea.WithInput(nil),
+		tea.WithOutput(io.Discard),
+		tea.WithoutRenderer(),
+		tea.WithoutSignalHandler(),
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runREPLProgram error = %v, want context.Canceled", err)
+	}
+}
 
 // replTestQuota returns the REPL's default production quota (xhigh) so tests
 // construct models the same way runREPL does.

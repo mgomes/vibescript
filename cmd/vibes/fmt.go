@@ -1,29 +1,50 @@
 package main
 
 import (
+	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/urfave/cli/v3"
 )
 
 func fmtCommand(args []string) error {
-	fs := flag.NewFlagSet("fmt", flag.ContinueOnError)
-	fs.SetOutput(new(flagErrorSink))
-	write := fs.Bool("w", false, "write result to source files instead of stdout")
-	check := fs.Bool("check", false, "fail if any source file needs formatting")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	return runStandaloneCommand(context.Background(), newFmtCommand(), args)
+}
 
-	targets := fs.Args()
+func newFmtCommand() *cli.Command {
+	stopAfterPath := 1
+	return configureCLICommand(&cli.Command{
+		Name:         "fmt",
+		Usage:        "canonically format Vibescript source files",
+		ArgsUsage:    "<path>...",
+		StopOnNthArg: &stopAfterPath,
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "w",
+				Usage: "write results to source files instead of stdout",
+			},
+			&cli.BoolFlag{
+				Name:  "check",
+				Usage: "fail if any source file needs formatting",
+			},
+		},
+		Action: fmtAction,
+	})
+}
+
+func fmtAction(_ context.Context, command *cli.Command) error {
+	targets := commandPositionalArgs(command)
 	if len(targets) == 0 {
 		return errors.New("vibes fmt: path required")
 	}
+	write := command.Bool("w")
+	check := command.Bool("check")
 
 	files, err := collectVibeFiles(targets)
 	if err != nil {
@@ -47,7 +68,7 @@ func fmtCommand(args []string) error {
 		}
 
 		switch {
-		case *write && changed:
+		case write && changed:
 			info, err := os.Stat(path)
 			if err != nil {
 				return fmt.Errorf("stat %s: %w", path, err)
@@ -55,12 +76,12 @@ func fmtCommand(args []string) error {
 			if err := os.WriteFile(path, []byte(formatted), info.Mode().Perm()); err != nil {
 				return fmt.Errorf("write %s: %w", path, err)
 			}
-		case !*write && !*check:
+		case !write && !check:
 			fmt.Print(formatted)
 		}
 	}
 
-	if *check && changedCount > 0 {
+	if check && changedCount > 0 {
 		return fmt.Errorf("vibes fmt: %d file(s) need formatting", changedCount)
 	}
 

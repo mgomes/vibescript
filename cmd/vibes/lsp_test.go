@@ -3,13 +3,17 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
-	"os"
+	"errors"
+	"io"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/vibes"
@@ -17,26 +21,57 @@ import (
 )
 
 func TestRunCLIStartsLSPAndExitsOnEOF(t *testing.T) {
-	// not parallel-safe: swaps process-wide os.Stdin
-	origStdin := os.Stdin
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close write pipe: %v", err)
-	}
-	os.Stdin = r
-	defer func() {
-		os.Stdin = origStdin
-		if err := r.Close(); err != nil {
-			t.Errorf("close read pipe: %v", err)
-		}
-	}()
-
-	if err := runCLI([]string{"vibes", "lsp"}); err != nil {
+	t.Parallel()
+	if err := runCLIContextWithIO(t.Context(), []string{"vibes", "lsp"}, strings.NewReader(""), io.Discard, io.Discard); err != nil {
 		t.Fatalf("runCLI lsp failed: %v", err)
 	}
+}
+
+func TestRunLSPContextCancelsBlockedRead(t *testing.T) {
+	t.Parallel()
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		_ = writer.Close()
+	})
+	started := make(chan struct{})
+	signalingReader := &signalingReadCloser{
+		ReadCloser: reader,
+		started:    started,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	go func() {
+		result <- runLSPContext(ctx, signalingReader, io.Discard)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("LSP did not begin reading")
+	}
+	cancel()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("runLSPContext error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("LSP did not stop after cancellation")
+	}
+}
+
+type signalingReadCloser struct {
+	io.ReadCloser
+	started chan struct{}
+	once    sync.Once
+}
+
+func (r *signalingReadCloser) Read(p []byte) (int, error) {
+	r.once.Do(func() {
+		close(r.started)
+	})
+	return r.ReadCloser.Read(p)
 }
 
 func TestDiagnosticsForSourceWithoutErrors(t *testing.T) {

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +14,7 @@ import (
 	vibesruntime "github.com/mgomes/vibescript/internal/runtime"
 	"github.com/mgomes/vibescript/vibes"
 	"github.com/mgomes/vibescript/vibes/value"
+	"github.com/urfave/cli/v3"
 )
 
 func main() {
@@ -24,66 +24,73 @@ func main() {
 	}
 }
 
-func runCLI(args []string) error {
-	if len(args) < 2 {
-		return usageError()
-	}
-	switch args[1] {
-	case "run":
-		return runCommand(args[2:])
-	case "check":
-		return checkCommand(args[2:])
-	case "fmt":
-		return fmtCommand(args[2:])
-	case "analyze":
-		return analyzeCommand(args[2:])
-	case "test":
-		return testCommand(args[2:])
-	case "lsp":
-		return runLSP()
-	case "repl":
-		return runREPL(args[2:])
-	case "help", "-h", "--help":
-		printUsage()
-		return nil
-	default:
-		return usageError()
-	}
+func runCommand(args []string) error {
+	return runStandaloneCommand(context.Background(), newRunCommand(), args)
 }
 
-func runCommand(args []string) error {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	fs.SetOutput(new(flagErrorSink))
-	function := fs.String("function", "run", "function to invoke after compilation")
-	checkOnly := fs.Bool("check", false, "compile and validate static contracts without executing")
-	snippet := fs.String("e", "", "evaluate an inline snippet instead of a script file")
-	watch := fs.Bool("watch", false, "re-run whenever the script or its modules change")
-	var modulePaths pathList
-	fs.Var(&modulePaths, "module-path", "add a module search directory (repeatable)")
-	quotaFlags := registerQuotaFlags(fs)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+func newRunCommand() *cli.Command {
+	stopAfterScript := 1
+	quotaFlags := newQuotaFlags()
+	flags := make([]cli.Flag, 0, 5+len(quotaFlags))
+	flags = append(flags,
+		&cli.StringFlag{
+			Name:        "function",
+			Value:       "run",
+			Usage:       "function to invoke; without it, top-level statements run when present, otherwise run",
+			HideDefault: true,
+		},
+		&cli.BoolFlag{
+			Name:  "check",
+			Usage: "compile and validate static contracts without executing",
+		},
+		&cli.StringFlag{
+			Name:  "e",
+			Usage: "evaluate an inline snippet instead of a script file",
+		},
+		&cli.BoolFlag{
+			Name:  "watch",
+			Usage: "re-run whenever the script or its modules change",
+		},
+		&cli.StringSliceFlag{
+			Name:      "module-path",
+			Usage:     "add a module search directory (repeatable)",
+			TakesFile: true,
+		},
+	)
+	flags = append(flags, quotaFlags...)
+	return configureCLICommand(&cli.Command{
+		Name:                      "run",
+		Usage:                     "execute a script file or inline snippet",
+		ArgsUsage:                 "<script> [args...]",
+		UsageText:                 "vibes run [options] <script> [args...]\nvibes run [options] -e SNIPPET",
+		Flags:                     flags,
+		StopOnNthArg:              &stopAfterScript,
+		DisableSliceFlagSeparator: true,
+		Action:                    runAction,
+	})
+}
 
-	quota, err := quotaFlags.resolve()
+func runAction(ctx context.Context, command *cli.Command) error {
+	modulePaths := pathList(command.StringSlice("module-path"))
+	remaining := commandPositionalArgs(command)
+	quota, err := resolveCommandQuota(command)
 	if err != nil {
 		return fmt.Errorf("vibes run: %w", err)
 	}
 
-	functionSet := flagWasSet(fs, "function")
-	if flagWasSet(fs, "e") {
+	functionSet := command.IsSet("function")
+	if command.IsSet("e") {
 		switch {
-		case *watch:
+		case command.Bool("watch"):
 			return errors.New("vibes run: -e cannot be combined with -watch")
 		case functionSet:
 			return errors.New("vibes run: -e cannot be combined with -function")
-		case len(fs.Args()) > 0:
+		case len(remaining) > 0:
 			return errors.New("vibes run: -e does not accept positional arguments")
 		}
-		return evalSnippet(context.Background(), *snippet, modulePaths, quota, *checkOnly, os.Stdout)
+		return evalSnippet(ctx, command.String("e"), modulePaths, quota, command.Bool("check"), os.Stdout)
 	}
 
-	remaining := fs.Args()
 	if len(remaining) == 0 {
 		return errors.New("vibes run: script path required")
 	}
@@ -97,20 +104,20 @@ func runCommand(args []string) error {
 	}
 	inv := runInvocation{
 		scriptPath:  absScriptPath,
-		function:    *function,
+		function:    command.String("function"),
 		functionSet: functionSet,
-		checkOnly:   *checkOnly,
+		checkOnly:   command.Bool("check"),
 		moduleDirs:  moduleDirs,
 		callArgs:    stringArgs(remaining[1:]),
 		quota:       quota,
 	}
 
-	if *watch {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	if command.Bool("watch") {
+		ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 		defer stop()
 		return watchScript(ctx, inv, defaultWatchInterval, os.Stdout, os.Stderr)
 	}
-	return executeScript(context.Background(), inv, os.Stdout)
+	return executeScript(ctx, inv, os.Stdout)
 }
 
 // runInvocation captures everything needed to execute a script file once,
@@ -321,67 +328,7 @@ func stringArgs(raw []string) []value.Value {
 	return out
 }
 
-func flagWasSet(fs *flag.FlagSet, name string) bool {
-	set := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			set = true
-		}
-	})
-	return set
-}
-
-func usageError() error {
-	printUsage()
-	return errors.New("invalid command")
-}
-
-func printUsage() {
-	prog := filepath.Base(os.Args[0])
-	fmt.Fprintf(os.Stderr, "Usage: %s <command> [flags] [args...]\n\n", prog)
-	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintln(os.Stderr, "  run <script>    Execute a script file")
-	fmt.Fprintln(os.Stderr, "  check <script>  Static contract checking without executing")
-	fmt.Fprintln(os.Stderr, "  fmt <path>      Canonical formatting for .vibe files")
-	fmt.Fprintln(os.Stderr, "  analyze <script> Analyze a script for lint issues")
-	fmt.Fprintln(os.Stderr, "  test [path...]  Run *_test.vibe files (-run <regexp> to filter)")
-	fmt.Fprintln(os.Stderr, "  lsp             Start language server (stdio)")
-	fmt.Fprintln(os.Stderr, "  repl            Start interactive REPL")
-	fmt.Fprintln(os.Stderr, "  help            Show this help message")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Run flags:")
-	fmt.Fprintln(os.Stderr, "  -function string")
-	fmt.Fprintln(os.Stderr, "    function to invoke after compilation (default \"run\")")
-	fmt.Fprintln(os.Stderr, "  -check")
-	fmt.Fprintln(os.Stderr, "    compile and validate static contracts without executing")
-	fmt.Fprintln(os.Stderr, "  -e <snippet>")
-	fmt.Fprintln(os.Stderr, "    evaluate an inline snippet instead of a script file")
-	fmt.Fprintln(os.Stderr, "  -watch")
-	fmt.Fprintln(os.Stderr, "    re-run whenever the script or its modules change")
-	fmt.Fprintln(os.Stderr, "  -module-path <dir>")
-	fmt.Fprintln(os.Stderr, "    add a directory to module search paths (repeatable)")
-	fmt.Fprintln(os.Stderr, "  -profile <name>")
-	fmt.Fprintf(os.Stderr, "    execution quota profile: %s (default %q)\n", strings.Join(vibes.QuotaProfileNames(), ", "), defaultQuotaProfile)
-	fmt.Fprintln(os.Stderr, "  -step-quota / -memory-quota / -recursion-limit <n>")
-	fmt.Fprintln(os.Stderr, "    override a profile quota (-1 = unlimited)")
-}
-
-type flagErrorSink struct{}
-
-func (flagErrorSink) Write(p []byte) (int, error) {
-	return len(p), nil
-}
-
 type pathList []string
-
-func (l *pathList) String() string {
-	return strings.Join(*l, string(os.PathListSeparator))
-}
-
-func (l *pathList) Set(value string) error {
-	*l = append(*l, value)
-	return nil
-}
 
 func computeModulePaths(baseDir string, extras []string) ([]string, error) {
 	seen := make(map[string]struct{})
