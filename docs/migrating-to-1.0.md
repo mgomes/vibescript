@@ -682,3 +682,24 @@ error; the fix is to size quotas for the real peak.
 - **`String#match` accepts an optional offset** and `String#split(nil)` now
   behaves like the no-argument form — both previously raised, so only code
   asserting those errors is affected.
+
+## 22. CLI help succeeds and ignored arguments are rejected
+
+**What changed.** `vibes --help`, `vibes <command> --help`, and
+`vibes help <command>` now write help to stdout and exit successfully. Missing
+or unknown commands still exit non-zero and write usage plus an error to
+stderr. `vibes analyze` now accepts exactly one script path, while `vibes lsp`
+and `vibes repl` accept no positional arguments. `vibes help` accepts at most
+one command topic. `vibes lsp` also rejects unknown options instead of ignoring
+them.
+
+Options continue to stop at the first positional argument. In particular,
+every token after the script path in `vibes run <script> [args...]` remains a
+script argument.
+
+**What breaks.** Shell scripts that read help from stderr, treat subcommand
+help as an error, scrape the former usage text, or pass ignored arguments to
+`analyze`, `lsp`, `repl`, or `help` must be updated.
+
+**Fix.** Read successful help from stdout and remove extraneous arguments.
+Place CLI options before the first positional path.
