@@ -1,11 +1,55 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestRunCLIBuildsFreshCommandGraph(t *testing.T) {
+	path := writeVibeScript(t, `def run
+  "function"
+end
+
+"top-level"
+`)
+
+	stdout, _, err := dispatchCLI(t, "run", "-function=run", path)
+	if err != nil {
+		t.Fatalf("explicit run error = %v, want nil", err)
+	}
+	if got := strings.TrimSpace(stdout); got != "function" {
+		t.Fatalf("explicit run stdout = %q, want function", got)
+	}
+
+	stdout, _, err = dispatchCLI(t, "run", path)
+	if err != nil {
+		t.Fatalf("default run error = %v, want nil", err)
+	}
+	if got := strings.TrimSpace(stdout); got != "top-level" {
+		t.Fatalf("default run stdout = %q, want top-level", got)
+	}
+}
+
+func TestRunCLIPropagatesContext(t *testing.T) {
+	for _, args := range [][]string{
+		{"vibes", "run", "-e", "1 + 2"},
+		{"vibes", "lsp"},
+		{"vibes", "test"},
+	} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		err := runCLIContextWithIO(ctx, args, strings.NewReader(""), io.Discard, io.Discard)
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("runCLIContext(%v, canceled) error = %v, want context.Canceled", args[1:], err)
+		}
+	}
+}
 
 func TestRunCLI(t *testing.T) {
 	t.Parallel()
@@ -15,12 +59,13 @@ func TestRunCLI(t *testing.T) {
 		wantErr string
 	}{
 		{name: "help", args: []string{"help"}},
-		{name: "invalid_command", args: []string{"unknown"}, wantErr: "invalid command"},
-		{name: "missing_command", args: nil, wantErr: "invalid command"},
+		{name: "invalid_command", args: []string{"unknown"}, wantErr: `unknown command "unknown"`},
+		{name: "missing_command", args: nil, wantErr: "command required"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := dispatchCLI(t, tc.args...)
+			args := append([]string{"vibes"}, tc.args...)
+			err := runCLIContextWithIO(t.Context(), args, strings.NewReader(""), io.Discard, io.Discard)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("dispatchCLI(%v) err = %v, want nil", tc.args, err)

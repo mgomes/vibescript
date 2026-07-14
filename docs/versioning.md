@@ -34,7 +34,8 @@ This contract applies to:
 - Public Go embedding APIs in the `vibes` module. Which exported symbols
   are supported versus internal plumbing with no compatibility promise is
   declared in `docs/embedding-api-stability.md`.
-- CLI command surface (`vibes run`, `vibes fmt`, `vibes analyze`, `vibes lsp`, `vibes repl`).
+- CLI command surface (`vibes run`, `vibes check`, `vibes fmt`, `vibes
+  analyze`, `vibes test`, `vibes lsp`, `vibes repl`, `vibes help`).
 
 Go toolchain support follows `docs/compatibility.md`.
 Core language syntax guarantees are tracked in `docs/syntax_compatibility.md`.

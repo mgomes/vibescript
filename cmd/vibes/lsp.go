@@ -2,11 +2,11 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"slices"
 	"sort"
 	"strconv"
@@ -16,6 +16,7 @@ import (
 	"github.com/mgomes/vibescript/internal/ast"
 	vibesruntime "github.com/mgomes/vibescript/internal/runtime"
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/urfave/cli/v3"
 )
 
 const maxLSPPayloadBytes = 8 << 20
@@ -157,10 +158,32 @@ type publishedDiagnostics struct {
 	diagnostics []lspDiagnostic
 }
 
-func runLSP() error {
+func newLSPCommand() *cli.Command {
+	stopAfterArgument := 1
+	return configureCLICommand(&cli.Command{
+		Name:         "lsp",
+		Usage:        "start the language server over stdio",
+		StopOnNthArg: &stopAfterArgument,
+		Action: func(ctx context.Context, command *cli.Command) error {
+			if len(commandPositionalArgs(command)) > 0 {
+				return errors.New("vibes lsp: does not accept positional arguments")
+			}
+			return runLSPContext(ctx, command.Reader, command.Writer)
+		},
+	})
+}
+
+func runLSPContext(ctx context.Context, reader io.Reader, writer io.Writer) error {
+	if closer, ok := reader.(io.ReadCloser); ok {
+		stopClosingReader := context.AfterFunc(ctx, func() {
+			_ = closer.Close()
+		})
+		defer stopClosingReader()
+	}
+
 	server := &lspServer{
-		reader:      bufio.NewReader(os.Stdin),
-		writer:      bufio.NewWriter(os.Stdout),
+		reader:      bufio.NewReader(reader),
+		writer:      bufio.NewWriter(writer),
 		engine:      vibes.MustNewEngine(vibes.Config{}),
 		docs:        make(map[string]string),
 		lines:       make(map[string][]string),
@@ -170,11 +193,18 @@ func runLSP() error {
 		published:   make(map[string]publishedDiagnostics),
 		symbols:     make(map[string][]lspDocumentSymbol),
 	}
-	return server.serve()
+	err := server.serve(ctx)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
 }
 
-func (s *lspServer) serve() error {
+func (s *lspServer) serve(ctx context.Context) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		payload, err := s.readPayload()
 		if err != nil {
 			if errors.Is(err, io.EOF) {

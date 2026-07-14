@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -14,37 +13,62 @@ import (
 	"strings"
 
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/urfave/cli/v3"
 )
 
 // testFunctionPrefix marks the functions a *_test.vibe file exposes as tests.
 const testFunctionPrefix = "test_"
 
 func testCommand(args []string) error {
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.SetOutput(new(flagErrorSink))
-	runFilter := flags.String("run", "", "run only test functions matching this regular expression")
-	var modulePaths pathList
-	flags.Var(&modulePaths, "module-path", "add a module search directory (repeatable)")
-	quotaFlags := registerQuotaFlags(flags)
-	if err := flags.Parse(args); err != nil {
+	return runStandaloneCommand(context.Background(), newTestCommand(), args)
+}
+
+func newTestCommand() *cli.Command {
+	stopAfterPath := 1
+	quotaFlags := newQuotaFlags()
+	flags := make([]cli.Flag, 0, 2+len(quotaFlags))
+	flags = append(flags,
+		&cli.StringFlag{
+			Name:  "run",
+			Usage: "run only test functions matching this regular expression",
+		},
+		&cli.StringSliceFlag{
+			Name:      "module-path",
+			Usage:     "add a module search directory (repeatable)",
+			TakesFile: true,
+		},
+	)
+	flags = append(flags, quotaFlags...)
+	return configureCLICommand(&cli.Command{
+		Name:                      "test",
+		Usage:                     "discover and run Vibescript tests",
+		ArgsUsage:                 "[path...]",
+		Flags:                     flags,
+		StopOnNthArg:              &stopAfterPath,
+		DisableSliceFlagSeparator: true,
+		Action:                    testAction,
+	})
+}
+
+func testAction(ctx context.Context, command *cli.Command) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-
-	quota, err := quotaFlags.resolve()
+	quota, err := resolveCommandQuota(command)
 	if err != nil {
 		return fmt.Errorf("vibes test: %w", err)
 	}
 
 	var filter *regexp.Regexp
-	if *runFilter != "" {
-		compiled, err := regexp.Compile(*runFilter)
+	if command.String("run") != "" {
+		compiled, err := regexp.Compile(command.String("run"))
 		if err != nil {
 			return fmt.Errorf("vibes test: invalid -run pattern: %w", err)
 		}
 		filter = compiled
 	}
 
-	roots := flags.Args()
+	roots := commandPositionalArgs(command)
 	if len(roots) == 0 {
 		roots = []string{"."}
 	}
@@ -56,7 +80,10 @@ func testCommand(args []string) error {
 		return fmt.Errorf("vibes test: no *_test.vibe files found under %s", strings.Join(roots, ", "))
 	}
 
-	summary := runTestFiles(context.Background(), files, modulePaths, quota, filter, os.Stdout)
+	summary, err := runTestFiles(ctx, files, pathList(command.StringSlice("module-path")), quota, filter, os.Stdout)
+	if err != nil {
+		return fmt.Errorf("vibes test: %w", err)
+	}
 	fmt.Printf("%d test(s) across %d file(s): %d passed, %d failed\n",
 		summary.passed+summary.failed, len(files), summary.passed, summary.failed)
 	if summary.failed > 0 {
@@ -117,17 +144,23 @@ type testSummary struct {
 	failed int
 }
 
-func runTestFiles(ctx context.Context, files []string, modulePaths pathList, quota quotaConfig, filter *regexp.Regexp, out io.Writer) testSummary {
+func runTestFiles(ctx context.Context, files []string, modulePaths pathList, quota quotaConfig, filter *regexp.Regexp, out io.Writer) (testSummary, error) {
 	var summary testSummary
 	for _, file := range files {
-		fileSummary := runTestFile(ctx, file, modulePaths, quota, filter, out)
+		if err := ctx.Err(); err != nil {
+			return summary, err
+		}
+		fileSummary, err := runTestFile(ctx, file, modulePaths, quota, filter, out)
+		if err != nil {
+			return summary, err
+		}
 		summary.passed += fileSummary.passed
 		summary.failed += fileSummary.failed
 	}
-	return summary
+	return summary, nil
 }
 
-func runTestFile(ctx context.Context, file string, modulePaths pathList, quota quotaConfig, filter *regexp.Regexp, out io.Writer) testSummary {
+func runTestFile(ctx context.Context, file string, modulePaths pathList, quota quotaConfig, filter *regexp.Regexp, out io.Writer) (testSummary, error) {
 	var summary testSummary
 	failTest := func(name string, err error) {
 		summary.failed++
@@ -137,12 +170,12 @@ func runTestFile(ctx context.Context, file string, modulePaths pathList, quota q
 	absPath, err := filepath.Abs(file)
 	if err != nil {
 		failTest("(resolve)", err)
-		return summary
+		return summary, nil
 	}
 	moduleDirs, err := computeModulePaths(filepath.Dir(absPath), modulePaths)
 	if err != nil {
 		failTest("(module paths)", err)
-		return summary
+		return summary, nil
 	}
 	// Wire the output helpers (puts/print/p/warn) to the test command's streams
 	// so a *_test.vibe that prints does not fail on an unconfigured writer.
@@ -151,27 +184,30 @@ func runTestFile(ctx context.Context, file string, modulePaths pathList, quota q
 	engine, err := vibes.NewEngine(cfg)
 	if err != nil {
 		failTest("(engine)", err)
-		return summary
+		return summary, nil
 	}
 	source, err := readScriptSource(engine, file)
 	if err != nil {
 		failTest("(read)", err)
-		return summary
+		return summary, nil
 	}
 	script, err := engine.Compile(string(source))
 	if err != nil {
 		failTest("(compile)", err)
-		return summary
+		return summary, nil
 	}
 
 	names := testFunctionNames(script, filter)
 	if len(names) == 0 {
 		fmt.Fprintf(out, "ok   %s (no test functions)\n", file)
-		return summary
+		return summary, nil
 	}
 
 	for _, name := range names {
 		if err := runTestFunction(ctx, script, name); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return summary, ctxErr
+			}
 			failTest(name, err)
 			continue
 		}
@@ -180,7 +216,7 @@ func runTestFile(ctx context.Context, file string, modulePaths pathList, quota q
 	if summary.failed == 0 {
 		fmt.Fprintf(out, "ok   %s (%d test(s))\n", file, len(names))
 	}
-	return summary
+	return summary, nil
 }
 
 // testFunctionNames returns the script's test_ functions in deterministic

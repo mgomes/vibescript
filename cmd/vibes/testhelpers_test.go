@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-// stdoutMu serializes access to os.Stdout swaps so concurrent helpers cannot
-// race the global. Tests that go through captureStdout/captureStdoutErr take
-// this lock; tests that do not touch stdout may run in parallel safely.
+// stdoutMu serializes the capture helpers with each other. Tests using them
+// must still remain sequential because production code can read the process
+// streams without taking this test-only lock.
 var stdoutMu sync.Mutex
 
 // newTestCLI returns a fresh tempdir for a CLI test. The directory is cleaned
@@ -42,8 +42,8 @@ func writeVibeScriptNamed(t *testing.T, name, source string) string {
 
 // captureStdout runs fn while redirecting os.Stdout into a pipe and returns
 // the captured output together with fn's error. The os.Stdout swap is
-// serialized via stdoutMu so callers can opt into t.Parallel without racing
-// on the global writer.
+// serialized via stdoutMu. Callers must remain sequential because other
+// parallel tests may read the process-wide stream directly.
 func captureStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 
@@ -76,14 +76,64 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 	return buf.String(), runErr
 }
 
+// captureStdoutErr runs fn while redirecting both process output streams to
+// temporary files. Files avoid pipe-buffer deadlocks when generated help or a
+// command diagnostic grows beyond a pipe's capacity.
+func captureStdoutErr(t *testing.T, fn func() error) (stdout, stderr string, runErr error) {
+	t.Helper()
+
+	stdoutMu.Lock()
+	defer stdoutMu.Unlock()
+
+	stdoutFile, err := os.CreateTemp(t.TempDir(), "stdout-")
+	if err != nil {
+		t.Fatalf("create stdout capture: %v", err)
+	}
+	defer func() {
+		_ = stdoutFile.Close()
+	}()
+	stderrFile, err := os.CreateTemp(t.TempDir(), "stderr-")
+	if err != nil {
+		t.Fatalf("create stderr capture: %v", err)
+	}
+	defer func() {
+		_ = stderrFile.Close()
+	}()
+	originalStdout := os.Stdout
+	originalStderr := os.Stderr
+	os.Stdout = stdoutFile
+	os.Stderr = stderrFile
+	defer func() {
+		os.Stdout = originalStdout
+		os.Stderr = originalStderr
+	}()
+
+	runErr = fn()
+	os.Stdout = originalStdout
+	os.Stderr = originalStderr
+	if err := stdoutFile.Close(); err != nil {
+		t.Fatalf("close stdout capture: %v", err)
+	}
+	if err := stderrFile.Close(); err != nil {
+		t.Fatalf("close stderr capture: %v", err)
+	}
+	stdoutBytes, err := os.ReadFile(stdoutFile.Name())
+	if err != nil {
+		t.Fatalf("read stdout capture: %v", err)
+	}
+	stderrBytes, err := os.ReadFile(stderrFile.Name())
+	if err != nil {
+		t.Fatalf("read stderr capture: %v", err)
+	}
+	return string(stdoutBytes), string(stderrBytes), runErr
+}
+
 // dispatchCLI invokes runCLI with the supplied args (the program name "vibes"
-// is prepended automatically) while capturing stdout. The CLI does not write
-// to stderr today; this helper returns it as a convenience for future tests.
+// is prepended automatically) while capturing both output streams.
 func dispatchCLI(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	full := append([]string{"vibes"}, args...)
-	out, runErr := captureStdout(t, func() error {
+	return captureStdoutErr(t, func() error {
 		return runCLI(full)
 	})
-	return out, "", runErr
 }

@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"flag"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -16,6 +16,7 @@ import (
 	vibesruntime "github.com/mgomes/vibescript/internal/runtime"
 	"github.com/mgomes/vibescript/vibes"
 	"github.com/mgomes/vibescript/vibes/value"
+	"github.com/urfave/cli/v3"
 )
 
 var (
@@ -62,6 +63,7 @@ type historyEntry struct {
 }
 
 type replModel struct {
+	ctx         context.Context
 	textInput   textinput.Model
 	engine      *vibes.Engine
 	env         map[string]value.Value
@@ -216,6 +218,10 @@ var replBuiltinFunctionNames = []string{
 }
 
 func newREPLModel(quota quotaConfig) (replModel, error) {
+	return newREPLModelContext(context.Background(), quota)
+}
+
+func newREPLModelContext(ctx context.Context, quota quotaConfig) (replModel, error) {
 	ti := textinput.New()
 	ti.Placeholder = "type an expression..."
 	ti.Focus()
@@ -232,9 +238,10 @@ func newREPLModel(quota quotaConfig) (replModel, error) {
 	// The REPL evaluates the developer's own expressions interactively, so it
 	// defaults to the same generous xhigh profile as `vibes run` rather than the
 	// embedding sandbox floor. The quota is configurable via flags: because the
-	// REPL evaluates on an uncancelable context, an interactive session that
-	// wants a runaway loop to fail fast can select a finite budget with
-	// `vibes repl -profile low` or `-step-quota`.
+	// An embedding caller can cancel an in-flight expression through the command
+	// context. Quotas remain a defense against runaway work in an interactive
+	// session; users can select a finite budget with `vibes repl -profile low`
+	// or `-step-quota`.
 	cfg := vibes.Config{
 		OutputWriter: stdout,
 		ErrorWriter:  stderr,
@@ -246,6 +253,7 @@ func newREPLModel(quota quotaConfig) (replModel, error) {
 	}
 
 	return replModel{
+		ctx:        ctx,
 		textInput:  ti,
 		engine:     engine,
 		env:        make(map[string]value.Value),
@@ -491,7 +499,7 @@ func (m *replModel) evaluate(input string) (string, bool) {
 		Globals: m.env,
 	}
 
-	result, err := script.Call(context.Background(), "__repl__", nil, opts)
+	result, err := script.Call(m.ctx, "__repl__", nil, opts)
 	if err != nil {
 		m.lastError = "runtime error: " + remapSnippetRuntimeError(err, input, sourceMap).Error()
 		return m.lastError, true
@@ -749,23 +757,40 @@ func renderHelpPanel(width int) string {
 }
 
 func runREPL(args []string) error {
-	fs := flag.NewFlagSet("repl", flag.ContinueOnError)
-	fs.SetOutput(new(flagErrorSink))
-	quotaFlags := registerQuotaFlags(fs)
-	if err := fs.Parse(args); err != nil {
-		return err
+	return runStandaloneCommand(context.Background(), newREPLCommand(), args)
+}
+
+func newREPLCommand() *cli.Command {
+	stopAfterArgument := 1
+	return configureCLICommand(&cli.Command{
+		Name:         "repl",
+		Usage:        "start the interactive Vibescript REPL",
+		StopOnNthArg: &stopAfterArgument,
+		Flags:        newQuotaFlags(),
+		Action:       replAction,
+	})
+}
+
+func replAction(ctx context.Context, command *cli.Command) error {
+	if len(commandPositionalArgs(command)) > 0 {
+		return errors.New("vibes repl: does not accept positional arguments")
 	}
-	quota, err := quotaFlags.resolve()
+	quota, err := resolveCommandQuota(command)
 	if err != nil {
 		return fmt.Errorf("vibes repl: %w", err)
 	}
 
-	model, err := newREPLModel(quota)
+	model, err := newREPLModelContext(ctx, quota)
 	if err != nil {
 		return fmt.Errorf("init repl: %w", err)
 	}
-	p := tea.NewProgram(model)
-	if _, err = p.Run(); err != nil {
+	return runREPLProgram(ctx, model)
+}
+
+func runREPLProgram(ctx context.Context, model replModel, options ...tea.ProgramOption) error {
+	options = append([]tea.ProgramOption{tea.WithContext(ctx)}, options...)
+	p := tea.NewProgram(model, options...)
+	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("repl: %w", err)
 	}
 	return nil

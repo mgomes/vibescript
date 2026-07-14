@@ -1,24 +1,34 @@
 package main
 
 import (
-	"flag"
+	"context"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/urfave/cli/v3"
 )
 
-// resolveQuotaFlags parses args through a fresh flag set with the quota flags
+// resolveQuotaFlags parses args through a fresh command with the quota flags
 // registered, mirroring how the real commands wire them up.
 func resolveQuotaFlags(t *testing.T, args []string) (quotaConfig, error) {
 	t.Helper()
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	fs.SetOutput(new(flagErrorSink))
-	q := registerQuotaFlags(fs)
-	if err := fs.Parse(args); err != nil {
-		t.Fatalf("parse %v: %v", args, err)
-	}
-	return q.resolve()
+	var resolved quotaConfig
+	command := configureCLICommand(&cli.Command{
+		Name:  "quota-test",
+		Flags: newQuotaFlags(),
+		Action: func(_ context.Context, command *cli.Command) error {
+			var err error
+			resolved, err = resolveCommandQuota(command)
+			return err
+		},
+	})
+	command.Reader = strings.NewReader("")
+	command.Writer = io.Discard
+	command.ErrWriter = io.Discard
+	err := command.Run(t.Context(), append([]string{command.Name}, args...))
+	return resolved, err
 }
 
 func TestQuotaFlagsDefaultToXHigh(t *testing.T) {

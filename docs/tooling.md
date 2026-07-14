@@ -3,9 +3,26 @@
 The `vibes` CLI provides a small set of stable tooling commands for local
 development and CI.
 
-## `vibes run <script>`
+## Help and command syntax
+
+Run `vibes --help` for the command list or `vibes help <command>` for complete
+command-specific flags. Successful help is written to stdout and exits with
+status 0. Running `vibes` without a command or with an unknown command writes
+usage and an error to stderr and exits non-zero.
+
+After a subcommand, flags accept one or two leading hyphens, must appear before
+the first positional argument, and may be terminated explicitly with `--`.
+The root command does not use `--` to escape command selection. For `vibes
+run`, every token after the script path is passed to the script as a string,
+including tokens that begin with `-`. `vibes check` and
+`vibes analyze` accept exactly one script path; `vibes lsp` and `vibes repl`
+accept no positional arguments.
+
+## `vibes run [options] <script> [args...]`
 
 Compiles and executes a script file.
+Use `vibes run [options] -e <snippet>` for the inline form without a script
+path.
 
 ```bash
 vibes run ./examples/strings/operations.vibe
@@ -13,7 +30,8 @@ vibes run ./examples/strings/operations.vibe
 
 Useful flags:
 
-- `-function <name>`: invoke a specific function (default `run`).
+- `-function <name>`: invoke a specific function. Without this flag, the CLI
+  executes top-level statements when present and otherwise invokes `run`.
 - `-check`: compile only, without executing.
 - `-module-path <dir>`: add module search paths for `require`.
 - `-e '<snippet>'`: evaluate an inline snippet without a script file.
@@ -36,11 +54,11 @@ coherent bundle of all three with `-profile`:
 | `high`   | 200,000,000   | 512 MiB      | 4,000     | generous embedded budget                      |
 | `xhigh`  | unlimited     | unlimited    | 10,000    | run like a normal interpreter (CLI default)   |
 
-`vibes run` and `vibes test` default to **`xhigh`**: the CLI runs your own
-scripts on your own machine, so it is not a sandbox — steps and memory are
-unlimited and only a finite recursion cap remains to catch infinite recursion.
-An unlimited memory quota skips the accounting walk entirely, so `xhigh` also
-avoids the sandbox's per-check cost.
+`vibes run`, `vibes test`, and `vibes repl` default to **`xhigh`**: the CLI
+runs your own scripts on your own machine, so it is not a sandbox — steps and
+memory are unlimited and only a finite recursion cap remains to catch infinite
+recursion. An unlimited memory quota skips the accounting walk entirely, so
+`xhigh` also avoids the sandbox's per-check cost.
 
 Layer `-step-quota`, `-memory-quota`, or `-recursion-limit` on top of a profile
 to override just that quota; unset overrides keep the profile's value. To
@@ -61,12 +79,12 @@ see [Integrating Vibescript in Go](integration.md#quota-profiles).
 vibes run -e '1 + 2'
 ```
 
-The snippet is compiled as the body of an implicit zero-argument function
-(the same mechanism the REPL uses), so it can contain multiple statements
-but not top-level `def`s. Module paths default to the current working
-directory plus any `-module-path` entries, and the result is printed when
-it is not nil. `-e` cannot be combined with `-function`, `-watch`, or
-positional arguments.
+The snippet is compiled with an implicit zero-argument entrypoint (the same
+mechanism the REPL uses). It may contain multiple statements and top-level
+definitions; executable top-level statements run through that entrypoint.
+Module paths default to the current working directory plus any `-module-path`
+entries, and the result is printed when it is not nil. `-e` cannot be combined
+with `-function`, `-watch`, or positional arguments.
 
 ### Watch mode (`-watch`)
 
@@ -93,7 +111,7 @@ value. Reduce the returned value or have the script stream output itself.
 The cap matches the other stdlib output guards (see
 [Runtime Sandbox & Limits](../README.md#runtime-sandbox--limits)).
 
-## `vibes check <script>`
+## `vibes check [options] <script>`
 
 Compiles a script and reports every statically checkable contract issue —
 across all functions, class methods, and top-level code — without executing
@@ -124,7 +142,7 @@ capabilities report them as undefined here, because the CLI checks without a
 host context; embedding hosts get the same checks with their bindings applied
 through the `CheckWarnings*` API.
 
-## `vibes fmt <path>`
+## `vibes fmt [options] <path>...`
 
 Applies canonical formatting for `.vibe` files.
 
@@ -150,7 +168,7 @@ vibes analyze ./examples/strings/operations.vibe
 Current checks include unreachable statements after terminating operations such
 as `return` and `raise`.
 
-## `vibes test`
+## `vibes test [options] [path...]`
 
 Discovers `*_test.vibe` files and runs their test functions.
 
@@ -167,6 +185,9 @@ are reported with the assertion message and source position. Flags:
 - `-run <regexp>`: run only test functions whose name matches.
 - `-module-path <dir>`: add module search paths for `require` (each test
   file's own directory is always included).
+- `-profile <name>`: select the execution quota profile (default `xhigh`).
+- `-step-quota`, `-memory-quota`, and `-recursion-limit <n>`: override one
+  profile quota (`-1` = unlimited).
 
 The exit code is non-zero when any test fails, so the command slots directly
 into CI.
@@ -201,6 +222,9 @@ Starts the interactive REPL for quick evaluation.
 ```bash
 vibes repl
 ```
+
+The REPL accepts `-profile`, `-step-quota`, `-memory-quota`, and
+`-recursion-limit` with the same semantics as `vibes run`.
 
 REPL command set:
 

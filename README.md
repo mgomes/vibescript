@@ -179,7 +179,8 @@ Long-form guides live in `docs/`:
 - `docs/errors.md` – parse/runtime error formatting and debugging patterns.
 - `docs/control-flow.md` – conditionals, loops, and ranges.
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
-- `docs/tooling.md` – CLI workflows for running, formatting, analyzing, language-server usage, and REPL usage.
+- `docs/tooling.md` – CLI workflows for running, checking, formatting,
+  analyzing, testing, editor integration, and the REPL.
 - `docs/architecture.md` – internal runtime/parser/module architecture notes for maintainers.
 - `docs/integration.md` – integrating the interpreter in Go applications.
 - `docs/host_cookbook.md` – production integration patterns for embedding hosts.
