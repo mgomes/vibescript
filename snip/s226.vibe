@@ -1,8 +1,8 @@
-def warm_cache()
-  cache.warm()
+def warm_cache
+  cache.warm
 end
 
-def use_warmed_cache()
+def use_warmed_cache
   Tasks.run do |tasks|
     tasks.spawn(:warm_cache)
     tasks.wait
