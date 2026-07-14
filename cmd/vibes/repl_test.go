@@ -52,6 +52,26 @@ func TestREPLProgramUsesSessionContext(t *testing.T) {
 	}
 }
 
+func TestREPLProgramReturnsOnCtrlD(t *testing.T) {
+	t.Parallel()
+	m, err := newREPLModelContext(t.Context(), replTestQuota())
+	if err != nil {
+		t.Fatalf("newREPLModelContext failed: %v", err)
+	}
+
+	err = runREPLProgram(
+		t.Context(),
+		m,
+		tea.WithInput(strings.NewReader("\x04")),
+		tea.WithOutput(io.Discard),
+		tea.WithoutRenderer(),
+		tea.WithoutSignalHandler(),
+	)
+	if err != nil {
+		t.Fatalf("runREPLProgram error = %v, want nil", err)
+	}
+}
+
 // replTestQuota returns the REPL's default production quota (xhigh) so tests
 // construct models the same way runREPL does.
 func replTestQuota() quotaConfig {

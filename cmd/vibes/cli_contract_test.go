@@ -263,19 +263,6 @@ func TestCLIContractLeafCommandsTreatHelpAsAnArgument(t *testing.T) {
 	}
 }
 
-func TestCLIContractREPLClosedInputReturns(t *testing.T) {
-	got := runCLIContractProcess(t, "", "repl")
-	if got.ExitCode != 1 {
-		t.Errorf("repl with closed input exit code = %d, want 1", got.ExitCode)
-	}
-	if got.Stdout != "" {
-		t.Errorf("repl with closed input stdout = %q, want empty", got.Stdout)
-	}
-	if !strings.Contains(got.Stderr, "repl:") {
-		t.Errorf("repl with closed input stderr = %q, want REPL error", got.Stderr)
-	}
-}
-
 func TestCLIContractVersionRemainsUnavailable(t *testing.T) {
 	got := runCLIContractProcess(t, "", "--version")
 	assertCLIContractResult(t, got, cliContractResult{
