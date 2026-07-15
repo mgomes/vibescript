@@ -872,12 +872,37 @@ func userSymbolHover(program *ast.Program, lines []string, word string, hoverLin
 	if assignmentFollowsWord(lines, hoverLine, hoverCharacter) {
 		candidates = []string{word + "=", word}
 	}
+	qualifier := receiverWordBefore(lines, hoverLine, hoverCharacter)
 	for _, candidate := range candidates {
-		if md := userSymbolDoc(program, lines, candidate, hoverLine+1); md != "" {
+		if md := userSymbolDoc(program, lines, candidate, hoverLine+1, qualifier); md != "" {
 			return md
 		}
 	}
 	return ""
+}
+
+// receiverWordBefore returns the receiver word when the hovered word is
+// reached through "Receiver::" or "Receiver.", so qualified usages like
+// First::Draft can filter candidates by their owner.
+func receiverWordBefore(lines []string, line, character int) string {
+	runes, start, _, ok := wordSpanAtPosition(lines, line, character)
+	if !ok || start == 0 {
+		return ""
+	}
+	receiverEnd := start
+	switch {
+	case runes[start-1] == '.':
+		receiverEnd = start - 1
+	case start >= 2 && runes[start-1] == ':' && runes[start-2] == ':':
+		receiverEnd = start - 2
+	default:
+		return ""
+	}
+	receiverStart := receiverEnd
+	for receiverStart > 0 && isWordRune(runes[receiverStart-1]) {
+		receiverStart--
+	}
+	return string(runes[receiverStart:receiverEnd])
 }
 
 // assignmentFollowsWord reports whether the word at the position is
@@ -908,6 +933,7 @@ type userSymbolCandidate struct {
 	containerStart int
 	containerEnd   int
 	scoped         bool
+	owner          string
 }
 
 // userSymbolDoc resolves word against every matching declaration in the
@@ -917,8 +943,19 @@ type userSymbolCandidate struct {
 // latest-starting such container when they nest), then the nearest
 // declaration above the position, so duplicate names across classes
 // resolve to the copy in scope. hoverLine is 1-based.
-func userSymbolDoc(program *ast.Program, lines []string, word string, hoverLine int) string {
+func userSymbolDoc(program *ast.Program, lines []string, word string, hoverLine int, qualifier string) string {
 	candidates := collectUserSymbols(program, lines, word)
+	if qualifier != "" {
+		owned := make([]userSymbolCandidate, 0, len(candidates))
+		for _, c := range candidates {
+			if c.owner == qualifier {
+				owned = append(owned, c)
+			}
+		}
+		if len(owned) > 0 {
+			candidates = owned
+		}
+	}
 	if len(candidates) == 0 {
 		return ""
 	}
@@ -995,6 +1032,7 @@ func collectUserSymbols(program *ast.Program, lines []string, word string) []use
 						containerStart: st.Position.Line,
 						containerEnd:   nextStart - 1,
 						scoped:         true,
+						owner:          st.Name,
 					})
 				}
 			}
@@ -1027,6 +1065,7 @@ func collectClassSymbols(st *ast.ClassStmt, lines []string, word string, start, 
 				containerStart: start,
 				containerEnd:   end,
 				scoped:         true,
+				owner:          st.Name,
 			})
 		}
 	}
@@ -1038,13 +1077,41 @@ func collectClassSymbols(st *ast.ClassStmt, lines []string, word string, start, 
 				containerStart: start,
 				containerEnd:   end,
 				scoped:         true,
+				owner:          st.Name,
 			})
 		}
 	}
+	// A nested module's scope ends at the next sibling declaration, so a
+	// method defined after it in the parent body is never attributed to
+	// the nested module.
+	siblingStarts := classChildStarts(st)
 	for _, nested := range st.Modules {
-		out = append(out, collectClassSymbols(nested, lines, word, nested.Position.Line, end)...)
+		nestedEnd := end
+		for _, sibling := range siblingStarts {
+			if sibling > nested.Position.Line && sibling-1 < nestedEnd {
+				nestedEnd = sibling - 1
+			}
+		}
+		out = append(out, collectClassSymbols(nested, lines, word, nested.Position.Line, nestedEnd)...)
 	}
 	return out
+}
+
+// classChildStarts returns the start lines of every direct child
+// declaration of a class or module, across its method, class-method,
+// and nested-module lists.
+func classChildStarts(st *ast.ClassStmt) []int {
+	var starts []int
+	for _, method := range st.Methods {
+		starts = append(starts, method.Position.Line)
+	}
+	for _, method := range st.ClassMethods {
+		starts = append(starts, method.Position.Line)
+	}
+	for _, nested := range st.Modules {
+		starts = append(starts, nested.Position.Line)
+	}
+	return starts
 }
 
 // userDefSignature reconstructs a declaration line from the AST: def,

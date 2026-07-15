@@ -3195,3 +3195,56 @@ func TestHoverDottedMemberBeatsGlobalBuiltin(t *testing.T) {
 		t.Fatalf("hover(price.format) = %q, want member documentation", got)
 	}
 }
+
+func TestHoverQualifiedAndNestedUserSymbols(t *testing.T) {
+	t.Parallel()
+	source := "enum First\n" + // 0
+		"  Draft\n" + // 1
+		"end\n" +
+		"\n" +
+		"enum Second\n" + // 4
+		"  Draft\n" + // 5
+		"end\n" +
+		"\n" +
+		"module Outer\n" + // 8
+		"  module Inner\n" + // 9
+		"    # Inner helper.\n" + // 10
+		"    def helper\n" + // 11
+		"      1\n" +
+		"    end\n" +
+		"  end\n" + // 14
+		"\n" +
+		"  # Outer helper.\n" + // 16
+		"  def helper\n" + // 17
+		"    2\n" +
+		"  end\n" +
+		"\n" +
+		"  def run\n" + // 21
+		"    helper\n" + // 22: call in Outer, after Inner
+		"  end\n" +
+		"end\n" +
+		"\n" +
+		"a = First::Draft\n" + // 26
+		"b = Second::Draft\n" // 27
+
+	tests := []struct {
+		name      string
+		line      int
+		character int
+		want      string
+	}{
+		{name: "qualified first enum usage", line: 26, character: 12, want: "First::Draft"},
+		{name: "qualified second enum usage", line: 27, character: 13, want: "Second::Draft"},
+		{name: "outer helper wins after nested module", line: 22, character: 5, want: "Outer helper."},
+		{name: "inner helper at its declaration", line: 11, character: 9, want: "Inner helper."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := hoverValue(t, source, tt.line, tt.character)
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("hover(%d:%d) = %q, want it to contain %q", tt.line, tt.character, got, tt.want)
+			}
+		})
+	}
+}
