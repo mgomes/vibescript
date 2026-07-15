@@ -1780,7 +1780,7 @@ def configure(opts: hash<string, int>)
 end
 
 def run()
-  opts = { "limit" => 3 }
+  opts = { "limit": 3 }
   configure(opts)
   configure({})
 end
@@ -2265,7 +2265,7 @@ def run(flag)
   if flag
     h = { name: "Ada" }
   else
-    h = { "name" => "Ada" }
+    h = { "name": "Ada" }
   end
   takes_string(h["name"])
 end
@@ -2308,7 +2308,7 @@ end
 
 def run(raw: string, flag)
   if flag
-    h = { "profile" => { name: "Ada" } }
+    h = { "profile": { name: "Ada" } }
   else
     h = JSON.parse_as(raw, { profile: { name: string } })
   end

@@ -221,7 +221,10 @@ func TestOpenRangeHashKeys(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def run
-  h = {(1..) => "endless", (1..0) => "bounded", (..1) => "beginless"}
+  h = {}
+  h[(1..)] = "endless"
+  h[(1..0)] = "bounded"
+  h[(..1)] = "beginless"
   [h.size, h[(1..)], h[(1..0)], h[(..1)]]
 end`)
 

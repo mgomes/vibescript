@@ -221,7 +221,7 @@ func TestSymbolConversionHashLookup(t *testing.T) {
 
 	script := compileScript(t, `
 		def run()
-			by_symbol = { name: "symbol", "name" => "string" }
+			by_symbol = { name: "symbol", "name": "string" }
 			{
 				symbol_key: by_symbol["name".to_sym],
 				string_key: by_symbol["name"],

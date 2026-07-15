@@ -52,11 +52,16 @@ func TestHashArbitraryKeys(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def run()
-  hash = {1 => "one", [1, 2] => "array", "name" => "string", :name => "symbol"}
+  hash = {}
+  hash[1] = "one"
+  hash[[1, 2]] = "array"
+  hash["name"] = "string"
+  hash[:name] = "symbol"
   hash[[3, 4]] = "assigned"
 	  hash.store([5], "stored")
 	  copy = hash.dup
-	  mixed = { "name" => "string", :name => "symbol" }
+	  mixed = { "name": "string" }
+	  mixed[:name] = "symbol"
 	  groups = [1, 2, 3].group_by { |n| n % 2 }
 	  tally = [[1], [1], [2]].tally
 	  mixed_groups = ["name", :name, "name"].group_by { |key| key }
@@ -140,11 +145,15 @@ def reject_symbol(hash: hash<int, string>)
 end
 
 def build_int_hash()
-  {1 => "one"}
+  h = {}
+  h[1] = "one"
+  h
 end
 
 def build_array_hash()
-  {[1, 2] => "array"}
+  h = {}
+  h[[1, 2]] = "array"
+  h
 end
 
 def build_symbol_hash()
@@ -154,18 +163,18 @@ end`)
 	intHash := callFunc(t, script, "build_int_hash", nil)
 	intResult, err := script.Call(context.Background(), "int_key", []Value{intHash}, CallOptions{})
 	if err != nil {
-		t.Fatalf("int_key({1 => string}) error = %v, want nil", err)
+		t.Fatalf("int_key(int-keyed hash) error = %v, want nil", err)
 	}
 	if !intResult.Equal(NewString("one")) {
-		t.Fatalf("int_key({1 => string}) = %s, want one", intResult.Inspect())
+		t.Fatalf("int_key(int-keyed hash) = %s, want one", intResult.Inspect())
 	}
 	arrayHash := callFunc(t, script, "build_array_hash", nil)
 	arrayResult, err := script.Call(context.Background(), "array_key", []Value{arrayHash}, CallOptions{})
 	if err != nil {
-		t.Fatalf("array_key({[1, 2] => string}) error = %v, want nil", err)
+		t.Fatalf("array_key(array-keyed hash) error = %v, want nil", err)
 	}
 	if !arrayResult.Equal(NewString("array")) {
-		t.Fatalf("array_key({[1, 2] => string}) = %s, want array", arrayResult.Inspect())
+		t.Fatalf("array_key(array-keyed hash) = %s, want array", arrayResult.Inspect())
 	}
 	symbolHash := callFunc(t, script, "build_symbol_hash", nil)
 	_, err = script.Call(context.Background(), "reject_symbol", []Value{symbolHash}, CallOptions{})
@@ -178,8 +187,11 @@ func TestTypedHashKeysSurviveHashHelpers(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def run()
-  hash = { "a" => 1, :a => 2 }
-  merged = hash.merge({ :a => 3 })
+  hash = { "a": 1 }
+  hash[:a] = 2
+  merge_arg = {}
+  merge_arg[:a] = 3
+  merged = hash.merge(merge_arg)
   sliced = hash.slice("a", :a)
   excepted = hash.except(:a)
   selected = hash.select { |key, value| key == "a" }
@@ -187,7 +199,9 @@ func TestTypedHashKeysSurviveHashHelpers(t *testing.T) {
   deleted_if = hash.delete_if { |key, value| false }
   kept_if = hash.keep_if { |key, value| true }
   transformed = hash.transform_values { |value| value + 10 }
-  compacted = { "a" => 1, :a => nil }.compact
+  compact_base = { "a": 1 }
+  compact_base[:a] = nil
+  compacted = compact_base.compact
   looped = []
   for pair in hash
     looped = looped.push(pair)
@@ -307,7 +321,12 @@ func TestHostClonePreservesTypedHashKeys(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def build()
-  {1 => "one", [1] => "array", "name" => "string", :name => "symbol"}
+  h = {}
+  h[1] = "one"
+  h[[1]] = "array"
+  h["name"] = "string"
+  h[:name] = "symbol"
+  h
 end
 
 def fetch(hash)
@@ -1670,23 +1689,60 @@ end
 	}
 }
 
-func TestHashLiteralHashRockets(t *testing.T) {
+// TestHashLiteralSyntaxRestriction pins that the removed hash rocket literal
+// syntax stays a compile error: literal keys are colon-style labels or quoted
+// strings only, and runtime-keyed entries go through index assignment.
+func TestHashLiteralSyntaxRestriction(t *testing.T) {
 	t.Parallel()
 
-	script := compileScript(t, `def run(key)
-  h = { :name => "symbol", "name" => "string", key => "expr" }
-  [h[:name], h["name"], h[key]]
-end`)
-	got := callFunc(t, script, "run", []Value{NewInt(1)})
-	compareArrays(t, got, []Value{NewString("symbol"), NewString("string"), NewString("expr")})
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "symbol rocket key",
+			source: `
+    def broken()
+      { :name => "Ada" }
+    end
+    `,
+		},
+		{
+			name: "string rocket key",
+			source: `
+    def broken()
+      { "name" => "Ada" }
+    end
+    `,
+		},
+		{
+			name: "expression rocket key",
+			source: `
+    def broken(key)
+      { key => "Ada" }
+    end
+    `,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireCompileErrorContainsDefault(t, tt.source, `invalid hash pair: expected key like name: or "name":`)
+		})
+	}
 }
 
 func TestTypedHashDisplayCollisionsKeepDistinctSemanticEntries(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def run()
-  left = { :a => 1, "a" => 2 }
-  right = { :a => 9, "a" => 2 }
+  left = {}
+  left[:a] = 1
+  left["a"] = 2
+  right = {}
+  right[:a] = 9
+  right["a"] = 2
   {
     equal: left == right,
     json: JSON.stringify(left)
@@ -1707,7 +1763,9 @@ func TestFloatHashKeysNormalizeSignedZero(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def run()
-  h = { 0.0 => "positive", -0.0 => "negative" }
+  h = {}
+  h[0.0] = "positive"
+  h[-0.0] = "negative"
   {
     size: h.size,
     positive: h[0.0],
@@ -1734,7 +1792,6 @@ func TestHashRejectsUnsupportedKeyTypes(t *testing.T) {
 		expr string
 		want string
 	}{
-		{name: "literal", expr: `{ {a: 1} => 2 }`, want: "unsupported hash key type hash"},
 		{name: "index assignment", expr: `h = {}; h[{a: 1}] = 2`, want: "unsupported hash key type hash"},
 	}
 
@@ -2269,7 +2326,12 @@ func TestHashInsertionOrder(t *testing.T) {
     end
 
     def mixed_key_kinds()
-      { 2 => "two", 1 => "one", b: 2, "a" => 1 }.keys
+      h = {}
+      h[2] = "two"
+      h[1] = "one"
+      h[:b] = 2
+      h["a"] = 1
+      h.keys
     end
 
     def to_a_order()
@@ -2489,7 +2551,7 @@ func TestHashCopyPreservesSortedOrderForBareHostMap(t *testing.T) {
     end
 
     def bare_merge(h)
-      h.merge({ "zeta" => 9 }).keys
+      h.merge({ "zeta": 9 }).keys
     end
 
     def merge_bare_argument(h)

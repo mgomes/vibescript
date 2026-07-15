@@ -702,7 +702,8 @@ func TestUniversalDupCloneAndFreeze(t *testing.T) {
   ary_copy = ary.dup
   ary_copy[0] = 2
 
-  hash = {1 => ["one"], name: "old"}
+  hash = { name: "old" }
+  hash[1] = ["one"]
   hash_copy = hash.clone
   hash_copy[1][0] = "changed"
   hash_copy[:name] = "new"

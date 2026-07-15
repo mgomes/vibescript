@@ -45,7 +45,7 @@ func TestQuotedSymbolValues(t *testing.T) {
 		},
 		{
 			name:   "index_quoted_symbol_key",
-			source: `def run; ({ :"foo-bar" => 1 })[:"foo-bar"]; end`,
+			source: `def run; h = {}; h[:"foo-bar"] = 1; h[:"foo-bar"]; end`,
 			want:   NewInt(1),
 		},
 		{

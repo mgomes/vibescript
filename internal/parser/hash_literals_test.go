@@ -46,51 +46,72 @@ end`
 	}
 }
 
-func TestParserHashRockets(t *testing.T) {
+// TestParserHashRocketSingleError verifies that the removed hash rocket (=>)
+// syntax is rejected with the hash-pair diagnostic and that recovery advances
+// to the next comma or closing brace, so a rocket entry yields exactly one
+// actionable error instead of cascading diagnostics (mixed literals such as
+// `{:name => "Ada", good: 1}` previously produced several unrelated errors).
+func TestParserHashRocketSingleError(t *testing.T) {
 	t.Parallel()
 
-	source := `def run
-  {:name => "Ada", "first-name" => "Lovelace", 1 => "one", [1, 2] => "array", key => 3}
-end`
-
-	got, errs := parseSource(t, source)
-	if len(errs) > 0 {
-		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	sources := []string{
+		`{:name => "Ada"}`,
+		`{"first-name" => "Lovelace"}`,
+		`{1 => "one"}`,
+		`{[1, 2] => "array"}`,
+		`{key => 3}`,
+		`{:name => "Ada", good: 1}`,
+		`{good: 1, :name => "Ada"}`,
+		`{name: 1, 2 => 3}`,
+		`{a => {b => c}}`,
+		`{ {a: 1} => 2 }`,
 	}
 
-	wantBody := []ast.Statement{
-		&ast.ExprStmt{
-			Expr: &ast.HashLiteral{
-				Pairs: []ast.HashPair{
-					{
-						Key:   &ast.SymbolLiteral{Name: "name"},
-						Value: &ast.StringLiteral{Value: "Ada"},
-					},
-					{
-						Key:   &ast.StringLiteral{Value: "first-name"},
-						Value: &ast.StringLiteral{Value: "Lovelace"},
-					},
-					{
-						Key:   &ast.IntegerLiteral{Value: 1},
-						Value: &ast.StringLiteral{Value: "one"},
-					},
-					{
-						Key: &ast.ArrayLiteral{Elements: []ast.Expression{
-							&ast.IntegerLiteral{Value: 1},
-							&ast.IntegerLiteral{Value: 2},
-						}},
-						Value: &ast.StringLiteral{Value: "array"},
-					},
-					{
-						Key:   &ast.Identifier{Name: "key"},
-						Value: &ast.IntegerLiteral{Value: 3},
-					},
-				},
-			},
+	for _, source := range sources {
+		_, errs := parseSource(t, source)
+		if len(errs) != 1 {
+			t.Fatalf("parseSource(%q) errors = %v, want exactly one", source, errs)
+		}
+		if got, want := errs[0].Error(), invalidHashPairMessage; !strings.Contains(got, want) {
+			t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+		}
+	}
+}
+
+// TestParserHashRocketRecoveryKeepsValidPairs verifies that after rejecting a
+// rocket entry the surrounding literal still parses its valid colon pairs, so
+// downstream diagnostics keep working with the recovered AST.
+func TestParserHashRocketRecoveryKeepsValidPairs(t *testing.T) {
+	t.Parallel()
+
+	source := `{good: 1, :name => "Ada", also: 2}`
+	got, errs := parseSource(t, source)
+	if len(errs) != 1 {
+		t.Fatalf("parseSource(%q) errors = %v, want exactly one", source, errs)
+	}
+	if len(got.Statements) != 1 {
+		t.Fatalf("parseSource(%q) statements = %d, want 1", source, len(got.Statements))
+	}
+	expr, ok := got.Statements[0].(*ast.ExprStmt)
+	if !ok {
+		t.Fatalf("parseSource(%q) statement = %T, want *ast.ExprStmt", source, got.Statements[0])
+	}
+	hash, ok := expr.Expr.(*ast.HashLiteral)
+	if !ok {
+		t.Fatalf("parseSource(%q) expression = %T, want *ast.HashLiteral", source, expr.Expr)
+	}
+	wantPairs := []ast.HashPair{
+		{
+			Key:   &ast.SymbolLiteral{Name: "good"},
+			Value: &ast.IntegerLiteral{Value: 1},
+		},
+		{
+			Key:   &ast.SymbolLiteral{Name: "also"},
+			Value: &ast.IntegerLiteral{Value: 2},
 		},
 	}
-	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
-		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(wantPairs, hash.Pairs, astCmpOpts); diff != "" {
+		t.Fatalf("recovered pairs mismatch (-want +got):\n%s", diff)
 	}
 }
 

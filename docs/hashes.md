@@ -1,7 +1,7 @@
 # Hashes in Vibescript
 
 Hashes are dictionaries with Ruby-style key identity. String and symbol keys are
-distinct, and hash-rocket literals can use other hashable values such as
+distinct, and keys assigned at runtime can be other hashable values such as
 integers, arrays, booleans, nil, floats, and ranges. Declare common
 identifier-shaped symbol keys with Ruby-style shorthand:
 
@@ -14,8 +14,9 @@ player = {
 ```
 
 Shorthand labels (`name:`) create symbol keys, so access them with symbol
-notation (`player[:name]`). Use quoted string keys or hash rockets when the key
-must be a string (`player["name"]`) or another runtime value.
+notation (`player[:name]`). Use quoted string keys when the key must be a
+string (`player["name"]`), and index assignment when the key is another
+runtime value.
 
 When a label key is followed immediately by `,`, `}`, or end-of-input, the value
 is omitted and read from the local variable of the same name. `{ name: }` is
@@ -62,25 +63,25 @@ are accepted as keyword arguments at call sites, with or without parentheses
 disambiguates the label from the keyword, so `record rescue: "retry"` passes a
 keyword argument rather than parsing `rescue` as a control-flow keyword.
 
-Hash literals accept colon-style keys (shorthand labels like `name:` and quoted
-string keys like `"name":`) plus Ruby's hash rocket syntax (`=>`) for runtime
-key expressions:
+Hash literals only accept colon-style keys: shorthand labels (`name:`) and
+quoted string keys (`"name":`). Ruby's hash rocket syntax (`=>`) is not
+supported, so write `{ name: "Ada" }` rather than `{ :name => "Ada" }`. To use
+a value computed at runtime as a key, assign into the hash after constructing
+it:
 
 ```vibe
 current_key = :nickname
-player = { name: "Ada", "first-name": "Ada", current_key => "dynamic" }
-numbers = { 1 => "one", [2, 3] => "pair" }
+player = { name: "Ada", "first-name": "Ada" }
+player[current_key] = "dynamic"
+
+numbers = {}
+numbers[1] = "one"
+numbers[[2, 3]] = "pair"
 ```
 
-Index assignment uses the same key model as literals:
-
-```vibe
-player[[1, 2]] = "array key"
-player[[1, 2]] # "array key"
-```
-
-Unsupported key values, such as NaN floats, cyclic arrays, and objects, raise
-`unsupported hash key type ...`.
+Keys assigned through index access keep the same Ruby-style key identity as
+literal keys, and may be any hashable value. Unsupported key values, such as
+NaN floats, cyclic arrays, and objects, raise `unsupported hash key type ...`.
 
 Dot access keeps hash method names reserved. If a stored key is named like a
 hash method, use index access for the entry:
@@ -198,9 +199,12 @@ The key membership predicates accept any candidate key and use the same key
 identity as `[]` lookup.
 
 ```vibe
-{ a: 1 }.key?(:a)       # true
-{ a: 1 }.key?("a")      # false
-{ 1 => "one" }.key?(1)  # true
+numbers = {}
+numbers[1] = "one"
+
+{ a: 1 }.key?(:a)  # true
+{ a: 1 }.key?("a") # false
+numbers.key?(1)    # true
 ```
 
 `value?` and `has_value?` compare the candidate against each stored value using

@@ -968,7 +968,9 @@ func TestHashMergeBangGrowthTripsMemoryQuota(t *testing.T) {
 	source := `def run()
   h = {}
   for i in 1..200
-    h.merge!({ "key#{i}" => "abcdefghij" })
+    entry = {}
+    entry["key#{i}"] = "abcdefghij"
+    h.merge!(entry)
   end
   h.size
 end`
