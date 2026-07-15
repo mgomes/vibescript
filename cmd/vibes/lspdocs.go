@@ -930,9 +930,11 @@ func userSymbolHover(program *ast.Program, lines []string, word string, hoverLin
 	// the name= candidate probes first; everywhere else the plain name
 	// wins so reads keep resolving to the getter.
 	candidates := []string{word, word + "="}
-	// Only member assignments (obj.value = 3, self.value = 3) dispatch
-	// setters; a bare identifier write is a local assignment.
-	if assignmentFollowsWord(lines, hoverLine, hoverCharacter) && dotPrecedesWord(lines, hoverLine, hoverCharacter) {
+	// Only member assignments (obj.value = 3, self.value = 3) and setter
+	// declarations (def value=) name the setter; a bare identifier write
+	// is a local assignment.
+	if assignmentFollowsWord(lines, hoverLine, hoverCharacter) &&
+		(dotPrecedesWord(lines, hoverLine, hoverCharacter) || defPrecedesWord(lines, hoverLine, hoverCharacter)) {
 		candidates = []string{word + "=", word}
 	}
 	qualifier := receiverWordBefore(lines, hoverLine, hoverCharacter)
@@ -979,6 +981,24 @@ func receiverWordBefore(lines []string, line, character int) string {
 func dotPrecedesWord(lines []string, line, character int) bool {
 	runes, start, _, ok := wordSpanAtPosition(lines, line, character)
 	return ok && start > 0 && runes[start-1] == '.'
+}
+
+// defPrecedesWord reports whether the word at the position is a method
+// name in a def declaration, optionally through a self. receiver, so
+// hovering the name in "def value=(v)" resolves the setter.
+func defPrecedesWord(lines []string, line, character int) bool {
+	runes, start, _, ok := wordSpanAtPosition(lines, line, character)
+	if !ok {
+		return false
+	}
+	i := start
+	if i >= 5 && string(runes[i-5:i]) == "self." {
+		i -= 5
+	}
+	for i > 0 && (runes[i-1] == ' ' || runes[i-1] == '\t') {
+		i--
+	}
+	return i >= 3 && string(runes[i-3:i]) == "def" && (i == 3 || !isWordRune(runes[i-4]))
 }
 
 // assignmentFollowsWord reports whether the word at the position is

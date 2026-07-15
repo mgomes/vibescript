@@ -3413,3 +3413,24 @@ func TestHoverClassReceiverWithoutClassMethod(t *testing.T) {
 		t.Fatalf("hover(client.save) = %q, want the instance method docs", got)
 	}
 }
+
+func TestHoverSetterDeclarationName(t *testing.T) {
+	t.Parallel()
+	source := "class Counter\n" +
+		"  # Reads the current value.\n" +
+		"  def value\n" +
+		"  end\n" +
+		"\n" +
+		"  # Writes the current value.\n" +
+		"  def value=(v)\n" + // line 6
+		"  end\n" +
+		"end\n" +
+		"\n" +
+		"value=3\n" // line 10: flush bare local write
+	if got := hoverValue(t, source, 6, 8); !strings.Contains(got, "Writes the current value.") {
+		t.Fatalf("hover(def value=) = %q, want the setter docs", got)
+	}
+	if got := hoverValue(t, source, 10, 2); strings.Contains(got, "Writes the current value.") {
+		t.Fatalf("hover(flush bare write) = %q, must not serve setter docs", got)
+	}
+}
