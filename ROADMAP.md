@@ -846,4 +846,31 @@ opt-in, production-safe live reloading for required Vibescript modules.
 - [x] Full tests pass.
 - [x] Release checklist passes for `v1.0.0-rc5`.
 
+## v1.0.0-rc6 - Language Server Documentation (completed 2026-07-15)
+
+Goal: sixth release candidate — remove the accidentally reinstated hash-rocket
+syntax and make the language server a real documentation surface.
+
+- [x] Hash rockets in hash literals and shape annotations are parse errors
+  again with a single targeted diagnostic; the arbitrary-key runtime model,
+  colon shape fields, and rescue bindings are unchanged.
+- [x] Hover serves documentation parsed from the embedded references: kernel
+  builtins, namespaces and their members through both accessors, keywords and
+  contextual words, and the stdlib member surface including merged
+  multi-receiver entries and composed bang variants.
+- [x] User-defined symbols hover with reconstructed typed signatures and
+  leading doc comments, resolved by scope: declaration line, enclosing
+  container, qualifier owner and receiver kind, with setters preferred at
+  write sites.
+- [x] Completions carry the same documentation, and drift gates enforce that
+  every engine-registered builtin, parser keyword, and universal member claim
+  stays true against the runtime.
+- [x] The CLI is rebuilt on urfave/cli with a stable command contract.
+
+### v1.0.0-rc6 Definition of Done
+
+- [x] Release notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v1.0.0-rc6`.
+
 ## Unreleased
