@@ -1044,15 +1044,14 @@ func userSymbolDoc(program *ast.Program, lines []string, word string, hoverLine 
 			// instance methods, which that receiver cannot dispatch.
 			direct := make([]userSymbolCandidate, 0, len(owned))
 			for _, c := range owned {
-				if c.kind == userSymbolClassMethod || c.kind == userSymbolEnumMember {
+				if c.kind == userSymbolClassMethod || c.kind == userSymbolEnumMember || c.kind == userSymbolDecl {
 					direct = append(direct, c)
 				}
 			}
-			if len(direct) > 0 {
-				candidates = direct
-			} else {
-				candidates = owned
-			}
+			// A class-named receiver dispatches only class methods and
+			// enum members; with none, the qualified hover has no valid
+			// target rather than the owner's instance methods.
+			candidates = direct
 		} else {
 			// A qualified access can never resolve to a top-level
 			// declaration, and an instance receiver cannot dispatch

@@ -3395,3 +3395,21 @@ func TestHoverBareAssignmentIsNotASetterCall(t *testing.T) {
 		t.Fatalf("hover(self.value =) = %q, want setter docs", got)
 	}
 }
+
+func TestHoverClassReceiverWithoutClassMethod(t *testing.T) {
+	t.Parallel()
+	source := "class Client\n" +
+		"  # Saves this client instance.\n" +
+		"  def save\n" +
+		"  end\n" +
+		"end\n" +
+		"\n" +
+		"Client.save\n" + // line 6: invalid class dispatch
+		"client.save\n" // line 7: instance dispatch
+	if got := hoverValue(t, source, 6, 8); strings.Contains(got, "Saves this client instance.") {
+		t.Fatalf("hover(Client.save) = %q, must not serve instance method docs", got)
+	}
+	if got := hoverValue(t, source, 7, 8); !strings.Contains(got, "Saves this client instance.") {
+		t.Fatalf("hover(client.save) = %q, want the instance method docs", got)
+	}
+}
