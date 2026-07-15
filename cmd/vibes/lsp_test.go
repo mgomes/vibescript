@@ -572,6 +572,8 @@ func TestQualifiedWordAt(t *testing.T) {
 		{name: "dot without receiver", line: ".parse_as", character: 3, want: ""},
 		{name: "chained receiver word", line: "payload.keys.sort", character: 9, want: "payload.keys"},
 		{name: "scope resolution member", line: "Math::PI", character: 7, want: "Math.PI"},
+		{name: "chained namespace segment does not qualify", line: "payload.JSON.parse", character: 14, want: ""},
+		{name: "chained scope segment does not qualify", line: "A::JSON.parse", character: 9, want: ""},
 		{name: "single colon is not an accessor", line: "label: value", character: 8, want: ""},
 		{name: "scope resolution without receiver", line: "::PI", character: 3, want: ""},
 	}

@@ -338,6 +338,12 @@ func qualifiedWordAt(lines []string, line, character int) string {
 	if receiverStart == receiverEnd {
 		return ""
 	}
+	// The receiver must be standalone: in payload.JSON.parse the segment
+	// before parse is a member access on payload, not the JSON namespace,
+	// so a chained receiver never qualifies.
+	if receiverStart > 0 && (runes[receiverStart-1] == '.' || runes[receiverStart-1] == ':') {
+		return ""
+	}
 	return string(runes[receiverStart:receiverEnd]) + "." + string(runes[start:end])
 }
 
