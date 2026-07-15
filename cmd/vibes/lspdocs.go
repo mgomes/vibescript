@@ -295,6 +295,9 @@ func hoverMarkdown(program *ast.Program, lines []string, line, character int, wo
 	if entry, ok := docs[word]; ok {
 		return entry.Markdown
 	}
+	if md := namespaceDocMarkdown(word); md != "" {
+		return md
+	}
 	if doc, ok := keywordDocs[word]; ok {
 		return fmt.Sprintf("`%s`\n\n%s", word, doc)
 	}
@@ -471,7 +474,18 @@ func (idx *memberDocIndex) parse(markdown, fixedReceiver string, sections map[st
 			i = next
 			signature, description, ok := splitDocBullet(bullet)
 			if !ok {
-				signature, description = strings.TrimPrefix(bullet, "- "), ""
+				// Without a dash separator the bullet may still be a
+				// prose entry ("- `take(n)` to keep a prefix"), but a
+				// bullet that is nothing beyond its code-span run is an
+				// enumeration line ("- `strip!`, `lstrip!`, ...") whose
+				// names resolve through the bang-variant fallback.
+				body := strings.TrimPrefix(bullet, "- ")
+				refs, rest := leadingMemberNamesRest(body, receiver)
+				if strings.TrimSpace(rest) == "" {
+					continue
+				}
+				idx.add(refs, body, "")
+				continue
 			}
 			idx.add(leadingMemberNames(strings.TrimPrefix(bullet, "- "), receiver), signature, description)
 		}
@@ -515,23 +529,32 @@ var memberNameRegex = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*[?!]?$`)
 // unparseable span, so code mentioned later in a sentence never
 // registers an entry.
 func leadingMemberNames(text, receiver string) []memberNameRef {
+	refs, _ := leadingMemberNamesRest(text, receiver)
+	return refs
+}
+
+// leadingMemberNamesRest additionally returns the text remaining after
+// the leading code-span run, so callers can tell a prose bullet from a
+// bare enumeration list.
+func leadingMemberNamesRest(text, receiver string) ([]memberNameRef, string) {
 	rest := strings.TrimSpace(text)
 	var refs []memberNameRef
 	for {
 		rest = trimMemberSeparators(rest)
 		if !strings.HasPrefix(rest, "`") {
-			return refs
+			return refs, rest
 		}
 		end := strings.Index(rest[1:], "`")
 		if end < 0 {
-			return refs
+			return refs, rest
 		}
 		span := rest[1 : 1+end]
-		rest = rest[2+end:]
+		next := rest[2+end:]
 		ref, ok := memberRefFromSpan(span, receiver)
 		if !ok {
-			return refs
+			return refs, rest
 		}
+		rest = next
 		if !slices.Contains(refs, ref) {
 			refs = append(refs, ref)
 		}
@@ -620,6 +643,9 @@ func memberDocMarkdown(word string) string {
 		return entry.Markdown
 	}
 	entries := docs.entries[word]
+	if len(entries) == 0 {
+		entries = bangVariantEntries(word)
+	}
 	switch len(entries) {
 	case 0:
 		return ""
@@ -636,6 +662,137 @@ func memberDocMarkdown(word string) string {
 	return b.String()
 }
 
+// runtimeMemberIndex maps member name -> receiver types the runtime
+// dispatches it on, from the runtime's own completion table.
+var runtimeMemberIndex = func() map[string]map[string]bool {
+	index := make(map[string]map[string]bool)
+	for receiver, members := range vibes.MemberCompletionNames() {
+		for _, name := range members {
+			if index[name] == nil {
+				index[name] = make(map[string]bool)
+			}
+			index[name][receiver] = true
+		}
+	}
+	return index
+}()
+
+// bangVariantEntries composes documentation for an in-place bang
+// variant (strip!, sort!) from its base member's entries, restricted
+// to receivers where the runtime actually dispatches the bang name.
+// The result convention comes from the stdlib reference's Bang
+// Variants section: transformed value, or nil when nothing changed —
+// except sub!/gsub!, which key their result off the match.
+func bangVariantEntries(word string) []memberDocEntry {
+	base, isBang := strings.CutSuffix(word, "!")
+	if !isBang || base == "" {
+		return nil
+	}
+	receivers := runtimeMemberIndex[word]
+	if len(receivers) == 0 {
+		return nil
+	}
+	note := "In-place variant of `" + base + "`: returns the transformed value, or `nil` when nothing changed."
+	if word == "sub!" || word == "gsub!" {
+		note = "In-place variant of `" + base + "`: returns the rewritten string whenever the pattern matched, and `nil` only when it never matched."
+	}
+	var out []memberDocEntry
+	for _, entry := range memberDocs().entries[base] {
+		if !receivers[entry.Receiver] {
+			continue
+		}
+		out = append(out, memberDocEntry{
+			Receiver:  entry.Receiver,
+			Signature: "`" + word + "`",
+			Markdown:  "`" + word + "`\n\n" + note + "\n\n" + entry.Markdown,
+		})
+	}
+	return out
+}
+
+// namespaceDocsOnce parses the "## Namespace" section intros from the
+// embedded builtins reference; Proc and Regexp have no dedicated
+// section, so they carry hand-written one-liners.
+var (
+	namespaceDocsOnce  sync.Once
+	namespaceDocsTable map[string]string
+)
+
+var namespaceIntroFallbacks = map[string]string{
+	"Proc":   "Constructs callable proc values: `Proc.new { |args| ... }` is equivalent to the `proc` builtin.",
+	"Regexp": "Ruby-style regular expression helpers for building and inspecting regex values.",
+}
+
+func namespaceDocs() map[string]string {
+	namespaceDocsOnce.Do(func() {
+		namespaceDocsTable = make(map[string]string)
+		lines := strings.Split(vibescript.BuiltinsDoc, "\n")
+		current := ""
+		var intro []string
+		flush := func() {
+			if current == "" {
+				return
+			}
+			text := strings.TrimSpace(strings.Join(intro, "\n"))
+			if text != "" {
+				namespaceDocsTable[current] = text
+			}
+		}
+		for _, line := range lines {
+			if title, ok := strings.CutPrefix(line, "## "); ok {
+				flush()
+				current, intro = "", nil
+				name := strings.TrimSpace(title)
+				if _, isNamespace := lspDocNamespaces[name]; isNamespace {
+					current = name
+				}
+				continue
+			}
+			if strings.HasPrefix(line, "### ") {
+				flush()
+				current, intro = "", nil
+				continue
+			}
+			if current != "" {
+				intro = append(intro, line)
+			}
+		}
+		flush()
+		for name, text := range namespaceIntroFallbacks {
+			if _, exists := namespaceDocsTable[name]; !exists {
+				namespaceDocsTable[name] = text
+			}
+		}
+	})
+	return namespaceDocsTable
+}
+
+// namespaceDocMarkdown renders the hover for a bare namespace word
+// (Tasks, JSON): the section intro from the builtins reference plus a
+// member list generated from the parsed doc table, so the list can
+// never drift from what qualified hovers serve.
+func namespaceDocMarkdown(word string) string {
+	if _, ok := lspDocNamespaces[word]; !ok {
+		return ""
+	}
+	var members []string
+	prefix := word + "."
+	for name := range builtinDocs() {
+		if member, ok := strings.CutPrefix(name, prefix); ok {
+			members = append(members, member)
+		}
+	}
+	slices.Sort(members)
+	markdown := "`" + word + "`"
+	if intro := namespaceDocs()[word]; intro != "" {
+		markdown += "\n\n" + intro
+	}
+	if len(members) > 0 {
+		markdown += "\n\nMembers: `" + strings.Join(members, "`, `") + "`"
+	}
+	return markdown
+}
+
 // unambiguousMemberDocMarkdown returns member documentation for
 // completion items: only names with a single interpretation (a
 // universal helper, or exactly one documenting receiver) carry docs,
@@ -646,6 +803,9 @@ func unambiguousMemberDocMarkdown(name string) string {
 		return entry.Markdown
 	}
 	if entries := docs.entries[name]; len(entries) == 1 {
+		return entries[0].Markdown
+	}
+	if entries := bangVariantEntries(name); len(entries) == 1 {
 		return entries[0].Markdown
 	}
 	return ""

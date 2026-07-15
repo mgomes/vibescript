@@ -2982,7 +2982,6 @@ func TestMemberDocsMatchRuntimeMembers(t *testing.T) {
 	// fails loudly instead of shrinking the table.
 	canaries := []struct{ receiver, name string }{
 		{"string", "upcase"},
-		{"string", "strip!"},
 		{"array", "map"},
 		{"array", "take"},
 		{"hash", "fetch"},
@@ -3007,6 +3006,22 @@ func TestMemberDocsMatchRuntimeMembers(t *testing.T) {
 		if _, ok := docs.universal[name]; !ok {
 			t.Errorf("member docs lost the universal %s entry", name)
 		}
+	}
+	// Bang variants resolve through the base-entry fallback rather than
+	// table entries; the composed hover must carry the in-place note and
+	// the base documentation.
+	for _, name := range []string{"strip!", "lstrip!"} {
+		md := memberDocMarkdown(name)
+		if !strings.Contains(md, "In-place variant of") {
+			t.Errorf("memberDocMarkdown(%q) = %q, want the in-place bang note", name, md)
+		}
+	}
+	// sort! has a real stdlib entry, which wins over the fallback.
+	if md := memberDocMarkdown("sort!"); !strings.Contains(md, "transform the receiver in place") {
+		t.Errorf("memberDocMarkdown(sort!) = %q, want its real stdlib entry", md)
+	}
+	if md := memberDocMarkdown("sub!"); !strings.Contains(md, "never matched") {
+		t.Errorf("memberDocMarkdown(sub!) = %q, want the match-keyed note", md)
 	}
 
 	// Hard gate: no phantom docs.

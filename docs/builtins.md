@@ -77,6 +77,10 @@ price = money_cents(2550, "USD")  # $25.50 USD
 
 ## Time
 
+Time values come from the `now` builtin and the `Time` namespace's
+constructors and parser; all of them respect the configured clock and
+time zone.
+
 ### `now`
 
 Returns the current UTC timestamp as an ISO 8601 / RFC 3339 formatted string:
@@ -306,6 +310,10 @@ Duration.parse("1h30m").seconds               # 5400
 
 ## JSON
 
+`JSON` converts between JSON text and Vibescript values: parsing preserves
+member order and reads oversized integers exactly, and stringifying emits
+members in insertion order.
+
 ### `JSON.parse(string)`
 
 Parses a JSON string into Vibescript values (`hash`, `array`, `string`, `int`,
@@ -418,6 +426,9 @@ Regexp.union("cat", "dog").match?("dog")  # true
 ```
 
 ## Hash
+
+`Hash` constructs hashes with a configured default value or default proc,
+consulted when a missing key is read.
 
 ### `Hash.new(default = nil)` / `Hash.new { |hash, key| ... }`
 
