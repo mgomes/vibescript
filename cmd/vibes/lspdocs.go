@@ -930,7 +930,9 @@ func userSymbolHover(program *ast.Program, lines []string, word string, hoverLin
 	// the name= candidate probes first; everywhere else the plain name
 	// wins so reads keep resolving to the getter.
 	candidates := []string{word, word + "="}
-	if assignmentFollowsWord(lines, hoverLine, hoverCharacter) {
+	// Only member assignments (obj.value = 3, self.value = 3) dispatch
+	// setters; a bare identifier write is a local assignment.
+	if assignmentFollowsWord(lines, hoverLine, hoverCharacter) && dotPrecedesWord(lines, hoverLine, hoverCharacter) {
 		candidates = []string{word + "=", word}
 	}
 	qualifier := receiverWordBefore(lines, hoverLine, hoverCharacter)
@@ -970,6 +972,13 @@ func receiverWordBefore(lines []string, line, character int) string {
 		return ""
 	}
 	return receiver
+}
+
+// dotPrecedesWord reports whether the word at the position is reached
+// through a "." member accessor.
+func dotPrecedesWord(lines []string, line, character int) bool {
+	runes, start, _, ok := wordSpanAtPosition(lines, line, character)
+	return ok && start > 0 && runes[start-1] == '.'
 }
 
 // assignmentFollowsWord reports whether the word at the position is
