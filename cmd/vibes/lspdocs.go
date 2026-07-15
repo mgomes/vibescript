@@ -937,12 +937,25 @@ func userSymbolDoc(program *ast.Program, lines []string, word string, hoverLine 
 	if best != -1 {
 		return candidates[best].markdown
 	}
-	for i := len(candidates) - 1; i >= 0; i-- {
-		if candidates[i].declLine <= hoverLine {
-			return candidates[i].markdown
+	// Outside every container, top-level declarations outrank methods
+	// scoped to some class the position is not in: code in the gap after
+	// a class body must not resolve to that class's methods.
+	unscoped := make([]userSymbolCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		if !c.scoped {
+			unscoped = append(unscoped, c)
 		}
 	}
-	return candidates[0].markdown
+	pool := candidates
+	if len(unscoped) > 0 {
+		pool = unscoped
+	}
+	for i := len(pool) - 1; i >= 0; i-- {
+		if pool[i].declLine <= hoverLine {
+			return pool[i].markdown
+		}
+	}
+	return pool[0].markdown
 }
 
 func collectUserSymbols(program *ast.Program, lines []string, word string) []userSymbolCandidate {

@@ -3112,7 +3112,12 @@ func TestHoverUserSymbolScopePreference(t *testing.T) {
 		"\n" +
 		"enum Second\n" + // line 22
 		"  Draft\n" + // line 23
-		"end\n"
+		"end\n" +
+		"\n" +
+		"# Runs the top-level path.\n" +
+		"def run\n" + // line 27
+		"end\n" +
+		"run\n" // line 29: top-level gap call
 
 	tests := []struct {
 		name      string
@@ -3127,6 +3132,7 @@ func TestHoverUserSymbolScopePreference(t *testing.T) {
 		{name: "beta signature type", line: 9, character: 7, want: "def run(b: string) -> string"},
 		{name: "first enum member", line: 19, character: 3, want: "First::Draft"},
 		{name: "second enum member", line: 23, character: 3, want: "Second::Draft"},
+		{name: "gap after classes prefers top-level def", line: 29, character: 1, want: "Runs the top-level path."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
