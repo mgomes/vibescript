@@ -938,8 +938,9 @@ func userSymbolHover(program *ast.Program, lines []string, word string, hoverLin
 		candidates = []string{word + "=", word}
 	}
 	qualifier := receiverWordBefore(lines, hoverLine, hoverCharacter)
+	memberShaped := dotPrecedesWord(lines, hoverLine, hoverCharacter)
 	for _, candidate := range candidates {
-		if md := userSymbolDoc(program, lines, candidate, hoverLine+1, qualifier); md != "" {
+		if md := userSymbolDoc(program, lines, candidate, hoverLine+1, qualifier, memberShaped); md != "" {
 			return md
 		}
 	}
@@ -1049,7 +1050,7 @@ type userSymbolCandidate struct {
 // latest-starting such container when they nest), then the nearest
 // declaration above the position, so duplicate names across classes
 // resolve to the copy in scope. hoverLine is 1-based.
-func userSymbolDoc(program *ast.Program, lines []string, word string, hoverLine int, qualifier string) string {
+func userSymbolDoc(program *ast.Program, lines []string, word string, hoverLine int, qualifier string, memberShaped bool) string {
 	candidates := collectUserSymbols(program, lines, word)
 	if qualifier != "" {
 		owned := make([]userSymbolCandidate, 0, len(candidates))
@@ -1115,9 +1116,15 @@ func userSymbolDoc(program *ast.Program, lines []string, word string, hoverLine 
 			unscoped = append(unscoped, c)
 		}
 	}
-	pool := candidates
-	if len(unscoped) > 0 {
-		pool = unscoped
+	pool := unscoped
+	if len(pool) == 0 {
+		// Outside every container, a bare word cannot reach scoped
+		// members; only a member-shaped access (obj.x, self.x, X::y) may
+		// still resolve them.
+		if qualifier == "" && !memberShaped {
+			return ""
+		}
+		pool = candidates
 	}
 	for i := len(pool) - 1; i >= 0; i-- {
 		if pool[i].declLine <= hoverLine {
@@ -1233,9 +1240,9 @@ func collectClassSymbols(st *ast.ClassStmt, lines []string, word string, start, 
 	return out
 }
 
-// classChildStarts returns the start lines of every direct child
-// declaration of a class or module, across its method, class-method,
-// and nested-module lists.
+// classChildStarts returns the start lines of every direct child of a
+// class or module — declarations and plain body statements alike — so
+// a nested module's scope ends at whatever follows it in the parent.
 func classChildStarts(st *ast.ClassStmt) []int {
 	var starts []int
 	for _, method := range st.Methods {
@@ -1246,6 +1253,14 @@ func classChildStarts(st *ast.ClassStmt) []int {
 	}
 	for _, nested := range st.Modules {
 		starts = append(starts, nested.Position.Line)
+	}
+	for _, alias := range st.Aliases {
+		starts = append(starts, alias.Position.Line)
+	}
+	for _, stmt := range st.Body {
+		if pos := stmt.Pos(); pos.Line > 0 {
+			starts = append(starts, pos.Line)
+		}
 	}
 	return starts
 }

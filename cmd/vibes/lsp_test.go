@@ -3434,3 +3434,29 @@ func TestHoverSetterDeclarationName(t *testing.T) {
 		t.Fatalf("hover(flush bare write) = %q, must not serve setter docs", got)
 	}
 }
+
+func TestHoverScopedOnlyNamesStayOutOfTopLevel(t *testing.T) {
+	t.Parallel()
+	source := "module Outer\n" +
+		"  module Inner\n" +
+		"    # Inner helper.\n" +
+		"    def helper\n" +
+		"    end\n" +
+		"  end\n" + // line 5
+		"  helper\n" + // line 6: outer body call after Inner's end
+		"end\n" +
+		"\n" +
+		"class A\n" +
+		"  # Runs A.\n" +
+		"  def run\n" +
+		"  end\n" +
+		"end\n" +
+		"\n" +
+		"run\n" // line 15: bare top-level, no top-level def
+	if got := hoverValue(t, source, 15, 1); strings.Contains(got, "Runs A.") {
+		t.Fatalf("hover(top-level run) = %q, must not serve the scoped method", got)
+	}
+	if got := hoverValue(t, source, 6, 3); strings.Contains(got, "Inner helper.") {
+		t.Fatalf("hover(outer-body helper) = %q, must not serve the nested module's method", got)
+	}
+}
