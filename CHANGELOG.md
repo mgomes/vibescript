@@ -9,6 +9,50 @@ All notable changes to this project will be documented in this file.
 <!-- Unreleased entries are tracked as individual files in changelog.d/ so
      pull requests never conflict on this file. They are compiled into a
      versioned section by scripts/build_changelog.sh at release time. -->
+## v1.0.0-rc6 - 2026-07-15
+
+Sixth release candidate: the hash-rocket syntax that #867 accidentally
+reinstated is removed again, the CLI moves to urfave/cli, and the language
+server now serves real documentation — hover and completions cover builtins,
+namespaces, keywords, the stdlib member surface, and user-defined symbols with
+scope-aware resolution.
+
+- **Removed: hash rocket (`=>`) syntax, again.** The Ruby stdlib compatibility
+  batch (#867) unintentionally reinstated the hash-rocket literal syntax that
+  #762 had removed, and #599 extended rockets into shape type annotations.
+  Rockets in hash literals (`{ expr => value }`) and in shape annotations
+  (`def f(p: { "user-id" => string })`) are parse errors again, reported as a
+  single targeted hash-pair diagnostic. The supported spellings are unchanged:
+  colon keys (`name:`, `"name":`) in hash literals, index assignment
+  (`h[key] = value`) for runtime-computed keys, and colon shape-field
+  separators, including string, symbol, and quoted-symbol field names. The
+  arbitrary-key runtime behavior from #867 (integer, array, range, and other
+  hashable keys with Ruby-style string/symbol identity) is retained; only the
+  literal syntax is gone. Rescue bindings (`rescue RuntimeError => err`) are
+  unaffected.
+- **Changed: the `vibes` CLI now uses urfave/cli v3.** Every command has
+  generated `--help` output; successful help now exits zero on stdout. Flag
+  parsing still stops at the first positional argument so script arguments
+  keep their existing behavior. Unknown commands now name the rejected token,
+  and `analyze`, `lsp`, `repl`, and `help` reject undocumented extra positional
+  arguments instead of ignoring them.
+- **Added: LSP hover and completion documentation.** Hovering a builtin, a
+  namespace member (`JSON.parse_as`, `Math.sqrt`), or a keyword now shows its
+  documentation from `docs/builtins.md`, and completion items carry the same
+  docs plus signature details. The reference gained entries for the output,
+  proc/lambda, `Regexp`, `Duration`, `Time`, and `Tasks` builtins, with drift
+  gates so new builtins cannot ship undocumented.
+- **Added: LSP hover for value member methods.** Hovering a method after a
+  `.` receiver (`items.map`, `name.upcase`, `h.fetch`) now shows its entry
+  from the stdlib reference and the per-type guides; names shared by several
+  types (`size`) render one section per receiver type. Unambiguous members
+  carry the same docs in after-dot completion, and a drift gate keeps the
+  parsed table honest against the runtime's member dispatch.
+- **Added: LSP hover for user-defined symbols.** Hovering a function, class,
+  module, enum, or enum member declared in the current document shows its
+  reconstructed signature (parameter types, defaults, return type) plus the
+  `#` comment block above the declaration.
+
 ## v1.0.0-rc5 - 2026-07-12
 
 Fifth release candidate: development-time module reloading for embedding hosts.
