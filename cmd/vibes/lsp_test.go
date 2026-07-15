@@ -3136,3 +3136,43 @@ func TestHoverUserSymbolScopePreference(t *testing.T) {
 		})
 	}
 }
+
+func TestHoverSetterPreferenceAtWriteSites(t *testing.T) {
+	t.Parallel()
+	source := "class Counter\n" +
+		"  # Reads the current value.\n" +
+		"  def value\n" +
+		"    @value\n" +
+		"  end\n" +
+		"\n" +
+		"  # Writes the current value.\n" +
+		"  def value=(next_value)\n" +
+		"    @value = next_value\n" +
+		"  end\n" +
+		"end\n" +
+		"\n" +
+		"c = Counter.new\n" +
+		"c.value = 3\n" + // line 13: write site
+		"x = c.value\n" + // line 14: read site
+		"ok = c.value == 3\n" // line 15: comparison, not a write
+
+	tests := []struct {
+		name      string
+		line      int
+		character int
+		want      string
+	}{
+		{name: "write site prefers setter", line: 13, character: 3, want: "Writes the current value."},
+		{name: "read site keeps getter", line: 14, character: 7, want: "Reads the current value."},
+		{name: "comparison keeps getter", line: 15, character: 8, want: "Reads the current value."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := hoverValue(t, source, tt.line, tt.character)
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("hover(%d:%d) = %q, want it to contain %q", tt.line, tt.character, got, tt.want)
+			}
+		})
+	}
+}

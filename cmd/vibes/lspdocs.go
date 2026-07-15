@@ -306,7 +306,7 @@ func hoverMarkdown(program *ast.Program, lines []string, line, character int, wo
 			return md
 		}
 	}
-	if md := userSymbolHover(program, lines, word, line); md != "" {
+	if md := userSymbolHover(program, lines, word, line, character); md != "" {
 		return md
 	}
 	return fmt.Sprintf("`%s`\n\nVibescript %s", word, classifyWord(word))
@@ -853,16 +853,41 @@ func isValueMemberAccess(lines []string, line, character int) bool {
 // with their methods, and enums with their members. The setter form
 // "name=" is tried when the bare word has no declaration, mirroring
 // go-to-definition.
-func userSymbolHover(program *ast.Program, lines []string, word string, hoverLine int) string {
+func userSymbolHover(program *ast.Program, lines []string, word string, hoverLine, hoverCharacter int) string {
 	if program == nil || word == "" {
 		return ""
 	}
-	for _, candidate := range []string{word, word + "="} {
+	// At a write site (c.value = 3) the setter is the symbol in play, so
+	// the name= candidate probes first; everywhere else the plain name
+	// wins so reads keep resolving to the getter.
+	candidates := []string{word, word + "="}
+	if assignmentFollowsWord(lines, hoverLine, hoverCharacter) {
+		candidates = []string{word + "=", word}
+	}
+	for _, candidate := range candidates {
 		if md := userSymbolDoc(program, lines, candidate, hoverLine+1); md != "" {
 			return md
 		}
 	}
 	return ""
+}
+
+// assignmentFollowsWord reports whether the word at the position is
+// followed (after spaces) by a bare assignment '=': the shape of a
+// setter call. Comparison and match operators (==, =~) do not count.
+func assignmentFollowsWord(lines []string, line, character int) bool {
+	runes, _, end, ok := wordSpanAtPosition(lines, line, character)
+	if !ok {
+		return false
+	}
+	i := end
+	for i < len(runes) && (runes[i] == ' ' || runes[i] == '\t') {
+		i++
+	}
+	if i >= len(runes) || runes[i] != '=' {
+		return false
+	}
+	return i+1 >= len(runes) || (runes[i+1] != '=' && runes[i+1] != '~')
 }
 
 // userSymbolCandidate is one declaration matching the hovered word.
