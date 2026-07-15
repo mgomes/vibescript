@@ -1118,7 +1118,7 @@ func collectUserSymbols(program *ast.Program, lines []string, word string) []use
 				})
 			}
 		case *ast.ClassStmt:
-			out = append(out, collectClassSymbols(st, lines, word, st.Position.Line, nextStart-1)...)
+			out = append(out, collectClassSymbols(st, lines, word, st.Position.Line, nextStart-1, "")...)
 		case *ast.EnumStmt:
 			if st.Name == word {
 				out = append(out, userSymbolCandidate{
@@ -1148,16 +1148,19 @@ func collectUserSymbols(program *ast.Program, lines []string, word string) []use
 // declaration: the declaration itself, its instance and self. methods,
 // and nested modules, recursively. Nested containers inherit the
 // parent's end bound since statement positions only carry starts.
-func collectClassSymbols(st *ast.ClassStmt, lines []string, word string, start, end int) []userSymbolCandidate {
+func collectClassSymbols(st *ast.ClassStmt, lines []string, word string, start, end int, parentOwner string) []userSymbolCandidate {
 	var out []userSymbolCandidate
 	if st.Name == word {
 		keyword := "class"
 		if st.IsModule {
 			keyword = "module"
 		}
+		// A nested declaration records its parent as owner so qualified
+		// references (Outer::Inner) survive the qualifier filter.
 		out = append(out, userSymbolCandidate{
 			markdown: userSymbolMarkdown(lines, keyword+" "+st.Name, st.Position, st.Name),
 			declLine: st.Position.Line,
+			owner:    parentOwner,
 		})
 	}
 	for _, method := range st.Methods {
@@ -1197,7 +1200,7 @@ func collectClassSymbols(st *ast.ClassStmt, lines []string, word string, start, 
 				nestedEnd = sibling - 1
 			}
 		}
-		out = append(out, collectClassSymbols(nested, lines, word, nested.Position.Line, nestedEnd)...)
+		out = append(out, collectClassSymbols(nested, lines, word, nested.Position.Line, nestedEnd, st.Name)...)
 	}
 	return out
 }

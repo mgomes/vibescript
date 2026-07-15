@@ -3357,3 +3357,18 @@ func TestCompletionNamespaceDocumentation(t *testing.T) {
 	}
 	t.Fatal("JSON completion item not found")
 }
+
+func TestHoverQualifiedNestedModuleReference(t *testing.T) {
+	t.Parallel()
+	source := "module Outer\n" +
+		"  # Inner workings.\n" +
+		"  module Inner\n" + // line 2
+		"  end\n" +
+		"end\n" +
+		"\n" +
+		"x = Outer::Inner\n" // line 6
+	got := hoverValue(t, source, 6, 12)
+	if !strings.Contains(got, "module Inner") || !strings.Contains(got, "Inner workings.") {
+		t.Fatalf("hover(Outer::Inner) = %q, want the nested module signature and comment", got)
+	}
+}
