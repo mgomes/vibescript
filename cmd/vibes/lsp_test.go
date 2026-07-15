@@ -3009,6 +3009,38 @@ func TestMemberDocsMatchRuntimeMembers(t *testing.T) {
 			t.Errorf("member docs lost the universal %s entry", name)
 		}
 	}
+	// A universal entry must be dispatched by every runtime receiver;
+	// partial conversions like to_s (rejected on arrays, hashes, and
+	// ranges) demote to typed entries instead.
+	for name := range docs.universal {
+		for receiver := range memberDocReceivers {
+			if !runtimeMemberIndex[name][receiver] {
+				t.Errorf("universal entry %s is not dispatched on %s; it must demote to typed entries", name, receiver)
+			}
+		}
+	}
+	for _, name := range []string{"to_s", "string"} {
+		if _, ok := docs.universal[name]; ok {
+			t.Errorf("%s registered as universal but the runtime rejects it on some receivers", name)
+		}
+		md := memberDocMarkdown(name)
+		if md == "" {
+			t.Errorf("memberDocMarkdown(%q) = empty, want the demoted typed documentation", name)
+			continue
+		}
+		sections := strings.Split(md, "\n\n---\n\n")
+		seen := make(map[string]bool)
+		for _, section := range sections {
+			body := section
+			if idx := strings.Index(section, "\n\n"); idx >= 0 {
+				body = section[idx+2:]
+			}
+			if seen[body] {
+				t.Errorf("memberDocMarkdown(%q) repeats identical section bodies:\n%s", name, md)
+			}
+			seen[body] = true
+		}
+	}
 	// Bang variants resolve through the base-entry fallback rather than
 	// table entries; the composed hover must carry the in-place note and
 	// the base documentation.
@@ -3246,5 +3278,17 @@ func TestHoverQualifiedAndNestedUserSymbols(t *testing.T) {
 				t.Fatalf("hover(%d:%d) = %q, want it to contain %q", tt.line, tt.character, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHoverTypedRequiredKeywordSignature(t *testing.T) {
+	t.Parallel()
+	source := "# Greets loudly.\ndef f(name: string:)\n  name\nend\n"
+	got := hoverValue(t, source, 1, 5)
+	if !strings.Contains(got, "def f(name: string:)") {
+		t.Fatalf("hover = %q, want the declaration syntax def f(name: string:)", got)
+	}
+	if strings.Contains(got, "name:: string") {
+		t.Fatalf("hover = %q, renders the invalid name:: string form", got)
 	}
 }

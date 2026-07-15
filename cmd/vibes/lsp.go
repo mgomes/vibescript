@@ -1841,6 +1841,15 @@ func paramLabel(param ast.Param) string {
 	if param.Kind == ast.ParamKeyword && param.DefaultVal != nil && param.Type == nil {
 		return ast.FormatParamTarget(param) + " …"
 	}
+	// A typed required keyword declares as name: type: — the keyword
+	// colon trails the annotation (def f(name: string:)).
+	if param.Kind == ast.ParamKeyword && param.Type != nil {
+		label := strings.TrimSuffix(ast.FormatParamTarget(param), ":") + ": " + ast.FormatTypeExpr(param.Type) + ":"
+		if param.DefaultVal != nil {
+			label += " = …"
+		}
+		return label
+	}
 	label := ast.FormatParamTarget(param)
 	if param.Type != nil {
 		label += ": " + ast.FormatTypeExpr(param.Type)

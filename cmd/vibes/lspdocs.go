@@ -421,6 +421,7 @@ func memberDocs() *memberDocIndex {
 		index.parse(vibescript.HashesDoc, "hash", nil)
 		index.parse(vibescript.TimeDoc, "time", nil)
 		index.parse(vibescript.DurationsDoc, "duration", nil)
+		index.demotePartialUniversals()
 		for _, entries := range index.entries {
 			slices.SortFunc(entries, func(a, b memberDocEntry) int {
 				return strings.Compare(a.Receiver, b.Receiver)
@@ -496,6 +497,39 @@ func (idx *memberDocIndex) parse(markdown, fixedReceiver string, sections map[st
 				continue
 			}
 			idx.add(leadingMemberNames(strings.TrimPrefix(bullet, "- "), receiver), signature, description)
+		}
+	}
+}
+
+// demotePartialUniversals moves universal-section entries the runtime
+// does not dispatch on every receiver (to_s and string are rejected on
+// arrays, hashes, and ranges) down to typed entries for the receivers
+// that do dispatch them, so hover never advertises a method a value
+// lacks as universal.
+func (idx *memberDocIndex) demotePartialUniversals() {
+	for name, entry := range idx.universal {
+		dispatching := runtimeMemberIndex[name]
+		universal := len(dispatching) > 0
+		for receiver := range memberDocReceivers {
+			if !dispatching[receiver] {
+				universal = false
+				break
+			}
+		}
+		if universal {
+			continue
+		}
+		delete(idx.universal, name)
+		for receiver := range dispatching {
+			if _, known := memberDocReceivers[receiver]; !known {
+				continue
+			}
+			if slices.ContainsFunc(idx.entries[name], func(existing memberDocEntry) bool {
+				return existing.Receiver == receiver
+			}) {
+				continue
+			}
+			idx.entries[name] = append(idx.entries[name], memberDocEntry{Receiver: receiver, Signature: entry.Signature, Markdown: entry.Markdown})
 		}
 	}
 }
@@ -660,12 +694,39 @@ func memberDocMarkdown(word string) string {
 	case 1:
 		return entries[0].Markdown
 	}
+	// Receivers sharing identical documentation render as one section
+	// (demoted near-universal helpers), so hover never repeats itself.
+	type docGroup struct {
+		markdown  string
+		receivers []string
+	}
+	var groups []docGroup
+	for _, entry := range entries {
+		matched := false
+		for i := range groups {
+			if groups[i].markdown == entry.Markdown {
+				groups[i].receivers = append(groups[i].receivers, entry.Receiver)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			groups = append(groups, docGroup{markdown: entry.Markdown, receivers: []string{entry.Receiver}})
+		}
+	}
+	if len(groups) == 1 {
+		return groups[0].markdown
+	}
 	var b strings.Builder
-	for i, entry := range entries {
+	for i, group := range groups {
 		if i > 0 {
 			b.WriteString("\n\n---\n\n")
 		}
-		fmt.Fprintf(&b, "`%s.%s`\n\n%s", entry.Receiver, word, entry.Markdown)
+		labels := make([]string, len(group.receivers))
+		for j, receiver := range group.receivers {
+			labels[j] = "`" + receiver + "." + word + "`"
+		}
+		fmt.Fprintf(&b, "%s\n\n%s", strings.Join(labels, " / "), group.markdown)
 	}
 	return b.String()
 }
