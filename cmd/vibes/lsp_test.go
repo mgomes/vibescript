@@ -3314,3 +3314,25 @@ func TestHoverQualifiedAccessExcludesTopLevel(t *testing.T) {
 		t.Fatalf("hover(save) = %q, want the top-level docs", got)
 	}
 }
+
+func TestHoverInstanceReceiverSkipsClassMethods(t *testing.T) {
+	t.Parallel()
+	source := "class Client\n" +
+		"  # Saves this client instance.\n" +
+		"  def save\n" + // line 2
+		"  end\n" +
+		"\n" +
+		"  # Saves every client at once.\n" +
+		"  def self.save\n" + // line 6
+		"  end\n" +
+		"end\n" +
+		"\n" +
+		"client.save\n" + // line 10: instance receiver
+		"Client.save\n" // line 11: class receiver
+	if got := hoverValue(t, source, 10, 8); !strings.Contains(got, "Saves this client instance.") {
+		t.Fatalf("hover(client.save) = %q, want the instance method docs", got)
+	}
+	if got := hoverValue(t, source, 11, 8); !strings.Contains(got, "Saves every client at once.") {
+		t.Fatalf("hover(Client.save) = %q, want the class method docs", got)
+	}
+}

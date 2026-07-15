@@ -963,7 +963,13 @@ func receiverWordBefore(lines []string, line, character int) string {
 	for receiverStart > 0 && isWordRune(runes[receiverStart-1]) {
 		receiverStart--
 	}
-	return string(runes[receiverStart:receiverEnd])
+	receiver := string(runes[receiverStart:receiverEnd])
+	// self is not an owner name: inside a class body the positional
+	// scope rules already resolve self. members, so it never filters.
+	if receiver == "self" {
+		return ""
+	}
+	return receiver
 }
 
 // assignmentFollowsWord reports whether the word at the position is
@@ -988,6 +994,15 @@ func assignmentFollowsWord(lines []string, line, character int) bool {
 // containerStart/containerEnd bound the class, module, or enum body the
 // declaration lives in (1-based, inclusive); scoped is false for
 // top-level declarations, whose container is the whole file.
+type userSymbolKind int
+
+const (
+	userSymbolDecl userSymbolKind = iota
+	userSymbolInstanceMethod
+	userSymbolClassMethod
+	userSymbolEnumMember
+)
+
 type userSymbolCandidate struct {
 	markdown       string
 	declLine       int
@@ -995,6 +1010,7 @@ type userSymbolCandidate struct {
 	containerEnd   int
 	scoped         bool
 	owner          string
+	kind           userSymbolKind
 }
 
 // userSymbolDoc resolves word against every matching declaration in the
@@ -1014,18 +1030,32 @@ func userSymbolDoc(program *ast.Program, lines []string, word string, hoverLine 
 			}
 		}
 		if len(owned) > 0 {
-			candidates = owned
-		} else {
-			// A qualified access can never resolve to a top-level
-			// declaration; with no owner match, only scoped members (the
-			// receiver may be an instance of their class) stay eligible.
-			scoped := make([]userSymbolCandidate, 0, len(candidates))
-			for _, c := range candidates {
-				if c.scoped {
-					scoped = append(scoped, c)
+			// The receiver names the owner itself (Client.save,
+			// First::Draft), so class methods and enum members outrank
+			// instance methods, which that receiver cannot dispatch.
+			direct := make([]userSymbolCandidate, 0, len(owned))
+			for _, c := range owned {
+				if c.kind == userSymbolClassMethod || c.kind == userSymbolEnumMember {
+					direct = append(direct, c)
 				}
 			}
-			candidates = scoped
+			if len(direct) > 0 {
+				candidates = direct
+			} else {
+				candidates = owned
+			}
+		} else {
+			// A qualified access can never resolve to a top-level
+			// declaration, and an instance receiver cannot dispatch
+			// class methods or enum members; only instance methods (the
+			// receiver may be an instance of their class) stay eligible.
+			instance := make([]userSymbolCandidate, 0, len(candidates))
+			for _, c := range candidates {
+				if c.scoped && c.kind == userSymbolInstanceMethod {
+					instance = append(instance, c)
+				}
+			}
+			candidates = instance
 		}
 	}
 	if len(candidates) == 0 {
@@ -1105,6 +1135,7 @@ func collectUserSymbols(program *ast.Program, lines []string, word string) []use
 						containerEnd:   nextStart - 1,
 						scoped:         true,
 						owner:          st.Name,
+						kind:           userSymbolEnumMember,
 					})
 				}
 			}
@@ -1138,6 +1169,7 @@ func collectClassSymbols(st *ast.ClassStmt, lines []string, word string, start, 
 				containerEnd:   end,
 				scoped:         true,
 				owner:          st.Name,
+				kind:           userSymbolInstanceMethod,
 			})
 		}
 	}
@@ -1150,6 +1182,7 @@ func collectClassSymbols(st *ast.ClassStmt, lines []string, word string, start, 
 				containerEnd:   end,
 				scoped:         true,
 				owner:          st.Name,
+				kind:           userSymbolClassMethod,
 			})
 		}
 	}
