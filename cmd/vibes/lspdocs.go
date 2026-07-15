@@ -303,7 +303,7 @@ func hoverMarkdown(program *ast.Program, lines []string, line, character int, wo
 			return md
 		}
 	}
-	if md := userSymbolHover(program, lines, word); md != "" {
+	if md := userSymbolHover(program, lines, word, line); md != "" {
 		return md
 	}
 	return fmt.Sprintf("`%s`\n\nVibescript %s", word, classifyWord(word))
@@ -693,70 +693,152 @@ func isValueMemberAccess(lines []string, line, character int) bool {
 // with their methods, and enums with their members. The setter form
 // "name=" is tried when the bare word has no declaration, mirroring
 // go-to-definition.
-func userSymbolHover(program *ast.Program, lines []string, word string) string {
+func userSymbolHover(program *ast.Program, lines []string, word string, hoverLine int) string {
 	if program == nil || word == "" {
 		return ""
 	}
 	for _, candidate := range []string{word, word + "="} {
-		if md := userSymbolDoc(program, lines, candidate); md != "" {
+		if md := userSymbolDoc(program, lines, candidate, hoverLine+1); md != "" {
 			return md
 		}
 	}
 	return ""
 }
 
-func userSymbolDoc(program *ast.Program, lines []string, word string) string {
-	for _, stmt := range program.Statements {
+// userSymbolCandidate is one declaration matching the hovered word.
+// containerStart/containerEnd bound the class, module, or enum body the
+// declaration lives in (1-based, inclusive); scoped is false for
+// top-level declarations, whose container is the whole file.
+type userSymbolCandidate struct {
+	markdown       string
+	declLine       int
+	containerStart int
+	containerEnd   int
+	scoped         bool
+}
+
+// userSymbolDoc resolves word against every matching declaration in the
+// document, preferring the one the hover position points at: the
+// declaration on the hovered line first, then a declaration whose
+// enclosing class/module/enum body contains the hover position (the
+// latest-starting such container when they nest), then the nearest
+// declaration above the position, so duplicate names across classes
+// resolve to the copy in scope. hoverLine is 1-based.
+func userSymbolDoc(program *ast.Program, lines []string, word string, hoverLine int) string {
+	candidates := collectUserSymbols(program, lines, word)
+	if len(candidates) == 0 {
+		return ""
+	}
+	for _, c := range candidates {
+		if c.declLine == hoverLine {
+			return c.markdown
+		}
+	}
+	best := -1
+	for i, c := range candidates {
+		if !c.scoped || hoverLine < c.containerStart || hoverLine > c.containerEnd {
+			continue
+		}
+		if best == -1 || c.containerStart > candidates[best].containerStart {
+			best = i
+		}
+	}
+	if best != -1 {
+		return candidates[best].markdown
+	}
+	for i := len(candidates) - 1; i >= 0; i-- {
+		if candidates[i].declLine <= hoverLine {
+			return candidates[i].markdown
+		}
+	}
+	return candidates[0].markdown
+}
+
+func collectUserSymbols(program *ast.Program, lines []string, word string) []userSymbolCandidate {
+	var out []userSymbolCandidate
+	fileEnd := len(lines) + 1
+	for i, stmt := range program.Statements {
+		nextStart := fileEnd
+		if i+1 < len(program.Statements) {
+			if pos := program.Statements[i+1].Pos(); pos.Line > 0 {
+				nextStart = pos.Line
+			}
+		}
 		switch st := stmt.(type) {
 		case *ast.FunctionStmt:
 			if st.Name == word {
-				return userSymbolMarkdown(lines, userDefSignature(st, false), st.Position, st.Name)
+				out = append(out, userSymbolCandidate{
+					markdown: userSymbolMarkdown(lines, userDefSignature(st, false), st.Position, st.Name),
+					declLine: st.Position.Line,
+				})
 			}
 		case *ast.ClassStmt:
-			if md := classSymbolDoc(st, lines, word); md != "" {
-				return md
-			}
+			out = append(out, collectClassSymbols(st, lines, word, st.Position.Line, nextStart-1)...)
 		case *ast.EnumStmt:
 			if st.Name == word {
-				return userSymbolMarkdown(lines, "enum "+st.Name, st.Position, st.Name)
+				out = append(out, userSymbolCandidate{
+					markdown: userSymbolMarkdown(lines, "enum "+st.Name, st.Position, st.Name),
+					declLine: st.Position.Line,
+				})
 			}
 			for _, member := range st.Members {
 				if member.Name == word {
-					return userSymbolMarkdown(lines, st.Name+"::"+member.Name, member.Position, member.Name)
+					out = append(out, userSymbolCandidate{
+						markdown:       userSymbolMarkdown(lines, st.Name+"::"+member.Name, member.Position, member.Name),
+						declLine:       member.Position.Line,
+						containerStart: st.Position.Line,
+						containerEnd:   nextStart - 1,
+						scoped:         true,
+					})
 				}
 			}
 		}
 	}
-	return ""
+	return out
 }
 
-// classSymbolDoc resolves word within one class or module declaration:
-// the declaration itself, its instance and self. methods, and nested
-// modules, recursively.
-func classSymbolDoc(st *ast.ClassStmt, lines []string, word string) string {
+// collectClassSymbols gathers matches within one class or module
+// declaration: the declaration itself, its instance and self. methods,
+// and nested modules, recursively. Nested containers inherit the
+// parent's end bound since statement positions only carry starts.
+func collectClassSymbols(st *ast.ClassStmt, lines []string, word string, start, end int) []userSymbolCandidate {
+	var out []userSymbolCandidate
 	if st.Name == word {
 		keyword := "class"
 		if st.IsModule {
 			keyword = "module"
 		}
-		return userSymbolMarkdown(lines, keyword+" "+st.Name, st.Position, st.Name)
+		out = append(out, userSymbolCandidate{
+			markdown: userSymbolMarkdown(lines, keyword+" "+st.Name, st.Position, st.Name),
+			declLine: st.Position.Line,
+		})
 	}
 	for _, method := range st.Methods {
 		if method.Name == word {
-			return userSymbolMarkdown(lines, userDefSignature(method, false), method.Position, method.Name)
+			out = append(out, userSymbolCandidate{
+				markdown:       userSymbolMarkdown(lines, userDefSignature(method, false), method.Position, method.Name),
+				declLine:       method.Position.Line,
+				containerStart: start,
+				containerEnd:   end,
+				scoped:         true,
+			})
 		}
 	}
 	for _, method := range st.ClassMethods {
 		if method.Name == word {
-			return userSymbolMarkdown(lines, userDefSignature(method, true), method.Position, method.Name)
+			out = append(out, userSymbolCandidate{
+				markdown:       userSymbolMarkdown(lines, userDefSignature(method, true), method.Position, method.Name),
+				declLine:       method.Position.Line,
+				containerStart: start,
+				containerEnd:   end,
+				scoped:         true,
+			})
 		}
 	}
 	for _, nested := range st.Modules {
-		if md := classSymbolDoc(nested, lines, word); md != "" {
-			return md
-		}
+		out = append(out, collectClassSymbols(nested, lines, word, nested.Position.Line, end)...)
 	}
-	return ""
+	return out
 }
 
 // userDefSignature reconstructs a declaration line from the AST: def,

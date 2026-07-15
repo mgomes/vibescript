@@ -3068,3 +3068,56 @@ func TestMemberDocsMatchRuntimeMembers(t *testing.T) {
 		t.Errorf("member doc coverage %d/%d fell below 75%%; the parser likely lost a source", documented, total)
 	}
 }
+
+func TestHoverUserSymbolScopePreference(t *testing.T) {
+	t.Parallel()
+	source := "class Alpha\n" + // line 0
+		"  # Runs the alpha path.\n" +
+		"  def run(a: int) -> int\n" + // line 2
+		"    a\n" +
+		"  end\n" +
+		"end\n" +
+		"\n" +
+		"class Beta\n" + // line 7
+		"  # Runs the beta path.\n" +
+		"  def run(b: string) -> string\n" + // line 9
+		"    helper\n" + // line 10
+		"  end\n" +
+		"\n" +
+		"  def helper\n" +
+		"    run(\"x\")\n" + // line 14: call inside Beta
+		"  end\n" +
+		"end\n" +
+		"\n" +
+		"enum First\n" + // line 18
+		"  Draft\n" + // line 19
+		"end\n" +
+		"\n" +
+		"enum Second\n" + // line 22
+		"  Draft\n" + // line 23
+		"end\n"
+
+	tests := []struct {
+		name      string
+		line      int
+		character int
+		want      string
+	}{
+		{name: "alpha declaration", line: 2, character: 7, want: "Runs the alpha path."},
+		{name: "beta declaration", line: 9, character: 7, want: "Runs the beta path."},
+		{name: "call inside beta scope", line: 14, character: 5, want: "Runs the beta path."},
+		{name: "alpha signature type", line: 2, character: 7, want: "def run(a: int) -> int"},
+		{name: "beta signature type", line: 9, character: 7, want: "def run(b: string) -> string"},
+		{name: "first enum member", line: 19, character: 3, want: "First::Draft"},
+		{name: "second enum member", line: 23, character: 3, want: "Second::Draft"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := hoverValue(t, source, tt.line, tt.character)
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("hover(%d:%d) = %q, want it to contain %q", tt.line, tt.character, got, tt.want)
+			}
+		})
+	}
+}
