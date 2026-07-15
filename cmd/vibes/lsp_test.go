@@ -567,6 +567,9 @@ func TestQualifiedWordAt(t *testing.T) {
 		{name: "space before member", line: "JSON. parse_as", character: 8, want: ""},
 		{name: "dot without receiver", line: ".parse_as", character: 3, want: ""},
 		{name: "chained receiver word", line: "payload.keys.sort", character: 9, want: "payload.keys"},
+		{name: "scope resolution member", line: "Math::PI", character: 7, want: "Math.PI"},
+		{name: "single colon is not an accessor", line: "label: value", character: 8, want: ""},
+		{name: "scope resolution without receiver", line: "::PI", character: 3, want: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

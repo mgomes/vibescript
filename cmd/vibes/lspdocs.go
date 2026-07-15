@@ -295,10 +295,20 @@ func hoverMarkdown(lines []string, line, character int, word string) string {
 // otherwise.
 func qualifiedWordAt(lines []string, line, character int) string {
 	runes, start, end, ok := wordSpanAtPosition(lines, line, character)
-	if !ok || start == 0 || runes[start-1] != '.' {
+	if !ok || start == 0 {
 		return ""
 	}
-	receiverEnd := start - 1
+	// Members reach their namespace through either accessor: Math.PI and
+	// Math::PI both resolve to the parsed Math.PI entry.
+	receiverEnd := start
+	switch {
+	case runes[start-1] == '.':
+		receiverEnd = start - 1
+	case start >= 2 && runes[start-1] == ':' && runes[start-2] == ':':
+		receiverEnd = start - 2
+	default:
+		return ""
+	}
 	receiverStart := receiverEnd
 	for receiverStart > 0 && isWordRune(runes[receiverStart-1]) {
 		receiverStart--
