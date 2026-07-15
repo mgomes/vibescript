@@ -15,6 +15,46 @@ def validate_amount(amount)
 end
 ```
 
+## Output
+
+### `puts(*values)`
+
+Writes each value to the configured output, one per line, and a single blank
+line when called with no arguments. Returns `nil`.
+
+```vibe
+puts "processing", 42
+```
+
+### `print(*values)`
+
+Writes each value to the configured output without a trailing newline. Returns
+`nil`.
+
+```vibe
+print "loading", "..."  # loading...
+```
+
+### `p(*values)`
+
+Writes each value in inspect form (strings keep their quotes), one per line,
+then returns its argument: the single value for one argument, an array of the
+values for several, and `nil` for none. Useful for debug-printing a value
+inside a larger expression.
+
+```vibe
+count = p(42)  # prints 42, returns 42
+p("id", 7)     # prints "id" and 7, returns ["id", 7]
+```
+
+### `warn(*values)`
+
+Writes each value to the configured error output, one per line. Returns `nil`.
+
+```vibe
+warn "rate limit nearly reached"
+```
+
 ## Money
 
 ### `money(string)`
@@ -56,6 +96,29 @@ end
 
 For time manipulation in Vibescript, use the `Time` object (`Time.now`, `Time.parse`, `Time.utc`, etc.). See `docs/time.md`.
 
+### Time constructors
+
+The `Time` namespace builds first-class time values. Zone keywords accept IANA
+names (`"America/New_York"`), `"UTC"`/`"GMT"`, `"LOCAL"`, or numeric offsets
+like `"+05:30"`. See [Time](time.md) for the full instance-method surface.
+
+- `Time.now(in: zone)` – the current time as a time value, optionally in a
+  zone.
+- `Time.new(year, month = 1, day = 1, hour = 0, min = 0, sec = 0, zone = nil, in: zone)`
+  – builds a calendar time; omitted fields default to January 1 at midnight.
+- `Time.local(year, month = 1, day = 1, hour = 0, min = 0, sec = 0, usec = 0)` /
+  `Time.mktime(...)` – calendar time in the host's local zone.
+- `Time.utc(year, month = 1, day = 1, hour = 0, min = 0, sec = 0, usec = 0)` /
+  `Time.gm(...)` – calendar time in UTC.
+- `Time.at(seconds, subsec = nil, unit = nil, in: zone)` – time from epoch
+  seconds, with Ruby-style subsecond arguments.
+- `Time.parse(string, layout = nil, in: zone)` – parses common formats
+  (RFC3339/RFC1123, `YYYY-MM-DD`, ...) or an explicit Go layout.
+
+```vibe
+Time.utc(2024).iso8601  # "2024-01-01T00:00:00Z"
+```
+
 ### `sleep(seconds)`
 
 Pauses the current call for a non-negative numeric duration in seconds. Floats
@@ -82,6 +145,31 @@ value = loop do
     break :done
   end
 end
+```
+
+## Procs and Lambdas
+
+### `proc { |args| ... }` / `Proc.new { |args| ... }`
+
+Captures the block as a first-class proc value invoked with `.call`. A proc
+keeps block semantics: missing arguments pad to `nil`, extra arguments are
+dropped, and `return` in the body returns from the method whose body created
+the proc. See [Blocks](blocks.md#procs-and-lambdas) for the full semantics.
+
+```vibe
+doubler = proc { |x| x * 2 }
+doubler.call(21)  # 42
+```
+
+### `lambda { |args| ... }`
+
+Captures the block as a lambda, which behaves like an anonymous method: arity
+is strict, and `return`, `break`, and `next` in the body are local to the
+lambda call. The stabby form `->(args) { ... }` builds the same value.
+
+```vibe
+add = lambda { |a, b| a + b }
+add.call(2, 3)  # 5
 ```
 
 ## Formatting
@@ -194,6 +282,28 @@ matching Ruby's `Math::DomainError`. In-domain special values follow Ruby and
 IEEE 754: `Math.log(0)` returns `-Infinity`, `Math.sin`/`cos`/`tan` of
 `Infinity` return `NaN`, and a `NaN` argument propagates through unchanged.
 
+## Duration
+
+Duration values usually come from duration literals (`5.minutes`, `2.days`);
+the `Duration` namespace builds them from numbers and strings. See
+[Durations](durations.md) for the full instance-method surface.
+
+### `Duration.build(seconds)` / `Duration.build(weeks:, days:, hours:, minutes:, seconds:)`
+
+Builds a duration from total seconds or from named parts. At least one part is
+required (a bare `Duration.build()` errors), and positional seconds and named
+parts are mutually exclusive.
+
+### `Duration.parse(string)`
+
+Parses Go duration strings (`"1h30m"`, whole seconds only) or ISO 8601
+durations (`"PT90S"`, `"P2W"`).
+
+```vibe
+Duration.build(hours: 1, minutes: 30).minutes # 90
+Duration.parse("1h30m").seconds               # 5400
+```
+
 ## JSON
 
 ### `JSON.parse(string)`
@@ -208,6 +318,19 @@ payload["score"] # 10
 
 `JSON.parse` enforces a 1 MiB input limit and rejects more than 10,000 nested
 arrays/objects.
+
+### `JSON.parse_as(string, shape)`
+
+Parses a JSON string and validates the result against a shape in one step,
+with the same semantics as typed parameter boundaries. The static checker
+treats the result as that shape, so downstream reads are inferred and checked
+without further annotations. Validation failures raise the standard
+typed-boundary error. See [Typing](typing.md#jsonparse_as).
+
+```vibe
+body = JSON.parse_as(raw, { name: string, email: string })
+body["name"]  # a known string
+```
 
 ### `JSON.stringify(value)`
 
@@ -268,6 +391,32 @@ Regex.replace("ID-12", "ID-([0-9]+)", "X-$1")            # "X-12"
 
 Regex helpers enforce input guards (max pattern size 16 KiB, max text size 1 MiB).
 
+### `Regexp.new(pattern)`
+
+Compiles a pattern string into a first-class regex value, equivalent to a
+`/pattern/` literal without flags.
+
+### `Regexp.escape(text)` / `Regexp.quote(text)`
+
+Returns `text` with every regex metacharacter escaped, so the result matches
+the text literally when used as a pattern.
+
+### `Regexp.union(*patterns)`
+
+Builds a regex value that matches any of the given pattern strings.
+
+### `Regexp.last_match`
+
+Returns `nil`: Vibescript does not track Ruby's global per-call match state.
+The member exists for Ruby compatibility; use `regex.match(text)` to obtain
+match data directly.
+
+```vibe
+Regexp.new("ID-[0-9]+").match?("ID-12")   # true
+Regexp.escape("a.b*c")                    # "a\\.b\\*c"
+Regexp.union("cat", "dog").match?("dog")  # true
+```
+
 ## Hash
 
 ### `Hash.new(default = nil)` / `Hash.new { |hash, key| ... }`
@@ -285,6 +434,36 @@ transforms preserve or drop the default.
 Hash.new(0)[:missing]                              # 0
 Hash.new { |hash, key| hash[key] = key }["a"]      # "a"
 Hash.new                                           # {} with a nil default
+```
+
+## Tasks
+
+`Tasks` runs independent named functions concurrently while the runtime keeps
+the work bounded and scoped: a task cannot outlive the scope that created it,
+and leaving a scope waits for every spawned task. See [Tasks](tasks.md).
+
+### `Tasks.map(items, with:, max: nil)`
+
+Runs the named function (`with:` accepts a symbol or string) concurrently over
+each item of the array and returns the results in input order. `max:` lowers
+the concurrency level for one call.
+
+```vibe
+Tasks.map(users, with: :score_user)
+```
+
+### `Tasks.run(max: nil) { |tasks| ... }`
+
+Opens a task scope. The block spawns tasks with `tasks.spawn(:name, args...)`,
+reads individual results with `task.value`, and the scope waits for every
+spawned task at exit. Returns the block value.
+
+```vibe
+Tasks.run(max: 2) do |tasks|
+  left = tasks.spawn(:prepare_user, first)
+  right = tasks.spawn(:prepare_user, second)
+  [left.value, right.value]
+end
 ```
 
 ## Module Loading

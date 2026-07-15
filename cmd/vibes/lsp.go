@@ -52,9 +52,14 @@ var lspBuiltins = []string{
 	"to_int",
 	"uuid",
 	"warn",
+	"Duration",
 	"Hash",
 	"JSON",
+	"Math",
+	"Proc",
 	"Regex",
+	"Regexp",
+	"Tasks",
 	"Time",
 }
 
@@ -446,13 +451,13 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				},
 			}
 		}
-		word := wordAtPosition(s.documentLines(params.TextDocument.URI), params.Position.Line, params.Position.Character)
+		lines := s.documentLines(params.TextDocument.URI)
+		word := wordAtPosition(lines, params.Position.Line, params.Position.Character)
 		if word == "" {
 			return []lspOutboundMessage{
 				{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull},
 			}
 		}
-		kind := classifyWord(word)
 		return []lspOutboundMessage{
 			{
 				JSONRPC: "2.0",
@@ -460,7 +465,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				Result: map[string]any{
 					"contents": map[string]any{
 						"kind":  "markdown",
-						"value": fmt.Sprintf("`%s`\n\nVibescript %s", word, kind),
+						"value": hoverMarkdown(lines, params.Position.Line, params.Position.Character, word),
 					},
 				},
 			},
@@ -756,15 +761,33 @@ func buildCompletionItems() []map[string]any {
 	for _, label := range labels {
 		kind := 3 // Function
 		detail := "builtin"
+		documentation := ""
 		if _, ok := keywordSet[label]; ok {
 			kind = 14 // Keyword
 			detail = "keyword"
+			if doc, ok := keywordDocs[label]; ok {
+				documentation = fmt.Sprintf("`%s`\n\n%s", label, doc)
+			}
+		} else if entry, ok := builtinDocs()[label]; ok {
+			documentation = entry.Markdown
+			if signature, ok := builtinSignatures[label]; ok {
+				detail = signature
+			} else {
+				detail = strings.ReplaceAll(entry.Signature, "`", "")
+			}
 		}
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"label":  label,
 			"kind":   kind,
 			"detail": detail,
-		})
+		}
+		if documentation != "" {
+			item["documentation"] = map[string]any{
+				"kind":  "markdown",
+				"value": documentation,
+			}
+		}
+		items = append(items, item)
 	}
 	return items
 }
@@ -780,14 +803,25 @@ func classifyWord(word string) string {
 }
 
 func wordAtPosition(lines []string, line, character int) string {
-	if line < 0 || line >= len(lines) {
+	runes, start, end, ok := wordSpanAtPosition(lines, line, character)
+	if !ok {
 		return ""
+	}
+	return string(runes[start:end])
+}
+
+// wordSpanAtPosition locates the word under the position and returns
+// the line's runes together with the word's rune bounds, so callers can
+// also inspect the surrounding text (for example a dotted receiver).
+func wordSpanAtPosition(lines []string, line, character int) (runes []rune, start, end int, ok bool) {
+	if line < 0 || line >= len(lines) {
+		return nil, 0, 0, false
 	}
 
 	lineText := lines[line]
-	runes := []rune(lineText)
+	runes = []rune(lineText)
 	if len(runes) == 0 {
-		return ""
+		return nil, 0, 0, false
 	}
 	if character < 0 {
 		character = 0
@@ -799,24 +833,24 @@ func wordAtPosition(lines []string, line, character int) string {
 		cursor--
 	}
 	if cursor < 0 {
-		return ""
+		return nil, 0, 0, false
 	}
 	if !isWordRune(runes[cursor]) {
 		if cursor == 0 || !isWordRune(runes[cursor-1]) {
-			return ""
+			return nil, 0, 0, false
 		}
 		cursor--
 	}
 
-	start := cursor
+	start = cursor
 	for start > 0 && isWordRune(runes[start-1]) {
 		start--
 	}
-	end := cursor
+	end = cursor
 	for end < len(runes) && isWordRune(runes[end]) {
 		end++
 	}
-	return string(runes[start:end])
+	return runes, start, end, true
 }
 
 func utf16OffsetToRuneIndex(text string, utf16Offset int) int {

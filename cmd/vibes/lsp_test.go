@@ -212,11 +212,18 @@ func TestCompletionItemsAreSortedAndCategorized(t *testing.T) {
 	}
 
 	builtin := findCompletionItem(t, items, "assert")
-	if builtin["detail"] != "builtin" {
-		t.Fatalf("expected builtin detail, got %#v", builtin["detail"])
+	if builtin["detail"] != builtinSignatures["assert"] {
+		t.Fatalf("expected signature detail, got %#v", builtin["detail"])
 	}
 	if builtin["kind"] != 3 {
 		t.Fatalf("expected builtin kind 3, got %#v", builtin["kind"])
+	}
+
+	// Namespace objects have no signature entry, so their detail keeps
+	// the generic builtin classification.
+	namespace := findCompletionItem(t, items, "JSON")
+	if namespace["detail"] != "builtin" {
+		t.Fatalf("expected namespace detail builtin, got %#v", namespace["detail"])
 	}
 }
 
@@ -240,8 +247,8 @@ func TestLSPKeywordCompletionsMatchParserKeywords(t *testing.T) {
 		t.Fatalf("keyword completions = %#v, want parser keywords %#v", got, want)
 	}
 	require := findCompletionItem(t, items, "require")
-	if require["detail"] != "builtin" {
-		t.Fatalf("require detail = %#v, want builtin", require["detail"])
+	if require["detail"] != builtinSignatures["require"] {
+		t.Fatalf("require detail = %#v, want its builtin signature", require["detail"])
 	}
 	if require["kind"] != 3 {
 		t.Fatalf("require kind = %#v, want function kind 3", require["kind"])
@@ -288,12 +295,14 @@ func TestHandleMessageDidOpenPublishesDiagnostics(t *testing.T) {
 	}
 }
 
-func TestHandleMessageHoverClassifiesBuiltins(t *testing.T) {
-	t.Parallel()
+// hoverValue drives a textDocument/hover request against a fresh
+// server holding source and returns the markdown contents value.
+func hoverValue(t *testing.T, source string, line, character int) string {
+	t.Helper()
 	server := &lspServer{
 		engine: vibes.MustNewEngine(vibes.Config{}),
 		docs: map[string]string{
-			"file:///tmp/test.vibe": "def run()\n  assert(true)\nend\n",
+			"file:///tmp/test.vibe": source,
 		},
 	}
 	params := map[string]any{
@@ -301,8 +310,8 @@ func TestHandleMessageHoverClassifiesBuiltins(t *testing.T) {
 			"uri": "file:///tmp/test.vibe",
 		},
 		"position": map[string]any{
-			"line":      1,
-			"character": 3,
+			"line":      line,
+			"character": character,
 		},
 	}
 	payload, err := json.Marshal(params)
@@ -331,8 +340,242 @@ func TestHandleMessageHoverClassifiesBuiltins(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected hover value: %#v", contents["value"])
 	}
-	if !strings.Contains(value, "builtin") {
-		t.Fatalf("expected builtin classification in hover value, got %q", value)
+	return value
+}
+
+func TestHandleMessageHoverServesBuiltinDocs(t *testing.T) {
+	t.Parallel()
+	value := hoverValue(t, "def run()\n  assert(true)\nend\n", 1, 3)
+	if !strings.Contains(value, "`assert(condition, message)`") {
+		t.Fatalf("expected the assert signature in hover value, got %q", value)
+	}
+	if !strings.Contains(value, "Raises an error if `condition` is falsy") {
+		t.Fatalf("expected the assert description in hover value, got %q", value)
+	}
+	if strings.Contains(value, "Vibescript builtin") {
+		t.Fatalf("documented builtin must not fall back to the classifier line, got %q", value)
+	}
+}
+
+func TestHandleMessageHoverResolvesQualifiedBuiltin(t *testing.T) {
+	t.Parallel()
+	source := "def run(raw)\n  JSON.parse_as(raw, { name: string })\nend\n"
+	// Hover in the middle of parse_as: "  JSON.parse_as" puts the
+	// member at characters 7-14.
+	value := hoverValue(t, source, 1, 10)
+	if !strings.Contains(value, "JSON.parse_as") {
+		t.Fatalf("expected the qualified JSON.parse_as entry, got %q", value)
+	}
+	if !strings.Contains(value, "shape") {
+		t.Fatalf("expected the parse_as description, got %q", value)
+	}
+
+	// The same member name without its namespace receiver has no doc
+	// entry and degrades to the classifier line.
+	bare := hoverValue(t, "def run(raw)\n  parse_as(raw)\nend\n", 1, 5)
+	if !strings.Contains(bare, "Vibescript symbol") {
+		t.Fatalf("bare member word should fall back to the classifier, got %q", bare)
+	}
+}
+
+func TestHandleMessageHoverServesKeywordDocs(t *testing.T) {
+	t.Parallel()
+	value := hoverValue(t, "if true then\n  1\nend\n", 0, 9)
+	if !strings.Contains(value, "`then`") {
+		t.Fatalf("expected the keyword name in hover value, got %q", value)
+	}
+	if !strings.Contains(value, "Optional separator") {
+		t.Fatalf("expected the then keyword doc, got %q", value)
+	}
+}
+
+func TestHandleMessageHoverUnknownWordFallsBackToClassifier(t *testing.T) {
+	t.Parallel()
+	value := hoverValue(t, "def run()\n  frobnicate\nend\n", 1, 4)
+	if value != "`frobnicate`\n\nVibescript symbol" {
+		t.Fatalf("expected classifier fallback, got %q", value)
+	}
+}
+
+func TestCompletionItemsCarryDocumentation(t *testing.T) {
+	t.Parallel()
+	items := completionItems()
+
+	builtin := findCompletionItem(t, items, "puts")
+	doc, ok := builtin["documentation"].(map[string]any)
+	if !ok {
+		t.Fatalf("puts documentation = %#v, want markdown contents", builtin["documentation"])
+	}
+	if doc["kind"] != "markdown" {
+		t.Fatalf("puts documentation kind = %#v, want markdown", doc["kind"])
+	}
+	if value, _ := doc["value"].(string); !strings.Contains(value, "Writes each value") {
+		t.Fatalf("puts documentation value = %#v, want the builtins.md description", doc["value"])
+	}
+	if builtin["detail"] != builtinSignatures["puts"] {
+		t.Fatalf("puts detail = %#v, want its signature", builtin["detail"])
+	}
+
+	keyword := findCompletionItem(t, items, "if")
+	doc, ok = keyword["documentation"].(map[string]any)
+	if !ok {
+		t.Fatalf("if documentation = %#v, want markdown contents", keyword["documentation"])
+	}
+	if value, _ := doc["value"].(string); !strings.Contains(value, keywordDocs["if"]) {
+		t.Fatalf("if documentation value = %#v, want the keyword doc", doc["value"])
+	}
+}
+
+func TestParseBuiltinDocs(t *testing.T) {
+	t.Parallel()
+	markdown := "# Reference\n\n" +
+		"## Formatting\n\n" +
+		"### `format(pattern, *values)` / `sprintf(pattern, *values)`\n\n" +
+		"Formats values with percent strings.\nSecond line of the paragraph.\n\n" +
+		"```vibe\nformat(\"%d\", 1)\n# `fenced(code)` must not register entries\n```\n\n" +
+		"Output is capped.\n\n" +
+		"### Constants\n\n" +
+		"- `Math::PI` – the circle constant.\n" +
+		"- `Math.hypot(x, y)` / `Math.atan2(y, x)` – two-argument helpers\n" +
+		"  spanning a continuation line.\n" +
+		"- prose bullet with `inline(code)` that must not register.\n\n" +
+		"### `Tasks.run(max: nil) { |tasks| ... }`\n\n" +
+		"Opens a task scope.\n"
+	entries := parseBuiltinDocs(markdown)
+
+	format, ok := entries["format"]
+	if !ok {
+		t.Fatalf("entries = %v, want a format entry", entries)
+	}
+	if format.Signature != "`format(pattern, *values)` / `sprintf(pattern, *values)`" {
+		t.Fatalf("format signature = %q", format.Signature)
+	}
+	wantDoc := format.Signature + "\n\nFormats values with percent strings.\nSecond line of the paragraph.\n\nOutput is capped."
+	if format.Markdown != wantDoc {
+		t.Fatalf("format markdown = %q, want %q", format.Markdown, wantDoc)
+	}
+	if entries["sprintf"].Markdown != format.Markdown {
+		t.Fatalf("sprintf should share the format entry, got %q", entries["sprintf"].Markdown)
+	}
+
+	pi, ok := entries["Math.PI"]
+	if !ok {
+		t.Fatalf("entries = %v, want a Math.PI entry from the :: bullet", entries)
+	}
+	if pi.Markdown != "`Math::PI`\n\nthe circle constant." {
+		t.Fatalf("Math.PI markdown = %q", pi.Markdown)
+	}
+
+	hypot, ok := entries["Math.hypot"]
+	if !ok {
+		t.Fatal("want a Math.hypot entry from the multi-span bullet")
+	}
+	if !strings.Contains(hypot.Markdown, "spanning a continuation line.") {
+		t.Fatalf("Math.hypot markdown lost its continuation line: %q", hypot.Markdown)
+	}
+	if entries["Math.atan2"].Markdown != hypot.Markdown {
+		t.Fatal("Math.atan2 should share the bullet entry")
+	}
+
+	run, ok := entries["Tasks.run"]
+	if !ok {
+		t.Fatal("want a Tasks.run entry")
+	}
+	if run.Signature != "`Tasks.run(max: nil) { |tasks| ... }`" {
+		t.Fatalf("Tasks.run signature = %q", run.Signature)
+	}
+
+	for name := range entries {
+		switch name {
+		case "format", "sprintf", "Math.PI", "Math.hypot", "Math.atan2", "Tasks.run":
+		default:
+			t.Errorf("unexpected entry %q (fenced or prose code spans must not register)", name)
+		}
+	}
+}
+
+// TestBuiltinDocsCoverRegisteredBuiltins is the documentation drift
+// gate: every kernel builtin and every namespace member the engine
+// registers must have an entry parsed from docs/builtins.md, so a new
+// builtin cannot ship without hover documentation.
+func TestBuiltinDocsCoverRegisteredBuiltins(t *testing.T) {
+	t.Parallel()
+	docs := builtinDocs()
+	if len(docs) == 0 {
+		t.Fatal("no builtin documentation entries were parsed from docs/builtins.md")
+	}
+
+	var missing []string
+	for name, builtin := range vibes.MustNewEngine(vibes.Config{}).Builtins() {
+		switch builtin.Kind() {
+		case value.KindBuiltin:
+			if _, ok := docs[name]; !ok {
+				missing = append(missing, name)
+			}
+		case value.KindObject:
+			for member := range builtin.Hash() {
+				qualified := name + "." + member
+				if _, ok := docs[qualified]; !ok {
+					missing = append(missing, qualified)
+				}
+			}
+		}
+	}
+	slices.Sort(missing)
+	if len(missing) > 0 {
+		t.Errorf("registered builtins missing docs/builtins.md entries: %v", missing)
+	}
+}
+
+// TestKeywordDocsCoverParserKeywords gates the keyword table the same
+// way: every reserved keyword and contextual word has a description,
+// and the table holds nothing else.
+func TestKeywordDocsCoverParserKeywords(t *testing.T) {
+	t.Parallel()
+	known := make(map[string]struct{}, len(ast.Keywords())+len(lspContextualWords))
+	for _, keyword := range ast.Keywords() {
+		known[keyword] = struct{}{}
+		if doc, ok := keywordDocs[keyword]; !ok {
+			t.Errorf("reserved keyword %q has no keywordDocs entry", keyword)
+		} else if len(doc) == 0 || len(doc) > 130 {
+			t.Errorf("keywordDocs[%q] length %d, want a short one-liner", keyword, len(doc))
+		}
+	}
+	for _, word := range lspContextualWords {
+		known[word] = struct{}{}
+		if _, ok := keywordDocs[word]; !ok {
+			t.Errorf("contextual word %q has no keywordDocs entry", word)
+		}
+	}
+	for name := range keywordDocs {
+		if _, ok := known[name]; !ok {
+			t.Errorf("keywordDocs entry %q is neither a reserved keyword nor a contextual word", name)
+		}
+	}
+}
+
+func TestQualifiedWordAt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		line      string
+		character int
+		want      string
+	}{
+		{name: "namespace member", line: "JSON.parse_as(raw)", character: 8, want: "JSON.parse_as"},
+		{name: "bare word", line: "parse_as(raw)", character: 3, want: ""},
+		{name: "space before member", line: "JSON. parse_as", character: 8, want: ""},
+		{name: "dot without receiver", line: ".parse_as", character: 3, want: ""},
+		{name: "chained receiver word", line: "payload.keys.sort", character: 9, want: "payload.keys"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := qualifiedWordAt([]string{tt.line}, 0, tt.character)
+			if got != tt.want {
+				t.Fatalf("qualifiedWordAt(%q, %d) = %q, want %q", tt.line, tt.character, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -688,7 +931,7 @@ end
 		"amount":  "parameter",
 		"doubled": "local",
 		"if":      "keyword",
-		"assert":  "builtin",
+		"assert":  builtinSignatures["assert"],
 	} {
 		item, ok := labels[label]
 		if !ok {
