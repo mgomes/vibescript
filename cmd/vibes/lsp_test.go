@@ -3184,3 +3184,14 @@ func TestHoverSetterPreferenceAtWriteSites(t *testing.T) {
 		})
 	}
 }
+
+func TestHoverDottedMemberBeatsGlobalBuiltin(t *testing.T) {
+	t.Parallel()
+	got := hoverValue(t, "price = money(\"$3.50\")\nlabel = price.format\n", 1, 15)
+	if strings.Contains(got, "format(pattern, *values)") {
+		t.Fatalf("hover(price.format) served the global format builtin: %q", got)
+	}
+	if !strings.Contains(got, "format") || strings.Contains(got, "Vibescript symbol") {
+		t.Fatalf("hover(price.format) = %q, want member documentation", got)
+	}
+}

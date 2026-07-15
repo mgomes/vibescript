@@ -274,11 +274,12 @@ var keywordDocs = map[string]string{
 
 // hoverMarkdown resolves hover documentation for word at the given
 // position. Lookup order: qualified builtin (the word directly follows
-// a "Namespace." receiver), bare builtin, keyword or contextual word,
-// instance/value method (the word directly follows a "." on a value
-// receiver), user-defined symbol in the current document, and finally
-// the generic classifier line so hover never regresses for
-// undocumented words.
+// a "Namespace." receiver); then, for a word reached through a "." on
+// a value receiver, the instance/value member table — a dotted call
+// like money.format is never the global format builtin; otherwise bare
+// builtin, namespace, and keyword docs; then a user-defined symbol in
+// the current document; and finally the generic classifier line so
+// hover never regresses for undocumented words.
 //
 // Builtin, keyword, and member documentation deliberately shadows a
 // same-named user definition: the canonical docs describe what the
@@ -292,18 +293,19 @@ func hoverMarkdown(program *ast.Program, lines []string, line, character int, wo
 			return entry.Markdown
 		}
 	}
-	if entry, ok := docs[word]; ok {
-		return entry.Markdown
-	}
-	if md := namespaceDocMarkdown(word); md != "" {
-		return md
-	}
-	if doc, ok := keywordDocs[word]; ok {
-		return fmt.Sprintf("`%s`\n\n%s", word, doc)
-	}
 	if isValueMemberAccess(lines, line, character) {
 		if md := memberDocMarkdown(word); md != "" {
 			return md
+		}
+	} else {
+		if entry, ok := docs[word]; ok {
+			return entry.Markdown
+		}
+		if md := namespaceDocMarkdown(word); md != "" {
+			return md
+		}
+		if doc, ok := keywordDocs[word]; ok {
+			return fmt.Sprintf("`%s`\n\n%s", word, doc)
 		}
 	}
 	if md := userSymbolHover(program, lines, word, line, character); md != "" {
