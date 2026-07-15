@@ -296,18 +296,22 @@ func TestHandleMessageDidOpenPublishesDiagnostics(t *testing.T) {
 }
 
 // hoverValue drives a textDocument/hover request against a fresh
-// server holding source and returns the markdown contents value.
+// server that opened source (so the navigation program used for
+// user-symbol hover is cached) and returns the markdown contents value.
 func hoverValue(t *testing.T, source string, line, character int) string {
 	t.Helper()
-	server := &lspServer{
-		engine: vibes.MustNewEngine(vibes.Config{}),
-		docs: map[string]string{
-			"file:///tmp/test.vibe": source,
-		},
-	}
+	server := newCompletionTestServer()
+	openDoc(t, server, "file:///tmp/test.vibe", source)
+	return hoverValueAt(t, server, "file:///tmp/test.vibe", line, character)
+}
+
+// hoverValueAt drives a textDocument/hover request against server and
+// returns the markdown contents value.
+func hoverValueAt(t *testing.T, server *lspServer, uri string, line, character int) string {
+	t.Helper()
 	params := map[string]any{
 		"textDocument": map[string]any{
-			"uri": "file:///tmp/test.vibe",
+			"uri": uri,
 		},
 		"position": map[string]any{
 			"line":      line,
@@ -2736,5 +2740,331 @@ func TestDidCloseToleratesSparseServerState(t *testing.T) {
 	}
 	if len(server.docs) != 0 {
 		t.Fatal("didClose did not evict the document text")
+	}
+}
+
+func TestHandleMessageHoverServesMemberDocs(t *testing.T) {
+	t.Parallel()
+	// "  name.upcase" puts the member word at characters 7-12.
+	value := hoverValue(t, "def run(name)\n  name.upcase\nend\n", 1, 9)
+	if !strings.Contains(value, "`upcase(mode = nil) -> string`") {
+		t.Fatalf("expected the upcase signature in hover value, got %q", value)
+	}
+	if !strings.Contains(value, "Unicode") {
+		t.Fatalf("expected the upcase description, got %q", value)
+	}
+	if strings.Contains(value, "---") {
+		t.Fatalf("single-receiver member hover must not render merged sections, got %q", value)
+	}
+}
+
+func TestHandleMessageHoverMergesAmbiguousMemberDocs(t *testing.T) {
+	t.Parallel()
+	// "  items.size" puts the member word at characters 8-11.
+	value := hoverValue(t, "def run(items)\n  items.size\nend\n", 1, 9)
+	if !strings.Contains(value, "---") {
+		t.Fatalf("expected merged hover sections for the ambiguous member, got %q", value)
+	}
+	previous := -1
+	for _, header := range []string{"`array.size`", "`hash.size`", "`range.size`", "`string.size`"} {
+		idx := strings.Index(value, header)
+		if idx < 0 {
+			t.Fatalf("merged hover missing section %s, got %q", header, value)
+		}
+		if idx < previous {
+			t.Fatalf("merged hover sections out of stable receiver order: %s at %d after %d in %q", header, idx, previous, value)
+		}
+		previous = idx
+	}
+}
+
+func TestHandleMessageHoverServesUniversalMemberDocs(t *testing.T) {
+	t.Parallel()
+	// "  value.itself" puts the member word at characters 8-13.
+	value := hoverValue(t, "def run(value)\n  value.itself\nend\n", 1, 10)
+	if !strings.Contains(value, "returns the receiver unchanged") {
+		t.Fatalf("expected the universal itself doc, got %q", value)
+	}
+	if strings.Contains(value, "---") {
+		t.Fatalf("universal member hover must not merge per-type sections, got %q", value)
+	}
+}
+
+func TestHandleMessageHoverUnknownMemberFallsBackToClassifier(t *testing.T) {
+	t.Parallel()
+	value := hoverValue(t, "def run(x)\n  x.frobnify\nend\n", 1, 6)
+	if value != "`frobnify`\n\nVibescript symbol" {
+		t.Fatalf("unknown member should fall back to the classifier line, got %q", value)
+	}
+}
+
+func TestHandleMessageHoverMemberDocsRequireDotContext(t *testing.T) {
+	t.Parallel()
+	// A bare word that happens to be a member name is not a member
+	// access, so it must not serve member docs.
+	value := hoverValue(t, "def run()\n  upcase\nend\n", 1, 4)
+	if value != "`upcase`\n\nVibescript symbol" {
+		t.Fatalf("bare member-named word should fall back to the classifier, got %q", value)
+	}
+}
+
+func TestIsValueMemberAccess(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		line      string
+		character int
+		want      bool
+	}{
+		{name: "value receiver", line: "items.map", character: 7, want: true},
+		{name: "numeric receiver", line: "5.minutes", character: 4, want: true},
+		{name: "chained leading dot", line: "  .map { |x| x }", character: 4, want: true},
+		{name: "bare word", line: "map(x)", character: 1, want: false},
+		{name: "namespace receiver", line: "JSON.parse(raw)", character: 7, want: false},
+		{name: "scope accessor", line: "Math::PI", character: 7, want: false},
+		{name: "range end", line: "1..last", character: 4, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isValueMemberAccess([]string{tt.line}, 0, tt.character); got != tt.want {
+				t.Fatalf("isValueMemberAccess(%q, %d) = %v, want %v", tt.line, tt.character, got, tt.want)
+			}
+		})
+	}
+}
+
+const userHoverFixture = `# vibe: strict
+# Adds a and b.
+# Returns their sum.
+def add(a: int, b: int = 2) -> int
+  a + b
+end
+
+def plain(value)
+  value
+end
+
+def run()
+  add(1)
+  plain(2)
+end
+`
+
+func TestHandleMessageHoverServesUserFunctionDocs(t *testing.T) {
+	t.Parallel()
+	// "  add(1)" puts the callee at characters 2-4.
+	value := hoverValue(t, userHoverFixture, 12, 3)
+	if !strings.Contains(value, "```vibe\ndef add(a: int, b: int = …) -> int\n```") {
+		t.Fatalf("expected the reconstructed typed signature, got %q", value)
+	}
+	if !strings.Contains(value, "Adds a and b.\nReturns their sum.") {
+		t.Fatalf("expected the doc comment prose, got %q", value)
+	}
+	if strings.Contains(value, "vibe: strict") {
+		t.Fatalf("directive comment lines must be excluded from hover prose, got %q", value)
+	}
+}
+
+func TestHandleMessageHoverUserFunctionWithoutComment(t *testing.T) {
+	t.Parallel()
+	value := hoverValue(t, userHoverFixture, 13, 3)
+	want := "```vibe\ndef plain(value)\n```"
+	if value != want {
+		t.Fatalf("uncommented def hover = %q, want signature only %q", value, want)
+	}
+}
+
+func TestHandleMessageHoverPrefersBuiltinOverUserDef(t *testing.T) {
+	t.Parallel()
+	source := "def puts(value)\n  value\nend\n\ndef run()\n  puts(1)\nend\n"
+	value := hoverValue(t, source, 5, 3)
+	if !strings.Contains(value, "Writes each value") {
+		t.Fatalf("builtin doc must win over a same-named user def, got %q", value)
+	}
+	if strings.Contains(value, "```vibe") {
+		t.Fatalf("shadowed user def must not contribute its signature, got %q", value)
+	}
+}
+
+func TestHandleMessageHoverServesUserClassAndEnumDocs(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/user-hover.vibe"
+	openDoc(t, server, uri, navigationFixture)
+
+	tests := []struct {
+		name      string
+		line      int
+		character int
+		want      string
+	}{
+		{name: "class", line: 4, character: 8, want: "```vibe\nclass Wallet\n```"},
+		{name: "method", line: 5, character: 7, want: "```vibe\ndef balance\n```"},
+		{name: "class method", line: 9, character: 12, want: "```vibe\ndef self.empty\n```"},
+		{name: "enum", line: 14, character: 6, want: "```vibe\nenum Status\n```"},
+		{name: "enum member", line: 16, character: 4, want: "```vibe\nStatus::Published\n```"},
+	}
+	for _, tt := range tests {
+		if got := hoverValueAt(t, server, uri, tt.line, tt.character); got != tt.want {
+			t.Fatalf("%s hover = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestHandleMessageHoverUserSetterDef(t *testing.T) {
+	t.Parallel()
+	source := `class Counter
+  # Stores the count.
+  def value=(n)
+    @value = n
+  end
+end
+
+def run()
+  c = Counter.new
+  c.value = 3
+end
+`
+	// "  c.value = 3" puts the setter word at characters 4-8.
+	value := hoverValue(t, source, 9, 5)
+	if !strings.Contains(value, "```vibe\ndef value=(n)\n```") {
+		t.Fatalf("expected the setter signature, got %q", value)
+	}
+	if !strings.Contains(value, "Stores the count.") {
+		t.Fatalf("expected the setter doc comment, got %q", value)
+	}
+}
+
+func TestMemberCompletionItemsCarryUnambiguousDocs(t *testing.T) {
+	t.Parallel()
+	items := memberCompletionItems()
+
+	upcase := findCompletionItem(t, items, "upcase")
+	doc, ok := upcase["documentation"].(map[string]any)
+	if !ok {
+		t.Fatalf("upcase documentation = %#v, want markdown contents", upcase["documentation"])
+	}
+	if doc["kind"] != "markdown" {
+		t.Fatalf("upcase documentation kind = %#v, want markdown", doc["kind"])
+	}
+	if value, _ := doc["value"].(string); !strings.Contains(value, "Unicode") {
+		t.Fatalf("upcase documentation value = %#v, want the stdlib description", doc["value"])
+	}
+
+	itself := findCompletionItem(t, items, "itself")
+	if _, ok := itself["documentation"].(map[string]any); !ok {
+		t.Fatalf("itself documentation = %#v, want the universal helper doc", itself["documentation"])
+	}
+
+	// An ambiguous name has no receiver context in the type-unaware
+	// member list, so it must not pick one type's documentation.
+	size := findCompletionItem(t, items, "size")
+	if _, ok := size["documentation"]; ok {
+		t.Fatalf("size documentation = %#v, want none for an ambiguous member", size["documentation"])
+	}
+}
+
+// TestMemberDocsMatchRuntimeMembers is the value-member documentation
+// drift gate: every parsed doc entry must name a member the runtime
+// actually dispatches for that receiver type, so the table can never
+// hold phantom documentation. Coverage in the other direction (runtime
+// members without docs) is reported informationally; the known-missing
+// set is tracked in the PR rather than gated, since closing it requires
+// writing new reference documentation.
+func TestMemberDocsMatchRuntimeMembers(t *testing.T) {
+	t.Parallel()
+	docs := memberDocs()
+	runtime := vibes.MemberCompletionNames()
+
+	// Canaries: one member per parsed source section, so a silently
+	// dropped section (a renamed heading, a changed bullet shape)
+	// fails loudly instead of shrinking the table.
+	canaries := []struct{ receiver, name string }{
+		{"string", "upcase"},
+		{"string", "strip!"},
+		{"array", "map"},
+		{"array", "take"},
+		{"hash", "fetch"},
+		{"hash", "default_proc"},
+		{"int", "times"},
+		{"float", "nan?"},
+		{"money", "cents"},
+		{"duration", "ago"},
+		{"time", "strftime"},
+		{"symbol", "id2name"},
+		{"range", "cover?"},
+		{"regex", "source"},
+	}
+	for _, canary := range canaries {
+		if !slices.ContainsFunc(docs.entries[canary.name], func(entry memberDocEntry) bool {
+			return entry.Receiver == canary.receiver
+		}) {
+			t.Errorf("member docs lost the %s.%s entry; check the section mappings in lspdocs.go", canary.receiver, canary.name)
+		}
+	}
+	for _, name := range []string{"itself", "tap", "eql?", "respond_to?"} {
+		if _, ok := docs.universal[name]; !ok {
+			t.Errorf("member docs lost the universal %s entry", name)
+		}
+	}
+
+	// Hard gate: no phantom docs.
+	union := make(map[string]struct{})
+	for receiver, members := range runtime {
+		if _, ok := memberDocReceivers[receiver]; !ok {
+			t.Errorf("runtime receiver %q missing from memberDocReceivers", receiver)
+		}
+		for _, member := range members {
+			union[member] = struct{}{}
+		}
+	}
+	for name, entries := range docs.entries {
+		for _, entry := range entries {
+			members, known := runtime[entry.Receiver]
+			if !known {
+				t.Errorf("documented member %s.%s names a receiver type the runtime does not dispatch", entry.Receiver, name)
+				continue
+			}
+			if !slices.Contains(members, name) {
+				t.Errorf("documented member %s.%s does not exist in the runtime", entry.Receiver, name)
+			}
+		}
+	}
+	for name := range docs.universal {
+		if _, ok := union[name]; !ok {
+			t.Errorf("documented universal member %s does not exist on any runtime receiver", name)
+		}
+	}
+
+	// Coverage report: what fraction of runtime members carry docs.
+	receivers := make([]string, 0, len(runtime))
+	for receiver := range runtime {
+		receivers = append(receivers, receiver)
+	}
+	slices.Sort(receivers)
+	total, documented := 0, 0
+	for _, receiver := range receivers {
+		members := runtime[receiver]
+		covered := 0
+		var missing []string
+		for _, member := range members {
+			_, universal := docs.universal[member]
+			if universal || slices.ContainsFunc(docs.entries[member], func(entry memberDocEntry) bool {
+				return entry.Receiver == receiver
+			}) {
+				covered++
+				continue
+			}
+			missing = append(missing, member)
+		}
+		slices.Sort(missing)
+		total += len(members)
+		documented += covered
+		t.Logf("%s: %d/%d members documented; missing %v", receiver, covered, len(members), missing)
+	}
+	t.Logf("overall member doc coverage: %d/%d (%.1f%%)", documented, total, 100*float64(documented)/float64(total))
+	if documented*4 < total*3 {
+		t.Errorf("member doc coverage %d/%d fell below 75%%; the parser likely lost a source", documented, total)
 	}
 }

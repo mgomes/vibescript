@@ -465,7 +465,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				Result: map[string]any{
 					"contents": map[string]any{
 						"kind":  "markdown",
-						"value": hoverMarkdown(lines, params.Position.Line, params.Position.Character, word),
+						"value": hoverMarkdown(s.programs[params.TextDocument.URI], lines, params.Position.Line, params.Position.Character, word),
 					},
 				},
 			},
@@ -1106,11 +1106,22 @@ func buildMemberCompletionItems() []map[string]any {
 	for _, label := range labels {
 		receivers := byName[label]
 		sort.Strings(receivers)
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"label":  label,
 			"kind":   2, // Method
 			"detail": strings.Join(receivers, ", "),
-		})
+		}
+		// Only members with a single documented interpretation carry
+		// docs: the completion list is type-unaware, so an ambiguous
+		// name (size on array/hash/string) has no receiver context to
+		// pick an entry with.
+		if md := unambiguousMemberDocMarkdown(label); md != "" {
+			item["documentation"] = map[string]any{
+				"kind":  "markdown",
+				"value": md,
+			}
+		}
+		items = append(items, item)
 	}
 	return items
 }
