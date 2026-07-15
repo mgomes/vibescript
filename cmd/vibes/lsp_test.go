@@ -3292,3 +3292,25 @@ func TestHoverTypedRequiredKeywordSignature(t *testing.T) {
 		t.Fatalf("hover = %q, renders the invalid name:: string form", got)
 	}
 }
+
+func TestHoverQualifiedAccessExcludesTopLevel(t *testing.T) {
+	t.Parallel()
+	source := "# Saves everything at once.\n" +
+		"def save\n" + // line 1
+		"end\n" +
+		"\n" +
+		"class Client\n" +
+		"  # Saves this client.\n" +
+		"  def save\n" + // line 6
+		"  end\n" +
+		"end\n" +
+		"\n" +
+		"client.save\n" + // line 10: qualified, unmatched receiver
+		"save\n" // line 11: bare call
+	if got := hoverValue(t, source, 10, 8); !strings.Contains(got, "Saves this client.") {
+		t.Fatalf("hover(client.save) = %q, want the scoped method docs", got)
+	}
+	if got := hoverValue(t, source, 11, 1); !strings.Contains(got, "Saves everything at once.") {
+		t.Fatalf("hover(save) = %q, want the top-level docs", got)
+	}
+}

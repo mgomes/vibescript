@@ -1015,6 +1015,17 @@ func userSymbolDoc(program *ast.Program, lines []string, word string, hoverLine 
 		}
 		if len(owned) > 0 {
 			candidates = owned
+		} else {
+			// A qualified access can never resolve to a top-level
+			// declaration; with no owner match, only scoped members (the
+			// receiver may be an instance of their class) stay eligible.
+			scoped := make([]userSymbolCandidate, 0, len(candidates))
+			for _, c := range candidates {
+				if c.scoped {
+					scoped = append(scoped, c)
+				}
+			}
+			candidates = scoped
 		}
 	}
 	if len(candidates) == 0 {
