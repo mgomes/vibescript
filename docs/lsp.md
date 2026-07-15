@@ -13,7 +13,7 @@ vibes lsp
 | LSP request | Support |
 | --- | --- |
 | `textDocument/publishDiagnostics` | Parse errors reported on open and on every change. |
-| `textDocument/hover` | Classifies the word under the cursor as a keyword, builtin, or symbol. |
+| `textDocument/hover` | Documentation for builtins, namespace members, and keywords; other words are classified as symbols. |
 | `textDocument/completion` | Context-aware: member methods after `.`, otherwise keywords, builtins, user-defined functions, and the enclosing function's parameters and locals. |
 | `textDocument/formatting` | Full-document canonical formatting (the same formatter as `vibes fmt`). |
 | `textDocument/signatureHelp` | Parameter hints on `(` and `,` for user-defined functions and global builtins. |
@@ -30,9 +30,19 @@ clear stale squiggles for the closed document.
 
 ### Hover
 
-Hovering an identifier reports whether it is a Vibescript keyword, a builtin
-function, or a plain symbol. UTF-16 positions (the LSP wire encoding) are
-translated correctly for documents containing multi-byte characters.
+Hovering a builtin function shows its signature and description from the
+embedded [builtins reference](builtins.md). A word directly following a
+namespace receiver resolves to the qualified entry first, so hovering
+`parse_as` in `JSON.parse_as(...)` shows the `JSON.parse_as` documentation;
+`Math`, `Time`, `Duration`, `Regexp`, `Hash`, `Proc`, and `Tasks` members
+resolve the same way. Reserved keywords and contextual declaration words
+(`module`, `include`, `alias`, ...) show a one-line description. Any other
+identifier falls back to being classified as a plain symbol. UTF-16 positions
+(the LSP wire encoding) are translated correctly for documents containing
+multi-byte characters.
+
+Completion items for builtins and keywords carry the same documentation, and
+documented builtins use their signature as the completion detail.
 
 ### Completion
 
