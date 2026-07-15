@@ -219,11 +219,14 @@ func TestCompletionItemsAreSortedAndCategorized(t *testing.T) {
 		t.Fatalf("expected builtin kind 3, got %#v", builtin["kind"])
 	}
 
-	// Namespace objects have no signature entry, so their detail keeps
-	// the generic builtin classification.
+	// Namespace objects carry the namespace hover markdown and the
+	// Module completion kind.
 	namespace := findCompletionItem(t, items, "JSON")
-	if namespace["detail"] != "builtin" {
-		t.Fatalf("expected namespace detail builtin, got %#v", namespace["detail"])
+	if namespace["detail"] != "namespace" {
+		t.Fatalf("expected namespace detail, got %#v", namespace["detail"])
+	}
+	if namespace["kind"] != 9 {
+		t.Fatalf("expected namespace kind 9, got %#v", namespace["kind"])
 	}
 }
 
@@ -3335,4 +3338,22 @@ func TestHoverInstanceReceiverSkipsClassMethods(t *testing.T) {
 	if got := hoverValue(t, source, 11, 8); !strings.Contains(got, "Saves every client at once.") {
 		t.Fatalf("hover(Client.save) = %q, want the class method docs", got)
 	}
+}
+
+func TestCompletionNamespaceDocumentation(t *testing.T) {
+	t.Parallel()
+	for _, item := range lspStaticCompletionItems {
+		if item["label"] != "JSON" {
+			continue
+		}
+		if item["detail"] != "namespace" {
+			t.Fatalf("JSON completion detail = %v, want namespace", item["detail"])
+		}
+		doc, ok := item["documentation"].(map[string]any)
+		if !ok || !strings.Contains(doc["value"].(string), "Members: `parse`") {
+			t.Fatalf("JSON completion documentation = %v, want the namespace markdown with members", item["documentation"])
+		}
+		return
+	}
+	t.Fatal("JSON completion item not found")
 }

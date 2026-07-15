@@ -775,6 +775,13 @@ func buildCompletionItems() []map[string]any {
 			} else {
 				detail = strings.ReplaceAll(entry.Signature, "`", "")
 			}
+		} else if md := namespaceDocMarkdown(label); md != "" {
+			// Namespace builtins (JSON, Math) are keyed by qualified
+			// member names in builtinDocs; they carry the same hover
+			// markdown here.
+			kind = 9 // Module
+			detail = "namespace"
+			documentation = md
 		}
 		item := map[string]any{
 			"label":  label,
