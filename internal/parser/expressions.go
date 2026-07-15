@@ -1904,31 +1904,9 @@ func shapeLeafTypesAllBuiltin(ty *ast.TypeExpr) bool {
 
 func (p *parser) parseHashPair() ast.HashPair {
 	if p.peekToken.Type != ast.TokenColon {
-		key := p.parseExpression(lowestPrec)
-		if key == nil || p.peekToken.Type != ast.TokenArrow {
-			p.addParseError(p.curToken.Pos, invalidHashPairMessage)
-			p.recoverHashPair()
-			return ast.HashPair{}
-		}
-		p.nextToken()
-		if p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRBrace || p.peekToken.Type == ast.TokenEOF {
-			p.addParseError(p.peekToken.Pos, fmt.Sprintf("missing value for hash key %s", hashKeyName(key)))
-			return ast.HashPair{}
-		}
-		p.nextToken()
-		value := p.parseExpression(lowestPrec)
-		if value == nil {
-			p.recoverHashPair()
-			return ast.HashPair{}
-		}
-		switch p.peekToken.Type {
-		case ast.TokenComma, ast.TokenRBrace, ast.TokenEOF:
-			return ast.HashPair{Key: key, Value: value}
-		default:
-			p.addParseError(p.peekToken.Pos, invalidHashPairMessage)
-			p.recoverHashPair()
-			return ast.HashPair{}
-		}
+		p.addParseError(p.curToken.Pos, invalidHashPairMessage)
+		p.recoverHashPair()
+		return ast.HashPair{}
 	}
 
 	var key ast.Expression
@@ -2007,7 +1985,7 @@ func (p *parser) recoverHashPair() {
 	}
 }
 
-const invalidHashPairMessage = `invalid hash pair: expected key like name:, "name":, or expr => value`
+const invalidHashPairMessage = `invalid hash pair: expected key like name: or "name":`
 
 func hashKeyName(key ast.Expression) string {
 	switch k := key.(type) {

@@ -147,7 +147,9 @@ def keyword_splat_non_hash
 end
 
 def keyword_splat_bad_key
-  kw(1, **{2 => "x"})
+  bad = {}
+  bad[2] = "x"
+  kw(1, **bad)
 end
 
 def missing_after_expansion
