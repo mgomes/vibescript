@@ -324,7 +324,7 @@ func qualifiedWordAt(lines []string, line, character int) string {
 	}
 	// Members reach their namespace through either accessor: Math.PI and
 	// Math::PI both resolve to the parsed Math.PI entry.
-	receiverEnd := start
+	var receiverEnd int
 	switch {
 	case runes[start-1] == '.':
 		receiverEnd = start - 1
@@ -955,7 +955,7 @@ func receiverWordBefore(lines []string, line, character int) string {
 	if !ok || start == 0 {
 		return ""
 	}
-	receiverEnd := start
+	var receiverEnd int
 	switch {
 	case runes[start-1] == '.':
 		receiverEnd = start - 1
