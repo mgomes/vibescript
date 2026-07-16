@@ -66,6 +66,7 @@ type replModel struct {
 	ctx         context.Context
 	textInput   textinput.Model
 	engine      *vibes.Engine
+	builtins    builtinCatalog
 	env         map[string]value.Value
 	stdout      *bytes.Buffer
 	stderr      *bytes.Buffer
@@ -140,40 +141,6 @@ var keys = keyMap{
 	),
 }
 
-var replBuiltinCompletions = []string{
-	"assert",
-	"money",
-	"money_cents",
-	"require",
-	"now",
-	"p",
-	"print",
-	"puts",
-	"uuid",
-	"random_id",
-	"to_int",
-	"to_float",
-	"warn",
-	"Hash",
-	"JSON",
-	"Regex",
-	"Time",
-}
-
-var replKeywordCompletions = []string{
-	"fn",
-	"if",
-	"else",
-	"for",
-	"in",
-	"return",
-	"true",
-	"false",
-	"nil",
-	"and",
-	"or",
-}
-
 var replCommandCompletions = []string{
 	":help",
 	":h",
@@ -193,28 +160,6 @@ var replCommandCompletions = []string{
 	":le",
 	":quit",
 	":q",
-}
-
-var replBuiltinFunctionNames = []string{
-	"assert",
-	"money",
-	"money_cents",
-	"now",
-	"p",
-	"print",
-	"puts",
-	"require",
-	"uuid",
-	"random_id",
-	"to_int",
-	"to_float",
-	"warn",
-	"JSON.parse",
-	"JSON.stringify",
-	"Regex.match",
-	"Regex.replace",
-	"Regex.replace_all",
-	"Time.parse",
 }
 
 func newREPLModel(quota quotaConfig) (replModel, error) {
@@ -256,6 +201,7 @@ func newREPLModelContext(ctx context.Context, quota quotaConfig) (replModel, err
 		ctx:        ctx,
 		textInput:  ti,
 		engine:     engine,
+		builtins:   newBuiltinCatalog(engine.Builtins()),
 		env:        make(map[string]value.Value),
 		stdout:     stdout,
 		stderr:     stderr,
@@ -378,7 +324,7 @@ func (m replModel) handleCommand(input string) (replModel, tea.Cmd) {
 	case ":functions", ":f":
 		m.history = append(m.history, historyEntry{
 			input:  input,
-			output: functionsSnapshot(m.env),
+			output: functionsSnapshot(m.builtins, m.env),
 			isErr:  false,
 		})
 	case ":types", ":t":
@@ -432,34 +378,37 @@ func (m replModel) handleAutocomplete() replModel {
 	}
 	lastWord := words[len(words)-1]
 
-	// Collect completions
-	var completions []string
+	matches := make(map[string]bool)
+	addMatches := func(names []string) {
+		for _, name := range names {
+			if strings.HasPrefix(name, lastWord) {
+				matches[name] = true
+			}
+		}
+	}
 
 	if strings.HasPrefix(lastWord, ":") {
-		for _, cmd := range replCommandCompletions {
-			if strings.HasPrefix(cmd, lastWord) {
-				completions = append(completions, cmd)
-			}
-		}
+		addMatches(replCommandCompletions)
 	} else {
-		for _, name := range replBuiltinCompletions {
-			if strings.HasPrefix(name, lastWord) {
-				completions = append(completions, name)
-			}
+		if strings.Contains(lastWord, ".") {
+			addMatches(m.builtins.documentedNames)
+		} else {
+			addMatches(m.builtins.topLevelNames)
 		}
-		for _, keyword := range replKeywordCompletions {
-			if strings.HasPrefix(keyword, lastWord) {
-				completions = append(completions, keyword)
-			}
-		}
+		addMatches(ast.Keywords())
 	}
 
 	// Environment variables
 	for name := range m.env {
 		if strings.HasPrefix(name, lastWord) {
-			completions = append(completions, name)
+			matches[name] = true
 		}
 	}
+	completions := make([]string, 0, len(matches))
+	for name := range matches {
+		completions = append(completions, name)
+	}
+	sort.Strings(completions)
 
 	if len(completions) == 1 {
 		// Single match - complete it
@@ -606,18 +555,9 @@ func globalsSnapshot(env map[string]value.Value) string {
 	return strings.Join(lines, "\n")
 }
 
-func isCallableValue(val value.Value) bool {
-	switch val.Kind() {
-	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass:
-		return true
-	default:
-		return false
-	}
-}
-
-func functionsSnapshot(env map[string]value.Value) string {
-	names := make([]string, 0, len(replBuiltinFunctionNames)+len(env))
-	names = append(names, replBuiltinFunctionNames...)
+func functionsSnapshot(builtins builtinCatalog, env map[string]value.Value) string {
+	names := make([]string, 0, len(builtins.functionNames)+len(env))
+	names = append(names, builtins.functionNames...)
 	for _, name := range sortedEnvKeys(env) {
 		if isCallableValue(env[name]) {
 			names = append(names, name)

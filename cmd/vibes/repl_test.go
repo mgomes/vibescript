@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sort"
 	"strings"
 	"testing"
 
@@ -471,11 +472,11 @@ func TestFunctionsCommandListsBuiltinsAndEnvCallables(t *testing.T) {
 	if last.isErr {
 		t.Fatalf("expected :functions result to be non-error")
 	}
-	if !strings.Contains(last.output, "JSON.parse") {
-		t.Fatalf("expected JSON.parse in functions output: %q", last.output)
-	}
-	if !strings.Contains(last.output, "worker") {
-		t.Fatalf("expected env callable in functions output: %q", last.output)
+	wantNames := append([]string(nil), m.builtins.functionNames...)
+	wantNames = append(wantNames, "worker")
+	sort.Strings(wantNames)
+	if want := strings.Join(wantNames, "\n"); last.output != want {
+		t.Fatalf(":functions output = %q, want %q", last.output, want)
 	}
 	if strings.Contains(last.output, "count") {
 		t.Fatalf("non-callable env value should not appear in functions output: %q", last.output)
@@ -520,6 +521,26 @@ func TestAutocomplete(t *testing.T) {
 			name:      "single_completion",
 			input:     "requ",
 			wantValue: "require",
+		},
+		{
+			name:      "runtime_namespace_completion",
+			input:     "Dur",
+			wantValue: "Duration",
+		},
+		{
+			name:      "qualified_builtin_completion",
+			input:     "JSON.parse_a",
+			wantValue: "JSON.parse_as",
+		},
+		{
+			name:      "namespace_constant_completion",
+			input:     "Math.P",
+			wantValue: "Math.PI",
+		},
+		{
+			name:      "parser_keyword_completion",
+			input:     "unle",
+			wantValue: "unless",
 		},
 		{
 			name:           "multiple_completions_add_history_entry",

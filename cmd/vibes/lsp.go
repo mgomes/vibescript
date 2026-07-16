@@ -30,39 +30,6 @@ var jsonNull = json.RawMessage("null")
 
 var lspKeywords = ast.Keywords()
 
-var lspBuiltins = []string{
-	"assert",
-	"format",
-	"lambda",
-	"loop",
-	"proc",
-	"money",
-	"money_cents",
-	"now",
-	"p",
-	"print",
-	"puts",
-	"rand",
-	"random_id",
-	"require",
-	"sleep",
-	"sprintf",
-	"srand",
-	"to_float",
-	"to_int",
-	"uuid",
-	"warn",
-	"Duration",
-	"Hash",
-	"JSON",
-	"Math",
-	"Proc",
-	"Regex",
-	"Regexp",
-	"Tasks",
-	"Time",
-}
-
 type lspInboundMessage struct {
 	JSONRPC string           `json:"jsonrpc"`
 	ID      *json.RawMessage `json:"id,omitempty"`
@@ -123,11 +90,13 @@ type lspTextDocumentPositionParams struct {
 }
 
 type lspServer struct {
-	reader *bufio.Reader
-	writer *bufio.Writer
-	engine *vibes.Engine
-	docs   map[string]string
-	lines  map[string][]string
+	reader            *bufio.Reader
+	writer            *bufio.Writer
+	engine            *vibes.Engine
+	builtins          builtinCatalog
+	staticCompletions []map[string]any
+	docs              map[string]string
+	lines             map[string][]string
 	// compiled holds the most recent successfully compiled script per
 	// document, so completion can offer user-defined symbols while the
 	// buffer is mid-edit and temporarily unparsable.
@@ -194,6 +163,7 @@ func runLSPContext(ctx context.Context, reader io.Reader, writer io.Writer) erro
 		reader:      bufio.NewReader(reader),
 		writer:      bufio.NewWriter(writer),
 		engine:      engine,
+		builtins:    newBuiltinCatalog(engine.Builtins()),
 		docs:        make(map[string]string),
 		lines:       make(map[string][]string),
 		compiled:    make(map[string]*vibes.Script),
@@ -469,7 +439,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				Result: map[string]any{
 					"contents": map[string]any{
 						"kind":  "markdown",
-						"value": hoverMarkdown(s.programs[params.TextDocument.URI], lines, params.Position.Line, params.Position.Character, word),
+						"value": hoverMarkdown(s.builtinCatalog(), s.programs[params.TextDocument.URI], lines, params.Position.Line, params.Position.Character, word),
 					},
 				},
 			},
@@ -601,7 +571,7 @@ func (s *lspServer) completionIndex(uri string) *lspCompletionIndex {
 	if script == nil {
 		return nil
 	}
-	index := newLSPCompletionIndex(script, s.documentLines(uri))
+	index := newLSPCompletionIndex(script, s.documentLines(uri), s.completionItems())
 	if s.completions != nil {
 		s.completions[uri] = index
 	}
@@ -741,19 +711,26 @@ func newDiagnostic(rng diagnosticRange, message string) lspDiagnostic {
 	}
 }
 
-var (
-	lspStaticCompletionItems = buildCompletionItems()
-	lspStaticMemberItems     = buildMemberCompletionItems()
-)
+var lspStaticMemberItems = buildMemberCompletionItems()
 
-func completionItems() []map[string]any {
-	return lspStaticCompletionItems
+func (s *lspServer) builtinCatalog() builtinCatalog {
+	if len(s.builtins.topLevelNames) == 0 && s.engine != nil {
+		s.builtins = newBuiltinCatalog(s.engine.Builtins())
+	}
+	return s.builtins
 }
 
-func buildCompletionItems() []map[string]any {
-	labels := make([]string, 0, len(lspKeywords)+len(lspBuiltins))
+func (s *lspServer) completionItems() []map[string]any {
+	if s.staticCompletions == nil {
+		s.staticCompletions = buildCompletionItems(s.builtinCatalog())
+	}
+	return s.staticCompletions
+}
+
+func buildCompletionItems(catalog builtinCatalog) []map[string]any {
+	labels := make([]string, 0, len(lspKeywords)+len(catalog.topLevelNames))
 	labels = append(labels, lspKeywords...)
-	labels = append(labels, lspBuiltins...)
+	labels = append(labels, catalog.topLevelNames...)
 	sort.Strings(labels)
 
 	keywordSet := make(map[string]struct{}, len(lspKeywords))
@@ -772,20 +749,15 @@ func buildCompletionItems() []map[string]any {
 			if doc, ok := keywordDocs[label]; ok {
 				documentation = fmt.Sprintf("`%s`\n\n%s", label, doc)
 			}
-		} else if entry, ok := builtinDocs()[label]; ok {
-			documentation = entry.Markdown
-			if signature, ok := builtinSignatures[label]; ok {
-				detail = signature
-			} else {
-				detail = strings.ReplaceAll(entry.Signature, "`", "")
-			}
-		} else if md := namespaceDocMarkdown(label); md != "" {
-			// Namespace builtins (JSON, Math) are keyed by qualified
-			// member names in builtinDocs; they carry the same hover
-			// markdown here.
+		} else if catalog.isNamespace(label) {
 			kind = 9 // Module
 			detail = "namespace"
-			documentation = md
+			documentation = namespaceDocMarkdown(catalog, label)
+		} else if entry, ok := builtinDocs()[label]; ok {
+			documentation = entry.Markdown
+			detail = strings.ReplaceAll(entry.Signature, "`", "")
+		} else if !catalog.isFunction(label) {
+			kind = 21 // Constant
 		}
 		item := map[string]any{
 			"label":  label,
@@ -803,11 +775,11 @@ func buildCompletionItems() []map[string]any {
 	return items
 }
 
-func classifyWord(word string) string {
+func classifyWord(catalog builtinCatalog, word string) string {
 	if slices.Contains(lspKeywords, word) {
 		return "keyword"
 	}
-	if slices.Contains(lspBuiltins, word) {
+	if catalog.isBuiltin(word) {
 		return "builtin"
 	}
 	return "symbol"
@@ -1006,7 +978,7 @@ func (s *lspServer) completionItemsAt(uri string, lines []string, line, characte
 	if index := s.completionIndex(uri); index != nil {
 		return index.itemsAt(line)
 	}
-	return completionItems()
+	return s.completionItems()
 }
 
 // isMemberContext reports whether the cursor sits immediately after a
@@ -1158,7 +1130,7 @@ type lspCompletionBlock struct {
 	allItems  []map[string]any
 }
 
-func newLSPCompletionIndex(script *vibes.Script, sourceLines []string) *lspCompletionIndex {
+func newLSPCompletionIndex(script *vibes.Script, sourceLines []string, builtinItems []map[string]any) *lspCompletionIndex {
 	if script == nil {
 		return nil
 	}
@@ -1201,7 +1173,7 @@ func newLSPCompletionIndex(script *vibes.Script, sourceLines []string) *lspCompl
 		index.scopes = append(index.scopes, scope)
 	}
 	sortCompletionItems(index.functions)
-	index.items = mergedCompletionItems(lspStaticCompletionItems, index.functions)
+	index.items = mergedCompletionItems(builtinItems, index.functions)
 	for i := range index.scopes {
 		scope := &index.scopes[i]
 		scope.allItems = mergedCompletionItems(index.items, scope.items)
@@ -1588,37 +1560,10 @@ func appendAssignmentTargetNames(names *[]string, target ast.Expression) {
 	}
 }
 
-// builtinSignatures maps global function builtins to their documented
-// signatures. Entries are validated against the engine's registered
-// builtins by tests so the table cannot go stale against renames.
-var builtinSignatures = map[string]string{
-	"assert":      "assert(condition, message = nil) -> nil",
-	"format":      "format(format_string, *values) -> string",
-	"lambda":      "lambda { |args| ... } -> lambda",
-	"loop":        "loop { ... } -> value",
-	"money":       `money("12.34 USD") -> money`,
-	"money_cents": "money_cents(cents, currency) -> money",
-	"now":         "now -> string",
-	"p":           "p(*values) -> value",
-	"print":       "print(*values) -> nil",
-	"proc":        "proc { |args| ... } -> proc",
-	"puts":        "puts(*values) -> nil",
-	"rand":        "rand(max = nil) -> number",
-	"random_id":   "random_id(length = 16) -> string",
-	"require":     `require(module, as: nil) -> object`,
-	"sleep":       "sleep(seconds) -> int",
-	"sprintf":     "sprintf(format_string, *values) -> string",
-	"srand":       "srand(seed = nil) -> int | nil",
-	"to_float":    "to_float(value) -> float",
-	"to_int":      "to_int(value) -> int",
-	"uuid":        "uuid -> string",
-	"warn":        "warn(*values) -> nil",
-}
-
 // signatureHelpAt resolves the innermost call around the cursor and
 // returns LSP SignatureHelp for it, or nil when no signature is known.
 func (s *lspServer) signatureHelpAt(uri string, lines []string, line, character int) map[string]any {
-	callee, activeParam, ok := enclosingCall(lines, line, character)
+	callee, activeParam, ok := enclosingCall(s.builtinCatalog(), lines, line, character)
 	if !ok {
 		callee, activeParam, ok = parenlessCall(lines, line, character)
 		if !ok {
@@ -1639,7 +1584,9 @@ func (s *lspServer) signatureHelpAt(uri string, lines []string, line, character 
 			return signatureHelpResponse(label, paramLabels, activeParam)
 		}
 	}
-	if label, found := builtinSignatures[callee]; found {
+	entry, found := builtinDocs()[callee]
+	if found && s.builtinCatalog().isFunction(callee) {
+		label := strings.ReplaceAll(entry.Signature, "`", "")
 		return signatureHelpResponse(label, paramLabelsFromSignature(label), activeParam)
 	}
 	return nil
@@ -1668,7 +1615,7 @@ func signatureHelpResponse(label string, paramLabels []string, activeParam int) 
 // enclosingCall scans the cursor's line backwards for the innermost
 // unclosed call and reports the callee name and the zero-based argument
 // index at the cursor. Multi-line calls degrade to no result.
-func enclosingCall(lines []string, line, character int) (string, int, bool) {
+func enclosingCall(catalog builtinCatalog, lines []string, line, character int) (string, int, bool) {
 	if line < 0 || line >= len(lines) {
 		return "", 0, false
 	}
@@ -1719,10 +1666,19 @@ func enclosingCall(lines []string, line, character int) (string, int, bool) {
 				return "", 0, false
 			}
 			if start > 0 && runes[start-1] == '.' {
-				// Member call: no signature data exists for member
-				// methods, and a same-named top-level function would
-				// be the wrong hint.
-				return "", 0, false
+				receiverEnd := start - 1
+				receiverStart := receiverEnd
+				for receiverStart > 0 && isWordRune(runes[receiverStart-1]) {
+					receiverStart--
+				}
+				receiver := string(runes[receiverStart:receiverEnd])
+				if receiver == "" || !catalog.isNamespace(receiver) ||
+					(receiverStart > 0 && runes[receiverStart-1] == '.') {
+					// Instance methods have no signature catalog, and a
+					// same-named top-level function would be the wrong hint.
+					return "", 0, false
+				}
+				return receiver + "." + string(runes[start:end]), activeParam, true
 			}
 			return string(runes[start:end]), activeParam, true
 		case ',':

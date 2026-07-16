@@ -221,7 +221,7 @@ func FuzzLSPPayloadAndMessageHandling(f *testing.F) {
 		if strings.ContainsAny(word, " \t\r\n") {
 			t.Fatalf("wordAtPosition(%q) = %q, want a single word", source, word)
 		}
-		_ = classifyWord(word)
+		_ = classifyWord(server.builtinCatalog(), word)
 
 		incoming := fuzzLSPMessage(selector, uri, source)
 		messages := server.handleMessage(incoming)

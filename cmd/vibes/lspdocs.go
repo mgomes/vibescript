@@ -69,11 +69,11 @@ func parseBuiltinDocs(markdown string) map[string]builtinDocEntry {
 			continue
 		}
 		if heading, ok := strings.CutPrefix(lines[i], "### "); ok {
-			names := docEntryNames(heading, false)
-			if len(names) == 0 {
+			refs := docEntryRefs(heading, false)
+			if len(refs) == 0 {
 				continue
 			}
-			addDocEntries(entries, names, strings.TrimSpace(heading), docDescription(lines, i+1))
+			addDocEntries(entries, refs, strings.TrimSpace(heading), docDescription(lines, i+1))
 			continue
 		}
 		if strings.HasPrefix(lines[i], "- `") {
@@ -83,11 +83,11 @@ func parseBuiltinDocs(markdown string) map[string]builtinDocEntry {
 			if !ok {
 				continue
 			}
-			names := docEntryNames(signature, true)
-			if len(names) == 0 {
+			refs := docEntryRefs(signature, true)
+			if len(refs) == 0 {
 				continue
 			}
-			addDocEntries(entries, names, signature, description)
+			addDocEntries(entries, refs, signature, description)
 		}
 	}
 	return entries
@@ -164,13 +164,17 @@ func splitDocBullet(bullet string) (signature, description string, ok bool) {
 	return "", "", false
 }
 
-// docEntryNames extracts entry names from the code spans of a heading
-// or bullet signature: the span text up to its argument list or block,
-// with `::` constant accessors normalized to dotted names. Bullets set
-// requireQualified so incidental inline code in prose never registers a
-// bare-name entry.
-func docEntryNames(text string, requireQualified bool) []string {
-	var names []string
+type builtinDocRef struct {
+	name      string
+	signature string
+}
+
+// docEntryRefs extracts entry names and their individual code-formatted
+// signatures from a heading or bullet. `::` constant accessors normalize to
+// dotted names. Bullets require qualified names so incidental inline code in
+// prose never registers a bare-name entry.
+func docEntryRefs(text string, requireQualified bool) []builtinDocRef {
+	var refs []builtinDocRef
 	seen := make(map[string]struct{})
 	for _, span := range docCodeSpanRegex.FindAllStringSubmatch(text, -1) {
 		name := span[1]
@@ -188,21 +192,21 @@ func docEntryNames(text string, requireQualified bool) []string {
 			continue
 		}
 		seen[name] = struct{}{}
-		names = append(names, name)
+		refs = append(refs, builtinDocRef{name: name, signature: span[0]})
 	}
-	return names
+	return refs
 }
 
-func addDocEntries(entries map[string]builtinDocEntry, names []string, signature, description string) {
+func addDocEntries(entries map[string]builtinDocEntry, refs []builtinDocRef, signature, description string) {
 	markdown := signature
 	if description != "" {
 		markdown += "\n\n" + description
 	}
-	for _, name := range names {
-		if _, exists := entries[name]; exists {
+	for _, ref := range refs {
+		if _, exists := entries[ref.name]; exists {
 			continue
 		}
-		entries[name] = builtinDocEntry{Signature: signature, Markdown: markdown}
+		entries[ref.name] = builtinDocEntry{Signature: ref.signature, Markdown: markdown}
 	}
 }
 
@@ -286,14 +290,14 @@ var keywordDocs = map[string]string{
 // word means in the language, while go-to-definition still resolves
 // the user's own declaration. A user symbol is served only when every
 // documentation table misses.
-func hoverMarkdown(program *ast.Program, lines []string, line, character int, word string) string {
+func hoverMarkdown(catalog builtinCatalog, program *ast.Program, lines []string, line, character int, word string) string {
 	docs := builtinDocs()
 	if qualified := qualifiedWordAt(lines, line, character); qualified != "" {
 		if entry, ok := docs[qualified]; ok {
 			return entry.Markdown
 		}
 	}
-	if isValueMemberAccess(lines, line, character) {
+	if isValueMemberAccess(catalog, lines, line, character) {
 		if md := memberDocMarkdown(word); md != "" {
 			return md
 		}
@@ -301,7 +305,7 @@ func hoverMarkdown(program *ast.Program, lines []string, line, character int, wo
 		if entry, ok := docs[word]; ok {
 			return entry.Markdown
 		}
-		if md := namespaceDocMarkdown(word); md != "" {
+		if md := namespaceDocMarkdown(catalog, word); md != "" {
 			return md
 		}
 		if doc, ok := keywordDocs[word]; ok {
@@ -311,7 +315,7 @@ func hoverMarkdown(program *ast.Program, lines []string, line, character int, wo
 	if md := userSymbolHover(program, lines, word, line, character); md != "" {
 		return md
 	}
-	return fmt.Sprintf("`%s`\n\nVibescript %s", word, classifyWord(word))
+	return fmt.Sprintf("`%s`\n\nVibescript %s", word, classifyWord(catalog, word))
 }
 
 // qualifiedWordAt returns "Receiver.word" when the word at the position
@@ -779,9 +783,9 @@ func bangVariantEntries(word string) []memberDocEntry {
 	return out
 }
 
-// namespaceDocsOnce parses the "## Namespace" section intros from the
-// embedded builtins reference; Proc and Regexp have no dedicated
-// section, so they carry hand-written one-liners.
+// namespaceDocsOnce parses section intros from the embedded builtins reference.
+// Runtime catalog membership decides which sections represent namespaces; Proc
+// and Regexp have no dedicated sections, so they carry hand-written one-liners.
 var (
 	namespaceDocsOnce  sync.Once
 	namespaceDocsTable map[string]string
@@ -811,10 +815,7 @@ func namespaceDocs() map[string]string {
 			if title, ok := strings.CutPrefix(line, "## "); ok {
 				flush()
 				current, intro = "", nil
-				name := strings.TrimSpace(title)
-				if _, isNamespace := lspDocNamespaces[name]; isNamespace {
-					current = name
-				}
+				current = strings.TrimSpace(title)
 				continue
 			}
 			if strings.HasPrefix(line, "### ") {
@@ -840,8 +841,8 @@ func namespaceDocs() map[string]string {
 // (Tasks, JSON): the section intro from the builtins reference plus a
 // member list generated from the parsed doc table, so the list can
 // never drift from what qualified hovers serve.
-func namespaceDocMarkdown(word string) string {
-	if _, ok := lspDocNamespaces[word]; !ok {
+func namespaceDocMarkdown(catalog builtinCatalog, word string) string {
+	if !catalog.isNamespace(word) {
 		return ""
 	}
 	var members []string
@@ -880,26 +881,13 @@ func unambiguousMemberDocMarkdown(name string) string {
 	return ""
 }
 
-// lspDocNamespaces is the set of namespace builtins (JSON, Math, ...)
-// whose members resolve through the builtins.md table rather than the
-// value member table.
-var lspDocNamespaces = func() map[string]struct{} {
-	set := make(map[string]struct{})
-	for _, name := range lspBuiltins {
-		if name != "" && name[0] >= 'A' && name[0] <= 'Z' {
-			set[name] = struct{}{}
-		}
-	}
-	return set
-}()
-
 // isValueMemberAccess reports whether the word at the position is
 // reached through a "." member access on a value receiver: directly
 // preceded by a single dot (".." is a range, "::" a scope accessor)
 // whose receiver is not a documented namespace like JSON or Math. A
 // dot with no receiver word (a chained call continuing the previous
 // line) still counts as member access.
-func isValueMemberAccess(lines []string, line, character int) bool {
+func isValueMemberAccess(catalog builtinCatalog, lines []string, line, character int) bool {
 	runes, start, _, ok := wordSpanAtPosition(lines, line, character)
 	if !ok || start == 0 || runes[start-1] != '.' {
 		return false
@@ -913,8 +901,7 @@ func isValueMemberAccess(lines []string, line, character int) bool {
 		receiverStart--
 	}
 	receiver := string(runes[receiverStart:receiverEnd])
-	_, namespace := lspDocNamespaces[receiver]
-	return !namespace
+	return !catalog.isNamespace(receiver)
 }
 
 // userSymbolHover resolves hover documentation for a symbol declared

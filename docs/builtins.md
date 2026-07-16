@@ -4,7 +4,7 @@ Vibescript provides several built-in functions available globally in all scripts
 
 ## Assertions
 
-### `assert(condition, message)`
+### `assert(condition, message = nil, message: nil) -> nil`
 
 Raises an error if `condition` is falsy. Use for validating preconditions.
 
@@ -17,7 +17,7 @@ end
 
 ## Output
 
-### `puts(*values)`
+### `puts(*values) -> nil`
 
 Writes each value to the configured output, one per line, and a single blank
 line when called with no arguments. Returns `nil`.
@@ -26,7 +26,7 @@ line when called with no arguments. Returns `nil`.
 puts "processing", 42
 ```
 
-### `print(*values)`
+### `print(*values) -> nil`
 
 Writes each value to the configured output without a trailing newline. Returns
 `nil`.
@@ -35,7 +35,7 @@ Writes each value to the configured output without a trailing newline. Returns
 print "loading", "..."  # loading...
 ```
 
-### `p(*values)`
+### `p(*values) -> value`
 
 Writes each value in inspect form (strings keep their quotes), one per line,
 then returns its argument: the single value for one argument, an array of the
@@ -47,7 +47,7 @@ count = p(42)  # prints 42, returns 42
 p("id", 7)     # prints "id" and 7, returns ["id", 7]
 ```
 
-### `warn(*values)`
+### `warn(*values) -> nil`
 
 Writes each value to the configured error output, one per line. Returns `nil`.
 
@@ -57,7 +57,7 @@ warn "rate limit nearly reached"
 
 ## Money
 
-### `money(string)`
+### `money(literal) -> money`
 
 Parses a money value from a string in the format `"amount CURRENCY"`:
 
@@ -67,7 +67,7 @@ fee = money("2.50 USD")
 net = total - fee  # money("98.00 USD")
 ```
 
-### `money_cents(cents, currency)`
+### `money_cents(cents, currency) -> money`
 
 Creates a money value from an integer cent amount:
 
@@ -81,7 +81,7 @@ Time values come from the `now` builtin and the `Time` namespace's
 constructors and parser; all of them respect the configured clock and
 time zone.
 
-### `now`
+### `now -> string`
 
 Returns the current UTC timestamp as an ISO 8601 / RFC 3339 formatted string:
 
@@ -123,7 +123,7 @@ like `"+05:30"`. See [Time](time.md) for the full instance-method surface.
 Time.utc(2024).iso8601  # "2024-01-01T00:00:00Z"
 ```
 
-### `sleep(seconds)`
+### `sleep(seconds) -> int`
 
 Pauses the current call for a non-negative numeric duration in seconds. Floats
 are accepted for fractional seconds. The call returns the elapsed whole seconds
@@ -136,7 +136,7 @@ sleep(0.25)
 
 ## Control Flow
 
-### `loop { ... }`
+### `loop { ... } -> value`
 
 Runs the block until it exits with `break`. A `break value` becomes the return
 value, and `next` skips to the next iteration.
@@ -153,7 +153,7 @@ end
 
 ## Procs and Lambdas
 
-### `proc { |args| ... }` / `Proc.new { |args| ... }`
+### `proc { |args| ... } -> proc` / `Proc.new { |args| ... } -> proc`
 
 Captures the block as a first-class proc value invoked with `.call`. A proc
 keeps block semantics: missing arguments pad to `nil`, extra arguments are
@@ -165,7 +165,7 @@ doubler = proc { |x| x * 2 }
 doubler.call(21)  # 42
 ```
 
-### `lambda { |args| ... }`
+### `lambda { |args| ... } -> lambda`
 
 Captures the block as a lambda, which behaves like an anonymous method: arity
 is strict, and `return`, `break`, and `next` in the body are local to the
@@ -178,7 +178,7 @@ add.call(2, 3)  # 5
 
 ## Formatting
 
-### `format(pattern, *values)` / `sprintf(pattern, *values)`
+### `format(pattern, *values) -> string` / `sprintf(pattern, *values) -> string`
 
 Formats values with Ruby-style percent format strings for common numeric and
 string cases. `String#%` uses the same formatter. Output is capped at 1 MiB
@@ -192,7 +192,7 @@ sprintf("%x", 255)     # "ff"
 
 ## Random IDs
 
-### `uuid`
+### `uuid -> string`
 
 Returns an RFC 9562 version 7 UUID string:
 
@@ -200,7 +200,7 @@ Returns an RFC 9562 version 7 UUID string:
 event_id = uuid
 ```
 
-### `random_id(length = 16)`
+### `random_id(length = 16) -> string`
 
 Returns an alphanumeric random identifier string:
 
@@ -209,7 +209,7 @@ short = random_id(8)
 token = random_id()
 ```
 
-### `rand(max = nil)`
+### `rand(max = nil) -> number`
 
 Returns a random float in `[0.0, 1.0)` with no argument, an integer in
 `0...max` for a positive integer bound, or an integer inside an integer range.
@@ -220,7 +220,7 @@ rand(10)
 rand(1..3)
 ```
 
-### `srand(seed = nil)`
+### `srand(seed = nil) -> int | nil`
 
 Seeds the current script call's `rand` sequence. Reusing the same integer seed
 inside a call gives the same sequence without leaking seeded state into later
@@ -233,11 +233,11 @@ srand(1234)
 
 ## Numeric Conversion
 
-### `to_int(value)`
+### `to_int(value) -> int`
 
 Converts `int`, integral `float`, or base-10 numeric `string` values into `int`.
 
-### `to_float(value)`
+### `to_float(value) -> float`
 
 Converts `int`, `float`, or numeric `string` values into `float`.
 
@@ -479,7 +479,7 @@ end
 
 ## Module Loading
 
-### `require(module_name, as: alias?)`
+### `require(module_name, as: nil) -> object`
 
 Loads a module from configured module search paths and returns an object containing the module's exported functions and enums. Module functions are exported by default; top-level enums are exported as well. Executable top-level statements run as the module initializer before exports are returned, so module-local values can be prepared for exported functions. `private def ...` keeps helper functions module-local. Exported names are injected into globals only when the name is still free (existing globals keep precedence), and `as:` can be used to bind the module object explicitly:
 
