@@ -170,7 +170,7 @@ func newLSPCommand() *cli.Command {
 		Usage:        "start the language server over stdio",
 		StopOnNthArg: &stopAfterArgument,
 		Action: func(ctx context.Context, command *cli.Command) error {
-			if len(commandPositionalArgs(command)) > 0 {
+			if command.NArg() > 0 {
 				return errors.New("vibes lsp: does not accept positional arguments")
 			}
 			return runLSPContext(ctx, command.Reader, command.Writer)
@@ -186,10 +186,14 @@ func runLSPContext(ctx context.Context, reader io.Reader, writer io.Writer) erro
 		defer stopClosingReader()
 	}
 
+	engine, err := vibes.NewEngine(vibes.Config{})
+	if err != nil {
+		return fmt.Errorf("create lsp engine: %w", err)
+	}
 	server := &lspServer{
 		reader:      bufio.NewReader(reader),
 		writer:      bufio.NewWriter(writer),
-		engine:      vibes.MustNewEngine(vibes.Config{}),
+		engine:      engine,
 		docs:        make(map[string]string),
 		lines:       make(map[string][]string),
 		compiled:    make(map[string]*vibes.Script),
@@ -198,7 +202,7 @@ func runLSPContext(ctx context.Context, reader io.Reader, writer io.Writer) erro
 		published:   make(map[string]publishedDiagnostics),
 		symbols:     make(map[string][]lspDocumentSymbol),
 	}
-	err := server.serve(ctx)
+	err = server.serve(ctx)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}

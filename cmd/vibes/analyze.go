@@ -11,35 +11,40 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-func analyzeCommand(args []string) error {
-	return runStandaloneCommand(context.Background(), newAnalyzeCommand(), args)
-}
-
 func newAnalyzeCommand() *cli.Command {
+	var arguments []string
 	stopAfterScript := 1
 	return configureCLICommand(&cli.Command{
 		Name:         "analyze",
 		Usage:        "analyze a script for lint issues",
 		ArgsUsage:    "<script>",
 		StopOnNthArg: &stopAfterScript,
-		Action:       analyzeAction,
+		Arguments:    stringArguments("script", &arguments),
+		Action: func(ctx context.Context, command *cli.Command) error {
+			return analyzeAction(ctx, command, arguments)
+		},
 	})
 }
 
-func analyzeAction(_ context.Context, command *cli.Command) error {
-	remaining := commandPositionalArgs(command)
-	if len(remaining) == 0 {
+func analyzeAction(_ context.Context, command *cli.Command, arguments []string) error {
+	if len(arguments) == 0 {
 		return errors.New("vibes analyze: script path required")
 	}
-	if len(remaining) > 1 {
+	if len(arguments) > 1 {
 		return errors.New("vibes analyze: expected a single script path")
 	}
 
-	scriptPath, err := filepath.Abs(remaining[0])
+	scriptPath, err := filepath.Abs(arguments[0])
 	if err != nil {
 		return fmt.Errorf("resolve script path: %w", err)
 	}
-	engine := vibes.MustNewEngine(vibes.Config{})
+	engine, err := vibes.NewEngine(vibes.Config{
+		OutputWriter: command.Writer,
+		ErrorWriter:  command.ErrWriter,
+	})
+	if err != nil {
+		return fmt.Errorf("create engine: %w", err)
+	}
 	input, err := readScriptSource(engine, scriptPath)
 	if err != nil {
 		return fmt.Errorf("read script: %w", err)
@@ -52,7 +57,9 @@ func analyzeAction(_ context.Context, command *cli.Command) error {
 
 	warnings := analyze.Script(script)
 	if len(warnings) == 0 {
-		fmt.Println("No issues found")
+		if _, err := fmt.Fprintln(command.Writer, "No issues found"); err != nil {
+			return fmt.Errorf("write analysis output: %w", err)
+		}
 		return nil
 	}
 
@@ -65,7 +72,9 @@ func analyzeAction(_ context.Context, command *cli.Command) error {
 		if column <= 0 {
 			column = 1
 		}
-		fmt.Printf("%s:%d:%d: %s (%s)\n", scriptPath, line, column, warning.Message, warning.Function)
+		if _, err := fmt.Fprintf(command.Writer, "%s:%d:%d: %s (%s)\n", scriptPath, line, column, warning.Message, warning.Function); err != nil {
+			return fmt.Errorf("write analysis output: %w", err)
+		}
 	}
 
 	return fmt.Errorf("analysis found %d issue(s)", len(warnings))

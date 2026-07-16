@@ -13,11 +13,14 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-func fmtCommand(args []string) error {
-	return runStandaloneCommand(context.Background(), newFmtCommand(), args)
+type fmtCommandConfig struct {
+	write     bool
+	check     bool
+	arguments []string
 }
 
 func newFmtCommand() *cli.Command {
+	config := new(fmtCommandConfig)
 	stopAfterPath := 1
 	return configureCLICommand(&cli.Command{
 		Name:         "fmt",
@@ -26,27 +29,29 @@ func newFmtCommand() *cli.Command {
 		StopOnNthArg: &stopAfterPath,
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
-				Name:  "w",
-				Usage: "write results to source files instead of stdout",
+				Name:        "w",
+				Usage:       "write results to source files instead of stdout",
+				Destination: &config.write,
 			},
 			&cli.BoolFlag{
-				Name:  "check",
-				Usage: "fail if any source file needs formatting",
+				Name:        "check",
+				Usage:       "fail if any source file needs formatting",
+				Destination: &config.check,
 			},
 		},
-		Action: fmtAction,
+		Arguments: stringArguments("path", &config.arguments),
+		Action: func(ctx context.Context, command *cli.Command) error {
+			return fmtAction(ctx, command, config)
+		},
 	})
 }
 
-func fmtAction(_ context.Context, command *cli.Command) error {
-	targets := commandPositionalArgs(command)
-	if len(targets) == 0 {
+func fmtAction(_ context.Context, command *cli.Command, config *fmtCommandConfig) error {
+	if len(config.arguments) == 0 {
 		return errors.New("vibes fmt: path required")
 	}
-	write := command.Bool("w")
-	check := command.Bool("check")
 
-	files, err := collectVibeFiles(targets)
+	files, err := collectVibeFiles(config.arguments)
 	if err != nil {
 		return fmt.Errorf("collect files: %w", err)
 	}
@@ -68,7 +73,7 @@ func fmtAction(_ context.Context, command *cli.Command) error {
 		}
 
 		switch {
-		case write && changed:
+		case config.write && changed:
 			info, err := os.Stat(path)
 			if err != nil {
 				return fmt.Errorf("stat %s: %w", path, err)
@@ -76,12 +81,14 @@ func fmtAction(_ context.Context, command *cli.Command) error {
 			if err := os.WriteFile(path, []byte(formatted), info.Mode().Perm()); err != nil {
 				return fmt.Errorf("write %s: %w", path, err)
 			}
-		case !write && !check:
-			fmt.Print(formatted)
+		case !config.write && !config.check:
+			if _, err := fmt.Fprint(command.Writer, formatted); err != nil {
+				return fmt.Errorf("write formatted output: %w", err)
+			}
 		}
 	}
 
-	if check && changedCount > 0 {
+	if config.check && changedCount > 0 {
 		return fmt.Errorf("vibes fmt: %d file(s) need formatting", changedCount)
 	}
 
@@ -91,19 +98,20 @@ func fmtAction(_ context.Context, command *cli.Command) error {
 func collectVibeFiles(targets []string) ([]string, error) {
 	seen := make(map[string]struct{})
 	var files []string
-	addFile := func(path string) {
+	addFile := func(path string) error {
 		if filepath.Ext(path) != ".vibe" {
-			return
+			return nil
 		}
 		abs, err := filepath.Abs(path)
 		if err != nil {
-			return
+			return fmt.Errorf("resolve %s: %w", path, err)
 		}
 		if _, ok := seen[abs]; ok {
-			return
+			return nil
 		}
 		seen[abs] = struct{}{}
 		files = append(files, abs)
+		return nil
 	}
 
 	for _, target := range targets {
@@ -112,7 +120,9 @@ func collectVibeFiles(targets []string) ([]string, error) {
 			return nil, fmt.Errorf("stat %s: %w", target, err)
 		}
 		if !info.IsDir() {
-			addFile(target)
+			if err := addFile(target); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		err = filepath.WalkDir(target, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -122,8 +132,7 @@ func collectVibeFiles(targets []string) ([]string, error) {
 			if entry.IsDir() {
 				return nil
 			}
-			addFile(path)
-			return nil
+			return addFile(path)
 		})
 		if err != nil {
 			return nil, fmt.Errorf("walk %s: %w", target, err)

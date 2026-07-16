@@ -10,16 +10,18 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-// checkCommand implements `vibes check <script>`: it compiles the script and
+type checkCommandConfig struct {
+	modulePaths []string
+	arguments   []string
+}
+
+// newCheckCommand builds `vibes check <script>`: it compiles the script and
 // reports every statically checkable contract issue across the whole script —
 // all functions, class methods, and top-level code — using the same semantic
 // contract as `vibes run -check` (ADR-004: error on known contradictions,
 // permit unknowns).
-func checkCommand(args []string) error {
-	return runStandaloneCommand(context.Background(), newCheckCommand(), args)
-}
-
 func newCheckCommand() *cli.Command {
+	config := new(checkCommandConfig)
 	stopAfterScript := 1
 	return configureCLICommand(&cli.Command{
 		Name:                      "check",
@@ -29,33 +31,40 @@ func newCheckCommand() *cli.Command {
 		DisableSliceFlagSeparator: true,
 		Flags: []cli.Flag{
 			&cli.StringSliceFlag{
-				Name:      "module-path",
-				Usage:     "add a module search directory (repeatable)",
-				TakesFile: true,
+				Name:        "module-path",
+				Usage:       "add a module search directory (repeatable)",
+				TakesFile:   true,
+				Destination: &config.modulePaths,
 			},
 		},
-		Action: checkAction,
+		Arguments: stringArguments("script", &config.arguments),
+		Action: func(ctx context.Context, command *cli.Command) error {
+			return checkAction(ctx, command, config)
+		},
 	})
 }
 
-func checkAction(_ context.Context, command *cli.Command) error {
-	remaining := commandPositionalArgs(command)
-	if len(remaining) == 0 {
+func checkAction(_ context.Context, command *cli.Command, config *checkCommandConfig) error {
+	if len(config.arguments) == 0 {
 		return errors.New("vibes check: script path required")
 	}
-	if len(remaining) > 1 {
+	if len(config.arguments) > 1 {
 		return errors.New("vibes check: expected a single script path")
 	}
 
-	scriptPath, err := filepath.Abs(remaining[0])
+	scriptPath, err := filepath.Abs(config.arguments[0])
 	if err != nil {
 		return fmt.Errorf("resolve script path: %w", err)
 	}
-	moduleDirs, err := computeModulePaths(filepath.Dir(scriptPath), command.StringSlice("module-path"))
+	moduleDirs, err := computeModulePaths(filepath.Dir(scriptPath), config.modulePaths)
 	if err != nil {
 		return fmt.Errorf("compute module paths: %w", err)
 	}
-	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs})
+	engine, err := vibes.NewEngine(vibes.Config{
+		ModulePaths:  moduleDirs,
+		OutputWriter: command.Writer,
+		ErrorWriter:  command.ErrWriter,
+	})
 	if err != nil {
 		return fmt.Errorf("create engine: %w", err)
 	}
@@ -70,7 +79,9 @@ func checkAction(_ context.Context, command *cli.Command) error {
 
 	warnings := script.CheckWarningsWithOptions(vibes.CallOptions{})
 	if len(warnings) == 0 {
-		fmt.Println("No issues found")
+		if _, err := fmt.Fprintln(command.Writer, "No issues found"); err != nil {
+			return fmt.Errorf("write check output: %w", err)
+		}
 		return nil
 	}
 	for _, warning := range warnings {
@@ -87,10 +98,14 @@ func checkAction(_ context.Context, command *cli.Command) error {
 			source = scriptPath
 		}
 		if warning.Function == "" {
-			fmt.Printf("%s:%d:%d: %s\n", source, line, column, warning.Message)
+			if _, err := fmt.Fprintf(command.Writer, "%s:%d:%d: %s\n", source, line, column, warning.Message); err != nil {
+				return fmt.Errorf("write check output: %w", err)
+			}
 			continue
 		}
-		fmt.Printf("%s:%d:%d: %s (%s)\n", source, line, column, warning.Message, warning.Function)
+		if _, err := fmt.Fprintf(command.Writer, "%s:%d:%d: %s (%s)\n", source, line, column, warning.Message, warning.Function); err != nil {
+			return fmt.Errorf("write check output: %w", err)
+		}
 	}
 	return fmt.Errorf("check failed with %d issue(s)", len(warnings))
 }

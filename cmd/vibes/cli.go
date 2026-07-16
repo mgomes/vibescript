@@ -12,26 +12,14 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-var (
-	cliReader    = os.Stdin
-	cliWriter    = os.Stdout
-	cliErrWriter = os.Stderr
-)
-
-const rawCommandArgsMetadataKey = "vibes.raw-command-args"
-
 type cliFlagKind struct {
 	boolean    bool
 	takesValue bool
 	typeName   string
 }
 
-func runCLI(args []string) error {
-	return runCLIContext(context.Background(), args)
-}
-
 func runCLIContext(ctx context.Context, args []string) error {
-	return runCLIContextWithIO(ctx, args, cliReader, cliWriter, cliErrWriter)
+	return runCLIContextWithIO(ctx, args, os.Stdin, os.Stdout, os.Stderr)
 }
 
 func runCLIContextWithIO(ctx context.Context, args []string, reader io.Reader, writer, errWriter io.Writer) error {
@@ -58,7 +46,6 @@ func runCLIContextWithIO(ctx context.Context, args []string, reader io.Reader, w
 	command.Writer = writer
 	command.ErrWriter = errWriter
 	selectedCommand, selectedArgs := commandAndArgs(command, args)
-	rememberCommandArgs(selectedCommand, selectedArgs)
 	if selectedCommand != command {
 		normalizedArgs, err := normalizeCommandArgs(selectedCommand, selectedArgs)
 		if err != nil {
@@ -105,6 +92,7 @@ func newCLIWithRootError(rootError error) *cli.Command {
 }
 
 func newHelpCommand() *cli.Command {
+	var topics []string
 	stopAfterTopic := 1
 	return configureCLICommand(&cli.Command{
 		Name:         "help",
@@ -112,13 +100,13 @@ func newHelpCommand() *cli.Command {
 		Usage:        "Shows a list of commands or help for one command",
 		ArgsUsage:    "[command]",
 		StopOnNthArg: &stopAfterTopic,
+		Arguments:    stringArguments("command", &topics),
 		Action: func(ctx context.Context, command *cli.Command) error {
-			args := commandPositionalArgs(command)
-			switch len(args) {
+			switch len(topics) {
 			case 0:
 				return cli.ShowRootCommandHelp(command.Root())
 			case 1:
-				return cli.ShowCommandHelp(ctx, command.Root(), args[0])
+				return cli.ShowCommandHelp(ctx, command.Root(), topics[0])
 			default:
 				return errors.New("vibes help: expected at most one command")
 			}
@@ -137,17 +125,14 @@ func configureCLICommand(command *cli.Command) *cli.Command {
 	return command
 }
 
-func runStandaloneCommand(ctx context.Context, command *cli.Command, args []string) error {
-	rememberCommandArgs(command, args)
-	normalizedArgs, err := normalizeCommandArgs(command, args)
-	if err != nil {
-		return err
+func stringArguments(name string, destination *[]string) []cli.Argument {
+	return []cli.Argument{
+		&cli.StringArgs{
+			Name:        name,
+			Max:         -1,
+			Destination: destination,
+		},
 	}
-	command.Reader = cliReader
-	command.Writer = cliWriter
-	command.ErrWriter = cliErrWriter
-	argv := append([]string{command.Name}, normalizedArgs...)
-	return command.Run(ctx, argv)
 }
 
 func commandAndArgs(root *cli.Command, args []string) (*cli.Command, []string) {
@@ -187,8 +172,8 @@ func commandFlagKinds(command *cli.Command) map[string]cliFlagKind {
 func normalizeCommandArgs(command *cli.Command, args []string) ([]string, error) {
 	// The standard flag package stops parsing at the first positional argument
 	// and preserves every later token verbatim. urfave/cli trims and classifies
-	// several tokens before applying StopOnNthArg, so feed it a parser-safe copy
-	// while commandPositionalArgs exposes the untouched arguments to actions.
+	// several tokens before applying StopOnNthArg. A synthetic flag terminator
+	// lets urfave populate typed argument destinations from the untouched tail.
 	kinds := commandFlagKinds(command)
 	normalized := make([]string, 0, len(args)+1)
 	for i := 0; i < len(args); i++ {
@@ -197,11 +182,8 @@ func normalizeCommandArgs(command *cli.Command, args []string) ([]string, error)
 		case argument == "--":
 			return append(normalized, args[i:]...), nil
 		case argument == "-" || argument == "" || !strings.HasPrefix(argument, "-"):
-			if strings.TrimSpace(argument) == "" || strings.HasPrefix(strings.TrimSpace(argument), "-") {
-				argument = "\x00" + argument
-			}
-			normalized = append(normalized, argument)
-			return append(normalized, normalizeOpaqueCommandArgs(args[i+1:])...), nil
+			normalized = append(normalized, "--")
+			return append(normalized, args[i:]...), nil
 		}
 
 		nameValue := strings.TrimPrefix(argument, "-")
@@ -288,53 +270,6 @@ func unsupportedRootHelp(argument string) bool {
 		}
 	}
 	return false
-}
-
-func normalizeOpaqueCommandArgs(args []string) []string {
-	normalized := append([]string(nil), args...)
-	for i, argument := range normalized {
-		if strings.TrimSpace(argument) == "" {
-			normalized[i] = "\x00" + argument
-		}
-	}
-	return normalized
-}
-
-func rememberCommandArgs(command *cli.Command, args []string) {
-	if command.Metadata == nil {
-		command.Metadata = make(map[string]any)
-	}
-	command.Metadata[rawCommandArgsMetadataKey] = append([]string(nil), args...)
-}
-
-func commandPositionalArgs(command *cli.Command) []string {
-	rawArgs, ok := command.Metadata[rawCommandArgsMetadataKey].([]string)
-	if !ok {
-		return command.Args().Slice()
-	}
-
-	kinds := commandFlagKinds(command)
-	for i := 0; i < len(rawArgs); i++ {
-		argument := rawArgs[i]
-		if argument == "--" {
-			return append([]string(nil), rawArgs[i+1:]...)
-		}
-		if argument == "-" || argument == "" || !strings.HasPrefix(argument, "-") {
-			return append([]string(nil), rawArgs[i:]...)
-		}
-
-		nameValue := strings.TrimPrefix(argument, "-")
-		nameValue = strings.TrimPrefix(nameValue, "-")
-		name, _, hasValue := strings.Cut(nameValue, "=")
-		kind, ok := kinds[name]
-		if !ok {
-			return command.Args().Slice()
-		}
-		if kind.takesValue && !hasValue {
-			i++
-		}
-	}
-	return nil
 }
 
 func showRootUsageOnError(command *cli.Command) error {

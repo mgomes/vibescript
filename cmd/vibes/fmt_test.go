@@ -9,7 +9,7 @@ import (
 
 func TestFmtCommandRequiresPath(t *testing.T) {
 	t.Parallel()
-	err := fmtCommand(nil)
+	_, err := dispatchCommand(t, "fmt", nil)
 	if err == nil {
 		t.Fatalf("expected path required error")
 	}
@@ -21,7 +21,7 @@ func TestFmtCommandRequiresPath(t *testing.T) {
 func TestFmtCommandCheckDetectsUnformattedFiles(t *testing.T) {
 	t.Parallel()
 	path := writeVibeScript(t, "def run()  \n  1\t \nend")
-	err := fmtCommand([]string{"-check", path})
+	_, err := dispatchCommand(t, "fmt", []string{"-check", path})
 	if err == nil {
 		t.Fatalf("expected formatting check failure")
 	}
@@ -33,7 +33,7 @@ func TestFmtCommandCheckDetectsUnformattedFiles(t *testing.T) {
 func TestFmtCommandWriteFormatsFileInPlace(t *testing.T) {
 	t.Parallel()
 	path := writeVibeScript(t, "def run()  \n  1\t \nend")
-	if err := fmtCommand([]string{"-w", path}); err != nil {
+	if _, err := dispatchCommand(t, "fmt", []string{"-w", path}); err != nil {
 		t.Fatalf("fmt -w failed: %v", err)
 	}
 
@@ -49,9 +49,7 @@ func TestFmtCommandWriteFormatsFileInPlace(t *testing.T) {
 func TestFmtCommandPrintsFormattedOutput(t *testing.T) {
 	t.Parallel()
 	path := writeVibeScript(t, "def run()  \n  1\t \nend")
-	out, err := captureStdout(t, func() error {
-		return fmtCommand([]string{path})
-	})
+	out, err := dispatchCommand(t, "fmt", []string{path})
 	if err != nil {
 		t.Fatalf("fmt command failed: %v", err)
 	}
@@ -86,10 +84,10 @@ func TestFmtCommandFormatsDirectories(t *testing.T) {
 		t.Fatalf("write second file: %v", err)
 	}
 
-	if err := fmtCommand([]string{"-w", root}); err != nil {
+	if _, err := dispatchCommand(t, "fmt", []string{"-w", root}); err != nil {
 		t.Fatalf("fmt directory failed: %v", err)
 	}
-	if err := fmtCommand([]string{"-check", root}); err != nil {
+	if _, err := dispatchCommand(t, "fmt", []string{"-check", root}); err != nil {
 		t.Fatalf("expected no formatting diffs after write, got %v", err)
 	}
 }

@@ -45,41 +45,44 @@ type quotaFlagValues struct {
 	recursionSet   bool
 }
 
-func newQuotaFlags() []cli.Flag {
+func newQuotaFlagValues() quotaFlagValues {
+	return quotaFlagValues{profile: defaultQuotaProfile}
+}
+
+func newQuotaFlags(values *quotaFlagValues) []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
-			Name:  "profile",
-			Value: defaultQuotaProfile,
-			Usage: fmt.Sprintf("execution quota profile: %s", strings.Join(vibes.QuotaProfileNames(), ", ")),
+			Name:        "profile",
+			Value:       values.profile,
+			Destination: &values.profile,
+			Usage:       fmt.Sprintf("execution quota profile: %s", strings.Join(vibes.QuotaProfileNames(), ", ")),
 		},
 		&cli.IntFlag{
 			Name:        "step-quota",
 			Usage:       "override the profile's step quota (-1 = unlimited)",
 			HideDefault: true,
+			Destination: &values.stepQuota,
 		},
 		&cli.IntFlag{
 			Name:        "memory-quota",
 			Usage:       "override the profile's memory quota in bytes (-1 = unlimited)",
 			HideDefault: true,
+			Destination: &values.memoryQuota,
 		},
 		&cli.IntFlag{
 			Name:        "recursion-limit",
 			Usage:       "override the profile's recursion limit (-1 = unlimited, which can crash on infinite recursion)",
 			HideDefault: true,
+			Destination: &values.recursionLimit,
 		},
 	}
 }
 
-func resolveCommandQuota(command *cli.Command) (quotaConfig, error) {
-	return quotaFlagValues{
-		profile:        command.String("profile"),
-		stepQuota:      command.Int("step-quota"),
-		stepQuotaSet:   command.IsSet("step-quota"),
-		memoryQuota:    command.Int("memory-quota"),
-		memoryQuotaSet: command.IsSet("memory-quota"),
-		recursionLimit: command.Int("recursion-limit"),
-		recursionSet:   command.IsSet("recursion-limit"),
-	}.resolve()
+func resolveCommandQuota(command *cli.Command, values *quotaFlagValues) (quotaConfig, error) {
+	values.stepQuotaSet = command.IsSet("step-quota")
+	values.memoryQuotaSet = command.IsSet("memory-quota")
+	values.recursionSet = command.IsSet("recursion-limit")
+	return values.resolve()
 }
 
 // resolve selects the named profile and layers any explicitly-set override

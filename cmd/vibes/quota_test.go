@@ -15,12 +15,13 @@ import (
 func resolveQuotaFlags(t *testing.T, args []string) (quotaConfig, error) {
 	t.Helper()
 	var resolved quotaConfig
+	values := newQuotaFlagValues()
 	command := configureCLICommand(&cli.Command{
 		Name:  "quota-test",
-		Flags: newQuotaFlags(),
+		Flags: newQuotaFlags(&values),
 		Action: func(_ context.Context, command *cli.Command) error {
 			var err error
-			resolved, err = resolveCommandQuota(command)
+			resolved, err = resolveCommandQuota(command, &values)
 			return err
 		},
 	})
@@ -108,9 +109,7 @@ puts count(2000000)
 `
 	path := writeVibeScript(t, script)
 
-	out, err := captureStdout(t, func() error {
-		return runCommand([]string{path})
-	})
+	out, err := dispatchCommand(t, "run", []string{path})
 	if err != nil {
 		t.Fatalf("default (xhigh) run err = %v, want nil", err)
 	}
@@ -118,9 +117,7 @@ puts count(2000000)
 		t.Fatalf("default run stdout = %q, want 2000000", got)
 	}
 
-	_, err = captureStdout(t, func() error {
-		return runCommand([]string{"-profile", "low", path})
-	})
+	_, err = dispatchCommand(t, "run", []string{"-profile", "low", path})
 	if err == nil {
 		t.Fatal("low-profile run err = nil, want step quota exceeded")
 	}

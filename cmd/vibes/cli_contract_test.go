@@ -192,6 +192,14 @@ func TestCLIContractEverySubcommandHasHelp(t *testing.T) {
 			if want := "NAME:\n   vibes " + name; !strings.Contains(got.Stdout, want) {
 				t.Errorf("%s --help stdout = %q, want substring %q", name, got.Stdout, want)
 			}
+			if name == "lsp" || name == "repl" {
+				if want := "USAGE:\n   vibes " + name + " [options]\n"; !strings.Contains(got.Stdout, want) {
+					t.Errorf("%s --help stdout = %q, want substring %q", name, got.Stdout, want)
+				}
+				if strings.Contains(got.Stdout, "[argument") {
+					t.Errorf("%s --help stdout advertises rejected positional arguments: %q", name, got.Stdout)
+				}
+			}
 		})
 	}
 }

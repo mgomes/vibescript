@@ -237,8 +237,8 @@ func newREPLModelContext(ctx context.Context, quota quotaConfig) (replModel, err
 	stderr := new(bytes.Buffer)
 	// The REPL evaluates the developer's own expressions interactively, so it
 	// defaults to the same generous xhigh profile as `vibes run` rather than the
-	// embedding sandbox floor. The quota is configurable via flags: because the
-	// An embedding caller can cancel an in-flight expression through the command
+	// embedding sandbox floor. The quota is configurable via flags. An embedding
+	// caller can cancel an in-flight expression through the command
 	// context. Quotas remain a defense against runaway work in an interactive
 	// session; users can select a finite budget with `vibes repl -profile low`
 	// or `-step-quota`.
@@ -756,26 +756,29 @@ func renderHelpPanel(width int) string {
 	return borderStyle.Render(strings.Join(lines, "\n"))
 }
 
-func runREPL(args []string) error {
-	return runStandaloneCommand(context.Background(), newREPLCommand(), args)
+type replCommandConfig struct {
+	quota quotaFlagValues
 }
 
 func newREPLCommand() *cli.Command {
+	config := &replCommandConfig{quota: newQuotaFlagValues()}
 	stopAfterArgument := 1
 	return configureCLICommand(&cli.Command{
 		Name:         "repl",
 		Usage:        "start the interactive Vibescript REPL",
 		StopOnNthArg: &stopAfterArgument,
-		Flags:        newQuotaFlags(),
-		Action:       replAction,
+		Flags:        newQuotaFlags(&config.quota),
+		Action: func(ctx context.Context, command *cli.Command) error {
+			return replAction(ctx, command, config)
+		},
 	})
 }
 
-func replAction(ctx context.Context, command *cli.Command) error {
-	if len(commandPositionalArgs(command)) > 0 {
+func replAction(ctx context.Context, command *cli.Command, config *replCommandConfig) error {
+	if command.NArg() > 0 {
 		return errors.New("vibes repl: does not accept positional arguments")
 	}
-	quota, err := resolveCommandQuota(command)
+	quota, err := resolveCommandQuota(command, &config.quota)
 	if err != nil {
 		return fmt.Errorf("vibes repl: %w", err)
 	}
@@ -784,7 +787,7 @@ func replAction(ctx context.Context, command *cli.Command) error {
 	if err != nil {
 		return fmt.Errorf("init repl: %w", err)
 	}
-	return runREPLProgram(ctx, model)
+	return runREPLProgram(ctx, model, tea.WithInput(command.Reader), tea.WithOutput(command.Writer))
 }
 
 func runREPLProgram(ctx context.Context, model replModel, options ...tea.ProgramOption) error {

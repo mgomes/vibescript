@@ -128,7 +128,7 @@ func watchScriptPolling(ctx context.Context, inv runInvocation, interval time.Du
 }
 
 func runWatched(ctx context.Context, inv runInvocation, out, status io.Writer) {
-	if err := executeScript(ctx, inv, out); err != nil {
+	if err := executeScript(ctx, inv, out, status); err != nil {
 		fmt.Fprintln(status, err)
 	}
 }

@@ -352,7 +352,7 @@ func TestEvaluateErrorsUseREPLSource(t *testing.T) {
 
 func TestRunREPLRejectsUnknownProfile(t *testing.T) {
 	t.Parallel()
-	err := runREPL([]string{"-profile", "bogus"})
+	_, err := dispatchCommand(t, "repl", []string{"-profile", "bogus"})
 	if err == nil {
 		t.Fatal("runREPL with unknown profile err = nil, want error")
 	}

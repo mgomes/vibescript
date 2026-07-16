@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -9,6 +10,84 @@ import (
 	"strings"
 	"testing"
 )
+
+type closedWriter struct{}
+
+func (closedWriter) Write([]byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+func TestRunCLIUsesInjectedStreams(t *testing.T) {
+	t.Parallel()
+	path := writeVibeScript(t, `warn "careful"
+"done"
+`)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runCLIContextWithIO(t.Context(), []string{"vibes", "run", path}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run with injected streams: %v", err)
+	}
+	if got := stdout.String(); got != "done\n" {
+		t.Fatalf("stdout = %q, want %q", got, "done\n")
+	}
+	if got := stderr.String(); got != "careful\n" {
+		t.Fatalf("stderr = %q, want %q", got, "careful\n")
+	}
+}
+
+func TestRunCLIReportsOutputErrors(t *testing.T) {
+	t.Parallel()
+	path := writeVibeScript(t, `"done"`)
+	err := runCLIContextWithIO(t.Context(), []string{"vibes", "run", path}, strings.NewReader(""), closedWriter{}, io.Discard)
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("run with closed output error = %v, want %v", err, io.ErrClosedPipe)
+	}
+}
+
+func TestCLICommandsReportOutputErrors(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args func(*testing.T) []string
+	}{
+		{
+			name: "check",
+			args: func(t *testing.T) []string {
+				return []string{"check", writeVibeScript(t, `1`)}
+			},
+		},
+		{
+			name: "analyze",
+			args: func(t *testing.T) []string {
+				return []string{"analyze", writeVibeScript(t, `1`)}
+			},
+		},
+		{
+			name: "fmt",
+			args: func(t *testing.T) []string {
+				return []string{"fmt", writeVibeScript(t, "1")}
+			},
+		},
+		{
+			name: "test",
+			args: func(t *testing.T) []string {
+				path := writeVibeScriptNamed(t, "output_test.vibe", "def test_output()\n  assert true\nend\n")
+				return []string{"test", path}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			args := append([]string{"vibes"}, test.args(t)...)
+			err := runCLIContextWithIO(t.Context(), args, strings.NewReader(""), closedWriter{}, io.Discard)
+			if !errors.Is(err, io.ErrClosedPipe) {
+				t.Fatalf("command with closed output error = %v, want %v", err, io.ErrClosedPipe)
+			}
+		})
+	}
+}
 
 func TestRunCLIBuildsFreshCommandGraph(t *testing.T) {
 	path := writeVibeScript(t, `def run
@@ -222,9 +301,7 @@ end
 			} else {
 				args = tc.args("")
 			}
-			out, err := captureStdout(t, func() error {
-				return runCommand(args)
-			})
+			out, err := dispatchCommand(t, "run", args)
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("runCommand(%v) err = nil, want %q", args, tc.wantErr)
@@ -394,9 +471,7 @@ end`,
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := captureStdout(t, func() error {
-				return runCommand(tc.args)
-			})
+			out, err := dispatchCommand(t, "run", tc.args)
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("runCommand(%v) err = nil, want %q", tc.args, tc.wantErr)
@@ -418,9 +493,7 @@ end`,
 
 func TestRunCommandInlineEvalCompileErrorUsesSnippetSource(t *testing.T) {
 	t.Parallel()
-	_, err := captureStdout(t, func() error {
-		return runCommand([]string{"-e", "x = 1\ny = ("})
-	})
+	_, err := dispatchCommand(t, "run", []string{"-e", "x = 1\ny = ("})
 	if err == nil {
 		t.Fatal("runCommand(-e invalid snippet) err = nil, want compile error")
 	}
@@ -439,9 +512,7 @@ func TestRunCommandInlineEvalCompileErrorUsesSnippetSource(t *testing.T) {
 
 func TestRunCommandInlineEvalRuntimeErrorUsesSnippetFrame(t *testing.T) {
 	t.Parallel()
-	_, err := captureStdout(t, func() error {
-		return runCommand([]string{"-e", "x = 1\n1 / 0"})
-	})
+	_, err := dispatchCommand(t, "run", []string{"-e", "x = 1\n1 / 0"})
 	if err == nil {
 		t.Fatal("runCommand(-e runtime error) err = nil, want runtime error")
 	}
@@ -464,9 +535,7 @@ func TestRunCommandInlineEvalPreservesModuleRuntimeFrame(t *testing.T) {
 		t.Fatalf("write helper module: %v", err)
 	}
 
-	_, err := captureStdout(t, func() error {
-		return runCommand([]string{"-module-path", dir, "-e", "helper = require(\"helper\")\nhelper.boom()"})
-	})
+	_, err := dispatchCommand(t, "run", []string{"-module-path", dir, "-e", "helper = require(\"helper\")\nhelper.boom()"})
 	if err == nil {
 		t.Fatal("runCommand(-e module runtime error) err = nil, want runtime error")
 	}
@@ -648,9 +717,7 @@ end`,
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			scriptPath := writeVibeScript(t, tc.script)
-			out, err := captureStdout(t, func() error {
-				return analyzeCommand([]string{scriptPath})
-			})
+			out, err := dispatchCommand(t, "analyze", []string{scriptPath})
 			if tc.expectNoErr {
 				if err != nil {
 					t.Fatalf("analyzeCommand(%q) err = %v, want nil", scriptPath, err)
