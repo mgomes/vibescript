@@ -281,52 +281,42 @@ func MustNewEngine(cfg Config) *Engine {
 
 // RegisterBuiltin registers a callable global available to scripts.
 func (e *Engine) RegisterBuiltin(name string, fn BuiltinFunc) {
-	e.registerBuiltin(name, fn, true)
+	e.registerHostBuiltin(name, NewBuiltin(name, fn))
 }
 
-func (e *Engine) registerDefaultBuiltin(name string, fn BuiltinFunc) {
-	e.registerBuiltin(name, fn, false)
+type builtinDefinition struct {
+	name       string
+	fn         BuiltinFunc
+	autoInvoke bool
+	checkSpec  *staticCallSpec
 }
 
-func (e *Engine) registerBuiltin(name string, fn BuiltinFunc, host bool) {
+func (e *Engine) registerDefaultBuiltin(def builtinDefinition) {
 	e.builtinsMu.Lock()
 	defer e.builtinsMu.Unlock()
 
-	e.builtins[name] = NewBuiltin(name, fn)
-	if host {
-		if e.hostBuiltins == nil {
-			e.hostBuiltins = make(map[string]struct{})
-		}
-		e.hostBuiltins[name] = struct{}{}
-	} else {
-		delete(e.hostBuiltins, name)
+	val := newBuiltin(def.name, def.fn, def.autoInvoke)
+	valueBuiltin(val).checkSpec = def.checkSpec
+	e.builtins[def.name] = val
+	delete(e.hostBuiltins, def.name)
+	e.builtinProto = nil
+}
+
+func (e *Engine) registerHostBuiltin(name string, builtin Value) {
+	e.builtinsMu.Lock()
+	defer e.builtinsMu.Unlock()
+
+	e.builtins[name] = builtin
+	if e.hostBuiltins == nil {
+		e.hostBuiltins = make(map[string]struct{})
 	}
+	e.hostBuiltins[name] = struct{}{}
 	e.builtinProto = nil
 }
 
 // RegisterZeroArgBuiltin registers a builtin that can be invoked without arguments or parentheses.
 func (e *Engine) RegisterZeroArgBuiltin(name string, fn BuiltinFunc) {
-	e.registerZeroArgBuiltin(name, fn, true)
-}
-
-func (e *Engine) registerDefaultZeroArgBuiltin(name string, fn BuiltinFunc) {
-	e.registerZeroArgBuiltin(name, fn, false)
-}
-
-func (e *Engine) registerZeroArgBuiltin(name string, fn BuiltinFunc, host bool) {
-	e.builtinsMu.Lock()
-	defer e.builtinsMu.Unlock()
-
-	e.builtins[name] = NewAutoBuiltin(name, fn)
-	if host {
-		if e.hostBuiltins == nil {
-			e.hostBuiltins = make(map[string]struct{})
-		}
-		e.hostBuiltins[name] = struct{}{}
-	} else {
-		delete(e.hostBuiltins, name)
-	}
-	e.builtinProto = nil
+	e.registerHostBuiltin(name, NewAutoBuiltin(name, fn))
 }
 
 func (e *Engine) hasHostBuiltin(name string) bool {
@@ -340,39 +330,59 @@ func (e *Engine) hasHostBuiltin(name string) bool {
 	return ok
 }
 
+func (e *Engine) builtinCallSpec(name string) (staticCallSpec, bool) {
+	if e == nil {
+		return staticCallSpec{}, false
+	}
+	e.builtinsMu.RLock()
+	defer e.builtinsMu.RUnlock()
+
+	root, member, qualified := strings.Cut(name, ".")
+	val, ok := e.builtins[root]
+	if !ok {
+		return staticCallSpec{}, false
+	}
+	if qualified {
+		if val.Kind() != KindObject {
+			return staticCallSpec{}, false
+		}
+		val, ok = val.Hash()[member]
+		if !ok {
+			return staticCallSpec{}, false
+		}
+	}
+	builtin := valueBuiltin(val)
+	if builtin == nil || builtin.checkSpec == nil {
+		return staticCallSpec{}, false
+	}
+	return *builtin.checkSpec, true
+}
+
 func registerCoreBuiltins(engine *Engine) {
-	for _, builtin := range []struct {
-		name       string
-		fn         BuiltinFunc
-		autoInvoke bool
-	}{
-		{name: "assert", fn: builtinAssert},
+	for _, builtin := range []builtinDefinition{
+		{name: "assert", fn: builtinAssert, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: -1}},
 		{name: "format", fn: builtinFormat},
 		{name: "lambda", fn: builtinLambda, autoInvoke: true},
 		{name: "loop", fn: builtinLoop},
 		{name: "proc", fn: builtinProc, autoInvoke: true},
-		{name: "money", fn: builtinMoney},
-		{name: "money_cents", fn: builtinMoneyCents},
+		{name: "money", fn: builtinMoney, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: 1}},
+		{name: "money_cents", fn: builtinMoneyCents, checkSpec: &staticCallSpec{minArgs: 2, maxArgs: 2}},
 		{name: "p", fn: builtinP},
 		{name: "print", fn: builtinPrint},
 		{name: "puts", fn: builtinPuts},
 		{name: "require", fn: builtinRequire},
-		{name: "now", fn: builtinNow, autoInvoke: true},
-		{name: "rand", fn: builtinRand, autoInvoke: true},
-		{name: "sleep", fn: builtinSleep},
+		{name: "now", fn: builtinNow, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0}},
+		{name: "rand", fn: builtinRand, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true}},
+		{name: "sleep", fn: builtinSleep, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true}},
 		{name: "sprintf", fn: builtinSprintf},
-		{name: "srand", fn: builtinSrand},
-		{name: "uuid", fn: builtinUUID, autoInvoke: true},
+		{name: "srand", fn: builtinSrand, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true}},
+		{name: "uuid", fn: builtinUUID, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true}},
 		{name: "warn", fn: builtinWarn},
-		{name: "random_id", fn: builtinRandomID},
+		{name: "random_id", fn: builtinRandomID, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true}},
 		{name: "to_int", fn: builtinToInt},
 		{name: "to_float", fn: builtinToFloat},
 	} {
-		if builtin.autoInvoke {
-			engine.registerDefaultZeroArgBuiltin(builtin.name, builtin.fn)
-			continue
-		}
-		engine.registerDefaultBuiltin(builtin.name, builtin.fn)
+		engine.registerDefaultBuiltin(builtin)
 	}
 }
 
@@ -473,6 +483,7 @@ func cloneBuiltinValue(val Value) Value {
 		}
 		cloned := newBuiltin(builtin.Name, builtin.Fn, builtin.AutoInvoke)
 		clonedBuiltin := valueBuiltin(cloned)
+		clonedBuiltin.checkSpec = builtin.checkSpec
 		clonedBuiltin.OptionsHashTarget = builtin.OptionsHashTarget
 		clonedBuiltin.DirectCallAlias = builtin.DirectCallAlias
 		clonedBuiltin.DirectCallAliasPos = builtin.DirectCallAliasPos
@@ -579,17 +590,17 @@ func (e *Engine) MaxSourceBytes() int {
 
 func registerDataBuiltins(engine *Engine) {
 	engine.builtins["JSON"] = NewObject(map[string]Value{
-		"parse":     NewBuiltin("JSON.parse", builtinJSONParse),
-		"parse_as":  NewBuiltin("JSON.parse_as", builtinJSONParseAs),
-		"stringify": NewBuiltin("JSON.stringify", builtinJSONStringify),
+		"parse":     newCheckedBuiltin("JSON.parse", builtinJSONParse, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true}),
+		"parse_as":  newCheckedBuiltin("JSON.parse_as", builtinJSONParseAs, staticCallSpec{minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true}),
+		"stringify": newCheckedBuiltin("JSON.stringify", builtinJSONStringify, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true}),
 	})
 	engine.builtins["Proc"] = NewObject(map[string]Value{
 		"new": NewAutoBuiltin("Proc.new", builtinProc),
 	})
 	engine.builtins["Regex"] = NewObject(map[string]Value{
-		"match":       NewBuiltin("Regex.match", builtinRegexMatch),
-		"replace":     NewBuiltin("Regex.replace", builtinRegexReplace),
-		"replace_all": NewBuiltin("Regex.replace_all", builtinRegexReplaceAll),
+		"match":       newCheckedBuiltin("Regex.match", builtinRegexMatch, staticCallSpec{minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true}),
+		"replace":     newCheckedBuiltin("Regex.replace", builtinRegexReplace, staticCallSpec{minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true}),
+		"replace_all": newCheckedBuiltin("Regex.replace_all", builtinRegexReplaceAll, staticCallSpec{minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true}),
 	})
 	engine.builtins["Regexp"] = NewObject(map[string]Value{
 		"escape":     NewBuiltin("Regexp.escape", builtinRegexpEscape),
@@ -798,9 +809,9 @@ func registerTimeBuiltins(engine *Engine) {
 			}
 			return NewTime(time.Now().In(loc)), nil
 		}),
-		"parse": NewBuiltin("Time.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		"parse": newCheckedBuiltin("Time.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return timeParseValues(args, kwargs)
-		}),
+		}, staticCallSpec{minArgs: 1, maxArgs: 2, allowedKeywords: keywordSet("in")}),
 	})
 }
 

@@ -4192,7 +4192,7 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if c.hostBuiltinOverrides(callee.Name) {
 			return staticCallable{}, false
 		}
-		if spec, ok := staticBuiltinSpecs[callee.Name]; ok {
+		if spec, ok := c.defaultBuiltinCallSpec(callee.Name); ok {
 			return staticCallable{name: callee.Name, spec: spec}, true
 		}
 	case *MemberExpr:
@@ -4289,7 +4289,7 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		if c.hostBuiltinOverrides(ident.Name) {
 			return staticCallable{}, false
 		}
-		if spec, ok := staticBuiltinSpecs[ident.Name+"."+member.Property]; ok {
+		if spec, ok := c.defaultBuiltinCallSpec(ident.Name + "." + member.Property); ok {
 			// A script that reassigns the namespace member (e.g. JSON.parse =
 			// parse) dispatches through the assigned value at runtime, so the
 			// builtin contract no longer applies.
@@ -4307,7 +4307,7 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		}
 	}
 	if receiverKind, ok := staticBuiltinReceiverKind(member.Object); ok {
-		if spec, ok := staticBuiltinSpecs[receiverKind+"."+member.Property]; ok {
+		if spec, ok := staticMemberSpecs[receiverKind+"."+member.Property]; ok {
 			return staticCallable{name: receiverKind + "." + member.Property, spec: spec}, true
 		}
 	}
@@ -4315,6 +4315,13 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		return staticCallable{name: name, fn: fn, resolution: calleeMemberValue}, true
 	}
 	return staticCallable{}, false
+}
+
+func (c *scriptChecker) defaultBuiltinCallSpec(name string) (staticCallSpec, bool) {
+	if c.script == nil || c.script.engine == nil {
+		return staticCallSpec{}, false
+	}
+	return c.script.engine.builtinCallSpec(name)
 }
 
 func (c *scriptChecker) typeRootObjectFunction(name, property string) (*ScriptFunction, bool) {
@@ -4451,27 +4458,11 @@ func staticBuiltinReceiverKind(expr Expression) (string, bool) {
 	return "", false
 }
 
-var staticBuiltinSpecs = map[string]staticCallSpec{
-	"assert":            {minArgs: 1, maxArgs: -1},
-	"money":             {minArgs: 1, maxArgs: 1},
-	"money_cents":       {minArgs: 2, maxArgs: 2},
-	"now":               {minArgs: 0, maxArgs: 0},
-	"rand":              {minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
-	"srand":             {minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
-	"sleep":             {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
-	"uuid":              {minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true},
-	"random_id":         {minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
-	"JSON.parse":        {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
-	"JSON.parse_as":     {minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true},
-	"JSON.stringify":    {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true},
-	"Regex.match":       {minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true},
-	"Regex.replace":     {minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true},
-	"Regex.replace_all": {minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true},
-	"Time.parse":        {minArgs: 1, maxArgs: 2, allowedKeywords: keywordSet("in")},
-	"array.at":          {minArgs: 1, maxArgs: 1, rejectKeywords: true, autoInvoke: true},
-	"array.fetch":       {minArgs: 1, maxArgs: 2, autoInvoke: true, usesBlock: true},
-	"array.slice":       {minArgs: 1, maxArgs: 2, rejectKeywords: true, autoInvoke: true},
-	"string.slice":      {minArgs: 1, maxArgs: 2, autoInvoke: true},
+var staticMemberSpecs = map[string]staticCallSpec{
+	"array.at":     {minArgs: 1, maxArgs: 1, rejectKeywords: true, autoInvoke: true},
+	"array.fetch":  {minArgs: 1, maxArgs: 2, autoInvoke: true, usesBlock: true},
+	"array.slice":  {minArgs: 1, maxArgs: 2, rejectKeywords: true, autoInvoke: true},
+	"string.slice": {minArgs: 1, maxArgs: 2, autoInvoke: true},
 }
 
 func keywordSet(names ...string) map[string]struct{} {

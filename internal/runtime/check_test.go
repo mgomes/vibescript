@@ -236,6 +236,51 @@ end
 	}
 }
 
+func TestBuiltinCallSpecsFollowRegistry(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	tests := []struct {
+		name    string
+		minArgs int
+		maxArgs int
+	}{
+		{name: "assert", minArgs: 1, maxArgs: -1},
+		{name: "JSON.parse", minArgs: 1, maxArgs: 1},
+		{name: "Time.parse", minArgs: 1, maxArgs: 2},
+	}
+	for _, tt := range tests {
+		spec, ok := engine.builtinCallSpec(tt.name)
+		if !ok {
+			t.Errorf("builtinCallSpec(%q) was not found", tt.name)
+			continue
+		}
+		if spec.minArgs != tt.minArgs || spec.maxArgs != tt.maxArgs {
+			t.Errorf("builtinCallSpec(%q) arity = %d..%d, want %d..%d", tt.name, spec.minArgs, spec.maxArgs, tt.minArgs, tt.maxArgs)
+		}
+	}
+	if _, ok := engine.builtinCallSpec("Math.sqrt"); ok {
+		t.Error("Math.sqrt unexpectedly has a static call contract")
+	}
+
+	snapshot := engine.Builtins()
+	assertBuiltin := valueBuiltin(snapshot["assert"])
+	if assertBuiltin == nil || assertBuiltin.checkSpec == nil {
+		t.Error("Engine.Builtins() did not preserve the assert call contract")
+	}
+	jsonParse := valueBuiltin(snapshot["JSON"].Hash()["parse"])
+	if jsonParse == nil || jsonParse.checkSpec == nil {
+		t.Error("Engine.Builtins() did not preserve the JSON.parse call contract")
+	}
+
+	engine.RegisterBuiltin("assert", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewNil(), nil
+	})
+	if _, ok := engine.builtinCallSpec("assert"); ok {
+		t.Error("host override retained the default assert call contract")
+	}
+}
+
 func TestCheckWarningsWalkStatementLogicalStatements(t *testing.T) {
 	t.Parallel()
 

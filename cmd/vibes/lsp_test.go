@@ -17,7 +17,6 @@ import (
 
 	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/vibes"
-	"github.com/mgomes/vibescript/vibes/value"
 )
 
 func TestRunCLIStartsLSPAndExitsOnEOF(t *testing.T) {
@@ -186,7 +185,7 @@ func TestDiagnosticsForSourceWithoutPositionsReportDocumentStart(t *testing.T) {
 
 func TestCompletionItemsAreSortedAndCategorized(t *testing.T) {
 	t.Parallel()
-	items := completionItems()
+	items := testCompletionItems(t)
 	if len(items) == 0 {
 		t.Fatalf("expected completion items")
 	}
@@ -212,7 +211,7 @@ func TestCompletionItemsAreSortedAndCategorized(t *testing.T) {
 	}
 
 	builtin := findCompletionItem(t, items, "assert")
-	if builtin["detail"] != builtinSignatures["assert"] {
+	if builtin["detail"] != testBuiltinSignature(t, "assert") {
 		t.Fatalf("expected signature detail, got %#v", builtin["detail"])
 	}
 	if builtin["kind"] != 3 {
@@ -232,7 +231,7 @@ func TestCompletionItemsAreSortedAndCategorized(t *testing.T) {
 
 func TestLSPKeywordCompletionsMatchParserKeywords(t *testing.T) {
 	t.Parallel()
-	items := completionItems()
+	items := testCompletionItems(t)
 	got := make([]string, 0, len(ast.Keywords()))
 	for _, item := range items {
 		if item["detail"] != "keyword" {
@@ -250,7 +249,7 @@ func TestLSPKeywordCompletionsMatchParserKeywords(t *testing.T) {
 		t.Fatalf("keyword completions = %#v, want parser keywords %#v", got, want)
 	}
 	require := findCompletionItem(t, items, "require")
-	if require["detail"] != builtinSignatures["require"] {
+	if require["detail"] != testBuiltinSignature(t, "require") {
 		t.Fatalf("require detail = %#v, want its builtin signature", require["detail"])
 	}
 	if require["kind"] != 3 {
@@ -353,7 +352,7 @@ func hoverValueAt(t *testing.T, server *lspServer, uri string, line, character i
 func TestHandleMessageHoverServesBuiltinDocs(t *testing.T) {
 	t.Parallel()
 	value := hoverValue(t, "def run()\n  assert(true)\nend\n", 1, 3)
-	if !strings.Contains(value, "`assert(condition, message)`") {
+	if signature := "`" + testBuiltinSignature(t, "assert") + "`"; !strings.Contains(value, signature) {
 		t.Fatalf("expected the assert signature in hover value, got %q", value)
 	}
 	if !strings.Contains(value, "Raises an error if `condition` is falsy") {
@@ -406,7 +405,7 @@ func TestHandleMessageHoverUnknownWordFallsBackToClassifier(t *testing.T) {
 
 func TestCompletionItemsCarryDocumentation(t *testing.T) {
 	t.Parallel()
-	items := completionItems()
+	items := testCompletionItems(t)
 
 	builtin := findCompletionItem(t, items, "puts")
 	doc, ok := builtin["documentation"].(map[string]any)
@@ -419,7 +418,7 @@ func TestCompletionItemsCarryDocumentation(t *testing.T) {
 	if value, _ := doc["value"].(string); !strings.Contains(value, "Writes each value") {
 		t.Fatalf("puts documentation value = %#v, want the builtins.md description", doc["value"])
 	}
-	if builtin["detail"] != builtinSignatures["puts"] {
+	if builtin["detail"] != testBuiltinSignature(t, "puts") {
 		t.Fatalf("puts detail = %#v, want its signature", builtin["detail"])
 	}
 
@@ -454,12 +453,15 @@ func TestParseBuiltinDocs(t *testing.T) {
 	if !ok {
 		t.Fatalf("entries = %v, want a format entry", entries)
 	}
-	if format.Signature != "`format(pattern, *values)` / `sprintf(pattern, *values)`" {
+	if format.Signature != "`format(pattern, *values)`" {
 		t.Fatalf("format signature = %q", format.Signature)
 	}
-	wantDoc := format.Signature + "\n\nFormats values with percent strings.\nSecond line of the paragraph.\n\nOutput is capped."
+	wantDoc := "`format(pattern, *values)` / `sprintf(pattern, *values)`\n\nFormats values with percent strings.\nSecond line of the paragraph.\n\nOutput is capped."
 	if format.Markdown != wantDoc {
 		t.Fatalf("format markdown = %q, want %q", format.Markdown, wantDoc)
+	}
+	if entries["sprintf"].Signature != "`sprintf(pattern, *values)`" {
+		t.Fatalf("sprintf signature = %q", entries["sprintf"].Signature)
 	}
 	if entries["sprintf"].Markdown != format.Markdown {
 		t.Fatalf("sprintf should share the format entry, got %q", entries["sprintf"].Markdown)
@@ -501,36 +503,38 @@ func TestParseBuiltinDocs(t *testing.T) {
 	}
 }
 
-// TestBuiltinDocsCoverRegisteredBuiltins is the documentation drift
-// gate: every kernel builtin and every namespace member the engine
-// registers must have an entry parsed from docs/builtins.md, so a new
-// builtin cannot ship without hover documentation.
-func TestBuiltinDocsCoverRegisteredBuiltins(t *testing.T) {
+// TestBuiltinDocsMatchRegisteredBuiltins is the documentation drift gate:
+// every non-namespace global and namespace member must be documented, and the
+// docs cannot retain entries for builtins the runtime no longer registers.
+func TestBuiltinDocsMatchRegisteredBuiltins(t *testing.T) {
 	t.Parallel()
 	docs := builtinDocs()
 	if len(docs) == 0 {
 		t.Fatal("no builtin documentation entries were parsed from docs/builtins.md")
 	}
 
+	catalog := newTestBuiltinCatalog(t)
+	registered := make(map[string]struct{}, len(catalog.documentedNames))
 	var missing []string
-	for name, builtin := range vibes.MustNewEngine(vibes.Config{}).Builtins() {
-		switch builtin.Kind() {
-		case value.KindBuiltin:
-			if _, ok := docs[name]; !ok {
-				missing = append(missing, name)
-			}
-		case value.KindObject:
-			for member := range builtin.Hash() {
-				qualified := name + "." + member
-				if _, ok := docs[qualified]; !ok {
-					missing = append(missing, qualified)
-				}
-			}
+	for _, name := range catalog.documentedNames {
+		registered[name] = struct{}{}
+		if _, ok := docs[name]; !ok {
+			missing = append(missing, name)
 		}
 	}
-	slices.Sort(missing)
 	if len(missing) > 0 {
 		t.Errorf("registered builtins missing docs/builtins.md entries: %v", missing)
+	}
+
+	var stale []string
+	for name := range docs {
+		if _, ok := registered[name]; !ok {
+			stale = append(stale, name)
+		}
+	}
+	slices.Sort(stale)
+	if len(stale) > 0 {
+		t.Errorf("docs/builtins.md entries missing registered builtins: %v", stale)
 	}
 }
 
@@ -943,7 +947,7 @@ end
 		"amount":  "parameter",
 		"doubled": "local",
 		"if":      "keyword",
-		"assert":  builtinSignatures["assert"],
+		"assert":  testBuiltinSignature(t, "assert"),
 	} {
 		item, ok := labels[label]
 		if !ok {
@@ -1347,6 +1351,7 @@ func TestSignatureHelpOutsideCallReturnsNull(t *testing.T) {
 
 func TestEnclosingCall(t *testing.T) {
 	t.Parallel()
+	catalog := newTestBuiltinCatalog(t)
 	tests := []struct {
 		name      string
 		source    string
@@ -1369,6 +1374,7 @@ func TestEnclosingCall(t *testing.T) {
 		{name: "single_string_comma_ignored", source: `charge('1,00', `, line: 0, chr: 15, callee: "charge", param: 1, ok: true},
 		{name: "single_string_paren_ignored", source: `charge('a)b', `, line: 0, chr: 14, callee: "charge", param: 1, ok: true},
 		{name: "cursor_inside_array_literal", source: "charge([1, ", line: 0, chr: 11, callee: "charge", param: 0, ok: true},
+		{name: "namespace_call", source: "JSON.parse(", line: 0, chr: 11, callee: "JSON.parse", param: 0, ok: true},
 		{name: "member_call_suppressed", source: "price.format(", line: 0, chr: 13, ok: false},
 		{name: "comment_suppressed", source: "# money_cents(", line: 0, chr: 14, ok: false},
 		{name: "space_before_paren", source: "charge (100, ", line: 0, chr: 13, callee: "charge", param: 1, ok: true},
@@ -1377,7 +1383,7 @@ func TestEnclosingCall(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			callee, param, ok := enclosingCall(splitLSPLines(tc.source), tc.line, tc.chr)
+			callee, param, ok := enclosingCall(catalog, splitLSPLines(tc.source), tc.line, tc.chr)
 			if ok != tc.ok {
 				t.Fatalf("enclosingCall(%q) ok = %v, want %v", tc.source, ok, tc.ok)
 			}
@@ -1422,35 +1428,37 @@ func TestParenlessCall(t *testing.T) {
 	}
 }
 
-func TestBuiltinSignaturesMatchRegisteredBuiltins(t *testing.T) {
+func TestBuiltinCatalogDrivesLSPCompletionsAndSignatures(t *testing.T) {
 	t.Parallel()
-	builtins := vibes.MustNewEngine(vibes.Config{}).Builtins()
-	for name := range builtinSignatures {
-		if _, ok := builtins[name]; !ok {
-			t.Errorf("builtinSignatures entry %q does not correspond to a registered builtin", name)
+	catalog := newTestBuiltinCatalog(t)
+	items := buildCompletionItems(catalog)
+	completed := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		name, ok := item["label"].(string)
+		if ok {
+			completed[name] = struct{}{}
 		}
 	}
 
-	var missingCompletions []string
+	var missing []string
+	for _, name := range catalog.topLevelNames {
+		if _, ok := completed[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("registered builtins missing LSP completions: %v", missing)
+	}
+
 	var missingSignatures []string
-	for name, builtin := range builtins {
-		if builtin.Kind() != value.KindBuiltin {
-			continue
-		}
-		if !slices.Contains(lspBuiltins, name) {
-			missingCompletions = append(missingCompletions, name)
-		}
-		if _, ok := builtinSignatures[name]; !ok {
+	for _, name := range catalog.functionNames {
+		entry, ok := builtinDocs()[name]
+		if !ok || entry.Signature == "" {
 			missingSignatures = append(missingSignatures, name)
 		}
 	}
-	slices.Sort(missingCompletions)
-	slices.Sort(missingSignatures)
-	if len(missingCompletions) > 0 {
-		t.Errorf("registered builtin functions missing LSP completions: %v", missingCompletions)
-	}
 	if len(missingSignatures) > 0 {
-		t.Errorf("registered builtin functions missing LSP signatures: %v", missingSignatures)
+		t.Errorf("registered builtin functions missing documented signatures: %v", missingSignatures)
 	}
 }
 
@@ -2024,8 +2032,30 @@ func TestSignatureHelpForParenlessAssert(t *testing.T) {
 		t.Fatal("expected signature help for paren-less assert")
 	}
 	label := result["signatures"].([]map[string]any)[0]["label"].(string)
-	if !strings.Contains(label, "assert(condition, message = nil)") {
-		t.Fatalf("label = %q, want assert signature", label)
+	if want := testBuiltinSignature(t, "assert"); label != want {
+		t.Fatalf("label = %q, want %q", label, want)
+	}
+	if result["activeParameter"] != 1 {
+		t.Fatalf("activeParameter = %#v, want 1 after the comma", result["activeParameter"])
+	}
+}
+
+func TestSignatureHelpForQualifiedBuiltin(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/qualified-signature.vibe"
+	source := "def run()\n  JSON.parse_as(\"{}\", { name: string })\nend\n"
+	openDoc(t, server, uri, source)
+	line := splitLSPLines(source)[1]
+	cursor := strings.Index(line, "{ name")
+
+	result, ok := signatureHelpResult(t, server, uri, 1, cursor).(map[string]any)
+	if !ok {
+		t.Fatal("expected signature help for JSON.parse_as")
+	}
+	label := result["signatures"].([]map[string]any)[0]["label"].(string)
+	if want := testBuiltinSignature(t, "JSON.parse_as"); label != want {
+		t.Fatalf("label = %q, want %q", label, want)
 	}
 	if result["activeParameter"] != 1 {
 		t.Fatalf("activeParameter = %#v, want 1 after the comma", result["activeParameter"])
@@ -2815,6 +2845,7 @@ func TestHandleMessageHoverMemberDocsRequireDotContext(t *testing.T) {
 
 func TestIsValueMemberAccess(t *testing.T) {
 	t.Parallel()
+	catalog := newTestBuiltinCatalog(t)
 	tests := []struct {
 		name      string
 		line      string
@@ -2832,7 +2863,7 @@ func TestIsValueMemberAccess(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := isValueMemberAccess([]string{tt.line}, 0, tt.character); got != tt.want {
+			if got := isValueMemberAccess(catalog, []string{tt.line}, 0, tt.character); got != tt.want {
 				t.Fatalf("isValueMemberAccess(%q, %d) = %v, want %v", tt.line, tt.character, got, tt.want)
 			}
 		})
@@ -3342,7 +3373,7 @@ func TestHoverInstanceReceiverSkipsClassMethods(t *testing.T) {
 
 func TestCompletionNamespaceDocumentation(t *testing.T) {
 	t.Parallel()
-	for _, item := range lspStaticCompletionItems {
+	for _, item := range testCompletionItems(t) {
 		if item["label"] != "JSON" {
 			continue
 		}

@@ -6,7 +6,32 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mgomes/vibescript/vibes"
 )
+
+func newTestBuiltinCatalog(t testing.TB) builtinCatalog {
+	t.Helper()
+	engine, err := vibes.NewEngine(vibes.Config{})
+	if err != nil {
+		t.Fatalf("vibes.NewEngine() failed: %v", err)
+	}
+	return newBuiltinCatalog(engine.Builtins())
+}
+
+func testCompletionItems(t testing.TB) []map[string]any {
+	t.Helper()
+	return buildCompletionItems(newTestBuiltinCatalog(t))
+}
+
+func testBuiltinSignature(t testing.TB, name string) string {
+	t.Helper()
+	entry, ok := builtinDocs()[name]
+	if !ok {
+		t.Fatalf("builtinDocs() missing %q", name)
+	}
+	return strings.ReplaceAll(entry.Signature, "`", "")
+}
 
 // newTestCLI returns a fresh tempdir for a CLI test. The directory is cleaned
 // up automatically by testing.T. The current working directory is left

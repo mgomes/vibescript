@@ -1000,6 +1000,10 @@ type Builtin struct {
 	Name       string
 	Fn         BuiltinFunc
 	AutoInvoke bool
+	// checkSpec carries the static call contract for runtime-owned builtins.
+	// Host-registered builtins leave it nil because their contracts are not
+	// known to the language checker.
+	checkSpec *staticCallSpec
 	// OptionsHashTarget receives a collapsed keyword options hash for builtin
 	// wrappers around script functions (method, constructor, and function-call
 	// alias callers).
@@ -1140,6 +1144,12 @@ func NewFunction(fn *ScriptFunction) Value { return value.NewValue(KindFunction,
 
 func newBuiltin(name string, fn BuiltinFunc, autoInvoke bool) Value {
 	return value.NewValue(KindBuiltin, &Builtin{Name: name, Fn: fn, AutoInvoke: autoInvoke})
+}
+
+func newCheckedBuiltin(name string, fn BuiltinFunc, spec staticCallSpec) Value {
+	val := newBuiltin(name, fn, false)
+	valueBuiltin(val).checkSpec = &spec
+	return val
 }
 
 // NewBuiltin returns a builtin function Value.

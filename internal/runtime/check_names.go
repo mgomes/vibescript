@@ -64,9 +64,6 @@ func (c *scriptChecker) checkIdentifierResolved(function string, ident *Identifi
 	if c.hostGlobalShadows(name) || c.hostBuiltinOverrides(name) {
 		return
 	}
-	if _, ok := staticBuiltinSpecs[name]; ok {
-		return
-	}
 	facts := c.nameFacts()
 	if facts.suppress {
 		return
