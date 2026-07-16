@@ -112,21 +112,19 @@ func FuzzCLIArgumentAndPathInputs(f *testing.F) {
 
 		switch positiveMod(selector, 6) {
 		case 0:
-			_ = runCLI([]string{"vibes"})
-			_ = runCLI([]string{"vibes", rawArg})
-			_ = runCLI([]string{"vibes", "help"})
+			_, _, _ = dispatchCLI(t)
+			_, _, _ = dispatchCLI(t, rawArg)
+			_, _, _ = dispatchCLI(t, "help")
 		case 1:
-			_ = runCommand([]string{"-check", "-function", rawArg, "-module-path", moduleDir, scriptPath, rawExtra})
+			_, _ = dispatchCommand(t, "run", []string{"-check", "-function", rawArg, "-module-path", moduleDir, scriptPath, rawExtra})
 		case 2:
-			_ = runCommand([]string{"-check", rawArg})
+			_, _ = dispatchCommand(t, "run", []string{"-check", rawArg})
 		case 3:
-			_, _ = captureStdout(t, func() error {
-				return analyzeCommand([]string{scriptPath})
-			})
+			_, _ = dispatchCommand(t, "analyze", []string{scriptPath})
 		case 4:
-			_ = analyzeCommand([]string{rawArg})
+			_, _ = dispatchCommand(t, "analyze", []string{rawArg})
 		default:
-			_ = fmtCommand([]string{"-check", scriptPath})
+			_, _ = dispatchCommand(t, "fmt", []string{"-check", scriptPath})
 		}
 	})
 }

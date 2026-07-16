@@ -39,9 +39,7 @@ end
 end
 `)
 
-	out, err := captureStdout(t, func() error {
-		return testCommand([]string{dir})
-	})
+	out, err := dispatchCommand(t, "test", []string{dir})
 	if err == nil {
 		t.Fatalf("testCommand(%q) err = nil, want failure", dir)
 	}
@@ -71,9 +69,7 @@ func TestTestCommandAllPassing(t *testing.T) {
 end
 `)
 
-	out, err := captureStdout(t, func() error {
-		return testCommand([]string{dir})
-	})
+	out, err := dispatchCommand(t, "test", []string{dir})
 	if err != nil {
 		t.Fatalf("testCommand(%q) err = %v, want nil", dir, err)
 	}
@@ -91,9 +87,7 @@ func TestTestCommandWiresOutputHelpers(t *testing.T) {
 end
 `)
 
-	out, err := captureStdout(t, func() error {
-		return testCommand([]string{dir})
-	})
+	out, err := dispatchCommand(t, "test", []string{dir})
 	if err != nil {
 		t.Fatalf("testCommand(%q) err = %v, want nil", dir, err)
 	}
@@ -114,9 +108,7 @@ func TestTestCommandReportsAssertionPosition(t *testing.T) {
 end
 `)
 
-	out, err := captureStdout(t, func() error {
-		return testCommand([]string{dir})
-	})
+	out, err := dispatchCommand(t, "test", []string{dir})
 	if err == nil {
 		t.Fatal("testCommand err = nil, want failure")
 	}
@@ -137,9 +129,7 @@ def test_beta()
 end
 `)
 
-	out, err := captureStdout(t, func() error {
-		return testCommand([]string{"-run", "alpha", dir})
-	})
+	out, err := dispatchCommand(t, "test", []string{"-run", "alpha", dir})
 	if err != nil {
 		t.Fatalf("testCommand with -run alpha err = %v, want nil", err)
 	}
@@ -147,9 +137,7 @@ end
 		t.Fatalf("filtered output = %q, want only test_alpha to run", out)
 	}
 
-	_, err = captureStdout(t, func() error {
-		return testCommand([]string{"-run", "[", dir})
-	})
+	_, err = dispatchCommand(t, "test", []string{"-run", "[", dir})
 	if err == nil || !strings.Contains(err.Error(), "invalid -run pattern") {
 		t.Fatalf("testCommand with bad pattern err = %v, want invalid pattern error", err)
 	}
@@ -168,9 +156,7 @@ end
 end
 `)
 
-	out, err := captureStdout(t, func() error {
-		return testCommand([]string{"-module-path", dir, dir})
-	})
+	out, err := dispatchCommand(t, "test", []string{"-module-path", dir, dir})
 	if err != nil {
 		t.Fatalf("testCommand(%q) err = %v, want nil\noutput: %s", dir, err, out)
 	}
@@ -192,9 +178,7 @@ end
 end
 `)
 
-	out, err := captureStdout(t, func() error {
-		return testCommand([]string{dir})
-	})
+	out, err := dispatchCommand(t, "test", []string{dir})
 	if err != nil {
 		t.Fatalf("testCommand(%q) err = %v, want nil\noutput: %s", dir, err, out)
 	}
@@ -208,9 +192,7 @@ func TestTestCommandCompileFailureIsReported(t *testing.T) {
 	dir := t.TempDir()
 	writeTestVibeFile(t, dir, "bad_test.vibe", "def test_oops(\n")
 
-	out, err := captureStdout(t, func() error {
-		return testCommand([]string{dir})
-	})
+	out, err := dispatchCommand(t, "test", []string{dir})
 	if err == nil {
 		t.Fatal("testCommand err = nil, want compile failure")
 	}
@@ -231,9 +213,7 @@ def test_default_ok(value = 1)
 end
 `)
 
-	out, err := captureStdout(t, func() error {
-		return testCommand([]string{dir})
-	})
+	out, err := dispatchCommand(t, "test", []string{dir})
 	if err == nil {
 		t.Fatal("testCommand err = nil, want failure for required params")
 	}
@@ -250,9 +230,7 @@ end
 func TestTestCommandNoTestFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	_, err := captureStdout(t, func() error {
-		return testCommand([]string{dir})
-	})
+	_, err := dispatchCommand(t, "test", []string{dir})
 	if err == nil || !strings.Contains(err.Error(), "no *_test.vibe files found") {
 		t.Fatalf("testCommand on empty dir err = %v, want discovery error", err)
 	}
@@ -263,9 +241,7 @@ func TestTestCommandExplicitFileMustMatchConvention(t *testing.T) {
 	dir := t.TempDir()
 	plain := writeTestVibeFile(t, dir, "script.vibe", "def run()\n  1\nend\n")
 
-	_, err := captureStdout(t, func() error {
-		return testCommand([]string{plain})
-	})
+	_, err := dispatchCommand(t, "test", []string{plain})
 	if err == nil || !strings.Contains(err.Error(), "is not a *_test.vibe file") {
 		t.Fatalf("testCommand on plain file err = %v, want naming error", err)
 	}

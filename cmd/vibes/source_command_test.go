@@ -1,7 +1,8 @@
 package main
 
 import (
-	"context"
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,9 +31,7 @@ func TestRunCommandRejectsOversizedScript(t *testing.T) {
 	t.Parallel()
 	path := writeOversizedScript(t, "script.vibe")
 
-	_, err := captureStdout(t, func() error {
-		return runCommand([]string{path})
-	})
+	_, err := dispatchCommand(t, "run", []string{path})
 	if err == nil {
 		t.Fatalf("runCommand(%q) err = nil, want source-size rejection", path)
 	}
@@ -52,9 +51,8 @@ func TestExecuteScriptRejectsBeforeReadingFile(t *testing.T) {
 	}
 	inv := runInvocation{scriptPath: path, function: "run", moduleDirs: moduleDirs}
 
-	_, err = captureStdout(t, func() error {
-		return executeScript(context.Background(), inv, os.Stdout)
-	})
+	var out bytes.Buffer
+	err = executeScript(t.Context(), inv, &out, io.Discard)
 	if err == nil {
 		t.Fatalf("executeScript(%q) err = nil, want source-size rejection", path)
 	}
@@ -67,9 +65,7 @@ func TestAnalyzeCommandRejectsOversizedScript(t *testing.T) {
 	t.Parallel()
 	path := writeOversizedScript(t, "script.vibe")
 
-	_, err := captureStdout(t, func() error {
-		return analyzeCommand([]string{path})
-	})
+	_, err := dispatchCommand(t, "analyze", []string{path})
 	if err == nil {
 		t.Fatalf("analyzeCommand(%q) err = nil, want source-size rejection", path)
 	}
@@ -89,9 +85,7 @@ func TestTestCommandRejectsOversizedScript(t *testing.T) {
 		t.Fatalf("write oversized test file: %v", err)
 	}
 
-	out, err := captureStdout(t, func() error {
-		return testCommand([]string{path})
-	})
+	out, err := dispatchCommand(t, "test", []string{path})
 	if err == nil {
 		t.Fatalf("testCommand(%q) err = nil, want failure", path)
 	}

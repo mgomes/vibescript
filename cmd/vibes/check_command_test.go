@@ -78,9 +78,7 @@ create_user(body["name"])`,
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			scriptPath := writeVibeScript(t, tc.script)
-			out, err := captureStdout(t, func() error {
-				return checkCommand([]string{scriptPath})
-			})
+			out, err := dispatchCommand(t, "check", []string{scriptPath})
 			if tc.expectNoErr {
 				if err != nil {
 					t.Fatalf("checkCommand(%q) err = %v, want nil", scriptPath, err)
@@ -104,16 +102,12 @@ create_user(body["name"])`,
 
 func TestCheckCommandRequiresScriptPath(t *testing.T) {
 	t.Parallel()
-	_, err := captureStdout(t, func() error {
-		return checkCommand(nil)
-	})
+	_, err := dispatchCommand(t, "check", nil)
 	if err == nil || !strings.Contains(err.Error(), "script path required") {
 		t.Fatalf("checkCommand(nil) err = %v, want script path required", err)
 	}
 
-	_, err = captureStdout(t, func() error {
-		return checkCommand([]string{"a.vibe", "b.vibe"})
-	})
+	_, err = dispatchCommand(t, "check", []string{"a.vibe", "b.vibe"})
 	if err == nil || !strings.Contains(err.Error(), "expected a single script path") {
 		t.Fatalf("checkCommand(two paths) err = %v, want single-path rejection", err)
 	}
@@ -134,9 +128,7 @@ count = 1
 shout(count)`
 	scriptPath := writeVibeScript(t, script)
 
-	out, err := captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, scriptPath})
-	})
+	out, err := dispatchCommand(t, "check", []string{"-module-path", moduleDir, scriptPath})
 	if err == nil || !strings.Contains(err.Error(), "check failed with") {
 		t.Fatalf("checkCommand err = %v, want check failure", err)
 	}
@@ -164,9 +156,7 @@ def broken
 end`
 	scriptPath := writeVibeScript(t, script)
 
-	out, err := captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, scriptPath})
-	})
+	out, err := dispatchCommand(t, "check", []string{"-module-path", moduleDir, scriptPath})
 	if err == nil || !strings.Contains(err.Error(), "check failed with") {
 		t.Fatalf("checkCommand err = %v, want check failure", err)
 	}
@@ -194,9 +184,7 @@ def advance(status: Status) -> Status
 end`
 	scriptPath := writeVibeScript(t, script)
 
-	out, err := captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, scriptPath})
-	})
+	out, err := dispatchCommand(t, "check", []string{"-module-path", moduleDir, scriptPath})
 	if err != nil {
 		t.Fatalf("checkCommand err = %v, want nil", err)
 	}
@@ -220,9 +208,7 @@ end`
 bad`
 	scriptPath := writeVibeScript(t, script)
 
-	out, err := captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, scriptPath})
-	})
+	out, err := dispatchCommand(t, "check", []string{"-module-path", moduleDir, scriptPath})
 	if err == nil || !strings.Contains(err.Error(), "check failed with") {
 		t.Fatalf("checkCommand err = %v, want check failure", err)
 	}
@@ -244,9 +230,7 @@ end`
 	// own diagnostics; the suppressed require seed must not consume them.
 	scriptPath := writeVibeScript(t, `require "helpers"`)
 
-	out, err := captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, scriptPath})
-	})
+	out, err := dispatchCommand(t, "check", []string{"-module-path", moduleDir, scriptPath})
 	if err == nil || !strings.Contains(err.Error(), "check failed with") {
 		t.Fatalf("checkCommand err = %v, want check failure", err)
 	}
@@ -269,18 +253,14 @@ end`
 	// same bad call after the require reports.
 	before := writeVibeScript(t, `shout(1)
 require "helpers"`)
-	out, err := captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, before})
-	})
+	out, err := dispatchCommand(t, "check", []string{"-module-path", moduleDir, before})
 	if err != nil {
 		t.Fatalf("checkCommand before-require err = %v (out %q), want nil", err, out)
 	}
 
 	after := writeVibeScriptNamed(t, "after.vibe", `require "helpers"
 shout(1)`)
-	out, err = captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, after})
-	})
+	out, err = dispatchCommand(t, "check", []string{"-module-path", moduleDir, after})
 	if err == nil || !strings.Contains(out, "call to shout argument value expected string, got int") {
 		t.Fatalf("checkCommand after-require = %v (out %q), want argument warning", err, out)
 	}
@@ -305,9 +285,7 @@ end
 
 run
 require "helpers"`)
-	out, err := captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, before})
-	})
+	out, err := dispatchCommand(t, "check", []string{"-module-path", moduleDir, before})
 	if err != nil {
 		t.Fatalf("checkCommand callee-before-require err = %v (out %q), want nil", err, out)
 	}
@@ -320,9 +298,7 @@ def run
 end
 
 run`)
-	out, err = captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, after})
-	})
+	out, err = dispatchCommand(t, "check", []string{"-module-path", moduleDir, after})
 	if err == nil || !strings.Contains(out, "call to shout argument value expected string, got int") {
 		t.Fatalf("checkCommand callee-after-require = %v (out %q), want argument warning", err, out)
 	}
@@ -346,9 +322,7 @@ flag and require "helpers"
 def run
   shout(1)
 end`)
-	out, err := captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, wordAnd})
-	})
+	out, err := dispatchCommand(t, "check", []string{"-module-path", moduleDir, wordAnd})
 	if err == nil || !strings.Contains(out, "call to shout argument value expected string, got int") {
 		t.Fatalf("checkCommand word-and guard = %v (out %q), want argument warning", err, out)
 	}
@@ -359,9 +333,7 @@ flag && require "helpers"
 def run
   shout(1)
 end`)
-	out, err = captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, symbolAnd})
-	})
+	out, err = dispatchCommand(t, "check", []string{"-module-path", moduleDir, symbolAnd})
 	if err == nil || !strings.Contains(out, "call to shout argument value expected string, got int") {
 		t.Fatalf("checkCommand symbol-and guard = %v (out %q), want argument warning", err, out)
 	}
@@ -374,9 +346,7 @@ flag and require "helpers"
 def run
   shout(1)
 end`)
-	out, err = captureStdout(t, func() error {
-		return checkCommand([]string{"-module-path", moduleDir, unknown})
-	})
+	out, err = dispatchCommand(t, "check", []string{"-module-path", moduleDir, unknown})
 	if err != nil {
 		t.Fatalf("checkCommand unknown guard err = %v (out %q), want nil", err, out)
 	}
@@ -386,9 +356,7 @@ func TestCheckCommandRejectsOversizedScript(t *testing.T) {
 	t.Parallel()
 	path := writeOversizedScript(t, "script.vibe")
 
-	_, err := captureStdout(t, func() error {
-		return checkCommand([]string{path})
-	})
+	_, err := dispatchCommand(t, "check", []string{path})
 	if err == nil {
 		t.Fatalf("checkCommand(%q) err = nil, want source-size rejection", path)
 	}

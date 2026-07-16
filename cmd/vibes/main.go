@@ -18,43 +18,62 @@ import (
 )
 
 func main() {
-	if err := runCLI(os.Args); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	restoreSignals := context.AfterFunc(ctx, stop)
+	defer restoreSignals()
+	if err := runCLIContext(ctx, os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func runCommand(args []string) error {
-	return runStandaloneCommand(context.Background(), newRunCommand(), args)
+type runCommandConfig struct {
+	function    string
+	checkOnly   bool
+	snippet     string
+	watch       bool
+	modulePaths []string
+	arguments   []string
+	quota       quotaFlagValues
 }
 
 func newRunCommand() *cli.Command {
+	config := &runCommandConfig{
+		function: "run",
+		quota:    newQuotaFlagValues(),
+	}
 	stopAfterScript := 1
-	quotaFlags := newQuotaFlags()
+	quotaFlags := newQuotaFlags(&config.quota)
 	flags := make([]cli.Flag, 0, 5+len(quotaFlags))
 	flags = append(flags,
 		&cli.StringFlag{
 			Name:        "function",
-			Value:       "run",
+			Value:       config.function,
+			Destination: &config.function,
 			Usage:       "function to invoke; without it, top-level statements run when present, otherwise run",
 			HideDefault: true,
 		},
 		&cli.BoolFlag{
-			Name:  "check",
-			Usage: "compile and validate static contracts without executing",
+			Name:        "check",
+			Usage:       "compile and validate static contracts without executing",
+			Destination: &config.checkOnly,
 		},
 		&cli.StringFlag{
-			Name:  "e",
-			Usage: "evaluate an inline snippet instead of a script file",
+			Name:        "e",
+			Usage:       "evaluate an inline snippet instead of a script file",
+			Destination: &config.snippet,
 		},
 		&cli.BoolFlag{
-			Name:  "watch",
-			Usage: "re-run whenever the script or its modules change",
+			Name:        "watch",
+			Usage:       "re-run whenever the script or its modules change",
+			Destination: &config.watch,
 		},
 		&cli.StringSliceFlag{
-			Name:      "module-path",
-			Usage:     "add a module search directory (repeatable)",
-			TakesFile: true,
+			Name:        "module-path",
+			Usage:       "add a module search directory (repeatable)",
+			TakesFile:   true,
+			Destination: &config.modulePaths,
 		},
 	)
 	flags = append(flags, quotaFlags...)
@@ -66,14 +85,15 @@ func newRunCommand() *cli.Command {
 		Flags:                     flags,
 		StopOnNthArg:              &stopAfterScript,
 		DisableSliceFlagSeparator: true,
-		Action:                    runAction,
+		Arguments:                 stringArguments("argument", &config.arguments),
+		Action: func(ctx context.Context, command *cli.Command) error {
+			return runAction(ctx, command, config)
+		},
 	})
 }
 
-func runAction(ctx context.Context, command *cli.Command) error {
-	modulePaths := pathList(command.StringSlice("module-path"))
-	remaining := commandPositionalArgs(command)
-	quota, err := resolveCommandQuota(command)
+func runAction(ctx context.Context, command *cli.Command, config *runCommandConfig) error {
+	quota, err := resolveCommandQuota(command, &config.quota)
 	if err != nil {
 		return fmt.Errorf("vibes run: %w", err)
 	}
@@ -81,43 +101,41 @@ func runAction(ctx context.Context, command *cli.Command) error {
 	functionSet := command.IsSet("function")
 	if command.IsSet("e") {
 		switch {
-		case command.Bool("watch"):
+		case config.watch:
 			return errors.New("vibes run: -e cannot be combined with -watch")
 		case functionSet:
 			return errors.New("vibes run: -e cannot be combined with -function")
-		case len(remaining) > 0:
+		case len(config.arguments) > 0:
 			return errors.New("vibes run: -e does not accept positional arguments")
 		}
-		return evalSnippet(ctx, command.String("e"), modulePaths, quota, command.Bool("check"), os.Stdout)
+		return evalSnippet(ctx, config.snippet, config.modulePaths, quota, config.checkOnly, command.Writer, command.ErrWriter)
 	}
 
-	if len(remaining) == 0 {
+	if len(config.arguments) == 0 {
 		return errors.New("vibes run: script path required")
 	}
-	absScriptPath, err := filepath.Abs(remaining[0])
+	absScriptPath, err := filepath.Abs(config.arguments[0])
 	if err != nil {
 		return fmt.Errorf("resolve script path: %w", err)
 	}
-	moduleDirs, err := computeModulePaths(filepath.Dir(absScriptPath), modulePaths)
+	moduleDirs, err := computeModulePaths(filepath.Dir(absScriptPath), config.modulePaths)
 	if err != nil {
 		return fmt.Errorf("compute module paths: %w", err)
 	}
 	inv := runInvocation{
 		scriptPath:  absScriptPath,
-		function:    command.String("function"),
+		function:    config.function,
 		functionSet: functionSet,
-		checkOnly:   command.Bool("check"),
+		checkOnly:   config.checkOnly,
 		moduleDirs:  moduleDirs,
-		callArgs:    stringArgs(remaining[1:]),
+		callArgs:    stringArgs(config.arguments[1:]),
 		quota:       quota,
 	}
 
-	if command.Bool("watch") {
-		ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
-		defer stop()
-		return watchScript(ctx, inv, defaultWatchInterval, os.Stdout, os.Stderr)
+	if config.watch {
+		return watchScript(ctx, inv, defaultWatchInterval, command.Writer, command.ErrWriter)
 	}
-	return executeScript(ctx, inv, os.Stdout)
+	return executeScript(ctx, inv, command.Writer, command.ErrWriter)
 }
 
 // runInvocation captures everything needed to execute a script file once,
@@ -132,8 +150,8 @@ type runInvocation struct {
 	quota       quotaConfig
 }
 
-func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error {
-	cfg := vibes.Config{ModulePaths: inv.moduleDirs, OutputWriter: out, ErrorWriter: os.Stderr}
+func executeScript(ctx context.Context, inv runInvocation, out, errOut io.Writer) error {
+	cfg := vibes.Config{ModulePaths: inv.moduleDirs, OutputWriter: out, ErrorWriter: errOut}
 	inv.quota.applyTo(&cfg)
 	engine, err := vibes.NewEngine(cfg)
 	if err != nil {
@@ -185,7 +203,9 @@ func printResult(out io.Writer, result value.Value) error {
 		}
 		return fmt.Errorf("render result: %w", err)
 	}
-	fmt.Fprintln(out, rendered)
+	if _, err := fmt.Fprintln(out, rendered); err != nil {
+		return fmt.Errorf("write result: %w", err)
+	}
 	return nil
 }
 
@@ -206,7 +226,7 @@ var evalSnippetSourceMap = snippetSourceMap{
 	displayFunction:   "<snippet>",
 }
 
-func evalSnippet(ctx context.Context, snippet string, modulePaths []string, quota quotaConfig, checkOnly bool, out io.Writer) error {
+func evalSnippet(ctx context.Context, snippet string, modulePaths []string, quota quotaConfig, checkOnly bool, out, errOut io.Writer) error {
 	if strings.TrimSpace(snippet) == "" {
 		return errors.New("vibes run: -e requires a non-empty snippet")
 	}
@@ -218,7 +238,7 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, quot
 	if err != nil {
 		return fmt.Errorf("compute module paths: %w", err)
 	}
-	cfg := vibes.Config{ModulePaths: moduleDirs, OutputWriter: out, ErrorWriter: os.Stderr}
+	cfg := vibes.Config{ModulePaths: moduleDirs, OutputWriter: out, ErrorWriter: errOut}
 	quota.applyTo(&cfg)
 	engine, err := vibes.NewEngine(cfg)
 	if err != nil {
@@ -327,8 +347,6 @@ func stringArgs(raw []string) []value.Value {
 	}
 	return out
 }
-
-type pathList []string
 
 func computeModulePaths(baseDir string, extras []string) ([]string, error) {
 	seen := make(map[string]struct{})
