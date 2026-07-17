@@ -296,6 +296,11 @@ func (e *Engine) registerDefaultBuiltin(def builtinDefinition) {
 	defer e.builtinsMu.Unlock()
 
 	val := newBuiltin(def.name, def.fn, def.autoInvoke)
+	if def.checkSpec != nil {
+		// The definition's autoInvoke flag drives runtime dispatch; mirror it
+		// into the static contract so the checker never drifts from it.
+		def.checkSpec.autoInvoke = def.autoInvoke
+	}
 	valueBuiltin(val).checkSpec = def.checkSpec
 	e.builtins[def.name] = val
 	delete(e.hostBuiltins, def.name)

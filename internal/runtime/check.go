@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -3943,6 +3944,10 @@ type staticCallable struct {
 	constructor bool
 }
 
+// staticCallSpec is the static contract of a builtin callable. A builtin
+// without a spec is entirely unchecked; once a spec is attached the whole
+// shape is enforced, so a registration gaining a spec must set minArgs and
+// maxArgs deliberately (the zero value rejects all arguments).
 type staticCallSpec struct {
 	minArgs         int
 	maxArgs         int
@@ -3951,6 +3956,17 @@ type staticCallSpec struct {
 	rejectBlock     bool
 	autoInvoke      bool
 	usesBlock       bool
+	// paramTypes declares positional parameter types, index-aligned with the
+	// call's arguments; a nil entry or an index past the end stays unknown,
+	// so a variadic tail simply ends the slice.
+	paramTypes []*TypeExpr
+	// keywordTypes declares the types of known keyword arguments; absent
+	// names stay unknown. allowedKeywords, not this map, decides which
+	// keywords a call may pass.
+	keywordTypes map[string]*TypeExpr
+	// resultType is the builtin's invariant result type; nil keeps the
+	// result unknown for argument-dependent or unmodeled builtins.
+	resultType *TypeExpr
 }
 
 func (c *scriptChecker) checkCallResolved(function string, call *CallExpr, target staticCallable, ok bool) {
@@ -3973,7 +3989,9 @@ func (c *scriptChecker) checkCallResolved(function string, call *CallExpr, targe
 		c.enqueueReachableFunction(target.name, target.fn)
 		return
 	}
-	c.checkBuiltinCallShape(function, staticCallViewFor(call, target), target.name, target.spec)
+	view := staticCallViewFor(call, target)
+	c.checkBuiltinCallShape(function, view, target.name, target.spec)
+	c.checkBuiltinArgumentTypes(function, view, target.name, target.spec)
 	if target.name == "JSON.parse_as" {
 		c.checkParseAsShapeArgument(function, call)
 	}
@@ -4178,6 +4196,33 @@ func (c *scriptChecker) defaultBuiltinCallSpec(name string) (staticCallSpec, boo
 	return c.script.engine.builtinCallSpec(name)
 }
 
+// autoInvokedBuiltinResultFact reports the invariant result type of a bare
+// builtin identifier that auto-invokes at runtime (`t = uuid`). The guard
+// chain mirrors resolveCallable: any shadowing binding, script function, or
+// host override dispatches elsewhere, so no builtin fact applies.
+func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
+	if c.identifierShadowed(name) || c.hostGlobalShadows(name) {
+		return nil
+	}
+	if _, ok := c.script.functions[name]; ok {
+		return nil
+	}
+	if _, ok := c.typeRootFunction(name); ok {
+		return nil
+	}
+	if c.typeRootHasBinding(name) {
+		return nil
+	}
+	if c.hostBuiltinOverrides(name) {
+		return nil
+	}
+	spec, ok := c.defaultBuiltinCallSpec(name)
+	if !ok || !spec.autoInvoke {
+		return nil
+	}
+	return spec.resultType
+}
+
 func (c *scriptChecker) typeRootObjectFunction(name, property string) (*ScriptFunction, bool) {
 	for _, root := range []*Env{c.runtimeTypeRoot, c.typeRoot} {
 		val, ok := checkRootOwnBinding(root, name)
@@ -4346,6 +4391,21 @@ func (c *scriptChecker) checkBuiltinCallShape(function string, call staticCallVi
 	}
 	if spec.rejectBlock && call.block != nil {
 		c.add(function, call.block.Pos(), "call to %s does not accept a block", name)
+	}
+}
+
+// checkBuiltinArgumentTypes reports call arguments whose inferred types are
+// provably disjoint from the builtin's declared parameter types. Positions
+// past the declared list and keywords without a declared type stay unknown.
+func (c *scriptChecker) checkBuiltinArgumentTypes(function string, call staticCallView, name string, spec staticCallSpec) {
+	for i, arg := range call.args {
+		if i >= len(spec.paramTypes) {
+			break
+		}
+		c.checkInferredArgument(function, arg, spec.paramTypes[i], name, strconv.Itoa(i+1))
+	}
+	for _, kwarg := range call.kwargs {
+		c.checkInferredArgument(function, kwarg.Value, spec.keywordTypes[kwarg.Name], name, kwarg.Name)
 	}
 }
 
