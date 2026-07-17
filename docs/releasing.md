@@ -1,6 +1,7 @@
 # Releasing
 
-This repository uses GoReleaser for changelog generation and GitHub releases. The project ships as a Go module only—no binaries or archives are built.
+This repository uses GoReleaser to build the `vibes` CLI archives and publish
+GitHub releases. Each tag is also available as a Go module version.
 
 Versioning rules for deciding `MAJOR.MINOR.PATCH` are documented in
 `docs/versioning.md`.
@@ -42,6 +43,7 @@ For a repeatable pre-tag rehearsal, run:
 
 ```bash
 ./scripts/release_rehearsal.sh v0.19.0
+./scripts/release_rehearsal.sh v1.0.0-rc1
 ```
 
 This runs:

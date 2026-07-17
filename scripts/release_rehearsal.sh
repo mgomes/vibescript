@@ -3,13 +3,13 @@ set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
   echo "usage: scripts/release_rehearsal.sh <version>" >&2
-  echo "example: scripts/release_rehearsal.sh v0.19.0" >&2
+  echo "example: scripts/release_rehearsal.sh v0.19.0 or v1.0.0-rc1" >&2
   exit 2
 fi
 
 version="$1"
-if [[ ! "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "invalid version '${version}': expected vMAJOR.MINOR.PATCH" >&2
+if [[ ! "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]; then
+  echo "invalid version '${version}': expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rcN" >&2
   exit 2
 fi
 
