@@ -865,18 +865,18 @@ func reassignmentConflicts(current, next *TypeExpr, resolve namedTypeResolver) b
 	return typeExprsDisjoint(current, next, resolve)
 }
 
-// narrowLocalArms rebinds a local to the subset of its known arms that keep.
-// Unknown, poisoned, and any-typed locals stay unknown, a filter that changes
-// nothing binds nothing, and a filter that would empty the fact (a statically
-// dead branch) leaves it untouched rather than inventing a type.
-func (c *scriptChecker) narrowLocalArms(name string, keep func(*TypeExpr) bool) {
+// narrowLocalArms rebinds a local to the subset of its known arms that keep
+// and reports whether that subset is reachable. Unknown, poisoned, and
+// any-typed locals stay unknown, and a filter that changes nothing binds
+// nothing. An empty subset proves the requested outcome cannot occur.
+func (c *scriptChecker) narrowLocalArms(name string, keep func(*TypeExpr) bool) bool {
 	current := c.localTypeFor(name)
 	if current == nil {
-		return
+		return true
 	}
 	arms, ok := typeExprArms(current, 0)
 	if !ok || len(arms) == 0 {
-		return
+		return true
 	}
 	kept := make([]*TypeExpr, 0, len(arms))
 	for _, arm := range arms {
@@ -884,23 +884,26 @@ func (c *scriptChecker) narrowLocalArms(name string, keep func(*TypeExpr) bool) 
 			kept = append(kept, arm)
 		}
 	}
-	if len(kept) == 0 || len(kept) == len(arms) {
-		return
+	if len(kept) == 0 {
+		return false
+	}
+	if len(kept) == len(arms) {
+		return true
 	}
 	if refined := unionTypeExprs(kept...); refined != nil {
 		c.bindLocalType(name, refined)
 	}
+	return true
 }
 
 // narrowLocalTruthiness refines a local after a truthiness test: the truthy
 // path drops nil arms, and the falsy path keeps only arms that can be falsy
 // (nil, and bool for false).
-func (c *scriptChecker) narrowLocalTruthiness(name string, truthy bool) {
+func (c *scriptChecker) narrowLocalTruthiness(name string, truthy bool) bool {
 	if truthy {
-		c.narrowLocalArms(name, func(arm *TypeExpr) bool { return arm.Kind != TypeNil })
-		return
+		return c.narrowLocalArms(name, func(arm *TypeExpr) bool { return arm.Kind != TypeNil })
 	}
-	c.narrowLocalArms(name, func(arm *TypeExpr) bool {
+	return c.narrowLocalArms(name, func(arm *TypeExpr) bool {
 		if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
 			// Runtime shape values are always truthy.
 			return false
@@ -915,35 +918,34 @@ func (c *scriptChecker) narrowLocalTruthiness(name string, truthy bool) {
 // is always sound — a nil receiver or operand answers the test itself — but
 // the nil-only direction trusts the test's positive answer, which a class
 // instance can forge by overriding nil? or ==, so named arms disable it.
-func (c *scriptChecker) narrowLocalNilness(name string, isNil bool) {
+func (c *scriptChecker) narrowLocalNilness(name string, isNil bool) bool {
 	if !isNil {
-		c.narrowLocalArms(name, func(arm *TypeExpr) bool { return arm.Kind != TypeNil })
-		return
+		return c.narrowLocalArms(name, func(arm *TypeExpr) bool { return arm.Kind != TypeNil })
 	}
 	arms, ok := typeExprArms(c.localTypeFor(name), 0)
 	if !ok {
-		return
+		return true
 	}
 	for _, arm := range arms {
 		if arm.Kind == TypeEnum {
-			return
+			return true
 		}
 	}
-	c.narrowLocalArms(name, func(arm *TypeExpr) bool { return arm.Kind == TypeNil })
+	return c.narrowLocalArms(name, func(arm *TypeExpr) bool { return arm.Kind == TypeNil })
 }
 
 // narrowNilPredicateMember narrows a bare `x.nil?` receiver. Safe navigation
 // is excluded: `x&.nil?` yields nil (falsy) for a nil receiver, so its falsy
 // path does not prove the receiver non-nil.
-func (c *scriptChecker) narrowNilPredicateMember(member *MemberExpr, truthy bool) {
+func (c *scriptChecker) narrowNilPredicateMember(member *MemberExpr, truthy bool) bool {
 	if member == nil || member.Safe || member.Property != "nil?" {
-		return
+		return true
 	}
 	ident, ok := member.Object.(*Identifier)
 	if !ok {
-		return
+		return true
 	}
-	c.narrowLocalNilness(ident.Name, truthy)
+	return c.narrowLocalNilness(ident.Name, truthy)
 }
 
 // knownUniversalNilPredicateMember reports whether a plain local's nil?
@@ -1137,40 +1139,9 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		}
 		return c.binaryOperationOutcome(typed.Operator, left, right).result
 	case *ConditionalExpr:
-		if truthy, known := c.inferredConditionTruthiness(typed.Condition); known {
-			if truthy {
-				return c.inferExpressionType(typed.Consequent)
-			}
-			return c.inferExpressionType(typed.Alternate)
-		}
-		return c.inferBranchUnionType(typed.Consequent, typed.Alternate)
+		return c.inferConditionalExpressionType(typed)
 	case *IfExpr:
-		// Decided arms mirror the walk's reachability: a false condition's
-		// arm never runs, and a true condition ends the chain, so only the
-		// arms that can produce the value join the union.
-		branches := make([]Expression, 0, len(typed.ElseIf)+2)
-		chainDecided := false
-		appendReachableArm := func(condition, result Expression) {
-			truthy, known := c.inferredConditionTruthiness(condition)
-			if known && !truthy {
-				return
-			}
-			branches = append(branches, result)
-			if known {
-				chainDecided = true
-			}
-		}
-		appendReachableArm(typed.Condition, typed.Consequent)
-		for _, branch := range typed.ElseIf {
-			if chainDecided {
-				break
-			}
-			appendReachableArm(branch.Condition, branch.Result)
-		}
-		if !chainDecided {
-			branches = append(branches, typed.Alternate)
-		}
-		return c.inferBranchUnionType(branches...)
+		return c.inferIfExpressionType(typed)
 	case *RescueExpr:
 		return c.inferBranchUnionType(typed.Body, typed.Fallback)
 	case *CallExpr:
@@ -1179,6 +1150,55 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		return c.inferIndexExprType(typed)
 	}
 	return nil
+}
+
+func (c *scriptChecker) inferConditionalExpressionType(expr *ConditionalExpr) *TypeExpr {
+	baseScopeState := c.snapshotScopeState()
+	defer c.restoreScopeState(baseScopeState)
+
+	branches := make([]*TypeExpr, 0, 2)
+	if c.applyConditionOutcomeEffects(expr.Condition, true, nil) {
+		branches = append(branches, c.inferExpressionType(expr.Consequent))
+	}
+	c.restoreScopeState(baseScopeState)
+	if c.applyConditionOutcomeEffects(expr.Condition, false, nil) {
+		branches = append(branches, c.inferExpressionType(expr.Alternate))
+	}
+	return unionTypeExprs(branches...)
+}
+
+func (c *scriptChecker) inferIfExpressionType(expr *IfExpr) *TypeExpr {
+	baseScopeState := c.snapshotScopeState()
+	defer c.restoreScopeState(baseScopeState)
+
+	branches := make([]*TypeExpr, 0, len(expr.ElseIf)+2)
+	appendBranch := func(result Expression) {
+		if result == nil {
+			branches = append(branches, checkTypeNil)
+			return
+		}
+		branches = append(branches, c.inferExpressionType(result))
+	}
+	collectCondition := func(condition, result Expression) bool {
+		conditionScopeState := c.snapshotScopeState()
+		if c.applyConditionOutcomeEffects(condition, true, nil) {
+			appendBranch(result)
+		}
+		c.restoreScopeState(conditionScopeState)
+		return c.applyConditionOutcomeEffects(condition, false, nil)
+	}
+
+	falseReachable := collectCondition(expr.Condition, expr.Consequent)
+	for _, branch := range expr.ElseIf {
+		if !falseReachable {
+			break
+		}
+		falseReachable = collectCondition(branch.Condition, branch.Result)
+	}
+	if falseReachable {
+		appendBranch(expr.Alternate)
+	}
+	return unionTypeExprs(branches...)
 }
 
 // inferredConditionTruthiness resolves a condition's truthiness from static

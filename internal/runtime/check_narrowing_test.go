@@ -240,6 +240,167 @@ end
 	}
 }
 
+func TestCheckNullableNarrowingSkipsUnreachableOutcomes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "if statement contradictory true outcome",
+			source: `
+def f(x: int?)
+  if x.nil? && x
+    y = -x
+  end
+  y = -x
+end
+`,
+		},
+		{
+			name: "if statement contradictory false outcome",
+			source: `
+def f(x: int?)
+  if x.nil? || x
+    0
+  else
+    y = -"bad"
+  end
+  y = -x
+end
+`,
+		},
+		{
+			name: "implicit return skips contradictory true outcome",
+			source: `
+def f(x: int?) -> int
+  if x.nil? && x
+    "bad"
+  else
+    1
+  end
+end
+`,
+		},
+		{
+			name: "implicit return skips contradictory false outcome",
+			source: `
+def f(x: int?) -> int
+  if x.nil? || x
+    1
+  else
+    "bad"
+  end
+end
+`,
+		},
+		{
+			name: "if expression contradictory true outcome",
+			source: `
+def f(x: int?)
+  y = if x.nil? && x
+    -x
+  else
+    0
+  end
+  y = -x
+end
+`,
+		},
+		{
+			name: "if expression type skips contradictory true outcome",
+			source: `
+def f(x: int?) -> int
+  return (if x.nil? && x
+    "bad"
+  else
+    1
+  end)
+end
+`,
+		},
+		{
+			name: "ternary contradictory false outcome",
+			source: `
+def f(x: int?)
+  y = (x.nil? || x) ? 0 : -"bad"
+  y = -x
+end
+`,
+		},
+		{
+			name: "ternary type skips contradictory true outcome",
+			source: `
+def f(x: int?) -> int
+  (x.nil? && x) ? "bad" : 1
+end
+`,
+		},
+		{
+			name: "short circuit contradictory left outcome",
+			source: `
+def f(x: int?)
+  (x.nil? && x) && -x
+  y = -x
+end
+`,
+		},
+		{
+			name: "while contradictory true outcome",
+			source: `
+def f(x: int?)
+  while x.nil? && x
+    y = -x
+    break
+  end
+  y = -x
+end
+`,
+		},
+		{
+			name: "until contradictory false outcome",
+			source: `
+def f(x: int?)
+  until x.nil? || x
+    y = -"bad"
+    break
+  end
+  y = -x
+end
+`,
+		},
+		{
+			name: "while literal false skips body",
+			source: `
+def f() -> int
+  while false
+    return "bad"
+  end
+  1
+end
+`,
+		},
+		{
+			name: "until literal true skips body",
+			source: `
+def f() -> int
+  until true
+    return "bad"
+  end
+  1
+end
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireNoCheckWarnings(t, compileScriptDefault(t, tc.source))
+		})
+	}
+}
+
 func TestCheckNullableNarrowingStaysConservative(t *testing.T) {
 	t.Parallel()
 

@@ -170,6 +170,17 @@ type conditionDecision struct {
 	known  bool
 }
 
+func conditionDecisionFromOutcomes(truthy, known, trueReachable, falseReachable bool) conditionDecision {
+	switch {
+	case trueReachable && !falseReachable:
+		return conditionDecision{truthy: true, known: true}
+	case !trueReachable && falseReachable:
+		return conditionDecision{truthy: false, known: true}
+	default:
+		return conditionDecision{truthy: truthy, known: known}
+	}
+}
+
 type reachableFunction struct {
 	label        string
 	fn           *ScriptFunction
@@ -401,31 +412,41 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.recordLocalBindings(typed.Body)
 	case *WhileStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
-		if c.isolatedCollectInference {
-			c.recordLiveStatementNames(typed.Body)
-			c.degradeLocalTypesForBindings(typed.Body)
+		bodyReachable := c.conditionOutcomeReachable(typed.Condition, true)
+		if bodyReachable {
+			if c.isolatedCollectInference {
+				c.recordLiveStatementNames(typed.Body)
+				c.degradeLocalTypesForBindings(typed.Body)
+			}
+			bodyState := c.snapshotModuleCollectionState()
+			bodyScopeState := c.snapshotScopeState()
+			if c.applyConditionOutcomeEffects(typed.Condition, true, c.collectRequiredModuleExportsFromExpression) {
+				c.mutationRegionDepth++
+				c.collectRequiredModuleExportsFromStatements(typed.Body)
+				c.mutationRegionDepth--
+			}
+			c.restoreModuleCollectionState(bodyState)
+			c.restoreScopeState(bodyScopeState)
 		}
-		bodyState := c.snapshotModuleCollectionState()
-		bodyScopeState := c.snapshotScopeState()
-		c.mutationRegionDepth++
-		c.collectRequiredModuleExportsFromStatements(typed.Body)
-		c.mutationRegionDepth--
-		c.restoreModuleCollectionState(bodyState)
-		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
 	case *UntilStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
-		if c.isolatedCollectInference {
-			c.recordLiveStatementNames(typed.Body)
-			c.degradeLocalTypesForBindings(typed.Body)
+		bodyReachable := c.conditionOutcomeReachable(typed.Condition, false)
+		if bodyReachable {
+			if c.isolatedCollectInference {
+				c.recordLiveStatementNames(typed.Body)
+				c.degradeLocalTypesForBindings(typed.Body)
+			}
+			bodyState := c.snapshotModuleCollectionState()
+			bodyScopeState := c.snapshotScopeState()
+			if c.applyConditionOutcomeEffects(typed.Condition, false, c.collectRequiredModuleExportsFromExpression) {
+				c.mutationRegionDepth++
+				c.collectRequiredModuleExportsFromStatements(typed.Body)
+				c.mutationRegionDepth--
+			}
+			c.restoreModuleCollectionState(bodyState)
+			c.restoreScopeState(bodyScopeState)
 		}
-		bodyState := c.snapshotModuleCollectionState()
-		bodyScopeState := c.snapshotScopeState()
-		c.mutationRegionDepth++
-		c.collectRequiredModuleExportsFromStatements(typed.Body)
-		c.mutationRegionDepth--
-		c.restoreModuleCollectionState(bodyState)
-		c.restoreScopeState(bodyScopeState)
 		c.recordLocalBindings(typed.Body)
 	case *TryStmt:
 		baseState := c.snapshotModuleCollectionState()
@@ -1891,28 +1912,37 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		conditionScopeState := c.snapshotScopeState()
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
 		fallthroughScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
+		finish := func() {
+			c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
+			c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+			c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
+		}
 
 		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
-		if c.implicitIfDecisions != nil {
-			c.implicitIfDecisions[typed] = append(c.implicitIfDecisions[typed][:0],
-				conditionDecision{truthy: conditionTruthy, known: conditionKnown})
+		trueReachable := !conditionKnown || conditionTruthy
+		if trueReachable {
+			trueReachable = c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
 		}
-		if !conditionKnown || conditionTruthy {
-			c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
+		if trueReachable {
 			if c.checkStatements(function, returnType, typed.Consequent) {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
-			if conditionKnown {
-				c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
-				c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
-				c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
-				return
-			}
 		}
 		c.restoreRuntimeState(conditionRuntimeState)
 		c.restoreScopeState(conditionScopeState)
-		c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
+		falseReachable := !conditionKnown || !conditionTruthy
+		if falseReachable {
+			falseReachable = c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
+		}
+		if c.implicitIfDecisions != nil {
+			c.implicitIfDecisions[typed] = append(c.implicitIfDecisions[typed][:0],
+				conditionDecisionFromOutcomes(conditionTruthy, conditionKnown, trueReachable, falseReachable))
+		}
+		if !falseReachable {
+			finish()
+			return
+		}
 		falseRuntimeState := c.snapshotRuntimeState()
 		falseScopeState := c.snapshotScopeState()
 		for _, elseIf := range typed.ElseIf {
@@ -1923,26 +1953,30 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			conditionRuntimeState = c.snapshotRuntimeState()
 			conditionScopeState = c.snapshotScopeState()
 			branchTruthy, branchKnown := c.inferredConditionTruthiness(elseIf.Condition)
-			if c.implicitIfDecisions != nil {
-				c.implicitIfDecisions[typed] = append(c.implicitIfDecisions[typed],
-					conditionDecision{truthy: branchTruthy, known: branchKnown})
+			trueReachable = !branchKnown || branchTruthy
+			if trueReachable {
+				trueReachable = c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, true)
 			}
-			if !branchKnown || branchTruthy {
-				c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, true)
+			if trueReachable {
 				if c.checkStatements(function, returnType, elseIf.Consequent) {
 					fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 					fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 				}
-				if branchKnown {
-					c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
-					c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
-					c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
-					return
-				}
 			}
 			c.restoreRuntimeState(conditionRuntimeState)
 			c.restoreScopeState(conditionScopeState)
-			c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, false)
+			falseReachable = !branchKnown || !branchTruthy
+			if falseReachable {
+				falseReachable = c.collectRuntimeConditionOutcomeEffects(elseIf.Condition, false)
+			}
+			if c.implicitIfDecisions != nil {
+				c.implicitIfDecisions[typed] = append(c.implicitIfDecisions[typed],
+					conditionDecisionFromOutcomes(branchTruthy, branchKnown, trueReachable, falseReachable))
+			}
+			if !falseReachable {
+				finish()
+				return
+			}
 			falseRuntimeState = c.snapshotRuntimeState()
 			falseScopeState = c.snapshotScopeState()
 		}
@@ -1952,9 +1986,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 			fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 		}
-		c.mergeRuntimeStates(baseRuntimeState, fallthroughRuntimeStates)
-		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
-		c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
+		finish()
 	case *ForStmt:
 		// The iterable evaluates once with pre-loop facts before any body
 		// iteration, so it is checked (and the element type captured) before
@@ -1979,33 +2011,51 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.recordLocalBindings(typed.Body)
 	case *WhileStmt:
 		// The condition's first evaluation sees pre-loop facts, so it is
-		// checked before body-assigned locals degrade to unknown.
+		// checked before body-assigned locals degrade to unknown. Prove the
+		// body outcome reachable against those facts before degradation, then
+		// reapply it to the conservative loop-body state for the actual walk.
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
-		c.recordLiveStatementNames(typed.Body)
-		c.degradeLocalTypesForBindings(typed.Body)
-		bodyRuntimeState := c.snapshotRuntimeState()
-		bodyScopeState := c.snapshotScopeState()
-		c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
-		c.mutationRegionDepth++
-		c.checkStatements(function, returnType, typed.Body)
-		c.mutationRegionDepth--
-		c.restoreRuntimeState(bodyRuntimeState)
-		c.restoreScopeState(bodyScopeState)
+		conditionRuntimeState := c.snapshotRuntimeState()
+		conditionScopeState := c.snapshotScopeState()
+		bodyReachable := c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
+		c.restoreRuntimeState(conditionRuntimeState)
+		c.restoreScopeState(conditionScopeState)
+		if bodyReachable {
+			c.recordLiveStatementNames(typed.Body)
+			c.degradeLocalTypesForBindings(typed.Body)
+			bodyRuntimeState := c.snapshotRuntimeState()
+			bodyScopeState := c.snapshotScopeState()
+			if c.collectRuntimeConditionOutcomeEffects(typed.Condition, true) {
+				c.mutationRegionDepth++
+				c.checkStatements(function, returnType, typed.Body)
+				c.mutationRegionDepth--
+			}
+			c.restoreRuntimeState(bodyRuntimeState)
+			c.restoreScopeState(bodyScopeState)
+		}
 		c.recordLocalBindings(typed.Body)
 	case *UntilStmt:
 		c.checkExpression(function, typed.Condition)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
-		c.recordLiveStatementNames(typed.Body)
-		c.degradeLocalTypesForBindings(typed.Body)
-		bodyRuntimeState := c.snapshotRuntimeState()
-		bodyScopeState := c.snapshotScopeState()
-		c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
-		c.mutationRegionDepth++
-		c.checkStatements(function, returnType, typed.Body)
-		c.mutationRegionDepth--
-		c.restoreRuntimeState(bodyRuntimeState)
-		c.restoreScopeState(bodyScopeState)
+		conditionRuntimeState := c.snapshotRuntimeState()
+		conditionScopeState := c.snapshotScopeState()
+		bodyReachable := c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
+		c.restoreRuntimeState(conditionRuntimeState)
+		c.restoreScopeState(conditionScopeState)
+		if bodyReachable {
+			c.recordLiveStatementNames(typed.Body)
+			c.degradeLocalTypesForBindings(typed.Body)
+			bodyRuntimeState := c.snapshotRuntimeState()
+			bodyScopeState := c.snapshotScopeState()
+			if c.collectRuntimeConditionOutcomeEffects(typed.Condition, false) {
+				c.mutationRegionDepth++
+				c.checkStatements(function, returnType, typed.Body)
+				c.mutationRegionDepth--
+			}
+			c.restoreRuntimeState(bodyRuntimeState)
+			c.restoreScopeState(bodyScopeState)
+		}
 		c.recordLocalBindings(typed.Body)
 	case *TryStmt:
 		deferReturnType := returnType != nil && len(typed.Ensure) > 0 && !blockAlwaysExits(typed.Ensure)
@@ -2226,52 +2276,87 @@ func (c *scriptChecker) checkDeferredReturnSitesAfterEnsure(function string, ret
 	}
 }
 
-// collectRuntimeConditionOutcomeEffects applies what a condition's known
-// outcome implies to the current branch state: require exports that must have
-// bound for the outcome to hold, and narrowed facts for locals the outcome
-// constrains. Truthiness tests, explicit nil comparisons, nil?, negation, and
-// short-circuit compositions narrow in both directions; everything else
-// leaves facts untouched.
-func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, truthy bool) {
+// collectRuntimeConditionOutcomeEffects applies what a condition's requested
+// outcome implies to the current branch state and reports whether that outcome
+// remains reachable. Require exports that must have bound for the outcome to
+// hold and narrowed local facts are retained only by callers that observe a
+// reachable result. Truthiness tests, explicit nil comparisons, nil?,
+// negation, and short-circuit compositions narrow in both directions;
+// everything else leaves facts untouched.
+func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, truthy bool) bool {
+	return c.applyConditionOutcomeEffects(expr, truthy, c.collectRuntimeRequireCallExportsFromExpression)
+}
+
+// conditionOutcomeReachable tests an outcome using the same narrowing rules
+// without retaining facts or collecting runtime module effects.
+func (c *scriptChecker) conditionOutcomeReachable(expr Expression, truthy bool) bool {
+	scopeState := c.snapshotScopeState()
+	reachable := c.applyConditionOutcomeEffects(expr, truthy, nil)
+	c.restoreScopeState(scopeState)
+	return reachable
+}
+
+func (c *scriptChecker) applyConditionOutcomeEffects(expr Expression, truthy bool, collectRequired func(Expression)) bool {
+	if inferred, known := c.inferredConditionTruthiness(expr); known && inferred != truthy {
+		return false
+	}
+
 	switch typed := expr.(type) {
 	case *Identifier:
-		c.narrowLocalTruthiness(typed.Name, truthy)
+		return c.narrowLocalTruthiness(typed.Name, truthy)
 	case *UnaryExpr:
 		if typed.Operator == tokenBang {
-			c.collectRuntimeConditionOutcomeEffects(typed.Right, !truthy)
+			return c.applyConditionOutcomeEffects(typed.Right, !truthy, collectRequired)
 		}
 	case *MemberExpr:
-		c.narrowNilPredicateMember(typed, truthy)
+		return c.narrowNilPredicateMember(typed, truthy)
 	case *CallExpr:
 		if member, ok := typed.Callee.(*MemberExpr); ok &&
 			len(typed.Args) == 0 && len(typed.KwArgs) == 0 &&
 			typed.Block == nil && typed.BlockArg == nil {
-			c.narrowNilPredicateMember(member, truthy)
+			return c.narrowNilPredicateMember(member, truthy)
 		}
 	case *BinaryExpr:
 		switch typed.Operator {
 		case tokenAnd:
 			if truthy {
-				c.collectRuntimeRequireCallExportsFromExpression(typed.Right)
-				c.collectRuntimeConditionOutcomeEffects(typed.Left, true)
-				c.collectRuntimeConditionOutcomeEffects(typed.Right, true)
-			} else if binaryRightAlwaysEvaluates(typed) {
-				c.collectRuntimeConditionOutcomeEffects(typed.Right, false)
+				if !c.applyConditionOutcomeEffects(typed.Left, true, collectRequired) {
+					return false
+				}
+				if collectRequired != nil {
+					collectRequired(typed.Right)
+				}
+				return c.applyConditionOutcomeEffects(typed.Right, true, collectRequired)
+			}
+			if binaryRightAlwaysEvaluates(typed) || c.binaryRightAlwaysEvaluatesInferred(typed) {
+				if !c.applyConditionOutcomeEffects(typed.Left, true, collectRequired) {
+					return false
+				}
+				return c.applyConditionOutcomeEffects(typed.Right, false, collectRequired)
 			}
 		case tokenOr:
 			if !truthy {
-				c.collectRuntimeRequireCallExportsFromExpression(typed.Right)
-				c.collectRuntimeConditionOutcomeEffects(typed.Left, false)
-				c.collectRuntimeConditionOutcomeEffects(typed.Right, false)
-			} else if binaryRightAlwaysEvaluates(typed) {
-				c.collectRuntimeConditionOutcomeEffects(typed.Right, true)
+				if !c.applyConditionOutcomeEffects(typed.Left, false, collectRequired) {
+					return false
+				}
+				if collectRequired != nil {
+					collectRequired(typed.Right)
+				}
+				return c.applyConditionOutcomeEffects(typed.Right, false, collectRequired)
+			}
+			if binaryRightAlwaysEvaluates(typed) || c.binaryRightAlwaysEvaluatesInferred(typed) {
+				if !c.applyConditionOutcomeEffects(typed.Left, false, collectRequired) {
+					return false
+				}
+				return c.applyConditionOutcomeEffects(typed.Right, true, collectRequired)
 			}
 		case tokenEQ, tokenNotEQ:
 			if name, ok := identifierNilComparison(typed); ok {
-				c.narrowLocalNilness(name, (typed.Operator == tokenEQ) == truthy)
+				return c.narrowLocalNilness(name, (typed.Operator == tokenEQ) == truthy)
 			}
 		}
 	}
+	return true
 }
 
 // identifierNilComparison matches `x == nil`, `nil == x`, `x != nil`, and
@@ -2460,14 +2545,20 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			// short-circuit outcome, so the left's implied narrowing holds
 			// while the right evaluates (`x && x.length`). The surrounding
 			// snapshot/merge scopes the narrowed facts to this region.
+			rightReachable := true
 			switch typed.Operator {
 			case tokenAnd:
-				c.collectRuntimeConditionOutcomeEffects(typed.Left, true)
+				rightReachable = c.collectRuntimeConditionOutcomeEffects(typed.Left, true)
 			case tokenOr:
-				c.collectRuntimeConditionOutcomeEffects(typed.Left, false)
+				rightReachable = c.collectRuntimeConditionOutcomeEffects(typed.Left, false)
 			}
-			c.checkExpressionWithAuto(function, typed.Right, true)
-			if !rightAlwaysRuns {
+			if rightReachable {
+				c.checkExpressionWithAuto(function, typed.Right, true)
+			}
+			if !rightReachable {
+				c.restoreRuntimeState(state)
+				c.restoreScopeState(scopeState)
+			} else if !rightAlwaysRuns {
 				// A short-circuited right operand may not run, so its
 				// runtime effects roll back and its type facts (a shovel
 				// append, for example) merge as a branch join instead of
@@ -2494,22 +2585,31 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		conditionScopeState := c.snapshotScopeState()
 		branchRuntimeStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
 		branchScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
+		finish := func() {
+			c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+			c.mergeScopeStates(baseScopeState, branchScopeStates)
+		}
 
 		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
-		if !conditionKnown || conditionTruthy {
-			c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
+		trueReachable := !conditionKnown || conditionTruthy
+		if trueReachable {
+			trueReachable = c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
+		}
+		if trueReachable {
 			c.checkExpressionWithAuto(function, typed.Consequent, true)
 			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
-			if conditionKnown {
-				c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
-				c.mergeScopeStates(baseScopeState, branchScopeStates)
-				return
-			}
 		}
 		c.restoreRuntimeState(conditionRuntimeState)
 		c.restoreScopeState(conditionScopeState)
-		c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
+		falseReachable := !conditionKnown || !conditionTruthy
+		if falseReachable {
+			falseReachable = c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
+		}
+		if !falseReachable {
+			finish()
+			return
+		}
 		falseRuntimeState := c.snapshotRuntimeState()
 		falseScopeState := c.snapshotScopeState()
 		for _, branch := range typed.ElseIf {
@@ -2520,20 +2620,25 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			conditionRuntimeState = c.snapshotRuntimeState()
 			conditionScopeState = c.snapshotScopeState()
 			branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
-			if !branchKnown || branchTruthy {
-				c.collectRuntimeConditionOutcomeEffects(branch.Condition, true)
+			trueReachable = !branchKnown || branchTruthy
+			if trueReachable {
+				trueReachable = c.collectRuntimeConditionOutcomeEffects(branch.Condition, true)
+			}
+			if trueReachable {
 				c.checkExpressionWithAuto(function, branch.Result, true)
 				branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 				branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
-				if branchKnown {
-					c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
-					c.mergeScopeStates(baseScopeState, branchScopeStates)
-					return
-				}
 			}
 			c.restoreRuntimeState(conditionRuntimeState)
 			c.restoreScopeState(conditionScopeState)
-			c.collectRuntimeConditionOutcomeEffects(branch.Condition, false)
+			falseReachable = !branchKnown || !branchTruthy
+			if falseReachable {
+				falseReachable = c.collectRuntimeConditionOutcomeEffects(branch.Condition, false)
+			}
+			if !falseReachable {
+				finish()
+				return
+			}
 			falseRuntimeState = c.snapshotRuntimeState()
 			falseScopeState = c.snapshotScopeState()
 		}
@@ -2542,8 +2647,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkExpressionWithAuto(function, typed.Alternate, true)
 		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
-		c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
-		c.mergeScopeStates(baseScopeState, branchScopeStates)
+		finish()
 	case *RangeExpr:
 		c.checkExpressionWithAuto(function, typed.Start, true)
 		c.checkExpressionWithAuto(function, typed.End, true)
@@ -2577,31 +2681,39 @@ func (c *scriptChecker) checkConditionalExpression(function string, expr *Condit
 	conditionScopeState := c.snapshotScopeState()
 	branchRuntimeStates := make([]checkRuntimeState, 0, 2)
 	branchScopeStates := make([]checkScopeState, 0, 2)
+	finish := func() {
+		c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+		c.mergeScopeStates(baseScopeState, branchScopeStates)
+	}
 
 	conditionTruthy, conditionKnown := c.inferredConditionTruthiness(expr.Condition)
-	if !conditionKnown || conditionTruthy {
-		c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
+	trueReachable := !conditionKnown || conditionTruthy
+	if trueReachable {
+		trueReachable = c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
+	}
+	if trueReachable {
 		c.checkExpressionWithAuto(function, expr.Consequent, true)
 		c.collectRuntimeRequireCallExportsFromExpression(expr.Consequent)
 		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
-		if conditionKnown {
-			c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
-			c.mergeScopeStates(baseScopeState, branchScopeStates)
-			return
-		}
 	}
 
 	c.restoreRuntimeState(conditionRuntimeState)
 	c.restoreScopeState(conditionScopeState)
-	c.collectRuntimeConditionOutcomeEffects(expr.Condition, false)
+	falseReachable := !conditionKnown || !conditionTruthy
+	if falseReachable {
+		falseReachable = c.collectRuntimeConditionOutcomeEffects(expr.Condition, false)
+	}
+	if !falseReachable {
+		finish()
+		return
+	}
 	c.checkExpressionWithAuto(function, expr.Alternate, true)
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Alternate)
 	branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
 
-	c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
-	c.mergeScopeStates(baseScopeState, branchScopeStates)
+	finish()
 }
 
 func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr, autoCall bool) {
