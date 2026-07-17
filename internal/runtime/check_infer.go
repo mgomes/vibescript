@@ -529,6 +529,30 @@ func (c *scriptChecker) restoreLocalTypes(state []checkTypeFrame) {
 	}
 }
 
+// applyLoopEntryTypeRefinements overlays only facts changed by a condition
+// outcome. Loop bodies use it after degrading their assignments so the first
+// entry's proven scalar refinement remains visible without restoring
+// unrelated first-iteration facts or container interiors that later
+// iterations may mutate. The degraded state still survives the loop.
+func (c *scriptChecker) applyLoopEntryTypeRefinements(base, refined []checkTypeFrame) {
+	for i, refinedFrame := range refined {
+		if i >= len(base) || i >= len(c.localTypes) {
+			continue
+		}
+		for name, refinedType := range refinedFrame {
+			baseType, ok := base[i][name]
+			if !ok || refinedType == nil || refinedType == baseType ||
+				typeExprHasContainerArm(refinedType) {
+				continue
+			}
+			if c.localTypes[i] == nil {
+				c.localTypes[i] = make(checkTypeFrame)
+			}
+			c.localTypes[i][name] = refinedType
+		}
+	}
+}
+
 // mergeLocalTypeStates joins the branch type states into the live frames:
 // each local becomes the union of its type on every fall-through path. A path
 // that never bound a name contributes nil (branch-assigned locals are

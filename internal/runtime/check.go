@@ -412,7 +412,8 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.recordLocalBindings(typed.Body)
 	case *WhileStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
-		bodyReachable := c.conditionOutcomeReachable(typed.Condition, true)
+		conditionScopeState := c.snapshotScopeState()
+		conditionRefinedScopeState, bodyReachable := c.probeConditionOutcome(typed.Condition, true)
 		if bodyReachable {
 			if c.isolatedCollectInference {
 				c.recordLiveStatementNames(typed.Body)
@@ -420,6 +421,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			}
 			bodyState := c.snapshotModuleCollectionState()
 			bodyScopeState := c.snapshotScopeState()
+			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)
 			if c.applyConditionOutcomeEffects(typed.Condition, true, c.collectRequiredModuleExportsFromExpression) {
 				c.mutationRegionDepth++
 				c.collectRequiredModuleExportsFromStatements(typed.Body)
@@ -431,7 +433,8 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.recordLocalBindings(typed.Body)
 	case *UntilStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
-		bodyReachable := c.conditionOutcomeReachable(typed.Condition, false)
+		conditionScopeState := c.snapshotScopeState()
+		conditionRefinedScopeState, bodyReachable := c.probeConditionOutcome(typed.Condition, false)
 		if bodyReachable {
 			if c.isolatedCollectInference {
 				c.recordLiveStatementNames(typed.Body)
@@ -439,6 +442,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			}
 			bodyState := c.snapshotModuleCollectionState()
 			bodyScopeState := c.snapshotScopeState()
+			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)
 			if c.applyConditionOutcomeEffects(typed.Condition, false, c.collectRequiredModuleExportsFromExpression) {
 				c.mutationRegionDepth++
 				c.collectRequiredModuleExportsFromStatements(typed.Body)
@@ -2019,6 +2023,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		conditionRuntimeState := c.snapshotRuntimeState()
 		conditionScopeState := c.snapshotScopeState()
 		bodyReachable := c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
+		conditionRefinedScopeState := c.snapshotScopeState()
 		c.restoreRuntimeState(conditionRuntimeState)
 		c.restoreScopeState(conditionScopeState)
 		if bodyReachable {
@@ -2026,6 +2031,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.degradeLocalTypesForBindings(typed.Body)
 			bodyRuntimeState := c.snapshotRuntimeState()
 			bodyScopeState := c.snapshotScopeState()
+			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)
 			if c.collectRuntimeConditionOutcomeEffects(typed.Condition, true) {
 				c.mutationRegionDepth++
 				c.checkStatements(function, returnType, typed.Body)
@@ -2041,6 +2047,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		conditionRuntimeState := c.snapshotRuntimeState()
 		conditionScopeState := c.snapshotScopeState()
 		bodyReachable := c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
+		conditionRefinedScopeState := c.snapshotScopeState()
 		c.restoreRuntimeState(conditionRuntimeState)
 		c.restoreScopeState(conditionScopeState)
 		if bodyReachable {
@@ -2048,6 +2055,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.degradeLocalTypesForBindings(typed.Body)
 			bodyRuntimeState := c.snapshotRuntimeState()
 			bodyScopeState := c.snapshotScopeState()
+			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)
 			if c.collectRuntimeConditionOutcomeEffects(typed.Condition, false) {
 				c.mutationRegionDepth++
 				c.checkStatements(function, returnType, typed.Body)
@@ -2287,13 +2295,15 @@ func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, t
 	return c.applyConditionOutcomeEffects(expr, truthy, c.collectRuntimeRequireCallExportsFromExpression)
 }
 
-// conditionOutcomeReachable tests an outcome using the same narrowing rules
-// without retaining facts or collecting runtime module effects.
-func (c *scriptChecker) conditionOutcomeReachable(expr Expression, truthy bool) bool {
+// probeConditionOutcome tests an outcome using the same narrowing rules and
+// returns its refined scope without retaining facts or collecting runtime
+// module effects.
+func (c *scriptChecker) probeConditionOutcome(expr Expression, truthy bool) (checkScopeState, bool) {
 	scopeState := c.snapshotScopeState()
 	reachable := c.applyConditionOutcomeEffects(expr, truthy, nil)
+	refinedScopeState := c.snapshotScopeState()
 	c.restoreScopeState(scopeState)
-	return reachable
+	return refinedScopeState, reachable
 }
 
 func (c *scriptChecker) applyConditionOutcomeEffects(expr Expression, truthy bool, collectRequired func(Expression)) bool {

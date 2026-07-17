@@ -196,6 +196,30 @@ end
 			warning: "unsupported unary - operand nil",
 		},
 		{
+			name: "while entry narrowing survives a body assignment",
+			source: `
+def f(x: int?)
+  while x.nil?
+    y = -x
+    x = 1
+  end
+end
+`,
+			warning: "unsupported unary - operand nil",
+		},
+		{
+			name: "until entry narrowing survives a body assignment",
+			source: `
+def f(x: int?)
+  until x != nil
+    y = -x
+    x = 1
+  end
+end
+`,
+			warning: "unsupported unary - operand nil",
+		},
+		{
 			name: "nullable array nil? keeps its fact for the true path",
 			source: `
 def f(values: array<int>?)
@@ -440,6 +464,32 @@ def f(x: int?)
     break
   end
   y = -x
+end
+`,
+		},
+		{
+			name: "loop assignment remains widened after exit",
+			source: `
+def f(x: int?)
+  while x.nil?
+    x = 1
+  end
+  y = -x
+end
+`,
+		},
+		{
+			name: "loop condition does not restore mutable container interiors",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { name: string }?)
+  until user.nil?
+    takes_int(user["name"])
+    user["name"] = 1
+  end
 end
 `,
 		},
