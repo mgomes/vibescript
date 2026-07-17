@@ -1000,11 +1000,6 @@ func validateFuzzStatement(context string, stmt Statement) error {
 			return err
 		}
 		return validateFuzzExpression(context+".value", s.Value)
-	case *LogicalStmt:
-		if err := validateFuzzStatement(context+".left", s.Left); err != nil {
-			return err
-		}
-		return validateFuzzStatement(context+".right", s.Right)
 	case *ExprStmt:
 		return validateFuzzExpression(context+".expr", s.Expr)
 	case *IfStmt:

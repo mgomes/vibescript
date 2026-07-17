@@ -157,80 +157,6 @@ end
 	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int | nil")
 }
 
-func TestCheckInferLogicalStatementJoinsRightHandFacts(t *testing.T) {
-	t.Parallel()
-
-	// The right-hand side of a statement-level and/or may be skipped, so a
-	// local bound there is type-or-nil afterwards, which still contradicts
-	// a disjoint boundary.
-	script := compileScript(t, `
-def takes_string(value: string)
-  value
-end
-
-def run(flag)
-  flag and x = 1
-  takes_string(x)
-end
-`)
-	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int | nil")
-
-	requireNoCheckWarnings(t, compileScript(t, `
-def takes_string(value: string)
-  value
-end
-
-def run(flag)
-  flag and x = "s"
-  takes_string(x)
-end
-`))
-}
-
-func TestCheckInferImplicitReturnHonorsInferredShortCircuit(t *testing.T) {
-	t.Parallel()
-
-	// x is a known string, so `x or 1` always returns x and the unreachable
-	// int alternative must not report.
-	requireNoCheckWarnings(t, compileScript(t, `
-def run -> string
-  x = "ok"
-  x or 1
-end
-`))
-
-	// An undecided left keeps both sides checked.
-	script := compileScript(t, `
-def run(flag) -> string
-  x = flag
-  x or 1
-end
-`)
-	requireCheckWarningContains(t, script, "return value expected string, got int")
-}
-
-func TestCheckInferForcedLogicalRightSkipsImpossiblePath(t *testing.T) {
-	t.Parallel()
-
-	// A nil left forces `or` to evaluate the right side, so the impossible
-	// skipped path (x still nil) must not corrupt the implicit return.
-	requireNoCheckWarnings(t, compileScript(t, `
-def run -> int
-  x = nil
-  x or x = 1
-end
-`))
-
-	// The forced right side's own contradiction still reports.
-	script := compileScript(t, `
-def run -> int
-  x = nil
-  x or x = "s"
-end
-`)
-	requireCheckWarningContains(t, script, "return value expected int, got string")
-}
-
 func TestCheckInferReturnTypeContradiction(t *testing.T) {
 	t.Parallel()
 
@@ -1323,11 +1249,11 @@ end
 `))
 }
 
-func TestCheckInferWordOperatorsShortCircuitInExpressions(t *testing.T) {
+func TestCheckInferSymbolicOperatorsShortCircuitInExpressions(t *testing.T) {
 	t.Parallel()
 
-	// Word-form and/or short-circuit exactly like &&/||, so a conditional
-	// append inside an expression joins with the skipped path.
+	// A conditional append inside a short-circuit expression joins with the
+	// skipped path.
 	requireNoCheckWarnings(t, compileScript(t, `
 def ints(values: array<int>)
   values
@@ -1335,7 +1261,7 @@ end
 
 def run(flag)
   values = [1]
-  (flag and (values << "bad"))
+  (flag && (values << "bad"))
   ints(values)
 end
 `))
@@ -1348,7 +1274,7 @@ end
 
 def run()
   values = [1]
-  (true and (values << "bad"))
+  (true && (values << "bad"))
   ints(values)
 end
 `)

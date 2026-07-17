@@ -108,7 +108,7 @@ end`
 	}
 }
 
-func TestParserWordBooleanKeywordArguments(t *testing.T) {
+func TestParserOrdinaryIdentifierKeywordArguments(t *testing.T) {
 	t.Parallel()
 
 	source := `def run

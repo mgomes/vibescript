@@ -35,7 +35,6 @@ type (
 	RaiseStmt      = ast.RaiseStmt
 	AliasStmt      = ast.AliasStmt
 	AssignStmt     = ast.AssignStmt
-	LogicalStmt    = ast.LogicalStmt
 	ExprStmt       = ast.ExprStmt
 	IfStmt         = ast.IfStmt
 	ForStmt        = ast.ForStmt
@@ -132,7 +131,6 @@ const (
 	tokenPlus      = ast.TokenPlus
 	tokenMinus     = ast.TokenMinus
 	tokenBang      = ast.TokenBang
-	tokenNot       = ast.TokenNot
 	tokenAsterisk  = ast.TokenAsterisk
 	tokenPower     = ast.TokenPower
 	tokenSlash     = ast.TokenSlash
@@ -152,8 +150,6 @@ const (
 	tokenNotEQ     = ast.TokenNotEQ
 	tokenAnd       = ast.TokenAnd
 	tokenOr        = ast.TokenOr
-	tokenWordAnd   = ast.TokenWordAnd
-	tokenWordOr    = ast.TokenWordOr
 	tokenAmpersand = ast.TokenAmpersand
 	tokenQuestion  = ast.TokenQuestion
 	tokenComma     = ast.TokenComma

@@ -261,9 +261,9 @@ func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
 // right sides must not produce diagnostics.
 func (c *scriptChecker) binaryRightUnreachable(expr *BinaryExpr) bool {
 	switch expr.Operator {
-	case tokenOr, tokenWordOr:
+	case tokenOr:
 		return typeExprDefinitelyTruthy(c.inferExpressionType(expr.Left))
-	case tokenAnd, tokenWordAnd:
+	case tokenAnd:
 		return typeExprIsNilOnly(c.inferExpressionType(expr.Left))
 	}
 	return false
@@ -275,69 +275,12 @@ func (c *scriptChecker) binaryRightUnreachable(expr *BinaryExpr) bool {
 // join the merge.
 func (c *scriptChecker) binaryRightAlwaysEvaluatesInferred(expr *BinaryExpr) bool {
 	switch expr.Operator {
-	case tokenAnd, tokenWordAnd:
+	case tokenAnd:
 		return typeExprDefinitelyTruthy(c.inferExpressionType(expr.Left))
-	case tokenOr, tokenWordOr:
+	case tokenOr:
 		return typeExprIsNilOnly(c.inferExpressionType(expr.Left))
 	}
 	return false
-}
-
-// logicalStatementRightAlwaysEvaluatesInferred is the statement-level twin
-// of binaryRightAlwaysEvaluatesInferred.
-func (c *scriptChecker) logicalStatementRightAlwaysEvaluatesInferred(stmt *LogicalStmt) bool {
-	left := c.inferLogicalLeftType(stmt.Left)
-	switch stmt.Operator {
-	case tokenWordAnd:
-		return typeExprDefinitelyTruthy(left)
-	case tokenWordOr:
-		return typeExprIsNilOnly(left)
-	}
-	return false
-}
-
-// logicalStatementRightUnreachable is the statement-level twin of
-// binaryRightUnreachable for `left and right` / `left or right`.
-func (c *scriptChecker) logicalStatementRightUnreachable(stmt *LogicalStmt) bool {
-	left := c.inferLogicalLeftType(stmt.Left)
-	switch stmt.Operator {
-	case tokenWordOr:
-		return typeExprDefinitelyTruthy(left)
-	case tokenWordAnd:
-		return typeExprIsNilOnly(left)
-	}
-	return false
-}
-
-// implicitLogicalLeftType infers a logical statement's left value type under
-// the left leaf's captured walk state when available, so the implicit-return
-// reachability decision uses the facts that held when the left side actually
-// evaluated.
-func (c *scriptChecker) implicitLogicalLeftType(stmt Statement) *TypeExpr {
-	state, ok := c.implicitReturnStates[stmt]
-	if !ok {
-		return c.inferLogicalLeftType(stmt)
-	}
-	currentRuntime := c.snapshotRuntimeState()
-	currentScope := c.snapshotScopeState()
-	c.restoreRuntimeState(state.runtimeState)
-	c.restoreScopeState(state.scopeState)
-	left := c.inferLogicalLeftType(stmt)
-	c.restoreRuntimeState(currentRuntime)
-	c.restoreScopeState(currentScope)
-	return left
-}
-
-func (c *scriptChecker) inferLogicalLeftType(stmt Statement) *TypeExpr {
-	switch typed := stmt.(type) {
-	case *ExprStmt:
-		return c.inferExpressionType(typed.Expr)
-	case *AssignStmt:
-		if typed.Operator == "" {
-			return c.inferExpressionType(typed.Value)
-		}
-	}
-	return nil
 }
 
 // collectMutatedContainerRoots gathers the root identifiers of index and
@@ -353,9 +296,6 @@ func collectMutatedContainerRoots(statements []Statement, out map[string]struct{
 					out[name] = struct{}{}
 				}
 			}
-		case *LogicalStmt:
-			collectMutatedContainerRoots([]Statement{typed.Left}, out)
-			collectMutatedContainerRoots([]Statement{typed.Right}, out)
 		case *IfStmt:
 			collectMutatedContainerRoots(typed.Consequent, out)
 			for _, elseIf := range typed.ElseIf {
@@ -402,8 +342,6 @@ func collectMutationCandidateRoots(statements []Statement, out *[]Expression) {
 			collectMutationCandidateRootsFromExpression(typed.Value, out)
 		case *ExprStmt:
 			collectMutationCandidateRootsFromExpression(typed.Expr, out)
-		case *LogicalStmt:
-			collectMutationCandidateRoots([]Statement{typed.Left, typed.Right}, out)
 		case *IfStmt:
 			collectMutationCandidateRootsFromExpression(typed.Condition, out)
 			collectMutationCandidateRoots(typed.Consequent, out)
@@ -1055,10 +993,10 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		left := c.inferExpressionType(typed.Left)
 		right := c.inferExpressionType(typed.Right)
 		switch typed.Operator {
-		case tokenAnd, tokenOr, tokenWordAnd, tokenWordOr:
+		case tokenAnd, tokenOr:
 			// `a && b` is `a ? b : a`: a left operand whose truthiness is
 			// statically known picks one side instead of the union.
-			isAnd := typed.Operator == tokenAnd || typed.Operator == tokenWordAnd
+			isAnd := typed.Operator == tokenAnd
 			if val, ok := staticLiteralValue(typed.Left); ok {
 				if val.Truthy() == isAnd {
 					return right
@@ -1215,7 +1153,7 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 
 func (c *scriptChecker) inferUnaryExprType(expr *UnaryExpr) *TypeExpr {
 	switch expr.Operator {
-	case tokenBang, tokenNot:
+	case tokenBang:
 		return checkTypeBool
 	case tokenMinus:
 		operand := c.inferExpressionType(expr.Right)
@@ -1810,7 +1748,7 @@ type binaryOutcome struct {
 // number operand expands to both int and float before deciding.
 func (c *scriptChecker) binaryOperationOutcome(op TokenType, left, right *TypeExpr) binaryOutcome {
 	switch op {
-	case tokenAnd, tokenOr, tokenWordAnd, tokenWordOr:
+	case tokenAnd, tokenOr:
 		if left == nil || right == nil {
 			return binaryOutcome{}
 		}

@@ -540,7 +540,7 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 		default:
 			return NewNil(), exec.errorAt(e.Pos(), "unsupported unary + operand")
 		}
-	case tokenBang, tokenNot:
+	case tokenBang:
 		return NewBool(!right.Truthy()), nil
 	default:
 		return NewNil(), exec.errorAt(e.Pos(), "unsupported unary operator")
@@ -876,7 +876,7 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 		return NewNil(), err
 	}
 	switch expr.Operator {
-	case tokenAnd, tokenWordAnd:
+	case tokenAnd:
 		// Short-circuit and yield the operand value, not a coerced bool
 		// (Ruby semantics): `a && b` is `a ? b : a`. A falsy left operand is
 		// the result; otherwise the right operand is, whatever its value.
@@ -891,7 +891,7 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 			return NewNil(), err
 		}
 		return right, nil
-	case tokenOr, tokenWordOr:
+	case tokenOr:
 		// Short-circuit and yield the operand value, not a coerced bool
 		// (Ruby semantics): `a || b` is `a ? a : b`. This is what makes the
 		// `value = optional || default` idiom work; previously it collapsed
@@ -1740,8 +1740,6 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 		return expressionCapturesCurrentEnv(s.Value) || expressionCapturesCurrentEnv(s.Message)
 	case *AssignStmt:
 		return expressionCapturesCurrentEnv(s.Target) || expressionCapturesCurrentEnv(s.Value)
-	case *LogicalStmt:
-		return statementCapturesCurrentEnv(s.Left) || statementCapturesCurrentEnv(s.Right)
 	case *ExprStmt:
 		return expressionCapturesCurrentEnv(s.Expr)
 	case *IfStmt:
@@ -3244,7 +3242,7 @@ func predeclareLocalBindingsFromStatements(stmts []Statement, env *Env) {
 
 func statementCanPostPredeclareLocalBindings(stmt Statement) bool {
 	switch stmt.(type) {
-	case *LogicalStmt, *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
 		return true
 	default:
 		return false
@@ -3280,9 +3278,6 @@ func collectLocalBindingNames(stmts []Statement, collector *localBindingCollecto
 		switch s := stmt.(type) {
 		case *AssignStmt:
 			collectTargetBindingNames(s.Target, collector)
-		case *LogicalStmt:
-			collectLocalBindingNames([]Statement{s.Left}, collector)
-			collectLocalBindingNames([]Statement{s.Right}, collector)
 		case *IfStmt:
 			collectLocalBindingNames(s.Consequent, collector)
 			for _, branch := range s.ElseIf {
@@ -3934,9 +3929,6 @@ func statementContainsBypassableIdentifierCall(stmt Statement, name string) bool
 		return false
 	case *ExprStmt:
 		return expressionContainsBypassableIdentifierCall(t.Expr, name)
-	case *LogicalStmt:
-		return statementContainsBypassableIdentifierCall(t.Left, name) ||
-			statementContainsBypassableIdentifierCall(t.Right, name)
 	case *ReturnStmt:
 		return expressionContainsBypassableIdentifierCall(t.Value, name)
 	case *RaiseStmt:
@@ -4284,8 +4276,6 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			return returnVal, true, nil
 		}
 		return val, false, err
-	case *LogicalStmt:
-		return exec.evalLogicalStatement(s, env)
 	case *ReturnStmt:
 		if s.Value == nil {
 			return NewNil(), true, nil
@@ -4421,29 +4411,6 @@ func (exec *Execution) evalAssignmentValueWithExpectation(stmt *AssignStmt, env 
 		exec.localCallBypassStack = exec.localCallBypassStack[:len(exec.localCallBypassStack)-1]
 	}()
 	return exec.evalExpressionWithExpectation(stmt.Value, env, expectation)
-}
-
-func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value, bool, error) {
-	left, returned, err := exec.evalStatementWithLocalBindings(stmt.Left, env)
-	if err != nil || returned {
-		return left, returned, err
-	}
-	if err := exec.checkMemoryValue(left); err != nil {
-		return NewNil(), false, exec.wrapError(err, stmt.Left.Pos())
-	}
-	switch stmt.Operator {
-	case tokenWordAnd:
-		if !left.Truthy() {
-			return left, false, nil
-		}
-	case tokenWordOr:
-		if left.Truthy() {
-			return left, false, nil
-		}
-	default:
-		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement operator")
-	}
-	return exec.evalStatementWithLocalBindings(stmt.Right, env)
 }
 
 func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, bool, error) {

@@ -1420,8 +1420,6 @@ func localNames(statements []ast.Statement) []string {
 				walkExpr(st.Value)
 			case *ast.ExprStmt:
 				walkExpr(st.Expr)
-			case *ast.LogicalStmt:
-				walkStmts([]ast.Statement{st.Left, st.Right})
 			case *ast.ForStmt:
 				appendAssignmentTargetNames(&names, st.Target)
 				walkExpr(st.Iterable)

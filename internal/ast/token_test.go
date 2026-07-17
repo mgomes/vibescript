@@ -8,7 +8,6 @@ import (
 func TestKeywords(t *testing.T) {
 	t.Parallel()
 	want := []string{
-		"and",
 		"begin",
 		"break",
 		"case",
@@ -28,8 +27,6 @@ func TestKeywords(t *testing.T) {
 		"in",
 		"next",
 		"nil",
-		"not",
-		"or",
 		"private",
 		"property",
 		"raise",
@@ -56,7 +53,7 @@ func TestKeywords(t *testing.T) {
 			t.Fatalf("LookupIdent(%q) = TokenIdent, want reserved token", keyword)
 		}
 	}
-	for _, ident := range []string{"require"} {
+	for _, ident := range []string{"and", "not", "or", "require"} {
 		if got := LookupIdent(ident); got != TokenIdent {
 			t.Fatalf("LookupIdent(%q) = %s, want TokenIdent", ident, got)
 		}

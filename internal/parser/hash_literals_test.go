@@ -294,7 +294,7 @@ func TestParserKeywordHashLabelsNoSpaceStringValue(t *testing.T) {
 	}
 }
 
-func TestParserWordBooleanHashKeys(t *testing.T) {
+func TestParserOrdinaryIdentifierHashKeys(t *testing.T) {
 	t.Parallel()
 
 	source := `def run

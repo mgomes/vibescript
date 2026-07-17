@@ -473,7 +473,7 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserArrayLiteral
 	case ast.TokenLBrace:
 		return prefixParserHashLiteral
-	case ast.TokenBang, ast.TokenNot, ast.TokenMinus, ast.TokenPlus:
+	case ast.TokenBang, ast.TokenMinus, ast.TokenPlus:
 		return prefixParserPrefixExpression
 	case ast.TokenYield:
 		return prefixParserYieldExpression
@@ -584,7 +584,7 @@ func infixParserKind(tt ast.TokenType) infixParseKind {
 	switch tt {
 	case ast.TokenPlus, ast.TokenMinus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent,
 		ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenMatch, ast.TokenNotMatch, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
-		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenShovel, ast.TokenAmpersand:
+		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenShovel, ast.TokenAmpersand:
 		return infixParserInfixExpression
 	case ast.TokenQuestion:
 		return infixParserConditionalExpression
@@ -634,7 +634,7 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenSafeNav, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenMatch, ast.TokenNotMatch, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenQuestion, ast.TokenShovel, ast.TokenAmpersand:
+	case ast.TokenDot, ast.TokenSafeNav, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenMatch, ast.TokenNotMatch, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion, ast.TokenShovel, ast.TokenAmpersand:
 		return true
 	case ast.TokenAsterisk:
 		// A line that begins with "*" continues the previous expression as a
@@ -1529,12 +1529,7 @@ func (p *parser) parsePrefixExpression() ast.Expression {
 	pos := p.curToken.Pos
 	operator := p.curToken.Type
 	p.nextToken()
-	var right ast.Expression
-	if operator == ast.TokenNot {
-		right = p.parseLineExpressionUntilForced(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
-	} else {
-		right = p.parseExpression(precPrefix)
-	}
+	right := p.parseExpression(precPrefix)
 	if right == nil {
 		return nil
 	}
@@ -1619,9 +1614,9 @@ func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 // parseBeginlessRangeExpression parses Ruby's beginless range (..n / ...n)
 // with the range token in prefix position.
 // peekIsActiveExpressionStop reports whether the peek token is a stop token of
-// the enclosing line-limited expression (then in a when clause or condition,
-// word and/or in a modifier value). Range dots followed by such a token cannot
-// continue into a bounded endpoint, so the range is endless.
+// the enclosing line-limited expression, such as then in a when clause or
+// condition. Range dots followed by such a token cannot continue into a
+// bounded endpoint, so the range is endless.
 func (p *parser) peekIsActiveExpressionStop() bool {
 	for _, stop := range p.lineLimitedStops {
 		if p.peekToken.Type == stop {
@@ -2571,7 +2566,7 @@ func isLabelNameToken(tok ast.Token) bool {
 		ast.TokenBegin, ast.TokenRescue, ast.TokenEnsure, ast.TokenRaise,
 		ast.TokenEnd, ast.TokenReturn, ast.TokenYield, ast.TokenDo, ast.TokenThen, ast.TokenFor, ast.TokenWhile, ast.TokenUntil,
 		ast.TokenBreak, ast.TokenNext, ast.TokenRetry, ast.TokenIn, ast.TokenIf, ast.TokenUnless, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
-		ast.TokenTrue, ast.TokenFalse, ast.TokenNil, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenNot:
+		ast.TokenTrue, ast.TokenFalse, ast.TokenNil:
 		return true
 	default:
 		return false

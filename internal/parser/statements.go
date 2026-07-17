@@ -8,16 +8,6 @@ import (
 )
 
 func (p *parser) parseStatement() ast.Statement {
-	stmt := p.parseStatementOperand()
-	stmt = p.parseStatementLogical(stmt, lowestPrec)
-	// Apply the postfix modifier to the whole statement, after any logical
-	// split. A modifier has lower precedence than word `and`/`or`, so
-	// `ready or fallback if cond` guards the entire `ready or fallback`
-	// statement rather than just the `fallback` operand.
-	return p.parseStatementModifier(stmt)
-}
-
-func (p *parser) parseStatementOperand() ast.Statement {
 	var stmt ast.Statement
 	switch p.curToken.Type {
 	case ast.TokenDef:
@@ -72,10 +62,7 @@ func (p *parser) parseStatementOperand() ast.Statement {
 	if continued := p.continueStatementExpression(stmt); continued != nil {
 		stmt = continued
 	}
-	// The modifier is applied by parseStatement once the full statement
-	// (including any logical split) is assembled, so a right-hand operand in a
-	// logical statement does not greedily capture it.
-	return stmt
+	return p.parseStatementModifier(stmt)
 }
 
 func (p *parser) continueStatementExpression(stmt ast.Statement) ast.Statement {
@@ -147,47 +134,10 @@ func isStatementModifier(tt ast.TokenType) bool {
 
 func canUseStatementModifier(stmt ast.Statement) bool {
 	switch stmt.(type) {
-	case *ast.AssignStmt, *ast.ExprStmt, *ast.LogicalStmt, *ast.ReturnStmt, *ast.RaiseStmt, *ast.BreakStmt, *ast.NextStmt, *ast.RetryStmt:
+	case *ast.AssignStmt, *ast.ExprStmt, *ast.ReturnStmt, *ast.RaiseStmt, *ast.BreakStmt, *ast.NextStmt, *ast.RetryStmt:
 		return true
 	default:
 		return false
-	}
-}
-
-func (p *parser) parseStatementLogical(left ast.Statement, precedence int) ast.Statement {
-	if left == nil {
-		return nil
-	}
-	for isStatementLogicalOperator(p.peekToken.Type) && p.peekToken.Pos.Line == p.curToken.Pos.Line {
-		opPrecedence := statementLogicalPrecedence(p.peekToken.Type)
-		if precedence >= opPrecedence {
-			return left
-		}
-		op := p.peekToken
-		p.nextToken()
-		p.nextToken()
-		right := p.parseStatementOperand()
-		if right == nil {
-			return left
-		}
-		right = p.parseStatementLogical(right, opPrecedence)
-		left = &ast.LogicalStmt{Left: left, Operator: op.Type, Right: right, Position: op.Pos}
-	}
-	return left
-}
-
-func isStatementLogicalOperator(tt ast.TokenType) bool {
-	return tt == ast.TokenWordAnd || tt == ast.TokenWordOr
-}
-
-func statementLogicalPrecedence(tt ast.TokenType) int {
-	switch tt {
-	case ast.TokenWordOr:
-		return precWordOr
-	case ast.TokenWordAnd:
-		return precWordAnd
-	default:
-		return lowestPrec
 	}
 }
 
@@ -197,7 +147,7 @@ func (p *parser) parseReturnStatement() ast.Statement {
 		return &ast.ReturnStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseCommaSeparatedStatementExpression(ast.TokenWordAnd, ast.TokenWordOr, ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil)
+	value := p.parseCommaSeparatedStatementExpression(ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil)
 	if value == nil {
 		return nil
 	}
@@ -490,7 +440,7 @@ func (p *parser) parseNextStatement() ast.Statement {
 }
 
 func (p *parser) parseStatementValueExpression() ast.Expression {
-	return p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr, ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil)
+	return p.parseLineExpressionUntil(lowestPrec, ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil)
 }
 
 func (p *parser) parseRetryStatement() ast.Statement {
@@ -2058,12 +2008,7 @@ func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 		return p.parseAssignmentValue(target)
 	}
 
-	// Stop the expression at a statement-level `and`/`or` so parseStatementLogical
-	// can split the line (e.g. `ready or raise "not ready"`). Inside brackets the
-	// stop is suppressed, so grouped forms like `(a or b)` still parse the word
-	// operators as ordinary infix expressions. Assignment and return/raise paths
-	// already stop here for the same reason.
-	expr := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
+	expr := p.parseLineExpression(lowestPrec)
 	if expr == nil {
 		return nil
 	}
@@ -2138,7 +2083,7 @@ func (p *parser) parseCommaSeparatedAssignmentValue(first ast.Expression, pos as
 }
 
 func (p *parser) parseAssignmentExpression() ast.Expression {
-	expr := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
+	expr := p.parseLineExpression(lowestPrec)
 	if expr == nil {
 		return nil
 	}

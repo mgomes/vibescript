@@ -155,11 +155,11 @@ end`)
 	}
 }
 
-func TestImplicitBlockParamsInLogicalStatements(t *testing.T) {
+func TestImplicitBlockParamsInShortCircuitExpressions(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def run
-  [1, 2, 3].map { x = _1 and true }
+  [1, 2, 3].map { x = _1 && true }
 end`)
 
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})

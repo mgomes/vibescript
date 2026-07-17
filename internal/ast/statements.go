@@ -63,17 +63,6 @@ type AssignStmt struct {
 func (s *AssignStmt) stmtNode()     {}
 func (s *AssignStmt) Pos() Position { return s.Position }
 
-// LogicalStmt represents a low-precedence statement-level `and` or `or`.
-type LogicalStmt struct {
-	Left     Statement
-	Operator TokenType
-	Right    Statement
-	Position Position
-}
-
-func (s *LogicalStmt) stmtNode()     {}
-func (s *LogicalStmt) Pos() Position { return s.Position }
-
 // ExprStmt wraps an expression used as a statement.
 type ExprStmt struct {
 	Expr     Expression

@@ -191,7 +191,7 @@ func (c *scriptChecker) predeclareStatementLiveNames(stmt Statement) {
 // predeclares after a compound statement completes, whichever paths ran.
 func (c *scriptChecker) postdeclareStatementLiveNames(stmt Statement) {
 	switch stmt.(type) {
-	case *LogicalStmt, *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
 	default:
 		return
 	}
@@ -300,9 +300,6 @@ func collectOwnScopeNamesFromStatement(stmt Statement, out map[string]struct{}) 
 		collectOwnScopeNamesFromExpression(typed.Value, out)
 	case *ExprStmt:
 		collectOwnScopeNamesFromExpression(typed.Expr, out)
-	case *LogicalStmt:
-		collectOwnScopeNamesFromStatement(typed.Left, out)
-		collectOwnScopeNamesFromStatement(typed.Right, out)
 	case *IfStmt:
 		collectOwnScopeNamesFromExpression(typed.Condition, out)
 		collectOwnScopeNames(typed.Consequent, out)
@@ -556,9 +553,6 @@ func visitCallExprsInStatement(stmt Statement, visit func(*CallExpr)) {
 		visitCallExprsInExpression(typed.Value, visit)
 	case *ExprStmt:
 		visitCallExprsInExpression(typed.Expr, visit)
-	case *LogicalStmt:
-		visitCallExprsInStatement(typed.Left, visit)
-		visitCallExprsInStatement(typed.Right, visit)
 	case *IfStmt:
 		visitCallExprsInExpression(typed.Condition, visit)
 		visitCallExprsInStatements(typed.Consequent, visit)
