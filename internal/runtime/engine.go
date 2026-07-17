@@ -363,29 +363,39 @@ func (e *Engine) builtinCallSpec(name string) (staticCallSpec, bool) {
 	return *builtin.checkSpec, true
 }
 
+// Builtin contract type fragments shared by the registration tables below.
+// Every type here mirrors a kind check in the builtin's implementation; a
+// contract that overclaims turns valid scripts into checker false positives.
+var (
+	builtinTypeScalar         = &TypeExpr{Kind: TypeUnion, Union: []*TypeExpr{checkTypeInt, checkTypeFloat, checkTypeString}}
+	builtinTypeRandBound      = &TypeExpr{Kind: TypeUnion, Union: []*TypeExpr{checkTypeInt, checkTypeRange, checkTypeNil}}
+	builtinTypeNullableInt    = &TypeExpr{Kind: TypeInt, Nullable: true}
+	builtinTypeNullableString = &TypeExpr{Kind: TypeString, Nullable: true}
+)
+
 func registerCoreBuiltins(engine *Engine) {
 	for _, builtin := range []builtinDefinition{
-		{name: "assert", fn: builtinAssert, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: -1}},
-		{name: "format", fn: builtinFormat},
-		{name: "lambda", fn: builtinLambda, autoInvoke: true},
+		{name: "assert", fn: builtinAssert, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: -1, resultType: checkTypeNil}},
+		{name: "format", fn: builtinFormat, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: -1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString}, resultType: checkTypeString}},
+		{name: "lambda", fn: builtinLambda, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, usesBlock: true, resultType: checkTypeFunction}},
 		{name: "loop", fn: builtinLoop},
-		{name: "proc", fn: builtinProc, autoInvoke: true},
-		{name: "money", fn: builtinMoney, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: 1}},
-		{name: "money_cents", fn: builtinMoneyCents, checkSpec: &staticCallSpec{minArgs: 2, maxArgs: 2}},
+		{name: "proc", fn: builtinProc, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, usesBlock: true, resultType: checkTypeFunction}},
+		{name: "money", fn: builtinMoney, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: 1, paramTypes: []*TypeExpr{checkTypeString}, resultType: checkTypeMoney}},
+		{name: "money_cents", fn: builtinMoneyCents, checkSpec: &staticCallSpec{minArgs: 2, maxArgs: 2, paramTypes: []*TypeExpr{checkTypeNumber, checkTypeString}, resultType: checkTypeMoney}},
 		{name: "p", fn: builtinP},
-		{name: "print", fn: builtinPrint},
-		{name: "puts", fn: builtinPuts},
+		{name: "print", fn: builtinPrint, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: -1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeNil}},
+		{name: "puts", fn: builtinPuts, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: -1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeNil}},
 		{name: "require", fn: builtinRequire},
-		{name: "now", fn: builtinNow, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0}},
-		{name: "rand", fn: builtinRand, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true}},
-		{name: "sleep", fn: builtinSleep, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true}},
-		{name: "sprintf", fn: builtinSprintf},
-		{name: "srand", fn: builtinSrand, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true}},
-		{name: "uuid", fn: builtinUUID, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true}},
-		{name: "warn", fn: builtinWarn},
-		{name: "random_id", fn: builtinRandomID, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true}},
-		{name: "to_int", fn: builtinToInt},
-		{name: "to_float", fn: builtinToFloat},
+		{name: "now", fn: builtinNow, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, resultType: checkTypeString}},
+		{name: "rand", fn: builtinRand, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{builtinTypeRandBound}, resultType: checkTypeNumber}},
+		{name: "sleep", fn: builtinSleep, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeNumber}, resultType: checkTypeInt}},
+		{name: "sprintf", fn: builtinSprintf, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: -1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString}, resultType: checkTypeString}},
+		{name: "srand", fn: builtinSrand, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{builtinTypeNullableInt}, resultType: builtinTypeNullableInt}},
+		{name: "uuid", fn: builtinUUID, autoInvoke: true, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, resultType: checkTypeString}},
+		{name: "warn", fn: builtinWarn, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: -1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeNil}},
+		{name: "random_id", fn: builtinRandomID, checkSpec: &staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeInt}, resultType: checkTypeString}},
+		{name: "to_int", fn: builtinToInt, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{builtinTypeScalar}, resultType: checkTypeInt}},
+		{name: "to_float", fn: builtinToFloat, checkSpec: &staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{builtinTypeScalar}, resultType: checkTypeFloat}},
 	} {
 		engine.registerDefaultBuiltin(builtin)
 	}
@@ -595,24 +605,24 @@ func (e *Engine) MaxSourceBytes() int {
 
 func registerDataBuiltins(engine *Engine) {
 	engine.builtins["JSON"] = NewObject(map[string]Value{
-		"parse":     newCheckedBuiltin("JSON.parse", builtinJSONParse, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true}),
+		"parse":     newCheckedBuiltin("JSON.parse", builtinJSONParse, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString}}),
 		"parse_as":  newCheckedBuiltin("JSON.parse_as", builtinJSONParseAs, staticCallSpec{minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true}),
-		"stringify": newCheckedBuiltin("JSON.stringify", builtinJSONStringify, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true}),
+		"stringify": newCheckedBuiltin("JSON.stringify", builtinJSONStringify, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeString}),
 	})
 	engine.builtins["Proc"] = NewObject(map[string]Value{
-		"new": NewAutoBuiltin("Proc.new", builtinProc),
+		"new": newCheckedAutoBuiltin("Proc.new", builtinProc, staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, usesBlock: true, resultType: checkTypeFunction}),
 	})
 	engine.builtins["Regex"] = NewObject(map[string]Value{
-		"match":       newCheckedBuiltin("Regex.match", builtinRegexMatch, staticCallSpec{minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true}),
-		"replace":     newCheckedBuiltin("Regex.replace", builtinRegexReplace, staticCallSpec{minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true}),
-		"replace_all": newCheckedBuiltin("Regex.replace_all", builtinRegexReplaceAll, staticCallSpec{minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true}),
+		"match":       newCheckedBuiltin("Regex.match", builtinRegexMatch, staticCallSpec{minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString, checkTypeString}, resultType: builtinTypeNullableString}),
+		"replace":     newCheckedBuiltin("Regex.replace", builtinRegexReplace, staticCallSpec{minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString, checkTypeString, checkTypeString}, resultType: checkTypeString}),
+		"replace_all": newCheckedBuiltin("Regex.replace_all", builtinRegexReplaceAll, staticCallSpec{minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString, checkTypeString, checkTypeString}, resultType: checkTypeString}),
 	})
 	engine.builtins["Regexp"] = NewObject(map[string]Value{
-		"escape":     NewBuiltin("Regexp.escape", builtinRegexpEscape),
-		"quote":      NewBuiltin("Regexp.quote", builtinRegexpEscape),
-		"new":        NewBuiltin("Regexp.new", builtinRegexpNew),
+		"escape":     newCheckedBuiltin("Regexp.escape", builtinRegexpEscape, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString}, resultType: checkTypeString}),
+		"quote":      newCheckedBuiltin("Regexp.quote", builtinRegexpEscape, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString}, resultType: checkTypeString}),
+		"new":        newCheckedBuiltin("Regexp.new", builtinRegexpNew, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeString}}),
 		"union":      NewBuiltin("Regexp.union", builtinRegexpUnion),
-		"last_match": NewAutoBuiltin("Regexp.last_match", builtinRegexpLastMatch),
+		"last_match": newCheckedAutoBuiltin("Regexp.last_match", builtinRegexpLastMatch, staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, resultType: checkTypeNil}),
 	})
 }
 
@@ -626,7 +636,7 @@ func registerHashBuiltins(engine *Engine) {
 		// AutoBuiltin so a bare `Hash.new` (no parentheses, no block) builds an
 		// empty hash with a nil default, matching Ruby. Explicit `Hash.new(...)`
 		// and `Hash.new { ... }` calls still flow through the normal call path.
-		"new": NewAutoBuiltin("Hash.new", builtinHashNew),
+		"new": newCheckedAutoBuiltin("Hash.new", builtinHashNew, staticCallSpec{minArgs: 0, maxArgs: 1, rejectKeywords: true, usesBlock: true, resultType: checkTypeHash}),
 	})
 }
 
@@ -653,7 +663,7 @@ func builtinHashNew(exec *Execution, receiver Value, args []Value, kwargs map[st
 
 func registerDurationBuiltins(engine *Engine) {
 	engine.builtins["Duration"] = NewObject(map[string]Value{
-		"build": NewBuiltin("Duration.build", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		"build": newCheckedBuiltin("Duration.build", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) == 1 && len(kwargs) == 0 {
 				secs, err := numericToSeconds(args[0])
 				if err != nil {
@@ -707,8 +717,21 @@ func registerDurationBuiltins(engine *Engine) {
 				return NewNil(), fmt.Errorf("Duration.build %s: %w", "seconds", err)
 			}
 			return NewDuration(durationFromParts(weeks, days, hours, minutes, seconds)), nil
+		}, staticCallSpec{
+			minArgs:         0,
+			maxArgs:         1,
+			allowedKeywords: keywordSet("weeks", "days", "hours", "minutes", "seconds"),
+			paramTypes:      []*TypeExpr{checkTypeNumber},
+			keywordTypes: map[string]*TypeExpr{
+				"weeks":   checkTypeNumber,
+				"days":    checkTypeNumber,
+				"hours":   checkTypeNumber,
+				"minutes": checkTypeNumber,
+				"seconds": checkTypeNumber,
+			},
+			resultType: checkTypeDuration,
 		}),
-		"parse": NewBuiltin("Duration.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		"parse": newCheckedBuiltin("Duration.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 || args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("Duration.parse expects a duration string")
 			}
@@ -717,13 +740,14 @@ func registerDurationBuiltins(engine *Engine) {
 				return NewNil(), err
 			}
 			return NewDuration(parsed), nil
-		}),
+		}, staticCallSpec{minArgs: 1, maxArgs: 1, paramTypes: []*TypeExpr{checkTypeString}, resultType: checkTypeDuration}),
 	})
 }
 
 func registerTimeBuiltins(engine *Engine) {
+	timeInKeyword := map[string]*TypeExpr{"in": builtinTypeNullableString}
 	engine.builtins["Time"] = NewObject(map[string]Value{
-		"new": NewBuiltin("Time.new", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		"new": newCheckedBuiltin("Time.new", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			loc := time.Local
 			if zone, ok := kwargs["in"]; ok {
 				parsed, err := parseLocation(zone)
@@ -739,36 +763,36 @@ func registerTimeBuiltins(engine *Engine) {
 				return NewNil(), err
 			}
 			return NewTime(t), nil
-		}),
-		"local": NewBuiltin("Time.local", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		}, staticCallSpec{minArgs: 1, maxArgs: -1, keywordTypes: timeInKeyword, resultType: checkTypeTime}),
+		"local": newCheckedBuiltin("Time.local", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			t, err := timeFromCalendarParts(args, time.Local)
 			if err != nil {
 				return NewNil(), err
 			}
 			return NewTime(t), nil
-		}),
-		"mktime": NewAutoBuiltin("Time.mktime", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		}, staticCallSpec{minArgs: 1, maxArgs: 7, resultType: checkTypeTime}),
+		"mktime": newCheckedAutoBuiltin("Time.mktime", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			t, err := timeFromCalendarParts(args, time.Local)
 			if err != nil {
 				return NewNil(), err
 			}
 			return NewTime(t), nil
-		}),
-		"utc": NewBuiltin("Time.utc", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		}, staticCallSpec{minArgs: 1, maxArgs: 7, resultType: checkTypeTime}),
+		"utc": newCheckedBuiltin("Time.utc", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			t, err := timeFromCalendarParts(args, time.UTC)
 			if err != nil {
 				return NewNil(), err
 			}
 			return NewTime(t), nil
-		}),
-		"gm": NewAutoBuiltin("Time.gm", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		}, staticCallSpec{minArgs: 1, maxArgs: 7, resultType: checkTypeTime}),
+		"gm": newCheckedAutoBuiltin("Time.gm", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			t, err := timeFromCalendarParts(args, time.UTC)
 			if err != nil {
 				return NewNil(), err
 			}
 			return NewTime(t), nil
-		}),
-		"at": NewBuiltin("Time.at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		}, staticCallSpec{minArgs: 1, maxArgs: 7, resultType: checkTypeTime}),
+		"at": newCheckedBuiltin("Time.at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) < 1 || len(args) > 3 {
 				return NewNil(), fmt.Errorf("Time.at expects seconds since epoch with optional subsecond value and unit")
 			}
@@ -797,8 +821,15 @@ func registerTimeBuiltins(engine *Engine) {
 				return NewNil(), err
 			}
 			return NewTime(t), nil
+		}, staticCallSpec{
+			minArgs:         1,
+			maxArgs:         3,
+			allowedKeywords: keywordSet("in"),
+			paramTypes:      []*TypeExpr{nil, nil, checkTypeSymbol},
+			keywordTypes:    timeInKeyword,
+			resultType:      checkTypeTime,
 		}),
-		"now": NewAutoBuiltin("Time.now", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		"now": newCheckedAutoBuiltin("Time.now", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("Time.now does not take positional arguments")
 			}
@@ -813,10 +844,17 @@ func registerTimeBuiltins(engine *Engine) {
 				}
 			}
 			return NewTime(time.Now().In(loc)), nil
-		}),
+		}, staticCallSpec{minArgs: 0, maxArgs: 0, keywordTypes: timeInKeyword, resultType: checkTypeTime}),
 		"parse": newCheckedBuiltin("Time.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return timeParseValues(args, kwargs)
-		}, staticCallSpec{minArgs: 1, maxArgs: 2, allowedKeywords: keywordSet("in")}),
+		}, staticCallSpec{
+			minArgs:         1,
+			maxArgs:         2,
+			allowedKeywords: keywordSet("in"),
+			paramTypes:      []*TypeExpr{checkTypeString, builtinTypeNullableString},
+			keywordTypes:    timeInKeyword,
+			resultType:      checkTypeTime,
+		}),
 	})
 }
 

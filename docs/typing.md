@@ -133,6 +133,11 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   yields the field's type.
 - Values the checker cannot prove (JSON payloads, host globals, dynamic
   dispatch) are never rejected; the runtime checks remain the final guard.
+- Core builtins with fixed contracts participate: `to_int("1")` is known to
+  return an `int`, `Math.sqrt("x")` is rejected, and helpers such as `money`,
+  `uuid`, `Duration.build`, and the `Time` constructors expose their argument
+  and result types. Builtins with argument-dependent results (`JSON.parse`)
+  stay unknown, and a host override removes the default contract entirely.
 
 ### `JSON.parse_as`
 

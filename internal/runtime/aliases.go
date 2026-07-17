@@ -1148,6 +1148,16 @@ func newCheckedBuiltin(name string, fn BuiltinFunc, spec staticCallSpec) Value {
 	return val
 }
 
+// newCheckedAutoBuiltin is newCheckedBuiltin for members that auto-invoke on
+// a bare read (Hash.new, Time.mktime). The spec's autoInvoke flag is forced
+// on so the static contract never drifts from the runtime dispatch flag.
+func newCheckedAutoBuiltin(name string, fn BuiltinFunc, spec staticCallSpec) Value {
+	val := newBuiltin(name, fn, true)
+	spec.autoInvoke = true
+	valueBuiltin(val).checkSpec = &spec
+	return val
+}
+
 // NewBuiltin returns a builtin function Value.
 func NewBuiltin(name string, fn BuiltinFunc) Value { return newBuiltin(name, fn, false) }
 
