@@ -217,6 +217,50 @@ end
 `,
 			warning: "call to User#rename is missing argument name",
 		},
+		{
+			name: "constructor after splat keeps runtime auto invocation",
+			source: `
+class Builder
+  def initialize(required)
+  end
+end
+
+def accept(*values: array<function>)
+  values
+end
+
+def run()
+  accept(*[], Builder.new)
+end
+`,
+			warning: "call to Builder.new is missing argument required",
+		},
+		{
+			name: "rescue does not propagate structured callable expectations",
+			source: `
+def accept(values: array<function>)
+  values
+end
+
+def run()
+  accept(([User.new] rescue [User.new]))
+end
+`,
+			warning: "call to accept argument values expected array<function>, got array<User>",
+		},
+		{
+			name: "non bindable member still auto invokes under callable expectation",
+			source: `
+def accept(fn: function)
+  fn
+end
+
+def run()
+  accept([1].at)
+end
+`,
+			warning: "call to array.at has too few arguments",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -452,6 +496,53 @@ end
 
 def run()
   takes_default()
+end
+`,
+		},
+		{
+			name: "collapsed options hash inherits callable field expectation",
+			source: `
+class Builder
+  def initialize(required)
+  end
+end
+
+def accept(options: { cb: function })
+  options
+end
+
+def run()
+  accept cb: Builder.new
+end
+`,
+		},
+		{
+			name: "nullable safe method remains callable when dispatch runs",
+			source: `
+class Worker
+  def build(required) -> string
+    required
+  end
+end
+
+def accept(fn: function)
+  fn
+end
+
+def run(worker: Worker?)
+  accept(worker&.build)
+end
+`,
+		},
+		{
+			name: "bare builtin identifier remains callable",
+			source: `
+def accept(fn: function)
+  fn
+end
+
+def run()
+  accept(rand)
 end
 `,
 		},

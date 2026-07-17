@@ -1076,8 +1076,13 @@ func (c *scriptChecker) inferExpressionTypeWithExpectation(expr Expression, expe
 	if expectation.empty() {
 		return c.inferExpressionType(expr)
 	}
-	if expectation.includesCallable() && c.bareMemberArgumentIsCallable(expr) {
-		return checkTypeFunction
+	if expectation.includesCallable() {
+		if _, ok := c.bareIdentifierCallableArgument(expr); ok {
+			return checkTypeFunction
+		}
+		if callableFact, ok := c.bareMemberArgumentCallableFact(expr); ok {
+			return callableFact
+		}
 	}
 	switch typed := expr.(type) {
 	case *ConditionalExpr:
@@ -1120,7 +1125,7 @@ func (c *scriptChecker) inferExpressionTypeWithExpectation(expr Expression, expe
 		branches = append(branches, typed.ElseExpr)
 		return c.inferExpectedBranchUnion(expectation, branches...)
 	case *RescueExpr:
-		return c.inferExpectedBranchUnion(expectation, typed.Body, typed.Fallback)
+		return c.inferExpectedBranchUnion(autoCallExpectation(!expectation.includesCallable()), typed.Body, typed.Fallback)
 	case *ArrayLiteral:
 		return c.inferExpectedArrayLiteralType(typed, expectation)
 	case *HashLiteral:
@@ -1128,6 +1133,31 @@ func (c *scriptChecker) inferExpressionTypeWithExpectation(expr Expression, expe
 	default:
 		return c.inferExpressionType(expr)
 	}
+}
+
+// bareIdentifierCallableArgument matches the identifier forms the runtime
+// preserves under a callable expectation (`accept(rand)`).
+func (c *scriptChecker) bareIdentifierCallableArgument(expr Expression) (Expression, bool) {
+	var call *CallExpr
+	switch typed := expr.(type) {
+	case *Identifier:
+		call = &CallExpr{Callee: typed}
+	case *CallExpr:
+		if typed.Parenthesized || len(typed.Args) > 0 || len(typed.KwArgs) > 0 ||
+			typed.Block != nil || typed.BlockArg != nil {
+			return nil, false
+		}
+		if _, ok := typed.Callee.(*Identifier); !ok {
+			return nil, false
+		}
+		call = typed
+	default:
+		return nil, false
+	}
+	if _, ok := c.resolveCallable(call); !ok {
+		return nil, false
+	}
+	return expr, true
 }
 
 func (c *scriptChecker) inferExpectedBranchUnion(expectation expressionExpectation, branches ...Expression) *TypeExpr {
@@ -1881,17 +1911,27 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	}
 }
 
-// bareMemberArgumentIsCallable mirrors the runtime's callable-parameter
+// bareMemberArgumentCallableFact mirrors the runtime's callable-parameter
 // expectation: a bound script method (including a constructor backed by
-// initialize) is passed through instead of auto-invoked. Generated getters
-// still evaluate to their property value.
-func (c *scriptChecker) bareMemberArgumentIsCallable(expr Expression) bool {
+// initialize) is passed through instead of auto-invoked. Safe navigation adds
+// nil when the receiver may skip dispatch. Generated getters still evaluate
+// to their property value.
+func (c *scriptChecker) bareMemberArgumentCallableFact(expr Expression) (*TypeExpr, bool) {
 	member, ok := expr.(*MemberExpr)
-	if !ok || (member.Safe && !c.safeNavigationReceiverKnownNonNil(member.Object)) {
-		return false
+	if !ok {
+		return nil, false
 	}
 	target, ok := c.resolveMemberCallable(member)
-	return ok && target.fn != nil && target.fn.Accessor != functionAccessorGetter
+	if !ok || target.fn == nil || target.fn.Accessor == functionAccessorGetter {
+		return nil, false
+	}
+	if member.Safe && !c.safeNavigationReceiverKnownNonNil(member.Object) {
+		if typeExprIsNilOnly(c.safeNavigationReceiverFact(member.Object)) {
+			return checkTypeNil, true
+		}
+		return unionTypeExprs(checkTypeFunction, checkTypeNil), true
+	}
+	return checkTypeFunction, true
 }
 
 // checkBinaryOperandTypes rejects operator uses whose operand types are known

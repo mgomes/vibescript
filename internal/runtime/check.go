@@ -2285,6 +2285,19 @@ func (c *scriptChecker) checkExpressionWithExpectation(function string, expr Exp
 		c.checkExpression(function, expr)
 		return
 	}
+	if expectation.includesCallable() {
+		if _, bindable := c.bareMemberArgumentCallableFact(expr); bindable {
+			c.checkExpressionWithAuto(function, expr, false)
+			return
+		}
+		if callableExpr, bindable := c.bareIdentifierCallableArgument(expr); bindable {
+			if call, ok := callableExpr.(*CallExpr); ok {
+				callableExpr = call.Callee
+			}
+			c.checkExpressionWithAuto(function, callableExpr, false)
+			return
+		}
+	}
 	switch typed := expr.(type) {
 	case *ConditionalExpr:
 		c.checkConditionalExpression(function, typed, expectation)
@@ -2319,6 +2332,11 @@ func (c *scriptChecker) checkExpressionWithExpectation(function string, expr Exp
 			}
 			c.checkExpressionWithExpectation(function, pair.Value, valueExpectation)
 		}
+		return
+	case *MemberExpr:
+		// Callable expectations preserve bound script methods only. Runtime
+		// still auto-invokes generated getters and non-bindable builtins.
+		c.checkExpressionWithAuto(function, typed, true)
 		return
 	}
 	c.checkExpressionWithAuto(function, expr, !expectation.includesCallable())
@@ -2384,9 +2402,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// argument cannot erase the facts an earlier argument was evaluated
 		// under. checkCall consumes the captured facts afterwards.
 		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
+		positionalSplatSeen := false
 		for i, arg := range typed.Args {
 			expectation := expressionExpectation{}
-			if targetResolved {
+			_, isSplat := arg.(*SplatArg)
+			if targetResolved && !positionalSplatSeen && !isSplat {
 				expectation = staticCallablePositionalArgumentExpectation(target, i)
 			}
 			c.checkExpressionWithExpectation(function, arg, expectation)
@@ -2396,11 +2416,12 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			// for the arguments after it, never the ones before.
 			c.collectRuntimeRequireCallExportsFromExpression(arg)
 			argumentFacts[arg] = c.inferExpressionTypeWithExpectation(arg, expectation)
+			positionalSplatSeen = positionalSplatSeen || isSplat
 		}
 		for _, kwarg := range typed.KwArgs {
 			expectation := expressionExpectation{}
 			if targetResolved {
-				expectation = staticCallableKeywordArgumentExpectation(target, kwarg.Name)
+				expectation = staticCallableKeywordArgumentExpectation(typed, target, kwarg.Name)
 			}
 			c.checkExpressionWithExpectation(function, kwarg.Value, expectation)
 			c.collectRuntimeRequireCallExportsFromExpression(kwarg.Value)
@@ -2535,9 +2556,26 @@ func staticCallablePositionalArgumentExpectation(target staticCallable, index in
 	return expressionExpectation{}
 }
 
-func staticCallableKeywordArgumentExpectation(target staticCallable, name string) expressionExpectation {
+func staticCallableKeywordArgumentExpectation(call *CallExpr, target staticCallable, name string) expressionExpectation {
 	if target.fn != nil {
-		return typeExpressionExpectation(keywordArgumentExpectedType(target.fn.Params, name))
+		if expected := keywordArgumentExpectedType(target.fn.Params, name); expected != nil {
+			return typeExpressionExpectation(expected)
+		}
+		view := staticCallView{args: call.Args, kwargs: call.KwArgs}
+		if staticCallCollapsesOptionsHash(call, target, view) {
+			optionsType, ok := optionsHashArgumentType(target.fn, len(call.Args), func(candidate string) bool {
+				for _, kwarg := range call.KwArgs {
+					if kwarg.Name == candidate {
+						return true
+					}
+				}
+				return false
+			})
+			if ok {
+				return typeExpressionExpectation(optionsHashArgumentValueType(optionsType, name))
+			}
+		}
+		return expressionExpectation{}
 	}
 	return typeExpressionExpectation(target.spec.keywordTypes[name])
 }
