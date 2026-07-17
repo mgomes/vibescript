@@ -33,7 +33,7 @@ func registerMathBuiltins(engine *Engine) {
 		"log10": mathUnary("Math.log10", math.Log10, domainAtLeast(0)),
 		"atan2": mathBinary("Math.atan2", math.Atan2),
 		"hypot": mathBinary("Math.hypot", math.Hypot),
-		"log":   NewBuiltin("Math.log", builtinMathLog),
+		"log":   newCheckedBuiltin("Math.log", builtinMathLog, staticCallSpec{minArgs: 1, maxArgs: 2, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeNumber, checkTypeNumber}, resultType: checkTypeFloat}),
 	})
 }
 
@@ -64,7 +64,7 @@ func domainBetween(min, max float64) mathDomain {
 // domain error (e.g. sqrt(-1), asin(2)) while in-domain inputs, including the
 // infinities and NaNs that trig functions accept, produce their IEEE result.
 func mathUnary(name string, fn func(float64) float64, outOfDomain mathDomain) Value {
-	return NewBuiltin(name, func(_ *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	return newCheckedBuiltin(name, func(_ *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if err := rejectMathKwargsBlock(name, kwargs, block); err != nil {
 			return NewNil(), err
 		}
@@ -79,13 +79,13 @@ func mathUnary(name string, fn func(float64) float64, outOfDomain mathDomain) Va
 			return NewNil(), fmt.Errorf("%s out of domain", name)
 		}
 		return NewFloat(fn(x)), nil
-	})
+	}, staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeNumber}, resultType: checkTypeFloat})
 }
 
 // mathBinary builds a two-argument Math helper (atan2, hypot). Both are defined
 // across the whole real plane, so no domain check is needed.
 func mathBinary(name string, fn func(float64, float64) float64) Value {
-	return NewBuiltin(name, func(_ *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	return newCheckedBuiltin(name, func(_ *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if err := rejectMathKwargsBlock(name, kwargs, block); err != nil {
 			return NewNil(), err
 		}
@@ -101,7 +101,7 @@ func mathBinary(name string, fn func(float64, float64) float64) Value {
 			return NewNil(), err
 		}
 		return NewFloat(fn(x, y)), nil
-	})
+	}, staticCallSpec{minArgs: 2, maxArgs: 2, rejectKeywords: true, rejectBlock: true, paramTypes: []*TypeExpr{checkTypeNumber, checkTypeNumber}, resultType: checkTypeFloat})
 }
 
 // builtinMathLog implements Ruby's `Math.log(x)` and `Math.log(x, base)`.

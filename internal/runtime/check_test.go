@@ -248,6 +248,7 @@ func TestBuiltinCallSpecsFollowRegistry(t *testing.T) {
 		{name: "assert", minArgs: 1, maxArgs: -1},
 		{name: "JSON.parse", minArgs: 1, maxArgs: 1},
 		{name: "Time.parse", minArgs: 1, maxArgs: 2},
+		{name: "Math.sqrt", minArgs: 1, maxArgs: 1},
 	}
 	for _, tt := range tests {
 		spec, ok := engine.builtinCallSpec(tt.name)
@@ -259,8 +260,8 @@ func TestBuiltinCallSpecsFollowRegistry(t *testing.T) {
 			t.Errorf("builtinCallSpec(%q) arity = %d..%d, want %d..%d", tt.name, spec.minArgs, spec.maxArgs, tt.minArgs, tt.maxArgs)
 		}
 	}
-	if _, ok := engine.builtinCallSpec("Math.sqrt"); ok {
-		t.Error("Math.sqrt unexpectedly has a static call contract")
+	if _, ok := engine.builtinCallSpec("Regexp.union"); ok {
+		t.Error("Regexp.union unexpectedly has a static call contract")
 	}
 
 	snapshot := engine.Builtins()
