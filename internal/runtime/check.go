@@ -4779,8 +4779,12 @@ var staticMemberSpecs = map[string]staticCallSpec{
 	"money.string":    scalarMemberSpec(checkTypeString),
 	"duration.to_s":   scalarMemberSpec(checkTypeString),
 	"duration.string": scalarMemberSpec(checkTypeString),
-	"time.to_s":       scalarMemberSpec(checkTypeString),
-	"time.string":     scalarMemberSpec(checkTypeString),
+	// Temporal eql? methods own dispatch ahead of the universal fallback.
+	// They reject keywords but intentionally ignore a supplied block.
+	"duration.eql?": {minArgs: 1, maxArgs: 1, rejectKeywords: true, resultType: checkTypeBool},
+	"time.to_s":     scalarMemberSpec(checkTypeString),
+	"time.string":   scalarMemberSpec(checkTypeString),
+	"time.eql?":     {minArgs: 1, maxArgs: 1, rejectKeywords: true, resultType: checkTypeBool},
 	// range.to_a ignores a block at runtime, so it cannot use the stricter
 	// scalarMemberSpec contract shared by the other conversion builtins.
 	"range.to_a": {minArgs: 0, maxArgs: 0, rejectKeywords: true, autoInvoke: true, resultType: checkTypeIntArray},

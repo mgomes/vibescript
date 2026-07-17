@@ -517,6 +517,15 @@ end
 `,
 		},
 		{
+			name: "temporal equality keeps ignored block unevaluated",
+			source: `
+def run(d: duration, t: time)
+  d.eql?(d) { missing_duration_block }
+  t.eql?(t) { missing_time_block }
+end
+`,
+		},
+		{
 			name: "predicate result satisfies bool boundary",
 			source: `
 def takes_bool(value: bool)
