@@ -319,6 +319,17 @@ end
 `,
 		},
 		{
+			name: "bare equality predicates remain bound callables",
+			source: `
+def run(value: string)
+  eql = value.eql?
+  equal = value.equal?
+  eql.call(value)
+  equal.call(value)
+end
+`,
+		},
+		{
 			name: "mixed receiver kinds stay unknown",
 			source: `
 def takes_string(value: string)
