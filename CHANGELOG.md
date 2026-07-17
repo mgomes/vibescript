@@ -9,6 +9,29 @@ All notable changes to this project will be documented in this file.
 <!-- Unreleased entries are tracked as individual files in changelog.d/ so
      pull requests never conflict on this file. They are compiled into a
      versioned section by scripts/build_changelog.sh at release time. -->
+## v1.0.0-rc7 - 2026-07-16
+
+Seventh release candidate: builtin discovery now follows the runtime registry
+across the REPL and language server, and the urfave CLI migration is completed
+with consistent argument binding, command I/O, and cancellation.
+
+- **Fixed: CLI I/O and cancellation are consistent after the urfave migration
+  (#956).** `run`, `check`, `analyze`, `fmt`, and `test` use each command's
+  configured streams and report write failures instead of silently succeeding.
+  Long-running commands inherit Ctrl-C cancellation, and `lsp` and `repl` help
+  no longer advertise positional arguments they reject. Existing flag and
+  positional-argument behavior is preserved.
+- **Fixed: REPL discovery covers the full builtin surface (#957).**
+  `:functions` now lists every runtime callable instead of a 19-name manual
+  subset. Tab completion covers each registered global, namespace member and
+  constant, and parser keyword, so `Duration`, `JSON.parse_as`, `Math.PI`, and
+  `unless` complete correctly; the nonexistent `fn` keyword no longer does.
+- **Added: LSP signature help for qualified builtins (#957).** Calls such as
+  `JSON.parse_as(...)` now show their documented signatures. Completion, hover
+  classification, signatures, checker contracts, and namespace documentation
+  share the runtime registry and `docs/builtins.md`; coverage checks reject
+  both undocumented runtime additions and stale documentation.
+
 ## v1.0.0-rc6 - 2026-07-15
 
 Sixth release candidate: the hash-rocket syntax that #867 accidentally

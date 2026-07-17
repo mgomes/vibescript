@@ -873,4 +873,26 @@ syntax and make the language server a real documentation surface.
 - [x] Full tests pass.
 - [x] Release checklist passes for `v1.0.0-rc6`.
 
+## v1.0.0-rc7 - CLI Reliability and Builtin Discovery (completed 2026-07-16)
+
+Goal: seventh release candidate — finish the urfave CLI migration and remove
+manually synchronized builtin metadata from the REPL, checker, and language
+server.
+
+- [x] CLI commands bind positional arguments and flags through urfave's typed
+  destinations while preserving the existing command contract.
+- [x] Command output uses configured streams, propagates write failures, and
+  long-running work inherits Ctrl-C cancellation.
+- [x] REPL and LSP builtin discovery derives from the runtime registry, parser
+  keywords, and embedded documentation instead of parallel manual lists.
+- [x] Qualified builtin completion and signature help cover namespace members
+  and constants, with bidirectional documentation drift checks.
+- [x] Release rehearsal accepts release-candidate versions.
+
+### v1.0.0-rc7 Definition of Done
+
+- [x] Release notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v1.0.0-rc7`.
+
 ## Unreleased
