@@ -348,43 +348,68 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		baseState := c.snapshotModuleCollectionState()
 		baseScopeState := c.snapshotScopeState()
 		c.collectRequiredModuleExportsFromExpression(typed.Condition)
-		falseState := c.snapshotModuleCollectionState()
-		falseScopeState := c.snapshotScopeState()
+		conditionState := c.snapshotModuleCollectionState()
+		conditionScopeState := c.snapshotScopeState()
 		fallthroughStates := make([]checkModuleCollectionState, 0, len(typed.ElseIf)+2)
 		fallthroughScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
+		finish := func() {
+			c.mergeModuleCollectionStates(baseState, fallthroughStates)
+			c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
+			c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
+		}
 
 		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
-		if !conditionKnown || conditionTruthy {
+		trueReachable := !conditionKnown || conditionTruthy
+		if trueReachable {
+			trueReachable = c.applyConditionOutcomeEffects(typed.Condition, true, c.collectRequiredModuleExportsFromExpression)
+		}
+		if trueReachable {
 			if c.collectRequiredModuleExportsFromStatements(typed.Consequent) {
 				fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
-			if conditionKnown {
-				c.mergeModuleCollectionStates(baseState, fallthroughStates)
-				c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
-				c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
-				return
-			}
 		}
+		c.restoreModuleCollectionState(conditionState)
+		c.restoreScopeState(conditionScopeState)
+		falseReachable := !conditionKnown || !conditionTruthy
+		if falseReachable {
+			falseReachable = c.applyConditionOutcomeEffects(typed.Condition, false, c.collectRequiredModuleExportsFromExpression)
+		}
+		if !falseReachable {
+			finish()
+			return
+		}
+		falseState := c.snapshotModuleCollectionState()
+		falseScopeState := c.snapshotScopeState()
 		for _, elseIf := range typed.ElseIf {
 			c.restoreModuleCollectionState(falseState)
 			c.restoreScopeState(falseScopeState)
 			c.collectRequiredModuleExportsFromExpression(elseIf.Condition)
-			falseState = c.snapshotModuleCollectionState()
-			falseScopeState = c.snapshotScopeState()
+			conditionState = c.snapshotModuleCollectionState()
+			conditionScopeState = c.snapshotScopeState()
 			branchTruthy, branchKnown := c.inferredConditionTruthiness(elseIf.Condition)
-			if !branchKnown || branchTruthy {
+			trueReachable = !branchKnown || branchTruthy
+			if trueReachable {
+				trueReachable = c.applyConditionOutcomeEffects(elseIf.Condition, true, c.collectRequiredModuleExportsFromExpression)
+			}
+			if trueReachable {
 				if c.collectRequiredModuleExportsFromStatements(elseIf.Consequent) {
 					fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 					fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 				}
-				if branchKnown {
-					c.mergeModuleCollectionStates(baseState, fallthroughStates)
-					c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
-					c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
-					return
-				}
 			}
+			c.restoreModuleCollectionState(conditionState)
+			c.restoreScopeState(conditionScopeState)
+			falseReachable = !branchKnown || !branchTruthy
+			if falseReachable {
+				falseReachable = c.applyConditionOutcomeEffects(elseIf.Condition, false, c.collectRequiredModuleExportsFromExpression)
+			}
+			if !falseReachable {
+				finish()
+				return
+			}
+			falseState = c.snapshotModuleCollectionState()
+			falseScopeState = c.snapshotScopeState()
 		}
 		c.restoreModuleCollectionState(falseState)
 		c.restoreScopeState(falseScopeState)
@@ -392,9 +417,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			fallthroughStates = append(fallthroughStates, c.snapshotModuleCollectionState())
 			fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 		}
-		c.mergeModuleCollectionStates(baseState, fallthroughStates)
-		c.mergeScopeStates(baseScopeState, fallthroughScopeStates)
-		c.stmtNoFallthroughInferred = len(fallthroughStates) == 0
+		finish()
 	case *ForStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Iterable)
 		if c.isolatedCollectInference {
@@ -546,7 +569,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 			if typed.Block != nil {
 				c.degradeBlockBodyBindings(typed.Block)
 			}
-			if member, ok := typed.Callee.(*MemberExpr); ok {
+			if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownUniversalNilPredicateCall(typed) {
 				c.poisonEscapedIdentifier(member.Object)
 			}
 			for _, arg := range typed.Args {
@@ -558,7 +581,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		}
 	case *MemberExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
-		if c.isolatedCollectInference {
+		if c.isolatedCollectInference && !c.knownUniversalNilPredicateMember(typed) {
 			c.poisonEscapedIdentifier(typed.Object)
 		}
 	case *ScopeExpr:

@@ -1285,6 +1285,40 @@ end
 	requireCheckWarningContains(t, script, "call to normalize argument status expected Status, got string")
 }
 
+func TestCheckWarningsSeedEntrypointExportsAfterNilPredicateGuard(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		guard string
+	}{
+		{name: "bare member", guard: "value.nil?"},
+		{name: "parenthesized call", guard: "value.nil?()"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := moduleTestEngine(t)
+			script, err := engine.CompileSnippet(`
+def maybe_value() -> int?
+  nil
+end
+
+value = maybe_value()
+return unless `+tc.guard+`
+value || require("enum_status")
+
+def normalize(status: Status) -> Status
+  status
+end
+`, "<script>")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+
+			requireNoCheckWarnings(t, script)
+		})
+	}
+}
+
 func TestCheckWarningsDoNotHoistShortCircuitRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
