@@ -169,6 +169,15 @@ end
 			warning: "call to respond_to? argument 1 expected symbol | string, got int",
 		},
 		{
+			name: "respond_to rejects non-boolean visibility flag",
+			source: `
+def run(s: string)
+  s.respond_to?(:to_i, 1)
+end
+`,
+			warning: "call to respond_to? argument 2 expected bool, got int",
+		},
+		{
 			name: "conversion rejects arguments via fact receiver",
 			source: `
 def run(s: string)
