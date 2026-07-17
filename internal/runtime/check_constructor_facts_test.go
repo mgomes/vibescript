@@ -336,6 +336,125 @@ def run()
 end
 `,
 		},
+		{
+			name: "conditional constructors inherit callable expectation",
+			source: `
+class Builder
+  def initialize(required)
+  end
+end
+
+def takes_function(value: function)
+  value
+end
+
+def run(flag)
+  takes_function(flag ? Builder.new : Builder.new)
+end
+`,
+		},
+		{
+			name: "if constructors inherit callable expectation",
+			source: `
+class Builder
+  def initialize(required)
+  end
+end
+
+def takes_function(value: function)
+  value
+end
+
+def run(flag)
+  takes_function(if flag then Builder.new else Builder.new end)
+end
+`,
+		},
+		{
+			name: "case constructors inherit callable expectation",
+			source: `
+class Builder
+  def initialize(required)
+  end
+end
+
+def takes_function(value: function)
+  value
+end
+
+def run(flag)
+  takes_function(case flag when true then Builder.new else Builder.new end)
+end
+`,
+		},
+		{
+			name: "array constructors inherit callable element expectation",
+			source: `
+class Builder
+  def initialize(required)
+  end
+end
+
+def takes_functions(values: array<function>)
+  values
+end
+
+def run()
+  takes_functions([Builder.new])
+end
+`,
+		},
+		{
+			name: "shape constructors inherit callable field expectation",
+			source: `
+class Builder
+  def initialize(required)
+  end
+end
+
+def takes_options(options: { callback: function })
+  options
+end
+
+def run()
+  takes_options({ callback: Builder.new })
+end
+`,
+		},
+		{
+			name: "conditional arrays retain callable element expectation",
+			source: `
+class Builder
+  def initialize(required)
+  end
+end
+
+def takes_functions(values: array<function>)
+  values
+end
+
+def run(flag)
+  takes_functions(flag ? [Builder.new] : [Builder.new])
+end
+`,
+		},
+		{
+			name: "constructor default inherits callable expectation",
+			source: `
+class Builder
+  def initialize(required)
+  end
+end
+
+def takes_default(value: function = Builder.new)
+  value
+end
+
+def run()
+  takes_default()
+end
+`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

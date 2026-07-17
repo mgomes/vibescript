@@ -1068,6 +1068,166 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 	return nil
 }
 
+// inferExpressionTypeWithExpectation mirrors the runtime's typed argument
+// evaluation. A callable expectation turns a bare bound method into a
+// function value, and branch/container expectations flow to the expression
+// that actually produces the value.
+func (c *scriptChecker) inferExpressionTypeWithExpectation(expr Expression, expectation expressionExpectation) *TypeExpr {
+	if expectation.empty() {
+		return c.inferExpressionType(expr)
+	}
+	if expectation.includesCallable() && c.bareMemberArgumentIsCallable(expr) {
+		return checkTypeFunction
+	}
+	switch typed := expr.(type) {
+	case *ConditionalExpr:
+		if truthy, known := c.inferredConditionTruthiness(typed.Condition); known {
+			if truthy {
+				return c.inferExpressionTypeWithExpectation(typed.Consequent, expectation)
+			}
+			return c.inferExpressionTypeWithExpectation(typed.Alternate, expectation)
+		}
+		return c.inferExpectedBranchUnion(expectation, typed.Consequent, typed.Alternate)
+	case *IfExpr:
+		branches := make([]Expression, 0, len(typed.ElseIf)+2)
+		chainDecided := false
+		appendReachableArm := func(condition, result Expression) {
+			truthy, known := c.inferredConditionTruthiness(condition)
+			if known && !truthy {
+				return
+			}
+			branches = append(branches, result)
+			if known {
+				chainDecided = true
+			}
+		}
+		appendReachableArm(typed.Condition, typed.Consequent)
+		for _, branch := range typed.ElseIf {
+			if chainDecided {
+				break
+			}
+			appendReachableArm(branch.Condition, branch.Result)
+		}
+		if !chainDecided {
+			branches = append(branches, typed.Alternate)
+		}
+		return c.inferExpectedBranchUnion(expectation, branches...)
+	case *CaseExpr:
+		branches := make([]Expression, 0, len(typed.Clauses)+1)
+		for _, clause := range typed.Clauses {
+			branches = append(branches, clause.Result)
+		}
+		branches = append(branches, typed.ElseExpr)
+		return c.inferExpectedBranchUnion(expectation, branches...)
+	case *RescueExpr:
+		return c.inferExpectedBranchUnion(expectation, typed.Body, typed.Fallback)
+	case *ArrayLiteral:
+		return c.inferExpectedArrayLiteralType(typed, expectation)
+	case *HashLiteral:
+		return c.inferExpectedHashLiteralType(typed, expectation)
+	default:
+		return c.inferExpressionType(expr)
+	}
+}
+
+func (c *scriptChecker) inferExpectedBranchUnion(expectation expressionExpectation, branches ...Expression) *TypeExpr {
+	var merged *TypeExpr
+	for i, branch := range branches {
+		arm := checkTypeNil
+		if branch != nil {
+			arm = c.inferExpressionTypeWithExpectation(branch, expectation)
+		}
+		if arm == nil {
+			return nil
+		}
+		if i == 0 {
+			merged = arm
+			continue
+		}
+		merged = unionTypeExprs(merged, arm)
+		if merged == nil {
+			return nil
+		}
+	}
+	return merged
+}
+
+func (c *scriptChecker) inferExpectedArrayLiteralType(lit *ArrayLiteral, expectation expressionExpectation) *TypeExpr {
+	elementExpectation, ok := expectation.arrayElementExpectation()
+	if !ok || len(lit.Elements) == 0 {
+		return c.inferArrayLiteralType(lit)
+	}
+	elements := make([]*TypeExpr, 0, len(lit.Elements))
+	sawUnknown := false
+	for i, element := range lit.Elements {
+		if _, splat := element.(*SplatArg); splat {
+			sawUnknown = true
+			continue
+		}
+		elementType := c.inferExpressionTypeWithExpectation(element, elementExpectation(i, len(lit.Elements)))
+		if elementType == nil {
+			sawUnknown = true
+			continue
+		}
+		elements = append(elements, elementType)
+	}
+	if len(elements) == 0 {
+		return checkTypeArray
+	}
+	union := unionTypeExprs(elements...)
+	if union == nil {
+		return checkTypeArray
+	}
+	marker := literalElementsMarker
+	if sawUnknown {
+		marker = literalPartialElementsMarker
+	}
+	return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
+}
+
+func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectation expressionExpectation) *TypeExpr {
+	if !hashLiteralTypeHasValueSlots(expectation.ty) ||
+		(lit.ShapeType != nil && !c.hashShapeStaticallyShadowed(lit)) {
+		return c.inferHashLiteralType(lit)
+	}
+	shape := make(map[string]*TypeExpr, len(lit.Pairs))
+	allSymbolKeys, allStringKeys := true, true
+	for _, pair := range lit.Pairs {
+		switch pair.Key.(type) {
+		case *SymbolLiteral:
+			allStringKeys = false
+		case *StringLiteral:
+			allSymbolKeys = false
+		default:
+			return checkTypeHash
+		}
+		key, ok := staticLiteralHashKey(pair.Key)
+		if !ok {
+			return checkTypeHash
+		}
+		valueExpectation := expressionExpectation{}
+		if valueKey, ok := staticLiteralValue(pair.Key); ok {
+			valueExpectation = typeExpressionExpectation(hashLiteralValueType(expectation.ty, valueKey))
+		}
+		fieldType := c.inferExpressionTypeWithExpectation(pair.Value, valueExpectation)
+		if fieldType == nil {
+			return checkTypeHash
+		}
+		if _, duplicate := shape[key]; duplicate {
+			return checkTypeHash
+		}
+		shape[key] = fieldType
+	}
+	fact := &TypeExpr{Kind: TypeShape, Shape: shape}
+	switch {
+	case allSymbolKeys:
+		fact.Name = shapeKeysSymbolMarker
+	case allStringKeys:
+		fact.Name = shapeKeysStringMarker
+	}
+	return fact
+}
+
 // inferredConditionTruthiness resolves a condition's truthiness from static
 // literals first, then from inferred facts, mirroring the short-circuit
 // operators: a definitely-truthy type proves the true path runs, a nil-only
@@ -1670,10 +1830,20 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 // declared type. The declared annotation is validated silently here; the
 // regular annotation checks report unresolved names.
 func (c *scriptChecker) checkInferredExpressionAgainstType(function string, expr Expression, ty *TypeExpr, subject string) {
+	c.checkInferredExpressionAgainstTypeWithExpectation(function, expr, ty, subject, expressionExpectation{})
+}
+
+func (c *scriptChecker) checkInferredExpressionAgainstTypeWithExpectation(
+	function string,
+	expr Expression,
+	ty *TypeExpr,
+	subject string,
+	expectation expressionExpectation,
+) {
 	if ty == nil {
 		return
 	}
-	inferred := c.inferExpressionType(expr)
+	inferred := c.inferExpressionTypeWithExpectation(expr, expectation)
 	if inferred == nil {
 		return
 	}
@@ -1697,10 +1867,7 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	// earlier one.
 	inferred, captured := c.callArgumentFacts[expr]
 	if !captured {
-		inferred = c.inferExpressionType(expr)
-	}
-	if typeExprIncludesCallable(ty) && c.bareMemberArgumentIsCallable(expr) {
-		inferred = checkTypeFunction
+		inferred = c.inferExpressionTypeWithExpectation(expr, typeExpressionExpectation(ty))
 	}
 	if inferred == nil {
 		return

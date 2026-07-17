@@ -1275,7 +1275,10 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 		if usedDefault {
 			c.bindParamDefaultFact(param)
 			if param.DefaultVal != nil {
-				c.refineAnnotatedParamFact(param, c.inferExpressionType(param.DefaultVal))
+				c.refineAnnotatedParamFact(
+					param,
+					c.inferExpressionTypeWithExpectation(param.DefaultVal, typeExpressionExpectation(param.Type)),
+				)
 			}
 		}
 	}
@@ -1292,14 +1295,21 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 }
 
 func (c *scriptChecker) checkParamDefault(function string, param Param) {
-	c.checkExpression(function, param.DefaultVal)
+	expectation := typeExpressionExpectation(param.Type)
+	c.checkExpressionWithExpectation(function, param.DefaultVal, expectation)
 	c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
 	if param.Type == nil {
 		return
 	}
 	c.checkRuntimeTypeAnnotation(function, param.Type)
 	if param.DefaultVal != nil {
-		c.checkRuntimeExpressionAgainstType(function, param.DefaultVal, param.Type, fmt.Sprintf("default value for %s", param.Name))
+		c.checkRuntimeExpressionAgainstTypeWithExpectation(
+			function,
+			param.DefaultVal,
+			param.Type,
+			fmt.Sprintf("default value for %s", param.Name),
+			expectation,
+		)
 	}
 }
 
@@ -1797,12 +1807,19 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		defer popNameScope()
 
 		for _, param := range fn.Params {
-			c.checkExpression(label, param.DefaultVal)
+			expectation := typeExpressionExpectation(param.Type)
+			c.checkExpressionWithExpectation(label, param.DefaultVal, expectation)
 			c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
 			if param.Type != nil {
 				c.checkRuntimeTypeAnnotation(label, param.Type)
 				if param.DefaultVal != nil {
-					c.checkRuntimeExpressionAgainstType(label, param.DefaultVal, param.Type, fmt.Sprintf("default value for %s", param.Name))
+					c.checkRuntimeExpressionAgainstTypeWithExpectation(
+						label,
+						param.DefaultVal,
+						param.Type,
+						fmt.Sprintf("default value for %s", param.Name),
+						expectation,
+					)
 				}
 			}
 			c.recordParamBinding(param)
@@ -2263,6 +2280,57 @@ func (c *scriptChecker) checkExpression(function string, expr Expression) {
 	c.checkExpressionWithAuto(function, expr, true)
 }
 
+func (c *scriptChecker) checkExpressionWithExpectation(function string, expr Expression, expectation expressionExpectation) {
+	if expectation.empty() {
+		c.checkExpression(function, expr)
+		return
+	}
+	switch typed := expr.(type) {
+	case *ConditionalExpr:
+		c.checkConditionalExpression(function, typed, expectation)
+		return
+	case *IfExpr:
+		c.checkIfExpression(function, typed, expectation)
+		return
+	case *CaseExpr:
+		c.checkCaseExpression(function, typed, expectation)
+		return
+	case *ArrayLiteral:
+		elementExpectation, ok := expectation.arrayElementExpectation()
+		if !ok {
+			break
+		}
+		for i, element := range typed.Elements {
+			c.checkExpressionWithExpectation(function, element, elementExpectation(i, len(typed.Elements)))
+		}
+		return
+	case *HashLiteral:
+		if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
+			return
+		}
+		if !hashLiteralTypeHasValueSlots(expectation.ty) {
+			break
+		}
+		for _, pair := range typed.Pairs {
+			c.checkExpression(function, pair.Key)
+			valueExpectation := expressionExpectation{}
+			if key, ok := staticLiteralValue(pair.Key); ok {
+				valueExpectation = typeExpressionExpectation(hashLiteralValueType(expectation.ty, key))
+			}
+			c.checkExpressionWithExpectation(function, pair.Value, valueExpectation)
+		}
+		return
+	}
+	c.checkExpressionWithAuto(function, expr, !expectation.includesCallable())
+}
+
+func autoCallExpectation(autoCall bool) expressionExpectation {
+	if autoCall {
+		return expressionExpectation{}
+	}
+	return typeExpressionExpectation(checkTypeFunction)
+}
+
 func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression, autoCall bool) {
 	switch typed := expr.(type) {
 	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
@@ -2317,26 +2385,26 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// under. checkCall consumes the captured facts afterwards.
 		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
 		for i, arg := range typed.Args {
-			autoCall := true
+			expectation := expressionExpectation{}
 			if targetResolved {
-				autoCall = staticCallablePositionalArgumentAutoCalls(target, i)
+				expectation = staticCallablePositionalArgumentExpectation(target, i)
 			}
-			c.checkExpressionWithAuto(function, arg, autoCall)
+			c.checkExpressionWithExpectation(function, arg, expectation)
 			// The argument's value and effects materialize once its own
 			// evaluation completes, before the next argument runs: a shovel
 			// append lands in the facts, and a require binds its exports
 			// for the arguments after it, never the ones before.
 			c.collectRuntimeRequireCallExportsFromExpression(arg)
-			argumentFacts[arg] = c.inferExpressionType(arg)
+			argumentFacts[arg] = c.inferExpressionTypeWithExpectation(arg, expectation)
 		}
 		for _, kwarg := range typed.KwArgs {
-			autoCall := true
+			expectation := expressionExpectation{}
 			if targetResolved {
-				autoCall = staticCallableKeywordArgumentAutoCalls(target, kwarg.Name)
+				expectation = staticCallableKeywordArgumentExpectation(target, kwarg.Name)
 			}
-			c.checkExpressionWithAuto(function, kwarg.Value, autoCall)
+			c.checkExpressionWithExpectation(function, kwarg.Value, expectation)
 			c.collectRuntimeRequireCallExportsFromExpression(kwarg.Value)
-			argumentFacts[kwarg.Value] = c.inferExpressionType(kwarg.Value)
+			argumentFacts[kwarg.Value] = c.inferExpressionTypeWithExpectation(kwarg.Value, expectation)
 		}
 		if typed.BlockArg != nil {
 			c.checkExpressionWithAuto(function, typed.BlockArg, false)
@@ -2424,73 +2492,16 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkBinaryOperandTypes(function, typed)
 		c.applyShovelMutationFacts(typed)
 	case *ConditionalExpr:
-		c.checkConditionalExpression(function, typed)
+		c.checkConditionalExpression(function, typed, autoCallExpectation(autoCall))
 	case *RescueExpr:
 		c.checkRescueExpression(function, typed, autoCall)
 	case *IfExpr:
-		baseRuntimeState := c.snapshotRuntimeState()
-		baseScopeState := c.snapshotScopeState()
-		c.checkExpressionWithAuto(function, typed.Condition, true)
-		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
-		conditionRuntimeState := c.snapshotRuntimeState()
-		conditionScopeState := c.snapshotScopeState()
-		branchRuntimeStates := make([]checkRuntimeState, 0, len(typed.ElseIf)+2)
-		branchScopeStates := make([]checkScopeState, 0, len(typed.ElseIf)+2)
-
-		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
-		if !conditionKnown || conditionTruthy {
-			c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
-			c.checkExpressionWithAuto(function, typed.Consequent, true)
-			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
-			if conditionKnown {
-				c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
-				c.mergeScopeStates(baseScopeState, branchScopeStates)
-				return
-			}
-		}
-		c.restoreRuntimeState(conditionRuntimeState)
-		c.restoreScopeState(conditionScopeState)
-		c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
-		falseRuntimeState := c.snapshotRuntimeState()
-		falseScopeState := c.snapshotScopeState()
-		for _, branch := range typed.ElseIf {
-			c.restoreRuntimeState(falseRuntimeState)
-			c.restoreScopeState(falseScopeState)
-			c.checkExpressionWithAuto(function, branch.Condition, true)
-			c.collectRuntimeRequireCallExportsFromExpression(branch.Condition)
-			conditionRuntimeState = c.snapshotRuntimeState()
-			conditionScopeState = c.snapshotScopeState()
-			branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
-			if !branchKnown || branchTruthy {
-				c.collectRuntimeConditionOutcomeEffects(branch.Condition, true)
-				c.checkExpressionWithAuto(function, branch.Result, true)
-				branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-				branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
-				if branchKnown {
-					c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
-					c.mergeScopeStates(baseScopeState, branchScopeStates)
-					return
-				}
-			}
-			c.restoreRuntimeState(conditionRuntimeState)
-			c.restoreScopeState(conditionScopeState)
-			c.collectRuntimeConditionOutcomeEffects(branch.Condition, false)
-			falseRuntimeState = c.snapshotRuntimeState()
-			falseScopeState = c.snapshotScopeState()
-		}
-		c.restoreRuntimeState(falseRuntimeState)
-		c.restoreScopeState(falseScopeState)
-		c.checkExpressionWithAuto(function, typed.Alternate, true)
-		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
-		c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
-		c.mergeScopeStates(baseScopeState, branchScopeStates)
+		c.checkIfExpression(function, typed, autoCallExpectation(autoCall))
 	case *RangeExpr:
 		c.checkExpressionWithAuto(function, typed.Start, true)
 		c.checkExpressionWithAuto(function, typed.End, true)
 	case *CaseExpr:
-		c.checkCaseExpression(function, typed)
+		c.checkCaseExpression(function, typed, autoCallExpectation(autoCall))
 	case *BlockLiteral:
 		// A standalone block literal is a stabby lambda; its body checks like a
 		// call block's. Plain call blocks are checked from the CallExpr case.
@@ -2510,28 +2521,28 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 	}
 }
 
-func staticCallablePositionalArgumentAutoCalls(target staticCallable, index int) bool {
+func staticCallablePositionalArgumentExpectation(target staticCallable, index int) expressionExpectation {
 	if target.fn != nil {
 		param, ok := positionalCallableParam(target.fn.Params, index)
 		if !ok {
-			return true
+			return expressionExpectation{}
 		}
-		return !positionalArgumentExpectation(param).includesCallable()
+		return positionalArgumentExpectation(param)
 	}
 	if index < len(target.spec.paramTypes) {
-		return !typeExprIncludesCallable(target.spec.paramTypes[index])
+		return typeExpressionExpectation(target.spec.paramTypes[index])
 	}
-	return true
+	return expressionExpectation{}
 }
 
-func staticCallableKeywordArgumentAutoCalls(target staticCallable, name string) bool {
+func staticCallableKeywordArgumentExpectation(target staticCallable, name string) expressionExpectation {
 	if target.fn != nil {
-		return !typeExprIncludesCallable(keywordArgumentExpectedType(target.fn.Params, name))
+		return typeExpressionExpectation(keywordArgumentExpectedType(target.fn.Params, name))
 	}
-	return !typeExprIncludesCallable(target.spec.keywordTypes[name])
+	return typeExpressionExpectation(target.spec.keywordTypes[name])
 }
 
-func (c *scriptChecker) checkConditionalExpression(function string, expr *ConditionalExpr) {
+func (c *scriptChecker) checkConditionalExpression(function string, expr *ConditionalExpr, expectation expressionExpectation) {
 	baseRuntimeState := c.snapshotRuntimeState()
 	baseScopeState := c.snapshotScopeState()
 	c.checkExpressionWithAuto(function, expr.Condition, true)
@@ -2544,7 +2555,7 @@ func (c *scriptChecker) checkConditionalExpression(function string, expr *Condit
 	conditionTruthy, conditionKnown := c.inferredConditionTruthiness(expr.Condition)
 	if !conditionKnown || conditionTruthy {
 		c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
-		c.checkExpressionWithAuto(function, expr.Consequent, true)
+		c.checkExpressionWithExpectation(function, expr.Consequent, expectation)
 		c.collectRuntimeRequireCallExportsFromExpression(expr.Consequent)
 		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
@@ -2558,11 +2569,72 @@ func (c *scriptChecker) checkConditionalExpression(function string, expr *Condit
 	c.restoreRuntimeState(conditionRuntimeState)
 	c.restoreScopeState(conditionScopeState)
 	c.collectRuntimeConditionOutcomeEffects(expr.Condition, false)
-	c.checkExpressionWithAuto(function, expr.Alternate, true)
+	c.checkExpressionWithExpectation(function, expr.Alternate, expectation)
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Alternate)
 	branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
 
+	c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+	c.mergeScopeStates(baseScopeState, branchScopeStates)
+}
+
+func (c *scriptChecker) checkIfExpression(function string, expr *IfExpr, expectation expressionExpectation) {
+	baseRuntimeState := c.snapshotRuntimeState()
+	baseScopeState := c.snapshotScopeState()
+	c.checkExpression(function, expr.Condition)
+	c.collectRuntimeRequireCallExportsFromExpression(expr.Condition)
+	conditionRuntimeState := c.snapshotRuntimeState()
+	conditionScopeState := c.snapshotScopeState()
+	branchRuntimeStates := make([]checkRuntimeState, 0, len(expr.ElseIf)+2)
+	branchScopeStates := make([]checkScopeState, 0, len(expr.ElseIf)+2)
+
+	conditionTruthy, conditionKnown := c.inferredConditionTruthiness(expr.Condition)
+	if !conditionKnown || conditionTruthy {
+		c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
+		c.checkExpressionWithExpectation(function, expr.Consequent, expectation)
+		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		if conditionKnown {
+			c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+			c.mergeScopeStates(baseScopeState, branchScopeStates)
+			return
+		}
+	}
+	c.restoreRuntimeState(conditionRuntimeState)
+	c.restoreScopeState(conditionScopeState)
+	c.collectRuntimeConditionOutcomeEffects(expr.Condition, false)
+	falseRuntimeState := c.snapshotRuntimeState()
+	falseScopeState := c.snapshotScopeState()
+	for _, branch := range expr.ElseIf {
+		c.restoreRuntimeState(falseRuntimeState)
+		c.restoreScopeState(falseScopeState)
+		c.checkExpression(function, branch.Condition)
+		c.collectRuntimeRequireCallExportsFromExpression(branch.Condition)
+		conditionRuntimeState = c.snapshotRuntimeState()
+		conditionScopeState = c.snapshotScopeState()
+		branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
+		if !branchKnown || branchTruthy {
+			c.collectRuntimeConditionOutcomeEffects(branch.Condition, true)
+			c.checkExpressionWithExpectation(function, branch.Result, expectation)
+			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+			if branchKnown {
+				c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+				c.mergeScopeStates(baseScopeState, branchScopeStates)
+				return
+			}
+		}
+		c.restoreRuntimeState(conditionRuntimeState)
+		c.restoreScopeState(conditionScopeState)
+		c.collectRuntimeConditionOutcomeEffects(branch.Condition, false)
+		falseRuntimeState = c.snapshotRuntimeState()
+		falseScopeState = c.snapshotScopeState()
+	}
+	c.restoreRuntimeState(falseRuntimeState)
+	c.restoreScopeState(falseScopeState)
+	c.checkExpressionWithExpectation(function, expr.Alternate, expectation)
+	branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
 	c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
 	c.mergeScopeStates(baseScopeState, branchScopeStates)
 }
@@ -2586,7 +2658,7 @@ func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr,
 	c.mergeScopeStates(baseScopeState, []checkScopeState{bodyScopeState, fallbackScopeState})
 }
 
-func (c *scriptChecker) checkCaseExpression(function string, expr *CaseExpr) {
+func (c *scriptChecker) checkCaseExpression(function string, expr *CaseExpr, expectation expressionExpectation) {
 	baseRuntimeState := c.snapshotRuntimeState()
 	baseScopeState := c.snapshotScopeState()
 	c.checkExpressionWithAuto(function, expr.Target, true)
@@ -2605,7 +2677,7 @@ func (c *scriptChecker) checkCaseExpression(function string, expr *CaseExpr) {
 			matchRuntimeState := c.snapshotRuntimeState()
 			matchScopeState := c.snapshotScopeState()
 
-			c.checkExpressionWithAuto(function, clause.Result, true)
+			c.checkExpressionWithExpectation(function, clause.Result, expectation)
 			c.collectRuntimeRequireCallExportsFromExpression(clause.Result)
 			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
@@ -2616,7 +2688,7 @@ func (c *scriptChecker) checkCaseExpression(function string, expr *CaseExpr) {
 
 	c.restoreRuntimeState(fallthroughRuntimeState)
 	c.restoreScopeState(fallthroughScopeState)
-	c.checkExpressionWithAuto(function, expr.ElseExpr, true)
+	c.checkExpressionWithExpectation(function, expr.ElseExpr, expectation)
 	c.collectRuntimeRequireCallExportsFromExpression(expr.ElseExpr)
 	branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
@@ -2703,7 +2775,7 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	for _, param := range block.Params {
 		c.checkRuntimeTypeAnnotation(function, param.Type)
 		c.checkDestructureTargetTypeAnnotations(function, param.Target)
-		c.checkExpression(function, param.DefaultVal)
+		c.checkExpressionWithExpectation(function, param.DefaultVal, positionalArgumentExpectation(param))
 		c.bindParamLocalType(param)
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
@@ -3394,6 +3466,21 @@ func (c *scriptChecker) checkRuntimeExpressionAgainstType(function string, expr 
 	val, ok := staticLiteralValue(expr)
 	if !ok {
 		c.checkInferredExpressionAgainstType(function, expr, ty, subject)
+		return
+	}
+	c.checkRuntimeValueAgainstType(function, expr.Pos(), val, ty, subject)
+}
+
+func (c *scriptChecker) checkRuntimeExpressionAgainstTypeWithExpectation(
+	function string,
+	expr Expression,
+	ty *TypeExpr,
+	subject string,
+	expectation expressionExpectation,
+) {
+	val, ok := staticLiteralValue(expr)
+	if !ok {
+		c.checkInferredExpressionAgainstTypeWithExpectation(function, expr, ty, subject, expectation)
 		return
 	}
 	c.checkRuntimeValueAgainstType(function, expr.Pos(), val, ty, subject)
