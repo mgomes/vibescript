@@ -613,7 +613,7 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 			c.bindLocalType(target.Name, outcome.result)
 			return
 		}
-		if reassignmentConflicts(current, next) {
+		if reassignmentConflicts(current, next, c.checkNamedTypeResolver()) {
 			c.add(function, stmt.Pos(), "reassignment of %s expected %s, got %s",
 				target.Name, formatTypeExpr(current), formatTypeExpr(next))
 		}
@@ -826,9 +826,10 @@ func (c *scriptChecker) refineAnnotatedParamFact(param Param, fact *TypeExpr) {
 	if !ok || len(arms) < 2 {
 		return
 	}
+	resolve := c.checkNamedTypeResolver()
 	kept := make([]*TypeExpr, 0, len(arms))
 	for _, arm := range arms {
-		if !typeExprsDisjoint(fact, arm) {
+		if !typeExprsDisjoint(fact, arm, resolve) {
 			kept = append(kept, arm)
 		}
 	}
@@ -845,7 +846,7 @@ func (c *scriptChecker) refineAnnotatedParamFact(param Param, fact *TypeExpr) {
 // acts as the neutral initializer in both directions, numeric retyping widens
 // instead of erroring (arithmetic freely mixes int and float), and container
 // re-initialization (hash/shape literals of different shapes) stays legal.
-func reassignmentConflicts(current, next *TypeExpr) bool {
+func reassignmentConflicts(current, next *TypeExpr, resolve namedTypeResolver) bool {
 	if current == nil || next == nil {
 		return false
 	}
@@ -861,7 +862,7 @@ func reassignmentConflicts(current, next *TypeExpr) bool {
 	if typeExprArrayOnly(current) && typeExprArrayOnly(next) {
 		return false
 	}
-	return typeExprsDisjoint(current, next)
+	return typeExprsDisjoint(current, next, resolve)
 }
 
 // typeExprDefinitelyTruthy reports whether every possible value of the type
@@ -1366,7 +1367,7 @@ func appendedArrayFact(current, appended *TypeExpr) *TypeExpr {
 // literalArrayDisjoint reports whether a witnessed-element array can never
 // satisfy another array type: some witnessed element arm is disjoint from
 // the other side's declared element type.
-func literalArrayDisjoint(lit, other *TypeExpr) bool {
+func literalArrayDisjoint(lit, other *TypeExpr, resolve namedTypeResolver) bool {
 	if lit.Name != literalElementsMarker && lit.Name != literalPartialElementsMarker {
 		return false
 	}
@@ -1378,7 +1379,7 @@ func literalArrayDisjoint(lit, other *TypeExpr) bool {
 		return false
 	}
 	for _, arm := range arms {
-		if typeExprsDisjoint(arm, other.TypeArgs[0]) {
+		if typeExprsDisjoint(arm, other.TypeArgs[0], resolve) {
 			return true
 		}
 	}
@@ -1389,7 +1390,7 @@ func literalArrayDisjoint(lit, other *TypeExpr) bool {
 // a generic hash type: shapes witness every field, so a field type disjoint
 // from the hash's value type contradicts it. Key types are left to runtime
 // (key representation is not always known statically).
-func shapeVsTypedHashDisjoint(shape, hash *TypeExpr) bool {
+func shapeVsTypedHashDisjoint(shape, hash *TypeExpr, resolve namedTypeResolver) bool {
 	if len(hash.TypeArgs) != 2 {
 		return false
 	}
@@ -1403,13 +1404,13 @@ func shapeVsTypedHashDisjoint(shape, hash *TypeExpr) bool {
 		case shapeKeysSymbolMarker:
 			keyType = checkTypeSymbol
 		}
-		if keyType != nil && typeExprsDisjoint(keyType, hash.TypeArgs[0]) {
+		if keyType != nil && typeExprsDisjoint(keyType, hash.TypeArgs[0], resolve) {
 			return true
 		}
 	}
 	valueType := hash.TypeArgs[1]
 	for _, field := range shape.Shape {
-		if typeExprsDisjoint(field, valueType) {
+		if typeExprsDisjoint(field, valueType, resolve) {
 			return true
 		}
 	}
@@ -1614,7 +1615,7 @@ func (c *scriptChecker) checkInferredExpressionAgainstType(function string, expr
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return
 	}
-	if typeExprsDisjoint(inferred, ty) {
+	if typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver()) {
 		c.add(function, expr.Pos(), "%s expected %s, got %s", subject, formatTypeExpr(ty), formatTypeExpr(inferred))
 	}
 }
@@ -1639,7 +1640,7 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return
 	}
-	if typeExprsDisjoint(inferred, ty) {
+	if typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver()) {
 		c.add(function, expr.Pos(), "call to %s argument %s expected %s, got %s",
 			callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred))
 	}
@@ -2087,11 +2088,31 @@ func appendTypeFactKey(b *strings.Builder, ty *TypeExpr, depth int) {
 	}
 }
 
+// namedTypeResolver resolves a named (TypeEnum kind) annotation to its enum
+// or class definition. A nil resolver, or a miss, keeps named arms
+// conservatively compatible with everything, preserving gradual behavior for
+// unresolved and host-supplied names.
+type namedTypeResolver func(*TypeExpr) (namedTypeMatch, bool)
+
+// checkNamedTypeResolver resolves named annotations through the same
+// environments the runtime binds, so two spellings of one definition compare
+// equal by resolved identity.
+func (c *scriptChecker) checkNamedTypeResolver() namedTypeResolver {
+	return func(ty *TypeExpr) (namedTypeMatch, bool) {
+		match, ok, err := lookupNamedTypeForType(ty, c.runtimeTypeContext())
+		if err != nil || !ok {
+			return namedTypeMatch{}, false
+		}
+		return match, true
+	}
+}
+
 // typeExprsDisjoint reports whether no runtime value can satisfy both types.
-// It is deliberately conservative: unknown, any, and named (enum/class) types
+// It is deliberately conservative: unknown, any, and unresolved named types
 // never count as disjoint, empty containers make all array and hash types
-// overlap, and only exact shapes compare structurally.
-func typeExprsDisjoint(a, b *TypeExpr) bool {
+// overlap, and only exact shapes compare structurally. Resolved named types
+// compare by definition identity through resolve.
+func typeExprsDisjoint(a, b *TypeExpr, resolve namedTypeResolver) bool {
 	aArms, ok := typeExprArms(a, 0)
 	if !ok || len(aArms) == 0 {
 		return false
@@ -2102,7 +2123,7 @@ func typeExprsDisjoint(a, b *TypeExpr) bool {
 	}
 	for _, x := range aArms {
 		for _, y := range bArms {
-			if !typeArmPairDisjoint(x, y) {
+			if !typeArmPairDisjoint(x, y, resolve) {
 				return false
 			}
 		}
@@ -2151,7 +2172,7 @@ func typeExprArms(ty *TypeExpr, depth int) ([]*TypeExpr, bool) {
 	return arms, true
 }
 
-func typeArmPairDisjoint(x, y *TypeExpr) bool {
+func typeArmPairDisjoint(x, y *TypeExpr, resolve namedTypeResolver) bool {
 	// A first-class shape value satisfies no annotation but any (the
 	// runtime has no kind that matches it), and overlaps another shape
 	// value.
@@ -2162,9 +2183,11 @@ func typeArmPairDisjoint(x, y *TypeExpr) bool {
 		return shapeValueArmDisjoint(x)
 	}
 	kx, ky := x.Kind, y.Kind
-	if kx == TypeEnum || ky == TypeEnum || kx == TypeAny || ky == TypeAny ||
-		kx == TypeUnknown || ky == TypeUnknown {
+	if kx == TypeAny || ky == TypeAny || kx == TypeUnknown || ky == TypeUnknown {
 		return false
+	}
+	if kx == TypeEnum || ky == TypeEnum {
+		return namedArmPairDisjoint(x, y, resolve)
 	}
 	numeric := func(kind TypeKind) bool {
 		return kind == TypeInt || kind == TypeFloat || kind == TypeNumber
@@ -2179,18 +2202,85 @@ func typeArmPairDisjoint(x, y *TypeExpr) bool {
 	if hashLike(kx) && hashLike(ky) {
 		switch {
 		case kx == TypeShape && ky == TypeShape:
-			return shapeTypesDisjoint(x, y)
+			return shapeTypesDisjoint(x, y, resolve)
 		case kx == TypeShape && ky == TypeHash:
-			return shapeVsTypedHashDisjoint(x, y)
+			return shapeVsTypedHashDisjoint(x, y, resolve)
 		case kx == TypeHash && ky == TypeShape:
-			return shapeVsTypedHashDisjoint(y, x)
+			return shapeVsTypedHashDisjoint(y, x, resolve)
 		}
 		return false
 	}
 	if kx == TypeArray && ky == TypeArray {
-		return literalArrayDisjoint(x, y) || literalArrayDisjoint(y, x)
+		return literalArrayDisjoint(x, y, resolve) || literalArrayDisjoint(y, x, resolve)
 	}
 	return kx != ky
+}
+
+// namedArmPairDisjoint decides disjointness for arm pairs involving a named
+// (enum, class, or module) annotation, mirroring runtime named normalization:
+// an enum admits its own values and coercible symbols, a class admits its
+// instances, and a module admits instances of classes that include it.
+// Unresolved names stay conservatively compatible.
+func namedArmPairDisjoint(x, y *TypeExpr, resolve namedTypeResolver) bool {
+	if resolve == nil {
+		return false
+	}
+	if x.Kind == TypeEnum && y.Kind == TypeEnum {
+		mx, ok := resolve(x)
+		if !ok {
+			return false
+		}
+		my, ok := resolve(y)
+		if !ok {
+			return false
+		}
+		return namedMatchesDisjoint(mx, my)
+	}
+	named, other := x, y
+	if named.Kind != TypeEnum {
+		named, other = y, x
+	}
+	match, ok := resolve(named)
+	if !ok {
+		return false
+	}
+	if match.enum != nil {
+		// Runtime enum normalization admits the enum's own values and
+		// coercible symbols; every other kind is rejected
+		// (normalizeEnumValueForDef).
+		return other.Kind != TypeSymbol
+	}
+	// A class or module annotation admits only instances, which no plain
+	// runtime kind produces (normalizeClassInstanceForDef).
+	return true
+}
+
+// namedMatchesDisjoint compares two resolved named definitions. Plain classes
+// have no inheritance, so distinct definitions never share an instance; a
+// module stays compatible with classes that include it and with other modules
+// (one class can include both).
+func namedMatchesDisjoint(x, y namedTypeMatch) bool {
+	if x.enum != nil || y.enum != nil {
+		if x.enum != nil && y.enum != nil {
+			return x.enum != y.enum
+		}
+		// An enum value is never a class instance and vice versa.
+		return true
+	}
+	cx, cy := x.class, y.class
+	if cx == nil || cy == nil || cx == cy {
+		return false
+	}
+	switch {
+	case cx.IsModule && cy.IsModule:
+		return false
+	case cx.IsModule:
+		return !classIncludesModule(cy, cx.Name)
+	case cy.IsModule:
+		return !classIncludesModule(cx, cy.Name)
+	default:
+		return true
+	}
 }
 
 func shapeValueArmDisjoint(other *TypeExpr) bool {
@@ -2208,7 +2298,7 @@ func shapeValueArmDisjoint(other *TypeExpr) bool {
 
 // shapeTypesDisjoint compares two exact shapes: differing key sets or any
 // field pair with disjoint types means no value can satisfy both.
-func shapeTypesDisjoint(x, y *TypeExpr) bool {
+func shapeTypesDisjoint(x, y *TypeExpr, resolve namedTypeResolver) bool {
 	if len(x.Shape) != len(y.Shape) {
 		return true
 	}
@@ -2217,7 +2307,7 @@ func shapeTypesDisjoint(x, y *TypeExpr) bool {
 		if !ok {
 			return true
 		}
-		if typeExprsDisjoint(xField, yField) {
+		if typeExprsDisjoint(xField, yField, resolve) {
 			return true
 		}
 	}

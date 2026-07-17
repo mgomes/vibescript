@@ -138,6 +138,11 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   `uuid`, `Duration.build`, and the `Time` constructors expose their argument
   and result types. Builtins with argument-dependent results (`JSON.parse`)
   stay unknown, and a host override removes the default contract entirely.
+- Resolved named types compare by identity: a `Color` value contradicts a
+  `Status` boundary, a class instance contradicts an unrelated class or
+  module, and named values contradict primitive and container boundaries.
+  Symbols keep coercing into enums, a class keeps satisfying modules it
+  includes, and unresolved or host-supplied names stay conservative.
 
 ### `JSON.parse_as`
 
