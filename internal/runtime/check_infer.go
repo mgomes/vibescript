@@ -1392,11 +1392,14 @@ func (c *scriptChecker) inferUnaryExprType(expr *UnaryExpr) *TypeExpr {
 
 // inferCallExprType exposes a known callee's annotated return type to the
 // caller. Splats and constructors stay unknown; script functions reached
-// through safe navigation stay unknown too. A builtin contract's invariant
-// result flows through, with nil added under safe navigation (a nil receiver
-// skips the call and yields nil). JSON.parse_as models its validated shape
-// (ADR-004).
+// through safe navigation stay unknown too. A nil-only safe-navigation
+// receiver yields nil without dispatch; otherwise a builtin contract's
+// invariant result flows through with nil added. JSON.parse_as models its
+// validated shape (ADR-004).
 func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
+	if c.safeNavigationCallSkipsInferred(call) {
+		return checkTypeNil
+	}
 	safeNavigation := false
 	if member, ok := call.Callee.(*MemberExpr); ok && member.Safe {
 		safeNavigation = true
@@ -1437,9 +1440,13 @@ func nullableTypeExpr(ty *TypeExpr) *TypeExpr {
 
 // autoInvokedMemberResultFact reports the invariant result of a bare member
 // read that auto-invokes at runtime (`s.to_i` or `Time.now` without
-// parentheses). Members that resolve to script functions or carry no result
+// parentheses). A nil-only safe-navigation receiver yields nil without
+// dispatch. Other members that resolve to script functions or carry no result
 // contract stay unknown; safe navigation adds nil.
 func (c *scriptChecker) autoInvokedMemberResultFact(member *MemberExpr) *TypeExpr {
+	if member.Safe && typeExprIsNilOnly(c.inferExpressionType(member.Object)) {
+		return checkTypeNil
+	}
 	target, ok := c.resolveMemberCallable(member)
 	if !ok || target.fn != nil || !target.spec.autoInvoke {
 		return nil

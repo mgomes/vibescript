@@ -208,6 +208,34 @@ end
 `,
 			warning: "call to takes_int argument value expected int, got string?",
 		},
+		{
+			name: "nil-only safe navigation call result",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def run()
+  receiver = nil
+  takes_string(receiver&.to_s())
+end
+`,
+			warning: "call to takes_string argument value expected string, got nil",
+		},
+		{
+			name: "nil-only safe navigation bare result",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def run()
+  receiver = nil
+  takes_string(receiver&.to_s)
+end
+`,
+			warning: "call to takes_string argument value expected string, got nil",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
