@@ -1986,6 +1986,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.degradeLocalTypesForBindings(typed.Body)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
+		c.collectRuntimeConditionOutcomeEffects(typed.Condition, true)
 		c.mutationRegionDepth++
 		c.checkStatements(function, returnType, typed.Body)
 		c.mutationRegionDepth--
@@ -1999,6 +2000,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.degradeLocalTypesForBindings(typed.Body)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
+		c.collectRuntimeConditionOutcomeEffects(typed.Condition, false)
 		c.mutationRegionDepth++
 		c.checkStatements(function, returnType, typed.Body)
 		c.mutationRegionDepth--

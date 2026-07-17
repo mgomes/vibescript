@@ -171,6 +171,30 @@ end
 `,
 			warning: "unsupported unary - operand nil",
 		},
+		{
+			name: "while condition narrows its body with the true outcome",
+			source: `
+def f(x: int?)
+  while x.nil?
+    y = -x
+    break
+  end
+end
+`,
+			warning: "unsupported unary - operand nil",
+		},
+		{
+			name: "until condition narrows its body with the false outcome",
+			source: `
+def f(x: int?)
+  until x != nil
+    y = -x
+    break
+  end
+end
+`,
+			warning: "unsupported unary - operand nil",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,6 +230,17 @@ end
 def f(x: int?)
   if x.nil?
     1
+  end
+  y = -x
+end
+`,
+		},
+		{
+			name: "loop exit re-widens the body fact",
+			source: `
+def f(x: int?)
+  while x.nil?
+    break
   end
   y = -x
 end
