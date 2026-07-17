@@ -4009,7 +4009,7 @@ func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExp
 	if !rawCaptured {
 		rawType = c.inferExpressionType(raw)
 	}
-	if rawType != nil && typeExprsDisjoint(rawType, checkTypeString) {
+	if rawType != nil && typeExprsDisjoint(rawType, checkTypeString, c.checkNamedTypeResolver()) {
 		c.add(function, raw.Pos(), "call to JSON.parse_as expects a JSON string as its first argument, got %s", formatTypeExpr(rawType))
 	}
 	arg := call.Args[1]
@@ -4703,7 +4703,7 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 			// at call binding, and an exact shape checks per field.
 			switch {
 			case ty.Kind == TypeHash && len(ty.TypeArgs) == 2:
-				if typeExprsDisjoint(checkTypeString, ty.TypeArgs[0]) {
+				if typeExprsDisjoint(checkTypeString, ty.TypeArgs[0], c.checkNamedTypeResolver()) {
 					c.add(function, kwarg.Value.Pos(), "call to %s argument %s expected %s, got string-keyed keywords",
 						callName, paramName, formatTypeExpr(ty))
 					return
