@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -4498,14 +4499,37 @@ func (c *scriptChecker) factReceiverMemberCallable(member *MemberExpr) (staticCa
 		}
 	}
 	if uniform {
-		if spec, ok := staticMemberSpecs[kinds[0]+"."+member.Property]; ok {
+		if spec, exists := staticMemberSpecs[kinds[0]+"."+member.Property]; exists {
 			return staticCallable{name: kinds[0] + "." + member.Property, spec: spec}, true
 		}
 	}
-	if spec, ok := universalMemberSpecs[member.Property]; ok {
-		return staticCallable{name: member.Property, spec: spec}, true
+	universalSpec, hasUniversal := universalMemberSpecs[member.Property]
+	if !hasUniversal {
+		return staticCallable{}, false
 	}
-	return staticCallable{}, false
+	var typedSpec staticCallSpec
+	typedOverrides := 0
+	for _, kind := range kinds {
+		spec, exists := staticMemberSpecs[kind+"."+member.Property]
+		if !exists {
+			continue
+		}
+		if typedOverrides > 0 && !reflect.DeepEqual(typedSpec, spec) {
+			return staticCallable{}, false
+		}
+		typedSpec = spec
+		typedOverrides++
+	}
+	if typedOverrides > 0 {
+		// A universal fallback is unsound once any possible receiver owns the
+		// member: mixed dispatch can have different block or argument rules.
+		// Resolve only when every arm owns an equivalent typed contract.
+		if typedOverrides != len(kinds) {
+			return staticCallable{}, false
+		}
+		return staticCallable{name: member.Property, spec: typedSpec}, true
+	}
+	return staticCallable{name: member.Property, spec: universalSpec}, true
 }
 
 // staticMemberReceiverKinds returns the runtime dispatch kinds of every known

@@ -526,6 +526,14 @@ end
 `,
 		},
 		{
+			name: "mixed temporal equality keeps ignored block unevaluated",
+			source: `
+def run(value: duration | time, other: duration | time)
+  value.eql?(other) { missing_union_block }
+end
+`,
+		},
+		{
 			name: "predicate result satisfies bool boundary",
 			source: `
 def takes_bool(value: bool)
