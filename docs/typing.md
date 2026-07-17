@@ -143,6 +143,10 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   module, and named values contradict primitive and container boundaries.
   Symbols keep coercing into enums, a class keeps satisfying modules it
   includes, and unresolved or host-supplied names stay conservative.
+- Constructor results are nominal: `u = User.new` gives `u` the fact `User`,
+  boundary checks compare it by class identity, and instance methods called
+  on it check their argument shapes and expose their annotated return types.
+  Shadowed class names and dynamic constructor dispatch stay unknown.
 
 ### `JSON.parse_as`
 

@@ -3942,6 +3942,9 @@ type staticCallable struct {
 	spec        staticCallSpec
 	resolution  calleeResolution
 	constructor bool
+	// constructorClass names the statically resolved class a constructor
+	// call instantiates, so the call's result carries a nominal fact.
+	constructorClass string
 }
 
 // staticCallSpec is the static contract of a builtin callable. A builtin
@@ -4124,6 +4127,12 @@ func (c *scriptChecker) hostGlobalShadows(name string) bool {
 }
 
 func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallable, bool) {
+	// A local whose fact is a single script class resolves instance methods
+	// before the identifier paths below: typed locals are scope bindings, so
+	// they would otherwise bail at the shadowing guard.
+	if target, ok := c.nominalReceiverMethodCallable(member); ok {
+		return target, true
+	}
 	if ident, ok := member.Object.(*Identifier); ok {
 		if c.identifierShadowed(ident.Name) {
 			return staticCallable{}, false
@@ -4140,13 +4149,19 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 			if member.Property == "new" {
 				if initFn, ok := classDef.Methods["initialize"]; ok {
 					return staticCallable{
-						name:        ident.Name + ".new",
-						fn:          initFn,
-						resolution:  calleeMemberValue,
-						constructor: true,
+						name:             ident.Name + ".new",
+						fn:               initFn,
+						resolution:       calleeMemberValue,
+						constructor:      true,
+						constructorClass: ident.Name,
 					}, true
 				}
-				return staticCallable{name: ident.Name + ".new", spec: staticCallSpec{minArgs: 0, maxArgs: 0}}, true
+				return staticCallable{
+					name:             ident.Name + ".new",
+					spec:             staticCallSpec{minArgs: 0, maxArgs: 0},
+					constructor:      true,
+					constructorClass: ident.Name,
+				}, true
 			}
 			if fn, ok := classDef.ClassMethods[member.Property]; ok {
 				return staticCallable{name: ident.Name + "." + member.Property, fn: fn, resolution: calleeMemberMethod}, true
@@ -4301,6 +4316,30 @@ func checkRootBinding(root *Env, name string) (Value, bool) {
 		}
 	}
 	return Value{}, false
+}
+
+// nominalReceiverMethodCallable resolves an instance-method call on a local
+// whose fact is a single script class — a constructor-derived or annotated
+// nominal fact. Nullable, union, module, and unknown facts stay dynamic, so
+// user overrides and host values keep their runtime dispatch.
+func (c *scriptChecker) nominalReceiverMethodCallable(member *MemberExpr) (staticCallable, bool) {
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return staticCallable{}, false
+	}
+	arms, ok := typeExprArms(c.localTypeFor(ident.Name), 0)
+	if !ok || len(arms) != 1 || arms[0].Kind != TypeEnum {
+		return staticCallable{}, false
+	}
+	classDef, ok := c.script.classes[arms[0].Name]
+	if !ok || classDef.IsModule || member.Property == "initialize" {
+		return staticCallable{}, false
+	}
+	fn, ok := classDef.Methods[member.Property]
+	if !ok {
+		return staticCallable{}, false
+	}
+	return staticCallable{name: arms[0].Name + "#" + member.Property, fn: fn, resolution: calleeMemberMethod}, true
 }
 
 func (c *scriptChecker) staticInstanceClass(expr Expression) (string, bool) {

@@ -991,6 +991,8 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 			return ty
 		}
 		return c.autoInvokedBuiltinResultFact(typed.Name)
+	case *MemberExpr:
+		return c.constructorMemberResultFact(typed)
 	case *UnaryExpr:
 		return c.inferUnaryExprType(typed)
 	case *BinaryExpr:
@@ -1182,9 +1184,10 @@ func (c *scriptChecker) inferUnaryExprType(expr *UnaryExpr) *TypeExpr {
 }
 
 // inferCallExprType exposes a known callee's annotated return type to the
-// caller. Safe navigation, splats, and constructors stay unknown. Among
-// builtins the checker models only JSON.parse_as, whose result is the
-// validated shape (ADR-004).
+// caller. Safe navigation and splats stay unknown; a statically resolved
+// constructor call carries its class as a nominal fact. Among builtins the
+// checker models only JSON.parse_as, whose result is the validated shape
+// (ADR-004).
 func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 	if member, ok := call.Callee.(*MemberExpr); ok && member.Safe {
 		return nil
@@ -1192,6 +1195,9 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 	target, ok := c.resolveCallable(call)
 	if !ok || callExpandsArguments(call) {
 		return nil
+	}
+	if target.constructorClass != "" {
+		return &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
 	}
 	if target.fn != nil {
 		if target.constructor {
@@ -1207,6 +1213,19 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 		}
 	}
 	return target.spec.resultType
+}
+
+// constructorMemberResultFact reports the nominal fact of a bare constructor
+// read (`User.new` without parentheses), which auto-invokes at runtime.
+func (c *scriptChecker) constructorMemberResultFact(member *MemberExpr) *TypeExpr {
+	if member.Safe {
+		return nil
+	}
+	target, ok := c.resolveMemberCallable(member)
+	if !ok || target.constructorClass == "" {
+		return nil
+	}
+	return &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
 }
 
 // shapeValueMarkerName tags the synthetic type that carries a first-class
