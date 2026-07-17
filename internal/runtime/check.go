@@ -4750,30 +4750,60 @@ var staticMemberSpecs = map[string]staticCallSpec{
 	"array.slice":  {minArgs: 1, maxArgs: 2, rejectKeywords: true, autoInvoke: true},
 	"string.slice": {minArgs: 1, maxArgs: 2, autoInvoke: true},
 
-	// Scalar conversion members are nullary with invariant results
-	// (members_string.go, members_numeric.go).
-	"string.to_i":   scalarMemberSpec(checkTypeInt),
-	"string.to_f":   scalarMemberSpec(checkTypeFloat),
-	"string.to_s":   scalarMemberSpec(checkTypeString),
-	"string.string": scalarMemberSpec(checkTypeString),
-	"string.to_sym": scalarMemberSpec(checkTypeSymbol),
-	"string.intern": scalarMemberSpec(checkTypeSymbol),
-	"int.to_i":      scalarMemberSpec(checkTypeInt),
-	"int.to_f":      scalarMemberSpec(checkTypeFloat),
-	"int.to_s":      scalarMemberSpec(checkTypeString),
-	"int.string":    scalarMemberSpec(checkTypeString),
-	"float.to_i":    scalarMemberSpec(checkTypeInt),
-	"float.to_f":    scalarMemberSpec(checkTypeFloat),
-	"float.to_s":    scalarMemberSpec(checkTypeString),
-	"float.string":  scalarMemberSpec(checkTypeString),
-	"money.to_s":    scalarMemberSpec(checkTypeString),
-	"money.string":  scalarMemberSpec(checkTypeString),
+	// Callable scalar conversions are nullary auto-invoked builtins with
+	// invariant results (members_scalar.go, members_symbol.go,
+	// members_string.go, members_numeric.go, members_temporal.go).
+	"nil.to_s":        scalarMemberSpec(checkTypeString),
+	"nil.string":      scalarMemberSpec(checkTypeString),
+	"bool.to_s":       scalarMemberSpec(checkTypeString),
+	"bool.string":     scalarMemberSpec(checkTypeString),
+	"symbol.id2name":  scalarMemberSpec(checkTypeString),
+	"symbol.to_s":     scalarMemberSpec(checkTypeString),
+	"symbol.string":   scalarMemberSpec(checkTypeString),
+	"symbol.to_sym":   scalarMemberSpec(checkTypeSymbol),
+	"string.to_i":     scalarMemberSpec(checkTypeInt),
+	"string.to_f":     scalarMemberSpec(checkTypeFloat),
+	"string.to_s":     scalarMemberSpec(checkTypeString),
+	"string.string":   scalarMemberSpec(checkTypeString),
+	"string.to_sym":   scalarMemberSpec(checkTypeSymbol),
+	"string.intern":   scalarMemberSpec(checkTypeSymbol),
+	"int.to_i":        scalarMemberSpec(checkTypeInt),
+	"int.to_f":        scalarMemberSpec(checkTypeFloat),
+	"int.to_s":        scalarMemberSpec(checkTypeString),
+	"int.string":      scalarMemberSpec(checkTypeString),
+	"float.to_i":      scalarMemberSpec(checkTypeInt),
+	"float.to_f":      scalarMemberSpec(checkTypeFloat),
+	"float.to_s":      scalarMemberSpec(checkTypeString),
+	"float.string":    scalarMemberSpec(checkTypeString),
+	"money.to_s":      scalarMemberSpec(checkTypeString),
+	"money.string":    scalarMemberSpec(checkTypeString),
+	"duration.to_s":   scalarMemberSpec(checkTypeString),
+	"duration.string": scalarMemberSpec(checkTypeString),
+	"time.to_s":       scalarMemberSpec(checkTypeString),
+	"time.string":     scalarMemberSpec(checkTypeString),
+	// range.to_a ignores a block at runtime, so it cannot use the stricter
+	// scalarMemberSpec contract shared by the other conversion builtins.
+	"range.to_a": {minArgs: 0, maxArgs: 0, rejectKeywords: true, autoInvoke: true, resultType: checkTypeIntArray},
 }
 
 // scalarMemberSpec is the contract shared by the nullary scalar conversion
 // members: no arguments, no keywords, no block, auto-invoked on a bare read.
 func scalarMemberSpec(result *TypeExpr) staticCallSpec {
 	return staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: result}
+}
+
+// staticMemberValueTypes records conversion-style temporal members that the
+// runtime exposes as direct values rather than builtins. They contribute a
+// result fact to a bare member read, but deliberately stay outside
+// staticMemberSpecs: `d.to_i()` attempts to call the returned int at runtime,
+// so it must not resolve as a conversion callable.
+var staticMemberValueTypes = map[string]*TypeExpr{
+	"duration.to_i": checkTypeInt,
+	"time.to_i":     checkTypeInt,
+	"time.tv_sec":   checkTypeInt,
+	"time.to_f":     checkTypeFloat,
+	"time.to_r":     checkTypeFloat,
+	"time.to_a":     checkTypeArray,
 }
 
 // universalMemberSpecs are the Object-level predicates with fixed boolean

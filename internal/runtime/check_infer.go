@@ -36,6 +36,7 @@ var (
 	checkTypeNil      = &TypeExpr{Kind: TypeNil}
 	checkTypeSymbol   = &TypeExpr{Kind: TypeSymbol}
 	checkTypeArray    = &TypeExpr{Kind: TypeArray}
+	checkTypeIntArray = &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{checkTypeInt}}
 	checkTypeHash     = &TypeExpr{Kind: TypeHash}
 	checkTypeRange    = &TypeExpr{Kind: TypeRange}
 	checkTypeDuration = &TypeExpr{Kind: TypeDuration}
@@ -1181,7 +1182,7 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		}
 		return c.autoInvokedBuiltinResultFact(typed.Name)
 	case *MemberExpr:
-		return c.autoInvokedMemberResultFact(typed)
+		return c.memberResultFact(typed)
 	case *UnaryExpr:
 		return c.inferUnaryExprType(typed)
 	case *BinaryExpr:
@@ -1438,14 +1439,21 @@ func nullableTypeExpr(ty *TypeExpr) *TypeExpr {
 	return &clone
 }
 
-// autoInvokedMemberResultFact reports the invariant result of a bare member
-// read that auto-invokes at runtime (`s.to_i` or `Time.now` without
-// parentheses). A nil-only safe-navigation receiver yields nil without
-// dispatch. Other members that resolve to script functions or carry no result
-// contract stay unknown; safe navigation adds nil.
-func (c *scriptChecker) autoInvokedMemberResultFact(member *MemberExpr) *TypeExpr {
+// memberResultFact reports the invariant result of a bare member read. It
+// covers both builtins that auto-invoke (`s.to_i` or `Time.now` without
+// parentheses) and temporal conversions exposed directly as scalar values
+// (`d.to_i`). A nil-only safe-navigation receiver yields nil without dispatch.
+// Other members that resolve to script functions or carry no result contract
+// stay unknown; safe navigation adds nil.
+func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
 	if member.Safe && typeExprIsNilOnly(c.inferExpressionType(member.Object)) {
 		return checkTypeNil
+	}
+	if result := c.staticMemberValueResultFact(member); result != nil {
+		if member.Safe {
+			return nullableTypeExpr(result)
+		}
+		return result
 	}
 	target, ok := c.resolveMemberCallable(member)
 	if !ok || target.fn != nil || !target.spec.autoInvoke {
@@ -1455,6 +1463,23 @@ func (c *scriptChecker) autoInvokedMemberResultFact(member *MemberExpr) *TypeExp
 		return nullableTypeExpr(target.spec.resultType)
 	}
 	return target.spec.resultType
+}
+
+// staticMemberValueResultFact resolves a direct scalar value only when every
+// known receiver arm dispatches through the same built-in kind. Named or
+// dynamic receivers stay unknown so user-defined members keep precedence.
+func (c *scriptChecker) staticMemberValueResultFact(member *MemberExpr) *TypeExpr {
+	kinds, ok := c.staticMemberReceiverKinds(member)
+	if !ok {
+		return nil
+	}
+	kind := kinds[0]
+	for _, candidate := range kinds[1:] {
+		if candidate != kind {
+			return nil
+		}
+	}
+	return staticMemberValueTypes[kind+"."+member.Property]
 }
 
 // shapeValueMarkerName tags the synthetic type that carries a first-class
