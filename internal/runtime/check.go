@@ -119,6 +119,9 @@ type scriptChecker struct {
 	deferredReturnSites     *[]deferredReturnSite
 	implicitReturnLeaves    map[Statement]struct{}
 	implicitReturnStates    map[Statement]checkStateSnapshot
+	returnSummaries         map[*ScriptFunction]*TypeExpr
+	summaryInProgress       map[*ScriptFunction]struct{}
+	returnCollector         *returnSummaryCollector
 	requiredModules         map[string]struct{}
 	runtimeModules          map[string]struct{}
 	runtimeNamespaceMembers map[string]struct{}
@@ -1207,6 +1210,7 @@ func (c *scriptChecker) withRuntimeModuleCollection(collect func()) {
 }
 
 func (c *scriptChecker) checkScript() {
+	c.summarizeScriptFunctionReturns()
 	// The entrypoint executes its statements in order, so it is checked
 	// before the require-export seed: a top-level call before its require
 	// must not resolve the exports early. Its own walk binds each require
@@ -1301,6 +1305,7 @@ func (c *scriptChecker) checkFunctionExecution(target checkTarget) {
 	if fn == nil {
 		return
 	}
+	c.summarizeScriptFunctionReturns()
 	c.withFreshRuntimeTypeRoot(func() {
 		c.checkRuntimeClassBodies(deferredClassBodiesForFunction(fn, c.script.deferredClassBodies), false)
 		if target.ValidateCall {
@@ -1965,6 +1970,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// apply before the value leaves the function, so the expression is
 		// walked before the annotation check reads its inferred type.
 		c.checkExpression(function, typed.Value)
+		if c.returnCollector != nil {
+			if typed.Value == nil {
+				c.returnCollector.record(checkTypeNil)
+			} else {
+				c.returnCollector.record(c.inferExpressionType(typed.Value))
+			}
+		}
 		if returnType != nil {
 			c.checkReturnStatementType(function, returnType, typed)
 		} else if c.deferredReturnSites != nil {
@@ -4483,16 +4495,20 @@ func (c *scriptChecker) defaultBuiltinCallSpec(name string) (staticCallSpec, boo
 	return c.script.engine.builtinCallSpec(name)
 }
 
-// autoInvokedBuiltinResultFact reports the invariant result type of a bare
-// builtin identifier that auto-invokes at runtime (`t = uuid`). The guard
-// chain mirrors resolveCallable: any shadowing binding, script function, or
-// host override dispatches elsewhere, so no builtin fact applies.
+// autoInvokedBuiltinResultFact reports the result type of a bare identifier
+// that auto-invokes at runtime: a script function's annotated return or
+// summary (`x = build_count`), or a builtin's invariant result (`t = uuid`).
+// The guard chain mirrors resolveCallable: any shadowing binding or host
+// override dispatches elsewhere, so no fact applies.
 func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
 	if c.identifierShadowed(name) || c.hostGlobalShadows(name) {
 		return nil
 	}
-	if _, ok := c.script.functions[name]; ok {
-		return nil
+	if fn, ok := c.script.functions[name]; ok {
+		if fn.ReturnTy != nil {
+			return fn.ReturnTy
+		}
+		return c.scriptFunctionReturnSummary(name, fn)
 	}
 	if _, ok := c.typeRootFunction(name); ok {
 		return nil

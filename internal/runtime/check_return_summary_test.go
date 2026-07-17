@@ -1,0 +1,360 @@
+package runtime
+
+import "testing"
+
+func TestCheckFunctionReturnSummaries(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		source  string
+		warning string
+	}{
+		{
+			name: "implicit int result contradicts string boundary",
+			source: `
+def build_count()
+  41 + 1
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "bare parenless call carries the summary",
+			source: `
+def build_count()
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  count = build_count
+  takes_string(count)
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "explicit returns summarize",
+			source: `
+def pick(flag)
+  if flag
+    return 1
+  end
+  return 2
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(flag)
+  takes_string(pick(flag))
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "branch results join into a union",
+			source: `
+def pick(flag)
+  if flag
+    1
+  else
+    "x"
+  end
+end
+
+def takes_hash(value: hash)
+  value
+end
+
+def run(flag)
+  takes_hash(pick(flag))
+end
+`,
+			warning: "call to takes_hash argument value expected hash, got int | string",
+		},
+		{
+			name: "missing else adds the nil fallthrough arm",
+			source: `
+def maybe(flag)
+  if flag
+    1
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(flag)
+  takes_string(maybe(flag))
+end
+`,
+			warning: "call to takes_string argument value expected string, got int | nil",
+		},
+		{
+			name: "guard clause return joins the final expression",
+			source: `
+def pick(flag)
+  return "s" unless flag
+  1
+end
+
+def takes_hash(value: hash)
+  value
+end
+
+def run(flag)
+  takes_hash(pick(flag))
+end
+`,
+			warning: "call to takes_hash argument value expected hash, got string | int",
+		},
+		{
+			name: "summaries chain through callees",
+			source: `
+def build_count()
+  42
+end
+
+def outer()
+  build_count()
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(outer())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "rescue arms join the summary",
+			source: `
+def guarded()
+  begin
+    1
+  rescue
+    "fallback"
+  end
+end
+
+def takes_hash(value: hash)
+  value
+end
+
+def run()
+  takes_hash(guarded())
+end
+`,
+			warning: "call to takes_hash argument value expected hash, got int | string",
+		},
+		{
+			name: "empty body summarizes as nil",
+			source: `
+def nothing()
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(nothing())
+end
+`,
+			warning: "call to takes_string argument value expected string, got nil",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCheckWarningContains(t, compileScriptDefault(t, tc.source), tc.warning)
+		})
+	}
+}
+
+func TestCheckFunctionReturnSummariesStayGradual(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "recursive functions stay unknown",
+			source: `
+def countdown(n)
+  if n > 0
+    countdown(n - 1)
+  else
+    0
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(countdown(3))
+end
+`,
+		},
+		{
+			name: "mutually recursive functions stay unknown",
+			source: `
+def ping(n)
+  if n > 0
+    pong(n - 1)
+  else
+    0
+  end
+end
+
+def pong(n)
+  ping(n)
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(ping(3))
+end
+`,
+		},
+		{
+			name: "unknown result paths stay unknown",
+			source: `
+def dyn(v)
+  v.transform
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(v)
+  takes_string(dyn(v))
+end
+`,
+		},
+		{
+			name: "loop finals stay unknown",
+			source: `
+def spin()
+  while false
+    1
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(spin())
+end
+`,
+		},
+		{
+			name: "raise-only bodies stay unknown",
+			source: `
+def boom()
+  raise "nope"
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(boom())
+end
+`,
+		},
+		{
+			name: "nullable summary overlaps its boundary",
+			source: `
+def maybe(flag)
+  if flag
+    "name"
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(flag)
+  takes_string(maybe(flag))
+end
+`,
+		},
+		{
+			name: "explicit annotations stay authoritative",
+			source: `
+def build() -> int
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build())
+end
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireNoCheckWarnings(t, compileScriptDefault(t, tc.source))
+		})
+	}
+}
+
+// TestCheckFunctionReturnSummariesSkipForeignFunctions pins the issue scope:
+// required-module functions keep unknown results even when their bodies are
+// summarizable.
+func TestCheckFunctionReturnSummariesSkipForeignFunctions(t *testing.T) {
+	t.Parallel()
+
+	root := tempModuleTree(t, moduleFile{path: "counts.vibe", content: `
+export def build_count()
+  42
+end
+`})
+	engine := mustNewEngineWithModuleRoot(t, root)
+	script := compileScriptWithEngine(t, engine, `
+def takes_string(value: string)
+  value
+end
+
+def run()
+  require("counts")
+  takes_string(build_count())
+end
+`)
+	requireNoCheckWarnings(t, script)
+}
