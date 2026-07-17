@@ -195,6 +195,42 @@ end
 `,
 			warning: "unsupported unary - operand nil",
 		},
+		{
+			name: "nullable array nil? keeps its fact for the true path",
+			source: `
+def f(values: array<int>?)
+  if values.nil?
+    y = -values
+  end
+end
+`,
+			warning: "unsupported unary - operand nil",
+		},
+		{
+			name: "nullable hash nil? call keeps its fact for the true path",
+			source: `
+def f(values: hash<string, int>?)
+  if values.nil?()
+    y = -values
+  end
+end
+`,
+			warning: "unsupported unary - operand nil",
+		},
+		{
+			name: "nullable shape nil? guard keeps its fact for the false path",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f(value: { id: int }?)
+  return if value.nil?
+  takes_string(value[:id])
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -306,6 +342,25 @@ end
 def f(s: Sneaky?)
   if s.nil?
     y = -s
+  end
+end
+`,
+		},
+		{
+			name: "container union with a named nil? override stays conservative",
+			source: `
+class Sneaky
+  def initialize()
+  end
+
+  def nil?()
+    true
+  end
+end
+
+def f(value: array<int> | Sneaky | nil)
+  if value.nil?
+    y = -value
   end
 end
 `,

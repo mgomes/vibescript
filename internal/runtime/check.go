@@ -2401,8 +2401,10 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// Containers pass by reference, so a callee may mutate an argument
 		// in place; the caller's structural facts stop holding. Dispatch
 		// happens after the arguments evaluate, so the receiver's facts
-		// stop holding here too, not during the callee walk.
-		if member, ok := typed.Callee.(*MemberExpr); ok {
+		// stop holding here too, not during the callee walk. The known
+		// universal nil? predicate is pure, so its receiver fact must survive
+		// for the following condition-outcome narrowing.
+		if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownUniversalNilPredicateCall(typed) {
 			c.poisonEscapedIdentifier(member.Object)
 		}
 		if member, ok := typed.BlockArg.(*MemberExpr); ok {
@@ -2421,8 +2423,12 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			// Member dispatch on a container may mutate it in place (push,
 			// delete, ...), so the receiver's structural facts stop
 			// holding. A call callee poisons after its arguments instead:
-			// they evaluate before dispatch and still see the facts.
-			c.poisonEscapedIdentifier(typed.Object)
+			// they evaluate before dispatch and still see the facts. The
+			// universal nil? predicate is pure and preserves the fact that
+			// condition-outcome narrowing consumes next.
+			if !c.knownUniversalNilPredicateMember(typed) {
+				c.poisonEscapedIdentifier(typed.Object)
+			}
 		}
 	case *ScopeExpr:
 		c.checkExpressionWithAuto(function, typed.Object, true)

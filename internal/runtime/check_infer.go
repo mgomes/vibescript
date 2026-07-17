@@ -946,6 +946,40 @@ func (c *scriptChecker) narrowNilPredicateMember(member *MemberExpr, truthy bool
 	c.narrowLocalNilness(ident.Name, truthy)
 }
 
+// knownUniversalNilPredicateMember reports whether a plain local's nil?
+// dispatch is guaranteed to use the pure universal predicate under its current
+// fact. Named arms are excluded because a class may override nil?.
+func (c *scriptChecker) knownUniversalNilPredicateMember(member *MemberExpr) bool {
+	if member == nil || member.Safe || member.Property != "nil?" {
+		return false
+	}
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return false
+	}
+	arms, ok := typeExprArms(c.localTypeFor(ident.Name), 0)
+	if !ok || len(arms) == 0 {
+		return false
+	}
+	for _, arm := range arms {
+		if arm.Kind == TypeEnum {
+			return false
+		}
+	}
+	return true
+}
+
+// knownUniversalNilPredicateCall recognizes the explicit nullary call form of
+// a known universal nil? predicate.
+func (c *scriptChecker) knownUniversalNilPredicateCall(call *CallExpr) bool {
+	if call == nil || call.Safe || len(call.Args) != 0 || len(call.KwArgs) != 0 ||
+		call.Block != nil || call.BlockArg != nil {
+		return false
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	return ok && c.knownUniversalNilPredicateMember(member)
+}
+
 // typeExprDefinitelyTruthy reports whether every possible value of the type
 // is truthy: everything except nil and false is truthy, so any arm that can
 // be nil or bool (or is unknown) stays undecided.
