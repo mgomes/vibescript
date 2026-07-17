@@ -865,6 +865,87 @@ func reassignmentConflicts(current, next *TypeExpr, resolve namedTypeResolver) b
 	return typeExprsDisjoint(current, next, resolve)
 }
 
+// narrowLocalArms rebinds a local to the subset of its known arms that keep.
+// Unknown, poisoned, and any-typed locals stay unknown, a filter that changes
+// nothing binds nothing, and a filter that would empty the fact (a statically
+// dead branch) leaves it untouched rather than inventing a type.
+func (c *scriptChecker) narrowLocalArms(name string, keep func(*TypeExpr) bool) {
+	current := c.localTypeFor(name)
+	if current == nil {
+		return
+	}
+	arms, ok := typeExprArms(current, 0)
+	if !ok || len(arms) == 0 {
+		return
+	}
+	kept := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		if keep(arm) {
+			kept = append(kept, arm)
+		}
+	}
+	if len(kept) == 0 || len(kept) == len(arms) {
+		return
+	}
+	if refined := unionTypeExprs(kept...); refined != nil {
+		c.bindLocalType(name, refined)
+	}
+}
+
+// narrowLocalTruthiness refines a local after a truthiness test: the truthy
+// path drops nil arms, and the falsy path keeps only arms that can be falsy
+// (nil, and bool for false).
+func (c *scriptChecker) narrowLocalTruthiness(name string, truthy bool) {
+	if truthy {
+		c.narrowLocalArms(name, func(arm *TypeExpr) bool { return arm.Kind != TypeNil })
+		return
+	}
+	c.narrowLocalArms(name, func(arm *TypeExpr) bool {
+		if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+			// Runtime shape values are always truthy.
+			return false
+		}
+		return arm.Kind == TypeNil || arm.Kind == TypeBool
+	})
+}
+
+// narrowLocalNilness refines a local after an explicit nil test (`x == nil`,
+// `x.nil?`): the nil path keeps only nil arms, and the non-nil path drops
+// them (bool arms survive: false is falsy but not nil). The non-nil direction
+// is always sound — a nil receiver or operand answers the test itself — but
+// the nil-only direction trusts the test's positive answer, which a class
+// instance can forge by overriding nil? or ==, so named arms disable it.
+func (c *scriptChecker) narrowLocalNilness(name string, isNil bool) {
+	if !isNil {
+		c.narrowLocalArms(name, func(arm *TypeExpr) bool { return arm.Kind != TypeNil })
+		return
+	}
+	arms, ok := typeExprArms(c.localTypeFor(name), 0)
+	if !ok {
+		return
+	}
+	for _, arm := range arms {
+		if arm.Kind == TypeEnum {
+			return
+		}
+	}
+	c.narrowLocalArms(name, func(arm *TypeExpr) bool { return arm.Kind == TypeNil })
+}
+
+// narrowNilPredicateMember narrows a bare `x.nil?` receiver. Safe navigation
+// is excluded: `x&.nil?` yields nil (falsy) for a nil receiver, so its falsy
+// path does not prove the receiver non-nil.
+func (c *scriptChecker) narrowNilPredicateMember(member *MemberExpr, truthy bool) {
+	if member == nil || member.Safe || member.Property != "nil?" {
+		return
+	}
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return
+	}
+	c.narrowLocalNilness(ident.Name, truthy)
+}
+
 // typeExprDefinitelyTruthy reports whether every possible value of the type
 // is truthy: everything except nil and false is truthy, so any arm that can
 // be nil or bool (or is unknown) stays undecided.

@@ -2224,8 +2224,28 @@ func (c *scriptChecker) checkDeferredReturnSitesAfterEnsure(function string, ret
 	}
 }
 
+// collectRuntimeConditionOutcomeEffects applies what a condition's known
+// outcome implies to the current branch state: require exports that must have
+// bound for the outcome to hold, and narrowed facts for locals the outcome
+// constrains. Truthiness tests, explicit nil comparisons, nil?, negation, and
+// short-circuit compositions narrow in both directions; everything else
+// leaves facts untouched.
 func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, truthy bool) {
 	switch typed := expr.(type) {
+	case *Identifier:
+		c.narrowLocalTruthiness(typed.Name, truthy)
+	case *UnaryExpr:
+		if typed.Operator == tokenBang {
+			c.collectRuntimeConditionOutcomeEffects(typed.Right, !truthy)
+		}
+	case *MemberExpr:
+		c.narrowNilPredicateMember(typed, truthy)
+	case *CallExpr:
+		if member, ok := typed.Callee.(*MemberExpr); ok &&
+			len(typed.Args) == 0 && len(typed.KwArgs) == 0 &&
+			typed.Block == nil && typed.BlockArg == nil {
+			c.narrowNilPredicateMember(member, truthy)
+		}
 	case *BinaryExpr:
 		switch typed.Operator {
 		case tokenAnd:
@@ -2244,8 +2264,32 @@ func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, t
 			} else if binaryRightAlwaysEvaluates(typed) {
 				c.collectRuntimeConditionOutcomeEffects(typed.Right, true)
 			}
+		case tokenEQ, tokenNotEQ:
+			if name, ok := identifierNilComparison(typed); ok {
+				c.narrowLocalNilness(name, (typed.Operator == tokenEQ) == truthy)
+			}
 		}
 	}
+}
+
+// identifierNilComparison matches `x == nil`, `nil == x`, `x != nil`, and
+// `nil != x` for a plain identifier x.
+func identifierNilComparison(expr *BinaryExpr) (string, bool) {
+	if _, ok := expr.Left.(*NilLiteral); ok {
+		ident, ok := expr.Right.(*Identifier)
+		if !ok {
+			return "", false
+		}
+		return ident.Name, true
+	}
+	if _, ok := expr.Right.(*NilLiteral); ok {
+		ident, ok := expr.Left.(*Identifier)
+		if !ok {
+			return "", false
+		}
+		return ident.Name, true
+	}
+	return "", false
 }
 
 func (c *scriptChecker) checkReturnStatementType(function string, returnType *TypeExpr, stmt *ReturnStmt) {
@@ -2400,8 +2444,22 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			state := c.snapshotRuntimeState()
 			scopeState := c.snapshotScopeState()
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Left)
+			// Whether the right side provably always runs is a property of
+			// the left's value before the right evaluates, so it is decided
+			// on the pre-narrowing facts.
+			rightAlwaysRuns := binaryRightAlwaysEvaluates(typed) || c.binaryRightAlwaysEvaluatesInferred(typed)
+			// The right operand only runs when the left picked its
+			// short-circuit outcome, so the left's implied narrowing holds
+			// while the right evaluates (`x && x.length`). The surrounding
+			// snapshot/merge scopes the narrowed facts to this region.
+			switch typed.Operator {
+			case tokenAnd:
+				c.collectRuntimeConditionOutcomeEffects(typed.Left, true)
+			case tokenOr:
+				c.collectRuntimeConditionOutcomeEffects(typed.Left, false)
+			}
 			c.checkExpressionWithAuto(function, typed.Right, true)
-			if !binaryRightAlwaysEvaluates(typed) && !c.binaryRightAlwaysEvaluatesInferred(typed) {
+			if !rightAlwaysRuns {
 				// A short-circuited right operand may not run, so its
 				// runtime effects roll back and its type facts (a shovel
 				// append, for example) merge as a branch join instead of
