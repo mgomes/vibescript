@@ -4370,30 +4370,16 @@ func (c *scriptChecker) typeRootFunction(name string) (*ScriptFunction, bool) {
 }
 
 func checkRootFunction(root *Env, name string) (*ScriptFunction, bool) {
-	val, ok := checkRootChainBinding(root, name)
+	// The raw chain read matters: resolving through Env.Get caches
+	// call-clones of frozen builtin bindings into the mutable type root,
+	// which would make later own-binding checks see names the script never
+	// bound.
+	val, ok := checkRootBinding(root, name)
 	if !ok || val.Kind() != KindFunction {
 		return nil, false
 	}
 	fn := valueFunction(val)
 	return fn, fn != nil
-}
-
-// checkRootChainBinding reads name through the root's scope chain without
-// triggering lazy materialization or builtin call-clone caching: a resolution
-// probe must not define bindings into the shared type roots, or later
-// own-binding checks would see names the script never bound.
-func checkRootChainBinding(root *Env, name string) (Value, bool) {
-	for scope := root; scope != nil; scope = scope.parent {
-		if val, ok := checkRootOwnBinding(scope, name); ok {
-			return val, true
-		}
-		if scope.hasOwnBinding(name) {
-			// The binding exists but only materializes lazily; report it
-			// unreadable rather than mutate the scope.
-			return Value{}, false
-		}
-	}
-	return Value{}, false
 }
 
 func (c *scriptChecker) typeRootFunctionValue(name string) (*ScriptFunction, bool) {
