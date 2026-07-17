@@ -42,6 +42,10 @@ var (
 	checkTypeTime     = &TypeExpr{Kind: TypeTime}
 	checkTypeMoney    = &TypeExpr{Kind: TypeMoney}
 	checkTypeFunction = &TypeExpr{Kind: TypeFunction}
+
+	// checkTypeMethodName matches respond_to?'s method-name argument, which
+	// the runtime accepts as a symbol or string.
+	checkTypeMethodName = &TypeExpr{Kind: TypeUnion, Union: []*TypeExpr{checkTypeSymbol, checkTypeString}}
 )
 
 type checkTypeFrame map[string]*TypeExpr
@@ -1176,6 +1180,8 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 			return ty
 		}
 		return c.autoInvokedBuiltinResultFact(typed.Name)
+	case *MemberExpr:
+		return c.autoInvokedMemberResultFact(typed)
 	case *UnaryExpr:
 		return c.inferUnaryExprType(typed)
 	case *BinaryExpr:
@@ -1385,19 +1391,22 @@ func (c *scriptChecker) inferUnaryExprType(expr *UnaryExpr) *TypeExpr {
 }
 
 // inferCallExprType exposes a known callee's annotated return type to the
-// caller. Safe navigation, splats, and constructors stay unknown. Among
-// builtins the checker models only JSON.parse_as, whose result is the
-// validated shape (ADR-004).
+// caller. Splats and constructors stay unknown; script functions reached
+// through safe navigation stay unknown too. A builtin contract's invariant
+// result flows through, with nil added under safe navigation (a nil receiver
+// skips the call and yields nil). JSON.parse_as models its validated shape
+// (ADR-004).
 func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
+	safeNavigation := false
 	if member, ok := call.Callee.(*MemberExpr); ok && member.Safe {
-		return nil
+		safeNavigation = true
 	}
 	target, ok := c.resolveCallable(call)
 	if !ok || callExpandsArguments(call) {
 		return nil
 	}
 	if target.fn != nil {
-		if target.constructor {
+		if target.constructor || safeNavigation {
 			return nil
 		}
 		return target.fn.ReturnTy
@@ -1408,6 +1417,35 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 			// nested shapes are string-keyed stores.
 			return stringKeyedShapeFact(shape)
 		}
+	}
+	if safeNavigation {
+		return nullableTypeExpr(target.spec.resultType)
+	}
+	return target.spec.resultType
+}
+
+// nullableTypeExpr returns the type with a nil arm added, sharing the
+// original when it already admits nil.
+func nullableTypeExpr(ty *TypeExpr) *TypeExpr {
+	if ty == nil || ty.Nullable || ty.Kind == TypeNil {
+		return ty
+	}
+	clone := *ty
+	clone.Nullable = true
+	return &clone
+}
+
+// autoInvokedMemberResultFact reports the invariant result of a bare member
+// read that auto-invokes at runtime (`s.to_i` or `Time.now` without
+// parentheses). Members that resolve to script functions or carry no result
+// contract stay unknown; safe navigation adds nil.
+func (c *scriptChecker) autoInvokedMemberResultFact(member *MemberExpr) *TypeExpr {
+	target, ok := c.resolveMemberCallable(member)
+	if !ok || target.fn != nil || !target.spec.autoInvoke {
+		return nil
+	}
+	if member.Safe {
+		return nullableTypeExpr(target.spec.resultType)
 	}
 	return target.spec.resultType
 }

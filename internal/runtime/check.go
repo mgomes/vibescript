@@ -4370,15 +4370,30 @@ func (c *scriptChecker) typeRootFunction(name string) (*ScriptFunction, bool) {
 }
 
 func checkRootFunction(root *Env, name string) (*ScriptFunction, bool) {
-	if root == nil {
-		return nil, false
-	}
-	val, ok := root.Get(name)
+	val, ok := checkRootChainBinding(root, name)
 	if !ok || val.Kind() != KindFunction {
 		return nil, false
 	}
 	fn := valueFunction(val)
 	return fn, fn != nil
+}
+
+// checkRootChainBinding reads name through the root's scope chain without
+// triggering lazy materialization or builtin call-clone caching: a resolution
+// probe must not define bindings into the shared type roots, or later
+// own-binding checks would see names the script never bound.
+func checkRootChainBinding(root *Env, name string) (Value, bool) {
+	for scope := root; scope != nil; scope = scope.parent {
+		if val, ok := checkRootOwnBinding(scope, name); ok {
+			return val, true
+		}
+		if scope.hasOwnBinding(name) {
+			// The binding exists but only materializes lazily; report it
+			// unreadable rather than mutate the scope.
+			return Value{}, false
+		}
+	}
+	return Value{}, false
 }
 
 func (c *scriptChecker) typeRootFunctionValue(name string) (*ScriptFunction, bool) {
@@ -4411,6 +4426,12 @@ func (c *scriptChecker) hostGlobalShadows(name string) bool {
 }
 
 func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallable, bool) {
+	// A receiver whose fact pins the dispatch kind resolves member contracts
+	// before the identifier paths below: typed locals are scope bindings, so
+	// they would otherwise bail at the shadowing guard.
+	if target, ok := c.factReceiverMemberCallable(member); ok {
+		return target, true
+	}
 	if ident, ok := member.Object.(*Identifier); ok {
 		if c.identifierShadowed(ident.Name) {
 			return staticCallable{}, false
@@ -4465,15 +4486,114 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 			}
 		}
 	}
-	if receiverKind, ok := staticBuiltinReceiverKind(member.Object); ok {
-		if spec, ok := staticMemberSpecs[receiverKind+"."+member.Property]; ok {
-			return staticCallable{name: receiverKind + "." + member.Property, spec: spec}, true
-		}
-	}
 	if name, fn, ok := c.requiredModuleObjectFunction(member.Object, member.Property); ok {
 		return staticCallable{name: name, fn: fn, resolution: calleeMemberValue}, true
 	}
 	return staticCallable{}, false
+}
+
+// factReceiverMemberCallable resolves a member contract from the receiver's
+// literal spelling or inferred fact: scalar member contracts are keyed by the
+// dispatch kind every arm shares, and universal predicates apply whenever no
+// arm can override universal dispatch. Named receivers (user methods take
+// precedence), hash-like stores (stored callables can shadow helpers), and
+// unknown facts resolve nothing.
+func (c *scriptChecker) factReceiverMemberCallable(member *MemberExpr) (staticCallable, bool) {
+	kinds, ok := c.staticMemberReceiverKinds(member)
+	if !ok {
+		return staticCallable{}, false
+	}
+	uniform := true
+	for _, kind := range kinds[1:] {
+		if kind != kinds[0] {
+			uniform = false
+			break
+		}
+	}
+	if uniform {
+		if spec, ok := staticMemberSpecs[kinds[0]+"."+member.Property]; ok {
+			return staticCallable{name: kinds[0] + "." + member.Property, spec: spec}, true
+		}
+	}
+	for _, kind := range kinds {
+		// A stored callable on a hash-like receiver shadows the universal
+		// helper, so only kinds without named storage keep the contract.
+		if kind == "hash" {
+			return staticCallable{}, false
+		}
+	}
+	if spec, ok := universalMemberSpecs[member.Property]; ok {
+		return staticCallable{name: member.Property, spec: spec}, true
+	}
+	return staticCallable{}, false
+}
+
+// staticMemberReceiverKinds returns the runtime dispatch kinds of every known
+// arm of a member's receiver: the literal spelling when there is one, else
+// the receiver's inferred fact. Safe navigation drops nil arms — a nil
+// receiver skips the dispatch entirely — and any arm without a fixed
+// overridable-free dispatch kind makes the receiver unknown.
+func (c *scriptChecker) staticMemberReceiverKinds(member *MemberExpr) ([]string, bool) {
+	if kind, ok := staticBuiltinReceiverKind(member.Object); ok {
+		return []string{kind}, true
+	}
+	arms, ok := typeExprArms(c.inferExpressionType(member.Object), 0)
+	if !ok || len(arms) == 0 {
+		return nil, false
+	}
+	kinds := make([]string, 0, len(arms))
+	for _, arm := range arms {
+		if member.Safe && arm.Kind == TypeNil {
+			continue
+		}
+		if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+			return nil, false
+		}
+		kind, ok := receiverKindForTypeArm(arm)
+		if !ok {
+			return nil, false
+		}
+		kinds = append(kinds, kind)
+	}
+	if len(kinds) == 0 {
+		return nil, false
+	}
+	return kinds, true
+}
+
+// receiverKindForTypeArm maps a known fact arm to the member-dispatch kind it
+// selects at runtime. Named types stay unknown (user-defined methods take
+// precedence over builtin and universal dispatch), hash-like stores stay
+// unknown (a stored callable can shadow a universal helper), and number is
+// ambiguous between int and float dispatch.
+func receiverKindForTypeArm(arm *TypeExpr) (string, bool) {
+	switch arm.Kind {
+	case TypeInt:
+		return "int", true
+	case TypeFloat:
+		return "float", true
+	case TypeString:
+		return "string", true
+	case TypeBool:
+		return "bool", true
+	case TypeSymbol:
+		return "symbol", true
+	case TypeNil:
+		return "nil", true
+	case TypeMoney:
+		return "money", true
+	case TypeDuration:
+		return "duration", true
+	case TypeTime:
+		return "time", true
+	case TypeRange:
+		return "range", true
+	case TypeArray:
+		return "array", true
+	case TypeFunction:
+		return "function", true
+	}
+	return "", false
 }
 
 func (c *scriptChecker) defaultBuiltinCallSpec(name string) (staticCallSpec, bool) {
@@ -4649,6 +4769,47 @@ var staticMemberSpecs = map[string]staticCallSpec{
 	"array.fetch":  {minArgs: 1, maxArgs: 2, autoInvoke: true, usesBlock: true},
 	"array.slice":  {minArgs: 1, maxArgs: 2, rejectKeywords: true, autoInvoke: true},
 	"string.slice": {minArgs: 1, maxArgs: 2, autoInvoke: true},
+
+	// Scalar conversion members are nullary with invariant results
+	// (members_string.go, members_numeric.go).
+	"string.to_i":   scalarMemberSpec(checkTypeInt),
+	"string.to_f":   scalarMemberSpec(checkTypeFloat),
+	"string.to_s":   scalarMemberSpec(checkTypeString),
+	"string.string": scalarMemberSpec(checkTypeString),
+	"string.to_sym": scalarMemberSpec(checkTypeSymbol),
+	"string.intern": scalarMemberSpec(checkTypeSymbol),
+	"int.to_i":      scalarMemberSpec(checkTypeInt),
+	"int.to_f":      scalarMemberSpec(checkTypeFloat),
+	"int.to_s":      scalarMemberSpec(checkTypeString),
+	"int.string":    scalarMemberSpec(checkTypeString),
+	"float.to_i":    scalarMemberSpec(checkTypeInt),
+	"float.to_f":    scalarMemberSpec(checkTypeFloat),
+	"float.to_s":    scalarMemberSpec(checkTypeString),
+	"float.string":  scalarMemberSpec(checkTypeString),
+	"money.to_s":    scalarMemberSpec(checkTypeString),
+	"money.string":  scalarMemberSpec(checkTypeString),
+}
+
+// scalarMemberSpec is the contract shared by the nullary scalar conversion
+// members: no arguments, no keywords, no block, auto-invoked on a bare read.
+func scalarMemberSpec(result *TypeExpr) staticCallSpec {
+	return staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: result}
+}
+
+// universalMemberSpecs are the Object-level predicates with fixed boolean
+// results (members_universal.go). They apply only when every known receiver
+// arm dispatches them through the runtime universal fallback — no class
+// instances (user methods take precedence) and no hash-like stores (a stored
+// callable shadows the helper).
+var universalMemberSpecs = map[string]staticCallSpec{
+	"nil?":         {minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	"frozen?":      {minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	"eql?":         {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	"equal?":       {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	"respond_to?":  {minArgs: 1, maxArgs: 2, rejectKeywords: true, rejectBlock: true, autoInvoke: true, paramTypes: []*TypeExpr{checkTypeMethodName}, resultType: checkTypeBool},
+	"is_a?":        {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	"kind_of?":     {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	"instance_of?": {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
 }
 
 func keywordSet(names ...string) map[string]struct{} {
