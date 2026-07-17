@@ -134,6 +134,19 @@ end
 			warning: "call to takes_int argument value expected int, got bool",
 		},
 		{
+			name: "literal hash predicate result",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(({}).nil?)
+end
+`,
+			warning: "call to takes_int argument value expected int, got bool",
+		},
+		{
 			name: "nil predicate on nullable receiver",
 			source: `
 def takes_int(value: int)

@@ -4482,8 +4482,9 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 // literal spelling or inferred fact: scalar member contracts are keyed by the
 // dispatch kind every arm shares, and universal predicates apply whenever no
 // arm can override universal dispatch. Named receivers (user methods take
-// precedence), hash-like stores (stored callables can shadow helpers), and
-// unknown facts resolve nothing.
+// precedence) and unknown facts resolve nothing. Literal hashes are safe for
+// universal predicates because the runtime gives data-safe helpers precedence
+// over same-named stored entries.
 func (c *scriptChecker) factReceiverMemberCallable(member *MemberExpr) (staticCallable, bool) {
 	kinds, ok := c.staticMemberReceiverKinds(member)
 	if !ok {
@@ -4499,13 +4500,6 @@ func (c *scriptChecker) factReceiverMemberCallable(member *MemberExpr) (staticCa
 	if uniform {
 		if spec, ok := staticMemberSpecs[kinds[0]+"."+member.Property]; ok {
 			return staticCallable{name: kinds[0] + "." + member.Property, spec: spec}, true
-		}
-	}
-	for _, kind := range kinds {
-		// A stored callable on a hash-like receiver shadows the universal
-		// helper, so only kinds without named storage keep the contract.
-		if kind == "hash" {
-			return staticCallable{}, false
 		}
 	}
 	if spec, ok := universalMemberSpecs[member.Property]; ok {
@@ -4785,8 +4779,7 @@ func scalarMemberSpec(result *TypeExpr) staticCallSpec {
 // universalMemberSpecs are the Object-level predicates with fixed boolean
 // results (members_universal.go). They apply only when every known receiver
 // arm dispatches them through the runtime universal fallback — no class
-// instances (user methods take precedence) and no hash-like stores (a stored
-// callable shadows the helper).
+// instances, whose user methods take precedence.
 var universalMemberSpecs = map[string]staticCallSpec{
 	"nil?":         {minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
 	"frozen?":      {minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
