@@ -986,7 +986,10 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 	case *BlockLiteral:
 		return checkTypeFunction
 	case *Identifier:
-		return c.localTypeFor(typed.Name)
+		if ty := c.localTypeFor(typed.Name); ty != nil {
+			return ty
+		}
+		return c.autoInvokedBuiltinResultFact(typed.Name)
 	case *UnaryExpr:
 		return c.inferUnaryExprType(typed)
 	case *BinaryExpr:
@@ -1202,7 +1205,7 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 			return stringKeyedShapeFact(shape)
 		}
 	}
-	return nil
+	return target.spec.resultType
 }
 
 // shapeValueMarkerName tags the synthetic type that carries a first-class
