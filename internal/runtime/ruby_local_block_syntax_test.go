@@ -222,12 +222,6 @@ def nested_branch
   before
 end
 
-def logical_rhs
-  before = later
-  true or later = 1
-  before
-end
-
 def if_body_source_order
   if true
     before = later
@@ -244,7 +238,7 @@ def taken_branch_before_later_else_assignment
 end
 `)
 
-	for _, fn := range []string{"nested_branch", "logical_rhs", "if_body_source_order", "taken_branch_before_later_else_assignment"} {
+	for _, fn := range []string{"nested_branch", "if_body_source_order", "taken_branch_before_later_else_assignment"} {
 		t.Run(fn, func(t *testing.T) {
 			t.Parallel()
 			_, err := script.Call(context.Background(), fn, nil, CallOptions{})
@@ -477,10 +471,6 @@ def skipped_if_global
   shared
 end
 
-def skipped_or_global
-  true or shared = 1
-  shared
-end
 `)
 
 	if got := callFunc(t, script, "function_local", nil); !got.Equal(NewBool(true)) {
@@ -505,16 +495,14 @@ end
 		t.Fatalf("logical_falsey_global() returned error: %v", err)
 	}
 	compareArrays(t, got, []Value{NewInt(3), NewInt(3)})
-	for _, fn := range []string{"skipped_if_global", "skipped_or_global"} {
-		got, err := script.Call(context.Background(), fn, nil, CallOptions{
-			Globals: map[string]Value{"shared": NewInt(5), "maybe": NewNil()},
-		})
-		if err != nil {
-			t.Fatalf("%s() returned error: %v", fn, err)
-		}
-		if !got.Equal(NewInt(5)) {
-			t.Fatalf("%s() = %s, want 5", fn, got)
-		}
+	got, err = script.Call(context.Background(), "skipped_if_global", nil, CallOptions{
+		Globals: map[string]Value{"shared": NewInt(5), "maybe": NewNil()},
+	})
+	if err != nil {
+		t.Fatalf("skipped_if_global() returned error: %v", err)
+	}
+	if !got.Equal(NewInt(5)) {
+		t.Fatalf("skipped_if_global() = %s, want 5", got)
 	}
 }
 
@@ -610,46 +598,56 @@ end
 	})
 }
 
-func TestRubyWordBooleanOperatorsAndNotParenlessCall(t *testing.T) {
+func TestRubyWordBooleanNamesAreOrdinaryIdentifiers(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `
-def allowed(user)
-  user == "Ada"
+def and(value)
+  value + 1
 end
 
-def run
-  x = true and false
-  y = false or true
-  state = "allowed"
-  if not allowed "Bob"
-    state = "blocked"
+def or(value)
+  value + 2
+end
+
+def not(value)
+  value + 3
+end
+
+class WordMethods
+  def and(value)
+    value + 4
   end
-  [x, y, state]
+
+  def or(value)
+    value + 5
+  end
+
+  def not(value)
+    value + 6
+  end
+end
+
+def names_as_locals
+  and = 1
+  or = 2
+  not = 3
+  [and, or, not]
+end
+
+def names_as_functions
+  [and(1), or(2), not(3)]
+end
+
+def names_as_methods
+  names = WordMethods.new
+  [names.and(1), names.or(2), names.not(3)]
 end
 `)
 
-	got := callFunc(t, script, "run", nil)
-	compareArrays(t, got, []Value{NewBool(true), NewBool(false), NewString("blocked")})
-}
-
-func TestRubyNotPrecedenceInGroupedExpressions(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `
-def echo(value)
-  value
-end
-
-def run
-  grouped = (not true and false)
-  arg = echo(not true and false)
-  [grouped, arg]
-end
-`)
-
-	got := callFunc(t, script, "run", nil)
-	compareArrays(t, got, []Value{NewBool(false), NewBool(false)})
+	compareArrays(t, callFunc(t, script, "names_as_locals", nil), []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, callFunc(t, script, "names_as_functions", nil), []Value{NewInt(2), NewInt(4), NewInt(6)})
+	compareArrays(t, callFunc(t, script, "names_as_methods", nil), []Value{NewInt(5), NewInt(7), NewInt(9)})
 }
 
 func TestRubyLogicalAssignmentsShortCircuitTargets(t *testing.T) {
@@ -713,37 +711,6 @@ end
 	}
 	if got := callFunc(t, script, "shadow_helper_with_and_assign", nil); !got.Equal(NewNil()) {
 		t.Fatalf("shadow_helper_with_and_assign() = %s, want nil", got)
-	}
-}
-
-func TestRubyLogicalStatementPredeclaresShortCircuitedRHSAssignments(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `
-def run
-  x = true or y = 1
-  a = false and b = 2
-  [x, y, a, b]
-end
-`)
-
-	got := callFunc(t, script, "run", nil)
-	compareArrays(t, got, []Value{NewBool(true), NewNil(), NewBool(false), NewNil()})
-}
-
-func TestRubyLogicalStatementMixedPrecedenceAssignsTrailingOr(t *testing.T) {
-	t.Parallel()
-
-	script := compileScript(t, `
-def run
-  z = false
-  x = false and y = true or z = true
-  z
-end
-`)
-
-	if got := callFunc(t, script, "run", nil); !got.Equal(NewBool(true)) {
-		t.Fatalf("run() = %s, want true", got)
 	}
 }
 

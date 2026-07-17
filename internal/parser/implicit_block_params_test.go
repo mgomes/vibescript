@@ -90,8 +90,8 @@ func TestParserInfersImplicitBlockParams(t *testing.T) {
 			want:   []string{"it"},
 		},
 		{
-			name:   "logical_statement",
-			source: `def run; [1].map { x = _1 and true }; end`,
+			name:   "short_circuit_expression",
+			source: `def run; [1].map { x = _1 && true }; end`,
 			want:   []string{"_1"},
 		},
 	}

@@ -50,7 +50,6 @@ const (
 	TokenPlus           TokenType = "+"
 	TokenMinus          TokenType = "-"
 	TokenBang           TokenType = "!"
-	TokenNot            TokenType = "NOT"
 	TokenAsterisk       TokenType = "*"
 	TokenPower          TokenType = "**"
 	TokenSlash          TokenType = "/"
@@ -68,8 +67,6 @@ const (
 	TokenNotMatch       TokenType = "!~"
 	TokenAnd            TokenType = "&&"
 	TokenOr             TokenType = "||"
-	TokenWordAnd        TokenType = "AND"
-	TokenWordOr         TokenType = "OR"
 	TokenAmpersand      TokenType = "&"
 	TokenQuestion       TokenType = "?"
 
@@ -180,9 +177,6 @@ var keywordTokenTypes = map[string]TokenType{
 	"true":     TokenTrue,
 	"false":    TokenFalse,
 	"nil":      TokenNil,
-	"and":      TokenWordAnd,
-	"or":       TokenWordOr,
-	"not":      TokenNot,
 }
 
 // Keywords returns the parser's reserved keyword literals in sorted order.

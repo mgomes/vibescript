@@ -817,7 +817,7 @@ shout(1)`, "<script>")
 	requireCheckWarningContains(t, script, "call to shout argument value expected string, got int")
 }
 
-func TestCheckConditionRequiresCarryIntoWordOperatorBranches(t *testing.T) {
+func TestCheckConditionRequiresCarryIntoShortCircuitBranches(t *testing.T) {
 	t.Parallel()
 
 	moduleDir := t.TempDir()
@@ -829,7 +829,7 @@ end`
 	}
 	engine := MustNewEngine(Config{ModulePaths: []string{moduleDir}})
 	script, err := engine.CompileSnippet(`def run(flag)
-  if flag and require("helpers")
+  if flag && require("helpers")
     shout("x")
   end
 end`, "<script>")

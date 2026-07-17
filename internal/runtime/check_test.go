@@ -281,7 +281,7 @@ func TestBuiltinCallSpecsFollowRegistry(t *testing.T) {
 	}
 }
 
-func TestCheckWarningsWalkStatementLogicalStatements(t *testing.T) {
+func TestCheckWarningsWalkShortCircuitExpressions(t *testing.T) {
 	t.Parallel()
 
 	script := compileScriptDefault(t, `
@@ -290,7 +290,7 @@ def one(value)
 end
 
 def run()
-  true and one()
+  true && one()
 end
 `)
 
@@ -525,13 +525,13 @@ end
 	requireCheckWarningContains(t, script, "call to JSON.parse has too few arguments")
 }
 
-func TestCheckWarningsResolveRequiredModuleFunctionExportsInLogicalStatements(t *testing.T) {
+func TestCheckWarningsResolveRequiredModuleFunctionExportsInShortCircuitExpressions(t *testing.T) {
 	t.Parallel()
 
 	engine := moduleTestEngine(t)
 	script := compileScriptWithEngine(t, engine, `
 def run()
-  require("helper") and double(1, 2)
+  require("helper") && double(1, 2)
 end
 `)
 
@@ -1299,7 +1299,7 @@ end
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown type Status")
 }
 
-func TestCheckWarningsResolveReachableLogicalStatementRequiredModuleEnumExports(t *testing.T) {
+func TestCheckWarningsResolveReachableShortCircuitRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1308,20 +1308,20 @@ func TestCheckWarningsResolveReachableLogicalStatementRequiredModuleEnumExports(
 		want   string
 	}{
 		{
-			name: "word and",
+			name: "symbolic and",
 			source: `
 def run() -> Status
-  true and require("enum_status")
+  true && require("enum_status")
   :draft
 end
 `,
 			want: "Draft",
 		},
 		{
-			name: "word or",
+			name: "symbolic or",
 			source: `
 def run() -> Status
-  false or require("enum_status")
+  false || require("enum_status")
   :published
 end
 `,
@@ -1338,10 +1338,10 @@ end
 			requireNoCheckWarnings(t, script)
 			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
 			if err != nil {
-				t.Fatalf("Call() after logical-statement require returned error: %v", err)
+				t.Fatalf("Call() after short-circuit require returned error: %v", err)
 			}
 			if got.Kind() != KindEnumValue || valueEnumValue(got).Name != tc.want {
-				t.Fatalf("Call() after logical-statement require = %#v, want Status::%s", got, tc.want)
+				t.Fatalf("Call() after short-circuit require = %#v, want Status::%s", got, tc.want)
 			}
 		})
 	}
@@ -1820,11 +1820,11 @@ func TestCheckWarningsSkipShortCircuitedYieldedFunctionBlockBodies(t *testing.T)
 
 	script := compileScript(t, `
 def false_and_invoke
-  false and yield
+  false && yield
 end
 
 def true_or_invoke
-  true or yield
+  true || yield
 end
 
 def run
@@ -2094,8 +2094,6 @@ func TestCheckWarningsSkipUnreachableShortCircuitOperands(t *testing.T) {
 def run()
   false && rand(1, 2)
   true || rand(1, 2)
-  false and rand(1, 2)
-  true or rand(1, 2)
 end
 `)
 
@@ -2557,27 +2555,6 @@ end`,
 			name: "ternary nil branch",
 			source: `def run(flag) -> int
   flag ? nil : 1
-end`,
-			want: "typed return int can implicitly return nil",
-		},
-		{
-			name: "logical and literal final return",
-			source: `def run() -> int
-  true and "bad"
-end`,
-			want: "return value expected int, got string",
-		},
-		{
-			name: "logical or literal final return",
-			source: `def run() -> int
-  false or "bad"
-end`,
-			want: "return value expected int, got string",
-		},
-		{
-			name: "logical and nil short circuit",
-			source: `def run() -> int
-  nil and 1
 end`,
 			want: "typed return int can implicitly return nil",
 		},

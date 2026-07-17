@@ -37,7 +37,6 @@ func clonePrototypes() []Node {
 		&RaiseStmt{},
 		&AliasStmt{},
 		&AssignStmt{},
-		&LogicalStmt{},
 		&ExprStmt{},
 		&IfStmt{},
 		&ForStmt{},

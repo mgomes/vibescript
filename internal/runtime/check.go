@@ -332,19 +332,6 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		c.recordBindingTarget(typed.Target)
 	case *ExprStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Expr)
-	case *LogicalStmt:
-		c.collectRequiredModuleExportsFromStatement(typed.Left)
-		leftState := c.snapshotModuleCollectionState()
-		leftScopeState := c.snapshotScopeState()
-		if logicalStatementRightMayEvaluate(typed) && !c.logicalStatementRightUnreachable(typed) {
-			c.collectRequiredModuleExportsFromStatement(typed.Right)
-			if !logicalStatementRightAlwaysEvaluates(typed) && !c.logicalStatementRightAlwaysEvaluatesInferred(typed) {
-				c.restoreModuleCollectionState(leftState)
-				c.restoreScopeState(leftScopeState)
-				c.recordLocalBindings([]Statement{typed})
-			}
-		}
-		c.stmtNoFallthroughInferred = false
 	case *IfStmt:
 		baseState := c.snapshotModuleCollectionState()
 		baseScopeState := c.snapshotScopeState()
@@ -700,10 +687,10 @@ func (c *scriptChecker) collectStringPartRequiredModuleExports(parts []StringPar
 
 func binaryRightAlwaysEvaluates(expr *BinaryExpr) bool {
 	switch expr.Operator {
-	case tokenAnd, tokenWordAnd:
+	case tokenAnd:
 		val, ok := staticLiteralValue(expr.Left)
 		return ok && val.Truthy()
-	case tokenOr, tokenWordOr:
+	case tokenOr:
 		val, ok := staticLiteralValue(expr.Left)
 		return ok && !val.Truthy()
 	default:
@@ -713,61 +700,14 @@ func binaryRightAlwaysEvaluates(expr *BinaryExpr) bool {
 
 func binaryRightMayEvaluate(expr *BinaryExpr) bool {
 	switch expr.Operator {
-	case tokenAnd, tokenWordAnd:
+	case tokenAnd:
 		val, ok := staticLiteralValue(expr.Left)
 		return !ok || val.Truthy()
-	case tokenOr, tokenWordOr:
+	case tokenOr:
 		val, ok := staticLiteralValue(expr.Left)
 		return !ok || !val.Truthy()
 	default:
 		return true
-	}
-}
-
-func logicalStatementRightAlwaysEvaluates(stmt *LogicalStmt) bool {
-	if stmt == nil || statementAlwaysExits(stmt.Left) {
-		return false
-	}
-	val, ok := staticStatementValue(stmt.Left)
-	if !ok {
-		return false
-	}
-	switch stmt.Operator {
-	case tokenWordAnd:
-		return val.Truthy()
-	case tokenWordOr:
-		return !val.Truthy()
-	default:
-		return false
-	}
-}
-
-func logicalStatementRightMayEvaluate(stmt *LogicalStmt) bool {
-	if stmt == nil || statementAlwaysExits(stmt.Left) {
-		return false
-	}
-	val, ok := staticStatementValue(stmt.Left)
-	if !ok {
-		return true
-	}
-	switch stmt.Operator {
-	case tokenWordAnd:
-		return val.Truthy()
-	case tokenWordOr:
-		return !val.Truthy()
-	default:
-		return true
-	}
-}
-
-func staticStatementValue(stmt Statement) (Value, bool) {
-	switch typed := stmt.(type) {
-	case *ExprStmt:
-		return staticLiteralValue(typed.Expr)
-	case *AssignStmt:
-		return staticLiteralValue(typed.Value)
-	default:
-		return NewNil(), false
 	}
 }
 
@@ -1941,25 +1881,6 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if classDef != nil {
 			c.checkRuntimeClassBody(classDef, false)
 		}
-	case *LogicalStmt:
-		c.checkStatement(function, returnType, typed.Left)
-		leftRuntimeState := c.snapshotRuntimeState()
-		leftScopeState := c.snapshotScopeState()
-		if logicalStatementRightMayEvaluate(typed) && !c.logicalStatementRightUnreachable(typed) {
-			c.checkStatement(function, returnType, typed.Right)
-			if !logicalStatementRightAlwaysEvaluates(typed) && !c.logicalStatementRightAlwaysEvaluatesInferred(typed) {
-				c.restoreRuntimeState(leftRuntimeState)
-				// The right-hand side may be skipped, so its type facts join
-				// with the skipped path (a local bound only there becomes
-				// type-or-nil) instead of being discarded.
-				evaluatedScopeState := c.snapshotScopeState()
-				c.mergeScopeStates(leftScopeState, []checkScopeState{evaluatedScopeState, leftScopeState})
-				c.recordLocalBindings([]Statement{typed})
-			}
-		}
-		// The children set the no-fallthrough flag for themselves, not for
-		// this statement: a conditionally evaluated side never proves it.
-		c.stmtNoFallthroughInferred = false
 	case *IfStmt:
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
@@ -2224,9 +2145,6 @@ func collectImplicitReturnLeafStatement(stmt Statement, out map[Statement]struct
 	switch typed := stmt.(type) {
 	case *ExprStmt, *AssignStmt:
 		out[stmt] = struct{}{}
-	case *LogicalStmt:
-		collectImplicitReturnLeafStatement(typed.Left, out)
-		collectImplicitReturnLeafStatement(typed.Right, out)
 	case *IfStmt:
 		collectImplicitReturnLeaves(typed.Consequent, out)
 		for _, elseIf := range typed.ElseIf {
@@ -2309,7 +2227,7 @@ func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, t
 	switch typed := expr.(type) {
 	case *BinaryExpr:
 		switch typed.Operator {
-		case tokenAnd, tokenWordAnd:
+		case tokenAnd:
 			if truthy {
 				c.collectRuntimeRequireCallExportsFromExpression(typed.Right)
 				c.collectRuntimeConditionOutcomeEffects(typed.Left, true)
@@ -2317,7 +2235,7 @@ func (c *scriptChecker) collectRuntimeConditionOutcomeEffects(expr Expression, t
 			} else if binaryRightAlwaysEvaluates(typed) {
 				c.collectRuntimeConditionOutcomeEffects(typed.Right, false)
 			}
-		case tokenOr, tokenWordOr:
+		case tokenOr:
 			if !truthy {
 				c.collectRuntimeRequireCallExportsFromExpression(typed.Right)
 				c.collectRuntimeConditionOutcomeEffects(typed.Left, false)
@@ -2881,8 +2799,6 @@ func statementMayEscapeIteration(stmt Statement) bool {
 		return expressionMayEscapeIteration(typed.Target) || expressionMayEscapeIteration(typed.Value)
 	case *ExprStmt:
 		return expressionMayEscapeIteration(typed.Expr)
-	case *LogicalStmt:
-		return statementMayEscapeIteration(typed.Left) || statementMayEscapeIteration(typed.Right)
 	case *IfStmt:
 		if expressionMayEscapeIteration(typed.Condition) || blockBodyMayEscapeIteration(typed.Consequent) {
 			return true
@@ -3218,9 +3134,6 @@ func (c *scriptChecker) statementMayEvaluateCallBlock(stmt Statement, seen map[*
 			c.expressionMayEvaluateCallBlock(typed.Value, seen)
 	case *ExprStmt:
 		return c.expressionMayEvaluateCallBlock(typed.Expr, seen)
-	case *LogicalStmt:
-		return c.statementMayEvaluateCallBlock(typed.Left, seen) ||
-			(logicalStatementRightMayEvaluate(typed) && c.statementMayEvaluateCallBlock(typed.Right, seen))
 	case *IfStmt:
 		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) {
 			return true
@@ -3506,8 +3419,6 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 			return
 		}
 		c.checkImplicitLeafAgainstType(function, typed, typed.Value, ty)
-	case *LogicalStmt:
-		c.checkImplicitFinalLogicalStatement(function, ty, typed)
 	case *IfStmt:
 		c.checkImplicitFinalIfStatement(function, ty, typed)
 	case *ForStmt, *WhileStmt, *UntilStmt:
@@ -3574,57 +3485,6 @@ func (c *scriptChecker) implicitConditionDecision(stmt *IfStmt, index int, condi
 		return decisions[index].truthy, decisions[index].known
 	}
 	return staticExpressionTruthiness(condition)
-}
-
-func (c *scriptChecker) checkImplicitFinalLogicalStatement(function string, ty *TypeExpr, stmt *LogicalStmt) {
-	if stmt == nil {
-		return
-	}
-	left, known := staticStatementValue(stmt.Left)
-	switch stmt.Operator {
-	case tokenWordAnd:
-		if known {
-			if left.Truthy() {
-				c.checkImplicitFinalStatement(function, ty, stmt.Right)
-			} else {
-				c.checkImplicitFinalStatement(function, ty, stmt.Left)
-			}
-			return
-		}
-	case tokenWordOr:
-		if known {
-			if left.Truthy() {
-				c.checkImplicitFinalStatement(function, ty, stmt.Left)
-			} else {
-				c.checkImplicitFinalStatement(function, ty, stmt.Right)
-			}
-			return
-		}
-	default:
-		return
-	}
-	// Inferred truthiness decides reachability too, evaluated under the
-	// left side's own captured state (its facts at evaluation time, before
-	// the right side or later merges rebind them).
-	inferred := c.implicitLogicalLeftType(stmt.Left)
-	if typeExprDefinitelyTruthy(inferred) {
-		if stmt.Operator == tokenWordAnd {
-			c.checkImplicitFinalStatement(function, ty, stmt.Right)
-		} else {
-			c.checkImplicitFinalStatement(function, ty, stmt.Left)
-		}
-		return
-	}
-	if typeExprIsNilOnly(inferred) {
-		if stmt.Operator == tokenWordAnd {
-			c.checkImplicitFinalStatement(function, ty, stmt.Left)
-		} else {
-			c.checkImplicitFinalStatement(function, ty, stmt.Right)
-		}
-		return
-	}
-	c.checkImplicitFinalStatement(function, ty, stmt.Left)
-	c.checkImplicitFinalStatement(function, ty, stmt.Right)
 }
 
 func (c *scriptChecker) checkImplicitFinalBlock(function string, ty *TypeExpr, statements []Statement, pos Position) {
@@ -3727,12 +3587,6 @@ func statementExceedsCheckDepth(stmt Statement, remaining int) bool {
 			expressionExceedsCheckDepth(typed.Value, remaining)
 	case *ExprStmt:
 		return expressionExceedsCheckDepth(typed.Expr, remaining)
-	case *LogicalStmt:
-		if remaining <= 0 {
-			return true
-		}
-		return statementExceedsCheckDepth(typed.Left, remaining-1) ||
-			statementExceedsCheckDepth(typed.Right, remaining-1)
 	case *IfStmt:
 		if remaining <= 0 {
 			return true
@@ -5195,9 +5049,6 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 		switch typed := stmt.(type) {
 		case *AssignStmt:
 			collectBindingTarget(typed.Target, out)
-		case *LogicalStmt:
-			collectLocalBindings([]Statement{typed.Left}, out)
-			collectLocalBindings([]Statement{typed.Right}, out)
 		case *IfStmt:
 			collectLocalBindings(typed.Consequent, out)
 			for _, elseIf := range typed.ElseIf {

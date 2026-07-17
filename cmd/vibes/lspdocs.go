@@ -229,7 +229,6 @@ var lspContextualWords = []string{
 // docs/classes.md. Coverage of the parser's keyword set is enforced by
 // tests.
 var keywordDocs = map[string]string{
-	"and":      "Reserved word; not a boolean operator in Vibescript — use `&&`. Usable as a method name or hash label.",
 	"begin":    "Opens a block whose failures are handled by `rescue` clauses, with optional `else` and `ensure`.",
 	"break":    "Exits the nearest loop; `break value` becomes the loop's value.",
 	"case":     "Opens a multi-branch match whose `when` clauses compare with case equality (`===`).",
@@ -249,8 +248,6 @@ var keywordDocs = map[string]string{
 	"in":       "Separates the loop variable from the collection in `for ... in`.",
 	"next":     "Skips to the next iteration of the nearest loop.",
 	"nil":      "The absence-of-value literal.",
-	"not":      "Reserved word; not a boolean operator in Vibescript — use `!`.",
-	"or":       "Reserved word; not a boolean operator in Vibescript — use `||`.",
 	"private":  "Marks subsequent (or one prefixed) method declarations as internal to the class or module.",
 	"property": "Declares a read-write accessor (`x` and `x=`) backed by an instance variable.",
 	"raise":    "Raises an error, unwinding to the nearest matching `rescue`.",

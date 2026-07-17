@@ -316,32 +316,21 @@ end`
 
 	// The guard is a local whose inferred type proves the require always
 	// runs, so the exports seed for later functions exactly as at runtime.
-	wordAnd := writeVibeScript(t, `flag = "yes"
-flag and require "helpers"
-
-def run
-  shout(1)
-end`)
-	out, err := dispatchCommand(t, "check", []string{"-module-path", moduleDir, wordAnd})
-	if err == nil || !strings.Contains(out, "call to shout argument value expected string, got int") {
-		t.Fatalf("checkCommand word-and guard = %v (out %q), want argument warning", err, out)
-	}
-
-	symbolAnd := writeVibeScriptNamed(t, "symbol.vibe", `flag = "yes"
+	guaranteed := writeVibeScript(t, `flag = "yes"
 flag && require "helpers"
 
 def run
   shout(1)
 end`)
-	out, err = dispatchCommand(t, "check", []string{"-module-path", moduleDir, symbolAnd})
+	out, err := dispatchCommand(t, "check", []string{"-module-path", moduleDir, guaranteed})
 	if err == nil || !strings.Contains(out, "call to shout argument value expected string, got int") {
-		t.Fatalf("checkCommand symbol-and guard = %v (out %q), want argument warning", err, out)
+		t.Fatalf("checkCommand guaranteed guard = %v (out %q), want argument warning", err, out)
 	}
 
 	// A guard the checker cannot prove keeps the seed conservative: the
 	// module may never load, so the unknown callee stays permitted.
 	unknown := writeVibeScriptNamed(t, "unknown.vibe", `flag = JSON.parse("true")
-flag and require "helpers"
+flag && require "helpers"
 
 def run
   shout(1)

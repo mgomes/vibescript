@@ -95,11 +95,11 @@ func TestParserEmptyIndexExpressionIsError(t *testing.T) {
 	}
 }
 
-func TestParserIndexExpressionSuppressesAssignmentStops(t *testing.T) {
+func TestParserIndexExpressionAllowsSymbolicBooleanOperator(t *testing.T) {
 	t.Parallel()
 
 	source := `def run
-  value = items[flag or fallback]
+  value = items[flag || fallback]
 end`
 	got, errs := parseSource(t, source)
 	if len(errs) > 0 {
@@ -114,7 +114,7 @@ end`
 				Indices: []ast.Expression{
 					&ast.BinaryExpr{
 						Left:     &ast.Identifier{Name: "flag"},
-						Operator: ast.TokenWordOr,
+						Operator: ast.TokenOr,
 						Right:    &ast.Identifier{Name: "fallback"},
 					},
 				},

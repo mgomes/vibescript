@@ -181,9 +181,21 @@ end`,
 end`,
 		},
 		{
-			name: "word_boolean_operators",
-			source: `def run
-  not false and true or false
+			name: "word_boolean_identifiers",
+			source: `def and(value)
+  value
+end
+
+def or(value)
+  value
+end
+
+def not(value)
+  value
+end
+
+def run
+  [and(1), or(2), not(3)]
 end`,
 		},
 		{

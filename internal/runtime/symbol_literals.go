@@ -99,9 +99,6 @@ func (c *symbolLiteralCollector) collectStatement(stmt Statement) {
 	case *AssignStmt:
 		c.collectExpression(typed.Target)
 		c.collectExpression(typed.Value)
-	case *LogicalStmt:
-		c.collectStatement(typed.Left)
-		c.collectStatement(typed.Right)
 	case *ExprStmt:
 		c.collectExpression(typed.Expr)
 	case *IfStmt:

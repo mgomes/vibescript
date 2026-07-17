@@ -191,7 +191,7 @@ end`
 	}
 }
 
-func TestParserTypeShapeAllowsWordBooleanFieldNames(t *testing.T) {
+func TestParserTypeShapeAllowsOrdinaryIdentifierFieldNames(t *testing.T) {
 	t.Parallel()
 	source := `def run(payload: { and: bool, or: bool, not: bool, nested: { not: bool } })
   payload
