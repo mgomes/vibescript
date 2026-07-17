@@ -159,6 +159,64 @@ end
 `,
 			warning: "call to takes_order argument value expected Order, got Bare",
 		},
+		{
+			name: "constructor splat keeps its invariant result",
+			source: `
+def run()
+  takes_order(User.new(*[]))
+end
+`,
+			warning: "call to takes_order argument value expected Order, got User",
+		},
+		{
+			name: "non nil safe constructor keeps its result",
+			source: `
+def run()
+  takes_order(User&.new)
+end
+`,
+			warning: "call to takes_order argument value expected Order, got User",
+		},
+		{
+			name: "non nil safe method keeps its annotated result",
+			source: `
+def run(user: User)
+  takes_int(user&.label())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "bare method keeps its annotated result",
+			source: `
+def run(user: User)
+  takes_int(user.label)
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "conditional nominal receiver resolves method shape",
+			source: `
+def run(flag)
+  (flag ? User.new : User.new).rename()
+end
+`,
+			warning: "call to User#rename is missing argument name",
+		},
+		{
+			name: "annotated call receiver resolves method shape",
+			source: `
+def make_user() -> User
+  User.new
+end
+
+def run()
+  make_user().rename()
+end
+`,
+			warning: "call to User#rename is missing argument name",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -235,6 +293,46 @@ end
 
 def run(n: Nameable)
   n.display_name(1, 2, 3)
+end
+`,
+		},
+		{
+			name: "constructor member on module is not an instance fact",
+			source: `
+module Factory
+end
+
+def run()
+  takes_order(Factory.new)
+end
+`,
+		},
+		{
+			name: "bare constructor remains callable under a function boundary",
+			source: `
+def takes_function(value: function)
+  value
+end
+
+def run()
+  takes_function(User.new)
+end
+`,
+		},
+		{
+			name: "callable constructor is not auto invoked for shape checking",
+			source: `
+class Builder
+  def initialize(required)
+  end
+end
+
+def takes_function(value: function)
+  value
+end
+
+def run()
+  takes_function(Builder.new)
 end
 `,
 		},

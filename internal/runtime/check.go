@@ -2316,8 +2316,12 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// argument cannot erase the facts an earlier argument was evaluated
 		// under. checkCall consumes the captured facts afterwards.
 		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
-		for _, arg := range typed.Args {
-			c.checkExpressionWithAuto(function, arg, true)
+		for i, arg := range typed.Args {
+			autoCall := true
+			if targetResolved {
+				autoCall = staticCallablePositionalArgumentAutoCalls(target, i)
+			}
+			c.checkExpressionWithAuto(function, arg, autoCall)
 			// The argument's value and effects materialize once its own
 			// evaluation completes, before the next argument runs: a shovel
 			// append lands in the facts, and a require binds its exports
@@ -2326,7 +2330,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			argumentFacts[arg] = c.inferExpressionType(arg)
 		}
 		for _, kwarg := range typed.KwArgs {
-			c.checkExpressionWithAuto(function, kwarg.Value, true)
+			autoCall := true
+			if targetResolved {
+				autoCall = staticCallableKeywordArgumentAutoCalls(target, kwarg.Name)
+			}
+			c.checkExpressionWithAuto(function, kwarg.Value, autoCall)
 			c.collectRuntimeRequireCallExportsFromExpression(kwarg.Value)
 			argumentFacts[kwarg.Value] = c.inferExpressionType(kwarg.Value)
 		}
@@ -2500,6 +2508,27 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 	case *InterpolatedSymbol:
 		c.checkStringParts(function, typed.Parts)
 	}
+}
+
+func staticCallablePositionalArgumentAutoCalls(target staticCallable, index int) bool {
+	if target.fn != nil {
+		param, ok := positionalCallableParam(target.fn.Params, index)
+		if !ok {
+			return true
+		}
+		return !positionalArgumentExpectation(param).includesCallable()
+	}
+	if index < len(target.spec.paramTypes) {
+		return !typeExprIncludesCallable(target.spec.paramTypes[index])
+	}
+	return true
+}
+
+func staticCallableKeywordArgumentAutoCalls(target staticCallable, name string) bool {
+	if target.fn != nil {
+		return !typeExprIncludesCallable(keywordArgumentExpectedType(target.fn.Params, name))
+	}
+	return !typeExprIncludesCallable(target.spec.keywordTypes[name])
 }
 
 func (c *scriptChecker) checkConditionalExpression(function string, expr *ConditionalExpr) {
@@ -4146,7 +4175,7 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 			}
 		}
 		if classDef, ok := c.script.classes[ident.Name]; ok {
-			if member.Property == "new" {
+			if member.Property == "new" && !classDef.IsModule {
 				if initFn, ok := classDef.Methods["initialize"]; ok {
 					return staticCallable{
 						name:             ident.Name + ".new",
@@ -4318,28 +4347,49 @@ func checkRootBinding(root *Env, name string) (Value, bool) {
 	return Value{}, false
 }
 
-// nominalReceiverMethodCallable resolves an instance-method call on a local
-// whose fact is a single script class — a constructor-derived or annotated
-// nominal fact. Nullable, union, module, and unknown facts stay dynamic, so
-// user overrides and host values keep their runtime dispatch.
+// nominalReceiverMethodCallable resolves an instance-method call whose
+// receiver has one script-class identity. The fact may come from a local, a
+// constructor expression, a branch join, or an annotated call result. A safe
+// navigation receiver may additionally contain nil because dispatch skips
+// that arm; other unions, modules, and unknown facts stay dynamic.
 func (c *scriptChecker) nominalReceiverMethodCallable(member *MemberExpr) (staticCallable, bool) {
-	ident, ok := member.Object.(*Identifier)
-	if !ok {
+	var receiverFact *TypeExpr
+	if ident, ok := member.Object.(*Identifier); ok {
+		// Resolving a bare namespace identifier through the runtime type root
+		// can materialize its lazy binding and shadow the builtin contract that
+		// this same member lookup still needs. Locals already carry every
+		// nominal fact an identifier receiver can contribute.
+		receiverFact = c.localTypeFor(ident.Name)
+	} else {
+		receiverFact = c.inferExpressionType(member.Object)
+	}
+	arms, ok := typeExprArms(receiverFact, 0)
+	if !ok || len(arms) == 0 {
 		return staticCallable{}, false
 	}
-	arms, ok := typeExprArms(c.localTypeFor(ident.Name), 0)
-	if !ok || len(arms) != 1 || arms[0].Kind != TypeEnum {
+	className := ""
+	for _, arm := range arms {
+		if member.Safe && arm.Kind == TypeNil {
+			continue
+		}
+		if arm.Kind != TypeEnum || (className != "" && className != arm.Name) {
+			return staticCallable{}, false
+		}
+		classDef, exists := c.script.classes[arm.Name]
+		if !exists || classDef.IsModule {
+			return staticCallable{}, false
+		}
+		className = arm.Name
+	}
+	if className == "" || member.Property == "initialize" {
 		return staticCallable{}, false
 	}
-	classDef, ok := c.script.classes[arms[0].Name]
-	if !ok || classDef.IsModule || member.Property == "initialize" {
-		return staticCallable{}, false
-	}
+	classDef := c.script.classes[className]
 	fn, ok := classDef.Methods[member.Property]
 	if !ok {
 		return staticCallable{}, false
 	}
-	return staticCallable{name: arms[0].Name + "#" + member.Property, fn: fn, resolution: calleeMemberMethod}, true
+	return staticCallable{name: className + "#" + member.Property, fn: fn, resolution: calleeMemberMethod}, true
 }
 
 func (c *scriptChecker) staticInstanceClass(expr Expression) (string, bool) {
@@ -4374,7 +4424,8 @@ func (c *scriptChecker) staticConstructorClass(member *MemberExpr) (string, bool
 	if c.hostGlobalShadows(ident.Name) {
 		return "", false
 	}
-	if _, ok := c.script.classes[ident.Name]; !ok {
+	classDef, ok := c.script.classes[ident.Name]
+	if !ok || classDef.IsModule {
 		return "", false
 	}
 	return ident.Name, true

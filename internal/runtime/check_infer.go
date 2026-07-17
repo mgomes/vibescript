@@ -992,7 +992,7 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		}
 		return c.autoInvokedBuiltinResultFact(typed.Name)
 	case *MemberExpr:
-		return c.constructorMemberResultFact(typed)
+		return c.memberResultFact(typed)
 	case *UnaryExpr:
 		return c.inferUnaryExprType(typed)
 	case *BinaryExpr:
@@ -1183,49 +1183,95 @@ func (c *scriptChecker) inferUnaryExprType(expr *UnaryExpr) *TypeExpr {
 	return nil
 }
 
-// inferCallExprType exposes a known callee's annotated return type to the
-// caller. Safe navigation and splats stay unknown; a statically resolved
-// constructor call carries its class as a nominal fact. Among builtins the
-// checker models only JSON.parse_as, whose result is the validated shape
-// (ADR-004).
+// inferCallExprType exposes an invariant result fact for a resolved call: a
+// script function's annotation, a constructor's nominal class, or a builtin
+// contract. Constructor identity survives splat expansion because expansion
+// changes only argument binding, never the class produced by a successful
+// call. Safe navigation returns nil when it must skip and otherwise adds nil
+// unless the receiver is known non-nil.
 func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
-	if member, ok := call.Callee.(*MemberExpr); ok && member.Safe {
-		return nil
+	member, memberCall := call.Callee.(*MemberExpr)
+	if memberCall && member.Safe && typeExprIsNilOnly(c.safeNavigationReceiverFact(member.Object)) {
+		return checkTypeNil
 	}
 	target, ok := c.resolveCallable(call)
-	if !ok || callExpandsArguments(call) {
+	if !ok {
 		return nil
 	}
+	var result *TypeExpr
 	if target.constructorClass != "" {
-		return &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
-	}
-	if target.fn != nil {
+		result = &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
+	} else if callExpandsArguments(call) {
+		return nil
+	} else if target.fn != nil {
 		if target.constructor {
 			return nil
 		}
-		return target.fn.ReturnTy
-	}
-	if target.name == "JSON.parse_as" && len(call.Args) == 2 {
+		result = target.fn.ReturnTy
+	} else if target.name == "JSON.parse_as" && len(call.Args) == 2 {
 		if shape, ok := shapeValuePayload(c.inferExpressionType(call.Args[1])); ok {
 			// JSON object keys are strings, so the validated result and its
 			// nested shapes are string-keyed stores.
-			return stringKeyedShapeFact(shape)
+			result = stringKeyedShapeFact(shape)
 		}
+	} else {
+		result = target.spec.resultType
 	}
-	return target.spec.resultType
+	if memberCall {
+		return c.safeNavigationMemberResultFact(member, result)
+	}
+	return result
 }
 
-// constructorMemberResultFact reports the nominal fact of a bare constructor
-// read (`User.new` without parentheses), which auto-invokes at runtime.
-func (c *scriptChecker) constructorMemberResultFact(member *MemberExpr) *TypeExpr {
-	if member.Safe {
-		return nil
+// memberResultFact reports the result of a bare member that auto-invokes in a
+// value context. Constructors carry their nominal class, while ordinary
+// script methods expose an explicit return annotation.
+func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
+	if member.Safe && typeExprIsNilOnly(c.safeNavigationReceiverFact(member.Object)) {
+		return checkTypeNil
 	}
 	target, ok := c.resolveMemberCallable(member)
-	if !ok || target.constructorClass == "" {
+	if !ok {
 		return nil
 	}
-	return &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
+	var result *TypeExpr
+	if target.constructorClass != "" {
+		result = &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
+	} else if target.fn != nil && !target.constructor {
+		result = target.fn.ReturnTy
+	} else if target.spec.autoInvoke {
+		result = target.spec.resultType
+	}
+	return c.safeNavigationMemberResultFact(member, result)
+}
+
+func (c *scriptChecker) safeNavigationMemberResultFact(member *MemberExpr, result *TypeExpr) *TypeExpr {
+	if result == nil || member == nil || !member.Safe || c.safeNavigationReceiverKnownNonNil(member.Object) {
+		return result
+	}
+	return unionTypeExprs(result, checkTypeNil)
+}
+
+func (c *scriptChecker) safeNavigationReceiverKnownNonNil(expr Expression) bool {
+	ident, ok := expr.(*Identifier)
+	if !ok {
+		return typeExprNeverNil(c.inferExpressionType(expr))
+	}
+	if typeExprNeverNil(c.localTypeFor(ident.Name)) {
+		return true
+	}
+	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		return false
+	}
+	_, ok = c.script.classes[ident.Name]
+	return ok
+}
+
+func (c *scriptChecker) safeNavigationReceiverFact(expr Expression) *TypeExpr {
+	if ident, ok := expr.(*Identifier); ok {
+		return c.localTypeFor(ident.Name)
+	}
+	return c.inferExpressionType(expr)
 }
 
 // shapeValueMarkerName tags the synthetic type that carries a first-class
@@ -1653,6 +1699,9 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	if !captured {
 		inferred = c.inferExpressionType(expr)
 	}
+	if typeExprIncludesCallable(ty) && c.bareMemberArgumentIsCallable(expr) {
+		inferred = checkTypeFunction
+	}
 	if inferred == nil {
 		return
 	}
@@ -1663,6 +1712,19 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 		c.add(function, expr.Pos(), "call to %s argument %s expected %s, got %s",
 			callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred))
 	}
+}
+
+// bareMemberArgumentIsCallable mirrors the runtime's callable-parameter
+// expectation: a bound script method (including a constructor backed by
+// initialize) is passed through instead of auto-invoked. Generated getters
+// still evaluate to their property value.
+func (c *scriptChecker) bareMemberArgumentIsCallable(expr Expression) bool {
+	member, ok := expr.(*MemberExpr)
+	if !ok || (member.Safe && !c.safeNavigationReceiverKnownNonNil(member.Object)) {
+		return false
+	}
+	target, ok := c.resolveMemberCallable(member)
+	return ok && target.fn != nil && target.fn.Accessor != functionAccessorGetter
 }
 
 // checkBinaryOperandTypes rejects operator uses whose operand types are known
