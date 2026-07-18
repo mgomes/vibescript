@@ -144,7 +144,8 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   Symbols keep coercing into enums, a class keeps satisfying modules it
   includes, and unresolved or host-supplied names stay conservative.
 - Control flow narrows nullable locals: truthiness tests, explicit nil
-  comparisons, and `nil?` refine the local in both branches, including
+  comparisons, and `nil?` predicates with proven universal dispatch refine the
+  local in both branches, including
   `unless`, `elsif`, negation, short-circuits, and guard clauses that exit
   early. Unknown values stay unknown, and branches re-join into the wider
   fact afterwards.

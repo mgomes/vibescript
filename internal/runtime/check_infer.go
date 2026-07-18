@@ -974,7 +974,10 @@ func (c *scriptChecker) narrowNilPredicateMember(member *MemberExpr, truthy bool
 
 // knownUniversalNilPredicateMember reports whether a plain local's nil?
 // dispatch is guaranteed to use the pure universal predicate under its current
-// fact. Named arms are excluded because a class may override nil?.
+// fact. Named arms are excluded because a class may override nil?. Hash-like
+// facts must also rule out a callable nil? field: TypeHash and TypeShape admit
+// KindObject namespace values whose callable exports override the universal
+// fallback.
 func (c *scriptChecker) knownUniversalNilPredicateMember(member *MemberExpr) bool {
 	if member == nil || member.Safe || member.Property != "nil?" {
 		return false
@@ -988,11 +991,45 @@ func (c *scriptChecker) knownUniversalNilPredicateMember(member *MemberExpr) boo
 		return false
 	}
 	for _, arm := range arms {
-		if arm.Kind == TypeEnum {
+		if !nilPredicateArmUsesUniversalDispatch(arm) {
 			return false
 		}
 	}
 	return true
+}
+
+func nilPredicateArmUsesUniversalDispatch(arm *TypeExpr) bool {
+	if arm == nil {
+		return false
+	}
+	switch arm.Kind {
+	case TypeEnum:
+		return false
+	case TypeHash:
+		return len(arm.TypeArgs) == 2 && !typeExprMayIncludeCallable(arm.TypeArgs[1])
+	case TypeShape:
+		field, present := arm.Shape["nil?"]
+		return !present || !typeExprMayIncludeCallable(field)
+	default:
+		return true
+	}
+}
+
+func typeExprMayIncludeCallable(ty *TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	switch ty.Kind {
+	case TypeAny, TypeUnknown, TypeFunction:
+		return true
+	case TypeUnion:
+		for _, option := range ty.Union {
+			if typeExprMayIncludeCallable(option) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // knownUniversalNilPredicateCall recognizes the explicit nullary call form of

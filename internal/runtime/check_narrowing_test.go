@@ -577,6 +577,26 @@ end
 `,
 		},
 		{
+			name: "untyped hash can hold a callable nil? override",
+			source: `
+def f(value: hash?)
+  if value.nil?
+    y = -value
+  end
+end
+`,
+		},
+		{
+			name: "shape can declare a callable nil? override",
+			source: `
+def f(value: { nil?: function }?)
+  if value.nil?
+    y = -value
+  end
+end
+`,
+		},
+		{
 			name: "nil? with arguments does not narrow",
 			source: `
 def f(x: int?)
