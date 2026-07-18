@@ -1319,6 +1319,31 @@ end
 	}
 }
 
+func TestCheckWarningsKeepForcedNilPredicateShortCircuitEffects(t *testing.T) {
+	t.Parallel()
+
+	for _, predicate := range []string{"value.nil?", "value.nil?()"} {
+		t.Run(predicate, func(t *testing.T) {
+			engine := moduleTestEngine(t)
+			script, err := engine.CompileSnippet(`
+def maybe_value() -> int?
+  nil
+end
+
+value = maybe_value()
+return unless value.nil?
+`+predicate+` && require("enum_status")
+normalize("bad")
+`, "<script>")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+
+			requireCheckWarningContains(t, script, "call to normalize argument status expected Status, got string")
+		})
+	}
+}
+
 func TestCheckWarningsDoNotHoistShortCircuitRequiredModuleEnumExports(t *testing.T) {
 	t.Parallel()
 

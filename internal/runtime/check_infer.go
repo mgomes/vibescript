@@ -255,32 +255,39 @@ func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
 	}
 }
 
-// binaryRightUnreachable reports whether inferred facts prove a
-// short-circuit right operand never evaluates: a definitely-truthy left
-// short-circuits ||, and a definitely-nil left short-circuits &&, so their
-// right sides must not produce diagnostics.
+// binaryRightUnreachable reports whether inferred facts prove a short-circuit
+// right operand never evaluates. Condition-outcome reachability covers both
+// direct value facts and predicates whose requested outcome contradicts an
+// already narrowed receiver.
 func (c *scriptChecker) binaryRightUnreachable(expr *BinaryExpr) bool {
+	var evaluatingOutcome bool
 	switch expr.Operator {
 	case tokenOr:
-		return typeExprDefinitelyTruthy(c.inferExpressionType(expr.Left))
+		evaluatingOutcome = false
 	case tokenAnd:
-		return typeExprIsNilOnly(c.inferExpressionType(expr.Left))
+		evaluatingOutcome = true
+	default:
+		return false
 	}
-	return false
+	_, reachable := c.probeConditionOutcome(expr.Left, evaluatingOutcome)
+	return !reachable
 }
 
-// binaryRightAlwaysEvaluatesInferred reports whether inferred facts prove a
-// short-circuit right operand always evaluates (a definitely-truthy left for
-// &&, a definitely-nil left for ||), so the impossible skipped path must not
-// join the merge.
+// binaryRightAlwaysEvaluatesInferred reports whether inferred facts prove the
+// skipped left outcome unreachable, so the right operand's effects must not be
+// rolled back into a branch join.
 func (c *scriptChecker) binaryRightAlwaysEvaluatesInferred(expr *BinaryExpr) bool {
+	var skippedOutcome bool
 	switch expr.Operator {
 	case tokenAnd:
-		return typeExprDefinitelyTruthy(c.inferExpressionType(expr.Left))
+		skippedOutcome = false
 	case tokenOr:
-		return typeExprIsNilOnly(c.inferExpressionType(expr.Left))
+		skippedOutcome = true
+	default:
+		return false
 	}
-	return false
+	_, reachable := c.probeConditionOutcome(expr.Left, skippedOutcome)
+	return !reachable
 }
 
 // collectMutatedContainerRoots gathers the root identifiers of index and
