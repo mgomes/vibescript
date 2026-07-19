@@ -4967,6 +4967,14 @@ func (c *scriptChecker) checkBuiltinCallShape(function string, call staticCallVi
 	if spec.rejectBlock && call.block != nil {
 		c.add(function, call.block.Pos(), "call to %s does not accept a block", name)
 	}
+	if spec.rejectBlock && call.blockArg != nil {
+		// A forwarded `&blk` only reaches the builtin as a block when it is
+		// non-nil at runtime, so the contract violation is provable only for
+		// a never-nil argument.
+		if typeExprNeverNil(c.inferExpressionType(call.blockArg)) {
+			c.add(function, call.blockArg.Pos(), "call to %s does not accept a block", name)
+		}
+	}
 }
 
 // checkBuiltinArgumentTypes reports call arguments whose inferred types are
@@ -4986,17 +4994,19 @@ func (c *scriptChecker) checkBuiltinArgumentTypes(function string, call staticCa
 
 type staticCallView struct {
 	pos    Position
-	args   []Expression
-	kwargs []KeywordArg
-	block  *BlockLiteral
+	args     []Expression
+	kwargs   []KeywordArg
+	block    *BlockLiteral
+	blockArg Expression
 }
 
 func staticCallViewFor(call *CallExpr, target staticCallable) staticCallView {
 	view := staticCallView{
-		pos:    call.Pos(),
-		args:   call.Args,
-		kwargs: call.KwArgs,
-		block:  call.Block,
+		pos:      call.Pos(),
+		args:     call.Args,
+		kwargs:   call.KwArgs,
+		block:    call.Block,
+		blockArg: call.BlockArg,
 	}
 	if !staticCallCollapsesOptionsHash(call, target, view) {
 		return view

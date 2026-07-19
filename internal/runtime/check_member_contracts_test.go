@@ -381,6 +381,15 @@ end
 			warning: "call to string.to_i has too many arguments",
 		},
 		{
+			name: "conversion rejects forwarded block",
+			source: `
+def run(s: string, blk: function)
+  s.to_i(&blk)
+end
+`,
+			warning: "call to string.to_i does not accept a block",
+		},
+		{
 			name: "slice shape applies to fact receiver",
 			source: `
 def run(s: string)
@@ -578,6 +587,14 @@ end
 			source: `
 def run(s: string, k)
   s.instance_of?(k)
+end
+`,
+		},
+		{
+			name: "possibly nil forwarded block stays gradual",
+			source: `
+def run(s: string, blk)
+  s.to_i(&blk)
 end
 `,
 		},
