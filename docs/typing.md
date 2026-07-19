@@ -207,6 +207,13 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   known element type, and an unknown value conservatively widens the local
   back to unknown. Unknown receivers, `array<any>`, and untyped arrays stay
   gradual.
+- Entry writes to a local known to be `hash<K, V>` — `h[k] = v`, `store`,
+  and the in-place `merge!`/`update` — check the key against `K` and the
+  value against `V` the same way. Writes to a local with a declared shape
+  type check the field's declared type, and a statically known key outside
+  the shape is reported (shapes are exact). Hash and shape literals stay
+  writable: the checker updates their known fields in place instead of
+  reporting, and unknown keys or values widen the fact back to unknown.
 
 ### `JSON.parse_as`
 
