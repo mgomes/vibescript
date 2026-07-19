@@ -156,3 +156,30 @@ end
 		t.Fatalf("CheckedCall(failing bind) error = %v, want adapter bind failure", err)
 	}
 }
+
+func TestCheckedCallStopsBindingAtFirstFailure(t *testing.T) {
+	t.Parallel()
+
+	engine := vibes.MustNewEngine(vibes.Config{})
+	script, err := engine.Compile("def run()\n  1\nend")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	failing := vibes.MustNewContextCapability("first", func(ctx context.Context) (value.Value, error) {
+		return value.NewNil(), errors.New("first adapter failed")
+	})
+	touched := false
+	second := vibes.MustNewContextCapability("second", func(ctx context.Context) (value.Value, error) {
+		touched = true
+		return value.NewHash(map[string]value.Value{}), nil
+	})
+
+	_, _, err = script.CheckedCall(context.Background(), "run", nil, vibes.CallOptions{Capabilities: []vibes.CapabilityAdapter{failing, second}})
+	if err == nil || !strings.Contains(err.Error(), "first adapter failed") {
+		t.Fatalf("CheckedCall error = %v, want first bind failure", err)
+	}
+	if touched {
+		t.Fatal("second adapter bound after the first failed; Call would never reach it")
+	}
+}

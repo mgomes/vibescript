@@ -212,10 +212,12 @@ func checkOptionGlobals(ctx context.Context, script *Script, opts CallOptions) (
 			}
 			bound, err := adapter.Bind(binding)
 			if err != nil {
-				if bindErr == nil {
-					bindErr = err
-				}
-				continue
+				// Execution stops at the first bind failure
+				// (bindCapabilitiesForCall), so later adapters must not run
+				// here either — the gate may not touch surfaces the call
+				// never would.
+				bindErr = err
+				break
 			}
 			for name, val := range bound {
 				globals[name] = val

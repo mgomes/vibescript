@@ -31,7 +31,11 @@ func (s *Script) CheckedCall(ctx context.Context, name string, args []Value, opt
 	if bindErr != nil {
 		// A failing adapter is a runtime condition, not a static diagnostic:
 		// report it the way Call would instead of letting the gate warn
-		// about names the bind never produced.
+		// about names the bind never produced. Context expiry takes
+		// precedence, matching bindCapabilitiesForCall.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return NewNil(), nil, ctxErr
+		}
 		return NewNil(), nil, fmt.Errorf("bind capability: %w", bindErr)
 	}
 	warnings := s.checkWarningsWithGlobals(globals, opts, checkTarget{
