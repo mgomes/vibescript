@@ -43,6 +43,13 @@ func newIsTypePredicateBuiltin() Value {
 		if err != nil {
 			return NewNil(), err
 		}
+		if ty.Kind == TypeEnum {
+			resolved, err := resolveTypeAtomName(exec, ty, text)
+			if err != nil {
+				return NewNil(), err
+			}
+			ty = resolved
+		}
 		matches, err := valueMatchesType(receiver, ty)
 		if err != nil {
 			return NewNil(), err
@@ -96,7 +103,11 @@ func parseTypeAtom(text string) (*TypeExpr, error) {
 	if kind, ok := builtinTypeAtoms[base]; ok {
 		ty.Kind = kind
 	} else {
-		first, _ := utf8.DecodeRuneInString(base)
+		last := base
+		if dot := strings.LastIndex(base, "."); dot >= 0 {
+			last = base[dot+1:]
+		}
+		first, _ := utf8.DecodeRuneInString(last)
 		if !unicode.IsUpper(first) {
 			return nil, fmt.Errorf("unknown type atom %q in %s", text, isTypeMemberName)
 		}
@@ -107,15 +118,51 @@ func parseTypeAtom(text string) (*TypeExpr, error) {
 	return ty, nil
 }
 
-// isTypeAtomIdent reports whether base is a plain identifier: letters, digits,
-// and underscores only, not starting with a digit.
+// resolveTypeAtomName resolves a named atom in the executing source's scope,
+// the same way annotations resolve, so a module alias spelling such as
+// "lv.Level" tests against the enum it names. A plain name that does not
+// resolve keeps its literal spelling for structural matching; a qualified
+// name that does not resolve is an error, since it can never match anything.
+func resolveTypeAtomName(exec *Execution, ty *TypeExpr, text string) (*TypeExpr, error) {
+	ctx := typeContext{owner: exec.currentSourceScript(), env: exec.root, fallback: exec.root, exec: exec}
+	match, ok, err := lookupNamedTypeForType(ty, ctx)
+	if err != nil || !ok {
+		if strings.Contains(ty.Name, ".") {
+			return nil, fmt.Errorf("unknown type atom %q in %s", text, isTypeMemberName)
+		}
+		return ty, nil
+	}
+	resolved := &TypeExpr{Kind: TypeEnum, Nullable: ty.Nullable}
+	switch {
+	case match.enum != nil:
+		resolved.Name = match.enum.Name
+	case match.class != nil:
+		resolved.Name = match.class.Name
+	default:
+		return ty, nil
+	}
+	return resolved, nil
+}
+
+// isTypeAtomIdent reports whether base is a plain identifier — letters,
+// digits, and underscores, not starting with a digit — optionally qualified
+// by a single module alias segment ("lv.Level").
 func isTypeAtomIdent(base string) bool {
-	for i, r := range base {
-		switch {
-		case unicode.IsLetter(r) || r == '_':
-		case unicode.IsDigit(r) && i > 0:
-		default:
+	parts := strings.Split(base, ".")
+	if len(parts) > 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
 			return false
+		}
+		for i, r := range part {
+			switch {
+			case unicode.IsLetter(r) || r == '_':
+			case unicode.IsDigit(r) && i > 0:
+			default:
+				return false
+			}
 		}
 	}
 	return true

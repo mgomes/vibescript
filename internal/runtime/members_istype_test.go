@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -120,5 +121,42 @@ end`)
 	got := callFunc(t, script, "run", nil)
 	if got.Kind() != KindString || got.String() != "overridden" {
 		t.Fatalf("override result = %#v, want \"overridden\"", got)
+	}
+}
+
+func TestIsTypePredicateQualifiedModuleAtoms(t *testing.T) {
+	t.Parallel()
+
+	dir := tempModuleTree(t, moduleFile{path: "levels.vibe", content: "enum Level\n  Low\n  High\nend\n\ndef pick() -> Level\n  :low\nend\n"})
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("levels", as: "lv")
+  v = lv.pick()
+  [v.is_type?("lv.Level"), v.is_type?("lv.Level?"), 1.is_type?("lv.Level"), nil.is_type?("lv.Level?")]
+end
+`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call(run) error: %v", err)
+	}
+	want := []bool{true, true, false, true}
+	arr := got.Array()
+	if len(arr) != len(want) {
+		t.Fatalf("run() returned %d results, want %d", len(arr), len(want))
+	}
+	for i, w := range want {
+		if arr[i].Kind() != KindBool || arr[i].Bool() != w {
+			t.Fatalf("result %d = %#v, want %v", i, arr[i], w)
+		}
+	}
+}
+
+func TestIsTypePredicateUnknownQualifiedAtomErrors(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, "def run()\n  1.is_type?(\"missing.Level\")\nend")
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "unknown type atom \"missing.Level\"") {
+		t.Fatalf("Call error = %v, want unknown qualified atom error", err)
 	}
 }

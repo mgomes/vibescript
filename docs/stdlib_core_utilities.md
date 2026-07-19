@@ -229,7 +229,9 @@ predicate — `{ "respond_to?": 1 }.respond_to?(:keys)` still calls the predicat
   `:float`, `:number`, `:string`, `:bool`, `:symbol`, `:nil`, `:duration`,
   `:time`, `:money`), a bare container (`:array`, `:hash`/`:object`, `:range`,
   `:function`), or a class or enum name matched by exact name (no module
-  ancestry — use `is_a?` for that). A trailing `?` tests the nullable form:
+  ancestry — use `is_a?` for that). A module alias qualifies a name the way
+  annotations do: `v.is_type?("lv.Level")` tests against the enum the
+  required module exports, and an unknown qualified name is an error. A trailing `?` tests the nullable form:
   `'int?'` is int or nil. Parameterized spellings such as `array<int>` and
   unknown lowercase names are errors. `"5".is_type?(:int)` is `false` — the
   test never converts.
