@@ -2423,9 +2423,13 @@ func (c *scriptChecker) applyConditionOutcomeEffects(expr Expression, truthy boo
 		return c.narrowNilPredicateMember(typed, truthy)
 	case *CallExpr:
 		if member, ok := typed.Callee.(*MemberExpr); ok &&
-			len(typed.Args) == 0 && len(typed.KwArgs) == 0 &&
-			typed.Block == nil && typed.BlockArg == nil {
-			return c.narrowNilPredicateMember(member, truthy)
+			len(typed.KwArgs) == 0 && typed.Block == nil && typed.BlockArg == nil {
+			switch len(typed.Args) {
+			case 0:
+				return c.narrowNilPredicateMember(member, truthy)
+			case 1:
+				return c.narrowIsTypePredicateMember(member, typed.Args[0], truthy)
+			}
 		}
 	case *BinaryExpr:
 		switch typed.Operator {
@@ -4287,6 +4291,30 @@ func (c *scriptChecker) checkCallResolved(function string, call *CallExpr, targe
 	if _, isClassPredicate := classPredicateNames[target.name]; isClassPredicate {
 		c.checkClassPredicateArgument(function, call, target.name)
 	}
+	if target.name == isTypeMemberName {
+		c.checkIsTypeAtomArgument(function, call)
+	}
+}
+
+// checkIsTypeAtomArgument reports a literal is_type? atom the runtime always
+// rejects. Non-literal atoms stay gradual, and the paramTypes contract already
+// rejects provably non-symbol/string arguments.
+func (c *scriptChecker) checkIsTypeAtomArgument(function string, call *CallExpr) {
+	if len(call.Args) != 1 || callExpandsArguments(call) {
+		return
+	}
+	arg := call.Args[0]
+	val, ok := staticLiteralValue(arg)
+	if !ok {
+		return
+	}
+	text, ok := typeAtomArg(val)
+	if !ok {
+		return
+	}
+	if _, err := parseTypeAtom(text); err != nil {
+		c.add(function, arg.Pos(), "%s", err)
+	}
 }
 
 // checkParseAsShapeArgument reports a JSON.parse_as call whose second
@@ -4937,6 +4965,7 @@ var universalMemberSpecs = map[string]staticCallSpec{
 	"is_a?":        {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
 	"kind_of?":     {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
 	"instance_of?": {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	"is_type?":     {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, paramTypes: []*TypeExpr{checkTypeMethodName}, resultType: checkTypeBool},
 }
 
 func keywordSet(names ...string) map[string]struct{} {
