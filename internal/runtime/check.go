@@ -2420,7 +2420,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		}
 		for _, kwarg := range typed.KwArgs {
 			expectation := expressionExpectation{}
-			if targetResolved {
+			if targetResolved && !kwarg.Splat {
 				expectation = staticCallableKeywordArgumentExpectation(typed, target, kwarg.Name)
 			}
 			c.checkExpressionWithExpectation(function, kwarg.Value, expectation)

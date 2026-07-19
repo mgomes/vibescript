@@ -236,6 +236,24 @@ end
 			warning: "call to Builder.new is missing argument required",
 		},
 		{
+			name: "constructor in keyword splat keeps runtime auto invocation",
+			source: `
+class Builder
+  def initialize(required)
+  end
+end
+
+def accept(**options: hash<string, function>)
+  options
+end
+
+def run()
+  accept(**Builder.new)
+end
+`,
+			warning: "call to Builder.new is missing argument required",
+		},
+		{
 			name: "rescue does not propagate structured callable expectations",
 			source: `
 def accept(values: array<function>)
