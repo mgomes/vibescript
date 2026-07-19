@@ -5524,32 +5524,159 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 	}
 }
 
+// collectRuntimeNamespaceMemberAssignments records every builtin namespace
+// member the given code can reassign, descending into any code the body may
+// run — block and lambda bodies, statement expressions, and nested
+// definitions — so a caller invalidates cached facts even when the write
+// hides inside a block ([1].each { JSON.stringify = replacement }).
 func collectRuntimeNamespaceMemberAssignments(statements []Statement, out map[string]struct{}) {
 	for _, stmt := range statements {
-		switch typed := stmt.(type) {
-		case *AssignStmt:
-			if member, ok := runtimeNamespaceMemberName(typed.Target); ok {
-				out[member] = struct{}{}
+		collectNamespaceAssignmentsFromStatement(stmt, out)
+	}
+}
+
+func collectNamespaceAssignmentsFromStatement(stmt Statement, out map[string]struct{}) {
+	switch typed := stmt.(type) {
+	case nil:
+	case *AssignStmt:
+		if member, ok := runtimeNamespaceMemberName(typed.Target); ok {
+			out[member] = struct{}{}
+		}
+		collectNamespaceAssignmentsFromExpression(typed.Target, out)
+		collectNamespaceAssignmentsFromExpression(typed.Value, out)
+	case *ExprStmt:
+		collectNamespaceAssignmentsFromExpression(typed.Expr, out)
+	case *ReturnStmt:
+		collectNamespaceAssignmentsFromExpression(typed.Value, out)
+	case *RaiseStmt:
+		collectNamespaceAssignmentsFromExpression(typed.Value, out)
+		collectNamespaceAssignmentsFromExpression(typed.Message, out)
+	case *BreakStmt:
+		collectNamespaceAssignmentsFromExpression(typed.Value, out)
+	case *NextStmt:
+		collectNamespaceAssignmentsFromExpression(typed.Value, out)
+	case *IfStmt:
+		collectNamespaceAssignmentsFromExpression(typed.Condition, out)
+		collectRuntimeNamespaceMemberAssignments(typed.Consequent, out)
+		for _, elseIf := range typed.ElseIf {
+			collectNamespaceAssignmentsFromStatement(elseIf, out)
+		}
+		collectRuntimeNamespaceMemberAssignments(typed.Alternate, out)
+	case *ForStmt:
+		collectNamespaceAssignmentsFromExpression(typed.Iterable, out)
+		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+	case *WhileStmt:
+		collectNamespaceAssignmentsFromExpression(typed.Condition, out)
+		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+	case *UntilStmt:
+		collectNamespaceAssignmentsFromExpression(typed.Condition, out)
+		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+	case *TryStmt:
+		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+		for i := range typed.Rescues {
+			collectRuntimeNamespaceMemberAssignments(typed.Rescues[i].Body, out)
+		}
+		collectRuntimeNamespaceMemberAssignments(typed.Else, out)
+		collectRuntimeNamespaceMemberAssignments(typed.Ensure, out)
+	case *FunctionStmt:
+		// A nested definition's writes fire only when it is called, but a
+		// missed invalidation is unsound while an extra one only widens, so
+		// the walk stays conservative.
+		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+	case *ClassStmt:
+		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+	}
+}
+
+func collectNamespaceAssignmentsFromExpression(expr Expression, out map[string]struct{}) {
+	switch typed := expr.(type) {
+	case nil:
+	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:
+		collectNamespaceAssignmentsFromStatement(typed.(Statement), out)
+	case *BlockLiteral:
+		for _, param := range typed.Params {
+			collectNamespaceAssignmentsFromExpression(param.DefaultVal, out)
+		}
+		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+	case *CallExpr:
+		collectNamespaceAssignmentsFromExpression(typed.Callee, out)
+		for _, arg := range typed.Args {
+			collectNamespaceAssignmentsFromExpression(arg, out)
+		}
+		for _, kwarg := range typed.KwArgs {
+			collectNamespaceAssignmentsFromExpression(kwarg.Value, out)
+		}
+		collectNamespaceAssignmentsFromExpression(typed.BlockArg, out)
+		if typed.Block != nil {
+			collectNamespaceAssignmentsFromExpression(typed.Block, out)
+		}
+	case *SplatArg:
+		collectNamespaceAssignmentsFromExpression(typed.Value, out)
+	case *UnaryExpr:
+		collectNamespaceAssignmentsFromExpression(typed.Right, out)
+	case *BinaryExpr:
+		collectNamespaceAssignmentsFromExpression(typed.Left, out)
+		collectNamespaceAssignmentsFromExpression(typed.Right, out)
+	case *ConditionalExpr:
+		collectNamespaceAssignmentsFromExpression(typed.Condition, out)
+		collectNamespaceAssignmentsFromExpression(typed.Consequent, out)
+		collectNamespaceAssignmentsFromExpression(typed.Alternate, out)
+	case *IfExpr:
+		collectNamespaceAssignmentsFromExpression(typed.Condition, out)
+		collectNamespaceAssignmentsFromExpression(typed.Consequent, out)
+		for _, branch := range typed.ElseIf {
+			collectNamespaceAssignmentsFromExpression(branch.Condition, out)
+			collectNamespaceAssignmentsFromExpression(branch.Result, out)
+		}
+		collectNamespaceAssignmentsFromExpression(typed.Alternate, out)
+	case *RescueExpr:
+		collectNamespaceAssignmentsFromExpression(typed.Body, out)
+		collectNamespaceAssignmentsFromExpression(typed.Fallback, out)
+	case *RangeExpr:
+		collectNamespaceAssignmentsFromExpression(typed.Start, out)
+		collectNamespaceAssignmentsFromExpression(typed.End, out)
+	case *ArrayLiteral:
+		for _, elem := range typed.Elements {
+			collectNamespaceAssignmentsFromExpression(elem, out)
+		}
+	case *HashLiteral:
+		for _, pair := range typed.Pairs {
+			collectNamespaceAssignmentsFromExpression(pair.Key, out)
+			collectNamespaceAssignmentsFromExpression(pair.Value, out)
+		}
+	case *IndexExpr:
+		collectNamespaceAssignmentsFromExpression(typed.Object, out)
+		for _, index := range typed.Indices {
+			collectNamespaceAssignmentsFromExpression(index, out)
+		}
+	case *MemberExpr:
+		collectNamespaceAssignmentsFromExpression(typed.Object, out)
+	case *ScopeExpr:
+		collectNamespaceAssignmentsFromExpression(typed.Object, out)
+	case *CaseExpr:
+		collectNamespaceAssignmentsFromExpression(typed.Target, out)
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				collectNamespaceAssignmentsFromExpression(value.Expr, out)
 			}
-		case *IfStmt:
-			collectRuntimeNamespaceMemberAssignments(typed.Consequent, out)
-			for _, elseIf := range typed.ElseIf {
-				collectRuntimeNamespaceMemberAssignments(elseIf.Consequent, out)
-			}
-			collectRuntimeNamespaceMemberAssignments(typed.Alternate, out)
-		case *ForStmt:
-			collectRuntimeNamespaceMemberAssignments(typed.Body, out)
-		case *WhileStmt:
-			collectRuntimeNamespaceMemberAssignments(typed.Body, out)
-		case *UntilStmt:
-			collectRuntimeNamespaceMemberAssignments(typed.Body, out)
-		case *TryStmt:
-			collectRuntimeNamespaceMemberAssignments(typed.Body, out)
-			for i := range typed.Rescues {
-				collectRuntimeNamespaceMemberAssignments(typed.Rescues[i].Body, out)
-			}
-			collectRuntimeNamespaceMemberAssignments(typed.Else, out)
-			collectRuntimeNamespaceMemberAssignments(typed.Ensure, out)
+			collectNamespaceAssignmentsFromExpression(clause.Result, out)
+		}
+		collectNamespaceAssignmentsFromExpression(typed.ElseExpr, out)
+	case *YieldExpr:
+		for _, arg := range typed.Args {
+			collectNamespaceAssignmentsFromExpression(arg, out)
+		}
+	case *InterpolatedString:
+		collectNamespaceAssignmentsFromStringParts(typed.Parts, out)
+	case *InterpolatedSymbol:
+		collectNamespaceAssignmentsFromStringParts(typed.Parts, out)
+	}
+}
+
+func collectNamespaceAssignmentsFromStringParts(parts []StringPart, out map[string]struct{}) {
+	for _, part := range parts {
+		if exprPart, ok := part.(StringExpr); ok {
+			collectNamespaceAssignmentsFromExpression(exprPart.Expr, out)
 		}
 	}
 }
