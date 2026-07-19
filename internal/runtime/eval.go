@@ -111,6 +111,11 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalHashLiteral(e, env)
 	case *SplatArg:
 		return NewNil(), exec.errorAt(e.Pos(), "splat argument is only allowed in call arguments")
+	case *TypeLiteral:
+		if e.Fallback != nil && exec.shapeTypeNamesShadowed(e.Type, env) {
+			return exec.evalExpression(e.Fallback, env)
+		}
+		return NewShape(e.Type), nil
 	case *UnaryExpr:
 		return exec.evalUnaryExpr(e, env)
 	case *BinaryExpr:
@@ -556,10 +561,17 @@ func (exec *Execution) hashShapeShadowed(lit *HashLiteral, env *Env) bool {
 	if len(lit.Pairs) == 0 {
 		return false
 	}
+	return exec.shapeTypeNamesShadowed(lit.ShapeType, env)
+}
+
+// shapeTypeNamesShadowed reports whether any type name of a dual-reading
+// group (a braced shape or an argument type literal) resolves to a runtime
+// binding, in which case the group keeps its value reading.
+func (exec *Execution) shapeTypeNamesShadowed(ty *TypeExpr, env *Env) bool {
 	self, hasSelf := env.Get("self")
 	selfReceiver := hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass)
 	shadowed := false
-	walkShapeTypeNames(lit.ShapeType, func(name string) {
+	walkShapeTypeNames(ty, func(name string) {
 		if shadowed {
 			return
 		}
@@ -1820,6 +1832,8 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 			return true
 		}
 		return false
+	case *TypeLiteral:
+		return e.Fallback != nil && expressionCapturesCurrentEnv(e.Fallback)
 	case *SplatArg:
 		return expressionCapturesCurrentEnv(e.Value)
 	case *MemberExpr:

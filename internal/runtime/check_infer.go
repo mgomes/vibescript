@@ -1229,6 +1229,11 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		return c.inferArrayLiteralType(typed)
 	case *HashLiteral:
 		return c.inferHashLiteralType(typed)
+	case *TypeLiteral:
+		if c.typeLiteralStaticallyShadowed(typed) {
+			return c.inferExpressionType(typed.Fallback)
+		}
+		return shapeValueType(typed.Type)
 	case *BlockLiteral:
 		return checkTypeFunction
 	case *Identifier:
@@ -1829,8 +1834,22 @@ func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 	if len(lit.Pairs) == 0 {
 		return false
 	}
+	return c.shapeTypeNamesStaticallyShadowed(lit.ShapeType)
+}
+
+// typeLiteralStaticallyShadowed mirrors the runtime's type-versus-value
+// choice for an argument type literal: a literal without a value reading is
+// always a type, otherwise a shadowed type name keeps the value reading.
+func (c *scriptChecker) typeLiteralStaticallyShadowed(lit *TypeLiteral) bool {
+	if lit.Fallback == nil {
+		return false
+	}
+	return c.shapeTypeNamesStaticallyShadowed(lit.Type)
+}
+
+func (c *scriptChecker) shapeTypeNamesStaticallyShadowed(ty *TypeExpr) bool {
 	shadowed := false
-	walkShapeTypeNames(lit.ShapeType, func(name string) {
+	walkShapeTypeNames(ty, func(name string) {
 		if shadowed {
 			return
 		}

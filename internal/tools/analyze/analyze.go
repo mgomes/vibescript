@@ -230,6 +230,10 @@ func lintExpression(function string, expr ast.Expression, warnings *[]Warning) {
 		for _, element := range typed.Elements {
 			lintExpression(function, element.Target, warnings)
 		}
+	case *ast.TypeLiteral:
+		if typed.Fallback != nil {
+			lintExpression(function, typed.Fallback, warnings)
+		}
 	case *ast.SplatArg:
 		lintExpression(function, typed.Value, warnings)
 	case *ast.UnaryExpr:

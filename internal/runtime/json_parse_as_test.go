@@ -88,7 +88,7 @@ def run()
   JSON.parse_as("{}", 1)
 end
 `,
-			wantErr: "JSON.parse_as expects a shape literal as its second argument",
+			wantErr: "JSON.parse_as expects a type literal as its second argument",
 		},
 	}
 	for _, tc := range cases {
@@ -341,7 +341,7 @@ def run(raw: string)
 end
 `)
 	requireCheckWarningContains(t, checked, "call to takes_int argument value expected int, got string")
-	requireCheckWarningContainsWithOptions(t, checked, opts, "call to JSON.parse_as expects a shape literal as its second argument, got hash")
+	requireCheckWarningContainsWithOptions(t, checked, opts, "call to JSON.parse_as expects a type literal as its second argument, got hash")
 }
 
 func TestShapeLiteralImplicitSelfShadowKeepsHashSemantics(t *testing.T) {
@@ -610,7 +610,7 @@ def run(raw: string)
   JSON.parse_as(raw, 1)
 end
 `)
-	requireCheckWarningContains(t, scalar, "call to JSON.parse_as expects a shape literal as its second argument, got int")
+	requireCheckWarningContains(t, scalar, "call to JSON.parse_as expects a type literal as its second argument, got int")
 
 	// A hash of data values is a hash at runtime, not a shape.
 	dataHash := compileScript(t, `
@@ -618,7 +618,7 @@ def run(raw: string)
   JSON.parse_as(raw, { name: "Ada" })
 end
 `)
-	requireCheckWarningContains(t, dataHash, "call to JSON.parse_as expects a shape literal as its second argument")
+	requireCheckWarningContains(t, dataHash, "call to JSON.parse_as expects a type literal as its second argument")
 
 	// Dynamic schemas stay a runtime concern.
 	requireNoCheckWarnings(t, compileScript(t, `
@@ -723,12 +723,12 @@ def run(raw: string)
   takes_string(body[:price])
 end
 `)
-	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a shape literal as its second argument, got hash")
+	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a type literal as its second argument, got hash")
 
 	// And at runtime the shadowed group really is a hash, which parse_as
 	// rejects as a schema.
 	err := callScriptErr(t, context.Background(), script, "run", []Value{NewString("{}")}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expects a shape literal as its second argument") {
+	if err == nil || !strings.Contains(err.Error(), "expects a type literal as its second argument") {
 		t.Fatalf("run() err = %v, want non-shape schema rejection", err)
 	}
 }
@@ -894,10 +894,10 @@ def run(raw: string)
   takes_int(body["name"])
 end
 `)
-	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a shape literal as its second argument, got hash")
+	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a type literal as its second argument, got hash")
 
 	err := callScriptErr(t, context.Background(), script, "run", []Value{NewString("{}")}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expects a shape literal as its second argument") {
+	if err == nil || !strings.Contains(err.Error(), "expects a type literal as its second argument") {
 		t.Fatalf("run() err = %v, want non-shape schema rejection", err)
 	}
 }

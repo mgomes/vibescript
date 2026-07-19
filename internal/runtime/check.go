@@ -2529,6 +2529,13 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkExpressionWithAuto(function, pair.Key, true)
 			c.checkExpressionWithAuto(function, pair.Value, true)
 		}
+	case *TypeLiteral:
+		// An unshadowed type literal's identifiers are type spellings rather
+		// than variable reads and must not warn as undefined.
+		if !c.typeLiteralStaticallyShadowed(typed) {
+			return
+		}
+		c.checkExpressionWithAuto(function, typed.Fallback, true)
 	case *CallExpr:
 		// The receiver's nil-ness resolves from the facts at its evaluation
 		// point, before member dispatch poisons the receiver's own facts.
@@ -3168,6 +3175,8 @@ func expressionMayEscapeIteration(expr Expression) bool {
 			return true
 		}
 		return typed.Block != nil && expressionMayEscapeIteration(typed.Block)
+	case *TypeLiteral:
+		return typed.Fallback != nil && expressionMayEscapeIteration(typed.Fallback)
 	case *SplatArg:
 		return expressionMayEscapeIteration(typed.Value)
 	case *UnaryExpr:
@@ -4321,7 +4330,7 @@ func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExp
 			return
 		}
 	}
-	c.add(function, arg.Pos(), "call to JSON.parse_as expects a shape literal as its second argument, got %s", formatTypeExpr(inferred))
+	c.add(function, arg.Pos(), "call to JSON.parse_as expects a type literal as its second argument, got %s", formatTypeExpr(inferred))
 }
 
 // classPredicateNames are the universal predicates whose single argument the
@@ -5449,6 +5458,10 @@ func staticLiteralValue(expr Expression) (Value, bool) {
 			items = append(items, item)
 		}
 		return NewArray(items), true
+	case *TypeLiteral:
+		// The argument may evaluate as a first-class type value, so it has
+		// no static value reading.
+		return NewNil(), false
 	case *HashLiteral:
 		if typed.ShapeType != nil {
 			// The group may evaluate as a first-class shape value, so it has

@@ -173,6 +173,22 @@ type SplatArg struct {
 func (e *SplatArg) exprNode()     {}
 func (e *SplatArg) Pos() Position { return e.Position }
 
+// TypeLiteral represents a call argument that reads as a type annotation
+// (`JSON.parse_as(raw, array<int>)`), extending ADR-004's expression-position
+// shape literals to non-shape roots. Fallback carries the group's value
+// reading (`int | nil` as a bitwise-or of identifiers, for example), used
+// when a type name is shadowed by a runtime binding; a group with no value
+// reading (`array<int>`) has a nil Fallback and always evaluates to the type
+// value. It only ever appears inside CallExpr.Args.
+type TypeLiteral struct {
+	Type     *TypeExpr
+	Fallback Expression
+	Position Position
+}
+
+func (e *TypeLiteral) exprNode()     {}
+func (e *TypeLiteral) Pos() Position { return e.Position }
+
 // MemberExpr represents a dot-access property lookup (e.g. obj.prop).
 type MemberExpr struct {
 	Object   Expression
