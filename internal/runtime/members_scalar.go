@@ -79,9 +79,10 @@ func requireNullaryCall(name string, args []Value, kwargs map[string]Value, bloc
 // Object#to_s). typeName names the receiver in the builtin's identifier and in
 // argument errors (for example "int.to_s"); property is the invoked name so the
 // shared `to_s` and `string` aliases each report under the name the script used.
-// The rendering of every scalar kind this serves (nil, bool, int, float, string,
-// symbol) is bounded by the value's own footprint, so no memory projection is
-// needed the way aggregate interpolation requires one.
+// The rendering of every scalar kind this serves (nil, bool, int, float,
+// string, symbol, money, duration, and time) is bounded by the value's own
+// footprint, so no memory projection is needed the way aggregate interpolation
+// requires one.
 func newToStringBuiltin(typeName, property string) Value {
 	name := typeName + "." + property
 	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

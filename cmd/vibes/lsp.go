@@ -1144,6 +1144,20 @@ func memberContractSignatures(label string, contracts []vibes.MemberContract) st
 }
 
 func memberContractSignature(label string, contract vibes.MemberContract) string {
+	signature := contract.Receiver + "." + label
+	if contract.Receiver == "universal" {
+		// Universal helpers answer on every receiver, so no receiver
+		// qualifier applies; the item's detail already lists the kinds.
+		signature = label
+	}
+	if contract.ValueMember {
+		// A value member is read, not called: rendering parentheses would
+		// advertise a call the runtime rejects.
+		if contract.Result != "" {
+			signature += " -> " + contract.Result
+		}
+		return signature
+	}
 	params := make([]string, 0, len(contract.Params)+1)
 	for _, param := range contract.Params {
 		name := param.Name
@@ -1155,7 +1169,7 @@ func memberContractSignature(label string, contract vibes.MemberContract) string
 	if contract.Variadic {
 		params = append(params, "...")
 	}
-	signature := contract.Receiver + "." + label + "(" + strings.Join(params, ", ") + ")"
+	signature += "(" + strings.Join(params, ", ") + ")"
 	if contract.TakesBlock {
 		signature += " { ... }"
 	}

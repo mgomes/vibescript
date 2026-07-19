@@ -3015,6 +3015,9 @@ func TestMemberCompletionItemsCarryContractSignatures(t *testing.T) {
 		{"at", []string{"`array.at(index)`"}},
 		{"fetch", []string{"`array.fetch(index, default?) { ... }`"}},
 		{"slice", []string{"`array.slice(start, length?)`", "`string.slice(start, length?)`"}},
+		{"to_i", []string{"`string.to_i() -> int`", "`duration.to_i -> int`"}},
+		{"nil?", []string{"`nil?() -> bool`"}},
+		{"eql?", []string{"`duration.eql?(other) -> bool`", "`time.eql?(other) -> bool`", "`eql?(other) -> bool`"}},
 	}
 	for _, tc := range cases {
 		item := findCompletionItem(t, items, tc.label)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -115,6 +116,7 @@ type scriptChecker struct {
 	typePoison              map[string]struct{}
 	typeAliases             map[string]map[string]struct{}
 	mutationRegionDepth     int
+	speculativeInference    int
 	callArgumentFacts       map[Expression]*TypeExpr
 	deferredReturnSites     *[]deferredReturnSite
 	implicitReturnLeaves    map[Statement]struct{}
@@ -569,7 +571,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 			if typed.Block != nil {
 				c.degradeBlockBodyBindings(typed.Block)
 			}
-			if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownUniversalNilPredicateCall(typed) {
+			if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownPureUniversalPredicateCall(typed) {
 				c.poisonEscapedIdentifier(member.Object)
 			}
 			for _, arg := range typed.Args {
@@ -581,7 +583,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		}
 	case *MemberExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
-		if c.isolatedCollectInference && !c.knownUniversalNilPredicateMember(typed) {
+		if c.isolatedCollectInference && !c.knownPureUniversalPredicateMember(typed) {
 			c.poisonEscapedIdentifier(typed.Object)
 		}
 	case *ScopeExpr:
@@ -2595,10 +2597,10 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// Containers pass by reference, so a callee may mutate an argument
 		// in place; the caller's structural facts stop holding. Dispatch
 		// happens after the arguments evaluate, so the receiver's facts
-		// stop holding here too, not during the callee walk. The known
-		// universal nil? predicate is pure, so its receiver fact must survive
-		// for the following condition-outcome narrowing.
-		if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownUniversalNilPredicateCall(typed) {
+		// stop holding here too, not during the callee walk. Proven universal
+		// predicates are pure, so their receiver facts must
+		// survive for outer inference and condition-outcome narrowing.
+		if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownPureUniversalPredicateCall(typed) {
 			c.poisonEscapedIdentifier(member.Object)
 		}
 		if member, ok := typed.BlockArg.(*MemberExpr); ok {
@@ -2617,10 +2619,10 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			// Member dispatch on a container may mutate it in place (push,
 			// delete, ...), so the receiver's structural facts stop
 			// holding. A call callee poisons after its arguments instead:
-			// they evaluate before dispatch and still see the facts. The
-			// universal nil? predicate is pure and preserves the fact that
-			// condition-outcome narrowing consumes next.
-			if !c.knownUniversalNilPredicateMember(typed) {
+			// they evaluate before dispatch and still see the facts. Proven
+			// universal predicates are pure and preserve the receiver
+			// fact that outer inference or narrowing consumes next.
+			if !c.knownPureUniversalPredicateMember(typed) {
 				c.poisonEscapedIdentifier(typed.Object)
 			}
 		}
@@ -4282,6 +4284,9 @@ func (c *scriptChecker) checkCallResolved(function string, call *CallExpr, targe
 	if target.name == "JSON.parse_as" {
 		c.checkParseAsShapeArgument(function, call)
 	}
+	if _, isClassPredicate := classPredicateNames[target.name]; isClassPredicate {
+		c.checkClassPredicateArgument(function, call, target.name)
+	}
 }
 
 // checkParseAsShapeArgument reports a JSON.parse_as call whose second
@@ -4317,6 +4322,57 @@ func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExp
 		}
 	}
 	c.add(function, arg.Pos(), "call to JSON.parse_as expects a shape literal as its second argument, got %s", formatTypeExpr(inferred))
+}
+
+// classPredicateNames are the universal predicates whose single argument the
+// runtime requires to be a class or module value (newClassPredicateBuiltin).
+var classPredicateNames = map[string]struct{}{
+	"is_a?":        {},
+	"kind_of?":     {},
+	"instance_of?": {},
+}
+
+// checkClassPredicateArgument reports a class-predicate call whose argument is
+// provably not a class or module value — every known arm describes a plain
+// runtime value, which the runtime predicate always rejects. Unknown arms stay
+// silent: a bare class reference carries no inferred fact, so real class
+// arguments never reach the diagnostic.
+func (c *scriptChecker) checkClassPredicateArgument(function string, call *CallExpr, name string) {
+	if len(call.Args) != 1 || callExpandsArguments(call) {
+		return
+	}
+	arg := call.Args[0]
+	inferred, captured := c.callArgumentFacts[arg]
+	if !captured {
+		inferred = c.inferExpressionType(arg)
+	}
+	if inferred == nil {
+		return
+	}
+	arms, ok := typeExprArms(inferred, 0)
+	if !ok || len(arms) == 0 {
+		return
+	}
+	for _, arm := range arms {
+		if !typeArmProvablyNotClass(arm) {
+			return
+		}
+	}
+	c.add(function, arg.Pos(), "call to %s expects a class argument, got %s", name, formatTypeExpr(inferred))
+}
+
+// typeArmProvablyNotClass reports whether a known type arm can never describe
+// a class or module value. Only the explicitly listed value kinds qualify:
+// unknown markers (including first-class shape values) and any future kinds
+// stay gradual.
+func typeArmProvablyNotClass(arm *TypeExpr) bool {
+	switch arm.Kind {
+	case TypeInt, TypeFloat, TypeNumber, TypeString, TypeBool, TypeNil,
+		TypeDuration, TypeTime, TypeMoney, TypeArray, TypeHash, TypeRange,
+		TypeSymbol, TypeFunction, TypeShape, TypeEnum:
+		return true
+	}
+	return false
 }
 
 // callExpandsArguments reports whether a call carries a positional or
@@ -4370,10 +4426,11 @@ func (c *scriptChecker) typeRootFunction(name string) (*ScriptFunction, bool) {
 }
 
 func checkRootFunction(root *Env, name string) (*ScriptFunction, bool) {
-	if root == nil {
-		return nil, false
-	}
-	val, ok := root.Get(name)
+	// The raw chain read matters: resolving through Env.Get caches
+	// call-clones of frozen builtin bindings into the mutable type root,
+	// which would make later own-binding checks see names the script never
+	// bound.
+	val, ok := checkRootBinding(root, name)
 	if !ok || val.Kind() != KindFunction {
 		return nil, false
 	}
@@ -4411,6 +4468,12 @@ func (c *scriptChecker) hostGlobalShadows(name string) bool {
 }
 
 func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallable, bool) {
+	// A receiver whose fact pins the dispatch kind resolves member contracts
+	// before the identifier paths below: typed locals are scope bindings, so
+	// they would otherwise bail at the shadowing guard.
+	if target, ok := c.factReceiverMemberCallable(member); ok {
+		return target, true
+	}
 	if ident, ok := member.Object.(*Identifier); ok {
 		if c.identifierShadowed(ident.Name) {
 			return staticCallable{}, false
@@ -4465,15 +4528,160 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 			}
 		}
 	}
-	if receiverKind, ok := staticBuiltinReceiverKind(member.Object); ok {
-		if spec, ok := staticMemberSpecs[receiverKind+"."+member.Property]; ok {
-			return staticCallable{name: receiverKind + "." + member.Property, spec: spec}, true
-		}
-	}
 	if name, fn, ok := c.requiredModuleObjectFunction(member.Object, member.Property); ok {
 		return staticCallable{name: name, fn: fn, resolution: calleeMemberValue}, true
 	}
 	return staticCallable{}, false
+}
+
+// factReceiverMemberCallable resolves a member contract from the receiver's
+// literal spelling or inferred fact: scalar member contracts are keyed by the
+// dispatch kind every arm shares, and universal predicates apply whenever no
+// arm can override universal dispatch. Named receivers (user methods take
+// precedence) and unknown facts resolve nothing. Literal hashes are safe for
+// universal predicates because the runtime gives data-safe helpers precedence
+// over same-named stored entries.
+func (c *scriptChecker) factReceiverMemberCallable(member *MemberExpr) (staticCallable, bool) {
+	kinds, ok := c.staticMemberReceiverKinds(member)
+	if !ok {
+		return c.factReceiverUniversalMemberCallable(member)
+	}
+	uniform := true
+	for _, kind := range kinds[1:] {
+		if kind != kinds[0] {
+			uniform = false
+			break
+		}
+	}
+	if uniform {
+		if spec, exists := staticMemberSpecs[kinds[0]+"."+member.Property]; exists {
+			return staticCallable{name: kinds[0] + "." + member.Property, spec: spec}, true
+		}
+	}
+	universalSpec, hasUniversal := universalMemberSpecs[member.Property]
+	if !hasUniversal {
+		return staticCallable{}, false
+	}
+	var typedSpec staticCallSpec
+	typedOverrides := 0
+	for _, kind := range kinds {
+		spec, exists := staticMemberSpecs[kind+"."+member.Property]
+		if !exists {
+			continue
+		}
+		if typedOverrides > 0 && !reflect.DeepEqual(typedSpec, spec) {
+			return staticCallable{}, false
+		}
+		typedSpec = spec
+		typedOverrides++
+	}
+	if typedOverrides > 0 {
+		// A universal fallback is unsound once any possible receiver owns the
+		// member: mixed dispatch can have different block or argument rules.
+		// Resolve only when every arm owns an equivalent typed contract.
+		if typedOverrides != len(kinds) {
+			return staticCallable{}, false
+		}
+		return staticCallable{name: member.Property, spec: typedSpec}, true
+	}
+	return staticCallable{name: member.Property, spec: universalSpec}, true
+}
+
+// factReceiverUniversalMemberCallable resolves a universal contract when the
+// receiver fact cannot be reduced to one fixed runtime kind, but every arm is
+// still proven to reach the universal implementation. This covers typed
+// hash-like values whose exact value contracts rule out callable overrides.
+func (c *scriptChecker) factReceiverUniversalMemberCallable(member *MemberExpr) (staticCallable, bool) {
+	spec, ok := universalMemberSpecs[member.Property]
+	if !ok {
+		return staticCallable{}, false
+	}
+	arms, ok := typeExprArms(c.inferExpressionType(member.Object), 0)
+	if !ok || len(arms) == 0 {
+		return staticCallable{}, false
+	}
+	dispatchArms := 0
+	for _, arm := range arms {
+		if member.Safe && arm.Kind == TypeNil {
+			continue
+		}
+		if !typeArmUsesUniversalMemberDispatch(arm, member.Property) {
+			return staticCallable{}, false
+		}
+		dispatchArms++
+	}
+	if dispatchArms == 0 {
+		return staticCallable{}, false
+	}
+	return staticCallable{name: member.Property, spec: spec}, true
+}
+
+// staticMemberReceiverKinds returns the runtime dispatch kinds of every known
+// arm of a member's receiver: the literal spelling when there is one, else
+// the receiver's inferred fact. Safe navigation drops nil arms — a nil
+// receiver skips the dispatch entirely — and any arm without a fixed
+// overridable-free dispatch kind makes the receiver unknown.
+func (c *scriptChecker) staticMemberReceiverKinds(member *MemberExpr) ([]string, bool) {
+	if kind, ok := staticBuiltinReceiverKind(member.Object); ok {
+		return []string{kind}, true
+	}
+	arms, ok := typeExprArms(c.inferExpressionType(member.Object), 0)
+	if !ok || len(arms) == 0 {
+		return nil, false
+	}
+	kinds := make([]string, 0, len(arms))
+	for _, arm := range arms {
+		if member.Safe && arm.Kind == TypeNil {
+			continue
+		}
+		if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+			return nil, false
+		}
+		kind, ok := receiverKindForTypeArm(arm)
+		if !ok {
+			return nil, false
+		}
+		kinds = append(kinds, kind)
+	}
+	if len(kinds) == 0 {
+		return nil, false
+	}
+	return kinds, true
+}
+
+// receiverKindForTypeArm maps a known fact arm to the member-dispatch kind it
+// selects at runtime. Named types stay unknown (user-defined methods take
+// precedence over builtin and universal dispatch), hash-like stores stay
+// unknown (a stored callable can shadow a universal helper), and number is
+// ambiguous between int and float dispatch.
+func receiverKindForTypeArm(arm *TypeExpr) (string, bool) {
+	switch arm.Kind {
+	case TypeInt:
+		return "int", true
+	case TypeFloat:
+		return "float", true
+	case TypeString:
+		return "string", true
+	case TypeBool:
+		return "bool", true
+	case TypeSymbol:
+		return "symbol", true
+	case TypeNil:
+		return "nil", true
+	case TypeMoney:
+		return "money", true
+	case TypeDuration:
+		return "duration", true
+	case TypeTime:
+		return "time", true
+	case TypeRange:
+		return "range", true
+	case TypeArray:
+		return "array", true
+	case TypeFunction:
+		return "function", true
+	}
+	return "", false
 }
 
 func (c *scriptChecker) defaultBuiltinCallSpec(name string) (staticCallSpec, bool) {
@@ -4553,10 +4761,16 @@ func (c *scriptChecker) requiredModuleObjectFunction(expr Expression, property s
 	if fn == nil {
 		return "", nil, false
 	}
-	c.withRuntimeModuleCollection(func() {
-		c.collectModuleExports(entry)
-		c.bindRequireAlias(alias, exports)
-	})
+	// Speculative inference must stay effect-free: a require inside one
+	// branch of a conditional would otherwise bind its exports for code the
+	// branch may never run. The checking walk re-resolves and binds at the
+	// expression's own evaluation point.
+	if c.speculativeInference == 0 {
+		c.withRuntimeModuleCollection(func() {
+			c.collectModuleExports(entry)
+			c.bindRequireAlias(alias, exports)
+		})
+	}
 	return moduleName + "." + property, fn, true
 }
 
@@ -4672,6 +4886,14 @@ func (c *scriptChecker) checkBuiltinCallShape(function string, call staticCallVi
 	if spec.rejectBlock && call.block != nil {
 		c.add(function, call.block.Pos(), "call to %s does not accept a block", name)
 	}
+	if spec.rejectBlock && call.blockArg != nil {
+		// A forwarded `&blk` only reaches the builtin as a block when it is
+		// non-nil at runtime, so the contract violation is provable only for
+		// a never-nil argument.
+		if typeExprNeverNil(c.inferExpressionType(call.blockArg)) {
+			c.add(function, call.blockArg.Pos(), "call to %s does not accept a block", name)
+		}
+	}
 }
 
 // checkBuiltinArgumentTypes reports call arguments whose inferred types are
@@ -4690,18 +4912,20 @@ func (c *scriptChecker) checkBuiltinArgumentTypes(function string, call staticCa
 }
 
 type staticCallView struct {
-	pos    Position
-	args   []Expression
-	kwargs []KeywordArg
-	block  *BlockLiteral
+	pos      Position
+	args     []Expression
+	kwargs   []KeywordArg
+	block    *BlockLiteral
+	blockArg Expression
 }
 
 func staticCallViewFor(call *CallExpr, target staticCallable) staticCallView {
 	view := staticCallView{
-		pos:    call.Pos(),
-		args:   call.Args,
-		kwargs: call.KwArgs,
-		block:  call.Block,
+		pos:      call.Pos(),
+		args:     call.Args,
+		kwargs:   call.KwArgs,
+		block:    call.Block,
+		blockArg: call.BlockArg,
 	}
 	if !staticCallCollapsesOptionsHash(call, target, view) {
 		return view

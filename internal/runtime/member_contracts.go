@@ -9,12 +9,18 @@ import "slices"
 // unknown receivers and user-defined overrides is unaffected: contracts
 // only apply where the checker already proves the receiver kind.
 
+// universalReceiverKind marks a contract that applies to every receiver
+// through the universal Object-level fallback in resolveMember, rather
+// than one kind's typed dispatch.
+const universalReceiverKind = "universal"
+
 // memberContract is the runtime-owned contract of one builtin member: the
 // receiver kind it dispatches on, its canonical name and aliases, the call
 // shape with parameter and result types, and effect metadata.
 type memberContract struct {
 	// receiver is the runtime dispatch kind ("array", "string", ...), one
-	// of the keys of MemberCompletionNames.
+	// of the keys of MemberCompletionNames, or universalReceiverKind for
+	// the Object-level fallback helpers.
 	receiver string
 	// name is the canonical member name as dispatched at runtime.
 	name string
@@ -25,8 +31,14 @@ type memberContract struct {
 	// index-aligned with call.paramTypes, for rendered signatures. Indexes
 	// at or past call.minArgs are optional.
 	paramNames []string
+	// valueMember marks members the runtime exposes as direct scalar
+	// values rather than builtins: they contribute call.resultType as the
+	// fact of a bare member read but must not register a callable spec
+	// (`d.to_i()` attempts to call the returned int at runtime).
+	valueMember bool
 	// call is the statically enforced call shape: arity, keyword and block
-	// acceptance, parameter types, and result type.
+	// acceptance, parameter types, and result type. For value members only
+	// resultType applies.
 	call staticCallSpec
 	// effects is the member's effect metadata.
 	effects memberEffects
@@ -40,10 +52,42 @@ type memberEffects struct {
 	mutatesReceiver bool
 }
 
+// scalarMemberSpec is the contract shared by the nullary scalar conversion
+// members: no arguments, no keywords, no block, auto-invoked on a bare read.
+func scalarMemberSpec(result *TypeExpr) staticCallSpec {
+	return staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: result}
+}
+
+// scalarConversionContract is a registry entry for one nullary scalar
+// conversion member with an invariant result.
+func scalarConversionContract(receiver, name string, result *TypeExpr) memberContract {
+	return memberContract{receiver: receiver, name: name, call: scalarMemberSpec(result)}
+}
+
+// temporalEqlContract is the contract of the temporal eql? methods, which
+// own dispatch ahead of the universal fallback. They reject keywords but
+// intentionally ignore a supplied block.
+func temporalEqlContract(receiver string) memberContract {
+	return memberContract{
+		receiver:   receiver,
+		name:       "eql?",
+		paramNames: []string{"other"},
+		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, resultType: checkTypeBool},
+	}
+}
+
+// temporalValueContract is a registry entry for one conversion-style
+// temporal member the runtime exposes as a direct value rather than a
+// builtin (see memberContract.valueMember).
+func temporalValueContract(receiver, name string, result *TypeExpr) memberContract {
+	return memberContract{receiver: receiver, name: name, valueMember: true, call: staticCallSpec{resultType: result}}
+}
+
 // memberContracts is the registry of builtin member contracts, ordered by
-// receiver kind, then name. Public members not yet migrated are listed in
-// memberContractExemptions; the registry-completeness test requires every
-// public member to appear in exactly one of the two.
+// receiver kind, then name, with the universal fallback contracts last.
+// Public members not yet migrated are listed in memberContractExemptions;
+// the registry-completeness test requires every public member to appear in
+// exactly one of the two.
 var memberContracts = []memberContract{
 	{
 		receiver:   "array",
@@ -69,21 +113,167 @@ var memberContracts = []memberContract{
 		paramNames: []string{"start", "length"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 2, autoInvoke: true},
 	},
+
+	// Callable scalar conversions are nullary auto-invoked builtins with
+	// invariant results (members_scalar.go, members_symbol.go,
+	// members_string.go, members_numeric.go, members_temporal.go).
+	scalarConversionContract("nil", "to_s", checkTypeString),
+	scalarConversionContract("nil", "string", checkTypeString),
+	scalarConversionContract("bool", "to_s", checkTypeString),
+	scalarConversionContract("bool", "string", checkTypeString),
+	scalarConversionContract("symbol", "id2name", checkTypeString),
+	scalarConversionContract("symbol", "to_s", checkTypeString),
+	scalarConversionContract("symbol", "string", checkTypeString),
+	scalarConversionContract("symbol", "to_sym", checkTypeSymbol),
+	scalarConversionContract("string", "to_i", checkTypeInt),
+	scalarConversionContract("string", "to_f", checkTypeFloat),
+	scalarConversionContract("string", "to_s", checkTypeString),
+	scalarConversionContract("string", "string", checkTypeString),
+	scalarConversionContract("string", "to_sym", checkTypeSymbol),
+	scalarConversionContract("string", "intern", checkTypeSymbol),
+	scalarConversionContract("int", "to_i", checkTypeInt),
+	scalarConversionContract("int", "to_f", checkTypeFloat),
+	scalarConversionContract("int", "to_s", checkTypeString),
+	scalarConversionContract("int", "string", checkTypeString),
+	scalarConversionContract("float", "to_i", checkTypeInt),
+	scalarConversionContract("float", "to_f", checkTypeFloat),
+	scalarConversionContract("float", "to_s", checkTypeString),
+	scalarConversionContract("float", "string", checkTypeString),
+	scalarConversionContract("money", "to_s", checkTypeString),
+	scalarConversionContract("money", "string", checkTypeString),
+	scalarConversionContract("duration", "to_s", checkTypeString),
+	scalarConversionContract("duration", "string", checkTypeString),
+	temporalEqlContract("duration"),
+	scalarConversionContract("time", "to_s", checkTypeString),
+	scalarConversionContract("time", "string", checkTypeString),
+	temporalEqlContract("time"),
+	{
+		// range.to_a ignores a block at runtime, so it cannot use the
+		// stricter scalarMemberSpec contract shared by the other
+		// conversion builtins.
+		receiver: "range",
+		name:     "to_a",
+		call:     staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, autoInvoke: true, resultType: checkTypeIntArray},
+	},
+
+	// Conversion-style temporal members the runtime exposes as direct
+	// values rather than builtins. They contribute a result fact to a bare
+	// member read but stay outside staticMemberSpecs: `d.to_i()` attempts
+	// to call the returned int, so they must not resolve as callables.
+	temporalValueContract("duration", "to_i", checkTypeInt),
+	temporalValueContract("time", "to_i", checkTypeInt),
+	temporalValueContract("time", "tv_sec", checkTypeInt),
+	temporalValueContract("time", "to_f", checkTypeFloat),
+	temporalValueContract("time", "to_r", checkTypeFloat),
+	temporalValueContract("time", "to_a", checkTypeArray),
+
+	// Object-level predicates with fixed boolean results
+	// (members_universal.go). Their specs apply only when every known
+	// receiver arm dispatches them through the runtime universal fallback
+	// — no class instances, whose user methods take precedence.
+	{
+		receiver: universalReceiverKind,
+		name:     "nil?",
+		call:     staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	},
+	{
+		receiver: universalReceiverKind,
+		name:     "frozen?",
+		call:     staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	},
+	{
+		receiver:   universalReceiverKind,
+		name:       "eql?",
+		paramNames: []string{"other"},
+		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeBool},
+	},
+	{
+		receiver:   universalReceiverKind,
+		name:       "equal?",
+		paramNames: []string{"other"},
+		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeBool},
+	},
+	{
+		receiver:   universalReceiverKind,
+		name:       "respond_to?",
+		paramNames: []string{"name", "include_all"},
+		call:       staticCallSpec{minArgs: 1, maxArgs: 2, rejectKeywords: true, rejectBlock: true, autoInvoke: true, paramTypes: []*TypeExpr{checkTypeMethodName, checkTypeBool}, resultType: checkTypeBool},
+	},
+	{
+		receiver:   universalReceiverKind,
+		name:       "is_a?",
+		paramNames: []string{"class"},
+		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	},
+	{
+		receiver:   universalReceiverKind,
+		name:       "kind_of?",
+		paramNames: []string{"class"},
+		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	},
+	{
+		receiver:   universalReceiverKind,
+		name:       "instance_of?",
+		paramNames: []string{"class"},
+		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+	},
 }
 
-// staticMemberSpecs indexes the registered contracts by "<receiver>.<name>"
-// for the checker's member resolution; aliases index the same contract.
+// staticMemberSpecs indexes the registered typed-dispatch contracts by
+// "<receiver>.<name>" for the checker's member resolution; aliases index
+// the same contract. Universal contracts live in universalMemberSpecs and
+// value members in staticMemberValueTypes instead.
 var staticMemberSpecs = buildStaticMemberSpecs(memberContracts)
 
 func buildStaticMemberSpecs(contracts []memberContract) map[string]staticCallSpec {
 	specs := make(map[string]staticCallSpec, len(contracts))
 	for _, contract := range contracts {
+		if contract.receiver == universalReceiverKind || contract.valueMember {
+			continue
+		}
 		specs[contract.receiver+"."+contract.name] = contract.call
 		for _, alias := range contract.aliases {
 			specs[contract.receiver+"."+alias] = contract.call
 		}
 	}
 	return specs
+}
+
+// universalMemberSpecs indexes the universal-fallback contracts by member
+// name for the checker's universal dispatch resolution.
+var universalMemberSpecs = buildUniversalMemberSpecs(memberContracts)
+
+func buildUniversalMemberSpecs(contracts []memberContract) map[string]staticCallSpec {
+	specs := make(map[string]staticCallSpec)
+	for _, contract := range contracts {
+		if contract.receiver != universalReceiverKind {
+			continue
+		}
+		specs[contract.name] = contract.call
+		for _, alias := range contract.aliases {
+			specs[alias] = contract.call
+		}
+	}
+	return specs
+}
+
+// staticMemberValueTypes indexes the value-member contracts by
+// "<receiver>.<name>": members the runtime exposes as direct values, whose
+// contract contributes a result fact to a bare member read only.
+var staticMemberValueTypes = buildStaticMemberValueTypes(memberContracts)
+
+func buildStaticMemberValueTypes(contracts []memberContract) map[string]*TypeExpr {
+	types := make(map[string]*TypeExpr)
+	for _, contract := range contracts {
+		if !contract.valueMember {
+			continue
+		}
+		types[contract.receiver+"."+contract.name] = contract.call.resultType
+		for _, alias := range contract.aliases {
+			types[contract.receiver+"."+alias] = contract.call.resultType
+		}
+	}
+	return types
 }
 
 // MemberParam is one positional parameter of an exported member contract.
@@ -99,7 +289,9 @@ type MemberParam struct {
 // MemberContract is the exported view of one registered builtin member
 // contract, for editor tooling such as LSP completion.
 type MemberContract struct {
-	// Receiver is the runtime receiver kind providing the member.
+	// Receiver is the runtime receiver kind providing the member, or
+	// "universal" for the Object-level fallback helpers every value
+	// answers.
 	Receiver string
 	// Name is the canonical member name; Aliases resolve to the same
 	// builtin under the same contract.
@@ -113,6 +305,10 @@ type MemberContract struct {
 	TakesBlock bool
 	// AutoInvoke reports whether a bare member read invokes the builtin.
 	AutoInvoke bool
+	// ValueMember reports a member exposed as a direct value rather than
+	// a callable: reading it yields Result and calling it is not part of
+	// the contract.
+	ValueMember bool
 	// Result is the rendered invariant result type; empty when unknown.
 	Result string
 	// MutatesReceiver reports whether a call may modify the receiver in
@@ -121,8 +317,9 @@ type MemberContract struct {
 }
 
 // MemberContracts returns the registered builtin member contracts for
-// editor tooling, ordered by receiver kind, then name. The returned
-// slices are copies; callers may mutate them freely.
+// editor tooling, ordered by receiver kind, then name, with the universal
+// contracts last. The returned slices are copies; callers may mutate them
+// freely.
 func MemberContracts() []MemberContract {
 	out := make([]MemberContract, 0, len(memberContracts))
 	for _, contract := range memberContracts {
@@ -152,6 +349,7 @@ func exportedMemberContract(contract memberContract) MemberContract {
 		Variadic:        contract.call.maxArgs < 0,
 		TakesBlock:      contract.call.usesBlock,
 		AutoInvoke:      contract.call.autoInvoke,
+		ValueMember:     contract.valueMember,
 		Result:          result,
 		MutatesReceiver: contract.effects.mutatesReceiver,
 	}
@@ -184,20 +382,19 @@ var memberContractExemptions = map[string][]string{
 		"call", "lambda?",
 	},
 	"bool": {
-		"inspect", "string", "to_s",
+		"inspect",
 	},
 	"duration": {
-		"after", "ago", "before", "between?", "day", "days", "eql?", "format",
+		"after", "ago", "before", "between?", "day", "days", "format",
 		"from_now", "hour", "hours", "in_days", "in_hours", "in_minutes",
 		"in_months", "in_seconds", "in_weeks", "in_years", "iso8601", "minute",
-		"minutes", "parts", "second", "seconds", "since", "string", "to_i",
-		"to_s", "until", "week", "weeks",
+		"minutes", "parts", "second", "seconds", "since", "until", "week",
+		"weeks",
 	},
 	"float": {
 		"abs", "between?", "ceil", "clamp", "div", "divmod", "fdiv", "finite?",
 		"floor", "infinite?", "inspect", "modulo", "nan?", "negative?",
-		"nonzero?", "positive?", "remainder", "round", "string", "to_f", "to_i",
-		"to_s", "zero?",
+		"nonzero?", "positive?", "remainder", "round", "zero?",
 	},
 	"function": {
 		"call",
@@ -207,29 +404,28 @@ var memberContractExemptions = map[string][]string{
 		"delete", "delete_if", "dig", "each", "each_key", "each_value",
 		"each_with_index", "empty?", "except", "fetch", "fetch_values",
 		"flatten", "has_key?", "has_value?", "include?", "inspect", "keep_if",
-		"key?", "keys", "length", "map_with_index", "member?", "merge", "merge!",
-		"reject", "remap_keys", "replace", "select", "size", "slice", "store",
-		"to_a", "transform_keys", "transform_values", "update", "value?",
-		"values", "values_at",
+		"key?", "keys", "length", "map_with_index", "member?", "merge",
+		"merge!", "reject", "remap_keys", "replace", "select", "size", "slice",
+		"store", "to_a", "transform_keys", "transform_values", "update",
+		"value?", "values", "values_at",
 	},
 	"int": {
 		"abs", "between?", "ceil", "clamp", "day", "days", "div", "divmod",
-		"downto", "even?", "fdiv", "floor", "hour", "hours", "inspect", "minute",
-		"minutes", "modulo", "negative?", "next", "nonzero?", "odd?",
+		"downto", "even?", "fdiv", "floor", "hour", "hours", "inspect",
+		"minute", "minutes", "modulo", "negative?", "next", "nonzero?", "odd?",
 		"positive?", "pred", "remainder", "round", "second", "seconds", "step",
-		"string", "succ", "times", "to_f", "to_i", "to_s", "upto", "week",
-		"weeks", "zero?",
+		"succ", "times", "upto", "week", "weeks", "zero?",
 	},
 	"money": {
-		"amount", "between?", "cents", "currency", "format", "string", "to_s",
+		"amount", "between?", "cents", "currency", "format",
 	},
 	"nil": {
-		"inspect", "string", "to_s",
+		"inspect",
 	},
 	"range": {
 		"count", "cover?", "each", "exclude_end?", "find", "first", "include?",
 		"last", "map", "max", "member?", "min", "reduce", "reject", "select",
-		"size", "step", "sum", "to_a",
+		"size", "step", "sum",
 	},
 	"regex": {
 		"flags", "inspect", "match", "match?", "source",
@@ -242,27 +438,25 @@ var memberContractExemptions = map[string][]string{
 		"delete_prefix!", "delete_suffix", "delete_suffix!", "downcase",
 		"downcase!", "each_byte", "each_char", "each_codepoint", "each_line",
 		"empty?", "end_with?", "getbyte", "gsub", "gsub!", "hex", "include?",
-		"index", "insert", "inspect", "intern", "length", "lines", "ljust",
-		"lstrip", "lstrip!", "match", "match?", "oct", "ord", "partition",
-		"prepend", "replace", "reverse", "reverse!", "rindex", "rjust",
-		"rpartition", "rstrip", "rstrip!", "scan", "size", "split", "squeeze",
-		"squeeze!", "squish", "squish!", "start_with?", "string", "strip",
-		"strip!", "sub", "sub!", "swapcase", "swapcase!", "template", "to_f",
-		"to_i", "to_s", "to_sym", "tr", "tr!", "upcase", "upcase!",
+		"index", "insert", "inspect", "length", "lines", "ljust", "lstrip",
+		"lstrip!", "match", "match?", "oct", "ord", "partition", "prepend",
+		"replace", "reverse", "reverse!", "rindex", "rjust", "rpartition",
+		"rstrip", "rstrip!", "scan", "size", "split", "squeeze", "squeeze!",
+		"squish", "squish!", "start_with?", "strip", "strip!", "sub", "sub!",
+		"swapcase", "swapcase!", "template", "tr", "tr!", "upcase", "upcase!",
 	},
 	"symbol": {
-		"id2name", "inspect", "string", "to_s", "to_sym",
+		"inspect",
 	},
 	"time": {
-		"<=>", "between?", "ceil", "day", "dst?", "eql?", "floor", "format",
-		"friday?",
+		"<=>", "between?", "ceil", "day", "dst?", "floor", "format", "friday?",
 		"getgm", "getlocal", "getutc", "gmt?", "gmt_offset", "gmtime", "gmtoff",
 		"hash", "hour", "httpdate", "isdst", "iso8601", "localtime", "mday",
-		"min", "mon", "monday?", "month", "nsec", "rfc2822", "rfc3339", "rfc822",
-		"round", "saturday?", "sec", "strftime", "string", "subsec", "sunday?",
-		"thursday?", "to_a", "to_f", "to_i", "to_r", "to_s", "tuesday?",
-		"tv_nsec", "tv_sec", "tv_usec", "usec", "utc", "utc?", "utc_offset",
-		"wday", "wednesday?", "xmlschema", "yday", "year", "zone",
+		"min", "mon", "monday?", "month", "nsec", "rfc2822", "rfc3339",
+		"rfc822", "round", "saturday?", "sec", "strftime", "subsec", "sunday?",
+		"thursday?", "tuesday?", "tv_nsec", "tv_usec", "usec", "utc", "utc?",
+		"utc_offset", "wday", "wednesday?", "xmlschema", "yday", "year",
+		"zone",
 	},
 }
 
@@ -274,16 +468,8 @@ var universalMemberContractExemptions = []string{
 	"dup",
 	"clone",
 	"freeze",
-	"frozen?",
-	"nil?",
-	"eql?",
-	"equal?",
 	"send",
 	"public_send",
 	"tap",
 	"yield_self",
-	"respond_to?",
-	"is_a?",
-	"kind_of?",
-	"instance_of?",
 }
