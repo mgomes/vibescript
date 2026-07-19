@@ -1250,6 +1250,11 @@ func (c *scriptChecker) predicateArgumentIsPure(expr Expression) bool {
 		if _, autoCallable := c.resolveCallable(&CallExpr{Callee: typed}); autoCallable {
 			return false
 		}
+		if _, ok := c.staticClassArgument(typed); ok {
+			// A bare class or module reference evaluates to the definition
+			// value without running any code.
+			return true
+		}
 		return !typeExprMayIncludeCallable(c.inferExpressionType(typed))
 	case *UnaryExpr:
 		return c.predicateArgumentIsPure(typed.Right)
