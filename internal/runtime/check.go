@@ -4283,6 +4283,9 @@ func (c *scriptChecker) checkCallResolved(function string, call *CallExpr, targe
 	if target.name == "JSON.parse_as" {
 		c.checkParseAsShapeArgument(function, call)
 	}
+	if _, isClassPredicate := classPredicateNames[target.name]; isClassPredicate {
+		c.checkClassPredicateArgument(function, call, target.name)
+	}
 }
 
 // checkParseAsShapeArgument reports a JSON.parse_as call whose second
@@ -4318,6 +4321,57 @@ func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExp
 		}
 	}
 	c.add(function, arg.Pos(), "call to JSON.parse_as expects a shape literal as its second argument, got %s", formatTypeExpr(inferred))
+}
+
+// classPredicateNames are the universal predicates whose single argument the
+// runtime requires to be a class or module value (newClassPredicateBuiltin).
+var classPredicateNames = map[string]struct{}{
+	"is_a?":        {},
+	"kind_of?":     {},
+	"instance_of?": {},
+}
+
+// checkClassPredicateArgument reports a class-predicate call whose argument is
+// provably not a class or module value — every known arm describes a plain
+// runtime value, which the runtime predicate always rejects. Unknown arms stay
+// silent: a bare class reference carries no inferred fact, so real class
+// arguments never reach the diagnostic.
+func (c *scriptChecker) checkClassPredicateArgument(function string, call *CallExpr, name string) {
+	if len(call.Args) != 1 || callExpandsArguments(call) {
+		return
+	}
+	arg := call.Args[0]
+	inferred, captured := c.callArgumentFacts[arg]
+	if !captured {
+		inferred = c.inferExpressionType(arg)
+	}
+	if inferred == nil {
+		return
+	}
+	arms, ok := typeExprArms(inferred, 0)
+	if !ok || len(arms) == 0 {
+		return
+	}
+	for _, arm := range arms {
+		if !typeArmProvablyNotClass(arm) {
+			return
+		}
+	}
+	c.add(function, arg.Pos(), "call to %s expects a class argument, got %s", name, formatTypeExpr(inferred))
+}
+
+// typeArmProvablyNotClass reports whether a known type arm can never describe
+// a class or module value. Only the explicitly listed value kinds qualify:
+// unknown markers (including first-class shape values) and any future kinds
+// stay gradual.
+func typeArmProvablyNotClass(arm *TypeExpr) bool {
+	switch arm.Kind {
+	case TypeInt, TypeFloat, TypeNumber, TypeString, TypeBool, TypeNil,
+		TypeDuration, TypeTime, TypeMoney, TypeArray, TypeHash, TypeRange,
+		TypeSymbol, TypeFunction, TypeShape, TypeEnum:
+		return true
+	}
+	return false
 }
 
 // callExpandsArguments reports whether a call carries a positional or

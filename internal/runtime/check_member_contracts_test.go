@@ -345,6 +345,33 @@ end
 			warning: "call to respond_to? argument 2 expected bool, got int",
 		},
 		{
+			name: "is_a rejects non-class argument",
+			source: `
+def run(s: string)
+  s.is_a?(1)
+end
+`,
+			warning: "call to is_a? expects a class argument, got int",
+		},
+		{
+			name: "kind_of rejects non-class argument",
+			source: `
+def run(s: string)
+  s.kind_of?("Foo")
+end
+`,
+			warning: "call to kind_of? expects a class argument, got string",
+		},
+		{
+			name: "instance_of rejects non-class union argument",
+			source: `
+def run(s: string, v: int | string)
+  s.instance_of?(v)
+end
+`,
+			warning: "call to instance_of? expects a class argument, got int | string",
+		},
+		{
 			name: "conversion rejects arguments via fact receiver",
 			source: `
 def run(s: string)
@@ -530,6 +557,27 @@ def run(value: string)
   equal = value.equal?
   eql.call(value)
   equal.call(value)
+end
+`,
+		},
+		{
+			name: "class predicate accepts class argument",
+			source: `
+class Marker
+  def initialize()
+  end
+end
+
+def run(s: string)
+  s.is_a?(Marker)
+end
+`,
+		},
+		{
+			name: "class predicate keeps unknown argument gradual",
+			source: `
+def run(s: string, k)
+  s.instance_of?(k)
 end
 `,
 		},
