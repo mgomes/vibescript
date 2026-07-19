@@ -183,6 +183,45 @@ end
 	}
 }
 
+func TestJSONParseAsSupportsOpenShapes(t *testing.T) {
+	t.Parallel()
+
+	// Declared fields validate; undeclared fields pass through and read back
+	// with their raw parsed values.
+	script := compileScript(t, `
+def run()
+  body = JSON.parse_as("{\"name\": \"Ada\", \"age\": 36, \"role\": \"captain\"}", { name: string, ... })
+  body["role"]
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindString || got.String() != "captain" {
+		t.Fatalf("run() = %#v, want \"captain\"", got)
+	}
+
+	invalid := compileScript(t, `
+def run()
+  JSON.parse_as("{\"name\": 1, \"role\": \"captain\"}", { name: string, ... })
+end
+`)
+	err := callScriptErr(t, context.Background(), invalid, "run", nil, CallOptions{})
+	want := "JSON.parse_as value expected { name: string, ... }"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("run() error = %v, want substring %q", err, want)
+	}
+
+	missing := compileScript(t, `
+def run()
+  JSON.parse_as("{\"role\": \"captain\"}", { name: string, ... })
+end
+`)
+	err = callScriptErr(t, context.Background(), missing, "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("run() error = %v, want substring %q", err, want)
+	}
+}
+
 // Shape values compare by formatted text, so the contract with a literal
 // `valid?` field must not equal the contract with an optional `valid` field.
 func TestShapeValueEqualityDistinguishesOptionalFields(t *testing.T) {

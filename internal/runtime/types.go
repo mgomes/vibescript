@@ -83,7 +83,9 @@ func quickTypeCheck(val Value, ty *TypeExpr) (bool, bool) {
 			if val.Kind() != KindHash && val.Kind() != KindObject {
 				return true, false
 			}
-			return true, len(val.Hash()) == 0
+			// The open shape `{ ... }` accepts any hash; the exact `{}`
+			// accepts only an empty one.
+			return true, ty.Open || len(val.Hash()) == 0
 		}
 		return false, false
 	case TypeUnion:
@@ -290,7 +292,7 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 			return false, nil
 		}
 		entries := val.Hash()
-		if len(entries) > len(ty.Shape) {
+		if !ty.Open && len(entries) > len(ty.Shape) {
 			return false, nil
 		}
 		for field, fieldType := range ty.Shape {
@@ -309,9 +311,11 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 				return false, nil
 			}
 		}
-		for field := range entries {
-			if _, ok := ty.Shape[field]; !ok {
-				return false, nil
+		if !ty.Open {
+			for field := range entries {
+				if _, ok := ty.Shape[field]; !ok {
+					return false, nil
+				}
 			}
 		}
 		return true, nil
