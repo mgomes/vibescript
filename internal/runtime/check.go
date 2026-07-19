@@ -5061,6 +5061,13 @@ func (c *scriptChecker) checkBuiltinArgumentTypes(function string, call staticCa
 	for _, kwarg := range call.kwargs {
 		c.checkInferredArgument(function, kwarg.Value, spec.keywordTypes[kwarg.Name], name, kwarg.Name)
 	}
+	if spec.fromSignature && spec.resultType != nil {
+		// An unresolved result type rejects every successful call at the
+		// return boundary, whether or not the caller uses the result.
+		if err := validateTypeExprResolved(spec.resultType, c.runtimeTypeContext()); err != nil {
+			c.add(function, call.pos, "call to %s result uses unknown type %s", name, formatTypeExpr(spec.resultType))
+		}
+	}
 }
 
 type staticCallView struct {

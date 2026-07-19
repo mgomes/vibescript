@@ -63,8 +63,22 @@ func NewTypedBuiltin(name string, fn BuiltinFunc, sig Signature) (Value, error) 
 		return validated, nil
 	}
 	val := NewBuiltin(name, wrapped)
-	valueBuiltin(val).checkSpec = spec
+	builtin := valueBuiltin(val)
+	builtin.checkSpec = spec
+	builtin.SignatureParams = signatureRuntimeParams(sig, paramTypes)
 	return val, nil
+}
+
+// signatureRuntimeParams projects the signature into the parameter shape the
+// runtime argument evaluator consults, so a bare zero-arg callback passed to
+// a function-typed parameter is preserved instead of auto-invoked, exactly
+// like the same annotation on a script function.
+func signatureRuntimeParams(sig Signature, paramTypes []*TypeExpr) []Param {
+	params := make([]Param, len(sig.Params))
+	for i, param := range sig.Params {
+		params[i] = Param{Name: param.Name, Kind: ParamNormal, Type: paramTypes[i]}
+	}
+	return params
 }
 
 // signatureCallSpec lowers a public Signature into the checker's static call
@@ -165,15 +179,13 @@ func validateSignatureCall(exec *Execution, name string, sig Signature, paramTyp
 	return normalized, nil
 }
 
-// signatureTypeContext resolves signature type spellings in the execution's
-// root scope, the same way annotated script parameters resolve named types.
+// signatureTypeContext resolves signature type spellings the way annotated
+// script parameters do: named types resolve against the source currently
+// executing — a required module's own enums and classes when the call comes
+// from module code — with the call root as fallback.
 func signatureTypeContext(exec *Execution) typeContext {
 	if exec == nil {
 		return typeContext{}
 	}
-	var owner *Script
-	if exec.script != nil {
-		owner = exec.script
-	}
-	return typeContext{owner: owner, env: exec.root, fallback: exec.root, exec: exec}
+	return typeContext{owner: exec.currentSourceScript(), env: exec.root, fallback: exec.root, exec: exec}
 }

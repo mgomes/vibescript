@@ -286,3 +286,84 @@ func TestHostSignatureUnresolvedNamedTypeWarns(t *testing.T) {
 	script := compileScriptWithEngine(t, engine, "def run()\n  advance(:draft)\nend")
 	requireCheckWarningContains(t, script, "call to advance argument status uses unknown type Status")
 }
+
+func TestHostSignatureFunctionParamPreservesCallable(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	err := engine.RegisterBuiltinWithSignature("accept", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if !isCallableValue(args[0]) {
+			return NewNil(), fmt.Errorf("accept received %s, want a callable", args[0].Kind())
+		}
+		return NewBool(true), nil
+	}, Signature{Params: []SignatureParam{{Name: "fn", Type: "function"}}})
+	if err != nil {
+		t.Fatalf("RegisterBuiltinWithSignature: %v", err)
+	}
+	script := compileScriptWithEngine(t, engine, `
+def cb()
+  "ran"
+end
+
+def run()
+  accept(cb)
+end
+`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call(accept cb) error: %v", err)
+	}
+	if got.Kind() != KindBool || !got.Bool() {
+		t.Fatalf("Call(accept cb) = %#v, want true", got)
+	}
+}
+
+func TestHostSignatureModuleContextResolvesNamedTypes(t *testing.T) {
+	t.Parallel()
+
+	dir := tempModuleTree(t, moduleFile{path: "levels.vibe", content: `enum Level
+  Low
+  High
+end
+
+def pick(level: Level) -> Level
+  tag(level)
+end
+`})
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	err := engine.RegisterBuiltinWithSignature("tag", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return args[0], nil
+	}, Signature{
+		Params: []SignatureParam{{Name: "level", Type: "Level"}},
+		Result: "Level",
+	})
+	if err != nil {
+		t.Fatalf("RegisterBuiltinWithSignature: %v", err)
+	}
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("levels").pick(:low)
+end
+`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call(module pick) error: %v", err)
+	}
+	if got.Kind() != KindEnumValue {
+		t.Fatalf("Call(module pick) = %#v, want Level enum value", got)
+	}
+}
+
+func TestHostSignatureUnresolvedResultTypeWarns(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	err := engine.RegisterBuiltinWithSignature("mystery", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewInt(1), nil
+	}, Signature{Result: "Missing"})
+	if err != nil {
+		t.Fatalf("RegisterBuiltinWithSignature: %v", err)
+	}
+	script := compileScriptWithEngine(t, engine, "def run()\n  mystery()\nend")
+	requireCheckWarningContains(t, script, "call to mystery result uses unknown type Missing")
+}
