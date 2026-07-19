@@ -36,12 +36,17 @@ var (
 	checkTypeNil      = &TypeExpr{Kind: TypeNil}
 	checkTypeSymbol   = &TypeExpr{Kind: TypeSymbol}
 	checkTypeArray    = &TypeExpr{Kind: TypeArray}
+	checkTypeIntArray = &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{checkTypeInt}}
 	checkTypeHash     = &TypeExpr{Kind: TypeHash}
 	checkTypeRange    = &TypeExpr{Kind: TypeRange}
 	checkTypeDuration = &TypeExpr{Kind: TypeDuration}
 	checkTypeTime     = &TypeExpr{Kind: TypeTime}
 	checkTypeMoney    = &TypeExpr{Kind: TypeMoney}
 	checkTypeFunction = &TypeExpr{Kind: TypeFunction}
+
+	// checkTypeMethodName matches respond_to?'s method-name argument, which
+	// the runtime accepts as a symbol or string.
+	checkTypeMethodName = &TypeExpr{Kind: TypeUnion, Union: []*TypeExpr{checkTypeSymbol, checkTypeString}}
 )
 
 type checkTypeFrame map[string]*TypeExpr
@@ -979,33 +984,40 @@ func (c *scriptChecker) narrowNilPredicateMember(member *MemberExpr, truthy bool
 	return c.narrowLocalNilness(ident.Name, truthy)
 }
 
-// knownUniversalNilPredicateMember reports whether a plain local's nil?
-// dispatch is guaranteed to use the pure universal predicate under its current
-// fact. Named arms are excluded because a class may override nil?. Hash-like
-// facts must also rule out a callable nil? field: TypeHash and TypeShape admit
-// KindObject namespace values whose callable exports override the universal
-// fallback.
-func (c *scriptChecker) knownUniversalNilPredicateMember(member *MemberExpr) bool {
-	if member == nil || member.Safe || member.Property != "nil?" {
+// knownPureUniversalPredicateMember reports whether every receiver arm that
+// can dispatch is guaranteed to use one of the pure universal predicates.
+// Named arms are excluded because a class may override the member. Hash-like
+// facts must also rule out a callable field with the same name.
+func (c *scriptChecker) knownPureUniversalPredicateMember(member *MemberExpr) bool {
+	if member == nil {
 		return false
 	}
-	ident, ok := member.Object.(*Identifier)
-	if !ok {
+	if _, ok := universalMemberSpecs[member.Property]; !ok {
 		return false
 	}
-	arms, ok := typeExprArms(c.localTypeFor(ident.Name), 0)
+	arms, ok := typeExprArms(c.inferExpressionType(member.Object), 0)
 	if !ok || len(arms) == 0 {
 		return false
 	}
+	dispatchArms := 0
 	for _, arm := range arms {
-		if !nilPredicateArmUsesUniversalDispatch(arm) {
+		if member.Safe && arm.Kind == TypeNil {
+			continue
+		}
+		if !typeArmUsesUniversalMemberDispatch(arm, member.Property) {
 			return false
 		}
+		dispatchArms++
 	}
-	return true
+	return dispatchArms > 0
 }
 
-func nilPredicateArmUsesUniversalDispatch(arm *TypeExpr) bool {
+// typeArmUsesUniversalMemberDispatch reports whether a known fact arm must
+// reach the universal implementation of property. Named values may override
+// it. Hash-like facts are safe only when their exact value or field contract
+// rules out a callable export with the same name. Primitive kinds with their
+// own typed contract also dispatch before the universal fallback.
+func typeArmUsesUniversalMemberDispatch(arm *TypeExpr, property string) bool {
 	if arm == nil {
 		return false
 	}
@@ -1015,11 +1027,21 @@ func nilPredicateArmUsesUniversalDispatch(arm *TypeExpr) bool {
 	case TypeHash:
 		return len(arm.TypeArgs) == 2 && !typeExprMayIncludeCallable(arm.TypeArgs[1])
 	case TypeShape:
-		field, present := arm.Shape["nil?"]
+		field, present := arm.Shape[property]
 		return !present || !typeExprMayIncludeCallable(field)
-	default:
-		return true
+	case TypeNumber:
+		_, intOverride := staticMemberSpecs["int."+property]
+		_, floatOverride := staticMemberSpecs["float."+property]
+		return !intOverride && !floatOverride
+	case TypeAny, TypeUnknown, TypeUnion:
+		return false
 	}
+	kind, ok := receiverKindForTypeArm(arm)
+	if !ok {
+		return false
+	}
+	_, overridden := staticMemberSpecs[kind+"."+property]
+	return !overridden
 }
 
 func typeExprMayIncludeCallable(ty *TypeExpr) bool {
@@ -1039,15 +1061,44 @@ func typeExprMayIncludeCallable(ty *TypeExpr) bool {
 	return false
 }
 
-// knownUniversalNilPredicateCall recognizes the explicit nullary call form of
-// a known universal nil? predicate.
-func (c *scriptChecker) knownUniversalNilPredicateCall(call *CallExpr) bool {
-	if call == nil || call.Safe || len(call.Args) != 0 || len(call.KwArgs) != 0 ||
-		call.Block != nil || call.BlockArg != nil {
+// knownPureUniversalPredicateCall recognizes a call whose member dispatch is
+// guaranteed to reach a pure universal predicate and whose arguments provably
+// run no user code. Arguments evaluate before the predicate dispatches, so an
+// argument that can call into script code may mutate the receiver through an
+// alias — the receiver's fact must not survive such a call.
+func (c *scriptChecker) knownPureUniversalPredicateCall(call *CallExpr) bool {
+	if call == nil || len(call.KwArgs) > 0 || call.Block != nil || call.BlockArg != nil {
 		return false
 	}
+	for _, arg := range call.Args {
+		if !c.predicateArgumentIsPure(arg) {
+			return false
+		}
+	}
 	member, ok := call.Callee.(*MemberExpr)
-	return ok && c.knownUniversalNilPredicateMember(member)
+	return ok && c.knownPureUniversalPredicateMember(member)
+}
+
+// predicateArgumentIsPure reports whether a predicate argument provably runs
+// no user code when it evaluates: literals and plain non-callable reads
+// qualify. An identifier stays pure only when it cannot auto-invoke a
+// callable — neither as a resolved zero-arity function or builtin, nor as a
+// local whose value may itself be callable (a stored zero-arity function
+// auto-invokes when the argument evaluates).
+func (c *scriptChecker) predicateArgumentIsPure(expr Expression) bool {
+	switch typed := expr.(type) {
+	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral,
+		*NilLiteral, *SymbolLiteral:
+		return true
+	case *Identifier:
+		if _, autoCallable := c.resolveCallable(&CallExpr{Callee: typed}); autoCallable {
+			return false
+		}
+		return !typeExprMayIncludeCallable(c.inferExpressionType(typed))
+	case *UnaryExpr:
+		return c.predicateArgumentIsPure(typed.Right)
+	}
+	return false
 }
 
 // typeExprDefinitelyTruthy reports whether every possible value of the type
@@ -1150,6 +1201,10 @@ func (c *scriptChecker) safeNavigationArgumentsAlwaysEvaluateInferred(call *Call
 // it is not statically known. It is pure: it never emits warnings and never
 // mutates checker state.
 func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
+	// Inference computes facts speculatively (branch results, argument
+	// captures) and must not mutate runtime module state along the way.
+	c.speculativeInference++
+	defer func() { c.speculativeInference-- }()
 	switch typed := expr.(type) {
 	case *IntegerLiteral:
 		return checkTypeInt
@@ -1599,12 +1654,18 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 	return result
 }
 
-// memberResultFact reports the result of a bare member that auto-invokes in a
-// value context. Constructors carry their nominal class, while ordinary
-// script methods expose an explicit return annotation.
+// memberResultFact reports the result of a bare member read that auto-invokes
+// in a value context: constructors carry their nominal class, script methods
+// expose an explicit return annotation, builtins expose their invariant
+// contract results, and temporal conversions surface as direct scalar values.
+// A nil-only safe-navigation receiver yields nil without dispatch; safe
+// navigation otherwise adds nil unless the receiver is known non-nil.
 func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
 	if member.Safe && typeExprIsNilOnly(c.safeNavigationReceiverFact(member.Object)) {
 		return checkTypeNil
+	}
+	if result := c.staticMemberValueResultFact(member); result != nil {
+		return c.safeNavigationMemberResultFact(member, result)
 	}
 	target, ok := c.resolveMemberCallable(member)
 	if !ok {
@@ -1625,7 +1686,10 @@ func (c *scriptChecker) safeNavigationMemberResultFact(member *MemberExpr, resul
 	if result == nil || member == nil || !member.Safe || c.safeNavigationReceiverKnownNonNil(member.Object) {
 		return result
 	}
-	return unionTypeExprs(result, checkTypeNil)
+	if result.Kind == TypeUnion {
+		return unionTypeExprs(result, checkTypeNil)
+	}
+	return nullableTypeExpr(result)
 }
 
 func (c *scriptChecker) safeNavigationReceiverKnownNonNil(expr Expression) bool {
@@ -1648,6 +1712,34 @@ func (c *scriptChecker) safeNavigationReceiverFact(expr Expression) *TypeExpr {
 		return c.localTypeFor(ident.Name)
 	}
 	return c.inferExpressionType(expr)
+}
+
+// nullableTypeExpr returns the type with a nil arm added, sharing the
+// original when it already admits nil.
+func nullableTypeExpr(ty *TypeExpr) *TypeExpr {
+	if ty == nil || ty.Nullable || ty.Kind == TypeNil {
+		return ty
+	}
+	clone := *ty
+	clone.Nullable = true
+	return &clone
+}
+
+// staticMemberValueResultFact resolves a direct scalar value only when every
+// known receiver arm dispatches through the same built-in kind. Named or
+// dynamic receivers stay unknown so user-defined members keep precedence.
+func (c *scriptChecker) staticMemberValueResultFact(member *MemberExpr) *TypeExpr {
+	kinds, ok := c.staticMemberReceiverKinds(member)
+	if !ok {
+		return nil
+	}
+	kind := kinds[0]
+	for _, candidate := range kinds[1:] {
+		if candidate != kind {
+			return nil
+		}
+	}
+	return staticMemberValueTypes[kind+"."+member.Property]
 }
 
 // shapeValueMarkerName tags the synthetic type that carries a first-class
