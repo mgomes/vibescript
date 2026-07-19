@@ -1853,6 +1853,19 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 	if !ok {
 		return false
 	}
+	// insert validates its index before any element lands, so a provably
+	// non-numeric index means the call raises without writing and neither
+	// diagnosis nor preservation applies.
+	if member.Property == "insert" {
+		index, captured := argumentFacts[call.Args[0]]
+		if !captured {
+			index = c.inferExpressionType(call.Args[0])
+		}
+		if kind, known := staticOperandKind(index); known &&
+			kind != TypeInt && kind != TypeFloat && kind != TypeNumber {
+			return false
+		}
+	}
 	resolve := c.checkNamedTypeResolver()
 	// The mutators return their receiver, so a consumed result (a chained
 	// call, an argument, an assignment value) hands the array to code the

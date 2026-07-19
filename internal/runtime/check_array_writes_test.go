@@ -465,6 +465,14 @@ end
 `,
 		},
 		{
+			name: "insert with an invalid index never writes",
+			source: `
+def f(items: array<int>)
+  items.insert("x", "bad")
+end
+`,
+		},
+		{
 			name: "shape element with an unknown field value stays silent",
 			source: `
 def f(items: array<{ amount: int }>, v)
