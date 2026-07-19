@@ -26,7 +26,8 @@ end
 		t.Fatal(err)
 	}
 
-	var warnings []vibes.CheckWarning = script.CheckWarnings()
+	var warnings []vibes.CheckWarning
+	warnings = script.CheckWarnings()
 	if len(warnings) != 1 {
 		t.Fatalf("CheckWarnings() = %v, want one warning", warnings)
 	}
@@ -34,7 +35,8 @@ end
 	if w.Function != "run" {
 		t.Fatalf("warning Function = %q, want run", w.Function)
 	}
-	var pos vibes.Position = w.Pos
+	var pos vibes.Position
+	pos = w.Pos
 	if pos.Line == 0 {
 		t.Fatalf("warning Pos = %+v, want a source position", pos)
 	}
