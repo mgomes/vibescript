@@ -55,7 +55,7 @@ func NewTypedBuiltin(name string, fn BuiltinFunc, sig Signature) (Value, error) 
 		}
 		validated, err := normalizeValueForType(result, spec.resultType, signatureTypeContext(exec))
 		if err != nil {
-			if isHostControlSignal(err) {
+			if isHostControlSignal(err) || isNormalizationLimitError(err) {
 				return NewNil(), err
 			}
 			return NewNil(), fmt.Errorf("%s", formatReturnTypeMismatch(name, err))

@@ -261,3 +261,14 @@ func TestHostSignatureResultEnforcedAtRuntime(t *testing.T) {
 		t.Fatalf("Call(lie) error = %v, want return contract mismatch", err)
 	}
 }
+
+func TestHostSignatureRejectsForwardedBlockStatically(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithEngine(t, typedGreetEngine(t), `
+def run(s: string, blk: function)
+  greet(s, &blk)
+end
+`)
+	requireCheckWarningContains(t, script, "call to greet does not accept a block")
+}
