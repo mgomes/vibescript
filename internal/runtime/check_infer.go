@@ -1240,37 +1240,9 @@ func (c *scriptChecker) inferExpressionTypeWithExpectation(expr Expression, expe
 	}
 	switch typed := expr.(type) {
 	case *ConditionalExpr:
-		if truthy, known := c.inferredConditionTruthiness(typed.Condition); known {
-			if truthy {
-				return c.inferExpressionTypeWithExpectation(typed.Consequent, expectation)
-			}
-			return c.inferExpressionTypeWithExpectation(typed.Alternate, expectation)
-		}
-		return c.inferExpectedBranchUnion(expectation, typed.Consequent, typed.Alternate)
+		return c.inferConditionalExpressionTypeWithExpectation(typed, expectation)
 	case *IfExpr:
-		branches := make([]Expression, 0, len(typed.ElseIf)+2)
-		chainDecided := false
-		appendReachableArm := func(condition, result Expression) {
-			truthy, known := c.inferredConditionTruthiness(condition)
-			if known && !truthy {
-				return
-			}
-			branches = append(branches, result)
-			if known {
-				chainDecided = true
-			}
-		}
-		appendReachableArm(typed.Condition, typed.Consequent)
-		for _, branch := range typed.ElseIf {
-			if chainDecided {
-				break
-			}
-			appendReachableArm(branch.Condition, branch.Result)
-		}
-		if !chainDecided {
-			branches = append(branches, typed.Alternate)
-		}
-		return c.inferExpectedBranchUnion(expectation, branches...)
+		return c.inferIfExpressionTypeWithExpectation(typed, expectation)
 	case *CaseExpr:
 		branches := make([]Expression, 0, len(typed.Clauses)+1)
 		for _, clause := range typed.Clauses {
@@ -1413,21 +1385,32 @@ func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectati
 }
 
 func (c *scriptChecker) inferConditionalExpressionType(expr *ConditionalExpr) *TypeExpr {
+	return c.inferConditionalExpressionTypeWithExpectation(expr, expressionExpectation{})
+}
+
+// inferConditionalExpressionTypeWithExpectation infers a ternary under the
+// narrowing each condition outcome proves, flowing any expectation into the
+// branch results. Unreachable outcomes contribute no arm.
+func (c *scriptChecker) inferConditionalExpressionTypeWithExpectation(expr *ConditionalExpr, expectation expressionExpectation) *TypeExpr {
 	baseScopeState := c.snapshotScopeState()
 	defer c.restoreScopeState(baseScopeState)
 
 	branches := make([]*TypeExpr, 0, 2)
 	if c.applyConditionOutcomeEffects(expr.Condition, true, nil) {
-		branches = append(branches, c.inferExpressionType(expr.Consequent))
+		branches = append(branches, c.inferExpressionTypeWithExpectation(expr.Consequent, expectation))
 	}
 	c.restoreScopeState(baseScopeState)
 	if c.applyConditionOutcomeEffects(expr.Condition, false, nil) {
-		branches = append(branches, c.inferExpressionType(expr.Alternate))
+		branches = append(branches, c.inferExpressionTypeWithExpectation(expr.Alternate, expectation))
 	}
 	return unionTypeExprs(branches...)
 }
 
 func (c *scriptChecker) inferIfExpressionType(expr *IfExpr) *TypeExpr {
+	return c.inferIfExpressionTypeWithExpectation(expr, expressionExpectation{})
+}
+
+func (c *scriptChecker) inferIfExpressionTypeWithExpectation(expr *IfExpr, expectation expressionExpectation) *TypeExpr {
 	baseScopeState := c.snapshotScopeState()
 	defer c.restoreScopeState(baseScopeState)
 
@@ -1437,7 +1420,7 @@ func (c *scriptChecker) inferIfExpressionType(expr *IfExpr) *TypeExpr {
 			branches = append(branches, checkTypeNil)
 			return
 		}
-		branches = append(branches, c.inferExpressionType(result))
+		branches = append(branches, c.inferExpressionTypeWithExpectation(result, expectation))
 	}
 	collectCondition := func(condition, result Expression) bool {
 		conditionScopeState := c.snapshotScopeState()

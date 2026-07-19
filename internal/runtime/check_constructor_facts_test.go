@@ -279,6 +279,16 @@ end
 `,
 			warning: "call to array.at has too few arguments",
 		},
+		{
+			name: "expected branch inference narrows the receiver",
+			source: `
+def run(flag: bool)
+  u = flag ? User.new : nil
+  takes_int(u ? u.label() : "s")
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
