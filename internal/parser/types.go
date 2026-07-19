@@ -280,7 +280,7 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 // the returned name. String and symbol literal keys keep their spelling
 // verbatim, so a field whose name genuinely ends in `?` stays reachable as
 // `"valid?": bool`.
-func (p *parser) parseTypeShapeFieldName() (name string, optional bool, ok bool) {
+func (p *parser) parseTypeShapeFieldName() (name string, optional, ok bool) {
 	if !tokenStartsShapeFieldName(p.curToken) {
 		p.errorExpected(p.curToken, "shape field name")
 		return "", false, false
