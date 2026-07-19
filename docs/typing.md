@@ -30,6 +30,10 @@ Shape types for object/hash payload contracts:
   present `nil`, while `age?: int?` allows the field to be absent or `nil`
 - Fields stay required by default; a field whose name literally ends in `?`
   is spelled with a string key (`{ "valid?": bool }`)
+- A trailing `...` marks the shape open: `{ name: string, ... }` validates the
+  declared fields and lets undeclared extra fields pass unchecked. Shapes stay
+  exact (closed) by default; `{ ... }` alone accepts any hash. Open and exact
+  shapes nest freely.
 
 Nullable: append `?` to allow `nil` (e.g., `string?`, `time?`, `int?`).
 
@@ -137,7 +141,8 @@ The governing rule is: **error on known contradictions, permit unknowns**.
 - Operators reject operands known to be invalid at runtime (`1 + nil`).
 - Shape-typed values carry field-level facts, so indexing with a known key
   yields the field's type. Reading an optional field infers the field type
-  joined with `nil`, since the field may be absent.
+  joined with `nil`, since the field may be absent. On an open shape, reads of
+  undeclared fields stay unknown rather than inferring `nil`.
 - Values the checker cannot prove (JSON payloads, host globals, dynamic
   dispatch) are never rejected; the runtime checks remain the final guard.
 - Core builtins with fixed contracts participate: `to_int("1")` is known to
@@ -187,6 +192,16 @@ body = JSON.parse_as(raw, {
 })
 
 body["age"]   # int | nil: present values validated as int, absent reads nil
+```
+
+An open shape validates the fields you care about without enumerating the
+whole payload:
+
+```vibe
+body = JSON.parse_as(raw, { name: string, ... })
+
+body["name"]   # known string
+body["role"]   # unknown: undeclared fields pass through unchecked
 ```
 
 Shape literals are legal in expression position: a braced group whose field
@@ -274,7 +289,8 @@ end
 
 Shapes are strict. Missing or extra keys fail checks. Mark a key that may be
 legitimately absent as optional (`points?: int`) instead of loosening the whole
-contract.
+contract, and use an open shape (`{ id: string, ... }`) when the payload
+carries extra fields you do not model.
 
 ### 4) Annotate block signatures where callbacks matter
 
@@ -359,5 +375,6 @@ Unknown keyword arguments are strict for all function calls, including typed sig
   `h[1] = "one"`, and `hash<string, string>` accepts `{ "name": "Ada" }` but
   rejects the symbol-keyed `{ name: "Ada" }`.
 - Shape types are strict: keys must match exactly, except fields marked
-  optional with `?`, which may be absent.
+  optional with `?`, which may be absent, and open shapes (trailing `...`),
+  which permit undeclared extra fields.
 - Type names are case-insensitive (`Int` == `int`).
