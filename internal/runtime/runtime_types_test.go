@@ -396,6 +396,154 @@ func TestTypedFunctions(t *testing.T) {
 	}
 }
 
+func TestShapeOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def accept(payload: { name: string, age?: int, contact?: { email: string, verified?: bool } }) -> { name: string, age?: int, contact?: { email: string, verified?: bool } }
+  payload
+end
+
+def nullable_optional(payload: { note?: string? }) -> { note?: string? }
+  payload
+end
+`)
+
+	successCases := []struct {
+		name string
+		fn   string
+		arg  Value
+	}{
+		{
+			name: "optional_fields_absent",
+			fn:   "accept",
+			arg:  NewHash(map[string]Value{"name": NewString("Ada")}),
+		},
+		{
+			name: "optional_field_present",
+			fn:   "accept",
+			arg:  NewHash(map[string]Value{"name": NewString("Ada"), "age": NewInt(36)}),
+		},
+		{
+			name: "nested_optional_absent",
+			fn:   "accept",
+			arg: NewHash(map[string]Value{
+				"name":    NewString("Ada"),
+				"contact": NewHash(map[string]Value{"email": NewString("ada@example.com")}),
+			}),
+		},
+		{
+			name: "nested_optional_present",
+			fn:   "accept",
+			arg: NewHash(map[string]Value{
+				"name":    NewString("Ada"),
+				"contact": NewHash(map[string]Value{"email": NewString("ada@example.com"), "verified": NewBool(true)}),
+			}),
+		},
+		{
+			name: "optional_nullable_absent",
+			fn:   "nullable_optional",
+			arg:  NewHash(map[string]Value{}),
+		},
+		{
+			name: "optional_nullable_nil",
+			fn:   "nullable_optional",
+			arg:  NewHash(map[string]Value{"note": NewNil()}),
+		},
+		{
+			name: "optional_nullable_present",
+			fn:   "nullable_optional",
+			arg:  NewHash(map[string]Value{"note": NewString("hi")}),
+		},
+	}
+	for _, tc := range successCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, []Value{tc.arg})
+			if got.Kind() != KindHash {
+				t.Fatalf("%s expected hash result, got %v", tc.fn, got.Kind())
+			}
+		})
+	}
+
+	const acceptShape = "{ age?: int, contact?: { email: string, verified?: bool }, name: string }"
+	errorCases := []struct {
+		name string
+		fn   string
+		arg  Value
+		want string
+	}{
+		{
+			name: "missing_required_field",
+			fn:   "accept",
+			arg:  NewHash(map[string]Value{"age": NewInt(36)}),
+			want: "argument payload expected " + acceptShape + ", got { age: int }",
+		},
+		{
+			name: "invalid_optional_field",
+			fn:   "accept",
+			arg:  NewHash(map[string]Value{"name": NewString("Ada"), "age": NewString("36")}),
+			want: "argument payload expected " + acceptShape + ", got { age: string, name: string }",
+		},
+		{
+			name: "unknown_field_still_rejected",
+			fn:   "accept",
+			arg:  NewHash(map[string]Value{"name": NewString("Ada"), "role": NewString("captain")}),
+			want: "argument payload expected " + acceptShape + ", got { name: string, role: string }",
+		},
+		{
+			name: "nested_missing_required_field",
+			fn:   "accept",
+			arg: NewHash(map[string]Value{
+				"name":    NewString("Ada"),
+				"contact": NewHash(map[string]Value{"verified": NewBool(true)}),
+			}),
+			want: "argument payload expected " + acceptShape,
+		},
+		{
+			name: "optional_field_not_nullable",
+			fn:   "accept",
+			arg:  NewHash(map[string]Value{"name": NewString("Ada"), "age": NewNil()}),
+			want: "argument payload expected " + acceptShape,
+		},
+	}
+	for _, tc := range errorCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCallErrorContains(t, script, tc.fn, []Value{tc.arg}, CallOptions{}, tc.want)
+		})
+	}
+}
+
+func TestShapeOptionalFieldsTypedHashKeys(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def accept(payload: { name: string, age?: int }) -> { name: string, age?: int }
+  payload
+end
+`)
+
+	// The typed-hash normalization path accepts an absent optional field.
+	withoutAge := NewTypedHash(0)
+	if err := withoutAge.HashSet(NewString("name"), NewString("Ada")); err != nil {
+		t.Fatalf("HashSet(\"name\") error = %v", err)
+	}
+	if got := callFunc(t, script, "accept", []Value{withoutAge}); !got.Equal(withoutAge) {
+		t.Fatalf("accept(typed hash without age) = %s, want original hash", got)
+	}
+
+	// A missing required field is still rejected.
+	withoutName := NewTypedHash(0)
+	if err := withoutName.HashSet(NewString("age"), NewInt(36)); err != nil {
+		t.Fatalf("HashSet(\"age\") error = %v", err)
+	}
+	requireCallErrorContains(t, script, "accept", []Value{withoutName}, CallOptions{},
+		"argument payload expected { age?: int, name: string }")
+}
+
 func TestShapeValidationRejectsTypedHashDisplayCollisions(t *testing.T) {
 	t.Parallel()
 

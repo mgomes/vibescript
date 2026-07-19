@@ -103,6 +103,49 @@ end
 	}
 }
 
+func TestJSONParseAsSupportsOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	// An absent optional field passes validation and reads as nil; a present
+	// one validates against the field type, including in nested shapes.
+	script := compileScript(t, `
+def run()
+  body = JSON.parse_as("{\"name\": \"Ada\", \"contact\": {\"email\": \"a@example.com\"}}", {
+    name: string,
+    age?: int,
+    contact?: { email: string, verified?: bool }
+  })
+  body["age"]
+end
+`)
+	requireNoCheckWarnings(t, script)
+	if got := callScript(t, context.Background(), script, "run", nil, CallOptions{}); got.Kind() != KindNil {
+		t.Fatalf("run() = %#v, want nil", got)
+	}
+
+	invalid := compileScript(t, `
+def run()
+  JSON.parse_as("{\"name\": \"Ada\", \"age\": \"36\"}", { name: string, age?: int })
+end
+`)
+	err := callScriptErr(t, context.Background(), invalid, "run", nil, CallOptions{})
+	want := "JSON.parse_as value expected { age?: int, name: string }, got { age: string, name: string }"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("run() error = %v, want substring %q", err, want)
+	}
+
+	missing := compileScript(t, `
+def run()
+  JSON.parse_as("{\"age\": 36}", { name: string, age?: int })
+end
+`)
+	err = callScriptErr(t, context.Background(), missing, "run", nil, CallOptions{})
+	want = "JSON.parse_as value expected { age?: int, name: string }, got { age: int }"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("run() error = %v, want substring %q", err, want)
+	}
+}
+
 func TestJSONParseAsAcceptsNestedShapesAndUnions(t *testing.T) {
 	t.Parallel()
 
