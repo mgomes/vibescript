@@ -62,10 +62,10 @@ func (c *scriptChecker) scriptFunctionReturnSummary(fn *ScriptFunction) *TypeExp
 // through (`transform` and `transform.call` dispatch to the same function).
 // Callable resolution can hand back a per-call env clone
 // (cloneFunctionForEnv), so a clone normalizes to its definition through the
-// body both share; body identity also keeps a same-named method from
-// borrowing the function's summary. Methods and other scripts' functions
-// resolve to nothing, and shadowing and host overrides were already applied
-// by callable resolution.
+// declaration position both share; within one script the position also keeps
+// a same-named method from borrowing the function's summary. Methods and
+// other scripts' functions resolve to nothing, and shadowing and host
+// overrides were already applied by callable resolution.
 func (c *scriptChecker) resolveOwnedPlainFunction(fn *ScriptFunction) (*ScriptFunction, bool) {
 	if fn == nil || fn.owner != c.script {
 		return nil, false
@@ -74,10 +74,7 @@ func (c *scriptChecker) resolveOwnedPlainFunction(fn *ScriptFunction) (*ScriptFu
 	if !ok {
 		return nil, false
 	}
-	if owned == fn {
-		return owned, true
-	}
-	if len(owned.Body) > 0 && len(fn.Body) == len(owned.Body) && &fn.Body[0] == &owned.Body[0] {
+	if owned == fn || owned.Pos == fn.Pos {
 		return owned, true
 	}
 	return nil, false

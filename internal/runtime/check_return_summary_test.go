@@ -405,6 +405,22 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "call member invocation carries an empty body nil summary",
+			source: `
+def empty(value)
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(empty.call(1))
+end
+`,
+			warning: "call to takes_string argument value expected string, got nil",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
