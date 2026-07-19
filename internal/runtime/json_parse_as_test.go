@@ -282,6 +282,115 @@ end
 	}
 }
 
+func TestJSONParseAsNonObjectRootDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{
+			// The actual type renders per-element detail, identifying the
+			// failing element kind.
+			name: "array element mismatch",
+			source: `
+def run()
+  JSON.parse_as("[1, \"x\"]", array<int>)
+end
+`,
+			wantErr: "JSON.parse_as value expected array<int>, got array<int | string>",
+		},
+		{
+			name: "nested shape field mismatch",
+			source: `
+def run()
+  JSON.parse_as("[{\"id\": 1}]", array<{ id: string }>)
+end
+`,
+			wantErr: "JSON.parse_as value expected array<{ id: string }>, got array<{ id: int }>",
+		},
+		{
+			name: "scalar mismatch",
+			source: `
+def run()
+  JSON.parse_as("\"x\"", int)
+end
+`,
+			wantErr: "JSON.parse_as value expected int, got string",
+		},
+		{
+			name: "union mismatch names the union",
+			source: `
+def run()
+  JSON.parse_as("true", int | string)
+end
+`,
+			wantErr: "JSON.parse_as value expected int | string, got bool",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			err := callScriptErr(t, context.Background(), script, "run", nil, CallOptions{})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("run() error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestArgumentTypeLiteralShadowing(t *testing.T) {
+	t.Parallel()
+
+	// A local sharing a type name keeps the value reading: the argument
+	// evaluates to the local, exactly as before type literals existed.
+	shadowed := compileScript(t, `
+def double(v)
+  v * 2
+end
+
+def run()
+  int = 21
+  double(int)
+end
+`)
+	got := callScript(t, context.Background(), shadowed, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 42 {
+		t.Fatalf("run() = %#v, want 42", got)
+	}
+
+	// The shadowed reading flows into JSON.parse_as too: the argument is the
+	// local's value, not a contract, and is rejected as such.
+	rejected := compileScript(t, `
+def run()
+  int = 21
+  JSON.parse_as("1", int)
+end
+`)
+	err := callScriptErr(t, context.Background(), rejected, "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expects a type literal as its second argument") {
+		t.Fatalf("run() error = %v, want type-literal rejection", err)
+	}
+
+	// Comparisons over non-type locals never read as types.
+	comparison := compileScript(t, `
+def truthy(v)
+  v
+end
+
+def run(threshold: int, value: int)
+  truthy(value < threshold)
+end
+`)
+	got = callScript(t, context.Background(), comparison, "run", []Value{NewInt(10), NewInt(3)}, CallOptions{})
+	if got.Kind() != KindBool || !got.Bool() {
+		t.Fatalf("run(10, 3) = %#v, want true", got)
+	}
+}
+
 func TestJSONParseAsSupportsOpenShapes(t *testing.T) {
 	t.Parallel()
 
