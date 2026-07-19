@@ -1021,9 +1021,13 @@ func (c *scriptChecker) narrowClassPredicateMember(member *MemberExpr, arg Expre
 		if !classPredicateArmUsesUniversalDispatch(arm, member.Property, resolve) {
 			return true
 		}
+		if _, known := classPredicateArmMatch(arm, want, exact, resolve); !known {
+			return true
+		}
 	}
 	matches := func(arm *TypeExpr) bool {
-		return classPredicateArmMatches(arm, want, exact, resolve)
+		m, _ := classPredicateArmMatch(arm, want, exact, resolve)
+		return m
 	}
 	if truthy {
 		return c.narrowLocalArms(ident.Name, matches)
@@ -1074,25 +1078,50 @@ func classPredicateArmUsesUniversalDispatch(arm *TypeExpr, property string, reso
 	return typeArmUsesUniversalMemberDispatch(arm, property)
 }
 
-// classPredicateArmMatches reports whether every value of the arm satisfies
-// the predicate: an instance arm matches its own class exactly, and
-// is_a?/kind_of? additionally match modules the class includes. Non-instance
-// arms always answer false.
-func classPredicateArmMatches(arm *TypeExpr, want *ClassDef, exact bool, resolve namedTypeResolver) bool {
+// classPredicateArmMatch reports how a value of the arm answers the
+// predicate. The runtime compares class definitions by identity, so the
+// positive direction requires the arm to resolve to the argument's own
+// definition; module membership mirrors the runtime's name-based include
+// walk. A same-named but distinct definition leaves identity unproven —
+// known=false — and the caller must not narrow.
+func classPredicateArmMatch(arm *TypeExpr, want *ClassDef, exact bool, resolve namedTypeResolver) (matches, known bool) {
 	if arm == nil || arm.Kind != TypeEnum {
-		return false
+		return false, true
 	}
 	match, ok := resolve(arm)
-	if !ok || match.class == nil {
-		return false
+	if !ok {
+		return false, false
+	}
+	if match.enum != nil {
+		// Enum values are never class instances.
+		return false, true
+	}
+	if match.class == nil {
+		return false, false
+	}
+	if classDefsIdentical(match.class, want) {
+		return true, true
+	}
+	if !exact && want.IsModule && classIncludesModule(match.class, want.Name) {
+		return true, true
 	}
 	if match.class.Name == want.Name {
+		return false, false
+	}
+	return false, true
+}
+
+// classDefsIdentical mirrors enumDefsEqual for classes: definition clones
+// keep their owner script, so identity survives cloning while same-named
+// definitions from different scripts stay distinct.
+func classDefsIdentical(left, right *ClassDef) bool {
+	if left == right {
 		return true
 	}
-	if !exact && want.IsModule {
-		return classIncludesModule(match.class, want.Name)
+	if left == nil || right == nil || left.Name != right.Name {
+		return false
 	}
-	return false
+	return left.owner != nil && left.owner == right.owner
 }
 
 // knownPureUniversalPredicateMember reports whether every receiver arm that
