@@ -267,12 +267,48 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
-			name: "nested callable returns do not contaminate the summary",
+			name: "lambda returns do not contaminate the summary",
 			source: `
 def build_count()
   ->() { return "lambda" }
   lambda { return "lambda helper" }
-  proc { return "proc helper" }
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "invoked lambda returns stay local",
+			source: `
+def build_count()
+  helper = ->() { return "lambda" }
+  helper.call
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "value blocks without returns keep the summary",
+			source: `
+def build_count()
+  [1, 2].each { |n| n }
   42
 end
 
@@ -484,6 +520,92 @@ def run()
   serialize()
   mutate_serializer()
   takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "block returns poison the summary",
+			source: `
+def find_marker()
+  [1].each { return "s" }
+  0
+end
+
+def takes_int(value: int)
+  value
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_int(find_marker())
+  takes_string(find_marker())
+end
+`,
+		},
+		{
+			name: "nested block returns poison the summary",
+			source: `
+def scan()
+  [[1]].each do |row|
+    row.each { return "s" }
+  end
+  0
+end
+
+def takes_int(value: int)
+  value
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_int(scan())
+  takes_string(scan())
+end
+`,
+		},
+		{
+			name: "invoked proc returns poison the summary",
+			source: `
+def build()
+  handler = proc { return "s" }
+  handler.call
+  0
+end
+
+def takes_int(value: int)
+  value
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_int(build())
+  takes_string(build())
+end
+`,
+		},
+		{
+			name: "discarded proc returns poison the summary",
+			source: `
+def build_count()
+  proc { return "s" }
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
 end
 `,
 		},

@@ -40,6 +40,11 @@ func (r *returnSummaryCollector) record(fact *TypeExpr) {
 	r.arms = append(r.arms, fact)
 }
 
+// sawReturn reports whether the collector reached any return path at all.
+func (r *returnSummaryCollector) sawReturn() bool {
+	return r != nil && (r.unknown || len(r.arms) > 0)
+}
+
 // scriptFunctionReturnSummary reports the summary for calls resolved to a
 // plain function of the checked script. Summaries are computed lazily so a
 // caller can recursively summarize its callees without depending on function

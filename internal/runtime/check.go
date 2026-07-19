@@ -2611,7 +2611,12 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		}
 		if c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
-			c.checkBlockLiteral(function, typed.Block)
+			// The lambda builtin converts its literal block to local return
+			// semantics, so those returns cannot unwind the enclosing
+			// function.
+			localReturns := typed.Block != nil && typed.Block.Lambda ||
+				targetResolved && target.fn == nil && target.name == "lambda"
+			c.checkBlockLiteral(function, typed.Block, localReturns)
 		}
 		if argumentsMayBeSkipped {
 			c.restoreRuntimeState(argumentState)
@@ -2795,7 +2800,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// A standalone block literal is a stabby lambda; its body checks like a
 		// call block's. Plain call blocks are checked from the CallExpr case.
 		if typed.Lambda {
-			c.checkBlockLiteral(function, typed)
+			c.checkBlockLiteral(function, typed, true)
 		}
 		return
 	case *YieldExpr:
@@ -2956,7 +2961,11 @@ func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr)
 	}
 }
 
-func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) {
+// checkBlockLiteral walks a block or lambda body. localReturns marks blocks
+// whose returns stay inside the block itself (stabby lambdas and the lambda
+// builtin's literal block); a plain block's return unwinds the enclosing
+// function instead.
+func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, localReturns bool) {
 	if block == nil {
 		return
 	}
@@ -2969,9 +2978,24 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	previousSites := c.deferredReturnSites
 	c.deferredReturnSites = nil
 	defer func() { c.deferredReturnSites = previousSites }()
+	// A lambda's returns never leave the lambda, so a summary walk ignores
+	// them. A plain block's return exits the enclosing function, but its
+	// walk-time fact can be stale by the time the block actually runs (a
+	// callee may mutate a captured container before yielding, or a stored
+	// proc may fire after later reassignments), so any return the block walk
+	// reaches poisons the summary instead of contributing a guessed arm.
 	previousCollector := c.returnCollector
-	c.returnCollector = nil
-	defer func() { c.returnCollector = previousCollector }()
+	var blockCollector *returnSummaryCollector
+	if previousCollector != nil && !localReturns {
+		blockCollector = &returnSummaryCollector{}
+	}
+	c.returnCollector = blockCollector
+	defer func() {
+		c.returnCollector = previousCollector
+		if blockCollector.sawReturn() {
+			previousCollector.record(nil)
+		}
+	}()
 
 	// A block may run zero or many times, so outer locals its body assigns
 	// lose their facts before the walk, and the walk's own bindings are
