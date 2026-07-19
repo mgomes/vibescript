@@ -1079,6 +1079,7 @@ func buildMemberCompletionItems() []map[string]any {
 			byName[name] = append(byName[name], receiver)
 		}
 	}
+	contractsByName := memberContractsByName()
 	labels := make([]string, 0, len(byName))
 	for name := range byName {
 		labels = append(labels, name)
@@ -1095,18 +1096,73 @@ func buildMemberCompletionItems() []map[string]any {
 			"detail": strings.Join(receivers, ", "),
 		}
 		// Only members with a single documented interpretation carry
-		// docs: the completion list is type-unaware, so an ambiguous
-		// name (size on array/hash/string) has no receiver context to
-		// pick an entry with.
-		if md := unambiguousMemberDocMarkdown(label); md != "" {
+		// prose docs: the completion list is type-unaware, so an
+		// ambiguous name (size on array/hash/string) has no receiver
+		// context to pick an entry with. Registered contract signatures
+		// are receiver-qualified, so they attach even to ambiguous names.
+		documentation := unambiguousMemberDocMarkdown(label)
+		if signatures := memberContractSignatures(label, contractsByName[label]); signatures != "" {
+			if documentation != "" {
+				documentation += "\n\n" + signatures
+			} else {
+				documentation = signatures
+			}
+		}
+		if documentation != "" {
 			item["documentation"] = map[string]any{
 				"kind":  "markdown",
-				"value": md,
+				"value": documentation,
 			}
 		}
 		items = append(items, item)
 	}
 	return items
+}
+
+// memberContractsByName indexes the runtime member contract registry by
+// member name, with aliases indexing the contract they share.
+func memberContractsByName() map[string][]vibes.MemberContract {
+	byName := make(map[string][]vibes.MemberContract)
+	for _, contract := range vibes.MemberContracts() {
+		byName[contract.Name] = append(byName[contract.Name], contract)
+		for _, alias := range contract.Aliases {
+			byName[alias] = append(byName[alias], contract)
+		}
+	}
+	return byName
+}
+
+// memberContractSignatures renders the registered contracts of one member
+// name as a markdown block of receiver-qualified signature lines, e.g.
+// "`array.fetch(index, default?) { ... }`".
+func memberContractSignatures(label string, contracts []vibes.MemberContract) string {
+	lines := make([]string, 0, len(contracts))
+	for _, contract := range contracts {
+		lines = append(lines, "`"+memberContractSignature(label, contract)+"`")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func memberContractSignature(label string, contract vibes.MemberContract) string {
+	params := make([]string, 0, len(contract.Params)+1)
+	for _, param := range contract.Params {
+		name := param.Name
+		if param.Optional {
+			name += "?"
+		}
+		params = append(params, name)
+	}
+	if contract.Variadic {
+		params = append(params, "...")
+	}
+	signature := contract.Receiver + "." + label + "(" + strings.Join(params, ", ") + ")"
+	if contract.TakesBlock {
+		signature += " { ... }"
+	}
+	if contract.Result != "" {
+		signature += " -> " + contract.Result
+	}
+	return signature
 }
 
 type lspCompletionIndex struct {

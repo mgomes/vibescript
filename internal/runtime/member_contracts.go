@@ -1,5 +1,7 @@
 package runtime
 
+import "slices"
+
 // This file is the central registry of builtin member contracts. The
 // dispatch tables in members_*.go stay authoritative for behavior; a
 // contract records that behavior statically so the checker and editor
@@ -82,4 +84,75 @@ func buildStaticMemberSpecs(contracts []memberContract) map[string]staticCallSpe
 		}
 	}
 	return specs
+}
+
+// MemberParam is one positional parameter of an exported member contract.
+type MemberParam struct {
+	// Name is the display name used in rendered signatures.
+	Name string
+	// Type is the rendered parameter type; empty when undeclared.
+	Type string
+	// Optional reports whether the call may omit the parameter.
+	Optional bool
+}
+
+// MemberContract is the exported view of one registered builtin member
+// contract, for editor tooling such as LSP completion.
+type MemberContract struct {
+	// Receiver is the runtime receiver kind providing the member.
+	Receiver string
+	// Name is the canonical member name; Aliases resolve to the same
+	// builtin under the same contract.
+	Name    string
+	Aliases []string
+	// Params describes the positional parameters; Variadic reports an
+	// unbounded tail beyond them.
+	Params   []MemberParam
+	Variadic bool
+	// TakesBlock reports whether the member consumes a block argument.
+	TakesBlock bool
+	// AutoInvoke reports whether a bare member read invokes the builtin.
+	AutoInvoke bool
+	// Result is the rendered invariant result type; empty when unknown.
+	Result string
+	// MutatesReceiver reports whether a call may modify the receiver in
+	// place.
+	MutatesReceiver bool
+}
+
+// MemberContracts returns the registered builtin member contracts for
+// editor tooling, ordered by receiver kind, then name. The returned
+// slices are copies; callers may mutate them freely.
+func MemberContracts() []MemberContract {
+	out := make([]MemberContract, 0, len(memberContracts))
+	for _, contract := range memberContracts {
+		out = append(out, exportedMemberContract(contract))
+	}
+	return out
+}
+
+func exportedMemberContract(contract memberContract) MemberContract {
+	params := make([]MemberParam, 0, len(contract.paramNames))
+	for i, name := range contract.paramNames {
+		param := MemberParam{Name: name, Optional: i >= contract.call.minArgs}
+		if i < len(contract.call.paramTypes) && contract.call.paramTypes[i] != nil {
+			param.Type = formatTypeExpr(contract.call.paramTypes[i])
+		}
+		params = append(params, param)
+	}
+	result := ""
+	if contract.call.resultType != nil {
+		result = formatTypeExpr(contract.call.resultType)
+	}
+	return MemberContract{
+		Receiver:        contract.receiver,
+		Name:            contract.name,
+		Aliases:         slices.Clone(contract.aliases),
+		Params:          params,
+		Variadic:        contract.call.maxArgs < 0,
+		TakesBlock:      contract.call.usesBlock,
+		AutoInvoke:      contract.call.autoInvoke,
+		Result:          result,
+		MutatesReceiver: contract.effects.mutatesReceiver,
+	}
 }

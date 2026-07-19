@@ -3001,6 +3001,36 @@ func TestMemberCompletionItemsCarryUnambiguousDocs(t *testing.T) {
 	}
 }
 
+// TestMemberCompletionItemsCarryContractSignatures verifies that members
+// registered in the runtime contract registry surface receiver-qualified
+// signatures in completion documentation, including for ambiguous names.
+func TestMemberCompletionItemsCarryContractSignatures(t *testing.T) {
+	t.Parallel()
+	items := memberCompletionItems()
+
+	cases := []struct {
+		label      string
+		signatures []string
+	}{
+		{"at", []string{"`array.at(index)`"}},
+		{"fetch", []string{"`array.fetch(index, default?) { ... }`"}},
+		{"slice", []string{"`array.slice(start, length?)`", "`string.slice(start, length?)`"}},
+	}
+	for _, tc := range cases {
+		item := findCompletionItem(t, items, tc.label)
+		doc, ok := item["documentation"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s documentation = %#v, want markdown contents", tc.label, item["documentation"])
+		}
+		value, _ := doc["value"].(string)
+		for _, signature := range tc.signatures {
+			if !strings.Contains(value, signature) {
+				t.Errorf("%s documentation = %q, want it to contain %q", tc.label, value, signature)
+			}
+		}
+	}
+}
+
 // TestMemberDocsMatchRuntimeMembers is the value-member documentation
 // drift gate: every parsed doc entry must name a member the runtime
 // actually dispatches for that receiver type, so the table can never
