@@ -45,10 +45,22 @@ func NewTypedBuiltin(name string, fn BuiltinFunc, sig Signature) (Value, error) 
 		return Value{}, err
 	}
 	wrapped := func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		if err := validateSignatureCall(name, sig, paramTypes, args, kwargs, block); err != nil {
+		normalized, err := validateSignatureCall(exec, name, sig, paramTypes, args, kwargs, block)
+		if err != nil {
 			return NewNil(), err
 		}
-		return fn(exec, receiver, args, kwargs, block)
+		result, err := fn(exec, receiver, normalized, kwargs, block)
+		if err != nil || spec.resultType == nil {
+			return result, err
+		}
+		validated, err := normalizeValueForType(result, spec.resultType, signatureTypeContext(exec))
+		if err != nil {
+			if isHostControlSignal(err) {
+				return NewNil(), err
+			}
+			return NewNil(), fmt.Errorf("%s", formatReturnTypeMismatch(name, err))
+		}
+		return validated, nil
 	}
 	val := NewBuiltin(name, wrapped)
 	valueBuiltin(val).checkSpec = spec
@@ -106,8 +118,11 @@ func signatureParamLabel(param SignatureParam, index int) string {
 }
 
 // validateSignatureCall enforces the published contract at runtime with the
-// same shape rules the checker reports statically.
-func validateSignatureCall(name string, sig Signature, paramTypes []*TypeExpr, args []Value, kwargs map[string]Value, block Value) error {
+// same shape rules the checker reports statically, normalizing each typed
+// argument exactly like an annotated script parameter (symbols coerce into
+// enums, named types resolve in the execution's scope). It returns the
+// normalized arguments the host function should receive.
+func validateSignatureCall(exec *Execution, name string, sig Signature, paramTypes []*TypeExpr, args []Value, kwargs map[string]Value, block Value) ([]Value, error) {
 	minArgs := 0
 	for i, param := range sig.Params {
 		if !param.Optional {
@@ -115,25 +130,49 @@ func validateSignatureCall(name string, sig Signature, paramTypes []*TypeExpr, a
 		}
 	}
 	if len(args) < minArgs {
-		return fmt.Errorf("%s expects at least %d arguments, got %d", name, minArgs, len(args))
+		return nil, fmt.Errorf("%s expects at least %d arguments, got %d", name, minArgs, len(args))
 	}
 	if len(args) > len(sig.Params) {
-		return fmt.Errorf("%s expects at most %d arguments, got %d", name, len(sig.Params), len(args))
+		return nil, fmt.Errorf("%s expects at most %d arguments, got %d", name, len(sig.Params), len(args))
 	}
 	if len(kwargs) > 0 {
-		return fmt.Errorf("%s does not take keyword arguments", name)
+		return nil, fmt.Errorf("%s does not take keyword arguments", name)
 	}
 	if !sig.AcceptsBlock && valueBlock(block) != nil {
-		return fmt.Errorf("%s does not take a block", name)
+		return nil, fmt.Errorf("%s does not take a block", name)
 	}
+	normalized := args
+	copied := false
 	for i, arg := range args {
 		ty := paramTypes[i]
 		if ty == nil {
 			continue
 		}
-		if err := checkValueType(arg, ty); err != nil {
-			return fmt.Errorf("%s %s", name, formatArgumentTypeMismatch(signatureParamLabel(sig.Params[i], i), err))
+		val, err := normalizeValueForType(arg, ty, signatureTypeContext(exec))
+		if err != nil {
+			if isHostControlSignal(err) || isNormalizationLimitError(err) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%s %s", name, formatArgumentTypeMismatch(signatureParamLabel(sig.Params[i], i), err))
 		}
+		if !copied {
+			normalized = append([]Value(nil), args...)
+			copied = true
+		}
+		normalized[i] = val
 	}
-	return nil
+	return normalized, nil
+}
+
+// signatureTypeContext resolves signature type spellings in the execution's
+// root scope, the same way annotated script parameters resolve named types.
+func signatureTypeContext(exec *Execution) typeContext {
+	if exec == nil {
+		return typeContext{}
+	}
+	var owner *Script
+	if exec.script != nil {
+		owner = exec.script
+	}
+	return typeContext{owner: owner, env: exec.root, fallback: exec.root, exec: exec}
 }

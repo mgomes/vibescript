@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -206,5 +207,57 @@ func TestHostSignatureDefinitionErrors(t *testing.T) {
 		Params: []SignatureParam{{Name: "x", Optional: true}, {Name: "y"}},
 	}); err == nil {
 		t.Fatal("required-after-optional registered without error")
+	}
+}
+
+func TestHostSignatureNamedTypesNormalizeLikeAnnotations(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	err := engine.RegisterBuiltinWithSignature("advance", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if args[0].Kind() != KindEnumValue {
+			return NewNil(), fmt.Errorf("advance received %s, want normalized enum value", args[0].Kind())
+		}
+		return args[0], nil
+	}, Signature{
+		Params: []SignatureParam{{Name: "status", Type: "Status"}},
+		Result: "Status",
+	})
+	if err != nil {
+		t.Fatalf("RegisterBuiltinWithSignature: %v", err)
+	}
+	script := compileScriptWithEngine(t, engine, `
+enum Status
+  Draft
+  Published
+end
+
+def run()
+  advance(:draft)
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call(advance :draft) error: %v", err)
+	}
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("Call(advance :draft) = %#v, want Status::Draft", got)
+	}
+}
+
+func TestHostSignatureResultEnforcedAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	err := engine.RegisterBuiltinWithSignature("lie", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewString("not an int"), nil
+	}, Signature{Result: "int"})
+	if err != nil {
+		t.Fatalf("RegisterBuiltinWithSignature: %v", err)
+	}
+	script := compileScriptWithEngine(t, engine, "def run()\n  lie()\nend")
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "return value for lie expected int, got string") {
+		t.Fatalf("Call(lie) error = %v, want return contract mismatch", err)
 	}
 }
