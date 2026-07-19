@@ -614,6 +614,20 @@ end
 `,
 		},
 		{
+			name: "callable predicate argument poisons the receiver fact",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(f: function)
+  x = {name: "a"}
+  x.eql?(f)
+  takes_int(x[:name])
+end
+`,
+		},
+		{
 			name: "predicate call with impure argument poisons the receiver fact",
 			source: `
 def name_key()

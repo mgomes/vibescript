@@ -1080,16 +1080,21 @@ func (c *scriptChecker) knownPureUniversalPredicateCall(call *CallExpr) bool {
 }
 
 // predicateArgumentIsPure reports whether a predicate argument provably runs
-// no user code when it evaluates: literals and plain value reads qualify. An
-// identifier stays pure only when it cannot auto-invoke a callable.
+// no user code when it evaluates: literals and plain non-callable reads
+// qualify. An identifier stays pure only when it cannot auto-invoke a
+// callable — neither as a resolved zero-arity function or builtin, nor as a
+// local whose value may itself be callable (a stored zero-arity function
+// auto-invokes when the argument evaluates).
 func (c *scriptChecker) predicateArgumentIsPure(expr Expression) bool {
 	switch typed := expr.(type) {
 	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral,
-		*NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+		*NilLiteral, *SymbolLiteral:
 		return true
 	case *Identifier:
-		_, autoCallable := c.resolveCallable(&CallExpr{Callee: typed})
-		return !autoCallable
+		if _, autoCallable := c.resolveCallable(&CallExpr{Callee: typed}); autoCallable {
+			return false
+		}
+		return !typeExprMayIncludeCallable(c.inferExpressionType(typed))
 	case *UnaryExpr:
 		return c.predicateArgumentIsPure(typed.Right)
 	}
