@@ -125,16 +125,21 @@ func parseTypeAtom(text string) (*TypeExpr, error) {
 // not resolve falls back to structural matching; a qualified name that does
 // not resolve is an error, since it can never match anything.
 func namedAtomMatches(exec *Execution, receiver Value, ty *TypeExpr, text string) (bool, error) {
-	if ty.Nullable && receiver.Kind() == KindNil {
-		return true, nil
-	}
 	ctx := typeContext{owner: exec.currentSourceScript(), env: exec.root, fallback: exec.root, exec: exec}
 	match, ok, err := lookupNamedTypeForType(ty, ctx)
 	if err != nil || !ok {
+		// An unknown qualified name can never match and errors even for a
+		// nil receiver, so typos fail loudly on every input.
 		if strings.Contains(ty.Name, ".") {
 			return false, fmt.Errorf("unknown type atom %q in %s", text, isTypeMemberName)
 		}
+		if ty.Nullable && receiver.Kind() == KindNil {
+			return true, nil
+		}
 		return valueMatchesType(receiver, ty)
+	}
+	if ty.Nullable && receiver.Kind() == KindNil {
+		return true, nil
 	}
 	if match.enum != nil {
 		member := valueEnumValue(receiver)

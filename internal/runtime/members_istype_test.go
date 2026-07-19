@@ -182,6 +182,10 @@ func TestIsTypePredicateUnknownQualifiedAtomErrors(t *testing.T) {
 	t.Parallel()
 
 	script := compileScriptDefault(t, "def run()\n  1.is_type?(\"missing.Level\")\nend")
+	nilScript := compileScriptDefault(t, "def run()\n  nil.is_type?(\"missing.Level?\")\nend")
+	if _, err := nilScript.Call(context.Background(), "run", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "unknown type atom") {
+		t.Fatalf("nil receiver error = %v, want unknown qualified atom error", err)
+	}
 	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "unknown type atom \"missing.Level\"") {
 		t.Fatalf("Call error = %v, want unknown qualified atom error", err)
 	}
