@@ -2,6 +2,7 @@ package vibes_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -89,5 +90,44 @@ end
 	_, warnings, err := script.CheckedCall(context.Background(), "run", nil, vibes.CallOptions{})
 	if err != nil || len(warnings) == 0 {
 		t.Fatalf("CheckedCall(script diagnostic) = warnings %v, err %v; want static gate", warnings, err)
+	}
+}
+
+func TestCheckedCallBindsCapabilitiesUnderCallContext(t *testing.T) {
+	t.Parallel()
+
+	type ctxKey struct{}
+	engine := vibes.MustNewEngine(vibes.Config{})
+	script, err := engine.Compile(`
+def run()
+  request["id"]
+end
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := vibes.MustNewContextCapability("request", func(ctx context.Context) (value.Value, error) {
+		id, _ := ctx.Value(ctxKey{}).(string)
+		if id == "" {
+			return value.NewNil(), errors.New("bind must see the invocation context")
+		}
+		return value.NewHash(map[string]value.Value{"id": value.NewString(id)}), nil
+	})
+
+	ctx := context.WithValue(context.Background(), ctxKey{}, "req-1")
+	got, warnings, err := script.CheckedCall(ctx, "run", nil, vibes.CallOptions{Capabilities: []vibes.CapabilityAdapter{adapter}})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("CheckedCall(context capability) = warnings %v, err %v; want clean run", warnings, err)
+	}
+	if got.String() != "req-1" {
+		t.Fatalf("CheckedCall(context capability) = %s, want req-1", got)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, warnings, err = script.CheckedCall(canceled, "run", nil, vibes.CallOptions{Capabilities: []vibes.CapabilityAdapter{adapter}})
+	if len(warnings) != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("CheckedCall(canceled) = warnings %v, err %v; want context.Canceled with no adapter work", warnings, err)
 	}
 }

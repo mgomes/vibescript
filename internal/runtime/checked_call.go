@@ -18,7 +18,18 @@ import "context"
 // deployment pipelines and untrusted-script boundaries where a provable
 // contradiction should block execution entirely.
 func (s *Script) CheckedCall(ctx context.Context, name string, args []Value, opts CallOptions) (Value, []CheckWarning, error) {
-	if warnings := s.CheckWarningsForCall(name, args, opts); len(warnings) > 0 {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return NewNil(), nil, err
+	}
+	warnings := s.checkWarningsCtx(ctx, opts, checkTarget{
+		Function:     name,
+		Args:         args,
+		ValidateCall: true,
+	})
+	if len(warnings) > 0 {
 		return NewNil(), warnings, nil
 	}
 	val, err := s.Call(ctx, name, args, opts)

@@ -63,14 +63,21 @@ type checkTarget struct {
 }
 
 func (s *Script) checkWarnings(opts CallOptions, target checkTarget) []CheckWarning {
-	return s.checkWarningsMode(opts, target, false)
+	return s.checkWarningsCtx(context.Background(), opts, target)
 }
 
-func (s *Script) checkWarningsMode(opts CallOptions, target checkTarget, orderIndependentOnly bool) []CheckWarning {
+// checkWarningsCtx runs the checker with capability adapters bound under the
+// caller's context, so a combined check-and-call gate binds the same host
+// surface the execution will.
+func (s *Script) checkWarningsCtx(ctx context.Context, opts CallOptions, target checkTarget) []CheckWarning {
+	return s.checkWarningsMode(ctx, opts, target, false)
+}
+
+func (s *Script) checkWarningsMode(ctx context.Context, opts CallOptions, target checkTarget, orderIndependentOnly bool) []CheckWarning {
 	if s == nil {
 		return nil
 	}
-	optionGlobals := checkOptionGlobals(s, opts)
+	optionGlobals := checkOptionGlobals(ctx, s, opts)
 	checker := scriptChecker{
 		script:                s,
 		callOptions:           opts,
@@ -187,13 +194,16 @@ type reachableFunction struct {
 	runtimeState checkRuntimeState
 }
 
-func checkOptionGlobals(script *Script, opts CallOptions) map[string]Value {
+func checkOptionGlobals(ctx context.Context, script *Script, opts CallOptions) map[string]Value {
 	if len(opts.Capabilities) == 0 && len(opts.Globals) == 0 {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	globals := make(map[string]Value, len(opts.Globals)+len(opts.Capabilities)*2)
 	if script != nil {
-		binding := CapabilityBinding{Context: context.Background(), Engine: script.engine}
+		binding := CapabilityBinding{Context: ctx, Engine: script.engine}
 		for _, adapter := range opts.Capabilities {
 			if adapter == nil {
 				continue
