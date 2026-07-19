@@ -152,6 +152,32 @@ end
 	}
 }
 
+func TestIsTypePredicateQualifiedAtomsKeepDefinitionIdentity(t *testing.T) {
+	t.Parallel()
+
+	dir := tempModuleTree(t,
+		moduleFile{path: "a.vibe", content: "enum Status\n  Ok\nend\n\ndef pick() -> Status\n  :ok\nend\n"},
+		moduleFile{path: "b.vibe", content: "enum Status\n  Ok\nend\n"},
+	)
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("a", as: "a")
+  require("b", as: "b")
+  v = a.pick()
+  [v.is_type?("a.Status"), v.is_type?("b.Status")]
+end
+`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call(run) error: %v", err)
+	}
+	arr := got.Array()
+	if len(arr) != 2 || !arr[0].Bool() || arr[1].Bool() {
+		t.Fatalf("run() = %v, want [true, false]: same-named enums from different modules stay distinct", got)
+	}
+}
+
 func TestIsTypePredicateUnknownQualifiedAtomErrors(t *testing.T) {
 	t.Parallel()
 

@@ -44,11 +44,11 @@ func newIsTypePredicateBuiltin() Value {
 			return NewNil(), err
 		}
 		if ty.Kind == TypeEnum {
-			resolved, err := resolveTypeAtomName(exec, ty, text)
+			matches, err := namedAtomMatches(exec, receiver, ty, text)
 			if err != nil {
 				return NewNil(), err
 			}
-			ty = resolved
+			return NewBool(matches), nil
 		}
 		matches, err := valueMatchesType(receiver, ty)
 		if err != nil {
@@ -118,30 +118,40 @@ func parseTypeAtom(text string) (*TypeExpr, error) {
 	return ty, nil
 }
 
-// resolveTypeAtomName resolves a named atom in the executing source's scope,
-// the same way annotations resolve, so a module alias spelling such as
-// "lv.Level" tests against the enum it names. A plain name that does not
-// resolve keeps its literal spelling for structural matching; a qualified
-// name that does not resolve is an error, since it can never match anything.
-func resolveTypeAtomName(exec *Execution, ty *TypeExpr, text string) (*TypeExpr, error) {
+// namedAtomMatches resolves a named atom in the executing source's scope,
+// the same way annotations resolve, and compares the receiver against the
+// resolved definition itself — so "a.Status" and "b.Status" stay distinct
+// even when two modules export the same enum name. A plain name that does
+// not resolve falls back to structural matching; a qualified name that does
+// not resolve is an error, since it can never match anything.
+func namedAtomMatches(exec *Execution, receiver Value, ty *TypeExpr, text string) (bool, error) {
+	if ty.Nullable && receiver.Kind() == KindNil {
+		return true, nil
+	}
 	ctx := typeContext{owner: exec.currentSourceScript(), env: exec.root, fallback: exec.root, exec: exec}
 	match, ok, err := lookupNamedTypeForType(ty, ctx)
 	if err != nil || !ok {
 		if strings.Contains(ty.Name, ".") {
-			return nil, fmt.Errorf("unknown type atom %q in %s", text, isTypeMemberName)
+			return false, fmt.Errorf("unknown type atom %q in %s", text, isTypeMemberName)
 		}
-		return ty, nil
+		return valueMatchesType(receiver, ty)
 	}
-	resolved := &TypeExpr{Kind: TypeEnum, Nullable: ty.Nullable}
-	switch {
-	case match.enum != nil:
-		resolved.Name = match.enum.Name
-	case match.class != nil:
-		resolved.Name = match.class.Name
-	default:
-		return ty, nil
+	if match.enum != nil {
+		member := valueEnumValue(receiver)
+		return member != nil && enumDefsEqual(member.Enum, match.enum), nil
 	}
-	return resolved, nil
+	if match.class != nil {
+		inst := valueInstance(receiver)
+		if inst == nil || inst.Class == nil {
+			return false, nil
+		}
+		if inst.Class == match.class {
+			return true, nil
+		}
+		return inst.Class.Name == match.class.Name &&
+			inst.Class.owner != nil && inst.Class.owner == match.class.owner, nil
+	}
+	return valueMatchesType(receiver, ty)
 }
 
 // isTypeAtomIdent reports whether base is a plain identifier — letters,
