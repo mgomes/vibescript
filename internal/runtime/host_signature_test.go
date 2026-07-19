@@ -389,3 +389,34 @@ end
 		t.Fatalf("CheckWarningsWithOptions() = %v, want none: the module's own fetch wins over the host global", warnings)
 	}
 }
+
+func TestHostSignatureTypedGlobalsApplyInsideModules(t *testing.T) {
+	t.Parallel()
+
+	dir := tempModuleTree(t, moduleFile{path: "worker.vibe", content: "def enqueue_bad()\n  jobs.enqueue(1, {})\nend\n"})
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	typed, err := NewTypedBuiltin("jobs.enqueue", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewBool(true), nil
+	}, Signature{
+		Params: []SignatureParam{{Name: "queue", Type: "string"}, {Name: "payload", Type: "hash"}},
+		Result: "bool",
+	})
+	if err != nil {
+		t.Fatalf("NewTypedBuiltin: %v", err)
+	}
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("worker").enqueue_bad()
+end
+`)
+	warnings := script.CheckWarningsWithOptions(CallOptions{Globals: map[string]Value{"jobs": NewObject(map[string]Value{"enqueue": typed})}})
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w.Message, "call to jobs.enqueue argument queue expected string, got int") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CheckWarningsWithOptions() = %v, want typed contract applied inside the module", warnings)
+	}
+}

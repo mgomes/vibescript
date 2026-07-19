@@ -4412,7 +4412,7 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if fn, ok := c.typeRootFunction(callee.Name); ok {
 			return staticCallable{name: callee.Name, fn: fn, resolution: calleeDirect}, true
 		}
-		if c.hostGlobalShadows(callee.Name) && !c.typeRootHasBinding(callee.Name) {
+		if c.optionGlobalSeeded(callee.Name) {
 			return c.hostGlobalCallable(callee.Name)
 		}
 		if c.typeRootHasBinding(callee.Name) {
@@ -4484,6 +4484,30 @@ func (c *scriptChecker) hostBuiltinOverrides(name string) bool {
 func (c *scriptChecker) hostGlobalShadows(name string) bool {
 	_, ok := c.hostGlobals[name]
 	return ok
+}
+
+// optionGlobalSeeded reports whether name resolves to the seeded call-option
+// global in this checking context: the global exists and the script's own
+// static bindings (functions, classes, enums) do not claim the name, which is
+// exactly when checkTypeRootWithParentAndGlobals defines the global on the
+// root. Required modules keep their own bindings ahead of parent globals.
+func (c *scriptChecker) optionGlobalSeeded(name string) bool {
+	if !c.hostGlobalShadows(name) {
+		return false
+	}
+	if c.script == nil {
+		return true
+	}
+	if _, ok := c.script.functions[name]; ok {
+		return false
+	}
+	if _, ok := c.script.classes[name]; ok {
+		return false
+	}
+	if _, ok := c.script.enums[name]; ok {
+		return false
+	}
+	return true
 }
 
 // hostGlobalCallable resolves a call-option global's published contract. A
@@ -4566,7 +4590,7 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		if fn, ok := c.typeRootObjectFunction(ident.Name, member.Property); ok {
 			return staticCallable{name: ident.Name + "." + member.Property, fn: fn, resolution: calleeMemberValue}, true
 		}
-		if c.hostGlobalShadows(ident.Name) && !c.typeRootHasBinding(ident.Name) {
+		if c.optionGlobalSeeded(ident.Name) {
 			return c.hostGlobalMemberCallable(ident.Name, member.Property)
 		}
 		if c.typeRootHasBinding(ident.Name) {
