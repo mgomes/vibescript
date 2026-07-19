@@ -391,6 +391,67 @@ end
 	}
 }
 
+func TestCheckInferParseAsNonObjectRootFacts(t *testing.T) {
+	t.Parallel()
+
+	// The declared root contract is the checker's result fact.
+	scalar := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(raw: string)
+  takes_string(JSON.parse_as(raw, int))
+end
+`)
+	requireCheckWarningContains(t, scalar, "call to takes_string argument value expected string, got int")
+
+	union := compileScript(t, `
+def takes_bool(value: bool)
+  value
+end
+
+def run(raw: string)
+  takes_bool(JSON.parse_as(raw, int | string))
+end
+`)
+	requireCheckWarningContains(t, union, "call to takes_bool argument value expected bool, got int | string")
+
+	// An array root's element reads infer the element type joined with nil,
+	// and nested shapes keep string-keyed field facts.
+	element := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(raw: string)
+  values = JSON.parse_as(raw, array<int>)
+  takes_string(values[0])
+end
+`)
+	requireCheckWarningContains(t, element, "call to takes_string argument value expected string, got int | nil")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  takes_int(JSON.parse_as(raw, int?) || 0)
+end
+`))
+
+	// A statically shadowed spelling keeps the value reading, so the checker
+	// reports the non-contract argument like any other value.
+	shadowed := compileScript(t, `
+def run(raw: string)
+  int = 1
+  JSON.parse_as(raw, int)
+end
+`)
+	requireCheckWarningContains(t, shadowed, "call to JSON.parse_as expects a type literal as its second argument, got int")
+}
+
 func TestJSONParseAsSupportsOpenShapes(t *testing.T) {
 	t.Parallel()
 
