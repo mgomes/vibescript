@@ -1710,9 +1710,9 @@ func literalArrayDisjoint(lit, other *TypeExpr, resolve namedTypeResolver) bool 
 }
 
 // shapeVsTypedHashDisjoint reports whether an exact shape can never satisfy
-// a generic hash type: shapes witness every field, so a field type disjoint
-// from the hash's value type contradicts it. Key types are left to runtime
-// (key representation is not always known statically).
+// a generic hash type: shapes witness every required field, so a required
+// field type disjoint from the hash's value type contradicts it. Key types
+// are left to runtime (key representation is not always known statically).
 func shapeVsTypedHashDisjoint(shape, hash *TypeExpr, resolve namedTypeResolver) bool {
 	if len(hash.TypeArgs) != 2 {
 		return false
@@ -1733,11 +1733,28 @@ func shapeVsTypedHashDisjoint(shape, hash *TypeExpr, resolve namedTypeResolver) 
 	}
 	valueType := hash.TypeArgs[1]
 	for _, field := range shape.Shape {
+		// An optional field may be absent, so only a required field's type
+		// is witnessed in every value of the shape.
+		if shapeFieldOptional(field) {
+			continue
+		}
 		if typeExprsDisjoint(field, valueType, resolve) {
 			return true
 		}
 	}
 	return false
+}
+
+// shapeFieldValueType strips the field-level optional marker for use as a
+// value fact: optionality describes the field's presence in the store, not
+// the value read from a present field.
+func shapeFieldValueType(fieldType *TypeExpr) *TypeExpr {
+	if fieldType == nil || !fieldType.Optional {
+		return fieldType
+	}
+	clone := *fieldType
+	clone.Optional = false
+	return &clone
 }
 
 // stringKeyedShapeFact clones a shape and marks it (and every nested shape)
@@ -1892,6 +1909,10 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 				return checkTypeNil
 			}
 			if present {
+				// An optional field may be absent, so its read joins nil.
+				if shapeFieldOptional(fieldType) {
+					return unionTypeExprs(shapeFieldValueType(fieldType), checkTypeNil)
+				}
 				return fieldType
 			}
 			return checkTypeNil
@@ -1900,7 +1921,7 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 		// field type or nil depending on the store's key kind; an absent one
 		// misses either store.
 		if present {
-			return unionTypeExprs(fieldType, checkTypeNil)
+			return unionTypeExprs(shapeFieldValueType(fieldType), checkTypeNil)
 		}
 		return checkTypeNil
 	case TypeArray:
@@ -2374,6 +2395,9 @@ func appendTypeFactKey(b *strings.Builder, ty *TypeExpr, depth int) {
 	if ty.Nullable {
 		b.WriteString("?")
 	}
+	if ty.Optional {
+		b.WriteString("~")
+	}
 	if len(ty.TypeArgs) > 0 {
 		b.WriteString("<")
 		for i, arg := range ty.TypeArgs {
@@ -2619,18 +2643,30 @@ func shapeValueArmDisjoint(other *TypeExpr) bool {
 	return true
 }
 
-// shapeTypesDisjoint compares two exact shapes: differing key sets or any
-// field pair with disjoint types means no value can satisfy both.
+// shapeTypesDisjoint compares two exact shapes. A required field missing from
+// the other shape's key set contradicts it: the field must be present, and
+// the other side rejects unknown fields. A field required on at least one
+// side is witnessed in every common value, so a disjoint field type pair
+// contradicts too; a field optional on both sides can be absent, satisfying
+// either type.
 func shapeTypesDisjoint(x, y *TypeExpr, resolve namedTypeResolver) bool {
-	if len(x.Shape) != len(y.Shape) {
-		return true
-	}
 	for field, xField := range x.Shape {
 		yField, ok := y.Shape[field]
 		if !ok {
-			return true
+			if !shapeFieldOptional(xField) {
+				return true
+			}
+			continue
+		}
+		if shapeFieldOptional(xField) && shapeFieldOptional(yField) {
+			continue
 		}
 		if typeExprsDisjoint(xField, yField, resolve) {
+			return true
+		}
+	}
+	for field, yField := range y.Shape {
+		if _, ok := x.Shape[field]; !ok && !shapeFieldOptional(yField) {
 			return true
 		}
 	}
