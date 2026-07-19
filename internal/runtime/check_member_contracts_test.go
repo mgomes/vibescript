@@ -236,6 +236,45 @@ end
 			warning: "call to takes_int argument value expected int, got bool",
 		},
 		{
+			name: "typed hash predicate result",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(value: hash<string, string>)
+  takes_int(value.nil?)
+end
+`,
+			warning: "call to takes_int argument value expected int, got bool",
+		},
+		{
+			name: "typed shape predicate result",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(value: { name: string })
+  takes_int(value.nil?())
+end
+`,
+			warning: "call to takes_int argument value expected int, got bool",
+		},
+		{
+			name: "mixed safe hash and scalar predicate result",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(value: hash<string, string> | string)
+  takes_int(value.nil?)
+end
+`,
+			warning: "call to takes_int argument value expected int, got bool",
+		},
+		{
 			name: "nil predicate on nullable receiver",
 			source: `
 def takes_int(value: int)
@@ -430,6 +469,30 @@ end
 
 def run(h: hash)
   takes_string(h.nil?)
+end
+`,
+		},
+		{
+			name: "callable hash receiver keeps universal helpers unknown",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def run(h: hash<string, function>)
+  takes_string(h.nil?)
+end
+`,
+		},
+		{
+			name: "callable shape receiver keeps universal helpers unknown",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def run(value: { nil?: function })
+  takes_string(value.nil?)
 end
 `,
 		},

@@ -1003,14 +1003,19 @@ func (c *scriptChecker) knownUniversalNilPredicateMember(member *MemberExpr) boo
 		return false
 	}
 	for _, arm := range arms {
-		if !nilPredicateArmUsesUniversalDispatch(arm) {
+		if !typeArmUsesUniversalMemberDispatch(arm, "nil?") {
 			return false
 		}
 	}
 	return true
 }
 
-func nilPredicateArmUsesUniversalDispatch(arm *TypeExpr) bool {
+// typeArmUsesUniversalMemberDispatch reports whether a known fact arm must
+// reach the universal implementation of property. Named values may override
+// it. Hash-like facts are safe only when their exact value or field contract
+// rules out a callable export with the same name. Primitive kinds with their
+// own typed contract also dispatch before the universal fallback.
+func typeArmUsesUniversalMemberDispatch(arm *TypeExpr, property string) bool {
 	if arm == nil {
 		return false
 	}
@@ -1020,11 +1025,21 @@ func nilPredicateArmUsesUniversalDispatch(arm *TypeExpr) bool {
 	case TypeHash:
 		return len(arm.TypeArgs) == 2 && !typeExprMayIncludeCallable(arm.TypeArgs[1])
 	case TypeShape:
-		field, present := arm.Shape["nil?"]
+		field, present := arm.Shape[property]
 		return !present || !typeExprMayIncludeCallable(field)
-	default:
-		return true
+	case TypeNumber:
+		_, intOverride := staticMemberSpecs["int."+property]
+		_, floatOverride := staticMemberSpecs["float."+property]
+		return !intOverride && !floatOverride
+	case TypeAny, TypeUnknown, TypeUnion:
+		return false
 	}
+	kind, ok := receiverKindForTypeArm(arm)
+	if !ok {
+		return false
+	}
+	_, overridden := staticMemberSpecs[kind+"."+property]
+	return !overridden
 }
 
 func typeExprMayIncludeCallable(ty *TypeExpr) bool {

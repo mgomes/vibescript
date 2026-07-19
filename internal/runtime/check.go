@@ -4489,7 +4489,7 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 func (c *scriptChecker) factReceiverMemberCallable(member *MemberExpr) (staticCallable, bool) {
 	kinds, ok := c.staticMemberReceiverKinds(member)
 	if !ok {
-		return staticCallable{}, false
+		return c.factReceiverUniversalMemberCallable(member)
 	}
 	uniform := true
 	for _, kind := range kinds[1:] {
@@ -4530,6 +4530,35 @@ func (c *scriptChecker) factReceiverMemberCallable(member *MemberExpr) (staticCa
 		return staticCallable{name: member.Property, spec: typedSpec}, true
 	}
 	return staticCallable{name: member.Property, spec: universalSpec}, true
+}
+
+// factReceiverUniversalMemberCallable resolves a universal contract when the
+// receiver fact cannot be reduced to one fixed runtime kind, but every arm is
+// still proven to reach the universal implementation. This covers typed
+// hash-like values whose exact value contracts rule out callable overrides.
+func (c *scriptChecker) factReceiverUniversalMemberCallable(member *MemberExpr) (staticCallable, bool) {
+	spec, ok := universalMemberSpecs[member.Property]
+	if !ok {
+		return staticCallable{}, false
+	}
+	arms, ok := typeExprArms(c.inferExpressionType(member.Object), 0)
+	if !ok || len(arms) == 0 {
+		return staticCallable{}, false
+	}
+	dispatchArms := 0
+	for _, arm := range arms {
+		if member.Safe && arm.Kind == TypeNil {
+			continue
+		}
+		if !typeArmUsesUniversalMemberDispatch(arm, member.Property) {
+			return staticCallable{}, false
+		}
+		dispatchArms++
+	}
+	if dispatchArms == 0 {
+		return staticCallable{}, false
+	}
+	return staticCallable{name: member.Property, spec: spec}, true
 }
 
 // staticMemberReceiverKinds returns the runtime dispatch kinds of every known
