@@ -40,6 +40,11 @@ type SignatureParam struct {
 // value can be registered as an engine builtin, passed as a call-option
 // global, or exposed as a capability method.
 func NewTypedBuiltin(name string, fn BuiltinFunc, sig Signature) (Value, error) {
+	// The wrapper and the published metadata read sig for the builtin's
+	// lifetime, so the caller-owned params slice is copied up front: a host
+	// reusing or mutating its slice must not change an already-registered
+	// contract.
+	sig.Params = append([]SignatureParam(nil), sig.Params...)
 	spec, paramTypes, err := signatureCallSpec(name, sig)
 	if err != nil {
 		return Value{}, err

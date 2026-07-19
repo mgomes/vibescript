@@ -420,3 +420,25 @@ end
 		t.Fatalf("CheckWarningsWithOptions() = %v, want typed contract applied inside the module", warnings)
 	}
 }
+
+func TestHostSignatureCopiesCallerParams(t *testing.T) {
+	t.Parallel()
+
+	params := []SignatureParam{{Name: "name", Type: "string"}}
+	typed, err := NewTypedBuiltin("greet", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return args[0], nil
+	}, Signature{Params: params})
+	if err != nil {
+		t.Fatalf("NewTypedBuiltin: %v", err)
+	}
+	params[0] = SignatureParam{Name: "count", Type: "int"}
+
+	engine := MustNewEngine(Config{})
+	engine.registerHostBuiltin("greet", typed)
+	script := compileScriptWithEngine(t, engine, "def run()\n  greet(\"ada\")\nend")
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil || got.String() != "ada" {
+		t.Fatalf("Call(greet) = %v, %v; want registered string contract unaffected by caller mutation", got, err)
+	}
+}
