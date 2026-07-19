@@ -88,6 +88,7 @@ type Execution struct {
 	envStack                  []*Env
 	activeTaskGroups          []*taskGroup
 	validatedCapabilityArgs   []string
+	capabilityReturnProof     capabilityReturnProof
 	memoryEst                 memoryEstimator
 	reservedScratchBytes      int
 
@@ -317,6 +318,45 @@ func (exec *Execution) capabilityArgsValidated(method string) bool {
 		}
 	}
 	return false
+}
+
+// capabilityReturnProof is the runtime-internal, unforgeable record that a
+// capability builtin's return value has already been validated and isolated
+// from host-owned state. Only code in this package can record one (via
+// markValidatedCapabilityReturn); the builtin dispatcher clears the slot
+// before invoking a builtin and consumes it afterwards, so a proof can only
+// describe the exact builtin invocation the dispatcher is completing. Host
+// adapters, which see CapabilityMethodContract through the public facade,
+// have no way to assert this proof and therefore cannot skip their declared
+// ValidateReturn.
+type capabilityReturnProof struct {
+	recorded bool
+	method   string
+	result   Value
+}
+
+// covers reports whether the proof vouches for exactly this method returning
+// exactly this value. Identity comparison keeps the proof bound to the value
+// the first-party builtin actually validated: returning any other value —
+// even an equal one rebuilt from unvalidated state — falls back to the
+// contract's ValidateReturn.
+func (p capabilityReturnProof) covers(method string, result Value) bool {
+	return p.recorded && p.method == method && p.result.Identical(result)
+}
+
+// markValidatedCapabilityReturn records the internal proof that the currently
+// executing first-party capability builtin has validated and isolated result
+// (for example via cloneCapabilityMethodResult). The dispatcher consumes the
+// proof after the builtin returns and skips the contract's ValidateReturn for
+// that value only, so first-party adapters do not validate the same result
+// twice. It is intended for the interpreter's internal use; nothing outside
+// this package can call it.
+func (exec *Execution) markValidatedCapabilityReturn(method string, result Value) {
+	exec.capabilityReturnProof = capabilityReturnProof{
+		recorded: true,
+		method:   method,
+		result:   result,
+	}
 }
 
 func (exec *Execution) pushEnv(env *Env) {
