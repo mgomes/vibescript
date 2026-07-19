@@ -4993,7 +4993,7 @@ func (c *scriptChecker) checkBuiltinArgumentTypes(function string, call staticCa
 }
 
 type staticCallView struct {
-	pos    Position
+	pos      Position
 	args     []Expression
 	kwargs   []KeywordArg
 	block    *BlockLiteral
