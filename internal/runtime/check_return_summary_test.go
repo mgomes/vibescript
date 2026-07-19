@@ -1038,6 +1038,35 @@ takes_string(wrapper())
 	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int")
 }
 
+// TestCheckFunctionReturnSummariesCollectDefaultRequires pins that a require
+// inside a parameter default binds its exports for the body walk, so the
+// summary sees the module function the body calls.
+func TestCheckFunctionReturnSummariesCollectDefaultRequires(t *testing.T) {
+	t.Parallel()
+
+	root := tempModuleTree(t, moduleFile{path: "counts.vibe", content: `
+export def build_count() -> int
+  42
+end
+`})
+	engine := mustNewEngineWithModuleRoot(t, root)
+	script, err := engine.CompileSnippet(`
+def wrapper(_ = require("counts"))
+  build_count()
+end
+
+def takes_string(value: string)
+  value
+end
+
+takes_string(wrapper())
+`, "run")
+	if err != nil {
+		t.Fatalf("CompileSnippet failed: %v", err)
+	}
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int")
+}
+
 // TestCheckFunctionReturnSummariesSkipForeignFunctions pins the issue scope:
 // required-module functions keep unknown results even when their bodies are
 // summarizable.
