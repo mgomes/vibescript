@@ -361,6 +361,50 @@ end
 			warning: "call to takes_hash argument value expected hash, got int | string",
 		},
 		{
+			name: "empty rescue arms contribute no summary arm",
+			source: `
+def guarded()
+  begin
+    "s"
+  rescue TypeError
+  rescue
+    1
+  end
+end
+
+def takes_hash(value: hash)
+  value
+end
+
+def run()
+  takes_hash(guarded())
+end
+`,
+			warning: "call to takes_hash argument value expected hash, got string | int",
+		},
+		{
+			name: "empty rescue clause keeps the body summary",
+			source: `
+def guarded()
+  begin
+    1
+  rescue TypeError
+  rescue
+    2
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(guarded())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()

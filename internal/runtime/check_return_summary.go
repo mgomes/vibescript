@@ -265,6 +265,12 @@ func (c *scriptChecker) collectImplicitResultStatementFacts(stmt Statement) {
 		}
 		for i := range typed.Rescues {
 			clause := &typed.Rescues[i]
+			// An empty matched clause propagates the error after ensure
+			// instead of yielding a value (the fallthrough merge skips these
+			// clauses the same way), so it contributes no arm.
+			if len(clause.Body) == 0 {
+				continue
+			}
 			c.collectImplicitResultFacts(clause.Body)
 		}
 	default:
