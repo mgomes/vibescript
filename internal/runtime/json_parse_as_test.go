@@ -183,6 +183,31 @@ end
 	}
 }
 
+// Shape values compare by formatted text, so the contract with a literal
+// `valid?` field must not equal the contract with an optional `valid` field.
+func TestShapeValueEqualityDistinguishesOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  literal = { "valid?": bool }
+  optional = { valid?: bool }
+  [literal == optional, optional == { valid?: bool }]
+end
+`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindArray || len(got.Array()) != 2 {
+		t.Fatalf("run() = %#v, want two-element array", got)
+	}
+	if cross := got.Array()[0]; cross.Kind() != KindBool || cross.Bool() {
+		t.Fatalf("literal == optional = %#v, want false", cross)
+	}
+	if same := got.Array()[1]; same.Kind() != KindBool || !same.Bool() {
+		t.Fatalf("optional == optional = %#v, want true", same)
+	}
+}
+
 func TestShapeLiteralDisambiguation(t *testing.T) {
 	t.Parallel()
 

@@ -66,3 +66,33 @@ func TestFormatTypeExprMarksOptionalShapeFields(t *testing.T) {
 		t.Fatalf("FormatTypeExpr() = %q, want %q", got, want)
 	}
 }
+
+// A required field whose name literally ends in `?` (a string-key field) must
+// not render like the optional spelling of the shorter name: shape equality
+// compares formatted text, so the two contracts have to stay distinguishable.
+func TestFormatTypeExprQuotesLiteralQuestionFieldNames(t *testing.T) {
+	t.Parallel()
+
+	literal := &TypeExpr{
+		Kind: TypeShape,
+		Shape: map[string]*TypeExpr{
+			"valid?": {Name: "bool", Kind: TypeBool},
+		},
+	}
+	if got, want := FormatTypeExpr(literal), `{ "valid?": bool }`; got != want {
+		t.Fatalf("FormatTypeExpr(literal) = %q, want %q", got, want)
+	}
+
+	optional := &TypeExpr{
+		Kind: TypeShape,
+		Shape: map[string]*TypeExpr{
+			"valid": {Name: "bool", Kind: TypeBool, Optional: true},
+		},
+	}
+	if got, want := FormatTypeExpr(optional), "{ valid?: bool }"; got != want {
+		t.Fatalf("FormatTypeExpr(optional) = %q, want %q", got, want)
+	}
+	if FormatTypeExpr(literal) == FormatTypeExpr(optional) {
+		t.Fatalf("literal and optional spellings format identically: %q", FormatTypeExpr(literal))
+	}
+}

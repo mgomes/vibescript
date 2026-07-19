@@ -3,6 +3,7 @@ package ast
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -142,6 +143,13 @@ func formatShapeType(ty *TypeExpr) string {
 	for i, field := range fields {
 		fieldType := ty.Shape[field]
 		label := field
+		if strings.HasSuffix(field, "?") {
+			// A field whose name literally ends in `?` would render exactly
+			// like the optional spelling of the shorter name; quote it (its
+			// string-key source spelling) so `{ "valid?": bool }` stays
+			// distinguishable from `{ valid?: bool }`.
+			label = strconv.Quote(field)
+		}
 		if fieldType != nil && fieldType.Optional {
 			label += "?"
 		}
