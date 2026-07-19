@@ -5954,7 +5954,19 @@ func (c *scriptChecker) applyShapeFieldWriteFacts(function string, stmt *AssignS
 	key, keyOK := staticLiteralHashKey(index)
 	switch shape.Name {
 	case shapeKeysStringMarker, shapeKeysSymbolMarker:
-		if !keyOK || indexKeyReprMarker(index) != shape.Name {
+		if !keyOK {
+			return false
+		}
+		repr := indexKeyReprMarker(index)
+		marker := shape.Name
+		// An empty literal's store has no key representation yet — the
+		// first static write establishes it — so the write's representation
+		// is adopted rather than matched against the empty-literal default.
+		if len(shape.Shape) == 0 &&
+			(repr == shapeKeysStringMarker || repr == shapeKeysSymbolMarker) {
+			marker = repr
+		}
+		if repr != marker {
 			return false
 		}
 		// Inside a loop or block body a refinement rolls back with the
@@ -5972,6 +5984,7 @@ func (c *scriptChecker) applyShapeFieldWriteFacts(function string, stmt *AssignS
 		// links in: a later mutation through it weakens both.
 		c.linkContainerWriteAlias(name, stmt.Value, written)
 		refined := cloneTypeExpr(shape)
+		refined.Name = marker
 		if refined.Shape == nil {
 			refined.Shape = make(map[string]*TypeExpr, 1)
 		}

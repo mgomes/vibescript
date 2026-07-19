@@ -206,6 +206,36 @@ end
 			warning: "call to g argument user expected { name: string }, got { name: int }",
 		},
 		{
+			name: "string write to an empty literal adopts the representation",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f
+  h = {}
+  h["name"] = 1
+  takes_string(h["name"])
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "symbol write to an empty literal refines the shape",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f
+  h = {}
+  h[:name] = 1
+  takes_string(h[:name])
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "refined parse_as field feeds a typed read",
 			source: `
 def takes_string(value: string)
@@ -309,6 +339,21 @@ def f
   h = { name: "x" }
   h[:name] = 1
   h[:extra] = true
+end
+`,
+		},
+		{
+			name: "write through the other representation after adoption weakens",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f
+  h = {}
+  h["a"] = 1
+  h[:a] = "s"
+  takes_string(h["a"])
 end
 `,
 		},
