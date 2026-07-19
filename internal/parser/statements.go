@@ -1781,9 +1781,10 @@ func shapeHasDegenerateNilField(ty *ast.TypeExpr) bool {
 // type with no fields. An empty shape is degenerate as a parameter annotation
 // (it accepts only an empty hash), so it is the Ruby-style empty-hash default
 // rather than a meaningful shape type, matching the top-level `{}` handling in
-// bracedGroupIsShapeType.
+// bracedGroupIsShapeType. The open shape `{ ... }` is excluded: it accepts any
+// hash, is meaningful as an annotation, and has no hash-literal reading.
 func typeIsEmptyShape(ty *ast.TypeExpr) bool {
-	return ty != nil && ty.Kind == ast.TypeShape && len(ty.Shape) == 0
+	return ty != nil && ty.Kind == ast.TypeShape && len(ty.Shape) == 0 && !ty.Open
 }
 
 // shapeHasEmptyNestedShape reports whether ty is a shape type with a field

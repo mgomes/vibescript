@@ -96,6 +96,11 @@ type TypeExpr struct {
 	// field type when present, while a nullable field must be present but may
 	// hold nil.
 	Optional bool
+	// Open marks a shape that permits undeclared extra fields
+	// (`{ name: string, ... }`). Declared fields keep their contracts; extra
+	// fields pass validation unchecked. It is meaningful only on TypeShape
+	// nodes; shapes stay exact (closed) by default.
+	Open     bool
 	TypeArgs []*TypeExpr
 	Shape    map[string]*TypeExpr
 	Union    []*TypeExpr

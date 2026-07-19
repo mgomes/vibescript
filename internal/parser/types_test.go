@@ -304,6 +304,67 @@ end`
 	}
 }
 
+func TestParserTypeShapeOpenMarker(t *testing.T) {
+	t.Parallel()
+	source := `def run(payload: { name: string, age?: int, nested: { id: string, ... }, ... }, extras: { ... })
+  payload
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("expected function statement, got %T", got.Statements[0])
+	}
+	wantPayload := &ast.TypeExpr{
+		Kind: ast.TypeShape,
+		Open: true,
+		Shape: map[string]*ast.TypeExpr{
+			"name": {Name: "string", Kind: ast.TypeString},
+			"age":  {Name: "int", Kind: ast.TypeInt, Optional: true},
+			"nested": {
+				Kind: ast.TypeShape,
+				Open: true,
+				Shape: map[string]*ast.TypeExpr{
+					"id": {Name: "string", Kind: ast.TypeString},
+				},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantPayload, fn.Params[0].Type, astCmpOpts); diff != "" {
+		t.Fatalf("payload type mismatch (-want +got):\n%s", diff)
+	}
+	wantExtras := &ast.TypeExpr{
+		Kind:  ast.TypeShape,
+		Open:  true,
+		Shape: map[string]*ast.TypeExpr{},
+	}
+	if diff := cmp.Diff(wantExtras, fn.Params[1].Type, astCmpOpts); diff != "" {
+		t.Fatalf("extras type mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserTypeShapeOpenMarkerMustBeLast(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{
+		`def run() -> { ..., name: string }
+  {}
+end`,
+		`def run() -> { name: string, ..., age: int }
+  {}
+end`,
+	} {
+		_, errs := parseSource(t, source)
+		if len(errs) == 0 {
+			t.Fatalf("expected parse errors for %q, got none", source)
+		}
+	}
+}
+
 func TestParserTypeShapeOptionalFieldDuplicateKey(t *testing.T) {
 	t.Parallel()
 

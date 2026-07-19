@@ -186,6 +186,7 @@ func (p *parser) applyNullableSuffix(ty *ast.TypeExpr) *ast.TypeExpr {
 func (p *parser) parseTypeShape() *ast.TypeExpr {
 	pos := p.curToken.Pos
 	fields := make(map[string]*ast.TypeExpr)
+	open := false
 	p.shapeStructurallyInvalid = false
 
 	if p.peekToken.Type == ast.TokenRBrace {
@@ -199,6 +200,18 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 
 	p.nextToken()
 	for {
+		// A `...` rest marker as the last member marks the shape open:
+		// undeclared extra fields pass validation. `{ ... }` alone accepts
+		// any hash or object.
+		if p.curToken.Type == ast.TokenRangeExcl {
+			if p.peekToken.Type != ast.TokenRBrace {
+				p.errorExpected(p.peekToken, "}")
+				return nil
+			}
+			open = true
+			p.nextToken()
+			break
+		}
 		key, optional, ok := p.parseTypeShapeFieldName()
 		if !ok {
 			return nil
@@ -271,6 +284,7 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 	return &ast.TypeExpr{
 		Kind:     ast.TypeShape,
 		Shape:    fields,
+		Open:     open,
 		Position: pos,
 	}
 }
