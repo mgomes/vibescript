@@ -156,3 +156,133 @@ func exportedMemberContract(contract memberContract) MemberContract {
 		MutatesReceiver: contract.effects.mutatesReceiver,
 	}
 }
+
+// memberContractExemptions lists the public members each receiver kind
+// dispatches that have no registered contract yet. Together with the
+// universal exemptions below it is the explicit worklist of unmigrated
+// members: the registry-completeness test requires every public member to
+// be registered or listed here, so adding a member forces a deliberate
+// choice, and migrating one requires removing its exemption.
+var memberContractExemptions = map[string][]string{
+	"array": {
+		"all?", "any?", "append", "chunk", "chunk_while", "clear", "combination",
+		"compact", "compact!", "count", "cycle", "delete", "delete_if",
+		"difference", "dig", "drop", "drop_while", "each", "each_cons",
+		"each_slice", "each_with_index", "empty?", "fill", "filter_map", "find",
+		"find_index", "first", "flatten", "grep", "grep_v", "group_by",
+		"group_by_stable", "include?", "index", "insert", "inspect", "join",
+		"keep_if", "last", "length", "map", "map!", "map_with_index", "max",
+		"max_by", "min", "min_by", "minmax", "none?", "one?", "partition",
+		"permutation", "pop", "prepend", "product", "push", "reduce", "reject",
+		"reject!", "repeated_combination", "repeated_permutation", "reverse",
+		"reverse!", "reverse_each", "rindex", "rotate", "sample", "select",
+		"select!", "shift", "shuffle", "size", "slice_when", "sort", "sort!",
+		"sort_by", "sum", "take", "take_while", "tally", "to_h", "transpose",
+		"union", "uniq", "uniq!", "unshift", "values_at", "window", "zip",
+	},
+	"block": {
+		"call", "lambda?",
+	},
+	"bool": {
+		"inspect", "string", "to_s",
+	},
+	"duration": {
+		"after", "ago", "before", "between?", "day", "days", "format",
+		"from_now", "hour", "hours", "in_days", "in_hours", "in_minutes",
+		"in_months", "in_seconds", "in_weeks", "in_years", "iso8601", "minute",
+		"minutes", "parts", "second", "seconds", "since", "string", "to_i",
+		"to_s", "until", "week", "weeks",
+	},
+	"float": {
+		"abs", "between?", "ceil", "clamp", "div", "divmod", "fdiv", "finite?",
+		"floor", "infinite?", "inspect", "modulo", "nan?", "negative?",
+		"nonzero?", "positive?", "remainder", "round", "string", "to_f", "to_i",
+		"to_s", "zero?",
+	},
+	"function": {
+		"call",
+	},
+	"hash": {
+		"clear", "compact", "deep_transform_keys", "default", "default_proc",
+		"delete", "delete_if", "dig", "each", "each_key", "each_value",
+		"each_with_index", "empty?", "except", "fetch", "fetch_values",
+		"flatten", "has_key?", "has_value?", "include?", "inspect", "keep_if",
+		"key?", "keys", "length", "map_with_index", "member?", "merge", "merge!",
+		"reject", "remap_keys", "replace", "select", "size", "slice", "store",
+		"to_a", "transform_keys", "transform_values", "update", "value?",
+		"values", "values_at",
+	},
+	"int": {
+		"abs", "between?", "ceil", "clamp", "day", "days", "div", "divmod",
+		"downto", "even?", "fdiv", "floor", "hour", "hours", "inspect", "minute",
+		"minutes", "modulo", "negative?", "next", "nonzero?", "odd?",
+		"positive?", "pred", "remainder", "round", "second", "seconds", "step",
+		"string", "succ", "times", "to_f", "to_i", "to_s", "upto", "week",
+		"weeks", "zero?",
+	},
+	"money": {
+		"amount", "between?", "cents", "currency", "format", "string", "to_s",
+	},
+	"nil": {
+		"inspect", "string", "to_s",
+	},
+	"range": {
+		"count", "cover?", "each", "exclude_end?", "find", "first", "include?",
+		"last", "map", "max", "member?", "min", "reduce", "reject", "select",
+		"size", "step", "sum", "to_a",
+	},
+	"regex": {
+		"flags", "inspect", "match", "match?", "source",
+	},
+	"string": {
+		"between?", "bytes", "bytesize", "byteslice", "capitalize",
+		"capitalize!", "casecmp", "casecmp?", "center", "chars", "chomp",
+		"chomp!", "chop", "chop!", "chr", "clamp", "clear", "codepoints",
+		"concat", "count", "delete", "delete!", "delete_prefix",
+		"delete_prefix!", "delete_suffix", "delete_suffix!", "downcase",
+		"downcase!", "each_byte", "each_char", "each_codepoint", "each_line",
+		"empty?", "end_with?", "getbyte", "gsub", "gsub!", "hex", "include?",
+		"index", "insert", "inspect", "intern", "length", "lines", "ljust",
+		"lstrip", "lstrip!", "match", "match?", "oct", "ord", "partition",
+		"prepend", "replace", "reverse", "reverse!", "rindex", "rjust",
+		"rpartition", "rstrip", "rstrip!", "scan", "size", "split", "squeeze",
+		"squeeze!", "squish", "squish!", "start_with?", "string", "strip",
+		"strip!", "sub", "sub!", "swapcase", "swapcase!", "template", "to_f",
+		"to_i", "to_s", "to_sym", "tr", "tr!", "upcase", "upcase!",
+	},
+	"symbol": {
+		"id2name", "inspect", "string", "to_s", "to_sym",
+	},
+	"time": {
+		"<=>", "between?", "ceil", "day", "dst?", "floor", "format", "friday?",
+		"getgm", "getlocal", "getutc", "gmt?", "gmt_offset", "gmtime", "gmtoff",
+		"hash", "hour", "httpdate", "isdst", "iso8601", "localtime", "mday",
+		"min", "mon", "monday?", "month", "nsec", "rfc2822", "rfc3339", "rfc822",
+		"round", "saturday?", "sec", "strftime", "string", "subsec", "sunday?",
+		"thursday?", "to_a", "to_f", "to_i", "to_r", "to_s", "tuesday?",
+		"tv_nsec", "tv_sec", "tv_usec", "usec", "utc", "utc?", "utc_offset",
+		"wday", "wednesday?", "xmlschema", "yday", "year", "zone",
+	},
+}
+
+// universalMemberContractExemptions lists the Object-level helpers from
+// universalMemberNames that have no registered contract yet. They resolve
+// on every receiver through the universal fallback in resolveMember.
+var universalMemberContractExemptions = []string{
+	"itself",
+	"dup",
+	"clone",
+	"freeze",
+	"frozen?",
+	"nil?",
+	"eql?",
+	"equal?",
+	"send",
+	"public_send",
+	"tap",
+	"yield_self",
+	"respond_to?",
+	"is_a?",
+	"kind_of?",
+	"instance_of?",
+}
