@@ -1819,7 +1819,7 @@ func (c *scriptChecker) applyIndexedElementWriteFacts(function string, stmt *Ass
 // compatible call can preserve the receiver's declared fact. insert may pad
 // the gap to a beyond-end index with nils, so its fact never survives; a
 // keyword argument makes every mutator raise before writing.
-func arrayMutatorElementWrites(call *CallExpr, property string) (elements []Expression, preservable bool, ok bool) {
+func arrayMutatorElementWrites(call *CallExpr, property string) (elements []Expression, preservable, ok bool) {
 	if len(call.KwArgs) != 0 {
 		return nil, false, false
 	}
