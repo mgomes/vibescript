@@ -421,6 +421,53 @@ end
 			warning: "call to takes_string argument value expected string, got nil",
 		},
 		{
+			name: "self mutating callee keeps this call's pre-mutation result",
+			source: `
+def replacement(value)
+  1
+end
+
+def fn()
+  saved = JSON.stringify({})
+  JSON.stringify = replacement
+  saved
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(fn())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "self mutating bare auto-invoke keeps the pre-mutation result",
+			source: `
+def replacement(value)
+  1
+end
+
+def fn()
+  saved = JSON.stringify({})
+  JSON.stringify = replacement
+  saved
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  result = fn
+  takes_int(result)
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
@@ -601,6 +648,29 @@ def run()
   takes_string(serialize())
   mutate_serializer()
   takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "self mutating callee stays unknown after its first call",
+			source: `
+def replacement(value)
+  1
+end
+
+def fn()
+  saved = JSON.stringify({})
+  JSON.stringify = replacement
+  saved
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  fn()
+  takes_string(fn())
 end
 `,
 		},

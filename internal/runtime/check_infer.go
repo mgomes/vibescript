@@ -1201,6 +1201,13 @@ func (c *scriptChecker) safeNavigationArgumentsAlwaysEvaluateInferred(call *Call
 // it is not statically known. It is pure: it never emits warnings and never
 // mutates checker state.
 func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
+	// A pinned node keeps the fact captured at its own walk: a call whose
+	// callee mutates a builtin namespace dispatched under the pre-mutation
+	// bindings, so its result must not recompute under the context its own
+	// write markers created.
+	if fact, ok := c.pinnedExpressionFacts[expr]; ok {
+		return fact
+	}
 	// Inference computes facts speculatively (branch results, argument
 	// captures) and must not mutate runtime module state along the way.
 	c.speculativeInference++

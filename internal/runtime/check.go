@@ -124,6 +124,7 @@ type scriptChecker struct {
 	returnSummaries         map[returnSummaryCacheKey]*TypeExpr
 	summaryInProgress       map[returnSummaryCacheKey]struct{}
 	returnCollector         *returnSummaryCollector
+	pinnedExpressionFacts   map[Expression]*TypeExpr
 	requiredModules         map[string]struct{}
 	runtimeModules          map[string]struct{}
 	runtimeNamespaceMembers map[string]struct{}
@@ -2609,7 +2610,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkCallResolved(function, typed, target, targetResolved)
 		c.callArgumentFacts = previousFacts
 		if targetResolved && target.fn != nil {
-			c.applyScriptFunctionNamespaceMutations(target.fn)
+			c.applyScriptFunctionNamespaceMutations(typed, target.fn)
 		}
 		if c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
@@ -5704,14 +5705,12 @@ func (c *scriptChecker) recordRuntimeNamespaceMember(memberName string) {
 	c.runtimeNamespaceMembers[memberName] = struct{}{}
 }
 
-// applyScriptFunctionNamespaceMutations carries a statically resolved
-// callee's possible namespace writes back to its caller. Function checking
-// itself runs against an isolated call-time snapshot, but these writes can
-// change later dispatch (for example JSON.stringify = replacement), so a
-// return summary computed before the call must not be reused afterwards.
-func (c *scriptChecker) applyScriptFunctionNamespaceMutations(fn *ScriptFunction) {
+// scriptFunctionNamespaceMutations reports the builtin namespace members a
+// callee's execution may reassign, transitively through the owned functions
+// it references.
+func (c *scriptChecker) scriptFunctionNamespaceMutations(fn *ScriptFunction) map[string]struct{} {
 	if fn == nil || fn.owner != c.script {
-		return
+		return nil
 	}
 	scan := &namespaceMutationScan{
 		out:       make(map[string]struct{}),
@@ -5719,7 +5718,26 @@ func (c *scriptChecker) applyScriptFunctionNamespaceMutations(fn *ScriptFunction
 		visited:   map[*ScriptFunction]struct{}{fn: {}},
 	}
 	scan.statements(fn.Body)
-	for member := range scan.out {
+	return scan.out
+}
+
+// applyScriptFunctionNamespaceMutations carries a statically resolved
+// callee's possible namespace writes back to its caller. Function checking
+// itself runs against an isolated call-time snapshot, but these writes can
+// change later dispatch (for example JSON.stringify = replacement), so a
+// return summary computed before the call must not be reused afterwards.
+// This call itself dispatched under the pre-mutation bindings, so its own
+// result fact pins before the write markers change the summary context for
+// the code after the call.
+func (c *scriptChecker) applyScriptFunctionNamespaceMutations(call *CallExpr, fn *ScriptFunction) {
+	members := c.scriptFunctionNamespaceMutations(fn)
+	if len(members) == 0 {
+		return
+	}
+	if call != nil {
+		c.pinExpressionFact(call, c.inferCallExprType(call))
+	}
+	for member := range members {
 		c.recordRuntimeNamespaceMember(member)
 	}
 }
@@ -5732,7 +5750,24 @@ func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Iden
 	if !ok || len(fn.Params) != 0 {
 		return
 	}
-	c.applyScriptFunctionNamespaceMutations(fn)
+	members := c.scriptFunctionNamespaceMutations(fn)
+	if len(members) == 0 {
+		return
+	}
+	c.pinExpressionFact(ident, c.autoInvokedBuiltinResultFact(ident.Name))
+	for member := range members {
+		c.recordRuntimeNamespaceMember(member)
+	}
+}
+
+// pinExpressionFact fixes the fact of one walked expression node so later
+// inference does not recompute it under state that arose after it evaluated.
+// A re-walk of the node overwrites the pin with the new walk's fact.
+func (c *scriptChecker) pinExpressionFact(expr Expression, fact *TypeExpr) {
+	if c.pinnedExpressionFacts == nil {
+		c.pinnedExpressionFacts = make(map[Expression]*TypeExpr)
+	}
+	c.pinnedExpressionFacts[expr] = fact
 }
 
 func (c *scriptChecker) recordBindingName(name string) {

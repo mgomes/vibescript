@@ -158,6 +158,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction) *returnSu
 		previousStates := c.implicitReturnStates
 		previousDecisions := c.implicitIfDecisions
 		previousCollector := c.returnCollector
+		previousPinned := c.pinnedExpressionFacts
 		restoreFresh := c.withFreshLocalInferenceScope()
 		c.scopes = nil
 		c.localTypes = nil
@@ -167,6 +168,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction) *returnSu
 		c.callArgumentFacts = nil
 		c.deferredReturnSites = nil
 		c.returnCollector = collector
+		c.pinnedExpressionFacts = nil
 		leaves := make(map[Statement]struct{})
 		collectImplicitReturnLeaves(fn.Body, leaves)
 		c.implicitReturnLeaves = leaves
@@ -184,6 +186,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction) *returnSu
 			c.implicitReturnStates = previousStates
 			c.implicitIfDecisions = previousDecisions
 			c.returnCollector = previousCollector
+			c.pinnedExpressionFacts = previousPinned
 			restoreFresh()
 		}()
 
