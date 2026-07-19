@@ -1839,27 +1839,36 @@ func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 
 // typeLiteralStaticallyShadowed mirrors the runtime's type-versus-value
 // choice for an argument type literal: a literal without a value reading is
-// always a type, otherwise a shadowed type name keeps the value reading.
+// always a type, otherwise a shadowed type name — or the fallback
+// identifier's own predicate-style spelling (`string?`), which leaf
+// normalization strips — keeps the value reading.
 func (c *scriptChecker) typeLiteralStaticallyShadowed(lit *TypeLiteral) bool {
 	if lit.Fallback == nil {
 		return false
 	}
-	return c.shapeTypeNamesStaticallyShadowed(lit.Type)
+	if c.shapeTypeNamesStaticallyShadowed(lit.Type) {
+		return true
+	}
+	if ident, ok := lit.Fallback.(*Identifier); ok && strings.HasSuffix(ident.Name, "?") {
+		return c.staticNameShadowed(ident.Name)
+	}
+	return false
 }
 
 func (c *scriptChecker) shapeTypeNamesStaticallyShadowed(ty *TypeExpr) bool {
 	shadowed := false
 	walkShapeTypeNames(ty, func(name string) {
-		if shadowed {
-			return
-		}
-		if c.identifierShadowed(name) || c.liveLocalNameHas(name) ||
-			c.hostGlobalShadows(name) || c.typeRootResolvesName(name) ||
-			c.hostBuiltinOverrides(name) || c.implicitSelfShadows(name) {
+		if !shadowed && c.staticNameShadowed(name) {
 			shadowed = true
 		}
 	})
 	return shadowed
+}
+
+func (c *scriptChecker) staticNameShadowed(name string) bool {
+	return c.identifierShadowed(name) || c.liveLocalNameHas(name) ||
+		c.hostGlobalShadows(name) || c.typeRootResolvesName(name) ||
+		c.hostBuiltinOverrides(name) || c.implicitSelfShadows(name)
 }
 
 // implicitSelfShadows reports whether a bare identifier would resolve

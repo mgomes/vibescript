@@ -112,7 +112,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *SplatArg:
 		return NewNil(), exec.errorAt(e.Pos(), "splat argument is only allowed in call arguments")
 	case *TypeLiteral:
-		if e.Fallback != nil && exec.shapeTypeNamesShadowed(e.Type, env) {
+		if exec.typeLiteralShadowed(e, env) {
 			return exec.evalExpression(e.Fallback, env)
 		}
 		return NewShape(e.Type), nil
@@ -568,25 +568,45 @@ func (exec *Execution) hashShapeShadowed(lit *HashLiteral, env *Env) bool {
 // group (a braced shape or an argument type literal) resolves to a runtime
 // binding, in which case the group keeps its value reading.
 func (exec *Execution) shapeTypeNamesShadowed(ty *TypeExpr, env *Env) bool {
-	self, hasSelf := env.Get("self")
-	selfReceiver := hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass)
 	shadowed := false
 	walkShapeTypeNames(ty, func(name string) {
-		if shadowed {
-			return
-		}
-		if _, ok := env.Get(name); ok {
-			shadowed = true
-			return
-		}
-		// Bare identifiers also resolve through implicit self (a zero-arity
-		// method named string, for example), matching evalExpression's
-		// identifier fallback.
-		if selfReceiver && exec.respondsTo(self, name, true) {
+		if !shadowed && exec.runtimeNameShadowed(name, env) {
 			shadowed = true
 		}
 	})
 	return shadowed
+}
+
+// typeLiteralShadowed reports whether an argument type literal keeps its
+// value reading. The normalized type-leaf names shadow exactly as for braced
+// shapes, and the fallback identifier's own spelling shadows too: a nullable
+// atom like `string?` reads back the predicate-style name `string?`, which
+// leaf normalization strips to `string`.
+func (exec *Execution) typeLiteralShadowed(e *TypeLiteral, env *Env) bool {
+	if e.Fallback == nil {
+		return false
+	}
+	if exec.shapeTypeNamesShadowed(e.Type, env) {
+		return true
+	}
+	if ident, ok := e.Fallback.(*Identifier); ok && strings.HasSuffix(ident.Name, "?") {
+		return exec.runtimeNameShadowed(ident.Name, env)
+	}
+	return false
+}
+
+// runtimeNameShadowed reports whether name resolves to a runtime binding: an
+// environment lookup, or implicit self (a zero-arity method named string, for
+// example), matching evalExpression's identifier fallback.
+func (exec *Execution) runtimeNameShadowed(name string, env *Env) bool {
+	if _, ok := env.Get(name); ok {
+		return true
+	}
+	self, hasSelf := env.Get("self")
+	if hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+		return exec.respondsTo(self, name, true)
+	}
+	return false
 }
 
 func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {

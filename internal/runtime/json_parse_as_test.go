@@ -375,6 +375,50 @@ end
 		t.Fatalf("run() error = %v, want type-literal rejection", err)
 	}
 
+	// A binding whose exact spelling matches the nullable atom (`string?` as
+	// a host global or zero-arity method) shadows the type reading too: leaf
+	// normalization strips the `?`, but the value reading reads the
+	// predicate-style name verbatim.
+	predicate := compileScript(t, `
+def echo(v)
+  v
+end
+
+def run()
+  echo(string?)
+end
+`)
+	got = callScript(t, context.Background(), predicate, "run", nil, CallOptions{
+		Globals: map[string]Value{"string?": NewString("shadowed")},
+	})
+	if got.Kind() != KindString || got.String() != "shadowed" {
+		t.Fatalf("run() = %#v, want \"shadowed\"", got)
+	}
+
+	// Unshadowed, the same spelling stays the nullable type literal.
+	unshadowed := compileScript(t, `
+def run()
+  JSON.parse_as("null", string?)
+end
+`)
+	if got := callScript(t, context.Background(), unshadowed, "run", nil, CallOptions{}); got.Kind() != KindNil {
+		t.Fatalf("run() = %#v, want nil", got)
+	}
+
+	// The static mirror sees implicit-self predicate methods the same way.
+	selfShadowed := compileScript(t, `
+class Probe
+  def string?
+    "predicate"
+  end
+
+  def run
+    JSON.parse_as("null", string?)
+  end
+end
+`)
+	requireNoCheckWarnings(t, selfShadowed)
+
 	// Comparisons over non-type locals never read as types.
 	comparison := compileScript(t, `
 def truthy(v)
