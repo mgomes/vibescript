@@ -187,7 +187,7 @@ var memberContractExemptions = map[string][]string{
 		"inspect", "string", "to_s",
 	},
 	"duration": {
-		"after", "ago", "before", "between?", "day", "days", "format",
+		"after", "ago", "before", "between?", "day", "days", "eql?", "format",
 		"from_now", "hour", "hours", "in_days", "in_hours", "in_minutes",
 		"in_months", "in_seconds", "in_weeks", "in_years", "iso8601", "minute",
 		"minutes", "parts", "second", "seconds", "since", "string", "to_i",
@@ -254,7 +254,8 @@ var memberContractExemptions = map[string][]string{
 		"id2name", "inspect", "string", "to_s", "to_sym",
 	},
 	"time": {
-		"<=>", "between?", "ceil", "day", "dst?", "floor", "format", "friday?",
+		"<=>", "between?", "ceil", "day", "dst?", "eql?", "floor", "format",
+		"friday?",
 		"getgm", "getlocal", "getutc", "gmt?", "gmt_offset", "gmtime", "gmtoff",
 		"hash", "hour", "httpdate", "isdst", "iso8601", "localtime", "mday",
 		"min", "mon", "monday?", "month", "nsec", "rfc2822", "rfc3339", "rfc822",

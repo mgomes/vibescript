@@ -8,12 +8,15 @@ import (
 // The member contract registry must stay complete and honest: every public
 // member the runtime dispatches is either registered with a contract or
 // explicitly exempted, and every registry or exemption entry names a member
-// the runtime actually dispatches.
+// the runtime actually dispatches. Receiver-owned members are checked
+// against their own kind's worklist even when a universal helper shares the
+// name (duration and time dispatch their own eql?); the universal exemption
+// list covers only the true universal-fallback helpers.
 
 func TestPublicMembersRegisteredOrExempt(t *testing.T) {
 	t.Parallel()
 
-	public := MemberCompletionNames()
+	own := ownMemberNames()
 	registered := registeredMemberNames(t)
 	universalExempt := make(map[string]struct{}, len(universalMemberContractExemptions))
 	for _, name := range universalMemberContractExemptions {
@@ -29,14 +32,14 @@ func TestPublicMembersRegisteredOrExempt(t *testing.T) {
 	}
 
 	for receiver, exempt := range memberContractExemptions {
-		names, known := public[receiver]
+		names, known := own[receiver]
 		if !known {
 			t.Errorf("exemptions name unknown receiver kind %s", receiver)
 			continue
 		}
 		for _, name := range exempt {
 			if !slices.Contains(names, name) {
-				t.Errorf("exemption %s.%s is not a public member; remove the stale entry", receiver, name)
+				t.Errorf("exemption %s.%s is not a receiver-owned member; remove the stale entry", receiver, name)
 			}
 			if _, ok := registered[receiver+"."+name]; ok {
 				t.Errorf("%s.%s is both registered and exempted; remove the exemption", receiver, name)
@@ -44,12 +47,9 @@ func TestPublicMembersRegisteredOrExempt(t *testing.T) {
 		}
 	}
 
-	for receiver, names := range public {
+	for receiver, names := range own {
 		exempt := memberContractExemptions[receiver]
 		for _, name := range names {
-			if _, ok := universalExempt[name]; ok {
-				continue
-			}
 			if _, ok := registered[receiver+"."+name]; ok {
 				continue
 			}
@@ -67,10 +67,10 @@ func TestPublicMembersRegisteredOrExempt(t *testing.T) {
 func registeredMemberNames(t *testing.T) map[string]struct{} {
 	t.Helper()
 
-	public := MemberCompletionNames()
+	own := ownMemberNames()
 	registered := make(map[string]struct{}, len(memberContracts))
 	for _, contract := range memberContracts {
-		names, known := public[contract.receiver]
+		names, known := own[contract.receiver]
 		if !known {
 			t.Errorf("contract %s.%s names unknown receiver kind %s", contract.receiver, contract.name, contract.receiver)
 			continue
@@ -82,7 +82,7 @@ func registeredMemberNames(t *testing.T) map[string]struct{} {
 			}
 			registered[key] = struct{}{}
 			if !slices.Contains(names, name) {
-				t.Errorf("contract %s names a member the runtime does not dispatch", key)
+				t.Errorf("contract %s names a member the receiver's typed dispatch does not own", key)
 			}
 		}
 		if contract.call.maxArgs >= 0 && len(contract.paramNames) != contract.call.maxArgs {
