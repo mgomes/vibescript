@@ -183,6 +183,105 @@ end
 	}
 }
 
+func TestJSONParseAsValidatesNonObjectRoots(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+		check  func(t *testing.T, got Value)
+	}{
+		{
+			name: "array root",
+			source: `
+def run()
+  JSON.parse_as("[1, 2, 3]", array<int>)
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindArray || len(got.Array()) != 3 {
+					t.Fatalf("run() = %#v, want three-element array", got)
+				}
+			},
+		},
+		{
+			name: "array of shapes root",
+			source: `
+def run()
+  rows = JSON.parse_as("[{\"id\": \"a\"}, {\"id\": \"b\"}]", array<{ id: string }>)
+  rows[1]["id"]
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindString || got.String() != "b" {
+					t.Fatalf("run() = %#v, want \"b\"", got)
+				}
+			},
+		},
+		{
+			name: "scalar root",
+			source: `
+def run()
+  JSON.parse_as("42", int)
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindInt || got.Int() != 42 {
+					t.Fatalf("run() = %#v, want 42", got)
+				}
+			},
+		},
+		{
+			name: "nullable root null",
+			source: `
+def run()
+  JSON.parse_as("null", int?)
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindNil {
+					t.Fatalf("run() = %#v, want nil", got)
+				}
+			},
+		},
+		{
+			name: "nullable root value",
+			source: `
+def run()
+  JSON.parse_as("7", int?)
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindInt || got.Int() != 7 {
+					t.Fatalf("run() = %#v, want 7", got)
+				}
+			},
+		},
+		{
+			name: "union root",
+			source: `
+def run()
+  JSON.parse_as("\"ready\"", int | string)
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindString || got.String() != "ready" {
+					t.Fatalf("run() = %#v, want \"ready\"", got)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			requireNoCheckWarnings(t, script)
+			tc.check(t, callScript(t, context.Background(), script, "run", nil, CallOptions{}))
+		})
+	}
+}
+
 func TestJSONParseAsSupportsOpenShapes(t *testing.T) {
 	t.Parallel()
 
