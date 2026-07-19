@@ -2755,6 +2755,24 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 			return len(declared.TypeArgs) == 0
 		}
 		return false
+	case TypeShape:
+		// Runtime shape normalization matches fields by display name with
+		// the entry count pinned to the declared field count, so an exact
+		// shape fact satisfies a shape annotation when the key sets match
+		// and every witnessed field satisfies its declared type.
+		if written.Kind != TypeShape || len(written.Shape) != len(declared.Shape) {
+			return false
+		}
+		for field, fieldType := range written.Shape {
+			declaredField, ok := declared.Shape[field]
+			if !ok {
+				return false
+			}
+			if !typeExprSatisfies(fieldType, declaredField, resolve) {
+				return false
+			}
+		}
+		return true
 	case TypeEnum:
 		if written.Kind != TypeEnum || resolve == nil {
 			return false

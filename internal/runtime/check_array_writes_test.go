@@ -101,6 +101,25 @@ end
 			warning: "write to rows expected element array<int>, got string",
 		},
 		{
+			name: "shape element with a contradicting field",
+			source: `
+def f(items: array<{ amount: int }>)
+  items << { amount: "bad" }
+end
+`,
+			warning: "write to items expected element { amount: int }, got { amount: string }",
+		},
+		{
+			name: "compatible shape element write preserves the bound",
+			source: `
+def f(items: array<{ amount: int }>)
+  items << { amount: 1 }
+  items << "bad"
+end
+`,
+			warning: "write to items expected element { amount: int }, got string",
+		},
+		{
 			name: "chained shovel appends through the chain root",
 			source: `
 def f(items: array<int>)
@@ -442,6 +461,14 @@ end
 def f(items: array<int>)
   items.insert(5, 1)
   items << "bad"
+end
+`,
+		},
+		{
+			name: "shape element with an unknown field value stays silent",
+			source: `
+def f(items: array<{ amount: int }>, v)
+  items << { amount: v }
 end
 `,
 		},
