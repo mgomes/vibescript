@@ -4555,7 +4555,7 @@ func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
 		if fn.ReturnTy != nil {
 			return fn.ReturnTy
 		}
-		return c.scriptFunctionReturnSummary(name, fn)
+		return c.scriptFunctionReturnSummary(fn)
 	}
 	if fn, ok := c.typeRootFunction(name); ok {
 		if len(fn.Params) > 0 {

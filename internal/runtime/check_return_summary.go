@@ -49,14 +49,38 @@ func (r *returnSummaryCollector) sawReturn() bool {
 // plain function of the checked script. Summaries are computed lazily so a
 // caller can recursively summarize its callees without depending on function
 // name order. Annotated functions and functions of other scripts stay unknown.
-func (c *scriptChecker) scriptFunctionReturnSummary(name string, fn *ScriptFunction) *TypeExpr {
-	if fn == nil || fn.ReturnTy != nil {
+func (c *scriptChecker) scriptFunctionReturnSummary(fn *ScriptFunction) *TypeExpr {
+	owned, ok := c.resolveOwnedPlainFunction(fn)
+	if !ok || owned.ReturnTy != nil {
 		return nil
 	}
-	if owned, ok := c.script.functions[name]; !ok || owned != fn {
-		return nil
+	return c.functionReturnSummary(owned)
+}
+
+// resolveOwnedPlainFunction maps a resolved callee to the checked script's
+// named function it dispatches to, whatever spelling the call resolved
+// through (`transform` and `transform.call` dispatch to the same function).
+// Callable resolution can hand back a per-call env clone
+// (cloneFunctionForEnv), so a clone normalizes to its definition through the
+// body both share; body identity also keeps a same-named method from
+// borrowing the function's summary. Methods and other scripts' functions
+// resolve to nothing, and shadowing and host overrides were already applied
+// by callable resolution.
+func (c *scriptChecker) resolveOwnedPlainFunction(fn *ScriptFunction) (*ScriptFunction, bool) {
+	if fn == nil || fn.owner != c.script {
+		return nil, false
 	}
-	return c.functionReturnSummary(fn)
+	owned, ok := c.script.functions[fn.Name]
+	if !ok {
+		return nil, false
+	}
+	if owned == fn {
+		return owned, true
+	}
+	if len(owned.Body) > 0 && len(fn.Body) == len(owned.Body) && &fn.Body[0] == &owned.Body[0] {
+		return owned, true
+	}
+	return nil, false
 }
 
 // functionReturnSummary computes (and caches) the summary for one function.

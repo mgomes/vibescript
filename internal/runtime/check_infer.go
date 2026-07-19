@@ -1403,7 +1403,7 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 		if target.fn.ReturnTy != nil {
 			return target.fn.ReturnTy
 		}
-		return c.scriptFunctionReturnSummary(target.name, target.fn)
+		return c.scriptFunctionReturnSummary(target.fn)
 	}
 	if target.name == "JSON.parse_as" && len(call.Args) == 2 {
 		if shape, ok := shapeValuePayload(c.inferExpressionType(call.Args[1])); ok {

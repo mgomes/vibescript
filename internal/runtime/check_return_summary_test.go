@@ -106,6 +106,23 @@ end
 			warning: "call to takes_int argument value expected int, got function",
 		},
 		{
+			name: "call member invocation carries the summary",
+			source: `
+def transform(value)
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(transform.call(1))
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "explicit returns summarize",
 			source: `
 def pick(flag)
