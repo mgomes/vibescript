@@ -272,3 +272,17 @@ end
 `)
 	requireCheckWarningContains(t, script, "call to greet does not accept a block")
 }
+
+func TestHostSignatureUnresolvedNamedTypeWarns(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	err := engine.RegisterBuiltinWithSignature("advance", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return args[0], nil
+	}, Signature{Params: []SignatureParam{{Name: "status", Type: "Status"}}})
+	if err != nil {
+		t.Fatalf("RegisterBuiltinWithSignature: %v", err)
+	}
+	script := compileScriptWithEngine(t, engine, "def run()\n  advance(:draft)\nend")
+	requireCheckWarningContains(t, script, "call to advance argument status uses unknown type Status")
+}

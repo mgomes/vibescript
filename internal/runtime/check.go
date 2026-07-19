@@ -4256,6 +4256,11 @@ type staticCallSpec struct {
 	// paramNames labels positional parameters in diagnostics, index-aligned
 	// with paramTypes; a missing or empty entry falls back to the position.
 	paramNames []string
+	// fromSignature marks a contract published by a host Signature. Host
+	// signature types resolve against the script's own scope, so an
+	// unresolved name is a guaranteed runtime rejection worth reporting;
+	// runtime-owned specs only use built-in kinds and never set this.
+	fromSignature bool
 	// resultType is the builtin's invariant result type; nil keeps the
 	// result unknown for argument-dependent or unmodeled builtins.
 	resultType *TypeExpr
@@ -5040,7 +5045,18 @@ func (c *scriptChecker) checkBuiltinArgumentTypes(function string, call staticCa
 		if i < len(spec.paramNames) && spec.paramNames[i] != "" {
 			label = spec.paramNames[i]
 		}
-		c.checkInferredArgument(function, arg, spec.paramTypes[i], name, label)
+		ty := spec.paramTypes[i]
+		if spec.fromSignature && ty != nil {
+			// A host signature naming a type the script never defines fails
+			// every call at the runtime boundary before the host function
+			// runs, so the call site reports it instead of silently skipping
+			// the unresolved declaration.
+			if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
+				c.add(function, arg.Pos(), "call to %s argument %s uses unknown type %s", name, label, formatTypeExpr(ty))
+				continue
+			}
+		}
+		c.checkInferredArgument(function, arg, ty, name, label)
 	}
 	for _, kwarg := range call.kwargs {
 		c.checkInferredArgument(function, kwarg.Value, spec.keywordTypes[kwarg.Name], name, kwarg.Name)

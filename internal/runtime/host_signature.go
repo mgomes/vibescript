@@ -75,6 +75,7 @@ func signatureCallSpec(name string, sig Signature) (*staticCallSpec, []*TypeExpr
 		rejectKeywords: true,
 		rejectBlock:    !sig.AcceptsBlock,
 		usesBlock:      sig.AcceptsBlock,
+		fromSignature:  true,
 	}
 	paramTypes := make([]*TypeExpr, len(sig.Params))
 	paramNames := make([]string, len(sig.Params))
