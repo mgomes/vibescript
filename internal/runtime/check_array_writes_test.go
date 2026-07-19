@@ -56,6 +56,28 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "push argument after the receiver escapes as an argument",
+			source: `
+def helper(a)
+  0
+end
+
+def f(items: array<int>)
+  items.push(helper(items), "bad")
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "push argument after a receiver member access",
+			source: `
+def f(items: array<int>)
+  items.push(items.length, "bad")
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "unshift argument",
 			source: `
 def f(items: array<int>)

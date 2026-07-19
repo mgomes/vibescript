@@ -1838,14 +1838,18 @@ func arrayMutatorElementWrites(call *CallExpr, property string) (elements []Expr
 // applyArrayMutatorCallFacts checks the elements an in-place builtin array
 // mutator writes against the receiver's declared element type and reports
 // whether every write is provably compatible, in which case the receiver's
-// fact still holds and the caller skips the escape poison. Argument facts
-// are read as captured at each argument's own evaluation point.
-func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallExpr, member *MemberExpr, argumentFacts map[Expression]*TypeExpr) bool {
+// fact still holds and the caller skips the escape poison. Both the
+// receiver fact and the argument facts are read as captured at their own
+// evaluation points: the receiver evaluates before any argument, so an
+// argument that escapes the same local cannot erase the bound the writes
+// contradict. Preservation additionally requires the local's fact to have
+// survived the argument walk unchanged.
+func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallExpr, member *MemberExpr, argumentFacts map[Expression]*TypeExpr, receiverFact *TypeExpr) bool {
 	ident, ok := member.Object.(*Identifier)
 	if !ok {
 		return false
 	}
-	elem := declaredArrayElementType(c.localTypeFor(ident.Name))
+	elem := declaredArrayElementType(receiverFact)
 	if elem == nil {
 		return false
 	}
@@ -1870,8 +1874,11 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 	// The mutators return their receiver, so a consumed result (a chained
 	// call, an argument, an assignment value) hands the array to code the
 	// checker cannot follow: only a statement-level call, whose value is
-	// discarded, can keep the declared bound.
-	preserved := preservable && Expression(call) == c.expressionStatementRoot
+	// discarded, can keep the declared bound — and only when the argument
+	// walk left the local's fact unchanged (an argument may poison or
+	// rebind the same local).
+	preserved := preservable && Expression(call) == c.expressionStatementRoot &&
+		mutatorReceiverFactIntact(c.localTypeFor(ident.Name), receiverFact)
 	for _, arg := range elements {
 		if _, splat := arg.(*SplatArg); splat {
 			preserved = false
@@ -1895,6 +1902,13 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 		}
 	}
 	return preserved
+}
+
+// mutatorReceiverFactIntact reports whether a mutator receiver's local fact
+// survived the argument walk unchanged, so preserving it is still about the
+// same fact the writes were checked against.
+func mutatorReceiverFactIntact(current, captured *TypeExpr) bool {
+	return current != nil && typeFactKey(current) == typeFactKey(captured)
 }
 
 // literalArrayDisjoint reports whether a witnessed-element array can never

@@ -2558,6 +2558,16 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// callee body still checks under the post-argument state: dispatch
 		// happens after the arguments (and their requires) evaluate.
 		target, targetResolved := c.resolveCallable(typed)
+		// A member callee's receiver evaluates before any argument runs, so
+		// the fact the container mutator checks its writes against is
+		// captured now: an argument that escapes or reads the same local
+		// must not erase the bound the receiver was evaluated under.
+		var receiverFact *TypeExpr
+		if member, ok := typed.Callee.(*MemberExpr); ok {
+			if ident, ok := member.Object.(*Identifier); ok {
+				receiverFact = c.localTypeFor(ident.Name)
+			}
+		}
 		// Arguments evaluate left to right before the call dispatches, so
 		// each argument's inferred type is captured at its own evaluation
 		// point: a mutating earlier argument (h.delete(:name)) poisons its
@@ -2611,7 +2621,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// compatible with the receiver's declared element type leaves the
 		// fact true.
 		if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownPureUniversalPredicateCall(typed) {
-			if !c.applyArrayMutatorCallFacts(function, typed, member, argumentFacts) {
+			if !c.applyArrayMutatorCallFacts(function, typed, member, argumentFacts, receiverFact) {
 				c.poisonEscapedIdentifier(member.Object)
 			}
 		}
