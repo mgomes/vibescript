@@ -726,6 +726,54 @@ end
 `,
 		},
 		{
+			name: "single branch namespace mutation survives the join",
+			source: `
+def replacement(value)
+  1
+end
+
+def mutate_serializer()
+  JSON.stringify = replacement
+end
+
+def serialize(flag)
+  if flag
+    mutate_serializer()
+  end
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(flag)
+  takes_int(serialize(flag))
+end
+`,
+		},
+		{
+			name: "block namespace mutation survives the block restore",
+			source: `
+def replacement(value)
+  1
+end
+
+def build()
+  [1].each { JSON.stringify = replacement }
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build())
+end
+`,
+		},
+		{
 			name: "self mutating callee stays unknown after its first call",
 			source: `
 def replacement(value)

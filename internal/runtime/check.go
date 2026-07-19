@@ -1686,31 +1686,21 @@ func (c *scriptChecker) mergeRuntimeStates(base checkRuntimeState, states []chec
 		})
 	}
 
-	commonMembers := commonRuntimeNamespaceMembers(base, states)
-	if len(commonMembers) == 0 {
-		return
-	}
-	if c.runtimeNamespaceMembers == nil {
-		c.runtimeNamespaceMembers = make(map[string]struct{}, len(commonMembers))
-	}
-	for member := range commonMembers {
-		c.runtimeNamespaceMembers[member] = struct{}{}
+	// Namespace writes are possible-write markers: a member reassigned on
+	// any joining path may govern dispatch after the join, so the branches
+	// union rather than intersect (unlike module requires, which must hold
+	// on every path to count as definitely bound).
+	for _, state := range states {
+		c.preserveRuntimeNamespaceMembers(state.namespaceMembers)
 	}
 }
 
-func commonRuntimeNamespaceMembers(base checkRuntimeState, states []checkRuntimeState) map[string]struct{} {
-	common := cloneCheckStringSet(states[0].namespaceMembers)
-	for _, state := range states[1:] {
-		for key := range common {
-			if _, ok := state.namespaceMembers[key]; !ok {
-				delete(common, key)
-			}
-		}
+// preserveRuntimeNamespaceMembers reunions possible namespace writes into
+// the live state after a restore or join of code that may have run.
+func (c *scriptChecker) preserveRuntimeNamespaceMembers(members map[string]struct{}) {
+	for member := range members {
+		c.recordRuntimeNamespaceMember(member)
 	}
-	for key := range base.namespaceMembers {
-		delete(common, key)
-	}
-	return common
 }
 
 func runtimeStateRoots(states []checkRuntimeState) []*Env {
@@ -2622,7 +2612,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkBlockLiteral(function, typed.Block, localReturns)
 		}
 		if argumentsMayBeSkipped {
+			evaluatedMembers := c.runtimeNamespaceMembers
 			c.restoreRuntimeState(argumentState)
+			// A namespace write inside a maybe-skipped argument still counts
+			// as a possible write on the evaluated path.
+			c.preserveRuntimeNamespaceMembers(evaluatedMembers)
 			// A nil receiver skips the arguments entirely, so type facts the
 			// argument walk established (a shovel append, for example) hold
 			// on only one of the two paths and must merge as a branch join.
@@ -2972,8 +2966,15 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, 
 	if block == nil {
 		return
 	}
+	// The restore models a block that may run zero times, but a namespace
+	// write inside a block that does run must keep governing dispatch, so
+	// possible-write markers survive the restore.
 	runtimeState := c.snapshotRuntimeState()
-	defer c.restoreRuntimeState(runtimeState)
+	defer func() {
+		walkMembers := c.runtimeNamespaceMembers
+		c.restoreRuntimeState(runtimeState)
+		c.preserveRuntimeNamespaceMembers(walkMembers)
+	}()
 
 	// Block and lambda returns are not checked against the enclosing
 	// function's annotation today, so an active begin/ensure deferral must
