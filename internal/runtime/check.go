@@ -4644,13 +4644,6 @@ func staticBuiltinReceiverKind(expr Expression) (string, bool) {
 	return "", false
 }
 
-var staticMemberSpecs = map[string]staticCallSpec{
-	"array.at":     {minArgs: 1, maxArgs: 1, rejectKeywords: true, autoInvoke: true},
-	"array.fetch":  {minArgs: 1, maxArgs: 2, autoInvoke: true, usesBlock: true},
-	"array.slice":  {minArgs: 1, maxArgs: 2, rejectKeywords: true, autoInvoke: true},
-	"string.slice": {minArgs: 1, maxArgs: 2, autoInvoke: true},
-}
-
 func keywordSet(names ...string) map[string]struct{} {
 	out := make(map[string]struct{}, len(names))
 	for _, name := range names {
