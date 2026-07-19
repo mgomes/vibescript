@@ -4383,7 +4383,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			c.applyKeywordSplatDeleteFact(typed)
 			mutatorArgsModeled := false
 			if member, ok := typed.Callee.(*MemberExpr); ok && !c.memberCallPreservesReceiverFacts(typed) {
-				preserved, modeled, mayWrite := c.applyArrayMutatorCallFacts(
+				preserved, modeled, mayWrite := c.applyContainerMutatorCallFacts(
 					function,
 					typed,
 					checkedCall,

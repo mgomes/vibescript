@@ -2978,13 +2978,16 @@ func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
 
 	// An index write or member call may restructure the container, so its
 	// shape facts must stop holding (no stale-field diagnostics afterwards).
+	// The declared shape's key representation is unknown, so even the
+	// compatible write weakens the fact. (An incompatible write is reported
+	// at the write site; see check_hash_writes_test.go.)
 	requireNoCheckWarnings(t, compileScript(t, `
 def takes_int(value: int)
   value
 end
 
 def run(user: { name: string })
-  user["name"] = 42
+  user["name"] = "x"
   takes_int(user["name"])
 end
 `))

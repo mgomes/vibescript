@@ -2312,10 +2312,11 @@ func (c *scriptChecker) inferAssignStatementTypes(
 		valueFacts := c.captureDestructureValueFacts(target, stmt.Value)
 		c.bindCapturedDestructureValueFacts(valueFacts)
 	case *IndexExpr:
-		// An index write mutates the container in place; a direct element
-		// write against a declared array<T> is checked and may preserve the
-		// fact. Exact literal-value facts advance independently; every fact
-		// that neither model can preserve is dropped.
+		// An index write mutates the container in place; a direct write
+		// against a declared array<T>, hash<K, V>, or shape fact is checked
+		// and may preserve or refine the fact. Exact literal-array facts
+		// advance independently; every fact neither model preserves is
+		// dropped.
 		if name, ok := rootIdentifierName(stmt.Target); ok {
 			writeStmt := stmt
 			logicalUnknown := false
@@ -2344,6 +2345,23 @@ func (c *scriptChecker) inferAssignStatementTypes(
 			writeMayLand := false
 			abortsBeforeWrite := false
 			applyDeclaredWrite := func() {
+				receiverFact := indexedReceiverFact
+				if receiverFact == nil {
+					receiverFact = c.inferExpressionType(target.Object)
+				}
+				keyBound, _ := declaredHashEntryTypes(receiverFact)
+				if keyBound != nil ||
+					(receiverFact != nil && receiverFact.Kind == TypeShape && !receiverFact.Nullable) {
+					declaredPreserved = c.applyIndexedWriteFacts(
+						function,
+						writeStmt,
+						target,
+						receiverFact,
+					)
+					written = c.inferExpressionType(writeStmt.Value)
+					writeMayLand = true
+					return
+				}
 				declaredPreserved, written, writeMayLand, abortsBeforeWrite = c.applyIndexedElementWriteFacts(
 					function,
 					writeStmt,
@@ -5295,12 +5313,16 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 	}
 	fact := &TypeExpr{Kind: TypeShape, Shape: shape}
 	// Runtime hashes distinguish symbol keys from string keys, so an exact
-	// index fact needs the store's key representation.
+	// index fact needs the store's key representation. A literal with mixed
+	// or non-string, non-symbol keys is marked too, so a marker-less shape
+	// always means an annotation-declared contract.
 	switch {
 	case allSymbolKeys:
 		fact.Name = shapeKeysSymbolMarker
 	case allStringKeys:
 		fact.Name = shapeKeysStringMarker
+	default:
+		fact.Name = shapeKeysMixedMarker
 	}
 	return fact
 }
@@ -5548,6 +5570,10 @@ func shapeValuePayload(ty *TypeExpr) (*TypeExpr, bool) {
 const (
 	shapeKeysStringMarker = "\x00string-keyed"
 	shapeKeysSymbolMarker = "\x00symbol-keyed"
+	// shapeKeysMixedMarker tags a literal-derived shape whose keys mix (or
+	// fall outside) the string and symbol representations, so marker-less
+	// shapes always denote annotation-declared contracts.
+	shapeKeysMixedMarker = "\x00mixed-keyed"
 )
 
 // literalElementsMarker tags an inferred array type whose element union is
@@ -5768,6 +5794,18 @@ func declaredArrayElementType(ty *TypeExpr) *TypeExpr {
 	return ty.TypeArgs[0]
 }
 
+// declaredHashEntryTypes returns the key and value bounds of a definite
+// annotation-derived hash<K, V> fact: a boundary-validated hash whose every
+// entry is known to satisfy them, so an entry write can be checked against
+// both. Hash facts carry no witness markers, and bare, nullable, or union
+// facts are not definitely bounded hashes.
+func declaredHashEntryTypes(ty *TypeExpr) (key, value *TypeExpr) {
+	if ty == nil || ty.Kind != TypeHash || ty.Nullable || len(ty.TypeArgs) != 2 {
+		return nil, nil
+	}
+	return ty.TypeArgs[0], ty.TypeArgs[1]
+}
+
 // reportIncompatibleElementWrite records the diagnostic shared by shovel,
 // indexed, and mutator-call element writes whose value can never satisfy the
 // receiver's declared element type.
@@ -5802,6 +5840,178 @@ func (c *scriptChecker) checkShovelElementWrite(function string, expr *BinaryExp
 	if typeExprsDisjoint(written, elem, c.checkNamedTypeResolver()) {
 		c.reportIncompatibleElementWrite(function, expr.Pos(), ident.Name, elem, written)
 	}
+}
+
+// applyIndexedWriteFacts checks a direct c[k] = value write against the
+// receiver's declared array, hash, or shape fact and reports whether the
+// fact still holds (or was refined); every other write weakens through the
+// caller's poison. A compatible write keeps the fact true for the receiver
+// and every alias, inside regions too — nothing rebinds. receiverFact
+// arrives as captured before the value expression walked (the runtime
+// evaluates the receiver first); a value that escaped the same local keeps
+// the bound for diagnosis, while preservation and refinement require the
+// local's fact to have survived the value walk unchanged.
+func (c *scriptChecker) applyIndexedWriteFacts(function string, stmt *AssignStmt, target *IndexExpr, receiverFact *TypeExpr) bool {
+	if stmt.Operator != "" {
+		return false
+	}
+	ident, ok := target.Object.(*Identifier)
+	if !ok {
+		return false
+	}
+	if len(target.Indices) != 1 {
+		return false
+	}
+	current := c.localTypeFor(ident.Name)
+	if receiverFact == nil {
+		receiverFact = current
+	}
+	intact := mutatorReceiverFactIntact(current, receiverFact)
+	if elem := declaredArrayElementType(receiverFact); elem != nil {
+		return c.applyIndexedArrayWriteFacts(function, stmt, target, ident.Name, elem, intact)
+	}
+	if keyBound, valueBound := declaredHashEntryTypes(receiverFact); keyBound != nil {
+		return c.applyHashEntryWriteFacts(function, stmt, ident.Name, keyBound, valueBound, target.Indices[0], intact)
+	}
+	if receiverFact != nil && receiverFact.Kind == TypeShape && !receiverFact.Nullable {
+		return c.applyShapeFieldWriteFacts(function, stmt, ident.Name, receiverFact, target.Indices[0], intact)
+	}
+	return false
+}
+
+// applyIndexedArrayWriteFacts checks a direct arr[i] = value element write
+// against the receiver's declared element type: a compatible in-bounds write
+// replaces one element with another admitted one, so the fact survives.
+func (c *scriptChecker) applyIndexedArrayWriteFacts(function string, stmt *AssignStmt, target *IndexExpr, name string, elem *TypeExpr, intact bool) bool {
+	// A provably non-numeric index raises before any element is written, so
+	// the write never lands and neither diagnosis nor preservation applies.
+	if kind, known := staticOperandKind(c.inferExpressionType(target.Indices[0])); known &&
+		kind != TypeInt && kind != TypeFloat && kind != TypeNumber {
+		return false
+	}
+	written := c.inferExpressionType(stmt.Value)
+	if written == nil {
+		return false
+	}
+	resolve := c.checkNamedTypeResolver()
+	// The receiver retains the written element regardless of compatibility,
+	// so a container-rooted value's local links in: a later mutation or
+	// escape through either side weakens both.
+	c.linkContainerWriteAlias(name, stmt.Value, written)
+	if typeExprsDisjoint(written, elem, resolve) {
+		c.reportIncompatibleElementWrite(function, stmt.Pos(), name, elem, written)
+		return false
+	}
+	return typeExprSatisfies(written, elem, resolve) && intact
+}
+
+// applyHashEntryWriteFacts checks h[k] = value against a declared
+// hash<K, V> fact: a key or value provably disjoint from its bound is
+// reported, and a provably compatible entry keeps the fact true (hash types
+// carry no exactness, so replacing and adding an entry both preserve the
+// bound).
+func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignStmt, name string, keyBound, valueBound *TypeExpr, index Expression, intact bool) bool {
+	resolve := c.checkNamedTypeResolver()
+	preserved := intact
+	if keyType := c.inferExpressionType(index); keyType == nil {
+		preserved = false
+	} else if typeExprsDisjoint(keyType, keyBound, resolve) {
+		c.add(function, stmt.Pos(), "write to %s expected key %s, got %s",
+			name, formatTypeExpr(keyBound), formatTypeExpr(keyType))
+		preserved = false
+	} else if !typeExprSatisfies(keyType, keyBound, resolve) {
+		preserved = false
+	}
+	if valueType := c.inferExpressionType(stmt.Value); valueType == nil {
+		preserved = false
+	} else if typeExprsDisjoint(valueType, valueBound, resolve) {
+		c.add(function, stmt.Pos(), "write to %s expected value %s, got %s",
+			name, formatTypeExpr(valueBound), formatTypeExpr(valueType))
+		preserved = false
+	} else if !typeExprSatisfies(valueType, valueBound, resolve) {
+		preserved = false
+	}
+	if !preserved {
+		return false
+	}
+	// The receiver retains a written container key or value, so their root
+	// locals link in: a later mutation through either weakens both.
+	c.linkContainerWriteAlias(name, index, c.inferExpressionType(index))
+	c.linkContainerWriteAlias(name, stmt.Value, c.inferExpressionType(stmt.Value))
+	return true
+}
+
+// applyShapeFieldWriteFacts checks user[:field] = value against a shape
+// fact. A declared (marker-less) shape is a boundary contract with an
+// unknown key representation: a field-type contradiction or a statically
+// known extra field is reported — either representation violates exactness —
+// and no write preserves the fact, since a same-name write through the other
+// representation would add a second key. Witnessed literal and JSON.parse_as
+// shapes carry their store's key representation and are evidence rather than
+// contracts: a matching-representation write with a known key and value
+// refines the exact fact in place, and everything else weakens it silently.
+func (c *scriptChecker) applyShapeFieldWriteFacts(function string, stmt *AssignStmt, name string, shape *TypeExpr, index Expression, intact bool) bool {
+	key, keyOK := staticLiteralHashKey(index)
+	switch shape.Name {
+	case shapeKeysStringMarker, shapeKeysSymbolMarker:
+		if !keyOK || indexKeyReprMarker(index) != shape.Name {
+			return false
+		}
+		// Inside a loop or block body a refinement rolls back with the
+		// region's state restore, it cannot reach other names sharing the
+		// store, and a value walk that changed the local's fact invalidated
+		// the captured shape, so all three cases weaken instead.
+		if c.mutationRegionDepth != 0 || len(c.typeAliases[name]) != 0 || !intact {
+			return false
+		}
+		written := c.inferExpressionType(stmt.Value)
+		if written == nil {
+			return false
+		}
+		// The store retains a written container value, so its root local
+		// links in: a later mutation through it weakens both.
+		c.linkContainerWriteAlias(name, stmt.Value, written)
+		refined := cloneTypeExpr(shape)
+		if refined.Shape == nil {
+			refined.Shape = make(map[string]*TypeExpr, 1)
+		}
+		refined.Shape[key] = written
+		c.bindLocalType(name, refined)
+		return true
+	case "":
+		if !keyOK {
+			return false
+		}
+		field, present := shape.Shape[key]
+		if !present {
+			c.add(function, stmt.Pos(), "write to %s adds field %s to exact shape %s",
+				name, key, formatTypeExpr(shape))
+			return false
+		}
+		written := c.inferExpressionType(stmt.Value)
+		if written == nil {
+			return false
+		}
+		if typeExprsDisjoint(written, field, c.checkNamedTypeResolver()) {
+			c.add(function, stmt.Pos(), "write to %s field %s expected %s, got %s",
+				name, key, formatTypeExpr(field), formatTypeExpr(written))
+		}
+		return false
+	}
+	return false
+}
+
+// indexKeyReprMarker reports the key-representation marker a static index
+// literal writes through, mirroring the read-side dispatch in
+// inferIndexExprType. Non-string, non-symbol keys carry no representation.
+func indexKeyReprMarker(index Expression) string {
+	switch index.(type) {
+	case *SymbolLiteral:
+		return shapeKeysSymbolMarker
+	case *StringLiteral:
+		return shapeKeysStringMarker
+	}
+	return ""
 }
 
 // applyIndexedElementWriteFacts checks a direct arr[i] = value element write
@@ -5900,6 +6110,81 @@ func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string,
 	return true
 }
 
+// applyContainerMutatorCallFacts checks the writes an in-place builtin
+// container mutator call performs against the receiver's declared fact.
+// preserved reports whether every write is provably compatible, in which
+// case the receiver's fact still holds and the caller skips its escape
+// poison. modeled reports whether the call's argument effects are fully
+// accounted for — the builtin only reads and retains its arguments, with
+// retention tracked through container write aliases — so the caller also
+// skips the generic argument escape poison that would otherwise cascade
+// through those aliases and undo the preservation. Both the receiver fact
+// and the argument facts are read as captured at their own evaluation
+// points: the receiver evaluates before any argument, so an argument that
+// escapes the same local cannot erase the bound the writes contradict.
+// mayWrite reports that at least one position can be mutated, so true no-op
+// calls keep exact value facts.
+func (c *scriptChecker) applyContainerMutatorCallFacts(
+	function string,
+	call, checkedCall *CallExpr,
+	member *MemberExpr,
+	argumentFacts map[Expression]*TypeExpr,
+	receiverFact *TypeExpr,
+) (preserved, modeled, mayWrite bool) {
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return false, false, false
+	}
+	// Dispatch only proceeds on the non-nil path (safe navigation skips
+	// nil and a plain member call on nil raises), so the non-nil arm
+	// bounds the writes; preservation still compares the original fact.
+	contentFact := nonNilMutatorReceiverFact(receiverFact)
+	if contentFact != nil && typeExprArmsAll(contentFact, func(arm *TypeExpr) bool {
+		return arm.Kind == TypeArray
+	}) {
+		return c.applyArrayMutatorCallFacts(function, call, checkedCall, member, argumentFacts, receiverFact)
+	}
+	if keyBound, valueBound := declaredHashEntryTypes(contentFact); keyBound != nil {
+		preserved, modeled := c.applyHashMutatorCallFacts(
+			function,
+			call,
+			member,
+			argumentFacts,
+			ident.Name,
+			receiverFact,
+			contentFact,
+			keyBound,
+			valueBound,
+		)
+		return preserved, modeled, hashMutatorCallMayWrite(call, member.Property)
+	}
+	return false, false, false
+}
+
+// mutatorCallArgumentFact reads an argument's fact as captured at its own
+// evaluation point, falling back to the current state.
+func (c *scriptChecker) mutatorCallArgumentFact(arg Expression, argumentFacts map[Expression]*TypeExpr) *TypeExpr {
+	if written, captured := argumentFacts[arg]; captured {
+		return written
+	}
+	return c.inferExpressionType(arg)
+}
+
+// mutatorCallPreservable reports whether a mutator call's receiver fact may
+// survive at all: the mutators return their receiver (or, for store, a value
+// the receiver retains), so a consumed result (a chained call, an argument,
+// an assignment value) hands the container to code the checker cannot
+// follow, and an argument walk that poisoned or rebound the local already
+// invalidated the captured fact. Only a statement-level call whose local
+// still carries the captured fact can keep the declared bound.
+func (c *scriptChecker) mutatorCallPreservable(call *CallExpr, name string, receiverFact *TypeExpr) bool {
+	if Expression(call) != c.expressionStatementRoot {
+		return false
+	}
+	current := c.localTypeFor(name)
+	return current != nil && typeFactKey(current) == typeFactKey(receiverFact)
+}
+
 // applyArrayMutatorCallFacts checks the elements an in-place builtin array
 // mutator writes against the receiver's declared element type. preserved
 // reports whether every write is provably compatible, in which case the
@@ -5963,8 +6248,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	// call, an argument, an assignment value) hands the array to code the
 	// checker cannot follow: only a statement-level call, whose value is
 	// discarded, can keep the declared bound — and only when the argument
-	// walk left the local's fact unchanged (an argument may poison or
-	// rebind the same local).
+	// walk left the local's fact unchanged.
 	preserved = preservable && Expression(call) == c.expressionStatementRoot &&
 		mutatorReceiverFactIntact(c.localTypeFor(ident.Name), receiverFact)
 	if !mayWrite {
@@ -5976,10 +6260,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			if _, splat := arg.(*SplatArg); splat {
 				return false, false, true
 			}
-			written, captured := argumentFacts[arg]
-			if !captured {
-				written = c.inferExpressionType(arg)
-			}
+			written := c.mutatorCallArgumentFact(arg, argumentFacts)
 			c.linkContainerWriteAlias(ident.Name, arg, written)
 		}
 		return false, true, true
@@ -5987,7 +6268,13 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	resolve := c.checkNamedTypeResolver()
 	for _, arg := range elements {
 		if splat, isSplat := arg.(*SplatArg); isSplat {
-			compatible, aborts := c.applySplattedElementWriteFacts(function, splat, ident.Name, elem, resolve)
+			compatible, aborts := c.applySplattedElementWriteFacts(
+				function,
+				splat,
+				ident.Name,
+				elem,
+				resolve,
+			)
 			if aborts {
 				// Expansion raises before dispatch and before later
 				// arguments evaluate, so no write lands and the remaining
@@ -5999,10 +6286,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			}
 			continue
 		}
-		written, captured := argumentFacts[arg]
-		if !captured {
-			written = c.inferExpressionType(arg)
-		}
+		written := c.mutatorCallArgumentFact(arg, argumentFacts)
 		if written == nil {
 			c.linkContainerWriteAlias(ident.Name, arg, written)
 			preserved = false
@@ -6014,8 +6298,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			c.invalidateElementWriteAliases(ident.Name, written)
 		}
 		// The receiver retains every written element regardless of
-		// compatibility, so a container-rooted element's local links in: a
-		// later mutation through it weakens both.
+		// compatibility, so a container-rooted element's local links in.
 		c.linkContainerWriteAlias(ident.Name, arg, written)
 		if disjoint {
 			c.reportIncompatibleElementWrite(function, arg.Pos(), ident.Name, elem, written)
@@ -6091,9 +6374,99 @@ func splattedElementBound(ty *TypeExpr) *TypeExpr {
 	return ty.TypeArgs[0]
 }
 
+func hashMutatorCallMayWrite(call *CallExpr, property string) bool {
+	if call == nil || len(call.KwArgs) != 0 {
+		return false
+	}
+	switch property {
+	case "store":
+		return len(call.Args) == 2
+	case "merge!", "update":
+		return len(call.Args) > 0
+	default:
+		return false
+	}
+}
+
+// applyHashMutatorCallFacts checks the entries an in-place builtin hash
+// mutator writes against the receiver's declared hash<K, V> fact. store
+// writes one checked entry like h[k] = v; merge! and update fold whole hash
+// arguments in, so each argument fact is checked against the receiver's
+// type (an exact shape witnesses its entries, proving a contradiction). A
+// conflict block's results are unknown, so its presence checks nothing and
+// preserves nothing — and its calls may mutate retained entry values, so
+// only block-less calls report their arguments as modeled.
+func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExpr, member *MemberExpr, argumentFacts map[Expression]*TypeExpr, name string, receiverFact, hashFact, keyBound, valueBound *TypeExpr) (preserved, modeled bool) {
+	if len(call.KwArgs) != 0 {
+		return false, false
+	}
+	resolve := c.checkNamedTypeResolver()
+	switch member.Property {
+	case "store":
+		if len(call.Args) != 2 {
+			return false, false
+		}
+		preserved = c.mutatorCallPreservable(call, name, receiverFact)
+		checkEntry := func(arg Expression, bound *TypeExpr, noun string) {
+			written := c.mutatorCallArgumentFact(arg, argumentFacts)
+			// The receiver retains the stored entry regardless of
+			// compatibility, so a written container's root local links in.
+			c.linkContainerWriteAlias(name, arg, written)
+			if written == nil {
+				preserved = false
+				return
+			}
+			if typeExprsDisjoint(written, bound, resolve) {
+				c.add(function, arg.Pos(), "write to %s expected %s %s, got %s",
+					name, noun, formatTypeExpr(bound), formatTypeExpr(written))
+				preserved = false
+				return
+			}
+			if !typeExprSatisfies(written, bound, resolve) {
+				preserved = false
+			}
+		}
+		checkEntry(call.Args[0], keyBound, "key")
+		checkEntry(call.Args[1], valueBound, "value")
+		return preserved, true
+	case "merge!", "update":
+		if call.Block != nil || call.BlockArg != nil {
+			return false, false
+		}
+		preserved = c.mutatorCallPreservable(call, name, receiverFact)
+		for _, arg := range call.Args {
+			if _, splat := arg.(*SplatArg); splat {
+				preserved = false
+				continue
+			}
+			written := c.mutatorCallArgumentFact(arg, argumentFacts)
+			// The receiver retains the argument's entry values regardless
+			// of compatibility, so the argument's root local links in.
+			c.linkContainerWriteAlias(name, arg, written)
+			if written == nil {
+				preserved = false
+				continue
+			}
+			// A provably non-hash argument raises before any entry lands,
+			// so only hash-like argument facts diagnose content.
+			if typeExprHashLikeOnly(written) && typeExprsDisjoint(written, hashFact, resolve) {
+				c.add(function, arg.Pos(), "write to %s expected %s, got %s",
+					name, formatTypeExpr(hashFact), formatTypeExpr(written))
+				preserved = false
+				continue
+			}
+			if !typeExprSatisfies(written, hashFact, resolve) {
+				preserved = false
+			}
+		}
+		return preserved, true
+	}
+	return false, false
+}
+
 // mutatorReceiverFactIntact reports whether a mutator receiver's local fact
-// survived the argument walk unchanged, so preserving it is still about the
-// same fact the writes were checked against.
+// survived a later operand or argument walk unchanged, so preserving it is
+// still about the same fact the writes were checked against.
 func mutatorReceiverFactIntact(current, captured *TypeExpr) bool {
 	return current != nil && typeFactKey(current) == typeFactKey(captured)
 }
@@ -7905,9 +8278,39 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 			return typeExprSatisfies(written.TypeArgs[0], declared.TypeArgs[0], resolve) &&
 				typeExprSatisfies(written.TypeArgs[1], declared.TypeArgs[1], resolve)
 		case TypeShape:
-			// A shape is a hash at runtime, but its key representation and
-			// field bounds against hash<K, V> are left to runtime checks.
-			return len(declared.TypeArgs) == 0
+			// A shape is a hash at runtime; with a known key representation
+			// its keys and witnessed fields can be checked against the hash
+			// bounds, while an unknown representation only satisfies a bare
+			// hash annotation.
+			if len(declared.TypeArgs) == 0 {
+				return true
+			}
+			if len(declared.TypeArgs) != 2 {
+				return false
+			}
+			// An exact shape witnesses every entry, so an empty shape has
+			// none and satisfies any hash bounds.
+			if len(written.Shape) == 0 {
+				return true
+			}
+			var keyType *TypeExpr
+			switch written.Name {
+			case shapeKeysStringMarker:
+				keyType = checkTypeString
+			case shapeKeysSymbolMarker:
+				keyType = checkTypeSymbol
+			default:
+				return false
+			}
+			if !typeExprSatisfies(keyType, declared.TypeArgs[0], resolve) {
+				return false
+			}
+			for _, field := range written.Shape {
+				if !typeExprSatisfies(field, declared.TypeArgs[1], resolve) {
+					return false
+				}
+			}
+			return true
 		}
 		return false
 	case TypeShape:
