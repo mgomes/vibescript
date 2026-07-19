@@ -570,7 +570,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 			if typed.Block != nil {
 				c.degradeBlockBodyBindings(typed.Block)
 			}
-			if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownUniversalNilPredicateCall(typed) {
+			if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownPureUniversalPredicateCall(typed) {
 				c.poisonEscapedIdentifier(member.Object)
 			}
 			for _, arg := range typed.Args {
@@ -582,7 +582,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		}
 	case *MemberExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
-		if c.isolatedCollectInference && !c.knownUniversalNilPredicateMember(typed) {
+		if c.isolatedCollectInference && !c.knownPureUniversalPredicateMember(typed) {
 			c.poisonEscapedIdentifier(typed.Object)
 		}
 	case *ScopeExpr:
@@ -2596,10 +2596,10 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// Containers pass by reference, so a callee may mutate an argument
 		// in place; the caller's structural facts stop holding. Dispatch
 		// happens after the arguments evaluate, so the receiver's facts
-		// stop holding here too, not during the callee walk. The known
-		// universal nil? predicate is pure, so its receiver fact must survive
-		// for the following condition-outcome narrowing.
-		if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownUniversalNilPredicateCall(typed) {
+		// stop holding here too, not during the callee walk. Proven universal
+		// predicates are pure, so their receiver facts must
+		// survive for outer inference and condition-outcome narrowing.
+		if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownPureUniversalPredicateCall(typed) {
 			c.poisonEscapedIdentifier(member.Object)
 		}
 		if member, ok := typed.BlockArg.(*MemberExpr); ok {
@@ -2618,10 +2618,10 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			// Member dispatch on a container may mutate it in place (push,
 			// delete, ...), so the receiver's structural facts stop
 			// holding. A call callee poisons after its arguments instead:
-			// they evaluate before dispatch and still see the facts. The
-			// universal nil? predicate is pure and preserves the fact that
-			// condition-outcome narrowing consumes next.
-			if !c.knownUniversalNilPredicateMember(typed) {
+			// they evaluate before dispatch and still see the facts. Proven
+			// universal predicates are pure and preserve the receiver
+			// fact that outer inference or narrowing consumes next.
+			if !c.knownPureUniversalPredicateMember(typed) {
 				c.poisonEscapedIdentifier(typed.Object)
 			}
 		}

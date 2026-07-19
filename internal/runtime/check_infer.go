@@ -984,30 +984,32 @@ func (c *scriptChecker) narrowNilPredicateMember(member *MemberExpr, truthy bool
 	return c.narrowLocalNilness(ident.Name, truthy)
 }
 
-// knownUniversalNilPredicateMember reports whether a plain local's nil?
-// dispatch is guaranteed to use the pure universal predicate under its current
-// fact. Named arms are excluded because a class may override nil?. Hash-like
-// facts must also rule out a callable nil? field: TypeHash and TypeShape admit
-// KindObject namespace values whose callable exports override the universal
-// fallback.
-func (c *scriptChecker) knownUniversalNilPredicateMember(member *MemberExpr) bool {
-	if member == nil || member.Safe || member.Property != "nil?" {
+// knownPureUniversalPredicateMember reports whether every receiver arm that
+// can dispatch is guaranteed to use one of the pure universal predicates.
+// Named arms are excluded because a class may override the member. Hash-like
+// facts must also rule out a callable field with the same name.
+func (c *scriptChecker) knownPureUniversalPredicateMember(member *MemberExpr) bool {
+	if member == nil {
 		return false
 	}
-	ident, ok := member.Object.(*Identifier)
-	if !ok {
+	if _, ok := universalMemberSpecs[member.Property]; !ok {
 		return false
 	}
-	arms, ok := typeExprArms(c.localTypeFor(ident.Name), 0)
+	arms, ok := typeExprArms(c.inferExpressionType(member.Object), 0)
 	if !ok || len(arms) == 0 {
 		return false
 	}
+	dispatchArms := 0
 	for _, arm := range arms {
-		if !typeArmUsesUniversalMemberDispatch(arm, "nil?") {
+		if member.Safe && arm.Kind == TypeNil {
+			continue
+		}
+		if !typeArmUsesUniversalMemberDispatch(arm, member.Property) {
 			return false
 		}
+		dispatchArms++
 	}
-	return true
+	return dispatchArms > 0
 }
 
 // typeArmUsesUniversalMemberDispatch reports whether a known fact arm must
@@ -1059,15 +1061,15 @@ func typeExprMayIncludeCallable(ty *TypeExpr) bool {
 	return false
 }
 
-// knownUniversalNilPredicateCall recognizes the explicit nullary call form of
-// a known universal nil? predicate.
-func (c *scriptChecker) knownUniversalNilPredicateCall(call *CallExpr) bool {
-	if call == nil || call.Safe || len(call.Args) != 0 || len(call.KwArgs) != 0 ||
-		call.Block != nil || call.BlockArg != nil {
+// knownPureUniversalPredicateCall recognizes a call whose member dispatch is
+// guaranteed to reach a pure universal predicate. Argument evaluation applies
+// its own mutations before this dispatch gate.
+func (c *scriptChecker) knownPureUniversalPredicateCall(call *CallExpr) bool {
+	if call == nil {
 		return false
 	}
 	member, ok := call.Callee.(*MemberExpr)
-	return ok && c.knownUniversalNilPredicateMember(member)
+	return ok && c.knownPureUniversalPredicateMember(member)
 }
 
 // typeExprDefinitelyTruthy reports whether every possible value of the type

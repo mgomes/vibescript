@@ -262,6 +262,32 @@ end
 			warning: "call to takes_int argument value expected int, got bool",
 		},
 		{
+			name: "typed hash pure predicate preserves receiver fact",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(value: hash<string, string>)
+  takes_int(value.frozen?)
+end
+`,
+			warning: "call to takes_int argument value expected int, got bool",
+		},
+		{
+			name: "typed shape pure predicate call preserves receiver fact",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(value: { name: string })
+  takes_int(value.respond_to?(:name))
+end
+`,
+			warning: "call to takes_int argument value expected int, got bool",
+		},
+		{
 			name: "mixed safe hash and scalar predicate result",
 			source: `
 def takes_int(value: int)
