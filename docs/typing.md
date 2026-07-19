@@ -154,7 +154,7 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   keeps arms that may satisfy the atom, the false path drops arms that always
   do. The atom is a symbol or string naming a primitive (`:int`, `:string`,
   `:bool`, `:symbol`, `:nil`, `:number`, `:duration`, `:time`, `:money`), a
-  bare container (`:array`, `:hash`, `:range`, `:function`), a class or enum
+  bare container (`:array`, `:hash`/`:object`, `:range`, `:function`), a class or enum
   name (matched by exact name, no ancestry), or any of these with a trailing
   `?` for the nullable form (`'int?'`). The test never coerces —
   `"5".is_type?(:int)` is `false` — and parameterized spellings such as

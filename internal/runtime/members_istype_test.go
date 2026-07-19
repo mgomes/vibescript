@@ -29,6 +29,8 @@ func TestIsTypePredicate(t *testing.T) {
 		{name: "symbol is not string", expr: ":ok.is_type?(:string)", want: false},
 		{name: "array matches array", expr: "[1].is_type?(:array)", want: true},
 		{name: "hash matches hash", expr: "({\"a\": 1}).is_type?(:hash)", want: true},
+		{name: "object alias matches hash", expr: "({\"a\": 1}).is_type?(:object)", want: true},
+		{name: "nullable object alias", expr: "nil.is_type?('object?')", want: true},
 		{name: "range matches range", expr: "(1..3).is_type?(:range)", want: true},
 		{name: "lambda matches function", expr: "->(x) { x }.is_type?(:function)", want: true},
 		{name: "duration matches duration", expr: "5.minutes.is_type?(:duration)", want: true},

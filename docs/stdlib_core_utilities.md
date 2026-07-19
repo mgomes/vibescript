@@ -227,7 +227,7 @@ predicate — `{ "respond_to?": 1 }.respond_to?(:keys)` still calls the predicat
 - `is_type?(atom) -> bool` – tests the receiver against a type atom without
   coercion. The atom is a symbol or string naming a primitive (`:int`,
   `:float`, `:number`, `:string`, `:bool`, `:symbol`, `:nil`, `:duration`,
-  `:time`, `:money`), a bare container (`:array`, `:hash`, `:range`,
+  `:time`, `:money`), a bare container (`:array`, `:hash`/`:object`, `:range`,
   `:function`), or a class or enum name matched by exact name (no module
   ancestry — use `is_a?` for that). A trailing `?` tests the nullable form:
   `'int?'` is int or nil. Parameterized spellings such as `array<int>` and
