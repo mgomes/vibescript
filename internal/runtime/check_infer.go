@@ -1062,14 +1062,38 @@ func typeExprMayIncludeCallable(ty *TypeExpr) bool {
 }
 
 // knownPureUniversalPredicateCall recognizes a call whose member dispatch is
-// guaranteed to reach a pure universal predicate. Argument evaluation applies
-// its own mutations before this dispatch gate.
+// guaranteed to reach a pure universal predicate and whose arguments provably
+// run no user code. Arguments evaluate before the predicate dispatches, so an
+// argument that can call into script code may mutate the receiver through an
+// alias — the receiver's fact must not survive such a call.
 func (c *scriptChecker) knownPureUniversalPredicateCall(call *CallExpr) bool {
-	if call == nil {
+	if call == nil || len(call.KwArgs) > 0 || call.Block != nil || call.BlockArg != nil {
 		return false
+	}
+	for _, arg := range call.Args {
+		if !c.predicateArgumentIsPure(arg) {
+			return false
+		}
 	}
 	member, ok := call.Callee.(*MemberExpr)
 	return ok && c.knownPureUniversalPredicateMember(member)
+}
+
+// predicateArgumentIsPure reports whether a predicate argument provably runs
+// no user code when it evaluates: literals and plain value reads qualify. An
+// identifier stays pure only when it cannot auto-invoke a callable.
+func (c *scriptChecker) predicateArgumentIsPure(expr Expression) bool {
+	switch typed := expr.(type) {
+	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral,
+		*NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+		return true
+	case *Identifier:
+		_, autoCallable := c.resolveCallable(&CallExpr{Callee: typed})
+		return !autoCallable
+	case *UnaryExpr:
+		return c.predicateArgumentIsPure(typed.Right)
+	}
+	return false
 }
 
 // typeExprDefinitelyTruthy reports whether every possible value of the type

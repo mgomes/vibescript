@@ -599,6 +599,39 @@ end
 `,
 		},
 		{
+			name: "mutating predicate argument poisons the receiver fact",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  x = {name: "a"}
+  y = x
+  x.eql?(y.store(:name, 1))
+  takes_int(x[:name])
+end
+`,
+		},
+		{
+			name: "predicate call with impure argument poisons the receiver fact",
+			source: `
+def name_key()
+  :name
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  x = {name: "a"}
+  x.respond_to?(name_key())
+  takes_int(x[:name])
+end
+`,
+		},
+		{
 			name: "mixed receiver kinds stay unknown",
 			source: `
 def takes_string(value: string)
