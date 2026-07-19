@@ -1139,12 +1139,28 @@ func (c *scriptChecker) knownPureUniversalPredicateMember(member *MemberExpr) bo
 	if !ok || len(arms) == 0 {
 		return false
 	}
+	classPredicate := false
+	switch member.Property {
+	case isAMemberName, kindOfMemberName, instanceOfMemberName:
+		classPredicate = true
+	}
+	var resolve namedTypeResolver
 	dispatchArms := 0
 	for _, arm := range arms {
 		if member.Safe && arm.Kind == TypeNil {
 			continue
 		}
-		if !typeArmUsesUniversalMemberDispatch(arm, member.Property) {
+		if classPredicate {
+			// Nominal arms qualify when their class does not override the
+			// predicate, so mixed nominal and container unions keep their
+			// receiver facts for the narrowing that follows.
+			if resolve == nil {
+				resolve = c.checkNamedTypeResolver()
+			}
+			if !classPredicateArmUsesUniversalDispatch(arm, member.Property, resolve) {
+				return false
+			}
+		} else if !typeArmUsesUniversalMemberDispatch(arm, member.Property) {
 			return false
 		}
 		dispatchArms++

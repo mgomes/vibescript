@@ -99,6 +99,18 @@ end
 			warning: "call to takes_order argument value expected Order, got User",
 		},
 		{
+			name: "container arm keeps the receiver fact",
+			source: `
+def run(flag)
+  u = flag ? User.new : []
+  if u.is_a?(User)
+    takes_order(u)
+  end
+end
+`,
+			warning: "call to takes_order argument value expected Order, got User",
+		},
+		{
 			name: "guard clause narrowing survives",
 			source: `
 def run(flag)
