@@ -149,6 +149,17 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   `unless`, `elsif`, negation, short-circuits, and guard clauses that exit
   early. Unknown values stay unknown, and branches re-join into the wider
   fact afterwards.
+- `is_type?` narrows known unions: `value.is_type?(:int)` with a literal
+  built-in atom refines a known union local in both branches — the true path
+  keeps arms that may satisfy the atom, the false path drops arms that always
+  do. The atom is a symbol or string naming a primitive (`:int`, `:string`,
+  `:bool`, `:symbol`, `:nil`, `:number`, `:duration`, `:time`, `:money`), a
+  bare container (`:array`, `:hash`, `:range`, `:function`), a class or enum
+  name (matched by exact name, no ancestry), or any of these with a trailing
+  `?` for the nullable form (`'int?'`). The test never coerces —
+  `"5".is_type?(:int)` is `false` — and parameterized spellings such as
+  `array<int>` are rejected. Class and enum atoms answer at runtime but do
+  not narrow yet, and receivers that may override `is_type?` stay unchanged.
 - Scalar member contracts resolve from receiver facts: `s.to_i` on a known
   string is an `int`, universal predicates such as `nil?` and `respond_to?`
   are `bool`, and safe navigation adds `nil` to the result (`x&.to_s` is
