@@ -190,3 +190,20 @@ func TestIsTypePredicateUnknownQualifiedAtomErrors(t *testing.T) {
 		t.Fatalf("Call error = %v, want unknown qualified atom error", err)
 	}
 }
+
+func TestIsTypePredicateNamedAtomsAreCaseExact(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `class User
+  def initialize()
+  end
+end
+
+def run()
+  User.new.is_type?(:USER)
+end`)
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindBool || got.Bool() {
+		t.Fatalf("is_type?(:USER) = %#v, want false: named atoms match by exact spelling", got)
+	}
+}

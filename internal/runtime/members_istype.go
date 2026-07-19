@@ -141,6 +141,18 @@ func namedAtomMatches(exec *Execution, receiver Value, ty *TypeExpr, text string
 	if ty.Nullable && receiver.Kind() == KindNil {
 		return true, nil
 	}
+	if !typeAtomSpellingExact(ty.Name, match) {
+		// The annotation resolver tolerates case-insensitive lookups; the
+		// predicate matches by exact name, so a differently-cased atom is an
+		// unknown atom rather than a fuzzy hit.
+		if strings.Contains(ty.Name, ".") {
+			return false, fmt.Errorf("unknown type atom %q in %s", text, isTypeMemberName)
+		}
+		if ty.Nullable && receiver.Kind() == KindNil {
+			return true, nil
+		}
+		return valueMatchesType(receiver, ty)
+	}
 	if match.enum != nil {
 		member := valueEnumValue(receiver)
 		return member != nil && enumDefsEqual(member.Enum, match.enum), nil
@@ -157,6 +169,32 @@ func namedAtomMatches(exec *Execution, receiver Value, ty *TypeExpr, text string
 			inst.Class.owner != nil && inst.Class.owner == match.class.owner, nil
 	}
 	return valueMatchesType(receiver, ty)
+}
+
+// typeAtomSpellingExact reports whether the atom's own name segment equals
+// the resolved definition's name exactly, rejecting the resolver's
+// case-insensitive fallback hits.
+func typeAtomSpellingExact(atom string, match namedTypeMatch) bool {
+	segment := atom
+	if dot := strings.LastIndex(segment, "."); dot >= 0 {
+		segment = segment[dot+1:]
+	}
+	resolved := ""
+	switch {
+	case match.enum != nil:
+		resolved = match.enum.Name
+	case match.class != nil:
+		resolved = match.class.Name
+	default:
+		return true
+	}
+	if sep := strings.LastIndex(resolved, "::"); sep >= 0 {
+		resolved = resolved[sep+2:]
+	}
+	if dot := strings.LastIndex(resolved, "."); dot >= 0 {
+		resolved = resolved[dot+1:]
+	}
+	return segment == resolved
 }
 
 // isTypeAtomIdent reports whether base is a plain identifier — letters,
