@@ -117,6 +117,7 @@ type scriptChecker struct {
 	typeAliases             map[string]map[string]struct{}
 	mutationRegionDepth     int
 	speculativeInference    int
+	expressionStatementRoot Expression
 	callArgumentFacts       map[Expression]*TypeExpr
 	deferredReturnSites     *[]deferredReturnSite
 	implicitReturnLeaves    map[Statement]struct{}
@@ -2000,7 +2001,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.recordBindingTarget(typed.Target)
 		c.captureImplicitReturnState(typed)
 	case *ExprStmt:
+		// A statement-level expression discards its value, so a mutator
+		// call's returned receiver cannot escape through it; array mutator
+		// fact preservation keys on this root.
+		previousRoot := c.expressionStatementRoot
+		c.expressionStatementRoot = typed.Expr
 		c.checkExpression(function, typed.Expr)
+		c.expressionStatementRoot = previousRoot
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Expr)
 		c.captureImplicitReturnState(typed)
 	case *ClassStmt:
@@ -2599,9 +2606,14 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// happens after the arguments evaluate, so the receiver's facts
 		// stop holding here too, not during the callee walk. Proven universal
 		// predicates are pure, so their receiver facts must
-		// survive for outer inference and condition-outcome narrowing.
+		// survive for outer inference and condition-outcome narrowing, and a
+		// builtin array mutator whose written elements are all provably
+		// compatible with the receiver's declared element type leaves the
+		// fact true.
 		if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownPureUniversalPredicateCall(typed) {
-			c.poisonEscapedIdentifier(member.Object)
+			if !c.applyArrayMutatorCallFacts(function, typed, member, argumentFacts) {
+				c.poisonEscapedIdentifier(member.Object)
+			}
 		}
 		if member, ok := typed.BlockArg.(*MemberExpr); ok {
 			c.poisonEscapedIdentifier(member.Object)
@@ -2682,6 +2694,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			}
 		}
 		c.checkBinaryOperandTypes(function, typed)
+		c.checkShovelElementWrite(function, typed)
 		c.applyShovelMutationFacts(typed)
 	case *ConditionalExpr:
 		c.checkConditionalExpression(function, typed)

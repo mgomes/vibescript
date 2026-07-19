@@ -654,7 +654,7 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 				target.Name, formatTypeExpr(current), formatTypeExpr(next))
 		}
 		c.bindLocalType(target.Name, next)
-		switch stmt.Value.(type) {
+		switch value := stmt.Value.(type) {
 		case *Identifier:
 			if next != nil && typeExprHasContainerArm(next) {
 				if root, ok := rootIdentifierName(stmt.Value); ok {
@@ -670,15 +670,33 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 					c.linkContainerAlias(target.Name, root)
 				}
 			}
+		case *BinaryExpr:
+			// A shovel value evaluates to its mutated receiver, so the
+			// target shares that container with the chain's root local.
+			if value.Operator == tokenShovel {
+				if root, ok := rootIdentifierName(unwrapShovelChain(value.Left)); ok {
+					c.linkContainerAlias(target.Name, root)
+				}
+			}
 		}
 	case *DestructureTarget:
 		for _, element := range target.Elements {
 			c.bindDestructureElementType(element)
 		}
-	case *IndexExpr, *MemberExpr:
-		// An index or member write mutates the container in place, so any
-		// structural fact about the root local (shape exactness in
-		// particular) no longer holds.
+	case *IndexExpr:
+		// An index write mutates the container in place; a direct element
+		// write against a declared array<T> is checked and may preserve the
+		// fact, while every other write drops the root's structural facts.
+		if c.applyIndexedElementWriteFacts(function, stmt, target) {
+			return
+		}
+		if name, ok := rootIdentifierName(stmt.Target); ok {
+			c.poisonLocalType(name)
+		}
+	case *MemberExpr:
+		// A member write mutates the container in place, so any structural
+		// fact about the root local (shape exactness in particular) no
+		// longer holds.
 		if name, ok := rootIdentifierName(stmt.Target); ok {
 			c.poisonLocalType(name)
 		}
@@ -1637,6 +1655,24 @@ func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
 	if current == nil {
 		return
 	}
+	if elem := declaredArrayElementType(current); elem != nil {
+		if appended := c.inferExpressionType(expr.Right); appended != nil {
+			if typeExprSatisfies(appended, elem, c.checkNamedTypeResolver()) {
+				// A compatible append keeps the declared fact true for the
+				// receiver and every alias — inside regions too: nothing
+				// rebinds, so the region's state restore stays correct.
+				return
+			}
+			if c.mutationRegionDepth == 0 && len(c.typeAliases[ident.Name]) == 0 {
+				if refined := appendedArrayFact(current, appended); refined != nil {
+					c.bindLocalType(ident.Name, refined)
+					return
+				}
+			}
+		}
+		c.poisonLocalType(ident.Name)
+		return
+	}
 	// Inside a loop or block body the walk's retypes are rolled back by the
 	// region's state restore, so an in-place append there must poison
 	// (monotone, survives the restore) rather than refine; an aliased
@@ -1685,6 +1721,167 @@ func appendedArrayFact(current, appended *TypeExpr) *TypeExpr {
 	default:
 		return &TypeExpr{Kind: TypeArray, Name: literalPartialElementsMarker, TypeArgs: []*TypeExpr{appended}}
 	}
+}
+
+// declaredArrayElementType returns the element bound of a definite
+// annotation-derived array<T> fact: a boundary-validated array whose every
+// element is known to satisfy T, so an element write can be checked against
+// it. Witnessed literal facts carry no such bound (their unions describe
+// elements that exist, not a constraint on writes), and nullable or union
+// facts are not definitely arrays.
+func declaredArrayElementType(ty *TypeExpr) *TypeExpr {
+	if ty == nil || ty.Kind != TypeArray || ty.Nullable {
+		return nil
+	}
+	if ty.Name == literalElementsMarker || ty.Name == literalPartialElementsMarker {
+		return nil
+	}
+	if len(ty.TypeArgs) != 1 {
+		return nil
+	}
+	return ty.TypeArgs[0]
+}
+
+// reportIncompatibleElementWrite records the diagnostic shared by shovel,
+// indexed, and mutator-call element writes whose value can never satisfy the
+// receiver's declared element type.
+func (c *scriptChecker) reportIncompatibleElementWrite(function string, pos Position, name string, elem, written *TypeExpr) {
+	c.add(function, pos, "write to %s expected element %s, got %s",
+		name, formatTypeExpr(elem), formatTypeExpr(written))
+}
+
+// checkShovelElementWrite reports a shovel append whose value is provably
+// disjoint from the receiver's declared element type. Chained shovels append
+// through the returned receiver, so the chain root's fact is the one the
+// append contradicts. It runs before applyShovelMutationFacts updates the
+// receiver's fact for the append.
+func (c *scriptChecker) checkShovelElementWrite(function string, expr *BinaryExpr) {
+	if expr.Operator != tokenShovel {
+		return
+	}
+	ident, ok := unwrapShovelChain(expr.Left).(*Identifier)
+	if !ok {
+		return
+	}
+	elem := declaredArrayElementType(c.localTypeFor(ident.Name))
+	if elem == nil {
+		return
+	}
+	written := c.inferExpressionType(expr.Right)
+	if written == nil {
+		return
+	}
+	if typeExprsDisjoint(written, elem, c.checkNamedTypeResolver()) {
+		c.reportIncompatibleElementWrite(function, expr.Pos(), ident.Name, elem, written)
+	}
+}
+
+// applyIndexedElementWriteFacts checks a direct arr[i] = value element write
+// against the receiver's declared element type and reports whether the fact
+// still holds: a compatible write replaces one element with another admitted
+// one (for the receiver and every alias, inside regions too — nothing
+// rebinds), while every other write weakens through the caller's poison.
+func (c *scriptChecker) applyIndexedElementWriteFacts(function string, stmt *AssignStmt, target *IndexExpr) bool {
+	if stmt.Operator != "" {
+		return false
+	}
+	ident, ok := target.Object.(*Identifier)
+	if !ok {
+		return false
+	}
+	elem := declaredArrayElementType(c.localTypeFor(ident.Name))
+	if elem == nil {
+		return false
+	}
+	if len(target.Indices) != 1 {
+		return false
+	}
+	// A provably non-numeric index raises before any element is written, so
+	// the write never lands and neither diagnosis nor preservation applies.
+	if kind, known := staticOperandKind(c.inferExpressionType(target.Indices[0])); known &&
+		kind != TypeInt && kind != TypeFloat && kind != TypeNumber {
+		return false
+	}
+	written := c.inferExpressionType(stmt.Value)
+	if written == nil {
+		return false
+	}
+	resolve := c.checkNamedTypeResolver()
+	if typeExprsDisjoint(written, elem, resolve) {
+		c.reportIncompatibleElementWrite(function, stmt.Pos(), ident.Name, elem, written)
+		return false
+	}
+	return typeExprSatisfies(written, elem, resolve)
+}
+
+// arrayMutatorElementWrites returns the argument expressions an in-place
+// builtin array mutator call writes as new elements, and whether a fully
+// compatible call can preserve the receiver's declared fact. insert may pad
+// the gap to a beyond-end index with nils, so its fact never survives; a
+// keyword argument makes every mutator raise before writing.
+func arrayMutatorElementWrites(call *CallExpr, property string) (elements []Expression, preservable bool, ok bool) {
+	if len(call.KwArgs) != 0 {
+		return nil, false, false
+	}
+	switch property {
+	case "push", "append", "prepend", "unshift":
+		return call.Args, true, true
+	case "insert":
+		if len(call.Args) == 0 {
+			return nil, false, false
+		}
+		return call.Args[1:], false, true
+	}
+	return nil, false, false
+}
+
+// applyArrayMutatorCallFacts checks the elements an in-place builtin array
+// mutator writes against the receiver's declared element type and reports
+// whether every write is provably compatible, in which case the receiver's
+// fact still holds and the caller skips the escape poison. Argument facts
+// are read as captured at each argument's own evaluation point.
+func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallExpr, member *MemberExpr, argumentFacts map[Expression]*TypeExpr) bool {
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return false
+	}
+	elem := declaredArrayElementType(c.localTypeFor(ident.Name))
+	if elem == nil {
+		return false
+	}
+	elements, preservable, ok := arrayMutatorElementWrites(call, member.Property)
+	if !ok {
+		return false
+	}
+	resolve := c.checkNamedTypeResolver()
+	// The mutators return their receiver, so a consumed result (a chained
+	// call, an argument, an assignment value) hands the array to code the
+	// checker cannot follow: only a statement-level call, whose value is
+	// discarded, can keep the declared bound.
+	preserved := preservable && Expression(call) == c.expressionStatementRoot
+	for _, arg := range elements {
+		if _, splat := arg.(*SplatArg); splat {
+			preserved = false
+			continue
+		}
+		written, captured := argumentFacts[arg]
+		if !captured {
+			written = c.inferExpressionType(arg)
+		}
+		if written == nil {
+			preserved = false
+			continue
+		}
+		if typeExprsDisjoint(written, elem, resolve) {
+			c.reportIncompatibleElementWrite(function, arg.Pos(), ident.Name, elem, written)
+			preserved = false
+			continue
+		}
+		if !typeExprSatisfies(written, elem, resolve) {
+			preserved = false
+		}
+	}
+	return preserved
 }
 
 // literalArrayDisjoint reports whether a witnessed-element array can never
@@ -2016,6 +2213,19 @@ func (c *scriptChecker) poisonEscapedIdentifier(expr Expression) {
 // holding when expr escapes into unfollowed code: a bare container-typed
 // identifier, or a projection whose value may itself be a mutable container.
 func (c *scriptChecker) escapePoisonTarget(expr Expression) (string, bool) {
+	if binary, ok := expr.(*BinaryExpr); ok && binary.Operator == tokenShovel {
+		// A shovel expression evaluates to its mutated receiver, so the
+		// receiver escapes wherever the expression's value does. A declared
+		// element bound cannot survive code that may append arbitrary
+		// elements; witnessed facts stay (existing elements keep their
+		// witnesses through appends).
+		if ident, ok := unwrapShovelChain(binary.Left).(*Identifier); ok {
+			if declaredArrayElementType(c.localTypeFor(ident.Name)) != nil {
+				return ident.Name, true
+			}
+		}
+		return "", false
+	}
 	name, ok := rootIdentifierName(expr)
 	if !ok {
 		return "", false
@@ -2452,6 +2662,109 @@ func typeExprsDisjoint(a, b *TypeExpr, resolve namedTypeResolver) bool {
 		}
 	}
 	return true
+}
+
+// typeExprSatisfies reports whether every runtime value of the written type
+// provably satisfies the declared annotation — the dual of typeExprsDisjoint,
+// and just as deliberately conservative: unknown or any-typed writes and
+// relations the checker does not model all report false, so callers weaken a
+// fact instead of preserving it.
+func typeExprSatisfies(written, declared *TypeExpr, resolve namedTypeResolver) bool {
+	if written == nil || declared == nil {
+		return false
+	}
+	if declared.Kind == TypeAny && !declared.Nullable {
+		return true
+	}
+	writtenArms, ok := typeExprArms(written, 0)
+	if !ok || len(writtenArms) == 0 {
+		return false
+	}
+	declaredArms, ok := typeExprArms(declared, 0)
+	if !ok || len(declaredArms) == 0 {
+		return false
+	}
+	for _, w := range writtenArms {
+		admitted := false
+		for _, d := range declaredArms {
+			if typeArmAdmits(d, w, resolve) {
+				admitted = true
+				break
+			}
+		}
+		if !admitted {
+			return false
+		}
+	}
+	return true
+}
+
+// typeArmAdmits reports whether every value of the written arm satisfies the
+// declared arm, mirroring runtime annotation normalization: exact kind
+// matches, number admitting int and float, containers whose facts bound
+// every contained value, and resolved named types by definition identity.
+// First-class shape values satisfy no annotation the arms model here.
+func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool {
+	if _, isShapeValue := shapeValuePayload(written); isShapeValue {
+		return false
+	}
+	if _, isShapeValue := shapeValuePayload(declared); isShapeValue {
+		return false
+	}
+	switch declared.Kind {
+	case TypeNumber:
+		return written.Kind == TypeInt || written.Kind == TypeFloat || written.Kind == TypeNumber
+	case TypeInt, TypeFloat, TypeString, TypeBool, TypeNil, TypeSymbol,
+		TypeDuration, TypeTime, TypeMoney, TypeRange, TypeFunction:
+		return written.Kind == declared.Kind
+	case TypeArray:
+		if written.Kind != TypeArray {
+			return false
+		}
+		if len(declared.TypeArgs) != 1 {
+			// A bare array annotation admits every array.
+			return len(declared.TypeArgs) == 0
+		}
+		if written.Name == literalPartialElementsMarker || len(written.TypeArgs) != 1 {
+			// Partial witnesses and bare arrays do not bound their elements.
+			return false
+		}
+		return typeExprSatisfies(written.TypeArgs[0], declared.TypeArgs[0], resolve)
+	case TypeHash:
+		switch written.Kind {
+		case TypeHash:
+			if len(declared.TypeArgs) == 0 {
+				return true
+			}
+			if len(declared.TypeArgs) != 2 || len(written.TypeArgs) != 2 {
+				return false
+			}
+			return typeExprSatisfies(written.TypeArgs[0], declared.TypeArgs[0], resolve) &&
+				typeExprSatisfies(written.TypeArgs[1], declared.TypeArgs[1], resolve)
+		case TypeShape:
+			// A shape is a hash at runtime, but its key representation and
+			// field bounds against hash<K, V> are left to runtime checks.
+			return len(declared.TypeArgs) == 0
+		}
+		return false
+	case TypeEnum:
+		if written.Kind != TypeEnum || resolve == nil {
+			return false
+		}
+		dm, ok := resolve(declared)
+		if !ok {
+			return false
+		}
+		wm, ok := resolve(written)
+		if !ok {
+			return false
+		}
+		if dm.enum != nil || wm.enum != nil {
+			return dm.enum != nil && dm.enum == wm.enum
+		}
+		return dm.class != nil && dm.class == wm.class
+	}
+	return false
 }
 
 const maxTypeArmDepth = 8

@@ -1298,23 +1298,17 @@ end
 `)
 	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<string>")
 
-	// A compatible append stays silent, and prior unwitnessed elements
-	// never count as witnesses (an empty receiver makes [\"bad\"] a valid
-	// array<string>).
+	// A compatible append preserves the declared fact, so the boundary
+	// stays satisfied. (The incompatible append itself is reported at the
+	// write site; see check_array_writes_test.go.)
 	requireNoCheckWarnings(t, compileScript(t, `
 def ints(values: array<int>)
   values
 end
 
-def strings(values: array<string>)
-  values
-end
-
-def run(a: array<int>, b: array<int>)
+def run(a: array<int>)
   a << 1
   ints(a)
-  b << "bad"
-  strings(b)
 end
 `))
 }
