@@ -116,6 +116,7 @@ type scriptChecker struct {
 	typePoison              map[string]struct{}
 	typeAliases             map[string]map[string]struct{}
 	mutationRegionDepth     int
+	speculativeInference    int
 	callArgumentFacts       map[Expression]*TypeExpr
 	deferredReturnSites     *[]deferredReturnSite
 	implicitReturnLeaves    map[Statement]struct{}
@@ -4760,10 +4761,16 @@ func (c *scriptChecker) requiredModuleObjectFunction(expr Expression, property s
 	if fn == nil {
 		return "", nil, false
 	}
-	c.withRuntimeModuleCollection(func() {
-		c.collectModuleExports(entry)
-		c.bindRequireAlias(alias, exports)
-	})
+	// Speculative inference must stay effect-free: a require inside one
+	// branch of a conditional would otherwise bind its exports for code the
+	// branch may never run. The checking walk re-resolves and binds at the
+	// expression's own evaluation point.
+	if c.speculativeInference == 0 {
+		c.withRuntimeModuleCollection(func() {
+			c.collectModuleExports(entry)
+			c.bindRequireAlias(alias, exports)
+		})
+	}
 	return moduleName + "." + property, fn, true
 }
 

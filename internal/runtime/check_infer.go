@@ -1172,6 +1172,10 @@ func (c *scriptChecker) safeNavigationArgumentsAlwaysEvaluateInferred(call *Call
 // it is not statically known. It is pure: it never emits warnings and never
 // mutates checker state.
 func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
+	// Inference computes facts speculatively (branch results, argument
+	// captures) and must not mutate runtime module state along the way.
+	c.speculativeInference++
+	defer func() { c.speculativeInference-- }()
 	switch typed := expr.(type) {
 	case *IntegerLiteral:
 		return checkTypeInt
