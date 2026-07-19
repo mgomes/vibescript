@@ -4400,7 +4400,10 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if c.identifierShadowed(callee.Name) {
 			return staticCallable{}, false
 		}
-		if c.hostGlobalShadows(callee.Name) {
+		if c.hostGlobalShadows(callee.Name) && c.optionGlobalsOverride {
+			// Call-option globals shadow same-named script bindings only in
+			// the checked script itself; a required module's own functions
+			// win at runtime over the parent call's globals.
 			return c.hostGlobalCallable(callee.Name)
 		}
 		if fn, ok := c.script.functions[callee.Name]; ok {
@@ -4408,6 +4411,9 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		}
 		if fn, ok := c.typeRootFunction(callee.Name); ok {
 			return staticCallable{name: callee.Name, fn: fn, resolution: calleeDirect}, true
+		}
+		if c.hostGlobalShadows(callee.Name) && !c.typeRootHasBinding(callee.Name) {
+			return c.hostGlobalCallable(callee.Name)
 		}
 		if c.typeRootHasBinding(callee.Name) {
 			return staticCallable{}, false
@@ -4533,7 +4539,7 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		if c.identifierShadowed(ident.Name) {
 			return staticCallable{}, false
 		}
-		if c.hostGlobalShadows(ident.Name) {
+		if c.hostGlobalShadows(ident.Name) && c.optionGlobalsOverride {
 			return c.hostGlobalMemberCallable(ident.Name, member.Property)
 		}
 		if member.Property == "call" {
@@ -4559,6 +4565,9 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		}
 		if fn, ok := c.typeRootObjectFunction(ident.Name, member.Property); ok {
 			return staticCallable{name: ident.Name + "." + member.Property, fn: fn, resolution: calleeMemberValue}, true
+		}
+		if c.hostGlobalShadows(ident.Name) && !c.typeRootHasBinding(ident.Name) {
+			return c.hostGlobalMemberCallable(ident.Name, member.Property)
 		}
 		if c.typeRootHasBinding(ident.Name) {
 			return staticCallable{}, false

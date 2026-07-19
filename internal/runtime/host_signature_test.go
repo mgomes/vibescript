@@ -367,3 +367,25 @@ func TestHostSignatureUnresolvedResultTypeWarns(t *testing.T) {
 	script := compileScriptWithEngine(t, engine, "def run()\n  mystery()\nend")
 	requireCheckWarningContains(t, script, "call to mystery result uses unknown type Missing")
 }
+
+func TestHostSignatureModuleFunctionsWinOverGlobals(t *testing.T) {
+	t.Parallel()
+
+	dir := tempModuleTree(t, moduleFile{path: "helpers.vibe", content: "def fetch(a, b, c)\n  a\nend\n\ndef use() -> int\n  fetch(1, 2, 3)\nend\n"})
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	typed, err := NewTypedBuiltin("fetch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewString(args[0].String()), nil
+	}, Signature{Params: []SignatureParam{{Name: "key", Type: "string"}}, Result: "string"})
+	if err != nil {
+		t.Fatalf("NewTypedBuiltin: %v", err)
+	}
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("helpers").use()
+end
+`)
+	warnings := script.CheckWarningsWithOptions(CallOptions{Globals: map[string]Value{"fetch": typed}})
+	if len(warnings) != 0 {
+		t.Fatalf("CheckWarningsWithOptions() = %v, want none: the module's own fetch wins over the host global", warnings)
+	}
+}

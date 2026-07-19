@@ -514,6 +514,7 @@ func cloneBuiltinValue(val Value) Value {
 		cloned := newBuiltin(builtin.Name, builtin.Fn, builtin.AutoInvoke)
 		clonedBuiltin := valueBuiltin(cloned)
 		clonedBuiltin.checkSpec = builtin.checkSpec
+		clonedBuiltin.SignatureParams = builtin.SignatureParams
 		clonedBuiltin.OptionsHashTarget = builtin.OptionsHashTarget
 		clonedBuiltin.DirectCallAlias = builtin.DirectCallAlias
 		clonedBuiltin.DirectCallAliasPos = builtin.DirectCallAliasPos
