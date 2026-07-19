@@ -266,6 +266,60 @@ end`
 	}
 }
 
+func TestParserTypeShapeOptionalFields(t *testing.T) {
+	t.Parallel()
+	source := `def run(payload: { name: string, age?: int, email?: string?, nested?: { score?: int }, "valid?": bool })
+  payload
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("expected function statement, got %T", got.Statements[0])
+	}
+	wantType := &ast.TypeExpr{
+		Kind: ast.TypeShape,
+		Shape: map[string]*ast.TypeExpr{
+			"name":  {Name: "string", Kind: ast.TypeString},
+			"age":   {Name: "int", Kind: ast.TypeInt, Optional: true},
+			"email": {Name: "string?", Kind: ast.TypeString, Nullable: true, Optional: true},
+			"nested": {
+				Kind:     ast.TypeShape,
+				Optional: true,
+				Shape: map[string]*ast.TypeExpr{
+					"score": {Name: "int", Kind: ast.TypeInt, Optional: true},
+				},
+			},
+			// A string-literal key keeps its spelling verbatim: the `?` is
+			// part of the field name, not an optional marker.
+			"valid?": {Name: "bool", Kind: ast.TypeBool},
+		},
+	}
+	if diff := cmp.Diff(wantType, fn.Params[0].Type, astCmpOpts); diff != "" {
+		t.Fatalf("payload type mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserTypeShapeOptionalFieldDuplicateKey(t *testing.T) {
+	t.Parallel()
+
+	// An optional spelling and a required spelling name the same field.
+	source := `def run() -> { age: int, age?: int }
+  {}
+end`
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("expected parse errors, got none")
+	}
+	if got := errs[0].Error(); !strings.Contains(got, "duplicate shape field age") {
+		t.Errorf("got error %q, want substring %q", got, "duplicate shape field age")
+	}
+}
+
 func TestParserTypeSyntaxTypedBlockParameters(t *testing.T) {
 	t.Parallel()
 	source := `def run(values)
@@ -415,6 +469,15 @@ func TestParserTypeErrorCases(t *testing.T) {
   {}
 end`,
 			wantErr: "duplicate shape field id",
+		},
+		{
+			// As with duplicate_shape_field, asserted in a return-type position
+			// where `{ ... }` is unambiguously a shape type.
+			name: "double_optional_shape_field",
+			source: `def run() -> { age??: int }
+  {}
+end`,
+			wantErr: "duplicate optional suffix on shape field age??",
 		},
 		{
 			name: "generic_args_on_scalar",

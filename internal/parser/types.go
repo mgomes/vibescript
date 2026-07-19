@@ -199,7 +199,7 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 
 	p.nextToken()
 	for {
-		key, ok := p.parseTypeShapeFieldName()
+		key, optional, ok := p.parseTypeShapeFieldName()
 		if !ok {
 			return nil
 		}
@@ -213,6 +213,7 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 		if fieldType == nil {
 			return nil
 		}
+		fieldType.Optional = optional
 		if prior, exists := fields[key]; exists {
 			// A repeated key reaches here only after both field values parsed as
 			// complete type expressions ending at a `,` or `}` boundary, so the
@@ -274,12 +275,29 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 	}
 }
 
-func (p *parser) parseTypeShapeFieldName() (string, bool) {
-	if tokenStartsShapeFieldName(p.curToken) {
-		return p.curToken.Literal, true
+// parseTypeShapeFieldName reads a shape field name at curToken. A trailing `?`
+// on a bare label marks the field optional (`age?: int`) and is stripped from
+// the returned name. String and symbol literal keys keep their spelling
+// verbatim, so a field whose name genuinely ends in `?` stays reachable as
+// `"valid?": bool`.
+func (p *parser) parseTypeShapeFieldName() (name string, optional bool, ok bool) {
+	if !tokenStartsShapeFieldName(p.curToken) {
+		p.errorExpected(p.curToken, "shape field name")
+		return "", false, false
 	}
-	p.errorExpected(p.curToken, "shape field name")
-	return "", false
+	name = p.curToken.Literal
+	if p.curToken.Type == ast.TokenString || p.curToken.Type == ast.TokenSymbol {
+		return name, false, true
+	}
+	if !strings.HasSuffix(name, "?") {
+		return name, false, true
+	}
+	name = strings.TrimSuffix(name, "?")
+	if strings.HasSuffix(name, "?") {
+		p.addParseError(p.curToken.Pos, fmt.Sprintf("duplicate optional suffix on shape field %s", p.curToken.Literal))
+		return "", false, false
+	}
+	return name, true, true
 }
 
 // peekStartsShapeField reports whether the lookahead tokens open another shape

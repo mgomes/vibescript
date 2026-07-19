@@ -49,3 +49,20 @@ func TestFormatTypeExprPreservesHashObjectAlias(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatTypeExprMarksOptionalShapeFields(t *testing.T) {
+	t.Parallel()
+
+	ty := &TypeExpr{
+		Kind: TypeShape,
+		Shape: map[string]*TypeExpr{
+			"name":  {Name: "string", Kind: TypeString},
+			"age":   {Name: "int", Kind: TypeInt, Optional: true},
+			"email": {Name: "string?", Kind: TypeString, Nullable: true, Optional: true},
+		},
+	}
+	want := "{ age?: int, email?: string?, name: string }"
+	if got := FormatTypeExpr(ty); got != want {
+		t.Fatalf("FormatTypeExpr() = %q, want %q", got, want)
+	}
+}

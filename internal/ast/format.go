@@ -140,7 +140,12 @@ func formatShapeType(ty *TypeExpr) string {
 	sort.Strings(fields)
 	parts := make([]string, len(fields))
 	for i, field := range fields {
-		parts[i] = fmt.Sprintf("%s: %s", field, FormatTypeExpr(ty.Shape[field]))
+		fieldType := ty.Shape[field]
+		label := field
+		if fieldType != nil && fieldType.Optional {
+			label += "?"
+		}
+		parts[i] = fmt.Sprintf("%s: %s", label, FormatTypeExpr(fieldType))
 	}
 	return "{ " + strings.Join(parts, ", ") + " }"
 }
