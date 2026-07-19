@@ -154,6 +154,13 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   are `bool`, and safe navigation adds `nil` to the result (`x&.to_s` is
   `string?`). Class instances (user methods take precedence) and unknown
   receivers stay unknown.
+- Element writes to a local known to be `array<T>` — `items << v`,
+  `items[i] = v`, and the in-place mutators `push`/`append`/`prepend`/
+  `unshift`/`insert` — are checked against `T`: a value that can never
+  satisfy `T` is reported at the write, a provably compatible write keeps the
+  known element type, and an unknown value conservatively widens the local
+  back to unknown. Unknown receivers, `array<any>`, and untyped arrays stay
+  gradual.
 
 ### `JSON.parse_as`
 
