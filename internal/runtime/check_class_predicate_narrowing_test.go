@@ -169,6 +169,24 @@ end
 `,
 		},
 		{
+			name: "self class constant disables narrowing",
+			source: `
+class Wrapper
+  User = 1
+
+  def initialize()
+  end
+
+  def check(u: User | Order)
+    unless u.is_a?(User)
+      takes_order(u)
+    end
+    u
+  end
+end
+`,
+		},
+		{
 			name: "unknown receiver stays unknown",
 			source: `
 def run(u)

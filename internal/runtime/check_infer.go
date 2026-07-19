@@ -1036,7 +1036,9 @@ func (c *scriptChecker) narrowClassPredicateMember(member *MemberExpr, arg Expre
 }
 
 // staticClassArgument resolves a predicate argument to the script class or
-// module it names. Shadowed names and dynamic expressions stay unknown.
+// module it names. Shadowed names, dynamic expressions, and names self's
+// class may bind first (the runtime checks class constants before the
+// top-level binding) stay unknown.
 func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
 	ident, ok := arg.(*Identifier)
 	if !ok {
@@ -1045,11 +1047,41 @@ func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
 	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
 		return nil, false
 	}
+	if c.selfClass != nil && classMayBindConstant(c.selfClass, ident.Name) {
+		return nil, false
+	}
 	classDef, ok := c.script.classes[ident.Name]
 	if !ok || classDef == nil {
 		return nil, false
 	}
 	return classDef, true
+}
+
+// classMayBindConstant reports whether self's class can supply name ahead of
+// the top-level binding: a class variable, a nested module, or a class-body
+// assignment that creates the variable when the body runs.
+func classMayBindConstant(cl *ClassDef, name string) bool {
+	if cl == nil {
+		return false
+	}
+	if _, ok := cl.ClassVars[name]; ok {
+		return true
+	}
+	for _, nested := range cl.NestedModules {
+		if nested == name {
+			return true
+		}
+	}
+	for _, stmt := range cl.Body {
+		assign, ok := stmt.(*AssignStmt)
+		if !ok {
+			continue
+		}
+		if target, ok := assign.Target.(*Identifier); ok && target.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // classPredicateArmUsesUniversalDispatch reports whether a known fact arm must
