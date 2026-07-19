@@ -4519,3 +4519,18 @@ func requireCheckWarningContainsWithOptions(t *testing.T, script *Script, opts C
 		t.Fatalf("CheckWarningsWithOptions() = %q, want substring %q", got, want)
 	}
 }
+
+func TestCheckInferenceDoesNotBindConditionalRequireExports(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def run(flag)
+  value = flag ? require("helper").double : nil
+  double(1, 2)
+  value
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+}

@@ -154,6 +154,11 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   fallthrough) joins into the call's result fact. A single unknown path —
   recursion, dynamic dispatch, unmodeled constructs — keeps the whole result
   unknown, and explicit return annotations always win.
+- Scalar member contracts resolve from receiver facts: `s.to_i` on a known
+  string is an `int`, universal predicates such as `nil?` and `respond_to?`
+  are `bool`, and safe navigation adds `nil` to the result (`x&.to_s` is
+  `string?`). Class instances (user methods take precedence) and unknown
+  receivers stay unknown.
 
 ### `JSON.parse_as`
 
