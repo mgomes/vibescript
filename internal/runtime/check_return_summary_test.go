@@ -468,6 +468,23 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "benign parameter defaults keep the summary",
+			source: `
+def build_count(n = 2)
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
@@ -647,6 +664,30 @@ end
 def run()
   takes_string(serialize())
   mutate_serializer()
+  takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "namespace mutating default poisons the body summary",
+			source: `
+def replacement(value)
+  1
+end
+
+def install_serializer()
+  JSON.stringify = replacement
+end
+
+def serialize(_ = install_serializer())
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
   takes_int(serialize())
 end
 `,

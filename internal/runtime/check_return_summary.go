@@ -195,6 +195,10 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction) *returnSu
 		popNameScope := c.pushFunctionNameScope(fn)
 		defer popNameScope()
 		for _, param := range fn.Params {
+			// An omitted argument runs the default expression before the
+			// body, so its effects (a namespace write, for example) must be
+			// live for the body walk, mirroring checkFunction.
+			c.checkExpression(fn.Name, param.DefaultVal)
 			c.recordParamBinding(param)
 		}
 		if c.checkStatements(fn.Name, nil, fn.Body) {
