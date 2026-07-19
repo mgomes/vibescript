@@ -143,6 +143,12 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   module, and named values contradict primitive and container boundaries.
   Symbols keep coercing into enums, a class keeps satisfying modules it
   includes, and unresolved or host-supplied names stay conservative.
+- Control flow narrows nullable locals: truthiness tests, explicit nil
+  comparisons, and `nil?` predicates with proven universal dispatch refine the
+  local in both branches, including
+  `unless`, `elsif`, negation, short-circuits, and guard clauses that exit
+  early. Unknown values stay unknown, and branches re-join into the wider
+  fact afterwards.
 - Constructor results are nominal: `u = User.new` gives `u` the fact `User`,
   boundary checks compare it by class identity, and instance methods called
   on it check their argument shapes and expose their annotated return types.
