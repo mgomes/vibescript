@@ -4251,6 +4251,9 @@ type staticCallSpec struct {
 	// names stay unknown. allowedKeywords, not this map, decides which
 	// keywords a call may pass.
 	keywordTypes map[string]*TypeExpr
+	// paramNames labels positional parameters in diagnostics, index-aligned
+	// with paramTypes; a missing or empty entry falls back to the position.
+	paramNames []string
 	// resultType is the builtin's invariant result type; nil keeps the
 	// result unknown for argument-dependent or unmodeled builtins.
 	resultType *TypeExpr
@@ -4337,7 +4340,7 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 			return staticCallable{}, false
 		}
 		if c.hostGlobalShadows(callee.Name) {
-			return staticCallable{}, false
+			return c.hostGlobalCallable(callee.Name)
 		}
 		if fn, ok := c.script.functions[callee.Name]; ok {
 			return staticCallable{name: callee.Name, fn: fn, resolution: calleeDirect}, true
@@ -4349,6 +4352,11 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 			return staticCallable{}, false
 		}
 		if c.hostBuiltinOverrides(callee.Name) {
+			// A host override that publishes a signature keeps a static
+			// contract; one registered without a signature stays dynamic.
+			if spec, ok := c.defaultBuiltinCallSpec(callee.Name); ok {
+				return staticCallable{name: callee.Name, spec: spec}, true
+			}
 			return staticCallable{}, false
 		}
 		if spec, ok := c.defaultBuiltinCallSpec(callee.Name); ok {
@@ -4410,13 +4418,55 @@ func (c *scriptChecker) hostGlobalShadows(name string) bool {
 	return ok
 }
 
+// hostGlobalCallable resolves a call-option global's published contract. A
+// host global without a signature stays fully dynamic.
+func (c *scriptChecker) hostGlobalCallable(name string) (staticCallable, bool) {
+	val, ok := c.optionGlobals[name]
+	if !ok {
+		return staticCallable{}, false
+	}
+	if spec, ok := builtinValueCallSpec(val); ok {
+		return staticCallable{name: name, spec: spec}, true
+	}
+	return staticCallable{}, false
+}
+
+// hostGlobalMemberCallable resolves a published contract from a host global
+// namespace member — a capability method, for example. Members without a
+// signature, non-namespace globals, and script-mutated members stay dynamic.
+func (c *scriptChecker) hostGlobalMemberCallable(object, property string) (staticCallable, bool) {
+	val, ok := c.optionGlobals[object]
+	if !ok || val.Kind() != KindObject {
+		return staticCallable{}, false
+	}
+	memberVal, ok := val.Hash()[property]
+	if !ok {
+		return staticCallable{}, false
+	}
+	if c.namespaceMemberMutated(object, property) {
+		return staticCallable{}, false
+	}
+	if spec, ok := builtinValueCallSpec(memberVal); ok {
+		return staticCallable{name: object + "." + property, spec: spec}, true
+	}
+	return staticCallable{}, false
+}
+
+func builtinValueCallSpec(val Value) (staticCallSpec, bool) {
+	builtin := valueBuiltin(val)
+	if builtin == nil || builtin.checkSpec == nil {
+		return staticCallSpec{}, false
+	}
+	return *builtin.checkSpec, true
+}
+
 func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallable, bool) {
 	if ident, ok := member.Object.(*Identifier); ok {
 		if c.identifierShadowed(ident.Name) {
 			return staticCallable{}, false
 		}
 		if c.hostGlobalShadows(ident.Name) {
-			return staticCallable{}, false
+			return c.hostGlobalMemberCallable(ident.Name, member.Property)
 		}
 		if member.Property == "call" {
 			if fn, ok := c.typeRootFunctionValue(ident.Name); ok {
@@ -4445,17 +4495,18 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		if c.typeRootHasBinding(ident.Name) {
 			return staticCallable{}, false
 		}
-		if c.hostBuiltinOverrides(ident.Name) {
-			return staticCallable{}, false
-		}
 		if spec, ok := c.defaultBuiltinCallSpec(ident.Name + "." + member.Property); ok {
-			// A script that reassigns the namespace member (e.g. JSON.parse =
-			// parse) dispatches through the assigned value at runtime, so the
-			// builtin contract no longer applies.
+			// A host override without a published signature stays dynamic,
+			// and a script that reassigns the namespace member (e.g.
+			// JSON.parse = parse) dispatches through the assigned value at
+			// runtime, so the builtin contract no longer applies.
 			if c.namespaceMemberMutated(ident.Name, member.Property) {
 				return staticCallable{}, false
 			}
 			return staticCallable{name: ident.Name + "." + member.Property, spec: spec}, true
+		}
+		if c.hostBuiltinOverrides(ident.Name) {
+			return staticCallable{}, false
 		}
 	}
 	if className, ok := c.staticInstanceClass(member.Object); ok {
@@ -4689,7 +4740,11 @@ func (c *scriptChecker) checkBuiltinArgumentTypes(function string, call staticCa
 		if i >= len(spec.paramTypes) {
 			break
 		}
-		c.checkInferredArgument(function, arg, spec.paramTypes[i], name, strconv.Itoa(i+1))
+		label := strconv.Itoa(i + 1)
+		if i < len(spec.paramNames) && spec.paramNames[i] != "" {
+			label = spec.paramNames[i]
+		}
+		c.checkInferredArgument(function, arg, spec.paramTypes[i], name, label)
 	}
 	for _, kwarg := range call.kwargs {
 		c.checkInferredArgument(function, kwarg.Value, spec.keywordTypes[kwarg.Name], name, kwarg.Name)
