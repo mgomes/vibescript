@@ -2304,6 +2304,14 @@ func (c *scriptChecker) binaryOperationOutcome(op TokenType, left, right *TypeEx
 	leftKind, leftOK := staticOperandKind(left)
 	rightKind, rightOK := staticOperandKind(right)
 	if op == tokenShovel && leftOK && leftKind == TypeArray {
+		// A compatible append returns the receiver still satisfying its
+		// declared bound, so an assignment of the result carries the bound
+		// (and the alias link) instead of degrading to a partial witness.
+		if elem := declaredArrayElementType(left); elem != nil {
+			if right != nil && typeExprSatisfies(right, elem, c.checkNamedTypeResolver()) {
+				return binaryOutcome{result: left}
+			}
+		}
 		// The shovel operator returns its receiver with the element
 		// appended, so the appended type joins (or seeds) the witnessed
 		// arms; anything less certain degrades to a bare array.

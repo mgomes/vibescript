@@ -174,6 +174,26 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "assigned compatible shovel result carries the bound",
+			source: `
+def f(items: array<int>)
+  x = (items << 1)
+  x << "bad"
+end
+`,
+			warning: "write to x expected element int, got string",
+		},
+		{
+			name: "receiver warns after a compatible shovel was assigned",
+			source: `
+def f(items: array<int>)
+  x = (items << 1)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "write inside a conditional branch",
 			source: `
 def f(items: array<int>, flag)
@@ -403,6 +423,16 @@ def f(items: array<int>, v)
   x = (items << 1)
   items << v
   x << "bad"
+end
+`,
+		},
+		{
+			name: "unknown write through the assigned alias weakens the receiver",
+			source: `
+def f(items: array<int>, v)
+  x = (items << 1)
+  x << v
+  items << "bad"
 end
 `,
 		},
