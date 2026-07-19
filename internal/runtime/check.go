@@ -5308,8 +5308,11 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 					supplied[rest.Name] = struct{}{}
 					fieldType, known := ty.Shape[rest.Name]
 					if !known {
-						c.add(function, rest.Value.Pos(), "call to %s argument %s expected %s, got keyword %s",
-							callName, paramName, formatTypeExpr(ty), rest.Name)
+						// An open shape admits undeclared keywords unchecked.
+						if !ty.Open {
+							c.add(function, rest.Value.Pos(), "call to %s argument %s expected %s, got keyword %s",
+								callName, paramName, formatTypeExpr(ty), rest.Name)
+						}
 						continue
 					}
 					c.checkInferredArgument(function, rest.Value, fieldType, callName, paramName)

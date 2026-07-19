@@ -1028,7 +1028,12 @@ func typeArmUsesUniversalMemberDispatch(arm *TypeExpr, property string) bool {
 		return len(arm.TypeArgs) == 2 && !typeExprMayIncludeCallable(arm.TypeArgs[1])
 	case TypeShape:
 		field, present := arm.Shape[property]
-		return !present || !typeExprMayIncludeCallable(field)
+		if !present {
+			// An open shape may hold an undeclared callable export with the
+			// same name, so only a closed shape rules the override out.
+			return !arm.Open
+		}
+		return !typeExprMayIncludeCallable(field)
 	case TypeNumber:
 		_, intOverride := staticMemberSpecs["int."+property]
 		_, floatOverride := staticMemberSpecs["float."+property]
@@ -1915,6 +1920,11 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 				}
 				return fieldType
 			}
+			// An open shape may hold an undeclared field of any type, so the
+			// read stays unknown; a closed shape is known to miss.
+			if objectType.Open {
+				return nil
+			}
 			return checkTypeNil
 		}
 		// Unknown store representation: a present display name reads as the
@@ -1922,6 +1932,9 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 		// misses either store.
 		if present {
 			return unionTypeExprs(shapeFieldValueType(fieldType), checkTypeNil)
+		}
+		if objectType.Open {
+			return nil
 		}
 		return checkTypeNil
 	case TypeArray:
@@ -2398,6 +2411,9 @@ func appendTypeFactKey(b *strings.Builder, ty *TypeExpr, depth int) {
 	if ty.Optional {
 		b.WriteString("~")
 	}
+	if ty.Open {
+		b.WriteString("+")
+	}
 	if len(ty.TypeArgs) > 0 {
 		b.WriteString("<")
 		for i, arg := range ty.TypeArgs {
@@ -2643,17 +2659,18 @@ func shapeValueArmDisjoint(other *TypeExpr) bool {
 	return true
 }
 
-// shapeTypesDisjoint compares two exact shapes. A required field missing from
-// the other shape's key set contradicts it: the field must be present, and
-// the other side rejects unknown fields. A field required on at least one
-// side is witnessed in every common value, so a disjoint field type pair
-// contradicts too; a field optional on both sides can be absent, satisfying
-// either type.
+// shapeTypesDisjoint compares two shapes. A required field missing from the
+// other shape's key set contradicts it only when that other shape is closed:
+// the field must be present, and a closed shape rejects unknown fields, while
+// an open shape admits (and leaves unvalidated) the extra. A field required
+// on at least one side is witnessed in every common value, so a disjoint
+// field type pair contradicts too; a field optional on both sides can be
+// absent, satisfying either type.
 func shapeTypesDisjoint(x, y *TypeExpr, resolve namedTypeResolver) bool {
 	for field, xField := range x.Shape {
 		yField, ok := y.Shape[field]
 		if !ok {
-			if !shapeFieldOptional(xField) {
+			if !shapeFieldOptional(xField) && !y.Open {
 				return true
 			}
 			continue
@@ -2666,7 +2683,7 @@ func shapeTypesDisjoint(x, y *TypeExpr, resolve namedTypeResolver) bool {
 		}
 	}
 	for field, yField := range y.Shape {
-		if _, ok := x.Shape[field]; !ok && !shapeFieldOptional(yField) {
+		if _, ok := x.Shape[field]; !ok && !shapeFieldOptional(yField) && !x.Open {
 			return true
 		}
 	}

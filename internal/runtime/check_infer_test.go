@@ -1198,6 +1198,112 @@ end
 	requireCheckWarningContains(t, invalid, "call to accept argument payload expected { age?: int, name: string }, got { age: string, name: string }")
 }
 
+func TestCheckInferOpenShapeFacts(t *testing.T) {
+	t.Parallel()
+
+	// Undeclared reads on an open-shape fact stay unknown (gradual), while
+	// declared fields keep exact facts.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string, ... })
+  takes_int(body["role"])
+end
+`))
+
+	declared := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string, ... })
+  takes_int(body["name"])
+end
+`)
+	requireCheckWarningContains(t, declared, "call to takes_int argument value expected int, got string")
+
+	// The same undeclared read on a closed shape is known to miss.
+	closed := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string })
+  takes_int(body["role"])
+end
+`)
+	requireCheckWarningContains(t, closed, "call to takes_int argument value expected int, got nil")
+}
+
+func TestCheckInferOpenShapeCompatibility(t *testing.T) {
+	t.Parallel()
+
+	// A literal with extra fields satisfies an open shape boundary, and an
+	// open-shape fact can satisfy a boundary declaring fields it omits.
+	requireNoCheckWarnings(t, compileScript(t, `
+def accept(payload: { name: string, ... })
+  payload
+end
+
+def wants_role(payload: { name: string, role: string })
+  payload
+end
+
+def run(raw: string)
+  v = "Ada"
+  accept({ name: v, role: "captain", level: 3 })
+  wants_role(JSON.parse_as(raw, { name: string, ... }))
+end
+`))
+
+	// Declared fields still contradict.
+	invalid := compileScript(t, `
+def accept(payload: { name: string, ... })
+  payload
+end
+
+def run()
+  v = 1
+  accept({ name: v, role: "captain" })
+end
+`)
+	requireCheckWarningContains(t, invalid, "call to accept argument payload expected { name: string, ... }")
+
+	// A required field missing from a literal contradicts even an open shape.
+	missing := compileScript(t, `
+def accept(payload: { name: string, ... })
+  payload
+end
+
+def run()
+  v = "captain"
+  accept({ role: v })
+end
+`)
+	requireCheckWarningContains(t, missing, "call to accept argument payload expected { name: string, ... }")
+}
+
+func TestCheckInferOpenShapeKeepsMemberDispatchUnknown(t *testing.T) {
+	t.Parallel()
+
+	// An open shape may carry an undeclared callable export, so universal
+	// helpers like nil? stay unknown instead of inferring bool.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(value: { name: string, ... })
+  takes_string(value.nil?)
+end
+`))
+}
+
 func TestCheckInferShovelAppendsWitnessElements(t *testing.T) {
 	t.Parallel()
 
