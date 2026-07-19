@@ -1328,24 +1328,55 @@ func TestCheckWarningsSeedEntrypointExportsFromNarrowedConditionalExpressions(t 
 		conditional string
 	}{
 		{
-			name:        "nil bare member",
+			name:        "ternary nil bare member",
 			guard:       "return unless value.nil?",
 			conditional: "value.nil? ? require(\"enum_status\") : nil",
 		},
 		{
-			name:        "nil parenthesized call",
+			name:        "ternary nil parenthesized call",
 			guard:       "return unless value.nil?()",
 			conditional: "value.nil?() ? require(\"enum_status\") : nil",
 		},
 		{
-			name:        "non-nil bare member",
+			name:        "ternary non-nil bare member",
 			guard:       "return if value.nil?",
 			conditional: "value.nil? ? nil : require(\"enum_status\")",
 		},
 		{
-			name:        "non-nil parenthesized call",
+			name:        "ternary non-nil parenthesized call",
 			guard:       "return if value.nil?()",
 			conditional: "value.nil?() ? nil : require(\"enum_status\")",
+		},
+		{
+			name:        "if expression nil bare member",
+			guard:       "return unless value.nil?",
+			conditional: "if value.nil? then require(\"enum_status\") else nil end",
+		},
+		{
+			name:        "if expression nil parenthesized call",
+			guard:       "return unless value.nil?()",
+			conditional: "if value.nil?() then require(\"enum_status\") else nil end",
+		},
+		{
+			name:        "if expression non-nil bare member",
+			guard:       "return if value.nil?",
+			conditional: "if value.nil? then nil else require(\"enum_status\") end",
+		},
+		{
+			name:        "if expression non-nil parenthesized call",
+			guard:       "return if value.nil?()",
+			conditional: "if value.nil?() then nil else require(\"enum_status\") end",
+		},
+		{
+			name:  "if expression elsif",
+			guard: "return unless value.nil?",
+			conditional: `if !value.nil?
+  nil
+elsif value.nil?
+  require("enum_status")
+else
+  nil
+end`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1375,32 +1406,44 @@ end
 func TestCheckWarningsRewidenConditionalExpressionFactsDuringExportCollection(t *testing.T) {
 	t.Parallel()
 
-	engine := moduleTestEngine(t)
-	script, err := engine.CompileSnippet(`
+	for _, expression := range []string{
+		"!value.nil? ? nil : nil",
+		"if !value.nil? then nil else nil end",
+	} {
+		t.Run(expression, func(t *testing.T) {
+			engine := moduleTestEngine(t)
+			script, err := engine.CompileSnippet(`
 def maybe_value() -> int?
   nil
 end
 
 value = maybe_value()
-!value.nil? ? nil : nil
+`+expression+`
 value || require("enum_status")
 
 def normalize(status: Status) -> Status
   status
 end
 `, "<script>")
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
 
-	requireCheckWarningContains(t, script, "unknown type Status")
+			requireCheckWarningContains(t, script, "unknown type Status")
+		})
+	}
 }
 
 func TestCheckWarningsDoNotLeakConditionalExportFactsToFollowingArguments(t *testing.T) {
 	t.Parallel()
 
-	engine := MustNewEngine(Config{})
-	script, err := engine.CompileSnippet(`
+	for _, expression := range []string{
+		"!value.nil? ? 1 : 2",
+		"if !value.nil? then 1 else 2 end",
+	} {
+		t.Run(expression, func(t *testing.T) {
+			engine := MustNewEngine(Config{})
+			script, err := engine.CompileSnippet(`
 def maybe_value() -> int?
   nil
 end
@@ -1410,13 +1453,15 @@ def pair(left, right)
 end
 
 value = maybe_value()
-pair(!value.nil? ? 1 : 2, -value)
+pair(`+expression+`, -value)
 `, "<script>")
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
 
-	requireNoCheckWarnings(t, script)
+			requireNoCheckWarnings(t, script)
+		})
+	}
 }
 
 func TestCheckWarningsKeepForcedNilPredicateShortCircuitEffects(t *testing.T) {

@@ -625,38 +625,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		c.mergeModuleCollectionStates(baseState, []checkModuleCollectionState{bodyState, fallbackState})
 		c.mergeScopeStates(baseScopeState, []checkScopeState{bodyScopeState, fallbackScopeState})
 	case *IfExpr:
-		baseState := c.snapshotModuleCollectionState()
-		c.collectRequiredModuleExportsFromExpression(typed.Condition)
-		falseState := c.snapshotModuleCollectionState()
-		branchStates := make([]checkModuleCollectionState, 0, len(typed.ElseIf)+2)
-
-		conditionTruthy, conditionKnown := c.inferredConditionTruthiness(typed.Condition)
-		if !conditionKnown || conditionTruthy {
-			c.collectRequiredModuleExportsFromExpression(typed.Consequent)
-			branchStates = append(branchStates, c.snapshotModuleCollectionState())
-			if conditionKnown {
-				c.mergeModuleCollectionStates(baseState, branchStates)
-				return
-			}
-		}
-		for _, branch := range typed.ElseIf {
-			c.restoreModuleCollectionState(falseState)
-			c.collectRequiredModuleExportsFromExpression(branch.Condition)
-			falseState = c.snapshotModuleCollectionState()
-			branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
-			if !branchKnown || branchTruthy {
-				c.collectRequiredModuleExportsFromExpression(branch.Result)
-				branchStates = append(branchStates, c.snapshotModuleCollectionState())
-				if branchKnown {
-					c.mergeModuleCollectionStates(baseState, branchStates)
-					return
-				}
-			}
-		}
-		c.restoreModuleCollectionState(falseState)
-		c.collectRequiredModuleExportsFromExpression(typed.Alternate)
-		branchStates = append(branchStates, c.snapshotModuleCollectionState())
-		c.mergeModuleCollectionStates(baseState, branchStates)
+		c.collectRequiredModuleExportsFromIfExpression(typed)
 	case *RangeExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Start)
 		c.collectRequiredModuleExportsFromExpression(typed.End)
@@ -715,6 +684,86 @@ func (c *scriptChecker) collectRequiredModuleExportsFromConditionalExpression(ex
 		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
 	}
 
+	finish()
+}
+
+func (c *scriptChecker) collectRequiredModuleExportsFromIfExpression(expr *IfExpr) {
+	baseState := c.snapshotModuleCollectionState()
+	baseScopeState := c.snapshotScopeState()
+	c.collectRequiredModuleExportsFromExpression(expr.Condition)
+	conditionState := c.snapshotModuleCollectionState()
+	conditionScopeState := c.snapshotScopeState()
+	branchStates := make([]checkModuleCollectionState, 0, len(expr.ElseIf)+2)
+	branchScopeStates := make([]checkScopeState, 0, len(expr.ElseIf)+2)
+	finish := func() {
+		c.mergeModuleCollectionStates(baseState, branchStates)
+		if c.isolatedCollectInference {
+			c.mergeScopeStates(baseScopeState, branchScopeStates)
+			return
+		}
+		c.restoreScopeState(baseScopeState)
+	}
+
+	conditionTruthy, conditionKnown := c.inferredConditionTruthiness(expr.Condition)
+	trueReachable := !conditionKnown || conditionTruthy
+	if trueReachable {
+		trueReachable = c.applyConditionOutcomeEffects(expr.Condition, true, c.collectRequiredModuleExportsFromExpression)
+	}
+	if trueReachable {
+		c.collectRequiredModuleExportsFromExpression(expr.Consequent)
+		branchStates = append(branchStates, c.snapshotModuleCollectionState())
+		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+	}
+
+	c.restoreModuleCollectionState(conditionState)
+	c.restoreScopeState(conditionScopeState)
+	falseReachable := !conditionKnown || !conditionTruthy
+	if falseReachable {
+		falseReachable = c.applyConditionOutcomeEffects(expr.Condition, false, c.collectRequiredModuleExportsFromExpression)
+	}
+	if !falseReachable {
+		finish()
+		return
+	}
+	falseState := c.snapshotModuleCollectionState()
+	falseScopeState := c.snapshotScopeState()
+
+	for _, branch := range expr.ElseIf {
+		c.restoreModuleCollectionState(falseState)
+		c.restoreScopeState(falseScopeState)
+		c.collectRequiredModuleExportsFromExpression(branch.Condition)
+		conditionState = c.snapshotModuleCollectionState()
+		conditionScopeState = c.snapshotScopeState()
+		branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
+		trueReachable = !branchKnown || branchTruthy
+		if trueReachable {
+			trueReachable = c.applyConditionOutcomeEffects(branch.Condition, true, c.collectRequiredModuleExportsFromExpression)
+		}
+		if trueReachable {
+			c.collectRequiredModuleExportsFromExpression(branch.Result)
+			branchStates = append(branchStates, c.snapshotModuleCollectionState())
+			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		}
+
+		c.restoreModuleCollectionState(conditionState)
+		c.restoreScopeState(conditionScopeState)
+		falseReachable = !branchKnown || !branchTruthy
+		if falseReachable {
+			falseReachable = c.applyConditionOutcomeEffects(branch.Condition, false, c.collectRequiredModuleExportsFromExpression)
+		}
+		if !falseReachable {
+			finish()
+			return
+		}
+		falseState = c.snapshotModuleCollectionState()
+		falseScopeState = c.snapshotScopeState()
+	}
+
+	c.restoreModuleCollectionState(falseState)
+	c.restoreScopeState(falseScopeState)
+	c.collectRequiredModuleExportsFromExpression(expr.Alternate)
+	branchStates = append(branchStates, c.snapshotModuleCollectionState())
+	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
 	finish()
 }
 
