@@ -46,6 +46,66 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "local binding wins over same named function summary",
+			source: `
+def build_count()
+  42
+end
+
+def shadowed_count()
+  build_count = "local"
+  build_count
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(shadowed_count())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "parameterized bare function stays a function value",
+			source: `
+def transform(value)
+  42
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(transform)
+end
+`,
+			warning: "call to takes_int argument value expected int, got function",
+		},
+		{
+			name: "returned parameterized function stays a function value",
+			source: `
+def transform(value)
+  42
+end
+
+def expose_transform()
+  transform
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(expose_transform())
+end
+`,
+			warning: "call to takes_int argument value expected int, got function",
+		},
+		{
 			name: "explicit returns summarize",
 			source: `
 def pick(flag)
@@ -140,6 +200,88 @@ end
 
 def run()
   takes_string(outer())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "summary dependency order follows calls not names",
+			source: `
+def a_outer()
+  z_build_count()
+end
+
+def z_build_count()
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(a_outer())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "always exiting ensure replaces earlier returns",
+			source: `
+def forced()
+  begin
+    return 1
+  ensure
+    return "forced"
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(forced())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "dead loop returns do not contaminate the summary",
+			source: `
+def build_count()
+  while false
+    return "unreachable"
+  end
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "nested callable returns do not contaminate the summary",
+			source: `
+def build_count()
+  ->() { return "lambda" }
+  lambda { return "lambda helper" }
+  proc { return "proc helper" }
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
 end
 `,
 			warning: "call to takes_string argument value expected string, got int",
@@ -258,6 +400,94 @@ end
 `,
 		},
 		{
+			name: "one unknown branch poisons known return arms",
+			source: `
+def maybe_dynamic(flag, value)
+  if flag
+    1
+  else
+    value.transform
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(flag, value)
+  takes_string(maybe_dynamic(flag, value))
+end
+`,
+		},
+		{
+			name: "summaries are not reused after namespace mutation",
+			source: `
+def replacement(value)
+  1
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  JSON.stringify = replacement
+  takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "ensure mutation invalidates a returned container fact",
+			source: `
+def build_user()
+  user = { name: "Ada" }
+  begin
+    return user
+  ensure
+    user["name"] = 42
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build_user()["name"])
+end
+`,
+		},
+		{
+			name: "callee namespace mutation invalidates a cached summary",
+			source: `
+def replacement(value)
+  1
+end
+
+def mutate_serializer()
+  JSON.stringify = replacement
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  serialize()
+  mutate_serializer()
+  takes_int(serialize())
+end
+`,
+		},
+		{
 			name: "loop finals stay unknown",
 			source: `
 def spin()
@@ -332,6 +562,34 @@ end
 			requireNoCheckWarnings(t, compileScriptDefault(t, tc.source))
 		})
 	}
+}
+
+func TestCheckFunctionReturnSummariesUseEntrypointImports(t *testing.T) {
+	t.Parallel()
+
+	root := tempModuleTree(t, moduleFile{path: "counts.vibe", content: `
+export def build_count() -> int
+  42
+end
+`})
+	engine := mustNewEngineWithModuleRoot(t, root)
+	script, err := engine.CompileSnippet(`
+require("counts")
+
+def wrapper()
+  build_count()
+end
+
+def takes_string(value: string)
+  value
+end
+
+takes_string(wrapper())
+`, "run")
+	if err != nil {
+		t.Fatalf("CompileSnippet failed: %v", err)
+	}
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int")
 }
 
 // TestCheckFunctionReturnSummariesSkipForeignFunctions pins the issue scope:

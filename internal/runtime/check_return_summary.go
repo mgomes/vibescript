@@ -1,5 +1,10 @@
 package runtime
 
+import (
+	"sort"
+	"strings"
+)
+
 // Return summaries expose a known result fact for calls to unannotated
 // script functions: a function that provably returns an int should not pass
 // a string boundary just because its author omitted the annotation. A
@@ -18,6 +23,11 @@ type returnSummaryCollector struct {
 	unknown bool
 }
 
+type returnSummaryCacheKey struct {
+	fn      *ScriptFunction
+	context string
+}
+
 func (r *returnSummaryCollector) record(fact *TypeExpr) {
 	if r == nil || r.unknown {
 		return
@@ -30,20 +40,10 @@ func (r *returnSummaryCollector) record(fact *TypeExpr) {
 	r.arms = append(r.arms, fact)
 }
 
-// summarizeScriptFunctionReturns computes return summaries for every plain
-// script function before the main walk, so call-site inference only ever
-// reads the cache and never nests a summary walk inside a live function walk.
-func (c *scriptChecker) summarizeScriptFunctionReturns() {
-	for _, fn := range c.sortedScriptFunctions() {
-		c.withFreshRuntimeTypeRootForCallable(fn, func() {
-			c.functionReturnSummary(fn)
-		})
-	}
-}
-
-// scriptFunctionReturnSummary reports the cached summary for calls resolved
-// to a plain function of the checked script; annotated functions and
-// functions of other scripts stay unknown.
+// scriptFunctionReturnSummary reports the summary for calls resolved to a
+// plain function of the checked script. Summaries are computed lazily so a
+// caller can recursively summarize its callees without depending on function
+// name order. Annotated functions and functions of other scripts stay unknown.
 func (c *scriptChecker) scriptFunctionReturnSummary(name string, fn *ScriptFunction) *TypeExpr {
 	if fn == nil || fn.ReturnTy != nil {
 		return nil
@@ -51,7 +51,7 @@ func (c *scriptChecker) scriptFunctionReturnSummary(name string, fn *ScriptFunct
 	if owned, ok := c.script.functions[name]; !ok || owned != fn {
 		return nil
 	}
-	return c.returnSummaries[fn]
+	return c.functionReturnSummary(fn)
 }
 
 // functionReturnSummary computes (and caches) the summary for one function.
@@ -62,17 +62,18 @@ func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction) *TypeExpr {
 	if fn == nil || fn.ReturnTy != nil {
 		return nil
 	}
-	if summary, ok := c.returnSummaries[fn]; ok {
+	key := c.returnSummaryCacheKey(fn)
+	if summary, ok := c.returnSummaries[key]; ok {
 		return summary
 	}
 	if c.summaryInProgress == nil {
-		c.summaryInProgress = make(map[*ScriptFunction]struct{})
+		c.summaryInProgress = make(map[returnSummaryCacheKey]struct{})
 	}
-	if _, busy := c.summaryInProgress[fn]; busy {
+	if _, busy := c.summaryInProgress[key]; busy {
 		return nil
 	}
-	c.summaryInProgress[fn] = struct{}{}
-	defer delete(c.summaryInProgress, fn)
+	c.summaryInProgress[key] = struct{}{}
+	defer delete(c.summaryInProgress, key)
 
 	var summary *TypeExpr
 	if len(fn.Body) == 0 {
@@ -84,10 +85,31 @@ func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction) *TypeExpr {
 		}
 	}
 	if c.returnSummaries == nil {
-		c.returnSummaries = make(map[*ScriptFunction]*TypeExpr)
+		c.returnSummaries = make(map[returnSummaryCacheKey]*TypeExpr)
 	}
-	c.returnSummaries[fn] = summary
+	c.returnSummaries[key] = summary
 	return summary
+}
+
+// returnSummaryCacheKey separates summaries computed under different runtime
+// bindings. A required module or a reassigned namespace member can change a
+// callee from statically known to dynamic, so reusing a fact across those
+// states would make the checker unsound.
+func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction) returnSummaryCacheKey {
+	root := c.runtimeTypeRoot
+	if root == nil {
+		root = c.typeRoot
+	}
+	context := moduleCheckContextKey(root)
+	if len(c.runtimeNamespaceMembers) > 0 {
+		members := make([]string, 0, len(c.runtimeNamespaceMembers))
+		for member := range c.runtimeNamespaceMembers {
+			members = append(members, member)
+		}
+		sort.Strings(members)
+		context += "\x00" + strings.Join(members, "\x00")
+	}
+	return returnSummaryCacheKey{fn: fn, context: context}
 }
 
 // collectFunctionReturnFacts walks the function body with warnings
@@ -151,6 +173,30 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction) *returnSu
 		}
 	})
 	return collector
+}
+
+// recordDeferredReturnSummaryFacts records returns after a non-exiting
+// ensure has applied its mutation effects. The return expression itself is
+// inferred under the state at which it was evaluated, while monotone local
+// poisoning from the ensure remains live so a mutated returned container
+// cannot retain stale structural facts.
+func (c *scriptChecker) recordDeferredReturnSummaryFacts(sites []deferredReturnSite) {
+	runtimeState := c.snapshotRuntimeState()
+	scopeState := c.snapshotScopeState()
+	defer func() {
+		c.restoreRuntimeState(runtimeState)
+		c.restoreScopeState(scopeState)
+	}()
+
+	for _, site := range sites {
+		c.restoreRuntimeState(site.runtimeState)
+		c.restoreScopeState(site.scopeState)
+		if site.stmt.Value == nil {
+			c.returnCollector.record(checkTypeNil)
+			continue
+		}
+		c.returnCollector.record(c.inferExpressionType(site.stmt.Value))
+	}
 }
 
 // collectImplicitResultFacts mirrors checkImplicitFinalBlock, recording the

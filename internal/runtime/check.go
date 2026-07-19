@@ -119,8 +119,8 @@ type scriptChecker struct {
 	deferredReturnSites     *[]deferredReturnSite
 	implicitReturnLeaves    map[Statement]struct{}
 	implicitReturnStates    map[Statement]checkStateSnapshot
-	returnSummaries         map[*ScriptFunction]*TypeExpr
-	summaryInProgress       map[*ScriptFunction]struct{}
+	returnSummaries         map[returnSummaryCacheKey]*TypeExpr
+	summaryInProgress       map[returnSummaryCacheKey]struct{}
 	returnCollector         *returnSummaryCollector
 	requiredModules         map[string]struct{}
 	runtimeModules          map[string]struct{}
@@ -1210,7 +1210,6 @@ func (c *scriptChecker) withRuntimeModuleCollection(collect func()) {
 }
 
 func (c *scriptChecker) checkScript() {
-	c.summarizeScriptFunctionReturns()
 	// The entrypoint executes its statements in order, so it is checked
 	// before the require-export seed: a top-level call before its require
 	// must not resolve the exports early. Its own walk binds each require
@@ -1305,7 +1304,6 @@ func (c *scriptChecker) checkFunctionExecution(target checkTarget) {
 	if fn == nil {
 		return
 	}
-	c.summarizeScriptFunctionReturns()
 	c.withFreshRuntimeTypeRoot(func() {
 		c.checkRuntimeClassBodies(deferredClassBodiesForFunction(fn, c.script.deferredClassBodies), false)
 		if target.ValidateCall {
@@ -1970,7 +1968,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// apply before the value leaves the function, so the expression is
 		// walked before the annotation check reads its inferred type.
 		c.checkExpression(function, typed.Value)
-		if c.returnCollector != nil {
+		if c.returnCollector != nil && c.deferredReturnSites == nil {
 			if typed.Value == nil {
 				c.returnCollector.record(checkTypeNil)
 			} else {
@@ -2177,10 +2175,19 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		c.recordLocalBindings(typed.Body)
 	case *TryStmt:
-		deferReturnType := returnType != nil && len(typed.Ensure) > 0 && !blockAlwaysExits(typed.Ensure)
+		ensureAlwaysExits := blockAlwaysExits(typed.Ensure)
+		deferReturnType := returnType != nil && len(typed.Ensure) > 0 && !ensureAlwaysExits
 		branchReturnType := returnType
-		if deferReturnType || blockAlwaysExits(typed.Ensure) {
+		if deferReturnType || ensureAlwaysExits {
 			branchReturnType = nil
+		}
+		// An always-exiting ensure replaces every value that the body, else,
+		// or rescue would otherwise return. Keep those overridden facts out of
+		// an unannotated function summary, then collect the ensure itself into
+		// the caller's active collector.
+		summaryCollector := c.returnCollector
+		if summaryCollector != nil && ensureAlwaysExits {
+			c.returnCollector = &returnSummaryCollector{}
 		}
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
@@ -2255,7 +2262,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		c.mergeRuntimeStates(baseRuntimeState, mergeRuntimeStates)
 		c.mergeScopeStates(baseScopeState, mergeScopeStates)
+		if summaryCollector != nil && ensureAlwaysExits {
+			c.returnCollector = summaryCollector
+		}
 		c.checkStatements(function, returnType, typed.Ensure)
+		if c.returnCollector != nil && armCapture && previousSites == nil {
+			c.recordDeferredReturnSummaryFacts(deferredSites)
+		}
 		if deferReturnType {
 			c.checkDeferredReturnSitesAfterEnsure(function, returnType, typed.Ensure, deferredSites)
 		}
@@ -2523,6 +2536,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkIdentifierResolved(function, typed)
 		if autoCall {
 			c.enqueueReachableIdentifierCall(typed)
+			c.applyAutoInvokedIdentifierNamespaceMutations(typed)
 		}
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
@@ -2592,6 +2606,9 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.callArgumentFacts = argumentFacts
 		c.checkCallResolved(function, typed, target, targetResolved)
 		c.callArgumentFacts = previousFacts
+		if targetResolved && target.fn != nil {
+			c.applyScriptFunctionNamespaceMutations(target.fn)
+		}
 		if c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
 			c.checkBlockLiteral(function, typed.Block)
@@ -2952,6 +2969,9 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	previousSites := c.deferredReturnSites
 	c.deferredReturnSites = nil
 	defer func() { c.deferredReturnSites = previousSites }()
+	previousCollector := c.returnCollector
+	c.returnCollector = nil
+	defer func() { c.returnCollector = previousCollector }()
 
 	// A block may run zero or many times, so outer locals its body assigns
 	// lose their facts before the walk, and the walk's own bindings are
@@ -4505,12 +4525,18 @@ func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
 		return nil
 	}
 	if fn, ok := c.script.functions[name]; ok {
+		if len(fn.Params) > 0 {
+			return checkTypeFunction
+		}
 		if fn.ReturnTy != nil {
 			return fn.ReturnTy
 		}
 		return c.scriptFunctionReturnSummary(name, fn)
 	}
-	if _, ok := c.typeRootFunction(name); ok {
+	if fn, ok := c.typeRootFunction(name); ok {
+		if len(fn.Params) > 0 {
+			return checkTypeFunction
+		}
 		return nil
 	}
 	if c.typeRootHasBinding(name) {
@@ -5343,10 +5369,44 @@ func (c *scriptChecker) recordRuntimeBindingTarget(target Expression) {
 	if !ok {
 		return
 	}
+	c.recordRuntimeNamespaceMember(memberName)
+}
+
+func (c *scriptChecker) recordRuntimeNamespaceMember(memberName string) {
+	if memberName == "" {
+		return
+	}
 	if c.runtimeNamespaceMembers == nil {
 		c.runtimeNamespaceMembers = make(map[string]struct{})
 	}
 	c.runtimeNamespaceMembers[memberName] = struct{}{}
+}
+
+// applyScriptFunctionNamespaceMutations carries a statically resolved
+// callee's possible namespace writes back to its caller. Function checking
+// itself runs against an isolated call-time snapshot, but these writes can
+// change later dispatch (for example JSON.stringify = replacement), so a
+// return summary computed before the call must not be reused afterwards.
+func (c *scriptChecker) applyScriptFunctionNamespaceMutations(fn *ScriptFunction) {
+	if fn == nil || fn.owner != c.script {
+		return
+	}
+	members := make(map[string]struct{})
+	collectRuntimeNamespaceMemberAssignments(fn.Body, members)
+	for member := range members {
+		c.recordRuntimeNamespaceMember(member)
+	}
+}
+
+func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Identifier) {
+	if ident == nil || c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		return
+	}
+	fn, ok := c.script.functions[ident.Name]
+	if !ok || len(fn.Params) != 0 {
+		return
+	}
+	c.applyScriptFunctionNamespaceMutations(fn)
 }
 
 func (c *scriptChecker) recordBindingName(name string) {
@@ -5436,6 +5496,36 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 			}
 			collectLocalBindings(typed.Else, out)
 			collectLocalBindings(typed.Ensure, out)
+		}
+	}
+}
+
+func collectRuntimeNamespaceMemberAssignments(statements []Statement, out map[string]struct{}) {
+	for _, stmt := range statements {
+		switch typed := stmt.(type) {
+		case *AssignStmt:
+			if member, ok := runtimeNamespaceMemberName(typed.Target); ok {
+				out[member] = struct{}{}
+			}
+		case *IfStmt:
+			collectRuntimeNamespaceMemberAssignments(typed.Consequent, out)
+			for _, elseIf := range typed.ElseIf {
+				collectRuntimeNamespaceMemberAssignments(elseIf.Consequent, out)
+			}
+			collectRuntimeNamespaceMemberAssignments(typed.Alternate, out)
+		case *ForStmt:
+			collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+		case *WhileStmt:
+			collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+		case *UntilStmt:
+			collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+		case *TryStmt:
+			collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+			for i := range typed.Rescues {
+				collectRuntimeNamespaceMemberAssignments(typed.Rescues[i].Body, out)
+			}
+			collectRuntimeNamespaceMemberAssignments(typed.Else, out)
+			collectRuntimeNamespaceMemberAssignments(typed.Ensure, out)
 		}
 	}
 }
