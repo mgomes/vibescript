@@ -5717,7 +5717,7 @@ func (c *scriptChecker) scriptFunctionNamespaceMutations(fn *ScriptFunction) map
 		functions: c.script.functions,
 		visited:   map[*ScriptFunction]struct{}{fn: {}},
 	}
-	scan.statements(fn.Body)
+	scan.function(fn)
 	return scan.out
 }
 
@@ -5888,6 +5888,15 @@ func (s *namespaceMutationScan) functionReference(name string) {
 		return
 	}
 	s.visited[fn] = struct{}{}
+	s.function(fn)
+}
+
+// function scans everything a call may execute: parameter defaults run
+// before the body when the caller omits the argument.
+func (s *namespaceMutationScan) function(fn *ScriptFunction) {
+	for _, param := range fn.Params {
+		s.expression(param.DefaultVal)
+	}
 	s.statements(fn.Body)
 }
 
@@ -5944,6 +5953,9 @@ func (s *namespaceMutationScan) statement(stmt Statement) {
 		// A nested definition's writes fire only when it is called, but a
 		// missed invalidation is unsound while an extra one only widens, so
 		// the walk stays conservative.
+		for _, param := range typed.Params {
+			s.expression(param.DefaultVal)
+		}
 		s.statements(typed.Body)
 	case *ClassStmt:
 		s.statements(typed.Body)

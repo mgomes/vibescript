@@ -693,6 +693,39 @@ end
 `,
 		},
 		{
+			name: "default hidden namespace mutation invalidates a cached summary",
+			source: `
+def replacement(value)
+  1
+end
+
+def install_serializer()
+  JSON.stringify = replacement
+end
+
+def flip(x = install_serializer())
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_string(serialize())
+  flip()
+  takes_int(serialize())
+end
+`,
+		},
+		{
 			name: "self mutating callee stays unknown after its first call",
 			source: `
 def replacement(value)
