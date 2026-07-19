@@ -187,6 +187,28 @@ end
 `,
 		},
 		{
+			name: "included module constant disables narrowing",
+			source: `
+module Aliases
+  User = 2
+end
+
+class Holder
+  include Aliases
+
+  def initialize()
+  end
+
+  def check(u: User | Order)
+    unless u.is_a?(User)
+      takes_order(u)
+    end
+    u
+  end
+end
+`,
+		},
+		{
 			name: "unknown receiver stays unknown",
 			source: `
 def run(u)

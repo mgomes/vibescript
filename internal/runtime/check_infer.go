@@ -1047,7 +1047,7 @@ func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
 	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
 		return nil, false
 	}
-	if c.selfClass != nil && classMayBindConstant(c.selfClass, ident.Name) {
+	if c.selfClass != nil && c.selfClassMayBindConstant(c.selfClass, ident.Name) {
 		return nil, false
 	}
 	classDef, ok := c.script.classes[ident.Name]
@@ -1057,10 +1057,11 @@ func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
 	return classDef, true
 }
 
-// classMayBindConstant reports whether self's class can supply name ahead of
-// the top-level binding: a class variable, a nested module, or a class-body
-// assignment that creates the variable when the body runs.
-func classMayBindConstant(cl *ClassDef, name string) bool {
+// selfClassMayBindConstant reports whether self's class can supply name
+// ahead of the top-level binding: a class variable, a nested module, a
+// class-body assignment that creates the variable when the body runs, or a
+// constant adopted from an included module.
+func (c *scriptChecker) selfClassMayBindConstant(cl *ClassDef, name string) bool {
 	if cl == nil {
 		return false
 	}
@@ -1079,6 +1080,31 @@ func classMayBindConstant(cl *ClassDef, name string) bool {
 		}
 		if target, ok := assign.Target.(*Identifier); ok && target.Name == name {
 			return true
+		}
+	}
+	// IncludedModules is the flattened transitive closure, so one level of
+	// adopted-constant lookup covers every reachable module.
+	for _, included := range cl.IncludedModules {
+		moduleDef, ok := c.script.classes[included]
+		if !ok || moduleDef == nil {
+			continue
+		}
+		if _, ok := moduleDef.ClassVars[name]; ok {
+			return true
+		}
+		for _, nested := range moduleDef.NestedModules {
+			if nested == name {
+				return true
+			}
+		}
+		for _, stmt := range moduleDef.Body {
+			assign, ok := stmt.(*AssignStmt)
+			if !ok {
+				continue
+			}
+			if target, ok := assign.Target.(*Identifier); ok && target.Name == name {
+				return true
+			}
 		}
 	}
 	return false
