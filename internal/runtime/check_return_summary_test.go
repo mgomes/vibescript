@@ -605,6 +605,79 @@ end
 `,
 		},
 		{
+			name: "transitive callee namespace mutation invalidates a cached summary",
+			source: `
+def replacement(value)
+  1
+end
+
+def mutate_serializer()
+  JSON.stringify = replacement
+end
+
+def wrapper()
+  mutate_serializer()
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_string(serialize())
+  wrapper()
+  takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "cyclic helper namespace mutation invalidates a cached summary",
+			source: `
+def replacement(value)
+  1
+end
+
+def ping(flag)
+  if flag
+    pong(false)
+  end
+end
+
+def pong(flag)
+  JSON.stringify = replacement
+  if flag
+    ping(false)
+  end
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_string(serialize())
+  ping(true)
+  takes_int(serialize())
+end
+
+def takes_string(value: string)
+  value
+end
+`,
+		},
+		{
 			name: "callee namespace mutation invalidates a cached summary",
 			source: `
 def replacement(value)

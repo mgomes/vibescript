@@ -5415,9 +5415,13 @@ func (c *scriptChecker) applyScriptFunctionNamespaceMutations(fn *ScriptFunction
 	if fn == nil || fn.owner != c.script {
 		return
 	}
-	members := make(map[string]struct{})
-	collectRuntimeNamespaceMemberAssignments(fn.Body, members)
-	for member := range members {
+	scan := &namespaceMutationScan{
+		out:       make(map[string]struct{}),
+		functions: c.script.functions,
+		visited:   map[*ScriptFunction]struct{}{fn: {}},
+	}
+	scan.statements(fn.Body)
+	for member := range scan.out {
 		c.recordRuntimeNamespaceMember(member)
 	}
 }
@@ -5524,159 +5528,186 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 	}
 }
 
-// collectRuntimeNamespaceMemberAssignments records every builtin namespace
-// member the given code can reassign, descending into any code the body may
-// run — block and lambda bodies, statement expressions, and nested
-// definitions — so a caller invalidates cached facts even when the write
-// hides inside a block ([1].each { JSON.stringify = replacement }).
-func collectRuntimeNamespaceMemberAssignments(statements []Statement, out map[string]struct{}) {
+// namespaceMutationScan records every builtin namespace member a function's
+// execution can reassign, descending into any code the body may run — block
+// and lambda bodies, statement expressions, and nested definitions — so a
+// caller invalidates cached facts even when the write hides inside a block
+// ([1].each { JSON.stringify = replacement }). A reference to another owned
+// function recurses into that function's body (visited breaks call cycles),
+// so writes reached only through helpers, stored function values, or
+// transitive calls still count.
+type namespaceMutationScan struct {
+	out       map[string]struct{}
+	functions map[string]*ScriptFunction
+	visited   map[*ScriptFunction]struct{}
+}
+
+// functionReference unions in the writes of an owned function the scanned
+// body mentions. Any mention counts — callee, bare auto-invoke, or escaping
+// value — since a stored function can run later; a shadowed name only
+// over-invalidates, which is the sound direction.
+func (s *namespaceMutationScan) functionReference(name string) {
+	fn, ok := s.functions[name]
+	if !ok {
+		return
+	}
+	if _, seen := s.visited[fn]; seen {
+		return
+	}
+	s.visited[fn] = struct{}{}
+	s.statements(fn.Body)
+}
+
+func (s *namespaceMutationScan) statements(statements []Statement) {
 	for _, stmt := range statements {
-		collectNamespaceAssignmentsFromStatement(stmt, out)
+		s.statement(stmt)
 	}
 }
 
-func collectNamespaceAssignmentsFromStatement(stmt Statement, out map[string]struct{}) {
+func (s *namespaceMutationScan) statement(stmt Statement) {
 	switch typed := stmt.(type) {
 	case nil:
 	case *AssignStmt:
 		if member, ok := runtimeNamespaceMemberName(typed.Target); ok {
-			out[member] = struct{}{}
+			s.out[member] = struct{}{}
 		}
-		collectNamespaceAssignmentsFromExpression(typed.Target, out)
-		collectNamespaceAssignmentsFromExpression(typed.Value, out)
+		s.expression(typed.Target)
+		s.expression(typed.Value)
 	case *ExprStmt:
-		collectNamespaceAssignmentsFromExpression(typed.Expr, out)
+		s.expression(typed.Expr)
 	case *ReturnStmt:
-		collectNamespaceAssignmentsFromExpression(typed.Value, out)
+		s.expression(typed.Value)
 	case *RaiseStmt:
-		collectNamespaceAssignmentsFromExpression(typed.Value, out)
-		collectNamespaceAssignmentsFromExpression(typed.Message, out)
+		s.expression(typed.Value)
+		s.expression(typed.Message)
 	case *BreakStmt:
-		collectNamespaceAssignmentsFromExpression(typed.Value, out)
+		s.expression(typed.Value)
 	case *NextStmt:
-		collectNamespaceAssignmentsFromExpression(typed.Value, out)
+		s.expression(typed.Value)
 	case *IfStmt:
-		collectNamespaceAssignmentsFromExpression(typed.Condition, out)
-		collectRuntimeNamespaceMemberAssignments(typed.Consequent, out)
+		s.expression(typed.Condition)
+		s.statements(typed.Consequent)
 		for _, elseIf := range typed.ElseIf {
-			collectNamespaceAssignmentsFromStatement(elseIf, out)
+			s.statement(elseIf)
 		}
-		collectRuntimeNamespaceMemberAssignments(typed.Alternate, out)
+		s.statements(typed.Alternate)
 	case *ForStmt:
-		collectNamespaceAssignmentsFromExpression(typed.Iterable, out)
-		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+		s.expression(typed.Iterable)
+		s.statements(typed.Body)
 	case *WhileStmt:
-		collectNamespaceAssignmentsFromExpression(typed.Condition, out)
-		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+		s.expression(typed.Condition)
+		s.statements(typed.Body)
 	case *UntilStmt:
-		collectNamespaceAssignmentsFromExpression(typed.Condition, out)
-		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+		s.expression(typed.Condition)
+		s.statements(typed.Body)
 	case *TryStmt:
-		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+		s.statements(typed.Body)
 		for i := range typed.Rescues {
-			collectRuntimeNamespaceMemberAssignments(typed.Rescues[i].Body, out)
+			s.statements(typed.Rescues[i].Body)
 		}
-		collectRuntimeNamespaceMemberAssignments(typed.Else, out)
-		collectRuntimeNamespaceMemberAssignments(typed.Ensure, out)
+		s.statements(typed.Else)
+		s.statements(typed.Ensure)
 	case *FunctionStmt:
 		// A nested definition's writes fire only when it is called, but a
 		// missed invalidation is unsound while an extra one only widens, so
 		// the walk stays conservative.
-		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+		s.statements(typed.Body)
 	case *ClassStmt:
-		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+		s.statements(typed.Body)
 	}
 }
 
-func collectNamespaceAssignmentsFromExpression(expr Expression, out map[string]struct{}) {
+func (s *namespaceMutationScan) expression(expr Expression) {
 	switch typed := expr.(type) {
 	case nil:
+	case *Identifier:
+		s.functionReference(typed.Name)
 	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:
-		collectNamespaceAssignmentsFromStatement(typed.(Statement), out)
+		s.statement(typed.(Statement))
 	case *BlockLiteral:
 		for _, param := range typed.Params {
-			collectNamespaceAssignmentsFromExpression(param.DefaultVal, out)
+			s.expression(param.DefaultVal)
 		}
-		collectRuntimeNamespaceMemberAssignments(typed.Body, out)
+		s.statements(typed.Body)
 	case *CallExpr:
-		collectNamespaceAssignmentsFromExpression(typed.Callee, out)
+		s.expression(typed.Callee)
 		for _, arg := range typed.Args {
-			collectNamespaceAssignmentsFromExpression(arg, out)
+			s.expression(arg)
 		}
 		for _, kwarg := range typed.KwArgs {
-			collectNamespaceAssignmentsFromExpression(kwarg.Value, out)
+			s.expression(kwarg.Value)
 		}
-		collectNamespaceAssignmentsFromExpression(typed.BlockArg, out)
+		s.expression(typed.BlockArg)
 		if typed.Block != nil {
-			collectNamespaceAssignmentsFromExpression(typed.Block, out)
+			s.expression(typed.Block)
 		}
 	case *SplatArg:
-		collectNamespaceAssignmentsFromExpression(typed.Value, out)
+		s.expression(typed.Value)
 	case *UnaryExpr:
-		collectNamespaceAssignmentsFromExpression(typed.Right, out)
+		s.expression(typed.Right)
 	case *BinaryExpr:
-		collectNamespaceAssignmentsFromExpression(typed.Left, out)
-		collectNamespaceAssignmentsFromExpression(typed.Right, out)
+		s.expression(typed.Left)
+		s.expression(typed.Right)
 	case *ConditionalExpr:
-		collectNamespaceAssignmentsFromExpression(typed.Condition, out)
-		collectNamespaceAssignmentsFromExpression(typed.Consequent, out)
-		collectNamespaceAssignmentsFromExpression(typed.Alternate, out)
+		s.expression(typed.Condition)
+		s.expression(typed.Consequent)
+		s.expression(typed.Alternate)
 	case *IfExpr:
-		collectNamespaceAssignmentsFromExpression(typed.Condition, out)
-		collectNamespaceAssignmentsFromExpression(typed.Consequent, out)
+		s.expression(typed.Condition)
+		s.expression(typed.Consequent)
 		for _, branch := range typed.ElseIf {
-			collectNamespaceAssignmentsFromExpression(branch.Condition, out)
-			collectNamespaceAssignmentsFromExpression(branch.Result, out)
+			s.expression(branch.Condition)
+			s.expression(branch.Result)
 		}
-		collectNamespaceAssignmentsFromExpression(typed.Alternate, out)
+		s.expression(typed.Alternate)
 	case *RescueExpr:
-		collectNamespaceAssignmentsFromExpression(typed.Body, out)
-		collectNamespaceAssignmentsFromExpression(typed.Fallback, out)
+		s.expression(typed.Body)
+		s.expression(typed.Fallback)
 	case *RangeExpr:
-		collectNamespaceAssignmentsFromExpression(typed.Start, out)
-		collectNamespaceAssignmentsFromExpression(typed.End, out)
+		s.expression(typed.Start)
+		s.expression(typed.End)
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
-			collectNamespaceAssignmentsFromExpression(elem, out)
+			s.expression(elem)
 		}
 	case *HashLiteral:
 		for _, pair := range typed.Pairs {
-			collectNamespaceAssignmentsFromExpression(pair.Key, out)
-			collectNamespaceAssignmentsFromExpression(pair.Value, out)
+			s.expression(pair.Key)
+			s.expression(pair.Value)
 		}
 	case *IndexExpr:
-		collectNamespaceAssignmentsFromExpression(typed.Object, out)
+		s.expression(typed.Object)
 		for _, index := range typed.Indices {
-			collectNamespaceAssignmentsFromExpression(index, out)
+			s.expression(index)
 		}
 	case *MemberExpr:
-		collectNamespaceAssignmentsFromExpression(typed.Object, out)
+		s.expression(typed.Object)
 	case *ScopeExpr:
-		collectNamespaceAssignmentsFromExpression(typed.Object, out)
+		s.expression(typed.Object)
 	case *CaseExpr:
-		collectNamespaceAssignmentsFromExpression(typed.Target, out)
+		s.expression(typed.Target)
 		for _, clause := range typed.Clauses {
 			for _, value := range clause.Values {
-				collectNamespaceAssignmentsFromExpression(value.Expr, out)
+				s.expression(value.Expr)
 			}
-			collectNamespaceAssignmentsFromExpression(clause.Result, out)
+			s.expression(clause.Result)
 		}
-		collectNamespaceAssignmentsFromExpression(typed.ElseExpr, out)
+		s.expression(typed.ElseExpr)
 	case *YieldExpr:
 		for _, arg := range typed.Args {
-			collectNamespaceAssignmentsFromExpression(arg, out)
+			s.expression(arg)
 		}
 	case *InterpolatedString:
-		collectNamespaceAssignmentsFromStringParts(typed.Parts, out)
+		s.stringParts(typed.Parts)
 	case *InterpolatedSymbol:
-		collectNamespaceAssignmentsFromStringParts(typed.Parts, out)
+		s.stringParts(typed.Parts)
 	}
 }
 
-func collectNamespaceAssignmentsFromStringParts(parts []StringPart, out map[string]struct{}) {
+func (s *namespaceMutationScan) stringParts(parts []StringPart) {
 	for _, part := range parts {
 		if exprPart, ok := part.(StringExpr); ok {
-			collectNamespaceAssignmentsFromExpression(exprPart.Expr, out)
+			s.expression(exprPart.Expr)
 		}
 	}
 }
