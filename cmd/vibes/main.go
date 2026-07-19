@@ -258,28 +258,14 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, quot
 	return printResult(out, result)
 }
 
-// checkSnippetScript validates a -e snippet: first the entrypoint execution
-// path (matching what run would execute, including state established by
-// top-level requires), then the order-independent whole-snippet warnings so
-// functions the snippet never calls still surface undefined names and typed
-// block parameters contradicted by literal receivers. Snippets are
-// self-contained — no host injects globals or capabilities into vibes run -e
-// — so the supplemental warnings cannot be resolved by call-time state.
+// checkSnippetScript validates a -e snippet with the same whole-script pass
+// vibes check applies to a file: the entrypoint's statements are walked in
+// execution order (preserving top-level require semantics), and every
+// function and method the snippet never calls is then checked under the full
+// static contract rules, so equivalent inline and file sources report the
+// same state-independent diagnostics.
 func checkSnippetScript(script *vibes.Script) error {
-	warnings := script.CheckWarningsForCall(evalSnippetFunction, nil, vibes.CallOptions{})
-	seen := make(map[string]struct{}, len(warnings))
-	warningKey := func(warning vibesruntime.CheckWarning) string {
-		return fmt.Sprintf("%d:%d:%s", warning.Pos.Line, warning.Pos.Column, warning.Message)
-	}
-	for _, warning := range warnings {
-		seen[warningKey(warning)] = struct{}{}
-	}
-	for _, warning := range script.CheckOrderIndependentWarnings() {
-		if _, duplicate := seen[warningKey(warning)]; duplicate {
-			continue
-		}
-		warnings = append(warnings, warning)
-	}
+	warnings := script.CheckWarningsWithOptions(vibes.CallOptions{})
 	if len(warnings) == 0 {
 		return nil
 	}
