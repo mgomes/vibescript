@@ -63,21 +63,18 @@ type checkTarget struct {
 }
 
 func (s *Script) checkWarnings(opts CallOptions, target checkTarget) []CheckWarning {
-	return s.checkWarningsCtx(context.Background(), opts, target)
-}
-
-// checkWarningsCtx runs the checker with capability adapters bound under the
-// caller's context, so a combined check-and-call gate binds the same host
-// surface the execution will.
-func (s *Script) checkWarningsCtx(ctx context.Context, opts CallOptions, target checkTarget) []CheckWarning {
-	return s.checkWarningsMode(ctx, opts, target, false)
+	return s.checkWarningsMode(context.Background(), opts, target, false)
 }
 
 func (s *Script) checkWarningsMode(ctx context.Context, opts CallOptions, target checkTarget, orderIndependentOnly bool) []CheckWarning {
+	optionGlobals, _ := checkOptionGlobals(ctx, s, opts)
+	return s.checkWarningsWithGlobals(optionGlobals, opts, target, orderIndependentOnly)
+}
+
+func (s *Script) checkWarningsWithGlobals(optionGlobals map[string]Value, opts CallOptions, target checkTarget, orderIndependentOnly bool) []CheckWarning {
 	if s == nil {
 		return nil
 	}
-	optionGlobals := checkOptionGlobals(ctx, s, opts)
 	checker := scriptChecker{
 		script:                s,
 		callOptions:           opts,
@@ -194,13 +191,18 @@ type reachableFunction struct {
 	runtimeState checkRuntimeState
 }
 
-func checkOptionGlobals(ctx context.Context, script *Script, opts CallOptions) map[string]Value {
+// checkOptionGlobals resolves the host globals a call would receive. Bind
+// failures leave the adapter's names unbound and are also returned so a
+// combined check-and-call gate can surface them; the pure CheckWarnings*
+// queries ignore the error and stay best-effort.
+func checkOptionGlobals(ctx context.Context, script *Script, opts CallOptions) (map[string]Value, error) {
 	if len(opts.Capabilities) == 0 && len(opts.Globals) == 0 {
-		return nil
+		return nil, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var bindErr error
 	globals := make(map[string]Value, len(opts.Globals)+len(opts.Capabilities)*2)
 	if script != nil {
 		binding := CapabilityBinding{Context: ctx, Engine: script.engine}
@@ -210,6 +212,9 @@ func checkOptionGlobals(ctx context.Context, script *Script, opts CallOptions) m
 			}
 			bound, err := adapter.Bind(binding)
 			if err != nil {
+				if bindErr == nil {
+					bindErr = err
+				}
 				continue
 			}
 			for name, val := range bound {
@@ -221,9 +226,9 @@ func checkOptionGlobals(ctx context.Context, script *Script, opts CallOptions) m
 		globals[name] = val
 	}
 	if len(globals) == 0 {
-		return nil
+		return nil, bindErr
 	}
-	return globals
+	return globals, bindErr
 }
 
 func checkHostGlobals(globals map[string]Value) map[string]struct{} {

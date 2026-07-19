@@ -131,3 +131,28 @@ end
 		t.Fatalf("CheckedCall(canceled) = warnings %v, err %v; want context.Canceled with no adapter work", warnings, err)
 	}
 }
+
+func TestCheckedCallSurfacesBindFailures(t *testing.T) {
+	t.Parallel()
+
+	engine := vibes.MustNewEngine(vibes.Config{})
+	script, err := engine.Compile(`
+def run()
+  request["id"]
+end
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	failing := vibes.MustNewContextCapability("request", func(ctx context.Context) (value.Value, error) {
+		return value.NewNil(), errors.New("resolver unavailable")
+	})
+	_, warnings, err := script.CheckedCall(context.Background(), "run", nil, vibes.CallOptions{Capabilities: []vibes.CapabilityAdapter{failing}})
+	if len(warnings) != 0 {
+		t.Fatalf("CheckedCall(failing bind) warnings = %v, want none (bind failure is not a static diagnostic)", warnings)
+	}
+	if err == nil || !strings.Contains(err.Error(), "resolver unavailable") {
+		t.Fatalf("CheckedCall(failing bind) error = %v, want adapter bind failure", err)
+	}
+}

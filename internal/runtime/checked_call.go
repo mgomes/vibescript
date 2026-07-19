@@ -1,6 +1,9 @@
 package runtime
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // CheckedCall statically checks the exact call — the same function, argument
 // values, and options a Call would receive — and executes it only when the
@@ -24,11 +27,18 @@ func (s *Script) CheckedCall(ctx context.Context, name string, args []Value, opt
 	if err := ctx.Err(); err != nil {
 		return NewNil(), nil, err
 	}
-	warnings := s.checkWarningsCtx(ctx, opts, checkTarget{
+	globals, bindErr := checkOptionGlobals(ctx, s, opts)
+	if bindErr != nil {
+		// A failing adapter is a runtime condition, not a static diagnostic:
+		// report it the way Call would instead of letting the gate warn
+		// about names the bind never produced.
+		return NewNil(), nil, fmt.Errorf("bind capability: %w", bindErr)
+	}
+	warnings := s.checkWarningsWithGlobals(globals, opts, checkTarget{
 		Function:     name,
 		Args:         args,
 		ValidateCall: true,
-	})
+	}, false)
 	if len(warnings) > 0 {
 		return NewNil(), warnings, nil
 	}

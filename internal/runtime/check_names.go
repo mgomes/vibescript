@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+
 	"github.com/mgomes/vibescript/internal/ast"
 )
 
