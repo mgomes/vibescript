@@ -2440,9 +2440,13 @@ func (c *scriptChecker) applyConditionOutcomeEffects(expr Expression, truthy boo
 		return c.narrowNilPredicateMember(typed, truthy)
 	case *CallExpr:
 		if member, ok := typed.Callee.(*MemberExpr); ok &&
-			len(typed.Args) == 0 && len(typed.KwArgs) == 0 &&
-			typed.Block == nil && typed.BlockArg == nil {
-			return c.narrowNilPredicateMember(member, truthy)
+			len(typed.KwArgs) == 0 && typed.Block == nil && typed.BlockArg == nil {
+			switch len(typed.Args) {
+			case 0:
+				return c.narrowNilPredicateMember(member, truthy)
+			case 1:
+				return c.narrowClassPredicateMember(member, typed.Args[0], truthy)
+			}
 		}
 	case *BinaryExpr:
 		switch typed.Operator {

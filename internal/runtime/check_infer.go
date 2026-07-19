@@ -984,6 +984,117 @@ func (c *scriptChecker) narrowNilPredicateMember(member *MemberExpr, truthy bool
 	return c.narrowLocalNilness(ident.Name, truthy)
 }
 
+// narrowClassPredicateMember narrows `x.is_a?(User)`, `x.kind_of?(Mod)`, and
+// `x.instance_of?(User)` on a plain local against a statically resolved class
+// or module argument. Both branches refine exactly: without inheritance an
+// instance arm either always or never satisfies the predicate, so the true
+// path keeps matching arms and the false path drops them. Narrowing applies
+// only when every arm provably reaches the runtime universal predicate —
+// named arms whose class overrides it, module-typed arms (their concrete
+// class is unknown), and dynamic receivers stay unchanged.
+func (c *scriptChecker) narrowClassPredicateMember(member *MemberExpr, arg Expression, truthy bool) bool {
+	if member == nil || member.Safe {
+		return true
+	}
+	exact := false
+	switch member.Property {
+	case isAMemberName, kindOfMemberName:
+	case instanceOfMemberName:
+		exact = true
+	default:
+		return true
+	}
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return true
+	}
+	want, ok := c.staticClassArgument(arg)
+	if !ok {
+		return true
+	}
+	arms, ok := typeExprArms(c.localTypeFor(ident.Name), 0)
+	if !ok || len(arms) == 0 {
+		return true
+	}
+	resolve := c.checkNamedTypeResolver()
+	for _, arm := range arms {
+		if !classPredicateArmUsesUniversalDispatch(arm, member.Property, resolve) {
+			return true
+		}
+	}
+	matches := func(arm *TypeExpr) bool {
+		return classPredicateArmMatches(arm, want, exact, resolve)
+	}
+	if truthy {
+		return c.narrowLocalArms(ident.Name, matches)
+	}
+	return c.narrowLocalArms(ident.Name, func(arm *TypeExpr) bool { return !matches(arm) })
+}
+
+// staticClassArgument resolves a predicate argument to the script class or
+// module it names. Shadowed names and dynamic expressions stay unknown.
+func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
+	ident, ok := arg.(*Identifier)
+	if !ok {
+		return nil, false
+	}
+	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		return nil, false
+	}
+	classDef, ok := c.script.classes[ident.Name]
+	if !ok || classDef == nil {
+		return nil, false
+	}
+	return classDef, true
+}
+
+// classPredicateArmUsesUniversalDispatch reports whether a known fact arm must
+// reach the universal class predicate. A named arm qualifies when it resolves
+// to an enum (no user methods) or to a non-module class without its own
+// override; module-typed arms stay conservative because their concrete class
+// is unknown. Plain data arms defer to the shared dispatch proof.
+func classPredicateArmUsesUniversalDispatch(arm *TypeExpr, property string, resolve namedTypeResolver) bool {
+	if arm == nil {
+		return false
+	}
+	if arm.Kind == TypeEnum {
+		match, ok := resolve(arm)
+		if !ok {
+			return false
+		}
+		if match.enum != nil {
+			return true
+		}
+		if match.class == nil || match.class.IsModule {
+			return false
+		}
+		_, overridden := match.class.Methods[property]
+		return !overridden
+	}
+	return typeArmUsesUniversalMemberDispatch(arm, property)
+}
+
+// classPredicateArmMatches reports whether every value of the arm satisfies
+// the predicate: an instance arm matches its own class exactly, and
+// is_a?/kind_of? additionally match modules the class includes. Non-instance
+// arms always answer false.
+func classPredicateArmMatches(arm *TypeExpr, want *ClassDef, exact bool, resolve namedTypeResolver) bool {
+	if arm == nil || arm.Kind != TypeEnum {
+		return false
+	}
+	match, ok := resolve(arm)
+	if !ok || match.class == nil {
+		return false
+	}
+	if match.class.Name == want.Name {
+		return true
+	}
+	if !exact && want.IsModule {
+		return classIncludesModule(match.class, want.Name)
+	}
+	return false
+}
+
 // knownPureUniversalPredicateMember reports whether every receiver arm that
 // can dispatch is guaranteed to use one of the pure universal predicates.
 // Named arms are excluded because a class may override the member. Hash-like

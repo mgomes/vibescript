@@ -153,6 +153,13 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   boundary checks compare it by class identity, and instance methods called
   on it check their argument shapes and expose their annotated return types.
   Shadowed class names and dynamic constructor dispatch stay unknown.
+- Class predicates narrow nominal unions: `u.is_a?(User)`,
+  `u.kind_of?(Payable)`, and `u.instance_of?(User)` against a statically
+  resolved class or module refine a known union local in both branches,
+  including guard clauses. Narrowing applies only when every arm provably
+  reaches the runtime universal predicate — an arm whose class overrides the
+  predicate, a module-typed arm, or a dynamic argument leaves the fact
+  unchanged.
 - Scalar member contracts resolve from receiver facts: `s.to_i` on a known
   string is an `int`, universal predicates such as `nil?` and `respond_to?`
   are `bool`, and safe navigation adds `nil` to the result (`x&.to_s` is
