@@ -582,6 +582,24 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "compound assignment finals record the combined result",
+			source: `
+def build_count()
+  x = 1
+  x += 2
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
@@ -952,6 +970,23 @@ def run()
   takes_string(serialize())
   wrapper()
   takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "logical assignment finals keep the existing arm",
+			source: `
+def build()
+  x = 1
+  x ||= "fallback"
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build())
 end
 `,
 		},

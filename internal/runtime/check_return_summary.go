@@ -297,7 +297,14 @@ func (c *scriptChecker) collectImplicitResultStatementFacts(stmt Statement) {
 	case *ExprStmt:
 		c.recordImplicitLeafFact(typed, typed.Expr)
 	case *AssignStmt:
-		c.recordImplicitLeafFact(typed, typed.Value)
+		if typed.Operator == "" {
+			c.recordImplicitLeafFact(typed, typed.Value)
+		} else {
+			// A compound or logical assignment yields its combined result
+			// (x ||= y is x-or-y, x += y is x plus y), which is the
+			// target's post-assignment fact, not the bare right-hand side.
+			c.recordImplicitLeafFact(typed, typed.Target)
+		}
 	case *IfStmt:
 		c.collectImplicitResultIfFacts(typed)
 	case *ForStmt, *WhileStmt, *UntilStmt:
