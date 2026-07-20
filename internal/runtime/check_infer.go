@@ -1874,26 +1874,31 @@ func arrayMutatorElementWrites(call *CallExpr, property string) (elements []Expr
 }
 
 // applyArrayMutatorCallFacts checks the elements an in-place builtin array
-// mutator writes against the receiver's declared element type and reports
-// whether every write is provably compatible, in which case the receiver's
-// fact still holds and the caller skips the escape poison. Both the
-// receiver fact and the argument facts are read as captured at their own
-// evaluation points: the receiver evaluates before any argument, so an
-// argument that escapes the same local cannot erase the bound the writes
-// contradict. Preservation additionally requires the local's fact to have
-// survived the argument walk unchanged.
-func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallExpr, member *MemberExpr, argumentFacts map[Expression]*TypeExpr, receiverFact *TypeExpr) bool {
+// mutator writes against the receiver's declared element type. preserved
+// reports whether every write is provably compatible, in which case the
+// receiver's fact still holds and the caller skips its escape poison.
+// modeled reports whether the call's argument effects are fully accounted
+// for — the builtin only reads and retains its arguments, with retention
+// tracked through container write aliases — so the caller also skips the
+// generic argument escape poison that would otherwise cascade through those
+// aliases and undo the preservation. Both the receiver fact and the
+// argument facts are read as captured at their own evaluation points: the
+// receiver evaluates before any argument, so an argument that escapes the
+// same local cannot erase the bound the writes contradict. Preservation
+// additionally requires the local's fact to have survived the argument walk
+// unchanged.
+func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallExpr, member *MemberExpr, argumentFacts map[Expression]*TypeExpr, receiverFact *TypeExpr) (preserved, modeled bool) {
 	ident, ok := member.Object.(*Identifier)
 	if !ok {
-		return false
+		return false, false
 	}
 	elem := declaredArrayElementType(receiverFact)
 	if elem == nil {
-		return false
+		return false, false
 	}
 	elements, preservable, ok := arrayMutatorElementWrites(call, member.Property)
 	if !ok {
-		return false
+		return false, false
 	}
 	// insert validates its index before any element lands, so a provably
 	// non-numeric index means the call raises without writing and neither
@@ -1901,7 +1906,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 	// argument positions (and an empty expansion, which raises) unknowable.
 	if member.Property == "insert" {
 		if _, isSplat := call.Args[0].(*SplatArg); isSplat {
-			return false
+			return false, true
 		}
 		index, captured := argumentFacts[call.Args[0]]
 		if !captured {
@@ -1909,7 +1914,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 		}
 		if kind, known := staticOperandKind(index); known &&
 			kind != TypeInt && kind != TypeFloat && kind != TypeNumber {
-			return false
+			return false, true
 		}
 	}
 	resolve := c.checkNamedTypeResolver()
@@ -1919,7 +1924,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 	// discarded, can keep the declared bound — and only when the argument
 	// walk left the local's fact unchanged (an argument may poison or
 	// rebind the same local).
-	preserved := preservable && Expression(call) == c.expressionStatementRoot &&
+	preserved = preservable && Expression(call) == c.expressionStatementRoot &&
 		mutatorReceiverFactIntact(c.localTypeFor(ident.Name), receiverFact)
 	for _, arg := range elements {
 		if splat, isSplat := arg.(*SplatArg); isSplat {
@@ -1932,6 +1937,10 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 		if !captured {
 			written = c.inferExpressionType(arg)
 		}
+		// The receiver retains every written element regardless of
+		// compatibility, so a container-rooted element's local links in: a
+		// later mutation through it weakens both.
+		c.linkContainerWriteAlias(ident.Name, arg, written)
 		if written == nil {
 			preserved = false
 			continue
@@ -1943,13 +1952,9 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 		}
 		if !typeExprSatisfies(written, elem, resolve) {
 			preserved = false
-			continue
 		}
-		// The receiver retains a written container element, so its root
-		// local links in: a later mutation through it weakens both.
-		c.linkContainerWriteAlias(ident.Name, arg, written)
 	}
-	return preserved
+	return preserved, true
 }
 
 // applySplattedElementWriteFacts checks a splatted mutator element argument:
@@ -1962,8 +1967,16 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 func (c *scriptChecker) applySplattedElementWriteFacts(function string, splat *SplatArg, name string, elem *TypeExpr, resolve namedTypeResolver) bool {
 	written := c.inferExpressionType(splat.Value)
 	if written == nil || written.Kind != TypeArray || written.Nullable {
+		// The receiver retains whatever elements the splat expands to, so
+		// an unknown splatted local links in conservatively.
+		c.linkContainerWriteAlias(name, splat.Value, nil)
 		return false
 	}
+	// The receiver retains the splatted array's elements regardless of
+	// compatibility, so its root local links in when those elements may be
+	// containers: a later mutation through it weakens both.
+	bound := splattedElementBound(written)
+	c.linkContainerWriteAlias(name, splat.Value, bound)
 	if written.Name == literalElementsMarker || written.Name == literalPartialElementsMarker {
 		if len(written.TypeArgs) == 1 {
 			if arms, ok := typeExprArms(written.TypeArgs[0], 0); ok {
@@ -1976,14 +1989,7 @@ func (c *scriptChecker) applySplattedElementWriteFacts(function string, splat *S
 			}
 		}
 	}
-	bound := splattedElementBound(written)
-	if bound == nil || !typeExprSatisfies(bound, elem, resolve) {
-		return false
-	}
-	// The receiver retains the splatted array's elements, so its root
-	// local links in: a later mutation through it weakens both.
-	c.linkContainerWriteAlias(name, splat.Value, bound)
-	return true
+	return bound != nil && typeExprSatisfies(bound, elem, resolve)
 }
 
 // splattedElementBound returns the element bound of a splatted array fact:

@@ -228,6 +228,17 @@ end
 			warning: "write to rows expected element array<int>, got string",
 		},
 		{
+			name: "pushed child local keeps the bound until it mutates",
+			source: `
+def f(rows: array<array<int>>)
+  child = [1]
+  rows.push(child)
+  rows << "bad"
+end
+`,
+			warning: "write to rows expected element array<int>, got string",
+		},
+		{
 			name: "selector side effects follow receiver selection",
 			source: `
 def idx -> int
@@ -596,6 +607,25 @@ end
 def f(items: array<int>)
   items.insert(5, 1)
   items << "bad"
+end
+`,
+		},
+		{
+			name: "mutating a pushed child weakens the outer bound",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f(rows: array<array<int>>)
+  child = [1]
+  rows.push(child)
+  child << "bad"
+  for row in rows
+    for v in row
+      takes_string(v)
+    end
+  end
 end
 `,
 		},

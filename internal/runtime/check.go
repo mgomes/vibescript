@@ -2639,8 +2639,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// builtin array mutator whose written elements are all provably
 		// compatible with the receiver's declared element type leaves the
 		// fact true.
+		mutatorArgsModeled := false
 		if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownPureUniversalPredicateCall(typed) {
-			if !c.applyArrayMutatorCallFacts(function, typed, member, argumentFacts, receiverFact) {
+			preserved, modeled := c.applyArrayMutatorCallFacts(function, typed, member, argumentFacts, receiverFact)
+			mutatorArgsModeled = modeled
+			if !preserved {
 				c.poisonEscapedIdentifier(member.Object)
 			}
 		}
@@ -2648,6 +2651,13 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.poisonEscapedIdentifier(member.Object)
 		}
 		for _, arg := range typed.Args {
+			// A modeled builtin mutator only reads and retains its
+			// arguments — retention is tracked through container write
+			// aliases — so the generic escape poison would wrongly undo
+			// the preservation it just established.
+			if mutatorArgsModeled {
+				continue
+			}
 			c.poisonEscapedIdentifier(arg)
 		}
 		for _, kwarg := range typed.KwArgs {
