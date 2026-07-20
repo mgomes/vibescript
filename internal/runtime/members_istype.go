@@ -133,13 +133,7 @@ func namedAtomMatches(exec *Execution, receiver Value, ty *TypeExpr, text string
 		if strings.Contains(ty.Name, ".") {
 			return false, fmt.Errorf("unknown type atom %q in %s", text, isTypeMemberName)
 		}
-		if ty.Nullable && receiver.Kind() == KindNil {
-			return true, nil
-		}
-		return valueMatchesType(receiver, ty)
-	}
-	if ty.Nullable && receiver.Kind() == KindNil {
-		return true, nil
+		return unmatchedNamedAtom(receiver, ty)
 	}
 	if !typeAtomSpellingExact(ty.Name, match) {
 		// The annotation resolver tolerates case-insensitive lookups; the
@@ -148,10 +142,10 @@ func namedAtomMatches(exec *Execution, receiver Value, ty *TypeExpr, text string
 		if strings.Contains(ty.Name, ".") {
 			return false, fmt.Errorf("unknown type atom %q in %s", text, isTypeMemberName)
 		}
-		if ty.Nullable && receiver.Kind() == KindNil {
-			return true, nil
-		}
-		return valueMatchesType(receiver, ty)
+		return unmatchedNamedAtom(receiver, ty)
+	}
+	if ty.Nullable && receiver.Kind() == KindNil {
+		return true, nil
 	}
 	if match.enum != nil {
 		member := valueEnumValue(receiver)
@@ -167,6 +161,17 @@ func namedAtomMatches(exec *Execution, receiver Value, ty *TypeExpr, text string
 		}
 		return inst.Class.Name == match.class.Name &&
 			inst.Class.owner != nil && inst.Class.owner == match.class.owner, nil
+	}
+	return valueMatchesType(receiver, ty)
+}
+
+// unmatchedNamedAtom answers for a named atom that resolved to nothing (or
+// only to a fuzzy casing hit): non-nil receivers fall back to structural
+// exact-name matching, and nil never satisfies the nullable form of a name
+// that fails to resolve — `"USER?"` is a typo, not a nil test.
+func unmatchedNamedAtom(receiver Value, ty *TypeExpr) (bool, error) {
+	if receiver.Kind() == KindNil {
+		return false, nil
 	}
 	return valueMatchesType(receiver, ty)
 }

@@ -206,4 +206,17 @@ end`)
 	if got.Kind() != KindBool || got.Bool() {
 		t.Fatalf("is_type?(:USER) = %#v, want false: named atoms match by exact spelling", got)
 	}
+
+	nilScript := compileScript(t, `class User
+  def initialize()
+  end
+end
+
+def run()
+  [nil.is_type?("USER?"), nil.is_type?("User?")]
+end`)
+	arr := callFunc(t, nilScript, "run", nil).Array()
+	if len(arr) != 2 || arr[0].Bool() || !arr[1].Bool() {
+		t.Fatalf("nullable named atoms on nil = %v, want [false, true]: only a resolved exact name admits nil", arr)
+	}
 }
