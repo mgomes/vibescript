@@ -488,6 +488,22 @@ end
 `,
 		},
 		{
+			name: "unstorable index key aborts before the value writes",
+			source: `
+def f(h: hash<any, int>)
+  h[{ a: 1 }] = "bad"
+end
+`,
+		},
+		{
+			name: "unstorable store key aborts before the value writes",
+			source: `
+def f(h: hash<any, int>)
+  h.store({ a: 1 }, "bad")
+end
+`,
+		},
+		{
 			name: "provably non-hash merge argument aborts the call",
 			source: `
 def f(h: hash<string, int>)

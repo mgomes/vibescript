@@ -5934,6 +5934,11 @@ func (c *scriptChecker) applyIndexedArrayWriteFacts(function string, stmt *Assig
 // bound).
 func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignStmt, name string, keyBound, valueBound *TypeExpr, index Expression, intact bool) bool {
 	resolve := c.checkNamedTypeResolver()
+	// A provably unsupported key kind raises before the entry is written,
+	// so neither the key nor the value diagnostics apply.
+	if keyType := c.inferExpressionType(index); keyType != nil && typeExprProvablyUnstorableKey(keyType) {
+		return false
+	}
 	preserved := intact
 	if keyType := c.inferExpressionType(index); keyType == nil {
 		preserved = false
@@ -5973,6 +5978,7 @@ func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignSt
 // contracts: a matching-representation write with a known key and value
 // refines the exact fact in place, and everything else weakens it silently.
 func (c *scriptChecker) applyShapeFieldWriteFacts(function string, stmt *AssignStmt, name string, shape *TypeExpr, index Expression, intact bool) bool {
+	value, pos := stmt.Value, stmt.Pos()
 	key, keyOK := staticLiteralHashKey(index)
 	switch shape.Name {
 	case shapeKeysStringMarker, shapeKeysSymbolMarker:
@@ -5998,13 +6004,13 @@ func (c *scriptChecker) applyShapeFieldWriteFacts(function string, stmt *AssignS
 		if c.mutationRegionDepth != 0 || len(c.typeAliases[name]) != 0 || !intact {
 			return false
 		}
-		written := c.inferExpressionType(stmt.Value)
+		written := c.inferExpressionType(value)
 		if written == nil {
 			return false
 		}
 		// The store retains a written container value, so its root local
 		// links in: a later mutation through it weakens both.
-		c.linkContainerWriteAlias(name, stmt.Value, written)
+		c.linkContainerWriteAlias(name, value, written)
 		refined := cloneTypeExpr(shape)
 		refined.Name = marker
 		if refined.Shape == nil {
@@ -6019,16 +6025,16 @@ func (c *scriptChecker) applyShapeFieldWriteFacts(function string, stmt *AssignS
 		}
 		field, present := shape.Shape[key]
 		if !present {
-			c.add(function, stmt.Pos(), "write to %s adds field %s to exact shape %s",
+			c.add(function, pos, "write to %s adds field %s to exact shape %s",
 				name, key, formatTypeExpr(shape))
 			return false
 		}
-		written := c.inferExpressionType(stmt.Value)
+		written := c.inferExpressionType(value)
 		if written == nil {
 			return false
 		}
 		if typeExprsDisjoint(written, field, c.checkNamedTypeResolver()) {
-			c.add(function, stmt.Pos(), "write to %s field %s expected %s, got %s",
+			c.add(function, pos, "write to %s field %s expected %s, got %s",
 				name, key, formatTypeExpr(field), formatTypeExpr(written))
 		}
 		return false
@@ -6202,6 +6208,23 @@ func (c *scriptChecker) applyContainerMutatorCallFacts(
 		return preserved, modeled, hashMutatorCallMayWrite(call, member.Property)
 	}
 	return false, false, false
+}
+
+// typeExprProvablyUnstorableKey reports a fact no arm of which the runtime
+// accepts as a hash key: hashes, shapes, functions, and the temporal kinds
+// all raise "unsupported hash key" before any entry is written. Named arms
+// stay conservatively storable (an enum's underlying values are opaque).
+func typeExprProvablyUnstorableKey(ty *TypeExpr) bool {
+	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
+		if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+			return true
+		}
+		switch arm.Kind {
+		case TypeHash, TypeShape, TypeFunction, TypeTime, TypeDuration, TypeMoney:
+			return true
+		}
+		return false
+	})
 }
 
 // typeExprProvablyNotHash reports a fact no arm of which can be a hash at
@@ -6484,6 +6507,12 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 	case "store":
 		if len(call.Args) != 2 {
 			return false, false
+		}
+		// store canonicalizes its key before writing, so a provably
+		// unsupported key kind raises without storing anything.
+		if keyType := c.mutatorCallArgumentFact(call.Args[0], argumentFacts); keyType != nil &&
+			typeExprProvablyUnstorableKey(keyType) {
+			return false, true
 		}
 		preserved = c.mutatorCallPreservable(call, name, receiverFact)
 		checkEntry := func(arg Expression, bound *TypeExpr, noun string) {
