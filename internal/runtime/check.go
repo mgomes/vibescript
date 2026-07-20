@@ -4477,8 +4477,18 @@ func (c *scriptChecker) checkIsTypeAtomArgument(function string, call *CallExpr)
 	if !ok {
 		return
 	}
-	if _, err := parseTypeAtom(text); err != nil {
+	ty, err := parseTypeAtom(text)
+	if err != nil {
 		c.add(function, arg.Pos(), "%s", err)
+		return
+	}
+	if ty.Kind == TypeEnum && strings.Contains(ty.Name, ".") {
+		// An unresolved qualified atom raises unconditionally at runtime,
+		// even for nil receivers, so a literal spelling that fails to
+		// resolve in the checked context is a deterministic failure.
+		if _, ok, lookupErr := lookupNamedTypeForType(ty, c.runtimeTypeContext()); lookupErr != nil || !ok {
+			c.add(function, arg.Pos(), "unknown type atom %q in %s", text, isTypeMemberName)
+		}
 	}
 }
 

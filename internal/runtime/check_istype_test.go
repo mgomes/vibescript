@@ -54,6 +54,15 @@ end
 			warning: "is_type? supports type atoms only",
 		},
 		{
+			name: "rejects unknown qualified atoms",
+			source: `
+def run(s: string)
+  s.is_type?("missing.Level")
+end
+`,
+			warning: "unknown type atom \"missing.Level\" in is_type?",
+		},
+		{
 			name: "rejects unknown atoms",
 			source: `
 def run(s: string)
