@@ -155,4 +155,12 @@ func TestRegisteredContractsDeclareEffects(t *testing.T) {
 			t.Errorf("contract %s.%s declares no receiver effect; classify it as pure or mutates-receiver", contract.receiver, contract.name)
 		}
 	}
+
+	// The deprecated exported MutatesReceiver field must stay consistent
+	// with the Effect classification it predates.
+	for _, contract := range MemberContracts() {
+		if contract.MutatesReceiver != (contract.Effect == "mutates-receiver") {
+			t.Errorf("exported contract %s.%s: MutatesReceiver %v disagrees with Effect %q", contract.Receiver, contract.Name, contract.MutatesReceiver, contract.Effect)
+		}
+	}
 }

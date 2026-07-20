@@ -384,6 +384,12 @@ type MemberContract struct {
 	// Effect is the member's declared receiver effect: "pure",
 	// "mutates-receiver", or "unknown".
 	Effect string
+	// MutatesReceiver reports whether a call may modify the receiver in
+	// place.
+	//
+	// Deprecated: use Effect, which also distinguishes pure members from
+	// unclassified ones.
+	MutatesReceiver bool
 }
 
 // MemberContracts returns the registered builtin member contracts for
@@ -412,16 +418,17 @@ func exportedMemberContract(contract memberContract) MemberContract {
 		result = formatTypeExpr(contract.call.resultType)
 	}
 	return MemberContract{
-		Receiver:    contract.receiver,
-		Name:        contract.name,
-		Aliases:     slices.Clone(contract.aliases),
-		Params:      params,
-		Variadic:    contract.call.maxArgs < 0,
-		TakesBlock:  contract.call.usesBlock,
-		AutoInvoke:  contract.call.autoInvoke,
-		ValueMember: contract.valueMember,
-		Result:      result,
-		Effect:      contract.effect.String(),
+		Receiver:        contract.receiver,
+		Name:            contract.name,
+		Aliases:         slices.Clone(contract.aliases),
+		Params:          params,
+		Variadic:        contract.call.maxArgs < 0,
+		TakesBlock:      contract.call.usesBlock,
+		AutoInvoke:      contract.call.autoInvoke,
+		ValueMember:     contract.valueMember,
+		Result:          result,
+		Effect:          contract.effect.String(),
+		MutatesReceiver: contract.effect == effectMutatesReceiver,
 	}
 }
 
