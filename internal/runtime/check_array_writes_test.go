@@ -576,6 +576,22 @@ end
 `,
 		},
 		{
+			name: "block in the assigned value can rebind the receiver",
+			source: `
+def helper -> string
+  yield
+  "s"
+end
+
+def f(items: array<int>)
+  items[0] = helper() do
+    items = ["s"]
+    "s"
+  end
+end
+`,
+		},
+		{
 			name: "unknown shovel value that escapes the receiver weakens",
 			source: `
 def unknown_fn(a)

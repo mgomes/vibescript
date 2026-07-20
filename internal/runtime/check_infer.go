@@ -1939,6 +1939,96 @@ func mutatorReceiverFactIntact(current, captured *TypeExpr) bool {
 	return current != nil && typeFactKey(current) == typeFactKey(captured)
 }
 
+// expressionContainsBlockLiteral reports whether evaluating expr can run a
+// block or lambda body written inline, the constructs whose assignments
+// write through to enclosing locals mid-expression. Lambdas defined earlier
+// already degraded the locals their bodies assign when their literals
+// walked, so only inline literals need detecting here.
+func expressionContainsBlockLiteral(expr Expression) bool {
+	contains := false
+	var visit func(Expression)
+	visitAll := func(exprs ...Expression) {
+		for _, e := range exprs {
+			visit(e)
+		}
+	}
+	visit = func(e Expression) {
+		if contains || e == nil {
+			return
+		}
+		switch typed := e.(type) {
+		case *BlockLiteral:
+			contains = true
+		case *ArrayLiteral:
+			visitAll(typed.Elements...)
+		case *HashLiteral:
+			for _, pair := range typed.Pairs {
+				visitAll(pair.Key, pair.Value)
+			}
+		case *CallExpr:
+			if typed.Block != nil {
+				contains = true
+				return
+			}
+			visit(typed.Callee)
+			visitAll(typed.Args...)
+			for _, kwarg := range typed.KwArgs {
+				visit(kwarg.Value)
+			}
+			visit(typed.BlockArg)
+		case *MemberExpr:
+			visit(typed.Object)
+		case *ScopeExpr:
+			visit(typed.Object)
+		case *IndexExpr:
+			visit(typed.Object)
+			visitAll(typed.Indices...)
+		case *SplatArg:
+			visit(typed.Value)
+		case *UnaryExpr:
+			visit(typed.Right)
+		case *BinaryExpr:
+			visitAll(typed.Left, typed.Right)
+		case *ConditionalExpr:
+			visitAll(typed.Condition, typed.Consequent, typed.Alternate)
+		case *RescueExpr:
+			visitAll(typed.Body, typed.Fallback)
+		case *IfExpr:
+			visitAll(typed.Condition, typed.Consequent, typed.Alternate)
+			for _, branch := range typed.ElseIf {
+				visitAll(branch.Condition, branch.Result)
+			}
+		case *RangeExpr:
+			visitAll(typed.Start, typed.End)
+		case *CaseExpr:
+			visit(typed.Target)
+			for _, clause := range typed.Clauses {
+				for _, value := range clause.Values {
+					visit(value.Expr)
+				}
+				visit(clause.Result)
+			}
+			visit(typed.ElseExpr)
+		case *YieldExpr:
+			visitAll(typed.Args...)
+		case *InterpolatedString:
+			for _, part := range typed.Parts {
+				if exprPart, ok := part.(StringExpr); ok {
+					visit(exprPart.Expr)
+				}
+			}
+		case *InterpolatedSymbol:
+			for _, part := range typed.Parts {
+				if exprPart, ok := part.(StringExpr); ok {
+					visit(exprPart.Expr)
+				}
+			}
+		}
+	}
+	visit(expr)
+	return contains
+}
+
 // linkContainerWriteAlias links a receiver whose fact a compatible write
 // preserved to the root local of the written container value: the receiver
 // retains the value, so a later mutation or escape through the original

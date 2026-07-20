@@ -2004,6 +2004,14 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			}
 		}
 		c.checkExpression(function, typed.Value)
+		// The runtime evaluates the value before the target, so an inline
+		// block in the value expression can rebind the receiver local
+		// before the write resolves it; the captured fact then no longer
+		// describes the receiver. (An escape without a block cannot rebind
+		// a local, so the capture survives poisoning.)
+		if indexedReceiverFact != nil && expressionContainsBlockLiteral(typed.Value) {
+			indexedReceiverFact = nil
+		}
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
 		c.inferAssignStatementTypes(function, typed, indexedReceiverFact)
