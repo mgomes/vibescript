@@ -6196,6 +6196,26 @@ func (c *scriptChecker) applyContainerMutatorCallFacts(
 	return false, false, false
 }
 
+// hashBoundsContainerFree reports whether every key and value the bounds
+// admit is a scalar or nominal kind, so entries copied out of a source hash
+// share no mutable containers with it. Unknown and any-typed bounds stay
+// conservatively container-possible.
+func hashBoundsContainerFree(keyBound, valueBound *TypeExpr) bool {
+	containerFree := func(ty *TypeExpr) bool {
+		return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
+			if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+				return false
+			}
+			switch arm.Kind {
+			case TypeArray, TypeHash, TypeShape:
+				return false
+			}
+			return true
+		})
+	}
+	return containerFree(keyBound) && containerFree(valueBound)
+}
+
 // mutatorCallArgumentFact reads an argument's fact as captured at its own
 // evaluation point, falling back to the current state.
 func (c *scriptChecker) mutatorCallArgumentFact(arg Expression, argumentFacts map[Expression]*TypeExpr) *TypeExpr {
@@ -6493,9 +6513,15 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 				continue
 			}
 			written := c.mutatorCallArgumentFact(arg, argumentFacts)
-			// The receiver retains the argument's entry values regardless
-			// of compatibility, so the argument's root local links in.
-			c.linkContainerWriteAlias(name, arg, written)
+			// The runtime folds the argument's current entries into the
+			// receiver without retaining the source hash, so entry-level
+			// writes to the source never touch the receiver; only shared
+			// container values do. Link the source root only when the
+			// receiver's bounds can hold containers, so mutations through
+			// the source's interior still weaken both.
+			if !hashBoundsContainerFree(keyBound, valueBound) {
+				c.linkContainerWriteAlias(name, arg, written)
+			}
 			if written == nil {
 				preserved = false
 				continue

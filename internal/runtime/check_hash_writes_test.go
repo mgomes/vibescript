@@ -80,6 +80,17 @@ end
 			warning: "write to h expected key symbol, got string",
 		},
 		{
+			name: "merge source hash is not retained by the receiver",
+			source: `
+def f(h: hash<string, int>, other: hash<string, int>)
+  h.merge!(other)
+  other["b"] = "bad"
+  h[:sym] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
 			name: "conflict block cannot hide an impossible key",
 			source: `
 def f(h: hash<string, int>)
@@ -459,6 +470,20 @@ def f
   h["a"] = 1
   h[:a] = "s"
   takes_string(h["a"])
+end
+`,
+		},
+		{
+			name: "merge source with container values keeps the receiver linked",
+			source: `
+def helper(a)
+  a
+end
+
+def f(h: hash<symbol, array<int>>, other: hash<symbol, array<int>>)
+  h.merge!(other)
+  helper(other)
+  h[true] = [1]
 end
 `,
 		},
