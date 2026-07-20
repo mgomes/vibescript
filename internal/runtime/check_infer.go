@@ -984,32 +984,98 @@ func (c *scriptChecker) narrowNilPredicateMember(member *MemberExpr, truthy bool
 	return c.narrowLocalNilness(ident.Name, truthy)
 }
 
-// knownPureUniversalPredicateMember reports whether every receiver arm that
-// can dispatch is guaranteed to use one of the pure universal predicates.
-// Named arms are excluded because a class may override the member. Hash-like
-// facts must also rule out a callable field with the same name.
-func (c *scriptChecker) knownPureUniversalPredicateMember(member *MemberExpr) bool {
+// memberDispatchEffect resolves the registered receiver effect of a member
+// dispatch from the receiver's known arms: effectPure only when every arm
+// that can dispatch proves a pure registered contract, effectMutatesReceiver
+// when every arm resolves and at least one is a registered mutator, and
+// effectUnknown otherwise. Named receivers (user overrides may shadow any
+// member), unregistered members, and unknown arms all stay unknown, so
+// dynamic dispatch keeps its conservative treatment. Safe navigation skips
+// nil arms: a nil receiver skips the dispatch entirely.
+func (c *scriptChecker) memberDispatchEffect(member *MemberExpr) memberEffect {
 	if member == nil {
-		return false
-	}
-	if _, ok := universalMemberSpecs[member.Property]; !ok {
-		return false
+		return effectUnknown
 	}
 	arms, ok := typeExprArms(c.inferExpressionType(member.Object), 0)
 	if !ok || len(arms) == 0 {
-		return false
+		return effectUnknown
 	}
+	combined := effectPure
 	dispatchArms := 0
 	for _, arm := range arms {
 		if member.Safe && arm.Kind == TypeNil {
 			continue
 		}
-		if !typeArmUsesUniversalMemberDispatch(arm, member.Property) {
-			return false
+		combined = combineMemberEffects(combined, c.typeArmMemberEffect(arm, member.Property))
+		if combined == effectUnknown {
+			return effectUnknown
 		}
 		dispatchArms++
 	}
-	return dispatchArms > 0
+	if dispatchArms == 0 {
+		return effectUnknown
+	}
+	return combined
+}
+
+// typeArmMemberEffect resolves the registered effect a member dispatch has
+// on one known receiver arm, mirroring runtime dispatch order: a typed
+// contract wins over the universal fallback, a kind's own unregistered
+// member shadows the universal helper with an unknown effect, and hash-like
+// arms qualify only when no stored callable can shadow the helper.
+func (c *scriptChecker) typeArmMemberEffect(arm *TypeExpr, property string) memberEffect {
+	if arm == nil {
+		return effectUnknown
+	}
+	switch arm.Kind {
+	case TypeHash, TypeShape:
+		if !typeArmUsesUniversalMemberDispatch(arm, property) {
+			return effectUnknown
+		}
+		if effect, ok := universalMemberEffects[property]; ok {
+			return effect
+		}
+		return effectUnknown
+	case TypeNumber:
+		return combineMemberEffects(kindMemberEffect("int", property), kindMemberEffect("float", property))
+	case TypeEnum, TypeAny, TypeUnknown, TypeUnion:
+		return effectUnknown
+	}
+	kind, ok := receiverKindForTypeArm(arm)
+	if !ok {
+		return effectUnknown
+	}
+	return kindMemberEffect(kind, property)
+}
+
+// kindMemberEffect resolves the registered effect of a member on one fixed
+// receiver kind. A registered typed contract answers directly; a member the
+// kind dispatches itself without a contract stays unknown even when a
+// universal helper shares its name; otherwise the universal contract's
+// effect applies.
+func kindMemberEffect(kind, property string) memberEffect {
+	if effect, ok := staticMemberEffects[kind+"."+property]; ok {
+		return effect
+	}
+	if memberKindOwns(kind, property) {
+		return effectUnknown
+	}
+	if effect, ok := universalMemberEffects[property]; ok {
+		return effect
+	}
+	return effectUnknown
+}
+
+// combineMemberEffects joins the effects of two possible dispatches: any
+// unknown side stays unknown, a mutating side dominates a pure one.
+func combineMemberEffects(a, b memberEffect) memberEffect {
+	if a == effectUnknown || b == effectUnknown {
+		return effectUnknown
+	}
+	if a == effectMutatesReceiver || b == effectMutatesReceiver {
+		return effectMutatesReceiver
+	}
+	return effectPure
 }
 
 // typeArmUsesUniversalMemberDispatch reports whether a known fact arm must
@@ -1061,31 +1127,32 @@ func typeExprMayIncludeCallable(ty *TypeExpr) bool {
 	return false
 }
 
-// knownPureUniversalPredicateCall recognizes a call whose member dispatch is
-// guaranteed to reach a pure universal predicate and whose arguments provably
-// run no user code. Arguments evaluate before the predicate dispatches, so an
-// argument that can call into script code may mutate the receiver through an
-// alias — the receiver's fact must not survive such a call.
-func (c *scriptChecker) knownPureUniversalPredicateCall(call *CallExpr) bool {
+// pureMemberCall recognizes a call whose member dispatch resolves to a
+// registered pure contract on every receiver arm and whose arguments
+// provably run no user code. Arguments evaluate before the member
+// dispatches, so an argument that can call into script code may mutate the
+// receiver through an alias, and a block runs user code during the dispatch
+// itself — the receiver's fact must not survive either.
+func (c *scriptChecker) pureMemberCall(call *CallExpr) bool {
 	if call == nil || len(call.KwArgs) > 0 || call.Block != nil || call.BlockArg != nil {
 		return false
 	}
 	for _, arg := range call.Args {
-		if !c.predicateArgumentIsPure(arg) {
+		if !c.pureCallArgument(arg) {
 			return false
 		}
 	}
 	member, ok := call.Callee.(*MemberExpr)
-	return ok && c.knownPureUniversalPredicateMember(member)
+	return ok && c.memberDispatchEffect(member) == effectPure
 }
 
-// predicateArgumentIsPure reports whether a predicate argument provably runs
-// no user code when it evaluates: literals and plain non-callable reads
-// qualify. An identifier stays pure only when it cannot auto-invoke a
-// callable — neither as a resolved zero-arity function or builtin, nor as a
-// local whose value may itself be callable (a stored zero-arity function
+// pureCallArgument reports whether a call argument provably runs no user
+// code when it evaluates: literals and plain non-callable reads qualify. An
+// identifier stays pure only when it cannot auto-invoke a callable —
+// neither as a resolved zero-arity function or builtin, nor as a local
+// whose value may itself be callable (a stored zero-arity function
 // auto-invokes when the argument evaluates).
-func (c *scriptChecker) predicateArgumentIsPure(expr Expression) bool {
+func (c *scriptChecker) pureCallArgument(expr Expression) bool {
 	switch typed := expr.(type) {
 	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral,
 		*NilLiteral, *SymbolLiteral:
@@ -1096,7 +1163,7 @@ func (c *scriptChecker) predicateArgumentIsPure(expr Expression) bool {
 		}
 		return !typeExprMayIncludeCallable(c.inferExpressionType(typed))
 	case *UnaryExpr:
-		return c.predicateArgumentIsPure(typed.Right)
+		return c.pureCallArgument(typed.Right)
 	}
 	return false
 }
