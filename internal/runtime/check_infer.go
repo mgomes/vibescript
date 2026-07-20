@@ -1832,7 +1832,10 @@ func arrayMutatorElementWrites(call *CallExpr, property string) (elements []Expr
 		if len(call.Args) == 0 {
 			return nil, false, false
 		}
-		return call.Args[1:], false, true
+		// An index-only insert writes nothing: the runtime returns the
+		// receiver unchanged after validating the index, so the fact
+		// survives. With values the beyond-end nil padding still applies.
+		return call.Args[1:], len(call.Args) == 1, true
 	}
 	return nil, false, false
 }

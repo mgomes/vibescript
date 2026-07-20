@@ -91,6 +91,16 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "index-only insert preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.insert(0)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "unshift argument",
 			source: `
 def f(items: array<int>)
@@ -491,7 +501,7 @@ end
 `,
 		},
 		{
-			name: "insert never preserves the bound",
+			name: "insert with values never preserves the bound",
 			source: `
 def f(items: array<int>)
   items.insert(5, 1)
