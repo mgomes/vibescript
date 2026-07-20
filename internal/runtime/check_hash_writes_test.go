@@ -80,6 +80,28 @@ end
 			warning: "write to h expected key symbol, got string",
 		},
 		{
+			name: "conflict block cannot hide an impossible key",
+			source: `
+def f(h: hash<string, int>)
+  h.merge!({ a: 1 }) do |key, old, new|
+    old
+  end
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "conflict block cannot hide a value behind an impossible key",
+			source: `
+def f(h: hash<symbol, int>)
+  h.merge!({ "a": true }) do |key, old, new|
+    old
+  end
+end
+`,
+			warning: "write to h expected value int, got bool",
+		},
+		{
 			name: "mixed-key merge literal diagnoses each entry",
 			source: `
 def f(h: hash<string, int>)

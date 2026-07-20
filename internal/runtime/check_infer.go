@@ -6448,10 +6448,13 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 		checkEntry(call.Args[1], valueBound, "value")
 		return preserved, true
 	case "merge!", "update":
-		if call.Block != nil || call.BlockArg != nil {
-			return false, false
-		}
-		preserved = c.mutatorCallPreservable(call, name, receiverFact)
+		// A conflict block replaces the values of already-present keys with
+		// results the checker cannot know, so nothing preserves; entries
+		// whose keys provably cannot exist still store directly and keep
+		// diagnosing. Its calls may also mutate retained entry values, so
+		// only block-less calls report their arguments as modeled.
+		blockConflicts := call.Block != nil || call.BlockArg != nil
+		preserved = !blockConflicts && c.mutatorCallPreservable(call, name, receiverFact)
 		for _, arg := range call.Args {
 			if _, splat := arg.(*SplatArg); splat {
 				preserved = false
@@ -6462,7 +6465,7 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 			// literal still diagnoses every entry even though its
 			// whole-shape fact carries no single key type.
 			if lit, isLiteral := arg.(*HashLiteral); isLiteral && lit.ShapeType == nil {
-				if !c.checkHashLiteralMergeEntries(function, name, lit, keyBound, valueBound, resolve) {
+				if !c.checkHashLiteralMergeEntries(function, name, lit, keyBound, valueBound, resolve, blockConflicts) {
 					preserved = false
 				}
 				continue
@@ -6472,6 +6475,13 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 			// of compatibility, so the argument's root local links in.
 			c.linkContainerWriteAlias(name, arg, written)
 			if written == nil {
+				preserved = false
+				continue
+			}
+			if blockConflicts {
+				// Whole-shape disjointness cannot separate a key cause (a
+				// guaranteed direct store) from a value cause the block may
+				// override, so fact-based arguments stay gradual here.
 				preserved = false
 				continue
 			}
@@ -6485,14 +6495,9 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 			}
 			if !typeExprSatisfies(written, hashFact, resolve) {
 				preserved = false
-				continue
 			}
-			// The receiver retains the argument's entry values, so the
-			// argument's root local links in: a later mutation through it
-			// weakens both.
-			c.linkContainerWriteAlias(name, arg, written)
 		}
-		return preserved, true
+		return preserved, !blockConflicts
 	}
 	return false, false
 }
@@ -7002,36 +7007,41 @@ func (c *scriptChecker) linkPossibleDirectContainerAlias(
 
 // checkHashLiteralMergeEntries checks a literal merge!/update argument entry
 // by entry against the receiver's declared bounds and reports whether every
-// entry provably satisfies both.
-func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit *HashLiteral, keyBound, valueBound *TypeExpr, resolve namedTypeResolver) bool {
+// entry provably satisfies both. With a conflict block, a value only lands
+// unmediated when its key provably cannot already exist (an impossible key
+// never conflicts), so value diagnostics gate on that.
+func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit *HashLiteral, keyBound, valueBound *TypeExpr, resolve namedTypeResolver, blockConflicts bool) bool {
 	compatible := true
-	check := func(expr Expression, bound *TypeExpr, noun string) {
+	check := func(expr Expression, bound *TypeExpr, noun string, warn bool) (disjoint bool) {
 		if expr == nil {
 			compatible = false
-			return
+			return false
 		}
 		written := c.inferExpressionType(expr)
 		if written == nil {
 			compatible = false
-			return
+			return false
 		}
 		if typeExprsDisjoint(written, bound, resolve) {
-			c.add(function, expr.Pos(), "write to %s expected %s %s, got %s",
-				name, noun, formatTypeExpr(bound), formatTypeExpr(written))
+			if warn {
+				c.add(function, expr.Pos(), "write to %s expected %s %s, got %s",
+					name, noun, formatTypeExpr(bound), formatTypeExpr(written))
+			}
 			compatible = false
-			return
+			return true
 		}
 		if !typeExprSatisfies(written, bound, resolve) {
 			compatible = false
-			return
+			return false
 		}
 		// The receiver retains the entry, so a written container's root
 		// local links in: a later mutation through it weakens both.
 		c.linkContainerWriteAlias(name, expr, written)
+		return false
 	}
 	for _, pair := range lit.Pairs {
-		check(pair.Key, keyBound, "key")
-		check(pair.Value, valueBound, "value")
+		keyDisjoint := check(pair.Key, keyBound, "key", true)
+		check(pair.Value, valueBound, "value", !blockConflicts || keyDisjoint)
 	}
 	return compatible
 }
