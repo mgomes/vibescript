@@ -442,3 +442,31 @@ func TestHostSignatureCopiesCallerParams(t *testing.T) {
 		t.Fatalf("Call(greet) = %v, %v; want registered string contract unaffected by caller mutation", got, err)
 	}
 }
+
+func TestHostSignatureDefaultBindingResolvesCalleeModuleTypes(t *testing.T) {
+	t.Parallel()
+
+	dir := tempModuleTree(t, moduleFile{path: "widgets.vibe", content: "class Widget\n  def initialize()\n  end\nend\n\ndef run(x = tag(Widget.new))\n  x\nend\n"})
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	err := engine.RegisterBuiltinWithSignature("tag", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return args[0], nil
+	}, Signature{
+		Params: []SignatureParam{{Name: "widget", Type: "Widget"}},
+		Result: "Widget",
+	})
+	if err != nil {
+		t.Fatalf("RegisterBuiltinWithSignature: %v", err)
+	}
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("widgets").run()
+end
+`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call(module default) error: %v", err)
+	}
+	if got.Kind() != KindInstance {
+		t.Fatalf("Call(module default) = %#v, want Widget instance", got)
+	}
+}

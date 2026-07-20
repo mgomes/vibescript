@@ -192,5 +192,12 @@ func signatureTypeContext(exec *Execution) typeContext {
 	if exec == nil {
 		return typeContext{}
 	}
-	return typeContext{owner: exec.currentSourceScript(), env: exec.root, fallback: exec.root, exec: exec}
+	owner := exec.currentSourceScript()
+	if exec.bindingOwner != nil {
+		// A default parameter expression runs before the callee's module
+		// context is pushed; the binding owner is the source whose scope the
+		// default (and any typed builtin it calls) resolves in.
+		owner = exec.bindingOwner
+	}
+	return typeContext{owner: owner, env: exec.root, fallback: exec.root, exec: exec}
 }
