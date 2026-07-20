@@ -485,6 +485,35 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "supplied argument skips the default's namespace writes",
+			source: `
+def replacement(value)
+  1
+end
+
+def install_serializer()
+  JSON.stringify = replacement
+end
+
+def flip(x = install_serializer())
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  flip(1)
+  takes_int(serialize())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
@@ -770,6 +799,39 @@ end
 
 def run()
   takes_int(build())
+end
+`,
+		},
+		{
+			name: "splatted call keeps the default's namespace writes",
+			source: `
+def replacement(value)
+  1
+end
+
+def install_serializer()
+  JSON.stringify = replacement
+end
+
+def flip(x = install_serializer())
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(values)
+  takes_string(serialize())
+  flip(*values)
+  takes_int(serialize())
 end
 `,
 		},

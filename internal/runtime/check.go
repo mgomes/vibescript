@@ -5707,9 +5707,12 @@ func (c *scriptChecker) recordRuntimeNamespaceMember(memberName string) {
 }
 
 // scriptFunctionNamespaceMutations reports the builtin namespace members a
-// callee's execution may reassign, transitively through the owned functions
-// it references.
-func (c *scriptChecker) scriptFunctionNamespaceMutations(fn *ScriptFunction) map[string]struct{} {
+// call to fn may reassign, transitively through the owned functions it
+// references. A non-nil call refines the root function's defaults to the
+// ones this call's shape can leave unsupplied; a nil call (a bare reference
+// or unknown shape) counts every default. Transitive references always count
+// every default, since their future call shapes are unknowable.
+func (c *scriptChecker) scriptFunctionNamespaceMutations(call *CallExpr, fn *ScriptFunction) map[string]struct{} {
 	if fn == nil || fn.owner != c.script {
 		return nil
 	}
@@ -5718,8 +5721,68 @@ func (c *scriptChecker) scriptFunctionNamespaceMutations(fn *ScriptFunction) map
 		functions: c.script.functions,
 		visited:   map[*ScriptFunction]struct{}{fn: {}},
 	}
-	scan.function(fn)
+	for i, param := range fn.Params {
+		if param.DefaultVal == nil {
+			continue
+		}
+		if call == nil || callMayEvaluateParamDefault(call, fn, i) {
+			scan.expression(param.DefaultVal)
+		}
+	}
+	scan.statements(fn.Body)
 	return scan.out
+}
+
+// callMayEvaluateParamDefault mirrors the runtime's binding bookkeeping
+// (bindFunctionArgs): a parameter default runs only when the call leaves the
+// parameter unsupplied by both position and keyword. A splatted call's
+// shape is dynamic, so every default may run.
+func callMayEvaluateParamDefault(call *CallExpr, fn *ScriptFunction, paramIndex int) bool {
+	if callExpandsArguments(call) {
+		return true
+	}
+	argIdx := 0
+	for i, param := range fn.Params {
+		switch param.Kind {
+		case ParamNormal:
+			supplied := false
+			if argIdx < len(call.Args) {
+				argIdx++
+				supplied = true
+			} else if callHasKeywordArg(call, param.Name) {
+				supplied = true
+			}
+			if i == paramIndex {
+				return !supplied
+			}
+		case ParamKeyword:
+			if i == paramIndex {
+				return !callHasKeywordArg(call, param.Name)
+			}
+		case ParamRest:
+			argIdx = len(call.Args)
+			if i == paramIndex {
+				return false
+			}
+		default:
+			if i == paramIndex {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func callHasKeywordArg(call *CallExpr, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, kw := range call.KwArgs {
+		if kw.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // applyScriptFunctionNamespaceMutations carries a statically resolved
@@ -5731,7 +5794,7 @@ func (c *scriptChecker) scriptFunctionNamespaceMutations(fn *ScriptFunction) map
 // result fact pins before the write markers change the summary context for
 // the code after the call.
 func (c *scriptChecker) applyScriptFunctionNamespaceMutations(call *CallExpr, fn *ScriptFunction) {
-	members := c.scriptFunctionNamespaceMutations(fn)
+	members := c.scriptFunctionNamespaceMutations(call, fn)
 	if len(members) == 0 {
 		return
 	}
@@ -5751,7 +5814,7 @@ func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Iden
 	if !ok || len(fn.Params) != 0 {
 		return
 	}
-	members := c.scriptFunctionNamespaceMutations(fn)
+	members := c.scriptFunctionNamespaceMutations(nil, fn)
 	if len(members) == 0 {
 		return
 	}
