@@ -76,6 +76,32 @@ and `ValidateReturn` runs on every result. An adapter cannot opt out of its
 declared return validation — the proof that a result was already validated is
 internal to the runtime and reserved for the built-in first-party adapters.
 
+### Publish static signatures
+
+Host callables are fully dynamic by default: the checker treats their
+arguments and results as unknown. When the host already knows the contract,
+publish it with a `Signature` so `vibes check` validates call sites and the
+same contract is enforced at runtime:
+
+```go
+err := engine.RegisterBuiltinWithSignature("greet",
+        greetFn,
+        vibes.Signature{
+                Params: []vibes.SignatureParam{
+                        {Name: "name", Type: "string"},
+                        {Name: "shout", Type: "bool", Optional: true},
+                },
+                Result: "string",
+        })
+```
+
+Type spellings use the script annotation grammar (`"int"`, `"array<string>"`,
+`"{ name: string }"`, `"money | nil"`); an empty spelling leaves that slot
+unknown. `vibes.NewTypedBuiltin` builds a standalone typed builtin Value for
+call-option globals and capability method maps. A host override of a core
+builtin registered with a signature supersedes the core contract; registering
+with plain `RegisterBuiltin` keeps the name fully dynamic instead.
+
 ## 4. Module Governance
 
 Treat module loading as policy-controlled:

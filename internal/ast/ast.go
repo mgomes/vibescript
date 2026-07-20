@@ -90,6 +90,12 @@ type TypeExpr struct {
 	Name     string
 	Kind     TypeKind
 	Nullable bool
+	// Optional marks a shape field that may be absent from the value
+	// (`age?: int`). It is set only on the field types stored in a Shape map
+	// and is distinct from Nullable: an optional field validates against the
+	// field type when present, while a nullable field must be present but may
+	// hold nil.
+	Optional bool
 	TypeArgs []*TypeExpr
 	Shape    map[string]*TypeExpr
 	Union    []*TypeExpr

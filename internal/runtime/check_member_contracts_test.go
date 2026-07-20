@@ -547,13 +547,15 @@ end
 `,
 		},
 		{
+			// A `?`-suffixed bare label now marks an optional field, so a
+			// field literally named nil? takes the string-key spelling.
 			name: "callable shape receiver keeps universal helpers unknown",
 			source: `
 def takes_string(value: string)
   value
 end
 
-def run(value: { nil?: function })
+def run(value: { "nil?": function })
   takes_string(value.nil?)
 end
 `,

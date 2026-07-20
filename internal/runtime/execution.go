@@ -81,6 +81,7 @@ type Execution struct {
 	moduleLoading             map[string]bool
 	moduleLoadStack           []string
 	moduleStack               []moduleContext
+	bindingOwner              *Script
 	capabilityContracts       map[*Builtin]CapabilityMethodContract
 	capabilityContractScopes  map[*Builtin]*capabilityContractScope
 	capabilityContractsByName map[string]CapabilityMethodContract

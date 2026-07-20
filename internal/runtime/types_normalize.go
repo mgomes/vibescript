@@ -476,7 +476,7 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 
 	var entryBuf [smallHashKeyBufferSize]HashEntry
 	entries := val.HashEntriesInto(entryBuf[:])
-	if len(entries) != len(ty.Shape) {
+	if len(entries) > len(ty.Shape) {
 		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 	}
 
@@ -513,6 +513,12 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 			normalizedEntries[i] = HashEntry{Key: entry.Key, Value: normalized}
 		}
 	}
+	if len(seenFields) != len(ty.Shape) && shapeMissingRequiredField(ty, func(field string) bool {
+		_, ok := seenFields[field]
+		return ok
+	}) {
+		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+	}
 	if normalizedEntries == nil {
 		return val, nil
 	}
@@ -530,7 +536,10 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 
 func normalizeStringKeyShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {
 	entries := val.Hash()
-	if len(entries) != len(ty.Shape) {
+	if len(entries) != len(ty.Shape) && shapeMissingRequiredField(ty, func(field string) bool {
+		_, ok := entries[field]
+		return ok
+	}) {
 		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 	}
 
