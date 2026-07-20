@@ -1140,6 +1140,13 @@ func astAssignsName(root any, name string) bool {
 				if typed.Name == name {
 					found = true
 				}
+			case *MemberExpr:
+				// A member assignment such as `self.User = Order` creates a
+				// class constant the runtime resolves ahead of the top-level
+				// binding; any target property with the name counts.
+				if typed.Property == name {
+					found = true
+				}
 			}
 		})
 	})

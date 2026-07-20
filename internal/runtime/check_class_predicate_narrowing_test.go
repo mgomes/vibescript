@@ -229,6 +229,24 @@ end
 `,
 		},
 		{
+			name: "member-assigned constant disables narrowing",
+			source: `
+class Holder
+  self.User = Order
+
+  def initialize()
+  end
+
+  def check(u: User | Order)
+    unless u.is_a?(User)
+      takes_order(u)
+    end
+    u
+  end
+end
+`,
+		},
+		{
 			name: "unknown receiver stays unknown",
 			source: `
 def run(u)
