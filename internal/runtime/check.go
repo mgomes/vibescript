@@ -571,7 +571,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 			if typed.Block != nil {
 				c.degradeBlockBodyBindings(typed.Block)
 			}
-			if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownPureUniversalPredicateCall(typed) {
+			if member, ok := typed.Callee.(*MemberExpr); ok && !c.memberCallPreservesReceiverFacts(typed) {
 				c.poisonEscapedIdentifier(member.Object)
 			}
 			for _, arg := range typed.Args {
@@ -583,7 +583,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		}
 	case *MemberExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
-		if c.isolatedCollectInference && !c.knownPureUniversalPredicateMember(typed) {
+		if c.isolatedCollectInference && !c.memberDispatchPreservesReceiverFacts(typed) {
 			c.poisonEscapedIdentifier(typed.Object)
 		}
 	case *ScopeExpr:
@@ -2694,10 +2694,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// Containers pass by reference, so a callee may mutate an argument
 		// in place; the caller's structural facts stop holding. Dispatch
 		// happens after the arguments evaluate, so the receiver's facts
-		// stop holding here too, not during the callee walk. Proven universal
-		// predicates are pure, so their receiver facts must
-		// survive for outer inference and condition-outcome narrowing.
-		if member, ok := typed.Callee.(*MemberExpr); ok && !c.knownPureUniversalPredicateCall(typed) {
+		// stop holding here too, not during the callee walk. A dispatch
+		// proven pure by its registered member contract preserves the
+		// receiver's facts for outer inference and condition-outcome
+		// narrowing; known mutators and unknown dispatch keep poisoning.
+		if member, ok := typed.Callee.(*MemberExpr); ok && !c.memberCallPreservesReceiverFacts(typed) {
 			c.poisonEscapedIdentifier(member.Object)
 		}
 		if member, ok := typed.BlockArg.(*MemberExpr); ok {
@@ -2716,10 +2717,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			// Member dispatch on a container may mutate it in place (push,
 			// delete, ...), so the receiver's structural facts stop
 			// holding. A call callee poisons after its arguments instead:
-			// they evaluate before dispatch and still see the facts. Proven
-			// universal predicates are pure and preserve the receiver
-			// fact that outer inference or narrowing consumes next.
-			if !c.knownPureUniversalPredicateMember(typed) {
+			// they evaluate before dispatch and still see the facts. A
+			// dispatch proven pure by its registered member contract
+			// preserves the receiver fact that outer inference or
+			// narrowing consumes next.
+			if !c.memberDispatchPreservesReceiverFacts(typed) {
 				c.poisonEscapedIdentifier(typed.Object)
 			}
 		}

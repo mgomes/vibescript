@@ -521,6 +521,30 @@ func ownMemberNames() map[string][]string {
 	}
 }
 
+// ownedMemberIndex records which member names each receiver kind
+// dispatches itself, so effect resolution never claims a universal helper
+// that a typed dispatch shadows.
+var ownedMemberIndex = buildOwnedMemberIndex()
+
+func buildOwnedMemberIndex() map[string]map[string]struct{} {
+	index := make(map[string]map[string]struct{})
+	for kind, names := range ownMemberNames() {
+		owned := make(map[string]struct{}, len(names))
+		for _, name := range names {
+			owned[name] = struct{}{}
+		}
+		index[kind] = owned
+	}
+	return index
+}
+
+// memberKindOwns reports whether a receiver kind dispatches the member
+// itself rather than through the universal fallback.
+func memberKindOwns(kind, property string) bool {
+	_, ok := ownedMemberIndex[kind][property]
+	return ok
+}
+
 // MemberCompletionNames returns the builtin member-method names per
 // receiver type, for editor tooling such as LSP completion. The slices
 // are copies; callers may sort or mutate them freely. Each type's list

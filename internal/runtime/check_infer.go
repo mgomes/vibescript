@@ -193,7 +193,7 @@ func (c *scriptChecker) withIsolatedLocalInference() func() {
 // skipped entirely, but any mutation inside it must still degrade facts.
 func (c *scriptChecker) poisonSkippedMutationFacts(expr Expression) {
 	var sites []Expression
-	collectMutationCandidateRootsFromExpression(expr, &sites)
+	c.collectMutationCandidateRootsFromExpression(expr, &sites)
 	for _, site := range sites {
 		if name, ok := c.escapePoisonTarget(site); ok {
 			c.poisonLocalType(name)
@@ -335,155 +335,166 @@ func collectMutatedContainerRoots(statements []Statement, out map[string]struct{
 // region contains (member-call receivers, call and yield arguments — the
 // walk-time poison sources), so pre-region degradation can clear the
 // affected container facts before reads earlier in the region are checked.
-// The caller applies the same gate the walk-time poison uses.
-func collectMutationCandidateRoots(statements []Statement, out *[]Expression) {
+// Dispatches whose registered contracts preserve receiver facts are skipped
+// with the same gate the walk-time poison uses; the caller applies the
+// container-typed escape filter.
+func (c *scriptChecker) collectMutationCandidateRoots(statements []Statement, out *[]Expression) {
 	for _, stmt := range statements {
 		switch typed := stmt.(type) {
 		case nil:
 		case *ReturnStmt:
-			collectMutationCandidateRootsFromExpression(typed.Value, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Value, out)
 		case *RaiseStmt:
-			collectMutationCandidateRootsFromExpression(typed.Value, out)
-			collectMutationCandidateRootsFromExpression(typed.Message, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Value, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Message, out)
 		case *BreakStmt:
-			collectMutationCandidateRootsFromExpression(typed.Value, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Value, out)
 		case *NextStmt:
-			collectMutationCandidateRootsFromExpression(typed.Value, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Value, out)
 		case *AssignStmt:
-			collectMutationCandidateRootsFromExpression(typed.Target, out)
-			collectMutationCandidateRootsFromExpression(typed.Value, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Target, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Value, out)
 		case *ExprStmt:
-			collectMutationCandidateRootsFromExpression(typed.Expr, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Expr, out)
 		case *IfStmt:
-			collectMutationCandidateRootsFromExpression(typed.Condition, out)
-			collectMutationCandidateRoots(typed.Consequent, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Condition, out)
+			c.collectMutationCandidateRoots(typed.Consequent, out)
 			for _, elseIf := range typed.ElseIf {
-				collectMutationCandidateRootsFromExpression(elseIf.Condition, out)
-				collectMutationCandidateRoots(elseIf.Consequent, out)
+				c.collectMutationCandidateRootsFromExpression(elseIf.Condition, out)
+				c.collectMutationCandidateRoots(elseIf.Consequent, out)
 			}
-			collectMutationCandidateRoots(typed.Alternate, out)
+			c.collectMutationCandidateRoots(typed.Alternate, out)
 		case *ForStmt:
-			collectMutationCandidateRootsFromExpression(typed.Iterable, out)
-			collectMutationCandidateRoots(typed.Body, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Iterable, out)
+			c.collectMutationCandidateRoots(typed.Body, out)
 		case *WhileStmt:
-			collectMutationCandidateRootsFromExpression(typed.Condition, out)
-			collectMutationCandidateRoots(typed.Body, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Condition, out)
+			c.collectMutationCandidateRoots(typed.Body, out)
 		case *UntilStmt:
-			collectMutationCandidateRootsFromExpression(typed.Condition, out)
-			collectMutationCandidateRoots(typed.Body, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Condition, out)
+			c.collectMutationCandidateRoots(typed.Body, out)
 		case *TryStmt:
-			collectMutationCandidateRoots(typed.Body, out)
+			c.collectMutationCandidateRoots(typed.Body, out)
 			for i := range typed.Rescues {
-				collectMutationCandidateRoots(typed.Rescues[i].Body, out)
+				c.collectMutationCandidateRoots(typed.Rescues[i].Body, out)
 			}
-			collectMutationCandidateRoots(typed.Else, out)
-			collectMutationCandidateRoots(typed.Ensure, out)
+			c.collectMutationCandidateRoots(typed.Else, out)
+			c.collectMutationCandidateRoots(typed.Ensure, out)
 		}
 	}
 }
 
-func collectMutationCandidateRootsFromExpression(expr Expression, out *[]Expression) {
+func (c *scriptChecker) collectMutationCandidateRootsFromExpression(expr Expression, out *[]Expression) {
 	switch typed := expr.(type) {
 	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral,
 		*BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 	case *ArrayLiteral:
 		for _, element := range typed.Elements {
-			collectMutationCandidateRootsFromExpression(element, out)
+			c.collectMutationCandidateRootsFromExpression(element, out)
 		}
 	case *HashLiteral:
 		for _, pair := range typed.Pairs {
-			collectMutationCandidateRootsFromExpression(pair.Key, out)
-			collectMutationCandidateRootsFromExpression(pair.Value, out)
+			c.collectMutationCandidateRootsFromExpression(pair.Key, out)
+			c.collectMutationCandidateRootsFromExpression(pair.Value, out)
 		}
 	case *CallExpr:
-		collectMutationCandidateRootsFromExpression(typed.Callee, out)
+		if member, ok := typed.Callee.(*MemberExpr); ok && c.memberCallPreservesReceiverFacts(typed) {
+			// A dispatch proven to preserve receiver facts contributes no
+			// mutation site of its own, matching the walk-time gate;
+			// expressions nested inside the receiver still can.
+			c.collectMutationCandidateRootsFromExpression(member.Object, out)
+		} else {
+			c.collectMutationCandidateRootsFromExpression(typed.Callee, out)
+		}
 		for _, arg := range typed.Args {
 			*out = append(*out, arg)
-			collectMutationCandidateRootsFromExpression(arg, out)
+			c.collectMutationCandidateRootsFromExpression(arg, out)
 		}
 		for _, kwarg := range typed.KwArgs {
 			*out = append(*out, kwarg.Value)
-			collectMutationCandidateRootsFromExpression(kwarg.Value, out)
+			c.collectMutationCandidateRootsFromExpression(kwarg.Value, out)
 		}
-		collectMutationCandidateRootsFromExpression(typed.BlockArg, out)
+		c.collectMutationCandidateRootsFromExpression(typed.BlockArg, out)
 		if typed.Block != nil {
 			for _, param := range typed.Block.Params {
-				collectMutationCandidateRootsFromExpression(param.DefaultVal, out)
+				c.collectMutationCandidateRootsFromExpression(param.DefaultVal, out)
 			}
-			collectMutationCandidateRoots(typed.Block.Body, out)
+			c.collectMutationCandidateRoots(typed.Block.Body, out)
 		}
 	case *MemberExpr:
-		*out = append(*out, typed.Object)
-		collectMutationCandidateRootsFromExpression(typed.Object, out)
+		if !c.memberDispatchPreservesReceiverFacts(typed) {
+			*out = append(*out, typed.Object)
+		}
+		c.collectMutationCandidateRootsFromExpression(typed.Object, out)
 	case *ScopeExpr:
-		collectMutationCandidateRootsFromExpression(typed.Object, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Object, out)
 	case *IndexExpr:
-		collectMutationCandidateRootsFromExpression(typed.Object, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Object, out)
 		for _, index := range typed.Indices {
-			collectMutationCandidateRootsFromExpression(index, out)
+			c.collectMutationCandidateRootsFromExpression(index, out)
 		}
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
-			collectMutationCandidateRootsFromExpression(element.Target, out)
+			c.collectMutationCandidateRootsFromExpression(element.Target, out)
 		}
 	case *SplatArg:
-		collectMutationCandidateRootsFromExpression(typed.Value, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Value, out)
 	case *UnaryExpr:
-		collectMutationCandidateRootsFromExpression(typed.Right, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Right, out)
 	case *BinaryExpr:
-		collectMutationCandidateRootsFromExpression(typed.Left, out)
-		collectMutationCandidateRootsFromExpression(typed.Right, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Left, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Right, out)
 	case *ConditionalExpr:
-		collectMutationCandidateRootsFromExpression(typed.Condition, out)
-		collectMutationCandidateRootsFromExpression(typed.Consequent, out)
-		collectMutationCandidateRootsFromExpression(typed.Alternate, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Condition, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Consequent, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Alternate, out)
 	case *RescueExpr:
-		collectMutationCandidateRootsFromExpression(typed.Body, out)
-		collectMutationCandidateRootsFromExpression(typed.Fallback, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Body, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Fallback, out)
 	case *IfExpr:
-		collectMutationCandidateRootsFromExpression(typed.Condition, out)
-		collectMutationCandidateRootsFromExpression(typed.Consequent, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Condition, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Consequent, out)
 		for _, branch := range typed.ElseIf {
-			collectMutationCandidateRootsFromExpression(branch.Condition, out)
-			collectMutationCandidateRootsFromExpression(branch.Result, out)
+			c.collectMutationCandidateRootsFromExpression(branch.Condition, out)
+			c.collectMutationCandidateRootsFromExpression(branch.Result, out)
 		}
-		collectMutationCandidateRootsFromExpression(typed.Alternate, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Alternate, out)
 	case *RangeExpr:
-		collectMutationCandidateRootsFromExpression(typed.Start, out)
-		collectMutationCandidateRootsFromExpression(typed.End, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Start, out)
+		c.collectMutationCandidateRootsFromExpression(typed.End, out)
 	case *CaseExpr:
-		collectMutationCandidateRootsFromExpression(typed.Target, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Target, out)
 		for _, clause := range typed.Clauses {
 			for _, value := range clause.Values {
-				collectMutationCandidateRootsFromExpression(value.Expr, out)
+				c.collectMutationCandidateRootsFromExpression(value.Expr, out)
 			}
-			collectMutationCandidateRootsFromExpression(clause.Result, out)
+			c.collectMutationCandidateRootsFromExpression(clause.Result, out)
 		}
-		collectMutationCandidateRootsFromExpression(typed.ElseExpr, out)
+		c.collectMutationCandidateRootsFromExpression(typed.ElseExpr, out)
 	case *BlockLiteral:
 		for _, param := range typed.Params {
-			collectMutationCandidateRootsFromExpression(param.DefaultVal, out)
+			c.collectMutationCandidateRootsFromExpression(param.DefaultVal, out)
 		}
-		collectMutationCandidateRoots(typed.Body, out)
+		c.collectMutationCandidateRoots(typed.Body, out)
 	case *YieldExpr:
 		for _, arg := range typed.Args {
 			*out = append(*out, arg)
-			collectMutationCandidateRootsFromExpression(arg, out)
+			c.collectMutationCandidateRootsFromExpression(arg, out)
 		}
 	case *InterpolatedString:
 		for _, part := range typed.Parts {
 			if exprPart, ok := part.(StringExpr); ok {
-				collectMutationCandidateRootsFromExpression(exprPart.Expr, out)
+				c.collectMutationCandidateRootsFromExpression(exprPart.Expr, out)
 			}
 		}
 	case *InterpolatedSymbol:
 		for _, part := range typed.Parts {
 			if exprPart, ok := part.(StringExpr); ok {
-				collectMutationCandidateRootsFromExpression(exprPart.Expr, out)
+				c.collectMutationCandidateRootsFromExpression(exprPart.Expr, out)
 			}
 		}
 	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
-		collectMutationCandidateRoots([]Statement{typed.(Statement)}, out)
+		c.collectMutationCandidateRoots([]Statement{typed.(Statement)}, out)
 	}
 }
 
@@ -492,7 +503,7 @@ func collectMutationCandidateRootsFromExpression(expr Expression, out *[]Express
 // their facts (immutable kinds cannot be mutated in place).
 func (c *scriptChecker) degradeMutationCandidates(statements []Statement, names map[string]struct{}) {
 	var sites []Expression
-	collectMutationCandidateRoots(statements, &sites)
+	c.collectMutationCandidateRoots(statements, &sites)
 	for _, site := range sites {
 		if name, ok := c.escapePoisonTarget(site); ok {
 			names[name] = struct{}{}
@@ -984,32 +995,230 @@ func (c *scriptChecker) narrowNilPredicateMember(member *MemberExpr, truthy bool
 	return c.narrowLocalNilness(ident.Name, truthy)
 }
 
-// knownPureUniversalPredicateMember reports whether every receiver arm that
-// can dispatch is guaranteed to use one of the pure universal predicates.
-// Named arms are excluded because a class may override the member. Hash-like
-// facts must also rule out a callable field with the same name.
-func (c *scriptChecker) knownPureUniversalPredicateMember(member *MemberExpr) bool {
+// memberDispatchEffect resolves the registered receiver effect of a member
+// dispatch from the receiver's known arms: effectPure only when every arm
+// that can dispatch proves a pure registered contract, effectMutatesReceiver
+// when every arm resolves and at least one is a registered mutator, and
+// effectUnknown otherwise. Named receivers (user overrides may shadow any
+// member), unregistered members, and unknown arms all stay unknown, so
+// dynamic dispatch keeps its conservative treatment. Safe navigation skips
+// nil arms: a nil receiver skips the dispatch entirely.
+func (c *scriptChecker) memberDispatchEffect(member *MemberExpr) memberEffect {
 	if member == nil {
-		return false
+		return effectUnknown
 	}
-	if _, ok := universalMemberSpecs[member.Property]; !ok {
+	arms, ok := typeExprArms(c.inferExpressionType(member.Object), 0)
+	if !ok || len(arms) == 0 {
+		return effectUnknown
+	}
+	combined := effectPure
+	dispatchArms := 0
+	for _, arm := range arms {
+		if member.Safe && arm.Kind == TypeNil {
+			continue
+		}
+		combined = combineMemberEffects(combined, c.typeArmMemberEffect(arm, member.Property))
+		if combined == effectUnknown {
+			return effectUnknown
+		}
+		dispatchArms++
+	}
+	if dispatchArms == 0 {
+		return effectUnknown
+	}
+	return combined
+}
+
+// typeArmMemberEffect resolves the registered effect a member dispatch has
+// on one known receiver arm, mirroring runtime dispatch order: a typed
+// contract wins over the universal fallback, a kind's own unregistered
+// member shadows the universal helper with an unknown effect, and hash-like
+// arms qualify only when no stored callable can shadow the helper.
+func (c *scriptChecker) typeArmMemberEffect(arm *TypeExpr, property string) memberEffect {
+	if arm == nil {
+		return effectUnknown
+	}
+	switch arm.Kind {
+	case TypeHash, TypeShape:
+		if !typeArmUsesUniversalMemberDispatch(arm, property) {
+			return effectUnknown
+		}
+		if effect, ok := universalMemberEffects[property]; ok {
+			return effect
+		}
+		return effectUnknown
+	case TypeNumber:
+		return combineMemberEffects(kindMemberEffect("int", property), kindMemberEffect("float", property))
+	case TypeEnum, TypeAny, TypeUnknown, TypeUnion:
+		return effectUnknown
+	}
+	kind, ok := receiverKindForTypeArm(arm)
+	if !ok {
+		return effectUnknown
+	}
+	return kindMemberEffect(kind, property)
+}
+
+// kindMemberEffect resolves the registered effect of a member on one fixed
+// receiver kind. A registered typed contract answers directly; a member the
+// kind dispatches itself without a contract stays unknown even when a
+// universal helper shares its name; otherwise the universal contract's
+// effect applies.
+func kindMemberEffect(kind, property string) memberEffect {
+	if effect, ok := staticMemberEffects[kind+"."+property]; ok {
+		return effect
+	}
+	if memberKindOwns(kind, property) {
+		return effectUnknown
+	}
+	if effect, ok := universalMemberEffects[property]; ok {
+		return effect
+	}
+	return effectUnknown
+}
+
+// combineMemberEffects joins the effects of two possible dispatches: any
+// unknown side stays unknown, a mutating side dominates a pure one.
+func combineMemberEffects(a, b memberEffect) memberEffect {
+	if a == effectUnknown || b == effectUnknown {
+		return effectUnknown
+	}
+	if a == effectMutatesReceiver || b == effectMutatesReceiver {
+		return effectMutatesReceiver
+	}
+	return effectPure
+}
+
+// memberDispatchPreservesReceiverFacts reports whether a member dispatch is
+// proven pure by its registered contracts and cannot hand the caller a
+// mutable alias into the receiver's interior. Purity alone is not enough to
+// keep the receiver's facts: a pure read like at on array<array<int>>
+// returns a nested container the caller can mutate through a chained call
+// (`a.at(0).push("x")`), and that receiver spelling is not an identifier
+// projection escapePoisonTarget could trace back to the root, so the deep
+// fact would silently go stale.
+func (c *scriptChecker) memberDispatchPreservesReceiverFacts(member *MemberExpr) bool {
+	if c.memberDispatchEffect(member) != effectPure {
 		return false
 	}
 	arms, ok := typeExprArms(c.inferExpressionType(member.Object), 0)
 	if !ok || len(arms) == 0 {
 		return false
 	}
-	dispatchArms := 0
 	for _, arm := range arms {
 		if member.Safe && arm.Kind == TypeNil {
 			continue
 		}
-		if !typeArmUsesUniversalMemberDispatch(arm, member.Property) {
+		if typeArmMemberResultMayAliasInterior(arm, member.Property) {
 			return false
 		}
-		dispatchArms++
 	}
-	return dispatchArms > 0
+	return true
+}
+
+// typeArmMemberResultMayAliasInterior reports whether the member's result on
+// one receiver arm may still reach into the receiver. An arm whose interior
+// provably holds neither mutable containers nor callables has nothing to
+// hand out; otherwise only a declared result that can never be a mutable
+// container or a callable (predicates and conversions return fresh scalars)
+// proves the call does not leak an interior reference.
+func typeArmMemberResultMayAliasInterior(arm *TypeExpr, property string) bool {
+	if arm == nil {
+		return true
+	}
+	if !typeArmInteriorMayEscape(arm) {
+		return false
+	}
+	result, known := typeArmMemberResultType(arm, property)
+	return !known || result == nil || typeExprMayEscapeReceiverInterior(result)
+}
+
+// typeArmMemberResultType resolves the declared result type of the
+// registered contract governing a member dispatch on one receiver arm,
+// mirroring the dispatch order of kindMemberEffect: typed contracts win, a
+// kind's own unregistered member stays unknown, then the universal
+// contract answers.
+func typeArmMemberResultType(arm *TypeExpr, property string) (*TypeExpr, bool) {
+	switch arm.Kind {
+	case TypeHash, TypeShape:
+		if spec, ok := universalMemberSpecs[property]; ok {
+			return spec.resultType, true
+		}
+		return nil, false
+	}
+	kind, ok := receiverKindForTypeArm(arm)
+	if !ok {
+		return nil, false
+	}
+	if spec, ok := staticMemberSpecs[kind+"."+property]; ok {
+		return spec.resultType, true
+	}
+	if valueType, ok := staticMemberValueTypes[kind+"."+property]; ok {
+		return valueType, true
+	}
+	if memberKindOwns(kind, property) {
+		return nil, false
+	}
+	if spec, ok := universalMemberSpecs[property]; ok {
+		return spec.resultType, true
+	}
+	return nil, false
+}
+
+// typeArmInteriorMayEscape reports whether values stored inside one
+// receiver arm could reach back into it after being read out: a nested
+// mutable container aliases its storage directly, and a stored callable
+// can close over the receiver and mutate it when invoked later.
+func typeArmInteriorMayEscape(arm *TypeExpr) bool {
+	switch arm.Kind {
+	case TypeArray:
+		if len(arm.TypeArgs) != 1 {
+			return true
+		}
+		return typeExprMayEscapeReceiverInterior(arm.TypeArgs[0])
+	case TypeHash:
+		if len(arm.TypeArgs) != 2 {
+			return true
+		}
+		return typeExprMayEscapeReceiverInterior(arm.TypeArgs[1])
+	case TypeShape:
+		for _, field := range arm.Shape {
+			if typeExprMayEscapeReceiverInterior(field) {
+				return true
+			}
+		}
+		return false
+	}
+	// Scalar receivers store no mutable interior.
+	return false
+}
+
+// typeExprMayEscapeReceiverInterior reports whether a value of this type,
+// handed out of a receiver's interior, could still reach the receiver: a
+// mutable container aliases its storage, and a callable can run user code
+// that mutates the receiver through a captured alias. Unknown types stay
+// conservative.
+func typeExprMayEscapeReceiverInterior(ty *TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	if typeExprMayIncludeCallable(ty) {
+		return true
+	}
+	arms, ok := typeExprArms(ty, 0)
+	if !ok || len(arms) == 0 {
+		return true
+	}
+	for _, arm := range arms {
+		if arm == nil {
+			return true
+		}
+		switch arm.Kind {
+		case TypeArray, TypeHash, TypeShape, TypeAny, TypeUnknown:
+			return true
+		}
+	}
+	return false
 }
 
 // typeArmUsesUniversalMemberDispatch reports whether a known fact arm must
@@ -1061,31 +1270,33 @@ func typeExprMayIncludeCallable(ty *TypeExpr) bool {
 	return false
 }
 
-// knownPureUniversalPredicateCall recognizes a call whose member dispatch is
-// guaranteed to reach a pure universal predicate and whose arguments provably
-// run no user code. Arguments evaluate before the predicate dispatches, so an
-// argument that can call into script code may mutate the receiver through an
-// alias — the receiver's fact must not survive such a call.
-func (c *scriptChecker) knownPureUniversalPredicateCall(call *CallExpr) bool {
+// memberCallPreservesReceiverFacts recognizes a call whose member dispatch
+// preserves the receiver's facts (a registered pure contract that cannot
+// alias the receiver's interior) and whose arguments provably run no user
+// code. Arguments evaluate before the member dispatches, so an argument
+// that can call into script code may mutate the receiver through an alias,
+// and a block runs user code during the dispatch itself — the receiver's
+// fact must not survive either.
+func (c *scriptChecker) memberCallPreservesReceiverFacts(call *CallExpr) bool {
 	if call == nil || len(call.KwArgs) > 0 || call.Block != nil || call.BlockArg != nil {
 		return false
 	}
 	for _, arg := range call.Args {
-		if !c.predicateArgumentIsPure(arg) {
+		if !c.pureCallArgument(arg) {
 			return false
 		}
 	}
 	member, ok := call.Callee.(*MemberExpr)
-	return ok && c.knownPureUniversalPredicateMember(member)
+	return ok && c.memberDispatchPreservesReceiverFacts(member)
 }
 
-// predicateArgumentIsPure reports whether a predicate argument provably runs
-// no user code when it evaluates: literals and plain non-callable reads
-// qualify. An identifier stays pure only when it cannot auto-invoke a
-// callable — neither as a resolved zero-arity function or builtin, nor as a
-// local whose value may itself be callable (a stored zero-arity function
+// pureCallArgument reports whether a call argument provably runs no user
+// code when it evaluates: literals and plain non-callable reads qualify. An
+// identifier stays pure only when it cannot auto-invoke a callable —
+// neither as a resolved zero-arity function or builtin, nor as a local
+// whose value may itself be callable (a stored zero-arity function
 // auto-invokes when the argument evaluates).
-func (c *scriptChecker) predicateArgumentIsPure(expr Expression) bool {
+func (c *scriptChecker) pureCallArgument(expr Expression) bool {
 	switch typed := expr.(type) {
 	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral,
 		*NilLiteral, *SymbolLiteral:
@@ -1096,7 +1307,7 @@ func (c *scriptChecker) predicateArgumentIsPure(expr Expression) bool {
 		}
 		return !typeExprMayIncludeCallable(c.inferExpressionType(typed))
 	case *UnaryExpr:
-		return c.predicateArgumentIsPure(typed.Right)
+		return c.pureCallArgument(typed.Right)
 	}
 	return false
 }
