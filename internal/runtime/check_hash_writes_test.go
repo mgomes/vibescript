@@ -112,6 +112,27 @@ end
 			warning: "write to h expected hash<string, int>, got",
 		},
 		{
+			name: "mixed-key local contradicts a union bound excluding symbols",
+			source: `
+def f(h: hash<string | int, int>)
+  bad = { a: 1, "b": 2 }
+  h.merge!(bad)
+end
+`,
+			warning: "write to h expected hash<string | int, int>, got",
+		},
+		{
+			name: "compatible mixed-key local merge preserves the fact",
+			source: `
+def f(h: hash<string | symbol, int>)
+  bad = { a: 1, "b": 2 }
+  h.merge!(bad)
+  h[true] = 1
+end
+`,
+			warning: "write to h expected key string | symbol, got bool",
+		},
+		{
 			name: "mixed-key local contradicts a symbol-keyed boundary",
 			source: `
 def g(h: hash<symbol, int>)

@@ -5288,15 +5288,15 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 		// literal infers its hash facts below like any other braced group.
 	}
 	shape := make(map[string]*TypeExpr, len(lit.Pairs))
-	allSymbolKeys, allStringKeys := true, true
+	sawSymbolKeys, sawStringKeys, sawOtherKeys := false, false, false
 	for _, pair := range lit.Pairs {
 		switch pair.Key.(type) {
 		case *SymbolLiteral:
-			allStringKeys = false
+			sawSymbolKeys = true
 		case *StringLiteral:
-			allSymbolKeys = false
+			sawStringKeys = true
 		default:
-			allSymbolKeys, allStringKeys = false, false
+			sawOtherKeys = true
 		}
 		key, ok := staticLiteralHashKey(pair.Key)
 		if !ok {
@@ -5314,15 +5314,17 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 	fact := &TypeExpr{Kind: TypeShape, Shape: shape}
 	// Runtime hashes distinguish symbol keys from string keys, so an exact
 	// index fact needs the store's key representation. A literal with mixed
-	// or non-string, non-symbol keys is marked too, so a marker-less shape
-	// always means an annotation-declared contract.
+	// or non-string, non-symbol keys carries its witnessed key kinds, so a
+	// marker-less shape always means an annotation-declared contract. An
+	// empty literal keeps the symbol default; its first static write adopts
+	// the write's representation.
 	switch {
-	case allSymbolKeys:
+	case len(lit.Pairs) == 0 || (sawSymbolKeys && !sawStringKeys && !sawOtherKeys):
 		fact.Name = shapeKeysSymbolMarker
-	case allStringKeys:
+	case sawStringKeys && !sawSymbolKeys && !sawOtherKeys:
 		fact.Name = shapeKeysStringMarker
 	default:
-		fact.Name = shapeKeysMixedMarker
+		fact.Name = mixedKeysMarker(sawSymbolKeys, sawStringKeys, sawOtherKeys)
 	}
 	return fact
 }
@@ -5570,11 +5572,31 @@ func shapeValuePayload(ty *TypeExpr) (*TypeExpr, bool) {
 const (
 	shapeKeysStringMarker = "\x00string-keyed"
 	shapeKeysSymbolMarker = "\x00symbol-keyed"
-	// shapeKeysMixedMarker tags a literal-derived shape whose keys mix (or
+	// shapeKeysMixedPrefix tags a literal-derived shape whose keys mix (or
 	// fall outside) the string and symbol representations, so marker-less
-	// shapes always denote annotation-declared contracts.
-	shapeKeysMixedMarker = "\x00mixed-keyed"
+	// shapes always denote annotation-declared contracts. The suffix
+	// records which key kinds the literal witnessed — "s" symbol, "t"
+	// string, "o" other hashable literals — so disjointness can use both
+	// positive witnesses (a symbol key against a bound excluding symbols)
+	// and negative ones (a non-string, non-symbol key against a bound
+	// admitting only those).
+	shapeKeysMixedPrefix = "\x00mixed-keyed:"
 )
+
+// mixedKeysMarker builds the witnessed-kind marker for a mixed-key literal.
+func mixedKeysMarker(sawSymbol, sawString, sawOther bool) string {
+	marker := shapeKeysMixedPrefix
+	if sawSymbol {
+		marker += "s"
+	}
+	if sawString {
+		marker += "t"
+	}
+	if sawOther {
+		marker += "o"
+	}
+	return marker
+}
 
 // literalElementsMarker tags an inferred array type whose element union is
 // existential: every arm is witnessed by an actual element of a literal, so
@@ -7080,17 +7102,25 @@ func shapeVsTypedHashDisjoint(shape, hash *TypeExpr, resolve namedTypeResolver) 
 	// string-keyed store never satisfies hash<symbol, ...> and vice versa.
 	if len(shape.Shape) > 0 {
 		var keyType *TypeExpr
-		switch shape.Name {
-		case shapeKeysStringMarker:
+		switch {
+		case shape.Name == shapeKeysStringMarker:
 			keyType = checkTypeString
-		case shapeKeysSymbolMarker:
+		case shape.Name == shapeKeysSymbolMarker:
 			keyType = checkTypeSymbol
-		case shapeKeysMixedMarker:
-			// Mixed keys witness both a non-symbol and a non-string key, so
-			// a key bound admitting only one of those representations is
-			// provably violated by the other witness.
-			if typeExprArmsAll(hash.TypeArgs[0], func(arm *TypeExpr) bool { return arm.Kind == TypeString }) ||
-				typeExprArmsAll(hash.TypeArgs[0], func(arm *TypeExpr) bool { return arm.Kind == TypeSymbol }) {
+		case strings.HasPrefix(shape.Name, shapeKeysMixedPrefix):
+			// A witnessed key kind provably violates a bound that excludes
+			// that kind entirely, and an "other" witness — neither a symbol
+			// nor a string — violates a bound admitting only those two.
+			flags := strings.TrimPrefix(shape.Name, shapeKeysMixedPrefix)
+			if strings.Contains(flags, "s") && typeExprsDisjoint(checkTypeSymbol, hash.TypeArgs[0], resolve) {
+				return true
+			}
+			if strings.Contains(flags, "t") && typeExprsDisjoint(checkTypeString, hash.TypeArgs[0], resolve) {
+				return true
+			}
+			if strings.Contains(flags, "o") && typeExprArmsAll(hash.TypeArgs[0], func(arm *TypeExpr) bool {
+				return arm.Kind == TypeString || arm.Kind == TypeSymbol
+			}) {
 				return true
 			}
 		}
@@ -8381,11 +8411,30 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 				return true
 			}
 			var keyType *TypeExpr
-			switch written.Name {
-			case shapeKeysStringMarker:
+			switch {
+			case written.Name == shapeKeysStringMarker:
 				keyType = checkTypeString
-			case shapeKeysSymbolMarker:
+			case written.Name == shapeKeysSymbolMarker:
 				keyType = checkTypeSymbol
+			case strings.HasPrefix(written.Name, shapeKeysMixedPrefix):
+				// A mixed store whose witnessed kinds are only symbols and
+				// strings bounds its keys by that union; an "other" witness
+				// leaves the key kinds unprovable.
+				flags := strings.TrimPrefix(written.Name, shapeKeysMixedPrefix)
+				if strings.Contains(flags, "o") {
+					return false
+				}
+				kinds := make([]*TypeExpr, 0, 2)
+				if strings.Contains(flags, "s") {
+					kinds = append(kinds, checkTypeSymbol)
+				}
+				if strings.Contains(flags, "t") {
+					kinds = append(kinds, checkTypeString)
+				}
+				keyType = unionTypeExprs(kinds...)
+				if keyType == nil {
+					return false
+				}
 			default:
 				return false
 			}
