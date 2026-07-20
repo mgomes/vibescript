@@ -625,6 +625,24 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "uninvoked lambda writes do not mark the namespace",
+			source: `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  handler = ->() { JSON.stringify = replacement }
+  takes_int(JSON.stringify({}))
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
@@ -1058,6 +1076,26 @@ def run(flag)
   ensure
     JSON.stringify = replacement
   end
+  takes_int(JSON.stringify({}))
+end
+`,
+		},
+		{
+			name: "escaping lambda argument writes stay possible",
+			source: `
+def replacement(value)
+  1
+end
+
+def consume(cb)
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  consume(->() { JSON.stringify = replacement })
   takes_int(JSON.stringify({}))
 end
 `,

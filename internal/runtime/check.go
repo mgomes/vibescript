@@ -2659,6 +2659,15 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		if targetResolved && target.fn != nil {
 			c.applyScriptFunctionNamespaceMutations(typed, target.fn)
 		}
+		// A lambda literal escaping into the call may run during it, so its
+		// possible namespace writes count here, unlike a bare definition.
+		for _, arg := range typed.Args {
+			c.applyLambdaLiteralNamespaceMutations(arg)
+		}
+		for _, kwarg := range typed.KwArgs {
+			c.applyLambdaLiteralNamespaceMutations(kwarg.Value)
+		}
+		c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
 		if c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
 			// The lambda builtin converts its literal block to local return
@@ -3024,13 +3033,18 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, 
 		return
 	}
 	// The restore models a block that may run zero times, but a namespace
-	// write inside a block that does run must keep governing dispatch, so
-	// possible-write markers survive the restore.
+	// write inside a call block that does run must keep governing dispatch,
+	// so possible-write markers survive the restore. A lambda's body does
+	// not run when the literal evaluates, so its writes count only where a
+	// call can reach them (an escaping argument, a resolvable invocation),
+	// never at the definition.
 	runtimeState := c.snapshotRuntimeState()
 	defer func() {
 		walkMembers := c.runtimeNamespaceMembers
 		c.restoreRuntimeState(runtimeState)
-		c.preserveRuntimeNamespaceMembers(walkMembers)
+		if !localReturns {
+			c.preserveRuntimeNamespaceMembers(walkMembers)
+		}
 	}()
 
 	// Block and lambda returns are not checked against the enclosing
@@ -5878,6 +5892,30 @@ func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Iden
 	}
 	c.pinExpressionFact(ident, c.autoInvokedBuiltinResultFact(ident.Name))
 	for member := range members {
+		c.recordRuntimeNamespaceMember(member)
+	}
+}
+
+// applyLambdaLiteralNamespaceMutations records the possible namespace
+// writes of a lambda literal passed directly to a call: the callee may
+// invoke it during the call. A bare lambda definition leaks nothing — its
+// body runs only if a later resolvable call reaches it.
+func (c *scriptChecker) applyLambdaLiteralNamespaceMutations(arg Expression) {
+	block, ok := arg.(*BlockLiteral)
+	if !ok || block == nil || !block.Lambda {
+		return
+	}
+	scan := &namespaceMutationScan{
+		out:       make(map[string]struct{}),
+		functions: c.script.functions,
+		classes:   c.script.classes,
+		visited:   make(map[*ScriptFunction]struct{}),
+	}
+	for _, param := range block.Params {
+		scan.expression(param.DefaultVal)
+	}
+	scan.statements(block.Body)
+	for member := range scan.out {
 		c.recordRuntimeNamespaceMember(member)
 	}
 }
