@@ -242,6 +242,15 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
+			name: "safe navigation store checks the nullable bound",
+			source: `
+def f(h: hash<string, int>?)
+  h&.store(:sym, 1)
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
 			name: "nullable hash narrowed by a nil guard",
 			source: `
 def f(h: hash<string, int>?)
