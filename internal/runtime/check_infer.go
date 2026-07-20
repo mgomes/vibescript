@@ -2352,12 +2352,15 @@ func (c *scriptChecker) inferAssignStatementTypes(
 				keyBound, _ := declaredHashEntryTypes(receiverFact)
 				if keyBound != nil ||
 					(receiverFact != nil && receiverFact.Kind == TypeShape && !receiverFact.Nullable) {
-					declaredPreserved = c.applyIndexedWriteFacts(
+					declaredPreserved, abortsBeforeWrite = c.applyIndexedWriteFacts(
 						function,
 						writeStmt,
 						target,
 						receiverFact,
 					)
+					if abortsBeforeWrite {
+						return
+					}
 					written = c.inferExpressionType(writeStmt.Value)
 					writeMayLand = true
 					return
@@ -5872,17 +5875,23 @@ func (c *scriptChecker) checkShovelElementWrite(function string, expr *BinaryExp
 // arrives as captured before the value expression walked (the runtime
 // evaluates the receiver first); a value that escaped the same local keeps
 // the bound for diagnosis, while preservation and refinement require the
-// local's fact to have survived the value walk unchanged.
-func (c *scriptChecker) applyIndexedWriteFacts(function string, stmt *AssignStmt, target *IndexExpr, receiverFact *TypeExpr) bool {
+// local's fact to have survived the value walk unchanged. abortsBeforeWrite
+// reports a key the hash runtime rejects before retaining the value.
+func (c *scriptChecker) applyIndexedWriteFacts(
+	function string,
+	stmt *AssignStmt,
+	target *IndexExpr,
+	receiverFact *TypeExpr,
+) (preserved, abortsBeforeWrite bool) {
 	if stmt.Operator != "" {
-		return false
+		return false, false
 	}
 	ident, ok := target.Object.(*Identifier)
 	if !ok {
-		return false
+		return false, false
 	}
 	if len(target.Indices) != 1 {
-		return false
+		return false, true
 	}
 	current := c.localTypeFor(ident.Name)
 	if receiverFact == nil {
@@ -5890,15 +5899,45 @@ func (c *scriptChecker) applyIndexedWriteFacts(function string, stmt *AssignStmt
 	}
 	intact := mutatorReceiverFactIntact(current, receiverFact)
 	if elem := declaredArrayElementType(receiverFact); elem != nil {
-		return c.applyIndexedArrayWriteFacts(function, stmt, target, ident.Name, elem, intact)
+		return c.applyIndexedArrayWriteFacts(
+			function,
+			stmt,
+			target,
+			ident.Name,
+			elem,
+			intact,
+		), false
 	}
 	if keyBound, valueBound := declaredHashEntryTypes(receiverFact); keyBound != nil {
-		return c.applyHashEntryWriteFacts(function, stmt, ident.Name, keyBound, valueBound, target.Indices[0], intact)
+		if keyType := c.inferExpressionType(target.Indices[0]); keyType != nil &&
+			typeExprProvablyUnstorableKey(keyType) {
+			return false, true
+		}
+		return c.applyHashEntryWriteFacts(
+			function,
+			stmt,
+			ident.Name,
+			keyBound,
+			valueBound,
+			target.Indices[0],
+			intact,
+		), false
 	}
 	if receiverFact != nil && receiverFact.Kind == TypeShape && !receiverFact.Nullable {
-		return c.applyShapeFieldWriteFacts(function, stmt, ident.Name, receiverFact, target.Indices[0], intact)
+		if keyType := c.inferExpressionType(target.Indices[0]); keyType != nil &&
+			typeExprProvablyUnstorableKey(keyType) {
+			return false, true
+		}
+		return c.applyShapeFieldWriteFacts(
+			function,
+			stmt,
+			ident.Name,
+			receiverFact,
+			target.Indices[0],
+			intact,
+		), false
 	}
-	return false
+	return false, false
 }
 
 // applyIndexedArrayWriteFacts checks a direct arr[i] = value element write
@@ -5978,7 +6017,12 @@ func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignSt
 // contracts: a matching-representation write with a known key and value
 // refines the exact fact in place, and everything else weakens it silently.
 func (c *scriptChecker) applyShapeFieldWriteFacts(function string, stmt *AssignStmt, name string, shape *TypeExpr, index Expression, intact bool) bool {
-	value, pos := stmt.Value, stmt.Pos()
+	return c.applyShapeFieldWrite(function, name, shape, index, stmt.Value, stmt.Pos(), intact)
+}
+
+// applyShapeFieldWrite is the shared core for shape field writes: index
+// assignment and the store mutator write one field the same way.
+func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeExpr, index, value Expression, pos Position, intact bool) bool {
 	key, keyOK := staticLiteralHashKey(index)
 	switch shape.Name {
 	case shapeKeysStringMarker, shapeKeysSymbolMarker:
@@ -6205,9 +6249,285 @@ func (c *scriptChecker) applyContainerMutatorCallFacts(
 			keyBound,
 			valueBound,
 		)
-		return preserved, modeled, hashMutatorCallMayWrite(call, member.Property)
+		return preserved, modeled, c.hashMutatorCallMayWrite(
+			call,
+			member.Property,
+			argumentFacts,
+		)
+	}
+	if contentFact != nil && contentFact.Kind == TypeShape && !contentFact.Nullable {
+		preserved, modeled := c.applyShapeMutatorCallFacts(
+			function,
+			call,
+			member,
+			argumentFacts,
+			ident.Name,
+			receiverFact,
+			contentFact,
+		)
+		return preserved, modeled, c.shapeMutatorCallMayWrite(
+			call,
+			member.Property,
+			argumentFacts,
+		)
 	}
 	return false, false, false
+}
+
+func (c *scriptChecker) containerMutatorCallProvablyAborts(
+	call *CallExpr,
+	receiverFact *TypeExpr,
+	argumentFacts map[Expression]*TypeExpr,
+) bool {
+	if call == nil {
+		return false
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok {
+		return false
+	}
+	if _, direct := member.Object.(*Identifier); !direct {
+		return false
+	}
+	switch member.Property {
+	case "store", "merge!", "update":
+		return c.hashMutatorCallProvablyAborts(
+			call,
+			"hash."+member.Property,
+			receiverFact,
+			argumentFacts,
+		)
+	default:
+		return false
+	}
+}
+
+// hashMutatorCallProvablyAborts reports a builtin hash mutation that cannot
+// reach a write after its arguments evaluate. Declared hash value bounds and
+// exact shape fields can shadow the builtin with stored callables, so those
+// receivers stay conservative unless the shadow itself is provably
+// non-callable (and therefore also raises).
+func (c *scriptChecker) hashMutatorCallProvablyAborts(
+	call *CallExpr,
+	name string,
+	receiverFact *TypeExpr,
+	argumentFacts map[Expression]*TypeExpr,
+) bool {
+	if call == nil {
+		return false
+	}
+	property := ""
+	switch name {
+	case "hash.store":
+		property = "store"
+	case "hash.merge!":
+		property = "merge!"
+	case "hash.update":
+		property = "update"
+	default:
+		return false
+	}
+	contentFact := nonNilMutatorReceiverFact(receiverFact)
+	if _, valueBound := declaredHashEntryTypes(contentFact); valueBound != nil {
+		if typeExprMayIncludeCallable(valueBound) {
+			return false
+		}
+	} else if contentFact != nil && contentFact.Kind == TypeShape && !contentFact.Nullable {
+		if contentFact.Name == "" {
+			if field, present := contentFact.Shape[property]; present {
+				if typeExprMayIncludeCallable(field) {
+					return false
+				}
+			} else if contentFact.Open {
+				return false
+			}
+		}
+	} else {
+		return false
+	}
+	switch property {
+	case "store":
+		if len(call.Args) != 2 || len(call.KwArgs) != 0 {
+			return false
+		}
+		keyType := c.mutatorCallArgumentFact(call.Args[0], argumentFacts)
+		return keyType != nil && typeExprProvablyUnstorableKey(keyType)
+	case "merge!", "update":
+		return len(call.KwArgs) == 0 &&
+			c.mergeArgumentsProvablyAbort(call, argumentFacts)
+	default:
+		return false
+	}
+}
+
+// mergeArgumentsProvablyAbort reports whether a merge!/update call provably
+// raises before merging any entries: splat expansion rejects a non-array
+// value, and every positional argument is validated as a hash up front.
+func (c *scriptChecker) mergeArgumentsProvablyAbort(call *CallExpr, argumentFacts map[Expression]*TypeExpr) bool {
+	for _, arg := range call.Args {
+		if splat, isSplat := arg.(*SplatArg); isSplat {
+			if written := c.inferExpressionType(splat.Value); written != nil &&
+				typeExprArmsAll(written, func(arm *TypeExpr) bool {
+					if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+						return true
+					}
+					return arm.Kind != TypeArray
+				}) {
+				return true
+			}
+			continue
+		}
+		if written := c.mutatorCallArgumentFact(arg, argumentFacts); typeExprProvablyNotHash(written) {
+			return true
+		}
+	}
+	return false
+}
+
+// hashMergeCallMayWrite reports whether a successfully validated merge! or
+// update call can contribute at least one entry. Statically empty hashes and
+// splatted array literals are true no-ops, so they preserve both declared and
+// witnessed receiver facts.
+func (c *scriptChecker) hashMergeCallMayWrite(
+	call *CallExpr,
+	argumentFacts map[Expression]*TypeExpr,
+) bool {
+	if call == nil || len(call.KwArgs) != 0 ||
+		c.mergeArgumentsProvablyAbort(call, argumentFacts) {
+		return false
+	}
+	for _, arg := range call.Args {
+		if c.hashMergeArgumentMayWrite(arg, argumentFacts) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) hashMergeArgumentMayWrite(
+	arg Expression,
+	argumentFacts map[Expression]*TypeExpr,
+) bool {
+	if splat, ok := arg.(*SplatArg); ok {
+		if array, literal := splat.Value.(*ArrayLiteral); literal {
+			for _, element := range array.Elements {
+				if c.hashMergeArgumentMayWrite(element, argumentFacts) {
+					return true
+				}
+			}
+			return false
+		}
+		return true
+	}
+	if hash, literal := arg.(*HashLiteral); literal && hash.ShapeType == nil {
+		return len(hash.Pairs) != 0
+	}
+	written := c.mutatorCallArgumentFact(arg, argumentFacts)
+	return written == nil || written.Kind != TypeShape || written.Nullable ||
+		len(written.Shape) != 0
+}
+
+func (c *scriptChecker) shapeMutatorCallMayWrite(
+	call *CallExpr,
+	property string,
+	argumentFacts map[Expression]*TypeExpr,
+) bool {
+	if call == nil || len(call.KwArgs) != 0 {
+		return false
+	}
+	switch property {
+	case "store":
+		if len(call.Args) != 2 {
+			return false
+		}
+		keyType := c.mutatorCallArgumentFact(call.Args[0], argumentFacts)
+		return keyType == nil || !typeExprProvablyUnstorableKey(keyType)
+	case "merge!", "update":
+		return c.hashMergeCallMayWrite(call, argumentFacts)
+	default:
+		return false
+	}
+}
+
+// applyShapeMutatorCallFacts checks the fields an in-place builtin hash
+// mutator writes against a shape receiver fact: store is index assignment,
+// so user.store(:extra, 1) violates a declared shape exactly like
+// user[:extra] = 1, and merge!/update literal entries check against a
+// declared contract's field types. Shape exactness also pins the
+// object-backed shadowing risk: dispatch can only be shadowed by a field
+// named like the mutator, and a non-callable one can only raise.
+func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallExpr, member *MemberExpr, argumentFacts map[Expression]*TypeExpr, name string, receiverFact, shape *TypeExpr) (preserved, modeled bool) {
+	if len(call.KwArgs) != 0 {
+		return false, false
+	}
+	if field, present := shape.Shape[member.Property]; present && typeExprMayIncludeCallable(field) {
+		return false, false
+	}
+	switch member.Property {
+	case "store":
+		if len(call.Args) != 2 {
+			return false, false
+		}
+		// store canonicalizes its key before writing, so a provably
+		// unsupported key kind raises without storing anything.
+		if keyType := c.mutatorCallArgumentFact(call.Args[0], argumentFacts); keyType != nil &&
+			typeExprProvablyUnstorableKey(keyType) {
+			return false, true
+		}
+		return c.applyShapeFieldWrite(function, name, shape, call.Args[0], call.Args[1], call.Args[0].Pos(),
+			c.mutatorCallPreservable(call, name, receiverFact)), true
+	case "merge!", "update":
+		if c.mergeArgumentsProvablyAbort(call, argumentFacts) {
+			return false, true
+		}
+		if !c.hashMergeCallMayWrite(call, argumentFacts) {
+			return c.mutatorCallPreservable(call, name, receiverFact), true
+		}
+		if shape.Name != "" {
+			// Witnessed shapes are evidence, not contracts; folding whole
+			// hashes in weakens them without a report.
+			return false, true
+		}
+		blockConflicts := call.Block != nil || call.BlockArg != nil
+		for _, arg := range call.Args {
+			lit, isLiteral := arg.(*HashLiteral)
+			if !isLiteral || lit.ShapeType != nil {
+				continue
+			}
+			for _, pair := range lit.Pairs {
+				key, keyOK := staticLiteralHashKey(pair.Key)
+				if !keyOK {
+					continue
+				}
+				field, present := shape.Shape[key]
+				if !present {
+					// An exact shape can never already hold this key, so
+					// the entry stores directly — with or without a
+					// conflict block — and violates exactness.
+					c.add(function, pair.Key.Pos(), "write to %s adds field %s to exact shape %s",
+						name, key, formatTypeExpr(shape))
+					continue
+				}
+				if blockConflicts {
+					// A present key may conflict, letting the block decide
+					// the stored value.
+					continue
+				}
+				written := c.inferExpressionType(pair.Value)
+				if written == nil {
+					continue
+				}
+				if typeExprsDisjoint(written, field, c.checkNamedTypeResolver()) {
+					c.add(function, pair.Value.Pos(), "write to %s field %s expected %s, got %s",
+						name, key, formatTypeExpr(field), formatTypeExpr(written))
+				}
+			}
+		}
+		// A declared shape's key representation is unknown, so no merge
+		// preserves it.
+		return false, true
+	}
+	return false, false
 }
 
 // typeExprProvablyUnstorableKey reports a fact no arm of which the runtime
@@ -6476,15 +6796,23 @@ func splattedElementBound(ty *TypeExpr) *TypeExpr {
 	return ty.TypeArgs[0]
 }
 
-func hashMutatorCallMayWrite(call *CallExpr, property string) bool {
+func (c *scriptChecker) hashMutatorCallMayWrite(
+	call *CallExpr,
+	property string,
+	argumentFacts map[Expression]*TypeExpr,
+) bool {
 	if call == nil || len(call.KwArgs) != 0 {
 		return false
 	}
 	switch property {
 	case "store":
-		return len(call.Args) == 2
+		if len(call.Args) != 2 {
+			return false
+		}
+		keyType := c.mutatorCallArgumentFact(call.Args[0], argumentFacts)
+		return keyType == nil || !typeExprProvablyUnstorableKey(keyType)
 	case "merge!", "update":
-		return len(call.Args) > 0
+		return c.hashMergeCallMayWrite(call, argumentFacts)
 	default:
 		return false
 	}
@@ -6547,22 +6875,11 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 		// argument before merging any entries, so a provably non-array
 		// splat or non-hash argument makes the call raise before any entry
 		// lands: nothing may be diagnosed or modeled.
-		for _, arg := range call.Args {
-			if splat, isSplat := arg.(*SplatArg); isSplat {
-				if written := c.inferExpressionType(splat.Value); written != nil &&
-					typeExprArmsAll(written, func(arm *TypeExpr) bool {
-						if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
-							return true
-						}
-						return arm.Kind != TypeArray
-					}) {
-					return false, true
-				}
-				continue
-			}
-			if written := c.mutatorCallArgumentFact(arg, argumentFacts); typeExprProvablyNotHash(written) {
-				return false, true
-			}
+		if c.mergeArgumentsProvablyAbort(call, argumentFacts) {
+			return false, true
+		}
+		if !c.hashMergeCallMayWrite(call, argumentFacts) {
+			return c.mutatorCallPreservable(call, name, receiverFact), true
 		}
 		// A conflict block replaces the values of already-present keys with
 		// results the checker cannot know, so nothing preserves; entries

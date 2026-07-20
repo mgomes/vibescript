@@ -253,6 +253,48 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
+			name: "store on a declared shape rejects an extra field",
+			source: `
+def f(user: { name: string })
+  user.store(:extra, 1)
+end
+`,
+			warning: "write to user adds field extra to exact shape { name: string }",
+		},
+		{
+			name: "store on a declared shape checks the field type",
+			source: `
+def f(user: { name: string })
+  user.store(:name, 1)
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "store on a literal shape refines the field",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f
+  h = { name: "x" }
+  h.store(:name, 1)
+  takes_string(h[:name])
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "merge on a declared shape rejects an extra field",
+			source: `
+def f(user: { name: string })
+  user.merge!({ extra: 1 })
+end
+`,
+			warning: "write to user adds field extra to exact shape { name: string }",
+		},
+		{
 			name: "safe navigation store checks the nullable bound",
 			source: `
 def f(h: hash<string, int>?)
@@ -366,6 +408,107 @@ end
 `,
 			warning: "call to takes_string argument value expected string, got int",
 		},
+		{
+			name: "zero-argument shape merge preserves the fact",
+			source: `
+def f(user: { name: string })
+  user.merge!()
+  user[:name] = 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "empty-literal shape merge preserves the fact",
+			source: `
+def f(user: { name: string })
+  user.merge!({})
+  user[:name] = 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "empty-splat shape merge preserves the fact",
+			source: `
+def f(user: { name: string })
+  user.merge!(*[])
+  user[:name] = 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "rescued unstorable index key preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  begin
+    h[{}] = 1
+  rescue
+    nil
+  end
+  h[:sym] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "rescued unstorable store key preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  begin
+    h.store({}, 1)
+  rescue
+    nil
+  end
+  h[:sym] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "rescued invalid merge argument preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  begin
+    h.merge!(1)
+  rescue
+    nil
+  end
+  h[:sym] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "rescued store abort preserves retained child facts",
+			source: `
+def f(h: hash<string, array<int>>, child: array<int>)
+  h["child"] = child
+  begin
+    h.store({}, child)
+  rescue
+    nil
+  end
+  child << "bad"
+end
+`,
+			warning: "write to child expected element int, got string",
+		},
+		{
+			name: "callable shape shadow keeps the continuation reachable",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { store: function })
+  user.store({}, 1)
+  takes_int("bad")
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -389,6 +532,45 @@ def f(h: hash<string, int>)
   h["a"] = 1
   h.store("b", 2)
   h.merge!({ "c": 3 })
+end
+`,
+		},
+		{
+			name: "unstorable index key stops the continuation",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<string, int>)
+  h[{}] = 1
+  takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "unstorable store key stops the continuation",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<string, int>)
+  h.store({}, 1)
+  takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "invalid merge argument stops the continuation",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<string, int>)
+  h.merge!(1)
+  takes_int("unreachable")
 end
 `,
 		},
@@ -500,6 +682,22 @@ end
 			source: `
 def f(h: hash<any, int>)
   h.store({ a: 1 }, "bad")
+end
+`,
+		},
+		{
+			name: "shape mutator shadowed by a callable field stays gradual",
+			source: `
+def f(user: { store: function }, v)
+  user.store(:extra, v)
+end
+`,
+		},
+		{
+			name: "non-hash argument aborts a declared shape merge",
+			source: `
+def f(user: { name: string })
+  user.merge!({ extra: 1 }, 5)
 end
 `,
 		},

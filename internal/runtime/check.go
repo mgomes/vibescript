@@ -4214,7 +4214,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		} else if targetResolved {
 			view := staticCallViewFor(checkedCall, target)
 			targetMayEnter = targetMayEnter && c.builtinCallMayEnter(view, target.spec)
-			targetMayEnter = targetMayEnter && c.specialBuiltinCallMayComplete(checkedCall, target.name)
+			targetMayEnter = targetMayEnter &&
+				c.specialBuiltinCallMayComplete(checkedCall, target.name, receiverFact)
 			callMayComplete = targetMayEnter && c.builtinCallMayComplete(target.spec)
 		} else if !targetResolved {
 			dynamicBodyMayEnter := c.refineDynamicCallTargetEntry(dynamicResolution.targets)
@@ -4226,6 +4227,11 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			} else {
 				callMayComplete = targetMayEnter
 			}
+		}
+		if targetMayEnter &&
+			c.containerMutatorCallProvablyAborts(typed, receiverFact, argumentFacts) {
+			targetMayEnter = false
+			callMayComplete = false
 		}
 		opaqueCallEffectsMayRun := targetMayEnter && opaqueCallEffects
 		// Binding can stop before the body after earlier parameter defaults
@@ -4516,6 +4522,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			if !c.checkExpressionWithAuto(function, index, true) {
 				return false
 			}
+			c.pinExpressionFact(index, c.inferExpressionType(index))
 		}
 		c.enqueueReachableInstanceDispatch(dispatchType, "[]")
 		if opaqueDispatch {
@@ -5275,6 +5282,9 @@ func (c *scriptChecker) indexExpressionMayComplete(expr *IndexExpr) bool {
 	if expr == nil {
 		return true
 	}
+	if c.indexedHashOperationProvablyAborts(expr) {
+		return false
+	}
 	call := &CallExpr{
 		Callee: &MemberExpr{
 			Object:   expr.Object,
@@ -5497,6 +5507,7 @@ func (c *scriptChecker) checkPlainAssignmentTarget(
 			}
 			c.collectRuntimeRequireCallExportsFromExpression(index)
 			c.captureEvaluatedDestructureFact(index)
+			c.pinExpressionFact(index, c.inferExpressionType(index))
 		}
 		c.enqueueReachableInstanceDispatch(dispatchType, "[]=")
 		completed := true
@@ -5753,8 +5764,11 @@ func (c *scriptChecker) assignmentSetterMayComplete(
 	target, value Expression,
 	captured ...checkDynamicCallCandidates,
 ) bool {
-	if indexed, ok := target.(*IndexExpr); ok && c.exactArrayIndexWriteOutOfBounds(indexed) {
-		return false
+	if indexed, ok := target.(*IndexExpr); ok {
+		if c.exactArrayIndexWriteOutOfBounds(indexed) ||
+			c.indexedHashOperationProvablyAborts(indexed) {
+			return false
+		}
 	}
 	rawMemberWrite := false
 	switch target.(type) {
@@ -5830,6 +5844,27 @@ func (c *scriptChecker) assignmentSetterMayComplete(
 	c.refineDynamicCallTargetEntry(resolution.targets)
 	return resolution.nonScriptMayComplete ||
 		c.dynamicScriptCallTargetsMayComplete(resolution.targets)
+}
+
+func (c *scriptChecker) indexedHashOperationProvablyAborts(target *IndexExpr) bool {
+	if target == nil {
+		return false
+	}
+	receiver := c.inferExpressionType(target.Object)
+	if !typeExprArmsAll(receiver, func(arm *TypeExpr) bool {
+		return arm.Kind == TypeHash || arm.Kind == TypeShape || arm.Kind == TypeNil
+	}) {
+		return false
+	}
+	if len(target.Indices) != 1 {
+		return true
+	}
+	key := target.Indices[0]
+	keyType, captured := c.callArgumentFacts[key]
+	if !captured {
+		keyType = c.inferExpressionType(key)
+	}
+	return keyType != nil && typeExprProvablyUnstorableKey(keyType)
 }
 
 func (c *scriptChecker) exactArrayIndexWriteOutOfBounds(target *IndexExpr) bool {
@@ -11092,12 +11127,40 @@ func (c *scriptChecker) builtinCallMayComplete(spec staticCallSpec) bool {
 // specialBuiltinCallMayComplete mirrors deterministic validation that lives
 // outside staticCallSpec. All call arguments have already evaluated when this
 // runs; false therefore stops only the enclosing expression's continuation.
-func (c *scriptChecker) specialBuiltinCallMayComplete(call *CallExpr, name string) bool {
+func (c *scriptChecker) specialBuiltinCallMayComplete(
+	call *CallExpr,
+	name string,
+	receiverFacts ...*TypeExpr,
+) bool {
 	switch name {
 	case "JSON.parse_as":
 		return c.parseAsCallMayComplete(call)
 	case isTypeMemberName:
 		return c.isTypeCallMayComplete(call)
+	case "hash.store", "hash.merge!", "hash.update":
+		if call == nil {
+			return true
+		}
+		var receiverFact *TypeExpr
+		member, direct := call.Callee.(*MemberExpr)
+		if !direct {
+			return true
+		}
+		if _, direct = member.Object.(*Identifier); !direct {
+			return true
+		}
+		if len(receiverFacts) != 0 {
+			receiverFact = receiverFacts[0]
+		}
+		if receiverFact == nil {
+			receiverFact = c.inferExpressionType(member.Object)
+		}
+		return !c.hashMutatorCallProvablyAborts(
+			call,
+			name,
+			receiverFact,
+			c.callArgumentFacts,
+		)
 	default:
 		if _, predicate := classPredicateNames[name]; predicate {
 			return c.classPredicateCallMayComplete(call)
