@@ -1928,7 +1928,14 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 		mutatorReceiverFactIntact(c.localTypeFor(ident.Name), receiverFact)
 	for _, arg := range elements {
 		if splat, isSplat := arg.(*SplatArg); isSplat {
-			if !c.applySplattedElementWriteFacts(function, splat, ident.Name, elem, resolve) {
+			compatible, aborts := c.applySplattedElementWriteFacts(function, splat, ident.Name, elem, resolve)
+			if aborts {
+				// Expansion raises before dispatch and before later
+				// arguments evaluate, so no write lands and the remaining
+				// elements must not be modeled.
+				return false, true
+			}
+			if !compatible {
 				preserved = false
 			}
 			continue
@@ -1963,14 +1970,24 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 // reported (witness arms are real elements), and the write is compatible
 // only when the splatted array's own element bound — a declared array<V> or
 // a full witness union — satisfies the receiver's. A typed but possibly
-// empty splat stays silent: no element is proven to land.
-func (c *scriptChecker) applySplattedElementWriteFacts(function string, splat *SplatArg, name string, elem *TypeExpr, resolve namedTypeResolver) bool {
+// empty splat stays silent: no element is proven to land. aborts reports a
+// splat value that is provably not an array: expansion raises before
+// dispatch and before later arguments evaluate, so no write occurs at all.
+func (c *scriptChecker) applySplattedElementWriteFacts(function string, splat *SplatArg, name string, elem *TypeExpr, resolve namedTypeResolver) (compatible, aborts bool) {
 	written := c.inferExpressionType(splat.Value)
+	if written != nil && typeExprArmsAll(written, func(arm *TypeExpr) bool {
+		if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+			return true
+		}
+		return arm.Kind != TypeArray
+	}) {
+		return false, true
+	}
 	if written == nil || written.Kind != TypeArray || written.Nullable {
 		// The receiver retains whatever elements the splat expands to, so
 		// an unknown splatted local links in conservatively.
 		c.linkContainerWriteAlias(name, splat.Value, nil)
-		return false
+		return false, false
 	}
 	// The receiver retains the splatted array's elements regardless of
 	// compatibility, so its root local links in when those elements may be
@@ -1983,13 +2000,13 @@ func (c *scriptChecker) applySplattedElementWriteFacts(function string, splat *S
 				for _, arm := range arms {
 					if typeExprsDisjoint(arm, elem, resolve) {
 						c.reportIncompatibleElementWrite(function, splat.Pos(), name, elem, arm)
-						return false
+						return false, false
 					}
 				}
 			}
 		}
 	}
-	return bound != nil && typeExprSatisfies(bound, elem, resolve)
+	return bound != nil && typeExprSatisfies(bound, elem, resolve), false
 }
 
 // splattedElementBound returns the element bound of a splatted array fact:

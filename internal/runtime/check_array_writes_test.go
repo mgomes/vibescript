@@ -766,6 +766,14 @@ end
 `,
 		},
 		{
+			name: "provably non-array splat aborts the call",
+			source: `
+def f(items: array<int>)
+  items.push(*1, "bad")
+end
+`,
+		},
+		{
 			name: "splatted insert index stays gradual",
 			source: `
 def f(items: array<int>, v)
