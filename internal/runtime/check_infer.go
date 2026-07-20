@@ -2949,7 +2949,15 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 		if dm.enum != nil || wm.enum != nil {
 			return dm.enum != nil && dm.enum == wm.enum
 		}
-		return dm.class != nil && dm.class == wm.class
+		if dm.class == nil || wm.class == nil {
+			return false
+		}
+		if dm.class == wm.class {
+			return true
+		}
+		// A module annotation admits instances of classes that include it,
+		// mirroring runtime named normalization.
+		return dm.class.IsModule && !wm.class.IsModule && classIncludesModule(wm.class, dm.class.Name)
 	}
 	return false
 }
