@@ -4,8 +4,10 @@ package runtime
 // variables. The runtime normalizes and validates every direct ivar write
 // against the declared property contract, so the checker mirrors that
 // boundary: instance-method analysis seeds a fact for each typed
-// accessor-backed ivar, a write whose known value is provably disjoint from
-// the contract warns, and unknown values pass to the runtime guard.
+// accessor-backed ivar, a write whose known value is provably incompatible
+// with the contract warns, and unknown values pass to the runtime guard.
+
+import "errors"
 
 // ivarFactKey names the local-inference fact slot for an instance variable.
 // The @ prefix keeps ivar facts from colliding with same-named locals.
@@ -71,10 +73,6 @@ func (c *scriptChecker) seedInstanceIvarFacts(function string, fn *ScriptFunctio
 			c.add(function, param.Type.Position, "write to @%s expected %s, got %s",
 				param.Name, formatTypeExpr(ty), formatTypeExpr(param.Type))
 		}
-		if param.Type == nil && param.DefaultVal != nil {
-			c.checkRuntimeExpressionAgainstType(function, param.DefaultVal, ty,
-				"default value for @"+param.Name)
-		}
 		if fact := c.ivarContractFact(ty); fact != nil {
 			c.bindLocalTypeInCurrentFrame(ivarFactKey(param.Name), fact)
 		}
@@ -96,16 +94,50 @@ func (c *scriptChecker) ivarParamContract(fn *ScriptFunction, param Param) *Type
 	return ty
 }
 
-// effectiveParamContract is the boundary contract a caller must satisfy for
-// param: its own annotation when present, otherwise the property contract
-// backing an ivar parameter. The runtime validates the annotation at binding
-// and the property contract at the ivar store, so an unannotated ivar
-// parameter still rejects incompatible values.
-func (c *scriptChecker) effectiveParamContract(fn *ScriptFunction, param Param) *TypeExpr {
-	if param.Type != nil {
-		return param.Type
+// checkIvarParamArgument checks a known call argument against both boundary
+// contracts a parameter carries: its own annotation, and the property
+// contract an ivar parameter stores into. A value can satisfy the annotation
+// and still provably fail the ivar store, so both apply; the store check is
+// skipped when the annotation already rejected the argument.
+func (c *scriptChecker) checkIvarParamArgument(function string, arg Expression, fn *ScriptFunction, param Param, callName string) {
+	before := len(c.warnings)
+	c.checkArgumentExpression(function, arg, param.Type, callName, param.Name)
+	if len(c.warnings) > before {
+		return
 	}
-	return c.ivarParamContract(fn, param)
+	ty := c.ivarParamContract(fn, param)
+	if ty == nil {
+		return
+	}
+	c.checkArgumentExpression(function, arg, ty, callName, param.Name)
+}
+
+// checkIvarParamDefault checks an ivar parameter's default value against the
+// property contract it stores into. It runs from the parameter walk, after
+// earlier parameters have bound their facts, matching the runtime's binding
+// order for defaults that reference prior parameters. The annotation check
+// for annotated parameters runs separately; this covers the store contract.
+func (c *scriptChecker) checkIvarParamDefault(function string, fn *ScriptFunction, param Param) {
+	if param.DefaultVal == nil {
+		return
+	}
+	ty := c.ivarParamContract(fn, param)
+	if ty == nil {
+		return
+	}
+	c.checkRuntimeExpressionAgainstType(function, param.DefaultVal, ty,
+		"default value for @"+param.Name)
+}
+
+// addIvarWriteWarning reports a direct-write contradiction in the standard
+// write-to shape, unwrapping the normalization mismatch when present.
+func (c *scriptChecker) addIvarWriteWarning(function string, pos Position, name string, err error) {
+	var mismatch *typeMismatchError
+	if errors.As(err, &mismatch) {
+		c.add(function, pos, "write to @%s expected %s, got %s", name, mismatch.Expected, mismatch.Actual)
+		return
+	}
+	c.add(function, pos, "write to @%s type check failed: %s", name, err)
 }
 
 // inferIvarAssignStatementTypes checks a direct write to an instance
@@ -120,10 +152,15 @@ func (c *scriptChecker) inferIvarAssignStatementTypes(function string, stmt *Ass
 	if ty == nil {
 		return
 	}
-	if stmt.Operator == "" {
-		next := c.inferExpressionType(stmt.Value)
-		if next != nil &&
-			validateTypeExprResolved(ty, c.runtimeTypeContext()) == nil &&
+	if stmt.Operator == "" && validateTypeExprResolved(ty, c.runtimeTypeContext()) == nil {
+		if val, ok := staticLiteralValue(stmt.Value); ok {
+			// An exact literal validates through normalization, which keeps
+			// value-level checks kind disjointness would miss: a symbol that
+			// names no member of the declared enum, for example.
+			if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
+				c.addIvarWriteWarning(function, stmt.Pos(), target.Name, err)
+			}
+		} else if next := c.inferExpressionType(stmt.Value); next != nil &&
 			typeExprsDisjoint(next, ty, c.checkNamedTypeResolver()) {
 			c.add(function, stmt.Pos(), "write to @%s expected %s, got %s",
 				target.Name, formatTypeExpr(ty), formatTypeExpr(next))

@@ -2562,6 +2562,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 					)
 				}
 			}
+			c.checkIvarParamDefault(label, fn, param)
 			c.recordParamBinding(param)
 			c.applyReachableParamFact(param)
 		}
@@ -11508,19 +11509,19 @@ func (c *scriptChecker) checkCallArgumentTypes(function string, call staticCallV
 		switch param.Kind {
 		case ParamNormal:
 			if argIdx < len(call.args) {
-				c.checkArgumentExpression(function, call.args[argIdx], c.effectiveParamContract(fn, param), name, param.Name)
+				c.checkIvarParamArgument(function, call.args[argIdx], fn, param, name)
 				argIdx++
 				continue
 			}
 			if kwIndex := keywordIndex(call, param.Name); kwIndex >= 0 {
-				c.checkArgumentExpression(function, call.kwargs[kwIndex].Value, c.effectiveParamContract(fn, param), name, param.Name)
+				c.checkIvarParamArgument(function, call.kwargs[kwIndex].Value, fn, param, name)
 				if usedKw != nil {
 					usedKw[param.Name] = true
 				}
 			}
 		case ParamKeyword:
 			if kwIndex := keywordIndex(call, param.Name); kwIndex >= 0 {
-				c.checkArgumentExpression(function, call.kwargs[kwIndex].Value, c.effectiveParamContract(fn, param), name, param.Name)
+				c.checkIvarParamArgument(function, call.kwargs[kwIndex].Value, fn, param, name)
 				if usedKw != nil {
 					usedKw[param.Name] = true
 				}
