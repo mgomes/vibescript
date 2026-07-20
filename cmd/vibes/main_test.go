@@ -414,6 +414,42 @@ end`},
 			wantErr: "argument value expected int, got string",
 		},
 		{
+			name: "check_only_reports_typed_contradiction_in_uncalled_function",
+			args: []string{"-check", "-e", `def takes_string(value: string)
+  value
+end
+
+def bad(value: int)
+  takes_string(value)
+end
+
+1`},
+			wantErr: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "check_only_reports_typed_contradiction_in_uncalled_method",
+			args: []string{"-check", "-e", `def takes_string(value: string)
+  value
+end
+
+class Holder
+  def bad(value: int)
+    takes_string(value)
+  end
+end
+
+2`},
+			wantErr: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "check_only_keeps_uncalled_unknowns_gradual",
+			args: []string{"-check", "-e", `def gradual(value)
+  value.whatever_member
+end
+
+3`},
+		},
+		{
 			name: "check_only_accepts_command_argument_regex",
 			args: []string{"-check", "-e", `def describe(re)
   re.source

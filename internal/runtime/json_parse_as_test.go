@@ -103,6 +103,49 @@ end
 	}
 }
 
+func TestJSONParseAsSupportsOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	// An absent optional field passes validation and reads as nil; a present
+	// one validates against the field type, including in nested shapes.
+	script := compileScript(t, `
+def run()
+  body = JSON.parse_as("{\"name\": \"Ada\", \"contact\": {\"email\": \"a@example.com\"}}", {
+    name: string,
+    age?: int,
+    contact?: { email: string, verified?: bool }
+  })
+  body["age"]
+end
+`)
+	requireNoCheckWarnings(t, script)
+	if got := callScript(t, context.Background(), script, "run", nil, CallOptions{}); got.Kind() != KindNil {
+		t.Fatalf("run() = %#v, want nil", got)
+	}
+
+	invalid := compileScript(t, `
+def run()
+  JSON.parse_as("{\"name\": \"Ada\", \"age\": \"36\"}", { name: string, age?: int })
+end
+`)
+	err := callScriptErr(t, context.Background(), invalid, "run", nil, CallOptions{})
+	want := "JSON.parse_as value expected { age?: int, name: string }, got { age: string, name: string }"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("run() error = %v, want substring %q", err, want)
+	}
+
+	missing := compileScript(t, `
+def run()
+  JSON.parse_as("{\"age\": 36}", { name: string, age?: int })
+end
+`)
+	err = callScriptErr(t, context.Background(), missing, "run", nil, CallOptions{})
+	want = "JSON.parse_as value expected { age?: int, name: string }, got { age: int }"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("run() error = %v, want substring %q", err, want)
+	}
+}
+
 func TestJSONParseAsAcceptsNestedShapesAndUnions(t *testing.T) {
 	t.Parallel()
 
@@ -137,6 +180,31 @@ end
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	if got.Kind() != KindString || got.String() != "Ada" {
 		t.Fatalf("run() = %#v, want \"Ada\"", got)
+	}
+}
+
+// Shape values compare by formatted text, so the contract with a literal
+// `valid?` field must not equal the contract with an optional `valid` field.
+func TestShapeValueEqualityDistinguishesOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  literal = { "valid?": bool }
+  optional = { valid?: bool }
+  [literal == optional, optional == { valid?: bool }]
+end
+`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindArray || len(got.Array()) != 2 {
+		t.Fatalf("run() = %#v, want two-element array", got)
+	}
+	if cross := got.Array()[0]; cross.Kind() != KindBool || cross.Bool() {
+		t.Fatalf("literal == optional = %#v, want false", cross)
+	}
+	if same := got.Array()[1]; same.Kind() != KindBool || !same.Bool() {
+		t.Fatalf("optional == optional = %#v, want true", same)
 	}
 }
 

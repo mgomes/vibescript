@@ -4414,6 +4414,14 @@ type staticCallSpec struct {
 	// names stay unknown. allowedKeywords, not this map, decides which
 	// keywords a call may pass.
 	keywordTypes map[string]*TypeExpr
+	// paramNames labels positional parameters in diagnostics, index-aligned
+	// with paramTypes; a missing or empty entry falls back to the position.
+	paramNames []string
+	// fromSignature marks a contract published by a host Signature. Host
+	// signature types resolve against the script's own scope, so an
+	// unresolved name is a guaranteed runtime rejection worth reporting;
+	// runtime-owned specs only use built-in kinds and never set this.
+	fromSignature bool
 	// resultType is the builtin's invariant result type; nil keeps the
 	// result unknown for argument-dependent or unmodeled builtins.
 	resultType *TypeExpr
@@ -4553,8 +4561,11 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if c.identifierShadowed(callee.Name) {
 			return staticCallable{}, false
 		}
-		if c.hostGlobalShadows(callee.Name) {
-			return staticCallable{}, false
+		if c.hostGlobalShadows(callee.Name) && c.optionGlobalsOverride {
+			// Call-option globals shadow same-named script bindings only in
+			// the checked script itself; a required module's own functions
+			// win at runtime over the parent call's globals.
+			return c.hostGlobalCallable(callee.Name)
 		}
 		if fn, ok := c.script.functions[callee.Name]; ok {
 			return staticCallable{name: callee.Name, fn: fn, resolution: calleeDirect}, true
@@ -4562,10 +4573,18 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if fn, ok := c.typeRootFunction(callee.Name); ok {
 			return staticCallable{name: callee.Name, fn: fn, resolution: calleeDirect}, true
 		}
+		if c.optionGlobalSeeded(callee.Name) {
+			return c.hostGlobalCallable(callee.Name)
+		}
 		if c.typeRootHasBinding(callee.Name) {
 			return staticCallable{}, false
 		}
 		if c.hostBuiltinOverrides(callee.Name) {
+			// A host override that publishes a signature keeps a static
+			// contract; one registered without a signature stays dynamic.
+			if spec, ok := c.defaultBuiltinCallSpec(callee.Name); ok {
+				return staticCallable{name: callee.Name, spec: spec}, true
+			}
 			return staticCallable{}, false
 		}
 		if spec, ok := c.defaultBuiltinCallSpec(callee.Name); ok {
@@ -4628,6 +4647,72 @@ func (c *scriptChecker) hostGlobalShadows(name string) bool {
 	return ok
 }
 
+// optionGlobalSeeded reports whether name resolves to the seeded call-option
+// global in this checking context: the global exists and the script's own
+// static bindings (functions, classes, enums) do not claim the name, which is
+// exactly when checkTypeRootWithParentAndGlobals defines the global on the
+// root. Required modules keep their own bindings ahead of parent globals.
+func (c *scriptChecker) optionGlobalSeeded(name string) bool {
+	if !c.hostGlobalShadows(name) {
+		return false
+	}
+	if c.script == nil {
+		return true
+	}
+	if _, ok := c.script.functions[name]; ok {
+		return false
+	}
+	if _, ok := c.script.classes[name]; ok {
+		return false
+	}
+	if _, ok := c.script.enums[name]; ok {
+		return false
+	}
+	return true
+}
+
+// hostGlobalCallable resolves a call-option global's published contract. A
+// host global without a signature stays fully dynamic.
+func (c *scriptChecker) hostGlobalCallable(name string) (staticCallable, bool) {
+	val, ok := c.optionGlobals[name]
+	if !ok {
+		return staticCallable{}, false
+	}
+	if spec, ok := builtinValueCallSpec(val); ok {
+		return staticCallable{name: name, spec: spec}, true
+	}
+	return staticCallable{}, false
+}
+
+// hostGlobalMemberCallable resolves a published contract from a host global
+// namespace member — a capability method, for example. Members without a
+// signature, non-namespace globals, and script-mutated members stay dynamic.
+func (c *scriptChecker) hostGlobalMemberCallable(object, property string) (staticCallable, bool) {
+	val, ok := c.optionGlobals[object]
+	if !ok || val.Kind() != KindObject {
+		return staticCallable{}, false
+	}
+	memberVal, ok := val.Hash()[property]
+	if !ok {
+		return staticCallable{}, false
+	}
+	if c.namespaceMemberMutated(object, property) {
+		return staticCallable{}, false
+	}
+	if spec, ok := builtinValueCallSpec(memberVal); ok {
+		return staticCallable{name: object + "." + property, spec: spec}, true
+	}
+	return staticCallable{}, false
+}
+
+func builtinValueCallSpec(val Value) (staticCallSpec, bool) {
+	builtin := valueBuiltin(val)
+	if builtin == nil || builtin.checkSpec == nil {
+		return staticCallSpec{}, false
+	}
+	return *builtin.checkSpec, true
+}
+
 func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallable, bool) {
 	// A local whose fact is a single script class resolves instance methods
 	// before the identifier paths below: typed locals are scope bindings, so
@@ -4645,8 +4730,8 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		if c.identifierShadowed(ident.Name) {
 			return staticCallable{}, false
 		}
-		if c.hostGlobalShadows(ident.Name) {
-			return staticCallable{}, false
+		if c.hostGlobalShadows(ident.Name) && c.optionGlobalsOverride {
+			return c.hostGlobalMemberCallable(ident.Name, member.Property)
 		}
 		if member.Property == "call" {
 			if fn, ok := c.typeRootFunctionValue(ident.Name); ok {
@@ -4678,20 +4763,24 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		if fn, ok := c.typeRootObjectFunction(ident.Name, member.Property); ok {
 			return staticCallable{name: ident.Name + "." + member.Property, fn: fn, resolution: calleeMemberValue}, true
 		}
+		if c.optionGlobalSeeded(ident.Name) {
+			return c.hostGlobalMemberCallable(ident.Name, member.Property)
+		}
 		if c.typeRootHasBinding(ident.Name) {
 			return staticCallable{}, false
 		}
-		if c.hostBuiltinOverrides(ident.Name) {
-			return staticCallable{}, false
-		}
 		if spec, ok := c.defaultBuiltinCallSpec(ident.Name + "." + member.Property); ok {
-			// A script that reassigns the namespace member (e.g. JSON.parse =
-			// parse) dispatches through the assigned value at runtime, so the
-			// builtin contract no longer applies.
+			// A host override without a published signature stays dynamic,
+			// and a script that reassigns the namespace member (e.g.
+			// JSON.parse = parse) dispatches through the assigned value at
+			// runtime, so the builtin contract no longer applies.
 			if c.namespaceMemberMutated(ident.Name, member.Property) {
 				return staticCallable{}, false
 			}
 			return staticCallable{name: ident.Name + "." + member.Property, spec: spec}, true
+		}
+		if c.hostBuiltinOverrides(ident.Name) {
+			return staticCallable{}, false
 		}
 	}
 	if className, ok := c.staticInstanceClass(member.Object); ok {
@@ -5077,87 +5166,6 @@ func staticBuiltinReceiverKind(expr Expression) (string, bool) {
 	return "", false
 }
 
-var staticMemberSpecs = map[string]staticCallSpec{
-	"array.at":     {minArgs: 1, maxArgs: 1, rejectKeywords: true, autoInvoke: true},
-	"array.fetch":  {minArgs: 1, maxArgs: 2, autoInvoke: true, usesBlock: true},
-	"array.slice":  {minArgs: 1, maxArgs: 2, rejectKeywords: true, autoInvoke: true},
-	"string.slice": {minArgs: 1, maxArgs: 2, autoInvoke: true},
-
-	// Callable scalar conversions are nullary auto-invoked builtins with
-	// invariant results (members_scalar.go, members_symbol.go,
-	// members_string.go, members_numeric.go, members_temporal.go).
-	"nil.to_s":        scalarMemberSpec(checkTypeString),
-	"nil.string":      scalarMemberSpec(checkTypeString),
-	"bool.to_s":       scalarMemberSpec(checkTypeString),
-	"bool.string":     scalarMemberSpec(checkTypeString),
-	"symbol.id2name":  scalarMemberSpec(checkTypeString),
-	"symbol.to_s":     scalarMemberSpec(checkTypeString),
-	"symbol.string":   scalarMemberSpec(checkTypeString),
-	"symbol.to_sym":   scalarMemberSpec(checkTypeSymbol),
-	"string.to_i":     scalarMemberSpec(checkTypeInt),
-	"string.to_f":     scalarMemberSpec(checkTypeFloat),
-	"string.to_s":     scalarMemberSpec(checkTypeString),
-	"string.string":   scalarMemberSpec(checkTypeString),
-	"string.to_sym":   scalarMemberSpec(checkTypeSymbol),
-	"string.intern":   scalarMemberSpec(checkTypeSymbol),
-	"int.to_i":        scalarMemberSpec(checkTypeInt),
-	"int.to_f":        scalarMemberSpec(checkTypeFloat),
-	"int.to_s":        scalarMemberSpec(checkTypeString),
-	"int.string":      scalarMemberSpec(checkTypeString),
-	"float.to_i":      scalarMemberSpec(checkTypeInt),
-	"float.to_f":      scalarMemberSpec(checkTypeFloat),
-	"float.to_s":      scalarMemberSpec(checkTypeString),
-	"float.string":    scalarMemberSpec(checkTypeString),
-	"money.to_s":      scalarMemberSpec(checkTypeString),
-	"money.string":    scalarMemberSpec(checkTypeString),
-	"duration.to_s":   scalarMemberSpec(checkTypeString),
-	"duration.string": scalarMemberSpec(checkTypeString),
-	// Temporal eql? methods own dispatch ahead of the universal fallback.
-	// They reject keywords but intentionally ignore a supplied block.
-	"duration.eql?": {minArgs: 1, maxArgs: 1, rejectKeywords: true, resultType: checkTypeBool},
-	"time.to_s":     scalarMemberSpec(checkTypeString),
-	"time.string":   scalarMemberSpec(checkTypeString),
-	"time.eql?":     {minArgs: 1, maxArgs: 1, rejectKeywords: true, resultType: checkTypeBool},
-	// range.to_a ignores a block at runtime, so it cannot use the stricter
-	// scalarMemberSpec contract shared by the other conversion builtins.
-	"range.to_a": {minArgs: 0, maxArgs: 0, rejectKeywords: true, autoInvoke: true, resultType: checkTypeIntArray},
-}
-
-// scalarMemberSpec is the contract shared by the nullary scalar conversion
-// members: no arguments, no keywords, no block, auto-invoked on a bare read.
-func scalarMemberSpec(result *TypeExpr) staticCallSpec {
-	return staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: result}
-}
-
-// staticMemberValueTypes records conversion-style temporal members that the
-// runtime exposes as direct values rather than builtins. They contribute a
-// result fact to a bare member read, but deliberately stay outside
-// staticMemberSpecs: `d.to_i()` attempts to call the returned int at runtime,
-// so it must not resolve as a conversion callable.
-var staticMemberValueTypes = map[string]*TypeExpr{
-	"duration.to_i": checkTypeInt,
-	"time.to_i":     checkTypeInt,
-	"time.tv_sec":   checkTypeInt,
-	"time.to_f":     checkTypeFloat,
-	"time.to_r":     checkTypeFloat,
-	"time.to_a":     checkTypeArray,
-}
-
-// universalMemberSpecs are the Object-level predicates with fixed boolean
-// results (members_universal.go). They apply only when every known receiver
-// arm dispatches them through the runtime universal fallback — no class
-// instances, whose user methods take precedence.
-var universalMemberSpecs = map[string]staticCallSpec{
-	"nil?":         {minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
-	"frozen?":      {minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
-	"eql?":         {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeBool},
-	"equal?":       {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeBool},
-	"respond_to?":  {minArgs: 1, maxArgs: 2, rejectKeywords: true, rejectBlock: true, autoInvoke: true, paramTypes: []*TypeExpr{checkTypeMethodName, checkTypeBool}, resultType: checkTypeBool},
-	"is_a?":        {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
-	"kind_of?":     {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
-	"instance_of?": {minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
-}
-
 func keywordSet(names ...string) map[string]struct{} {
 	out := make(map[string]struct{}, len(names))
 	for _, name := range names {
@@ -5204,10 +5212,32 @@ func (c *scriptChecker) checkBuiltinArgumentTypes(function string, call staticCa
 		if i >= len(spec.paramTypes) {
 			break
 		}
-		c.checkInferredArgument(function, arg, spec.paramTypes[i], name, strconv.Itoa(i+1))
+		label := strconv.Itoa(i + 1)
+		if i < len(spec.paramNames) && spec.paramNames[i] != "" {
+			label = spec.paramNames[i]
+		}
+		ty := spec.paramTypes[i]
+		if spec.fromSignature && ty != nil {
+			// A host signature naming a type the script never defines fails
+			// every call at the runtime boundary before the host function
+			// runs, so the call site reports it instead of silently skipping
+			// the unresolved declaration.
+			if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
+				c.add(function, arg.Pos(), "call to %s argument %s uses unknown type %s", name, label, formatTypeExpr(ty))
+				continue
+			}
+		}
+		c.checkInferredArgument(function, arg, ty, name, label)
 	}
 	for _, kwarg := range call.kwargs {
 		c.checkInferredArgument(function, kwarg.Value, spec.keywordTypes[kwarg.Name], name, kwarg.Name)
+	}
+	if spec.fromSignature && spec.resultType != nil {
+		// An unresolved result type rejects every successful call at the
+		// return boundary, whether or not the caller uses the result.
+		if err := validateTypeExprResolved(spec.resultType, c.runtimeTypeContext()); err != nil {
+			c.add(function, call.pos, "call to %s result uses unknown type %s", name, formatTypeExpr(spec.resultType))
+		}
 	}
 }
 
@@ -5533,14 +5563,17 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 					}
 					c.checkInferredArgument(function, rest.Value, fieldType, callName, paramName)
 				}
-				// Exact shapes require every field, so an absent keyword is a
-				// known normalization failure.
+				// Exact shapes require every non-optional field, so an absent
+				// required keyword is a known normalization failure.
 				missingPos := warningPos
 				if missingPos == (Position{}) {
 					missingPos = pos
 				}
 				fields := make([]string, 0, len(ty.Shape))
 				for field := range ty.Shape {
+					if shapeFieldOptional(ty.Shape[field]) {
+						continue
+					}
 					fields = append(fields, field)
 				}
 				sort.Strings(fields)

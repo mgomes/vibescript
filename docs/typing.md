@@ -24,6 +24,12 @@ Shape types for object/hash payload contracts:
 - `{ id: string, score: int }` requires exactly those keys
 - Field values are recursively type-checked
 - Extra keys and missing keys fail validation
+- A `?` on a field name marks the field optional: `{ name: string, age?: int }`
+  accepts payloads with or without `age`, and a present `age` must be an `int`
+- Optional is about presence, nullable about the value: `age?: int` rejects a
+  present `nil`, while `age?: int?` allows the field to be absent or `nil`
+- Fields stay required by default; a field whose name literally ends in `?`
+  is spelled with a string key (`{ "valid?": bool }`)
 
 Nullable: append `?` to allow `nil` (e.g., `string?`, `time?`, `int?`).
 
@@ -130,7 +136,8 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   known calls check argument types and expose their annotated return type.
 - Operators reject operands known to be invalid at runtime (`1 + nil`).
 - Shape-typed values carry field-level facts, so indexing with a known key
-  yields the field's type.
+  yields the field's type. Reading an optional field infers the field type
+  joined with `nil`, since the field may be absent.
 - Values the checker cannot prove (JSON payloads, host globals, dynamic
   dispatch) are never rejected; the runtime checks remain the final guard.
 - Core builtins with fixed contracts participate: `to_int("1")` is known to
@@ -180,6 +187,17 @@ body = JSON.parse_as(raw, {
 })
 
 create_user(body["name"])   # body["name"] is a known string
+```
+
+Optional fields fit JSON payloads whose keys may be omitted:
+
+```vibe
+body = JSON.parse_as(raw, {
+  name: string,
+  age?: int
+})
+
+body["age"]   # int | nil: present values validated as int, absent reads nil
 ```
 
 Shape literals are legal in expression position: a braced group whose field
@@ -265,7 +283,9 @@ def reward(payload: { id: string, points: int }) -> { id: string, points: int }
 end
 ```
 
-Shapes are strict. Missing or extra keys fail checks.
+Shapes are strict. Missing or extra keys fail checks. Mark a key that may be
+legitimately absent as optional (`points?: int`) instead of loosening the whole
+contract.
 
 ### 4) Annotate block signatures where callbacks matter
 
@@ -349,5 +369,6 @@ Unknown keyword arguments are strict for all function calls, including typed sig
   values. For example, `hash<int, string>` accepts a hash built with
   `h[1] = "one"`, and `hash<string, string>` accepts `{ "name": "Ada" }` but
   rejects the symbol-keyed `{ name: "Ada" }`.
-- Shape types are strict: keys must match exactly.
+- Shape types are strict: keys must match exactly, except fields marked
+  optional with `?`, which may be absent.
 - Type names are case-insensitive (`Int` == `int`).
