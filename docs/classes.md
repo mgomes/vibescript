@@ -153,6 +153,16 @@ setter rejects a wrong-typed assignment, and a typed getter enforces its return 
 on read — so reading a property whose backing ivar was never set raises unless the
 type is nullable (e.g. `int?`). Bare accessors without an annotation stay untyped.
 
+The declared type also guards the backing instance variable itself: a direct
+write such as `@name = value` — in a constructor, an ordinary method, or through
+an `@name` parameter — normalizes and validates like the generated setter's
+boundary, raising `instance variable @name expected string, got int` when the
+value is incompatible. The contract is the generated setter's parameter type
+when a generated setter exists, otherwise the generated getter's return type. A
+handwritten setter takes over the write path, so direct writes stay dynamic
+even beside a generated typed getter, and instance variables without a typed
+generated accessor stay fully dynamic.
+
 ## Operator And Index Methods
 
 As in Ruby, a class can define operator methods and the index protocol, and
