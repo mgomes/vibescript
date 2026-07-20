@@ -222,6 +222,25 @@ end
 	}
 }
 
+func TestOpenShapeLiteralIgnoresLocalShadowing(t *testing.T) {
+	t.Parallel()
+
+	// The `...` marker removes the braced group's hash reading, so the open
+	// shape literal stays a contract even when a type name is shadowed by a
+	// local; the closed spelling keeps its established hash fallback.
+	script := compileScript(t, `
+def run()
+  string = "local"
+  body = JSON.parse_as("{\"name\": \"Ada\", \"extra\": 1}", { name: string, ... })
+  body["name"]
+end
+`)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindString || got.String() != "Ada" {
+		t.Fatalf("run() = %#v, want \"Ada\"", got)
+	}
+}
+
 // Shape values compare by formatted text, so the contract with a literal
 // `valid?` field must not equal the contract with an optional `valid` field.
 func TestShapeValueEqualityDistinguishesOptionalFields(t *testing.T) {

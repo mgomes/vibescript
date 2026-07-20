@@ -347,6 +347,91 @@ end`
 	}
 }
 
+func TestParserOpenShapeBypassesHashDefaultHeuristics(t *testing.T) {
+	t.Parallel()
+
+	// The `...` marker removes any hash-literal reading, so field spellings
+	// that normally mark a braced group as a Ruby-style hash default — a
+	// nil-only field, an empty nested shape, at any nesting depth — stay open
+	// shape annotations.
+	source := `def f(p: { previous: nil, ... })
+  p
+end
+
+def g(q: { headers: {}, ... })
+  q
+end
+
+def h(r: { user: { previous: nil, ... } })
+  r
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	wants := []*ast.TypeExpr{
+		{
+			Kind: ast.TypeShape,
+			Open: true,
+			Shape: map[string]*ast.TypeExpr{
+				"previous": {Name: "nil", Kind: ast.TypeNil},
+			},
+		},
+		{
+			Kind: ast.TypeShape,
+			Open: true,
+			Shape: map[string]*ast.TypeExpr{
+				"headers": {Kind: ast.TypeShape, Shape: map[string]*ast.TypeExpr{}},
+			},
+		},
+		{
+			Kind: ast.TypeShape,
+			Shape: map[string]*ast.TypeExpr{
+				"user": {
+					Kind: ast.TypeShape,
+					Open: true,
+					Shape: map[string]*ast.TypeExpr{
+						"previous": {Name: "nil", Kind: ast.TypeNil},
+					},
+				},
+			},
+		},
+	}
+	for i, want := range wants {
+		fn, ok := got.Statements[i].(*ast.FunctionStmt)
+		if !ok {
+			t.Fatalf("statement %d: expected function statement, got %T", i, got.Statements[i])
+		}
+		if fn.Params[0].Type == nil {
+			t.Fatalf("statement %d: parameter parsed as hash default, want shape annotation", i)
+		}
+		if diff := cmp.Diff(want, fn.Params[0].Type, astCmpOpts); diff != "" {
+			t.Fatalf("statement %d type mismatch (-want +got):\n%s", i, diff)
+		}
+	}
+
+	// Closed groups keep the hash-default reading.
+	closed := `def f(opts: { previous: nil })
+  opts
+end`
+	got, errs = parseSource(t, closed)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors for closed group, got %v", errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("expected function statement, got %T", got.Statements[0])
+	}
+	if fn.Params[0].Type != nil {
+		t.Fatalf("closed group parsed as type %s, want hash default", ast.FormatTypeExpr(fn.Params[0].Type))
+	}
+	if fn.Params[0].DefaultVal == nil {
+		t.Fatalf("closed group missing hash default value")
+	}
+}
+
 func TestParserTypeShapeOpenMarkerMustBeLast(t *testing.T) {
 	t.Parallel()
 
