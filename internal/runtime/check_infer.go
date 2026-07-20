@@ -6196,6 +6196,22 @@ func (c *scriptChecker) applyContainerMutatorCallFacts(
 	return false, false, false
 }
 
+// typeExprProvablyNotHash reports a fact no arm of which can be a hash at
+// runtime: shapes are hashes, first-class shape values are not, and named
+// arms stay conservatively hash-possible (an enum's values are opaque).
+func typeExprProvablyNotHash(ty *TypeExpr) bool {
+	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
+		if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+			return true
+		}
+		switch arm.Kind {
+		case TypeHash, TypeShape, TypeEnum:
+			return false
+		}
+		return true
+	})
+}
+
 // hashBoundsContainerFree reports whether every key and value the bounds
 // admit is a scalar or nominal kind, so entries copied out of a source hash
 // share no mutable containers with it. Unknown and any-typed bounds stay
@@ -6490,6 +6506,27 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 		checkEntry(call.Args[1], valueBound, "value")
 		return preserved, true
 	case "merge!", "update":
+		// The runtime expands splats and validates every positional
+		// argument before merging any entries, so a provably non-array
+		// splat or non-hash argument makes the call raise before any entry
+		// lands: nothing may be diagnosed or modeled.
+		for _, arg := range call.Args {
+			if splat, isSplat := arg.(*SplatArg); isSplat {
+				if written := c.inferExpressionType(splat.Value); written != nil &&
+					typeExprArmsAll(written, func(arm *TypeExpr) bool {
+						if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+							return true
+						}
+						return arm.Kind != TypeArray
+					}) {
+					return false, true
+				}
+				continue
+			}
+			if written := c.mutatorCallArgumentFact(arg, argumentFacts); typeExprProvablyNotHash(written) {
+				return false, true
+			}
+		}
 		// A conflict block replaces the values of already-present keys with
 		// results the checker cannot know, so nothing preserves; entries
 		// whose keys provably cannot exist still store directly and keep

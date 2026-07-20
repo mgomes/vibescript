@@ -488,6 +488,22 @@ end
 `,
 		},
 		{
+			name: "provably non-hash merge argument aborts the call",
+			source: `
+def f(h: hash<string, int>)
+  h.merge!({ "a": "bad" }, 1)
+end
+`,
+		},
+		{
+			name: "provably non-array merge splat aborts the call",
+			source: `
+def f(h: hash<string, int>)
+  h.merge!(*1, { "a": "bad" })
+end
+`,
+		},
+		{
 			name: "mixed-key local merge into a union key bound stays silent",
 			source: `
 def f(h: hash<string | symbol, int>)
