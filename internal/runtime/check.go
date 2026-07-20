@@ -1551,7 +1551,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 	defer popScope()
 	popNameScope := c.pushFunctionNameScope(fn)
 	defer popNameScope()
-	c.seedInstanceIvarFacts()
+	c.seedInstanceIvarFacts(label, fn)
 
 	var usedKw map[string]bool
 	if len(kwargs) > 0 {
@@ -2535,7 +2535,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		defer popScope()
 		popNameScope := c.pushFunctionNameScope(fn)
 		defer popNameScope()
-		c.seedInstanceIvarFacts()
+		c.seedInstanceIvarFacts(label, fn)
 
 		c.linkReachableParamAliases(fn.Params)
 		for i, param := range fn.Params {
@@ -11508,19 +11508,19 @@ func (c *scriptChecker) checkCallArgumentTypes(function string, call staticCallV
 		switch param.Kind {
 		case ParamNormal:
 			if argIdx < len(call.args) {
-				c.checkArgumentExpression(function, call.args[argIdx], param.Type, name, param.Name)
+				c.checkArgumentExpression(function, call.args[argIdx], c.effectiveParamContract(fn, param), name, param.Name)
 				argIdx++
 				continue
 			}
 			if kwIndex := keywordIndex(call, param.Name); kwIndex >= 0 {
-				c.checkArgumentExpression(function, call.kwargs[kwIndex].Value, param.Type, name, param.Name)
+				c.checkArgumentExpression(function, call.kwargs[kwIndex].Value, c.effectiveParamContract(fn, param), name, param.Name)
 				if usedKw != nil {
 					usedKw[param.Name] = true
 				}
 			}
 		case ParamKeyword:
 			if kwIndex := keywordIndex(call, param.Name); kwIndex >= 0 {
-				c.checkArgumentExpression(function, call.kwargs[kwIndex].Value, param.Type, name, param.Name)
+				c.checkArgumentExpression(function, call.kwargs[kwIndex].Value, c.effectiveParamContract(fn, param), name, param.Name)
 				if usedKw != nil {
 					usedKw[param.Name] = true
 				}

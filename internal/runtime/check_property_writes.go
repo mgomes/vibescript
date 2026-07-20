@@ -38,21 +38,74 @@ func (c *scriptChecker) ivarContractFact(ty *TypeExpr) *TypeExpr {
 // instance variable of the class under check. The seed widens the declared
 // contract with nil: an instance variable that was never written reads as
 // nil regardless of its declared type, while every executed write satisfies
-// the contract — statically or through the runtime guard.
-func (c *scriptChecker) seedInstanceIvarFacts() {
+// the contract — statically or through the runtime guard. Ivar parameters
+// are direct writes that bind before the body runs, so they refine their
+// ivar's fact to the bare contract, and an annotation or default value that
+// provably contradicts the contract warns at the definition: every call
+// would fail during parameter binding.
+func (c *scriptChecker) seedInstanceIvarFacts(function string, fn *ScriptFunction) {
 	if c.selfClass == nil || c.selfClassContext {
 		return
 	}
-	for _, fn := range c.selfClass.Methods {
-		if fn.Accessor == functionAccessorNone || fn.AccessorName == "" {
+	for _, method := range c.selfClass.Methods {
+		if method.Accessor == functionAccessorNone || method.AccessorName == "" {
 			continue
 		}
-		fact := c.ivarContractFact(c.instanceIvarContract(fn.AccessorName))
+		fact := c.ivarContractFact(c.instanceIvarContract(method.AccessorName))
 		if fact == nil {
 			continue
 		}
-		c.bindLocalTypeInCurrentFrame(ivarFactKey(fn.AccessorName), unionTypeExprs(fact, checkTypeNil))
+		c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), unionTypeExprs(fact, checkTypeNil))
 	}
+	if fn == nil {
+		return
+	}
+	for _, param := range fn.Params {
+		ty := c.ivarParamContract(fn, param)
+		if ty == nil || validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
+			continue
+		}
+		if param.Type != nil &&
+			validateTypeExprResolved(param.Type, c.runtimeTypeContext()) == nil &&
+			typeExprsDisjoint(param.Type, ty, c.checkNamedTypeResolver()) {
+			c.add(function, param.Type.Position, "write to @%s expected %s, got %s",
+				param.Name, formatTypeExpr(ty), formatTypeExpr(param.Type))
+		}
+		if param.Type == nil && param.DefaultVal != nil {
+			c.checkRuntimeExpressionAgainstType(function, param.DefaultVal, ty,
+				"default value for @"+param.Name)
+		}
+		if fact := c.ivarContractFact(ty); fact != nil {
+			c.bindLocalTypeInCurrentFrame(ivarFactKey(param.Name), fact)
+		}
+	}
+}
+
+// ivarParamContract returns the property contract backing an ivar parameter
+// of fn, resolved through the class that owns the method. Parameters of
+// plain functions and ivars without a typed generated accessor have none.
+func (c *scriptChecker) ivarParamContract(fn *ScriptFunction, param Param) *TypeExpr {
+	if !param.IsIvar {
+		return nil
+	}
+	classDef := c.selfScopeFnClasses[fn]
+	if classDef == nil {
+		return nil
+	}
+	_, ty := propertyContract(classDef, param.Name)
+	return ty
+}
+
+// effectiveParamContract is the boundary contract a caller must satisfy for
+// param: its own annotation when present, otherwise the property contract
+// backing an ivar parameter. The runtime validates the annotation at binding
+// and the property contract at the ivar store, so an unannotated ivar
+// parameter still rejects incompatible values.
+func (c *scriptChecker) effectiveParamContract(fn *ScriptFunction, param Param) *TypeExpr {
+	if param.Type != nil {
+		return param.Type
+	}
+	return c.ivarParamContract(fn, param)
 }
 
 // inferIvarAssignStatementTypes checks a direct write to an instance
