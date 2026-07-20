@@ -26,3 +26,17 @@ type Builtins = map[string]value.Value
 func MemberCompletionNames() map[string][]string {
 	return runtime.MemberCompletionNames()
 }
+
+// MemberParam is one positional parameter of a builtin member contract.
+type MemberParam = runtime.MemberParam
+
+// MemberContract is the registered contract of one builtin member method:
+// receiver kind, name and aliases, call shape, and effect metadata.
+type MemberContract = runtime.MemberContract
+
+// MemberContracts returns the registered builtin member contracts, for
+// editor tooling such as LSP completion. The runtime registry backing it
+// also drives the static checker's member call validation.
+func MemberContracts() []MemberContract {
+	return runtime.MemberContracts()
+}
