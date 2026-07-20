@@ -1992,7 +1992,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *BreakStmt:
 		c.checkExpression(function, typed.Value)
 	case *AssignStmt:
-		c.checkExpression(function, typed.Target)
+		if typed.Operator == "" {
+			c.checkAssignTargetExpression(function, typed.Target)
+		} else {
+			// A compound assignment reads the target before writing it, so
+			// the target keeps ordinary read semantics.
+			c.checkExpression(function, typed.Target)
+		}
 		c.checkExpression(function, typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
@@ -2519,6 +2525,23 @@ func (c *scriptChecker) checkReturnStatementType(function string, returnType *Ty
 
 func (c *scriptChecker) checkExpression(function string, expr Expression) {
 	c.checkExpressionWithAuto(function, expr, true)
+}
+
+// checkAssignTargetExpression walks a plain assignment target. Binding roots
+// (identifiers and destructure elements) are never evaluated at runtime, so
+// they must not auto-invoke a same-named zero-arg function; index and member
+// targets still evaluate their objects and indices as ordinary reads.
+func (c *scriptChecker) checkAssignTargetExpression(function string, target Expression) {
+	switch typed := target.(type) {
+	case *Identifier:
+		c.checkExpressionWithAuto(function, typed, false)
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			c.checkAssignTargetExpression(function, element.Target)
+		}
+	default:
+		c.checkExpression(function, target)
+	}
 }
 
 func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression, autoCall bool) {

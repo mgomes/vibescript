@@ -514,6 +514,32 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "assignment targets do not auto-invoke shadowed functions",
+			source: `
+def replacement(value)
+  1
+end
+
+def install_serializer()
+  JSON.stringify = replacement
+end
+
+def shadow()
+  install_serializer = 1
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(shadow())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
