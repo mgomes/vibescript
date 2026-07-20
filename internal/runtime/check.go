@@ -1551,6 +1551,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 	defer popScope()
 	popNameScope := c.pushFunctionNameScope(fn)
 	defer popNameScope()
+	c.seedInstanceIvarFacts()
 
 	var usedKw map[string]bool
 	if len(kwargs) > 0 {
@@ -2534,6 +2535,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		defer popScope()
 		popNameScope := c.pushFunctionNameScope(fn)
 		defer popNameScope()
+		c.seedInstanceIvarFacts()
 
 		c.linkReachableParamAliases(fn.Params)
 		for i, param := range fn.Params {

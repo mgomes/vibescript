@@ -2308,6 +2308,8 @@ func (c *scriptChecker) inferAssignStatementTypes(
 				c.linkContainerAlias(target.Name, root)
 			}
 		}
+	case *IvarExpr:
+		c.inferIvarAssignStatementTypes(function, stmt, target)
 	case *DestructureTarget:
 		valueFacts := c.captureDestructureValueFacts(target, stmt.Value)
 		c.bindCapturedDestructureValueFacts(valueFacts)
@@ -4923,6 +4925,8 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 			return ty
 		}
 		return c.autoInvokedBuiltinResultFact(typed.Name)
+	case *IvarExpr:
+		return c.localTypeFor(ivarFactKey(typed.Name))
 	case *MemberExpr:
 		return c.memberResultFact(typed)
 	case *UnaryExpr:
