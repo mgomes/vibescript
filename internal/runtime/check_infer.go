@@ -7085,6 +7085,14 @@ func shapeVsTypedHashDisjoint(shape, hash *TypeExpr, resolve namedTypeResolver) 
 			keyType = checkTypeString
 		case shapeKeysSymbolMarker:
 			keyType = checkTypeSymbol
+		case shapeKeysMixedMarker:
+			// Mixed keys witness both a non-symbol and a non-string key, so
+			// a key bound admitting only one of those representations is
+			// provably violated by the other witness.
+			if typeExprArmsAll(hash.TypeArgs[0], func(arm *TypeExpr) bool { return arm.Kind == TypeString }) ||
+				typeExprArmsAll(hash.TypeArgs[0], func(arm *TypeExpr) bool { return arm.Kind == TypeSymbol }) {
+				return true
+			}
 		}
 		if keyType != nil && typeExprsDisjoint(keyType, hash.TypeArgs[0], resolve) {
 			return true

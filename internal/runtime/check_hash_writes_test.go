@@ -102,6 +102,30 @@ end
 			warning: "write to h expected value int, got bool",
 		},
 		{
+			name: "mixed-key local merge argument contradicts a single-representation bound",
+			source: `
+def f(h: hash<string, int>)
+  bad = { a: 1, "b": 2 }
+  h.merge!(bad)
+end
+`,
+			warning: "write to h expected hash<string, int>, got",
+		},
+		{
+			name: "mixed-key local contradicts a symbol-keyed boundary",
+			source: `
+def g(h: hash<symbol, int>)
+  h
+end
+
+def f
+  bad = { a: 1, "b": 2 }
+  g(bad)
+end
+`,
+			warning: "call to g argument h expected hash<symbol, int>, got",
+		},
+		{
 			name: "mixed-key merge literal diagnoses each entry",
 			source: `
 def f(h: hash<string, int>)
@@ -405,6 +429,15 @@ def f
   h["a"] = 1
   h[:a] = "s"
   takes_string(h["a"])
+end
+`,
+		},
+		{
+			name: "mixed-key local merge into a union key bound stays silent",
+			source: `
+def f(h: hash<string | symbol, int>)
+  bad = { a: 1, "b": 2 }
+  h.merge!(bad)
 end
 `,
 		},
