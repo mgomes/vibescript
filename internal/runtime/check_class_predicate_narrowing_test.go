@@ -209,6 +209,26 @@ end
 `,
 		},
 		{
+			name: "method class var write disables narrowing",
+			source: `
+class Holder
+  def initialize()
+  end
+
+  def stash(v)
+    @@User = v
+  end
+
+  def check(u: User | Order)
+    unless u.is_a?(User)
+      takes_order(u)
+    end
+    u
+  end
+end
+`,
+		},
+		{
 			name: "unknown receiver stays unknown",
 			source: `
 def run(u)

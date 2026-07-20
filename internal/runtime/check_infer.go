@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -1073,14 +1074,8 @@ func (c *scriptChecker) selfClassMayBindConstant(cl *ClassDef, name string) bool
 			return true
 		}
 	}
-	for _, stmt := range cl.Body {
-		assign, ok := stmt.(*AssignStmt)
-		if !ok {
-			continue
-		}
-		if target, ok := assign.Target.(*Identifier); ok && target.Name == name {
-			return true
-		}
+	if classDefAssignsName(cl, name) {
+		return true
 	}
 	// IncludedModules is the flattened transitive closure, so one level of
 	// adopted-constant lookup covers every reachable module.
@@ -1097,17 +1092,95 @@ func (c *scriptChecker) selfClassMayBindConstant(cl *ClassDef, name string) bool
 				return true
 			}
 		}
-		for _, stmt := range moduleDef.Body {
-			assign, ok := stmt.(*AssignStmt)
-			if !ok {
-				continue
-			}
-			if target, ok := assign.Target.(*Identifier); ok && target.Name == name {
-				return true
-			}
+		if classDefAssignsName(moduleDef, name) {
+			return true
 		}
 	}
 	return false
+}
+
+// classDefAssignsName reports whether the class body or any of its methods
+// contains an assignment whose target could bind name on the class — a bare
+// identifier in the body, or a class-var write anywhere. The walk is
+// reflective so destructuring targets and future statement forms stay
+// covered.
+func classDefAssignsName(cl *ClassDef, name string) bool {
+	if astAssignsName(cl.Body, name) {
+		return true
+	}
+	for _, fn := range cl.Methods {
+		if fn != nil && astAssignsName(fn.Body, name) {
+			return true
+		}
+	}
+	for _, fn := range cl.ClassMethods {
+		if fn != nil && astAssignsName(fn.Body, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// astAssignsName walks the subtree for AssignStmt nodes whose target subtree
+// names name as an identifier or class-var write.
+func astAssignsName(root any, name string) bool {
+	found := false
+	walkASTValue(reflect.ValueOf(root), 0, func(node any) {
+		assign, ok := node.(*AssignStmt)
+		if !ok || found {
+			return
+		}
+		walkASTValue(reflect.ValueOf(assign.Target), 0, func(target any) {
+			switch typed := target.(type) {
+			case *Identifier:
+				if typed.Name == name {
+					found = true
+				}
+			case *ClassVarExpr:
+				if typed.Name == name {
+					found = true
+				}
+			}
+		})
+	})
+	return found
+}
+
+const maxASTWalkDepth = 200
+
+// walkASTValue reflectively visits every node reachable from v, invoking
+// visit for each addressable struct pointer. The AST is acyclic; the depth
+// cap guards pathological inputs.
+func walkASTValue(v reflect.Value, depth int, visit func(any)) {
+	if depth > maxASTWalkDepth || !v.IsValid() {
+		return
+	}
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface:
+		if v.IsNil() {
+			return
+		}
+		if v.Kind() == reflect.Ptr && v.Elem().Kind() == reflect.Struct && v.CanInterface() {
+			visit(v.Interface())
+		}
+		walkASTValue(v.Elem(), depth+1, visit)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			field := v.Field(i)
+			if !field.CanInterface() {
+				continue
+			}
+			walkASTValue(field, depth+1, visit)
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			walkASTValue(v.Index(i), depth+1, visit)
+		}
+	case reflect.Map:
+		for _, key := range v.MapKeys() {
+			walkASTValue(v.MapIndex(key), depth+1, visit)
+		}
+	}
 }
 
 // classPredicateArmUsesUniversalDispatch reports whether a known fact arm must
