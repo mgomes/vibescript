@@ -471,6 +471,36 @@ end
 `))
 }
 
+// An ||= write on a falsey (in particular unset) property assigns the RHS
+// through the same runtime guard as a plain write, so a provably
+// incompatible RHS warns; compatible and callable-preserving spellings stay
+// quiet.
+func TestCheckOrAssignIvarWrites(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class Counter
+  property seed: string
+
+  def default_bad
+    @seed ||= 2
+  end
+end
+`), "write to @seed expected string, got int")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class Counter
+  property seed: string
+  property cb: function
+
+  def defaults
+    @seed ||= "s"
+    @cb ||= rand
+  end
+end
+`))
+}
+
 // A skipped &&= write leaves an unset property nil, so the fact keeps its
 // nil arm and the falsey branch stays reachable for diagnostics.
 func TestCheckAndAssignKeepsNilArm(t *testing.T) {
