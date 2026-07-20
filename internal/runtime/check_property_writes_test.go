@@ -326,6 +326,64 @@ end
 `))
 }
 
+// Instance variables inside destructuring targets check like bare ivar
+// writes when the element values are known, and stay gradual otherwise.
+func TestCheckDestructuredIvarWrites(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class Counter
+  property count: int
+  property label: string
+
+  def initialize
+    @count, @label = 1, 2
+  end
+end
+`), "write to @label expected string, got int")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class Counter
+  property count: int
+  property label: string
+
+  def initialize
+    @count, @label = 1, "c"
+  end
+
+  def adopt(pair)
+    @count, @label = pair
+  end
+
+  def spread(items)
+    @count, *rest = items
+    rest
+  end
+end
+`))
+}
+
+// A skipped &&= write leaves an unset property nil, so the fact keeps its
+// nil arm and the falsey branch stays reachable for diagnostics.
+func TestCheckAndAssignKeepsNilArm(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def check
+    @name &&= "x"
+    if @name
+      "set"
+    else
+      1 + nil
+    end
+  end
+end
+`), "unsupported addition operands int and nil")
+}
+
 // A literal write validates through normalization, not only kind
 // disjointness: a symbol that names no member of the declared enum warns
 // even though symbols as a kind coerce into enums.
