@@ -369,7 +369,12 @@ func compileClassDef(stmt *ClassStmt, qualifiedName string, classes map[string]*
 		Body:         stmt.Body,
 	}
 	if len(stmt.Members) == 0 {
-		return compileClassDefLegacyOrder(stmt, classDef)
+		compiled, err := compileClassDefLegacyOrder(stmt, classDef)
+		if err != nil {
+			return nil, err
+		}
+		resolvePropertyParamContracts(compiled)
+		return compiled, nil
 	}
 	// Section directives (`private` on its own line) apply to every
 	// definition that follows them until another section directive, matching
@@ -429,6 +434,7 @@ func compileClassDef(stmt *ClassStmt, qualifiedName string, classes map[string]*
 			}
 		}
 	}
+	resolvePropertyParamContracts(classDef)
 	return classDef, nil
 }
 

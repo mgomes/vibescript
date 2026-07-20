@@ -28,10 +28,10 @@ import (
 // CheckOrderIndependentWarnings returns the whole-script check warnings that
 // hold regardless of which function runs first or what state earlier calls
 // established: undefined value/function names and typed block parameters
-// contradicted by literal receivers. vibes run -check -e uses it to cover
-// snippet functions the entrypoint never calls, where state-sensitive
-// warnings (for example a type annotation that resolves only after a require
-// in the entrypoint runs) would misfire.
+// contradicted by literal receivers. Hosts that check functions outside any
+// entrypoint execution order use it where state-sensitive warnings (for
+// example a type annotation that resolves only after a require in the
+// entrypoint runs) would misfire.
 //
 // The pass checks against empty CallOptions, so hosts that inject Globals or
 // Capabilities should prefer CheckWarningsWithOptions with their real

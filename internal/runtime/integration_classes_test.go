@@ -100,6 +100,7 @@ func TestTypedAccessors(t *testing.T) {
 class User
   property name: string
   getter age: int
+  getter level: int
   setter tag: string
 
   def initialize(name, age)
@@ -130,8 +131,12 @@ def good_tag
   u.raw_tag
 end
 
-def bad_name_read
-  User.new(1, 30).name
+def bad_name_write_in_constructor
+  User.new(1, 30)
+end
+
+def bad_level_read
+  User.new("ada", 30).level
 end
 
 def bad_name_write
@@ -154,7 +159,8 @@ end
 	if got := callFunc(t, script, "good_tag", nil); !got.Equal(NewString("vip")) {
 		t.Fatalf("good_tag = %v, want \"vip\"", got)
 	}
-	requireCallErrorContains(t, script, "bad_name_read", nil, CallOptions{}, "return value for name expected string")
+	requireCallErrorContains(t, script, "bad_name_write_in_constructor", nil, CallOptions{}, "instance variable @name expected string, got int")
+	requireCallErrorContains(t, script, "bad_level_read", nil, CallOptions{}, "return value for level expected int")
 	requireCallErrorContains(t, script, "bad_name_write", nil, CallOptions{}, "expected string")
 	requireCallErrorContains(t, script, "bad_tag_write", nil, CallOptions{}, "expected string")
 }
@@ -226,7 +232,7 @@ def bad_nominal_arg
   user_name("Ada")
 end
 
-def bad_getter_return
+def bad_direct_write
   User.new("Ada").corrupt_name
 end
 `)
@@ -237,7 +243,7 @@ end
 	requireCallErrorContains(t, script, "bad_name_setter", nil, CallOptions{}, "argument value expected string, got int")
 	requireCallErrorContains(t, script, "bad_friend_setter", nil, CallOptions{}, "argument value expected User, got string")
 	requireCallErrorContains(t, script, "bad_nominal_arg", nil, CallOptions{}, "argument user expected User, got string")
-	requireCallErrorContains(t, script, "bad_getter_return", nil, CallOptions{}, "return value for name expected string, got int")
+	requireCallErrorContains(t, script, "bad_direct_write", nil, CallOptions{}, "instance variable @name expected string, got int")
 }
 
 func TestExactClassTypeWinsOverCaseInsensitiveEnumFallback(t *testing.T) {

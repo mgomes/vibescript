@@ -496,6 +496,31 @@ func appendAccessibleMethodNames(candidates []string, methods map[string]*Script
 	return candidates
 }
 
+// ownMemberNames returns the per-kind member-name lists exactly as the
+// typed dispatch tables own them, without the universal fallback helpers.
+// The registry-completeness gate consumes it: a receiver-owned member needs
+// a receiver-specific contract or exemption even when a universal helper
+// shares its name (duration and time dispatch their own eql?).
+func ownMemberNames() map[string][]string {
+	return map[string][]string{
+		"string":   stringMemberNames,
+		"symbol":   symbolMemberNames,
+		"array":    arrayMemberNames,
+		"hash":     hashMemberNames,
+		"int":      intMemberNames,
+		"float":    floatMemberNames,
+		"money":    moneyMemberNames,
+		"duration": durationMemberNames,
+		"time":     timeMemberNames,
+		"range":    rangeMemberNames,
+		"function": functionMemberNames,
+		"block":    blockMemberNames,
+		"nil":      nilMemberNames,
+		"bool":     boolMemberNames,
+		"regex":    regexMemberNames,
+	}
+}
+
 // MemberCompletionNames returns the builtin member-method names per
 // receiver type, for editor tooling such as LSP completion. The slices
 // are copies; callers may sort or mutate them freely. Each type's list
@@ -504,21 +529,10 @@ func appendAccessibleMethodNames(candidates []string, methods map[string]*Script
 // instance_of?), which resolve on every value through resolveMember's fallback
 // even though they live outside the per-kind dispatch switches.
 func MemberCompletionNames() map[string][]string {
-	return map[string][]string{
-		"string":   withUniversalMembers(stringMemberNames),
-		"symbol":   withUniversalMembers(symbolMemberNames),
-		"array":    withUniversalMembers(arrayMemberNames),
-		"hash":     withUniversalMembers(hashMemberNames),
-		"int":      withUniversalMembers(intMemberNames),
-		"float":    withUniversalMembers(floatMemberNames),
-		"money":    withUniversalMembers(moneyMemberNames),
-		"duration": withUniversalMembers(durationMemberNames),
-		"time":     withUniversalMembers(timeMemberNames),
-		"range":    withUniversalMembers(rangeMemberNames),
-		"function": withUniversalMembers(functionMemberNames),
-		"block":    withUniversalMembers(blockMemberNames),
-		"nil":      withUniversalMembers(nilMemberNames),
-		"bool":     withUniversalMembers(boolMemberNames),
-		"regex":    withUniversalMembers(regexMemberNames),
+	own := ownMemberNames()
+	out := make(map[string][]string, len(own))
+	for receiver, names := range own {
+		out[receiver] = withUniversalMembers(names)
 	}
+	return out
 }

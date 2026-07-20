@@ -324,6 +324,21 @@ func (e *Engine) RegisterZeroArgBuiltin(name string, fn BuiltinFunc) {
 	e.registerHostBuiltin(name, NewAutoBuiltin(name, fn))
 }
 
+// RegisterBuiltinWithSignature registers a callable global that publishes an
+// opt-in static contract: the checker validates known arguments and infers
+// the declared result, and the same contract is enforced at runtime. When the
+// name replaces a core builtin, the published signature supersedes the core
+// contract; registering with RegisterBuiltin instead keeps the callable fully
+// dynamic.
+func (e *Engine) RegisterBuiltinWithSignature(name string, fn BuiltinFunc, sig Signature) error {
+	val, err := NewTypedBuiltin(name, fn, sig)
+	if err != nil {
+		return err
+	}
+	e.registerHostBuiltin(name, val)
+	return nil
+}
+
 func (e *Engine) hasHostBuiltin(name string) bool {
 	if e == nil {
 		return false
@@ -499,6 +514,7 @@ func cloneBuiltinValue(val Value) Value {
 		cloned := newBuiltin(builtin.Name, builtin.Fn, builtin.AutoInvoke)
 		clonedBuiltin := valueBuiltin(cloned)
 		clonedBuiltin.checkSpec = builtin.checkSpec
+		clonedBuiltin.SignatureParams = builtin.SignatureParams
 		clonedBuiltin.OptionsHashTarget = builtin.OptionsHashTarget
 		clonedBuiltin.DirectCallAlias = builtin.DirectCallAlias
 		clonedBuiltin.DirectCallAliasPos = builtin.DirectCallAliasPos
