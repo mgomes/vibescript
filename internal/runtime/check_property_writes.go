@@ -142,31 +142,94 @@ func (c *scriptChecker) addIvarWriteWarning(function string, pos Position, name 
 
 // inferIvarAssignStatementTypes checks a direct write to an instance
 // variable against its declared property contract and updates the ivar's
-// fact. Plain writes warn when the value's known type is provably disjoint
-// from the contract; compound and logical writes stay quiet and rely on the
-// runtime guard. Any executed write leaves the ivar satisfying its contract
-// and a typed ivar can never return to the unset state, so the post-write
-// fact is the contract itself, without the entry nil arm.
+// fact. Plain writes warn when the value's known type is provably
+// incompatible with the contract; compound and logical writes stay quiet
+// and rely on the runtime guard.
 func (c *scriptChecker) inferIvarAssignStatementTypes(function string, stmt *AssignStmt, target *IvarExpr) {
-	ty := c.instanceIvarContract(target.Name)
+	if stmt.Operator == tokenAndAssign {
+		// A falsey current value short-circuits &&= without assigning, so an
+		// unset property keeps its nil arm and the fact must not refine to
+		// the bare contract.
+		return
+	}
+	var value Expression
+	if stmt.Operator == "" {
+		value = stmt.Value
+	}
+	c.checkIvarWrite(function, stmt.Pos(), target.Name, value)
+}
+
+// checkIvarWrite applies the property-contract check for one direct write
+// to the named instance variable and refines its fact. value is nil when
+// the written value is not statically known (compound operators,
+// destructured elements without a literal source); unknown writes stay
+// quiet and rely on the runtime guard. Any executed write leaves the ivar
+// satisfying its contract and a typed ivar can never return to the unset
+// state, so the post-write fact is the contract itself, without the entry
+// nil arm.
+func (c *scriptChecker) checkIvarWrite(function string, pos Position, name string, value Expression) {
+	ty := c.instanceIvarContract(name)
 	if ty == nil {
 		return
 	}
-	if stmt.Operator == "" && validateTypeExprResolved(ty, c.runtimeTypeContext()) == nil {
-		if val, ok := staticLiteralValue(stmt.Value); ok {
+	if value != nil && validateTypeExprResolved(ty, c.runtimeTypeContext()) == nil {
+		if val, ok := staticLiteralValue(value); ok {
 			// An exact literal validates through normalization, which keeps
 			// value-level checks kind disjointness would miss: a symbol that
 			// names no member of the declared enum, for example.
 			if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
-				c.addIvarWriteWarning(function, stmt.Pos(), target.Name, err)
+				c.addIvarWriteWarning(function, pos, name, err)
 			}
-		} else if next := c.inferExpressionType(stmt.Value); next != nil &&
+		} else if next := c.inferExpressionType(value); next != nil &&
 			typeExprsDisjoint(next, ty, c.checkNamedTypeResolver()) {
-			c.add(function, stmt.Pos(), "write to @%s expected %s, got %s",
-				target.Name, formatTypeExpr(ty), formatTypeExpr(next))
+			c.add(function, pos, "write to @%s expected %s, got %s",
+				name, formatTypeExpr(ty), formatTypeExpr(next))
 		}
 	}
 	if fact := c.ivarContractFact(ty); fact != nil {
-		c.bindLocalType(ivarFactKey(target.Name), fact)
+		c.bindLocalType(ivarFactKey(name), fact)
 	}
+}
+
+// inferDestructureIvarWrites routes instance-variable targets inside a
+// destructuring assignment through the property-contract check. Element
+// values are known only when the right-hand side is a literal element list
+// that maps index for index with no rest element on the target side and no
+// splat on the value side; every other spelling checks as an unknown write
+// and still refines the ivar's fact.
+func (c *scriptChecker) inferDestructureIvarWrites(function string, value Expression, target *DestructureTarget) {
+	values := destructureElementValueExprs(value, target)
+	for i, element := range target.Elements {
+		var elementValue Expression
+		if values != nil {
+			elementValue = values[i]
+		}
+		switch elementTarget := element.Target.(type) {
+		case *IvarExpr:
+			c.checkIvarWrite(function, elementTarget.Pos(), elementTarget.Name, elementValue)
+		case *DestructureTarget:
+			c.inferDestructureIvarWrites(function, elementValue, elementTarget)
+		}
+	}
+}
+
+// destructureElementValueExprs returns the per-element value expressions of
+// a destructuring assignment when they map index for index, or nil when the
+// element values are not statically known.
+func destructureElementValueExprs(value Expression, target *DestructureTarget) []Expression {
+	arr, ok := value.(*ArrayLiteral)
+	if !ok || len(arr.Elements) != len(target.Elements) {
+		return nil
+	}
+	for _, element := range target.Elements {
+		if element.Rest {
+			return nil
+		}
+	}
+	for _, expr := range arr.Elements {
+		if _, ok := expr.(*SplatArg); ok {
+			return nil
+		}
+	}
+	return arr.Elements
 }

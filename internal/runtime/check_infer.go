@@ -2313,6 +2313,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 	case *DestructureTarget:
 		valueFacts := c.captureDestructureValueFacts(target, stmt.Value)
 		c.bindCapturedDestructureValueFacts(valueFacts)
+		c.inferDestructureIvarWrites(function, stmt.Value, target)
 	case *IndexExpr:
 		// An index write mutates the container in place; a direct write
 		// against a declared array<T>, hash<K, V>, or shape fact is checked
