@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -49,12 +50,29 @@ func (r *returnSummaryCollector) sawReturn() bool {
 // plain function of the checked script. Summaries are computed lazily so a
 // caller can recursively summarize its callees without depending on function
 // name order. Annotated functions and functions of other scripts stay unknown.
-func (c *scriptChecker) scriptFunctionReturnSummary(fn *ScriptFunction) *TypeExpr {
+func (c *scriptChecker) scriptFunctionReturnSummary(call *CallExpr, fn *ScriptFunction) *TypeExpr {
 	owned, ok := c.resolveOwnedPlainFunction(fn)
 	if !ok || owned.ReturnTy != nil {
 		return nil
 	}
-	return c.functionReturnSummary(owned)
+	return c.functionReturnSummary(owned, callRunnableDefaults(call, owned))
+}
+
+// callRunnableDefaults reports the defaulted parameter indices this call
+// shape may leave unsupplied, so the summary walk evaluates exactly the
+// defaults the runtime would. A nil call (a bare auto-invoke) runs every
+// default.
+func callRunnableDefaults(call *CallExpr, fn *ScriptFunction) []int {
+	var indices []int
+	for i, param := range fn.Params {
+		if param.DefaultVal == nil {
+			continue
+		}
+		if call == nil || callMayEvaluateParamDefault(call, fn, i) {
+			indices = append(indices, i)
+		}
+	}
+	return indices
 }
 
 // resolveOwnedPlainFunction maps a resolved callee to the checked script's
@@ -80,15 +98,15 @@ func (c *scriptChecker) resolveOwnedPlainFunction(fn *ScriptFunction) (*ScriptFu
 	return nil, false
 }
 
-// functionReturnSummary computes (and caches) the summary for one function.
-// A recursive or mutually recursive call reaches the in-progress guard,
-// infers as unknown, and poisons the dependent summary, so cycles terminate
-// with the conservative answer.
-func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction) *TypeExpr {
+// functionReturnSummary computes (and caches) the summary for one function
+// under one set of runnable defaults. A recursive or mutually recursive call
+// reaches the in-progress guard, infers as unknown, and poisons the
+// dependent summary, so cycles terminate with the conservative answer.
+func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaults []int) *TypeExpr {
 	if fn == nil || fn.ReturnTy != nil {
 		return nil
 	}
-	key := c.returnSummaryCacheKey(fn)
+	key := c.returnSummaryCacheKey(fn, runnableDefaults)
 	if summary, ok := c.returnSummaries[key]; ok {
 		return summary
 	}
@@ -105,7 +123,7 @@ func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction) *TypeExpr {
 	if len(fn.Body) == 0 {
 		summary = checkTypeNil
 	} else {
-		collector := c.collectFunctionReturnFacts(fn)
+		collector := c.collectFunctionReturnFacts(fn, runnableDefaults)
 		if !collector.unknown && len(collector.arms) > 0 {
 			summary = unionTypeExprs(collector.arms...)
 		}
@@ -120,8 +138,9 @@ func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction) *TypeExpr {
 // returnSummaryCacheKey separates summaries computed under different runtime
 // bindings. A required module or a reassigned namespace member can change a
 // callee from statically known to dynamic, so reusing a fact across those
-// states would make the checker unsound.
-func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction) returnSummaryCacheKey {
+// states would make the checker unsound; different call shapes run different
+// parameter defaults, so their effects separate the key too.
+func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaults []int) returnSummaryCacheKey {
 	root := c.runtimeTypeRoot
 	if root == nil {
 		root = c.typeRoot
@@ -135,13 +154,17 @@ func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction) returnSummaryC
 		sort.Strings(members)
 		context += "\x00" + strings.Join(members, "\x00")
 	}
+	if len(runnableDefaults) > 0 {
+		context += "\x01defaults:" + fmt.Sprint(runnableDefaults)
+	}
 	return returnSummaryCacheKey{fn: fn, context: context}
 }
 
 // collectFunctionReturnFacts walks the function body with warnings
 // suppressed and every piece of walk state walled off, recording return-site
-// facts as the walk reaches them and implicit-final facts afterwards.
-func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction) *returnSummaryCollector {
+// facts as the walk reaches them and implicit-final facts afterwards. Only
+// the defaults the summarized call shape may evaluate are walked.
+func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableDefaults []int) *returnSummaryCollector {
 	collector := &returnSummaryCollector{}
 	c.withSuppressedWarnings(func() {
 		runtimeState := c.snapshotRuntimeState()
@@ -194,12 +217,20 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction) *returnSu
 		defer popScope()
 		popNameScope := c.pushFunctionNameScope(fn)
 		defer popNameScope()
-		for _, param := range fn.Params {
+		runnable := make(map[int]struct{}, len(runnableDefaults))
+		for _, index := range runnableDefaults {
+			runnable[index] = struct{}{}
+		}
+		for i, param := range fn.Params {
 			// An omitted argument runs the default expression before the
 			// body, so its effects (a require's exports, a namespace write)
-			// must be live for the body walk, mirroring checkFunction.
-			c.checkExpression(fn.Name, param.DefaultVal)
-			c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
+			// must be live for the body walk, mirroring checkFunction. A
+			// default the summarized call shape provably supplies never
+			// runs and contributes nothing.
+			if _, mayRun := runnable[i]; mayRun {
+				c.checkExpression(fn.Name, param.DefaultVal)
+				c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
+			}
 			c.recordParamBinding(param)
 		}
 		if c.checkStatements(fn.Name, nil, fn.Body) {

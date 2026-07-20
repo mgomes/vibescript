@@ -540,6 +540,31 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "supplied call shape skips the default in the summary",
+			source: `
+def replacement(value)
+  1
+end
+
+def install_serializer()
+  JSON.stringify = replacement
+end
+
+def serialize(_ = install_serializer())
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(serialize(1))
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
