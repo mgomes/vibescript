@@ -183,3 +183,46 @@ func TestCheckedCallStopsBindingAtFirstFailure(t *testing.T) {
 		t.Fatal("second adapter bound after the first failed; Call would never reach it")
 	}
 }
+
+type dupContractAdapter struct{}
+
+func (dupContractAdapter) Bind(vibes.CapabilityBinding) (map[string]value.Value, error) {
+	return map[string]value.Value{}, nil
+}
+
+func (dupContractAdapter) CapabilityContracts() map[string]vibes.CapabilityMethodContract {
+	return map[string]vibes.CapabilityMethodContract{" ": {}}
+}
+
+func TestCheckedCallMirrorsContractValidation(t *testing.T) {
+	t.Parallel()
+
+	engine := vibes.MustNewEngine(vibes.Config{})
+	script, err := engine.Compile("def run()\n  1\nend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, warnings, err := script.CheckedCall(context.Background(), "run", nil, vibes.CallOptions{Capabilities: []vibes.CapabilityAdapter{dupContractAdapter{}}})
+	if len(warnings) != 0 || err == nil || !strings.Contains(err.Error(), "capability contract method name must be non-empty") {
+		t.Fatalf("CheckedCall(blank contract) = warnings %v, err %v; want the same validation error Call reports", warnings, err)
+	}
+}
+
+func TestCheckedCallStopsWhenBindCancels(t *testing.T) {
+	t.Parallel()
+
+	engine := vibes.MustNewEngine(vibes.Config{})
+	script, err := engine.Compile("def run()\n  1\nend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	canceling := vibes.MustNewContextCapability("request", func(context.Context) (value.Value, error) {
+		cancel()
+		return value.NewHash(map[string]value.Value{}), nil
+	})
+	_, warnings, err := script.CheckedCall(ctx, "run", nil, vibes.CallOptions{Capabilities: []vibes.CapabilityAdapter{canceling}})
+	if len(warnings) != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("CheckedCall(bind cancels) = warnings %v, err %v; want context.Canceled before checker work", warnings, err)
+	}
+}

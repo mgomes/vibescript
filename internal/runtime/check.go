@@ -208,16 +208,40 @@ func checkOptionGlobals(ctx context.Context, script *Script, opts CallOptions) (
 	globals := make(map[string]Value, len(opts.Globals)+len(opts.Capabilities)*2)
 	if script != nil {
 		binding := CapabilityBinding{Context: ctx, Engine: script.engine}
+		seenContracts := make(map[string]struct{})
 		for _, adapter := range opts.Capabilities {
 			if adapter == nil {
 				continue
 			}
+			// Execution validates contract names before invoking Bind and
+			// stops at the first failure (bindCapabilitiesForCall); the gate
+			// mirrors that order so it never touches a surface the call
+			// would not.
+			if provider, ok := adapter.(CapabilityContractProvider); ok {
+				for methodName := range provider.CapabilityContracts() {
+					name := strings.TrimSpace(methodName)
+					if name == "" {
+						bindErr = fmt.Errorf("capability contract method name must be non-empty")
+						break
+					}
+					if _, exists := seenContracts[name]; exists {
+						bindErr = fmt.Errorf("duplicate capability contract for %s", name)
+						break
+					}
+					seenContracts[name] = struct{}{}
+				}
+				if bindErr != nil {
+					break
+				}
+			}
 			bound, err := adapter.Bind(binding)
 			if err != nil {
-				// Execution stops at the first bind failure
-				// (bindCapabilitiesForCall), so later adapters must not run
-				// here either — the gate may not touch surfaces the call
-				// never would.
+				bindErr = err
+				break
+			}
+			// Execution checks the context after each successful bind; a
+			// cancellation must stop the gate before any checker work runs.
+			if err := ctx.Err(); err != nil {
 				bindErr = err
 				break
 			}
