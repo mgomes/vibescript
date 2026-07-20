@@ -428,6 +428,10 @@ func collectMutationCandidateRootsFromExpression(expr Expression, out *[]Express
 		}
 	case *SplatArg:
 		collectMutationCandidateRootsFromExpression(typed.Value, out)
+	case *TypeLiteral:
+		if typed.Fallback != nil {
+			collectMutationCandidateRootsFromExpression(typed.Fallback, out)
+		}
 	case *UnaryExpr:
 		collectMutationCandidateRootsFromExpression(typed.Right, out)
 	case *BinaryExpr:
@@ -2078,6 +2082,16 @@ func (c *scriptChecker) poisonEscapedIdentifier(expr Expression) {
 // holding when expr escapes into unfollowed code: a bare container-typed
 // identifier, or a projection whose value may itself be a mutable container.
 func (c *scriptChecker) escapePoisonTarget(expr Expression) (string, bool) {
+	// A statically shadowed type literal evaluates its value reading, so the
+	// escaping value is the fallback identifier's (a container local named
+	// array, for example); an unshadowed literal escapes only a fresh type
+	// value and poisons nothing.
+	if lit, ok := expr.(*TypeLiteral); ok {
+		if !c.typeLiteralStaticallyShadowed(lit) {
+			return "", false
+		}
+		expr = lit.Fallback
+	}
 	name, ok := rootIdentifierName(expr)
 	if !ok {
 		return "", false
