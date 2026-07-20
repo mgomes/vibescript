@@ -228,6 +228,34 @@ end
 			warning: "write to rows expected element array<int>, got string",
 		},
 		{
+			name: "safe navigation mutator checks the nullable bound",
+			source: `
+def f(items: array<int>?)
+  items&.push("bad")
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "plain mutator call checks the nullable bound",
+			source: `
+def f(items: array<int>?)
+  items.push("bad")
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible safe navigation mutator preserves the nullable bound",
+			source: `
+def f(items: array<int>?)
+  items&.push(1)
+  items&.push("bad")
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "pushed child local keeps the bound until it mutates",
 			source: `
 def f(rows: array<array<int>>)

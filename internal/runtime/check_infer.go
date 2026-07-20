@@ -1892,7 +1892,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 	if !ok {
 		return false, false
 	}
-	elem := declaredArrayElementType(receiverFact)
+	elem := declaredArrayElementType(nonNilMutatorReceiverFact(receiverFact))
 	if elem == nil {
 		return false, false
 	}
@@ -2010,6 +2010,39 @@ func splattedElementBound(ty *TypeExpr) *TypeExpr {
 // same fact the writes were checked against.
 func mutatorReceiverFactIntact(current, captured *TypeExpr) bool {
 	return current != nil && typeFactKey(current) == typeFactKey(captured)
+}
+
+// nonNilMutatorReceiverFact strips the nil possibility from a mutator
+// receiver's fact: dispatch only proceeds on the non-nil path (safe
+// navigation skips nil and a plain member call on nil raises), so the
+// non-nil arm bounds the writes that actually land. Preservation still
+// compares the original fact — a nullable receiver stays nullable.
+func nonNilMutatorReceiverFact(ty *TypeExpr) *TypeExpr {
+	if ty == nil {
+		return nil
+	}
+	if ty.Nullable {
+		clone := *ty
+		clone.Nullable = false
+		return &clone
+	}
+	if ty.Kind != TypeUnion {
+		return ty
+	}
+	arms, ok := typeExprArms(ty, 0)
+	if !ok {
+		return ty
+	}
+	kept := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		if arm.Kind != TypeNil {
+			kept = append(kept, arm)
+		}
+	}
+	if len(kept) == len(arms) {
+		return ty
+	}
+	return unionTypeExprs(kept...)
 }
 
 // expressionContainsBlockLiteral reports whether evaluating expr can run a
