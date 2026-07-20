@@ -326,6 +326,101 @@ end
 `))
 }
 
+// A literal write validates through normalization, not only kind
+// disjointness: a symbol that names no member of the declared enum warns
+// even though symbols as a kind coerce into enums.
+func TestCheckTypedPropertyLiteralWriteNormalizes(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+enum Status
+  Draft
+  Published
+end
+
+class Post
+  property status: Status
+
+  def initialize
+    @status = :bogus
+  end
+end
+`), "write to @status expected Status")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+enum Status
+  Draft
+  Published
+end
+
+class Post
+  property status: Status
+
+  def initialize
+    @status = :published
+  end
+end
+`))
+}
+
+// An annotated ivar parameter's call sites check the property store contract
+// as well as the annotation: a value can satisfy the annotation and still
+// provably fail the ivar store at binding.
+func TestCheckAnnotatedIvarParamStoreContract(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def initialize(@name: string | int)
+  end
+end
+
+def make
+  User.new(1)
+end
+`), "call to User.new argument name expected string, got int")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def initialize(@name: string | int)
+  end
+end
+
+def make
+  User.new("ada")
+end
+`))
+}
+
+// An ivar parameter default checks against the property contract with the
+// facts of the parameters bound before it, matching the runtime's binding
+// order.
+func TestCheckIvarParamDefaultAfterPriorParams(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def initialize(seed: int = 1, @name = seed)
+  end
+end
+`), "default value for @name expected string, got int")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def initialize(seed: string = "s", @name = seed)
+  end
+end
+`))
+}
+
 // Reads observe the seeded contract: an unwritten typed ivar reads as the
 // declared type or nil, and a checked write drops the entry nil arm.
 func TestCheckTypedPropertyReadFacts(t *testing.T) {
