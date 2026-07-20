@@ -48,6 +48,7 @@ func TestPureMemberCallsPreserveReceiverFacts(t *testing.T) {
 		// A declared scalar result cannot alias the receiver's interior,
 		// so predicates preserve even nested-container facts.
 		{"scalar-result predicate on nested receiver", "def probe()\n  a = [[1]]\n  a.nil?\n  takes(a)\nend", "array<array<int>>"},
+		{"scalar-result predicate on callable interior", "def probe()\n  f = lambda { 1 }\n  a = [f]\n  a.nil?\n  takes(a)\nend", "array<function>"},
 		{"chained pure calls", "def probe()\n  a = [1, 2, 3]\n  a.slice(0, 1).at(0)\n  takes(a)\nend", "array<int>"},
 		{"alias of pure receiver", "def probe()\n  a = [1, 2, 3]\n  b = a\n  a.at(0)\n  takes(b)\nend", "array<int>"},
 		{"safe navigation pure call", "def probe(a: array<int>?)\n  a&.at(0)\n  takes(a)\nend", "array<int>?"},
@@ -89,6 +90,12 @@ func TestUnclassifiedMemberCallsStillPoisonReceiverFacts(t *testing.T) {
 		{"nested interior slice", "def probe()\n  a = [[1]]\n  a.slice(0, 1)\n  takes(a)\nend"},
 		{"nested interior safe navigation", "def probe(a: array<array<int>>?)\n  a&.at(0)\n  takes(a)\nend"},
 		{"untyped interior read", "def probe(a: array)\n  a.at(0)\n  takes(a)\nend"},
+		// A stored callable read out of the receiver can close over it and
+		// mutate it when invoked later (a.at(0).call() leaves no
+		// identifier receiver for escapePoisonTarget to trace), so a
+		// may-include-callable interior is a receiver escape too.
+		{"callable interior read", "def probe()\n  f = lambda { 1 }\n  a = [f]\n  a.at(0)\n  takes(a)\nend"},
+		{"callable interior read typed", "def probe(a: array<function>)\n  a.at(0)\n  takes(a)\nend"},
 		{"mutator inside loop", "def probe(cond: bool)\n  a = [1, 2, 3]\n  while cond\n    a.push(9)\n  end\n  takes(a)\nend"},
 		{"mutator inside block", "def probe()\n  a = [1, 2, 3]\n  3.times { a.push(9) }\n  takes(a)\nend"},
 		{"nested interior read inside loop", "def probe(cond: bool)\n  a = [[1]]\n  while cond\n    a.at(0)\n  end\n  takes(a)\nend"},

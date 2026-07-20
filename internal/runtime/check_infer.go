@@ -1117,20 +1117,20 @@ func (c *scriptChecker) memberDispatchPreservesReceiverFacts(member *MemberExpr)
 }
 
 // typeArmMemberResultMayAliasInterior reports whether the member's result on
-// one receiver arm may reference a mutable container stored inside the
-// receiver. An arm whose interior provably holds no mutable containers has
-// nothing to alias; otherwise only a declared result that can never be a
-// mutable container (predicates and conversions return fresh scalars)
-// proves the call does not hand back an interior reference.
+// one receiver arm may still reach into the receiver. An arm whose interior
+// provably holds neither mutable containers nor callables has nothing to
+// hand out; otherwise only a declared result that can never be a mutable
+// container or a callable (predicates and conversions return fresh scalars)
+// proves the call does not leak an interior reference.
 func typeArmMemberResultMayAliasInterior(arm *TypeExpr, property string) bool {
 	if arm == nil {
 		return true
 	}
-	if !typeArmInteriorMayHoldContainer(arm) {
+	if !typeArmInteriorMayEscape(arm) {
 		return false
 	}
 	result, known := typeArmMemberResultType(arm, property)
-	return !known || result == nil || typeExprMayHoldMutableContainer(result)
+	return !known || result == nil || typeExprMayEscapeReceiverInterior(result)
 }
 
 // typeArmMemberResultType resolves the declared result type of the
@@ -1165,24 +1165,25 @@ func typeArmMemberResultType(arm *TypeExpr, property string) (*TypeExpr, bool) {
 	return nil, false
 }
 
-// typeArmInteriorMayHoldContainer reports whether values stored inside one
-// receiver arm may themselves be mutable containers, so a member reading
-// the interior could hand the caller a mutable alias into it.
-func typeArmInteriorMayHoldContainer(arm *TypeExpr) bool {
+// typeArmInteriorMayEscape reports whether values stored inside one
+// receiver arm could reach back into it after being read out: a nested
+// mutable container aliases its storage directly, and a stored callable
+// can close over the receiver and mutate it when invoked later.
+func typeArmInteriorMayEscape(arm *TypeExpr) bool {
 	switch arm.Kind {
 	case TypeArray:
 		if len(arm.TypeArgs) != 1 {
 			return true
 		}
-		return typeExprMayHoldMutableContainer(arm.TypeArgs[0])
+		return typeExprMayEscapeReceiverInterior(arm.TypeArgs[0])
 	case TypeHash:
 		if len(arm.TypeArgs) != 2 {
 			return true
 		}
-		return typeExprMayHoldMutableContainer(arm.TypeArgs[1])
+		return typeExprMayEscapeReceiverInterior(arm.TypeArgs[1])
 	case TypeShape:
 		for _, field := range arm.Shape {
-			if typeExprMayHoldMutableContainer(field) {
+			if typeExprMayEscapeReceiverInterior(field) {
 				return true
 			}
 		}
@@ -1192,10 +1193,16 @@ func typeArmInteriorMayHoldContainer(arm *TypeExpr) bool {
 	return false
 }
 
-// typeExprMayHoldMutableContainer reports whether a type may describe a
-// mutable container value; unknown types stay conservative.
-func typeExprMayHoldMutableContainer(ty *TypeExpr) bool {
+// typeExprMayEscapeReceiverInterior reports whether a value of this type,
+// handed out of a receiver's interior, could still reach the receiver: a
+// mutable container aliases its storage, and a callable can run user code
+// that mutates the receiver through a captured alias. Unknown types stay
+// conservative.
+func typeExprMayEscapeReceiverInterior(ty *TypeExpr) bool {
 	if ty == nil {
+		return true
+	}
+	if typeExprMayIncludeCallable(ty) {
 		return true
 	}
 	arms, ok := typeExprArms(ty, 0)
