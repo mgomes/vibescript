@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/mgomes/vibescript/internal/parser"
@@ -58,7 +59,7 @@ func NewTypedBuiltin(name string, fn BuiltinFunc, sig Signature) (Value, error) 
 		if err != nil || spec.resultType == nil {
 			return result, err
 		}
-		validated, err := normalizeValueForType(result, spec.resultType, signatureTypeContext(exec))
+		validated, err := signatureNormalize(exec, result, spec.resultType)
 		if err != nil {
 			if isHostControlSignal(err) || isNormalizationLimitError(err) {
 				return NewNil(), err
@@ -168,7 +169,7 @@ func validateSignatureCall(exec *Execution, name string, sig Signature, paramTyp
 		if ty == nil {
 			continue
 		}
-		val, err := normalizeValueForType(arg, ty, signatureTypeContext(exec))
+		val, err := signatureNormalize(exec, arg, ty)
 		if err != nil {
 			if isHostControlSignal(err) || isNormalizationLimitError(err) {
 				return nil, err
@@ -182,6 +183,47 @@ func validateSignatureCall(exec *Execution, name string, sig Signature, paramTyp
 		normalized[i] = val
 	}
 	return normalized, nil
+}
+
+// signatureNormalize validates a value against a signature type. Named class
+// contracts additionally accept an instance whose class matches the resolved
+// definition by name and owner: signature validation runs against the
+// execution's root context, while instances are built from per-call clones,
+// so the pointer identity the shared normalizer uses is too strict here.
+func signatureNormalize(exec *Execution, val Value, ty *TypeExpr) (Value, error) {
+	out, err := normalizeValueForType(val, ty, signatureTypeContext(exec))
+	if err == nil {
+		return out, nil
+	}
+	var mismatch *typeMismatchError
+	if errors.As(err, &mismatch) && signatureInstanceMatchesNamed(exec, val, ty) {
+		return val, nil
+	}
+	return out, err
+}
+
+// signatureInstanceMatchesNamed reports whether val is an instance of the
+// class the named type resolves to, comparing definitions the clone-safe way
+// (same name, same owner script) and honoring module contracts by include.
+func signatureInstanceMatchesNamed(exec *Execution, val Value, ty *TypeExpr) bool {
+	if ty == nil || ty.Kind != TypeEnum || val.Kind() != KindInstance {
+		return false
+	}
+	inst := valueInstance(val)
+	if inst == nil || inst.Class == nil {
+		return false
+	}
+	match, ok, err := lookupNamedTypeForType(ty, signatureTypeContext(exec))
+	if err != nil || !ok || match.class == nil {
+		return false
+	}
+	if match.class.IsModule {
+		return classIncludesModule(inst.Class, match.class.Name)
+	}
+	if inst.Class.Name != match.class.Name {
+		return false
+	}
+	return inst.Class.owner != nil && inst.Class.owner == match.class.owner
 }
 
 // signatureTypeContext resolves signature type spellings the way annotated
