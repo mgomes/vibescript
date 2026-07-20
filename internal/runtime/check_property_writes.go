@@ -156,7 +156,12 @@ func (c *scriptChecker) inferIvarAssignStatementTypes(function string, stmt *Ass
 		return
 	}
 	var value Expression
-	if stmt.Operator == "" {
+	if stmt.Operator == "" || stmt.Operator == tokenOrAssign {
+		// A plain write always stores the right-hand side, and ||= stores it
+		// whenever the current value is falsey — an unset property in
+		// particular — through the same runtime guard, so a known RHS checks
+		// against the contract either way. Arithmetic compounds derive their
+		// stored value from both operands and stay unknown.
 		value = stmt.Value
 	}
 	c.checkIvarWrite(function, stmt.Pos(), target.Name, value)
