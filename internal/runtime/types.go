@@ -125,6 +125,14 @@ func formatArgumentTypeMismatch(name string, err error) string {
 	return fmt.Sprintf("argument %s type check failed: %s", name, err.Error())
 }
 
+func formatIvarTypeMismatch(name string, err error) string {
+	var mismatch *typeMismatchError
+	if errors.As(err, &mismatch) {
+		return fmt.Sprintf("instance variable @%s expected %s, got %s", name, mismatch.Expected, mismatch.Actual)
+	}
+	return fmt.Sprintf("instance variable @%s type check failed: %s", name, err.Error())
+}
+
 func formatReturnTypeMismatch(fnName string, err error) string {
 	var mismatch *typeMismatchError
 	if errors.As(err, &mismatch) {
