@@ -4410,6 +4410,14 @@ type staticCallSpec struct {
 	// names stay unknown. allowedKeywords, not this map, decides which
 	// keywords a call may pass.
 	keywordTypes map[string]*TypeExpr
+	// paramNames labels positional parameters in diagnostics, index-aligned
+	// with paramTypes; a missing or empty entry falls back to the position.
+	paramNames []string
+	// fromSignature marks a contract published by a host Signature. Host
+	// signature types resolve against the script's own scope, so an
+	// unresolved name is a guaranteed runtime rejection worth reporting;
+	// runtime-owned specs only use built-in kinds and never set this.
+	fromSignature bool
 	// resultType is the builtin's invariant result type; nil keeps the
 	// result unknown for argument-dependent or unmodeled builtins.
 	resultType *TypeExpr
@@ -4549,8 +4557,11 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if c.identifierShadowed(callee.Name) {
 			return staticCallable{}, false
 		}
-		if c.hostGlobalShadows(callee.Name) {
-			return staticCallable{}, false
+		if c.hostGlobalShadows(callee.Name) && c.optionGlobalsOverride {
+			// Call-option globals shadow same-named script bindings only in
+			// the checked script itself; a required module's own functions
+			// win at runtime over the parent call's globals.
+			return c.hostGlobalCallable(callee.Name)
 		}
 		if fn, ok := c.script.functions[callee.Name]; ok {
 			return staticCallable{name: callee.Name, fn: fn, resolution: calleeDirect}, true
@@ -4558,10 +4569,18 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if fn, ok := c.typeRootFunction(callee.Name); ok {
 			return staticCallable{name: callee.Name, fn: fn, resolution: calleeDirect}, true
 		}
+		if c.optionGlobalSeeded(callee.Name) {
+			return c.hostGlobalCallable(callee.Name)
+		}
 		if c.typeRootHasBinding(callee.Name) {
 			return staticCallable{}, false
 		}
 		if c.hostBuiltinOverrides(callee.Name) {
+			// A host override that publishes a signature keeps a static
+			// contract; one registered without a signature stays dynamic.
+			if spec, ok := c.defaultBuiltinCallSpec(callee.Name); ok {
+				return staticCallable{name: callee.Name, spec: spec}, true
+			}
 			return staticCallable{}, false
 		}
 		if spec, ok := c.defaultBuiltinCallSpec(callee.Name); ok {
@@ -4624,6 +4643,72 @@ func (c *scriptChecker) hostGlobalShadows(name string) bool {
 	return ok
 }
 
+// optionGlobalSeeded reports whether name resolves to the seeded call-option
+// global in this checking context: the global exists and the script's own
+// static bindings (functions, classes, enums) do not claim the name, which is
+// exactly when checkTypeRootWithParentAndGlobals defines the global on the
+// root. Required modules keep their own bindings ahead of parent globals.
+func (c *scriptChecker) optionGlobalSeeded(name string) bool {
+	if !c.hostGlobalShadows(name) {
+		return false
+	}
+	if c.script == nil {
+		return true
+	}
+	if _, ok := c.script.functions[name]; ok {
+		return false
+	}
+	if _, ok := c.script.classes[name]; ok {
+		return false
+	}
+	if _, ok := c.script.enums[name]; ok {
+		return false
+	}
+	return true
+}
+
+// hostGlobalCallable resolves a call-option global's published contract. A
+// host global without a signature stays fully dynamic.
+func (c *scriptChecker) hostGlobalCallable(name string) (staticCallable, bool) {
+	val, ok := c.optionGlobals[name]
+	if !ok {
+		return staticCallable{}, false
+	}
+	if spec, ok := builtinValueCallSpec(val); ok {
+		return staticCallable{name: name, spec: spec}, true
+	}
+	return staticCallable{}, false
+}
+
+// hostGlobalMemberCallable resolves a published contract from a host global
+// namespace member — a capability method, for example. Members without a
+// signature, non-namespace globals, and script-mutated members stay dynamic.
+func (c *scriptChecker) hostGlobalMemberCallable(object, property string) (staticCallable, bool) {
+	val, ok := c.optionGlobals[object]
+	if !ok || val.Kind() != KindObject {
+		return staticCallable{}, false
+	}
+	memberVal, ok := val.Hash()[property]
+	if !ok {
+		return staticCallable{}, false
+	}
+	if c.namespaceMemberMutated(object, property) {
+		return staticCallable{}, false
+	}
+	if spec, ok := builtinValueCallSpec(memberVal); ok {
+		return staticCallable{name: object + "." + property, spec: spec}, true
+	}
+	return staticCallable{}, false
+}
+
+func builtinValueCallSpec(val Value) (staticCallSpec, bool) {
+	builtin := valueBuiltin(val)
+	if builtin == nil || builtin.checkSpec == nil {
+		return staticCallSpec{}, false
+	}
+	return *builtin.checkSpec, true
+}
+
 func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallable, bool) {
 	// A local whose fact is a single script class resolves instance methods
 	// before the identifier paths below: typed locals are scope bindings, so
@@ -4641,8 +4726,8 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		if c.identifierShadowed(ident.Name) {
 			return staticCallable{}, false
 		}
-		if c.hostGlobalShadows(ident.Name) {
-			return staticCallable{}, false
+		if c.hostGlobalShadows(ident.Name) && c.optionGlobalsOverride {
+			return c.hostGlobalMemberCallable(ident.Name, member.Property)
 		}
 		if member.Property == "call" {
 			if fn, ok := c.typeRootFunctionValue(ident.Name); ok {
@@ -4674,20 +4759,24 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		if fn, ok := c.typeRootObjectFunction(ident.Name, member.Property); ok {
 			return staticCallable{name: ident.Name + "." + member.Property, fn: fn, resolution: calleeMemberValue}, true
 		}
+		if c.optionGlobalSeeded(ident.Name) {
+			return c.hostGlobalMemberCallable(ident.Name, member.Property)
+		}
 		if c.typeRootHasBinding(ident.Name) {
 			return staticCallable{}, false
 		}
-		if c.hostBuiltinOverrides(ident.Name) {
-			return staticCallable{}, false
-		}
 		if spec, ok := c.defaultBuiltinCallSpec(ident.Name + "." + member.Property); ok {
-			// A script that reassigns the namespace member (e.g. JSON.parse =
-			// parse) dispatches through the assigned value at runtime, so the
-			// builtin contract no longer applies.
+			// A host override without a published signature stays dynamic,
+			// and a script that reassigns the namespace member (e.g.
+			// JSON.parse = parse) dispatches through the assigned value at
+			// runtime, so the builtin contract no longer applies.
 			if c.namespaceMemberMutated(ident.Name, member.Property) {
 				return staticCallable{}, false
 			}
 			return staticCallable{name: ident.Name + "." + member.Property, spec: spec}, true
+		}
+		if c.hostBuiltinOverrides(ident.Name) {
+			return staticCallable{}, false
 		}
 	}
 	if className, ok := c.staticInstanceClass(member.Object); ok {
@@ -5119,10 +5208,32 @@ func (c *scriptChecker) checkBuiltinArgumentTypes(function string, call staticCa
 		if i >= len(spec.paramTypes) {
 			break
 		}
-		c.checkInferredArgument(function, arg, spec.paramTypes[i], name, strconv.Itoa(i+1))
+		label := strconv.Itoa(i + 1)
+		if i < len(spec.paramNames) && spec.paramNames[i] != "" {
+			label = spec.paramNames[i]
+		}
+		ty := spec.paramTypes[i]
+		if spec.fromSignature && ty != nil {
+			// A host signature naming a type the script never defines fails
+			// every call at the runtime boundary before the host function
+			// runs, so the call site reports it instead of silently skipping
+			// the unresolved declaration.
+			if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
+				c.add(function, arg.Pos(), "call to %s argument %s uses unknown type %s", name, label, formatTypeExpr(ty))
+				continue
+			}
+		}
+		c.checkInferredArgument(function, arg, ty, name, label)
 	}
 	for _, kwarg := range call.kwargs {
 		c.checkInferredArgument(function, kwarg.Value, spec.keywordTypes[kwarg.Name], name, kwarg.Name)
+	}
+	if spec.fromSignature && spec.resultType != nil {
+		// An unresolved result type rejects every successful call at the
+		// return boundary, whether or not the caller uses the result.
+		if err := validateTypeExprResolved(spec.resultType, c.runtimeTypeContext()); err != nil {
+			c.add(function, call.pos, "call to %s result uses unknown type %s", name, formatTypeExpr(spec.resultType))
+		}
 	}
 }
 

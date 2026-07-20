@@ -586,3 +586,43 @@ func TestParserNullableSuffixSuggestionParses(t *testing.T) {
 		})
 	}
 }
+
+func TestParseTypeExprStandalone(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		source string
+		kind   ast.TypeKind
+	}{
+		{source: "int", kind: ast.TypeInt},
+		{source: "array<string>", kind: ast.TypeArray},
+		{source: "{ name: string }", kind: ast.TypeShape},
+		{source: "money | nil", kind: ast.TypeUnion},
+		{source: "string?", kind: ast.TypeString},
+	}
+	for _, tc := range cases {
+		t.Run(tc.source, func(t *testing.T) {
+			t.Parallel()
+			ty, err := ParseTypeExpr(tc.source)
+			if err != nil {
+				t.Fatalf("ParseTypeExpr(%q) error: %v", tc.source, err)
+			}
+			if ty.Kind != tc.kind {
+				t.Fatalf("ParseTypeExpr(%q).Kind = %v, want %v", tc.source, ty.Kind, tc.kind)
+			}
+		})
+	}
+}
+
+func TestParseTypeExprStandaloneRejectsInvalidInput(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{"", "not a type <", "int int", "array<", "1"} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			if _, err := ParseTypeExpr(source); err == nil {
+				t.Fatalf("ParseTypeExpr(%q) succeeded, want error", source)
+			}
+		})
+	}
+}

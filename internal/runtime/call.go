@@ -1832,6 +1832,9 @@ func callableParamTypes(callee Value) (callableParamInfo, bool) {
 		if builtin.OptionsHashTarget != nil {
 			return callableParamInfo{params: builtin.OptionsHashTarget.Params}, true
 		}
+		if len(builtin.SignatureParams) > 0 {
+			return callableParamInfo{params: builtin.SignatureParams}, true
+		}
 		if builtin.Name == blockCallBuiltinName && len(builtin.CapturedValues) == 1 && builtin.CapturedValues[0].Kind() == KindBlock {
 			blk := valueBlock(builtin.CapturedValues[0])
 			if blk != nil {
@@ -3433,6 +3436,15 @@ func (exec *Execution) validateCallShape(fn *ScriptFunction, args []Value, kwarg
 }
 
 func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Value, kwargs map[string]Value, pos Position) error {
+	// Parameter defaults evaluate before the callee's module context is
+	// pushed, so typed host builtins invoked from a default must still
+	// resolve named signature types against the callee's own source. The
+	// binding owner carries that context for the duration of the bind.
+	if fn.owner != nil {
+		previousOwner := exec.bindingOwner
+		exec.bindingOwner = fn.owner
+		defer func() { exec.bindingOwner = previousOwner }()
+	}
 	// Validate the whole call shape before binding so that no parameter default
 	// is evaluated when the call can never bind successfully. A default may have
 	// side effects, raise an error, or consume the step quota, and evaluating it
