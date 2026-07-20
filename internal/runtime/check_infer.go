@@ -6180,6 +6180,14 @@ func (c *scriptChecker) applyContainerMutatorCallFacts(
 		return c.applyArrayMutatorCallFacts(function, call, checkedCall, member, argumentFacts, receiverFact)
 	}
 	if keyBound, valueBound := declaredHashEntryTypes(contentFact); keyBound != nil {
+		// A hash<K, V> boundary may be backed by an object, whose member
+		// dispatch returns a same-named entry before the builtin. With a
+		// non-callable value bound such a field can only raise (no write
+		// lands), but a callable one could dispatch anywhere, so modeling
+		// requires ruling callables out.
+		if typeExprMayIncludeCallable(valueBound) {
+			return false, false, false
+		}
 		preserved, modeled := c.applyHashMutatorCallFacts(
 			function,
 			call,

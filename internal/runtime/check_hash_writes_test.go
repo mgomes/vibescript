@@ -504,6 +504,14 @@ end
 `,
 		},
 		{
+			name: "callable value bounds are not modeled as builtin mutators",
+			source: `
+def f(h: hash<string, function>, v)
+  h.store(:sym, v)
+end
+`,
+		},
+		{
 			name: "mixed-key local merge into a union key bound stays silent",
 			source: `
 def f(h: hash<string | symbol, int>)
