@@ -237,6 +237,16 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "compatible chained shovels preserve the bound",
+			source: `
+def f(items: array<int>)
+  (items << 1) << 2
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "local seeded by a declared return type",
 			source: `
 def build -> array<int>

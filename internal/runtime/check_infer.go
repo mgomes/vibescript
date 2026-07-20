@@ -1641,10 +1641,24 @@ func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
 	}
 	if _, chained := expr.Left.(*BinaryExpr); chained {
 		// A chained shovel ((values << a) << b) appends through the returned
-		// receiver; the outer appends are not retyped, so drop the root fact.
-		if name, ok := rootIdentifierName(unwrapShovelChain(expr.Left)); ok {
-			c.poisonLocalType(name)
+		// receiver. A compatible append against the chain root's declared
+		// bound keeps the fact true exactly like the direct form; anything
+		// else drops the root fact — the outer appends are not retyped.
+		root, isIdent := unwrapShovelChain(expr.Left).(*Identifier)
+		if !isIdent {
+			if name, ok := rootIdentifierName(unwrapShovelChain(expr.Left)); ok {
+				c.poisonLocalType(name)
+			}
+			return
 		}
+		if elem := declaredArrayElementType(c.localTypeFor(root.Name)); elem != nil {
+			if appended := c.inferExpressionType(expr.Right); appended != nil &&
+				typeExprSatisfies(appended, elem, c.checkNamedTypeResolver()) {
+				c.linkContainerWriteAlias(root.Name, expr.Right, appended)
+				return
+			}
+		}
+		c.poisonLocalType(root.Name)
 		return
 	}
 	ident, ok := expr.Left.(*Identifier)
