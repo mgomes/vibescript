@@ -154,6 +154,11 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   are `bool`, and safe navigation adds `nil` to the result (`x&.to_s` is
   `string?`). Class instances (user methods take precedence) and unknown
   receivers stay unknown.
+- Member contracts also classify receiver effects. A container fact survives
+  a call the registry proves pure (`a.at(0)`, `a.nil?`), including through
+  aliases, chained calls, and safe navigation. Known mutators, unregistered
+  members, blocks, impure arguments, dynamic dispatch, and user overrides
+  still discard the receiver's facts.
 
 ### `JSON.parse_as`
 
