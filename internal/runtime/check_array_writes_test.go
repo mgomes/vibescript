@@ -152,6 +152,25 @@ end
 			warning: "write to items expected element string, got int",
 		},
 		{
+			name: "splatted literal element",
+			source: `
+def f(items: array<int>)
+  items.push(*["bad"])
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible splat preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.push(*[1, 2])
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "insert element argument",
 			source: `
 def f(items: array<int>)
@@ -621,6 +640,32 @@ end
 def f(items: array<int>)
   items << unknown_fn(items)
   items << "bad"
+end
+`,
+		},
+		{
+			name: "unknown splat weakens the bound",
+			source: `
+def f(items: array<int>, v)
+  items.push(*v)
+  items << "bad"
+end
+`,
+		},
+		{
+			name: "possibly empty typed splat stays silent and weakens",
+			source: `
+def f(items: array<int>, more: array<string>)
+  items.push(*more)
+  items << "bad"
+end
+`,
+		},
+		{
+			name: "splatted insert index stays gradual",
+			source: `
+def f(items: array<int>, v)
+  items.insert(*v, "bad")
 end
 `,
 		},

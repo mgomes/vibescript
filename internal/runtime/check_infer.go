@@ -1883,8 +1883,12 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 	}
 	// insert validates its index before any element lands, so a provably
 	// non-numeric index means the call raises without writing and neither
-	// diagnosis nor preservation applies.
+	// diagnosis nor preservation applies. A splatted index makes the
+	// argument positions (and an empty expansion, which raises) unknowable.
 	if member.Property == "insert" {
+		if _, isSplat := call.Args[0].(*SplatArg); isSplat {
+			return false
+		}
 		index, captured := argumentFacts[call.Args[0]]
 		if !captured {
 			index = c.inferExpressionType(call.Args[0])
@@ -1904,8 +1908,10 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 	preserved := preservable && Expression(call) == c.expressionStatementRoot &&
 		mutatorReceiverFactIntact(c.localTypeFor(ident.Name), receiverFact)
 	for _, arg := range elements {
-		if _, splat := arg.(*SplatArg); splat {
-			preserved = false
+		if splat, isSplat := arg.(*SplatArg); isSplat {
+			if !c.applySplattedElementWriteFacts(function, splat, ident.Name, elem, resolve) {
+				preserved = false
+			}
 			continue
 		}
 		written, captured := argumentFacts[arg]
@@ -1930,6 +1936,53 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 		c.linkContainerWriteAlias(ident.Name, arg, written)
 	}
 	return preserved
+}
+
+// applySplattedElementWriteFacts checks a splatted mutator element argument:
+// the runtime expands the splatted array's elements into the written
+// positions, so a witnessed element arm provably disjoint from the bound is
+// reported (witness arms are real elements), and the write is compatible
+// only when the splatted array's own element bound — a declared array<V> or
+// a full witness union — satisfies the receiver's. A typed but possibly
+// empty splat stays silent: no element is proven to land.
+func (c *scriptChecker) applySplattedElementWriteFacts(function string, splat *SplatArg, name string, elem *TypeExpr, resolve namedTypeResolver) bool {
+	written := c.inferExpressionType(splat.Value)
+	if written == nil || written.Kind != TypeArray || written.Nullable {
+		return false
+	}
+	if written.Name == literalElementsMarker || written.Name == literalPartialElementsMarker {
+		if len(written.TypeArgs) == 1 {
+			if arms, ok := typeExprArms(written.TypeArgs[0], 0); ok {
+				for _, arm := range arms {
+					if typeExprsDisjoint(arm, elem, resolve) {
+						c.reportIncompatibleElementWrite(function, splat.Pos(), name, elem, arm)
+						return false
+					}
+				}
+			}
+		}
+	}
+	bound := splattedElementBound(written)
+	if bound == nil || !typeExprSatisfies(bound, elem, resolve) {
+		return false
+	}
+	// The receiver retains the splatted array's elements, so its root
+	// local links in: a later mutation through it weakens both.
+	c.linkContainerWriteAlias(name, splat.Value, bound)
+	return true
+}
+
+// splattedElementBound returns the element bound of a splatted array fact:
+// declared array<V> facts and full witness unions bound every element, while
+// partial witnesses and bare arrays do not.
+func splattedElementBound(ty *TypeExpr) *TypeExpr {
+	if ty == nil || ty.Kind != TypeArray || ty.Nullable || len(ty.TypeArgs) != 1 {
+		return nil
+	}
+	if ty.Name == literalPartialElementsMarker {
+		return nil
+	}
+	return ty.TypeArgs[0]
 }
 
 // mutatorReceiverFactIntact reports whether a mutator receiver's local fact
