@@ -70,6 +70,12 @@ Avoid:
 
 Why: small surfaces are easier to contract-test and audit.
 
+When an adapter declares method contracts (`CapabilityContractProvider`), the
+runtime enforces them unconditionally: `ValidateArgs` runs before the method
+and `ValidateReturn` runs on every result. An adapter cannot opt out of its
+declared return validation — the proof that a result was already validated is
+internal to the runtime and reserved for the built-in first-party adapters.
+
 ### Publish static signatures
 
 Host callables are fully dynamic by default: the checker treats their

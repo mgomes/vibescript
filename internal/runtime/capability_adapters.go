@@ -91,7 +91,14 @@ func (c *jobQueueCapability) callEnqueue(exec *Execution, receiver Value, args [
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
-	return cloneCapabilityMethodResult(name+".enqueue", result)
+	cloned, err := cloneCapabilityMethodResult(method, result)
+	if err != nil {
+		return NewNil(), err
+	}
+	// The clone above validated and isolated the result; record the internal
+	// proof so the dispatcher's contract check does not validate it twice.
+	exec.markValidatedCapabilityReturn(method, cloned)
+	return cloned, nil
 }
 
 func (c *jobQueueCapability) callRetry(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -124,23 +131,28 @@ func (c *jobQueueCapability) callRetry(exec *Execution, receiver Value, args []V
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
-	return cloneCapabilityMethodResult(name+".retry", result)
+	cloned, err := cloneCapabilityMethodResult(method, result)
+	if err != nil {
+		return NewNil(), err
+	}
+	// The clone above validated and isolated the result; record the internal
+	// proof so the dispatcher's contract check does not validate it twice.
+	exec.markValidatedCapabilityReturn(method, cloned)
+	return cloned, nil
 }
 
 func (c *jobQueueCapability) CapabilityContracts() map[string]CapabilityMethodContract {
 	name := c.inner.Name
 	contracts := map[string]CapabilityMethodContract{
 		name + ".enqueue": {
-			ValidateArgs:             c.validateEnqueueContractArgs,
-			ReturnValidatedByBuiltin: true,
-			ValidateReturn:           capabilityValidateAnyReturn(name + ".enqueue"),
+			ValidateArgs:   c.validateEnqueueContractArgs,
+			ValidateReturn: capabilityValidateAnyReturn(name + ".enqueue"),
 		},
 	}
 	if c.inner.HasRetry() {
 		contracts[name+".retry"] = CapabilityMethodContract{
-			ValidateArgs:             c.validateRetryContractArgs,
-			ReturnValidatedByBuiltin: true,
-			ValidateReturn:           capabilityValidateAnyReturn(name + ".retry"),
+			ValidateArgs:   c.validateRetryContractArgs,
+			ValidateReturn: capabilityValidateAnyReturn(name + ".retry"),
 		}
 	}
 	return contracts
@@ -334,9 +346,8 @@ func (c *eventsCapability) CapabilityContracts() map[string]CapabilityMethodCont
 	method := c.inner.PublishMethodName()
 	return map[string]CapabilityMethodContract{
 		method: {
-			ValidateArgs:             c.validatePublishArgs,
-			ReturnValidatedByBuiltin: true,
-			ValidateReturn:           c.inner.ValidatePublishReturn,
+			ValidateArgs:   c.validatePublishArgs,
+			ValidateReturn: c.inner.ValidatePublishReturn,
 		},
 	}
 }
@@ -349,9 +360,10 @@ func (c *eventsCapability) Bind(binding CapabilityBinding) (map[string]Value, er
 }
 
 func (c *eventsCapability) callPublish(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	method := c.inner.PublishMethodName()
 	var result Value
 	var err error
-	if exec.capabilityArgsValidated(c.inner.PublishMethodName()) {
+	if exec.capabilityArgsValidated(method) {
 		result, err = c.inner.PublishValidated(exec.Context(), args, kwargs, !block.IsNil())
 	} else {
 		result, err = c.inner.Publish(exec.Context(), args, kwargs, !block.IsNil())
@@ -359,6 +371,10 @@ func (c *eventsCapability) callPublish(exec *Execution, receiver Value, args []V
 	if err != nil {
 		return NewNil(), err
 	}
+	// Both publish paths validate the host's return value and deep-clone it
+	// (events.Capability.PublishValidated ends in CloneMethodResult); record
+	// the internal proof so the dispatcher does not validate the result twice.
+	exec.markValidatedCapabilityReturn(method, result)
 	return result, nil
 }
 

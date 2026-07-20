@@ -45,6 +45,15 @@ Tier 2 below. Concretely:
   `MemberCompletionNames`, the capability adapter surface
   (`CapabilityAdapter`, `CapabilityBinding`, `CapabilityContractProvider`,
   `CapabilityMethodContract`, `New*Capability`, `MustNew*Capability`).
+  `CapabilityMethodContract` carries only `ValidateArgs` and
+  `ValidateReturn`; the pre-rc8 `ReturnValidatedByBuiltin` field was
+  removed (#976) because a host adapter must not be able to assert an
+  internal runtime proof and skip its declared return validation. The
+  runtime now always runs a contract's `ValidateReturn`; only first-party
+  builtins inside the runtime can record the internal proof that a result
+  was already validated. Migration: delete the field from contract
+  literals — no replacement is needed, the extra validation pass is the
+  intended behavior.
 - **`vibes/value`**: `Value`, `ValueKind` and the `Kind*` constants; the
   typed constructors (`NewNil` ... `NewRegex`, `NewBigInt`, `NewTypedHash`,
   `NewHashWithDefault`, `NewMoneyFromCents`); the typed accessors
