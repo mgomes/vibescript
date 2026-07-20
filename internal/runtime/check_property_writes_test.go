@@ -393,6 +393,27 @@ end
 `), "default value for @a expected string?, got int")
 }
 
+// Class-method ivar parameters never write instance ivars at runtime — the
+// binding only defines a local when self is not an instance — so property
+// contracts do not apply to their arguments, annotations, or defaults.
+func TestCheckClassMethodIvarParamsSkipContracts(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def self.build(@name: int = 2)
+    name
+  end
+end
+
+def make
+  User.build(1)
+end
+`))
+}
+
 // Store-contract checks resolve method ownership even when the first call
 // checked is reached before any function scope initialized the ownership
 // maps, such as a constructor call in a class body.
