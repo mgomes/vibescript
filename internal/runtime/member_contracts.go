@@ -40,16 +40,35 @@ type memberContract struct {
 	// acceptance, parameter types, and result type. For value members only
 	// resultType applies.
 	call staticCallSpec
-	// effects is the member's effect metadata.
-	effects memberEffects
+	// effect classifies what a call may do to the receiver.
+	effect memberEffect
 }
 
-// memberEffects records what a member call may do beyond computing its
-// result, so consumers can decide which receiver facts survive a call.
-type memberEffects struct {
-	// mutatesReceiver marks members that may modify their receiver in
-	// place (push, map!, upcase!, ...).
-	mutatesReceiver bool
+// memberEffect classifies what a member does to its receiver, so consumers
+// can decide which receiver facts survive a dispatch.
+type memberEffect uint8
+
+const (
+	// effectUnknown is the zero value: the contract does not classify the
+	// member, so consumers must assume it may do anything.
+	effectUnknown memberEffect = iota
+	// effectPure marks members that neither mutate their receiver nor run
+	// user code during dispatch.
+	effectPure
+	// effectMutatesReceiver marks members that may modify their receiver
+	// in place (push, map!, upcase!, ...).
+	effectMutatesReceiver
+)
+
+// String renders the effect for exported contracts and diagnostics.
+func (effect memberEffect) String() string {
+	switch effect {
+	case effectPure:
+		return "pure"
+	case effectMutatesReceiver:
+		return "mutates-receiver"
+	}
+	return "unknown"
 }
 
 // scalarMemberSpec is the contract shared by the nullary scalar conversion
@@ -61,7 +80,7 @@ func scalarMemberSpec(result *TypeExpr) staticCallSpec {
 // scalarConversionContract is a registry entry for one nullary scalar
 // conversion member with an invariant result.
 func scalarConversionContract(receiver, name string, result *TypeExpr) memberContract {
-	return memberContract{receiver: receiver, name: name, call: scalarMemberSpec(result)}
+	return memberContract{receiver: receiver, name: name, call: scalarMemberSpec(result), effect: effectPure}
 }
 
 // temporalEqlContract is the contract of the temporal eql? methods, which
@@ -73,14 +92,15 @@ func temporalEqlContract(receiver string) memberContract {
 		name:       "eql?",
 		paramNames: []string{"other"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, resultType: checkTypeBool},
+		effect:     effectPure,
 	}
 }
 
 // temporalValueContract is a registry entry for one conversion-style
 // temporal member the runtime exposes as a direct value rather than a
-// builtin (see memberContract.valueMember).
+// builtin (see memberContract.valueMember). Reading the value is pure.
 func temporalValueContract(receiver, name string, result *TypeExpr) memberContract {
-	return memberContract{receiver: receiver, name: name, valueMember: true, call: staticCallSpec{resultType: result}}
+	return memberContract{receiver: receiver, name: name, valueMember: true, call: staticCallSpec{resultType: result}, effect: effectPure}
 }
 
 // memberContracts is the registry of builtin member contracts, ordered by
@@ -94,24 +114,28 @@ var memberContracts = []memberContract{
 		name:       "at",
 		paramNames: []string{"index"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, autoInvoke: true},
+		effect:     effectPure,
 	},
 	{
 		receiver:   "array",
 		name:       "fetch",
 		paramNames: []string{"index", "default"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 2, autoInvoke: true, usesBlock: true},
+		effect:     effectPure,
 	},
 	{
 		receiver:   "array",
 		name:       "slice",
 		paramNames: []string{"start", "length"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 2, rejectKeywords: true, autoInvoke: true},
+		effect:     effectPure,
 	},
 	{
 		receiver:   "string",
 		name:       "slice",
 		paramNames: []string{"start", "length"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 2, autoInvoke: true},
+		effect:     effectPure,
 	},
 
 	// Callable scalar conversions are nullary auto-invoked builtins with
@@ -154,6 +178,7 @@ var memberContracts = []memberContract{
 		receiver: "range",
 		name:     "to_a",
 		call:     staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, autoInvoke: true, resultType: checkTypeIntArray},
+		effect:   effectPure,
 	},
 
 	// Conversion-style temporal members the runtime exposes as direct
@@ -175,47 +200,55 @@ var memberContracts = []memberContract{
 		receiver: universalReceiverKind,
 		name:     "nil?",
 		call:     staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+		effect:   effectPure,
 	},
 	{
 		receiver: universalReceiverKind,
 		name:     "frozen?",
 		call:     staticCallSpec{minArgs: 0, maxArgs: 0, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+		effect:   effectPure,
 	},
 	{
 		receiver:   universalReceiverKind,
 		name:       "eql?",
 		paramNames: []string{"other"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeBool},
+		effect:     effectPure,
 	},
 	{
 		receiver:   universalReceiverKind,
 		name:       "equal?",
 		paramNames: []string{"other"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, resultType: checkTypeBool},
+		effect:     effectPure,
 	},
 	{
 		receiver:   universalReceiverKind,
 		name:       "respond_to?",
 		paramNames: []string{"name", "include_all"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 2, rejectKeywords: true, rejectBlock: true, autoInvoke: true, paramTypes: []*TypeExpr{checkTypeMethodName, checkTypeBool}, resultType: checkTypeBool},
+		effect:     effectPure,
 	},
 	{
 		receiver:   universalReceiverKind,
 		name:       "is_a?",
 		paramNames: []string{"class"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+		effect:     effectPure,
 	},
 	{
 		receiver:   universalReceiverKind,
 		name:       "kind_of?",
 		paramNames: []string{"class"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+		effect:     effectPure,
 	},
 	{
 		receiver:   universalReceiverKind,
 		name:       "instance_of?",
 		paramNames: []string{"class"},
 		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
+		effect:     effectPure,
 	},
 }
 
@@ -276,6 +309,43 @@ func buildStaticMemberValueTypes(contracts []memberContract) map[string]*TypeExp
 	return types
 }
 
+// staticMemberEffects indexes the registered typed-dispatch and value
+// contracts' receiver effects by "<receiver>.<name>"; aliases share the
+// contract's effect. Absent keys mean the member's effect is unknown.
+var staticMemberEffects = buildStaticMemberEffects(memberContracts)
+
+func buildStaticMemberEffects(contracts []memberContract) map[string]memberEffect {
+	effects := make(map[string]memberEffect, len(contracts))
+	for _, contract := range contracts {
+		if contract.receiver == universalReceiverKind {
+			continue
+		}
+		effects[contract.receiver+"."+contract.name] = contract.effect
+		for _, alias := range contract.aliases {
+			effects[contract.receiver+"."+alias] = contract.effect
+		}
+	}
+	return effects
+}
+
+// universalMemberEffects indexes the universal-fallback contracts' receiver
+// effects by member name. Absent keys mean the helper's effect is unknown.
+var universalMemberEffects = buildUniversalMemberEffects(memberContracts)
+
+func buildUniversalMemberEffects(contracts []memberContract) map[string]memberEffect {
+	effects := make(map[string]memberEffect)
+	for _, contract := range contracts {
+		if contract.receiver != universalReceiverKind {
+			continue
+		}
+		effects[contract.name] = contract.effect
+		for _, alias := range contract.aliases {
+			effects[alias] = contract.effect
+		}
+	}
+	return effects
+}
+
 // MemberParam is one positional parameter of an exported member contract.
 type MemberParam struct {
 	// Name is the display name used in rendered signatures.
@@ -311,9 +381,9 @@ type MemberContract struct {
 	ValueMember bool
 	// Result is the rendered invariant result type; empty when unknown.
 	Result string
-	// MutatesReceiver reports whether a call may modify the receiver in
-	// place.
-	MutatesReceiver bool
+	// Effect is the member's declared receiver effect: "pure",
+	// "mutates-receiver", or "unknown".
+	Effect string
 }
 
 // MemberContracts returns the registered builtin member contracts for
@@ -342,16 +412,16 @@ func exportedMemberContract(contract memberContract) MemberContract {
 		result = formatTypeExpr(contract.call.resultType)
 	}
 	return MemberContract{
-		Receiver:        contract.receiver,
-		Name:            contract.name,
-		Aliases:         slices.Clone(contract.aliases),
-		Params:          params,
-		Variadic:        contract.call.maxArgs < 0,
-		TakesBlock:      contract.call.usesBlock,
-		AutoInvoke:      contract.call.autoInvoke,
-		ValueMember:     contract.valueMember,
-		Result:          result,
-		MutatesReceiver: contract.effects.mutatesReceiver,
+		Receiver:    contract.receiver,
+		Name:        contract.name,
+		Aliases:     slices.Clone(contract.aliases),
+		Params:      params,
+		Variadic:    contract.call.maxArgs < 0,
+		TakesBlock:  contract.call.usesBlock,
+		AutoInvoke:  contract.call.autoInvoke,
+		ValueMember: contract.valueMember,
+		Result:      result,
+		Effect:      contract.effect.String(),
 	}
 }
 
