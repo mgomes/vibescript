@@ -64,6 +64,7 @@ type (
 	CallExpr           = ast.CallExpr
 	KeywordArg         = ast.KeywordArg
 	SplatArg           = ast.SplatArg
+	TypeLiteral        = ast.TypeLiteral
 	MemberExpr         = ast.MemberExpr
 	ScopeExpr          = ast.ScopeExpr
 	IndexExpr          = ast.IndexExpr

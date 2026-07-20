@@ -185,6 +185,10 @@ func (c *symbolLiteralCollector) collectExpression(expr Expression) {
 		for _, element := range typed.Elements {
 			c.collectExpression(element.Target)
 		}
+	case *TypeLiteral:
+		if typed.Fallback != nil {
+			c.collectExpression(typed.Fallback)
+		}
 	case *SplatArg:
 		c.collectExpression(typed.Value)
 	case *UnaryExpr:
