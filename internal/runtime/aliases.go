@@ -1000,6 +1000,10 @@ type Builtin struct {
 	// Host-registered builtins leave it nil because their contracts are not
 	// known to the language checker.
 	checkSpec *staticCallSpec
+	// SignatureParams carries the published positional parameters of a typed
+	// host builtin (NewTypedBuiltin) so argument evaluation applies the same
+	// callable and typed expectations an annotated script function would.
+	SignatureParams []Param
 	// OptionsHashTarget receives a collapsed keyword options hash for builtin
 	// wrappers around script functions (method, constructor, and function-call
 	// alias callers).

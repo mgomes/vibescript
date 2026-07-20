@@ -57,6 +57,12 @@ type Param struct {
 	DefaultVal Expression
 	IsIvar     bool
 	Target     Expression
+	// PropertyType is the declared property contract backing an unannotated
+	// ivar parameter, resolved when the owning class compiles. It shapes
+	// argument and default evaluation (a callable-typed contract keeps a
+	// bare zero-arity callable un-invoked) while binding validation stays
+	// with the ivar write itself.
+	PropertyType *TypeExpr
 }
 
 // TypeKind identifies the category of a type expression.
@@ -90,6 +96,12 @@ type TypeExpr struct {
 	Name     string
 	Kind     TypeKind
 	Nullable bool
+	// Optional marks a shape field that may be absent from the value
+	// (`age?: int`). It is set only on the field types stored in a Shape map
+	// and is distinct from Nullable: an optional field validates against the
+	// field type when present, while a nullable field must be present but may
+	// hold nil.
+	Optional bool
 	TypeArgs []*TypeExpr
 	Shape    map[string]*TypeExpr
 	Union    []*TypeExpr
