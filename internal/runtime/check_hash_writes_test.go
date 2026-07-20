@@ -714,6 +714,17 @@ end
 `,
 		},
 		{
+			name: "conflict-block shape merge keeps escape semantics",
+			source: `
+def f(user: { name: string }, other: hash<symbol, array<int>>)
+  user.merge!(other) do |key, old, new|
+    old
+  end
+  other[true] = [1]
+end
+`,
+		},
+		{
 			name: "non-hash argument aborts a declared shape merge",
 			source: `
 def f(user: { name: string })

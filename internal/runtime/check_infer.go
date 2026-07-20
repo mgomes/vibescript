@@ -6483,12 +6483,15 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallEx
 		if !c.hashMergeCallMayWrite(call, argumentFacts) {
 			return c.mutatorCallPreservable(call, name, receiverFact), true
 		}
+		// A conflict block runs user code that can mutate retained
+		// argument containers, so only block-less merges report their
+		// arguments as modeled (mirroring the typed-hash branch).
+		blockConflicts := call.Block != nil || call.BlockArg != nil
 		if shape.Name != "" {
 			// Witnessed shapes are evidence, not contracts; folding whole
 			// hashes in weakens them without a report.
-			return false, true
+			return false, !blockConflicts
 		}
-		blockConflicts := call.Block != nil || call.BlockArg != nil
 		for _, arg := range call.Args {
 			if lit, isLiteral := arg.(*HashLiteral); isLiteral && lit.ShapeType == nil {
 				for _, pair := range lit.Pairs {
@@ -6519,7 +6522,7 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallEx
 		}
 		// A declared shape's key representation is unknown, so no merge
 		// preserves it.
-		return false, true
+		return false, !blockConflicts
 	}
 	return false, false
 }
