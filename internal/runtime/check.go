@@ -1992,17 +1992,18 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *BreakStmt:
 		c.checkExpression(function, typed.Value)
 	case *AssignStmt:
-		c.checkExpression(function, typed.Target)
-		// An indexed write's receiver evaluates before the assigned value,
-		// so the fact the write is checked against is captured now: a value
-		// expression that escapes the same local must not erase the bound
-		// the receiver was evaluated under.
+		// The runtime selects an indexed write's receiver object before the
+		// index selectors run, so the fact the write is checked against is
+		// captured before the selector expressions walk: a selector side
+		// effect (an inline block rebinding the local) lands after the
+		// original receiver was selected and must not erase its bound.
 		var indexedReceiverFact *TypeExpr
 		if index, ok := typed.Target.(*IndexExpr); ok {
 			if ident, ok := index.Object.(*Identifier); ok {
 				indexedReceiverFact = c.localTypeFor(ident.Name)
 			}
 		}
+		c.checkExpression(function, typed.Target)
 		c.checkExpression(function, typed.Value)
 		// The runtime evaluates the value before the target, so an inline
 		// block in the value expression can rebind the receiver local

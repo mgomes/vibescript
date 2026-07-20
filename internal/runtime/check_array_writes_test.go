@@ -228,6 +228,23 @@ end
 			warning: "write to rows expected element array<int>, got string",
 		},
 		{
+			name: "selector side effects follow receiver selection",
+			source: `
+def idx -> int
+  yield
+  0
+end
+
+def f(items: array<int>)
+  items[idx() do
+    items = ["s"]
+    0
+  end] = "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "chained shovel appends through the chain root",
 			source: `
 def f(items: array<int>)
