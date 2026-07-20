@@ -113,7 +113,10 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return NewNil(), exec.errorAt(e.Pos(), "splat argument is only allowed in call arguments")
 	case *TypeLiteral:
 		if exec.typeLiteralShadowed(e, env) {
-			return exec.evalExpression(e.Fallback, env)
+			// The fallback inherits the caller's auto-call state: a callable
+			// bound to a type-spelled name still passes bare into a
+			// function-typed parameter instead of auto-invoking.
+			return exec.evalExpressionWithAuto(e.Fallback, env, autoCall)
 		}
 		return NewShape(e.Type), nil
 	case *UnaryExpr:

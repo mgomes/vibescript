@@ -419,6 +419,57 @@ end
 `)
 	requireNoCheckWarnings(t, selfShadowed)
 
+	// A zero-arity callable bound to a type-spelled name keeps the caller's
+	// auto-call state: a function-typed parameter receives it bare, while an
+	// untyped parameter auto-invokes it like any other identifier argument.
+	autoCall := compileScript(t, `
+def function
+  "invoked"
+end
+
+def take(cb: function)
+  cb.call
+end
+
+def echo(v)
+  v
+end
+
+def run()
+  [take(function), echo(function)]
+end
+`)
+	// Pre-fix, the argument auto-invoked and the string failed the
+	// `cb: function` boundary; bare passing must satisfy it and let the
+	// callee invoke.
+	got = callScript(t, context.Background(), autoCall, "run", nil, CallOptions{})
+	if got.Kind() != KindArray || len(got.Array()) != 2 {
+		t.Fatalf("run() = %#v, want two-element array", got)
+	}
+	if bare := got.Array()[0]; bare.Kind() != KindString || bare.String() != "invoked" {
+		t.Fatalf("take(function) = %#v, want \"invoked\"", bare)
+	}
+	if invoked := got.Array()[1]; invoked.Kind() != KindString || invoked.String() != "invoked" {
+		t.Fatalf("echo(function) = %#v, want auto-invoked \"invoked\"", invoked)
+	}
+
+	// A lambda-holding local behaves like any other local: passed bare to a
+	// callable-typed parameter.
+	lambdaLocal := compileScript(t, `
+def take(cb: function)
+  cb.call
+end
+
+def run()
+  function = -> { "from lambda" }
+  take(function)
+end
+`)
+	got = callScript(t, context.Background(), lambdaLocal, "run", nil, CallOptions{})
+	if got.Kind() != KindString || got.String() != "from lambda" {
+		t.Fatalf("take(lambda local) = %#v, want \"from lambda\"", got)
+	}
+
 	// Comparisons over non-type locals never read as types.
 	comparison := compileScript(t, `
 def truthy(v)
