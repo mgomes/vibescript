@@ -158,7 +158,9 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   a call the registry proves pure (`a.at(0)`, `a.nil?`), including through
   aliases, chained calls, and safe navigation. Known mutators, unregistered
   members, blocks, impure arguments, dynamic dispatch, and user overrides
-  still discard the receiver's facts.
+  still discard the receiver's facts — as does a pure read that may hand
+  back a nested mutable element (`a.at(0)` on `array<array<int>>`), since a
+  chained mutation through that alias could not be traced back to `a`.
 
 ### `JSON.parse_as`
 

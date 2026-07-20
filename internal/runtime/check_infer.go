@@ -1078,6 +1078,131 @@ func combineMemberEffects(a, b memberEffect) memberEffect {
 	return effectPure
 }
 
+// memberDispatchPreservesReceiverFacts reports whether a member dispatch is
+// proven pure by its registered contracts and cannot hand the caller a
+// mutable alias into the receiver's interior. Purity alone is not enough to
+// keep the receiver's facts: a pure read like at on array<array<int>>
+// returns a nested container the caller can mutate through a chained call
+// (`a.at(0).push("x")`), and that receiver spelling is not an identifier
+// projection escapePoisonTarget could trace back to the root, so the deep
+// fact would silently go stale.
+func (c *scriptChecker) memberDispatchPreservesReceiverFacts(member *MemberExpr) bool {
+	if c.memberDispatchEffect(member) != effectPure {
+		return false
+	}
+	arms, ok := typeExprArms(c.inferExpressionType(member.Object), 0)
+	if !ok || len(arms) == 0 {
+		return false
+	}
+	for _, arm := range arms {
+		if member.Safe && arm.Kind == TypeNil {
+			continue
+		}
+		if typeArmMemberResultMayAliasInterior(arm, member.Property) {
+			return false
+		}
+	}
+	return true
+}
+
+// typeArmMemberResultMayAliasInterior reports whether the member's result on
+// one receiver arm may reference a mutable container stored inside the
+// receiver. An arm whose interior provably holds no mutable containers has
+// nothing to alias; otherwise only a declared result that can never be a
+// mutable container (predicates and conversions return fresh scalars)
+// proves the call does not hand back an interior reference.
+func typeArmMemberResultMayAliasInterior(arm *TypeExpr, property string) bool {
+	if arm == nil {
+		return true
+	}
+	if !typeArmInteriorMayHoldContainer(arm) {
+		return false
+	}
+	result, known := typeArmMemberResultType(arm, property)
+	return !known || result == nil || typeExprMayHoldMutableContainer(result)
+}
+
+// typeArmMemberResultType resolves the declared result type of the
+// registered contract governing a member dispatch on one receiver arm,
+// mirroring the dispatch order of kindMemberEffect: typed contracts win, a
+// kind's own unregistered member stays unknown, then the universal
+// contract answers.
+func typeArmMemberResultType(arm *TypeExpr, property string) (*TypeExpr, bool) {
+	switch arm.Kind {
+	case TypeHash, TypeShape:
+		if spec, ok := universalMemberSpecs[property]; ok {
+			return spec.resultType, true
+		}
+		return nil, false
+	}
+	kind, ok := receiverKindForTypeArm(arm)
+	if !ok {
+		return nil, false
+	}
+	if spec, ok := staticMemberSpecs[kind+"."+property]; ok {
+		return spec.resultType, true
+	}
+	if valueType, ok := staticMemberValueTypes[kind+"."+property]; ok {
+		return valueType, true
+	}
+	if memberKindOwns(kind, property) {
+		return nil, false
+	}
+	if spec, ok := universalMemberSpecs[property]; ok {
+		return spec.resultType, true
+	}
+	return nil, false
+}
+
+// typeArmInteriorMayHoldContainer reports whether values stored inside one
+// receiver arm may themselves be mutable containers, so a member reading
+// the interior could hand the caller a mutable alias into it.
+func typeArmInteriorMayHoldContainer(arm *TypeExpr) bool {
+	switch arm.Kind {
+	case TypeArray:
+		if len(arm.TypeArgs) != 1 {
+			return true
+		}
+		return typeExprMayHoldMutableContainer(arm.TypeArgs[0])
+	case TypeHash:
+		if len(arm.TypeArgs) != 2 {
+			return true
+		}
+		return typeExprMayHoldMutableContainer(arm.TypeArgs[1])
+	case TypeShape:
+		for _, field := range arm.Shape {
+			if typeExprMayHoldMutableContainer(field) {
+				return true
+			}
+		}
+		return false
+	}
+	// Scalar receivers store no mutable interior.
+	return false
+}
+
+// typeExprMayHoldMutableContainer reports whether a type may describe a
+// mutable container value; unknown types stay conservative.
+func typeExprMayHoldMutableContainer(ty *TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	arms, ok := typeExprArms(ty, 0)
+	if !ok || len(arms) == 0 {
+		return true
+	}
+	for _, arm := range arms {
+		if arm == nil {
+			return true
+		}
+		switch arm.Kind {
+		case TypeArray, TypeHash, TypeShape, TypeAny, TypeUnknown:
+			return true
+		}
+	}
+	return false
+}
+
 // typeArmUsesUniversalMemberDispatch reports whether a known fact arm must
 // reach the universal implementation of property. Named values may override
 // it. Hash-like facts are safe only when their exact value or field contract
@@ -1127,13 +1252,14 @@ func typeExprMayIncludeCallable(ty *TypeExpr) bool {
 	return false
 }
 
-// pureMemberCall recognizes a call whose member dispatch resolves to a
-// registered pure contract on every receiver arm and whose arguments
-// provably run no user code. Arguments evaluate before the member
-// dispatches, so an argument that can call into script code may mutate the
-// receiver through an alias, and a block runs user code during the dispatch
-// itself — the receiver's fact must not survive either.
-func (c *scriptChecker) pureMemberCall(call *CallExpr) bool {
+// memberCallPreservesReceiverFacts recognizes a call whose member dispatch
+// preserves the receiver's facts (a registered pure contract that cannot
+// alias the receiver's interior) and whose arguments provably run no user
+// code. Arguments evaluate before the member dispatches, so an argument
+// that can call into script code may mutate the receiver through an alias,
+// and a block runs user code during the dispatch itself — the receiver's
+// fact must not survive either.
+func (c *scriptChecker) memberCallPreservesReceiverFacts(call *CallExpr) bool {
 	if call == nil || len(call.KwArgs) > 0 || call.Block != nil || call.BlockArg != nil {
 		return false
 	}
@@ -1143,7 +1269,7 @@ func (c *scriptChecker) pureMemberCall(call *CallExpr) bool {
 		}
 	}
 	member, ok := call.Callee.(*MemberExpr)
-	return ok && c.memberDispatchEffect(member) == effectPure
+	return ok && c.memberDispatchPreservesReceiverFacts(member)
 }
 
 // pureCallArgument reports whether a call argument provably runs no user

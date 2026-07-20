@@ -571,7 +571,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 			if typed.Block != nil {
 				c.degradeBlockBodyBindings(typed.Block)
 			}
-			if member, ok := typed.Callee.(*MemberExpr); ok && !c.pureMemberCall(typed) {
+			if member, ok := typed.Callee.(*MemberExpr); ok && !c.memberCallPreservesReceiverFacts(typed) {
 				c.poisonEscapedIdentifier(member.Object)
 			}
 			for _, arg := range typed.Args {
@@ -583,7 +583,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		}
 	case *MemberExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
-		if c.isolatedCollectInference && c.memberDispatchEffect(typed) != effectPure {
+		if c.isolatedCollectInference && !c.memberDispatchPreservesReceiverFacts(typed) {
 			c.poisonEscapedIdentifier(typed.Object)
 		}
 	case *ScopeExpr:
@@ -2601,7 +2601,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// proven pure by its registered member contract preserves the
 		// receiver's facts for outer inference and condition-outcome
 		// narrowing; known mutators and unknown dispatch keep poisoning.
-		if member, ok := typed.Callee.(*MemberExpr); ok && !c.pureMemberCall(typed) {
+		if member, ok := typed.Callee.(*MemberExpr); ok && !c.memberCallPreservesReceiverFacts(typed) {
 			c.poisonEscapedIdentifier(member.Object)
 		}
 		if member, ok := typed.BlockArg.(*MemberExpr); ok {
@@ -2624,7 +2624,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			// dispatch proven pure by its registered member contract
 			// preserves the receiver fact that outer inference or
 			// narrowing consumes next.
-			if c.memberDispatchEffect(typed) != effectPure {
+			if !c.memberDispatchPreservesReceiverFacts(typed) {
 				c.poisonEscapedIdentifier(typed.Object)
 			}
 		}

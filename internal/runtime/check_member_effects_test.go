@@ -17,13 +17,13 @@ end
 
 `
 
-func requireArrayFactSurvives(t *testing.T, body string) {
+func requireArrayFactSurvives(t *testing.T, body, fact string) {
 	t.Helper()
 	source := memberEffectsProbePrelude + body
 	requireCheckWarningContains(
 		t,
 		compileScriptDefault(t, source),
-		"call to takes argument value expected string, got array<int>",
+		"call to takes argument value expected string, got "+fact,
 	)
 }
 
@@ -39,30 +39,25 @@ func TestPureMemberCallsPreserveReceiverFacts(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
+		fact string
 	}{
-		{"registered pure read", "def probe()\n  a = [1, 2, 3]\n  a.at(0)\n  takes(a)\nend"},
-		{"pure read with optional arity", "def probe()\n  a = [1, 2, 3]\n  a.slice(0, 1)\n  takes(a)\nend"},
-		{"pure fetch without block", "def probe()\n  a = [1, 2, 3]\n  a.fetch(0)\n  takes(a)\nend"},
-		{"universal predicate", "def probe()\n  a = [1, 2, 3]\n  a.nil?\n  takes(a)\nend"},
-		{"chained pure calls", "def probe()\n  a = [1, 2, 3]\n  a.slice(0, 1).at(0)\n  takes(a)\nend"},
-		{"alias of pure receiver", "def probe()\n  a = [1, 2, 3]\n  b = a\n  a.at(0)\n  takes(b)\nend"},
-		{"safe navigation pure call", "def probe(a: array<int>?)\n  a&.at(0)\n  takes(a)\nend"},
+		{"registered pure read", "def probe()\n  a = [1, 2, 3]\n  a.at(0)\n  takes(a)\nend", "array<int>"},
+		{"pure read with optional arity", "def probe()\n  a = [1, 2, 3]\n  a.slice(0, 1)\n  takes(a)\nend", "array<int>"},
+		{"pure fetch without block", "def probe()\n  a = [1, 2, 3]\n  a.fetch(0)\n  takes(a)\nend", "array<int>"},
+		{"universal predicate", "def probe()\n  a = [1, 2, 3]\n  a.nil?\n  takes(a)\nend", "array<int>"},
+		// A declared scalar result cannot alias the receiver's interior,
+		// so predicates preserve even nested-container facts.
+		{"scalar-result predicate on nested receiver", "def probe()\n  a = [[1]]\n  a.nil?\n  takes(a)\nend", "array<array<int>>"},
+		{"chained pure calls", "def probe()\n  a = [1, 2, 3]\n  a.slice(0, 1).at(0)\n  takes(a)\nend", "array<int>"},
+		{"alias of pure receiver", "def probe()\n  a = [1, 2, 3]\n  b = a\n  a.at(0)\n  takes(b)\nend", "array<int>"},
+		{"safe navigation pure call", "def probe(a: array<int>?)\n  a&.at(0)\n  takes(a)\nend", "array<int>?"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			requireArrayFactSurvives(t, tc.body)
+			requireArrayFactSurvives(t, tc.body, tc.fact)
 		})
 	}
-
-	t.Run("safe navigation preserved fact", func(t *testing.T) {
-		t.Parallel()
-		requireCheckWarningContains(
-			t,
-			compileScriptDefault(t, memberEffectsProbePrelude+"def probe(a: array<int>?)\n  a&.at(0)\n  takes(a)\nend"),
-			"got array<int>?",
-		)
-	})
 }
 
 func TestUnclassifiedMemberCallsStillPoisonReceiverFacts(t *testing.T) {
@@ -79,6 +74,16 @@ func TestUnclassifiedMemberCallsStillPoisonReceiverFacts(t *testing.T) {
 		{"impure argument", "def probe()\n  a = [1, 2, 3]\n  a.at(idx())\n  takes(a)\nend\n\ndef idx()\n  0\nend"},
 		{"safe navigation mutator", "def probe(a: array<int>?)\n  a&.push(9)\n  takes(a)\nend"},
 		{"dynamic receiver argument escape", "def probe(a)\n  b = [1, 2, 3]\n  a.at(b)\n  takes(b)\nend"},
+		// A pure read whose result may reference a nested mutable element
+		// hands the caller an alias into the receiver: a chained mutation
+		// through it (a.at(0).push("x")) has no identifier receiver for
+		// escapePoisonTarget to trace, so the deep fact must weaken at the
+		// read itself.
+		{"nested interior read", "def probe()\n  a = [[1]]\n  a.at(0)\n  takes(a)\nend"},
+		{"nested interior chained mutation", "def probe()\n  a = [[1]]\n  a.at(0).push(\"x\")\n  takes(a)\nend"},
+		{"nested interior slice", "def probe()\n  a = [[1]]\n  a.slice(0, 1)\n  takes(a)\nend"},
+		{"nested interior safe navigation", "def probe(a: array<array<int>>?)\n  a&.at(0)\n  takes(a)\nend"},
+		{"untyped interior read", "def probe(a: array)\n  a.at(0)\n  takes(a)\nend"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
