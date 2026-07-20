@@ -2010,7 +2010,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// before the write resolves it; the captured fact then no longer
 		// describes the receiver. (An escape without a block cannot rebind
 		// a local, so the capture survives poisoning.)
-		if indexedReceiverFact != nil && expressionContainsBlockLiteral(typed.Value) {
+		if indexedReceiverFact != nil && expressionMayRunBlockLiteral(typed.Value) {
 			indexedReceiverFact = nil
 		}
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)

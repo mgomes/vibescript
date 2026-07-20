@@ -267,6 +267,18 @@ end
 			warning: "write to rows expected element array<int>, got string",
 		},
 		{
+			name: "inert lambda value still checks the write",
+			source: `
+def f(items: array<int>)
+  items[0] = ->() {
+    items = ["s"]
+    1
+  }
+end
+`,
+			warning: "write to items expected element int, got function",
+		},
+		{
 			name: "selector side effects follow receiver selection",
 			source: `
 def idx -> int
@@ -731,6 +743,21 @@ def f(items: array<int>)
     items = ["s"]
     "s"
   end
+end
+`,
+		},
+		{
+			name: "lambda passed to a call in the value can rebind the receiver",
+			source: `
+def helper(cb) -> string
+  "s"
+end
+
+def f(items: array<int>)
+  items[0] = helper(->() {
+    items = ["s"]
+    0
+  })
 end
 `,
 		},

@@ -2062,94 +2062,134 @@ func nonNilMutatorReceiverFact(ty *TypeExpr) *TypeExpr {
 	return unionTypeExprs(kept...)
 }
 
-// expressionContainsBlockLiteral reports whether evaluating expr can run a
-// block or lambda body written inline, the constructs whose assignments
-// write through to enclosing locals mid-expression. Lambdas defined earlier
-// already degraded the locals their bodies assign when their literals
-// walked, so only inline literals need detecting here.
-func expressionContainsBlockLiteral(expr Expression) bool {
-	contains := false
-	var visit func(Expression)
-	visitAll := func(exprs ...Expression) {
-		for _, e := range exprs {
-			visit(e)
+// expressionMayRunBlockLiteral reports whether evaluating expr can run an
+// inline block or lambda body, the constructs whose assignments write
+// through to enclosing locals mid-expression: an attached call block, or a
+// literal in a position an evaluation may invoke (a call's callee,
+// arguments, or a member receiver). A literal that is merely constructed —
+// the whole value, a container element, a branch result — does not execute
+// during the evaluation. Lambdas defined earlier already degraded the
+// locals their bodies assign when their literals walked, so only inline
+// literals need detecting here.
+func expressionMayRunBlockLiteral(expr Expression) bool {
+	return blockLiteralMayRun(expr, false)
+}
+
+func blockLiteralMayRun(e Expression, invocable bool) bool {
+	switch typed := e.(type) {
+	case nil:
+		return false
+	case *BlockLiteral:
+		return invocable
+	case *ArrayLiteral:
+		for _, element := range typed.Elements {
+			if blockLiteralMayRun(element, invocable) {
+				return true
+			}
+		}
+	case *HashLiteral:
+		for _, pair := range typed.Pairs {
+			if blockLiteralMayRun(pair.Key, invocable) || blockLiteralMayRun(pair.Value, invocable) {
+				return true
+			}
+		}
+	case *CallExpr:
+		if typed.Block != nil {
+			return true
+		}
+		// The callee resolution and the call itself may invoke any literal
+		// reachable from the callee or the arguments.
+		if blockLiteralMayRun(typed.Callee, true) {
+			return true
+		}
+		for _, arg := range typed.Args {
+			if blockLiteralMayRun(arg, true) {
+				return true
+			}
+		}
+		for _, kwarg := range typed.KwArgs {
+			if blockLiteralMayRun(kwarg.Value, true) {
+				return true
+			}
+		}
+		if blockLiteralMayRun(typed.BlockArg, true) {
+			return true
+		}
+	case *MemberExpr:
+		// Member dispatch on a function value ((-> {}).call) may run it.
+		return blockLiteralMayRun(typed.Object, true)
+	case *ScopeExpr:
+		return blockLiteralMayRun(typed.Object, invocable)
+	case *IndexExpr:
+		if blockLiteralMayRun(typed.Object, invocable) {
+			return true
+		}
+		for _, index := range typed.Indices {
+			if blockLiteralMayRun(index, invocable) {
+				return true
+			}
+		}
+	case *SplatArg:
+		return blockLiteralMayRun(typed.Value, invocable)
+	case *UnaryExpr:
+		return blockLiteralMayRun(typed.Right, invocable)
+	case *BinaryExpr:
+		return blockLiteralMayRun(typed.Left, invocable) || blockLiteralMayRun(typed.Right, invocable)
+	case *ConditionalExpr:
+		return blockLiteralMayRun(typed.Condition, invocable) ||
+			blockLiteralMayRun(typed.Consequent, invocable) ||
+			blockLiteralMayRun(typed.Alternate, invocable)
+	case *RescueExpr:
+		return blockLiteralMayRun(typed.Body, invocable) || blockLiteralMayRun(typed.Fallback, invocable)
+	case *IfExpr:
+		if blockLiteralMayRun(typed.Condition, invocable) ||
+			blockLiteralMayRun(typed.Consequent, invocable) ||
+			blockLiteralMayRun(typed.Alternate, invocable) {
+			return true
+		}
+		for _, branch := range typed.ElseIf {
+			if blockLiteralMayRun(branch.Condition, invocable) || blockLiteralMayRun(branch.Result, invocable) {
+				return true
+			}
+		}
+	case *RangeExpr:
+		return blockLiteralMayRun(typed.Start, invocable) || blockLiteralMayRun(typed.End, invocable)
+	case *CaseExpr:
+		if blockLiteralMayRun(typed.Target, invocable) {
+			return true
+		}
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				if blockLiteralMayRun(value.Expr, invocable) {
+					return true
+				}
+			}
+			if blockLiteralMayRun(clause.Result, invocable) {
+				return true
+			}
+		}
+		return blockLiteralMayRun(typed.ElseExpr, invocable)
+	case *YieldExpr:
+		// The caller-supplied block may invoke any literal yielded to it.
+		for _, arg := range typed.Args {
+			if blockLiteralMayRun(arg, true) {
+				return true
+			}
+		}
+	case *InterpolatedString:
+		for _, part := range typed.Parts {
+			if exprPart, ok := part.(StringExpr); ok && blockLiteralMayRun(exprPart.Expr, invocable) {
+				return true
+			}
+		}
+	case *InterpolatedSymbol:
+		for _, part := range typed.Parts {
+			if exprPart, ok := part.(StringExpr); ok && blockLiteralMayRun(exprPart.Expr, invocable) {
+				return true
+			}
 		}
 	}
-	visit = func(e Expression) {
-		if contains || e == nil {
-			return
-		}
-		switch typed := e.(type) {
-		case *BlockLiteral:
-			contains = true
-		case *ArrayLiteral:
-			visitAll(typed.Elements...)
-		case *HashLiteral:
-			for _, pair := range typed.Pairs {
-				visitAll(pair.Key, pair.Value)
-			}
-		case *CallExpr:
-			if typed.Block != nil {
-				contains = true
-				return
-			}
-			visit(typed.Callee)
-			visitAll(typed.Args...)
-			for _, kwarg := range typed.KwArgs {
-				visit(kwarg.Value)
-			}
-			visit(typed.BlockArg)
-		case *MemberExpr:
-			visit(typed.Object)
-		case *ScopeExpr:
-			visit(typed.Object)
-		case *IndexExpr:
-			visit(typed.Object)
-			visitAll(typed.Indices...)
-		case *SplatArg:
-			visit(typed.Value)
-		case *UnaryExpr:
-			visit(typed.Right)
-		case *BinaryExpr:
-			visitAll(typed.Left, typed.Right)
-		case *ConditionalExpr:
-			visitAll(typed.Condition, typed.Consequent, typed.Alternate)
-		case *RescueExpr:
-			visitAll(typed.Body, typed.Fallback)
-		case *IfExpr:
-			visitAll(typed.Condition, typed.Consequent, typed.Alternate)
-			for _, branch := range typed.ElseIf {
-				visitAll(branch.Condition, branch.Result)
-			}
-		case *RangeExpr:
-			visitAll(typed.Start, typed.End)
-		case *CaseExpr:
-			visit(typed.Target)
-			for _, clause := range typed.Clauses {
-				for _, value := range clause.Values {
-					visit(value.Expr)
-				}
-				visit(clause.Result)
-			}
-			visit(typed.ElseExpr)
-		case *YieldExpr:
-			visitAll(typed.Args...)
-		case *InterpolatedString:
-			for _, part := range typed.Parts {
-				if exprPart, ok := part.(StringExpr); ok {
-					visit(exprPart.Expr)
-				}
-			}
-		case *InterpolatedSymbol:
-			for _, part := range typed.Parts {
-				if exprPart, ok := part.(StringExpr); ok {
-					visit(exprPart.Expr)
-				}
-			}
-		}
-	}
-	visit(expr)
-	return contains
+	return false
 }
 
 // linkContainerWriteAlias links a receiver whose fact a compatible write
