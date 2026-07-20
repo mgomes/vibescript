@@ -295,6 +295,26 @@ end
 			warning: "write to user adds field extra to exact shape { name: string }",
 		},
 		{
+			name: "shape merge checks an exact shape local argument",
+			source: `
+def f(user: { name: string })
+  extra = { extra: 1 }
+  user.merge!(extra)
+end
+`,
+			warning: "write to user adds field extra to exact shape { name: string }",
+		},
+		{
+			name: "shape merge checks a shape local field type",
+			source: `
+def f(user: { name: string })
+  patch = { name: 1 }
+  user.merge!(patch)
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
 			name: "safe navigation store checks the nullable bound",
 			source: `
 def f(h: hash<string, int>?)

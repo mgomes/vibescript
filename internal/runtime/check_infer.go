@@ -6490,36 +6490,30 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallEx
 		}
 		blockConflicts := call.Block != nil || call.BlockArg != nil
 		for _, arg := range call.Args {
-			lit, isLiteral := arg.(*HashLiteral)
-			if !isLiteral || lit.ShapeType != nil {
+			if lit, isLiteral := arg.(*HashLiteral); isLiteral && lit.ShapeType == nil {
+				for _, pair := range lit.Pairs {
+					key, keyOK := staticLiteralHashKey(pair.Key)
+					if !keyOK {
+						continue
+					}
+					c.checkShapeMergeEntry(function, name, shape, key,
+						c.inferExpressionType(pair.Value), pair.Key.Pos(), pair.Value.Pos(), blockConflicts)
+				}
 				continue
 			}
-			for _, pair := range lit.Pairs {
-				key, keyOK := staticLiteralHashKey(pair.Key)
-				if !keyOK {
-					continue
+			// A local whose fact is an exact shape carries the same
+			// statically known entries as a literal and checks the same
+			// way.
+			if written := c.mutatorCallArgumentFact(arg, argumentFacts); written != nil &&
+				written.Kind == TypeShape && !written.Nullable {
+				fields := make([]string, 0, len(written.Shape))
+				for field := range written.Shape {
+					fields = append(fields, field)
 				}
-				field, present := shape.Shape[key]
-				if !present {
-					// An exact shape can never already hold this key, so
-					// the entry stores directly — with or without a
-					// conflict block — and violates exactness.
-					c.add(function, pair.Key.Pos(), "write to %s adds field %s to exact shape %s",
-						name, key, formatTypeExpr(shape))
-					continue
-				}
-				if blockConflicts {
-					// A present key may conflict, letting the block decide
-					// the stored value.
-					continue
-				}
-				written := c.inferExpressionType(pair.Value)
-				if written == nil {
-					continue
-				}
-				if typeExprsDisjoint(written, field, c.checkNamedTypeResolver()) {
-					c.add(function, pair.Value.Pos(), "write to %s field %s expected %s, got %s",
-						name, key, formatTypeExpr(field), formatTypeExpr(written))
+				sort.Strings(fields)
+				for _, key := range fields {
+					c.checkShapeMergeEntry(function, name, shape, key,
+						written.Shape[key], arg.Pos(), arg.Pos(), blockConflicts)
 				}
 			}
 		}
@@ -6528,6 +6522,27 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallEx
 		return false, true
 	}
 	return false, false
+}
+
+// checkShapeMergeEntry checks one statically known merge entry against a
+// declared shape contract: an absent key always violates exactness (an
+// exact shape can never already hold it, so the entry stores directly with
+// or without a conflict block), while a present key's value only diagnoses
+// without a block (a conflict lets the block decide the stored value).
+func (c *scriptChecker) checkShapeMergeEntry(function, name string, shape *TypeExpr, key string, written *TypeExpr, keyPos, valuePos Position, blockConflicts bool) {
+	field, present := shape.Shape[key]
+	if !present {
+		c.add(function, keyPos, "write to %s adds field %s to exact shape %s",
+			name, key, formatTypeExpr(shape))
+		return
+	}
+	if blockConflicts || written == nil {
+		return
+	}
+	if typeExprsDisjoint(written, field, c.checkNamedTypeResolver()) {
+		c.add(function, valuePos, "write to %s field %s expected %s, got %s",
+			name, key, formatTypeExpr(field), formatTypeExpr(written))
+	}
 }
 
 // typeExprProvablyUnstorableKey reports a fact no arm of which the runtime
