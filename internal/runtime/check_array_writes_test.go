@@ -611,6 +611,25 @@ end
 `,
 		},
 		{
+			name: "mutating a shovel-valued pushed child weakens the outer bound",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f(rows: array<array<int>>)
+  child = [1]
+  rows.push(child << 2)
+  child << "bad"
+  for row in rows
+    for v in row
+      takes_string(v)
+    end
+  end
+end
+`,
+		},
+		{
 			name: "mutating a pushed child weakens the outer bound",
 			source: `
 def takes_string(value: string)

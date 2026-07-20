@@ -2105,15 +2105,23 @@ func expressionContainsBlockLiteral(expr Expression) bool {
 // linkContainerWriteAlias links a receiver whose fact a compatible write
 // preserved to the root local of the written container value: the receiver
 // retains the value, so a later mutation or escape through the original
-// name invalidates the receiver's bound and must weaken both facts.
+// name invalidates the receiver's bound and must weaken both facts. A
+// shovel expression evaluates to its mutated receiver, so it links through
+// to the chain's root local.
 func (c *scriptChecker) linkContainerWriteAlias(receiver string, value Expression, written *TypeExpr) {
 	if written != nil && !typeExprHasContainerArm(written) {
 		return
 	}
-	switch value.(type) {
+	switch typed := value.(type) {
 	case *Identifier, *IndexExpr, *MemberExpr:
 		if root, ok := rootIdentifierName(value); ok {
 			c.linkContainerAlias(receiver, root)
+		}
+	case *BinaryExpr:
+		if typed.Operator == tokenShovel {
+			if root, ok := rootIdentifierName(unwrapShovelChain(typed.Left)); ok {
+				c.linkContainerAlias(receiver, root)
+			}
 		}
 	}
 }
