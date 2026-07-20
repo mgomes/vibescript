@@ -51,6 +51,11 @@ func TestPureMemberCallsPreserveReceiverFacts(t *testing.T) {
 		{"chained pure calls", "def probe()\n  a = [1, 2, 3]\n  a.slice(0, 1).at(0)\n  takes(a)\nend", "array<int>"},
 		{"alias of pure receiver", "def probe()\n  a = [1, 2, 3]\n  b = a\n  a.at(0)\n  takes(b)\nend", "array<int>"},
 		{"safe navigation pure call", "def probe(a: array<int>?)\n  a&.at(0)\n  takes(a)\nend", "array<int>?"},
+		// Region pre-degradation applies the same gate: a pure read inside
+		// a loop or block body must not clear the fact before the body is
+		// even walked.
+		{"pure read inside loop", "def probe(cond: bool)\n  a = [1, 2, 3]\n  while cond\n    a.at(0)\n  end\n  takes(a)\nend", "array<int>"},
+		{"pure read inside block", "def probe()\n  a = [1, 2, 3]\n  3.times { a.at(0) }\n  takes(a)\nend", "array<int>"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,6 +89,10 @@ func TestUnclassifiedMemberCallsStillPoisonReceiverFacts(t *testing.T) {
 		{"nested interior slice", "def probe()\n  a = [[1]]\n  a.slice(0, 1)\n  takes(a)\nend"},
 		{"nested interior safe navigation", "def probe(a: array<array<int>>?)\n  a&.at(0)\n  takes(a)\nend"},
 		{"untyped interior read", "def probe(a: array)\n  a.at(0)\n  takes(a)\nend"},
+		{"mutator inside loop", "def probe(cond: bool)\n  a = [1, 2, 3]\n  while cond\n    a.push(9)\n  end\n  takes(a)\nend"},
+		{"mutator inside block", "def probe()\n  a = [1, 2, 3]\n  3.times { a.push(9) }\n  takes(a)\nend"},
+		{"nested interior read inside loop", "def probe(cond: bool)\n  a = [[1]]\n  while cond\n    a.at(0)\n  end\n  takes(a)\nend"},
+		{"loop body reassigns receiver", "def probe(cond: bool)\n  a = [1, 2, 3]\n  while cond\n    a.at(0)\n    a = [9]\n  end\n  takes(a)\nend"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

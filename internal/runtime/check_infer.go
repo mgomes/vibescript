@@ -193,7 +193,7 @@ func (c *scriptChecker) withIsolatedLocalInference() func() {
 // skipped entirely, but any mutation inside it must still degrade facts.
 func (c *scriptChecker) poisonSkippedMutationFacts(expr Expression) {
 	var sites []Expression
-	collectMutationCandidateRootsFromExpression(expr, &sites)
+	c.collectMutationCandidateRootsFromExpression(expr, &sites)
 	for _, site := range sites {
 		if name, ok := c.escapePoisonTarget(site); ok {
 			c.poisonLocalType(name)
@@ -335,155 +335,166 @@ func collectMutatedContainerRoots(statements []Statement, out map[string]struct{
 // region contains (member-call receivers, call and yield arguments — the
 // walk-time poison sources), so pre-region degradation can clear the
 // affected container facts before reads earlier in the region are checked.
-// The caller applies the same gate the walk-time poison uses.
-func collectMutationCandidateRoots(statements []Statement, out *[]Expression) {
+// Dispatches whose registered contracts preserve receiver facts are skipped
+// with the same gate the walk-time poison uses; the caller applies the
+// container-typed escape filter.
+func (c *scriptChecker) collectMutationCandidateRoots(statements []Statement, out *[]Expression) {
 	for _, stmt := range statements {
 		switch typed := stmt.(type) {
 		case nil:
 		case *ReturnStmt:
-			collectMutationCandidateRootsFromExpression(typed.Value, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Value, out)
 		case *RaiseStmt:
-			collectMutationCandidateRootsFromExpression(typed.Value, out)
-			collectMutationCandidateRootsFromExpression(typed.Message, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Value, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Message, out)
 		case *BreakStmt:
-			collectMutationCandidateRootsFromExpression(typed.Value, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Value, out)
 		case *NextStmt:
-			collectMutationCandidateRootsFromExpression(typed.Value, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Value, out)
 		case *AssignStmt:
-			collectMutationCandidateRootsFromExpression(typed.Target, out)
-			collectMutationCandidateRootsFromExpression(typed.Value, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Target, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Value, out)
 		case *ExprStmt:
-			collectMutationCandidateRootsFromExpression(typed.Expr, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Expr, out)
 		case *IfStmt:
-			collectMutationCandidateRootsFromExpression(typed.Condition, out)
-			collectMutationCandidateRoots(typed.Consequent, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Condition, out)
+			c.collectMutationCandidateRoots(typed.Consequent, out)
 			for _, elseIf := range typed.ElseIf {
-				collectMutationCandidateRootsFromExpression(elseIf.Condition, out)
-				collectMutationCandidateRoots(elseIf.Consequent, out)
+				c.collectMutationCandidateRootsFromExpression(elseIf.Condition, out)
+				c.collectMutationCandidateRoots(elseIf.Consequent, out)
 			}
-			collectMutationCandidateRoots(typed.Alternate, out)
+			c.collectMutationCandidateRoots(typed.Alternate, out)
 		case *ForStmt:
-			collectMutationCandidateRootsFromExpression(typed.Iterable, out)
-			collectMutationCandidateRoots(typed.Body, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Iterable, out)
+			c.collectMutationCandidateRoots(typed.Body, out)
 		case *WhileStmt:
-			collectMutationCandidateRootsFromExpression(typed.Condition, out)
-			collectMutationCandidateRoots(typed.Body, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Condition, out)
+			c.collectMutationCandidateRoots(typed.Body, out)
 		case *UntilStmt:
-			collectMutationCandidateRootsFromExpression(typed.Condition, out)
-			collectMutationCandidateRoots(typed.Body, out)
+			c.collectMutationCandidateRootsFromExpression(typed.Condition, out)
+			c.collectMutationCandidateRoots(typed.Body, out)
 		case *TryStmt:
-			collectMutationCandidateRoots(typed.Body, out)
+			c.collectMutationCandidateRoots(typed.Body, out)
 			for i := range typed.Rescues {
-				collectMutationCandidateRoots(typed.Rescues[i].Body, out)
+				c.collectMutationCandidateRoots(typed.Rescues[i].Body, out)
 			}
-			collectMutationCandidateRoots(typed.Else, out)
-			collectMutationCandidateRoots(typed.Ensure, out)
+			c.collectMutationCandidateRoots(typed.Else, out)
+			c.collectMutationCandidateRoots(typed.Ensure, out)
 		}
 	}
 }
 
-func collectMutationCandidateRootsFromExpression(expr Expression, out *[]Expression) {
+func (c *scriptChecker) collectMutationCandidateRootsFromExpression(expr Expression, out *[]Expression) {
 	switch typed := expr.(type) {
 	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral,
 		*BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 	case *ArrayLiteral:
 		for _, element := range typed.Elements {
-			collectMutationCandidateRootsFromExpression(element, out)
+			c.collectMutationCandidateRootsFromExpression(element, out)
 		}
 	case *HashLiteral:
 		for _, pair := range typed.Pairs {
-			collectMutationCandidateRootsFromExpression(pair.Key, out)
-			collectMutationCandidateRootsFromExpression(pair.Value, out)
+			c.collectMutationCandidateRootsFromExpression(pair.Key, out)
+			c.collectMutationCandidateRootsFromExpression(pair.Value, out)
 		}
 	case *CallExpr:
-		collectMutationCandidateRootsFromExpression(typed.Callee, out)
+		if member, ok := typed.Callee.(*MemberExpr); ok && c.memberCallPreservesReceiverFacts(typed) {
+			// A dispatch proven to preserve receiver facts contributes no
+			// mutation site of its own, matching the walk-time gate;
+			// expressions nested inside the receiver still can.
+			c.collectMutationCandidateRootsFromExpression(member.Object, out)
+		} else {
+			c.collectMutationCandidateRootsFromExpression(typed.Callee, out)
+		}
 		for _, arg := range typed.Args {
 			*out = append(*out, arg)
-			collectMutationCandidateRootsFromExpression(arg, out)
+			c.collectMutationCandidateRootsFromExpression(arg, out)
 		}
 		for _, kwarg := range typed.KwArgs {
 			*out = append(*out, kwarg.Value)
-			collectMutationCandidateRootsFromExpression(kwarg.Value, out)
+			c.collectMutationCandidateRootsFromExpression(kwarg.Value, out)
 		}
-		collectMutationCandidateRootsFromExpression(typed.BlockArg, out)
+		c.collectMutationCandidateRootsFromExpression(typed.BlockArg, out)
 		if typed.Block != nil {
 			for _, param := range typed.Block.Params {
-				collectMutationCandidateRootsFromExpression(param.DefaultVal, out)
+				c.collectMutationCandidateRootsFromExpression(param.DefaultVal, out)
 			}
-			collectMutationCandidateRoots(typed.Block.Body, out)
+			c.collectMutationCandidateRoots(typed.Block.Body, out)
 		}
 	case *MemberExpr:
-		*out = append(*out, typed.Object)
-		collectMutationCandidateRootsFromExpression(typed.Object, out)
+		if !c.memberDispatchPreservesReceiverFacts(typed) {
+			*out = append(*out, typed.Object)
+		}
+		c.collectMutationCandidateRootsFromExpression(typed.Object, out)
 	case *ScopeExpr:
-		collectMutationCandidateRootsFromExpression(typed.Object, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Object, out)
 	case *IndexExpr:
-		collectMutationCandidateRootsFromExpression(typed.Object, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Object, out)
 		for _, index := range typed.Indices {
-			collectMutationCandidateRootsFromExpression(index, out)
+			c.collectMutationCandidateRootsFromExpression(index, out)
 		}
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
-			collectMutationCandidateRootsFromExpression(element.Target, out)
+			c.collectMutationCandidateRootsFromExpression(element.Target, out)
 		}
 	case *SplatArg:
-		collectMutationCandidateRootsFromExpression(typed.Value, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Value, out)
 	case *UnaryExpr:
-		collectMutationCandidateRootsFromExpression(typed.Right, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Right, out)
 	case *BinaryExpr:
-		collectMutationCandidateRootsFromExpression(typed.Left, out)
-		collectMutationCandidateRootsFromExpression(typed.Right, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Left, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Right, out)
 	case *ConditionalExpr:
-		collectMutationCandidateRootsFromExpression(typed.Condition, out)
-		collectMutationCandidateRootsFromExpression(typed.Consequent, out)
-		collectMutationCandidateRootsFromExpression(typed.Alternate, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Condition, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Consequent, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Alternate, out)
 	case *RescueExpr:
-		collectMutationCandidateRootsFromExpression(typed.Body, out)
-		collectMutationCandidateRootsFromExpression(typed.Fallback, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Body, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Fallback, out)
 	case *IfExpr:
-		collectMutationCandidateRootsFromExpression(typed.Condition, out)
-		collectMutationCandidateRootsFromExpression(typed.Consequent, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Condition, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Consequent, out)
 		for _, branch := range typed.ElseIf {
-			collectMutationCandidateRootsFromExpression(branch.Condition, out)
-			collectMutationCandidateRootsFromExpression(branch.Result, out)
+			c.collectMutationCandidateRootsFromExpression(branch.Condition, out)
+			c.collectMutationCandidateRootsFromExpression(branch.Result, out)
 		}
-		collectMutationCandidateRootsFromExpression(typed.Alternate, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Alternate, out)
 	case *RangeExpr:
-		collectMutationCandidateRootsFromExpression(typed.Start, out)
-		collectMutationCandidateRootsFromExpression(typed.End, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Start, out)
+		c.collectMutationCandidateRootsFromExpression(typed.End, out)
 	case *CaseExpr:
-		collectMutationCandidateRootsFromExpression(typed.Target, out)
+		c.collectMutationCandidateRootsFromExpression(typed.Target, out)
 		for _, clause := range typed.Clauses {
 			for _, value := range clause.Values {
-				collectMutationCandidateRootsFromExpression(value.Expr, out)
+				c.collectMutationCandidateRootsFromExpression(value.Expr, out)
 			}
-			collectMutationCandidateRootsFromExpression(clause.Result, out)
+			c.collectMutationCandidateRootsFromExpression(clause.Result, out)
 		}
-		collectMutationCandidateRootsFromExpression(typed.ElseExpr, out)
+		c.collectMutationCandidateRootsFromExpression(typed.ElseExpr, out)
 	case *BlockLiteral:
 		for _, param := range typed.Params {
-			collectMutationCandidateRootsFromExpression(param.DefaultVal, out)
+			c.collectMutationCandidateRootsFromExpression(param.DefaultVal, out)
 		}
-		collectMutationCandidateRoots(typed.Body, out)
+		c.collectMutationCandidateRoots(typed.Body, out)
 	case *YieldExpr:
 		for _, arg := range typed.Args {
 			*out = append(*out, arg)
-			collectMutationCandidateRootsFromExpression(arg, out)
+			c.collectMutationCandidateRootsFromExpression(arg, out)
 		}
 	case *InterpolatedString:
 		for _, part := range typed.Parts {
 			if exprPart, ok := part.(StringExpr); ok {
-				collectMutationCandidateRootsFromExpression(exprPart.Expr, out)
+				c.collectMutationCandidateRootsFromExpression(exprPart.Expr, out)
 			}
 		}
 	case *InterpolatedSymbol:
 		for _, part := range typed.Parts {
 			if exprPart, ok := part.(StringExpr); ok {
-				collectMutationCandidateRootsFromExpression(exprPart.Expr, out)
+				c.collectMutationCandidateRootsFromExpression(exprPart.Expr, out)
 			}
 		}
 	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
-		collectMutationCandidateRoots([]Statement{typed.(Statement)}, out)
+		c.collectMutationCandidateRoots([]Statement{typed.(Statement)}, out)
 	}
 }
 
@@ -492,7 +503,7 @@ func collectMutationCandidateRootsFromExpression(expr Expression, out *[]Express
 // their facts (immutable kinds cannot be mutated in place).
 func (c *scriptChecker) degradeMutationCandidates(statements []Statement, names map[string]struct{}) {
 	var sites []Expression
-	collectMutationCandidateRoots(statements, &sites)
+	c.collectMutationCandidateRoots(statements, &sites)
 	for _, site := range sites {
 		if name, ok := c.escapePoisonTarget(site); ok {
 			names[name] = struct{}{}
