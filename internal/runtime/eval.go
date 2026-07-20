@@ -581,21 +581,16 @@ func (exec *Execution) shapeTypeNamesShadowed(ty *TypeExpr, env *Env) bool {
 }
 
 // typeLiteralShadowed reports whether an argument type literal keeps its
-// value reading. The normalized type-leaf names shadow exactly as for braced
-// shapes, and the fallback identifier's own spelling shadows too: a nullable
-// atom like `string?` reads back the predicate-style name `string?`, which
-// leaf normalization strips to `string`.
+// value reading. A literal only carries a fallback when the whole group is a
+// bare identifier, so the sole binding that can change its meaning is that
+// identifier's verbatim spelling: `string?` is shadowed by a binding named
+// `string?`, not by an unrelated one named `string`.
 func (exec *Execution) typeLiteralShadowed(e *TypeLiteral, env *Env) bool {
-	if e.Fallback == nil {
+	ident, ok := e.Fallback.(*Identifier)
+	if !ok {
 		return false
 	}
-	if exec.shapeTypeNamesShadowed(e.Type, env) {
-		return true
-	}
-	if ident, ok := e.Fallback.(*Identifier); ok && strings.HasSuffix(ident.Name, "?") {
-		return exec.runtimeNameShadowed(ident.Name, env)
-	}
-	return false
+	return exec.runtimeNameShadowed(ident.Name, env)
 }
 
 // runtimeNameShadowed reports whether name resolves to a runtime binding: an

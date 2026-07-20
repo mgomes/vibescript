@@ -1843,20 +1843,15 @@ func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 
 // typeLiteralStaticallyShadowed mirrors the runtime's type-versus-value
 // choice for an argument type literal: a literal without a value reading is
-// always a type, otherwise a shadowed type name — or the fallback
-// identifier's own predicate-style spelling (`string?`), which leaf
-// normalization strips — keeps the value reading.
+// always a type, and one with a value reading — always a bare identifier —
+// keeps it only when that identifier's verbatim spelling resolves (`string?`
+// is shadowed by a binding named `string?`, not by one named `string`).
 func (c *scriptChecker) typeLiteralStaticallyShadowed(lit *TypeLiteral) bool {
-	if lit.Fallback == nil {
+	ident, ok := lit.Fallback.(*Identifier)
+	if !ok {
 		return false
 	}
-	if c.shapeTypeNamesStaticallyShadowed(lit.Type) {
-		return true
-	}
-	if ident, ok := lit.Fallback.(*Identifier); ok && strings.HasSuffix(ident.Name, "?") {
-		return c.staticNameShadowed(ident.Name)
-	}
-	return false
+	return c.staticNameShadowed(ident.Name)
 }
 
 func (c *scriptChecker) shapeTypeNamesStaticallyShadowed(ty *TypeExpr) bool {

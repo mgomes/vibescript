@@ -405,6 +405,31 @@ end
 		t.Fatalf("run() = %#v, want nil", got)
 	}
 
+	// An unrelated binding of the BASE name does not shadow the nullable
+	// spelling: the fallback reads `string?` verbatim, never `string`.
+	baseName := compileScript(t, `
+def run(string: string)
+  JSON.parse_as("null", string?)
+end
+`)
+	got = callScript(t, context.Background(), baseName, "run", []Value{NewString("unrelated")}, CallOptions{})
+	if got.Kind() != KindNil {
+		t.Fatalf("run(\"unrelated\") = %#v, want nil", got)
+	}
+
+	// The static mirror agrees: the literal stays the nullable contract, so
+	// its result fact contradicts an int boundary.
+	baseNameStatic := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(string: string, raw: string)
+  takes_int(JSON.parse_as(raw, string?))
+end
+`)
+	requireCheckWarningContains(t, baseNameStatic, "call to takes_int argument value expected int, got string?")
+
 	// The static mirror sees implicit-self predicate methods the same way.
 	selfShadowed := compileScript(t, `
 class Probe
