@@ -2285,8 +2285,11 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if summaryCollector != nil && ensureAlwaysExits {
 			c.returnCollector = summaryCollector
 		}
-		c.checkStatements(function, returnType, typed.Ensure)
-		if c.returnCollector != nil && armCapture && previousSites == nil {
+		ensureFallsThrough := c.checkStatements(function, returnType, typed.Ensure)
+		// An ensure the walk proves always exits replaces every deferred
+		// body return, even when the proof is inferred rather than
+		// syntactic, so those arms must not widen the summary.
+		if c.returnCollector != nil && armCapture && previousSites == nil && ensureFallsThrough {
 			c.recordDeferredReturnSummaryFacts(deferredSites)
 		}
 		if deferReturnType {
@@ -2309,8 +2312,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			*previousSites = append(*previousSites, deferredSites...)
 		}
 		// No fallthrough path means the code after the block is
-		// unreachable: deferred returns exit through the ensure.
-		c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
+		// unreachable: deferred returns exit through the ensure. An ensure
+		// the walk proves always exits blocks every path the same way.
+		c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0 || !ensureFallsThrough
 	}
 }
 

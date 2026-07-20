@@ -643,6 +643,30 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "inferred exiting ensure replaces deferred returns",
+			source: `
+def f()
+  begin
+    return 1
+  ensure
+    x = nil
+    if x == nil
+      return "s"
+    end
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(f())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
