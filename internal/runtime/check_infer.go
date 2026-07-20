@@ -1282,22 +1282,195 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 	return nil
 }
 
+// inferExpressionTypeWithExpectation mirrors the runtime's typed argument
+// evaluation. A callable expectation turns a bare bound method into a
+// function value, and branch/container expectations flow to the expression
+// that actually produces the value.
+func (c *scriptChecker) inferExpressionTypeWithExpectation(expr Expression, expectation expressionExpectation) *TypeExpr {
+	if expectation.empty() {
+		return c.inferExpressionType(expr)
+	}
+	if expectation.includesCallable() {
+		if _, ok := c.bareIdentifierCallableArgument(expr); ok {
+			return checkTypeFunction
+		}
+		if callableFact, ok := c.bareMemberArgumentCallableFact(expr); ok {
+			return callableFact
+		}
+	}
+	switch typed := expr.(type) {
+	case *ConditionalExpr:
+		return c.inferConditionalExpressionTypeWithExpectation(typed, expectation)
+	case *IfExpr:
+		return c.inferIfExpressionTypeWithExpectation(typed, expectation)
+	case *CaseExpr:
+		branches := make([]Expression, 0, len(typed.Clauses)+1)
+		for _, clause := range typed.Clauses {
+			branches = append(branches, clause.Result)
+		}
+		branches = append(branches, typed.ElseExpr)
+		return c.inferExpectedBranchUnion(expectation, branches...)
+	case *RescueExpr:
+		return c.inferExpectedBranchUnion(autoCallExpectation(!expectation.includesCallable()), typed.Body, typed.Fallback)
+	case *ArrayLiteral:
+		return c.inferExpectedArrayLiteralType(typed, expectation)
+	case *HashLiteral:
+		return c.inferExpectedHashLiteralType(typed, expectation)
+	default:
+		return c.inferExpressionType(expr)
+	}
+}
+
+// bareIdentifierCallableArgument matches the identifier forms the runtime
+// preserves under a callable expectation (`accept(rand)`).
+func (c *scriptChecker) bareIdentifierCallableArgument(expr Expression) (Expression, bool) {
+	var call *CallExpr
+	switch typed := expr.(type) {
+	case *Identifier:
+		call = &CallExpr{Callee: typed}
+	case *CallExpr:
+		if typed.Parenthesized || len(typed.Args) > 0 || len(typed.KwArgs) > 0 ||
+			typed.Block != nil || typed.BlockArg != nil {
+			return nil, false
+		}
+		if _, ok := typed.Callee.(*Identifier); !ok {
+			return nil, false
+		}
+		call = typed
+	default:
+		return nil, false
+	}
+	if _, ok := c.resolveCallable(call); !ok {
+		return nil, false
+	}
+	return expr, true
+}
+
+func (c *scriptChecker) inferExpectedBranchUnion(expectation expressionExpectation, branches ...Expression) *TypeExpr {
+	var merged *TypeExpr
+	for i, branch := range branches {
+		arm := checkTypeNil
+		if branch != nil {
+			arm = c.inferExpressionTypeWithExpectation(branch, expectation)
+		}
+		if arm == nil {
+			return nil
+		}
+		if i == 0 {
+			merged = arm
+			continue
+		}
+		merged = unionTypeExprs(merged, arm)
+		if merged == nil {
+			return nil
+		}
+	}
+	return merged
+}
+
+func (c *scriptChecker) inferExpectedArrayLiteralType(lit *ArrayLiteral, expectation expressionExpectation) *TypeExpr {
+	elementExpectation, ok := expectation.arrayElementExpectation()
+	if !ok || len(lit.Elements) == 0 {
+		return c.inferArrayLiteralType(lit)
+	}
+	elements := make([]*TypeExpr, 0, len(lit.Elements))
+	sawUnknown := false
+	for i, element := range lit.Elements {
+		if _, splat := element.(*SplatArg); splat {
+			sawUnknown = true
+			continue
+		}
+		elementType := c.inferExpressionTypeWithExpectation(element, elementExpectation(i, len(lit.Elements)))
+		if elementType == nil {
+			sawUnknown = true
+			continue
+		}
+		elements = append(elements, elementType)
+	}
+	if len(elements) == 0 {
+		return checkTypeArray
+	}
+	union := unionTypeExprs(elements...)
+	if union == nil {
+		return checkTypeArray
+	}
+	marker := literalElementsMarker
+	if sawUnknown {
+		marker = literalPartialElementsMarker
+	}
+	return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
+}
+
+func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectation expressionExpectation) *TypeExpr {
+	if !hashLiteralTypeHasValueSlots(expectation.ty) ||
+		(lit.ShapeType != nil && !c.hashShapeStaticallyShadowed(lit)) {
+		return c.inferHashLiteralType(lit)
+	}
+	shape := make(map[string]*TypeExpr, len(lit.Pairs))
+	allSymbolKeys, allStringKeys := true, true
+	for _, pair := range lit.Pairs {
+		switch pair.Key.(type) {
+		case *SymbolLiteral:
+			allStringKeys = false
+		case *StringLiteral:
+			allSymbolKeys = false
+		default:
+			return checkTypeHash
+		}
+		key, ok := staticLiteralHashKey(pair.Key)
+		if !ok {
+			return checkTypeHash
+		}
+		valueExpectation := expressionExpectation{}
+		if valueKey, ok := staticLiteralValue(pair.Key); ok {
+			valueExpectation = typeExpressionExpectation(hashLiteralValueType(expectation.ty, valueKey))
+		}
+		fieldType := c.inferExpressionTypeWithExpectation(pair.Value, valueExpectation)
+		if fieldType == nil {
+			return checkTypeHash
+		}
+		if _, duplicate := shape[key]; duplicate {
+			return checkTypeHash
+		}
+		shape[key] = fieldType
+	}
+	fact := &TypeExpr{Kind: TypeShape, Shape: shape}
+	switch {
+	case allSymbolKeys:
+		fact.Name = shapeKeysSymbolMarker
+	case allStringKeys:
+		fact.Name = shapeKeysStringMarker
+	}
+	return fact
+}
+
 func (c *scriptChecker) inferConditionalExpressionType(expr *ConditionalExpr) *TypeExpr {
+	return c.inferConditionalExpressionTypeWithExpectation(expr, expressionExpectation{})
+}
+
+// inferConditionalExpressionTypeWithExpectation infers a ternary under the
+// narrowing each condition outcome proves, flowing any expectation into the
+// branch results. Unreachable outcomes contribute no arm.
+func (c *scriptChecker) inferConditionalExpressionTypeWithExpectation(expr *ConditionalExpr, expectation expressionExpectation) *TypeExpr {
 	baseScopeState := c.snapshotScopeState()
 	defer c.restoreScopeState(baseScopeState)
 
 	branches := make([]*TypeExpr, 0, 2)
 	if c.applyConditionOutcomeEffects(expr.Condition, true, nil) {
-		branches = append(branches, c.inferExpressionType(expr.Consequent))
+		branches = append(branches, c.inferExpressionTypeWithExpectation(expr.Consequent, expectation))
 	}
 	c.restoreScopeState(baseScopeState)
 	if c.applyConditionOutcomeEffects(expr.Condition, false, nil) {
-		branches = append(branches, c.inferExpressionType(expr.Alternate))
+		branches = append(branches, c.inferExpressionTypeWithExpectation(expr.Alternate, expectation))
 	}
 	return unionTypeExprs(branches...)
 }
 
 func (c *scriptChecker) inferIfExpressionType(expr *IfExpr) *TypeExpr {
+	return c.inferIfExpressionTypeWithExpectation(expr, expressionExpectation{})
+}
+
+func (c *scriptChecker) inferIfExpressionTypeWithExpectation(expr *IfExpr, expectation expressionExpectation) *TypeExpr {
 	baseScopeState := c.snapshotScopeState()
 	defer c.restoreScopeState(baseScopeState)
 
@@ -1307,7 +1480,7 @@ func (c *scriptChecker) inferIfExpressionType(expr *IfExpr) *TypeExpr {
 			branches = append(branches, checkTypeNil)
 			return
 		}
-		branches = append(branches, c.inferExpressionType(result))
+		branches = append(branches, c.inferExpressionTypeWithExpectation(result, expectation))
 	}
 	collectCondition := func(condition, result Expression) bool {
 		conditionScopeState := c.snapshotScopeState()
@@ -1446,41 +1619,104 @@ func (c *scriptChecker) inferUnaryExprType(expr *UnaryExpr) *TypeExpr {
 	return nil
 }
 
-// inferCallExprType exposes a known callee's annotated return type to the
-// caller. Splats and constructors stay unknown; script functions reached
-// through safe navigation stay unknown too. A nil-only safe-navigation
-// receiver yields nil without dispatch; otherwise a builtin contract's
-// invariant result flows through with nil added. JSON.parse_as models its
-// validated shape (ADR-004).
+// inferCallExprType exposes an invariant result fact for a resolved call: a
+// script function's annotation, a constructor's nominal class, or a builtin
+// contract. Constructor identity survives splat expansion because expansion
+// changes only argument binding, never the class produced by a successful
+// call. Safe navigation returns nil when it must skip and otherwise adds nil
+// unless the receiver is known non-nil.
 func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
-	if c.safeNavigationCallSkipsInferred(call) {
+	member, memberCall := call.Callee.(*MemberExpr)
+	if memberCall && member.Safe && typeExprIsNilOnly(c.safeNavigationReceiverFact(member.Object)) {
 		return checkTypeNil
 	}
-	safeNavigation := false
-	if member, ok := call.Callee.(*MemberExpr); ok && member.Safe {
-		safeNavigation = true
-	}
 	target, ok := c.resolveCallable(call)
-	if !ok || callExpandsArguments(call) {
+	if !ok {
 		return nil
 	}
-	if target.fn != nil {
-		if target.constructor || safeNavigation {
+	var result *TypeExpr
+	if target.constructorClass != "" {
+		result = &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
+	} else if callExpandsArguments(call) {
+		return nil
+	} else if target.fn != nil {
+		if target.constructor {
 			return nil
 		}
-		return target.fn.ReturnTy
-	}
-	if target.name == "JSON.parse_as" && len(call.Args) == 2 {
+		result = target.fn.ReturnTy
+	} else if target.name == "JSON.parse_as" && len(call.Args) == 2 {
 		if shape, ok := shapeValuePayload(c.inferExpressionType(call.Args[1])); ok {
 			// JSON object keys are strings, so the validated result and its
 			// nested shapes are string-keyed stores.
-			return stringKeyedShapeFact(shape)
+			result = stringKeyedShapeFact(shape)
 		}
+	} else {
+		result = target.spec.resultType
 	}
-	if safeNavigation {
-		return nullableTypeExpr(target.spec.resultType)
+	if memberCall {
+		return c.safeNavigationMemberResultFact(member, result)
 	}
-	return target.spec.resultType
+	return result
+}
+
+// memberResultFact reports the result of a bare member read that auto-invokes
+// in a value context: constructors carry their nominal class, script methods
+// expose an explicit return annotation, builtins expose their invariant
+// contract results, and temporal conversions surface as direct scalar values.
+// A nil-only safe-navigation receiver yields nil without dispatch; safe
+// navigation otherwise adds nil unless the receiver is known non-nil.
+func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
+	if member.Safe && typeExprIsNilOnly(c.safeNavigationReceiverFact(member.Object)) {
+		return checkTypeNil
+	}
+	if result := c.staticMemberValueResultFact(member); result != nil {
+		return c.safeNavigationMemberResultFact(member, result)
+	}
+	target, ok := c.resolveMemberCallable(member)
+	if !ok {
+		return nil
+	}
+	var result *TypeExpr
+	if target.constructorClass != "" {
+		result = &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
+	} else if target.fn != nil && !target.constructor {
+		result = target.fn.ReturnTy
+	} else if target.spec.autoInvoke {
+		result = target.spec.resultType
+	}
+	return c.safeNavigationMemberResultFact(member, result)
+}
+
+func (c *scriptChecker) safeNavigationMemberResultFact(member *MemberExpr, result *TypeExpr) *TypeExpr {
+	if result == nil || member == nil || !member.Safe || c.safeNavigationReceiverKnownNonNil(member.Object) {
+		return result
+	}
+	if result.Kind == TypeUnion {
+		return unionTypeExprs(result, checkTypeNil)
+	}
+	return nullableTypeExpr(result)
+}
+
+func (c *scriptChecker) safeNavigationReceiverKnownNonNil(expr Expression) bool {
+	ident, ok := expr.(*Identifier)
+	if !ok {
+		return typeExprNeverNil(c.inferExpressionType(expr))
+	}
+	if typeExprNeverNil(c.localTypeFor(ident.Name)) {
+		return true
+	}
+	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		return false
+	}
+	_, ok = c.script.classes[ident.Name]
+	return ok
+}
+
+func (c *scriptChecker) safeNavigationReceiverFact(expr Expression) *TypeExpr {
+	if ident, ok := expr.(*Identifier); ok {
+		return c.localTypeFor(ident.Name)
+	}
+	return c.inferExpressionType(expr)
 }
 
 // nullableTypeExpr returns the type with a nil arm added, sharing the
@@ -1492,32 +1728,6 @@ func nullableTypeExpr(ty *TypeExpr) *TypeExpr {
 	clone := *ty
 	clone.Nullable = true
 	return &clone
-}
-
-// memberResultFact reports the invariant result of a bare member read. It
-// covers both builtins that auto-invoke (`s.to_i` or `Time.now` without
-// parentheses) and temporal conversions exposed directly as scalar values
-// (`d.to_i`). A nil-only safe-navigation receiver yields nil without dispatch.
-// Other members that resolve to script functions or carry no result contract
-// stay unknown; safe navigation adds nil.
-func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
-	if member.Safe && typeExprIsNilOnly(c.inferExpressionType(member.Object)) {
-		return checkTypeNil
-	}
-	if result := c.staticMemberValueResultFact(member); result != nil {
-		if member.Safe {
-			return nullableTypeExpr(result)
-		}
-		return result
-	}
-	target, ok := c.resolveMemberCallable(member)
-	if !ok || target.fn != nil || !target.spec.autoInvoke {
-		return nil
-	}
-	if member.Safe {
-		return nullableTypeExpr(target.spec.resultType)
-	}
-	return target.spec.resultType
 }
 
 // staticMemberValueResultFact resolves a direct scalar value only when every
@@ -1962,10 +2172,20 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 // declared type. The declared annotation is validated silently here; the
 // regular annotation checks report unresolved names.
 func (c *scriptChecker) checkInferredExpressionAgainstType(function string, expr Expression, ty *TypeExpr, subject string) {
+	c.checkInferredExpressionAgainstTypeWithExpectation(function, expr, ty, subject, expressionExpectation{})
+}
+
+func (c *scriptChecker) checkInferredExpressionAgainstTypeWithExpectation(
+	function string,
+	expr Expression,
+	ty *TypeExpr,
+	subject string,
+	expectation expressionExpectation,
+) {
 	if ty == nil {
 		return
 	}
-	inferred := c.inferExpressionType(expr)
+	inferred := c.inferExpressionTypeWithExpectation(expr, expectation)
 	if inferred == nil {
 		return
 	}
@@ -1989,7 +2209,7 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	// earlier one.
 	inferred, captured := c.callArgumentFacts[expr]
 	if !captured {
-		inferred = c.inferExpressionType(expr)
+		inferred = c.inferExpressionTypeWithExpectation(expr, typeExpressionExpectation(ty))
 	}
 	if inferred == nil {
 		return
@@ -2001,6 +2221,29 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 		c.add(function, expr.Pos(), "call to %s argument %s expected %s, got %s",
 			callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred))
 	}
+}
+
+// bareMemberArgumentCallableFact mirrors the runtime's callable-parameter
+// expectation: a bound script method (including a constructor backed by
+// initialize) is passed through instead of auto-invoked. Safe navigation adds
+// nil when the receiver may skip dispatch. Generated getters still evaluate
+// to their property value.
+func (c *scriptChecker) bareMemberArgumentCallableFact(expr Expression) (*TypeExpr, bool) {
+	member, ok := expr.(*MemberExpr)
+	if !ok {
+		return nil, false
+	}
+	target, ok := c.resolveMemberCallable(member)
+	if !ok || target.fn == nil || target.fn.Accessor == functionAccessorGetter {
+		return nil, false
+	}
+	if member.Safe && !c.safeNavigationReceiverKnownNonNil(member.Object) {
+		if typeExprIsNilOnly(c.safeNavigationReceiverFact(member.Object)) {
+			return checkTypeNil, true
+		}
+		return unionTypeExprs(checkTypeFunction, checkTypeNil), true
+	}
+	return checkTypeFunction, true
 }
 
 // checkBinaryOperandTypes rejects operator uses whose operand types are known

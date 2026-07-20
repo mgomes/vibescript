@@ -334,3 +334,21 @@ func tokenStartsShapeFieldName(tok ast.Token) bool {
 		return isLabelNameToken(tok)
 	}
 }
+
+// ParseTypeExpr parses a standalone type annotation spelling ("array<int>",
+// "{ name: string }", "int | nil") the way parameter and return annotations
+// parse inside a script. The whole input must be a single type expression.
+func ParseTypeExpr(source string) (*ast.TypeExpr, error) {
+	p := newParser(source)
+	ty := p.parseTypeExpr()
+	if len(p.errors) > 0 {
+		return nil, p.errors[0]
+	}
+	if ty == nil {
+		return nil, fmt.Errorf("invalid type annotation %q", source)
+	}
+	if p.peekToken.Type != ast.TokenEOF {
+		return nil, fmt.Errorf("unexpected trailing input in type annotation %q", source)
+	}
+	return ty, nil
+}

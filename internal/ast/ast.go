@@ -57,6 +57,12 @@ type Param struct {
 	DefaultVal Expression
 	IsIvar     bool
 	Target     Expression
+	// PropertyType is the declared property contract backing an unannotated
+	// ivar parameter, resolved when the owning class compiles. It shapes
+	// argument and default evaluation (a callable-typed contract keeps a
+	// bare zero-arity callable un-invoked) while binding validation stays
+	// with the ivar write itself.
+	PropertyType *TypeExpr
 }
 
 // TypeKind identifies the category of a type expression.

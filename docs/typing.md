@@ -161,6 +161,10 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   `unless`, `elsif`, negation, short-circuits, and guard clauses that exit
   early. Unknown values stay unknown, and branches re-join into the wider
   fact afterwards.
+- Constructor results are nominal: `u = User.new` gives `u` the fact `User`,
+  boundary checks compare it by class identity, and instance methods called
+  on it check their argument shapes and expose their annotated return types.
+  Shadowed class names and dynamic constructor dispatch stay unknown.
 - Scalar member contracts resolve from receiver facts: `s.to_i` on a known
   string is an `int`, universal predicates such as `nil?` and `respond_to?`
   are `bool`, and safe navigation adds `nil` to the result (`x&.to_s` is
