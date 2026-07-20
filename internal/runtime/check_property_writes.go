@@ -95,12 +95,17 @@ func (c *scriptChecker) checkIvarParamBinding(function string, fn *ScriptFunctio
 
 // ivarParamContract returns the property contract backing an ivar parameter
 // of fn, resolved through the class that owns the method. Parameters of
-// plain functions and ivars without a typed generated accessor have none.
+// plain functions, class methods (whose ivar parameters only bind a local —
+// the runtime writes the ivar only when self is an instance), and ivars
+// without a typed generated accessor have none.
 func (c *scriptChecker) ivarParamContract(fn *ScriptFunction, param Param) *TypeExpr {
 	if !param.IsIvar {
 		return nil
 	}
 	c.prepareSelfScopeFunctions()
+	if _, classMethod := c.selfScopeClassFns[fn]; classMethod {
+		return nil
+	}
 	classDef := c.selfScopeFnClasses[fn]
 	if classDef == nil {
 		return nil
