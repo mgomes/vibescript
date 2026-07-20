@@ -2101,8 +2101,13 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if !ok || self.Kind() != KindInstance {
 			return exec.errorAt(target.Pos(), "no instance context for ivar")
 		}
+		inst := valueInstance(self)
+		normalized, err := exec.normalizeIvarWrite(inst, t.Name, value, target.Pos())
+		if err != nil {
+			return err
+		}
 		bumpMutationEpoch()
-		valueInstance(self).Ivars[t.Name] = value
+		inst.Ivars[t.Name] = normalized
 		return nil
 	case *ClassVarExpr:
 		self, ok := env.Get("self")

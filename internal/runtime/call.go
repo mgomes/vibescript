@@ -3553,8 +3553,15 @@ func (exec *Execution) bindFunctionParamValue(fn *ScriptFunction, env *Env, para
 		if selfVal, ok := env.Get("self"); ok && selfVal.Kind() == KindInstance {
 			inst := valueInstance(selfVal)
 			if inst != nil {
+				// An ivar parameter is a direct write to the backing ivar, so
+				// the declared property contract applies on top of any
+				// parameter annotation already validated above.
+				normalized, err := exec.normalizeIvarWrite(inst, param.Name, val, pos)
+				if err != nil {
+					return err
+				}
 				bumpMutationEpoch()
-				inst.Ivars[param.Name] = val
+				inst.Ivars[param.Name] = normalized
 			}
 		}
 	}
