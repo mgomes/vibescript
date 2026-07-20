@@ -55,14 +55,17 @@ func (c *scriptChecker) scriptFunctionReturnSummary(call *CallExpr, fn *ScriptFu
 	if !ok || owned.ReturnTy != nil {
 		return nil
 	}
-	return c.functionReturnSummary(owned, callRunnableDefaults(call, owned))
+	runnable, definite := callRunnableDefaults(call, owned)
+	return c.functionReturnSummary(owned, runnable, definite)
 }
 
 // callRunnableDefaults reports the defaulted parameter indices this call
 // shape may leave unsupplied, so the summary walk evaluates exactly the
-// defaults the runtime would. A nil call (a bare auto-invoke) runs every
-// default.
-func callRunnableDefaults(call *CallExpr, fn *ScriptFunction) []int {
+// defaults the runtime would. definite reports whether those defaults
+// provably run: a literal shape omits its parameters outright, while a
+// splatted shape only may, so its defaults' value facts cannot bind. A nil
+// call (a bare auto-invoke) passes no arguments, so every default runs.
+func callRunnableDefaults(call *CallExpr, fn *ScriptFunction) ([]int, bool) {
 	var indices []int
 	for i, param := range fn.Params {
 		if param.DefaultVal == nil {
@@ -72,7 +75,7 @@ func callRunnableDefaults(call *CallExpr, fn *ScriptFunction) []int {
 			indices = append(indices, i)
 		}
 	}
-	return indices
+	return indices, call == nil || !callExpandsArguments(call)
 }
 
 // resolveOwnedPlainFunction maps a resolved callee to the checked script's
@@ -102,11 +105,11 @@ func (c *scriptChecker) resolveOwnedPlainFunction(fn *ScriptFunction) (*ScriptFu
 // under one set of runnable defaults. A recursive or mutually recursive call
 // reaches the in-progress guard, infers as unknown, and poisons the
 // dependent summary, so cycles terminate with the conservative answer.
-func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaults []int) *TypeExpr {
+func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaults []int, definiteDefaults bool) *TypeExpr {
 	if fn == nil || fn.ReturnTy != nil {
 		return nil
 	}
-	key := c.returnSummaryCacheKey(fn, runnableDefaults)
+	key := c.returnSummaryCacheKey(fn, runnableDefaults, definiteDefaults)
 	if summary, ok := c.returnSummaries[key]; ok {
 		return summary
 	}
@@ -123,7 +126,7 @@ func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaul
 	if len(fn.Body) == 0 {
 		summary = checkTypeNil
 	} else {
-		collector := c.collectFunctionReturnFacts(fn, runnableDefaults)
+		collector := c.collectFunctionReturnFacts(fn, runnableDefaults, definiteDefaults)
 		if !collector.unknown && len(collector.arms) > 0 {
 			summary = unionTypeExprs(collector.arms...)
 		}
@@ -140,7 +143,7 @@ func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaul
 // callee from statically known to dynamic, so reusing a fact across those
 // states would make the checker unsound; different call shapes run different
 // parameter defaults, so their effects separate the key too.
-func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaults []int) returnSummaryCacheKey {
+func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaults []int, definiteDefaults bool) returnSummaryCacheKey {
 	root := c.runtimeTypeRoot
 	if root == nil {
 		root = c.typeRoot
@@ -156,6 +159,9 @@ func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaul
 	}
 	if len(runnableDefaults) > 0 {
 		context += "\x01defaults:" + fmt.Sprint(runnableDefaults)
+		if definiteDefaults {
+			context += "!"
+		}
 	}
 	return returnSummaryCacheKey{fn: fn, context: context}
 }
@@ -164,7 +170,7 @@ func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaul
 // suppressed and every piece of walk state walled off, recording return-site
 // facts as the walk reaches them and implicit-final facts afterwards. Only
 // the defaults the summarized call shape may evaluate are walked.
-func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableDefaults []int) *returnSummaryCollector {
+func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableDefaults []int, definiteDefaults bool) *returnSummaryCollector {
 	collector := &returnSummaryCollector{}
 	c.withSuppressedWarnings(func() {
 		runtimeState := c.snapshotRuntimeState()
@@ -227,11 +233,19 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 			// must be live for the body walk, mirroring checkFunction. A
 			// default the summarized call shape provably supplies never
 			// runs and contributes nothing.
-			if _, mayRun := runnable[i]; mayRun {
+			_, mayRun := runnable[i]
+			if mayRun {
 				c.checkExpression(fn.Name, param.DefaultVal)
 				c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
 			}
 			c.recordParamBinding(param)
+			// A literal call shape omits the parameter outright, so the
+			// default is exactly the value the runtime binds; a splatted
+			// shape may supply it instead, so no value fact holds.
+			if mayRun && definiteDefaults {
+				c.bindParamDefaultFact(param)
+				c.refineAnnotatedParamFact(param, c.inferExpressionType(param.DefaultVal))
+			}
 		}
 		if c.checkStatements(fn.Name, nil, fn.Body) {
 			c.collectImplicitResultFacts(fn.Body)

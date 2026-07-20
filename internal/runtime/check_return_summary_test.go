@@ -565,6 +565,23 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "definitely omitted parameter carries the default fact",
+			source: `
+def build_count(x = 1)
+  x
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
@@ -883,6 +900,22 @@ def run(values)
   takes_string(serialize())
   flip(*values)
   takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "splatted call keeps the default fact unknown",
+			source: `
+def build_count(x = 1)
+  x
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(a)
+  takes_string(build_count(*a))
 end
 `,
 		},
