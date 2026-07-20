@@ -38,7 +38,7 @@ Tier 2 below. Concretely:
   `RegisterZeroArgBuiltin`, `Builtins`, `ClearModuleCache`,
   `ConfigSummary`, `MaxSourceBytes`), `Config`, `Script` (`Call`,
   `Function`/`Functions`, `Classes`, `Enums`, the `CheckWarnings*`
-  family returning `CheckWarning`), `CallOptions`, `Execution` (opaque; `Context`, `Step`,
+  family returning `CheckWarning`, `CheckedCall`), `CallOptions`, `Execution` (opaque; `Context`, `Step`,
   `CallBlock`), `RuntimeError`, `StackFrame`, `Position`, `ParseIssue`,
   `ParseIssues`, `Builtin`/`BuiltinFunc`/`Builtins`, `NewBuiltin`,
   `NewAutoBuiltin`, `ParamKind` and the `Param*` constants,

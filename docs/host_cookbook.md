@@ -111,6 +111,27 @@ engine, err := vibes.NewEngine(vibes.Config{
 Why: this reduces accidental coupling and blocks unsafe internal helpers from
 becoming de-facto public APIs.
 
+### Gate untrusted scripts with CheckedCall
+
+`Script.Call` stays gradual: provable contradictions warn under
+`CheckWarnings*` but the call still runs and relies on runtime contracts.
+Deployment pipelines and untrusted-script boundaries that want a hard static
+gate use the opt-in combined API:
+
+```go
+result, warnings, err := script.CheckedCall(ctx, "run", args, opts)
+switch {
+case len(warnings) > 0:
+        // Static gate: the script did not execute.
+case err != nil:
+        // Runtime failure from the executed call.
+}
+```
+
+The static phase checks the exact call — same function, same argument
+values, same options — so the gate and the execution can never disagree
+about names, inputs, or bound host surfaces.
+
 ## 5. Failure Handling and Observability
 
 On script failures, capture:

@@ -64,14 +64,18 @@ type checkTarget struct {
 }
 
 func (s *Script) checkWarnings(opts CallOptions, target checkTarget) []CheckWarning {
-	return s.checkWarningsMode(opts, target, false)
+	return s.checkWarningsMode(context.Background(), opts, target, false)
 }
 
-func (s *Script) checkWarningsMode(opts CallOptions, target checkTarget, orderIndependentOnly bool) []CheckWarning {
+func (s *Script) checkWarningsMode(ctx context.Context, opts CallOptions, target checkTarget, orderIndependentOnly bool) []CheckWarning {
+	optionGlobals, _ := checkOptionGlobals(ctx, s, opts)
+	return s.checkWarningsWithGlobals(optionGlobals, opts, target, orderIndependentOnly)
+}
+
+func (s *Script) checkWarningsWithGlobals(optionGlobals map[string]Value, opts CallOptions, target checkTarget, orderIndependentOnly bool) []CheckWarning {
 	if s == nil {
 		return nil
 	}
-	optionGlobals := checkOptionGlobals(s, opts)
 	checker := scriptChecker{
 		script:                s,
 		callOptions:           opts,
@@ -189,20 +193,57 @@ type reachableFunction struct {
 	runtimeState checkRuntimeState
 }
 
-func checkOptionGlobals(script *Script, opts CallOptions) map[string]Value {
+// checkOptionGlobals resolves the host globals a call would receive. Bind
+// failures leave the adapter's names unbound and are also returned so a
+// combined check-and-call gate can surface them; the pure CheckWarnings*
+// queries ignore the error and stay best-effort.
+func checkOptionGlobals(ctx context.Context, script *Script, opts CallOptions) (map[string]Value, error) {
 	if len(opts.Capabilities) == 0 && len(opts.Globals) == 0 {
-		return nil
+		return nil, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var bindErr error
 	globals := make(map[string]Value, len(opts.Globals)+len(opts.Capabilities)*2)
 	if script != nil {
-		binding := CapabilityBinding{Context: context.Background(), Engine: script.engine}
+		binding := CapabilityBinding{Context: ctx, Engine: script.engine}
+		seenContracts := make(map[string]struct{})
 		for _, adapter := range opts.Capabilities {
 			if adapter == nil {
 				continue
 			}
+			// Execution validates contract names before invoking Bind and
+			// stops at the first failure (bindCapabilitiesForCall); the gate
+			// mirrors that order so it never touches a surface the call
+			// would not.
+			if provider, ok := adapter.(CapabilityContractProvider); ok {
+				for methodName := range provider.CapabilityContracts() {
+					name := strings.TrimSpace(methodName)
+					if name == "" {
+						bindErr = fmt.Errorf("capability contract method name must be non-empty")
+						break
+					}
+					if _, exists := seenContracts[name]; exists {
+						bindErr = fmt.Errorf("duplicate capability contract for %s", name)
+						break
+					}
+					seenContracts[name] = struct{}{}
+				}
+				if bindErr != nil {
+					break
+				}
+			}
 			bound, err := adapter.Bind(binding)
 			if err != nil {
-				continue
+				bindErr = err
+				break
+			}
+			// Execution checks the context after each successful bind; a
+			// cancellation must stop the gate before any checker work runs.
+			if err := ctx.Err(); err != nil {
+				bindErr = err
+				break
 			}
 			for name, val := range bound {
 				globals[name] = val
@@ -213,9 +254,9 @@ func checkOptionGlobals(script *Script, opts CallOptions) map[string]Value {
 		globals[name] = val
 	}
 	if len(globals) == 0 {
-		return nil
+		return nil, bindErr
 	}
-	return globals
+	return globals, bindErr
 }
 
 func checkHostGlobals(globals map[string]Value) map[string]struct{} {
