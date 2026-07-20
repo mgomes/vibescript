@@ -1663,7 +1663,10 @@ func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
 			if typeExprSatisfies(appended, elem, c.checkNamedTypeResolver()) {
 				// A compatible append keeps the declared fact true for the
 				// receiver and every alias — inside regions too: nothing
-				// rebinds, so the region's state restore stays correct.
+				// rebinds, so the region's state restore stays correct. The
+				// receiver retains an appended container, so its root local
+				// links in: a later mutation through it weakens both.
+				c.linkContainerWriteAlias(ident.Name, expr.Right, appended)
 				return
 			}
 			if c.mutationRegionDepth == 0 && len(c.typeAliases[ident.Name]) == 0 {
@@ -1823,7 +1826,13 @@ func (c *scriptChecker) applyIndexedElementWriteFacts(function string, stmt *Ass
 		c.reportIncompatibleElementWrite(function, stmt.Pos(), ident.Name, elem, written)
 		return false
 	}
-	return typeExprSatisfies(written, elem, resolve) && mutatorReceiverFactIntact(current, receiverFact)
+	if !typeExprSatisfies(written, elem, resolve) || !mutatorReceiverFactIntact(current, receiverFact) {
+		return false
+	}
+	// The receiver retains a written container element, so its root local
+	// links in: a later mutation through it weakens both.
+	c.linkContainerWriteAlias(ident.Name, stmt.Value, written)
+	return true
 }
 
 // arrayMutatorElementWrites returns the argument expressions an in-place
@@ -1914,7 +1923,11 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 		}
 		if !typeExprSatisfies(written, elem, resolve) {
 			preserved = false
+			continue
 		}
+		// The receiver retains a written container element, so its root
+		// local links in: a later mutation through it weakens both.
+		c.linkContainerWriteAlias(ident.Name, arg, written)
 	}
 	return preserved
 }
@@ -1924,6 +1937,22 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 // same fact the writes were checked against.
 func mutatorReceiverFactIntact(current, captured *TypeExpr) bool {
 	return current != nil && typeFactKey(current) == typeFactKey(captured)
+}
+
+// linkContainerWriteAlias links a receiver whose fact a compatible write
+// preserved to the root local of the written container value: the receiver
+// retains the value, so a later mutation or escape through the original
+// name invalidates the receiver's bound and must weaken both facts.
+func (c *scriptChecker) linkContainerWriteAlias(receiver string, value Expression, written *TypeExpr) {
+	if written != nil && !typeExprHasContainerArm(written) {
+		return
+	}
+	switch value.(type) {
+	case *Identifier, *IndexExpr, *MemberExpr:
+		if root, ok := rootIdentifierName(value); ok {
+			c.linkContainerAlias(receiver, root)
+		}
+	}
 }
 
 // literalArrayDisjoint reports whether a witnessed-element array can never

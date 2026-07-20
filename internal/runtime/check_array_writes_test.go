@@ -178,6 +178,17 @@ end
 			warning: "write to items expected element { amount: int }, got string",
 		},
 		{
+			name: "appended child local keeps the bound until it mutates",
+			source: `
+def f(rows: array<array<int>>)
+  child = [1]
+  rows << child
+  rows << "bad"
+end
+`,
+			warning: "write to rows expected element array<int>, got string",
+		},
+		{
 			name: "chained shovel appends through the chain root",
 			source: `
 def f(items: array<int>)
@@ -519,6 +530,48 @@ end
 def f(items: array<int>)
   items.insert(5, 1)
   items << "bad"
+end
+`,
+		},
+		{
+			name: "mutating an appended child weakens the outer bound",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f(rows: array<array<int>>)
+  child = [1]
+  rows << child
+  child << "bad"
+  for row in rows
+    for v in row
+      takes_string(v)
+    end
+  end
+end
+`,
+		},
+		{
+			name: "escaping an appended child weakens the outer bound",
+			source: `
+def helper(a)
+  a
+end
+
+def takes_string(value: string)
+  value
+end
+
+def f(rows: array<array<int>>)
+  child = [1]
+  rows << child
+  helper(child)
+  for row in rows
+    for v in row
+      takes_string(v)
+    end
+  end
 end
 `,
 		},
