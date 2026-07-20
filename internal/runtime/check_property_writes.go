@@ -40,12 +40,8 @@ func (c *scriptChecker) ivarContractFact(ty *TypeExpr) *TypeExpr {
 // instance variable of the class under check. The seed widens the declared
 // contract with nil: an instance variable that was never written reads as
 // nil regardless of its declared type, while every executed write satisfies
-// the contract — statically or through the runtime guard. Ivar parameters
-// are direct writes that bind before the body runs, so they refine their
-// ivar's fact to the bare contract, and an annotation or default value that
-// provably contradicts the contract warns at the definition: every call
-// would fail during parameter binding.
-func (c *scriptChecker) seedInstanceIvarFacts(function string, fn *ScriptFunction) {
+// the contract — statically or through the runtime guard.
+func (c *scriptChecker) seedInstanceIvarFacts() {
 	if c.selfClass == nil || c.selfClassContext {
 		return
 	}
@@ -59,23 +55,41 @@ func (c *scriptChecker) seedInstanceIvarFacts(function string, fn *ScriptFunctio
 		}
 		c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), unionTypeExprs(fact, checkTypeNil))
 	}
-	if fn == nil {
+}
+
+// checkIvarParamBinding checks one ivar parameter as the direct write it
+// performs when it binds, at its own position in the parameter walk so
+// earlier defaults still read later ivars as unset. An annotation that
+// provably contradicts the property contract warns at the definition (every
+// call would fail during binding), the default value checks under the same
+// expectation the runtime evaluates it with (a callable-typed contract
+// keeps a bare callable un-invoked), and the ivar's fact refines to the
+// bare contract once the parameter has bound.
+func (c *scriptChecker) checkIvarParamBinding(function string, fn *ScriptFunction, param Param) {
+	ty := c.ivarParamContract(fn, param)
+	if ty == nil || validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
 		return
 	}
-	for _, param := range fn.Params {
-		ty := c.ivarParamContract(fn, param)
-		if ty == nil || validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
-			continue
+	if param.Type != nil &&
+		validateTypeExprResolved(param.Type, c.runtimeTypeContext()) == nil &&
+		typeExprsDisjoint(param.Type, ty, c.checkNamedTypeResolver()) {
+		c.add(function, param.Type.Position, "write to @%s expected %s, got %s",
+			param.Name, formatTypeExpr(ty), formatTypeExpr(param.Type))
+	}
+	if param.DefaultVal != nil {
+		subject := "default value for @" + param.Name
+		if val, ok := staticLiteralValue(param.DefaultVal); ok {
+			if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
+				c.addValueTypeWarning(function, param.DefaultVal.Pos(), subject, err)
+			}
+		} else if inferred := c.inferExpressionTypeWithExpectation(param.DefaultVal, positionalArgumentExpectation(param)); inferred != nil &&
+			typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver()) {
+			c.add(function, param.DefaultVal.Pos(), "%s expected %s, got %s",
+				subject, formatTypeExpr(ty), formatTypeExpr(inferred))
 		}
-		if param.Type != nil &&
-			validateTypeExprResolved(param.Type, c.runtimeTypeContext()) == nil &&
-			typeExprsDisjoint(param.Type, ty, c.checkNamedTypeResolver()) {
-			c.add(function, param.Type.Position, "write to @%s expected %s, got %s",
-				param.Name, formatTypeExpr(ty), formatTypeExpr(param.Type))
-		}
-		if fact := c.ivarContractFact(ty); fact != nil {
-			c.bindLocalTypeInCurrentFrame(ivarFactKey(param.Name), fact)
-		}
+	}
+	if fact := c.ivarContractFact(ty); fact != nil {
+		c.bindLocalTypeInCurrentFrame(ivarFactKey(param.Name), fact)
 	}
 }
 
@@ -86,6 +100,7 @@ func (c *scriptChecker) ivarParamContract(fn *ScriptFunction, param Param) *Type
 	if !param.IsIvar {
 		return nil
 	}
+	c.prepareSelfScopeFunctions()
 	classDef := c.selfScopeFnClasses[fn]
 	if classDef == nil {
 		return nil
@@ -110,23 +125,6 @@ func (c *scriptChecker) checkIvarParamArgument(function string, arg Expression, 
 		return
 	}
 	c.checkArgumentExpression(function, arg, ty, callName, param.Name)
-}
-
-// checkIvarParamDefault checks an ivar parameter's default value against the
-// property contract it stores into. It runs from the parameter walk, after
-// earlier parameters have bound their facts, matching the runtime's binding
-// order for defaults that reference prior parameters. The annotation check
-// for annotated parameters runs separately; this covers the store contract.
-func (c *scriptChecker) checkIvarParamDefault(function string, fn *ScriptFunction, param Param) {
-	if param.DefaultVal == nil {
-		return
-	}
-	ty := c.ivarParamContract(fn, param)
-	if ty == nil {
-		return
-	}
-	c.checkRuntimeExpressionAgainstType(function, param.DefaultVal, ty,
-		"default value for @"+param.Name)
 }
 
 // addIvarWriteWarning reports a direct-write contradiction in the standard
@@ -180,10 +178,20 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 			if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
 				c.addIvarWriteWarning(function, pos, name, err)
 			}
-		} else if next := c.inferExpressionType(value); next != nil &&
-			typeExprsDisjoint(next, ty, c.checkNamedTypeResolver()) {
-			c.add(function, pos, "write to @%s expected %s, got %s",
-				name, formatTypeExpr(ty), formatTypeExpr(next))
+		} else {
+			// The runtime evaluates the right-hand side under the property
+			// expectation for the same value shapes as a member setter, so a
+			// bare callable assigned to a function-typed property is stored
+			// un-invoked; the inference mirrors that before comparing.
+			expectation := expressionExpectation{}
+			if memberAssignmentValueCanUseExpectation(value) {
+				expectation = typeExpressionExpectation(ty)
+			}
+			if next := c.inferExpressionTypeWithExpectation(value, expectation); next != nil &&
+				typeExprsDisjoint(next, ty, c.checkNamedTypeResolver()) {
+				c.add(function, pos, "write to @%s expected %s, got %s",
+					name, formatTypeExpr(ty), formatTypeExpr(next))
+			}
 		}
 	}
 	if fact := c.ivarContractFact(ty); fact != nil {
