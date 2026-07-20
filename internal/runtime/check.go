@@ -1654,6 +1654,16 @@ func cloneCheckStringSet(modules map[string]struct{}) map[string]struct{} {
 	return clone
 }
 
+func unionCheckStringSet(dst, src map[string]struct{}) map[string]struct{} {
+	for key := range src {
+		if dst == nil {
+			dst = make(map[string]struct{}, len(src))
+		}
+		dst[key] = struct{}{}
+	}
+	return dst
+}
+
 func (c *scriptChecker) mergeRuntimeStates(base checkRuntimeState, states []checkRuntimeState) {
 	c.restoreRuntimeState(base)
 	if len(states) == 0 {
@@ -2259,6 +2269,17 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			mergeRuntimeStates = append(mergeRuntimeStates, site.runtimeState)
 			mergeScopeStates = append(mergeScopeStates, site.scopeState)
 		}
+		// A returned path's namespace writes reach the ensure walk but never
+		// the code after the block, which runs only on a fall-through path,
+		// so the continuation's marker set is remembered before the deferred
+		// states join the merge.
+		var continuationMembers map[string]struct{}
+		if len(deferredSites) > 0 {
+			continuationMembers = cloneCheckStringSet(baseRuntimeState.namespaceMembers)
+			for _, state := range fallthroughRuntimeStates {
+				continuationMembers = unionCheckStringSet(continuationMembers, state.namespaceMembers)
+			}
+		}
 		c.mergeRuntimeStates(baseRuntimeState, mergeRuntimeStates)
 		c.mergeScopeStates(baseScopeState, mergeScopeStates)
 		if summaryCollector != nil && ensureAlwaysExits {
@@ -2270,6 +2291,19 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		if deferReturnType {
 			c.checkDeferredReturnSitesAfterEnsure(function, returnType, typed.Ensure, deferredSites)
+		}
+		if len(deferredSites) > 0 {
+			// The ensure body's own possible writes run on the fall-through
+			// path too, so they persist past the block; only the returned
+			// paths' markers scope back out.
+			ensureScan := &namespaceMutationScan{
+				out:       make(map[string]struct{}),
+				functions: c.script.functions,
+				classes:   c.script.classes,
+				visited:   make(map[*ScriptFunction]struct{}),
+			}
+			ensureScan.statements(typed.Ensure)
+			c.runtimeNamespaceMembers = unionCheckStringSet(continuationMembers, ensureScan.out)
 		}
 		if armCapture && previousSites != nil {
 			*previousSites = append(*previousSites, deferredSites...)

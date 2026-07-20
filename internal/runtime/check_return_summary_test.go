@@ -600,6 +600,31 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "returned path namespace writes stay scoped to the try",
+			source: `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(flag)
+  begin
+    if flag
+      JSON.stringify = replacement
+      return
+    end
+  ensure
+    flag = false
+  end
+  takes_int(JSON.stringify({}))
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
@@ -987,6 +1012,53 @@ end
 
 def run()
   takes_int(build())
+end
+`,
+		},
+		{
+			name: "fallthrough namespace writes persist past the try",
+			source: `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(flag)
+  begin
+    if flag
+      JSON.stringify = replacement
+    end
+  ensure
+    flag = false
+  end
+  takes_int(JSON.stringify({}))
+end
+`,
+		},
+		{
+			name: "ensure namespace writes persist past the try",
+			source: `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(flag)
+  begin
+    if flag
+      JSON.stringify = replacement
+      return
+    end
+  ensure
+    JSON.stringify = replacement
+  end
+  takes_int(JSON.stringify({}))
 end
 `,
 		},
