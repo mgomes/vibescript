@@ -1048,6 +1048,12 @@ func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
 	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
 		return nil, false
 	}
+	if c.liveLocalNameHas(ident.Name) {
+		// A partial-path assignment post-predeclares the name as a call
+		// local (possibly nil), so the runtime reads the local — not the
+		// class — even on paths that never assigned it.
+		return nil, false
+	}
 	if c.selfClass != nil && c.selfClassMayBindConstant(c.selfClass, ident.Name) {
 		return nil, false
 	}

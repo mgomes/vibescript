@@ -247,6 +247,20 @@ end
 `,
 		},
 		{
+			name: "partial-path local assignment disables narrowing",
+			source: `
+def run(flag)
+  u = flag ? User.new : Order.new
+  if flag
+    User = Order
+  end
+  unless u.is_a?(User)
+    takes_order(u)
+  end
+end
+`,
+		},
+		{
 			name: "unknown receiver stays unknown",
 			source: `
 def run(u)
