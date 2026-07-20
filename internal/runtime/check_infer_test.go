@@ -1119,6 +1119,85 @@ end
 	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got nil")
 }
 
+func TestCheckInferOptionalShapeFieldReadsNullable(t *testing.T) {
+	t.Parallel()
+
+	// Reading an optional field of a known-representation shape infers the
+	// field type joined with nil: the field may be absent.
+	script := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string, age?: int })
+  takes_string(body["age"])
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_string argument value expected string, got int | nil")
+
+	// A required field of the same shape stays exact.
+	exact := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string, age?: int })
+  takes_int(body["name"])
+end
+`)
+	requireCheckWarningContains(t, exact, "call to takes_int argument value expected int, got string")
+}
+
+func TestCheckInferOptionalShapeFieldCompatibility(t *testing.T) {
+	t.Parallel()
+
+	// A literal without the optional field still satisfies the declared
+	// shape, and an optional field disjoint from a generic hash's value type
+	// is not a contradiction (the field may be absent).
+	requireNoCheckWarnings(t, compileScript(t, `
+def accept(payload: { name: string, age?: int })
+  payload
+end
+
+def strings_only(opts: hash<string, string>)
+  opts
+end
+
+def run(raw: string)
+  v = "Ada"
+  accept({ name: v })
+  accept({ name: v, age: 36 })
+  strings_only(JSON.parse_as(raw, { name: string, age?: int }))
+end
+`))
+
+	missing := compileScript(t, `
+def accept(payload: { name: string, age?: int })
+  payload
+end
+
+def run()
+  v = 36
+  accept({ age: v })
+end
+`)
+	requireCheckWarningContains(t, missing, "call to accept argument payload expected { age?: int, name: string }, got { age: int }")
+
+	invalid := compileScript(t, `
+def accept(payload: { name: string, age?: int })
+  payload
+end
+
+def run()
+  v = "36"
+  accept({ name: "Ada", age: v })
+end
+`)
+	requireCheckWarningContains(t, invalid, "call to accept argument payload expected { age?: int, name: string }, got { age: string, name: string }")
+}
+
 func TestCheckInferShovelAppendsWitnessElements(t *testing.T) {
 	t.Parallel()
 
@@ -1518,6 +1597,18 @@ def run()
 end
 `)
 	requireCheckWarningContains(t, missing, "call to accept argument opts expected { a: int, b: int }, missing keyword b")
+
+	// An absent optional field is not a missing keyword.
+	requireNoCheckWarnings(t, compileScript(t, `
+def accept(**opts: { a: int, b?: int })
+  opts
+end
+
+def run()
+  x = 1
+  accept(a: x)
+end
+`))
 }
 
 func TestCheckInferRestArgumentsUseInferredFacts(t *testing.T) {

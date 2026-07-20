@@ -5448,14 +5448,17 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 					}
 					c.checkInferredArgument(function, rest.Value, fieldType, callName, paramName)
 				}
-				// Exact shapes require every field, so an absent keyword is a
-				// known normalization failure.
+				// Exact shapes require every non-optional field, so an absent
+				// required keyword is a known normalization failure.
 				missingPos := warningPos
 				if missingPos == (Position{}) {
 					missingPos = pos
 				}
 				fields := make([]string, 0, len(ty.Shape))
 				for field := range ty.Shape {
+					if shapeFieldOptional(ty.Shape[field]) {
+						continue
+					}
 					fields = append(fields, field)
 				}
 				sort.Strings(fields)

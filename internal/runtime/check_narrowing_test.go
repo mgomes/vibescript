@@ -587,9 +587,11 @@ end
 `,
 		},
 		{
+			// A `?`-suffixed bare label now marks an optional field, so a
+			// field literally named nil? takes the string-key spelling.
 			name: "shape can declare a callable nil? override",
 			source: `
-def f(value: { nil?: function }?)
+def f(value: { "nil?": function }?)
   if value.nil?
     y = -value
   end
