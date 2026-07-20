@@ -6437,7 +6437,12 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 			}
 			if !typeExprSatisfies(written, bound, resolve) {
 				preserved = false
+				return
 			}
+			// The receiver retains the stored entry, so a written
+			// container's root local links in: a later mutation through it
+			// weakens both.
+			c.linkContainerWriteAlias(name, arg, written)
 		}
 		checkEntry(call.Args[0], keyBound, "key")
 		checkEntry(call.Args[1], valueBound, "value")
@@ -6450,6 +6455,16 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 		for _, arg := range call.Args {
 			if _, splat := arg.(*SplatArg); splat {
 				preserved = false
+				continue
+			}
+			// A literal argument's entries are statically known, so each
+			// key and value checks like h[k] = v — a mixed-representation
+			// literal still diagnoses every entry even though its
+			// whole-shape fact carries no single key type.
+			if lit, isLiteral := arg.(*HashLiteral); isLiteral && lit.ShapeType == nil {
+				if !c.checkHashLiteralMergeEntries(function, name, lit, keyBound, valueBound, resolve) {
+					preserved = false
+				}
 				continue
 			}
 			written := c.mutatorCallArgumentFact(arg, argumentFacts)
@@ -6470,7 +6485,12 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 			}
 			if !typeExprSatisfies(written, hashFact, resolve) {
 				preserved = false
+				continue
 			}
+			// The receiver retains the argument's entry values, so the
+			// argument's root local links in: a later mutation through it
+			// weakens both.
+			c.linkContainerWriteAlias(name, arg, written)
 		}
 		return preserved, true
 	}
@@ -6978,6 +6998,42 @@ func (c *scriptChecker) linkPossibleDirectContainerAlias(
 		// a mutation through either name may affect the other at runtime.
 		c.linkStaticValueAlias(receiver, root)
 	}
+}
+
+// checkHashLiteralMergeEntries checks a literal merge!/update argument entry
+// by entry against the receiver's declared bounds and reports whether every
+// entry provably satisfies both.
+func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit *HashLiteral, keyBound, valueBound *TypeExpr, resolve namedTypeResolver) bool {
+	compatible := true
+	check := func(expr Expression, bound *TypeExpr, noun string) {
+		if expr == nil {
+			compatible = false
+			return
+		}
+		written := c.inferExpressionType(expr)
+		if written == nil {
+			compatible = false
+			return
+		}
+		if typeExprsDisjoint(written, bound, resolve) {
+			c.add(function, expr.Pos(), "write to %s expected %s %s, got %s",
+				name, noun, formatTypeExpr(bound), formatTypeExpr(written))
+			compatible = false
+			return
+		}
+		if !typeExprSatisfies(written, bound, resolve) {
+			compatible = false
+			return
+		}
+		// The receiver retains the entry, so a written container's root
+		// local links in: a later mutation through it weakens both.
+		c.linkContainerWriteAlias(name, expr, written)
+	}
+	for _, pair := range lit.Pairs {
+		check(pair.Key, keyBound, "key")
+		check(pair.Value, valueBound, "value")
+	}
+	return compatible
 }
 
 // literalArrayDisjoint reports whether a witnessed-element array can never

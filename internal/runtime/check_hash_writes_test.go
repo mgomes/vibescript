@@ -68,7 +68,7 @@ def f(h: hash<symbol, int>)
   h.merge!({ a: "bad" })
 end
 `,
-			warning: "write to h expected hash<symbol, int>, got { a: string }",
+			warning: "write to h expected value int, got string",
 		},
 		{
 			name: "merge with a contradicting key representation",
@@ -77,13 +77,42 @@ def f(h: hash<symbol, int>)
   h.merge!({ "a": 1 })
 end
 `,
-			warning: "write to h expected hash<symbol, int>, got { a: int }",
+			warning: "write to h expected key symbol, got string",
+		},
+		{
+			name: "mixed-key merge literal diagnoses each entry",
+			source: `
+def f(h: hash<string, int>)
+  h.merge!({ a: 1, "b": 2 })
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "compatible mixed-key merge preserves the fact",
+			source: `
+def f(h: hash<string | symbol, int>)
+  h.merge!({ a: 1, "b": 2 })
+  h[true] = 1
+end
+`,
+			warning: "write to h expected key string | symbol, got bool",
 		},
 		{
 			name: "update alias of merge",
 			source: `
 def f(h: hash<symbol, int>)
   h.update({ a: "bad" })
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "merge with a local shape fact keeps the whole-shape check",
+			source: `
+def f(h: hash<symbol, int>)
+  bad = { a: "bad" }
+  h.merge!(bad)
 end
 `,
 			warning: "write to h expected hash<symbol, int>, got { a: string }",
