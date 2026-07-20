@@ -326,6 +326,93 @@ end
 `))
 }
 
+// Direct writes and ivar parameter defaults infer their value under the
+// property contract expectation, mirroring the runtime: a bare callable
+// assigned to a function-typed property is stored un-invoked, so its
+// auto-invoked result type must not warn.
+func TestCheckCallableContractWritesStayQuiet(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class Holder
+  property cb: function
+
+  def initialize(@cb = rand)
+  end
+
+  def set
+    @cb = rand
+  end
+end
+`))
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class Holder
+  property cb: function
+
+  def set
+    @cb = 5
+  end
+end
+`), "write to @cb expected function, got int")
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class Holder
+  property cb: function
+
+  def initialize(@cb = 5)
+  end
+end
+`), "default value for @cb expected function, got int")
+}
+
+// Ivar parameter facts bind at each parameter's own position, so an earlier
+// default reads later ivars as still unset while a later default sees the
+// earlier binding.
+func TestCheckIvarDefaultBindingOrder(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class Holder
+  property a: string?
+  property b: int
+
+  def initialize(@a = @b, @b = 1)
+  end
+end
+`))
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class Holder
+  property a: string?
+  property b: int
+
+  def initialize(@b = 1, @a = @b)
+  end
+end
+`), "default value for @a expected string?, got int")
+}
+
+// Store-contract checks resolve method ownership even when the first call
+// checked is reached before any function scope initialized the ownership
+// maps, such as a constructor call in a class body.
+func TestCheckClassBodyConstructorStoreContract(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def initialize(@name)
+  end
+end
+
+class Registry
+  DEFAULT = User.new(1)
+end
+`), "call to User.new argument name expected string, got int")
+}
+
 // Instance variables inside destructuring targets check like bare ivar
 // writes when the element values are known, and stay gradual otherwise.
 func TestCheckDestructuredIvarWrites(t *testing.T) {
