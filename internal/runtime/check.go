@@ -2666,6 +2666,16 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkUnaryOperandTypes(function, typed)
 	case *BinaryExpr:
 		c.checkExpressionWithAuto(function, typed.Left, true)
+		// A shovel receiver evaluates before its right operand, so the fact
+		// the append is checked against is captured now: a right side that
+		// escapes the same local must not erase the bound the receiver was
+		// evaluated under.
+		var shovelReceiverFact *TypeExpr
+		if typed.Operator == tokenShovel {
+			if ident, ok := unwrapShovelChain(typed.Left).(*Identifier); ok {
+				shovelReceiverFact = c.localTypeFor(ident.Name)
+			}
+		}
 		if binaryRightMayEvaluate(typed) && !c.binaryRightUnreachable(typed) {
 			state := c.snapshotRuntimeState()
 			scopeState := c.snapshotScopeState()
@@ -2704,7 +2714,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			}
 		}
 		c.checkBinaryOperandTypes(function, typed)
-		c.checkShovelElementWrite(function, typed)
+		c.checkShovelElementWrite(function, typed, shovelReceiverFact)
 		c.applyShovelMutationFacts(typed)
 	case *ConditionalExpr:
 		c.checkConditionalExpression(function, typed)

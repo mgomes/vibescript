@@ -78,6 +78,19 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "shovel value that escapes the receiver",
+			source: `
+def returns_string(a) -> string
+  "s"
+end
+
+def f(items: array<int>)
+  items << returns_string(items)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "unshift argument",
 			source: `
 def f(items: array<int>)
@@ -482,6 +495,19 @@ end
 			source: `
 def f(items: array<int>)
   items.insert(5, 1)
+  items << "bad"
+end
+`,
+		},
+		{
+			name: "unknown shovel value that escapes the receiver weakens",
+			source: `
+def unknown_fn(a)
+  a
+end
+
+def f(items: array<int>)
+  items << unknown_fn(items)
   items << "bad"
 end
 `,

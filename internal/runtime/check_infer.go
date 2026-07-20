@@ -1753,9 +1753,11 @@ func (c *scriptChecker) reportIncompatibleElementWrite(function string, pos Posi
 // checkShovelElementWrite reports a shovel append whose value is provably
 // disjoint from the receiver's declared element type. Chained shovels append
 // through the returned receiver, so the chain root's fact is the one the
-// append contradicts. It runs before applyShovelMutationFacts updates the
-// receiver's fact for the append.
-func (c *scriptChecker) checkShovelElementWrite(function string, expr *BinaryExpr) {
+// append contradicts. The receiver fact arrives as captured before the right
+// operand evaluated — a right side that escapes the same local cannot erase
+// the bound the append contradicts — and the check runs before
+// applyShovelMutationFacts updates the receiver's fact for the append.
+func (c *scriptChecker) checkShovelElementWrite(function string, expr *BinaryExpr, receiverFact *TypeExpr) {
 	if expr.Operator != tokenShovel {
 		return
 	}
@@ -1763,7 +1765,7 @@ func (c *scriptChecker) checkShovelElementWrite(function string, expr *BinaryExp
 	if !ok {
 		return
 	}
-	elem := declaredArrayElementType(c.localTypeFor(ident.Name))
+	elem := declaredArrayElementType(receiverFact)
 	if elem == nil {
 		return
 	}
