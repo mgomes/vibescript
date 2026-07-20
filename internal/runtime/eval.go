@@ -4215,7 +4215,11 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 		assign := func(value Value) error {
 			return exec.assign(t, value, env)
 		}
-		return compoundAssignmentTarget{current: current, assign: assign}, nil
+		result := compoundAssignmentTarget{current: current, assign: assign}
+		if ivar, ok := t.(*IvarExpr); ok {
+			result.expectation = exec.ivarAssignmentValueExpectation(ivar, nil, env)
+		}
+		return result, nil
 	case *DestructureTarget:
 		return compoundAssignmentTarget{}, exec.errorAt(t.Pos(), "compound assignment is not supported for destructuring targets")
 	default:
@@ -4307,6 +4311,12 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			return val, false, err
 		}
 		if val, handled, err := exec.evalMemberAssignment(s, env); handled || err != nil {
+			if returnVal, ok := functionReturnValue(err); ok {
+				return returnVal, true, nil
+			}
+			return val, false, err
+		}
+		if val, handled, err := exec.evalIvarAssignment(s, env); handled || err != nil {
 			if returnVal, ok := functionReturnValue(err); ok {
 				return returnVal, true, nil
 			}

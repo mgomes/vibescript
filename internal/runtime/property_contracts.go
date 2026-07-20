@@ -1,5 +1,7 @@
 package runtime
 
+import "errors"
+
 // propertyContract returns the generated accessor whose annotation declares
 // the contract for the named instance variable, along with the declared
 // type. A generated setter's parameter annotation wins when one exists (an
@@ -27,6 +29,54 @@ func propertyContract(classDef *ClassDef, name string) (*ScriptFunction, *TypeEx
 		return getter, getter.ReturnTy
 	}
 	return nil, nil
+}
+
+// evalIvarAssignment evaluates a direct instance-variable assignment whose
+// declared property contract shapes the right-hand side's evaluation,
+// mirroring evalMemberAssignment through the generated setter: a bare
+// zero-arity callable assigned to a function-typed property is stored
+// un-invoked instead of being auto-called, and typed-container literals
+// evaluate under the contract's element types. Targets without a usable
+// expectation fall through to the plain assignment path.
+func (exec *Execution) evalIvarAssignment(stmt *AssignStmt, env *Env) (Value, bool, error) {
+	target, ok := stmt.Target.(*IvarExpr)
+	if !ok {
+		return NewNil(), false, nil
+	}
+	expectation := exec.ivarAssignmentValueExpectation(target, stmt.Value, env)
+	if expectation.empty() {
+		return NewNil(), false, nil
+	}
+	val, err := exec.evalAssignmentValueWithExpectation(stmt, env, expectation)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryValue(val); err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.assign(stmt.Target, val, env); err != nil {
+		if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) {
+			return NewNil(), true, err
+		}
+		return NewNil(), true, exec.wrapError(err, stmt.Pos())
+	}
+	return val, true, nil
+}
+
+// ivarAssignmentValueExpectation derives the right-hand-side expectation for
+// a direct write to the named instance variable: the declared property
+// contract of self's class, for the same side-effect-free value shapes the
+// member setter path accepts. Everything else evaluates normally.
+func (exec *Execution) ivarAssignmentValueExpectation(target *IvarExpr, value Expression, env *Env) expressionExpectation {
+	if value != nil && !memberAssignmentValueCanUseExpectation(value) {
+		return expressionExpectation{}
+	}
+	self, ok := env.Get("self")
+	if !ok || self.Kind() != KindInstance {
+		return expressionExpectation{}
+	}
+	_, ty := propertyContract(valueInstance(self).Class, target.Name)
+	return typeExpressionExpectation(ty)
 }
 
 // normalizeIvarWrite applies the declared property contract, if any, to a

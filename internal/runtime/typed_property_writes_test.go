@@ -297,6 +297,62 @@ end
 	}
 }
 
+// A direct write to a callable-typed property evaluates its right-hand side
+// under the property contract, exactly like the generated setter: a bare
+// zero-arity callable is stored un-invoked instead of being auto-called and
+// rejected.
+func TestCallableTypedPropertyDirectWrite(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def five
+  5
+end
+
+class Holder
+  property cb: function
+  property fallback: function?
+
+  def initialize
+    @cb = five
+  end
+
+  def adopt
+    @fallback ||= five
+    @fallback
+  end
+
+  def run
+    @cb.call
+  end
+end
+
+def direct_callable
+  Holder.new.run
+end
+
+def logical_callable
+  h = Holder.new
+  h.adopt.call
+end
+
+def setter_callable
+  h = Holder.new
+  h.cb = five
+  h.run
+end
+`)
+
+	if got := callFunc(t, script, "direct_callable", nil); !got.Equal(NewInt(5)) {
+		t.Fatalf("direct_callable = %v, want 5", got)
+	}
+	if got := callFunc(t, script, "logical_callable", nil); !got.Equal(NewInt(5)) {
+		t.Fatalf("logical_callable = %v, want 5", got)
+	}
+	if got := callFunc(t, script, "setter_callable", nil); !got.Equal(NewInt(5)) {
+		t.Fatalf("setter_callable = %v, want 5", got)
+	}
+}
+
 // A generated untyped setter keeps direct writes dynamic even when the
 // getter half is typed: the declared write contract is the setter's.
 func TestUntypedGeneratedSetterKeepsWritesDynamic(t *testing.T) {
