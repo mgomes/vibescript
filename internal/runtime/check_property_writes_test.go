@@ -256,6 +256,76 @@ end
 	}
 }
 
+// Ivar parameters are direct writes too: a known argument bound to an
+// unannotated @ivar parameter checks against the property contract, an
+// annotation that contradicts the contract warns at the definition, and the
+// bound ivar fact drops the entry nil arm.
+func TestCheckIvarParameterPropertyContracts(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def initialize(@name)
+  end
+end
+
+def make
+  User.new(1)
+end
+`), "call to User.new argument name expected string, got int")
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def initialize(@name: int)
+  end
+end
+`), "write to @name expected string, got int")
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property name: string
+
+  def initialize(@name)
+    takes_int(@name)
+  end
+end
+`), "call to takes_int argument value expected int, got string")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def initialize(@name)
+  end
+end
+
+def make(value)
+  User.new(value)
+  User.new("ada")
+end
+`))
+
+	// Ivar parameters without a typed accessor contract stay dynamic.
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class Point
+  def initialize(@x, @y)
+  end
+end
+
+def make
+  Point.new(1, "two")
+end
+`))
+}
+
 // Reads observe the seeded contract: an unwritten typed ivar reads as the
 // declared type or nil, and a checked write drops the entry nil arm.
 func TestCheckTypedPropertyReadFacts(t *testing.T) {
