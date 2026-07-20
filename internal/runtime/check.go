@@ -306,7 +306,7 @@ func (c *scriptChecker) collectAssignLocalTypes(stmt *AssignStmt) {
 		return
 	}
 	c.withSuppressedWarnings(func() {
-		c.inferAssignStatementTypes("", stmt)
+		c.inferAssignStatementTypes("", stmt, nil)
 	})
 }
 
@@ -1993,10 +1993,20 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkExpression(function, typed.Value)
 	case *AssignStmt:
 		c.checkExpression(function, typed.Target)
+		// An indexed write's receiver evaluates before the assigned value,
+		// so the fact the write is checked against is captured now: a value
+		// expression that escapes the same local must not erase the bound
+		// the receiver was evaluated under.
+		var indexedReceiverFact *TypeExpr
+		if index, ok := typed.Target.(*IndexExpr); ok {
+			if ident, ok := index.Object.(*Identifier); ok {
+				indexedReceiverFact = c.localTypeFor(ident.Name)
+			}
+		}
 		c.checkExpression(function, typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
-		c.inferAssignStatementTypes(function, typed)
+		c.inferAssignStatementTypes(function, typed, indexedReceiverFact)
 		c.recordRuntimeBindingTarget(typed.Target)
 		c.recordBindingTarget(typed.Target)
 		c.captureImplicitReturnState(typed)

@@ -631,7 +631,10 @@ func (c *scriptChecker) mergeLocalTypeStates(base checkScopeState, states []chec
 // inferAssignStatementTypes updates the local type environment for an
 // assignment and reports a reassignment that contradicts the local's known
 // type (ADR-004: sequential reassignment to a conflicting type is an error).
-func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignStmt) {
+// indexedReceiverFact carries an indexed-write target's receiver fact as
+// captured before the value expression walked (the runtime evaluates the
+// receiver first); nil defers to the current state.
+func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignStmt, indexedReceiverFact *TypeExpr) {
 	switch target := stmt.Target.(type) {
 	case *Identifier:
 		current := c.localTypeFor(target.Name)
@@ -687,7 +690,7 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 		// An index write mutates the container in place; a direct element
 		// write against a declared array<T> is checked and may preserve the
 		// fact, while every other write drops the root's structural facts.
-		if c.applyIndexedElementWriteFacts(function, stmt, target) {
+		if c.applyIndexedElementWriteFacts(function, stmt, target, indexedReceiverFact) {
 			return
 		}
 		if name, ok := rootIdentifierName(stmt.Target); ok {
@@ -1783,7 +1786,10 @@ func (c *scriptChecker) checkShovelElementWrite(function string, expr *BinaryExp
 // still holds: a compatible write replaces one element with another admitted
 // one (for the receiver and every alias, inside regions too — nothing
 // rebinds), while every other write weakens through the caller's poison.
-func (c *scriptChecker) applyIndexedElementWriteFacts(function string, stmt *AssignStmt, target *IndexExpr) bool {
+// receiverFact arrives as captured before the value expression walked; a
+// value that escaped the same local keeps the bound for diagnosis, while
+// preservation requires the local's fact to have survived unchanged.
+func (c *scriptChecker) applyIndexedElementWriteFacts(function string, stmt *AssignStmt, target *IndexExpr, receiverFact *TypeExpr) bool {
 	if stmt.Operator != "" {
 		return false
 	}
@@ -1791,7 +1797,11 @@ func (c *scriptChecker) applyIndexedElementWriteFacts(function string, stmt *Ass
 	if !ok {
 		return false
 	}
-	elem := declaredArrayElementType(c.localTypeFor(ident.Name))
+	current := c.localTypeFor(ident.Name)
+	if receiverFact == nil {
+		receiverFact = current
+	}
+	elem := declaredArrayElementType(receiverFact)
 	if elem == nil {
 		return false
 	}
@@ -1813,7 +1823,7 @@ func (c *scriptChecker) applyIndexedElementWriteFacts(function string, stmt *Ass
 		c.reportIncompatibleElementWrite(function, stmt.Pos(), ident.Name, elem, written)
 		return false
 	}
-	return typeExprSatisfies(written, elem, resolve)
+	return typeExprSatisfies(written, elem, resolve) && mutatorReceiverFactIntact(current, receiverFact)
 }
 
 // arrayMutatorElementWrites returns the argument expressions an in-place

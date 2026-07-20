@@ -91,6 +91,19 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "indexed write whose value escapes the receiver",
+			source: `
+def returns_string(a) -> string
+  "s"
+end
+
+def f(items: array<int>)
+  items[0] = returns_string(items)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "index-only insert preserves the bound",
 			source: `
 def f(items: array<int>)
