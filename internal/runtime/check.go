@@ -5742,6 +5742,7 @@ func (c *scriptChecker) scriptFunctionNamespaceMutations(call *CallExpr, fn *Scr
 	scan := &namespaceMutationScan{
 		out:       make(map[string]struct{}),
 		functions: c.script.functions,
+		classes:   c.script.classes,
 		visited:   map[*ScriptFunction]struct{}{fn: {}},
 	}
 	for i, param := range fn.Params {
@@ -5959,16 +5960,12 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 type namespaceMutationScan struct {
 	out       map[string]struct{}
 	functions map[string]*ScriptFunction
+	classes   map[string]*ClassDef
 	visited   map[*ScriptFunction]struct{}
 }
 
-// functionReference unions in the writes of an owned function the scanned
-// body mentions. Any mention counts — callee, bare auto-invoke, or escaping
-// value — since a stored function can run later; a shadowed name only
-// over-invalidates, which is the sound direction.
-func (s *namespaceMutationScan) functionReference(name string) {
-	fn, ok := s.functions[name]
-	if !ok {
+func (s *namespaceMutationScan) visit(fn *ScriptFunction) {
+	if fn == nil {
 		return
 	}
 	if _, seen := s.visited[fn]; seen {
@@ -5976,6 +5973,63 @@ func (s *namespaceMutationScan) functionReference(name string) {
 	}
 	s.visited[fn] = struct{}{}
 	s.function(fn)
+}
+
+// functionReference unions in the writes of an owned function the scanned
+// body mentions. Any mention counts — callee, bare auto-invoke, or escaping
+// value — since a stored function can run later; a shadowed name only
+// over-invalidates, which is the sound direction.
+func (s *namespaceMutationScan) functionReference(name string) {
+	if fn, ok := s.functions[name]; ok {
+		s.visit(fn)
+	}
+}
+
+// memberReference descends into the statically resolvable methods a member
+// dispatch may run: a class method (Mutator.m), a constructor (Mutator.new
+// runs initialize), or an instance method on a constructor-fact receiver
+// (Mutator.new.m). Receivers the scan cannot resolve stay unscanned — the
+// checker applies their writes when it walks the call itself.
+func (s *namespaceMutationScan) memberReference(member *MemberExpr) {
+	switch object := member.Object.(type) {
+	case *Identifier:
+		classDef, ok := s.classes[object.Name]
+		if !ok {
+			return
+		}
+		if member.Property == "new" {
+			s.visit(classDef.Methods["initialize"])
+			return
+		}
+		s.visit(classDef.ClassMethods[member.Property])
+	case *CallExpr:
+		if className, ok := staticConstructorReceiverClass(object); ok {
+			if classDef, ok := s.classes[className]; ok {
+				s.visit(classDef.Methods[member.Property])
+			}
+		}
+	case *MemberExpr:
+		// A parenless constructor receiver (Mutator.new.m) reads as a
+		// nested member.
+		if ident, ok := object.Object.(*Identifier); ok && object.Property == "new" {
+			if classDef, ok := s.classes[ident.Name]; ok {
+				s.visit(classDef.Methods["initialize"])
+				s.visit(classDef.Methods[member.Property])
+			}
+		}
+	}
+}
+
+func staticConstructorReceiverClass(call *CallExpr) (string, bool) {
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || member.Property != "new" {
+		return "", false
+	}
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return "", false
+	}
+	return ident.Name, true
 }
 
 // function scans everything a call may execute: parameter defaults run
@@ -6113,6 +6167,7 @@ func (s *namespaceMutationScan) expression(expr Expression) {
 			s.expression(index)
 		}
 	case *MemberExpr:
+		s.memberReference(typed)
 		s.expression(typed.Object)
 	case *ScopeExpr:
 		s.expression(typed.Object)
