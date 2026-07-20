@@ -1156,11 +1156,11 @@ func walkASTValue(v reflect.Value, depth int, visit func(any)) {
 		return
 	}
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		if v.IsNil() {
 			return
 		}
-		if v.Kind() == reflect.Ptr && v.Elem().Kind() == reflect.Struct && v.CanInterface() {
+		if v.Kind() == reflect.Pointer && v.Elem().Kind() == reflect.Struct && v.CanInterface() {
 			visit(v.Interface())
 		}
 		walkASTValue(v.Elem(), depth+1, visit)
