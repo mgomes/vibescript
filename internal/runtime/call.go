@@ -1877,7 +1877,14 @@ func positionalArgumentExpectation(param Param) expressionExpectation {
 	case ParamRest:
 		return typeExpressionExpectation(restParamElementType(param.Type))
 	default:
-		expectation := typeExpressionExpectation(param.Type)
+		ty := param.Type
+		if ty == nil {
+			// An unannotated ivar parameter's expectation is the property
+			// contract resolved at class compile time, so a bare zero-arity
+			// callable reaches a function-typed ivar un-invoked.
+			ty = param.PropertyType
+		}
+		expectation := typeExpressionExpectation(ty)
 		if target, ok := param.Target.(*DestructureTarget); ok {
 			expectation.arrayElement = destructureTargetElementExpectation(target)
 		}

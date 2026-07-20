@@ -31,6 +31,39 @@ func propertyContract(classDef *ClassDef, name string) (*ScriptFunction, *TypeEx
 	return nil, nil
 }
 
+// resolvePropertyParamContracts records the property contract backing each
+// unannotated ivar parameter of the class's instance methods, once the
+// class has fully compiled (own definitions and mixin copies alike). The
+// resolved contract shapes argument and default evaluation exactly like an
+// annotation — a callable-typed contract keeps a bare zero-arity callable
+// un-invoked — while binding validation stays with the ivar write. A method
+// copied in from a module re-resolves against the including class, so its
+// params are cloned before they diverge from the module's own resolution.
+func resolvePropertyParamContracts(classDef *ClassDef) {
+	for _, fn := range classDef.Methods {
+		if fn.Accessor != functionAccessorNone {
+			continue
+		}
+		var params []Param
+		for i, param := range fn.Params {
+			if !param.IsIvar || param.Type != nil {
+				continue
+			}
+			_, ty := propertyContract(classDef, param.Name)
+			if param.PropertyType == ty {
+				continue
+			}
+			if params == nil {
+				params = append([]Param(nil), fn.Params...)
+			}
+			params[i].PropertyType = ty
+		}
+		if params != nil {
+			fn.Params = params
+		}
+	}
+}
+
 // evalIvarAssignment evaluates a direct instance-variable assignment whose
 // declared property contract shapes the right-hand side's evaluation,
 // mirroring evalMemberAssignment through the generated setter: a bare

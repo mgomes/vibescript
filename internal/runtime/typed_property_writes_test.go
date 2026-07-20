@@ -353,6 +353,44 @@ end
 	}
 }
 
+// An unannotated ivar parameter backed by a callable-typed property carries
+// the property contract into argument and default evaluation, so a bare
+// zero-arity callable reaches the ivar un-invoked at the call site too.
+func TestCallableTypedPropertyIvarParam(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def five
+  5
+end
+
+class Holder
+  property cb: function
+
+  def initialize(@cb = five)
+  end
+
+  def run
+    @cb.call
+  end
+end
+
+def param_callable
+  Holder.new(five).run
+end
+
+def default_callable
+  Holder.new.run
+end
+`)
+
+	if got := callFunc(t, script, "param_callable", nil); !got.Equal(NewInt(5)) {
+		t.Fatalf("param_callable = %v, want 5", got)
+	}
+	if got := callFunc(t, script, "default_callable", nil); !got.Equal(NewInt(5)) {
+		t.Fatalf("default_callable = %v, want 5", got)
+	}
+}
+
 // A generated untyped setter keeps direct writes dynamic even when the
 // getter half is typed: the declared write contract is the setter's.
 func TestUntypedGeneratedSetterKeepsWritesDynamic(t *testing.T) {
