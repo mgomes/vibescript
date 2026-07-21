@@ -125,6 +125,14 @@ func formatArgumentTypeMismatch(name string, err error) string {
 	return fmt.Sprintf("argument %s type check failed: %s", name, err.Error())
 }
 
+func formatIvarTypeMismatch(name string, err error) string {
+	var mismatch *typeMismatchError
+	if errors.As(err, &mismatch) {
+		return fmt.Sprintf("instance variable @%s expected %s, got %s", name, mismatch.Expected, mismatch.Actual)
+	}
+	return fmt.Sprintf("instance variable @%s type check failed: %s", name, err.Error())
+}
+
 func formatReturnTypeMismatch(fnName string, err error) string {
 	var mismatch *typeMismatchError
 	if errors.As(err, &mismatch) {
@@ -290,15 +298,15 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 			return false, nil
 		}
 		entries := val.Hash()
-		if len(entries) != len(ty.Shape) {
+		if len(entries) > len(ty.Shape) {
 			return false, nil
-		}
-		if len(ty.Shape) == 0 {
-			return true, nil
 		}
 		for field, fieldType := range ty.Shape {
 			fieldVal, ok := entries[field]
 			if !ok {
+				if shapeFieldOptional(fieldType) {
+					continue
+				}
 				return false, nil
 			}
 			matches, err := s.matches(fieldVal, fieldType)
@@ -329,6 +337,25 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 	default:
 		return false, fmt.Errorf("unknown type %s", ty.Name)
 	}
+}
+
+// shapeFieldOptional reports whether a shape field's declared type marks the
+// field optional (`age?: int`): the field may be absent, and validates
+// against the field type when present.
+func shapeFieldOptional(fieldType *TypeExpr) bool {
+	return fieldType != nil && fieldType.Optional
+}
+
+// shapeMissingRequiredField reports whether ty declares a required field that
+// has reports absent.
+func shapeMissingRequiredField(ty *TypeExpr, has func(string) bool) bool {
+	for field, fieldType := range ty.Shape {
+		if shapeFieldOptional(fieldType) || has(field) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func isCallableValue(val Value) bool {

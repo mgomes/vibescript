@@ -38,13 +38,22 @@ Tier 2 below. Concretely:
   `RegisterZeroArgBuiltin`, `Builtins`, `ClearModuleCache`,
   `ConfigSummary`, `MaxSourceBytes`), `Config`, `Script` (`Call`,
   `Function`/`Functions`, `Classes`, `Enums`, the `CheckWarnings*`
-  family), `CallOptions`, `Execution` (opaque; `Context`, `Step`,
+  family returning `CheckWarning`, `CheckedCall`), `CallOptions`, `Execution` (opaque; `Context`, `Step`,
   `CallBlock`), `RuntimeError`, `StackFrame`, `Position`, `ParseIssue`,
   `ParseIssues`, `Builtin`/`BuiltinFunc`/`Builtins`, `NewBuiltin`,
   `NewAutoBuiltin`, `ParamKind` and the `Param*` constants,
   `MemberCompletionNames`, the capability adapter surface
   (`CapabilityAdapter`, `CapabilityBinding`, `CapabilityContractProvider`,
   `CapabilityMethodContract`, `New*Capability`, `MustNew*Capability`).
+  `CapabilityMethodContract` carries only `ValidateArgs` and
+  `ValidateReturn`; the pre-rc8 `ReturnValidatedByBuiltin` field was
+  removed (#976) because a host adapter must not be able to assert an
+  internal runtime proof and skip its declared return validation. The
+  runtime now always runs a contract's `ValidateReturn`; only first-party
+  builtins inside the runtime can record the internal proof that a result
+  was already validated. Migration: delete the field from contract
+  literals — no replacement is needed, the extra validation pass is the
+  intended behavior.
 - **`vibes/value`**: `Value`, `ValueKind` and the `Kind*` constants; the
   typed constructors (`NewNil` ... `NewRegex`, `NewBigInt`, `NewTypedHash`,
   `NewHashWithDefault`, `NewMoneyFromCents`); the typed accessors
@@ -79,10 +88,13 @@ Two structural notes:
    fields reachable through `vibes.Engine`, `vibes.Script`, etc. — not the
    `internal/runtime` package, which hosts cannot import.
 2. Some methods return values of exported-but-unnameable internal types
-   (`Script.Functions` → `*runtime.ScriptFunction`, `Script.Classes`,
-   `CheckWarnings`). Hosts can hold these only through inference (`:=`)
-   and use their exported fields and methods; that reachable surface is
-   Tier 1, the type names are not.
+   (`Script.Functions` → `*runtime.ScriptFunction`, `Script.Classes`).
+   Hosts can hold these only through inference (`:=`) and use their
+   exported fields and methods; that reachable surface is Tier 1, the type
+   names are not. Checker diagnostics are the exception: the
+   `CheckWarnings*` family returns `vibes.CheckWarning` (a stable public
+   alias with `Function`, `Pos`, `Message`, and `Source`), so hosts can
+   name the diagnostic type in their own APIs.
 
 ## Tier 2 — Internal, no compatibility promise
 

@@ -24,12 +24,13 @@ func cloneParams(params []Param) []Param {
 	out := make([]Param, len(params))
 	for i, param := range params {
 		out[i] = Param{
-			Name:       param.Name,
-			Kind:       param.Kind,
-			Type:       cloneTypeExpr(param.Type),
-			DefaultVal: cloneExpression(param.DefaultVal),
-			IsIvar:     param.IsIvar,
-			Target:     cloneExpression(param.Target),
+			Name:         param.Name,
+			Kind:         param.Kind,
+			Type:         cloneTypeExpr(param.Type),
+			DefaultVal:   cloneExpression(param.DefaultVal),
+			IsIvar:       param.IsIvar,
+			Target:       cloneExpression(param.Target),
+			PropertyType: cloneTypeExpr(param.PropertyType),
 		}
 	}
 	return out
