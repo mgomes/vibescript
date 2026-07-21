@@ -55,27 +55,37 @@ func (c *scriptChecker) scriptFunctionReturnSummary(call *CallExpr, fn *ScriptFu
 	if !ok || owned.ReturnTy != nil {
 		return nil
 	}
-	runnable, definite := callRunnableDefaults(call, owned)
-	return c.functionReturnSummary(owned, runnable, definite)
+	runnable, hashSupplied, definite := callRunnableDefaults(call, owned)
+	return c.functionReturnSummary(owned, runnable, hashSupplied, definite)
 }
 
 // callRunnableDefaults reports the defaulted parameter indices this call
 // shape may leave unsupplied, so the summary walk evaluates exactly the
-// defaults the runtime would. definite reports whether those defaults
-// provably run: a literal shape omits its parameters outright, while a
-// splatted shape only may, so its defaults' value facts cannot bind. A nil
-// call (a bare auto-invoke) passes no arguments, so every default runs.
-func callRunnableDefaults(call *CallExpr, fn *ScriptFunction) ([]int, bool) {
+// defaults the runtime would, plus the indices a collapsed keyword options
+// hash supplies instead (those parameters always bind a hash for this
+// shape). definite reports whether those conclusions provably hold: a
+// literal shape omits or supplies its parameters outright, while a splatted
+// shape only may, so no value facts can bind. A nil call (a bare
+// auto-invoke) passes no arguments, so every default runs.
+func callRunnableDefaults(call *CallExpr, fn *ScriptFunction) ([]int, []int, bool) {
 	var indices []int
+	var hashSupplied []int
 	for i, param := range fn.Params {
 		if param.DefaultVal == nil {
 			continue
 		}
-		if call == nil || callMayEvaluateParamDefault(call, fn, i) {
+		if call == nil {
 			indices = append(indices, i)
+			continue
+		}
+		optionsHash, mayDefault := callParamSupply(call, fn, i)
+		if mayDefault {
+			indices = append(indices, i)
+		} else if optionsHash {
+			hashSupplied = append(hashSupplied, i)
 		}
 	}
-	return indices, call == nil || !callExpandsArguments(call)
+	return indices, hashSupplied, call == nil || !callExpandsArguments(call)
 }
 
 // resolveOwnedPlainFunction maps a resolved callee to the checked script's
@@ -105,11 +115,11 @@ func (c *scriptChecker) resolveOwnedPlainFunction(fn *ScriptFunction) (*ScriptFu
 // under one set of runnable defaults. A recursive or mutually recursive call
 // reaches the in-progress guard, infers as unknown, and poisons the
 // dependent summary, so cycles terminate with the conservative answer.
-func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaults []int, definiteDefaults bool) *TypeExpr {
+func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaults, hashSuppliedParams []int, definiteDefaults bool) *TypeExpr {
 	if fn == nil || fn.ReturnTy != nil {
 		return nil
 	}
-	key := c.returnSummaryCacheKey(fn, runnableDefaults, definiteDefaults)
+	key := c.returnSummaryCacheKey(fn, runnableDefaults, hashSuppliedParams, definiteDefaults)
 	if summary, ok := c.returnSummaries[key]; ok {
 		return summary
 	}
@@ -126,7 +136,7 @@ func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaul
 	if len(fn.Body) == 0 {
 		summary = checkTypeNil
 	} else {
-		collector := c.collectFunctionReturnFacts(fn, runnableDefaults, definiteDefaults)
+		collector := c.collectFunctionReturnFacts(fn, runnableDefaults, hashSuppliedParams, definiteDefaults)
 		if !collector.unknown && len(collector.arms) > 0 {
 			summary = unionTypeExprs(collector.arms...)
 		}
@@ -143,7 +153,7 @@ func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaul
 // callee from statically known to dynamic, so reusing a fact across those
 // states would make the checker unsound; different call shapes run different
 // parameter defaults, so their effects separate the key too.
-func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaults []int, definiteDefaults bool) returnSummaryCacheKey {
+func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaults, hashSuppliedParams []int, definiteDefaults bool) returnSummaryCacheKey {
 	root := c.runtimeTypeRoot
 	if root == nil {
 		root = c.typeRoot
@@ -163,6 +173,12 @@ func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaul
 			context += "!"
 		}
 	}
+	if len(hashSuppliedParams) > 0 {
+		context += "\x01options:" + fmt.Sprint(hashSuppliedParams)
+		if definiteDefaults {
+			context += "!"
+		}
+	}
 	return returnSummaryCacheKey{fn: fn, context: context}
 }
 
@@ -170,7 +186,7 @@ func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaul
 // suppressed and every piece of walk state walled off, recording return-site
 // facts as the walk reaches them and implicit-final facts afterwards. Only
 // the defaults the summarized call shape may evaluate are walked.
-func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableDefaults []int, definiteDefaults bool) *returnSummaryCollector {
+func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableDefaults, hashSuppliedParams []int, definiteDefaults bool) *returnSummaryCollector {
 	collector := &returnSummaryCollector{}
 	c.withSuppressedWarnings(func() {
 		runtimeState := c.snapshotRuntimeState()
@@ -227,6 +243,10 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 		for _, index := range runnableDefaults {
 			runnable[index] = struct{}{}
 		}
+		hashSupplied := make(map[int]struct{}, len(hashSuppliedParams))
+		for _, index := range hashSuppliedParams {
+			hashSupplied[index] = struct{}{}
+		}
 		for i, param := range fn.Params {
 			// An omitted argument runs the default expression before the
 			// body, so its effects (a require's exports, a namespace write)
@@ -239,12 +259,22 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 				c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
 			}
 			c.recordParamBinding(param)
-			// A literal call shape omits the parameter outright, so the
-			// default is exactly the value the runtime binds; a splatted
-			// shape may supply it instead, so no value fact holds.
-			if mayRun && definiteDefaults {
+			if !definiteDefaults {
+				continue
+			}
+			// A literal call shape omits or supplies the parameter outright:
+			// an omitted default is exactly the value the runtime binds, and
+			// a collapsed keyword options hash always binds a hash. A
+			// splatted shape may do either, so no value fact holds.
+			if mayRun {
 				c.bindParamDefaultFact(param)
 				c.refineAnnotatedParamFact(param, c.inferExpressionType(param.DefaultVal))
+			} else if _, viaHash := hashSupplied[i]; viaHash {
+				if param.Name != "" && param.Type == nil {
+					c.bindLocalTypeInCurrentFrame(param.Name, checkTypeHash)
+				} else {
+					c.refineAnnotatedParamFact(param, checkTypeHash)
+				}
 			}
 		}
 		if c.checkStatements(fn.Name, nil, fn.Body) {

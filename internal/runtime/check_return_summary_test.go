@@ -667,6 +667,52 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "collapsed options hash supplies the parameter",
+			source: `
+def build(opts = 1)
+  opts
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build(name: "x"))
+end
+`,
+			warning: "call to takes_int argument value expected int, got hash",
+		},
+		{
+			name: "collapsed options hash skips the default's namespace writes",
+			source: `
+def replacement(value)
+  1
+end
+
+def install_serializer()
+  JSON.stringify = replacement
+end
+
+def flip(x = install_serializer())
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  flip(name: "y")
+  takes_int(serialize())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
@@ -1121,6 +1167,22 @@ end
 def run()
   consume(->() { JSON.stringify = replacement })
   takes_int(JSON.stringify({}))
+end
+`,
+		},
+		{
+			name: "collapsed options hash does not carry the default fact",
+			source: `
+def build(opts = 1)
+  opts
+end
+
+def takes_hash(value: hash)
+  value
+end
+
+def run()
+  takes_hash(build(name: "x"))
 end
 `,
 		},

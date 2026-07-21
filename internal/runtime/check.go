@@ -6102,39 +6102,75 @@ func (c *scriptChecker) scriptFunctionNamespaceMutations(call *CallExpr, fn *Scr
 
 // callMayEvaluateParamDefault mirrors the runtime's binding bookkeeping
 // (bindFunctionArgs): a parameter default runs only when the call leaves the
-// parameter unsupplied by both position and keyword. A splatted call's
-// shape is dynamic, so every default may run.
+// parameter unsupplied by position, keyword, or a collapsed options hash. A
+// splatted call's shape is dynamic, so every default may run.
 func callMayEvaluateParamDefault(call *CallExpr, fn *ScriptFunction, paramIndex int) bool {
+	_, mayDefault := callParamSupply(call, fn, paramIndex)
+	return mayDefault
+}
+
+// callParamSupply reports how a non-splatted call shape treats one
+// parameter: optionsHash marks the open positional parameter a collapsed
+// keyword options hash supplies (resolveKeywordOptionsHash), and mayDefault
+// reports whether the parameter's default may still evaluate. A strict
+// callee rejects leftover keywords before any default runs, so the
+// collapsed treatment is sound for methods too.
+func callParamSupply(call *CallExpr, fn *ScriptFunction, paramIndex int) (optionsHash, mayDefault bool) {
 	if callExpandsArguments(call) {
-		return true
+		return false, true
 	}
+	collapse := callCollapsesKeywordOptions(call, fn)
 	argIdx := 0
 	for i, param := range fn.Params {
 		switch param.Kind {
 		case ParamNormal:
 			supplied := false
+			hashSupplied := false
 			if argIdx < len(call.Args) {
 				argIdx++
 				supplied = true
 			} else if callHasKeywordArg(call, param.Name) {
 				supplied = true
+			} else if collapse {
+				supplied = true
+				hashSupplied = true
+				collapse = false
 			}
 			if i == paramIndex {
-				return !supplied
+				return hashSupplied, !supplied
 			}
 		case ParamKeyword:
 			if i == paramIndex {
-				return !callHasKeywordArg(call, param.Name)
+				return false, !callHasKeywordArg(call, param.Name)
 			}
 		case ParamRest:
 			argIdx = len(call.Args)
+			// A rest parameter absorbs the collapsed hash as its final
+			// element, so no later positional parameter receives it.
+			collapse = false
 			if i == paramIndex {
-				return false
+				return false, false
 			}
 		default:
 			if i == paramIndex {
-				return false
+				return false, false
 			}
+		}
+	}
+	return false, true
+}
+
+// callCollapsesKeywordOptions mirrors resolveKeywordOptionsHash's
+// preconditions: eligible keywords collapse into a trailing positional
+// options hash when the callee declares no keyword parameters. Which open
+// parameter receives it is the binding loop's bookkeeping above.
+func callCollapsesKeywordOptions(call *CallExpr, fn *ScriptFunction) bool {
+	if !call.KeywordOptionsHash || len(call.KwArgs) == 0 {
+		return false
+	}
+	for _, param := range fn.Params {
+		if param.Kind == ParamKeyword || param.Kind == ParamKeywordRest {
+			return false
 		}
 	}
 	return true
