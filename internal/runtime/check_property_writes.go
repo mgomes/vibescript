@@ -228,16 +228,25 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 
 // inferDestructureIvarWrites routes instance-variable targets inside a
 // destructuring assignment through the property-contract check. Element
-// values are known only when the right-hand side is a literal element list
-// that maps index for index with no rest element on the target side and no
-// splat on the value side; every other spelling checks as an unknown write
-// and still refines the ivar's fact.
+// values are known when the right-hand side is a literal element list with
+// no rest element on the target side and no splat on the value side: each
+// fixed target maps index for index, a target past the literal's length
+// receives the nil the runtime pads in (checkable against non-nullable
+// contracts), and extra literal elements are dropped. Every other spelling
+// checks as an unknown write and still refines the ivar's fact.
 func (c *scriptChecker) inferDestructureIvarWrites(function string, value Expression, target *DestructureTarget) {
-	values := destructureElementValueExprs(value, target)
+	values, known := destructureElementValueExprs(value, target)
 	for i, element := range target.Elements {
 		var elementValue Expression
-		if values != nil {
-			elementValue = values[i]
+		if known {
+			if i < len(values) {
+				elementValue = values[i]
+			} else if ivar, ok := element.Target.(*IvarExpr); ok {
+				// valueAt pads missing fixed targets with nil, so the padded
+				// write checks like a literal nil. Nested destructures of a
+				// padded slot stay unknown.
+				elementValue = &NilLiteral{Position: ivar.Pos()}
+			}
 		}
 		switch elementTarget := element.Target.(type) {
 		case *IvarExpr:
@@ -249,22 +258,23 @@ func (c *scriptChecker) inferDestructureIvarWrites(function string, value Expres
 }
 
 // destructureElementValueExprs returns the per-element value expressions of
-// a destructuring assignment when they map index for index, or nil when the
-// element values are not statically known.
-func destructureElementValueExprs(value Expression, target *DestructureTarget) []Expression {
+// a destructuring assignment and whether they are statically known. The
+// list may be shorter than the target list (the runtime pads with nil) or
+// longer (the runtime drops the extras).
+func destructureElementValueExprs(value Expression, target *DestructureTarget) ([]Expression, bool) {
 	arr, ok := value.(*ArrayLiteral)
-	if !ok || len(arr.Elements) != len(target.Elements) {
-		return nil
+	if !ok {
+		return nil, false
 	}
 	for _, element := range target.Elements {
 		if element.Rest {
-			return nil
+			return nil, false
 		}
 	}
 	for _, expr := range arr.Elements {
 		if _, ok := expr.(*SplatArg); ok {
-			return nil
+			return nil, false
 		}
 	}
-	return arr.Elements
+	return arr.Elements, true
 }
