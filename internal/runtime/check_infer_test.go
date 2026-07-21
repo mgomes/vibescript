@@ -1304,6 +1304,42 @@ end
 `))
 }
 
+func TestCheckInferShadowedTypeLiteralEscapePoisonsFacts(t *testing.T) {
+	t.Parallel()
+
+	// A container local named like a type escapes through its shadowed value
+	// reading, so the call degrades its facts exactly like a plain-named
+	// local's: no stale-witness warning after the callee may have mutated it.
+	requireNoCheckWarnings(t, compileScript(t, `
+def sneaky(values)
+  values << "text"
+end
+
+def strings(values: array<string>)
+  values
+end
+
+def run()
+  array = [1]
+  sneaky(array)
+  strings(array)
+end
+`))
+
+	// Without an escape the witnessed facts keep contradicting the boundary.
+	direct := compileScript(t, `
+def strings(values: array<string>)
+  values
+end
+
+def run()
+  array = [1]
+  strings(array)
+end
+`)
+	requireCheckWarningContains(t, direct, "call to strings argument values expected array<string>, got array<int>")
+}
+
 func TestCheckInferShovelAppendsWitnessElements(t *testing.T) {
 	t.Parallel()
 

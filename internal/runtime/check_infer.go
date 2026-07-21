@@ -439,6 +439,10 @@ func (c *scriptChecker) collectMutationCandidateRootsFromExpression(expr Express
 		}
 	case *SplatArg:
 		c.collectMutationCandidateRootsFromExpression(typed.Value, out)
+	case *TypeLiteral:
+		if typed.Fallback != nil {
+			c.collectMutationCandidateRootsFromExpression(typed.Fallback, out)
+		}
 	case *UnaryExpr:
 		c.collectMutationCandidateRootsFromExpression(typed.Right, out)
 	case *BinaryExpr:
@@ -1440,6 +1444,11 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		return c.inferArrayLiteralType(typed)
 	case *HashLiteral:
 		return c.inferHashLiteralType(typed)
+	case *TypeLiteral:
+		if c.typeLiteralStaticallyShadowed(typed) {
+			return c.inferExpressionType(typed.Fallback)
+		}
+		return shapeValueType(typed.Type)
 	case *BlockLiteral:
 		return checkTypeFunction
 	case *Identifier:
@@ -2250,18 +2259,36 @@ func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 	if len(lit.Pairs) == 0 {
 		return false
 	}
+	return c.shapeTypeNamesStaticallyShadowed(lit.ShapeType)
+}
+
+// typeLiteralStaticallyShadowed mirrors the runtime's type-versus-value
+// choice for an argument type literal: a literal without a value reading is
+// always a type, and one with a value reading — always a bare identifier —
+// keeps it only when that identifier's verbatim spelling resolves (`string?`
+// is shadowed by a binding named `string?`, not by one named `string`).
+func (c *scriptChecker) typeLiteralStaticallyShadowed(lit *TypeLiteral) bool {
+	ident, ok := lit.Fallback.(*Identifier)
+	if !ok {
+		return false
+	}
+	return c.staticNameShadowed(ident.Name)
+}
+
+func (c *scriptChecker) shapeTypeNamesStaticallyShadowed(ty *TypeExpr) bool {
 	shadowed := false
-	walkShapeTypeNames(lit.ShapeType, func(name string) {
-		if shadowed {
-			return
-		}
-		if c.identifierShadowed(name) || c.liveLocalNameHas(name) ||
-			c.hostGlobalShadows(name) || c.typeRootResolvesName(name) ||
-			c.hostBuiltinOverrides(name) || c.implicitSelfShadows(name) {
+	walkShapeTypeNames(ty, func(name string) {
+		if !shadowed && c.staticNameShadowed(name) {
 			shadowed = true
 		}
 	})
 	return shadowed
+}
+
+func (c *scriptChecker) staticNameShadowed(name string) bool {
+	return c.identifierShadowed(name) || c.liveLocalNameHas(name) ||
+		c.hostGlobalShadows(name) || c.typeRootResolvesName(name) ||
+		c.hostBuiltinOverrides(name) || c.implicitSelfShadows(name)
 }
 
 // implicitSelfShadows reports whether a bare identifier would resolve
@@ -2504,6 +2531,16 @@ func (c *scriptChecker) poisonEscapedIdentifier(expr Expression) {
 // holding when expr escapes into unfollowed code: a bare container-typed
 // identifier, or a projection whose value may itself be a mutable container.
 func (c *scriptChecker) escapePoisonTarget(expr Expression) (string, bool) {
+	// A statically shadowed type literal evaluates its value reading, so the
+	// escaping value is the fallback identifier's (a container local named
+	// array, for example); an unshadowed literal escapes only a fresh type
+	// value and poisons nothing.
+	if lit, ok := expr.(*TypeLiteral); ok {
+		if !c.typeLiteralStaticallyShadowed(lit) {
+			return "", false
+		}
+		expr = lit.Fallback
+	}
 	name, ok := rootIdentifierName(expr)
 	if !ok {
 		return "", false

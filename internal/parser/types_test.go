@@ -450,6 +450,76 @@ end`,
 	}
 }
 
+func TestParserArgumentTypeLiterals(t *testing.T) {
+	t.Parallel()
+
+	source := `f(raw, array<int>)
+f(raw, int | nil)
+f(raw, string?)
+f(raw, count)
+f(raw, value < limit)
+f(raw, nil)`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	secondArg := func(i int) ast.Expression {
+		stmt, ok := got.Statements[i].(*ast.ExprStmt)
+		if !ok {
+			t.Fatalf("statement %d: expected expression statement, got %T", i, got.Statements[i])
+		}
+		call, ok := stmt.Expr.(*ast.CallExpr)
+		if !ok {
+			t.Fatalf("statement %d: expected call, got %T", i, stmt.Expr)
+		}
+		if len(call.Args) != 2 {
+			t.Fatalf("statement %d: expected 2 args, got %d", i, len(call.Args))
+		}
+		return call.Args[1]
+	}
+
+	// array<int> has no value reading: type-only literal.
+	generic, ok := secondArg(0).(*ast.TypeLiteral)
+	if !ok {
+		t.Fatalf("array<int> arg = %T, want *ast.TypeLiteral", secondArg(0))
+	}
+	if generic.Type.Kind != ast.TypeArray || generic.Fallback != nil {
+		t.Fatalf("array<int> literal = kind %v fallback %T, want array kind and nil fallback", generic.Type.Kind, generic.Fallback)
+	}
+
+	// `|` is not an expression operator, so a union has no value reading and
+	// is a type-only literal like the generic form.
+	union, ok := secondArg(1).(*ast.TypeLiteral)
+	if !ok {
+		t.Fatalf("int | nil arg = %T, want *ast.TypeLiteral", secondArg(1))
+	}
+	if union.Type.Kind != ast.TypeUnion || union.Fallback != nil {
+		t.Fatalf("int | nil literal = kind %v fallback %T, want union kind and nil fallback", union.Type.Kind, union.Fallback)
+	}
+
+	nullable, ok := secondArg(2).(*ast.TypeLiteral)
+	if !ok {
+		t.Fatalf("string? arg = %T, want *ast.TypeLiteral", secondArg(2))
+	}
+	if nullable.Type.Kind != ast.TypeString || !nullable.Type.Nullable || nullable.Fallback == nil {
+		t.Fatalf("string? literal = %+v, want nullable string with fallback", nullable.Type)
+	}
+
+	// Non-builtin identifiers, comparisons over locals, and bare nil keep
+	// their value readings.
+	if _, isLit := secondArg(3).(*ast.TypeLiteral); isLit {
+		t.Fatalf("count arg parsed as type literal")
+	}
+	if _, isLit := secondArg(4).(*ast.TypeLiteral); isLit {
+		t.Fatalf("value < limit arg parsed as type literal")
+	}
+	if _, isLit := secondArg(5).(*ast.TypeLiteral); isLit {
+		t.Fatalf("nil arg parsed as type literal")
+	}
+}
+
 func TestParserTypeShapeOptionalFieldDuplicateKey(t *testing.T) {
 	t.Parallel()
 

@@ -215,6 +215,24 @@ body["name"]   # known string
 body["role"]   # unknown: undeclared fields pass through unchecked
 ```
 
+JSON roots are not always objects. Array, primitive, nullable, and union
+contracts work at the root too, spelled directly as the second argument:
+
+```vibe
+scores = JSON.parse_as(raw, array<int>)
+count  = JSON.parse_as(raw, int)
+note   = JSON.parse_as(raw, string?)
+mixed  = JSON.parse_as(raw, int | string)
+rows   = JSON.parse_as(raw, array<{ id: string }>)
+```
+
+Validation uses the same normalization and diagnostics as shape roots
+(`JSON.parse_as value expected array<int>, got array<int | string>`), and the
+checker carries the declared root as the result fact. These non-shape type
+literals are recognized in parenthesized call arguments; a spelling that also
+reads as a value (a local named `int`, for example) keeps its value reading,
+mirroring the shape-literal shadowing rules below.
+
 Shape literals are legal in expression position: a braced group whose field
 values all name built-in types (including unions, `array<T>`/`hash<K, V>`
 arguments, and nested shapes) is a first-class shape value, assignable and

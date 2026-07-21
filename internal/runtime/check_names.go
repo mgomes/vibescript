@@ -377,6 +377,10 @@ func collectOwnScopeNamesFromExpression(expr Expression, out map[string]struct{}
 		collectOwnScopeNamesFromExpression(typed.BlockArg, out)
 	case *SplatArg:
 		collectOwnScopeNamesFromExpression(typed.Value, out)
+	case *TypeLiteral:
+		if typed.Fallback != nil {
+			collectOwnScopeNamesFromExpression(typed.Fallback, out)
+		}
 	case *MemberExpr:
 		collectOwnScopeNamesFromExpression(typed.Object, out)
 	case *ScopeExpr:
@@ -623,6 +627,10 @@ func visitCallExprsInExpression(expr Expression, visit func(*CallExpr)) {
 		}
 	case *SplatArg:
 		visitCallExprsInExpression(typed.Value, visit)
+	case *TypeLiteral:
+		if typed.Fallback != nil {
+			visitCallExprsInExpression(typed.Fallback, visit)
+		}
 	case *MemberExpr:
 		visitCallExprsInExpression(typed.Object, visit)
 	case *ScopeExpr:
