@@ -16,12 +16,17 @@ type CapabilityAdapter interface {
 
 // CapabilityMethodContract validates capability method calls at the boundary.
 // These contracts run before and after a capability builtin executes.
+//
+// ValidateReturn always runs after the builtin returns. The only exception is
+// runtime-internal: a first-party builtin that has already validated and
+// isolated its result records that fact through an unexported per-call proof
+// on the Execution (markValidatedCapabilityReturn), which the dispatcher
+// consumes to avoid validating the same value twice. Adapters outside this
+// package cannot record that proof, so a host-supplied contract can never
+// skip its declared return validation.
 type CapabilityMethodContract struct {
-	ValidateArgs func(args []Value, kwargs map[string]Value, block Value) error
-	// ReturnValidatedByBuiltin means the builtin returns a script-safe value
-	// that has already been validated and isolated from host-owned state.
-	ReturnValidatedByBuiltin bool
-	ValidateReturn           func(result Value) error
+	ValidateArgs   func(args []Value, kwargs map[string]Value, block Value) error
+	ValidateReturn func(result Value) error
 }
 
 // CapabilityContractProvider exposes per-method contracts for capability adapters.

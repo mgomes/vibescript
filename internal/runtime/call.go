@@ -270,9 +270,24 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// must move into defers or the counters leak.
 		savedSections := exec.accumMeteredSections
 		exec.accumMeteredSections = 0
+		// The return-proof slot is scoped to exactly one builtin invocation:
+		// clear it before Fn runs and consume it after, restoring the caller's
+		// slot, so a proof recorded by a nested dispatch (or left over from a
+		// sibling call) can never vouch for this frame's result. The writes are
+		// guarded so the common proof-free path stays write-free, and like the
+		// counter restores above they rely on a panicking builtin tearing down
+		// the whole Execution.
+		savedReturnProof := exec.capabilityReturnProof
+		if savedReturnProof.recorded {
+			exec.capabilityReturnProof = capabilityReturnProof{}
+		}
 		exec.builtinDepth++
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		exec.builtinDepth--
+		returnProof := exec.capabilityReturnProof
+		if returnProof.recorded || savedReturnProof.recorded {
+			exec.capabilityReturnProof = savedReturnProof
+		}
 		exec.accumMeteredSections = savedSections
 		if popValidatedArgs != nil {
 			popValidatedArgs()
@@ -289,7 +304,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if err := exec.checkContext(); err != nil {
 			return NewNil(), err
 		}
-		if hasContract && contract.ValidateReturn != nil && !contract.ReturnValidatedByBuiltin {
+		if hasContract && contract.ValidateReturn != nil && !returnProof.covers(builtin.Name, result) {
 			if err := contract.ValidateReturn(result); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
 			}
