@@ -1652,9 +1652,11 @@ func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
 			return
 		}
 		if elem := declaredArrayElementType(c.localTypeFor(root.Name)); elem != nil {
-			if appended := c.inferExpressionType(expr.Right); appended != nil &&
-				typeExprSatisfies(appended, elem, c.checkNamedTypeResolver()) {
-				c.linkContainerWriteAlias(root.Name, expr.Right, appended)
+			appended := c.inferExpressionType(expr.Right)
+			// The chain root retains the appended value regardless of
+			// compatibility.
+			c.linkContainerWriteAlias(root.Name, expr.Right, appended)
+			if appended != nil && typeExprSatisfies(appended, elem, c.checkNamedTypeResolver()) {
 				return
 			}
 		}
@@ -1673,14 +1675,16 @@ func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
 		return
 	}
 	if elem := declaredArrayElementType(current); elem != nil {
-		if appended := c.inferExpressionType(expr.Right); appended != nil {
+		appended := c.inferExpressionType(expr.Right)
+		// The receiver retains the appended value regardless of
+		// compatibility, so a container-rooted value's local links in: a
+		// later mutation or escape through either side weakens both.
+		c.linkContainerWriteAlias(ident.Name, expr.Right, appended)
+		if appended != nil {
 			if typeExprSatisfies(appended, elem, c.checkNamedTypeResolver()) {
 				// A compatible append keeps the declared fact true for the
 				// receiver and every alias — inside regions too: nothing
-				// rebinds, so the region's state restore stays correct. The
-				// receiver retains an appended container, so its root local
-				// links in: a later mutation through it weakens both.
-				c.linkContainerWriteAlias(ident.Name, expr.Right, appended)
+				// rebinds, so the region's state restore stays correct.
 				return
 			}
 			if c.mutationRegionDepth == 0 && len(c.typeAliases[ident.Name]) == 0 {
@@ -1836,17 +1840,15 @@ func (c *scriptChecker) applyIndexedElementWriteFacts(function string, stmt *Ass
 		return false
 	}
 	resolve := c.checkNamedTypeResolver()
+	// The receiver retains the written element regardless of compatibility,
+	// so a container-rooted value's local links in: a later mutation or
+	// escape through either side weakens both.
+	c.linkContainerWriteAlias(ident.Name, stmt.Value, written)
 	if typeExprsDisjoint(written, elem, resolve) {
 		c.reportIncompatibleElementWrite(function, stmt.Pos(), ident.Name, elem, written)
 		return false
 	}
-	if !typeExprSatisfies(written, elem, resolve) || !mutatorReceiverFactIntact(current, receiverFact) {
-		return false
-	}
-	// The receiver retains a written container element, so its root local
-	// links in: a later mutation through it weakens both.
-	c.linkContainerWriteAlias(ident.Name, stmt.Value, written)
-	return true
+	return typeExprSatisfies(written, elem, resolve) && mutatorReceiverFactIntact(current, receiverFact)
 }
 
 // arrayMutatorElementWrites returns the argument expressions an in-place
