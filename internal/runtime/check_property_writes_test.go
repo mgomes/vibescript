@@ -501,6 +501,39 @@ end
 `))
 }
 
+// Logical ivar writes consult the current fact's truthiness: a definitely
+// truthy fact makes &&= always assign (so its RHS checks) and makes ||=
+// always short-circuit (so its RHS never warns).
+func TestCheckLogicalIvarWritesRespectTruthiness(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def clobber
+    @name = "ok"
+    @name &&= 1
+  end
+end
+`), "write to @name expected string, got int")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def keep
+    @name = "ok"
+    @name ||= 1
+  end
+
+  def maybe_skip
+    @name &&= 1
+  end
+end
+`))
+}
+
 // A skipped &&= write leaves an unset property nil, so the fact keeps its
 // nil arm and the falsey branch stays reachable for diagnostics.
 func TestCheckAndAssignKeepsNilArm(t *testing.T) {
