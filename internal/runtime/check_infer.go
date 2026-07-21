@@ -5997,14 +5997,13 @@ func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignSt
 	} else if !typeExprSatisfies(valueType, valueBound, resolve) {
 		preserved = false
 	}
-	if !preserved {
-		return false
-	}
-	// The receiver retains a written container key or value, so their root
-	// locals link in: a later mutation through either weakens both.
+	// The receiver retains the written key and value regardless of
+	// compatibility — only the unstorable-key abort above keeps them out —
+	// so container roots link in: a later mutation or escape through
+	// either side weakens both.
 	c.linkContainerWriteAlias(name, index, c.inferExpressionType(index))
 	c.linkContainerWriteAlias(name, stmt.Value, c.inferExpressionType(stmt.Value))
-	return true
+	return preserved
 }
 
 // applyShapeFieldWriteFacts checks user[:field] = value against a shape

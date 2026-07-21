@@ -690,6 +690,20 @@ end
 `,
 		},
 		{
+			name: "partially compatible entry value still links its root",
+			source: `
+def helper(x)
+  x
+end
+
+def f(h: hash<string, array<int>>, v: array<number>)
+  h["a"] = v
+  helper(h)
+  v << "bad"
+end
+`,
+		},
+		{
 			name: "unstorable index key aborts before the value writes",
 			source: `
 def f(h: hash<any, int>)
