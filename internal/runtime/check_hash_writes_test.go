@@ -62,6 +62,15 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
+			name: "hash-element splat keeps later merge entries checked",
+			source: `
+def f(h: hash<string, int>)
+  h.merge!(*[{ "a": 1 }], { "b": "bad" })
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
 			name: "merge with a field contradicting the value bound",
 			source: `
 def f(h: hash<symbol, int>)
@@ -765,6 +774,14 @@ end
 			source: `
 def f(h: hash<string, int>)
   h.merge!({ "a": "bad" }, 1)
+end
+`,
+		},
+		{
+			name: "provably non-hash splatted merge element aborts the call",
+			source: `
+def f(h: hash<string, int>)
+  h.merge!(*[1], { "a": "bad" })
 end
 `,
 		},

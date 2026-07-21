@@ -6365,14 +6365,29 @@ func (c *scriptChecker) hashMutatorCallProvablyAborts(
 func (c *scriptChecker) mergeArgumentsProvablyAbort(call *CallExpr, argumentFacts map[Expression]*TypeExpr) bool {
 	for _, arg := range call.Args {
 		if splat, isSplat := arg.(*SplatArg); isSplat {
-			if written := c.inferExpressionType(splat.Value); written != nil &&
-				typeExprArmsAll(written, func(arm *TypeExpr) bool {
-					if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
-						return true
-					}
-					return arm.Kind != TypeArray
-				}) {
+			written := c.inferExpressionType(splat.Value)
+			if written != nil && typeExprArmsAll(written, func(arm *TypeExpr) bool {
+				if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
+					return true
+				}
+				return arm.Kind != TypeArray
+			}) {
 				return true
+			}
+			// A successfully expanded splat contributes its elements as
+			// positional arguments, so a witnessed element arm that is
+			// provably not a hash (witness arms are real elements) fails
+			// the up-front validation too.
+			if written != nil && written.Kind == TypeArray && !written.Nullable &&
+				(written.Name == literalElementsMarker || written.Name == literalPartialElementsMarker) &&
+				len(written.TypeArgs) == 1 {
+				if arms, ok := typeExprArms(written.TypeArgs[0], 0); ok {
+					for _, arm := range arms {
+						if typeExprProvablyNotHash(arm) {
+							return true
+						}
+					}
+				}
 			}
 			continue
 		}
