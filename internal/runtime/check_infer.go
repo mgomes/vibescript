@@ -7474,6 +7474,10 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 			return false
 		}
 		written := c.inferExpressionType(expr)
+		// The receiver retains the entry regardless of compatibility, so a
+		// written container's root local links in: a later mutation or
+		// escape through either side weakens both.
+		c.linkContainerWriteAlias(name, expr, written)
 		if written == nil {
 			compatible = false
 			return false
@@ -7488,11 +7492,7 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 		}
 		if !typeExprSatisfies(written, bound, resolve) {
 			compatible = false
-			return false
 		}
-		// The receiver retains the entry, so a written container's root
-		// local links in: a later mutation through it weakens both.
-		c.linkContainerWriteAlias(name, expr, written)
 		return false
 	}
 	for _, pair := range lit.Pairs {
