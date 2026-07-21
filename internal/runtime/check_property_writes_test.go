@@ -471,6 +471,52 @@ end
 `))
 }
 
+// A short literal right-hand side pads the missing fixed targets with nil at
+// runtime, so a padded ivar target is a known nil write: it warns against a
+// non-nullable contract and stays quiet for nullable ones. Extra literal
+// elements beyond the targets are dropped and keep the mapped checks.
+func TestCheckPaddedDestructuredIvarWrites(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def initialize
+    @name, other = []
+    other
+  end
+end
+`), "write to @name expected string, got nil")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property nickname: string?
+  property count: int
+
+  def initialize
+    @nickname, other = []
+    other
+  end
+
+  def extras
+    @count, @nickname = 1, "n", :extra
+  end
+end
+`))
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property count: int
+
+  def extras_bad
+    @count, other = "x", 2, 3
+    other
+  end
+end
+`), "write to @count expected int, got string")
+}
+
 // An ||= write on a falsey (in particular unset) property assigns the RHS
 // through the same runtime guard as a plain write, so a provably
 // incompatible RHS warns; compatible and callable-preserving spellings stay
