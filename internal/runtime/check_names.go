@@ -1,6 +1,10 @@
 package runtime
 
-import "github.com/mgomes/vibescript/internal/ast"
+import (
+	"context"
+
+	"github.com/mgomes/vibescript/internal/ast"
+)
 
 // This file implements static name resolution for check mode: bare value and
 // function references that cannot resolve to any binding the checker can see
@@ -24,16 +28,16 @@ import "github.com/mgomes/vibescript/internal/ast"
 // CheckOrderIndependentWarnings returns the whole-script check warnings that
 // hold regardless of which function runs first or what state earlier calls
 // established: undefined value/function names and typed block parameters
-// contradicted by literal receivers. vibes run -check -e uses it to cover
-// snippet functions the entrypoint never calls, where state-sensitive
-// warnings (for example a type annotation that resolves only after a require
-// in the entrypoint runs) would misfire.
+// contradicted by literal receivers. Hosts that check functions outside any
+// entrypoint execution order use it where state-sensitive warnings (for
+// example a type annotation that resolves only after a require in the
+// entrypoint runs) would misfire.
 //
 // The pass checks against empty CallOptions, so hosts that inject Globals or
 // Capabilities should prefer CheckWarningsWithOptions with their real
 // options: free names that only those options bind are reported here.
 func (s *Script) CheckOrderIndependentWarnings() []CheckWarning {
-	return s.checkWarningsMode(CallOptions{}, checkTarget{}, true)
+	return s.checkWarningsMode(context.Background(), CallOptions{}, checkTarget{}, true)
 }
 
 // checkNameFacts caches script-wide facts the identifier resolution pass
