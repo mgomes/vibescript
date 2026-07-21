@@ -229,17 +229,18 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 // inferDestructureIvarWrites routes instance-variable targets inside a
 // destructuring assignment through the property-contract check. Element
 // values are known when the right-hand side is a literal element list with
-// no rest element on the target side and no splat on the value side: each
-// fixed target maps index for index, a target past the literal's length
-// receives the nil the runtime pads in (checkable against non-nullable
-// contracts), and extra literal elements are dropped. Every other spelling
-// checks as an unknown write and still refines the ivar's fact.
+// no splat: fixed targets before and after a rest map to concrete indices,
+// the rest target receives its materialized window as an array literal, a
+// target past the literal's length receives the nil the runtime pads in
+// (checkable against non-nullable contracts), and extra literal elements
+// are dropped. Every other spelling checks as an unknown write and still
+// refines the ivar's fact.
 func (c *scriptChecker) inferDestructureIvarWrites(function string, value Expression, target *DestructureTarget) {
 	values, known := destructureElementValueExprs(value, target)
 	for i, element := range target.Elements {
 		var elementValue Expression
 		if known {
-			if i < len(values) {
+			if values[i] != nil {
 				elementValue = values[i]
 			} else if ivar, ok := element.Target.(*IvarExpr); ok {
 				// valueAt pads missing fixed targets with nil, so the padded
@@ -257,24 +258,58 @@ func (c *scriptChecker) inferDestructureIvarWrites(function string, value Expres
 	}
 }
 
-// destructureElementValueExprs returns the per-element value expressions of
-// a destructuring assignment and whether they are statically known. The
-// list may be shorter than the target list (the runtime pads with nil) or
-// longer (the runtime drops the extras).
+// destructureElementValueExprs returns per-target value expressions for a
+// destructuring assignment and whether they are statically known, mirroring
+// assignDestructureWithNormalizer's split: index-for-index before a rest,
+// the literal window (as an array literal) at the rest slot, the trailing
+// values after it, and nil entries where the runtime pads a missing fixed
+// target with nil.
 func destructureElementValueExprs(value Expression, target *DestructureTarget) ([]Expression, bool) {
 	arr, ok := value.(*ArrayLiteral)
 	if !ok {
 		return nil, false
-	}
-	for _, element := range target.Elements {
-		if element.Rest {
-			return nil, false
-		}
 	}
 	for _, expr := range arr.Elements {
 		if _, ok := expr.(*SplatArg); ok {
 			return nil, false
 		}
 	}
-	return arr.Elements, true
+	restIndex := -1
+	for i, element := range target.Elements {
+		if element.Rest {
+			restIndex = i
+			break
+		}
+	}
+	values := arr.Elements
+	exprAt := func(index int) Expression {
+		if index < 0 || index >= len(values) {
+			return nil
+		}
+		return values[index]
+	}
+	out := make([]Expression, len(target.Elements))
+	if restIndex == -1 {
+		for i := range target.Elements {
+			out[i] = exprAt(i)
+		}
+		return out, true
+	}
+	trailing := len(target.Elements) - restIndex - 1
+	restStart := min(restIndex, len(values))
+	restEnd := max(restStart, len(values)-trailing)
+	for i := range target.Elements {
+		switch {
+		case i < restIndex:
+			out[i] = exprAt(i)
+		case i == restIndex:
+			out[i] = &ArrayLiteral{
+				Elements: values[restStart:restEnd],
+				Position: target.Elements[i].Position,
+			}
+		default:
+			out[i] = exprAt(restEnd + (i - restIndex - 1))
+		}
+	}
+	return out, true
 }
