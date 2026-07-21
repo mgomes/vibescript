@@ -149,22 +149,39 @@ func (c *scriptChecker) addIvarWriteWarning(function string, pos Position, name 
 // incompatible with the contract; compound and logical writes stay quiet
 // and rely on the runtime guard.
 func (c *scriptChecker) inferIvarAssignStatementTypes(function string, stmt *AssignStmt, target *IvarExpr) {
-	if stmt.Operator == tokenAndAssign {
-		// A falsey current value short-circuits &&= without assigning, so an
-		// unset property keeps its nil arm and the fact must not refine to
-		// the bare contract.
-		return
+	switch stmt.Operator {
+	case tokenAndAssign:
+		// &&= assigns only when the current value is truthy. A definitely
+		// truthy fact proves the write always runs, so it checks and refines
+		// like a plain write. Otherwise the write may be skipped: an unset
+		// property keeps its nil arm, the fact must not refine to the bare
+		// contract, and the maybe-written RHS stays unchecked — the fact
+		// cannot prove a falsey current (a written nil refines to the
+		// nullable contract, not to nil), so warning here would flag writes
+		// that provably never run.
+		if !typeExprDefinitelyTruthy(c.localTypeFor(ivarFactKey(target.Name))) {
+			return
+		}
+		c.checkIvarWrite(function, stmt.Pos(), target.Name, stmt.Value)
+	case tokenOrAssign:
+		// ||= short-circuits on a truthy current value: a definitely truthy
+		// fact proves the RHS never evaluates or stores. Otherwise the write
+		// can run — on an unset property in particular — through the same
+		// runtime guard as a plain write, so a known RHS checks against the
+		// contract, and the fact refines either way: a skipped write means
+		// the current value was truthy and already within the contract.
+		if typeExprDefinitelyTruthy(c.localTypeFor(ivarFactKey(target.Name))) {
+			return
+		}
+		c.checkIvarWrite(function, stmt.Pos(), target.Name, stmt.Value)
+	case "":
+		c.checkIvarWrite(function, stmt.Pos(), target.Name, stmt.Value)
+	default:
+		// Arithmetic compounds derive their stored value from both operands
+		// and stay unknown, but the executed write still lands within the
+		// contract.
+		c.checkIvarWrite(function, stmt.Pos(), target.Name, nil)
 	}
-	var value Expression
-	if stmt.Operator == "" || stmt.Operator == tokenOrAssign {
-		// A plain write always stores the right-hand side, and ||= stores it
-		// whenever the current value is falsey — an unset property in
-		// particular — through the same runtime guard, so a known RHS checks
-		// against the contract either way. Arithmetic compounds derive their
-		// stored value from both operands and stay unknown.
-		value = stmt.Value
-	}
-	c.checkIvarWrite(function, stmt.Pos(), target.Name, value)
 }
 
 // checkIvarWrite applies the property-contract check for one direct write
