@@ -471,6 +471,75 @@ end
 `))
 }
 
+// A literal right-hand side makes the rest split deterministic: the rest
+// ivar receives the materialized window as an array, fixed targets before
+// and trailing targets after the rest map to concrete indices (padding with
+// nil when the literal runs short), and only non-literal sources degrade to
+// unknown.
+func TestCheckRestDestructuredIvarWrites(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property name: string
+
+  def initialize
+    head, *@name = [0, 1, 2]
+    head
+  end
+end
+`), "write to @name expected string, got array")
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property tags: array<string>
+
+  def initialize
+    head, *@tags = ["a", 1, 2]
+    head
+  end
+end
+`), "write to @tags expected array<string>")
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property count: int
+
+  def trailing
+    *rest, @count = [1, "x"]
+    rest
+  end
+end
+`), "write to @count expected int, got string")
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property count: int
+
+  def padded_trailing
+    a, *rest, @count = [1]
+    [a, rest]
+  end
+end
+`), "write to @count expected int, got nil")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property count: int
+  property tags: array<string>
+
+  def good
+    @count, *@tags = [1, "a", "b"]
+  end
+
+  def unknown_source(items)
+    head, *@tags = items
+    head
+  end
+end
+`))
+}
+
 // A short literal right-hand side pads the missing fixed targets with nil at
 // runtime, so a padded ivar target is a known nil write: it warns against a
 // non-nullable contract and stays quiet for nullable ones. Extra literal
