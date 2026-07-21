@@ -62,6 +62,24 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
+			name: "splatted literal merge entries are checked",
+			source: `
+def f(h: hash<string, int>)
+  h.merge!(*[{ "a": "bad" }])
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "splatted literal shape merge entries are checked",
+			source: `
+def f(user: { name: string })
+  user.merge!(*[{ extra: 1 }])
+end
+`,
+			warning: "write to user adds field extra to exact shape { name: string }",
+		},
+		{
 			name: "hash-element splat keeps later merge entries checked",
 			source: `
 def f(h: hash<string, int>)
@@ -774,6 +792,15 @@ end
 			source: `
 def f(h: hash<string, int>)
   h.merge!({ "a": "bad" }, 1)
+end
+`,
+		},
+		{
+			name: "unknown merge splat stays gradual and weakens",
+			source: `
+def f(h: hash<string, int>, v)
+  h.merge!(*v)
+  h[:sym] = 1
 end
 `,
 		},

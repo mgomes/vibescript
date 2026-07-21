@@ -6507,6 +6507,28 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallEx
 			return false, !blockConflicts
 		}
 		for _, arg := range call.Args {
+			if splat, isSplat := arg.(*SplatArg); isSplat {
+				// A splatted array literal's hash-literal elements are
+				// statically known expanded arguments whose entries land
+				// like direct literals; other splats stay gradual.
+				if lit, isLit := splat.Value.(*ArrayLiteral); isLit {
+					for _, element := range lit.Elements {
+						hashLit, isHash := element.(*HashLiteral)
+						if !isHash || hashLit.ShapeType != nil {
+							continue
+						}
+						for _, pair := range hashLit.Pairs {
+							key, keyOK := staticLiteralHashKey(pair.Key)
+							if !keyOK {
+								continue
+							}
+							c.checkShapeMergeEntry(function, name, shape, key,
+								c.inferExpressionType(pair.Value), pair.Key.Pos(), pair.Value.Pos(), blockConflicts)
+						}
+					}
+				}
+				continue
+			}
 			if lit, isLiteral := arg.(*HashLiteral); isLiteral && lit.ShapeType == nil {
 				for _, pair := range lit.Pairs {
 					key, keyOK := staticLiteralHashKey(pair.Key)
@@ -6921,8 +6943,18 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 		blockConflicts := call.Block != nil || call.BlockArg != nil
 		preserved = !blockConflicts && c.mutatorCallPreservable(call, name, receiverFact)
 		for _, arg := range call.Args {
-			if _, splat := arg.(*SplatArg); splat {
+			if splat, isSplat := arg.(*SplatArg); isSplat {
 				preserved = false
+				// A splatted array literal's hash-literal elements are
+				// statically known expanded arguments whose entries land
+				// like direct literals; other splats stay gradual.
+				if lit, isLit := splat.Value.(*ArrayLiteral); isLit {
+					for _, element := range lit.Elements {
+						if hashLit, isHash := element.(*HashLiteral); isHash && hashLit.ShapeType == nil {
+							c.checkHashLiteralMergeEntries(function, name, hashLit, keyBound, valueBound, resolve, blockConflicts)
+						}
+					}
+				}
 				continue
 			}
 			// A literal argument's entries are statically known, so each
