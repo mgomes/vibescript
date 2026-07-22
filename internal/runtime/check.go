@@ -3199,8 +3199,10 @@ func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr)
 	}
 	view := staticCallView{pos: member.Pos()}
 	if target.fn != nil {
-		if target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0 {
+		autoInvokes := target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0
+		if autoInvokes {
 			c.checkCallShape(function, view, target.name, target.fn)
+			c.applyAutoInvokedMemberNamespaceMutations(member, target)
 		}
 		// A bare member read dispatches like a call, so the callee checks
 		// under the call-time runtime root.
@@ -6250,6 +6252,17 @@ func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Iden
 	c.pinExpressionFact(ident, c.autoInvokedBuiltinResultFact(ident.Name))
 	for member := range members {
 		c.recordRuntimeNamespaceMember(member)
+	}
+}
+
+func (c *scriptChecker) applyAutoInvokedMemberNamespaceMutations(member *MemberExpr, target staticCallable) {
+	members := c.scriptFunctionNamespaceMutations(nil, target)
+	if len(members) == 0 {
+		return
+	}
+	c.pinExpressionFact(member, c.memberResultFact(member))
+	for name := range members {
+		c.recordRuntimeNamespaceMember(name)
 	}
 }
 

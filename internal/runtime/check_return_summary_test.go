@@ -468,6 +468,35 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "benign bare method preserves cached summaries",
+			source: `
+class Observer
+  def touch()
+    1
+  end
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_string(serialize())
+  Observer.new.touch
+  takes_int(serialize())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "benign parameter defaults keep the summary",
 			source: `
 def build_count(n = 2)
@@ -1165,6 +1194,38 @@ end
 def run()
   takes_string(serialize())
   wrapper()
+  takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "bare method namespace mutation invalidates a cached summary",
+			source: `
+def replacement(value)
+  1
+end
+
+class Mutator
+  def mutate()
+    JSON.stringify = replacement
+  end
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_string(serialize())
+  Mutator.new.mutate
   takes_int(serialize())
 end
 `,
