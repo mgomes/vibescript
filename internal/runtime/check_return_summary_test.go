@@ -733,6 +733,48 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "callable annotated default stays a function value",
+			source: `
+def helper()
+  "helper result"
+end
+
+def expose(value: function | string = helper)
+  value
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(expose())
+end
+`,
+			warning: "call to takes_string argument value expected string, got function",
+		},
+		{
+			name: "non-callable annotated default still auto invokes",
+			source: `
+def helper()
+  "helper result"
+end
+
+def expose(value: string | bool = helper)
+  value
+end
+
+def takes_bool(value: bool)
+  value
+end
+
+def run()
+  takes_bool(expose())
+end
+`,
+			warning: "call to takes_bool argument value expected bool, got string",
+		},
+		{
 			name: "compound assignment finals record the combined result",
 			source: `
 def build_count()

@@ -237,6 +237,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 			hashSupplied[index] = struct{}{}
 		}
 		for i, param := range fn.Params {
+			expectation := typeExpressionExpectation(param.Type)
 			// An omitted argument runs the default expression before the
 			// body, so its effects (a require's exports, a namespace write)
 			// must be live for the body walk, mirroring checkFunction. A
@@ -244,7 +245,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 			// runs and contributes nothing.
 			_, mayRun := runnable[i]
 			if mayRun {
-				c.checkExpression(fn.Name, param.DefaultVal)
+				c.checkExpressionWithExpectation(fn.Name, param.DefaultVal, expectation)
 				c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
 			}
 			c.recordParamBinding(param)
@@ -257,7 +258,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 			// splatted shape may do either, so no value fact holds.
 			if mayRun {
 				c.bindParamDefaultFact(param)
-				c.refineAnnotatedParamFact(param, c.inferExpressionType(param.DefaultVal))
+				c.refineAnnotatedParamFact(param, c.inferExpressionTypeWithExpectation(param.DefaultVal, expectation))
 			} else if _, viaHash := hashSupplied[i]; viaHash {
 				if param.Name != "" && param.Type == nil {
 					c.bindLocalTypeInCurrentFrame(param.Name, checkTypeHash)
