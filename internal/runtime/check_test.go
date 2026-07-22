@@ -815,6 +815,48 @@ end`,
 	}
 }
 
+func TestCheckWarningsForFunctionChecksBareMemberBeforeItsNamespaceEffects(t *testing.T) {
+	t.Parallel()
+
+	const source = `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Installer
+  def self.fire
+    takes_int(JSON.stringify({}))
+    JSON.stringify = replacement
+  end
+end
+
+def run
+  $CALL
+end
+	`
+
+	for _, call := range []string{"Installer.fire", "Installer.fire()"} {
+		t.Run(call, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, strings.Replace(source, "$CALL", call, 1))
+			warnings := script.CheckWarningsForFunction("run")
+			messages := make([]string, 0, len(warnings))
+			for _, warning := range warnings {
+				messages = append(messages, warning.Message)
+			}
+			got := strings.Join(messages, "\n")
+			want := "call to takes_int argument value expected int, got string"
+			if !strings.Contains(got, want) {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)
+			}
+		})
+	}
+}
+
 func TestCheckWarningsForFunctionRechecksReachableFunctionsPerRuntimeState(t *testing.T) {
 	t.Parallel()
 
@@ -877,6 +919,59 @@ end
 	want := "call to JSON.parse has too few arguments"
 	if !strings.Contains(got, want) {
 		t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)
+	}
+}
+
+func TestReachableFunctionCheckKeyIncludesNamespaceMutations(t *testing.T) {
+	t.Parallel()
+
+	checker := scriptChecker{}
+	fn := &ScriptFunction{}
+	before := checker.reachableFunctionCheckKey(fn, nil)
+	checker.runtimeNamespaceMembers = map[string]struct{}{"JSON.stringify": {}}
+	after := checker.reachableFunctionCheckKey(fn, nil)
+	if before == after {
+		t.Fatalf("reachable function key stayed %q after namespace mutation", before)
+	}
+}
+
+func TestCheckWarningsForFunctionClearsPinnedFactsBetweenReachableChecks(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def use()
+  takes_int(JSON.stringify({}))
+end
+
+def run(flag)
+  if flag
+    use()
+  else
+    require("enum_status")
+    JSON.stringify = replacement
+    use()
+  end
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	count := 0
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("CheckWarningsForFunction(%q) reported boundary warning %d times, want 1: %#v", "run", count, warnings)
 	}
 }
 
@@ -3278,6 +3373,33 @@ end`,
     return "bad"
   ensure
     return 1
+  end
+end`,
+		},
+		{
+			name: "nested ensure return masks inner body return type",
+			source: `def run() -> int
+  begin
+    begin
+      return "bad"
+    ensure
+      return 1
+    end
+  ensure
+    cleanup = true
+  end
+end`,
+		},
+		{
+			name: "inferred exiting ensure masks body return type",
+			source: `def run() -> string
+  begin
+    return 1
+  ensure
+    value = nil
+    if value == nil
+      return "forced"
+    end
   end
 end`,
 		},

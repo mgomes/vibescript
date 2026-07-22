@@ -247,6 +247,12 @@ func (c *scriptChecker) localNameUnionHas(name string) bool {
 // functionHasSelfScope reports whether fn runs with self bound, i.e. it is an
 // instance or class method of one of the script's classes.
 func (c *scriptChecker) functionHasSelfScope(fn *ScriptFunction) bool {
+	c.prepareSelfScopeFunctions()
+	_, ok := c.selfScopeFns[fn]
+	return ok
+}
+
+func (c *scriptChecker) prepareSelfScopeFunctions() {
 	if c.selfScopeFns == nil {
 		c.selfScopeFns = make(map[*ScriptFunction]struct{})
 		c.selfScopeFnClasses = make(map[*ScriptFunction]*ClassDef)
@@ -263,8 +269,6 @@ func (c *scriptChecker) functionHasSelfScope(fn *ScriptFunction) bool {
 			}
 		}
 	}
-	_, ok := c.selfScopeFns[fn]
-	return ok
 }
 
 // collectOwnScopeNames gathers every local name the statements can bind in
@@ -377,6 +381,10 @@ func collectOwnScopeNamesFromExpression(expr Expression, out map[string]struct{}
 		collectOwnScopeNamesFromExpression(typed.BlockArg, out)
 	case *SplatArg:
 		collectOwnScopeNamesFromExpression(typed.Value, out)
+	case *TypeLiteral:
+		if typed.Fallback != nil {
+			collectOwnScopeNamesFromExpression(typed.Fallback, out)
+		}
 	case *MemberExpr:
 		collectOwnScopeNamesFromExpression(typed.Object, out)
 	case *ScopeExpr:
@@ -623,6 +631,10 @@ func visitCallExprsInExpression(expr Expression, visit func(*CallExpr)) {
 		}
 	case *SplatArg:
 		visitCallExprsInExpression(typed.Value, visit)
+	case *TypeLiteral:
+		if typed.Fallback != nil {
+			visitCallExprsInExpression(typed.Fallback, visit)
+		}
 	case *MemberExpr:
 		visitCallExprsInExpression(typed.Object, visit)
 	case *ScopeExpr:

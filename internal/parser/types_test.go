@@ -304,6 +304,222 @@ end`
 	}
 }
 
+func TestParserTypeShapeOpenMarker(t *testing.T) {
+	t.Parallel()
+	source := `def run(payload: { name: string, age?: int, nested: { id: string, ... }, ... }, extras: { ... })
+  payload
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("expected function statement, got %T", got.Statements[0])
+	}
+	wantPayload := &ast.TypeExpr{
+		Kind: ast.TypeShape,
+		Open: true,
+		Shape: map[string]*ast.TypeExpr{
+			"name": {Name: "string", Kind: ast.TypeString},
+			"age":  {Name: "int", Kind: ast.TypeInt, Optional: true},
+			"nested": {
+				Kind: ast.TypeShape,
+				Open: true,
+				Shape: map[string]*ast.TypeExpr{
+					"id": {Name: "string", Kind: ast.TypeString},
+				},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantPayload, fn.Params[0].Type, astCmpOpts); diff != "" {
+		t.Fatalf("payload type mismatch (-want +got):\n%s", diff)
+	}
+	wantExtras := &ast.TypeExpr{
+		Kind:  ast.TypeShape,
+		Open:  true,
+		Shape: map[string]*ast.TypeExpr{},
+	}
+	if diff := cmp.Diff(wantExtras, fn.Params[1].Type, astCmpOpts); diff != "" {
+		t.Fatalf("extras type mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserOpenShapeBypassesHashDefaultHeuristics(t *testing.T) {
+	t.Parallel()
+
+	// The `...` marker removes any hash-literal reading, so field spellings
+	// that normally mark a braced group as a Ruby-style hash default — a
+	// nil-only field, an empty nested shape, at any nesting depth — stay open
+	// shape annotations.
+	source := `def f(p: { previous: nil, ... })
+  p
+end
+
+def g(q: { headers: {}, ... })
+  q
+end
+
+def h(r: { user: { previous: nil, ... } })
+  r
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	wants := []*ast.TypeExpr{
+		{
+			Kind: ast.TypeShape,
+			Open: true,
+			Shape: map[string]*ast.TypeExpr{
+				"previous": {Name: "nil", Kind: ast.TypeNil},
+			},
+		},
+		{
+			Kind: ast.TypeShape,
+			Open: true,
+			Shape: map[string]*ast.TypeExpr{
+				"headers": {Kind: ast.TypeShape, Shape: map[string]*ast.TypeExpr{}},
+			},
+		},
+		{
+			Kind: ast.TypeShape,
+			Shape: map[string]*ast.TypeExpr{
+				"user": {
+					Kind: ast.TypeShape,
+					Open: true,
+					Shape: map[string]*ast.TypeExpr{
+						"previous": {Name: "nil", Kind: ast.TypeNil},
+					},
+				},
+			},
+		},
+	}
+	for i, want := range wants {
+		fn, ok := got.Statements[i].(*ast.FunctionStmt)
+		if !ok {
+			t.Fatalf("statement %d: expected function statement, got %T", i, got.Statements[i])
+		}
+		if fn.Params[0].Type == nil {
+			t.Fatalf("statement %d: parameter parsed as hash default, want shape annotation", i)
+		}
+		if diff := cmp.Diff(want, fn.Params[0].Type, astCmpOpts); diff != "" {
+			t.Fatalf("statement %d type mismatch (-want +got):\n%s", i, diff)
+		}
+	}
+
+	// Closed groups keep the hash-default reading.
+	closed := `def f(opts: { previous: nil })
+  opts
+end`
+	got, errs = parseSource(t, closed)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors for closed group, got %v", errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("expected function statement, got %T", got.Statements[0])
+	}
+	if fn.Params[0].Type != nil {
+		t.Fatalf("closed group parsed as type %s, want hash default", ast.FormatTypeExpr(fn.Params[0].Type))
+	}
+	if fn.Params[0].DefaultVal == nil {
+		t.Fatalf("closed group missing hash default value")
+	}
+}
+
+func TestParserTypeShapeOpenMarkerMustBeLast(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{
+		`def run() -> { ..., name: string }
+  {}
+end`,
+		`def run() -> { name: string, ..., age: int }
+  {}
+end`,
+	} {
+		_, errs := parseSource(t, source)
+		if len(errs) == 0 {
+			t.Fatalf("expected parse errors for %q, got none", source)
+		}
+	}
+}
+
+func TestParserArgumentTypeLiterals(t *testing.T) {
+	t.Parallel()
+
+	source := `f(raw, array<int>)
+f(raw, int | nil)
+f(raw, string?)
+f(raw, count)
+f(raw, value < limit)
+f(raw, nil)`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	secondArg := func(i int) ast.Expression {
+		stmt, ok := got.Statements[i].(*ast.ExprStmt)
+		if !ok {
+			t.Fatalf("statement %d: expected expression statement, got %T", i, got.Statements[i])
+		}
+		call, ok := stmt.Expr.(*ast.CallExpr)
+		if !ok {
+			t.Fatalf("statement %d: expected call, got %T", i, stmt.Expr)
+		}
+		if len(call.Args) != 2 {
+			t.Fatalf("statement %d: expected 2 args, got %d", i, len(call.Args))
+		}
+		return call.Args[1]
+	}
+
+	// array<int> has no value reading: type-only literal.
+	generic, ok := secondArg(0).(*ast.TypeLiteral)
+	if !ok {
+		t.Fatalf("array<int> arg = %T, want *ast.TypeLiteral", secondArg(0))
+	}
+	if generic.Type.Kind != ast.TypeArray || generic.Fallback != nil {
+		t.Fatalf("array<int> literal = kind %v fallback %T, want array kind and nil fallback", generic.Type.Kind, generic.Fallback)
+	}
+
+	// `|` is not an expression operator, so a union has no value reading and
+	// is a type-only literal like the generic form.
+	union, ok := secondArg(1).(*ast.TypeLiteral)
+	if !ok {
+		t.Fatalf("int | nil arg = %T, want *ast.TypeLiteral", secondArg(1))
+	}
+	if union.Type.Kind != ast.TypeUnion || union.Fallback != nil {
+		t.Fatalf("int | nil literal = kind %v fallback %T, want union kind and nil fallback", union.Type.Kind, union.Fallback)
+	}
+
+	nullable, ok := secondArg(2).(*ast.TypeLiteral)
+	if !ok {
+		t.Fatalf("string? arg = %T, want *ast.TypeLiteral", secondArg(2))
+	}
+	if nullable.Type.Kind != ast.TypeString || !nullable.Type.Nullable || nullable.Fallback == nil {
+		t.Fatalf("string? literal = %+v, want nullable string with fallback", nullable.Type)
+	}
+
+	// Non-builtin identifiers, comparisons over locals, and bare nil keep
+	// their value readings.
+	if _, isLit := secondArg(3).(*ast.TypeLiteral); isLit {
+		t.Fatalf("count arg parsed as type literal")
+	}
+	if _, isLit := secondArg(4).(*ast.TypeLiteral); isLit {
+		t.Fatalf("value < limit arg parsed as type literal")
+	}
+	if _, isLit := secondArg(5).(*ast.TypeLiteral); isLit {
+		t.Fatalf("nil arg parsed as type literal")
+	}
+}
+
 func TestParserTypeShapeOptionalFieldDuplicateKey(t *testing.T) {
 	t.Parallel()
 

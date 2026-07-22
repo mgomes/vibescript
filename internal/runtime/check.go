@@ -131,6 +131,13 @@ type scriptChecker struct {
 	ensureExitSites         *[]checkStateSnapshot
 	implicitReturnLeaves    map[Statement]struct{}
 	implicitReturnStates    map[Statement]checkStateSnapshot
+	returnSummaries         map[returnSummaryCacheKey]*TypeExpr
+	summaryInProgress       map[returnSummaryCacheKey]struct{}
+	returnCollector         *returnSummaryCollector
+	summaryYieldCollector   *returnSummaryCollector
+	summaryYieldBlock       *BlockLiteral
+	summaryYieldsActive     bool
+	pinnedExpressionFacts   map[Expression]*TypeExpr
 	requiredModules         map[string]struct{}
 	runtimeModules          map[string]struct{}
 	runtimeNamespaceMembers map[string]struct{}
@@ -1614,6 +1621,10 @@ func (c *scriptChecker) markReachableFunctionCheckedWithParamFacts(
 }
 
 func (c *scriptChecker) reachableFunctionCheckKey(fn *ScriptFunction, paramFacts map[string]checkReachableParamFact) string {
+	return fmt.Sprintf("%p\x00%s\x00%s", fn, c.runtimeCheckContextKey(), reachableParamFactsKey(paramFacts))
+}
+
+func (c *scriptChecker) runtimeCheckContextKey() string {
 	root := c.runtimeTypeRoot
 	if root == nil {
 		root = c.typeRoot
@@ -1631,12 +1642,10 @@ func (c *scriptChecker) reachableFunctionCheckKey(fn *ScriptFunction, paramFacts
 	}
 	sort.Strings(members)
 	return fmt.Sprintf(
-		"%p\x00%s\x00%t\x00%s\x00%s",
-		fn,
+		"%s\x00%t\x00%s",
 		moduleCheckContextKey(root),
 		c.opaqueClassConstants || c.classConstantContext.opaque,
 		strings.Join(members, "\x00"),
-		reachableParamFactsKey(paramFacts),
 	)
 }
 
@@ -1966,6 +1975,16 @@ func cloneCheckStringSet(modules map[string]struct{}) map[string]struct{} {
 	return clone
 }
 
+func unionCheckStringSet(dst, src map[string]struct{}) map[string]struct{} {
+	for key := range src {
+		if dst == nil {
+			dst = make(map[string]struct{}, len(src))
+		}
+		dst[key] = struct{}{}
+	}
+	return dst
+}
+
 func (c *scriptChecker) mergeRuntimeStates(base checkRuntimeState, states []checkRuntimeState) {
 	c.restoreRuntimeState(base)
 	if len(states) == 0 {
@@ -2001,13 +2020,23 @@ func (c *scriptChecker) mergeRuntimeStates(base checkRuntimeState, states []chec
 		})
 	}
 
+	// Namespace writes are possible-write markers: a member reassigned on
+	// any joining path may govern dispatch after the join, so the branches
+	// union rather than intersect (unlike module requires, which must hold
+	// on every path to count as definitely bound).
 	for _, state := range states {
-		if len(state.namespaceMembers) > 0 && c.runtimeNamespaceMembers == nil {
-			c.runtimeNamespaceMembers = make(map[string]struct{}, len(state.namespaceMembers))
+		c.preserveRuntimeNamespaceMembers(state.namespaceMembers)
+	}
+}
+
+// preserveRuntimeNamespaceMembers reunions possible namespace writes into
+// the live state after a restore or join of code that may have run.
+func (c *scriptChecker) preserveRuntimeNamespaceMembers(members map[string]struct{}) {
+	for member := range members {
+		if _, exists := c.runtimeNamespaceMembers[member]; exists {
+			continue
 		}
-		for member := range state.namespaceMembers {
-			c.runtimeNamespaceMembers[member] = struct{}{}
-		}
+		c.recordRuntimeNamespaceMember(member)
 	}
 }
 
@@ -2352,6 +2381,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// apply before the value leaves the function, so the expression is
 		// walked before the annotation check reads its inferred type.
 		c.checkExpression(function, typed.Value)
+		if c.returnCollector != nil && c.deferredReturnSites == nil {
+			if typed.Value == nil {
+				c.returnCollector.record(checkTypeNil)
+			} else {
+				c.returnCollector.record(c.inferExpressionType(typed.Value))
+			}
+		}
 		c.captureEnsureExitState()
 		if returnType != nil {
 			c.checkReturnStatementType(function, returnType, typed)
@@ -2657,10 +2693,19 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		c.recordLocalBindings(typed.Body)
 	case *TryStmt:
-		deferReturnType := returnType != nil && len(typed.Ensure) > 0 && !blockAlwaysExits(typed.Ensure)
+		ensureAlwaysExits := blockAlwaysExits(typed.Ensure)
+		deferReturnType := returnType != nil && len(typed.Ensure) > 0 && !ensureAlwaysExits
 		branchReturnType := returnType
-		if deferReturnType || blockAlwaysExits(typed.Ensure) {
+		if deferReturnType || ensureAlwaysExits {
 			branchReturnType = nil
+		}
+		// An always-exiting ensure replaces every value that the body, else,
+		// or rescue would otherwise return. Keep those overridden facts out of
+		// an unannotated function summary, then collect the ensure itself into
+		// the caller's active collector.
+		summaryCollector := c.returnCollector
+		if summaryCollector != nil && ensureAlwaysExits {
+			c.returnCollector = &returnSummaryCollector{}
 		}
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
@@ -2676,14 +2721,15 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, 2)
 		fallthroughScopeStates := make([]checkScopeState, 0, 2)
-		// Every non-exiting ensure collects the returns escaping through it,
-		// whether or not this level owns the deferred annotation check: the
-		// ensure walk merges their states, and the sites hand up to any
-		// enclosing ensure the same returns continue through.
-		armCapture := len(typed.Ensure) > 0 && !blockAlwaysExits(typed.Ensure)
+		// Every ensure collects the returns entering it so the ensure walk sees
+		// their states. A non-exiting ensure hands those returns up to an outer
+		// ensure; an exiting ensure replaces them and discards the captured
+		// sites before checking its own return paths.
+		captureReturnSites := len(typed.Ensure) > 0
+		armCapture := captureReturnSites && !ensureAlwaysExits
 		var deferredSites []deferredReturnSite
 		var previousSites *[]deferredReturnSite
-		if armCapture {
+		if captureReturnSites {
 			previousSites = c.deferredReturnSites
 			c.deferredReturnSites = &deferredSites
 		}
@@ -2766,7 +2812,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 		}
-		if armCapture {
+		if captureReturnSites {
 			c.deferredReturnSites = previousSites
 		}
 		if protectedLoopExitEffects != nil {
@@ -2792,16 +2838,30 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			mergeRuntimeStates = append(mergeRuntimeStates, site.runtimeState)
 			mergeScopeStates = append(mergeScopeStates, site.scopeState)
 		}
+		// An exiting path's namespace writes reach the ensure walk but never
+		// the code after the block, which runs only on a fall-through path.
+		// Remember the continuation markers before the exit states join.
+		var continuationMembers map[string]struct{}
+		if len(ensureExitSites) > 0 {
+			continuationMembers = cloneCheckStringSet(baseRuntimeState.namespaceMembers)
+			for _, state := range fallthroughRuntimeStates {
+				continuationMembers = unionCheckStringSet(continuationMembers, state.namespaceMembers)
+			}
+		}
 		c.mergeRuntimeStates(baseRuntimeState, mergeRuntimeStates)
 		c.mergeScopeStates(baseScopeState, mergeScopeStates)
+		if summaryCollector != nil && ensureAlwaysExits {
+			c.returnCollector = summaryCollector
+		}
 		// Deferred returns reach ensure, but not the statement after the try.
 		// Feed their class-constant effects to ensure through the context below
 		// while keeping only normal fallthrough effects in the continuing state.
 		c.setClassConstantEffects(fallthroughClassConstantEffects)
+		ensureFallsThrough := true
 		if len(typed.Ensure) > 0 {
 			previousContext := cloneCheckClassConstantEffects(c.classConstantContext)
 			mergeCheckClassConstantEffects(&c.classConstantContext, ensureEffects)
-			ensureFallsThrough := c.checkStatements(function, returnType, typed.Ensure)
+			ensureFallsThrough = c.checkStatements(function, returnType, typed.Ensure)
 			c.classConstantContext = previousContext
 			if ensureFallsThrough && protectedLoopExitEffects != nil && protectedLoopExitEffects.seen {
 				mergeCheckClassConstantEffects(
@@ -2815,15 +2875,30 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				)
 			}
 		}
-		if deferReturnType {
+		// An ensure the walk proves always exits replaces every deferred
+		// body return, even when the proof is inferred rather than
+		// syntactic, so those arms must not widen the summary.
+		if c.returnCollector != nil && armCapture && previousSites == nil && ensureFallsThrough {
+			c.recordDeferredReturnSummaryFacts(deferredSites)
+		}
+		if deferReturnType && ensureFallsThrough {
 			c.checkDeferredReturnSitesAfterEnsure(function, returnType, typed.Ensure, deferredSites)
 		}
-		if armCapture && previousSites != nil {
+		if len(ensureExitSites) > 0 {
+			// The ensure body's own possible writes run on the fall-through
+			// path too, so they persist past the block; only the returned
+			// paths' markers scope back out.
+			ensureScan := c.newNamespaceMutationScan()
+			ensureScan.statements(typed.Ensure)
+			c.runtimeNamespaceMembers = unionCheckStringSet(continuationMembers, ensureScan.out)
+		}
+		if armCapture && previousSites != nil && ensureFallsThrough {
 			*previousSites = append(*previousSites, deferredSites...)
 		}
 		// No fallthrough path means the code after the block is
-		// unreachable: deferred returns exit through the ensure.
-		c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0
+		// unreachable: deferred returns exit through the ensure. An ensure
+		// the walk proves always exits blocks every path the same way.
+		c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0 || !ensureFallsThrough
 	}
 }
 
@@ -3017,7 +3092,12 @@ func (c *scriptChecker) applyConditionOutcomeEffects(expr Expression, truthy boo
 			case 0:
 				return c.narrowNilPredicateMember(member, truthy)
 			case 1:
-				return c.narrowClassPredicateMember(member, typed.Args[0], truthy)
+				switch member.Property {
+				case isAMemberName, kindOfMemberName, instanceOfMemberName:
+					return c.narrowClassPredicateMember(member, typed.Args[0], truthy)
+				case isTypeMemberName:
+					return c.narrowIsTypePredicateMember(member, typed.Args[0], truthy)
+				}
 			}
 		}
 	case *BinaryExpr:
@@ -3098,6 +3178,23 @@ func (c *scriptChecker) checkExpression(function string, expr Expression) {
 	c.checkExpressionWithAuto(function, expr, true)
 }
 
+// checkAssignTargetExpression walks a plain assignment target. Binding roots
+// (identifiers and destructure elements) are never evaluated at runtime, so
+// they must not auto-invoke a same-named zero-arg function; index and member
+// targets still evaluate their objects and indices as ordinary reads.
+func (c *scriptChecker) checkAssignTargetExpression(function string, target Expression) {
+	switch typed := target.(type) {
+	case *Identifier:
+		c.checkExpressionWithAuto(function, typed, false)
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			c.checkAssignTargetExpression(function, element.Target)
+		}
+	default:
+		c.checkExpression(function, target)
+	}
+}
+
 func (c *scriptChecker) checkExpressionWithExpectation(function string, expr Expression, expectation expressionExpectation) {
 	if expectation.empty() {
 		c.checkExpression(function, expr)
@@ -3175,6 +3272,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkIdentifierResolved(function, typed)
 		if autoCall {
 			c.enqueueReachableIdentifierCall(typed)
+			c.applyAutoInvokedIdentifierNamespaceMutations(typed)
 		}
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
@@ -3191,11 +3289,22 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkExpressionWithAuto(function, pair.Key, true)
 			c.checkExpressionWithAuto(function, pair.Value, true)
 		}
+	case *TypeLiteral:
+		// An unshadowed type literal's identifiers are type spellings rather
+		// than variable reads and must not warn as undefined.
+		if !c.typeLiteralStaticallyShadowed(typed) {
+			return
+		}
+		c.checkExpressionWithAuto(function, typed.Fallback, true)
 	case *CallExpr:
 		// The receiver's nil-ness resolves from the facts at its evaluation
 		// point, before member dispatch poisons the receiver's own facts.
 		callSkipsInferred := c.safeNavigationCallSkipsInferred(typed)
 		argumentsAlwaysEvaluate := c.safeNavigationArgumentsAlwaysEvaluateInferred(typed)
+		var invokedLambda *BlockLiteral
+		if member, ok := typed.Callee.(*MemberExpr); ok && member.Property == "call" {
+			invokedLambda = c.resolveImmediateLambdaBlock(member.Object)
+		}
 		c.checkExpressionWithAuto(function, typed.Callee, false)
 		if staticNilSafeNavigationCall(typed) || callSkipsInferred {
 			return
@@ -3213,6 +3322,15 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// callee body still checks under the post-argument state: dispatch
 		// happens after the arguments (and their requires) evaluate.
 		target, targetResolved := c.resolveCallable(typed)
+		if targetResolved && target.fn == nil && target.spec.resultType != nil && !callExpandsArguments(typed) {
+			// The invariant result belongs to the target selected before an
+			// argument can rebind the same builtin namespace member.
+			result := target.spec.resultType
+			if member, ok := typed.Callee.(*MemberExpr); ok {
+				result = c.safeNavigationMemberResultFact(member, result)
+			}
+			c.pinExpressionFact(typed, result)
+		}
 		dynamicCandidates := c.captureDynamicCallCandidates(typed)
 		opaqueCallEffects := c.callHasOpaqueClassConstantEffects(typed, target, targetResolved)
 		// Arguments evaluate left to right before the call dispatches, so
@@ -3228,7 +3346,9 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		for i, arg := range typed.Args {
 			expectation := expressionExpectation{}
 			_, isSplat := arg.(*SplatArg)
-			if targetResolved && !positionalSplatSeen && !isSplat {
+			if invokedLambda != nil && !positionalSplatSeen && !isSplat {
+				expectation = blockArgumentExpectation(invokedLambda.Params, i, len(typed.Args))
+			} else if targetResolved && !positionalSplatSeen && !isSplat {
 				expectation = staticCallablePositionalArgumentExpectation(target, i)
 			}
 			c.checkExpressionWithExpectation(function, arg, expectation)
@@ -3277,12 +3397,43 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.callArgumentFacts = previousFacts
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
+		if c.returnCollector != nil && !targetResolved && c.callMayDispatchDynamicValue(typed) {
+			c.returnCollector.record(nil)
+		}
+		if targetResolved && target.fn != nil {
+			c.applyScriptFunctionNamespaceMutations(typed, target)
+		}
 		if opaqueCallEffects {
 			c.markOpaqueClassConstants()
 		}
-		if c.callMayEvaluateBlock(typed) {
+		immediateLambdaEnters := c.immediateLambdaCallMayEnter(invokedLambda, typed)
+		if immediateLambdaEnters {
+			c.applyLambdaBlockNamespaceMutations(invokedLambda)
+			c.checkInvokedLambdaSummaryYields(function, invokedLambda)
+		}
+		// A lambda literal escaping into the call may run during it, so its
+		// possible namespace writes count here, unlike a bare definition.
+		// A rejected direct lambda call cannot invoke any of its callbacks.
+		if invokedLambda == nil || immediateLambdaEnters {
+			for _, arg := range typed.Args {
+				c.applyLambdaLiteralNamespaceMutations(arg)
+				c.checkLambdaLiteralSummaryYields(function, arg)
+			}
+			for _, kwarg := range typed.KwArgs {
+				c.applyLambdaLiteralNamespaceMutations(kwarg.Value)
+				c.checkLambdaLiteralSummaryYields(function, kwarg.Value)
+			}
+			c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
+			c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
+		}
+		if invokedLambda == nil && c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
-			c.checkBlockLiteral(function, typed.Block)
+			// The lambda builtin converts its literal block to local return
+			// semantics, so those returns cannot unwind the enclosing
+			// function.
+			localReturns := typed.Block != nil && typed.Block.Lambda ||
+				targetResolved && target.fn == nil && target.name == "lambda"
+			c.checkBlockLiteral(function, typed.Block, localReturns)
 		}
 		if argumentsMayBeSkipped {
 			c.restoreRuntimeStatePreservingClassConstantEffects(argumentState)
@@ -3312,8 +3463,16 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.poisonEscapedIdentifier(kwarg.Value)
 		}
 	case *MemberExpr:
+		var invokedLambda *BlockLiteral
+		if autoCall && typed.Property == "call" {
+			invokedLambda = c.resolveImmediateLambdaBlock(typed.Object)
+		}
 		c.checkExpressionWithAuto(function, typed.Object, true)
 		if autoCall {
+			if lambdaLiteralArity(invokedLambda) == 0 {
+				c.applyLambdaBlockNamespaceMutations(invokedLambda)
+				c.checkInvokedLambdaSummaryYields(function, invokedLambda)
+			}
 			target, resolved, invoked := c.checkMemberAutoCall(function, typed)
 			if invoked {
 				if target.fn != nil && !scriptFunctionClassConstantEffectsProvenAbsent(target.fn) {
@@ -3424,7 +3583,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// A standalone block literal is a stabby lambda; its body checks like a
 		// call block's. Plain call blocks are checked from the CallExpr case.
 		if typed.Lambda {
-			c.checkBlockLiteral(function, typed)
+			c.checkBlockLiteral(function, typed, true)
 		}
 		return
 	case *YieldExpr:
@@ -3433,6 +3592,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.poisonEscapedIdentifier(arg)
 		}
 		c.markOpaqueClassConstants()
+		// The caller-supplied block may return non-locally instead of
+		// letting the summarized function produce its later result.
+		if c.summaryYieldsActive {
+			c.summaryYieldCollector.record(nil)
+		}
 	case *InterpolatedString:
 		c.checkStringParts(function, typed.Parts)
 	case *InterpolatedSymbol:
@@ -3855,8 +4019,7 @@ func staticCallableKeywordArgumentExpectation(call *CallExpr, target staticCalla
 		if expected := keywordArgumentExpectedType(target.fn.Params, name); expected != nil {
 			return typeExpressionExpectation(expected)
 		}
-		view := staticCallView{args: call.Args, kwargs: call.KwArgs}
-		if staticCallCollapsesOptionsHash(call, target, view) {
+		if staticCallCollapsesOptionsHash(call, target) {
 			optionsType, ok := optionsHashArgumentType(target.fn, len(call.Args), func(candidate string) bool {
 				for _, kwarg := range call.KwArgs {
 					if kwarg.Name == candidate {
@@ -4084,14 +4247,15 @@ func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr)
 	}
 	view := staticCallView{pos: member.Pos()}
 	if target.fn != nil {
-		invoked := target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0
-		if invoked {
-			c.checkCallShape(function, view, target.name, target.fn)
-		}
-		// A bare member read dispatches like a call, so the callee checks
-		// under the call-time runtime root.
+		// A bare member read dispatches like a call, so snapshot the callee's
+		// call-time runtime root before carrying its possible writes forward.
 		c.enqueueReachableFunction(target.name, target.fn)
-		return target, true, invoked
+		autoInvokes := target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0
+		if autoInvokes {
+			c.checkCallShape(function, view, target.name, target.fn)
+			c.applyAutoInvokedMemberNamespaceMutations(member, target)
+		}
+		return target, true, autoInvokes
 	}
 	if target.spec.autoInvoke {
 		c.checkBuiltinCallShape(function, view, target.name, target.spec)
@@ -4100,12 +4264,33 @@ func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr)
 	return target, true, false
 }
 
-func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) {
+// checkBlockLiteral walks a block or lambda body. localReturns marks blocks
+// whose returns stay inside the block itself (stabby lambdas and the lambda
+// builtin's literal block); a plain block's return unwinds the enclosing
+// function instead.
+func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, localReturns bool) {
 	if block == nil {
 		return
 	}
+	previousSummaryYieldsActive := c.summaryYieldsActive
+	if localReturns {
+		c.summaryYieldsActive = block == c.summaryYieldBlock
+	}
+	defer func() { c.summaryYieldsActive = previousSummaryYieldsActive }()
+	// The restore models a block that may run zero times, but a namespace
+	// write inside a call block that does run must keep governing dispatch,
+	// so possible-write markers survive the restore. A lambda's body does
+	// not run when the literal evaluates, so its writes count only where a
+	// call can reach them (an escaping argument, a resolvable invocation),
+	// never at the definition.
 	runtimeState := c.snapshotRuntimeState()
-	defer c.restoreRuntimeState(runtimeState)
+	defer func() {
+		walkMembers := c.runtimeNamespaceMembers
+		c.restoreRuntimeState(runtimeState)
+		if !localReturns {
+			c.preserveRuntimeNamespaceMembers(walkMembers)
+		}
+	}()
 
 	// Block and lambda returns are not checked against the enclosing
 	// function's annotation today, so an active begin/ensure deferral must
@@ -4131,6 +4316,24 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	defer func() {
 		c.classConstantCaptures = previousClassConstantCaptures
 		c.loopExitEffects = previousLoopExitEffects
+	}()
+	// A lambda's returns never leave the lambda, so a summary walk ignores
+	// them. A plain block's return exits the enclosing function, but its
+	// walk-time fact can be stale by the time the block actually runs (a
+	// callee may mutate a captured container before yielding, or a stored
+	// proc may fire after later reassignments), so any return the block walk
+	// reaches poisons the summary instead of contributing a guessed arm.
+	previousCollector := c.returnCollector
+	var blockCollector *returnSummaryCollector
+	if previousCollector != nil && !localReturns {
+		blockCollector = &returnSummaryCollector{}
+	}
+	c.returnCollector = blockCollector
+	defer func() {
+		c.returnCollector = previousCollector
+		if blockCollector.sawReturn() {
+			previousCollector.record(nil)
+		}
 	}()
 
 	// A call block may run zero or many times, so outer locals its body
@@ -4361,6 +4564,8 @@ func expressionMayEscapeIteration(expr Expression) bool {
 			return true
 		}
 		return typed.Block != nil && expressionMayEscapeIteration(typed.Block)
+	case *TypeLiteral:
+		return typed.Fallback != nil && expressionMayEscapeIteration(typed.Fallback)
 	case *SplatArg:
 		return expressionMayEscapeIteration(typed.Value)
 	case *UnaryExpr:
@@ -4505,7 +4710,7 @@ func (c *scriptChecker) resolvedCallMayEvaluateBlock(call *CallExpr, target stat
 		return !staticallyNonCallableCallee(call.Callee)
 	}
 	if target.fn != nil {
-		return c.functionMayEvaluateCallBlock(target.fn, nil)
+		return c.functionMayEvaluateCallBlock(call, target, nil)
 	}
 	if target.name == "array.fetch" {
 		return staticArrayFetchBlockMayEvaluate(call)
@@ -4525,7 +4730,7 @@ func (c *scriptChecker) callMayEvaluateBlockWithSeen(call *CallExpr, seen map[*S
 		return !staticallyNonCallableCallee(call.Callee)
 	}
 	if target.fn != nil {
-		return c.functionMayEvaluateCallBlock(target.fn, seen)
+		return c.functionMayEvaluateCallBlock(call, target, seen)
 	}
 	if target.name == "array.fetch" {
 		return staticArrayFetchBlockMayEvaluate(call)
@@ -4589,7 +4794,12 @@ func staticallyNonCallableCallee(expr Expression) bool {
 	}
 }
 
-func (c *scriptChecker) functionMayEvaluateCallBlock(fn *ScriptFunction, seen map[*ScriptFunction]struct{}) bool {
+func (c *scriptChecker) functionMayEvaluateCallBlock(
+	call *CallExpr,
+	target staticCallable,
+	seen map[*ScriptFunction]struct{},
+) bool {
+	fn := target.fn
 	if fn == nil {
 		return false
 	}
@@ -4602,6 +4812,15 @@ func (c *scriptChecker) functionMayEvaluateCallBlock(fn *ScriptFunction, seen ma
 	seen[fn] = struct{}{}
 	defer delete(seen, fn)
 
+	collapseOptionsHash := staticCallCollapsesOptionsHash(call, target)
+	for i, param := range fn.Params {
+		if param.DefaultVal == nil || !callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
+			continue
+		}
+		if c.expressionMayEvaluateCallBlock(param.DefaultVal, seen) {
+			return true
+		}
+	}
 	return c.statementsMayEvaluateCallBlock(fn.Body, seen)
 }
 
@@ -5536,6 +5755,40 @@ func (c *scriptChecker) checkCallResolved(
 	if _, isClassPredicate := classPredicateNames[target.name]; isClassPredicate {
 		c.checkClassPredicateArgument(function, call, target.name)
 	}
+	if target.name == isTypeMemberName {
+		c.checkIsTypeAtomArgument(function, call)
+	}
+}
+
+// checkIsTypeAtomArgument reports a literal is_type? atom the runtime always
+// rejects. Non-literal atoms stay gradual, and the paramTypes contract already
+// rejects provably non-symbol/string arguments.
+func (c *scriptChecker) checkIsTypeAtomArgument(function string, call *CallExpr) {
+	if len(call.Args) != 1 || callExpandsArguments(call) {
+		return
+	}
+	arg := call.Args[0]
+	val, ok := staticLiteralValue(arg)
+	if !ok {
+		return
+	}
+	text, ok := typeAtomArg(val)
+	if !ok {
+		return
+	}
+	ty, err := parseTypeAtom(text)
+	if err != nil {
+		c.add(function, arg.Pos(), "%s", err)
+		return
+	}
+	if ty.Kind == TypeEnum && strings.Contains(ty.Name, ".") {
+		// An unresolved qualified atom raises unconditionally at runtime,
+		// even for nil receivers, so a literal spelling that fails to
+		// resolve in the checked context is a deterministic failure.
+		if _, ok, lookupErr := lookupNamedTypeForType(ty, c.runtimeTypeContext()); lookupErr != nil || !ok {
+			c.add(function, arg.Pos(), "unknown type atom %q in %s", text, isTypeMemberName)
+		}
+	}
 }
 
 // enqueueReachableDynamicMemberCall keeps method-body checking tied to the
@@ -5880,7 +6133,7 @@ func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExp
 			return
 		}
 	}
-	c.add(function, arg.Pos(), "call to JSON.parse_as expects a shape literal as its second argument, got %s", formatTypeExpr(inferred))
+	c.add(function, arg.Pos(), "call to JSON.parse_as expects a type literal as its second argument, got %s", formatTypeExpr(inferred))
 }
 
 // classPredicateNames are the universal predicates whose single argument the
@@ -5986,6 +6239,44 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		}
 	}
 	return staticCallable{}, false
+}
+
+// implicitSelfConstructorReceiver reports whether expr is a bare new or
+// explicit self.new expression in a class-self mutation scan.
+func implicitSelfConstructorReceiver(expr Expression) bool {
+	switch typed := expr.(type) {
+	case *Identifier:
+		return typed.Name == "new"
+	case *CallExpr:
+		return implicitSelfConstructorReceiver(typed.Callee)
+	case *MemberExpr:
+		ident, isIdentifier := typed.Object.(*Identifier)
+		return isIdentifier && ident.Name == "self" && typed.Property == "new"
+	}
+	return false
+}
+
+// callMayDispatchDynamicValue distinguishes unresolved first-class dispatch
+// from fixed builtin dispatch that simply has no checker contract. An
+// unshadowed identifier or fixed receiver selects fixed runtime dispatch (or
+// fails before dispatch), while a bound local, host override, or dynamic
+// receiver can select an arbitrary callee.
+func (c *scriptChecker) callMayDispatchDynamicValue(call *CallExpr) bool {
+	switch callee := call.Callee.(type) {
+	case *Identifier:
+		return c.identifierShadowed(callee.Name) ||
+			c.hostGlobalShadows(callee.Name) ||
+			c.typeRootHasBinding(callee.Name) ||
+			c.hostBuiltinOverrides(callee.Name)
+	case *MemberExpr:
+		if callee.Property == "call" {
+			return true
+		}
+		_, fixedReceiver := c.staticMemberReceiverKinds(callee)
+		return !fixedReceiver
+	default:
+		return true
+	}
 }
 
 func (c *scriptChecker) typeRootFunction(name string) (*ScriptFunction, bool) {
@@ -6356,18 +6647,28 @@ func (c *scriptChecker) defaultBuiltinCallSpec(name string) (staticCallSpec, boo
 	return c.script.engine.builtinCallSpec(name)
 }
 
-// autoInvokedBuiltinResultFact reports the invariant result type of a bare
-// builtin identifier that auto-invokes at runtime (`t = uuid`). The guard
-// chain mirrors resolveCallable: any shadowing binding, script function, or
-// host override dispatches elsewhere, so no builtin fact applies.
+// autoInvokedBuiltinResultFact reports the result type of a bare identifier
+// that auto-invokes at runtime: a script function's annotated return or
+// summary (`x = build_count`), or a builtin's invariant result (`t = uuid`).
+// The guard chain mirrors resolveCallable: any shadowing binding or host
+// override dispatches elsewhere, so no fact applies.
 func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
 	if c.identifierShadowed(name) || c.hostGlobalShadows(name) {
 		return nil
 	}
-	if _, ok := c.script.functions[name]; ok {
-		return nil
+	if fn, ok := c.script.functions[name]; ok {
+		if len(fn.Params) > 0 {
+			return checkTypeFunction
+		}
+		if fn.ReturnTy != nil {
+			return fn.ReturnTy
+		}
+		return c.scriptFunctionReturnSummary(nil, fn)
 	}
-	if _, ok := c.typeRootFunction(name); ok {
+	if fn, ok := c.typeRootFunction(name); ok {
+		if len(fn.Params) > 0 {
+			return checkTypeFunction
+		}
 		return nil
 	}
 	if c.typeRootHasBinding(name) {
@@ -6650,7 +6951,7 @@ func staticCallViewFor(call *CallExpr, target staticCallable) staticCallView {
 		block:    call.Block,
 		blockArg: call.BlockArg,
 	}
-	if !staticCallCollapsesOptionsHash(call, target, view) {
+	if !staticCallCollapsesOptionsHash(call, target) {
 		return view
 	}
 	hash := &HashLiteral{
@@ -6674,15 +6975,15 @@ func staticCallViewFor(call *CallExpr, target staticCallable) staticCallView {
 	return view
 }
 
-func staticCallCollapsesOptionsHash(call *CallExpr, target staticCallable, view staticCallView) bool {
+func staticCallCollapsesOptionsHash(call *CallExpr, target staticCallable) bool {
 	if !call.KeywordOptionsHash || len(call.KwArgs) == 0 || target.fn == nil {
 		return false
 	}
 	if call.Parenthesized && !target.constructor && target.resolution == calleeMemberMethod {
 		return false
 	}
-	return functionCanReceiveOptionsHash(target.fn, len(view.args), func(name string) bool {
-		for _, kwarg := range view.kwargs {
+	return functionCanReceiveOptionsHash(target.fn, len(call.Args), func(name string) bool {
+		for _, kwarg := range call.KwArgs {
 			if kwarg.Name == name {
 				return true
 			}
@@ -6950,8 +7251,11 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 					supplied[rest.Name] = struct{}{}
 					fieldType, known := ty.Shape[rest.Name]
 					if !known {
-						c.add(function, rest.Value.Pos(), "call to %s argument %s expected %s, got keyword %s",
-							callName, paramName, formatTypeExpr(ty), rest.Name)
+						// An open shape admits undeclared keywords unchecked.
+						if !ty.Open {
+							c.add(function, rest.Value.Pos(), "call to %s argument %s expected %s, got keyword %s",
+								callName, paramName, formatTypeExpr(ty), rest.Name)
+						}
 						continue
 					}
 					c.checkInferredArgument(function, rest.Value, fieldType, callName, paramName)
@@ -7088,6 +7392,10 @@ func staticLiteralValue(expr Expression) (Value, bool) {
 			items = append(items, item)
 		}
 		return NewArray(items), true
+	case *TypeLiteral:
+		// The argument may evaluate as a first-class type value, so it has
+		// no static value reading.
+		return NewNil(), false
 	case *HashLiteral:
 		if typed.ShapeType != nil {
 			// The group may evaluate as a first-class shape value, so it has
@@ -7352,6 +7660,9 @@ func (c *scriptChecker) runtimeNamespaceMemberName(target Expression) (string, b
 }
 
 func (c *scriptChecker) recordRuntimeNamespaceMember(memberName string) {
+	if memberName == "" {
+		return
+	}
 	if c.runtimeNamespaceMembers == nil {
 		c.runtimeNamespaceMembers = make(map[string]struct{})
 	}
@@ -7362,6 +7673,338 @@ func (c *scriptChecker) recordRuntimeNamespaceMember(memberName string) {
 		}
 		c.classConstantCaptures[i].namespaceMembers[memberName] = struct{}{}
 	}
+}
+
+// scriptFunctionNamespaceMutations reports the builtin namespace members a
+// call to fn may reassign, transitively through the owned functions it
+// references. A non-nil call refines the root function's defaults to the
+// ones this call's shape can leave unsupplied; a nil call (a bare reference
+// or unknown shape) counts every default. Transitive references always count
+// every default, since their future call shapes are unknowable.
+func (c *scriptChecker) scriptFunctionNamespaceMutations(
+	call *CallExpr,
+	target staticCallable,
+) map[string]struct{} {
+	fn := target.fn
+	if fn == nil || fn.owner != c.script {
+		return nil
+	}
+	scan := c.newNamespaceMutationScan()
+	scan.withFunctionSelf(fn, func() {
+		scan.withNominalReceiverParams(fn.Params, false, func() {
+			collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
+			for i, param := range fn.Params {
+				if param.DefaultVal == nil {
+					continue
+				}
+				if call == nil || callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
+					scan.expression(param.DefaultVal)
+				}
+			}
+			scan.statements(fn.Body)
+		})
+	})
+	return scan.out
+}
+
+// callMayEvaluateParamDefault mirrors the runtime's binding bookkeeping
+// (bindFunctionArgs): a parameter default runs only when the call leaves the
+// parameter unsupplied by position, keyword, or a collapsed options hash. A
+// splatted call's shape is dynamic, so every default may run. The collapse
+// decision comes from the resolved target because parenthesized ordinary
+// methods keep keyword binding strict.
+func callMayEvaluateParamDefault(
+	call *CallExpr,
+	fn *ScriptFunction,
+	paramIndex int,
+	collapseOptionsHash bool,
+) bool {
+	_, mayDefault := callParamSupply(call, fn, paramIndex, collapseOptionsHash)
+	return mayDefault
+}
+
+// callParamSupply reports how a non-splatted call shape treats one
+// parameter: optionsHash marks the open positional parameter a collapsed
+// keyword options hash supplies (resolveKeywordOptionsHash), and mayDefault
+// reports whether the parameter's default may still evaluate. The caller
+// supplies the target-aware collapse decision; this helper only mirrors the
+// binding loop once that dispatch rule is known.
+func callParamSupply(
+	call *CallExpr,
+	fn *ScriptFunction,
+	paramIndex int,
+	collapseOptionsHash bool,
+) (optionsHash, mayDefault bool) {
+	if callExpandsArguments(call) {
+		return false, true
+	}
+	collapse := collapseOptionsHash
+	keywordsConsumed := false
+	argIdx := 0
+	for i, param := range fn.Params {
+		switch param.Kind {
+		case ParamNormal:
+			supplied := false
+			hashSupplied := false
+			if argIdx < len(call.Args) {
+				argIdx++
+				supplied = true
+			} else if !keywordsConsumed && callHasKeywordArg(call, param.Name) {
+				supplied = true
+			} else if collapse {
+				supplied = true
+				hashSupplied = true
+				collapse = false
+				// The runtime clears the keyword map after appending the
+				// synthetic options hash, so later parameters cannot bind
+				// any of the original keyword names.
+				keywordsConsumed = true
+			}
+			if i == paramIndex {
+				return hashSupplied, !supplied
+			}
+		case ParamKeyword:
+			if i == paramIndex {
+				return false, keywordsConsumed || !callHasKeywordArg(call, param.Name)
+			}
+		case ParamRest:
+			argIdx = len(call.Args)
+			// A rest parameter absorbs the collapsed hash as its final
+			// element, so no later positional parameter receives it.
+			keywordsConsumed = keywordsConsumed || collapse
+			collapse = false
+			if i == paramIndex {
+				return false, false
+			}
+		default:
+			if i == paramIndex {
+				return false, false
+			}
+		}
+	}
+	return false, true
+}
+
+func callHasKeywordArg(call *CallExpr, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, kw := range call.KwArgs {
+		if kw.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// applyScriptFunctionNamespaceMutations carries a statically resolved
+// callee's possible namespace writes back to its caller. Function checking
+// itself runs against an isolated call-time snapshot, but these writes can
+// change later dispatch (for example JSON.stringify = replacement), so a
+// return summary computed before the call must not be reused afterwards.
+// This call itself dispatched under the pre-mutation bindings, so its own
+// result fact pins before the write markers change the summary context for
+// the code after the call.
+func (c *scriptChecker) applyScriptFunctionNamespaceMutations(call *CallExpr, target staticCallable) {
+	members := c.scriptFunctionNamespaceMutations(call, target)
+	if len(members) == 0 {
+		return
+	}
+	if call != nil {
+		c.pinExpressionFact(call, c.inferCallExprType(call))
+	}
+	for member := range members {
+		c.recordRuntimeNamespaceMember(member)
+	}
+}
+
+func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Identifier) {
+	if ident == nil || c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		return
+	}
+	fn, ok := c.script.functions[ident.Name]
+	if !ok || len(fn.Params) != 0 {
+		return
+	}
+	members := c.scriptFunctionNamespaceMutations(nil, staticCallable{fn: fn})
+	if len(members) == 0 {
+		return
+	}
+	c.pinExpressionFact(ident, c.autoInvokedBuiltinResultFact(ident.Name))
+	for member := range members {
+		c.recordRuntimeNamespaceMember(member)
+	}
+}
+
+func (c *scriptChecker) applyAutoInvokedMemberNamespaceMutations(member *MemberExpr, target staticCallable) {
+	members := c.scriptFunctionNamespaceMutations(nil, target)
+	if len(members) == 0 {
+		return
+	}
+	c.pinExpressionFact(member, c.memberResultFact(member))
+	for name := range members {
+		c.recordRuntimeNamespaceMember(name)
+	}
+}
+
+// resolveImmediateLambdaBlock recognizes only syntactically direct lambda
+// receivers. The named form counts when an unshadowed call resolves to the
+// core lambda constructor with its ordinary zero-argument literal-block shape.
+func (c *scriptChecker) resolveImmediateLambdaBlock(expr Expression) *BlockLiteral {
+	switch typed := expr.(type) {
+	case *BlockLiteral:
+		if typed.Lambda {
+			return typed
+		}
+	case *CallExpr:
+		callee, ok := typed.Callee.(*Identifier)
+		if !ok || callee.Name != "lambda" || typed.Block == nil || typed.BlockArg != nil ||
+			len(typed.Args) != 0 || len(typed.KwArgs) != 0 ||
+			c.hostGlobalShadows("lambda") || c.hostBuiltinOverrides("lambda") {
+			return nil
+		}
+		target, resolved := c.resolveCallable(typed)
+		if resolved && target.fn == nil && target.name == "lambda" {
+			return typed.Block
+		}
+	}
+	return nil
+}
+
+func lambdaLiteralArity(block *BlockLiteral) int {
+	if block == nil {
+		return -1
+	}
+	if len(block.Params) > 0 {
+		return len(block.Params)
+	}
+	return implicitBlockParamArity(block.ImplicitParams)
+}
+
+// immediateLambdaCallMayEnter reports whether the direct receiver's body can
+// run. Exact arity and scalar literal type contradictions are rejected;
+// dynamic splats stay conservative because they may provide the missing slots.
+func (c *scriptChecker) immediateLambdaCallMayEnter(block *BlockLiteral, call *CallExpr) bool {
+	if block == nil || call == nil || call.Block != nil {
+		return false
+	}
+	if call.BlockArg != nil {
+		if _, nilBlock := call.BlockArg.(*NilLiteral); !nilBlock {
+			return false
+		}
+	}
+	for _, kwarg := range call.KwArgs {
+		hash, empty := kwarg.Value.(*HashLiteral)
+		if !kwarg.Splat || !empty || hash.ShapeType != nil || len(hash.Pairs) != 0 {
+			return false
+		}
+	}
+	arguments := make([]Expression, 0, len(call.Args))
+	dynamicSplat := false
+	for _, arg := range call.Args {
+		splat, ok := arg.(*SplatArg)
+		if !ok {
+			arguments = append(arguments, arg)
+			continue
+		}
+		array, exact := splat.Value.(*ArrayLiteral)
+		if !exact {
+			dynamicSplat = true
+			continue
+		}
+		arguments = append(arguments, array.Elements...)
+	}
+	if len(arguments) > lambdaLiteralArity(block) ||
+		!dynamicSplat && len(arguments) != lambdaLiteralArity(block) {
+		return false
+	}
+	if dynamicSplat || len(block.Params) == 0 {
+		return true
+	}
+	for i, argument := range arguments {
+		param := block.Params[i]
+		if param.Type == nil {
+			continue
+		}
+		value, static := staticLiteralValue(argument)
+		if !static {
+			continue
+		}
+		if _, err := normalizeValueForType(value, param.Type, c.runtimeTypeContext()); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// applyLambdaLiteralNamespaceMutations records the possible namespace
+// writes of a lambda expression passed directly to a call: the callee may
+// invoke it during the call. A bare lambda definition leaks nothing — its
+// body runs only if a later resolvable call reaches it.
+func (c *scriptChecker) applyLambdaLiteralNamespaceMutations(arg Expression) {
+	block := lambdaLiteralBlock(arg)
+	if block == nil {
+		return
+	}
+	c.applyLambdaBlockNamespaceMutations(block)
+}
+
+func lambdaLiteralBlock(arg Expression) *BlockLiteral {
+	switch typed := arg.(type) {
+	case *BlockLiteral:
+		if typed.Lambda {
+			return typed
+		}
+	case *CallExpr:
+		callee, ok := typed.Callee.(*Identifier)
+		if ok && callee.Name == "lambda" {
+			return typed.Block
+		}
+	}
+	return nil
+}
+
+func (c *scriptChecker) checkLambdaLiteralSummaryYields(function string, arg Expression) {
+	c.checkInvokedLambdaSummaryYields(function, lambdaLiteralBlock(arg))
+}
+
+// checkInvokedLambdaSummaryYields rechecks an executed lambda with local
+// return semantics intact while allowing reachable yields to poison the
+// enclosing function summary. Merely defining a lambda keeps yields inert.
+func (c *scriptChecker) checkInvokedLambdaSummaryYields(function string, block *BlockLiteral) {
+	if block == nil || c.summaryYieldCollector == nil || !c.summaryYieldsActive {
+		return
+	}
+	previousBlock := c.summaryYieldBlock
+	c.summaryYieldBlock = block
+	defer func() { c.summaryYieldBlock = previousBlock }()
+	c.checkBlockLiteral(function, block, true)
+}
+
+// applyLambdaBlockNamespaceMutations records the namespace members a lambda
+// may rewrite once its body can run.
+func (c *scriptChecker) applyLambdaBlockNamespaceMutations(block *BlockLiteral) {
+	if block == nil {
+		return
+	}
+	scan := c.newNamespaceMutationScan()
+	for _, param := range block.Params {
+		scan.expression(param.DefaultVal)
+	}
+	scan.statements(block.Body)
+	for member := range scan.out {
+		c.recordRuntimeNamespaceMember(member)
+	}
+}
+
+// pinExpressionFact fixes the fact of one walked expression node so later
+// inference does not recompute it under state that arose after it evaluated.
+// A re-walk of the node overwrites the pin with the new walk's fact.
+func (c *scriptChecker) pinExpressionFact(expr Expression, fact *TypeExpr) {
+	if c.pinnedExpressionFacts == nil {
+		c.pinnedExpressionFacts = make(map[Expression]*TypeExpr)
+	}
+	c.pinnedExpressionFacts[expr] = fact
 }
 
 func (c *scriptChecker) recordBindingName(name string) {
@@ -7454,6 +8097,378 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 			}
 			collectLocalBindings(typed.Else, out)
 			collectLocalBindings(typed.Ensure, out)
+		}
+	}
+}
+
+// namespaceMutationScan records every builtin namespace member a function's
+// execution can reassign, descending into any code the body may run — block
+// and lambda bodies, statement expressions, and nested definitions — so a
+// caller invalidates cached facts even when the write hides inside a block
+// ([1].each { JSON.stringify = replacement }). A reference to another owned
+// function recurses into that function's body (visited breaks call cycles),
+// so writes reached only through helpers, stored function values, or
+// transitive calls still count. Exact class parameter facts keep same-named
+// instance methods separated while the scan descends through helper calls.
+type namespaceMutationScan struct {
+	out              map[string]struct{}
+	functions        map[string]*ScriptFunction
+	classes          map[string]*ClassDef
+	visited          map[*ScriptFunction]struct{}
+	methodClasses    map[*ScriptFunction]*ClassDef
+	classMethodFns   map[*ScriptFunction]struct{}
+	selfClass        *ClassDef
+	selfClassContext bool
+	// A nil class records a parameter that shadows a class name without
+	// proving one exact instance dispatch.
+	nominalReceivers map[string]*ClassDef
+}
+
+func (c *scriptChecker) newNamespaceMutationScan() *namespaceMutationScan {
+	c.prepareSelfScopeFunctions()
+	scan := &namespaceMutationScan{
+		out:              make(map[string]struct{}),
+		functions:        c.script.functions,
+		classes:          c.script.classes,
+		visited:          make(map[*ScriptFunction]struct{}),
+		methodClasses:    c.selfScopeFnClasses,
+		classMethodFns:   c.selfScopeClassFns,
+		selfClass:        c.selfClass,
+		selfClassContext: c.selfClassContext,
+	}
+	return scan
+}
+
+func (s *namespaceMutationScan) visit(fn *ScriptFunction) {
+	if fn == nil {
+		return
+	}
+	if _, seen := s.visited[fn]; seen {
+		return
+	}
+	s.visited[fn] = struct{}{}
+	s.function(fn)
+}
+
+// functionReference unions in the writes of an owned top-level function or
+// implicit-self method the scanned body mentions. Any mention counts — callee,
+// bare auto-invoke, or escaping value — since a stored function can run later;
+// a shadowed name only over-invalidates, which is the sound direction.
+func (s *namespaceMutationScan) functionReference(name string) {
+	if fn, ok := s.functions[name]; ok {
+		s.visit(fn)
+	}
+	s.selfReference(name)
+}
+
+func (s *namespaceMutationScan) selfReference(name string) {
+	if s.selfClass == nil {
+		return
+	}
+	if s.selfClassContext {
+		if name == "new" && !s.selfClass.IsModule {
+			s.visit(s.selfClass.Methods["initialize"])
+			return
+		}
+		s.visit(s.selfClass.ClassMethods[name])
+		return
+	}
+	s.visit(s.selfClass.Methods[name])
+}
+
+// memberReference descends into the statically resolvable methods a member
+// dispatch may run: a class method (Mutator.m), a constructor (Mutator.new
+// runs initialize), or an instance method on a constructor-fact or exactly
+// annotated receiver (Mutator.new.m or m: Mutator). Receivers the scan cannot
+// resolve stay unscanned — the checker applies their writes when it walks the
+// call itself.
+func (s *namespaceMutationScan) memberReference(member *MemberExpr) {
+	if implicitSelfConstructorReceiver(member.Object) && s.selfClassContext && s.selfClass != nil && !s.selfClass.IsModule {
+		s.visit(s.selfClass.Methods["initialize"])
+		s.visit(s.selfClass.Methods[member.Property])
+		return
+	}
+	switch object := member.Object.(type) {
+	case *Identifier:
+		if object.Name == "self" {
+			s.selfReference(member.Property)
+			return
+		}
+		if classDef, bound := s.nominalReceivers[object.Name]; bound {
+			if classDef != nil && member.Property != "initialize" {
+				s.visit(classDef.Methods[member.Property])
+			}
+			return
+		}
+		classDef, ok := s.classes[object.Name]
+		if !ok {
+			return
+		}
+		if member.Property == "new" {
+			s.visit(classDef.Methods["initialize"])
+			return
+		}
+		s.visit(classDef.ClassMethods[member.Property])
+	case *CallExpr:
+		if className, ok := staticConstructorReceiverClass(object); ok {
+			if classDef, ok := s.classes[className]; ok {
+				s.visit(classDef.Methods[member.Property])
+			}
+		}
+	case *MemberExpr:
+		// A parenless constructor receiver (Mutator.new.m) reads as a
+		// nested member.
+		if ident, ok := object.Object.(*Identifier); ok && object.Property == "new" {
+			if classDef, ok := s.classes[ident.Name]; ok {
+				s.visit(classDef.Methods["initialize"])
+				s.visit(classDef.Methods[member.Property])
+			}
+		}
+	}
+}
+
+func staticConstructorReceiverClass(call *CallExpr) (string, bool) {
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || member.Property != "new" {
+		return "", false
+	}
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return "", false
+	}
+	return ident.Name, true
+}
+
+// function scans everything a call may execute: parameter defaults run
+// before the body when the caller omits the argument.
+func (s *namespaceMutationScan) function(fn *ScriptFunction) {
+	s.withFunctionSelf(fn, func() {
+		s.withNominalReceiverParams(fn.Params, false, func() {
+			for _, param := range fn.Params {
+				s.expression(param.DefaultVal)
+			}
+			s.statements(fn.Body)
+		})
+	})
+}
+
+func (s *namespaceMutationScan) withFunctionSelf(fn *ScriptFunction, walk func()) {
+	previousClass := s.selfClass
+	previousClassContext := s.selfClassContext
+	s.selfClass = s.methodClasses[fn]
+	_, s.selfClassContext = s.classMethodFns[fn]
+	defer func() {
+		s.selfClass = previousClass
+		s.selfClassContext = previousClassContext
+	}()
+	walk()
+}
+
+func (s *namespaceMutationScan) withNominalReceiverParams(params []Param, inherit bool, walk func()) {
+	previous := s.nominalReceivers
+	receivers := make(map[string]*ClassDef, len(params))
+	if inherit {
+		for name, classDef := range previous {
+			receivers[name] = classDef
+		}
+	}
+	for _, param := range params {
+		if param.Name == "" {
+			continue
+		}
+		receivers[param.Name] = nil
+		if param.Kind != ParamNormal && param.Kind != ParamKeyword {
+			continue
+		}
+		if classDef := s.nominalReceiverClass(param.Type); classDef != nil {
+			receivers[param.Name] = classDef
+		}
+	}
+	s.nominalReceivers = receivers
+	defer func() { s.nominalReceivers = previous }()
+	walk()
+}
+
+func (s *namespaceMutationScan) nominalReceiverClass(ty *TypeExpr) *ClassDef {
+	arms, ok := typeExprArms(ty, 0)
+	if !ok || len(arms) == 0 {
+		return nil
+	}
+	var resolved *ClassDef
+	for _, arm := range arms {
+		if arm.Kind == TypeNil {
+			continue
+		}
+		if arm.Kind != TypeEnum {
+			return nil
+		}
+		classDef, ok := s.classes[arm.Name]
+		if !ok || classDef.IsModule || (resolved != nil && resolved != classDef) {
+			return nil
+		}
+		resolved = classDef
+	}
+	return resolved
+}
+
+func (s *namespaceMutationScan) statements(statements []Statement) {
+	for _, stmt := range statements {
+		s.statement(stmt)
+	}
+}
+
+func (s *namespaceMutationScan) statement(stmt Statement) {
+	switch typed := stmt.(type) {
+	case nil:
+	case *AssignStmt:
+		if member, ok := runtimeNamespaceMemberName(typed.Target); ok {
+			s.out[member] = struct{}{}
+		}
+		s.expression(typed.Target)
+		s.expression(typed.Value)
+	case *ExprStmt:
+		s.expression(typed.Expr)
+	case *ReturnStmt:
+		s.expression(typed.Value)
+	case *RaiseStmt:
+		s.expression(typed.Value)
+		s.expression(typed.Message)
+	case *BreakStmt:
+		s.expression(typed.Value)
+	case *NextStmt:
+		s.expression(typed.Value)
+	case *IfStmt:
+		s.expression(typed.Condition)
+		s.statements(typed.Consequent)
+		for _, elseIf := range typed.ElseIf {
+			s.statement(elseIf)
+		}
+		s.statements(typed.Alternate)
+	case *ForStmt:
+		s.expression(typed.Iterable)
+		s.statements(typed.Body)
+	case *WhileStmt:
+		s.expression(typed.Condition)
+		s.statements(typed.Body)
+	case *UntilStmt:
+		s.expression(typed.Condition)
+		s.statements(typed.Body)
+	case *TryStmt:
+		s.statements(typed.Body)
+		for i := range typed.Rescues {
+			s.statements(typed.Rescues[i].Body)
+		}
+		s.statements(typed.Else)
+		s.statements(typed.Ensure)
+	case *FunctionStmt:
+		// A nested definition's writes fire only when it is called, but a
+		// missed invalidation is unsound while an extra one only widens, so
+		// the walk stays conservative.
+		s.withNominalReceiverParams(typed.Params, false, func() {
+			for _, param := range typed.Params {
+				s.expression(param.DefaultVal)
+			}
+			s.statements(typed.Body)
+		})
+	case *ClassStmt:
+		s.statements(typed.Body)
+	}
+}
+
+func (s *namespaceMutationScan) expression(expr Expression) {
+	switch typed := expr.(type) {
+	case nil:
+	case *Identifier:
+		s.functionReference(typed.Name)
+	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:
+		s.statement(typed.(Statement))
+	case *BlockLiteral:
+		s.withNominalReceiverParams(typed.Params, true, func() {
+			for _, param := range typed.Params {
+				s.expression(param.DefaultVal)
+			}
+			s.statements(typed.Body)
+		})
+	case *CallExpr:
+		s.expression(typed.Callee)
+		for _, arg := range typed.Args {
+			s.expression(arg)
+		}
+		for _, kwarg := range typed.KwArgs {
+			s.expression(kwarg.Value)
+		}
+		s.expression(typed.BlockArg)
+		if typed.Block != nil {
+			s.expression(typed.Block)
+		}
+	case *SplatArg:
+		s.expression(typed.Value)
+	case *UnaryExpr:
+		s.expression(typed.Right)
+	case *BinaryExpr:
+		s.expression(typed.Left)
+		s.expression(typed.Right)
+	case *ConditionalExpr:
+		s.expression(typed.Condition)
+		s.expression(typed.Consequent)
+		s.expression(typed.Alternate)
+	case *IfExpr:
+		s.expression(typed.Condition)
+		s.expression(typed.Consequent)
+		for _, branch := range typed.ElseIf {
+			s.expression(branch.Condition)
+			s.expression(branch.Result)
+		}
+		s.expression(typed.Alternate)
+	case *RescueExpr:
+		s.expression(typed.Body)
+		s.expression(typed.Fallback)
+	case *RangeExpr:
+		s.expression(typed.Start)
+		s.expression(typed.End)
+	case *ArrayLiteral:
+		for _, elem := range typed.Elements {
+			s.expression(elem)
+		}
+	case *HashLiteral:
+		for _, pair := range typed.Pairs {
+			s.expression(pair.Key)
+			s.expression(pair.Value)
+		}
+	case *IndexExpr:
+		s.expression(typed.Object)
+		for _, index := range typed.Indices {
+			s.expression(index)
+		}
+	case *MemberExpr:
+		s.memberReference(typed)
+		s.expression(typed.Object)
+	case *ScopeExpr:
+		s.expression(typed.Object)
+	case *CaseExpr:
+		s.expression(typed.Target)
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				s.expression(value.Expr)
+			}
+			s.expression(clause.Result)
+		}
+		s.expression(typed.ElseExpr)
+	case *YieldExpr:
+		for _, arg := range typed.Args {
+			s.expression(arg)
+		}
+	case *InterpolatedString:
+		s.stringParts(typed.Parts)
+	case *InterpolatedSymbol:
+		s.stringParts(typed.Parts)
+	}
+}
+
+func (s *namespaceMutationScan) stringParts(parts []StringPart) {
+	for _, part := range parts {
+		if exprPart, ok := part.(StringExpr); ok {
+			s.expression(exprPart.Expr)
 		}
 	}
 }
