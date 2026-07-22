@@ -450,6 +450,22 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "container write to an unaliased literal refines the shape",
+			source: `
+def takes_strings(value: array<string>)
+  value
+end
+
+def f
+  h = {}
+  v = [1]
+  h[:profile] = v
+  takes_strings(h[:profile])
+end
+`,
+			warning: "call to takes_strings argument value expected array<string>, got array<int>",
+		},
+		{
 			name: "refined parse_as field feeds a typed read",
 			source: `
 def takes_string(value: string)
@@ -765,6 +781,22 @@ end
 def f(h: hash<string, array<int>>, v: array<number>)
   h.merge!({ "a": v })
   helper(h)
+  v << "bad"
+end
+`,
+		},
+		{
+			name: "aliased literal shape write links its retained value",
+			source: `
+def helper(x)
+  x
+end
+
+def f(v: array<int>)
+  h = {}
+  g = h
+  h[:profile] = v
+  helper(g)
   v << "bad"
 end
 `,

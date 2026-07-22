@@ -6040,20 +6040,21 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 		if repr != marker {
 			return false
 		}
+		receiverAliased := len(c.typeAliases[name]) != 0
+		written := c.inferExpressionType(value)
+		// The store retains the written value even when aliasing, a mutation
+		// region, or a changed receiver fact prevents shape refinement.
+		c.linkContainerWriteAlias(name, value, written)
 		// Inside a loop or block body a refinement rolls back with the
 		// region's state restore, it cannot reach other names sharing the
 		// store, and a value walk that changed the local's fact invalidated
 		// the captured shape, so all three cases weaken instead.
-		if c.mutationRegionDepth != 0 || len(c.typeAliases[name]) != 0 || !intact {
+		if c.mutationRegionDepth != 0 || receiverAliased || !intact {
 			return false
 		}
-		written := c.inferExpressionType(value)
 		if written == nil {
 			return false
 		}
-		// The store retains a written container value, so its root local
-		// links in: a later mutation through it weakens both.
-		c.linkContainerWriteAlias(name, value, written)
 		refined := cloneTypeExpr(shape)
 		refined.Name = marker
 		if refined.Shape == nil {
