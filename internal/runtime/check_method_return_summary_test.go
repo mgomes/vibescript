@@ -411,6 +411,71 @@ end
 	}
 }
 
+func TestCheckMethodReturnSummariesTreatSelfAsNonNil(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "instance self",
+			source: `
+class Counter
+  def helper()
+    42
+  end
+
+  def value()
+    self&.helper()
+  end
+end
+
+def takes_string(value: string?)
+  value
+end
+
+def run()
+  takes_string(Counter.new.value())
+end
+`,
+		},
+		{
+			name: "class self",
+			source: `
+class Counter
+  def self.helper()
+    42
+  end
+
+  def self.value()
+    self&.helper()
+  end
+end
+
+def takes_string(value: string?)
+  value
+end
+
+def run()
+  takes_string(Counter.value())
+end
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCheckWarningContains(
+				t,
+				compileScriptDefault(t, tc.source),
+				"call to takes_string argument value expected string?, got int",
+			)
+		})
+	}
+}
+
 func TestCheckMethodReturnSummariesResolveImplicitSelfNew(t *testing.T) {
 	t.Parallel()
 

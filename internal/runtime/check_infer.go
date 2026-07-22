@@ -3019,7 +3019,7 @@ func (c *scriptChecker) safeNavigationArgumentsAlwaysEvaluateInferred(call *Call
 	if !ok {
 		return false
 	}
-	return typeExprNeverNil(c.inferExpressionType(obj))
+	return c.safeNavigationReceiverKnownNonNil(obj)
 }
 
 // --- expression type inference ---
@@ -3679,6 +3679,9 @@ func (c *scriptChecker) safeNavigationReceiverKnownNonNil(expr Expression) bool 
 	ident, ok := expr.(*Identifier)
 	if !ok {
 		return typeExprNeverNil(c.inferExpressionType(expr))
+	}
+	if ident.Name == "self" && c.selfClass != nil {
+		return true
 	}
 	if typeExprNeverNil(c.localTypeFor(ident.Name)) {
 		return true
