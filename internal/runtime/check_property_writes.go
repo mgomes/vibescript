@@ -266,7 +266,24 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 			}
 		}
 	}
-	c.bindLocalType(ivarFactKey(name), c.ivarContractFact(ty))
+	c.bindWrittenIvarFact(name, ty, value)
+}
+
+// bindWrittenIvarFact keeps a compatible boolean literal's exact truthiness
+// while retaining the declared contract for every other successful write.
+func (c *scriptChecker) bindWrittenIvarFact(name string, ty *TypeExpr, value Expression) {
+	fact := c.ivarContractFact(ty)
+	if value != nil {
+		if literal, ok := staticLiteralValue(value); ok && literal.Kind() == KindBool &&
+			c.checkRuntimeStaticValueType(literal, ty) == nil {
+			if literal.Bool() {
+				fact = checkTypeTrue
+			} else {
+				fact = checkTypeFalse
+			}
+		}
+	}
+	c.bindLocalType(ivarFactKey(name), fact)
 }
 
 // inferDestructureIvarWrites routes instance-variable targets inside a

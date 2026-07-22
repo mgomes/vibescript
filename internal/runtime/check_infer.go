@@ -28,6 +28,11 @@ import (
 //     state restores by design, so a fact killed inside a block body cannot
 //     resurface after the walk backtracks.
 
+const (
+	boolTrueFactMarker  = "\x00bool-true"
+	boolFalseFactMarker = "\x00bool-false"
+)
+
 var (
 	checkTypeInt      = &TypeExpr{Kind: TypeInt}
 	checkTypeFloat    = &TypeExpr{Kind: TypeFloat}
@@ -44,6 +49,8 @@ var (
 	checkTypeTime     = &TypeExpr{Kind: TypeTime}
 	checkTypeMoney    = &TypeExpr{Kind: TypeMoney}
 	checkTypeFunction = &TypeExpr{Kind: TypeFunction}
+	checkTypeTrue     = &TypeExpr{Kind: TypeBool, Name: boolTrueFactMarker}
+	checkTypeFalse    = &TypeExpr{Kind: TypeBool, Name: boolFalseFactMarker}
 
 	// checkTypeMethodName matches respond_to?'s method-name argument, which
 	// the runtime accepts as a symbol or string.
@@ -3239,11 +3246,11 @@ func logicalAssignmentFact(operator TokenType, current, next *TypeExpr) *TypeExp
 		if typeExprDefinitelyTruthy(current) {
 			return current
 		}
-		if typeExprIsNilOnly(current) {
+		if typeExprDefinitelyFalsey(current) {
 			return next
 		}
 	case tokenAndAssign:
-		if typeExprIsNilOnly(current) {
+		if typeExprDefinitelyFalsey(current) {
 			return current
 		}
 		if typeExprDefinitelyTruthy(current) {
@@ -4296,14 +4303,16 @@ func (c *scriptChecker) narrowLocalArms(name string, keep func(*TypeExpr) bool) 
 // (nil, and bool for false).
 func (c *scriptChecker) narrowLocalTruthiness(name string, truthy bool) bool {
 	if truthy {
-		return c.narrowLocalArms(name, func(arm *TypeExpr) bool { return arm.Kind != TypeNil })
+		return c.narrowLocalArms(name, func(arm *TypeExpr) bool {
+			return arm.Kind != TypeNil && (arm.Kind != TypeBool || arm.Name != boolFalseFactMarker)
+		})
 	}
 	return c.narrowLocalArms(name, func(arm *TypeExpr) bool {
 		if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
 			// Runtime shape values are always truthy.
 			return false
 		}
-		return arm.Kind == TypeNil || arm.Kind == TypeBool
+		return arm.Kind == TypeNil || (arm.Kind == TypeBool && arm.Name != boolTrueFactMarker)
 	})
 }
 
@@ -5245,8 +5254,14 @@ func typeExprDefinitelyTruthy(ty *TypeExpr) bool {
 			// Runtime shape values are always truthy.
 			return true
 		}
-		return arm.Kind != TypeNil && arm.Kind != TypeBool &&
+		return arm.Kind != TypeNil && (arm.Kind != TypeBool || arm.Name == boolTrueFactMarker) &&
 			arm.Kind != TypeAny && arm.Kind != TypeUnknown
+	})
+}
+
+func typeExprDefinitelyFalsey(ty *TypeExpr) bool {
+	return typeExprArmsAll(ty, func(arm *TypeExpr) bool {
+		return arm.Kind == TypeNil || (arm.Kind == TypeBool && arm.Name == boolFalseFactMarker)
 	})
 }
 
@@ -5417,7 +5432,7 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 				}
 				return left
 			}
-			if typeExprIsNilOnly(left) {
+			if typeExprDefinitelyFalsey(left) {
 				if isAnd {
 					return left
 				}
@@ -5706,7 +5721,7 @@ func (c *scriptChecker) inferredConditionTruthiness(condition Expression) (bool,
 	if typeExprDefinitelyTruthy(ty) {
 		return true, true
 	}
-	if typeExprIsNilOnly(ty) {
+	if typeExprDefinitelyFalsey(ty) {
 		return false, true
 	}
 	return false, false
@@ -9236,6 +9251,7 @@ func unionTypeExprs(types ...*TypeExpr) *TypeExpr {
 		}
 		appendArm(ty)
 	}
+	arms = collapseBooleanFactArms(arms)
 	if len(arms) == 0 || len(arms) > maxInferredUnionArms {
 		return nil
 	}
@@ -9243,6 +9259,44 @@ func unionTypeExprs(types ...*TypeExpr) *TypeExpr {
 		return arms[0]
 	}
 	return &TypeExpr{Kind: TypeUnion, Union: arms}
+}
+
+func collapseBooleanFactArms(arms []*TypeExpr) []*TypeExpr {
+	var hasTrue, hasFalse, hasGeneral bool
+	for _, arm := range arms {
+		if arm == nil || arm.Kind != TypeBool {
+			continue
+		}
+		switch arm.Name {
+		case boolTrueFactMarker:
+			hasTrue = true
+		case boolFalseFactMarker:
+			hasFalse = true
+		default:
+			hasGeneral = true
+		}
+	}
+	if !hasGeneral && (!hasTrue || !hasFalse) {
+		return arms
+	}
+
+	collapsed := make([]*TypeExpr, 0, len(arms))
+	insertedBool := false
+	for _, arm := range arms {
+		if arm == nil || arm.Kind != TypeBool ||
+			(arm.Name != boolTrueFactMarker && arm.Name != boolFalseFactMarker) {
+			collapsed = append(collapsed, arm)
+			continue
+		}
+		if hasGeneral {
+			continue
+		}
+		if !insertedBool {
+			collapsed = append(collapsed, checkTypeBool)
+			insertedBool = true
+		}
+	}
+	return collapsed
 }
 
 // typeFactKey canonicalizes a type fact for deduplication. Unlike

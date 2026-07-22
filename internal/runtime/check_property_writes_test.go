@@ -795,6 +795,7 @@ end
 	requireNoCheckWarnings(t, compileScriptDefault(t, `
 class User
   property name: string
+  property flag: bool
 
   def keep
     @name = "ok"
@@ -803,6 +804,13 @@ class User
 
   def maybe_skip
     @name &&= 1
+  end
+
+  def keep_literal_bool
+    @flag = true
+    @flag ||= 1
+    @flag = false
+    @flag &&= 1
   end
 end
 `))
@@ -842,6 +850,28 @@ end
 			warning: true,
 		},
 		{
+			name: "literal true or short-circuits",
+			source: `
+class User
+  property a: int
+  property c: int
+  property flag: bool
+
+  def initialize
+    @flag = true
+    @flag ||= seed
+    @a = @c
+  end
+
+  def seed
+    @c = 1
+    true
+  end
+end
+`,
+			warning: true,
+		},
+		{
 			name: "and short-circuits",
 			source: `
 class User
@@ -857,6 +887,28 @@ class User
   def seed
     @c = 1
     1
+  end
+end
+`,
+			warning: true,
+		},
+		{
+			name: "literal false and short-circuits",
+			source: `
+class User
+  property a: int
+  property c: int
+  property flag: bool
+
+  def initialize
+    @flag = false
+    @flag &&= seed
+    @a = @c
+  end
+
+  def seed
+    @c = 1
+    false
   end
 end
 `,
