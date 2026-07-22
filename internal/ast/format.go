@@ -132,6 +132,9 @@ func formatHashTypeName(ty *TypeExpr) string {
 
 func formatShapeType(ty *TypeExpr) string {
 	if ty == nil || len(ty.Shape) == 0 {
+		if ty != nil && ty.Open {
+			return "{ ... }"
+		}
 		return "{}"
 	}
 	fields := make([]string, 0, len(ty.Shape))
@@ -154,6 +157,9 @@ func formatShapeType(ty *TypeExpr) string {
 			label += "?"
 		}
 		parts[i] = fmt.Sprintf("%s: %s", label, FormatTypeExpr(fieldType))
+	}
+	if ty.Open {
+		parts = append(parts, "...")
 	}
 	return "{ " + strings.Join(parts, ", ") + " }"
 }

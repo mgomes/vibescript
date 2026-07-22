@@ -439,6 +439,10 @@ func (c *scriptChecker) collectMutationCandidateRootsFromExpression(expr Express
 		}
 	case *SplatArg:
 		c.collectMutationCandidateRootsFromExpression(typed.Value, out)
+	case *TypeLiteral:
+		if typed.Fallback != nil {
+			c.collectMutationCandidateRootsFromExpression(typed.Fallback, out)
+		}
 	case *UnaryExpr:
 		c.collectMutationCandidateRootsFromExpression(typed.Right, out)
 	case *BinaryExpr:
@@ -1237,7 +1241,12 @@ func typeArmUsesUniversalMemberDispatch(arm *TypeExpr, property string) bool {
 		return len(arm.TypeArgs) == 2 && !typeExprMayIncludeCallable(arm.TypeArgs[1])
 	case TypeShape:
 		field, present := arm.Shape[property]
-		return !present || !typeExprMayIncludeCallable(field)
+		if !present {
+			// An open shape may hold an undeclared callable export with the
+			// same name, so only a closed shape rules the override out.
+			return !arm.Open
+		}
+		return !typeExprMayIncludeCallable(field)
 	case TypeNumber:
 		_, intOverride := staticMemberSpecs["int."+property]
 		_, floatOverride := staticMemberSpecs["float."+property]
@@ -1435,6 +1444,11 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		return c.inferArrayLiteralType(typed)
 	case *HashLiteral:
 		return c.inferHashLiteralType(typed)
+	case *TypeLiteral:
+		if c.typeLiteralStaticallyShadowed(typed) {
+			return c.inferExpressionType(typed.Fallback)
+		}
+		return shapeValueType(typed.Type)
 	case *BlockLiteral:
 		return checkTypeFunction
 	case *Identifier:
@@ -2245,18 +2259,36 @@ func (c *scriptChecker) hashShapeStaticallyShadowed(lit *HashLiteral) bool {
 	if len(lit.Pairs) == 0 {
 		return false
 	}
+	return c.shapeTypeNamesStaticallyShadowed(lit.ShapeType)
+}
+
+// typeLiteralStaticallyShadowed mirrors the runtime's type-versus-value
+// choice for an argument type literal: a literal without a value reading is
+// always a type, and one with a value reading — always a bare identifier —
+// keeps it only when that identifier's verbatim spelling resolves (`string?`
+// is shadowed by a binding named `string?`, not by one named `string`).
+func (c *scriptChecker) typeLiteralStaticallyShadowed(lit *TypeLiteral) bool {
+	ident, ok := lit.Fallback.(*Identifier)
+	if !ok {
+		return false
+	}
+	return c.staticNameShadowed(ident.Name)
+}
+
+func (c *scriptChecker) shapeTypeNamesStaticallyShadowed(ty *TypeExpr) bool {
 	shadowed := false
-	walkShapeTypeNames(lit.ShapeType, func(name string) {
-		if shadowed {
-			return
-		}
-		if c.identifierShadowed(name) || c.liveLocalNameHas(name) ||
-			c.hostGlobalShadows(name) || c.typeRootResolvesName(name) ||
-			c.hostBuiltinOverrides(name) || c.implicitSelfShadows(name) {
+	walkShapeTypeNames(ty, func(name string) {
+		if !shadowed && c.staticNameShadowed(name) {
 			shadowed = true
 		}
 	})
 	return shadowed
+}
+
+func (c *scriptChecker) staticNameShadowed(name string) bool {
+	return c.identifierShadowed(name) || c.liveLocalNameHas(name) ||
+		c.hostGlobalShadows(name) || c.typeRootResolvesName(name) ||
+		c.hostBuiltinOverrides(name) || c.implicitSelfShadows(name)
 }
 
 // implicitSelfShadows reports whether a bare identifier would resolve
@@ -2336,6 +2368,11 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 				}
 				return fieldType
 			}
+			// An open shape may hold an undeclared field of any type, so the
+			// read stays unknown; a closed shape is known to miss.
+			if objectType.Open {
+				return nil
+			}
 			return checkTypeNil
 		}
 		// Unknown store representation: a present display name reads as the
@@ -2343,6 +2380,9 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 		// misses either store.
 		if present {
 			return unionTypeExprs(shapeFieldValueType(fieldType), checkTypeNil)
+		}
+		if objectType.Open {
+			return nil
 		}
 		return checkTypeNil
 	case TypeArray:
@@ -2491,6 +2531,16 @@ func (c *scriptChecker) poisonEscapedIdentifier(expr Expression) {
 // holding when expr escapes into unfollowed code: a bare container-typed
 // identifier, or a projection whose value may itself be a mutable container.
 func (c *scriptChecker) escapePoisonTarget(expr Expression) (string, bool) {
+	// A statically shadowed type literal evaluates its value reading, so the
+	// escaping value is the fallback identifier's (a container local named
+	// array, for example); an unshadowed literal escapes only a fresh type
+	// value and poisons nothing.
+	if lit, ok := expr.(*TypeLiteral); ok {
+		if !c.typeLiteralStaticallyShadowed(lit) {
+			return "", false
+		}
+		expr = lit.Fallback
+	}
 	name, ok := rootIdentifierName(expr)
 	if !ok {
 		return "", false
@@ -2852,6 +2902,9 @@ func appendTypeFactKey(b *strings.Builder, ty *TypeExpr, depth int) {
 	if ty.Optional {
 		b.WriteString("~")
 	}
+	if ty.Open {
+		b.WriteString("+")
+	}
 	if len(ty.TypeArgs) > 0 {
 		b.WriteString("<")
 		for i, arg := range ty.TypeArgs {
@@ -3097,17 +3150,18 @@ func shapeValueArmDisjoint(other *TypeExpr) bool {
 	return true
 }
 
-// shapeTypesDisjoint compares two exact shapes. A required field missing from
-// the other shape's key set contradicts it: the field must be present, and
-// the other side rejects unknown fields. A field required on at least one
-// side is witnessed in every common value, so a disjoint field type pair
-// contradicts too; a field optional on both sides can be absent, satisfying
-// either type.
+// shapeTypesDisjoint compares two shapes. A required field missing from the
+// other shape's key set contradicts it only when that other shape is closed:
+// the field must be present, and a closed shape rejects unknown fields, while
+// an open shape admits (and leaves unvalidated) the extra. A field required
+// on at least one side is witnessed in every common value, so a disjoint
+// field type pair contradicts too; a field optional on both sides can be
+// absent, satisfying either type.
 func shapeTypesDisjoint(x, y *TypeExpr, resolve namedTypeResolver) bool {
 	for field, xField := range x.Shape {
 		yField, ok := y.Shape[field]
 		if !ok {
-			if !shapeFieldOptional(xField) {
+			if !shapeFieldOptional(xField) && !y.Open {
 				return true
 			}
 			continue
@@ -3120,7 +3174,7 @@ func shapeTypesDisjoint(x, y *TypeExpr, resolve namedTypeResolver) bool {
 		}
 	}
 	for field, yField := range y.Shape {
-		if _, ok := x.Shape[field]; !ok && !shapeFieldOptional(yField) {
+		if _, ok := x.Shape[field]; !ok && !shapeFieldOptional(yField) && !x.Open {
 			return true
 		}
 	}

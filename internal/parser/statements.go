@@ -1678,7 +1678,9 @@ func (p *parser) bracedGroupIsShapeType(options paramParseOptions) bool {
 // (`{ x: array<a> }`) is a genuine type, matching how those forms are
 // disambiguated outside shapes.
 func (p *parser) shapeFieldNamesLocalValue(ty *ast.TypeExpr) bool {
-	if ty == nil || ty.Kind != ast.TypeShape {
+	if ty == nil || ty.Kind != ast.TypeShape || ty.Open {
+		// An open shape's `...` marker rules out any hash-literal reading:
+		// even a field naming a local value cannot be a hash default here.
 		return false
 	}
 	for _, fieldType := range ty.Shape {
@@ -1763,7 +1765,10 @@ func (p *parser) bracedFieldIsHashDefault(ty *ast.TypeExpr) bool {
 // shape type. The check targets the bare atom only: a nullable union such as
 // `{ previous: int | nil }` is a legitimate shape field and is left untouched.
 func shapeHasDegenerateNilField(ty *ast.TypeExpr) bool {
-	if ty == nil || ty.Kind != ast.TypeShape {
+	if ty == nil || ty.Kind != ast.TypeShape || ty.Open {
+		// The `...` rest marker has no hash-literal reading, so an open
+		// shape's fields are never hash-default evidence: the marker itself
+		// proves shape intent, nil-only fields included.
 		return false
 	}
 	for _, fieldType := range ty.Shape {
@@ -1781,9 +1786,10 @@ func shapeHasDegenerateNilField(ty *ast.TypeExpr) bool {
 // type with no fields. An empty shape is degenerate as a parameter annotation
 // (it accepts only an empty hash), so it is the Ruby-style empty-hash default
 // rather than a meaningful shape type, matching the top-level `{}` handling in
-// bracedGroupIsShapeType.
+// bracedGroupIsShapeType. The open shape `{ ... }` is excluded: it accepts any
+// hash, is meaningful as an annotation, and has no hash-literal reading.
 func typeIsEmptyShape(ty *ast.TypeExpr) bool {
-	return ty != nil && ty.Kind == ast.TypeShape && len(ty.Shape) == 0
+	return ty != nil && ty.Kind == ast.TypeShape && len(ty.Shape) == 0 && !ty.Open
 }
 
 // shapeHasEmptyNestedShape reports whether ty is a shape type with a field
@@ -1795,7 +1801,9 @@ func typeIsEmptyShape(ty *ast.TypeExpr) bool {
 // type. This mirrors shapeHasDegenerateNilField for the empty-shape case,
 // extending the top-level `{}` handling in bracedGroupIsShapeType to any depth.
 func shapeHasEmptyNestedShape(ty *ast.TypeExpr) bool {
-	if ty == nil || ty.Kind != ast.TypeShape {
+	if ty == nil || ty.Kind != ast.TypeShape || ty.Open {
+		// An open shape's `...` marker rules out any hash-literal reading,
+		// so its nested groups are never hash-default evidence.
 		return false
 	}
 	for _, fieldType := range ty.Shape {

@@ -2444,10 +2444,63 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 		return
 	}
 
+	if typeLit := p.speculativeArgumentTypeLiteral(); typeLit != nil {
+		*args = append(*args, typeLit)
+		return
+	}
+
 	expr := p.parseExpression(lowestPrec)
 	if expr != nil {
 		*args = append(*args, expr)
 	}
+}
+
+// speculativeArgumentTypeLiteral parses a parenthesized call argument under
+// the type grammar, extending ADR-004's expression-position shape literals to
+// non-shape roots (`JSON.parse_as(raw, array<int>)`). The argument reads as a
+// type only when the whole group parses as one ending exactly at an argument
+// boundary and every named leaf resolves to a built-in type, so ordinary
+// identifier arguments (`f(count)`) and comparisons over locals
+// (`f(array < brr)`) keep their value reading. A bare `nil` root stays the
+// nil literal, and braced groups keep the established shape-literal path.
+//
+// When the same tokens also read as a value expression (`int` as an
+// identifier, `int | nil` as a bitwise or), that reading is kept as the
+// literal's fallback: evaluation prefers the type value and falls back to the
+// expression when a type name is shadowed by a runtime binding, mirroring the
+// dual-reading braced groups.
+func (p *parser) speculativeArgumentTypeLiteral() ast.Expression {
+	if p.curToken.Type != ast.TokenIdent && p.curToken.Type != ast.TokenNil {
+		return nil
+	}
+	saved := p.snapshot()
+	pos := p.curToken.Pos
+	ty := p.parseTypeExpr()
+	ok := ty != nil && len(p.errors) == saved.errorCount &&
+		(p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRParen) &&
+		ty.Kind != ast.TypeNil && ty.Kind != ast.TypeShape &&
+		shapeLeafTypesAllBuiltin(ty)
+	typeEnd := p.curToken.Pos
+	p.restore(saved)
+	if !ok {
+		return nil
+	}
+
+	fallback := p.parseExpression(lowestPrec)
+	if fallback == nil || len(p.errors) != saved.errorCount ||
+		(p.peekToken.Type != ast.TokenComma && p.peekToken.Type != ast.TokenRParen) ||
+		p.curToken.Pos != typeEnd {
+		// No value reading spans the same tokens (array<int> stops parsing at
+		// the type arguments): re-consume the group under the type grammar
+		// and keep the type-only literal.
+		p.restore(saved)
+		ty = p.parseTypeExpr()
+		if ty == nil {
+			return nil
+		}
+		return &ast.TypeLiteral{Type: ty, Position: pos}
+	}
+	return &ast.TypeLiteral{Type: ty, Fallback: fallback, Position: pos}
 }
 
 func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, keywordOptionsHash *bool, blockArg *ast.Expression) {

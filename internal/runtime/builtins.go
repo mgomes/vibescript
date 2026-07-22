@@ -1585,11 +1585,11 @@ func builtinJSONParseAs(exec *Execution, receiver Value, args []Value, kwargs ma
 		return NewNil(), fmt.Errorf("JSON.parse_as does not accept blocks")
 	}
 	if len(args) != 2 || args[0].Kind() != KindString {
-		return NewNil(), fmt.Errorf("JSON.parse_as expects a JSON string and a shape literal")
+		return NewNil(), fmt.Errorf("JSON.parse_as expects a JSON string and a type literal")
 	}
 	shape := valueShape(args[1])
 	if shape == nil {
-		return NewNil(), fmt.Errorf("JSON.parse_as expects a shape literal as its second argument")
+		return NewNil(), fmt.Errorf("JSON.parse_as expects a type literal as its second argument")
 	}
 
 	raw := args[0].String()

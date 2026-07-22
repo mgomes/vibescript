@@ -517,6 +517,152 @@ end
 	}
 }
 
+func TestOpenShapeFields(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def accept(payload: { name: string, age?: int, ... }) -> { name: string, age?: int, ... }
+  payload
+end
+
+def anything(payload: { ... }) -> { ... }
+  payload
+end
+
+def nested(payload: { user: { id: string, ... } }) -> { user: { id: string, ... } }
+  payload
+end
+`)
+
+	successCases := []struct {
+		name string
+		fn   string
+		arg  Value
+	}{
+		{
+			name: "declared_fields_only",
+			fn:   "accept",
+			arg:  NewHash(map[string]Value{"name": NewString("Ada")}),
+		},
+		{
+			name: "extra_fields_pass_unchecked",
+			fn:   "accept",
+			arg: NewHash(map[string]Value{
+				"name": NewString("Ada"),
+				"age":  NewInt(36),
+				"role": NewString("captain"),
+				"tags": NewArray([]Value{NewInt(1)}),
+			}),
+		},
+		{
+			name: "empty_open_shape_accepts_any_hash",
+			fn:   "anything",
+			arg:  NewHash(map[string]Value{"whatever": NewBool(true)}),
+		},
+		{
+			name: "empty_open_shape_accepts_empty_hash",
+			fn:   "anything",
+			arg:  NewHash(map[string]Value{}),
+		},
+		{
+			name: "open_nested_in_closed",
+			fn:   "nested",
+			arg: NewHash(map[string]Value{
+				"user": NewHash(map[string]Value{"id": NewString("u1"), "plan": NewString("pro")}),
+			}),
+		},
+	}
+	for _, tc := range successCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, []Value{tc.arg})
+			if got.Kind() != KindHash {
+				t.Fatalf("%s expected hash result, got %v", tc.fn, got.Kind())
+			}
+		})
+	}
+
+	const acceptShape = "{ age?: int, name: string, ... }"
+	errorCases := []struct {
+		name string
+		fn   string
+		arg  Value
+		want string
+	}{
+		{
+			name: "missing_required_field",
+			fn:   "accept",
+			arg:  NewHash(map[string]Value{"role": NewString("captain")}),
+			want: "argument payload expected " + acceptShape,
+		},
+		{
+			name: "invalid_declared_field",
+			fn:   "accept",
+			arg:  NewHash(map[string]Value{"name": NewInt(1), "role": NewString("captain")}),
+			want: "argument payload expected " + acceptShape,
+		},
+		{
+			name: "invalid_optional_field",
+			fn:   "accept",
+			arg:  NewHash(map[string]Value{"name": NewString("Ada"), "age": NewString("36")}),
+			want: "argument payload expected " + acceptShape,
+		},
+		{
+			name: "closed_root_still_rejects_extras",
+			fn:   "nested",
+			arg: NewHash(map[string]Value{
+				"user":  NewHash(map[string]Value{"id": NewString("u1")}),
+				"extra": NewInt(1),
+			}),
+			want: "argument payload expected { user: { id: string, ... } }",
+		},
+	}
+	for _, tc := range errorCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCallErrorContains(t, script, tc.fn, []Value{tc.arg}, CallOptions{}, tc.want)
+		})
+	}
+}
+
+func TestOpenShapeTypedHashKeys(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def accept(payload: { name: string, ... }) -> { name: string, ... }
+  payload
+end
+`)
+
+	// Undeclared extras pass through the typed-hash path unvalidated.
+	withExtras := NewTypedHash(0)
+	for _, kv := range []struct {
+		key Value
+		val Value
+	}{
+		{NewString("name"), NewString("Ada")},
+		{NewString("role"), NewString("captain")},
+		{NewSymbol("level"), NewInt(3)},
+	} {
+		if err := withExtras.HashSet(kv.key, kv.val); err != nil {
+			t.Fatalf("HashSet(%v) error = %v", kv.key, err)
+		}
+	}
+	if got := callFunc(t, script, "accept", []Value{withExtras}); !got.Equal(withExtras) {
+		t.Fatalf("accept(typed hash with extras) = %s, want original hash", got)
+	}
+
+	// A missing required field is still rejected even with extras present.
+	missing := NewTypedHash(0)
+	if err := missing.HashSet(NewString("role"), NewString("captain")); err != nil {
+		t.Fatalf("HashSet(\"role\") error = %v", err)
+	}
+	requireCallErrorContains(t, script, "accept", []Value{missing}, CallOptions{},
+		"argument payload expected { name: string, ... }")
+}
+
 func TestShapeOptionalFieldsTypedHashKeys(t *testing.T) {
 	t.Parallel()
 
