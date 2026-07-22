@@ -1381,6 +1381,7 @@ func TestCheckInitializerIvarFactsRespectRepeatedRegionEffects(t *testing.T) {
 
 	cases := []struct {
 		name       string
+		parameters string
 		properties string
 		region     string
 		methods    string
@@ -1591,6 +1592,51 @@ func TestCheckInitializerIvarFactsRespectRepeatedRegionEffects(t *testing.T) {
 			methods: initializerIvarSeedMethod("", "1"),
 		},
 		{
+			name: "later while condition may call mutator",
+			region: `    flag = 1
+    while flag || seed
+      flag = nil
+      next
+    end`,
+			methods: `
+  def seed
+    @b = 1
+    false
+  end
+`,
+		},
+		{
+			name: "later until condition may call mutator",
+			region: `    flag = nil
+    until flag && seed
+      flag = 1
+      next
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+		},
+		{
+			name: "single pass loop skips later condition",
+			region: `    flag = 1
+    while flag || seed
+      break
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+			warning: true,
+		},
+		{
+			name:       "terminating branches skip later condition",
+			parameters: "(stop: bool)",
+			region: `    flag = 1
+    while flag || seed
+      if stop
+        return
+      end
+      break
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+			warning: true,
+		},
+		{
 			name:    "forwarded block may call mutator",
 			region:  `    [1].fetch(2, &seed)`,
 			methods: initializerIvarSeedMethod("index", "index + 1"),
@@ -1604,7 +1650,7 @@ class User
   property a: int
   property b: int
 ` + tc.properties + `
-  def initialize
+  def initialize` + tc.parameters + `
 ` + tc.region + `
     @a = @b
   end

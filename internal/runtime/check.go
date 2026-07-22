@@ -591,8 +591,8 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		if bodyReachable {
 			if c.isolatedCollectInference {
 				c.recordLiveStatementNames(typed.Body)
-				c.degradeLocalTypesForBindings(typed.Body)
-				c.widenRepeatedRegionIvarFacts(typed.Body)
+				c.degradeLocalTypesForRepeatedLoop(typed.Condition, typed.Body)
+				c.widenRepeatedLoopIvarFacts(typed.Condition, typed.Body)
 			}
 			bodyState := c.snapshotModuleCollectionState()
 			bodyScopeState := c.snapshotScopeState()
@@ -613,8 +613,8 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		if bodyReachable {
 			if c.isolatedCollectInference {
 				c.recordLiveStatementNames(typed.Body)
-				c.degradeLocalTypesForBindings(typed.Body)
-				c.widenRepeatedRegionIvarFacts(typed.Body)
+				c.degradeLocalTypesForRepeatedLoop(typed.Condition, typed.Body)
+				c.widenRepeatedLoopIvarFacts(typed.Condition, typed.Body)
 			}
 			bodyState := c.snapshotModuleCollectionState()
 			bodyScopeState := c.snapshotScopeState()
@@ -3182,8 +3182,8 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.restoreScopeState(conditionScopeState)
 		if bodyReachable {
 			c.recordLiveStatementNames(typed.Body)
-			c.degradeLocalTypesForBindings(typed.Body)
-			c.widenRepeatedRegionIvarFacts(typed.Body)
+			c.degradeLocalTypesForRepeatedLoop(typed.Condition, typed.Body)
+			c.widenRepeatedLoopIvarFacts(typed.Condition, typed.Body)
 			bodyRuntimeState := c.snapshotRuntimeState()
 			bodyScopeState := c.snapshotScopeState()
 			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)
@@ -3220,8 +3220,8 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.restoreScopeState(conditionScopeState)
 		if bodyReachable {
 			c.recordLiveStatementNames(typed.Body)
-			c.degradeLocalTypesForBindings(typed.Body)
-			c.widenRepeatedRegionIvarFacts(typed.Body)
+			c.degradeLocalTypesForRepeatedLoop(typed.Condition, typed.Body)
+			c.widenRepeatedLoopIvarFacts(typed.Condition, typed.Body)
 			bodyRuntimeState := c.snapshotRuntimeState()
 			bodyScopeState := c.snapshotScopeState()
 			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)

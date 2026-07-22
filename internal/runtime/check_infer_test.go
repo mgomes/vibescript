@@ -510,6 +510,53 @@ def run(user: { name: string }, flag)
 end
 `))
 
+	// A later condition evaluation sees body-degraded locals too. Its call
+	// can mutate a container before the loop exits, so the entry shape must
+	// not survive the loop.
+	requireNoCheckWarnings(t, compileScript(t, `
+def mutate(items)
+  items << "s"
+  false
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run
+  items = [1]
+  flag = 1
+  while flag || mutate(items)
+    flag = nil
+    next
+  end
+  takes_string(items[1])
+end
+`))
+
+	// An unconditional break prevents a second condition evaluation, so its
+	// skipped mutation must not poison the pre-loop container fact.
+	singlePass := compileScript(t, `
+def mutate(items)
+  items << "s"
+  false
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run
+  items = [1]
+  flag = 1
+  while flag || mutate(items)
+    break
+  end
+  takes_string(items[1])
+end
+`)
+	requireCheckWarningContains(t, singlePass, "call to takes_string argument value expected string, got int | nil")
+
 	// Without a mutation in the body the pre-loop fact stays checkable.
 	script := compileScript(t, `
 def takes_int(value: int)

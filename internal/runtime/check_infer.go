@@ -1719,6 +1719,72 @@ func collectMutatedContainerTargetRoots(target Expression, out map[string]struct
 	}
 }
 
+type loopBackedgeFlow struct {
+	reachesBackedge bool
+	fallsThrough    bool
+}
+
+// loopBodyMayReachBackedge reports whether a loop body can evaluate its
+// condition again. Falling off the body and next reach the backedge; break,
+// return, and raise do not. Unknown constructs stay conservative.
+func loopBodyMayReachBackedge(statements []Statement) bool {
+	flow := loopBackedgeFlowForStatements(statements)
+	return flow.reachesBackedge || flow.fallsThrough
+}
+
+func loopBackedgeFlowForStatements(statements []Statement) loopBackedgeFlow {
+	flow := loopBackedgeFlow{fallsThrough: true}
+	for _, stmt := range statements {
+		if !flow.fallsThrough {
+			break
+		}
+		stmtFlow := loopBackedgeFlowForStatement(stmt)
+		flow.reachesBackedge = flow.reachesBackedge || stmtFlow.reachesBackedge
+		flow.fallsThrough = stmtFlow.fallsThrough
+	}
+	return flow
+}
+
+func loopBackedgeFlowForStatement(stmt Statement) loopBackedgeFlow {
+	switch typed := stmt.(type) {
+	case *BreakStmt, *ReturnStmt, *RaiseStmt:
+		return loopBackedgeFlow{}
+	case *NextStmt:
+		return loopBackedgeFlow{reachesBackedge: true}
+	case *IfStmt:
+		return loopBackedgeFlowForIf(typed)
+	default:
+		return loopBackedgeFlow{fallsThrough: true}
+	}
+}
+
+func loopBackedgeFlowForIf(stmt *IfStmt) loopBackedgeFlow {
+	var flow loopBackedgeFlow
+	merge := func(branch loopBackedgeFlow) {
+		flow.reachesBackedge = flow.reachesBackedge || branch.reachesBackedge
+		flow.fallsThrough = flow.fallsThrough || branch.fallsThrough
+	}
+
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if !known || truthy {
+		merge(loopBackedgeFlowForStatements(stmt.Consequent))
+	}
+	if known && truthy {
+		return flow
+	}
+	for _, branch := range stmt.ElseIf {
+		truthy, known = staticExpressionTruthiness(branch.Condition)
+		if !known || truthy {
+			merge(loopBackedgeFlowForStatements(branch.Consequent))
+		}
+		if known && truthy {
+			return flow
+		}
+	}
+	merge(loopBackedgeFlowForStatements(stmt.Alternate))
+	return flow
+}
+
 // collectMutationCandidateRoots gathers the escape-site expressions a
 // region contains (member-call receivers, call and yield arguments — the
 // walk-time poison sources), so pre-region degradation can clear the
@@ -2194,7 +2260,10 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
 // widenRepeatedRegionIvarFacts applies only the initializer-ivar uncertainty
 // the region can create. Direct ivar targets widen individually; a dispatch,
 // setter, or yield whose effects are unclassified widens every unset ivar.
-func (c *scriptChecker) widenRepeatedRegionIvarFacts(statements []Statement) {
+func (c *scriptChecker) widenRepeatedRegionIvarFacts(
+	statements []Statement,
+	repeated ...Expression,
+) {
 	typesState := c.snapshotLocalTypes()
 	classValuesState := c.snapshotLocalClassValues()
 	bindings := make(map[string]struct{})
@@ -2205,9 +2274,23 @@ func (c *scriptChecker) widenRepeatedRegionIvarFacts(statements []Statement) {
 	}
 	var effects regionIvarEffects
 	c.collectRepeatedRegionIvarEffects(statements, &effects)
+	for _, expr := range repeated {
+		c.collectRepeatedRegionIvarEffectsFromExpression(expr, &effects, true)
+	}
 	c.restoreLocalTypes(typesState)
 	c.restoreLocalClassValues(classValuesState)
 	c.widenRegionIvarFacts(effects)
+}
+
+func (c *scriptChecker) widenRepeatedLoopIvarFacts(
+	condition Expression,
+	statements []Statement,
+) {
+	if loopBodyMayReachBackedge(statements) {
+		c.widenRepeatedRegionIvarFacts(statements, condition)
+		return
+	}
+	c.widenRepeatedRegionIvarFacts(statements)
 }
 
 func (c *scriptChecker) widenRepeatedRegionBlockIvarFacts(block *BlockLiteral) {
@@ -2229,9 +2312,16 @@ func (c *scriptChecker) widenRegionIvarFacts(effects regionIvarEffects) {
 // degradeMutationCandidates clears container-typed locals a region may
 // mutate through member dispatch or call arguments; scalar receivers keep
 // their facts (immutable kinds cannot be mutated in place).
-func (c *scriptChecker) degradeMutationCandidates(statements []Statement, names map[string]struct{}) {
+func (c *scriptChecker) degradeMutationCandidates(
+	statements []Statement,
+	names map[string]struct{},
+	repeated ...Expression,
+) {
 	var sites []Expression
 	c.collectMutationCandidateRoots(statements, &sites)
+	for _, expr := range repeated {
+		c.collectMutationCandidateRootsFromExpression(expr, &sites)
+	}
 	for _, site := range sites {
 		if name, ok := c.shovelEscapeStaticValueTarget(site); ok {
 			c.poisonLocalStaticValues(name)
@@ -2247,10 +2337,29 @@ func (c *scriptChecker) degradeMutationCandidates(statements []Statement, names 
 // execution count the checker cannot know — loop and block bodies — so a
 // first-iteration fact cannot leak into the region or survive it.
 func (c *scriptChecker) degradeLocalTypesForBindings(statements []Statement, extraTargets ...Expression) {
+	c.degradeLocalTypesForRegion(statements, nil, extraTargets...)
+}
+
+func (c *scriptChecker) degradeLocalTypesForRepeatedLoop(
+	condition Expression,
+	statements []Statement,
+) {
+	var repeated []Expression
+	if loopBodyMayReachBackedge(statements) {
+		repeated = []Expression{condition}
+	}
+	c.degradeLocalTypesForRegion(statements, repeated)
+}
+
+func (c *scriptChecker) degradeLocalTypesForRegion(
+	statements []Statement,
+	repeated []Expression,
+	extraTargets ...Expression,
+) {
 	names := make(map[string]struct{})
 	collectLocalBindings(statements, names)
 	collectMutatedContainerRoots(statements, names)
-	c.degradeMutationCandidates(statements, names)
+	c.degradeMutationCandidates(statements, names, repeated...)
 	for _, target := range extraTargets {
 		if target != nil {
 			collectBindingTarget(target, names)
