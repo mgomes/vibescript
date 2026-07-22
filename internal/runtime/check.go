@@ -3635,7 +3635,7 @@ func (c *scriptChecker) callMayEvaluateBlockWithSeen(call *CallExpr, seen map[*S
 		return !staticallyNonCallableCallee(call.Callee)
 	}
 	if target.fn != nil {
-		return c.functionMayEvaluateCallBlock(target.fn, seen)
+		return c.functionMayEvaluateCallBlock(call, target, seen)
 	}
 	if target.name == "array.fetch" {
 		return staticArrayFetchBlockMayEvaluate(call)
@@ -3699,7 +3699,12 @@ func staticallyNonCallableCallee(expr Expression) bool {
 	}
 }
 
-func (c *scriptChecker) functionMayEvaluateCallBlock(fn *ScriptFunction, seen map[*ScriptFunction]struct{}) bool {
+func (c *scriptChecker) functionMayEvaluateCallBlock(
+	call *CallExpr,
+	target staticCallable,
+	seen map[*ScriptFunction]struct{},
+) bool {
+	fn := target.fn
 	if fn == nil {
 		return false
 	}
@@ -3712,6 +3717,15 @@ func (c *scriptChecker) functionMayEvaluateCallBlock(fn *ScriptFunction, seen ma
 	seen[fn] = struct{}{}
 	defer delete(seen, fn)
 
+	collapseOptionsHash := staticCallCollapsesOptionsHash(call, target)
+	for i, param := range fn.Params {
+		if param.DefaultVal == nil || !callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
+			continue
+		}
+		if c.expressionMayEvaluateCallBlock(param.DefaultVal, seen) {
+			return true
+		}
+	}
 	return c.statementsMayEvaluateCallBlock(fn.Body, seen)
 }
 

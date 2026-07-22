@@ -864,6 +864,34 @@ end
 `,
 			warning: "call to takes_string argument value expected string, got nil",
 		},
+		{
+			name: "supplied argument skips a yielding default",
+			source: `
+def replacement(value)
+  1
+end
+
+def invoke(_ = yield)
+end
+
+def build()
+  invoke(0) do
+    JSON.stringify = replacement
+    return 1
+  end
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1192,6 +1220,30 @@ end
 
 def build()
   [1].each { JSON.stringify = replacement }
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build())
+end
+`,
+		},
+		{
+			name: "yielding default block namespace mutation survives the block restore",
+			source: `
+def replacement(value)
+  1
+end
+
+def invoke(_ = yield)
+end
+
+def build()
+  invoke() { JSON.stringify = replacement }
   JSON.stringify({})
 end
 
@@ -1677,6 +1729,31 @@ end
 def run()
   takes_int(find_marker())
   takes_string(find_marker())
+end
+`,
+		},
+		{
+			name: "yielding default block returns poison the summary",
+			source: `
+def invoke(_ = yield)
+end
+
+def build()
+  invoke() { return "s" }
+  0
+end
+
+def takes_int(value: int)
+  value
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_int(build())
+  takes_string(build())
 end
 `,
 		},
