@@ -366,6 +366,83 @@ end
 `), "default value for @cb expected function, got int")
 }
 
+// A property expectation shapes evaluation as well as inference. Storing a
+// bare callable, including inside a typed literal, must not walk it as an
+// auto-call and erase the definitely-unset facts of other initializer ivars.
+func TestCheckCallablePropertyWriteWalkUsesExpectation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "bare callable",
+			source: `
+class Holder
+  property a: int
+  property b: int
+  property cb: function
+
+  def initialize
+    @cb = seed
+    @a = @b
+  end
+
+  def seed
+    @b = 1
+  end
+end
+`,
+		},
+		{
+			name: "callable in typed literal",
+			source: `
+class Holder
+  property a: int
+  property b: int
+  property callbacks: array<function>
+
+  def initialize
+    @callbacks = [seed]
+    @a = @b
+  end
+
+  def seed
+    @b = 1
+  end
+end
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCheckWarningContains(t, compileScriptDefault(t, tc.source), "write to @a expected int, got nil")
+		})
+	}
+
+	// A non-callable contract retains normal auto-call semantics: seed runs
+	// before the later read and may initialize @b.
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class Holder
+  property a: int
+  property b: int
+  property value: int
+
+  def initialize
+    @value = seed
+    @a = @b
+  end
+
+  def seed
+    @b = 1
+    1
+  end
+end
+`))
+}
+
 // Ivar parameter facts bind at each parameter's own position, so an earlier
 // default reads later ivars as still unset while a later default sees the
 // earlier binding.
