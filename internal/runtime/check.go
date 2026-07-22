@@ -2991,6 +2991,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkExpressionWithAuto(function, arg, true)
 			c.poisonEscapedIdentifier(arg)
 		}
+		// The caller-supplied block may return non-locally instead of
+		// letting the summarized function produce its later result.
+		if c.returnCollector != nil {
+			c.returnCollector.record(nil)
+		}
 	case *InterpolatedString:
 		c.checkStringParts(function, typed.Parts)
 	case *InterpolatedSymbol:

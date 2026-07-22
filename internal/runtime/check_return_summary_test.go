@@ -28,6 +28,26 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "unreachable yield preserves the implicit result",
+			source: `
+def build_count()
+  if false
+    yield
+  end
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count() { nil })
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "bare parenless call carries the summary",
 			source: `
 def build_count()
@@ -1931,6 +1951,23 @@ end
 def run()
   takes_int(find_marker())
   takes_string(find_marker())
+end
+`,
+		},
+		{
+			name: "reachable yield poisons the summary",
+			source: `
+def invoke()
+  yield
+  0
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(invoke() { return "s" })
 end
 `,
 		},
