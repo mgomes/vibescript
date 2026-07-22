@@ -794,6 +794,24 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "uninvoked lambda builtin writes do not mark the namespace",
+			source: `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  handler = lambda { JSON.stringify = replacement }
+  takes_int(JSON.stringify({}))
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "inferred exiting ensure replaces deferred returns",
 			source: `
 def f()
@@ -1629,6 +1647,26 @@ end
 
 def run()
   consume(->() { JSON.stringify = replacement })
+  takes_int(JSON.stringify({}))
+end
+`,
+		},
+		{
+			name: "escaping lambda builtin argument writes stay possible",
+			source: `
+def replacement(value)
+  1
+end
+
+def consume(cb)
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  consume(lambda { JSON.stringify = replacement })
   takes_int(JSON.stringify({}))
 end
 `,

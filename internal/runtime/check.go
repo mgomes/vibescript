@@ -6299,12 +6299,23 @@ func (c *scriptChecker) applyAutoInvokedMemberNamespaceMutations(member *MemberE
 }
 
 // applyLambdaLiteralNamespaceMutations records the possible namespace
-// writes of a lambda literal passed directly to a call: the callee may
+// writes of a lambda expression passed directly to a call: the callee may
 // invoke it during the call. A bare lambda definition leaks nothing — its
 // body runs only if a later resolvable call reaches it.
 func (c *scriptChecker) applyLambdaLiteralNamespaceMutations(arg Expression) {
-	block, ok := arg.(*BlockLiteral)
-	if !ok || block == nil || !block.Lambda {
+	var block *BlockLiteral
+	switch typed := arg.(type) {
+	case *BlockLiteral:
+		if typed.Lambda {
+			block = typed
+		}
+	case *CallExpr:
+		callee, ok := typed.Callee.(*Identifier)
+		if ok && callee.Name == "lambda" {
+			block = typed.Block
+		}
+	}
+	if block == nil {
 		return
 	}
 	scan := &namespaceMutationScan{
