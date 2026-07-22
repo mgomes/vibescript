@@ -144,6 +144,98 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "bare implicit self instance method",
+			source: `
+class Counter
+  def helper()
+    42
+  end
+
+  def value()
+    helper
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.new.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "bare explicit self instance method",
+			source: `
+class Counter
+  def helper()
+    42
+  end
+
+  def value()
+    self.helper
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.new.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "bare implicit self class method",
+			source: `
+class Counter
+  def self.helper()
+    42
+  end
+
+  def self.value()
+    helper
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "bare explicit self class method",
+			source: `
+class Counter
+  def self.helper()
+    42
+  end
+
+  def self.value()
+    self.helper
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "annotated receiver",
 			source: `
 class Counter

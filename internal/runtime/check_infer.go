@@ -3069,7 +3069,7 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		if ty := c.localTypeFor(typed.Name); ty != nil {
 			return ty
 		}
-		return c.autoInvokedBuiltinResultFact(typed.Name)
+		return c.autoInvokedIdentifierResultFact(typed.Name)
 	case *MemberExpr:
 		return c.memberResultFact(typed)
 	case *UnaryExpr:
@@ -3623,6 +3623,9 @@ func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
 		return c.safeNavigationMemberResultFact(member, result)
 	}
 	target, ok := c.resolveMemberCallable(member)
+	if !ok {
+		target, ok = c.implicitSelfCallSummaryTarget(member)
+	}
 	if !ok {
 		return nil
 	}

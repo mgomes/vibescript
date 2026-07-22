@@ -9953,12 +9953,12 @@ func (c *scriptChecker) defaultBuiltinCallSpec(name string) (staticCallSpec, boo
 	return c.script.engine.builtinCallSpec(name)
 }
 
-// autoInvokedBuiltinResultFact reports the result type of a bare identifier
-// that auto-invokes at runtime: a script function's annotated return or
-// summary (`x = build_count`), or a builtin's invariant result (`t = uuid`).
-// The guard chain mirrors resolveCallable: any shadowing binding or host
-// override dispatches elsewhere, so no fact applies.
-func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
+// autoInvokedIdentifierResultFact reports the result type of a bare identifier
+// that auto-invokes at runtime: a script callable's annotated return or summary
+// (`x = build_count`), or a builtin's invariant result (`t = uuid`). The guard
+// chain mirrors resolveCallable: any shadowing binding or host override
+// dispatches elsewhere, so no fact applies.
+func (c *scriptChecker) autoInvokedIdentifierResultFact(name string) *TypeExpr {
 	if c.identifierShadowed(name) || c.hostGlobalShadows(name) {
 		return nil
 	}
@@ -9987,11 +9987,20 @@ func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
 	if c.hostBuiltinOverrides(name) {
 		return nil
 	}
-	spec, ok := c.defaultBuiltinCallSpec(name)
-	if !ok || !spec.autoInvoke {
+	if spec, ok := c.defaultBuiltinCallSpec(name); ok {
+		if !spec.autoInvoke {
+			return nil
+		}
+		return spec.resultType
+	}
+	target, ok := c.implicitSelfSummaryCallable(name)
+	if !ok {
 		return nil
 	}
-	return spec.resultType
+	if target.fn.ReturnTy != nil {
+		return target.fn.ReturnTy
+	}
+	return c.scriptCallableReturnSummary(nil, target)
 }
 
 func (c *scriptChecker) typeRootObjectFunction(name, property string) (*ScriptFunction, bool) {
@@ -11570,7 +11579,7 @@ func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Iden
 	if len(members) == 0 {
 		return
 	}
-	c.pinExpressionFact(ident, c.autoInvokedBuiltinResultFact(ident.Name))
+	c.pinExpressionFact(ident, c.autoInvokedIdentifierResultFact(ident.Name))
 	for member := range members {
 		c.recordRuntimeNamespaceMember(member)
 	}
