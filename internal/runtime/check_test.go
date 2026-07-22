@@ -1037,6 +1037,306 @@ end
 	}
 }
 
+func TestCheckWarningsForFunctionAppliesExactDynamicCallNamespaceMutations(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		definitions string
+		invoke      string
+		wantCount   int
+	}{
+		{
+			name: "constructor",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer][0].new()",
+		},
+		{
+			name: "instance method",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer.new][0].install()",
+		},
+		{
+			name: "class method",
+			definitions: `class Installer
+  def self.install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer][0].install()",
+		},
+		{
+			name: "ordinary call method",
+			definitions: `class Installer
+  def call()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer.new][0].call()",
+		},
+		{
+			name: "forwarded constructor",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer][0].public_send(:new)",
+		},
+		{
+			name: "forwarded instance method",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer.new][0].public_send(:install)",
+		},
+		{
+			name: "forwarding override",
+			definitions: `class Installer
+  def public_send(name)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer.new][0].public_send(:ignored)",
+		},
+		{
+			name: "forwarding override accepts non-name argument",
+			definitions: `class FirstInstaller
+  def public_send(name)
+    JSON.stringify = replacement
+  end
+end
+
+class SecondInstaller
+  def public_send(name)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "(flag ? FirstInstaller.new : SecondInstaller.new).public_send(123)",
+		},
+		{
+			name: "private send override blocks dispatch",
+			definitions: `class FirstInstaller
+  private def send(name)
+    JSON.stringify = replacement
+  end
+end
+
+class SecondInstaller
+  private def send(name)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; (flag ? FirstInstaller.new : SecondInstaller.new).send(:ignored); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "protected public send override blocks dispatch",
+			definitions: `class FirstInstaller
+  protected def public_send(name)
+    JSON.stringify = replacement
+  end
+end
+
+class SecondInstaller
+  protected def public_send(name)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; (flag ? FirstInstaller.new : SecondInstaller.new).public_send(:ignored); rescue; nil; end",
+			wantCount: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+def replacement(value)
+  1
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+`+tc.definitions+`
+
+def run(flag: bool)
+  takes_int(serialize())
+  `+tc.invoke+`
+  takes_int(serialize())
+end
+`)
+			warnings := script.CheckWarningsForFunction("run")
+			count := 0
+			for _, warning := range warnings {
+				if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+					count++
+				}
+			}
+			wantCount := tc.wantCount
+			if wantCount == 0 {
+				wantCount = 1
+			}
+			if count != wantCount {
+				t.Fatalf("CheckWarningsForFunction(%q) reported boundary warning %d times, want %d: %#v", "run", count, wantCount, warnings)
+			}
+		})
+	}
+}
+
+func TestCheckWarningsForFunctionAppliesExactCallableNamespaceMutations(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def replacement(value)
+  1
+end
+
+def install()
+  JSON.stringify = replacement
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def invoke(callback: function)
+  takes_int(serialize())
+  callback.call()
+  takes_int(serialize())
+end
+
+def run()
+  invoke(install)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	count := 0
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("CheckWarningsForFunction(%q) reported boundary warning %d times, want 1: %#v", "run", count, warnings)
+	}
+}
+
+func TestCheckWarningsForFunctionUnionsExactDynamicCallNamespaceMutations(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def replacement(value)
+  1
+end
+
+class JSONInstaller
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class MathInstaller
+  def install()
+    Math.sqrt = replacement
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  takes_int(JSON.stringify({}))
+  takes_int(Math.sqrt(4))
+  (flag ? JSONInstaller.new : MathInstaller.new).install()
+  takes_int(JSON.stringify({}))
+  takes_int(Math.sqrt(4))
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	wants := []string{
+		"call to takes_int argument value expected int, got string",
+		"call to takes_int argument value expected int, got float",
+	}
+	for _, want := range wants {
+		count := 0
+		for _, warning := range warnings {
+			if strings.Contains(warning.Message, want) {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("CheckWarningsForFunction(%q) reported %q %d times, want 1: %#v", "run", want, count, warnings)
+		}
+	}
+}
+
+func TestCheckWarningsForFunctionAllowsProtectedDynamicOverrideFromSameClass(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class FirstInstaller
+  protected def public_send(name)
+    JSON.stringify = replacement
+  end
+
+  def exercise(first: FirstInstaller, other: SecondInstaller, flag: bool)
+    takes_int(JSON.stringify({}))
+    (flag ? first : other).public_send(:ignored)
+    takes_int(JSON.stringify({}))
+  end
+end
+
+class SecondInstaller
+  protected def public_send(name)
+    nil
+  end
+end
+
+def run(flag: bool)
+  FirstInstaller.new.exercise(FirstInstaller.new, SecondInstaller.new, flag)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	count := 0
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("CheckWarningsForFunction(%q) reported boundary warning %d times, want 1: %#v", "run", count, warnings)
+	}
+}
+
 func TestCheckWarningsForCallValidatesArguments(t *testing.T) {
 	t.Parallel()
 

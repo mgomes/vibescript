@@ -227,6 +227,11 @@ type checkDynamicCallCandidates struct {
 	callablesExact   bool
 }
 
+type checkDynamicCallTarget struct {
+	call   *CallExpr
+	target staticCallable
+}
+
 // checkOptionGlobals resolves the host globals a call would receive. Bind
 // failures leave the adapter's names unbound and are also returned so a
 // combined check-and-call gate can surface them; the pure CheckWarnings*
@@ -3332,6 +3337,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.pinExpressionFact(typed, result)
 		}
 		dynamicCandidates := c.captureDynamicCallCandidates(typed)
+		dynamicTargets := c.exactDynamicCallTargets(typed, target, targetResolved, dynamicCandidates)
 		opaqueCallEffects := c.callHasOpaqueClassConstantEffects(typed, target, targetResolved)
 		// Arguments evaluate left to right before the call dispatches, so
 		// each argument's inferred type is captured at its own evaluation
@@ -3393,7 +3399,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.callArgumentFacts = argumentFacts
 		c.callArgumentClassValues = argumentClassValues
 		c.callArgumentCallables = argumentCallables
-		c.checkCallResolved(function, typed, target, targetResolved, dynamicCandidates)
+		c.checkCallResolved(function, typed, target, targetResolved, dynamicTargets)
 		c.callArgumentFacts = previousFacts
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
@@ -3403,6 +3409,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		if targetResolved && target.fn != nil {
 			c.applyScriptFunctionNamespaceMutations(typed, target)
 		}
+		c.applyDynamicCallNamespaceMutations(typed, dynamicTargets)
 		if opaqueCallEffects {
 			c.markOpaqueClassConstants()
 		}
@@ -5732,14 +5739,14 @@ func (c *scriptChecker) checkCallResolved(
 	call *CallExpr,
 	target staticCallable,
 	ok bool,
-	dynamicCandidates checkDynamicCallCandidates,
+	dynamicTargets []checkDynamicCallTarget,
 ) {
 	if !ok {
-		c.enqueueReachableDynamicMemberCall(call, dynamicCandidates)
+		c.enqueueReachableDynamicCallTargets(dynamicTargets)
 		return
 	}
 	if target.fn == nil && (target.name == "send" || target.name == "public_send") {
-		c.enqueueReachableForwardedMemberCall(call, target.name == "send", dynamicCandidates)
+		c.enqueueReachableDynamicCallTargets(dynamicTargets)
 	}
 	if callExpandsArguments(call) {
 		// Splat expansion makes the argument shape dynamic: the runtime
@@ -5806,13 +5813,8 @@ func (c *scriptChecker) checkIsTypeAtomArgument(function string, call *CallExpr)
 	}
 }
 
-// enqueueReachableDynamicMemberCall keeps method-body checking tied to the
-// runtime state at an unresolved dispatch. Only an exhaustive finite receiver
-// or callable set is scheduled; unknown receivers leave methods to their
-// independent pristine checks. Without the bounded fallback, a method reached
-// through a class value in a container or branch is checked later under
-// pristine state, which can make a class-predicate narrowing look sound even
-// though an earlier call-site mutation changed the constant it resolves.
+// captureDynamicCallCandidates snapshots exhaustive receiver and callable
+// facts when the callee evaluates, before argument effects can change them.
 func (c *scriptChecker) captureDynamicCallCandidates(call *CallExpr) checkDynamicCallCandidates {
 	if call == nil {
 		return checkDynamicCallCandidates{}
@@ -5838,68 +5840,93 @@ func (c *scriptChecker) captureDynamicCallCandidates(call *CallExpr) checkDynami
 	}
 }
 
-func (c *scriptChecker) enqueueReachableDynamicMemberCall(
+// exactDynamicCallTargets resolves the exhaustive target set at callee
+// evaluation time. Arguments may mutate the receiver's facts before the body
+// runs, so both reachable checking and effect propagation reuse this snapshot.
+func (c *scriptChecker) exactDynamicCallTargets(
 	call *CallExpr,
+	resolvedTarget staticCallable,
+	resolved bool,
 	dynamicCandidates checkDynamicCallCandidates,
-) {
+) []checkDynamicCallTarget {
 	if call == nil {
-		return
+		return nil
+	}
+	if resolved {
+		if resolvedTarget.fn == nil && (resolvedTarget.name == "send" || resolvedTarget.name == "public_send") {
+			return c.exactForwardedCallTargets(call, resolvedTarget.name == "send", dynamicCandidates)
+		}
+		return nil
 	}
 	member, ok := call.Callee.(*MemberExpr)
 	if !ok {
-		return
+		return nil
 	}
 	if member.Property == "send" || member.Property == "public_send" {
-		c.enqueueReachableForwardedMemberCall(call, member.Property == "send", dynamicCandidates)
-		return
+		return c.exactForwardedCallTargets(call, member.Property == "send", dynamicCandidates)
 	}
-	if member.Property == "call" && typeExprMayIncludeCallable(c.inferExpressionType(member.Object)) {
-		if dynamicCandidates.callablesExact {
-			for _, fn := range dynamicCandidates.callables {
-				target := staticCallable{name: fn.Name + ".call", fn: fn, resolution: calleeDirect}
-				c.enqueueReachableFunctionWithParamFacts(target.name, fn, c.reachableCallParamFacts(call, target))
-			}
+	if member.Property == "call" && dynamicCandidates.callablesExact {
+		targets := make([]checkDynamicCallTarget, 0, len(dynamicCandidates.callables))
+		for _, fn := range dynamicCandidates.callables {
+			targets = appendDynamicCallTarget(targets, call, staticCallable{
+				name:       fn.Name + ".call",
+				fn:         fn,
+				resolution: calleeDirect,
+			}, true)
 		}
-		return
+		return targets
 	}
-	c.enqueueReachableMemberCandidates(member.Property, call, false, dynamicCandidates)
+	return c.exactMemberCallTargets(member.Property, call, dynamicCandidates)
 }
 
-// enqueueReachableForwardedMemberCall models Object#send/public_send when the
-// forwarded name is a literal. The first argument names the method and the
-// remaining arguments bind its parameters. Candidate receivers that override
-// the helper run that override instead; only the others use universal
-// forwarding. A dynamic name schedules the finite method set of an exact
-// receiver, never unrelated same-named methods from the rest of the script.
-func (c *scriptChecker) enqueueReachableForwardedMemberCall(
+// exactForwardedCallTargets models Object#send/public_send. Overrides receive
+// the original call; universal forwarding removes the method-name argument.
+func (c *scriptChecker) exactForwardedCallTargets(
 	call *CallExpr,
 	allowPrivate bool,
 	dynamicCandidates checkDynamicCallCandidates,
-) {
-	if call == nil || len(call.Args) == 0 {
-		return
+) []checkDynamicCallTarget {
+	if call == nil || len(call.Args) == 0 || c.script == nil {
+		return nil
 	}
 	member, ok := call.Callee.(*MemberExpr)
 	if !ok {
-		return
+		return nil
 	}
 	method := ""
+	methodKnown := false
+	methodValid := true
 	if val, literal := staticLiteralValue(call.Args[0]); literal {
-		var valid bool
-		method, valid = methodNameArg(val)
-		if !valid {
-			return
-		}
+		method, methodValid = methodNameArg(val)
+		methodKnown = true
 	}
 	forwarded := *call
-	forwarded.Args = call.Args[1:]
-	enqueue := func(target staticCallable, effectiveCall *CallExpr, publicOnly bool) {
-		fn := target.fn
-		if fn == nil || (publicOnly && (fn.Private || fn.Protected)) || (!publicOnly && !allowPrivate && fn.Private) {
-			return
-		}
-		c.enqueueReachableFunctionWithParamFacts(target.name, fn, c.reachableCallParamFacts(effectiveCall, target))
+	if _, nameSplat := call.Args[0].(*SplatArg); nameSplat {
+		// The expanded first argument may contain both the method name and
+		// forwarded values. Preserve the dynamic shape rather than treating
+		// every target as an exact zero-argument call.
+		forwarded.Args = call.Args
+	} else {
+		forwarded.Args = call.Args[1:]
 	}
+	forwarded.Parenthesized = true
+	forwarded.KeywordOptionsHash = len(call.KwArgs) > 0
+	appendTarget := func(
+		targets []checkDynamicCallTarget,
+		effectiveCall *CallExpr,
+		classDef *ClassDef,
+		classMethod bool,
+		target staticCallable,
+	) []checkDynamicCallTarget {
+		visible := target.constructor || c.dynamicCallTargetVisible(
+			classDef,
+			classMethod,
+			target.fn,
+			allowPrivate,
+		)
+		return appendDynamicCallTarget(targets, effectiveCall, target, visible)
+	}
+	var targets []checkDynamicCallTarget
 	if dynamicCandidates.instancesExact {
 		for _, className := range dynamicCandidates.instanceClasses {
 			classDef := c.script.classes[className]
@@ -5907,99 +5934,91 @@ func (c *scriptChecker) enqueueReachableForwardedMemberCall(
 				continue
 			}
 			if override := classDef.Methods[member.Property]; override != nil {
-				enqueue(staticCallable{
+				targets = appendDynamicCallTarget(targets, call, staticCallable{
 					name:       classDef.Name + "#" + member.Property,
 					fn:         override,
 					resolution: calleeMemberMethod,
-				}, call, false)
+				}, c.dynamicCallTargetVisible(classDef, false, override, false))
 				continue
 			}
-			if method == "" {
+			if !methodValid {
+				continue
+			}
+			if !methodKnown {
 				for _, fn := range sortedCheckFunctions(classDef.Methods) {
-					enqueue(staticCallable{
+					targets = appendTarget(targets, &forwarded, classDef, false, staticCallable{
 						name:       classDef.Name + "#" + fn.Name,
 						fn:         fn,
 						resolution: calleeForwardedMethod,
-					}, &forwarded, !allowPrivate)
+					})
 				}
 				continue
 			}
-			enqueue(staticCallable{
+			targets = appendTarget(targets, &forwarded, classDef, false, staticCallable{
 				name:       classDef.Name + "#" + method,
 				fn:         classDef.Methods[method],
 				resolution: calleeForwardedMethod,
-			}, &forwarded, !allowPrivate)
+			})
 		}
-		return
+		return targets
 	}
-	if dynamicCandidates.classValuesExact {
-		for _, className := range dynamicCandidates.classValues {
-			classDef := c.script.classes[className]
-			if classDef == nil {
-				continue
-			}
-			if override := classDef.ClassMethods[member.Property]; override != nil {
-				enqueue(staticCallable{
-					name:       classDef.Name + "." + member.Property,
-					fn:         override,
-					resolution: calleeMemberMethod,
-				}, call, false)
-				continue
-			}
-			if method == "new" && !classDef.IsModule {
-				enqueue(staticCallable{
-					name:             classDef.Name + ".new",
-					fn:               classDef.Methods["initialize"],
-					resolution:       calleeForwardedMethod,
-					constructor:      true,
-					constructorClass: classDef.Name,
-				}, &forwarded, !allowPrivate)
-				continue
-			}
-			if method == "" {
-				if !classDef.IsModule {
-					enqueue(staticCallable{
-						name:             classDef.Name + ".new",
-						fn:               classDef.Methods["initialize"],
-						resolution:       calleeForwardedMethod,
-						constructor:      true,
-						constructorClass: classDef.Name,
-					}, &forwarded, !allowPrivate)
-				}
-				for _, fn := range sortedCheckFunctions(classDef.ClassMethods) {
-					enqueue(staticCallable{
-						name:       classDef.Name + "." + fn.Name,
-						fn:         fn,
-						resolution: calleeForwardedMethod,
-					}, &forwarded, !allowPrivate)
-				}
-				continue
-			}
-			enqueue(staticCallable{
-				name:       classDef.Name + "." + method,
-				fn:         classDef.ClassMethods[method],
-				resolution: calleeForwardedMethod,
-			}, &forwarded, !allowPrivate)
+	if !dynamicCandidates.classValuesExact {
+		return nil
+	}
+	for _, className := range dynamicCandidates.classValues {
+		classDef := c.script.classes[className]
+		if classDef == nil {
+			continue
 		}
+		if override := classDef.ClassMethods[member.Property]; override != nil {
+			targets = appendDynamicCallTarget(targets, call, staticCallable{
+				name:       classDef.Name + "." + member.Property,
+				fn:         override,
+				resolution: calleeMemberMethod,
+			}, c.dynamicCallTargetVisible(classDef, true, override, false))
+			continue
+		}
+		if !methodValid {
+			continue
+		}
+		if methodKnown && method == "new" && !classDef.IsModule {
+			targets = appendTarget(targets, &forwarded, classDef, true, dynamicConstructorTarget(classDef, calleeForwardedMethod))
+			continue
+		}
+		if !methodKnown {
+			if !classDef.IsModule {
+				targets = appendTarget(targets, &forwarded, classDef, true, dynamicConstructorTarget(classDef, calleeForwardedMethod))
+			}
+			for _, fn := range sortedCheckFunctions(classDef.ClassMethods) {
+				if fn.Name == "new" && !classDef.IsModule {
+					continue
+				}
+				targets = appendTarget(targets, &forwarded, classDef, true, staticCallable{
+					name:       classDef.Name + "." + fn.Name,
+					fn:         fn,
+					resolution: calleeForwardedMethod,
+				})
+			}
+			continue
+		}
+		targets = appendTarget(targets, &forwarded, classDef, true, staticCallable{
+			name:       classDef.Name + "." + method,
+			fn:         classDef.ClassMethods[method],
+			resolution: calleeForwardedMethod,
+		})
 	}
+	return targets
 }
 
-func (c *scriptChecker) enqueueReachableMemberCandidates(
+func (c *scriptChecker) exactMemberCallTargets(
 	method string,
 	call *CallExpr,
-	allowPrivate bool,
 	dynamicCandidates checkDynamicCallCandidates,
-) {
-	if !c.checkReachableCalls || c.script == nil {
-		return
+) []checkDynamicCallTarget {
+	if c.script == nil {
+		return nil
 	}
-	enqueue := func(target staticCallable) {
-		fn := target.fn
-		if fn == nil || (!allowPrivate && fn.Private) {
-			return
-		}
-		c.enqueueReachableFunctionWithParamFacts(target.name, fn, c.reachableCallParamFacts(call, target))
-	}
+	var targets []checkDynamicCallTarget
 	if dynamicCandidates.instancesExact {
 		for _, className := range dynamicCandidates.instanceClasses {
 			classDef := c.script.classes[className]
@@ -6008,55 +6027,105 @@ func (c *scriptChecker) enqueueReachableMemberCandidates(
 			}
 			if method == "" {
 				for _, fn := range sortedCheckFunctions(classDef.Methods) {
-					enqueue(staticCallable{
+					targets = appendDynamicCallTarget(targets, call, staticCallable{
 						name:       classDef.Name + "#" + fn.Name,
 						fn:         fn,
 						resolution: calleeMemberMethod,
-					})
+					}, c.dynamicCallTargetVisible(classDef, false, fn, false))
 				}
 			} else {
-				enqueue(staticCallable{
+				fn := classDef.Methods[method]
+				targets = appendDynamicCallTarget(targets, call, staticCallable{
 					name:       classDef.Name + "#" + method,
-					fn:         classDef.Methods[method],
+					fn:         fn,
 					resolution: calleeMemberMethod,
-				})
+				}, c.dynamicCallTargetVisible(classDef, false, fn, false))
 			}
 		}
-		return
+		return targets
 	}
-	if dynamicCandidates.classValuesExact {
-		for _, className := range dynamicCandidates.classValues {
-			classDef := c.script.classes[className]
-			if classDef == nil {
-				continue
-			}
-			if method == "new" && !classDef.IsModule {
-				enqueue(staticCallable{
-					name:             classDef.Name + ".new",
-					fn:               classDef.Methods["initialize"],
-					resolution:       calleeMemberValue,
-					constructor:      true,
-					constructorClass: classDef.Name,
-				})
-				continue
-			}
-			if method == "" {
-				for _, fn := range sortedCheckFunctions(classDef.ClassMethods) {
-					enqueue(staticCallable{
-						name:       classDef.Name + "." + fn.Name,
-						fn:         fn,
-						resolution: calleeMemberMethod,
-					})
-				}
-				continue
-			}
-			enqueue(staticCallable{
-				name:       classDef.Name + "." + method,
-				fn:         classDef.ClassMethods[method],
-				resolution: calleeMemberMethod,
-			})
+	if !dynamicCandidates.classValuesExact {
+		return nil
+	}
+	for _, className := range dynamicCandidates.classValues {
+		classDef := c.script.classes[className]
+		if classDef == nil {
+			continue
 		}
-		return
+		if method == "new" && !classDef.IsModule {
+			targets = appendDynamicCallTarget(targets, call, dynamicConstructorTarget(classDef, calleeMemberValue), true)
+			continue
+		}
+		if method == "" {
+			for _, fn := range sortedCheckFunctions(classDef.ClassMethods) {
+				targets = appendDynamicCallTarget(targets, call, staticCallable{
+					name:       classDef.Name + "." + fn.Name,
+					fn:         fn,
+					resolution: calleeMemberMethod,
+				}, c.dynamicCallTargetVisible(classDef, true, fn, false))
+			}
+			continue
+		}
+		fn := classDef.ClassMethods[method]
+		targets = appendDynamicCallTarget(targets, call, staticCallable{
+			name:       classDef.Name + "." + method,
+			fn:         fn,
+			resolution: calleeMemberMethod,
+		}, c.dynamicCallTargetVisible(classDef, true, fn, false))
+	}
+	return targets
+}
+
+func dynamicConstructorTarget(classDef *ClassDef, resolution calleeResolution) staticCallable {
+	return staticCallable{
+		name:             classDef.Name + ".new",
+		fn:               classDef.Methods["initialize"],
+		resolution:       resolution,
+		constructor:      true,
+		constructorClass: classDef.Name,
+	}
+}
+
+func (c *scriptChecker) dynamicCallTargetVisible(
+	classDef *ClassDef,
+	classMethod bool,
+	fn *ScriptFunction,
+	callerIsReceiver bool,
+) bool {
+	if fn == nil {
+		return false
+	}
+	if callerIsReceiver {
+		return true
+	}
+	if fn.Private {
+		return false
+	}
+	if !fn.Protected {
+		return true
+	}
+	return c.selfClass == classDef && c.selfClassContext == classMethod
+}
+
+func appendDynamicCallTarget(
+	targets []checkDynamicCallTarget,
+	call *CallExpr,
+	target staticCallable,
+	include bool,
+) []checkDynamicCallTarget {
+	if !include || call == nil || target.fn == nil {
+		return targets
+	}
+	return append(targets, checkDynamicCallTarget{call: call, target: target})
+}
+
+func (c *scriptChecker) enqueueReachableDynamicCallTargets(targets []checkDynamicCallTarget) {
+	for _, candidate := range targets {
+		c.enqueueReachableFunctionWithParamFacts(
+			candidate.target.name,
+			candidate.target.fn,
+			c.reachableCallParamFacts(candidate.call, candidate.target),
+		)
 	}
 }
 
@@ -7893,6 +7962,34 @@ func callHasKeywordArg(call *CallExpr, name string) bool {
 // the code after the call.
 func (c *scriptChecker) applyScriptFunctionNamespaceMutations(call *CallExpr, target staticCallable) {
 	members := c.scriptFunctionNamespaceMutations(call, target)
+	if len(members) == 0 {
+		return
+	}
+	if call != nil {
+		c.pinExpressionFact(call, c.inferCallExprType(call))
+	}
+	for member := range members {
+		c.recordRuntimeNamespaceMember(member)
+	}
+}
+
+// applyDynamicCallNamespaceMutations carries the union of an exact dynamic
+// target set back to the caller. The original call is pinned once before any
+// member marker changes inference, keeping the result independent of candidate
+// order while invalidating summaries that rely on a mutated builtin binding.
+func (c *scriptChecker) applyDynamicCallNamespaceMutations(
+	call *CallExpr,
+	targets []checkDynamicCallTarget,
+) {
+	var members map[string]struct{}
+	for _, candidate := range targets {
+		for member := range c.scriptFunctionNamespaceMutations(candidate.call, candidate.target) {
+			if members == nil {
+				members = make(map[string]struct{})
+			}
+			members[member] = struct{}{}
+		}
+	}
 	if len(members) == 0 {
 		return
 	}

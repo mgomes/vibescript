@@ -1385,6 +1385,88 @@ Mutator.new.trigger = 1
 	}
 }
 
+func TestCheckClassPredicateNarrowingChecksDynamicConstructorsAtCallState(t *testing.T) {
+	t.Parallel()
+
+	calls := []string{
+		"[Holder][0].new(User.new)",
+		"[Holder][0].public_send(:new, User.new)",
+	}
+	for _, call := range calls {
+		t.Run(call, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+class Holder
+  def initialize(u: User | Order)
+    unless u.is_a?(User)
+      takes_user(u)
+    end
+    JSON.parse()
+  end
+end
+
+def run()
+  Holder.User = Order
+  `+call+`
+end
+`)
+			warnings := script.CheckWarningsForFunction("run")
+			messages := make([]string, 0, len(warnings))
+			for _, warning := range warnings {
+				messages = append(messages, warning.Message)
+			}
+			got := strings.Join(messages, "\n")
+			if !strings.Contains(got, "call to JSON.parse has too few arguments") {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want reachable initializer warning", "run", got)
+			}
+			stale := "call to takes_user argument value expected User, got Order"
+			if strings.Contains(got, stale) {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, do not want stale initializer warning %q", "run", got, stale)
+			}
+		})
+	}
+}
+
+func TestCheckDynamicInitializeDispatchRespectsVisibility(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		call        string
+		wantWarning bool
+	}{
+		{name: "explicit member", call: "holder.initialize(User.new)"},
+		{name: "public send", call: "holder.public_send(:initialize, User.new)"},
+		{name: "private send", call: "holder.send(:initialize, User.new)", wantWarning: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+class Holder
+  def initialize(u)
+    JSON.parse()
+  end
+end
+
+def run(holder: Holder)
+  `+tc.call+`
+end
+`)
+			warnings := script.CheckWarningsForFunction("run")
+			gotWarning := false
+			for _, warning := range warnings {
+				if strings.Contains(warning.Message, "call to JSON.parse has too few arguments") {
+					gotWarning = true
+				}
+			}
+			if gotWarning != tc.wantWarning {
+				t.Fatalf("CheckWarningsForFunction(%q) initializer warning = %t, want %t: %#v", "run", gotWarning, tc.wantWarning, warnings)
+			}
+		})
+	}
+}
+
 func TestCheckClassPredicateNarrowingPreservesPreDispatchWarnings(t *testing.T) {
 	t.Parallel()
 
