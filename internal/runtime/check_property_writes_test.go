@@ -726,6 +726,136 @@ end
 `))
 }
 
+// Logical-assignment right-hand sides run only when the current ivar picks
+// the assignment branch. A proven short circuit preserves other unset ivar
+// facts; a proven or possible assignment still walks the RHS effects.
+func TestCheckLogicalIvarWriteWalkRespectsShortCircuit(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		source  string
+		warning bool
+	}{
+		{
+			name: "or short-circuits",
+			source: `
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def initialize
+    @b = 1
+    @b ||= seed
+    @a = @c
+  end
+
+  def seed
+    @c = 1
+    1
+  end
+end
+`,
+			warning: true,
+		},
+		{
+			name: "and short-circuits",
+			source: `
+class User
+  property a: int
+  property b: int?
+  property c: int
+
+  def initialize
+    @b &&= seed
+    @a = @c
+  end
+
+  def seed
+    @c = 1
+    1
+  end
+end
+`,
+			warning: true,
+		},
+		{
+			name: "or executes",
+			source: `
+class User
+  property a: int
+  property b: int?
+  property c: int
+
+  def initialize
+    @b ||= seed
+    @a = @c
+  end
+
+  def seed
+    @c = 1
+    1
+  end
+end
+`,
+		},
+		{
+			name: "and executes",
+			source: `
+class User
+  property a: int
+  property b: int?
+  property c: int
+
+  def initialize
+    @b = 1
+    @b &&= seed
+    @a = @c
+  end
+
+  def seed
+    @c = 1
+    1
+  end
+end
+`,
+		},
+		{
+			name: "unknown may execute",
+			source: `
+class User
+  property a: int
+  property b: int?
+  property c: int
+
+  def initialize(value)
+    @b = value
+    @b ||= seed
+    @a = @c
+  end
+
+  def seed
+    @c = 1
+    1
+  end
+end
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, tc.source)
+			if tc.warning {
+				requireCheckWarningContains(t, script, "write to @a expected int, got nil")
+				return
+			}
+			requireNoCheckWarnings(t, script)
+		})
+	}
+}
+
 // A skipped &&= write leaves an unset property nil, so the fact keeps its
 // nil arm and the falsey branch stays reachable for diagnostics.
 func TestCheckAndAssignKeepsNilArm(t *testing.T) {
