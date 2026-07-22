@@ -9949,7 +9949,11 @@ func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
 		if fn.ReturnTy != nil {
 			return fn.ReturnTy
 		}
-		return c.scriptFunctionReturnSummary(nil, fn)
+		return c.scriptCallableReturnSummary(nil, staticCallable{
+			name:       name,
+			fn:         fn,
+			resolution: calleeDirect,
+		})
 	}
 	if fn, ok := c.typeRootFunction(name); ok {
 		if len(fn.Params) > 0 {

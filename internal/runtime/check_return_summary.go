@@ -5,16 +5,17 @@ import (
 )
 
 // Return summaries expose a known result fact for calls to unannotated
-// script functions: a function that provably returns an int should not pass
-// a string boundary just because its author omitted the annotation. A
-// summary is computed once per checked script by a suppressed walk of the
-// function body that records the inferred fact of every value-yielding path
-// — explicit returns, the implicit final expression, and nil fallthrough —
-// and joins them with the existing union rules. Any path the checker cannot
-// prove (dynamic calls, recursion, unmodeled constructs) makes the whole
-// summary unknown, and explicit return annotations stay authoritative.
+// script functions and statically resolved methods: a callable that provably
+// returns an int should not pass a string boundary just because its author
+// omitted the annotation. A summary is computed once per checked script by a
+// suppressed walk of the callable body that records the inferred fact of
+// every value-yielding path — explicit returns, the implicit final expression,
+// and nil fallthrough — and joins them with the existing union rules. Any path
+// the checker cannot prove (dynamic calls, recursion, unmodeled constructs)
+// makes the whole summary unknown, and explicit return annotations stay
+// authoritative.
 
-// returnSummaryCollector accumulates the facts of every way a function body
+// returnSummaryCollector accumulates the facts of every way a callable body
 // can yield a value during a summary walk. A single unknown path poisons the
 // collector: the summary must describe every possible result or none.
 type returnSummaryCollector struct {
@@ -52,17 +53,27 @@ func (r *returnSummaryCollector) sawReturn() bool {
 	return r != nil && (r.unknown || len(r.arms) > 0)
 }
 
-// scriptFunctionReturnSummary reports the summary for calls resolved to a
-// plain function of the checked script. Summaries are computed lazily so a
-// caller can recursively summarize its callees without depending on function
-// name order. Annotated functions and functions of other scripts stay unknown.
-func (c *scriptChecker) scriptFunctionReturnSummary(call *CallExpr, fn *ScriptFunction) *TypeExpr {
-	owned, ok := c.resolveOwnedPlainFunction(fn)
+// scriptCallableReturnSummary reports the summary for calls resolved to an
+// exact plain function, instance method, or class method of the checked script.
+// Callable resolution has already rejected dynamic receivers and host overrides;
+// this ownership check prevents foreign or stored functions from borrowing a
+// same-named script callable's body. Summaries are computed lazily so a caller
+// can recursively summarize its callees without depending on declaration
+// order. Annotated callables stay authoritative.
+func (c *scriptChecker) scriptCallableReturnSummary(call *CallExpr, target staticCallable) *TypeExpr {
+	owned, ok := c.resolveOwnedScriptCallable(target)
 	if !ok || owned.ReturnTy != nil {
 		return nil
 	}
-	runnable, hashSupplied, definite := callRunnableDefaults(call, owned)
-	paramFacts := c.summaryCallParamFacts(call, staticCallable{fn: owned}, definite)
+	// User methods that override the universal Object-level surface retain
+	// the gradual behavior of those overridable dispatch points. An explicit
+	// annotation can still make their result authoritative.
+	if target.resolution == calleeMemberMethod && isUniversalMember(owned.Name) {
+		return nil
+	}
+	target.fn = owned
+	runnable, hashSupplied, definite := callRunnableDefaults(call, target)
+	paramFacts := c.summaryCallParamFacts(call, target, definite)
 	return c.functionReturnAnalysis(
 		owned,
 		runnable,
@@ -84,8 +95,9 @@ func (c *scriptChecker) scriptFunctionCallMayComplete(
 	if fn == nil || fn.owner != c.script {
 		return true
 	}
-	runnable, hashSupplied, definite := callRunnableDefaults(call, fn)
-	paramFacts := c.summaryCallParamFacts(call, staticCallable{fn: fn, constructor: ignoreReturnType}, definite)
+	target := staticCallable{fn: fn, constructor: ignoreReturnType}
+	runnable, hashSupplied, definite := callRunnableDefaults(call, target)
+	paramFacts := c.summaryCallParamFacts(call, target, definite)
 	analysis := c.functionReturnAnalysis(
 		fn,
 		runnable,
@@ -126,7 +138,7 @@ func (c *scriptChecker) scriptCallFailureArgumentFacts(expr Expression) map[stri
 		staticCallCollapsesOptionsHash(call, target) {
 		return nil
 	}
-	runnable, hashSupplied, definite := callRunnableDefaults(call, target.fn)
+	runnable, hashSupplied, definite := callRunnableDefaults(call, target)
 	paramFacts := c.summaryCallParamFacts(call, target, definite)
 	analysis := c.functionReturnAnalysis(
 		target.fn,
@@ -194,10 +206,14 @@ func (c *scriptChecker) scriptCallFailureArgumentFacts(expr Expression) map[stri
 // literal shape omits or supplies its parameters outright, while a splatted
 // shape only may, so no value facts can bind. A nil call (a bare
 // auto-invoke) passes no arguments, so every default runs.
-func callRunnableDefaults(call *CallExpr, fn *ScriptFunction) ([]int, []int, bool) {
+func callRunnableDefaults(call *CallExpr, target staticCallable) ([]int, []int, bool) {
+	fn := target.fn
+	if fn == nil {
+		return nil, nil, false
+	}
 	var indices []int
 	var hashSupplied []int
-	collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, staticCallable{fn: fn})
+	collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
 	for i, param := range fn.Params {
 		if call == nil {
 			if param.DefaultVal != nil {
@@ -215,27 +231,36 @@ func callRunnableDefaults(call *CallExpr, fn *ScriptFunction) ([]int, []int, boo
 	return indices, hashSupplied, call == nil || !callExpandsArguments(call)
 }
 
-// resolveOwnedPlainFunction maps a resolved callee to the checked script's
-// named function it dispatches to, whatever spelling the call resolved
-// through (`transform` and `transform.call` dispatch to the same function).
-// Callable resolution can hand back a per-call env clone
-// (cloneFunctionForEnv), so a clone normalizes to its definition through the
-// declaration position both share; within one script the position also keeps
-// a same-named method from borrowing the function's summary. Methods and
-// other scripts' functions resolve to nothing, and shadowing and host
-// overrides were already applied by callable resolution.
-func (c *scriptChecker) resolveOwnedPlainFunction(fn *ScriptFunction) (*ScriptFunction, bool) {
+// resolveOwnedScriptCallable maps a resolved target to the exact checked-script
+// declaration it dispatches to. The resolved target name distinguishes plain
+// functions (`transform` and `transform.call`), instance methods (`Box#take`),
+// and class methods (`Box.build`), so a function stored under a dynamic member
+// cannot borrow a method summary. Plain-function env clones normalize through
+// the declaration position they share with the original; exact method targets
+// are the registered declarations callable resolution selected.
+func (c *scriptChecker) resolveOwnedScriptCallable(target staticCallable) (*ScriptFunction, bool) {
+	fn := target.fn
 	if fn == nil || fn.owner != c.script {
 		return nil, false
 	}
-	owned, ok := c.script.functions[fn.Name]
+	if target.name == fn.Name || target.name == fn.Name+".call" {
+		if owned, ok := c.script.functions[fn.Name]; ok && (owned == fn || owned.Pos == fn.Pos) {
+			return owned, true
+		}
+	}
+	c.prepareSelfScopeFunctions()
+	classDef, ok := c.selfScopeFnClasses[fn]
 	if !ok {
 		return nil, false
 	}
-	if owned == fn || owned.Pos == fn.Pos {
-		return owned, true
+	separator := "#"
+	if _, classMethod := c.selfScopeClassFns[fn]; classMethod {
+		separator = "."
 	}
-	return nil, false
+	if target.name != classDef.Name+separator+fn.Name {
+		return nil, false
+	}
+	return fn, true
 }
 
 func (c *scriptChecker) functionReturnAnalysis(

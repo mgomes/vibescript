@@ -3546,7 +3546,7 @@ func (c *scriptChecker) inferResolvedCallExprType(call *CallExpr, target staticC
 		}
 		result = target.fn.ReturnTy
 		if result == nil {
-			result = c.scriptFunctionReturnSummary(call, target.fn)
+			result = c.scriptCallableReturnSummary(call, target)
 		}
 	} else if target.name == "JSON.parse_as" && len(call.Args) == 2 {
 		if shape, ok := shapeValuePayload(c.inferExpressionType(call.Args[1])); ok {
@@ -3613,6 +3613,9 @@ func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
 		result = &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
 	} else if target.fn != nil && !target.constructor {
 		result = target.fn.ReturnTy
+		if result == nil {
+			result = c.scriptCallableReturnSummary(nil, target)
+		}
 	} else if target.spec.autoInvoke {
 		result = target.spec.resultType
 	}
