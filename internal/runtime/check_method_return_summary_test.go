@@ -411,6 +411,150 @@ end
 	}
 }
 
+func TestCheckMethodReturnSummariesResolveImplicitSelfNew(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		source  string
+		warning string
+	}{
+		{
+			name: "implicit constructor call",
+			source: `
+class Product
+  def self.build()
+    new()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Product.build())
+end
+`,
+			warning: "call to takes_string argument value expected string, got Product",
+		},
+		{
+			name: "explicit constructor call",
+			source: `
+class Product
+  def self.build()
+    self.new()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Product.build())
+end
+`,
+			warning: "call to takes_string argument value expected string, got Product",
+		},
+		{
+			name: "bare constructor auto call",
+			source: `
+class Product
+  def self.build()
+    new
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Product.build())
+end
+`,
+			warning: "call to takes_string argument value expected string, got Product",
+		},
+		{
+			name: "implicit module new method",
+			source: `
+module Factory
+  def self.new()
+    42
+  end
+
+  def self.value()
+    new()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Factory.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "explicit module new method",
+			source: `
+module Factory
+  def self.new()
+    42
+  end
+
+  def self.value()
+    self.new()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Factory.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "bare module new auto call",
+			source: `
+module Factory
+  def self.new()
+    42
+  end
+
+  def self.value()
+    new
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Factory.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCheckWarningContains(t, compileScriptDefault(t, tc.source), tc.warning)
+		})
+	}
+}
+
 func TestCheckMethodReturnSummariesRejectImpossibleImplicitSelfCalls(t *testing.T) {
 	t.Parallel()
 
@@ -503,6 +647,48 @@ end
 
 def run()
   takes_string(Counter.value())
+end
+`,
+		},
+		{
+			name: "constructor missing required argument",
+			source: `
+class Product
+  def initialize(required)
+    required
+  end
+
+  def self.build()
+    new()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  Product.build()
+  takes_string(42)
+end
+`,
+		},
+		{
+			name: "module cannot instantiate",
+			source: `
+module Factory
+  def self.value()
+    new()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  Factory.value()
+  takes_string(42)
 end
 `,
 		},
