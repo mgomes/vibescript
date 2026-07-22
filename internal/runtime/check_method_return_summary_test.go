@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCheckMethodReturnSummaries(t *testing.T) {
 	t.Parallel()
@@ -220,6 +223,102 @@ end
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCheckWarningContains(t, compileScriptDefault(t, tc.source), tc.warning)
+		})
+	}
+}
+
+func TestCheckMethodReturnSummariesPreserveMethodKeywordBinding(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "instance method",
+			source: `
+class Picker
+  def value(options = 1, flag = false)
+    takes_hash(options)
+  end
+end
+
+def takes_hash(value: hash)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  Picker.new.value(flag: true)
+  takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "class method",
+			source: `
+class Picker
+  def self.value(options = 1, flag = false)
+    takes_hash(options)
+  end
+end
+
+def takes_hash(value: hash)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  Picker.value(flag: true)
+  takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "exact dynamic instance method",
+			source: `
+class FirstPicker
+  def value(options = 1, flag = false)
+    takes_hash(options)
+  end
+end
+
+class SecondPicker
+  def value(options = 1, flag = false)
+    takes_hash(options)
+  end
+end
+
+def takes_hash(value: hash)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  picker = flag ? FirstPicker.new : SecondPicker.new
+  picker.value(flag: true)
+  takes_int("unreachable")
+end
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			warnings := strings.Join(checkWarningMessages(compileScriptDefault(t, tc.source).CheckWarnings()), "\n")
+			if strings.Contains(warnings, "call to takes_int") {
+				t.Fatalf("CheckWarnings() = %q, unreachable call was checked", warnings)
+			}
 		})
 	}
 }

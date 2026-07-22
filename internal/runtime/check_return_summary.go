@@ -89,13 +89,12 @@ func (c *scriptChecker) scriptCallableReturnSummary(call *CallExpr, target stati
 // in-progress analyses remain gradual.
 func (c *scriptChecker) scriptFunctionCallMayComplete(
 	call *CallExpr,
-	fn *ScriptFunction,
-	ignoreReturnType bool,
+	target staticCallable,
 ) bool {
+	fn := target.fn
 	if fn == nil || fn.owner != c.script {
 		return true
 	}
-	target := staticCallable{fn: fn, constructor: ignoreReturnType}
 	runnable, hashSupplied, definite := callRunnableDefaults(call, target)
 	paramFacts := c.summaryCallParamFacts(call, target, definite)
 	analysis := c.functionReturnAnalysis(
@@ -106,7 +105,7 @@ func (c *scriptChecker) scriptFunctionCallMayComplete(
 		paramFacts,
 		callMaySupplyBlock(call),
 	)
-	if ignoreReturnType {
+	if target.constructor {
 		return analysis.bodyMayComplete
 	}
 	return analysis.mayComplete

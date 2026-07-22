@@ -1785,7 +1785,7 @@ func (c *scriptChecker) autoInvokedIdentifierMayComplete(ident *Identifier) bool
 	}
 	if fns, exact := c.localCallableValuesFor(ident.Name); exact {
 		for _, fn := range fns {
-			if len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false) {
+			if len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn}) {
 				return true
 			}
 		}
@@ -1798,19 +1798,19 @@ func (c *scriptChecker) autoInvokedIdentifierMayComplete(ident *Identifier) bool
 		return true
 	}
 	if fn := c.script.functions[ident.Name]; fn != nil {
-		return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+		return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn})
 	}
 	if fn, ok := c.typeRootFunction(ident.Name); ok {
-		return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+		return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn})
 	}
 	if c.typeRootHasBinding(ident.Name) || c.hostBuiltinOverrides(ident.Name) {
 		return true
 	}
 	if fn := c.implicitSelfFunction(ident.Name); fn != nil {
 		call := &CallExpr{Callee: ident, Position: ident.Pos()}
-		target := staticCallable{name: ident.Name, fn: fn}
+		target := staticCallable{name: ident.Name, fn: fn, resolution: calleeMemberMethod}
 		plan := c.scriptCallBindingPlan(call, target)
-		return plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, fn, false)
+		return plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, target)
 	}
 	if spec, ok := c.defaultBuiltinCallSpec(ident.Name); ok && spec.autoInvoke {
 		view := staticCallView{pos: ident.Pos()}
@@ -3937,7 +3937,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if targetResolved && target.fn != nil {
 			targetMayEnter = targetMayEnter && c.scriptCallBindingPlan(checkedCall, target).bodyMayEnter
 			callMayComplete = targetMayEnter &&
-				c.scriptFunctionCallMayComplete(checkedCall, target.fn, target.constructor)
+				c.scriptFunctionCallMayComplete(checkedCall, target)
 		} else if targetResolved {
 			view := staticCallViewFor(checkedCall, target)
 			targetMayEnter = targetMayEnter && c.builtinCallMayEnter(view, target.spec)
@@ -4826,7 +4826,7 @@ func (c *scriptChecker) indexExpressionMayComplete(expr *IndexExpr) bool {
 		if target.fn != nil {
 			plan := c.scriptCallBindingPlan(call, target)
 			return plan.bodyMayEnter &&
-				c.scriptFunctionCallMayComplete(call, target.fn, target.constructor)
+				c.scriptFunctionCallMayComplete(call, target)
 		}
 		view := staticCallViewFor(call, target)
 		return c.builtinCallMayEnter(view, target.spec) &&
@@ -5232,7 +5232,7 @@ func (c *scriptChecker) assignmentSetterMayComplete(target, value Expression) bo
 					continue
 				}
 				plan := c.scriptCallBindingPlan(call, target)
-				if plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, fn, false) {
+				if plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, target) {
 					return true
 				}
 			}
@@ -5245,7 +5245,7 @@ func (c *scriptChecker) assignmentSetterMayComplete(target, value Expression) bo
 		if resolvedTarget.fn != nil {
 			plan := c.scriptCallBindingPlan(call, resolvedTarget)
 			return plan.bodyMayEnter &&
-				c.scriptFunctionCallMayComplete(call, resolvedTarget.fn, resolvedTarget.constructor)
+				c.scriptFunctionCallMayComplete(call, resolvedTarget)
 		}
 		view := staticCallViewFor(call, resolvedTarget)
 		return c.builtinCallMayEnter(view, resolvedTarget.spec) &&
@@ -5719,7 +5719,7 @@ func (c *scriptChecker) checkMemberAutoCall(
 			}
 			c.applyAutoInvokedMemberNamespaceMutations(member, call, target)
 			completed := plan.bodyMayEnter &&
-				c.scriptFunctionCallMayComplete(call, target.fn, target.constructor)
+				c.scriptFunctionCallMayComplete(call, target)
 			return target, true, true, completed
 		}
 		return target, true, false, true
@@ -7997,11 +7997,7 @@ func (c *scriptChecker) refineDynamicCallTargetEntry(targets []checkDynamicCallT
 
 func (c *scriptChecker) dynamicScriptCallTargetsMayComplete(targets []checkDynamicCallTarget) bool {
 	for _, candidate := range targets {
-		if candidate.mayEnter && c.scriptFunctionCallMayComplete(
-			candidate.call,
-			candidate.target.fn,
-			candidate.target.constructor,
-		) {
+		if candidate.mayEnter && c.scriptFunctionCallMayComplete(candidate.call, candidate.target) {
 			return true
 		}
 	}
@@ -8986,7 +8982,7 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 		if target.fn != nil {
 			plan := c.scriptCallBindingPlan(checkedCall, target)
 			return plan.bodyMayEnter &&
-				c.scriptFunctionCallMayComplete(checkedCall, target.fn, target.constructor)
+				c.scriptFunctionCallMayComplete(checkedCall, target)
 		}
 		view := staticCallViewFor(checkedCall, target)
 		return c.builtinCallMayEnter(view, target.spec) &&
@@ -8995,7 +8991,7 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 	case *Identifier:
 		if fns, exact := c.localCallableValuesFor(typed.Name); exact {
 			for _, fn := range fns {
-				if len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false) {
+				if len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn}) {
 					return true
 				}
 			}
@@ -9005,16 +9001,16 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 			return true
 		}
 		if fn := c.script.functions[typed.Name]; fn != nil {
-			return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+			return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn})
 		}
 		if fn, ok := c.typeRootFunction(typed.Name); ok {
-			return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+			return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn})
 		}
 		if fn := c.implicitSelfFunction(typed.Name); fn != nil {
 			call := &CallExpr{Callee: typed, Position: typed.Pos()}
-			target := staticCallable{name: typed.Name, fn: fn}
+			target := staticCallable{name: typed.Name, fn: fn, resolution: calleeMemberMethod}
 			plan := c.scriptCallBindingPlan(call, target)
-			return plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, fn, false)
+			return plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, target)
 		}
 		if spec, ok := c.defaultBuiltinCallSpec(typed.Name); ok && spec.autoInvoke {
 			view := staticCallView{pos: typed.Pos()}
@@ -9046,7 +9042,7 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 			call := &CallExpr{Callee: typed, Position: typed.Pos()}
 			plan := c.scriptCallBindingPlan(call, target)
 			return plan.bodyMayEnter &&
-				c.scriptFunctionCallMayComplete(call, target.fn, target.constructor)
+				c.scriptFunctionCallMayComplete(call, target)
 		}
 		if !target.spec.autoInvoke {
 			return true

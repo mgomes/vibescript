@@ -3573,8 +3573,7 @@ func (c *scriptChecker) inferDynamicCallExprType(
 	for _, candidate := range resolution.targets {
 		if !candidate.mayEnter || !c.scriptFunctionCallMayComplete(
 			candidate.call,
-			candidate.target.fn,
-			candidate.target.constructor,
+			candidate.target,
 		) {
 			continue
 		}
