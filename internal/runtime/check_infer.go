@@ -867,16 +867,21 @@ func (c *scriptChecker) mergeLocalClassValueStates(states []checkScopeState) {
 				case len(fact.staticVals) > 0 && len(other.staticVals) > 0:
 					fact.staticVals = normalizeCheckStaticValues(append(fact.staticVals, other.staticVals...))
 				case fact.keywordSplatFails && other.keywordSplatFails:
+					if len(fact.invalidKeywordSplatKeys) == 0 || len(other.invalidKeywordSplatKeys) == 0 {
+						fact.invalidKeywordSplatKeys = nil
+						break
+					}
 					commonKeys := make(map[string]struct{})
 					for key := range fact.invalidKeywordSplatKeys {
 						if _, ok := other.invalidKeywordSplatKeys[key]; ok {
 							commonKeys[key] = struct{}{}
 						}
 					}
-					fact.invalidKeywordSplatKeys = commonKeys
 					if len(commonKeys) == 0 {
-						fact.invalidKeywordSplatKeys = nil
+						delete(common, name)
+						continue
 					}
+					fact.invalidKeywordSplatKeys = commonKeys
 				default:
 					delete(common, name)
 					continue

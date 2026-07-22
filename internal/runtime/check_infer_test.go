@@ -43,6 +43,34 @@ func TestCheckInferMixedClassCallableFactsStayGradual(t *testing.T) {
 	}
 }
 
+func TestCheckInferDisjointKeywordSplatFailuresStayRepairable(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"value": nil}},
+		localClassValues: []checkClassValueFrame{{}},
+	}
+	states := []checkScopeState{
+		{classValues: []checkClassValueFrame{{
+			"value": {
+				keywordSplatFails:       true,
+				invalidKeywordSplatKeys: map[string]struct{}{"i:1": {}},
+			},
+		}}},
+		{classValues: []checkClassValueFrame{{
+			"value": {
+				keywordSplatFails:       true,
+				invalidKeywordSplatKeys: map[string]struct{}{"i:2": {}},
+			},
+		}}},
+	}
+
+	checker.mergeLocalClassValueStates(states)
+	if checker.localKeywordSplatFails("value") {
+		t.Fatal("merged disjoint keyword splat failures must remain repairable")
+	}
+}
+
 func TestCheckInferLocalBindingFlowsToTypedArgument(t *testing.T) {
 	t.Parallel()
 
