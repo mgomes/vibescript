@@ -6119,16 +6119,18 @@ func (c *scriptChecker) scriptFunctionNamespaceMutations(
 		classes:   c.script.classes,
 		visited:   map[*ScriptFunction]struct{}{fn: {}},
 	}
-	collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
-	for i, param := range fn.Params {
-		if param.DefaultVal == nil {
-			continue
+	scan.withNominalReceiverParams(fn.Params, false, func() {
+		collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
+		for i, param := range fn.Params {
+			if param.DefaultVal == nil {
+				continue
+			}
+			if call == nil || callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
+				scan.expression(param.DefaultVal)
+			}
 		}
-		if call == nil || callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
-			scan.expression(param.DefaultVal)
-		}
-	}
-	scan.statements(fn.Body)
+		scan.statements(fn.Body)
+	})
 	return scan.out
 }
 
@@ -6398,12 +6400,16 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 // ([1].each { JSON.stringify = replacement }). A reference to another owned
 // function recurses into that function's body (visited breaks call cycles),
 // so writes reached only through helpers, stored function values, or
-// transitive calls still count.
+// transitive calls still count. Exact class parameter facts keep same-named
+// instance methods separated while the scan descends through helper calls.
 type namespaceMutationScan struct {
 	out       map[string]struct{}
 	functions map[string]*ScriptFunction
 	classes   map[string]*ClassDef
 	visited   map[*ScriptFunction]struct{}
+	// A nil class records a parameter that shadows a class name without
+	// proving one exact instance dispatch.
+	nominalReceivers map[string]*ClassDef
 }
 
 func (s *namespaceMutationScan) visit(fn *ScriptFunction) {
@@ -6429,12 +6435,19 @@ func (s *namespaceMutationScan) functionReference(name string) {
 
 // memberReference descends into the statically resolvable methods a member
 // dispatch may run: a class method (Mutator.m), a constructor (Mutator.new
-// runs initialize), or an instance method on a constructor-fact receiver
-// (Mutator.new.m). Receivers the scan cannot resolve stay unscanned — the
-// checker applies their writes when it walks the call itself.
+// runs initialize), or an instance method on a constructor-fact or exactly
+// annotated receiver (Mutator.new.m or m: Mutator). Receivers the scan cannot
+// resolve stay unscanned — the checker applies their writes when it walks the
+// call itself.
 func (s *namespaceMutationScan) memberReference(member *MemberExpr) {
 	switch object := member.Object.(type) {
 	case *Identifier:
+		if classDef, bound := s.nominalReceivers[object.Name]; bound {
+			if classDef != nil && member.Property != "initialize" {
+				s.visit(classDef.Methods[member.Property])
+			}
+			return
+		}
 		classDef, ok := s.classes[object.Name]
 		if !ok {
 			return
@@ -6477,10 +6490,59 @@ func staticConstructorReceiverClass(call *CallExpr) (string, bool) {
 // function scans everything a call may execute: parameter defaults run
 // before the body when the caller omits the argument.
 func (s *namespaceMutationScan) function(fn *ScriptFunction) {
-	for _, param := range fn.Params {
-		s.expression(param.DefaultVal)
+	s.withNominalReceiverParams(fn.Params, false, func() {
+		for _, param := range fn.Params {
+			s.expression(param.DefaultVal)
+		}
+		s.statements(fn.Body)
+	})
+}
+
+func (s *namespaceMutationScan) withNominalReceiverParams(params []Param, inherit bool, walk func()) {
+	previous := s.nominalReceivers
+	receivers := make(map[string]*ClassDef, len(params))
+	if inherit {
+		for name, classDef := range previous {
+			receivers[name] = classDef
+		}
 	}
-	s.statements(fn.Body)
+	for _, param := range params {
+		if param.Name == "" {
+			continue
+		}
+		receivers[param.Name] = nil
+		if param.Kind != ParamNormal && param.Kind != ParamKeyword {
+			continue
+		}
+		if classDef := s.nominalReceiverClass(param.Type); classDef != nil {
+			receivers[param.Name] = classDef
+		}
+	}
+	s.nominalReceivers = receivers
+	defer func() { s.nominalReceivers = previous }()
+	walk()
+}
+
+func (s *namespaceMutationScan) nominalReceiverClass(ty *TypeExpr) *ClassDef {
+	arms, ok := typeExprArms(ty, 0)
+	if !ok || len(arms) == 0 {
+		return nil
+	}
+	var resolved *ClassDef
+	for _, arm := range arms {
+		if arm.Kind == TypeNil {
+			continue
+		}
+		if arm.Kind != TypeEnum {
+			return nil
+		}
+		classDef, ok := s.classes[arm.Name]
+		if !ok || classDef.IsModule || (resolved != nil && resolved != classDef) {
+			return nil
+		}
+		resolved = classDef
+	}
+	return resolved
 }
 
 func (s *namespaceMutationScan) statements(statements []Statement) {
@@ -6536,10 +6598,12 @@ func (s *namespaceMutationScan) statement(stmt Statement) {
 		// A nested definition's writes fire only when it is called, but a
 		// missed invalidation is unsound while an extra one only widens, so
 		// the walk stays conservative.
-		for _, param := range typed.Params {
-			s.expression(param.DefaultVal)
-		}
-		s.statements(typed.Body)
+		s.withNominalReceiverParams(typed.Params, false, func() {
+			for _, param := range typed.Params {
+				s.expression(param.DefaultVal)
+			}
+			s.statements(typed.Body)
+		})
 	case *ClassStmt:
 		s.statements(typed.Body)
 	}
@@ -6553,10 +6617,12 @@ func (s *namespaceMutationScan) expression(expr Expression) {
 	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:
 		s.statement(typed.(Statement))
 	case *BlockLiteral:
-		for _, param := range typed.Params {
-			s.expression(param.DefaultVal)
-		}
-		s.statements(typed.Body)
+		s.withNominalReceiverParams(typed.Params, true, func() {
+			for _, param := range typed.Params {
+				s.expression(param.DefaultVal)
+			}
+			s.statements(typed.Body)
+		})
 	case *CallExpr:
 		s.expression(typed.Callee)
 		for _, arg := range typed.Args {
