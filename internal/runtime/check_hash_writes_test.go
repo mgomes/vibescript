@@ -568,6 +568,16 @@ end
 			warning: "write to child expected element int, got string",
 		},
 		{
+			name: "literal merge uses the value fact from its evaluation point",
+			source: `
+def f(h: hash<string, int>)
+  value = "bad"
+  h.merge!({ "first": value }, lambda { value = 1; {} }.call)
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
 			name: "callable shape shadow keeps the continuation reachable",
 			source: `
 def takes_int(value: int)
@@ -643,6 +653,27 @@ end
 def f(h: hash<string, int>)
   h.merge!(1)
   takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "literal merge keeps an earlier entry value fact",
+			source: `
+def f(h: hash<string, int>)
+  value = 1
+  h.merge!({
+    "first": value,
+    "second": lambda { value = []; 2 }.call,
+  })
+end
+`,
+		},
+		{
+			name: "shape merge keeps a value fact before later arguments",
+			source: `
+def f(user: { first: int, second: int })
+  value = 1
+  user.merge!({ first: value }, lambda { value = { second: 2 } }.call)
 end
 `,
 		},
@@ -866,6 +897,19 @@ end
 			source: `
 def f(h: hash<string, int>)
   h.merge!(*[1], { "a": "bad" })
+end
+`,
+		},
+		{
+			name: "merge splat abort uses its evaluation-time fact",
+			source: `
+def helper(x)
+  x
+end
+
+def f(h: hash<string, int>)
+  v = [1]
+  h.merge!(*v, helper(v), { "a": "bad" })
 end
 `,
 		},

@@ -3893,6 +3893,7 @@ func (c *scriptChecker) checkExpressionWithExpectation(
 			if !c.checkExpression(function, pair.Key) {
 				return false
 			}
+			c.pinExpressionFact(pair.Key, c.inferExpressionType(pair.Key))
 			valueExpectation := expressionExpectation{}
 			if key, ok := staticLiteralValue(pair.Key); ok {
 				valueExpectation = typeExpressionExpectation(hashLiteralValueType(expectation.ty, key))
@@ -3900,6 +3901,10 @@ func (c *scriptChecker) checkExpressionWithExpectation(
 			if !c.checkExpressionWithExpectation(function, pair.Value, valueExpectation) {
 				return false
 			}
+			c.pinExpressionFact(
+				pair.Value,
+				c.inferExpressionTypeWithExpectation(pair.Value, valueExpectation),
+			)
 		}
 		return true
 	case *MemberExpr:
@@ -3951,10 +3956,14 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			return true
 		}
 		for _, pair := range typed.Pairs {
-			if !c.checkExpressionWithAuto(function, pair.Key, true) ||
-				!c.checkExpressionWithAuto(function, pair.Value, true) {
+			if !c.checkExpressionWithAuto(function, pair.Key, true) {
 				return false
 			}
+			c.pinExpressionFact(pair.Key, c.inferExpressionType(pair.Key))
+			if !c.checkExpressionWithAuto(function, pair.Value, true) {
+				return false
+			}
+			c.pinExpressionFact(pair.Value, c.inferExpressionType(pair.Value))
 		}
 	case *TypeLiteral:
 		// An unshadowed type literal's identifiers are type spellings rather
@@ -4050,7 +4059,11 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
 		argumentStaticValues := make(map[Expression][]Expression, len(typed.Args)+len(typed.KwArgs))
 		captureArgumentFacts := func(expr Expression, expectation expressionExpectation, autoCall bool) {
-			argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
+			if splat, ok := expr.(*SplatArg); ok {
+				argumentFacts[expr] = c.inferExpressionType(splat.Value)
+			} else {
+				argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
+			}
 			identitySource := expr
 			if !autoCall {
 				if callableExpr, bindable := c.bareIdentifierCallableArgument(expr); bindable {

@@ -6365,8 +6365,8 @@ func (c *scriptChecker) hashMutatorCallProvablyAborts(
 // value, and every positional argument is validated as a hash up front.
 func (c *scriptChecker) mergeArgumentsProvablyAbort(call *CallExpr, argumentFacts map[Expression]*TypeExpr) bool {
 	for _, arg := range call.Args {
-		if splat, isSplat := arg.(*SplatArg); isSplat {
-			written := c.inferExpressionType(splat.Value)
+		if _, isSplat := arg.(*SplatArg); isSplat {
+			written := c.mutatorCallArgumentFact(arg, argumentFacts)
 			if written != nil && typeExprArmsAll(written, func(arm *TypeExpr) bool {
 				if _, isShapeValue := shapeValuePayload(arm); isShapeValue {
 					return true
