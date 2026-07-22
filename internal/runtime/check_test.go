@@ -3212,6 +3212,33 @@ end`,
 end`,
 		},
 		{
+			name: "nested ensure return masks inner body return type",
+			source: `def run() -> int
+  begin
+    begin
+      return "bad"
+    ensure
+      return 1
+    end
+  ensure
+    cleanup = true
+  end
+end`,
+		},
+		{
+			name: "inferred exiting ensure masks body return type",
+			source: `def run() -> string
+  begin
+    return 1
+  ensure
+    value = nil
+    if value == nil
+      return "forced"
+    end
+  end
+end`,
+		},
+		{
 			name: "ensure return masks rescue return type",
 			source: `def run() -> int
   begin

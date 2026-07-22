@@ -2260,14 +2260,15 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		baseScopeState := c.snapshotScopeState()
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, 2)
 		fallthroughScopeStates := make([]checkScopeState, 0, 2)
-		// Every non-exiting ensure collects the returns escaping through it,
-		// whether or not this level owns the deferred annotation check: the
-		// ensure walk merges their states, and the sites hand up to any
-		// enclosing ensure the same returns continue through.
-		armCapture := len(typed.Ensure) > 0 && !blockAlwaysExits(typed.Ensure)
+		// Every ensure collects the returns entering it so the ensure walk sees
+		// their states. A non-exiting ensure hands those returns up to an outer
+		// ensure; an exiting ensure replaces them and discards the captured
+		// sites before checking its own return paths.
+		captureReturnSites := len(typed.Ensure) > 0
+		armCapture := captureReturnSites && !ensureAlwaysExits
 		var deferredSites []deferredReturnSite
 		var previousSites *[]deferredReturnSite
-		if armCapture {
+		if captureReturnSites {
 			previousSites = c.deferredReturnSites
 			c.deferredReturnSites = &deferredSites
 		}
@@ -2315,7 +2316,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
 		}
-		if armCapture {
+		if captureReturnSites {
 			c.deferredReturnSites = previousSites
 		}
 		mergeRuntimeStates := fallthroughRuntimeStates
@@ -2350,7 +2351,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if c.returnCollector != nil && armCapture && previousSites == nil && ensureFallsThrough {
 			c.recordDeferredReturnSummaryFacts(deferredSites)
 		}
-		if deferReturnType {
+		if deferReturnType && ensureFallsThrough {
 			c.checkDeferredReturnSitesAfterEnsure(function, returnType, typed.Ensure, deferredSites)
 		}
 		if len(deferredSites) > 0 {
@@ -2366,7 +2367,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			ensureScan.statements(typed.Ensure)
 			c.runtimeNamespaceMembers = unionCheckStringSet(continuationMembers, ensureScan.out)
 		}
-		if armCapture && previousSites != nil {
+		if armCapture && previousSites != nil && ensureFallsThrough {
 			*previousSites = append(*previousSites, deferredSites...)
 		}
 		// No fallthrough path means the code after the block is

@@ -264,6 +264,59 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "nested exiting ensure replaces outer deferred returns",
+			source: `
+def forced()
+  begin
+    begin
+      return 1
+    ensure
+      return "forced"
+    end
+  ensure
+    cleanup = true
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(forced())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "nested inferred exiting ensure replaces outer deferred returns",
+			source: `
+def forced()
+  begin
+    begin
+      return 1
+    ensure
+      value = nil
+      if value == nil
+        return "forced"
+      end
+    end
+  ensure
+    cleanup = true
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(forced())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "dead loop returns do not contaminate the summary",
 			source: `
 def build_count()
