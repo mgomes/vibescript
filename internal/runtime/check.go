@@ -2756,6 +2756,15 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// callee body still checks under the post-argument state: dispatch
 		// happens after the arguments (and their requires) evaluate.
 		target, targetResolved := c.resolveCallable(typed)
+		if targetResolved && target.fn == nil && target.spec.resultType != nil && !callExpandsArguments(typed) {
+			// The invariant result belongs to the target selected before an
+			// argument can rebind the same builtin namespace member.
+			result := target.spec.resultType
+			if member, ok := typed.Callee.(*MemberExpr); ok {
+				result = c.safeNavigationMemberResultFact(member, result)
+			}
+			c.pinExpressionFact(typed, result)
+		}
 		// Arguments evaluate left to right before the call dispatches, so
 		// each argument's inferred type is captured at its own evaluation
 		// point: a mutating earlier argument (h.delete(:name)) poisons its

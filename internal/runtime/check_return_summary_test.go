@@ -444,6 +444,32 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "mutating argument keeps the resolved builtin result",
+			source: `
+def replacement(value)
+  1
+end
+
+def mutate_serializer()
+  JSON.stringify = replacement
+  {}
+end
+
+def build()
+  JSON.stringify(mutate_serializer())
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "self mutating bare auto-invoke keeps the pre-mutation result",
 			source: `
 def replacement(value)
@@ -1073,6 +1099,32 @@ end
 def run()
   JSON.stringify = replacement
   takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "later calls see namespace mutation from an earlier argument",
+			source: `
+def replacement(value)
+  1
+end
+
+def mutate_serializer()
+  JSON.stringify = replacement
+  {}
+end
+
+def build()
+  JSON.stringify(mutate_serializer())
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build())
 end
 `,
 		},
