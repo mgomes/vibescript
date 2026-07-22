@@ -158,11 +158,14 @@ func (c *scriptChecker) withFreshLocalInference(check func()) {
 func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousPoison := c.typePoison
 	previousAliases := c.typeAliases
+	previousPinned := c.pinnedExpressionFacts
 	c.typePoison = nil
 	c.typeAliases = nil
+	c.pinnedExpressionFacts = nil
 	return func() {
 		c.typePoison = previousPoison
 		c.typeAliases = previousAliases
+		c.pinnedExpressionFacts = previousPinned
 	}
 }
 
@@ -1503,6 +1506,13 @@ func (c *scriptChecker) safeNavigationArgumentsAlwaysEvaluateInferred(call *Call
 // it is not statically known. It is pure: it never emits warnings and never
 // mutates checker state.
 func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
+	// A pinned node keeps the fact captured at its own walk: a call whose
+	// callee mutates a builtin namespace dispatched under the pre-mutation
+	// bindings, so its result must not recompute under the context its own
+	// write markers created.
+	if fact, ok := c.pinnedExpressionFacts[expr]; ok {
+		return fact
+	}
 	// Inference computes facts speculatively (branch results, argument
 	// captures) and must not mutate runtime module state along the way.
 	c.speculativeInference++
@@ -1946,6 +1956,9 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 			return nil
 		}
 		result = target.fn.ReturnTy
+		if result == nil {
+			result = c.scriptFunctionReturnSummary(call, target.fn)
+		}
 	} else if target.name == "JSON.parse_as" && len(call.Args) == 2 {
 		if shape, ok := shapeValuePayload(c.inferExpressionType(call.Args[1])); ok {
 			// JSON object keys are strings, so the validated result and its

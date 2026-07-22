@@ -161,6 +161,11 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   `unless`, `elsif`, negation, short-circuits, and guard clauses that exit
   early. Unknown values stay unknown, and branches re-join into the wider
   fact afterwards.
+- Unannotated script functions get inferred return summaries: every known
+  result path (explicit returns, the implicit final expression, and nil
+  fallthrough) joins into the call's result fact. A single unknown path —
+  recursion, dynamic dispatch, unmodeled constructs — keeps the whole result
+  unknown, and explicit return annotations always win.
 - Constructor results are nominal: `u = User.new` gives `u` the fact `User`,
   boundary checks compare it by class identity, and instance methods called
   on it check their argument shapes and expose their annotated return types.
