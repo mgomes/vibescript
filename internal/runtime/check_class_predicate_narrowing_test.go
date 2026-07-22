@@ -278,3 +278,29 @@ end
 		})
 	}
 }
+
+func TestCheckClassPredicateNarrowingBailsAfterRuntimeClassConstantWrite(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	script, err := engine.CompileSnippet(classPredicateNarrowingPrelude+`
+class Holder
+  def initialize()
+  end
+
+  def check(u: User | Order)
+    unless u.is_a?(User)
+      takes_user(u)
+    end
+    u
+  end
+end
+
+Holder.User = Order
+Holder.new.check(User.new)
+`, "run")
+	if err != nil {
+		t.Fatalf("CompileSnippet() error = %v", err)
+	}
+	requireNoCheckWarnings(t, script)
+}

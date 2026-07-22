@@ -1050,7 +1050,8 @@ func (c *scriptChecker) narrowClassPredicateMember(member *MemberExpr, arg Expre
 // staticClassArgument resolves a predicate argument to the script class or
 // module it names. Shadowed names, dynamic expressions, and names self's
 // class may bind first (the runtime checks class constants before the
-// top-level binding) stay unknown.
+// top-level binding), including through a prior external member write, stay
+// unknown.
 func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
 	ident, ok := arg.(*Identifier)
 	if !ok {
@@ -1065,8 +1066,11 @@ func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
 		// class — even on paths that never assigned it.
 		return nil, false
 	}
-	if c.selfClass != nil && c.selfClassMayBindConstant(c.selfClass, ident.Name) {
-		return nil, false
+	if c.selfClass != nil {
+		if c.namespaceMemberMutated(c.selfClass.Name, ident.Name) ||
+			c.selfClassMayBindConstant(c.selfClass, ident.Name) {
+			return nil, false
+		}
 	}
 	classDef, ok := c.script.classes[ident.Name]
 	if !ok || classDef == nil {
