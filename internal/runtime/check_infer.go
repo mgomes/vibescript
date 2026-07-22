@@ -1613,7 +1613,6 @@ func (c *scriptChecker) bindForTargetType(stmt *ForStmt, elemType *TypeExpr) {
 // to a shadowing block parameter writes the block-local, so the outer fact
 // still holds.
 func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
-	c.widenUnsetInstanceIvarFacts()
 	names := make(map[string]struct{})
 	collectLocalBindings(block.Body, names)
 	collectMutatedContainerRoots(block.Body, names)
@@ -1638,6 +1637,7 @@ func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
 		c.bindLocalType(name, nil)
 		c.bindLocalClassValue(name, "")
 	}
+	c.widenRepeatedRegionBlockIvarFacts(block)
 }
 
 // binaryRightUnreachable reports whether inferred facts prove a short-circuit
@@ -1682,12 +1682,7 @@ func collectMutatedContainerRoots(statements []Statement, out map[string]struct{
 	for _, stmt := range statements {
 		switch typed := stmt.(type) {
 		case *AssignStmt:
-			switch typed.Target.(type) {
-			case *IndexExpr, *MemberExpr:
-				if name, ok := rootIdentifierName(typed.Target); ok {
-					out[name] = struct{}{}
-				}
-			}
+			collectMutatedContainerTargetRoots(typed.Target, out)
 		case *IfStmt:
 			collectMutatedContainerRoots(typed.Consequent, out)
 			for _, elseIf := range typed.ElseIf {
@@ -1707,6 +1702,19 @@ func collectMutatedContainerRoots(statements []Statement, out map[string]struct{
 			}
 			collectMutatedContainerRoots(typed.Else, out)
 			collectMutatedContainerRoots(typed.Ensure, out)
+		}
+	}
+}
+
+func collectMutatedContainerTargetRoots(target Expression, out map[string]struct{}) {
+	switch typed := target.(type) {
+	case *IndexExpr, *MemberExpr:
+		if name, ok := rootIdentifierName(target); ok {
+			out[name] = struct{}{}
+		}
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			collectMutatedContainerTargetRoots(element.Target, out)
 		}
 	}
 }
@@ -1882,6 +1890,342 @@ func (c *scriptChecker) collectMutationCandidateRootsFromExpression(expr Express
 	}
 }
 
+type regionIvarEffects struct {
+	writes  map[string]struct{}
+	unknown bool
+}
+
+// collectRepeatedRegionIvarEffects gathers the initializer-ivar effects a
+// loop or block must apply before its first checker walk. Reachability pruning
+// uses syntax-static outcomes only: inferred entry facts may be changed by an
+// earlier statement or a later iteration.
+func (c *scriptChecker) collectRepeatedRegionIvarEffects(
+	statements []Statement,
+	effects *regionIvarEffects,
+) {
+	for _, stmt := range statements {
+		switch typed := stmt.(type) {
+		case nil:
+		case *ReturnStmt:
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
+		case *RaiseStmt:
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Message, effects, true)
+		case *BreakStmt:
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
+		case *NextStmt:
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
+		case *AssignStmt:
+			collectRegionIvarWriteTargets(typed.Target, effects)
+			if typed.Operator == "" && assignmentTargetMayInvokeCode(typed.Target) {
+				effects.unknown = true
+			}
+			c.collectRepeatedRegionIvarEffectsFromExpression(
+				typed.Target,
+				effects,
+				typed.Operator != "",
+			)
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
+		case *ExprStmt:
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Expr, effects, true)
+		case *IfStmt:
+			c.collectRepeatedRegionIvarEffectsFromIfStatement(typed, effects)
+		case *ForStmt:
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Iterable, effects, true)
+			c.collectRepeatedRegionIvarEffects(typed.Body, effects)
+		case *WhileStmt:
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Condition, effects, true)
+			truthy, known := staticExpressionTruthiness(typed.Condition)
+			if !known || truthy {
+				c.collectRepeatedRegionIvarEffects(typed.Body, effects)
+			}
+		case *UntilStmt:
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Condition, effects, true)
+			truthy, known := staticExpressionTruthiness(typed.Condition)
+			if !known || !truthy {
+				c.collectRepeatedRegionIvarEffects(typed.Body, effects)
+			}
+		case *TryStmt:
+			c.collectRepeatedRegionIvarEffects(typed.Body, effects)
+			for i := range typed.Rescues {
+				c.collectRepeatedRegionIvarEffects(typed.Rescues[i].Body, effects)
+			}
+			c.collectRepeatedRegionIvarEffects(typed.Else, effects)
+			c.collectRepeatedRegionIvarEffects(typed.Ensure, effects)
+		}
+		if statementAlwaysExits(stmt) {
+			return
+		}
+	}
+}
+
+func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromIfStatement(
+	stmt *IfStmt,
+	effects *regionIvarEffects,
+) {
+	if stmt == nil {
+		return
+	}
+	c.collectRepeatedRegionIvarEffectsFromExpression(stmt.Condition, effects, true)
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if !known || truthy {
+		c.collectRepeatedRegionIvarEffects(stmt.Consequent, effects)
+	}
+	if known && truthy {
+		return
+	}
+	for _, branch := range stmt.ElseIf {
+		c.collectRepeatedRegionIvarEffectsFromExpression(branch.Condition, effects, true)
+		truthy, known = staticExpressionTruthiness(branch.Condition)
+		if !known || truthy {
+			c.collectRepeatedRegionIvarEffects(branch.Consequent, effects)
+		}
+		if known && truthy {
+			return
+		}
+	}
+	c.collectRepeatedRegionIvarEffects(stmt.Alternate, effects)
+}
+
+func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromIfExpression(
+	expr *IfExpr,
+	effects *regionIvarEffects,
+	autoCall bool,
+) {
+	if expr == nil {
+		return
+	}
+	c.collectRepeatedRegionIvarEffectsFromExpression(expr.Condition, effects, true)
+	truthy, known := staticExpressionTruthiness(expr.Condition)
+	if !known || truthy {
+		c.collectRepeatedRegionIvarEffectsFromExpression(expr.Consequent, effects, autoCall)
+	}
+	if known && truthy {
+		return
+	}
+	for _, branch := range expr.ElseIf {
+		c.collectRepeatedRegionIvarEffectsFromExpression(branch.Condition, effects, true)
+		truthy, known = staticExpressionTruthiness(branch.Condition)
+		if !known || truthy {
+			c.collectRepeatedRegionIvarEffectsFromExpression(branch.Result, effects, autoCall)
+		}
+		if known && truthy {
+			return
+		}
+	}
+	c.collectRepeatedRegionIvarEffectsFromExpression(expr.Alternate, effects, autoCall)
+}
+
+func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
+	expr Expression,
+	effects *regionIvarEffects,
+	autoCall bool,
+) {
+	switch typed := expr.(type) {
+	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral,
+		*BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+	case *Identifier:
+		if autoCall && !c.pureCallArgument(typed) {
+			effects.unknown = true
+		}
+	case *ArrayLiteral:
+		for _, element := range typed.Elements {
+			c.collectRepeatedRegionIvarEffectsFromExpression(element, effects, true)
+		}
+	case *HashLiteral:
+		for _, pair := range typed.Pairs {
+			c.collectRepeatedRegionIvarEffectsFromExpression(pair.Key, effects, true)
+			c.collectRepeatedRegionIvarEffectsFromExpression(pair.Value, effects, true)
+		}
+	case *CallExpr:
+		if member, ok := typed.Callee.(*MemberExpr); ok {
+			c.collectRepeatedRegionIvarEffectsFromExpression(member.Object, effects, true)
+			if staticNilSafeNavigationCall(typed) {
+				return
+			}
+			if c.memberCallMayWriteUnknownIvar(typed) {
+				effects.unknown = true
+			}
+		} else {
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Callee, effects, false)
+			effects.unknown = true
+		}
+		for _, arg := range typed.Args {
+			c.collectRepeatedRegionIvarEffectsFromExpression(arg, effects, true)
+		}
+		for _, kwarg := range typed.KwArgs {
+			c.collectRepeatedRegionIvarEffectsFromExpression(kwarg.Value, effects, true)
+		}
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.BlockArg, effects, false)
+		blockMayRun := c.callMayInvokeSuppliedBlock(typed)
+		if blockMayRun && typed.BlockArg != nil {
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.BlockArg, effects, true)
+			effects.unknown = true
+		}
+		if blockMayRun && typed.Block != nil {
+			c.collectRepeatedRegionIvarEffectsFromBlock(typed.Block, effects)
+		}
+	case *MemberExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
+		if autoCall {
+			if staticNilSafeNavigationMember(typed) {
+				return
+			}
+			if c.memberDispatchEffect(typed) == effectUnknown {
+				effects.unknown = true
+			}
+		}
+	case *ScopeExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
+	case *IndexExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
+		for _, index := range typed.Indices {
+			c.collectRepeatedRegionIvarEffectsFromExpression(index, effects, true)
+		}
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			c.collectRepeatedRegionIvarEffectsFromExpression(element.Target, effects, false)
+		}
+	case *SplatArg:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
+	case *TypeLiteral:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Fallback, effects, true)
+	case *UnaryExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Right, effects, true)
+	case *BinaryExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Left, effects, true)
+		if binaryRightMayEvaluate(typed) {
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Right, effects, true)
+		}
+	case *ConditionalExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Condition, effects, true)
+		truthy, known := staticExpressionTruthiness(typed.Condition)
+		if !known || truthy {
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Consequent, effects, autoCall)
+		}
+		if !known || !truthy {
+			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Alternate, effects, autoCall)
+		}
+	case *RescueExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Body, effects, autoCall)
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Fallback, effects, autoCall)
+	case *IfExpr:
+		c.collectRepeatedRegionIvarEffectsFromIfExpression(typed, effects, autoCall)
+	case *RangeExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Start, effects, true)
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.End, effects, true)
+	case *CaseExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Target, effects, true)
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				c.collectRepeatedRegionIvarEffectsFromExpression(value.Expr, effects, true)
+			}
+			c.collectRepeatedRegionIvarEffectsFromExpression(clause.Result, effects, autoCall)
+		}
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.ElseExpr, effects, autoCall)
+	case *BlockLiteral:
+		c.collectRepeatedRegionIvarEffectsFromBlock(typed, effects)
+	case *YieldExpr:
+		for _, arg := range typed.Args {
+			c.collectRepeatedRegionIvarEffectsFromExpression(arg, effects, true)
+		}
+		effects.unknown = true
+	case *InterpolatedString:
+		for _, part := range typed.Parts {
+			if exprPart, ok := part.(StringExpr); ok {
+				c.collectRepeatedRegionIvarEffectsFromExpression(exprPart.Expr, effects, true)
+			}
+		}
+	case *InterpolatedSymbol:
+		for _, part := range typed.Parts {
+			if exprPart, ok := part.(StringExpr); ok {
+				c.collectRepeatedRegionIvarEffectsFromExpression(exprPart.Expr, effects, true)
+			}
+		}
+	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+		c.collectRepeatedRegionIvarEffects([]Statement{typed.(Statement)}, effects)
+	}
+}
+
+func collectRegionIvarWriteTargets(target Expression, effects *regionIvarEffects) {
+	switch typed := target.(type) {
+	case *IvarExpr:
+		if effects.writes == nil {
+			effects.writes = make(map[string]struct{})
+		}
+		effects.writes[typed.Name] = struct{}{}
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			collectRegionIvarWriteTargets(element.Target, effects)
+		}
+	}
+}
+
+func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromBlock(
+	block *BlockLiteral,
+	effects *regionIvarEffects,
+) {
+	if block == nil {
+		return
+	}
+	popScope := c.pushBlockCheckScope(block)
+	defer popScope()
+	for _, name := range block.ImplicitParams {
+		c.bindLocalTypeInCurrentFrame(name, nil)
+		c.bindLocalClassValue(name, "")
+	}
+	for _, param := range block.Params {
+		c.collectRepeatedRegionIvarEffectsFromExpression(param.DefaultVal, effects, true)
+		c.bindParamLocalType(param)
+	}
+	bodyBindings := make(map[string]struct{})
+	collectLocalBindings(block.Body, bodyBindings)
+	currentScope := c.scopes[len(c.scopes)-1]
+	for name := range bodyBindings {
+		if _, blockBound := currentScope[name]; !blockBound {
+			continue
+		}
+		c.bindLocalTypeInCurrentFrame(name, nil)
+		c.bindLocalClassValue(name, "")
+	}
+	c.collectRepeatedRegionIvarEffects(block.Body, effects)
+}
+
+// widenRepeatedRegionIvarFacts applies only the initializer-ivar uncertainty
+// the region can create. Direct ivar targets widen individually; a dispatch,
+// setter, or yield whose effects are unclassified widens every unset ivar.
+func (c *scriptChecker) widenRepeatedRegionIvarFacts(statements []Statement) {
+	typesState := c.snapshotLocalTypes()
+	classValuesState := c.snapshotLocalClassValues()
+	bindings := make(map[string]struct{})
+	collectLocalBindings(statements, bindings)
+	for name := range bindings {
+		c.bindLocalType(name, nil)
+		c.bindLocalClassValue(name, "")
+	}
+	var effects regionIvarEffects
+	c.collectRepeatedRegionIvarEffects(statements, &effects)
+	c.restoreLocalTypes(typesState)
+	c.restoreLocalClassValues(classValuesState)
+	c.widenRegionIvarFacts(effects)
+}
+
+func (c *scriptChecker) widenRepeatedRegionBlockIvarFacts(block *BlockLiteral) {
+	var effects regionIvarEffects
+	c.collectRepeatedRegionIvarEffectsFromBlock(block, &effects)
+	c.widenRegionIvarFacts(effects)
+}
+
+func (c *scriptChecker) widenRegionIvarFacts(effects regionIvarEffects) {
+	if effects.unknown {
+		c.widenUnsetInstanceIvarFacts()
+		return
+	}
+	for name := range effects.writes {
+		c.widenUnsetInstanceIvarFact(name)
+	}
+}
+
 // degradeMutationCandidates clears container-typed locals a region may
 // mutate through member dispatch or call arguments; scalar receivers keep
 // their facts (immutable kinds cannot be mutated in place).
@@ -1903,7 +2247,6 @@ func (c *scriptChecker) degradeMutationCandidates(statements []Statement, names 
 // execution count the checker cannot know — loop and block bodies — so a
 // first-iteration fact cannot leak into the region or survive it.
 func (c *scriptChecker) degradeLocalTypesForBindings(statements []Statement, extraTargets ...Expression) {
-	c.widenUnsetInstanceIvarFacts()
 	names := make(map[string]struct{})
 	collectLocalBindings(statements, names)
 	collectMutatedContainerRoots(statements, names)
@@ -4744,6 +5087,17 @@ func (c *scriptChecker) memberCallPreservesReceiverFacts(call *CallExpr) bool {
 	}
 	member, ok := call.Callee.(*MemberExpr)
 	return ok && c.memberDispatchPreservesReceiverFacts(member)
+}
+
+// memberCallMayWriteUnknownIvar reports whether dispatch can run unclassified
+// code whose writes to the current self are not visible in its arguments. A
+// supplied block's effects are handled separately when the dispatch may run it.
+func (c *scriptChecker) memberCallMayWriteUnknownIvar(call *CallExpr) bool {
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok {
+		return true
+	}
+	return c.memberDispatchEffect(member) == effectUnknown
 }
 
 // pureCallArgument reports whether a call argument provably runs no user

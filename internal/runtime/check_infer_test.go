@@ -478,6 +478,38 @@ def run(user: { name: string }, flag)
 end
 `))
 
+	// Destructuring targets mutate their projected container too; the
+	// enclosing target list must not hide that root from pre-loop poisoning.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string }, flag)
+  while flag
+    takes_int(user["name"])
+    user["name"], ignored = [1, 2]
+    flag = false
+  end
+end
+`))
+
+	// A forwarded bound member can mutate its receiver when the callee runs
+	// the block, so that receiver is also a pre-loop mutation root.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string }, flag)
+  while flag
+    takes_int(user["name"])
+    ["name"].map(&user.delete)
+    flag = false
+  end
+end
+`))
+
 	// Without a mutation in the body the pre-loop fact stays checkable.
 	script := compileScript(t, `
 def takes_int(value: int)

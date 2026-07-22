@@ -569,8 +569,11 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 	case *ForStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Iterable)
 		if c.isolatedCollectInference {
+			elemType := c.forTargetElementType(typed)
 			c.recordLiveStatementNames(typed.Body)
 			c.degradeLocalTypesForBindings(typed.Body, typed.Target)
+			c.bindForTargetType(typed, elemType)
+			c.widenRepeatedRegionIvarFacts(typed.Body)
 		}
 		c.recordBindingTarget(typed.Target)
 		bodyState := c.snapshotModuleCollectionState()
@@ -589,6 +592,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			if c.isolatedCollectInference {
 				c.recordLiveStatementNames(typed.Body)
 				c.degradeLocalTypesForBindings(typed.Body)
+				c.widenRepeatedRegionIvarFacts(typed.Body)
 			}
 			bodyState := c.snapshotModuleCollectionState()
 			bodyScopeState := c.snapshotScopeState()
@@ -610,6 +614,7 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 			if c.isolatedCollectInference {
 				c.recordLiveStatementNames(typed.Body)
 				c.degradeLocalTypesForBindings(typed.Body)
+				c.widenRepeatedRegionIvarFacts(typed.Body)
 			}
 			bodyState := c.snapshotModuleCollectionState()
 			bodyScopeState := c.snapshotScopeState()
@@ -3146,6 +3151,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.degradeLocalTypesForBindings(typed.Body, typed.Target)
 		c.recordBindingTarget(typed.Target)
 		c.bindForTargetType(typed, elemType)
+		c.widenRepeatedRegionIvarFacts(typed.Body)
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
 		c.mutationRegionDepth++
@@ -3177,6 +3183,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if bodyReachable {
 			c.recordLiveStatementNames(typed.Body)
 			c.degradeLocalTypesForBindings(typed.Body)
+			c.widenRepeatedRegionIvarFacts(typed.Body)
 			bodyRuntimeState := c.snapshotRuntimeState()
 			bodyScopeState := c.snapshotScopeState()
 			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)
@@ -3214,6 +3221,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if bodyReachable {
 			c.recordLiveStatementNames(typed.Body)
 			c.degradeLocalTypesForBindings(typed.Body)
+			c.widenRepeatedRegionIvarFacts(typed.Body)
 			bodyRuntimeState := c.snapshotRuntimeState()
 			bodyScopeState := c.snapshotScopeState()
 			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)
@@ -4415,7 +4423,6 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			}
 		}
 		_, memberCall := typed.Callee.(*MemberExpr)
-		memberCallPreservesFacts := memberCall && c.memberCallPreservesReceiverFacts(typed)
 		// Containers pass by reference, so a callee may mutate an argument
 		// in place; the caller's structural facts stop holding. Dispatch
 		// happens after the arguments evaluate, so the receiver's facts
@@ -4426,7 +4433,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		// and may preserve a still-compatible declared fact, and everything
 		// else keeps poisoning.
 		if targetMayEnter {
-			if !memberCallPreservesFacts {
+			forwardedBlockMayRun := typed.BlockArg != nil && c.callMayInvokeSuppliedBlock(typed)
+			if !memberCall || c.memberCallMayWriteUnknownIvar(typed) || forwardedBlockMayRun {
 				c.widenUnsetInstanceIvarFacts()
 			}
 			shovelEscapeMayMutate := callMayComplete ||
@@ -4531,7 +4539,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				return false
 			}
 			dispatchPreservesFacts := c.memberDispatchPreservesReceiverFacts(typed)
-			if (invoked || !resolved) && !dispatchPreservesFacts {
+			if (invoked || !resolved) && c.memberDispatchEffect(typed) == effectUnknown {
 				c.widenUnsetInstanceIvarFacts()
 			}
 			if invoked {
@@ -6399,7 +6407,11 @@ func staticNilSafeNavigationCall(call *CallExpr) bool {
 		return false
 	}
 	member, ok := call.Callee.(*MemberExpr)
-	if !ok || !member.Safe {
+	return ok && staticNilSafeNavigationMember(member)
+}
+
+func staticNilSafeNavigationMember(member *MemberExpr) bool {
+	if member == nil || !member.Safe {
 		return false
 	}
 	val, ok := staticLiteralValue(member.Object)
@@ -7015,8 +7027,26 @@ func (c *scriptChecker) callMayEvaluateBlockWithSeen(call *CallExpr, seen map[*S
 	return target.spec.usesBlock
 }
 
+func (c *scriptChecker) callMayInvokeSuppliedBlock(call *CallExpr) bool {
+	if call == nil || (call.Block == nil && call.BlockArg == nil) ||
+		staticNilSafeNavigationCall(call) {
+		return false
+	}
+	target, ok := c.resolveCallable(call)
+	if !ok {
+		return !staticallyNonCallableCallee(call.Callee)
+	}
+	if target.fn != nil {
+		return c.functionMayEvaluateCallBlock(call, target, nil)
+	}
+	if target.name == "array.fetch" {
+		return staticArrayFetchBlockMayEvaluate(call)
+	}
+	return target.spec.usesBlock
+}
+
 func staticArrayFetchBlockMayEvaluate(call *CallExpr) bool {
-	if call == nil || call.Block == nil {
+	if call == nil || (call.Block == nil && call.BlockArg == nil) {
 		return false
 	}
 	if len(call.Args) < 1 || len(call.Args) > 2 {

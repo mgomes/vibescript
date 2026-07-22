@@ -79,21 +79,29 @@ func (c *scriptChecker) widenUnsetInstanceIvarFacts() {
 		if method.Accessor == functionAccessorNone || method.AccessorName == "" {
 			continue
 		}
-		name := method.AccessorName
-		if !typeExprIsNilOnly(c.localTypeFor(ivarFactKey(name))) {
-			continue
-		}
-		ty := c.instanceIvarContract(name)
-		if ty == nil {
-			continue
-		}
-		fact := c.ivarContractFact(ty)
-		if fact == nil {
-			c.bindLocalType(ivarFactKey(name), nil)
-			continue
-		}
-		c.bindLocalType(ivarFactKey(name), unionTypeExprs(fact, checkTypeNil))
+		c.widenUnsetInstanceIvarFact(method.AccessorName)
 	}
+}
+
+// widenUnsetInstanceIvarFact drops initializer-only certainty for one ivar a
+// repeated region may write. Unknown calls use widenUnsetInstanceIvarFacts;
+// direct ivar assignments can preserve unrelated unset facts through this
+// narrower path.
+func (c *scriptChecker) widenUnsetInstanceIvarFact(name string) {
+	if c.assignmentTargetDepth > 0 || c.selfClass == nil || c.selfClassContext ||
+		!typeExprIsNilOnly(c.localTypeFor(ivarFactKey(name))) {
+		return
+	}
+	ty := c.instanceIvarContract(name)
+	if ty == nil {
+		return
+	}
+	fact := c.ivarContractFact(ty)
+	if fact == nil {
+		c.bindLocalType(ivarFactKey(name), nil)
+		return
+	}
+	c.bindLocalType(ivarFactKey(name), unionTypeExprs(fact, checkTypeNil))
 }
 
 // checkIvarParamBinding checks one ivar parameter as the direct write it

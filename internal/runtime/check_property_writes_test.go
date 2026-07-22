@@ -1326,3 +1326,262 @@ def make
 end
 `))
 }
+
+// Repeated regions preserve definitely-unset initializer ivars they cannot
+// write. Direct writes widen only their target, while calls that may mutate
+// self still widen every unset ivar conservatively.
+func TestCheckInitializerIvarFactsRespectRepeatedRegionEffects(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		properties string
+		region     string
+		methods    string
+		warning    bool
+	}{
+		{
+			name: "pure for",
+			region: `    for x in [1]
+      x
+    end`,
+			warning: true,
+		},
+		{
+			name: "pure block",
+			region: `    [1].fetch(2) do
+      1
+    end`,
+			warning: true,
+		},
+		{
+			name: "pure typed block parameter",
+			region: `    [1].fetch(2) do |index: int|
+      index
+    end`,
+			warning: true,
+		},
+		{
+			name: "ignored literal block",
+			region: `    (1..2).to_a do
+      @b = 1
+    end`,
+			warning: true,
+		},
+		{
+			name:    "ignored forwarded block",
+			region:  `    (1..2).to_a(&seed)`,
+			methods: initializerIvarSeedMethod("value", "value"),
+			warning: true,
+		},
+		{
+			name: "statically skipped safe call",
+			region: `    for x in [1]
+      nil&.missing(seed)
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+			warning: true,
+		},
+		{
+			name: "statically skipped safe member",
+			region: `    for x in [1]
+      nil&.missing
+    end`,
+			warning: true,
+		},
+		{
+			name: "short-circuited call",
+			region: `    for x in [1]
+      true || seed
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+			warning: true,
+		},
+		{
+			name: "unreachable if branch",
+			region: `    for x in [1]
+      if false
+        seed
+      end
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+			warning: true,
+		},
+		{
+			name: "unreachable expression branches",
+			region: `    for x in [1]
+      false ? seed : 1
+      value = if false
+        seed
+      else
+        1
+      end
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+			warning: true,
+		},
+		{
+			name: "unreachable nested loop",
+			region: `    for x in [1]
+      while false
+        seed
+      end
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+			warning: true,
+		},
+		{
+			name: "call after break",
+			region: `    for x in [1]
+      break
+      seed
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+			warning: true,
+		},
+		{
+			name:       "assigned ivar enables branch mutation",
+			properties: "  property flag: bool\n",
+			region: `    for x in [1]
+      @flag = true
+      if @flag
+        @b = 1
+      end
+    end`,
+		},
+		{
+			name: "assigned local enables branch mutation",
+			region: `    for x in [nil]
+      x = true
+      if x
+        @b = 1
+      end
+    end`,
+		},
+		{
+			name:       "assigned ivar enables logical mutation",
+			properties: "  property flag: bool\n",
+			region: `    for x in [1]
+      @flag = true
+      @flag && seed
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+		},
+		{
+			name:       "later iteration enables nested mutation",
+			properties: "  property flag: bool\n",
+			region: `    for x in [1, 2]
+      while @flag
+        @b = 1
+        break
+      end
+      @flag = true
+    end`,
+		},
+		{
+			name:       "assigned safe receiver runs block",
+			properties: "  property flag: bool\n",
+			region: `    for x in [1]
+      @flag = true
+      @flag&.tap do
+        @b = 1
+      end
+    end`,
+		},
+		{
+			name:       "for writes unrelated ivar",
+			properties: "  property c: int\n",
+			region: `    for x in [1]
+      @c = x
+    end`,
+			warning: true,
+		},
+		{
+			name:       "for destructures unrelated ivar",
+			properties: "  property c: int\n",
+			region: `    for x in [1]
+      @c, ignored = [x, 2]
+    end`,
+			warning: true,
+		},
+		{
+			name:       "block writes unrelated ivar",
+			properties: "  property c: int\n",
+			region: `    [1].fetch(2) do
+      @c = 1
+    end`,
+			warning: true,
+		},
+		{
+			name: "for writes observed ivar",
+			region: `    for x in [1]
+      @b = x
+    end`,
+		},
+		{
+			name: "for destructures observed ivar",
+			region: `    for x in [1]
+      @b, ignored = [x, 2]
+    end`,
+		},
+		{
+			name: "block writes observed ivar",
+			region: `    [1].fetch(2) do
+      @b = 1
+    end`,
+		},
+		{
+			name: "for may call mutator",
+			region: `    for x in [1]
+      seed
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+		},
+		{
+			name: "block may call mutator",
+			region: `    [1].fetch(2) do
+      seed
+    end`,
+			methods: initializerIvarSeedMethod("", "1"),
+		},
+		{
+			name:    "forwarded block may call mutator",
+			region:  `    [1].fetch(2, &seed)`,
+			methods: initializerIvarSeedMethod("index", "index + 1"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source := `
+class User
+  property a: int
+  property b: int
+` + tc.properties + `
+  def initialize
+` + tc.region + `
+    @a = @b
+  end
+` + tc.methods + `
+end
+`
+			script := compileScriptDefault(t, source)
+			if tc.warning {
+				requireCheckWarningContains(t, script, "write to @a expected int, got nil")
+				return
+			}
+			requireNoCheckWarnings(t, script)
+		})
+	}
+}
+
+func initializerIvarSeedMethod(param, value string) string {
+	if param != "" {
+		param = "(" + param + ")"
+	}
+	return `
+  def seed` + param + `
+    @b = ` + value + `
+  end
+`
+}
