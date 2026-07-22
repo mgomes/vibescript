@@ -217,6 +217,28 @@ end
 			warning: "write to items expected element { amount: int }, got string",
 		},
 		{
+			name: "scalar local inside an array literal does not alias its root",
+			source: `
+def f(rows: array<array<int>>, child: array<int>, count: int, v)
+  rows << [count]
+  child << v
+  rows << "bad"
+end
+`,
+			warning: "write to rows expected element array<int>, got string",
+		},
+		{
+			name: "container condition inside an array literal does not alias its root",
+			source: `
+def f(rows: array<array<int>>, flag: array<int>, v)
+  rows << (flag ? [1] : [2])
+  flag << v
+  rows << "bad"
+end
+`,
+			warning: "write to rows expected element array<int>, got string",
+		},
+		{
 			name: "omitted optional shape field preserves the bound",
 			source: `
 def f(items: array<{ name: string, age?: int }>)
@@ -712,6 +734,92 @@ def f(rows: array<array<int>>)
   for row in rows
     for v in row
       takes_string(v)
+    end
+  end
+end
+`,
+		},
+		{
+			name: "mutating a child retained inside an array literal weakens the outer bound",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f(rows: array<array<array<int>>>, v)
+  child = [1]
+  rows << [child]
+  child << v
+  for group in rows
+    for row in group
+      for value in row
+        takes_string(value)
+      end
+    end
+  end
+end
+`,
+		},
+		{
+			name: "mutating a conditional child retained inside an array literal weakens the outer bound",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f(rows: array<array<array<int>>>, child: array<int>, choose, v)
+  rows << [choose ? child : [1]]
+  child << v
+  for group in rows
+    for row in group
+      for value in row
+        takes_string(value)
+      end
+    end
+  end
+end
+`,
+		},
+		{
+			name: "mutating a child retained inside a hash literal weakens the outer bound",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f(rows: array<array<{ child: array<int> }>>, v)
+  child = [1]
+  rows << [{ child: child }]
+  child << v
+  for group in rows
+    for entry in group
+      for value in entry[:child]
+        takes_string(value)
+      end
+    end
+  end
+end
+`,
+		},
+		{
+			name: "container call retained inside an array literal weakens the outer bound",
+			source: `
+def retain(value: array<int>) -> array<int>
+  value
+end
+
+def takes_string(value: string)
+  value
+end
+
+def f(rows: array<array<array<int>>>, child: array<int>, v)
+  rows << [retain(child)]
+  child << v
+  for group in rows
+    for row in group
+      for value in row
+        takes_string(value)
+      end
     end
   end
 end
