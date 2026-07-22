@@ -856,6 +856,58 @@ end
 `,
 		},
 		{
+			name: "unresolved first class calls poison later namespace facts",
+			source: `
+def replacement(value)
+  1
+end
+
+def mutate(_value)
+  JSON.stringify = replacement
+end
+
+def build()
+  cb = mutate
+  cb.call(0)
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build())
+end
+`,
+		},
+		{
+			name: "unresolved direct calls poison later namespace facts",
+			source: `
+def replacement(value)
+  1
+end
+
+def mutate(_value)
+  JSON.stringify = replacement
+end
+
+def build()
+  cb = mutate
+  cb(0)
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build())
+end
+`,
+		},
+		{
 			name: "summaries are not reused after namespace mutation",
 			source: `
 def replacement(value)

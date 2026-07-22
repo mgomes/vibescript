@@ -2798,6 +2798,9 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.callArgumentFacts = argumentFacts
 		c.checkCallResolved(function, typed, target, targetResolved)
 		c.callArgumentFacts = previousFacts
+		if c.returnCollector != nil && !targetResolved && c.callMayDispatchDynamicValue(typed) {
+			c.returnCollector.record(nil)
+		}
 		if targetResolved && target.fn != nil {
 			c.applyScriptFunctionNamespaceMutations(typed, target)
 		}
@@ -4767,6 +4770,29 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		}
 	}
 	return staticCallable{}, false
+}
+
+// callMayDispatchDynamicValue distinguishes unresolved first-class dispatch
+// from fixed builtin dispatch that simply has no checker contract. An
+// unshadowed identifier or fixed receiver selects fixed runtime dispatch (or
+// fails before dispatch), while a bound local, host override, or dynamic
+// receiver can select an arbitrary callee.
+func (c *scriptChecker) callMayDispatchDynamicValue(call *CallExpr) bool {
+	switch callee := call.Callee.(type) {
+	case *Identifier:
+		return c.identifierShadowed(callee.Name) ||
+			c.hostGlobalShadows(callee.Name) ||
+			c.typeRootHasBinding(callee.Name) ||
+			c.hostBuiltinOverrides(callee.Name)
+	case *MemberExpr:
+		if callee.Property == "call" {
+			return true
+		}
+		_, fixedReceiver := c.staticMemberReceiverKinds(callee)
+		return !fixedReceiver
+	default:
+		return true
+	}
 }
 
 func (c *scriptChecker) typeRootFunction(name string) (*ScriptFunction, bool) {
