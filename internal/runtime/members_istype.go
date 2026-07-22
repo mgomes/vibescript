@@ -125,7 +125,11 @@ func parseTypeAtom(text string) (*TypeExpr, error) {
 // not resolve falls back to structural matching; a qualified name that does
 // not resolve is an error, since it can never match anything.
 func namedAtomMatches(exec *Execution, receiver Value, ty *TypeExpr, text string) (bool, error) {
-	ctx := typeContext{owner: exec.currentSourceScript(), env: exec.root, fallback: exec.root, exec: exec}
+	env := exec.currentEnv()
+	if env == nil {
+		env = exec.root
+	}
+	ctx := typeContext{owner: exec.currentSourceScript(), env: env, fallback: exec.root, exec: exec}
 	match, ok, err := lookupNamedTypeForType(ty, ctx)
 	if err != nil || !ok {
 		// An unknown qualified name can never match and errors even for a

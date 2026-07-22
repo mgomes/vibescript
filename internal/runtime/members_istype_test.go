@@ -178,6 +178,41 @@ end
 	}
 }
 
+func TestIsTypePredicateUnqualifiedModuleAtomUsesModuleDefinition(t *testing.T) {
+	t.Parallel()
+
+	dir := tempModuleTree(t,
+		moduleFile{path: "a.vibe", content: "enum Status\n  Ok\nend\n"},
+		moduleFile{path: "b.vibe", content: `enum Status
+  Ok
+end
+
+def pick() -> Status
+  :ok
+end
+
+def matches(value)
+  value.is_type?(:Status)
+end
+`},
+	)
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	script := compileScriptWithEngine(t, engine, `
+def run()
+  require("a")
+  require("b", as: "b")
+  b.matches(b.pick())
+end
+`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call(run) error: %v", err)
+	}
+	if got.Kind() != KindBool || !got.Bool() {
+		t.Fatalf("run() = %#v, want true: unqualified atoms use their module definition", got)
+	}
+}
+
 func TestIsTypePredicateUnknownQualifiedAtomErrors(t *testing.T) {
 	t.Parallel()
 
