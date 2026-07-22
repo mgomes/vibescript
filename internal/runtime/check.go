@@ -4545,6 +4545,27 @@ func (c *scriptChecker) implicitSelfFunction(name string) *ScriptFunction {
 	return c.selfClass.Methods[name]
 }
 
+func (c *scriptChecker) implicitSelfSummaryCallable(name string) (staticCallable, bool) {
+	if c.selfClass == nil ||
+		(c.selfClassContext && name == "new") ||
+		(!c.selfClassContext && name == "class") {
+		return staticCallable{}, false
+	}
+	fn := c.implicitSelfFunction(name)
+	if fn == nil {
+		return staticCallable{}, false
+	}
+	separator := "#"
+	if c.selfClassContext {
+		separator = "."
+	}
+	return staticCallable{
+		name:       c.selfClass.Name + separator + name,
+		fn:         fn,
+		resolution: calleeMemberMethod,
+	}, true
+}
+
 // scriptFunctionClassConstantEffectsProvenAbsent recognizes the bounded set
 // of script functions whose reachable expressions cannot write class state.
 // Unknown dispatch, callable bindings, control flow, and mutation all remain
@@ -9515,6 +9536,9 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 		if target, ok := c.resolveMemberCallable(callee); ok {
 			return target, true
 		}
+	}
+	if c.returnCollector != nil {
+		return c.implicitSelfCallSummaryTarget(call.Callee)
 	}
 	return staticCallable{}, false
 }

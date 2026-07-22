@@ -3530,6 +3530,25 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 	return c.inferResolvedCallExprType(call, target)
 }
 
+func (c *scriptChecker) implicitSelfCallSummaryTarget(callee Expression) (staticCallable, bool) {
+	switch typed := callee.(type) {
+	case *Identifier:
+		if c.identifierShadowed(typed.Name) || c.hostGlobalShadows(typed.Name) ||
+			c.typeRootHasBinding(typed.Name) || c.hostBuiltinOverrides(typed.Name) {
+			return staticCallable{}, false
+		}
+		return c.implicitSelfSummaryCallable(typed.Name)
+	case *MemberExpr:
+		ident, ok := typed.Object.(*Identifier)
+		if !ok || ident.Name != "self" {
+			return staticCallable{}, false
+		}
+		return c.implicitSelfSummaryCallable(typed.Property)
+	default:
+		return staticCallable{}, false
+	}
+}
+
 func (c *scriptChecker) inferResolvedCallExprType(call *CallExpr, target staticCallable) *TypeExpr {
 	member, memberCall := call.Callee.(*MemberExpr)
 	if memberCall && member.Safe && typeExprIsNilOnly(c.safeNavigationReceiverFact(member.Object)) {

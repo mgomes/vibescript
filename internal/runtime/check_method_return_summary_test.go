@@ -52,6 +52,98 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "implicit self instance method",
+			source: `
+class Counter
+  def helper()
+    42
+  end
+
+  def value()
+    helper()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.new.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "explicit self instance method",
+			source: `
+class Counter
+  def helper()
+    42
+  end
+
+  def value()
+    self.helper()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.new.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "implicit self class method",
+			source: `
+class Counter
+  def self.helper()
+    42
+  end
+
+  def self.value()
+    helper()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "explicit self class method",
+			source: `
+class Counter
+  def self.helper()
+    42
+  end
+
+  def self.value()
+    self.helper()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "annotated receiver",
 			source: `
 class Counter
@@ -223,6 +315,114 @@ end
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCheckWarningContains(t, compileScriptDefault(t, tc.source), tc.warning)
+		})
+	}
+}
+
+func TestCheckMethodReturnSummariesRejectImpossibleImplicitSelfCalls(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "bare instance method",
+			source: `
+class Counter
+  def helper(required)
+    42
+  end
+
+  def value()
+    helper()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.new.value())
+end
+`,
+		},
+		{
+			name: "explicit instance method",
+			source: `
+class Counter
+  def helper(required)
+    42
+  end
+
+  def value()
+    self.helper()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.new.value())
+end
+`,
+		},
+		{
+			name: "bare class method",
+			source: `
+class Counter
+  def self.helper(required)
+    42
+  end
+
+  def self.value()
+    helper()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.value())
+end
+`,
+		},
+		{
+			name: "explicit class method",
+			source: `
+class Counter
+  def self.helper(required)
+    42
+  end
+
+  def self.value()
+    self.helper()
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.value())
+end
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			warnings := strings.Join(checkWarningMessages(compileScriptDefault(t, tc.source).CheckWarnings()), "\n")
+			if strings.Contains(warnings, "call to takes_string") {
+				t.Errorf("CheckWarnings() = %q, impossible call produced an outer return warning", warnings)
+			}
 		})
 	}
 }
