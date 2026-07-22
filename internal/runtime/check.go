@@ -2749,6 +2749,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 						c.recordNonCompletingExpression()
 						return
 					}
+					c.captureNonCompletingExpressionArm()
 					targetMayWrite = false
 					inferWrite = false
 					c.restoreRuntimeState(runtimeState)
@@ -2769,6 +2770,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 						c.recordNonCompletingExpression()
 						return
 					}
+					c.captureNonCompletingExpressionArm()
 					targetMayWrite = false
 					inferWrite = false
 					c.restoreRuntimeState(runtimeState)
@@ -2907,8 +2909,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.restoreRuntimeState(falseRuntimeState)
 			c.restoreScopeState(falseScopeState)
 			if !c.checkExpression(function, elseIf.Condition) {
-				c.captureExceptionExitState()
-				c.captureEnsureExitState()
+				c.captureNonCompletingExpressionArm()
 				finish()
 				return
 			}
@@ -3352,6 +3353,22 @@ func (c *scriptChecker) captureEnsureExitState() {
 		runtimeState: c.snapshotRuntimeState(),
 		scopeState:   c.snapshotScopeState(),
 	})
+}
+
+// captureNonCompletingExpressionArm preserves a failed arm before its parent
+// expression restores another arm. An inline rescue consumes the failure;
+// otherwise it propagates to the surrounding rescue and ensure.
+func (c *scriptChecker) captureNonCompletingExpressionArm() {
+	if c.expressionExitSites != nil {
+		*c.expressionExitSites = append(*c.expressionExitSites, checkStateSnapshot{
+			runtimeState: c.snapshotRuntimeState(),
+			scopeState:   c.snapshotScopeState(),
+			typePoison:   cloneCheckStringSet(c.typePoison),
+		})
+		return
+	}
+	c.captureExceptionExitState()
+	c.captureEnsureExitState()
 }
 
 // collectImplicitReturnLeaves gathers the statements whose expressions the
@@ -3954,6 +3971,16 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				callMayComplete = targetMayEnter
 			}
 		}
+		opaqueCallEffectsMayRun := targetMayEnter && opaqueCallEffects
+		// Binding can stop before the body after earlier parameter defaults
+		// have run, so carry only that evaluated prefix into the exception path.
+		if callMayEnter && targetResolved && target.fn != nil &&
+			!c.scriptCallDefaultPrefixClassConstantEffectsProvenAbsent(checkedCall, target) {
+			opaqueCallEffectsMayRun = true
+		} else if callMayEnter && !targetResolved && dynamicResolution.exact &&
+			c.exactDynamicCallDefaultPrefixHasOpaqueClassConstantEffects(dynamicResolution) {
+			opaqueCallEffectsMayRun = true
+		}
 		if targetResolved && (callMayComplete || argumentsMayBeSkipped) {
 			result := c.inferResolvedCallExprType(checkedCall, target)
 			if argumentsMayBeSkipped {
@@ -4011,7 +4038,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 			}
 		}
-		if targetMayEnter && opaqueCallEffects {
+		if opaqueCallEffectsMayRun {
 			c.markOpaqueClassConstants()
 		}
 		callBlockMayRun := targetMayEnter && invokedLambda == nil && c.callMayEvaluateBlock(typed)
@@ -4070,8 +4097,10 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		c.callArgumentStaticValues = previousStaticValues
 		if argumentsMayBeSkipped {
 			if !callMayComplete {
-				// The non-nil arm cannot reach the expression result, so only
-				// the nil short-circuit contributes state after the call.
+				// The failed non-nil arm still reaches rescue and ensure with any
+				// argument or default effects that ran before the failure. Only the
+				// nil short-circuit contributes state after the call itself.
+				c.captureNonCompletingExpressionArm()
 				c.restoreRuntimeState(argumentState)
 				c.restoreScopeState(argumentScopeState)
 			} else {
@@ -4138,9 +4167,14 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				c.applyLambdaBlockNamespaceMutations(invokedLambda)
 				c.checkInvokedLambdaSummaryYields(function, invokedLambda)
 			}
+			dispatchRuntimeState := c.snapshotRuntimeState()
+			dispatchScopeState := c.snapshotScopeState()
 			target, resolved, invoked, completed := c.checkMemberAutoCall(function, typed)
 			if !completed {
 				if typed.Safe && !c.safeNavigationReceiverKnownNonNil(typed.Object) {
+					c.captureNonCompletingExpressionArm()
+					c.restoreRuntimeState(dispatchRuntimeState)
+					c.restoreScopeState(dispatchScopeState)
 					c.pinExpressionFact(typed, checkTypeNil)
 					return true
 				}
@@ -4238,6 +4272,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				if rightAlwaysRuns {
 					return false
 				}
+				c.captureNonCompletingExpressionArm()
 				c.restoreRuntimeState(state)
 				c.restoreScopeState(scopeState)
 			} else if !rightAlwaysRuns {
@@ -4344,6 +4379,42 @@ func (c *scriptChecker) callHasOpaqueClassConstantEffects(call *CallExpr, target
 		}
 	}
 	return true
+}
+
+func (c *scriptChecker) exactDynamicCallDefaultPrefixHasOpaqueClassConstantEffects(
+	resolution checkDynamicCallResolution,
+) bool {
+	for _, candidate := range resolution.targets {
+		if candidate.bindingStarts &&
+			!c.scriptCallDefaultPrefixClassConstantEffectsProvenAbsent(
+				candidate.call,
+				candidate.target,
+			) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) exactDynamicCallHasOpaqueClassConstantEffects(
+	resolution checkDynamicCallResolution,
+) bool {
+	for _, candidate := range resolution.targets {
+		if candidate.mayEnter {
+			if !c.scriptCallClassConstantEffectsProvenAbsent(candidate.call, candidate.target) {
+				return true
+			}
+			continue
+		}
+		if candidate.bindingStarts &&
+			!c.scriptCallDefaultPrefixClassConstantEffectsProvenAbsent(
+				candidate.call,
+				candidate.target,
+			) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *scriptChecker) callableExpressionFunctions(expr Expression) ([]*ScriptFunction, bool) {
@@ -4560,56 +4631,133 @@ func (c *scriptChecker) scriptCallClassConstantEffectsProvenAbsent(
 	return c.scriptCallClassConstantEffectsProvenAbsentSeen(
 		call,
 		target,
-		make(map[*ScriptFunction]struct{}),
+		make(map[scriptClassConstantEffectKey]struct{}),
 	)
+}
+
+type scriptClassConstantEffectKey struct {
+	fn   *ScriptFunction
+	plan string
+}
+
+func scriptClassConstantEffectPlanKey(defaultParams []int, body bool) string {
+	var key strings.Builder
+	if body {
+		key.WriteByte('b')
+	} else {
+		key.WriteByte('d')
+	}
+	for _, index := range defaultParams {
+		key.WriteByte(':')
+		key.WriteString(strconv.Itoa(index))
+	}
+	return key.String()
 }
 
 func (c *scriptChecker) scriptCallClassConstantEffectsProvenAbsentSeen(
 	call *CallExpr,
 	target staticCallable,
-	seen map[*ScriptFunction]struct{},
+	seen map[scriptClassConstantEffectKey]struct{},
 ) bool {
 	fn := target.fn
 	if fn == nil || fn.owner != c.script {
 		return false
 	}
-	if _, recursive := seen[fn]; recursive {
-		return false
+
+	defaultParams := make([]int, 0, len(fn.Params))
+	collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
+	for i, param := range fn.Params {
+		if param.DefaultVal != nil &&
+			(call == nil || callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash)) {
+			defaultParams = append(defaultParams, i)
+		}
 	}
-	seen[fn] = struct{}{}
-	defer delete(seen, fn)
+	return c.scriptFunctionClassConstantEffectsProvenAbsentForPlan(
+		fn,
+		defaultParams,
+		true,
+		seen,
+	)
+}
+
+func (c *scriptChecker) scriptFunctionClassConstantEffectsProvenAbsentForPlan(
+	fn *ScriptFunction,
+	defaultParams []int,
+	body bool,
+	seen map[scriptClassConstantEffectKey]struct{},
+) bool {
+	key := scriptClassConstantEffectKey{
+		fn:   fn,
+		plan: scriptClassConstantEffectPlanKey(defaultParams, body),
+	}
+	if _, recursive := seen[key]; recursive {
+		// Re-entering the same evaluated defaults/body is a proof cycle. Any
+		// concrete write before or after that edge is still scanned by its
+		// first visit; treating the edge itself as clean reaches the fixed point.
+		return true
+	}
+	seen[key] = struct{}{}
+	defer delete(seen, key)
 
 	bindings := scriptFunctionBindings(fn)
 	restoreResolution := c.withClassConstantProofResolution(fn, bindings)
 	defer restoreResolution()
 
-	collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
-	for i, param := range fn.Params {
-		if param.DefaultVal == nil {
-			continue
+	for _, index := range defaultParams {
+		if index < 0 || index >= len(fn.Params) {
+			return false
 		}
-		if call != nil && !callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
-			continue
-		}
+		param := fn.Params[index]
 		if !c.scriptExpressionClassConstantEffectsProvenAbsent(param.DefaultVal, bindings, seen) {
 			return false
 		}
 	}
+	if !body {
+		return true
+	}
 	for _, stmt := range fn.Body {
-		var expr Expression
+		var expressions []Expression
 		switch typed := stmt.(type) {
 		case *ExprStmt:
-			expr = typed.Expr
+			expressions = []Expression{typed.Expr}
 		case *ReturnStmt:
-			expr = typed.Value
+			expressions = []Expression{typed.Value}
+		case *RaiseStmt:
+			if staticRaiseErrorClass(typed) {
+				expressions = []Expression{typed.Message}
+			} else {
+				expressions = []Expression{typed.Value, typed.Message}
+			}
 		default:
 			return false
 		}
-		if !c.scriptExpressionClassConstantEffectsProvenAbsent(expr, bindings, seen) {
-			return false
+		for _, expr := range expressions {
+			if !c.scriptExpressionClassConstantEffectsProvenAbsent(expr, bindings, seen) {
+				return false
+			}
 		}
 	}
 	return true
+}
+
+func (c *scriptChecker) scriptCallDefaultPrefixClassConstantEffectsProvenAbsent(
+	call *CallExpr,
+	target staticCallable,
+) bool {
+	fn := target.fn
+	if call == nil || fn == nil || fn.owner != c.script {
+		return false
+	}
+	plan := c.scriptCallBindingPlan(call, target)
+	if plan.bodyMayEnter || len(plan.defaultParams) == 0 {
+		return true
+	}
+	return c.scriptFunctionClassConstantEffectsProvenAbsentForPlan(
+		fn,
+		plan.defaultParams,
+		false,
+		make(map[scriptClassConstantEffectKey]struct{}),
+	)
 }
 
 func scriptFunctionBindings(fn *ScriptFunction) map[string]*TypeExpr {
@@ -4685,7 +4833,7 @@ func (c *scriptChecker) withClassConstantProofResolution(
 func (c *scriptChecker) scriptExpressionClassConstantEffectsProvenAbsent(
 	expr Expression,
 	bindings map[string]*TypeExpr,
-	seen map[*ScriptFunction]struct{},
+	seen map[scriptClassConstantEffectKey]struct{},
 ) bool {
 	if expr == nil {
 		return true
@@ -5336,6 +5484,8 @@ func (c *scriptChecker) checkConditionalExpression(
 		if completed {
 			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		} else {
+			c.captureNonCompletingExpressionArm()
 		}
 		if conditionKnown && conditionTruthy {
 			return completed
@@ -5360,6 +5510,8 @@ func (c *scriptChecker) checkConditionalExpression(
 	if completed {
 		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+	} else {
+		c.captureNonCompletingExpressionArm()
 	}
 	if conditionKnown {
 		return completed
@@ -5402,6 +5554,8 @@ func (c *scriptChecker) checkIfExpression(
 		if completed {
 			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		} else {
+			c.captureNonCompletingExpressionArm()
 		}
 		if conditionKnown && conditionTruthy {
 			return completed
@@ -5426,6 +5580,7 @@ func (c *scriptChecker) checkIfExpression(
 		c.restoreRuntimeState(falseRuntimeState)
 		c.restoreScopeState(falseScopeState)
 		if !c.checkExpressionWithAuto(function, branch.Condition, true) {
+			c.captureNonCompletingExpressionArm()
 			if len(branchRuntimeStates) == 0 {
 				return false
 			}
@@ -5445,6 +5600,8 @@ func (c *scriptChecker) checkIfExpression(
 			if completed {
 				branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 				branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+			} else {
+				c.captureNonCompletingExpressionArm()
 			}
 			if branchKnown && branchTruthy {
 				if len(branchRuntimeStates) == 0 {
@@ -5475,6 +5632,8 @@ func (c *scriptChecker) checkIfExpression(
 	if c.checkExpressionWithExpectation(function, expr.Alternate, expectation) {
 		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+	} else {
+		c.captureNonCompletingExpressionArm()
 	}
 	if len(branchRuntimeStates) == 0 {
 		return false
@@ -5548,6 +5707,9 @@ func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr,
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Fallback)
 	fallbackRuntimeState := c.snapshotRuntimeState()
 	fallbackScopeState := c.snapshotScopeState()
+	if !fallbackCompleted {
+		c.captureNonCompletingExpressionArm()
+	}
 	c.typePoison = unionCheckStringSet(bodyTypePoison, c.typePoison)
 
 	runtimeStates := make([]checkRuntimeState, 0, 2)
@@ -5594,6 +5756,7 @@ func (c *scriptChecker) checkCaseExpression(
 			c.restoreRuntimeState(fallthroughRuntimeState)
 			c.restoreScopeState(fallthroughScopeState)
 			if !c.checkExpressionWithAuto(function, value.Expr, true) {
+				c.captureNonCompletingExpressionArm()
 				if len(branchRuntimeStates) == 0 {
 					return false
 				}
@@ -5603,6 +5766,7 @@ func (c *scriptChecker) checkCaseExpression(
 			}
 			c.collectRuntimeRequireCallExportsFromExpression(value.Expr)
 			if !c.caseWhenSplatExpansionMaySucceed(value.Expr, value.Splat) {
+				c.captureNonCompletingExpressionArm()
 				if len(branchRuntimeStates) == 0 {
 					return false
 				}
@@ -5618,6 +5782,8 @@ func (c *scriptChecker) checkCaseExpression(
 			if completed {
 				branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 				branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+			} else {
+				c.captureNonCompletingExpressionArm()
 			}
 			fallthroughRuntimeState = matchRuntimeState
 			fallthroughScopeState = matchScopeState
@@ -5631,6 +5797,8 @@ func (c *scriptChecker) checkCaseExpression(
 	if completed {
 		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
 		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+	} else {
+		c.captureNonCompletingExpressionArm()
 	}
 	if len(branchRuntimeStates) == 0 {
 		return false
@@ -5686,6 +5854,9 @@ func (c *scriptChecker) checkMemberAutoCall(
 		c.callArgumentCallables = map[Expression][]*ScriptFunction{}
 		c.callArgumentStaticValues = map[Expression][]Expression{}
 		bodyMayEnter := c.refineDynamicCallTargetEntry(resolution.targets)
+		if resolution.exact && c.exactDynamicCallHasOpaqueClassConstantEffects(resolution) {
+			c.markOpaqueClassConstants()
+		}
 		c.checkDynamicCallTargets(function, resolution.targets, resolution.diagnoseTargets)
 		c.applyDynamicCallNamespaceMutations(call, resolution.targets)
 		c.callArgumentFacts = previousFacts
@@ -5693,6 +5864,7 @@ func (c *scriptChecker) checkMemberAutoCall(
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
 		if !resolution.exact {
+			c.markOpaqueClassConstants()
 			return staticCallable{}, false, true, true
 		}
 		invoked := bodyMayEnter || resolution.nonScriptMayComplete
@@ -5716,6 +5888,13 @@ func (c *scriptChecker) checkMemberAutoCall(
 				c.enqueueReachableFunction(target.name, target.fn)
 			} else if plan.defaultParams != nil {
 				c.enqueueReachableFunctionBinding(target.name, target.fn, nil, plan)
+			}
+			if plan.bodyMayEnter {
+				if !c.scriptCallClassConstantEffectsProvenAbsent(call, target) {
+					c.markOpaqueClassConstants()
+				}
+			} else if !c.scriptCallDefaultPrefixClassConstantEffectsProvenAbsent(call, target) {
+				c.markOpaqueClassConstants()
 			}
 			c.applyAutoInvokedMemberNamespaceMutations(member, call, target)
 			completed := plan.bodyMayEnter &&
