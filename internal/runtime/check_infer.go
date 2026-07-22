@@ -6552,6 +6552,11 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallEx
 				}
 				sort.Strings(fields)
 				for _, key := range fields {
+					// Optional fields may be absent, so they do not witness a
+					// merge entry that is guaranteed to land.
+					if shapeFieldOptional(written.Shape[key]) {
+						continue
+					}
 					c.checkShapeMergeEntry(function, name, shape, key,
 						written.Shape[key], arg.Pos(), arg.Pos(), blockConflicts)
 				}

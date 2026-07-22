@@ -351,6 +351,15 @@ end
 			warning: "write to user field name expected string, got int",
 		},
 		{
+			name: "shape merge checks a required shape parameter field",
+			source: `
+def f(user: { name: string }, patch: { extra: int })
+  user.merge!(patch)
+end
+`,
+			warning: "write to user adds field extra to exact shape { name: string }",
+		},
+		{
 			name: "safe navigation store checks the nullable bound",
 			source: `
 def f(h: hash<string, int>?)
@@ -872,6 +881,22 @@ end
 			source: `
 def f(user: { name: string })
   user.merge!({ extra: 1 }, 5)
+end
+`,
+		},
+		{
+			name: "optional extra field in a shape merge may be absent",
+			source: `
+def f(user: { name: string }, patch: { extra?: int })
+  user.merge!(patch)
+end
+`,
+		},
+		{
+			name: "optional present field in a shape merge may be absent",
+			source: `
+def f(user: { name: string }, patch: { name?: int })
+  user.merge!(patch)
 end
 `,
 		},
