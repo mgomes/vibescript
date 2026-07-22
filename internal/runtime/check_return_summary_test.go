@@ -2235,3 +2235,93 @@ end
 `)
 	requireNoCheckWarnings(t, script)
 }
+
+func TestCheckImmediateLambdaNamespaceMutations(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		prelude string
+		invoke  string
+		mutates bool
+	}{
+		{
+			name:    "stabby call",
+			invoke:  `-> { JSON.stringify = replacement }.call()`,
+			mutates: true,
+		},
+		{
+			name:    "bare stabby call",
+			invoke:  `-> { JSON.stringify = replacement }.call`,
+			mutates: true,
+		},
+		{
+			name:    "lambda builtin call",
+			invoke:  `lambda { JSON.stringify = replacement }.call()`,
+			mutates: true,
+		},
+		{
+			name:    "matching typed argument",
+			invoke:  `->(value: int) { JSON.stringify = replacement }.call(1)`,
+			mutates: true,
+		},
+		{
+			name:    "matching literal splat",
+			invoke:  `->(value: int) { JSON.stringify = replacement }.call(*[1])`,
+			mutates: true,
+		},
+		{
+			name:   "arity mismatch",
+			invoke: `begin; ->(value) { JSON.stringify = replacement }.call(); rescue; nil; end`,
+		},
+		{
+			name:   "typed argument mismatch",
+			invoke: `begin; ->(value: int) { JSON.stringify = replacement }.call("bad"); rescue; nil; end`,
+		},
+		{
+			name:   "callback argument on rejected call",
+			invoke: `begin; -> { nil }.call(-> { JSON.stringify = replacement }); rescue; nil; end`,
+		},
+		{
+			name:   "callback block argument on rejected call",
+			invoke: `begin; -> { nil }.call(&-> { JSON.stringify = replacement }); rescue; nil; end`,
+		},
+		{
+			name:   "rejected call block",
+			invoke: `begin; -> { nil }.call { JSON.stringify = replacement }; rescue; nil; end`,
+		},
+		{
+			name:   "nonempty keyword splat",
+			invoke: `begin; -> { JSON.stringify = replacement }.call(**{ x: 1 }); rescue; nil; end`,
+		},
+		{
+			name:    "shadowed lambda builtin",
+			prelude: "def lambda()\n  1\nend\n\n",
+			invoke:  `begin; lambda { JSON.stringify = replacement }.call(); rescue; nil; end`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, tc.prelude+`
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  `+tc.invoke+`
+  takes_int(JSON.stringify({}))
+end
+`)
+			if tc.mutates {
+				requireNoCheckWarnings(t, script)
+				return
+			}
+			requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+		})
+	}
+}

@@ -2753,6 +2753,10 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// point, before member dispatch poisons the receiver's own facts.
 		callSkipsInferred := c.safeNavigationCallSkipsInferred(typed)
 		argumentsAlwaysEvaluate := c.safeNavigationArgumentsAlwaysEvaluateInferred(typed)
+		var invokedLambda *BlockLiteral
+		if member, ok := typed.Callee.(*MemberExpr); ok && member.Property == "call" {
+			invokedLambda = c.resolveImmediateLambdaBlock(member.Object)
+		}
 		c.checkExpressionWithAuto(function, typed.Callee, false)
 		if staticNilSafeNavigationCall(typed) || callSkipsInferred {
 			return
@@ -2790,7 +2794,9 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		for i, arg := range typed.Args {
 			expectation := expressionExpectation{}
 			_, isSplat := arg.(*SplatArg)
-			if targetResolved && !positionalSplatSeen && !isSplat {
+			if invokedLambda != nil && !positionalSplatSeen && !isSplat {
+				expectation = blockArgumentExpectation(invokedLambda.Params, i, len(typed.Args))
+			} else if targetResolved && !positionalSplatSeen && !isSplat {
 				expectation = staticCallablePositionalArgumentExpectation(target, i)
 			}
 			c.checkExpressionWithExpectation(function, arg, expectation)
@@ -2827,16 +2833,23 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		if targetResolved && target.fn != nil {
 			c.applyScriptFunctionNamespaceMutations(typed, target)
 		}
+		immediateLambdaEnters := c.immediateLambdaCallMayEnter(invokedLambda, typed)
+		if immediateLambdaEnters {
+			c.applyLambdaBlockNamespaceMutations(invokedLambda)
+		}
 		// A lambda literal escaping into the call may run during it, so its
 		// possible namespace writes count here, unlike a bare definition.
-		for _, arg := range typed.Args {
-			c.applyLambdaLiteralNamespaceMutations(arg)
+		// A rejected direct lambda call cannot invoke any of its callbacks.
+		if invokedLambda == nil || immediateLambdaEnters {
+			for _, arg := range typed.Args {
+				c.applyLambdaLiteralNamespaceMutations(arg)
+			}
+			for _, kwarg := range typed.KwArgs {
+				c.applyLambdaLiteralNamespaceMutations(kwarg.Value)
+			}
+			c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
 		}
-		for _, kwarg := range typed.KwArgs {
-			c.applyLambdaLiteralNamespaceMutations(kwarg.Value)
-		}
-		c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
-		if c.callMayEvaluateBlock(typed) {
+		if invokedLambda == nil && c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
 			// The lambda builtin converts its literal block to local return
 			// semantics, so those returns cannot unwind the enclosing
@@ -2877,8 +2890,15 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.poisonEscapedIdentifier(kwarg.Value)
 		}
 	case *MemberExpr:
+		var invokedLambda *BlockLiteral
+		if autoCall && typed.Property == "call" {
+			invokedLambda = c.resolveImmediateLambdaBlock(typed.Object)
+		}
 		c.checkExpressionWithAuto(function, typed.Object, true)
 		if autoCall {
+			if lambdaLiteralArity(invokedLambda) == 0 {
+				c.applyLambdaBlockNamespaceMutations(invokedLambda)
+			}
 			c.checkMemberAutoCall(function, typed)
 			// Member dispatch on a container may mutate it in place (push,
 			// delete, ...), so the receiver's structural facts stop
@@ -6311,6 +6331,96 @@ func (c *scriptChecker) applyAutoInvokedMemberNamespaceMutations(member *MemberE
 	}
 }
 
+// resolveImmediateLambdaBlock recognizes only syntactically direct lambda
+// receivers. The named form counts when an unshadowed call resolves to the
+// core lambda constructor with its ordinary zero-argument literal-block shape.
+func (c *scriptChecker) resolveImmediateLambdaBlock(expr Expression) *BlockLiteral {
+	switch typed := expr.(type) {
+	case *BlockLiteral:
+		if typed.Lambda {
+			return typed
+		}
+	case *CallExpr:
+		callee, ok := typed.Callee.(*Identifier)
+		if !ok || callee.Name != "lambda" || typed.Block == nil || typed.BlockArg != nil ||
+			len(typed.Args) != 0 || len(typed.KwArgs) != 0 ||
+			c.hostGlobalShadows("lambda") || c.hostBuiltinOverrides("lambda") {
+			return nil
+		}
+		target, resolved := c.resolveCallable(typed)
+		if resolved && target.fn == nil && target.name == "lambda" {
+			return typed.Block
+		}
+	}
+	return nil
+}
+
+func lambdaLiteralArity(block *BlockLiteral) int {
+	if block == nil {
+		return -1
+	}
+	if len(block.Params) > 0 {
+		return len(block.Params)
+	}
+	return implicitBlockParamArity(block.ImplicitParams)
+}
+
+// immediateLambdaCallMayEnter reports whether the direct receiver's body can
+// run. Exact arity and scalar literal type contradictions are rejected;
+// dynamic splats stay conservative because they may provide the missing slots.
+func (c *scriptChecker) immediateLambdaCallMayEnter(block *BlockLiteral, call *CallExpr) bool {
+	if block == nil || call == nil || call.Block != nil {
+		return false
+	}
+	if call.BlockArg != nil {
+		if _, nilBlock := call.BlockArg.(*NilLiteral); !nilBlock {
+			return false
+		}
+	}
+	for _, kwarg := range call.KwArgs {
+		hash, empty := kwarg.Value.(*HashLiteral)
+		if !kwarg.Splat || !empty || hash.ShapeType != nil || len(hash.Pairs) != 0 {
+			return false
+		}
+	}
+	arguments := make([]Expression, 0, len(call.Args))
+	dynamicSplat := false
+	for _, arg := range call.Args {
+		splat, ok := arg.(*SplatArg)
+		if !ok {
+			arguments = append(arguments, arg)
+			continue
+		}
+		array, exact := splat.Value.(*ArrayLiteral)
+		if !exact {
+			dynamicSplat = true
+			continue
+		}
+		arguments = append(arguments, array.Elements...)
+	}
+	if len(arguments) > lambdaLiteralArity(block) ||
+		!dynamicSplat && len(arguments) != lambdaLiteralArity(block) {
+		return false
+	}
+	if dynamicSplat || len(block.Params) == 0 {
+		return true
+	}
+	for i, argument := range arguments {
+		param := block.Params[i]
+		if param.Type == nil {
+			continue
+		}
+		value, static := staticLiteralValue(argument)
+		if !static {
+			continue
+		}
+		if _, err := normalizeValueForType(value, param.Type, c.runtimeTypeContext()); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // applyLambdaLiteralNamespaceMutations records the possible namespace
 // writes of a lambda expression passed directly to a call: the callee may
 // invoke it during the call. A bare lambda definition leaks nothing — its
@@ -6328,6 +6438,15 @@ func (c *scriptChecker) applyLambdaLiteralNamespaceMutations(arg Expression) {
 			block = typed.Block
 		}
 	}
+	if block == nil {
+		return
+	}
+	c.applyLambdaBlockNamespaceMutations(block)
+}
+
+// applyLambdaBlockNamespaceMutations records the namespace members a lambda
+// may rewrite once its body can run.
+func (c *scriptChecker) applyLambdaBlockNamespaceMutations(block *BlockLiteral) {
 	if block == nil {
 		return
 	}
