@@ -851,7 +851,7 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 		next := c.inferExpressionType(stmt.Value)
 		if stmt.Operator == tokenOrAssign || stmt.Operator == tokenAndAssign {
 			c.bindLocalType(target.Name, logicalAssignmentFact(stmt.Operator, current, next))
-			c.bindLocalClassValue(target.Name, "")
+			c.bindLogicalAssignmentClassValueFact(target.Name, stmt.Operator, current, stmt.Value)
 			return
 		}
 		if stmt.Operator != "" {
@@ -933,6 +933,47 @@ func logicalAssignmentFact(operator TokenType, current, next *TypeExpr) *TypeExp
 		return nil
 	}
 	return unionTypeExprs(current, next)
+}
+
+// bindLogicalAssignmentClassValueFact mirrors logicalAssignmentFact for exact
+// class objects, which are always truthy even though they have no TypeExpr.
+func (c *scriptChecker) bindLogicalAssignmentClassValueFact(
+	name string,
+	operator TokenType,
+	currentType *TypeExpr,
+	next Expression,
+) {
+	currentFact, currentTracked := c.localValueFactFor(name)
+	currentExact := currentTracked && len(currentFact.classNames) > 0 && len(currentFact.callables) == 0
+	bindNext := func() {
+		if classNames, ok := c.classValueExpressionNames(next); ok {
+			c.bindLocalClassValues(name, classNames)
+			return
+		}
+		c.bindLocalClassValue(name, "")
+	}
+
+	switch operator {
+	case tokenOrAssign:
+		if currentExact {
+			c.bindLocalClassValues(name, currentFact.classNames)
+			return
+		}
+		if typeExprIsNilOnly(currentType) {
+			bindNext()
+			return
+		}
+	case tokenAndAssign:
+		if currentExact || typeExprDefinitelyTruthy(currentType) {
+			bindNext()
+			return
+		}
+		if typeExprIsNilOnly(currentType) {
+			c.bindLocalClassValue(name, "")
+			return
+		}
+	}
+	c.bindLocalClassValue(name, "")
 }
 
 func (c *scriptChecker) bindDestructureElementType(element DestructureElement) {
@@ -2605,6 +2646,12 @@ func (c *scriptChecker) inferIfExpressionTypeWithExpectation(expr *IfExpr, expec
 func (c *scriptChecker) inferredConditionTruthiness(condition Expression) (bool, bool) {
 	if truthy, known := staticExpressionTruthiness(condition); known {
 		return truthy, known
+	}
+	if ident, ok := condition.(*Identifier); ok {
+		if fact, exact := c.localValueFactFor(ident.Name); exact &&
+			len(fact.classNames) > 0 && len(fact.callables) == 0 {
+			return true, true
+		}
 	}
 	ty := c.inferExpressionType(condition)
 	if typeExprDefinitelyTruthy(ty) {

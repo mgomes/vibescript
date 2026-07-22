@@ -1082,6 +1082,43 @@ klass.new.check(User.new)
 `,
 		},
 		{
+			name: "or-assigned class alias",
+			source: `
+klass = Holder
+klass ||= Holder
+klass.User = Order
+klass.new.check(User.new)
+`,
+		},
+		{
+			name: "and-assigned class alias",
+			source: `
+klass = Order
+klass &&= Holder
+klass.User = Order
+klass.new.check(User.new)
+`,
+		},
+		{
+			name: "nil or-assigned class alias",
+			source: `
+klass = nil
+klass ||= Holder
+klass.User = Order
+klass.new.check(User.new)
+`,
+		},
+		{
+			name: "nil logical assignment class alias",
+			source: `
+klass = nil
+klass &&= Order
+klass ||= Holder
+klass.User = Order
+klass.new.check(User.new)
+`,
+		},
+		{
 			name: "dynamic argument receiver",
 			source: `
 def invoke(target)
@@ -1518,6 +1555,19 @@ end
 		{
 			name:   "conditional class value receiver",
 			source: "(true ? Holder : Holder).new.check(Order.new)\n",
+		},
+		{
+			name: "or-assigned class receiver skips rhs effects",
+			source: `
+def replace_holder_user()
+  Holder.User = Order
+  Order
+end
+
+klass = Holder
+klass ||= replace_holder_user()
+klass.new.check(Order.new)
+`,
 		},
 		{
 			name:   "hash class value receiver",
