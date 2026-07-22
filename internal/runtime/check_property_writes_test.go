@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // The checker seeds instance-method analysis with the contracts of typed
 // accessor-backed instance variables and rejects direct writes whose known
@@ -1325,6 +1328,49 @@ def make
   end
 end
 `))
+}
+
+func TestCheckCompoundIndexSetterWidensInitializerIvarFacts(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize(@box: User? = nil)
+    if @box
+      for index in [0]
+        @box[index] += 1
+      end
+      @a = @b
+    else
+      @b = 0
+      @a = @b
+    end
+  end
+
+  def [](index)
+    0
+  end
+
+  def []=(index, value)
+    @b = value
+  end
+end
+
+def run
+  user = User.new
+  user.send(:initialize, user)
+  user.a
+end
+`)
+	requireNoCheckWarnings(t, script)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run() = %v, want 1", got)
+	}
 }
 
 // Repeated regions preserve definitely-unset initializer ivars they cannot

@@ -3020,7 +3020,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if targetMayWrite {
 			c.recordRuntimeBindingTarget(typed.Target)
 		}
-		if typed.Operator == "" && assignmentTargetMayInvokeCode(typed.Target) {
+		if assignmentTargetMayInvokeCode(typed.Target) {
 			c.widenUnsetInstanceIvarFacts()
 		}
 		c.recordBindingTarget(typed.Target)

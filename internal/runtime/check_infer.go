@@ -1917,7 +1917,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffects(
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
 		case *AssignStmt:
 			collectRegionIvarWriteTargets(typed.Target, effects)
-			if typed.Operator == "" && assignmentTargetMayInvokeCode(typed.Target) {
+			if assignmentTargetMayInvokeCode(typed.Target) {
 				effects.unknown = true
 			}
 			c.collectRepeatedRegionIvarEffectsFromExpression(
