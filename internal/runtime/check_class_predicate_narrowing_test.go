@@ -1911,6 +1911,103 @@ end
 	}
 }
 
+func TestCheckClassPredicateNarrowingTracksClassMutationAcrossCalls(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		definition  string
+		mutation    string
+		wantWarning bool
+	}{
+		{
+			name:        "direct class write",
+			mutation:    "Holder.User = Order",
+			wantWarning: true,
+		},
+		{
+			name: "instance self class write",
+			definition: `  def stash(value)
+    self.class.User = value
+  end
+`,
+			mutation:    "holder.stash(Order)",
+			wantWarning: true,
+		},
+		{
+			name: "included self class write",
+			definition: `  include Mutator
+`,
+			mutation:    "holder.stash(Order)",
+			wantWarning: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+module Mutator
+  def stash(value)
+    self.class.User = value
+  end
+end
+
+class Holder
+`+tc.definition+`
+  def initialize()
+  end
+
+  def check(u: User | Order)
+    unless u.is_a?(User)
+      takes_order(u)
+    end
+  end
+end
+
+def run()
+  holder = Holder.new
+  `+tc.mutation+`
+  holder.check(User.new)
+end
+`)
+			warnings := script.CheckWarningsForFunction("run")
+			gotWarning := false
+			for _, warning := range warnings {
+				if strings.Contains(warning.Message, "call to takes_order argument value expected Order, got User") {
+					gotWarning = true
+				}
+			}
+			if gotWarning != tc.wantWarning {
+				t.Fatalf("CheckWarningsForFunction() warning = %t, want %t: %#v", gotWarning, tc.wantWarning, warnings)
+			}
+		})
+	}
+}
+
+func TestCheckClassPredicateNarrowingKeepsExactCallFactsBeforeClassMutation(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+class Holder
+  def initialize()
+  end
+
+  def check(u: User | Order)
+    unless u.is_a?(User)
+      takes_order(u)
+    end
+  end
+end
+
+def run()
+  Holder.new.check(User.new)
+end
+`)
+	if warnings := script.CheckWarningsForFunction("run"); len(warnings) > 0 {
+		t.Fatalf("CheckWarningsForFunction() = %#v, want none", warnings)
+	}
+}
+
 func TestCheckDynamicModuleConstructorDoesNotReachInstanceMethods(t *testing.T) {
 	t.Parallel()
 

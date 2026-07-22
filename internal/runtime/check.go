@@ -7842,15 +7842,28 @@ func (c *scriptChecker) runtimeNamespaceMemberName(target Expression) (string, b
 	if !ok {
 		return "", false
 	}
-	obj, ok := member.Object.(*Identifier)
-	if !ok {
-		return "", false
+	switch obj := member.Object.(type) {
+	case *Identifier:
+		if obj.Name == "self" {
+			if c.selfClass == nil || !c.selfClassContext {
+				return "", false
+			}
+			return c.selfClass.Name + "." + member.Property, true
+		}
+		namespace := obj.Name
+		if className, ok := c.localClassValueFor(obj.Name); ok {
+			namespace = className
+		}
+		return namespace + "." + member.Property, true
+	case *MemberExpr:
+		ident, selfClass := obj.Object.(*Identifier)
+		if !selfClass || ident.Name != "self" || obj.Property != "class" || c.selfClass == nil ||
+			classMemberAssignmentIntercepted(c.selfClass, member.Property) {
+			return "", false
+		}
+		return c.selfClass.Name + "." + member.Property, true
 	}
-	namespace := obj.Name
-	if className, ok := c.localClassValueFor(obj.Name); ok {
-		namespace = className
-	}
-	return namespace + "." + member.Property, true
+	return "", false
 }
 
 func (c *scriptChecker) recordRuntimeNamespaceMember(memberName string) {
@@ -8543,9 +8556,7 @@ func (s *namespaceMutationScan) statement(stmt Statement) {
 	switch typed := stmt.(type) {
 	case nil:
 	case *AssignStmt:
-		if member, ok := runtimeNamespaceMemberName(typed.Target); ok {
-			s.out[member] = struct{}{}
-		}
+		s.recordRuntimeNamespaceAssignment(typed.Target)
 		s.expression(typed.Target)
 		s.expression(typed.Value)
 	case *ExprStmt:
@@ -8595,6 +8606,53 @@ func (s *namespaceMutationScan) statement(stmt Statement) {
 	case *ClassStmt:
 		s.statements(typed.Body)
 	}
+}
+
+func (s *namespaceMutationScan) recordRuntimeNamespaceAssignment(target Expression) {
+	if destructure, ok := target.(*DestructureTarget); ok {
+		for _, element := range destructure.Elements {
+			s.recordRuntimeNamespaceAssignment(element.Target)
+		}
+		return
+	}
+	member, ok := target.(*MemberExpr)
+	if !ok {
+		return
+	}
+	var namespace string
+	var classDef *ClassDef
+	switch object := member.Object.(type) {
+	case *Identifier:
+		if object.Name == "self" {
+			if s.selfClass == nil || !s.selfClassContext {
+				return
+			}
+			classDef = s.selfClass
+			namespace = s.selfClass.Name
+		} else {
+			classDef = s.classes[object.Name]
+			namespace = object.Name
+		}
+	case *MemberExpr:
+		ident, selfClass := object.Object.(*Identifier)
+		if !selfClass || ident.Name != "self" || object.Property != "class" || s.selfClass == nil {
+			return
+		}
+		classDef = s.selfClass
+		namespace = s.selfClass.Name
+	default:
+		return
+	}
+	if classDef != nil {
+		if setter := classDef.ClassMethods[member.Property+"="]; setter != nil {
+			s.visit(setter)
+			return
+		}
+		if classDef.ClassMethods[member.Property] != nil {
+			return
+		}
+	}
+	s.out[namespace+"."+member.Property] = struct{}{}
 }
 
 func (s *namespaceMutationScan) expression(expr Expression) {

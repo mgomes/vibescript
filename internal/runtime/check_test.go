@@ -997,6 +997,106 @@ func TestReachableFunctionCheckKeyIncludesNamespaceMutations(t *testing.T) {
 	}
 }
 
+func TestScriptFunctionNamespaceMutationsResolveSelfClassAssignments(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+		want   []string
+	}{
+		{
+			name: "instance method",
+			source: `class Holder
+  def stash(value)
+    self.class.User = value
+  end
+end
+`,
+			want: []string{"Holder.User"},
+		},
+		{
+			name: "included method uses receiver class",
+			source: `module Mutator
+  def self.User=(value)
+    value
+  end
+
+  def stash(value)
+    self.class.User = value
+  end
+end
+
+class Holder
+  include Mutator
+end
+`,
+			want: []string{"Holder.User"},
+		},
+		{
+			name: "class setter effects",
+			source: `def replacement(value)
+  value
+end
+
+class Holder
+  def self.User=(value)
+    JSON.stringify = replacement
+  end
+
+  def stash(value)
+    self.class.User = value
+  end
+end
+`,
+			want: []string{"JSON.stringify"},
+		},
+		{
+			name: "getter-only member",
+			source: `class Holder
+  def self.User()
+    1
+  end
+
+  def stash(value)
+    self.class.User = value
+  end
+end
+`,
+		},
+		{
+			name: "destructured assignment",
+			source: `class Holder
+  def stash(value)
+    self.class.User, ignored = [value, nil]
+  end
+end
+`,
+			want: []string{"Holder.User"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			fn := script.classes["Holder"].Methods["stash"]
+			checker := &scriptChecker{script: script}
+			got := checker.scriptFunctionNamespaceMutations(nil, staticCallable{
+				name: "Holder#stash",
+				fn:   fn,
+			})
+			if len(got) != len(tc.want) {
+				t.Fatalf("scriptFunctionNamespaceMutations() = %v, want %v", got, tc.want)
+			}
+			for _, member := range tc.want {
+				if _, ok := got[member]; !ok {
+					t.Fatalf("scriptFunctionNamespaceMutations() = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestCheckWarningsForFunctionClearsPinnedFactsBetweenReachableChecks(t *testing.T) {
 	t.Parallel()
 
@@ -1063,6 +1163,23 @@ end`,
   end
 end`,
 			invoke: "[Installer.new][0].install()",
+		},
+		{
+			name: "self class setter",
+			definitions: `module Mutator
+  def stash(value)
+    self.class.User = value
+  end
+end
+
+class Holder
+  include Mutator
+
+  def self.User=(value)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Holder.new][0].stash(1)",
 		},
 		{
 			name: "class method",
