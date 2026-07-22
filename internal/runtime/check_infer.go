@@ -158,11 +158,14 @@ func (c *scriptChecker) withFreshLocalInference(check func()) {
 func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousPoison := c.typePoison
 	previousAliases := c.typeAliases
+	previousPinned := c.pinnedExpressionFacts
 	c.typePoison = nil
 	c.typeAliases = nil
+	c.pinnedExpressionFacts = nil
 	return func() {
 		c.typePoison = previousPoison
 		c.typeAliases = previousAliases
+		c.pinnedExpressionFacts = previousPinned
 	}
 }
 

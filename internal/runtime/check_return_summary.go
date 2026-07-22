@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"fmt"
-	"sort"
-	"strings"
 )
 
 // Return summaries expose a known result fact for calls to unannotated
@@ -151,19 +149,7 @@ func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaul
 // states would make the checker unsound; different call shapes run different
 // parameter defaults, so their effects separate the key too.
 func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaults, hashSuppliedParams []int, definiteDefaults bool) returnSummaryCacheKey {
-	root := c.runtimeTypeRoot
-	if root == nil {
-		root = c.typeRoot
-	}
-	context := moduleCheckContextKey(root)
-	if len(c.runtimeNamespaceMembers) > 0 {
-		members := make([]string, 0, len(c.runtimeNamespaceMembers))
-		for member := range c.runtimeNamespaceMembers {
-			members = append(members, member)
-		}
-		sort.Strings(members)
-		context += "\x00" + strings.Join(members, "\x00")
-	}
+	context := c.runtimeCheckContextKey()
 	if len(runnableDefaults) > 0 {
 		context += "\x01defaults:" + fmt.Sprint(runnableDefaults)
 		if definiteDefaults {

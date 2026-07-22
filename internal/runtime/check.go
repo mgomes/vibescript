@@ -1544,11 +1544,24 @@ func (c *scriptChecker) markReachableFunctionChecked(fn *ScriptFunction) bool {
 }
 
 func (c *scriptChecker) reachableFunctionCheckKey(fn *ScriptFunction) string {
+	return fmt.Sprintf("%p\x00%s", fn, c.runtimeCheckContextKey())
+}
+
+func (c *scriptChecker) runtimeCheckContextKey() string {
 	root := c.runtimeTypeRoot
 	if root == nil {
 		root = c.typeRoot
 	}
-	return fmt.Sprintf("%p\x00%s", fn, moduleCheckContextKey(root))
+	context := moduleCheckContextKey(root)
+	if len(c.runtimeNamespaceMembers) == 0 {
+		return context
+	}
+	members := make([]string, 0, len(c.runtimeNamespaceMembers))
+	for member := range c.runtimeNamespaceMembers {
+		members = append(members, member)
+	}
+	sort.Strings(members)
+	return context + "\x00" + strings.Join(members, "\x00")
 }
 
 func (c *scriptChecker) checkReachableFunctions() {
@@ -3209,14 +3222,14 @@ func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr)
 	}
 	view := staticCallView{pos: member.Pos()}
 	if target.fn != nil {
+		// A bare member read dispatches like a call, so snapshot the callee's
+		// call-time runtime root before carrying its possible writes forward.
+		c.enqueueReachableFunction(target.name, target.fn)
 		autoInvokes := target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0
 		if autoInvokes {
 			c.checkCallShape(function, view, target.name, target.fn)
 			c.applyAutoInvokedMemberNamespaceMutations(member, target)
 		}
-		// A bare member read dispatches like a call, so the callee checks
-		// under the call-time runtime root.
-		c.enqueueReachableFunction(target.name, target.fn)
 		return
 	}
 	if target.spec.autoInvoke {
