@@ -6166,6 +6166,7 @@ func callParamSupply(
 		return false, true
 	}
 	collapse := collapseOptionsHash
+	keywordsConsumed := false
 	argIdx := 0
 	for i, param := range fn.Params {
 		switch param.Kind {
@@ -6175,24 +6176,29 @@ func callParamSupply(
 			if argIdx < len(call.Args) {
 				argIdx++
 				supplied = true
-			} else if callHasKeywordArg(call, param.Name) {
+			} else if !keywordsConsumed && callHasKeywordArg(call, param.Name) {
 				supplied = true
 			} else if collapse {
 				supplied = true
 				hashSupplied = true
 				collapse = false
+				// The runtime clears the keyword map after appending the
+				// synthetic options hash, so later parameters cannot bind
+				// any of the original keyword names.
+				keywordsConsumed = true
 			}
 			if i == paramIndex {
 				return hashSupplied, !supplied
 			}
 		case ParamKeyword:
 			if i == paramIndex {
-				return false, !callHasKeywordArg(call, param.Name)
+				return false, keywordsConsumed || !callHasKeywordArg(call, param.Name)
 			}
 		case ParamRest:
 			argIdx = len(call.Args)
 			// A rest parameter absorbs the collapsed hash as its final
 			// element, so no later positional parameter receives it.
+			keywordsConsumed = keywordsConsumed || collapse
 			collapse = false
 			if i == paramIndex {
 				return false, false

@@ -756,6 +756,23 @@ end
 			warning: "call to takes_int argument value expected int, got hash",
 		},
 		{
+			name: "collapsed options hash consumes later keyword names",
+			source: `
+def build(opts = nil, value = 1)
+  value
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build(name: "x", value: 2))
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "collapsed options hash skips the default's namespace writes",
 			source: `
 def replacement(value)
@@ -1472,6 +1489,50 @@ end
 
 def run()
   takes_hash(build(name: "x"))
+end
+`,
+		},
+		{
+			name: "uncollapsed keywords still supply later parameters",
+			source: `
+def build(opts = nil, value = "fallback")
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(build(opts: 0, value: 2))
+end
+`,
+		},
+		{
+			name: "collapsed options hash runs later default effects",
+			source: `
+def replacement(value)
+  1
+end
+
+def install_serializer()
+  JSON.stringify = replacement
+end
+
+def flip(opts = nil, value = install_serializer())
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  flip(name: "x", value: 2)
+  takes_int(serialize())
 end
 `,
 		},
