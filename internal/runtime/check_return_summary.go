@@ -68,7 +68,8 @@ func (c *scriptChecker) scriptCallableReturnSummary(call *CallExpr, target stati
 	// User methods that override the universal Object-level surface retain
 	// the gradual behavior of those overridable dispatch points. An explicit
 	// annotation can still make their result authoritative.
-	if target.resolution == calleeMemberMethod && isUniversalMember(owned.Name) {
+	if (target.resolution == calleeMemberMethod || target.resolution == calleeForwardedMethod) &&
+		isUniversalMember(owned.Name) {
 		return nil
 	}
 	target.fn = owned

@@ -466,6 +466,42 @@ def run()
 end
 `,
 		},
+		{
+			name: "forwarded instance method overriding universal dispatch",
+			source: `
+class Counter
+  def nil?()
+    1
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.new.send(:nil?))
+end
+`,
+		},
+		{
+			name: "forwarded class method overriding universal dispatch",
+			source: `
+class Counter
+  def self.nil?()
+    1
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.public_send(:nil?))
+end
+`,
+		},
 	}
 
 	for _, tc := range cases {
