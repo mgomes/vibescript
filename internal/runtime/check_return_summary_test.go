@@ -1630,6 +1630,190 @@ end
 `,
 		},
 		{
+			name: "implicit self instance helper invalidates a cached summary",
+			source: `
+def replacement(value)
+  1
+end
+
+class Mutator
+  def install()
+    JSON.stringify = replacement
+  end
+
+  def mutate()
+    install()
+  end
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_string(serialize())
+  Mutator.new.mutate()
+  takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "implicit self class helper invalidates a cached summary",
+			source: `
+def replacement(value)
+  1
+end
+
+class Mutator
+  def self.install()
+    JSON.stringify = replacement
+  end
+
+  def self.mutate()
+    install()
+  end
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_string(serialize())
+  Mutator.mutate()
+  takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "recursive implicit self call includes newly reachable defaults",
+			source: `
+def replacement(value)
+  1
+end
+
+class Mutator
+  def install(recurse, value = begin
+    JSON.stringify = replacement
+    0
+  end)
+    if recurse
+      install(false)
+    end
+  end
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_string(serialize())
+  Mutator.new.install(true, 1)
+  takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "explicit self helper invalidates a cached summary",
+			source: `
+def replacement(value)
+  1
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Mutator
+  def install()
+    JSON.stringify = replacement
+  end
+
+  def mutate()
+    self.install()
+  end
+end
+
+def run()
+  takes_string(serialize())
+  Mutator.new.mutate()
+  takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "implicit self constructor chain reaches instance helper",
+			source: `
+def replacement(value)
+  1
+end
+
+class Mutator
+  def initialize(value = 0)
+  end
+
+  def install()
+    JSON.stringify = replacement
+  end
+
+  def self.mutate()
+    new.install()
+  end
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_string(serialize())
+  Mutator.mutate()
+  takes_int(serialize())
+end
+`,
+		},
+		{
 			name: "nominal receiver mutation propagates through a helper",
 			source: `
 def replacement(value)

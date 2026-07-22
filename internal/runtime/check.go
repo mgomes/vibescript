@@ -2374,12 +2374,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			// The ensure body's own possible writes run on the fall-through
 			// path too, so they persist past the block; only the returned
 			// paths' markers scope back out.
-			ensureScan := &namespaceMutationScan{
-				out:       make(map[string]struct{}),
-				functions: c.script.functions,
-				classes:   c.script.classes,
-				visited:   make(map[*ScriptFunction]struct{}),
-			}
+			ensureScan := c.newNamespaceMutationScan()
 			ensureScan.statements(typed.Ensure)
 			c.runtimeNamespaceMembers = unionCheckStringSet(continuationMembers, ensureScan.out)
 		}
@@ -4849,6 +4844,21 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 	return staticCallable{}, false
 }
 
+// implicitSelfConstructorReceiver reports whether expr is a bare new or
+// explicit self.new expression in a class-self mutation scan.
+func implicitSelfConstructorReceiver(expr Expression) bool {
+	switch typed := expr.(type) {
+	case *Identifier:
+		return typed.Name == "new"
+	case *CallExpr:
+		return implicitSelfConstructorReceiver(typed.Callee)
+	case *MemberExpr:
+		ident, isIdentifier := typed.Object.(*Identifier)
+		return isIdentifier && ident.Name == "self" && typed.Property == "new"
+	}
+	return false
+}
+
 // callMayDispatchDynamicValue distinguishes unresolved first-class dispatch
 // from fixed builtin dispatch that simply has no checker contract. An
 // unshadowed identifier or fixed receiver selects fixed runtime dispatch (or
@@ -6188,23 +6198,20 @@ func (c *scriptChecker) scriptFunctionNamespaceMutations(
 	if fn == nil || fn.owner != c.script {
 		return nil
 	}
-	scan := &namespaceMutationScan{
-		out:       make(map[string]struct{}),
-		functions: c.script.functions,
-		classes:   c.script.classes,
-		visited:   map[*ScriptFunction]struct{}{fn: {}},
-	}
-	scan.withNominalReceiverParams(fn.Params, false, func() {
-		collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
-		for i, param := range fn.Params {
-			if param.DefaultVal == nil {
-				continue
+	scan := c.newNamespaceMutationScan()
+	scan.withFunctionSelf(fn, func() {
+		scan.withNominalReceiverParams(fn.Params, false, func() {
+			collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
+			for i, param := range fn.Params {
+				if param.DefaultVal == nil {
+					continue
+				}
+				if call == nil || callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
+					scan.expression(param.DefaultVal)
+				}
 			}
-			if call == nil || callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
-				scan.expression(param.DefaultVal)
-			}
-		}
-		scan.statements(fn.Body)
+			scan.statements(fn.Body)
+		})
 	})
 	return scan.out
 }
@@ -6489,12 +6496,7 @@ func (c *scriptChecker) applyLambdaBlockNamespaceMutations(block *BlockLiteral) 
 	if block == nil {
 		return
 	}
-	scan := &namespaceMutationScan{
-		out:       make(map[string]struct{}),
-		functions: c.script.functions,
-		classes:   c.script.classes,
-		visited:   make(map[*ScriptFunction]struct{}),
-	}
+	scan := c.newNamespaceMutationScan()
 	for _, param := range block.Params {
 		scan.expression(param.DefaultVal)
 	}
@@ -6615,13 +6617,32 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 // transitive calls still count. Exact class parameter facts keep same-named
 // instance methods separated while the scan descends through helper calls.
 type namespaceMutationScan struct {
-	out       map[string]struct{}
-	functions map[string]*ScriptFunction
-	classes   map[string]*ClassDef
-	visited   map[*ScriptFunction]struct{}
+	out              map[string]struct{}
+	functions        map[string]*ScriptFunction
+	classes          map[string]*ClassDef
+	visited          map[*ScriptFunction]struct{}
+	methodClasses    map[*ScriptFunction]*ClassDef
+	classMethodFns   map[*ScriptFunction]struct{}
+	selfClass        *ClassDef
+	selfClassContext bool
 	// A nil class records a parameter that shadows a class name without
 	// proving one exact instance dispatch.
 	nominalReceivers map[string]*ClassDef
+}
+
+func (c *scriptChecker) newNamespaceMutationScan() *namespaceMutationScan {
+	c.prepareSelfScopeFunctions()
+	scan := &namespaceMutationScan{
+		out:              make(map[string]struct{}),
+		functions:        c.script.functions,
+		classes:          c.script.classes,
+		visited:          make(map[*ScriptFunction]struct{}),
+		methodClasses:    c.selfScopeFnClasses,
+		classMethodFns:   c.selfScopeClassFns,
+		selfClass:        c.selfClass,
+		selfClassContext: c.selfClassContext,
+	}
+	return scan
 }
 
 func (s *namespaceMutationScan) visit(fn *ScriptFunction) {
@@ -6635,14 +6656,30 @@ func (s *namespaceMutationScan) visit(fn *ScriptFunction) {
 	s.function(fn)
 }
 
-// functionReference unions in the writes of an owned function the scanned
-// body mentions. Any mention counts — callee, bare auto-invoke, or escaping
-// value — since a stored function can run later; a shadowed name only
-// over-invalidates, which is the sound direction.
+// functionReference unions in the writes of an owned top-level function or
+// implicit-self method the scanned body mentions. Any mention counts — callee,
+// bare auto-invoke, or escaping value — since a stored function can run later;
+// a shadowed name only over-invalidates, which is the sound direction.
 func (s *namespaceMutationScan) functionReference(name string) {
 	if fn, ok := s.functions[name]; ok {
 		s.visit(fn)
 	}
+	s.selfReference(name)
+}
+
+func (s *namespaceMutationScan) selfReference(name string) {
+	if s.selfClass == nil {
+		return
+	}
+	if s.selfClassContext {
+		if name == "new" && !s.selfClass.IsModule {
+			s.visit(s.selfClass.Methods["initialize"])
+			return
+		}
+		s.visit(s.selfClass.ClassMethods[name])
+		return
+	}
+	s.visit(s.selfClass.Methods[name])
 }
 
 // memberReference descends into the statically resolvable methods a member
@@ -6652,8 +6689,17 @@ func (s *namespaceMutationScan) functionReference(name string) {
 // resolve stay unscanned — the checker applies their writes when it walks the
 // call itself.
 func (s *namespaceMutationScan) memberReference(member *MemberExpr) {
+	if implicitSelfConstructorReceiver(member.Object) && s.selfClassContext && s.selfClass != nil && !s.selfClass.IsModule {
+		s.visit(s.selfClass.Methods["initialize"])
+		s.visit(s.selfClass.Methods[member.Property])
+		return
+	}
 	switch object := member.Object.(type) {
 	case *Identifier:
+		if object.Name == "self" {
+			s.selfReference(member.Property)
+			return
+		}
 		if classDef, bound := s.nominalReceivers[object.Name]; bound {
 			if classDef != nil && member.Property != "initialize" {
 				s.visit(classDef.Methods[member.Property])
@@ -6702,12 +6748,26 @@ func staticConstructorReceiverClass(call *CallExpr) (string, bool) {
 // function scans everything a call may execute: parameter defaults run
 // before the body when the caller omits the argument.
 func (s *namespaceMutationScan) function(fn *ScriptFunction) {
-	s.withNominalReceiverParams(fn.Params, false, func() {
-		for _, param := range fn.Params {
-			s.expression(param.DefaultVal)
-		}
-		s.statements(fn.Body)
+	s.withFunctionSelf(fn, func() {
+		s.withNominalReceiverParams(fn.Params, false, func() {
+			for _, param := range fn.Params {
+				s.expression(param.DefaultVal)
+			}
+			s.statements(fn.Body)
+		})
 	})
+}
+
+func (s *namespaceMutationScan) withFunctionSelf(fn *ScriptFunction, walk func()) {
+	previousClass := s.selfClass
+	previousClassContext := s.selfClassContext
+	s.selfClass = s.methodClasses[fn]
+	_, s.selfClassContext = s.classMethodFns[fn]
+	defer func() {
+		s.selfClass = previousClass
+		s.selfClassContext = previousClassContext
+	}()
+	walk()
 }
 
 func (s *namespaceMutationScan) withNominalReceiverParams(params []Param, inherit bool, walk func()) {

@@ -247,6 +247,12 @@ func (c *scriptChecker) localNameUnionHas(name string) bool {
 // functionHasSelfScope reports whether fn runs with self bound, i.e. it is an
 // instance or class method of one of the script's classes.
 func (c *scriptChecker) functionHasSelfScope(fn *ScriptFunction) bool {
+	c.prepareSelfScopeFunctions()
+	_, ok := c.selfScopeFns[fn]
+	return ok
+}
+
+func (c *scriptChecker) prepareSelfScopeFunctions() {
 	if c.selfScopeFns == nil {
 		c.selfScopeFns = make(map[*ScriptFunction]struct{})
 		c.selfScopeFnClasses = make(map[*ScriptFunction]*ClassDef)
@@ -263,8 +269,6 @@ func (c *scriptChecker) functionHasSelfScope(fn *ScriptFunction) bool {
 			}
 		}
 	}
-	_, ok := c.selfScopeFns[fn]
-	return ok
 }
 
 // collectOwnScopeNames gathers every local name the statements can bind in
