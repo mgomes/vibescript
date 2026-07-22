@@ -70,18 +70,17 @@ func callRunnableDefaults(call *CallExpr, fn *ScriptFunction) ([]int, []int, boo
 	var hashSupplied []int
 	collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, staticCallable{fn: fn})
 	for i, param := range fn.Params {
-		if param.DefaultVal == nil {
-			continue
-		}
 		if call == nil {
-			indices = append(indices, i)
+			if param.DefaultVal != nil {
+				indices = append(indices, i)
+			}
 			continue
 		}
 		optionsHash, mayDefault := callParamSupply(call, fn, i, collapseOptionsHash)
-		if mayDefault {
-			indices = append(indices, i)
-		} else if optionsHash {
+		if optionsHash {
 			hashSupplied = append(hashSupplied, i)
+		} else if mayDefault && param.DefaultVal != nil {
+			indices = append(indices, i)
 		}
 	}
 	return indices, hashSupplied, call == nil || !callExpandsArguments(call)

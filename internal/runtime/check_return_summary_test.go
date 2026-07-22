@@ -895,6 +895,23 @@ end
 			warning: "call to takes_int argument value expected int, got hash",
 		},
 		{
+			name: "collapsed options hash supplies required parameter",
+			source: `
+def configure(opts)
+  opts
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(configure(retries: 3))
+end
+`,
+			warning: "call to takes_int argument value expected int, got hash",
+		},
+		{
 			name: "collapsed options hash consumes later keyword names",
 			source: `
 def build(opts = nil, value = 1)
