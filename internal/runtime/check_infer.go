@@ -1625,7 +1625,8 @@ func (c *scriptChecker) selfClassMayBindConstant(cl *ClassDef, name string) bool
 				return true
 			}
 		}
-		if classDefAssignsName(moduleDef, name) {
+		if classDefNamespaceAssignsName(moduleDef, name) ||
+			classDefInstanceMethodsAssignName(moduleDef, cl, name) {
 			return true
 		}
 	}
@@ -1638,16 +1639,25 @@ func (c *scriptChecker) selfClassMayBindConstant(cl *ClassDef, name string) bool
 // qualify; call-local and unrelated-receiver assignments do not. The walk is
 // reflective so destructuring targets and future statement forms stay covered.
 func classDefAssignsName(cl *ClassDef, name string) bool {
+	return classDefNamespaceAssignsName(cl, name) ||
+		classDefInstanceMethodsAssignName(cl, cl, name)
+}
+
+func classDefNamespaceAssignsName(cl *ClassDef, name string) bool {
 	if astAssignsClassName(cl.Body, cl, name, true, true) {
 		return true
 	}
-	for _, fn := range cl.Methods {
-		if fn != nil && astAssignsClassName(fn.Body, cl, name, false, false) {
+	for _, fn := range cl.ClassMethods {
+		if fn != nil && astAssignsClassName(fn.Body, cl, name, false, true) {
 			return true
 		}
 	}
-	for _, fn := range cl.ClassMethods {
-		if fn != nil && astAssignsClassName(fn.Body, cl, name, false, true) {
+	return false
+}
+
+func classDefInstanceMethodsAssignName(methodOwner, receiverClass *ClassDef, name string) bool {
+	for _, fn := range methodOwner.Methods {
+		if fn != nil && astAssignsClassName(fn.Body, receiverClass, name, false, false) {
 			return true
 		}
 	}
@@ -1676,15 +1686,25 @@ func astAssignsClassName(root any, cl *ClassDef, name string, classBody, classSe
 					found = true
 				}
 			case *MemberExpr:
-				if typed.Property != name || classMemberAssignmentIntercepted(cl, name) {
+				if typed.Property != name {
 					return
 				}
-				ident, ok := typed.Object.(*Identifier)
-				if !ok {
-					return
-				}
-				if ident.Name == cl.Name || (ident.Name == "self" && classSelf) {
-					found = true
+				switch object := typed.Object.(type) {
+				case *Identifier:
+					if classMemberAssignmentIntercepted(cl, name) {
+						return
+					}
+					if object.Name == cl.Name || (object.Name == "self" && classSelf) {
+						found = true
+					}
+				case *MemberExpr:
+					ident, ok := object.Object.(*Identifier)
+					if ok && ident.Name == "self" && object.Property == "class" {
+						if classMemberAssignmentIntercepted(cl, name) {
+							return
+						}
+						found = true
+					}
 				}
 			}
 		})

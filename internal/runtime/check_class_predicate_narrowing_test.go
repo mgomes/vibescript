@@ -476,6 +476,73 @@ end
 `,
 		},
 		{
+			name: "instance self class write disables narrowing",
+			source: `
+class Holder
+  def initialize()
+  end
+
+  def stash(v)
+    self.class.User = v
+  end
+
+  def check(u: User | Order)
+    if u.is_a?(User)
+      takes_order(u)
+    end
+    u
+  end
+end
+`,
+		},
+		{
+			name: "stored class self write disables narrowing",
+			source: `
+class Holder
+  self.class = self
+  self.class.User = Order
+
+  def initialize()
+  end
+
+  def check(u: User | Order)
+    if u.is_a?(User)
+      takes_order(u)
+    end
+    u
+  end
+end
+`,
+		},
+		{
+			name: "included self class write uses receiver setters",
+			source: `
+module Mutator
+  def self.User=(value)
+    value
+  end
+
+  def stash(value)
+    self.class.User = value
+  end
+end
+
+class Holder
+  include Mutator
+
+  def initialize()
+  end
+
+  def check(u: User | Order)
+    if u.is_a?(User)
+      takes_order(u)
+    end
+    u
+  end
+end
+`,
+		},
+		{
 			name: "member-assigned constant disables narrowing",
 			source: `
 class Holder
@@ -1903,7 +1970,15 @@ func TestCheckClassPredicateNarrowingRespectsClassSetters(t *testing.T) {
 
 	engine := MustNewEngine(Config{})
 	script, err := engine.CompileSnippet(classPredicateNarrowingPrelude+`
+module Mutator
+  def stash(value)
+    self.class.User = value
+  end
+end
+
 class Holder
+  include Mutator
+
   def self.User=(value)
     1
   end
