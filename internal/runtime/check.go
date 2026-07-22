@@ -6120,18 +6120,25 @@ func (c *scriptChecker) instanceClassExpressionNames(receiver Expression) ([]str
 	case *MemberExpr:
 		member = typed
 	}
-	if member != nil && member.Property == "new" {
-		classes, exact := c.dispatchClassValueExpressionNames(member.Object)
-		if !exact || c.script == nil {
-			return nil, false
-		}
-		for _, className := range classes {
-			classDef := c.script.classes[className]
-			if classDef == nil || classDef.IsModule {
-				return nil, false
+	if member != nil {
+		switch member.Property {
+		case "new":
+			return c.constructorInstanceClassNames(member.Object, "")
+		case "send", "public_send":
+			call, ok := receiver.(*CallExpr)
+			if !ok || len(call.Args) == 0 {
+				break
 			}
+			method, valid := staticLiteralValue(call.Args[0])
+			if !valid {
+				break
+			}
+			name, valid := methodNameArg(method)
+			if !valid || name != "new" {
+				break
+			}
+			return c.constructorInstanceClassNames(member.Object, member.Property)
 		}
-		return classes, len(classes) > 0
 	}
 	arms, ok := typeExprArms(c.inferExpressionType(receiver), 0)
 	if !ok || len(arms) == 0 {
@@ -6157,6 +6164,45 @@ func (c *scriptChecker) instanceClassExpressionNames(receiver Expression) ([]str
 		classes = append(classes, classDef.Name)
 	}
 	return classes, len(classes) > 0
+}
+
+func (c *scriptChecker) constructorInstanceClassNames(receiver Expression, forwarder string) ([]string, bool) {
+	classes, exact := c.dispatchClassValueExpressionNames(receiver)
+	if !exact || c.script == nil {
+		return nil, false
+	}
+	instances := make([]string, 0, len(classes))
+	for _, className := range classes {
+		classDef := c.script.classes[className]
+		if classDef == nil {
+			return nil, false
+		}
+		if forwarder != "" && classValueMemberMayOverride(classDef, forwarder) {
+			return nil, false
+		}
+		if classDef.IsModule {
+			// A plain module raises before producing a receiver, so it can be
+			// removed from the successful-path set. A module-provided new may
+			// return any value, making every downstream receiver gradual.
+			if classValueMemberMayOverride(classDef, "new") {
+				return nil, false
+			}
+			continue
+		}
+		instances = append(instances, classDef.Name)
+	}
+	return instances, true
+}
+
+func classValueMemberMayOverride(classDef *ClassDef, member string) bool {
+	if classDef == nil {
+		return false
+	}
+	if _, ok := classDef.ClassMethods[member]; ok {
+		return true
+	}
+	_, ok := classDef.ClassVars[member]
+	return ok
 }
 
 func (c *scriptChecker) reachableCallParamFacts(

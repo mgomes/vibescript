@@ -1092,6 +1092,58 @@ end`,
 			invoke: "[Installer][0].public_send(:new)",
 		},
 		{
+			name: "forwarded constructor instance method",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer][0].public_send(:new).install()",
+		},
+		{
+			name: "send constructor instance method",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer][0].send(:new).install()",
+		},
+		{
+			name: "mixed class and plain module constructor",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+module Factory
+end`,
+			invoke: "begin; (flag ? Installer : Factory).new.install(); rescue; nil; end",
+		},
+		{
+			name: "module constructor override stays gradual",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Other
+  def install()
+    nil
+  end
+end
+
+module Factory
+  def self.new()
+    Other.new
+  end
+end`,
+			invoke:    "(flag ? Installer : Factory).new.install()",
+			wantCount: 2,
+		},
+		{
 			name: "forwarded instance method",
 			definitions: `class Installer
   def install()
