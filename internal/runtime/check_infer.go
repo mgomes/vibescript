@@ -2171,6 +2171,9 @@ func (c *scriptChecker) narrowClassPredicateMember(member *MemberExpr, arg Expre
 // top-level binding), including through a prior external member write, stay
 // unknown.
 func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
+	if scoped, ok := arg.(*ScopeExpr); ok {
+		return c.staticScopedClassArgument(scoped)
+	}
 	ident, ok := arg.(*Identifier)
 	if !ok {
 		return nil, false
@@ -2209,6 +2212,58 @@ func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
 		}
 	}
 	return classDef, true
+}
+
+func (c *scriptChecker) staticScopedClassArgument(scoped *ScopeExpr) (*ClassDef, bool) {
+	if scoped == nil {
+		return nil, false
+	}
+	namespace, ok := c.staticClassArgument(scoped.Object)
+	if !ok || namespace == nil ||
+		c.opaqueClassConstants || c.classConstantContext.opaque ||
+		c.namespaceMemberMutated(namespace.Name, scoped.Property) ||
+		c.nestedClassConstantMayChange(namespace, scoped.Property) {
+		return nil, false
+	}
+	qualified := namespace.Name + "::" + scoped.Property
+	classDef, ok := c.script.classes[qualified]
+	if !ok || classDef == nil {
+		return nil, false
+	}
+	for _, nested := range namespace.NestedModules {
+		if nested == scoped.Property {
+			return classDef, true
+		}
+	}
+	return nil, false
+}
+
+func (c *scriptChecker) nestedClassConstantMayChange(classDef *ClassDef, name string) bool {
+	if classDef == nil || classDefAssignsName(classDef, name) {
+		return true
+	}
+	if _, ok := classDef.ClassVars[name]; ok {
+		return true
+	}
+	for _, included := range classDef.IncludedModules {
+		moduleDef := c.script.classes[included]
+		if moduleDef == nil {
+			continue
+		}
+		if _, ok := moduleDef.ClassVars[name]; ok {
+			return true
+		}
+		for _, nested := range moduleDef.NestedModules {
+			if nested == name {
+				return true
+			}
+		}
+		if classDefNamespaceAssignsName(moduleDef, name) ||
+			classDefInstanceMethodsAssignName(moduleDef, classDef, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // selfClassMayBindConstant reports whether self's class can supply name

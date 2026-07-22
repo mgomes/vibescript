@@ -102,6 +102,33 @@ end
 			warning: "call to takes_order argument value expected Order, got User",
 		},
 		{
+			name: "qualified module ancestry narrows kind_of",
+			source: `
+module Billing
+  module QualifiedPayable
+  end
+end
+
+class QualifiedUser
+  include Billing::QualifiedPayable
+
+  def initialize()
+  end
+end
+
+def takes_qualified_user(value: QualifiedUser)
+  value
+end
+
+def run(u: QualifiedUser | Order)
+  unless u.kind_of?(Billing::QualifiedPayable)
+    takes_qualified_user(u)
+  end
+end
+`,
+			warning: "call to takes_qualified_user argument value expected QualifiedUser, got Order",
+		},
+		{
 			name: "container arm keeps the receiver fact",
 			source: `
 def run(flag)
@@ -411,6 +438,60 @@ def run(flag, k)
   u = flag ? User.new : Order.new
   unless u.is_a?(k)
     takes_order(u)
+  end
+end
+`,
+		},
+		{
+			name: "qualified namespace write disables narrowing",
+			source: `
+module Billing
+  module QualifiedPayable
+  end
+end
+
+class QualifiedUser
+  include Billing::QualifiedPayable
+
+  def initialize()
+  end
+end
+
+def takes_qualified_user(value: QualifiedUser)
+  value
+end
+
+def run(u: QualifiedUser | Order)
+  Billing.QualifiedPayable = Order
+  unless u.kind_of?(Billing::QualifiedPayable)
+    takes_qualified_user(u)
+  end
+end
+`,
+		},
+		{
+			name: "opaque call disables qualified narrowing",
+			source: `
+module Billing
+  module QualifiedPayable
+  end
+end
+
+class QualifiedUser
+  include Billing::QualifiedPayable
+
+  def initialize()
+  end
+end
+
+def takes_qualified_user(value: QualifiedUser)
+  value
+end
+
+def run(trigger, u: QualifiedUser | Order)
+  trigger
+  unless u.kind_of?(Billing::QualifiedPayable)
+    takes_qualified_user(u)
   end
 end
 `,
