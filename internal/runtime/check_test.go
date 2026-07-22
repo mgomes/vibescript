@@ -846,6 +846,40 @@ end
 	requireCallErrorContains(t, script, "run", []Value{NewBool(false)}, CallOptions{}, "unknown type Status")
 }
 
+func TestCheckWarningsForFunctionRechecksReachableFunctionsPerNamespaceState(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def replacement(value)
+  value
+end
+
+def parse()
+  JSON.parse()
+end
+
+def run(flag: bool)
+  if flag
+    JSON.parse = replacement
+    parse()
+  else
+    parse()
+  end
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	messages := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		messages = append(messages, warning.Message)
+	}
+	got := strings.Join(messages, "\n")
+	want := "call to JSON.parse has too few arguments"
+	if !strings.Contains(got, want) {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)
+	}
+}
+
 func TestCheckWarningsForCallValidatesArguments(t *testing.T) {
 	t.Parallel()
 
@@ -1668,6 +1702,42 @@ shout(1)`, "main")
 	}
 	if warnings[0].Pos.Line != 2 || !strings.Contains(warnings[0].Message, "call to shout argument value expected string, got int") {
 		t.Fatalf("CheckWarnings() = %#v, want line-2 argument warning", warnings)
+	}
+}
+
+func TestCheckPlainAssignmentAppliesRequireEffectsInEvaluationOrder(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "right side before target",
+			source: `
+def run()
+  values = [0]
+  values[normalize(:bogus)] = require("enum_status")
+end
+`,
+		},
+		{
+			name: "destructured targets left to right",
+			source: `
+def run()
+  values = [0]
+  require("enum_status").foo, values[normalize(:bogus)] = [1, 2]
+end
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithEngine(t, engine, tc.source)
+			requireCheckWarningContains(t, script, "call to normalize argument status expected Status, got symbol")
+		})
 	}
 }
 
@@ -4481,7 +4551,34 @@ def run()
   end] = [1, 2]
   c
 end
-`))
+	`))
+}
+
+func TestCheckWarningsForFunctionDoesNotLeakBlockClassValueFacts(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+class Holder
+  def initialize()
+  end
+
+  def check(value: int)
+    value
+  end
+end
+
+def run()
+  klass = nil
+  [].each do
+    klass = Holder
+  end
+  klass.new.check("bad")
+end
+`)
+
+	if warnings := script.CheckWarningsForFunction("run"); len(warnings) > 0 {
+		t.Fatalf("CheckWarningsForFunction() = %#v, want none", warnings)
+	}
 }
 
 func requireNoCheckWarnings(t *testing.T, script *Script) {

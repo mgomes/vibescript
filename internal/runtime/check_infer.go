@@ -52,6 +52,13 @@ var (
 
 type checkTypeFrame map[string]*TypeExpr
 
+type checkLocalValueFact struct {
+	classNames []string
+	callables  []*ScriptFunction
+}
+
+type checkClassValueFrame map[string]checkLocalValueFact
+
 func cloneCheckTypeFrame(frame checkTypeFrame) checkTypeFrame {
 	if len(frame) == 0 {
 		return nil
@@ -61,6 +68,105 @@ func cloneCheckTypeFrame(frame checkTypeFrame) checkTypeFrame {
 		clone[name] = ty
 	}
 	return clone
+}
+
+func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame {
+	if len(frame) == 0 {
+		return nil
+	}
+	clone := make(checkClassValueFrame, len(frame))
+	for name, fact := range frame {
+		clone[name] = checkLocalValueFact{
+			classNames: append([]string(nil), fact.classNames...),
+			callables:  append([]*ScriptFunction(nil), fact.callables...),
+		}
+	}
+	return clone
+}
+
+func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
+	fact, ok := c.localValueFactFor(name)
+	if !ok || len(fact.classNames) != 1 || len(fact.callables) > 0 {
+		return "", false
+	}
+	return fact.classNames[0], true
+}
+
+func (c *scriptChecker) localClassValuesFor(name string) ([]string, bool) {
+	fact, ok := c.localValueFactFor(name)
+	return fact.classNames, ok && len(fact.classNames) > 0
+}
+
+func (c *scriptChecker) localValueFactFor(name string) (checkLocalValueFact, bool) {
+	for i := len(c.localTypes) - 1; i >= 0; i-- {
+		if _, tracked := c.localTypes[i][name]; !tracked {
+			continue
+		}
+		fact, ok := c.localClassValues[i][name]
+		return fact, ok
+	}
+	return checkLocalValueFact{}, false
+}
+
+func (c *scriptChecker) bindLocalClassValue(name, className string) {
+	if className == "" {
+		c.bindLocalClassValues(name, nil)
+		return
+	}
+	c.bindLocalClassValues(name, []string{className})
+}
+
+func (c *scriptChecker) bindLocalClassValues(name string, classNames []string) {
+	if name == "" || len(c.localTypes) == 0 {
+		return
+	}
+	for i := len(c.localTypes) - 1; i >= 0; i-- {
+		if _, tracked := c.localTypes[i][name]; !tracked {
+			continue
+		}
+		if len(classNames) == 0 {
+			delete(c.localClassValues[i], name)
+			return
+		}
+		if c.localClassValues[i] == nil {
+			c.localClassValues[i] = make(checkClassValueFrame)
+		}
+		c.localClassValues[i][name] = checkLocalValueFact{classNames: normalizeCheckClassNames(classNames)}
+		return
+	}
+}
+
+func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, bool) {
+	fact, ok := c.localValueFactFor(name)
+	if !ok || len(fact.callables) != 1 || len(fact.classNames) > 0 {
+		return nil, false
+	}
+	return fact.callables[0], true
+}
+
+func (c *scriptChecker) localCallableValuesFor(name string) ([]*ScriptFunction, bool) {
+	fact, ok := c.localValueFactFor(name)
+	return fact.callables, ok && len(fact.callables) > 0
+}
+
+func (c *scriptChecker) bindLocalCallableValues(name string, fns []*ScriptFunction) {
+	if name == "" || len(c.localTypes) == 0 {
+		return
+	}
+	for i := len(c.localTypes) - 1; i >= 0; i-- {
+		if _, tracked := c.localTypes[i][name]; !tracked {
+			continue
+		}
+		if len(fns) == 0 {
+			delete(c.localClassValues[i], name)
+			return
+		}
+		if c.localClassValues[i] == nil {
+			c.localClassValues[i] = make(checkClassValueFrame)
+		}
+		c.localClassValues[i][name] = checkLocalValueFact{callables: normalizeCheckCallables(fns)}
+		return
+	}
 }
 
 // localTypeFor returns the innermost inferred type fact for name, or nil when
@@ -172,10 +278,12 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 // corrupting the facts of whatever function walk is in flight.
 func (c *scriptChecker) withIsolatedLocalInference() func() {
 	previousTypes := c.localTypes
+	previousClassValues := c.localClassValues
 	previousLive := c.liveLocalNames
 	previousDepth := c.mutationRegionDepth
 	previousIsolated := c.isolatedCollectInference
 	c.localTypes = nil
+	c.localClassValues = nil
 	c.liveLocalNames = nil
 	c.mutationRegionDepth = 0
 	c.isolatedCollectInference = true
@@ -183,6 +291,7 @@ func (c *scriptChecker) withIsolatedLocalInference() func() {
 	return func() {
 		restoreScope()
 		c.localTypes = previousTypes
+		c.localClassValues = previousClassValues
 		c.liveLocalNames = previousLive
 		c.mutationRegionDepth = previousDepth
 		c.isolatedCollectInference = previousIsolated
@@ -258,6 +367,7 @@ func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
 			continue
 		}
 		c.bindLocalType(name, nil)
+		c.bindLocalClassValue(name, "")
 	}
 }
 
@@ -528,6 +638,7 @@ func (c *scriptChecker) degradeLocalTypesForBindings(statements []Statement, ext
 	}
 	for name := range names {
 		c.bindLocalType(name, nil)
+		c.bindLocalClassValue(name, "")
 	}
 }
 
@@ -551,6 +662,89 @@ func (c *scriptChecker) restoreLocalTypes(state []checkTypeFrame) {
 	for i, frame := range state {
 		c.localTypes[i] = cloneCheckTypeFrame(frame)
 	}
+}
+
+func (c *scriptChecker) snapshotLocalClassValues() []checkClassValueFrame {
+	if len(c.localClassValues) == 0 {
+		return nil
+	}
+	state := make([]checkClassValueFrame, len(c.localClassValues))
+	for i, frame := range c.localClassValues {
+		state[i] = cloneCheckClassValueFrame(frame)
+	}
+	return state
+}
+
+func (c *scriptChecker) restoreLocalClassValues(state []checkClassValueFrame) {
+	if len(state) == 0 {
+		c.localClassValues = nil
+		return
+	}
+	c.localClassValues = make([]checkClassValueFrame, len(state))
+	for i, frame := range state {
+		c.localClassValues[i] = cloneCheckClassValueFrame(frame)
+	}
+}
+
+func (c *scriptChecker) mergeLocalClassValueStates(states []checkScopeState) {
+	if len(states) == 0 {
+		return
+	}
+	for i := range c.localClassValues {
+		if i >= len(states[0].classValues) {
+			continue
+		}
+		common := cloneCheckClassValueFrame(states[0].classValues[i])
+		for _, state := range states[1:] {
+			if i >= len(state.classValues) {
+				clear(common)
+				break
+			}
+			for name, fact := range common {
+				other, ok := state.classValues[i][name]
+				if !ok {
+					delete(common, name)
+					continue
+				}
+				fact.classNames = normalizeCheckClassNames(append(fact.classNames, other.classNames...))
+				fact.callables = normalizeCheckCallables(append(fact.callables, other.callables...))
+				common[name] = fact
+			}
+		}
+		c.localClassValues[i] = common
+	}
+}
+
+func normalizeCheckClassNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	normalized := append([]string(nil), names...)
+	sort.Strings(normalized)
+	out := normalized[:0]
+	for _, name := range normalized {
+		if len(out) == 0 || out[len(out)-1] != name {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func normalizeCheckCallables(fns []*ScriptFunction) []*ScriptFunction {
+	if len(fns) == 0 {
+		return nil
+	}
+	normalized := append([]*ScriptFunction(nil), fns...)
+	sort.Slice(normalized, func(i, j int) bool {
+		return reflect.ValueOf(normalized[i]).Pointer() < reflect.ValueOf(normalized[j]).Pointer()
+	})
+	out := normalized[:0]
+	for _, fn := range normalized {
+		if len(out) == 0 || out[len(out)-1] != fn {
+			out = append(out, fn)
+		}
+	}
+	return out
 }
 
 // applyLoopEntryTypeRefinements overlays only facts changed by a condition
@@ -650,6 +844,7 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 		next := c.inferExpressionType(stmt.Value)
 		if stmt.Operator == tokenOrAssign || stmt.Operator == tokenAndAssign {
 			c.bindLocalType(target.Name, logicalAssignmentFact(stmt.Operator, current, next))
+			c.bindLocalClassValue(target.Name, "")
 			return
 		}
 		if stmt.Operator != "" {
@@ -659,6 +854,7 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 					binaryOperatorNoun(stmt.Operator), formatTypeExpr(current), formatTypeExpr(next))
 			}
 			c.bindLocalType(target.Name, outcome.result)
+			c.bindLocalClassValue(target.Name, "")
 			return
 		}
 		if reassignmentConflicts(current, next, c.checkNamedTypeResolver()) {
@@ -666,6 +862,13 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 				target.Name, formatTypeExpr(current), formatTypeExpr(next))
 		}
 		c.bindLocalType(target.Name, next)
+		if classNames, ok := c.classValueExpressionNames(stmt.Value); ok {
+			c.bindLocalClassValues(target.Name, classNames)
+		} else if fns, ok := c.callableExpressionFunctions(stmt.Value); ok {
+			c.bindLocalCallableValues(target.Name, fns)
+		} else {
+			c.bindLocalClassValue(target.Name, "")
+		}
 		switch stmt.Value.(type) {
 		case *Identifier:
 			if next != nil && typeExprHasContainerArm(next) {
@@ -687,6 +890,7 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 		for _, element := range target.Elements {
 			c.bindDestructureElementType(element)
 		}
+		c.bindDestructureValueFacts(target, stmt.Value)
 	case *IndexExpr, *MemberExpr:
 		// An index or member write mutates the container in place, so any
 		// structural fact about the root local (shape exactness in
@@ -728,11 +932,253 @@ func (c *scriptChecker) bindDestructureElementType(element DestructureElement) {
 	switch target := element.Target.(type) {
 	case *Identifier:
 		c.bindLocalType(target.Name, element.Type)
+		c.bindLocalClassValue(target.Name, "")
 	case *DestructureTarget:
 		for _, nested := range target.Elements {
 			c.bindDestructureElementType(nested)
 		}
 	}
+}
+
+func (c *scriptChecker) bindDestructureValueFacts(target *DestructureTarget, value Expression) {
+	if target == nil {
+		return
+	}
+	array, ok := value.(*ArrayLiteral)
+	if !ok {
+		return
+	}
+	for _, expression := range array.Elements {
+		if _, splat := expression.(*SplatArg); splat {
+			return
+		}
+	}
+	valueIndex := 0
+	for _, element := range target.Elements {
+		if element.Rest || valueIndex >= len(array.Elements) {
+			return
+		}
+		c.bindDestructureElementValueFact(element, array.Elements[valueIndex])
+		valueIndex++
+	}
+}
+
+func (c *scriptChecker) bindDestructureElementValueFact(element DestructureElement, value Expression) {
+	switch target := element.Target.(type) {
+	case *Identifier:
+		if classNames, ok := c.classValueExpressionNames(value); ok {
+			c.bindLocalClassValues(target.Name, classNames)
+		} else if fns, ok := c.callableExpressionFunctions(value); ok {
+			c.bindLocalCallableValues(target.Name, fns)
+		}
+	case *DestructureTarget:
+		c.bindDestructureValueFacts(target, value)
+	}
+}
+
+// classValueExpressionNames returns the exhaustive script-class identities an
+// expression can produce. It recognizes value-preserving branches and literal
+// projections so dynamic dispatch can schedule only methods the receiver can
+// actually reach; an incomplete result is rejected instead of widening to all
+// same-named methods and hiding their independent pristine checks.
+func (c *scriptChecker) classValueExpressionNames(expr Expression) ([]string, bool) {
+	c.speculativeInference++
+	defer func() { c.speculativeInference-- }()
+	return c.classValueExpressionNamesSeen(expr, nil, false)
+}
+
+func (c *scriptChecker) dispatchClassValueExpressionNames(expr Expression) ([]string, bool) {
+	c.speculativeInference++
+	defer func() { c.speculativeInference-- }()
+	return c.classValueExpressionNamesSeen(expr, nil, true)
+}
+
+func (c *scriptChecker) classValueExpressionNamesSeen(
+	expr Expression,
+	seen map[*ScriptFunction]struct{},
+	allowFunctionReturns bool,
+) ([]string, bool) {
+	switch typed := expr.(type) {
+	case *Identifier:
+		if classNames, ok := c.localClassValuesFor(typed.Name); ok {
+			return classNames, true
+		}
+		if typed.Name == "self" && c.selfClass != nil && c.selfClassContext {
+			return []string{c.selfClass.Name}, true
+		}
+		classDef, ok := c.staticClassArgument(typed)
+		if !ok {
+			return nil, false
+		}
+		return []string{classDef.Name}, true
+	case *ConditionalExpr:
+		if branch, ok := staticConditionalExpressionBranch(typed); ok {
+			return c.classValueExpressionNamesSeen(branch, seen, allowFunctionReturns)
+		}
+		left, leftOK := c.classValueExpressionNamesSeen(typed.Consequent, seen, allowFunctionReturns)
+		right, rightOK := c.classValueExpressionNamesSeen(typed.Alternate, seen, allowFunctionReturns)
+		return mergeCheckStringCandidates(left, leftOK, right, rightOK)
+	case *IfExpr:
+		branches := make([]Expression, 0, len(typed.ElseIf)+2)
+		branches = append(branches, typed.Consequent)
+		for _, branch := range typed.ElseIf {
+			branches = append(branches, branch.Result)
+		}
+		branches = append(branches, typed.Alternate)
+		return c.mergeClassValueExpressionCandidates(branches, seen, allowFunctionReturns)
+	case *RescueExpr:
+		body, bodyOK := c.classValueExpressionNamesSeen(typed.Body, seen, allowFunctionReturns)
+		fallback, fallbackOK := c.classValueExpressionNamesSeen(typed.Fallback, seen, allowFunctionReturns)
+		return mergeCheckStringCandidates(body, bodyOK, fallback, fallbackOK)
+	case *BinaryExpr:
+		if typed.Operator != tokenAnd && typed.Operator != tokenOr {
+			return nil, false
+		}
+		if truthy, known := staticExpressionTruthiness(typed.Left); known {
+			if truthy == (typed.Operator == tokenAnd) {
+				return c.classValueExpressionNamesSeen(typed.Right, seen, allowFunctionReturns)
+			}
+			return c.classValueExpressionNamesSeen(typed.Left, seen, allowFunctionReturns)
+		}
+		if left, ok := c.classValueExpressionNamesSeen(typed.Left, seen, allowFunctionReturns); ok {
+			if typed.Operator == tokenOr {
+				return left, true
+			}
+			return c.classValueExpressionNamesSeen(typed.Right, seen, allowFunctionReturns)
+		}
+		return nil, false
+	case *IndexExpr:
+		projected, ok := c.staticLiteralProjection(typed)
+		if !ok {
+			return nil, false
+		}
+		return c.classValueExpressionNamesSeen(projected, seen, allowFunctionReturns)
+	case *CallExpr:
+		if member, ok := typed.Callee.(*MemberExpr); ok && member.Property == "itself" &&
+			len(typed.Args) == 0 && len(typed.KwArgs) == 0 && typed.Block == nil && typed.BlockArg == nil {
+			candidates, exact := c.classValueExpressionNamesSeen(member.Object, seen, allowFunctionReturns)
+			if !exact {
+				return nil, false
+			}
+			for _, className := range candidates {
+				classDef := c.script.classes[className]
+				if classDef == nil || classDef.ClassMethods["itself"] != nil {
+					return nil, false
+				}
+			}
+			return candidates, true
+		}
+		if !allowFunctionReturns {
+			return nil, false
+		}
+		target, ok := c.resolveCallable(typed)
+		if !ok || target.fn == nil || target.constructor || len(target.fn.Body) != 1 {
+			return nil, false
+		}
+		if seen == nil {
+			seen = make(map[*ScriptFunction]struct{})
+		}
+		if _, recursive := seen[target.fn]; recursive {
+			return nil, false
+		}
+		seen[target.fn] = struct{}{}
+		defer delete(seen, target.fn)
+		switch stmt := target.fn.Body[0].(type) {
+		case *ExprStmt:
+			return c.classValueExpressionNamesSeen(stmt.Expr, seen, true)
+		case *ReturnStmt:
+			return c.classValueExpressionNamesSeen(stmt.Value, seen, true)
+		}
+	}
+	return nil, false
+}
+
+func (c *scriptChecker) mergeClassValueExpressionCandidates(
+	branches []Expression,
+	seen map[*ScriptFunction]struct{},
+	allowFunctionReturns bool,
+) ([]string, bool) {
+	var merged []string
+	for _, branch := range branches {
+		candidates, ok := c.classValueExpressionNamesSeen(branch, seen, allowFunctionReturns)
+		if !ok {
+			return nil, false
+		}
+		if merged == nil {
+			merged = candidates
+			continue
+		}
+		merged, _ = mergeCheckStringCandidates(merged, true, candidates, true)
+	}
+	return merged, len(merged) > 0
+}
+
+func mergeCheckStringCandidates(left []string, leftOK bool, right []string, rightOK bool) ([]string, bool) {
+	if !leftOK || !rightOK || len(left) == 0 || len(right) == 0 {
+		return nil, false
+	}
+	merged := append([]string(nil), left...)
+	seen := make(map[string]struct{}, len(left)+len(right))
+	for _, candidate := range left {
+		seen[candidate] = struct{}{}
+	}
+	for _, candidate := range right {
+		if _, duplicate := seen[candidate]; duplicate {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		merged = append(merged, candidate)
+	}
+	return normalizeCheckClassNames(merged), true
+}
+
+func (c *scriptChecker) staticLiteralProjection(expr *IndexExpr) (Expression, bool) {
+	if expr == nil || len(expr.Indices) != 1 {
+		return nil, false
+	}
+	switch object := expr.Object.(type) {
+	case *ArrayLiteral:
+		for _, element := range object.Elements {
+			if _, splat := element.(*SplatArg); splat {
+				return nil, false
+			}
+		}
+		value, ok := staticLiteralValue(expr.Indices[0])
+		if !ok {
+			return nil, false
+		}
+		index, ok := staticArrayFetchIndex(value)
+		if !ok {
+			return nil, false
+		}
+		if index < 0 {
+			index += int64(len(object.Elements))
+		}
+		if index < 0 || index >= int64(len(object.Elements)) {
+			return nil, false
+		}
+		return object.Elements[index], true
+	case *HashLiteral:
+		if object.ShapeType != nil && !c.hashShapeStaticallyShadowed(object) {
+			return nil, false
+		}
+		want, ok := staticLiteralHashKey(expr.Indices[0])
+		if !ok {
+			return nil, false
+		}
+		var projected Expression
+		for _, pair := range object.Pairs {
+			key, ok := staticLiteralHashKey(pair.Key)
+			if !ok {
+				return nil, false
+			}
+			if key == want {
+				projected = pair.Value
+			}
+		}
+		return projected, projected != nil
+	}
+	return nil, false
 }
 
 // bindParamLocalType seeds a parameter's declared type into the current
@@ -1057,6 +1503,10 @@ func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
 	if !ok {
 		return nil, false
 	}
+	if className, ok := c.localClassValueFor(ident.Name); ok {
+		classDef, exists := c.script.classes[className]
+		return classDef, exists && classDef != nil
+	}
 	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
 		return nil, false
 	}
@@ -1067,7 +1517,8 @@ func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
 		return nil, false
 	}
 	if c.selfClass != nil {
-		if c.namespaceMemberMutated(c.selfClass.Name, ident.Name) ||
+		if c.opaqueClassConstants || c.classConstantContext.opaque ||
+			c.namespaceMemberMutated(c.selfClass.Name, ident.Name) ||
 			c.selfClassMayBindConstant(c.selfClass, ident.Name) {
 			return nil, false
 		}
@@ -1075,6 +1526,15 @@ func (c *scriptChecker) staticClassArgument(arg Expression) (*ClassDef, bool) {
 	classDef, ok := c.script.classes[ident.Name]
 	if !ok || classDef == nil {
 		return nil, false
+	}
+	if val, bound := checkRootBinding(c.runtimeTypeRoot, ident.Name); bound {
+		if val.Kind() != KindClass {
+			return nil, false
+		}
+		runtimeClass := valueClass(val)
+		if runtimeClass == nil || runtimeClass.Name != classDef.Name || runtimeClass.owner != classDef.owner {
+			return nil, false
+		}
 	}
 	return classDef, true
 }
@@ -1120,31 +1580,33 @@ func (c *scriptChecker) selfClassMayBindConstant(cl *ClassDef, name string) bool
 	return false
 }
 
-// classDefAssignsName reports whether the class body or any of its methods
-// contains an assignment whose target could bind name on the class — a bare
-// identifier in the body, or a class-var write anywhere. The walk is
-// reflective so destructuring targets and future statement forms stay
-// covered.
+// classDefAssignsName reports whether the class body or one of its methods
+// contains an assignment whose target can bind name on the class. Bare class
+// body assignments, class-variable writes, and writes through the class value
+// qualify; call-local and unrelated-receiver assignments do not. The walk is
+// reflective so destructuring targets and future statement forms stay covered.
 func classDefAssignsName(cl *ClassDef, name string) bool {
-	if astAssignsName(cl.Body, name) {
+	if astAssignsClassName(cl.Body, cl, name, true, true) {
 		return true
 	}
 	for _, fn := range cl.Methods {
-		if fn != nil && astAssignsName(fn.Body, name) {
+		if fn != nil && astAssignsClassName(fn.Body, cl, name, false, false) {
 			return true
 		}
 	}
 	for _, fn := range cl.ClassMethods {
-		if fn != nil && astAssignsName(fn.Body, name) {
+		if fn != nil && astAssignsClassName(fn.Body, cl, name, false, true) {
 			return true
 		}
 	}
 	return false
 }
 
-// astAssignsName walks the subtree for AssignStmt nodes whose target subtree
-// names name as an identifier or class-var write.
-func astAssignsName(root any, name string) bool {
+// astAssignsClassName walks assignment targets that can mutate cl's class
+// constant. Bare identifiers do so only in the class body; call scopes bind
+// them as locals. Explicit self writes require class-valued self, and writes
+// through another class never affect cl.
+func astAssignsClassName(root any, cl *ClassDef, name string, classBody, classSelf bool) bool {
 	found := false
 	walkASTValue(reflect.ValueOf(root), 0, func(node any) {
 		assign, ok := node.(*AssignStmt)
@@ -1154,7 +1616,7 @@ func astAssignsName(root any, name string) bool {
 		walkASTValue(reflect.ValueOf(assign.Target), 0, func(target any) {
 			switch typed := target.(type) {
 			case *Identifier:
-				if typed.Name == name {
+				if classBody && typed.Name == name {
 					found = true
 				}
 			case *ClassVarExpr:
@@ -1162,16 +1624,29 @@ func astAssignsName(root any, name string) bool {
 					found = true
 				}
 			case *MemberExpr:
-				// A member assignment such as `self.User = Order` creates a
-				// class constant the runtime resolves ahead of the top-level
-				// binding; any target property with the name counts.
-				if typed.Property == name {
+				if typed.Property != name || classMemberAssignmentIntercepted(cl, name) {
+					return
+				}
+				ident, ok := typed.Object.(*Identifier)
+				if !ok {
+					return
+				}
+				if ident.Name == cl.Name || (ident.Name == "self" && classSelf) {
 					found = true
 				}
 			}
 		})
 	})
 	return found
+}
+
+func classMemberAssignmentIntercepted(cl *ClassDef, name string) bool {
+	if cl == nil {
+		return false
+	}
+	_, hasSetter := cl.ClassMethods[name+"="]
+	_, hasGetter := cl.ClassMethods[name]
+	return hasSetter || hasGetter
 }
 
 const maxASTWalkDepth = 200

@@ -117,17 +117,27 @@ type scriptChecker struct {
 	warnings                []CheckWarning
 	scopes                  []map[string]struct{}
 	localTypes              []checkTypeFrame
+	localClassValues        []checkClassValueFrame
 	typePoison              map[string]struct{}
 	typeAliases             map[string]map[string]struct{}
 	mutationRegionDepth     int
 	speculativeInference    int
 	callArgumentFacts       map[Expression]*TypeExpr
+	callArgumentClassValues map[Expression][]string
+	callArgumentCallables   map[Expression][]*ScriptFunction
+	reachableParamFacts     map[string]checkReachableParamFact
 	deferredReturnSites     *[]deferredReturnSite
+	exceptionExitSites      *[]checkStateSnapshot
+	ensureExitSites         *[]checkStateSnapshot
 	implicitReturnLeaves    map[Statement]struct{}
 	implicitReturnStates    map[Statement]checkStateSnapshot
 	requiredModules         map[string]struct{}
 	runtimeModules          map[string]struct{}
 	runtimeNamespaceMembers map[string]struct{}
+	opaqueClassConstants    bool
+	classConstantContext    checkClassConstantEffects
+	classConstantCaptures   []checkClassConstantEffects
+	loopExitEffects         *checkLoopExitEffects
 	moduleEntries           map[string]moduleEntry
 	moduleExportValues      map[string]Value
 	moduleCheckedFunctions  map[string]struct{}
@@ -191,6 +201,23 @@ type reachableFunction struct {
 	label        string
 	fn           *ScriptFunction
 	runtimeState checkRuntimeState
+	paramFacts   map[string]checkReachableParamFact
+}
+
+type checkReachableParamFact struct {
+	typeExpr    *TypeExpr
+	classNames  []string
+	callables   []*ScriptFunction
+	usesDefault bool
+}
+
+type checkDynamicCallCandidates struct {
+	instanceClasses  []string
+	instancesExact   bool
+	classValues      []string
+	classValuesExact bool
+	callables        []*ScriptFunction
+	callablesExact   bool
 }
 
 // checkOptionGlobals resolves the host globals a call would receive. Bind
@@ -1192,13 +1219,16 @@ func (c *scriptChecker) collectRequiredModuleExportsFromModuleInitialization(ent
 	previousCaller := c.moduleCaller
 	previousScopes := c.scopes
 	previousLocalTypes := c.localTypes
+	previousLocalClassValues := c.localClassValues
 	c.moduleCaller = &caller
 	c.scopes = nil
 	c.localTypes = nil
+	c.localClassValues = nil
 	defer func() {
 		c.moduleCaller = previousCaller
 		c.scopes = previousScopes
 		c.localTypes = previousLocalTypes
+		c.localClassValues = previousLocalClassValues
 	}()
 
 	c.collectRequiredModuleExportsFromModuleClassBodies(entry)
@@ -1496,16 +1526,25 @@ func (c *scriptChecker) withReachableCallChecks(check func()) {
 }
 
 func (c *scriptChecker) enqueueReachableFunction(label string, fn *ScriptFunction) {
+	c.enqueueReachableFunctionWithParamFacts(label, fn, nil)
+}
+
+func (c *scriptChecker) enqueueReachableFunctionWithParamFacts(
+	label string,
+	fn *ScriptFunction,
+	paramFacts map[string]checkReachableParamFact,
+) {
 	if !c.checkReachableCalls || fn == nil || fn.owner != c.script {
 		return
 	}
-	if !c.markReachableFunctionChecked(fn) {
+	if !c.markReachableFunctionCheckedWithParamFacts(fn, paramFacts) {
 		return
 	}
 	c.reachableFuncQueue = append(c.reachableFuncQueue, reachableFunction{
 		label:        label,
 		fn:           fn,
 		runtimeState: c.snapshotRuntimeState(),
+		paramFacts:   cloneReachableParamFacts(paramFacts),
 	})
 }
 
@@ -1513,25 +1552,60 @@ func (c *scriptChecker) enqueueReachableFunction(label string, fn *ScriptFunctio
 // dispatches like run(), so the callee checks under the call-time runtime
 // root exactly as a spelled-out call does.
 func (c *scriptChecker) enqueueReachableIdentifierCall(ident *Identifier) {
-	if !c.checkReachableCalls || ident == nil {
+	if ident == nil {
+		return
+	}
+	if _, ok := c.localClassValueFor(ident.Name); ok {
 		return
 	}
 	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		if typeExprMayIncludeCallable(c.inferExpressionType(ident)) {
+			c.markOpaqueClassConstants()
+		}
 		return
 	}
-	if fn, ok := c.script.functions[ident.Name]; ok {
+	if _, ok := c.staticClassArgument(ident); ok {
+		return
+	}
+	fn := c.script.functions[ident.Name]
+	if fn == nil {
+		fn, _ = c.typeRootFunction(ident.Name)
+	}
+	if fn == nil {
+		if c.typeRootHasBinding(ident.Name) || c.hostBuiltinOverrides(ident.Name) {
+			if typeExprMayIncludeCallable(c.inferExpressionType(ident)) {
+				c.markOpaqueClassConstants()
+			}
+			return
+		}
+		fn = c.implicitSelfFunction(ident.Name)
+	}
+	if fn == nil {
+		return
+	}
+	if c.checkReachableCalls {
 		c.enqueueReachableFunction(ident.Name, fn)
+	}
+	if len(fn.Params) == 0 && !scriptFunctionClassConstantEffectsProvenAbsent(fn) {
+		c.markOpaqueClassConstants()
 	}
 }
 
 func (c *scriptChecker) markReachableFunctionChecked(fn *ScriptFunction) bool {
+	return c.markReachableFunctionCheckedWithParamFacts(fn, nil)
+}
+
+func (c *scriptChecker) markReachableFunctionCheckedWithParamFacts(
+	fn *ScriptFunction,
+	paramFacts map[string]checkReachableParamFact,
+) bool {
 	if fn == nil {
 		return false
 	}
 	if c.checkedReachableFuncs == nil {
 		c.checkedReachableFuncs = make(map[string]struct{})
 	}
-	key := c.reachableFunctionCheckKey(fn)
+	key := c.reachableFunctionCheckKey(fn, paramFacts)
 	if _, ok := c.checkedReachableFuncs[key]; ok {
 		return false
 	}
@@ -1539,12 +1613,69 @@ func (c *scriptChecker) markReachableFunctionChecked(fn *ScriptFunction) bool {
 	return true
 }
 
-func (c *scriptChecker) reachableFunctionCheckKey(fn *ScriptFunction) string {
+func (c *scriptChecker) reachableFunctionCheckKey(fn *ScriptFunction, paramFacts map[string]checkReachableParamFact) string {
 	root := c.runtimeTypeRoot
 	if root == nil {
 		root = c.typeRoot
 	}
-	return fmt.Sprintf("%p\x00%s", fn, moduleCheckContextKey(root))
+	memberSet := cloneCheckStringSet(c.runtimeNamespaceMembers)
+	if memberSet == nil && len(c.classConstantContext.namespaceMembers) > 0 {
+		memberSet = make(map[string]struct{}, len(c.classConstantContext.namespaceMembers))
+	}
+	for member := range c.classConstantContext.namespaceMembers {
+		memberSet[member] = struct{}{}
+	}
+	members := make([]string, 0, len(memberSet))
+	for member := range memberSet {
+		members = append(members, member)
+	}
+	sort.Strings(members)
+	return fmt.Sprintf(
+		"%p\x00%s\x00%t\x00%s\x00%s",
+		fn,
+		moduleCheckContextKey(root),
+		c.opaqueClassConstants || c.classConstantContext.opaque,
+		strings.Join(members, "\x00"),
+		reachableParamFactsKey(paramFacts),
+	)
+}
+
+func cloneReachableParamFacts(facts map[string]checkReachableParamFact) map[string]checkReachableParamFact {
+	if len(facts) == 0 {
+		return nil
+	}
+	clone := make(map[string]checkReachableParamFact, len(facts))
+	for name, fact := range facts {
+		fact.classNames = append([]string(nil), fact.classNames...)
+		fact.callables = append([]*ScriptFunction(nil), fact.callables...)
+		clone[name] = fact
+	}
+	return clone
+}
+
+func reachableParamFactsKey(facts map[string]checkReachableParamFact) string {
+	names := make([]string, 0, len(facts))
+	for name := range facts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var key strings.Builder
+	for _, name := range names {
+		key.WriteString(name)
+		key.WriteByte('=')
+		fact := facts[name]
+		key.WriteString(formatTypeExpr(fact.typeExpr))
+		key.WriteByte(':')
+		key.WriteString(strings.Join(fact.classNames, ","))
+		key.WriteByte(':')
+		for _, fn := range fact.callables {
+			fmt.Fprintf(&key, "%p,", fn)
+		}
+		key.WriteByte(':')
+		key.WriteString(strconv.FormatBool(fact.usesDefault))
+		key.WriteByte('\x00')
+	}
+	return key.String()
 }
 
 func (c *scriptChecker) checkReachableFunctions() {
@@ -1565,7 +1696,11 @@ func (c *scriptChecker) drainReachableFunctions(reached map[*ScriptFunction]stru
 		c.restoreRuntimeState(next.runtimeState)
 		c.scopes = nil
 		c.localTypes = nil
+		c.localClassValues = nil
+		previousParamFacts := c.reachableParamFacts
+		c.reachableParamFacts = next.paramFacts
 		c.checkFunction(next.label, next.fn)
+		c.reachableParamFacts = previousParamFacts
 		c.restoreScopeState(scopeState)
 	}
 }
@@ -1581,13 +1716,19 @@ func (c *scriptChecker) withFreshRuntimeTypeRoot(check func()) {
 	previousRoot := c.runtimeTypeRoot
 	previousModules := c.runtimeModules
 	previousNamespaceMembers := c.runtimeNamespaceMembers
+	previousOpaqueClassConstants := c.opaqueClassConstants
+	previousClassConstantContext := c.classConstantContext
 	c.runtimeTypeRoot = checkTypeRootWithParentAndGlobals(c.script, c.optionGlobals, cloneCheckRoot(c.runtimeTypeRootParent), c.optionGlobalsOverride)
 	c.runtimeModules = nil
 	c.runtimeNamespaceMembers = nil
+	c.opaqueClassConstants = false
+	c.classConstantContext = checkClassConstantEffects{}
 	defer func() {
 		c.runtimeTypeRoot = previousRoot
 		c.runtimeModules = previousModules
 		c.runtimeNamespaceMembers = previousNamespaceMembers
+		c.opaqueClassConstants = previousOpaqueClassConstants
+		c.classConstantContext = previousClassConstantContext
 	}()
 	check()
 }
@@ -1647,9 +1788,21 @@ func (c *scriptChecker) withSuppressedWarnings(check func()) {
 }
 
 type checkRuntimeState struct {
-	root             *Env
-	modules          map[string]struct{}
+	root                 *Env
+	modules              map[string]struct{}
+	namespaceMembers     map[string]struct{}
+	opaqueClassConstants bool
+	classConstantContext checkClassConstantEffects
+}
+
+type checkClassConstantEffects struct {
+	opaque           bool
 	namespaceMembers map[string]struct{}
+}
+
+type checkLoopExitEffects struct {
+	effects checkClassConstantEffects
+	seen    bool
 }
 
 type checkModuleCollectionState struct {
@@ -1658,14 +1811,17 @@ type checkModuleCollectionState struct {
 }
 
 type checkScopeState struct {
-	defined []map[string]struct{}
-	types   []checkTypeFrame
+	defined     []map[string]struct{}
+	types       []checkTypeFrame
+	classValues []checkClassValueFrame
 }
 
 func (c *scriptChecker) snapshotRuntimeState() checkRuntimeState {
 	state := checkRuntimeState{
-		modules:          cloneCheckModuleSet(c.runtimeModules),
-		namespaceMembers: cloneCheckStringSet(c.runtimeNamespaceMembers),
+		modules:              cloneCheckModuleSet(c.runtimeModules),
+		namespaceMembers:     cloneCheckStringSet(c.runtimeNamespaceMembers),
+		opaqueClassConstants: c.opaqueClassConstants,
+		classConstantContext: cloneCheckClassConstantEffects(c.classConstantContext),
 	}
 	if c.runtimeTypeRoot != nil {
 		state.root = c.runtimeTypeRoot.CloneShallow()
@@ -1677,6 +1833,115 @@ func (c *scriptChecker) restoreRuntimeState(state checkRuntimeState) {
 	c.runtimeTypeRoot = cloneCheckRoot(state.root)
 	c.runtimeModules = cloneCheckModuleSet(state.modules)
 	c.runtimeNamespaceMembers = cloneCheckStringSet(state.namespaceMembers)
+	c.opaqueClassConstants = state.opaqueClassConstants
+	c.classConstantContext = cloneCheckClassConstantEffects(state.classConstantContext)
+}
+
+func cloneCheckClassConstantEffects(effects checkClassConstantEffects) checkClassConstantEffects {
+	return checkClassConstantEffects{
+		opaque:           effects.opaque,
+		namespaceMembers: cloneCheckStringSet(effects.namespaceMembers),
+	}
+}
+
+func mergeCheckClassConstantEffects(dst *checkClassConstantEffects, src checkClassConstantEffects) {
+	if dst == nil {
+		return
+	}
+	dst.opaque = dst.opaque || src.opaque
+	if len(src.namespaceMembers) == 0 {
+		return
+	}
+	if dst.namespaceMembers == nil {
+		dst.namespaceMembers = make(map[string]struct{}, len(src.namespaceMembers))
+	}
+	for member := range src.namespaceMembers {
+		dst.namespaceMembers[member] = struct{}{}
+	}
+}
+
+func (c *scriptChecker) currentClassConstantEffects() checkClassConstantEffects {
+	return checkClassConstantEffects{
+		opaque:           c.opaqueClassConstants,
+		namespaceMembers: cloneCheckStringSet(c.runtimeNamespaceMembers),
+	}
+}
+
+func (c *scriptChecker) applyClassConstantEffects(effects checkClassConstantEffects) {
+	c.opaqueClassConstants = c.opaqueClassConstants || effects.opaque
+	if len(effects.namespaceMembers) == 0 {
+		return
+	}
+	if c.runtimeNamespaceMembers == nil {
+		c.runtimeNamespaceMembers = make(map[string]struct{}, len(effects.namespaceMembers))
+	}
+	for member := range effects.namespaceMembers {
+		c.runtimeNamespaceMembers[member] = struct{}{}
+	}
+}
+
+func runtimeStatesClassConstantEffects(base checkRuntimeState, states []checkRuntimeState) checkClassConstantEffects {
+	effects := checkClassConstantEffects{
+		opaque:           base.opaqueClassConstants,
+		namespaceMembers: cloneCheckStringSet(base.namespaceMembers),
+	}
+	for _, state := range states {
+		mergeCheckClassConstantEffects(&effects, checkClassConstantEffects{
+			opaque:           state.opaqueClassConstants,
+			namespaceMembers: state.namespaceMembers,
+		})
+	}
+	return effects
+}
+
+func (c *scriptChecker) setClassConstantEffects(effects checkClassConstantEffects) {
+	c.opaqueClassConstants = effects.opaque
+	c.runtimeNamespaceMembers = cloneCheckStringSet(effects.namespaceMembers)
+}
+
+func (c *scriptChecker) restoreRuntimeStatePreservingClassConstantEffects(state checkRuntimeState) {
+	effects := c.currentClassConstantEffects()
+	c.restoreRuntimeState(state)
+	c.applyClassConstantEffects(effects)
+}
+
+func (c *scriptChecker) markOpaqueClassConstants() {
+	c.opaqueClassConstants = true
+	for i := range c.classConstantCaptures {
+		c.classConstantCaptures[i].opaque = true
+	}
+}
+
+func (c *scriptChecker) captureClassConstantEffects(check func()) checkClassConstantEffects {
+	index := len(c.classConstantCaptures)
+	c.classConstantCaptures = append(c.classConstantCaptures, checkClassConstantEffects{})
+	defer func() {
+		c.classConstantCaptures = c.classConstantCaptures[:index]
+	}()
+	check()
+	return cloneCheckClassConstantEffects(c.classConstantCaptures[index])
+}
+
+func (c *scriptChecker) checkLoopStatements(function string, returnType *TypeExpr, statements []Statement) checkClassConstantEffects {
+	previous := c.loopExitEffects
+	var exits checkLoopExitEffects
+	c.loopExitEffects = &exits
+	defer func() {
+		c.loopExitEffects = previous
+	}()
+	if c.checkStatements(function, returnType, statements) {
+		mergeCheckClassConstantEffects(&exits.effects, c.currentClassConstantEffects())
+	}
+	return exits.effects
+}
+
+func (c *scriptChecker) captureLoopExitClassConstantEffects() {
+	if c.loopExitEffects == nil {
+		return
+	}
+	c.loopExitEffects.seen = true
+	mergeCheckClassConstantEffects(&c.loopExitEffects.effects, c.currentClassConstantEffects())
+	mergeCheckClassConstantEffects(&c.loopExitEffects.effects, c.classConstantContext)
 }
 
 func cloneCheckRoot(root *Env) *Env {
@@ -1706,6 +1971,9 @@ func (c *scriptChecker) mergeRuntimeStates(base checkRuntimeState, states []chec
 	if len(states) == 0 {
 		return
 	}
+	for _, state := range states {
+		c.opaqueClassConstants = c.opaqueClassConstants || state.opaqueClassConstants
+	}
 	common := cloneCheckModuleSet(states[0].modules)
 	for _, state := range states[1:] {
 		for key := range common {
@@ -1733,31 +2001,14 @@ func (c *scriptChecker) mergeRuntimeStates(base checkRuntimeState, states []chec
 		})
 	}
 
-	commonMembers := commonRuntimeNamespaceMembers(base, states)
-	if len(commonMembers) == 0 {
-		return
-	}
-	if c.runtimeNamespaceMembers == nil {
-		c.runtimeNamespaceMembers = make(map[string]struct{}, len(commonMembers))
-	}
-	for member := range commonMembers {
-		c.runtimeNamespaceMembers[member] = struct{}{}
-	}
-}
-
-func commonRuntimeNamespaceMembers(base checkRuntimeState, states []checkRuntimeState) map[string]struct{} {
-	common := cloneCheckStringSet(states[0].namespaceMembers)
-	for _, state := range states[1:] {
-		for key := range common {
-			if _, ok := state.namespaceMembers[key]; !ok {
-				delete(common, key)
-			}
+	for _, state := range states {
+		if len(state.namespaceMembers) > 0 && c.runtimeNamespaceMembers == nil {
+			c.runtimeNamespaceMembers = make(map[string]struct{}, len(state.namespaceMembers))
+		}
+		for member := range state.namespaceMembers {
+			c.runtimeNamespaceMembers[member] = struct{}{}
 		}
 	}
-	for key := range base.namespaceMembers {
-		delete(common, key)
-	}
-	return common
 }
 
 func runtimeStateRoots(states []checkRuntimeState) []*Env {
@@ -1851,7 +2102,10 @@ func commonObjectAliasBindings(base *Env, roots []*Env) map[string]Value {
 }
 
 func (c *scriptChecker) snapshotScopeState() checkScopeState {
-	state := checkScopeState{types: c.snapshotLocalTypes()}
+	state := checkScopeState{
+		types:       c.snapshotLocalTypes(),
+		classValues: c.snapshotLocalClassValues(),
+	}
 	if len(c.scopes) > 0 {
 		state.defined = make([]map[string]struct{}, len(c.scopes))
 		for i, scope := range c.scopes {
@@ -1863,6 +2117,7 @@ func (c *scriptChecker) snapshotScopeState() checkScopeState {
 
 func (c *scriptChecker) restoreScopeState(state checkScopeState) {
 	c.restoreLocalTypes(state.types)
+	c.restoreLocalClassValues(state.classValues)
 	if len(state.defined) == 0 {
 		c.scopes = nil
 		return
@@ -1921,6 +2176,7 @@ func (c *scriptChecker) mergeScopeStates(base checkScopeState, states []checkSco
 		}
 	}
 	c.mergeLocalTypeStates(base, states)
+	c.mergeLocalClassValueStates(states)
 }
 
 func (c *scriptChecker) sortedScriptFunctions() []*ScriptFunction {
@@ -1975,8 +2231,12 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 
 		for _, param := range fn.Params {
 			expectation := typeExpressionExpectation(param.Type)
-			c.checkExpressionWithExpectation(label, param.DefaultVal, expectation)
-			c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
+			if c.reachableParamDefaultRuns(param) {
+				c.checkExpressionWithExpectation(label, param.DefaultVal, expectation)
+				c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
+			} else {
+				c.checkNonExecutingDefaultExpression(label, param.DefaultVal, expectation)
+			}
 			if param.Type != nil {
 				c.checkRuntimeTypeAnnotation(label, param.Type)
 				if param.DefaultVal != nil {
@@ -1990,12 +2250,79 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 				}
 			}
 			c.recordParamBinding(param)
+			c.applyReachableParamFact(param)
 		}
 		c.checkStatements(label, fn.ReturnTy, fn.Body)
 		if fn.ReturnTy != nil {
 			c.checkImplicitReturn(label, fn.ReturnTy, fn.Body, fn.Pos)
 		}
 	})
+}
+
+func (c *scriptChecker) reachableParamDefaultRuns(param Param) bool {
+	if param.DefaultVal == nil || param.Name == "" {
+		return false
+	}
+	fact, callBound := c.reachableParamFacts[param.Name]
+	if !callBound {
+		// A pristine function walk or an expanded call has no exact binding
+		// shape, so the default remains a possible runtime path.
+		return true
+	}
+	return fact.usesDefault
+}
+
+func (c *scriptChecker) checkNonExecutingDefaultExpression(
+	function string,
+	expr Expression,
+	expectation expressionExpectation,
+) {
+	if expr == nil {
+		return
+	}
+	runtimeState := c.snapshotRuntimeState()
+	scopeState := c.snapshotScopeState()
+	reachableChecks := c.checkReachableCalls
+	captures := make([]checkClassConstantEffects, len(c.classConstantCaptures))
+	for i, capture := range c.classConstantCaptures {
+		captures[i] = cloneCheckClassConstantEffects(capture)
+	}
+	c.checkReachableCalls = false
+	c.checkExpressionWithExpectation(function, expr, expectation)
+	c.checkReachableCalls = reachableChecks
+	c.classConstantCaptures = captures
+	c.restoreRuntimeState(runtimeState)
+	c.restoreScopeState(scopeState)
+}
+
+func (c *scriptChecker) applyReachableParamFact(param Param) {
+	fact, ok := c.reachableParamFacts[param.Name]
+	if !ok || param.Name == "" {
+		return
+	}
+	if fact.usesDefault && param.DefaultVal != nil {
+		fact.typeExpr = c.inferExpressionTypeWithExpectation(
+			param.DefaultVal,
+			positionalArgumentExpectation(param),
+		)
+		if classNames, exact := c.classValueExpressionNames(param.DefaultVal); exact {
+			fact.classNames = classNames
+		} else if fns, exact := c.callableExpressionFunctions(param.DefaultVal); exact {
+			fact.callables = fns
+		}
+	}
+	if fact.typeExpr != nil {
+		if param.Type == nil {
+			c.bindLocalTypeInCurrentFrame(param.Name, fact.typeExpr)
+		} else {
+			c.refineAnnotatedParamFact(param, fact.typeExpr)
+		}
+	}
+	if len(fact.classNames) > 0 {
+		c.bindLocalClassValues(param.Name, fact.classNames)
+	} else if len(fact.callables) > 0 {
+		c.bindLocalCallableValues(param.Name, fact.callables)
+	}
 }
 
 // checkStatements walks a statement list and reports whether it can fall
@@ -2025,6 +2352,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// apply before the value leaves the function, so the expression is
 		// walked before the annotation check reads its inferred type.
 		c.checkExpression(function, typed.Value)
+		c.captureEnsureExitState()
 		if returnType != nil {
 			c.checkReturnStatementType(function, returnType, typed)
 		} else if c.deferredReturnSites != nil {
@@ -2046,15 +2374,112 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkExpression(function, typed.Message)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Message)
+		c.captureExceptionExitState()
+		c.captureEnsureExitState()
 	case *BreakStmt:
 		c.checkExpression(function, typed.Value)
-	case *AssignStmt:
-		c.checkExpression(function, typed.Target)
+		c.captureLoopExitClassConstantEffects()
+		c.captureEnsureExitState()
+	case *NextStmt:
 		c.checkExpression(function, typed.Value)
-		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
-		c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
+		c.captureLoopExitClassConstantEffects()
+		c.captureEnsureExitState()
+	case *AssignStmt:
+		targetMayWrite := true
+		switch typed.Operator {
+		case "":
+			// Plain assignment evaluates its value before the target receiver and
+			// selectors, and it dispatches only the setter (never [] or a getter).
+			c.checkExpression(function, typed.Value)
+			c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
+			c.checkPlainAssignmentTarget(function, typed.Target)
+		case tokenOrAssign, tokenAndAssign:
+			c.checkExpression(function, typed.Target)
+			c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
+			truthy, known := c.inferredConditionTruthiness(typed.Target)
+			rhsReachable := true
+			if known {
+				if typed.Operator == tokenOrAssign {
+					rhsReachable = !truthy
+				} else {
+					rhsReachable = truthy
+				}
+			}
+			targetMayWrite = rhsReachable
+			rhsAlwaysEvaluates := rhsReachable && known
+			if rhsReachable {
+				runtimeState := c.snapshotRuntimeState()
+				scopeState := c.snapshotScopeState()
+				opaqueDispatch := false
+				var indexSetterType *TypeExpr
+				var memberSetter *MemberExpr
+				switch target := typed.Target.(type) {
+				case *IndexExpr:
+					indexSetterType = c.inferExpressionType(target.Object)
+					opaqueDispatch = c.instanceDispatchHasOpaqueClassConstantEffects(
+						indexSetterType,
+						"[]=",
+					)
+				case *MemberExpr:
+					memberSetter = target
+					opaqueDispatch = c.memberSetterHasOpaqueClassConstantEffects(target)
+				}
+				c.checkExpression(function, typed.Value)
+				c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
+				if indexSetterType != nil {
+					c.enqueueReachableInstanceDispatch(indexSetterType, "[]=")
+				}
+				if memberSetter != nil {
+					c.enqueueReachableMemberSetter(memberSetter)
+				}
+				if opaqueDispatch {
+					c.markOpaqueClassConstants()
+				}
+				if !rhsAlwaysEvaluates {
+					c.restoreRuntimeStatePreservingClassConstantEffects(runtimeState)
+					evaluatedScopeState := c.snapshotScopeState()
+					c.mergeScopeStates(scopeState, []checkScopeState{scopeState, evaluatedScopeState})
+				}
+			}
+		default:
+			c.checkExpression(function, typed.Target)
+			c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
+			operatorType := c.inferExpressionType(typed.Target)
+			opaqueOperator := c.binaryDispatchHasOpaqueClassConstantEffects(operatorType, typed.Operator)
+			opaqueSetter := false
+			var indexSetterType *TypeExpr
+			var memberSetter *MemberExpr
+			switch target := typed.Target.(type) {
+			case *IndexExpr:
+				indexSetterType = c.inferExpressionType(target.Object)
+				opaqueSetter = c.instanceDispatchHasOpaqueClassConstantEffects(
+					indexSetterType,
+					"[]=",
+				)
+			case *MemberExpr:
+				memberSetter = target
+				opaqueSetter = c.memberSetterHasOpaqueClassConstantEffects(target)
+			}
+			c.checkExpression(function, typed.Value)
+			c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
+			c.enqueueReachableInstanceDispatch(operatorType, binaryDispatchMethodNames(typed.Operator)...)
+			if opaqueOperator {
+				c.markOpaqueClassConstants()
+			}
+			if indexSetterType != nil {
+				c.enqueueReachableInstanceDispatch(indexSetterType, "[]=")
+			}
+			if memberSetter != nil {
+				c.enqueueReachableMemberSetter(memberSetter)
+			}
+			if opaqueSetter {
+				c.markOpaqueClassConstants()
+			}
+		}
 		c.inferAssignStatementTypes(function, typed)
-		c.recordRuntimeBindingTarget(typed.Target)
+		if targetMayWrite {
+			c.recordRuntimeBindingTarget(typed.Target)
+		}
 		c.recordBindingTarget(typed.Target)
 		c.captureImplicitReturnState(typed)
 	case *ExprStmt:
@@ -2166,9 +2591,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
 		c.mutationRegionDepth++
-		c.checkStatements(function, returnType, typed.Body)
+		loopEffects := c.checkLoopStatements(function, returnType, typed.Body)
 		c.mutationRegionDepth--
 		c.restoreRuntimeState(bodyRuntimeState)
+		c.applyClassConstantEffects(loopEffects)
 		c.restoreScopeState(bodyScopeState)
 		c.degradeLocalTypesForBindings(nil, typed.Target)
 		c.recordLocalBindings(typed.Body)
@@ -2193,10 +2619,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)
 			if c.collectRuntimeConditionOutcomeEffects(typed.Condition, true) {
 				c.mutationRegionDepth++
-				c.checkStatements(function, returnType, typed.Body)
+				loopEffects := c.checkLoopStatements(function, returnType, typed.Body)
 				c.mutationRegionDepth--
+				c.restoreRuntimeState(bodyRuntimeState)
+				c.applyClassConstantEffects(loopEffects)
+			} else {
+				c.restoreRuntimeState(bodyRuntimeState)
 			}
-			c.restoreRuntimeState(bodyRuntimeState)
 			c.restoreScopeState(bodyScopeState)
 		}
 		c.recordLocalBindings(typed.Body)
@@ -2217,10 +2646,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)
 			if c.collectRuntimeConditionOutcomeEffects(typed.Condition, false) {
 				c.mutationRegionDepth++
-				c.checkStatements(function, returnType, typed.Body)
+				loopEffects := c.checkLoopStatements(function, returnType, typed.Body)
 				c.mutationRegionDepth--
+				c.restoreRuntimeState(bodyRuntimeState)
+				c.applyClassConstantEffects(loopEffects)
+			} else {
+				c.restoreRuntimeState(bodyRuntimeState)
 			}
-			c.restoreRuntimeState(bodyRuntimeState)
 			c.restoreScopeState(bodyScopeState)
 		}
 		c.recordLocalBindings(typed.Body)
@@ -2232,6 +2664,16 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
+		previousExceptionExitSites := c.exceptionExitSites
+		var exceptionExitSites []checkStateSnapshot
+		if len(typed.Rescues) > 0 {
+			c.exceptionExitSites = &exceptionExitSites
+		}
+		previousEnsureExitSites := c.ensureExitSites
+		var ensureExitSites []checkStateSnapshot
+		if len(typed.Ensure) > 0 {
+			c.ensureExitSites = &ensureExitSites
+		}
 		fallthroughRuntimeStates := make([]checkRuntimeState, 0, 2)
 		fallthroughScopeStates := make([]checkScopeState, 0, 2)
 		// Every non-exiting ensure collects the returns escaping through it,
@@ -2245,9 +2687,28 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			previousSites = c.deferredReturnSites
 			c.deferredReturnSites = &deferredSites
 		}
+		previousLoopExitEffects := c.loopExitEffects
+		var protectedLoopExitEffects *checkLoopExitEffects
+		if len(typed.Ensure) > 0 && previousLoopExitEffects != nil {
+			protectedLoopExitEffects = &checkLoopExitEffects{}
+			c.loopExitEffects = protectedLoopExitEffects
+		}
 
-		if c.checkStatements(function, branchReturnType, typed.Body) {
-			if c.checkStatements(function, branchReturnType, typed.Else) {
+		bodyFallsThrough := false
+		bodyEffects := c.captureClassConstantEffects(func() {
+			bodyFallsThrough = c.checkStatements(function, branchReturnType, typed.Body)
+		})
+		if len(typed.Rescues) > 0 {
+			c.exceptionExitSites = previousExceptionExitSites
+		}
+		ensureEffects := cloneCheckClassConstantEffects(bodyEffects)
+		if bodyFallsThrough {
+			elseFallsThrough := false
+			elseEffects := c.captureClassConstantEffects(func() {
+				elseFallsThrough = c.checkStatements(function, branchReturnType, typed.Else)
+			})
+			mergeCheckClassConstantEffects(&ensureEffects, elseEffects)
+			if elseFallsThrough {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -2264,8 +2725,20 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			if len(clause.Body) == 0 {
 				continue
 			}
-			c.restoreRuntimeState(baseRuntimeState)
-			c.restoreScopeState(baseScopeState)
+			if len(exceptionExitSites) == 0 {
+				c.restoreRuntimeState(baseRuntimeState)
+				c.applyClassConstantEffects(bodyEffects)
+				c.restoreScopeState(baseScopeState)
+			} else {
+				runtimeStates := make([]checkRuntimeState, 0, len(exceptionExitSites))
+				scopeStates := make([]checkScopeState, 0, len(exceptionExitSites))
+				for _, site := range exceptionExitSites {
+					runtimeStates = append(runtimeStates, site.runtimeState)
+					scopeStates = append(scopeStates, site.scopeState)
+				}
+				c.mergeRuntimeStates(baseRuntimeState, runtimeStates)
+				c.mergeScopeStates(baseScopeState, scopeStates)
+			}
 			popEarlier := func() {}
 			if len(earlierClauseLocals) > 0 {
 				scope := make(map[string]struct{}, len(earlierClauseLocals))
@@ -2275,7 +2748,11 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				popEarlier = c.pushScope(scope)
 			}
 			popScope := c.pushRescueScope(clause)
-			clauseFallsThrough := c.checkStatements(function, branchReturnType, clause.Body)
+			clauseFallsThrough := false
+			clauseEffects := c.captureClassConstantEffects(func() {
+				clauseFallsThrough = c.checkStatements(function, branchReturnType, clause.Body)
+			})
+			mergeCheckClassConstantEffects(&ensureEffects, clauseEffects)
 			popScope()
 			popEarlier()
 			clauseLocals := map[string]struct{}{}
@@ -2292,8 +2769,18 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if armCapture {
 			c.deferredReturnSites = previousSites
 		}
+		if protectedLoopExitEffects != nil {
+			c.loopExitEffects = previousLoopExitEffects
+		}
+		if len(typed.Ensure) > 0 {
+			c.ensureExitSites = previousEnsureExitSites
+		}
 		mergeRuntimeStates := fallthroughRuntimeStates
 		mergeScopeStates := fallthroughScopeStates
+		fallthroughClassConstantEffects := runtimeStatesClassConstantEffects(
+			baseRuntimeState,
+			fallthroughRuntimeStates,
+		)
 		// The ensure block runs on every path into it — fallthrough or
 		// deferred return — so the return sites' states join the merge the
 		// ensure walk (and the code after the block) sees.
@@ -2301,9 +2788,33 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			mergeRuntimeStates = append(mergeRuntimeStates, site.runtimeState)
 			mergeScopeStates = append(mergeScopeStates, site.scopeState)
 		}
+		for _, site := range ensureExitSites {
+			mergeRuntimeStates = append(mergeRuntimeStates, site.runtimeState)
+			mergeScopeStates = append(mergeScopeStates, site.scopeState)
+		}
 		c.mergeRuntimeStates(baseRuntimeState, mergeRuntimeStates)
 		c.mergeScopeStates(baseScopeState, mergeScopeStates)
-		c.checkStatements(function, returnType, typed.Ensure)
+		// Deferred returns reach ensure, but not the statement after the try.
+		// Feed their class-constant effects to ensure through the context below
+		// while keeping only normal fallthrough effects in the continuing state.
+		c.setClassConstantEffects(fallthroughClassConstantEffects)
+		if len(typed.Ensure) > 0 {
+			previousContext := cloneCheckClassConstantEffects(c.classConstantContext)
+			mergeCheckClassConstantEffects(&c.classConstantContext, ensureEffects)
+			ensureFallsThrough := c.checkStatements(function, returnType, typed.Ensure)
+			c.classConstantContext = previousContext
+			if ensureFallsThrough && protectedLoopExitEffects != nil && protectedLoopExitEffects.seen {
+				mergeCheckClassConstantEffects(
+					&protectedLoopExitEffects.effects,
+					c.currentClassConstantEffects(),
+				)
+				previousLoopExitEffects.seen = true
+				mergeCheckClassConstantEffects(
+					&previousLoopExitEffects.effects,
+					protectedLoopExitEffects.effects,
+				)
+			}
+		}
 		if deferReturnType {
 			c.checkDeferredReturnSitesAfterEnsure(function, returnType, typed.Ensure, deferredSites)
 		}
@@ -2348,6 +2859,26 @@ func (c *scriptChecker) withImplicitReturnCapture(fn *ScriptFunction) func() {
 type checkStateSnapshot struct {
 	runtimeState checkRuntimeState
 	scopeState   checkScopeState
+}
+
+func (c *scriptChecker) captureExceptionExitState() {
+	if c.exceptionExitSites == nil {
+		return
+	}
+	*c.exceptionExitSites = append(*c.exceptionExitSites, checkStateSnapshot{
+		runtimeState: c.snapshotRuntimeState(),
+		scopeState:   c.snapshotScopeState(),
+	})
+}
+
+func (c *scriptChecker) captureEnsureExitState() {
+	if c.ensureExitSites == nil {
+		return
+	}
+	*c.ensureExitSites = append(*c.ensureExitSites, checkStateSnapshot{
+		runtimeState: c.snapshotRuntimeState(),
+		scopeState:   c.snapshotScopeState(),
+	})
 }
 
 // collectImplicitReturnLeaves gathers the statements whose expressions the
@@ -2682,6 +3213,8 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// callee body still checks under the post-argument state: dispatch
 		// happens after the arguments (and their requires) evaluate.
 		target, targetResolved := c.resolveCallable(typed)
+		dynamicCandidates := c.captureDynamicCallCandidates(typed)
+		opaqueCallEffects := c.callHasOpaqueClassConstantEffects(typed, target, targetResolved)
 		// Arguments evaluate left to right before the call dispatches, so
 		// each argument's inferred type is captured at its own evaluation
 		// point: a mutating earlier argument (h.delete(:name)) poisons its
@@ -2689,6 +3222,8 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// argument cannot erase the facts an earlier argument was evaluated
 		// under. checkCall consumes the captured facts afterwards.
 		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
+		argumentClassValues := make(map[Expression][]string, len(typed.Args)+len(typed.KwArgs))
+		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
 		positionalSplatSeen := false
 		for i, arg := range typed.Args {
 			expectation := expressionExpectation{}
@@ -2703,6 +3238,12 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			// for the arguments after it, never the ones before.
 			c.collectRuntimeRequireCallExportsFromExpression(arg)
 			argumentFacts[arg] = c.inferExpressionTypeWithExpectation(arg, expectation)
+			if classNames, ok := c.classValueExpressionNames(arg); ok {
+				argumentClassValues[arg] = classNames
+			}
+			if fns, ok := c.callableExpressionFunctions(arg); ok {
+				argumentCallables[arg] = fns
+			}
 			positionalSplatSeen = positionalSplatSeen || isSplat
 		}
 		for _, kwarg := range typed.KwArgs {
@@ -2713,6 +3254,12 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkExpressionWithExpectation(function, kwarg.Value, expectation)
 			c.collectRuntimeRequireCallExportsFromExpression(kwarg.Value)
 			argumentFacts[kwarg.Value] = c.inferExpressionTypeWithExpectation(kwarg.Value, expectation)
+			if classNames, ok := c.classValueExpressionNames(kwarg.Value); ok {
+				argumentClassValues[kwarg.Value] = classNames
+			}
+			if fns, ok := c.callableExpressionFunctions(kwarg.Value); ok {
+				argumentCallables[kwarg.Value] = fns
+			}
 		}
 		if typed.BlockArg != nil {
 			c.checkExpressionWithAuto(function, typed.BlockArg, false)
@@ -2721,15 +3268,24 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.collectRuntimeRequireCallExportsFromExpression(typed.BlockArg)
 		}
 		previousFacts := c.callArgumentFacts
+		previousClassValues := c.callArgumentClassValues
+		previousCallables := c.callArgumentCallables
 		c.callArgumentFacts = argumentFacts
-		c.checkCallResolved(function, typed, target, targetResolved)
+		c.callArgumentClassValues = argumentClassValues
+		c.callArgumentCallables = argumentCallables
+		c.checkCallResolved(function, typed, target, targetResolved, dynamicCandidates)
 		c.callArgumentFacts = previousFacts
+		c.callArgumentClassValues = previousClassValues
+		c.callArgumentCallables = previousCallables
+		if opaqueCallEffects {
+			c.markOpaqueClassConstants()
+		}
 		if c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
 			c.checkBlockLiteral(function, typed.Block)
 		}
 		if argumentsMayBeSkipped {
-			c.restoreRuntimeState(argumentState)
+			c.restoreRuntimeStatePreservingClassConstantEffects(argumentState)
 			// A nil receiver skips the arguments entirely, so type facts the
 			// argument walk established (a shovel append, for example) hold
 			// on only one of the two paths and must merge as a branch join.
@@ -2758,7 +3314,18 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 	case *MemberExpr:
 		c.checkExpressionWithAuto(function, typed.Object, true)
 		if autoCall {
-			c.checkMemberAutoCall(function, typed)
+			target, resolved, invoked := c.checkMemberAutoCall(function, typed)
+			if invoked {
+				if target.fn != nil && !scriptFunctionClassConstantEffectsProvenAbsent(target.fn) {
+					c.markOpaqueClassConstants()
+				} else if target.fn == nil && target.spec.fromSignature {
+					c.markOpaqueClassConstants()
+				}
+			} else if !resolved {
+				// An unresolved member value may still auto-invoke a callable at
+				// runtime, so its class-constant effects stay opaque.
+				c.markOpaqueClassConstants()
+			}
 			// Member dispatch on a container may mutate it in place (push,
 			// delete, ...), so the receiver's structural facts stop
 			// holding. A call callee poisons after its arguments instead:
@@ -2774,8 +3341,14 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkExpressionWithAuto(function, typed.Object, true)
 	case *IndexExpr:
 		c.checkExpressionWithAuto(function, typed.Object, true)
+		dispatchType := c.inferExpressionType(typed.Object)
+		opaqueDispatch := c.indexReadHasOpaqueClassConstantEffects(typed.Object)
 		for _, index := range typed.Indices {
 			c.checkExpressionWithAuto(function, index, true)
+		}
+		c.enqueueReachableInstanceDispatch(dispatchType, "[]")
+		if opaqueDispatch {
+			c.markOpaqueClassConstants()
 		}
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
@@ -2788,6 +3361,8 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkUnaryOperandTypes(function, typed)
 	case *BinaryExpr:
 		c.checkExpressionWithAuto(function, typed.Left, true)
+		dispatchType := c.inferExpressionType(typed.Left)
+		opaqueDispatch := c.binaryDispatchHasOpaqueClassConstantEffects(dispatchType, typed.Operator)
 		if binaryRightMayEvaluate(typed) && !c.binaryRightUnreachable(typed) {
 			state := c.snapshotRuntimeState()
 			scopeState := c.snapshotScopeState()
@@ -2820,13 +3395,20 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 				// surviving unconditionally. A right side that provably
 				// always runs keeps both — including exports from a
 				// guaranteed require.
-				c.restoreRuntimeState(state)
+				c.restoreRuntimeStatePreservingClassConstantEffects(state)
 				evaluatedScopeState := c.snapshotScopeState()
 				c.mergeScopeStates(scopeState, []checkScopeState{scopeState, evaluatedScopeState})
 			}
 		}
 		c.checkBinaryOperandTypes(function, typed)
 		c.applyShovelMutationFacts(typed)
+		c.enqueueReachableInstanceDispatch(
+			dispatchType,
+			binaryDispatchMethodNames(typed.Operator)...,
+		)
+		if opaqueDispatch {
+			c.markOpaqueClassConstants()
+		}
 	case *ConditionalExpr:
 		c.checkConditionalExpression(function, typed, autoCallExpectation(autoCall))
 	case *RescueExpr:
@@ -2850,10 +3432,407 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.checkExpressionWithAuto(function, arg, true)
 			c.poisonEscapedIdentifier(arg)
 		}
+		c.markOpaqueClassConstants()
 	case *InterpolatedString:
 		c.checkStringParts(function, typed.Parts)
 	case *InterpolatedSymbol:
 		c.checkStringParts(function, typed.Parts)
+	}
+}
+
+// callHasOpaqueClassConstantEffects reports calls whose implementation is not
+// proven unable to install a class constant. The verdict is captured when the
+// callee evaluates because later arguments can change the receiver's facts.
+func (c *scriptChecker) callHasOpaqueClassConstantEffects(call *CallExpr, target staticCallable, resolved bool) bool {
+	if call == nil {
+		return false
+	}
+	blockMayRun := call.BlockArg != nil || c.resolvedCallMayEvaluateBlock(call, target, resolved)
+	if !blockMayRun {
+		if member, ok := call.Callee.(*MemberExpr); ok && c.memberDispatchEffect(member) == effectPure {
+			return false
+		}
+		if resolved && target.fn != nil && scriptFunctionClassConstantEffectsProvenAbsent(target.fn) {
+			return false
+		}
+		if resolved && target.fn == nil && !target.spec.fromSignature {
+			return false
+		}
+		if !resolved {
+			if ident, ok := call.Callee.(*Identifier); ok &&
+				!c.identifierShadowed(ident.Name) &&
+				!c.hostGlobalShadows(ident.Name) &&
+				!c.typeRootHasBinding(ident.Name) &&
+				!c.hostBuiltinOverrides(ident.Name) &&
+				scriptFunctionClassConstantEffectsProvenAbsent(c.implicitSelfFunction(ident.Name)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (c *scriptChecker) callableExpressionFunctions(expr Expression) ([]*ScriptFunction, bool) {
+	c.speculativeInference++
+	defer func() { c.speculativeInference-- }()
+	return c.callableExpressionFunctionsSeen(expr, nil)
+}
+
+func (c *scriptChecker) callableExpressionFunctionsSeen(
+	expr Expression,
+	seen map[*ScriptFunction]struct{},
+) ([]*ScriptFunction, bool) {
+	switch typed := expr.(type) {
+	case *Identifier:
+		if fns, ok := c.localCallableValuesFor(typed.Name); ok {
+			return fns, true
+		}
+		if c.identifierShadowed(typed.Name) || c.hostGlobalShadows(typed.Name) {
+			return nil, false
+		}
+		if fn, ok := c.script.functions[typed.Name]; ok {
+			return []*ScriptFunction{fn}, true
+		}
+		fn, ok := c.typeRootFunction(typed.Name)
+		if !ok {
+			return nil, false
+		}
+		return []*ScriptFunction{fn}, true
+	case *MemberExpr:
+		target, ok := c.resolveMemberCallable(typed)
+		if !ok || target.fn == nil || target.constructor {
+			return nil, false
+		}
+		return []*ScriptFunction{target.fn}, true
+	case *ConditionalExpr:
+		if branch, ok := staticConditionalExpressionBranch(typed); ok {
+			return c.callableExpressionFunctionsSeen(branch, seen)
+		}
+		left, leftOK := c.callableExpressionFunctionsSeen(typed.Consequent, seen)
+		right, rightOK := c.callableExpressionFunctionsSeen(typed.Alternate, seen)
+		return mergeCheckFunctionCandidates(left, leftOK, right, rightOK)
+	case *IfExpr:
+		branches := make([]Expression, 0, len(typed.ElseIf)+2)
+		branches = append(branches, typed.Consequent)
+		for _, branch := range typed.ElseIf {
+			branches = append(branches, branch.Result)
+		}
+		branches = append(branches, typed.Alternate)
+		var merged []*ScriptFunction
+		for _, branch := range branches {
+			candidates, ok := c.callableExpressionFunctionsSeen(branch, seen)
+			if !ok {
+				return nil, false
+			}
+			if merged == nil {
+				merged = candidates
+				continue
+			}
+			merged, _ = mergeCheckFunctionCandidates(merged, true, candidates, true)
+		}
+		return merged, len(merged) > 0
+	case *RescueExpr:
+		body, bodyOK := c.callableExpressionFunctionsSeen(typed.Body, seen)
+		fallback, fallbackOK := c.callableExpressionFunctionsSeen(typed.Fallback, seen)
+		return mergeCheckFunctionCandidates(body, bodyOK, fallback, fallbackOK)
+	case *BinaryExpr:
+		if typed.Operator != tokenAnd && typed.Operator != tokenOr {
+			return nil, false
+		}
+		if truthy, known := staticExpressionTruthiness(typed.Left); known {
+			if truthy == (typed.Operator == tokenAnd) {
+				return c.callableExpressionFunctionsSeen(typed.Right, seen)
+			}
+			return c.callableExpressionFunctionsSeen(typed.Left, seen)
+		}
+		if left, ok := c.callableExpressionFunctionsSeen(typed.Left, seen); ok {
+			if typed.Operator == tokenOr {
+				return left, true
+			}
+			return c.callableExpressionFunctionsSeen(typed.Right, seen)
+		}
+		return nil, false
+	case *IndexExpr:
+		projected, ok := c.staticLiteralProjection(typed)
+		if !ok {
+			return nil, false
+		}
+		return c.callableExpressionFunctionsSeen(projected, seen)
+	case *CallExpr:
+		if member, ok := typed.Callee.(*MemberExpr); ok && member.Property == "itself" &&
+			len(typed.Args) == 0 && len(typed.KwArgs) == 0 && typed.Block == nil && typed.BlockArg == nil {
+			return c.callableExpressionFunctionsSeen(member.Object, seen)
+		}
+		target, ok := c.resolveCallable(typed)
+		if !ok || target.fn == nil || target.constructor || len(target.fn.Body) != 1 {
+			return nil, false
+		}
+		if seen == nil {
+			seen = make(map[*ScriptFunction]struct{})
+		}
+		if _, recursive := seen[target.fn]; recursive {
+			return nil, false
+		}
+		seen[target.fn] = struct{}{}
+		defer delete(seen, target.fn)
+		switch stmt := target.fn.Body[0].(type) {
+		case *ExprStmt:
+			return c.callableExpressionFunctionsSeen(stmt.Expr, seen)
+		case *ReturnStmt:
+			return c.callableExpressionFunctionsSeen(stmt.Value, seen)
+		}
+	}
+	return nil, false
+}
+
+func mergeCheckFunctionCandidates(
+	left []*ScriptFunction,
+	leftOK bool,
+	right []*ScriptFunction,
+	rightOK bool,
+) ([]*ScriptFunction, bool) {
+	if !leftOK || !rightOK || len(left) == 0 || len(right) == 0 {
+		return nil, false
+	}
+	merged := append([]*ScriptFunction(nil), left...)
+	seen := make(map[*ScriptFunction]struct{}, len(left)+len(right))
+	for _, candidate := range left {
+		seen[candidate] = struct{}{}
+	}
+	for _, candidate := range right {
+		if _, duplicate := seen[candidate]; duplicate {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		merged = append(merged, candidate)
+	}
+	return normalizeCheckCallables(merged), true
+}
+
+func (c *scriptChecker) implicitSelfFunction(name string) *ScriptFunction {
+	if c.selfClass == nil {
+		return nil
+	}
+	if c.selfClassContext {
+		return c.selfClass.ClassMethods[name]
+	}
+	return c.selfClass.Methods[name]
+}
+
+// scriptFunctionClassConstantEffectsProvenAbsent recognizes the deliberately
+// small subset of script functions whose bodies cannot dispatch or write.
+// Everything richer remains opaque so dynamic and transitive effects stay
+// conservative.
+func scriptFunctionClassConstantEffectsProvenAbsent(fn *ScriptFunction) bool {
+	if fn == nil {
+		return false
+	}
+	for _, param := range fn.Params {
+		if param.DefaultVal == nil {
+			continue
+		}
+		if _, literal := staticLiteralValue(param.DefaultVal); !literal {
+			return false
+		}
+	}
+	for _, stmt := range fn.Body {
+		var expr Expression
+		switch typed := stmt.(type) {
+		case *ExprStmt:
+			expr = typed.Expr
+		case *ReturnStmt:
+			expr = typed.Value
+		default:
+			return false
+		}
+		if expr == nil {
+			continue
+		}
+		if _, literal := staticLiteralValue(expr); !literal {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *scriptChecker) binaryDispatchHasOpaqueClassConstantEffects(ty *TypeExpr, operator TokenType) bool {
+	return c.instanceDispatchHasOpaqueClassConstantEffects(ty, binaryDispatchMethodNames(operator)...)
+}
+
+func binaryDispatchMethodNames(operator TokenType) []string {
+	switch operator {
+	case tokenPlus, tokenMinus, tokenAsterisk, tokenSlash, tokenPercent, tokenPower,
+		tokenShovel, tokenAmpersand, tokenLT, tokenLTE, tokenGT, tokenGTE, tokenSpaceship,
+		tokenEQ:
+		return []string{string(operator)}
+	case tokenNotEQ:
+		return []string{"!=", "=="}
+	default:
+		return nil
+	}
+}
+
+func (c *scriptChecker) instanceDispatchHasOpaqueClassConstantEffects(ty *TypeExpr, methods ...string) bool {
+	arms, ok := typeExprArms(ty, 0)
+	if !ok || len(arms) == 0 {
+		return true
+	}
+	resolve := c.checkNamedTypeResolver()
+	for _, arm := range arms {
+		if arm.Kind != TypeEnum {
+			continue
+		}
+		match, ok := resolve(arm)
+		if !ok {
+			return true
+		}
+		if match.enum != nil {
+			continue
+		}
+		if match.class == nil || match.class.IsModule {
+			return true
+		}
+		for _, method := range methods {
+			fn, exists := match.class.Methods[method]
+			if !exists {
+				continue
+			}
+			if !scriptFunctionClassConstantEffectsProvenAbsent(fn) {
+				return true
+			}
+			break
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) enqueueReachableInstanceDispatch(ty *TypeExpr, methods ...string) {
+	arms, ok := typeExprArms(ty, 0)
+	if !ok {
+		return
+	}
+	resolve := c.checkNamedTypeResolver()
+	for _, arm := range arms {
+		if arm.Kind != TypeEnum {
+			continue
+		}
+		match, ok := resolve(arm)
+		if !ok || match.class == nil || match.class.IsModule || match.enum != nil {
+			continue
+		}
+		for _, method := range methods {
+			fn, exists := match.class.Methods[method]
+			if !exists {
+				continue
+			}
+			c.enqueueReachableFunction(match.class.Name+"#"+method, fn)
+			break
+		}
+	}
+}
+
+func (c *scriptChecker) indexReadHasOpaqueClassConstantEffects(receiver Expression) bool {
+	if _, literal := receiver.(*HashLiteral); literal {
+		return false
+	}
+	ty := c.inferExpressionType(receiver)
+	arms, ok := typeExprArms(ty, 0)
+	if !ok || len(arms) == 0 {
+		return true
+	}
+	for _, arm := range arms {
+		if arm.Kind == TypeHash || arm.Kind == TypeShape {
+			return true
+		}
+	}
+	return c.instanceDispatchHasOpaqueClassConstantEffects(ty, "[]")
+}
+
+func (c *scriptChecker) memberSetterHasOpaqueClassConstantEffects(member *MemberExpr) bool {
+	if member == nil {
+		return false
+	}
+	setter := member.Property + "="
+	if ident, ok := member.Object.(*Identifier); ok {
+		if ident.Name == "self" && c.selfClass != nil {
+			methods := c.selfClass.Methods
+			if c.selfClassContext {
+				methods = c.selfClass.ClassMethods
+			}
+			fn, exists := methods[setter]
+			return exists && !scriptFunctionClassConstantEffectsProvenAbsent(fn)
+		}
+		if classDef, ok := c.staticClassArgument(ident); ok {
+			fn, exists := classDef.ClassMethods[setter]
+			return exists && !scriptFunctionClassConstantEffectsProvenAbsent(fn)
+		}
+	}
+	return c.instanceDispatchHasOpaqueClassConstantEffects(c.inferExpressionType(member.Object), setter)
+}
+
+func (c *scriptChecker) enqueueReachableMemberSetter(member *MemberExpr) {
+	if member == nil {
+		return
+	}
+	setter := member.Property + "="
+	if ident, ok := member.Object.(*Identifier); ok {
+		if ident.Name == "self" && c.selfClass != nil {
+			methods := c.selfClass.Methods
+			owner := c.selfClass.Name + "#"
+			if c.selfClassContext {
+				methods = c.selfClass.ClassMethods
+				owner = c.selfClass.Name + "."
+			}
+			if fn, exists := methods[setter]; exists {
+				c.enqueueReachableFunction(owner+setter, fn)
+			}
+			return
+		}
+		if classDef, ok := c.staticClassArgument(ident); ok {
+			if fn, exists := classDef.ClassMethods[setter]; exists {
+				c.enqueueReachableFunction(classDef.Name+"."+setter, fn)
+			}
+			return
+		}
+	}
+	c.enqueueReachableInstanceDispatch(c.inferExpressionType(member.Object), setter)
+}
+
+func (c *scriptChecker) checkPlainAssignmentTarget(function string, target Expression) {
+	switch typed := target.(type) {
+	case nil, *Identifier, *IvarExpr, *ClassVarExpr:
+		return
+	case *MemberExpr:
+		c.checkExpressionWithAuto(function, typed.Object, true)
+		c.collectRuntimeRequireCallExportsFromExpression(typed.Object)
+		c.enqueueReachableMemberSetter(typed)
+		if c.memberSetterHasOpaqueClassConstantEffects(typed) {
+			c.markOpaqueClassConstants()
+		}
+		c.recordRuntimeBindingTarget(typed)
+	case *IndexExpr:
+		c.checkExpressionWithAuto(function, typed.Object, true)
+		c.collectRuntimeRequireCallExportsFromExpression(typed.Object)
+		dispatchType := c.inferExpressionType(typed.Object)
+		opaqueDispatch := c.instanceDispatchHasOpaqueClassConstantEffects(
+			dispatchType,
+			"[]=",
+		)
+		for _, index := range typed.Indices {
+			c.checkExpressionWithAuto(function, index, true)
+			c.collectRuntimeRequireCallExportsFromExpression(index)
+		}
+		c.enqueueReachableInstanceDispatch(dispatchType, "[]=")
+		if opaqueDispatch {
+			c.markOpaqueClassConstants()
+		}
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			c.checkPlainAssignmentTarget(function, element.Target)
+		}
+	default:
+		c.checkExpression(function, target)
+		c.collectRuntimeRequireCallExportsFromExpression(target)
 	}
 }
 
@@ -3016,12 +3995,15 @@ func (c *scriptChecker) checkIfExpression(function string, expr *IfExpr, expecta
 func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr, autoCall bool) {
 	baseRuntimeState := c.snapshotRuntimeState()
 	baseScopeState := c.snapshotScopeState()
-	c.checkExpressionWithAuto(function, expr.Body, autoCall)
-	c.collectRuntimeRequireCallExportsFromExpression(expr.Body)
+	bodyEffects := c.captureClassConstantEffects(func() {
+		c.checkExpressionWithAuto(function, expr.Body, autoCall)
+		c.collectRuntimeRequireCallExportsFromExpression(expr.Body)
+	})
 	bodyRuntimeState := c.snapshotRuntimeState()
 	bodyScopeState := c.snapshotScopeState()
 
 	c.restoreRuntimeState(baseRuntimeState)
+	c.applyClassConstantEffects(bodyEffects)
 	c.restoreScopeState(baseScopeState)
 	c.checkExpressionWithAuto(function, expr.Fallback, autoCall)
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Fallback)
@@ -3095,24 +4077,27 @@ func safeNavigationCallMaySkipArguments(call *CallExpr) bool {
 	return !ok || val.Kind() == KindNil
 }
 
-func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr) {
+func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr) (staticCallable, bool, bool) {
 	target, ok := c.resolveMemberCallable(member)
 	if !ok {
-		return
+		return staticCallable{}, false, false
 	}
 	view := staticCallView{pos: member.Pos()}
 	if target.fn != nil {
-		if target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0 {
+		invoked := target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0
+		if invoked {
 			c.checkCallShape(function, view, target.name, target.fn)
 		}
 		// A bare member read dispatches like a call, so the callee checks
 		// under the call-time runtime root.
 		c.enqueueReachableFunction(target.name, target.fn)
-		return
+		return target, true, invoked
 	}
 	if target.spec.autoInvoke {
 		c.checkBuiltinCallShape(function, view, target.name, target.spec)
+		return target, true, true
 	}
+	return target, true, false
 }
 
 func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) {
@@ -3126,17 +4111,39 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral) 
 	// function's annotation today, so an active begin/ensure deferral must
 	// not capture them either (a lambda return is local to the lambda).
 	previousSites := c.deferredReturnSites
+	previousExceptionExitSites := c.exceptionExitSites
+	previousEnsureExitSites := c.ensureExitSites
 	c.deferredReturnSites = nil
-	defer func() { c.deferredReturnSites = previousSites }()
+	c.exceptionExitSites = nil
+	c.ensureExitSites = nil
+	defer func() {
+		c.deferredReturnSites = previousSites
+		c.exceptionExitSites = previousExceptionExitSites
+		c.ensureExitSites = previousEnsureExitSites
+	}()
+	// The enclosing call already accounts for any block effects that can run.
+	// Keep the out-of-order block walk from reporting inert lambda effects as
+	// exits or exceptions in the surrounding control-flow region.
+	previousClassConstantCaptures := c.classConstantCaptures
+	previousLoopExitEffects := c.loopExitEffects
+	c.classConstantCaptures = nil
+	c.loopExitEffects = nil
+	defer func() {
+		c.classConstantCaptures = previousClassConstantCaptures
+		c.loopExitEffects = previousLoopExitEffects
+	}()
 
-	// A block may run zero or many times, so outer locals its body assigns
-	// lose their facts before the walk, and the walk's own bindings are
-	// rolled back afterwards (the degraded state is the correct post-call
-	// truth for those locals). Names the block binds itself (parameters,
-	// implicit parameters) shadow the outer locals and never write through.
-	c.degradeBlockBodyBindings(block)
+	// A call block may run zero or many times, so outer locals its body
+	// assigns lose their facts before the walk. A lambda literal only creates
+	// a callable; its body has not run yet, so creation preserves captured
+	// outer facts. The walk's own bindings are rolled back in either case.
+	if !block.Lambda {
+		c.degradeBlockBodyBindings(block)
+	}
 	typesState := c.snapshotLocalTypes()
 	defer c.restoreLocalTypes(typesState)
+	classValuesState := c.snapshotLocalClassValues()
+	defer c.restoreLocalClassValues(classValuesState)
 
 	popScope := c.pushBlockCheckScope(block)
 	defer popScope()
@@ -3488,6 +4495,22 @@ func (c *scriptChecker) checkDestructureTargetTypeAnnotations(function string, t
 
 func (c *scriptChecker) callMayEvaluateBlock(call *CallExpr) bool {
 	return c.callMayEvaluateBlockWithSeen(call, nil)
+}
+
+func (c *scriptChecker) resolvedCallMayEvaluateBlock(call *CallExpr, target staticCallable, resolved bool) bool {
+	if call == nil || call.Block == nil || staticNilSafeNavigationCall(call) {
+		return false
+	}
+	if !resolved {
+		return !staticallyNonCallableCallee(call.Callee)
+	}
+	if target.fn != nil {
+		return c.functionMayEvaluateCallBlock(target.fn, nil)
+	}
+	if target.name == "array.fetch" {
+		return staticArrayFetchBlockMayEvaluate(call)
+	}
+	return target.spec.usesBlock
 }
 
 func (c *scriptChecker) callMayEvaluateBlockWithSeen(call *CallExpr, seen map[*ScriptFunction]struct{}) bool {
@@ -4470,9 +5493,19 @@ type staticCallSpec struct {
 	resultType *TypeExpr
 }
 
-func (c *scriptChecker) checkCallResolved(function string, call *CallExpr, target staticCallable, ok bool) {
+func (c *scriptChecker) checkCallResolved(
+	function string,
+	call *CallExpr,
+	target staticCallable,
+	ok bool,
+	dynamicCandidates checkDynamicCallCandidates,
+) {
 	if !ok {
+		c.enqueueReachableDynamicMemberCall(call, dynamicCandidates)
 		return
+	}
+	if target.fn == nil && (target.name == "send" || target.name == "public_send") {
+		c.enqueueReachableForwardedMemberCall(call, target.name == "send", dynamicCandidates)
 	}
 	if callExpandsArguments(call) {
 		// Splat expansion makes the argument shape dynamic: the runtime
@@ -4487,7 +5520,11 @@ func (c *scriptChecker) checkCallResolved(function string, call *CallExpr, targe
 		view := staticCallViewFor(call, target)
 		c.checkCallShape(function, view, target.name, target.fn)
 		c.checkCallArgumentTypes(function, view, target.name, target.fn)
-		c.enqueueReachableFunction(target.name, target.fn)
+		c.enqueueReachableFunctionWithParamFacts(
+			target.name,
+			target.fn,
+			c.reachableCallParamFacts(call, target.fn),
+		)
 		return
 	}
 	view := staticCallViewFor(call, target)
@@ -4499,6 +5536,316 @@ func (c *scriptChecker) checkCallResolved(function string, call *CallExpr, targe
 	if _, isClassPredicate := classPredicateNames[target.name]; isClassPredicate {
 		c.checkClassPredicateArgument(function, call, target.name)
 	}
+}
+
+// enqueueReachableDynamicMemberCall keeps method-body checking tied to the
+// runtime state at an unresolved dispatch. Only an exhaustive finite receiver
+// or callable set is scheduled; unknown receivers leave methods to their
+// independent pristine checks. Without the bounded fallback, a method reached
+// through a class value in a container or branch is checked later under
+// pristine state, which can make a class-predicate narrowing look sound even
+// though an earlier call-site mutation changed the constant it resolves.
+func (c *scriptChecker) captureDynamicCallCandidates(call *CallExpr) checkDynamicCallCandidates {
+	if call == nil {
+		return checkDynamicCallCandidates{}
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok {
+		return checkDynamicCallCandidates{}
+	}
+	instances, instancesExact := c.instanceClassExpressionNames(member.Object)
+	classes, classesExact := c.dispatchClassValueExpressionNames(member.Object)
+	var callables []*ScriptFunction
+	callablesExact := false
+	if member.Property == "call" && typeExprMayIncludeCallable(c.inferExpressionType(member.Object)) {
+		callables, callablesExact = c.callableExpressionFunctions(member.Object)
+	}
+	return checkDynamicCallCandidates{
+		instanceClasses:  instances,
+		instancesExact:   instancesExact,
+		classValues:      classes,
+		classValuesExact: classesExact,
+		callables:        callables,
+		callablesExact:   callablesExact,
+	}
+}
+
+func (c *scriptChecker) enqueueReachableDynamicMemberCall(
+	call *CallExpr,
+	dynamicCandidates checkDynamicCallCandidates,
+) {
+	if call == nil {
+		return
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok {
+		return
+	}
+	if member.Property == "send" || member.Property == "public_send" {
+		c.enqueueReachableForwardedMemberCall(call, member.Property == "send", dynamicCandidates)
+		return
+	}
+	if member.Property == "call" && typeExprMayIncludeCallable(c.inferExpressionType(member.Object)) {
+		if dynamicCandidates.callablesExact {
+			for _, fn := range dynamicCandidates.callables {
+				c.enqueueReachableFunctionWithParamFacts(fn.Name+".call", fn, c.reachableCallParamFacts(call, fn))
+			}
+		}
+		return
+	}
+	c.enqueueReachableMemberCandidates(member.Property, call, false, dynamicCandidates)
+}
+
+// enqueueReachableForwardedMemberCall models Object#send/public_send when the
+// forwarded name is a literal. The first argument names the method and the
+// remaining arguments bind its parameters. Candidate receivers that override
+// the helper run that override instead; only the others use universal
+// forwarding. A dynamic name schedules the finite method set of an exact
+// receiver, never unrelated same-named methods from the rest of the script.
+func (c *scriptChecker) enqueueReachableForwardedMemberCall(
+	call *CallExpr,
+	allowPrivate bool,
+	dynamicCandidates checkDynamicCallCandidates,
+) {
+	if call == nil || len(call.Args) == 0 {
+		return
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok {
+		return
+	}
+	method := ""
+	if val, literal := staticLiteralValue(call.Args[0]); literal {
+		var valid bool
+		method, valid = methodNameArg(val)
+		if !valid {
+			return
+		}
+	}
+	forwarded := *call
+	forwarded.Args = call.Args[1:]
+	enqueue := func(label string, fn *ScriptFunction, effectiveCall *CallExpr, publicOnly bool) {
+		if fn == nil || (publicOnly && (fn.Private || fn.Protected)) || (!publicOnly && !allowPrivate && fn.Private) {
+			return
+		}
+		c.enqueueReachableFunctionWithParamFacts(label, fn, c.reachableCallParamFacts(effectiveCall, fn))
+	}
+	if dynamicCandidates.instancesExact {
+		for _, className := range dynamicCandidates.instanceClasses {
+			classDef := c.script.classes[className]
+			if classDef == nil {
+				continue
+			}
+			if override := classDef.Methods[member.Property]; override != nil {
+				enqueue(classDef.Name+"#"+member.Property, override, call, false)
+				continue
+			}
+			if method == "" {
+				for _, fn := range sortedCheckFunctions(classDef.Methods) {
+					enqueue(classDef.Name+"#"+fn.Name, fn, &forwarded, !allowPrivate)
+				}
+				continue
+			}
+			enqueue(classDef.Name+"#"+method, classDef.Methods[method], &forwarded, !allowPrivate)
+		}
+		return
+	}
+	if dynamicCandidates.classValuesExact {
+		for _, className := range dynamicCandidates.classValues {
+			classDef := c.script.classes[className]
+			if classDef == nil {
+				continue
+			}
+			if override := classDef.ClassMethods[member.Property]; override != nil {
+				enqueue(classDef.Name+"."+member.Property, override, call, false)
+				continue
+			}
+			if method == "new" && !classDef.IsModule {
+				enqueue(classDef.Name+".new", classDef.Methods["initialize"], &forwarded, !allowPrivate)
+				continue
+			}
+			if method == "" {
+				if !classDef.IsModule {
+					enqueue(classDef.Name+".new", classDef.Methods["initialize"], &forwarded, !allowPrivate)
+				}
+				for _, fn := range sortedCheckFunctions(classDef.ClassMethods) {
+					enqueue(classDef.Name+"."+fn.Name, fn, &forwarded, !allowPrivate)
+				}
+				continue
+			}
+			enqueue(classDef.Name+"."+method, classDef.ClassMethods[method], &forwarded, !allowPrivate)
+		}
+	}
+}
+
+func (c *scriptChecker) enqueueReachableMemberCandidates(
+	method string,
+	call *CallExpr,
+	allowPrivate bool,
+	dynamicCandidates checkDynamicCallCandidates,
+) {
+	if !c.checkReachableCalls || c.script == nil {
+		return
+	}
+	enqueue := func(label string, fn *ScriptFunction) {
+		if fn == nil || (!allowPrivate && fn.Private) {
+			return
+		}
+		c.enqueueReachableFunctionWithParamFacts(label, fn, c.reachableCallParamFacts(call, fn))
+	}
+	if dynamicCandidates.instancesExact {
+		for _, className := range dynamicCandidates.instanceClasses {
+			classDef := c.script.classes[className]
+			if classDef == nil {
+				continue
+			}
+			if method == "" {
+				for _, fn := range sortedCheckFunctions(classDef.Methods) {
+					enqueue(classDef.Name+"#"+fn.Name, fn)
+				}
+			} else {
+				enqueue(classDef.Name+"#"+method, classDef.Methods[method])
+			}
+		}
+		return
+	}
+	if dynamicCandidates.classValuesExact {
+		for _, className := range dynamicCandidates.classValues {
+			classDef := c.script.classes[className]
+			if classDef == nil {
+				continue
+			}
+			if method == "new" && !classDef.IsModule {
+				enqueue(classDef.Name+".new", classDef.Methods["initialize"])
+				continue
+			}
+			if method == "" {
+				for _, fn := range sortedCheckFunctions(classDef.ClassMethods) {
+					enqueue(classDef.Name+"."+fn.Name, fn)
+				}
+				continue
+			}
+			enqueue(classDef.Name+"."+method, classDef.ClassMethods[method])
+		}
+		return
+	}
+}
+
+func (c *scriptChecker) instanceClassExpressionNames(receiver Expression) ([]string, bool) {
+	var member *MemberExpr
+	switch typed := receiver.(type) {
+	case *CallExpr:
+		member, _ = typed.Callee.(*MemberExpr)
+	case *MemberExpr:
+		member = typed
+	}
+	if member != nil && member.Property == "new" {
+		return c.dispatchClassValueExpressionNames(member.Object)
+	}
+	arms, ok := typeExprArms(c.inferExpressionType(receiver), 0)
+	if !ok || len(arms) == 0 {
+		return nil, false
+	}
+	classes := make([]string, 0, len(arms))
+	seen := make(map[string]struct{}, len(arms))
+	for _, arm := range arms {
+		if arm.Kind == TypeNil {
+			continue
+		}
+		if arm.Kind != TypeEnum {
+			return nil, false
+		}
+		classDef := c.script.classes[arm.Name]
+		if classDef == nil || classDef.IsModule {
+			return nil, false
+		}
+		if _, duplicate := seen[classDef.Name]; duplicate {
+			continue
+		}
+		seen[classDef.Name] = struct{}{}
+		classes = append(classes, classDef.Name)
+	}
+	return classes, len(classes) > 0
+}
+
+func (c *scriptChecker) reachableCallParamFacts(
+	call *CallExpr,
+	fn *ScriptFunction,
+) map[string]checkReachableParamFact {
+	if call == nil || fn == nil || callExpandsArguments(call) {
+		return nil
+	}
+	facts := make(map[string]checkReachableParamFact)
+	bound := make(map[string]struct{})
+	for i, arg := range call.Args {
+		param, ok := positionalCallableParam(fn.Params, i)
+		if !ok || param.Name == "" {
+			continue
+		}
+		bound[param.Name] = struct{}{}
+		if _, exists := facts[param.Name]; !exists {
+			facts[param.Name] = checkReachableParamFact{}
+		}
+		if param.Kind == ParamRest {
+			continue
+		}
+		fact := c.callArgumentFacts[arg]
+		if fact == nil {
+			fact = c.inferExpressionType(arg)
+		}
+		classNames := c.callArgumentClassValues[arg]
+		callables := c.callArgumentCallables[arg]
+		if fact != nil || len(classNames) > 0 || len(callables) > 0 {
+			facts[param.Name] = checkReachableParamFact{
+				typeExpr:   fact,
+				classNames: append([]string(nil), classNames...),
+				callables:  append([]*ScriptFunction(nil), callables...),
+			}
+		}
+	}
+	for _, kwarg := range call.KwArgs {
+		if kwarg.Splat {
+			continue
+		}
+		for _, param := range fn.Params {
+			if param.Name != kwarg.Name || (param.Kind != ParamNormal && param.Kind != ParamKeyword) {
+				continue
+			}
+			bound[param.Name] = struct{}{}
+			if _, exists := facts[param.Name]; !exists {
+				facts[param.Name] = checkReachableParamFact{}
+			}
+			fact := c.callArgumentFacts[kwarg.Value]
+			if fact == nil {
+				fact = c.inferExpressionType(kwarg.Value)
+			}
+			classNames := c.callArgumentClassValues[kwarg.Value]
+			callables := c.callArgumentCallables[kwarg.Value]
+			if fact != nil || len(classNames) > 0 || len(callables) > 0 {
+				facts[param.Name] = checkReachableParamFact{
+					typeExpr:   fact,
+					classNames: append([]string(nil), classNames...),
+					callables:  append([]*ScriptFunction(nil), callables...),
+				}
+			}
+			break
+		}
+	}
+	for _, param := range fn.Params {
+		if param.Name == "" || param.DefaultVal == nil {
+			continue
+		}
+		if _, supplied := bound[param.Name]; supplied {
+			continue
+		}
+		fact := facts[param.Name]
+		fact.usesDefault = true
+		facts[param.Name] = fact
+	}
+	if len(facts) == 0 {
+		return nil
+	}
+	return facts
 }
 
 // checkParseAsShapeArgument reports a JSON.parse_as call whose second
@@ -4770,6 +6117,41 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		return target, true
 	}
 	if ident, ok := member.Object.(*Identifier); ok {
+		if member.Property == "call" {
+			if fn, ok := c.localCallableValueFor(ident.Name); ok {
+				return staticCallable{
+					name:       fn.Name + ".call",
+					fn:         fn,
+					resolution: calleeDirect,
+				}, true
+			}
+		}
+		if classDef, ok := c.staticClassArgument(ident); ok {
+			if member.Property == "new" && !classDef.IsModule {
+				if initFn, exists := classDef.Methods["initialize"]; exists {
+					return staticCallable{
+						name:             classDef.Name + ".new",
+						fn:               initFn,
+						resolution:       calleeMemberValue,
+						constructor:      true,
+						constructorClass: classDef.Name,
+					}, true
+				}
+				return staticCallable{
+					name:             classDef.Name + ".new",
+					spec:             staticCallSpec{minArgs: 0, maxArgs: 0},
+					constructor:      true,
+					constructorClass: classDef.Name,
+				}, true
+			}
+			if fn, exists := classDef.ClassMethods[member.Property]; exists {
+				return staticCallable{
+					name:       classDef.Name + "." + member.Property,
+					fn:         fn,
+					resolution: calleeMemberMethod,
+				}, true
+			}
+		}
 		if c.identifierShadowed(ident.Name) {
 			return staticCallable{}, false
 		}
@@ -4779,28 +6161,6 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 		if member.Property == "call" {
 			if fn, ok := c.typeRootFunctionValue(ident.Name); ok {
 				return staticCallable{name: ident.Name + ".call", fn: fn, resolution: calleeDirect}, true
-			}
-		}
-		if classDef, ok := c.script.classes[ident.Name]; ok {
-			if member.Property == "new" && !classDef.IsModule {
-				if initFn, ok := classDef.Methods["initialize"]; ok {
-					return staticCallable{
-						name:             ident.Name + ".new",
-						fn:               initFn,
-						resolution:       calleeMemberValue,
-						constructor:      true,
-						constructorClass: ident.Name,
-					}, true
-				}
-				return staticCallable{
-					name:             ident.Name + ".new",
-					spec:             staticCallSpec{minArgs: 0, maxArgs: 0},
-					constructor:      true,
-					constructorClass: ident.Name,
-				}, true
-			}
-			if fn, ok := classDef.ClassMethods[member.Property]; ok {
-				return staticCallable{name: ident.Name + "." + member.Property, fn: fn, resolution: calleeMemberMethod}, true
 			}
 		}
 		if fn, ok := c.typeRootObjectFunction(ident.Name, member.Property); ok {
@@ -5176,21 +6536,11 @@ func (c *scriptChecker) staticConstructorClass(member *MemberExpr) (string, bool
 	if !ok {
 		return "", false
 	}
-	// A local or parameter that shadows the class name dispatches through the
-	// runtime value, not the static class, so the chained call must not be
-	// validated against the class. This mirrors the direct receiver path in
-	// resolveMemberCallable.
-	if c.identifierShadowed(ident.Name) {
-		return "", false
-	}
-	if c.hostGlobalShadows(ident.Name) {
-		return "", false
-	}
-	classDef, ok := c.script.classes[ident.Name]
+	classDef, ok := c.staticClassArgument(ident)
 	if !ok || classDef.IsModule {
 		return "", false
 	}
-	return ident.Name, true
+	return classDef.Name, true
 }
 
 func staticBuiltinReceiverKind(expr Expression) (string, bool) {
@@ -5895,10 +7245,12 @@ func (c *scriptChecker) pushRescueScope(clause *RescueClause) func() {
 func (c *scriptChecker) pushScope(scope map[string]struct{}) func() {
 	c.scopes = append(c.scopes, scope)
 	c.localTypes = append(c.localTypes, nil)
+	c.localClassValues = append(c.localClassValues, nil)
 	c.liveLocalNames = append(c.liveLocalNames, nil)
 	return func() {
 		c.scopes = c.scopes[:len(c.scopes)-1]
 		c.localTypes = c.localTypes[:len(c.localTypes)-1]
+		c.localClassValues = c.localClassValues[:len(c.localClassValues)-1]
 		c.liveLocalNames = c.liveLocalNames[:len(c.liveLocalNames)-1]
 	}
 }
@@ -5916,14 +7268,100 @@ func (c *scriptChecker) recordBindingTarget(target Expression) {
 }
 
 func (c *scriptChecker) recordRuntimeBindingTarget(target Expression) {
-	memberName, ok := runtimeNamespaceMemberName(target)
-	if !ok {
-		return
+	switch typed := target.(type) {
+	case *MemberExpr:
+		if c.memberAssignmentIntercepted(typed) {
+			return
+		}
+		memberName, ok := c.runtimeNamespaceMemberName(typed)
+		if ok {
+			c.recordRuntimeNamespaceMember(memberName)
+		}
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			c.recordRuntimeBindingTarget(element.Target)
+		}
 	}
+}
+
+func (c *scriptChecker) memberAssignmentIntercepted(member *MemberExpr) bool {
+	if member == nil {
+		return false
+	}
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return false
+	}
+	var methods map[string]*ScriptFunction
+	if ident.Name == "self" && c.selfClass != nil {
+		methods = c.selfClass.Methods
+		if c.selfClassContext {
+			methods = c.selfClass.ClassMethods
+		}
+	} else if classDef, ok := c.assignmentClassValue(ident); ok {
+		methods = classDef.ClassMethods
+	} else {
+		return false
+	}
+	_, hasSetter := methods[member.Property+"="]
+	_, hasGetter := methods[member.Property]
+	return hasSetter || hasGetter
+}
+
+func (c *scriptChecker) assignmentClassValue(ident *Identifier) (*ClassDef, bool) {
+	if ident == nil {
+		return nil, false
+	}
+	if className, ok := c.localClassValueFor(ident.Name); ok {
+		classDef, exists := c.script.classes[className]
+		return classDef, exists && classDef != nil
+	}
+	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		return nil, false
+	}
+	classDef, ok := c.script.classes[ident.Name]
+	if !ok || classDef == nil {
+		return nil, false
+	}
+	if val, bound := checkRootBinding(c.runtimeTypeRoot, ident.Name); bound {
+		if val.Kind() != KindClass {
+			return nil, false
+		}
+		runtimeClass := valueClass(val)
+		if runtimeClass == nil || runtimeClass.Name != classDef.Name || runtimeClass.owner != classDef.owner {
+			return nil, false
+		}
+	}
+	return classDef, true
+}
+
+func (c *scriptChecker) runtimeNamespaceMemberName(target Expression) (string, bool) {
+	member, ok := target.(*MemberExpr)
+	if !ok {
+		return "", false
+	}
+	obj, ok := member.Object.(*Identifier)
+	if !ok {
+		return "", false
+	}
+	namespace := obj.Name
+	if className, ok := c.localClassValueFor(obj.Name); ok {
+		namespace = className
+	}
+	return namespace + "." + member.Property, true
+}
+
+func (c *scriptChecker) recordRuntimeNamespaceMember(memberName string) {
 	if c.runtimeNamespaceMembers == nil {
 		c.runtimeNamespaceMembers = make(map[string]struct{})
 	}
 	c.runtimeNamespaceMembers[memberName] = struct{}{}
+	for i := range c.classConstantCaptures {
+		if c.classConstantCaptures[i].namespaceMembers == nil {
+			c.classConstantCaptures[i].namespaceMembers = make(map[string]struct{})
+		}
+		c.classConstantCaptures[i].namespaceMembers[memberName] = struct{}{}
+	}
 }
 
 func (c *scriptChecker) recordBindingName(name string) {
@@ -5969,6 +7407,9 @@ func (c *scriptChecker) identifierShadowed(name string) bool {
 func (c *scriptChecker) namespaceMemberMutated(namespace, property string) bool {
 	memberName := namespace + "." + property
 	if c.scopeHas(memberName) {
+		return true
+	}
+	if _, ok := c.classConstantContext.namespaceMembers[memberName]; ok {
 		return true
 	}
 	_, ok := c.runtimeNamespaceMembers[memberName]
