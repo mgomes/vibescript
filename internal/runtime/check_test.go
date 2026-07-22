@@ -815,6 +815,68 @@ end`,
 	}
 }
 
+func TestCheckWarningsForFunctionTracksCollapsedOptionsHashFacts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "binds synthesized hash",
+			source: `def takes_string(value: string)
+  value
+end
+
+def target(opts = "default")
+  takes_string(opts)
+end
+
+def run()
+  target(name: 1)
+end`,
+			want: "call to takes_string argument value expected string, got { name: int }",
+		},
+		{
+			name: "consumes later keyword names",
+			source: `def takes_string(value: string)
+  value
+end
+
+def target(opts = "unused", later = "safe")
+  takes_string(later)
+end
+
+def run()
+  target(name: 1, later: 2)
+end`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			warnings := script.CheckWarningsForFunction("run")
+			messages := make([]string, 0, len(warnings))
+			for _, warning := range warnings {
+				messages = append(messages, warning.Message)
+			}
+			got := strings.Join(messages, "\n")
+			if tc.want == "" {
+				if got != "" {
+					t.Fatalf("CheckWarningsForFunction(%q) = %q, want none", "run", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckWarningsForFunctionChecksBareMemberBeforeItsNamespaceEffects(t *testing.T) {
 	t.Parallel()
 

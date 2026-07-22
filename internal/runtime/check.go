@@ -5757,7 +5757,7 @@ func (c *scriptChecker) checkCallResolved(
 		c.enqueueReachableFunctionWithParamFacts(
 			target.name,
 			target.fn,
-			c.reachableCallParamFacts(call, target.fn),
+			c.reachableCallParamFacts(call, target),
 		)
 		return
 	}
@@ -5856,7 +5856,8 @@ func (c *scriptChecker) enqueueReachableDynamicMemberCall(
 	if member.Property == "call" && typeExprMayIncludeCallable(c.inferExpressionType(member.Object)) {
 		if dynamicCandidates.callablesExact {
 			for _, fn := range dynamicCandidates.callables {
-				c.enqueueReachableFunctionWithParamFacts(fn.Name+".call", fn, c.reachableCallParamFacts(call, fn))
+				target := staticCallable{name: fn.Name + ".call", fn: fn, resolution: calleeDirect}
+				c.enqueueReachableFunctionWithParamFacts(target.name, fn, c.reachableCallParamFacts(call, target))
 			}
 		}
 		return
@@ -5892,11 +5893,12 @@ func (c *scriptChecker) enqueueReachableForwardedMemberCall(
 	}
 	forwarded := *call
 	forwarded.Args = call.Args[1:]
-	enqueue := func(label string, fn *ScriptFunction, effectiveCall *CallExpr, publicOnly bool) {
+	enqueue := func(target staticCallable, effectiveCall *CallExpr, publicOnly bool) {
+		fn := target.fn
 		if fn == nil || (publicOnly && (fn.Private || fn.Protected)) || (!publicOnly && !allowPrivate && fn.Private) {
 			return
 		}
-		c.enqueueReachableFunctionWithParamFacts(label, fn, c.reachableCallParamFacts(effectiveCall, fn))
+		c.enqueueReachableFunctionWithParamFacts(target.name, fn, c.reachableCallParamFacts(effectiveCall, target))
 	}
 	if dynamicCandidates.instancesExact {
 		for _, className := range dynamicCandidates.instanceClasses {
@@ -5905,16 +5907,28 @@ func (c *scriptChecker) enqueueReachableForwardedMemberCall(
 				continue
 			}
 			if override := classDef.Methods[member.Property]; override != nil {
-				enqueue(classDef.Name+"#"+member.Property, override, call, false)
+				enqueue(staticCallable{
+					name:       classDef.Name + "#" + member.Property,
+					fn:         override,
+					resolution: calleeMemberMethod,
+				}, call, false)
 				continue
 			}
 			if method == "" {
 				for _, fn := range sortedCheckFunctions(classDef.Methods) {
-					enqueue(classDef.Name+"#"+fn.Name, fn, &forwarded, !allowPrivate)
+					enqueue(staticCallable{
+						name:       classDef.Name + "#" + fn.Name,
+						fn:         fn,
+						resolution: calleeForwardedMethod,
+					}, &forwarded, !allowPrivate)
 				}
 				continue
 			}
-			enqueue(classDef.Name+"#"+method, classDef.Methods[method], &forwarded, !allowPrivate)
+			enqueue(staticCallable{
+				name:       classDef.Name + "#" + method,
+				fn:         classDef.Methods[method],
+				resolution: calleeForwardedMethod,
+			}, &forwarded, !allowPrivate)
 		}
 		return
 	}
@@ -5925,23 +5939,47 @@ func (c *scriptChecker) enqueueReachableForwardedMemberCall(
 				continue
 			}
 			if override := classDef.ClassMethods[member.Property]; override != nil {
-				enqueue(classDef.Name+"."+member.Property, override, call, false)
+				enqueue(staticCallable{
+					name:       classDef.Name + "." + member.Property,
+					fn:         override,
+					resolution: calleeMemberMethod,
+				}, call, false)
 				continue
 			}
 			if method == "new" && !classDef.IsModule {
-				enqueue(classDef.Name+".new", classDef.Methods["initialize"], &forwarded, !allowPrivate)
+				enqueue(staticCallable{
+					name:             classDef.Name + ".new",
+					fn:               classDef.Methods["initialize"],
+					resolution:       calleeForwardedMethod,
+					constructor:      true,
+					constructorClass: classDef.Name,
+				}, &forwarded, !allowPrivate)
 				continue
 			}
 			if method == "" {
 				if !classDef.IsModule {
-					enqueue(classDef.Name+".new", classDef.Methods["initialize"], &forwarded, !allowPrivate)
+					enqueue(staticCallable{
+						name:             classDef.Name + ".new",
+						fn:               classDef.Methods["initialize"],
+						resolution:       calleeForwardedMethod,
+						constructor:      true,
+						constructorClass: classDef.Name,
+					}, &forwarded, !allowPrivate)
 				}
 				for _, fn := range sortedCheckFunctions(classDef.ClassMethods) {
-					enqueue(classDef.Name+"."+fn.Name, fn, &forwarded, !allowPrivate)
+					enqueue(staticCallable{
+						name:       classDef.Name + "." + fn.Name,
+						fn:         fn,
+						resolution: calleeForwardedMethod,
+					}, &forwarded, !allowPrivate)
 				}
 				continue
 			}
-			enqueue(classDef.Name+"."+method, classDef.ClassMethods[method], &forwarded, !allowPrivate)
+			enqueue(staticCallable{
+				name:       classDef.Name + "." + method,
+				fn:         classDef.ClassMethods[method],
+				resolution: calleeForwardedMethod,
+			}, &forwarded, !allowPrivate)
 		}
 	}
 }
@@ -5955,11 +5993,12 @@ func (c *scriptChecker) enqueueReachableMemberCandidates(
 	if !c.checkReachableCalls || c.script == nil {
 		return
 	}
-	enqueue := func(label string, fn *ScriptFunction) {
+	enqueue := func(target staticCallable) {
+		fn := target.fn
 		if fn == nil || (!allowPrivate && fn.Private) {
 			return
 		}
-		c.enqueueReachableFunctionWithParamFacts(label, fn, c.reachableCallParamFacts(call, fn))
+		c.enqueueReachableFunctionWithParamFacts(target.name, fn, c.reachableCallParamFacts(call, target))
 	}
 	if dynamicCandidates.instancesExact {
 		for _, className := range dynamicCandidates.instanceClasses {
@@ -5969,10 +6008,18 @@ func (c *scriptChecker) enqueueReachableMemberCandidates(
 			}
 			if method == "" {
 				for _, fn := range sortedCheckFunctions(classDef.Methods) {
-					enqueue(classDef.Name+"#"+fn.Name, fn)
+					enqueue(staticCallable{
+						name:       classDef.Name + "#" + fn.Name,
+						fn:         fn,
+						resolution: calleeMemberMethod,
+					})
 				}
 			} else {
-				enqueue(classDef.Name+"#"+method, classDef.Methods[method])
+				enqueue(staticCallable{
+					name:       classDef.Name + "#" + method,
+					fn:         classDef.Methods[method],
+					resolution: calleeMemberMethod,
+				})
 			}
 		}
 		return
@@ -5984,16 +6031,30 @@ func (c *scriptChecker) enqueueReachableMemberCandidates(
 				continue
 			}
 			if method == "new" && !classDef.IsModule {
-				enqueue(classDef.Name+".new", classDef.Methods["initialize"])
+				enqueue(staticCallable{
+					name:             classDef.Name + ".new",
+					fn:               classDef.Methods["initialize"],
+					resolution:       calleeMemberValue,
+					constructor:      true,
+					constructorClass: classDef.Name,
+				})
 				continue
 			}
 			if method == "" {
 				for _, fn := range sortedCheckFunctions(classDef.ClassMethods) {
-					enqueue(classDef.Name+"."+fn.Name, fn)
+					enqueue(staticCallable{
+						name:       classDef.Name + "." + fn.Name,
+						fn:         fn,
+						resolution: calleeMemberMethod,
+					})
 				}
 				continue
 			}
-			enqueue(classDef.Name+"."+method, classDef.ClassMethods[method])
+			enqueue(staticCallable{
+				name:       classDef.Name + "." + method,
+				fn:         classDef.ClassMethods[method],
+				resolution: calleeMemberMethod,
+			})
 		}
 		return
 	}
@@ -6038,19 +6099,19 @@ func (c *scriptChecker) instanceClassExpressionNames(receiver Expression) ([]str
 
 func (c *scriptChecker) reachableCallParamFacts(
 	call *CallExpr,
-	fn *ScriptFunction,
+	target staticCallable,
 ) map[string]checkReachableParamFact {
+	fn := target.fn
 	if call == nil || fn == nil || callExpandsArguments(call) {
 		return nil
 	}
+	view := staticCallViewFor(call, target)
 	facts := make(map[string]checkReachableParamFact)
-	bound := make(map[string]struct{})
-	for i, arg := range call.Args {
+	for i, arg := range view.args {
 		param, ok := positionalCallableParam(fn.Params, i)
 		if !ok || param.Name == "" {
 			continue
 		}
-		bound[param.Name] = struct{}{}
 		if _, exists := facts[param.Name]; !exists {
 			facts[param.Name] = checkReachableParamFact{}
 		}
@@ -6071,7 +6132,7 @@ func (c *scriptChecker) reachableCallParamFacts(
 			}
 		}
 	}
-	for _, kwarg := range call.KwArgs {
+	for _, kwarg := range view.kwargs {
 		if kwarg.Splat {
 			continue
 		}
@@ -6079,7 +6140,6 @@ func (c *scriptChecker) reachableCallParamFacts(
 			if param.Name != kwarg.Name || (param.Kind != ParamNormal && param.Kind != ParamKeyword) {
 				continue
 			}
-			bound[param.Name] = struct{}{}
 			if _, exists := facts[param.Name]; !exists {
 				facts[param.Name] = checkReachableParamFact{}
 			}
@@ -6099,15 +6159,26 @@ func (c *scriptChecker) reachableCallParamFacts(
 			break
 		}
 	}
-	for _, param := range fn.Params {
-		if param.Name == "" || param.DefaultVal == nil {
+	// The normalized view supplies inferred values, while callParamSupply is
+	// authoritative about defaults. In particular, an options-hash collapse
+	// consumes every raw keyword, so a later same-named parameter must discard
+	// the fact captured from the original spelling and run its default.
+	collapseOptionsHash := staticCallCollapsesOptionsHash(call, target)
+	for i, param := range fn.Params {
+		if param.Name == "" {
 			continue
 		}
-		if _, supplied := bound[param.Name]; supplied {
+		_, mayDefault := callParamSupply(call, fn, i, collapseOptionsHash)
+		if mayDefault {
+			if param.DefaultVal == nil {
+				delete(facts, param.Name)
+				continue
+			}
+			facts[param.Name] = checkReachableParamFact{usesDefault: true}
 			continue
 		}
 		fact := facts[param.Name]
-		fact.usesDefault = true
+		fact.usesDefault = false
 		facts[param.Name] = fact
 	}
 	if len(facts) == 0 {
