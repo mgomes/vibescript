@@ -3616,7 +3616,7 @@ func (c *scriptChecker) callHasOpaqueClassConstantEffects(call *CallExpr, target
 		if member, ok := call.Callee.(*MemberExpr); ok && c.memberDispatchEffect(member) == effectPure {
 			return false
 		}
-		if resolved && target.fn != nil && scriptFunctionClassConstantEffectsProvenAbsent(target.fn) {
+		if resolved && target.fn != nil && scriptCallClassConstantEffectsProvenAbsent(call, target) {
 			return false
 		}
 		if resolved && target.fn == nil && !target.spec.fromSignature {
@@ -3627,9 +3627,15 @@ func (c *scriptChecker) callHasOpaqueClassConstantEffects(call *CallExpr, target
 				!c.identifierShadowed(ident.Name) &&
 				!c.hostGlobalShadows(ident.Name) &&
 				!c.typeRootHasBinding(ident.Name) &&
-				!c.hostBuiltinOverrides(ident.Name) &&
-				scriptFunctionClassConstantEffectsProvenAbsent(c.implicitSelfFunction(ident.Name)) {
-				return false
+				!c.hostBuiltinOverrides(ident.Name) {
+				fn := c.implicitSelfFunction(ident.Name)
+				if scriptCallClassConstantEffectsProvenAbsent(call, staticCallable{
+					name:       ident.Name,
+					fn:         fn,
+					resolution: calleeMemberMethod,
+				}) {
+					return false
+				}
 			}
 		}
 	}
@@ -3788,11 +3794,20 @@ func (c *scriptChecker) implicitSelfFunction(name string) *ScriptFunction {
 // Everything richer remains opaque so dynamic and transitive effects stay
 // conservative.
 func scriptFunctionClassConstantEffectsProvenAbsent(fn *ScriptFunction) bool {
+	return scriptCallClassConstantEffectsProvenAbsent(nil, staticCallable{fn: fn})
+}
+
+func scriptCallClassConstantEffectsProvenAbsent(call *CallExpr, target staticCallable) bool {
+	fn := target.fn
 	if fn == nil {
 		return false
 	}
-	for _, param := range fn.Params {
+	collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
+	for i, param := range fn.Params {
 		if param.DefaultVal == nil {
+			continue
+		}
+		if call != nil && !callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
 			continue
 		}
 		if _, literal := staticLiteralValue(param.DefaultVal); !literal {

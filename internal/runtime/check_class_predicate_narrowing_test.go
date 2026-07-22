@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Class predicates narrow known nominal unions through both condition
 // branches when every arm provably reaches the runtime universal predicate.
@@ -1621,6 +1624,48 @@ end
 			}
 			requireNoCheckWarnings(t, script)
 		})
+	}
+}
+
+func TestCheckClassPredicateNarrowingIgnoresUnusedDefaultCallEffects(t *testing.T) {
+	t.Parallel()
+
+	source := classPredicateNarrowingPrelude + `
+def mutate_class_constant()
+  User.Shadow = Order
+end
+
+def touch(value = mutate_class_constant())
+  1
+end
+
+class Holder
+  def self.check(u: User | Order)
+    touch(1)
+    unless u.is_a?(User)
+      takes_user(u)
+    end
+  end
+end
+
+def run(u: User | Order)
+  Holder.check(u)
+end
+`
+	engine := MustNewEngine(Config{})
+	script, err := engine.CompileSnippet(source, "entry")
+	if err != nil {
+		t.Fatalf("CompileSnippet() error = %v", err)
+	}
+	warnings := script.CheckWarningsForFunction("run")
+	messages := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		messages = append(messages, warning.Message)
+	}
+	got := strings.Join(messages, "\n")
+	want := "call to takes_user argument value expected User, got Order"
+	if !strings.Contains(got, want) {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)
 	}
 }
 
