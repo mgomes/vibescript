@@ -2799,7 +2799,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		c.checkCallResolved(function, typed, target, targetResolved)
 		c.callArgumentFacts = previousFacts
 		if targetResolved && target.fn != nil {
-			c.applyScriptFunctionNamespaceMutations(typed, target.fn)
+			c.applyScriptFunctionNamespaceMutations(typed, target)
 		}
 		// A lambda literal escaping into the call may run during it, so its
 		// possible namespace writes count here, unlike a bare definition.
@@ -2971,8 +2971,7 @@ func staticCallableKeywordArgumentExpectation(call *CallExpr, target staticCalla
 		if expected := keywordArgumentExpectedType(target.fn.Params, name); expected != nil {
 			return typeExpressionExpectation(expected)
 		}
-		view := staticCallView{args: call.Args, kwargs: call.KwArgs}
-		if staticCallCollapsesOptionsHash(call, target, view) {
+		if staticCallCollapsesOptionsHash(call, target) {
 			optionsType, ok := optionsHashArgumentType(target.fn, len(call.Args), func(candidate string) bool {
 				for _, kwarg := range call.KwArgs {
 					if kwarg.Name == candidate {
@@ -5439,7 +5438,7 @@ func staticCallViewFor(call *CallExpr, target staticCallable) staticCallView {
 		block:    call.Block,
 		blockArg: call.BlockArg,
 	}
-	if !staticCallCollapsesOptionsHash(call, target, view) {
+	if !staticCallCollapsesOptionsHash(call, target) {
 		return view
 	}
 	hash := &HashLiteral{
@@ -5463,15 +5462,15 @@ func staticCallViewFor(call *CallExpr, target staticCallable) staticCallView {
 	return view
 }
 
-func staticCallCollapsesOptionsHash(call *CallExpr, target staticCallable, view staticCallView) bool {
+func staticCallCollapsesOptionsHash(call *CallExpr, target staticCallable) bool {
 	if !call.KeywordOptionsHash || len(call.KwArgs) == 0 || target.fn == nil {
 		return false
 	}
 	if call.Parenthesized && !target.constructor && target.resolution == calleeMemberMethod {
 		return false
 	}
-	return functionCanReceiveOptionsHash(target.fn, len(view.args), func(name string) bool {
-		for _, kwarg := range view.kwargs {
+	return functionCanReceiveOptionsHash(target.fn, len(call.Args), func(name string) bool {
+		for _, kwarg := range call.KwArgs {
 			if kwarg.Name == name {
 				return true
 			}
@@ -6078,7 +6077,11 @@ func (c *scriptChecker) recordRuntimeNamespaceMember(memberName string) {
 // ones this call's shape can leave unsupplied; a nil call (a bare reference
 // or unknown shape) counts every default. Transitive references always count
 // every default, since their future call shapes are unknowable.
-func (c *scriptChecker) scriptFunctionNamespaceMutations(call *CallExpr, fn *ScriptFunction) map[string]struct{} {
+func (c *scriptChecker) scriptFunctionNamespaceMutations(
+	call *CallExpr,
+	target staticCallable,
+) map[string]struct{} {
+	fn := target.fn
 	if fn == nil || fn.owner != c.script {
 		return nil
 	}
@@ -6088,11 +6091,12 @@ func (c *scriptChecker) scriptFunctionNamespaceMutations(call *CallExpr, fn *Scr
 		classes:   c.script.classes,
 		visited:   map[*ScriptFunction]struct{}{fn: {}},
 	}
+	collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
 	for i, param := range fn.Params {
 		if param.DefaultVal == nil {
 			continue
 		}
-		if call == nil || callMayEvaluateParamDefault(call, fn, i) {
+		if call == nil || callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
 			scan.expression(param.DefaultVal)
 		}
 	}
@@ -6103,23 +6107,35 @@ func (c *scriptChecker) scriptFunctionNamespaceMutations(call *CallExpr, fn *Scr
 // callMayEvaluateParamDefault mirrors the runtime's binding bookkeeping
 // (bindFunctionArgs): a parameter default runs only when the call leaves the
 // parameter unsupplied by position, keyword, or a collapsed options hash. A
-// splatted call's shape is dynamic, so every default may run.
-func callMayEvaluateParamDefault(call *CallExpr, fn *ScriptFunction, paramIndex int) bool {
-	_, mayDefault := callParamSupply(call, fn, paramIndex)
+// splatted call's shape is dynamic, so every default may run. The collapse
+// decision comes from the resolved target because parenthesized ordinary
+// methods keep keyword binding strict.
+func callMayEvaluateParamDefault(
+	call *CallExpr,
+	fn *ScriptFunction,
+	paramIndex int,
+	collapseOptionsHash bool,
+) bool {
+	_, mayDefault := callParamSupply(call, fn, paramIndex, collapseOptionsHash)
 	return mayDefault
 }
 
 // callParamSupply reports how a non-splatted call shape treats one
 // parameter: optionsHash marks the open positional parameter a collapsed
 // keyword options hash supplies (resolveKeywordOptionsHash), and mayDefault
-// reports whether the parameter's default may still evaluate. A strict
-// callee rejects leftover keywords before any default runs, so the
-// collapsed treatment is sound for methods too.
-func callParamSupply(call *CallExpr, fn *ScriptFunction, paramIndex int) (optionsHash, mayDefault bool) {
+// reports whether the parameter's default may still evaluate. The caller
+// supplies the target-aware collapse decision; this helper only mirrors the
+// binding loop once that dispatch rule is known.
+func callParamSupply(
+	call *CallExpr,
+	fn *ScriptFunction,
+	paramIndex int,
+	collapseOptionsHash bool,
+) (optionsHash, mayDefault bool) {
 	if callExpandsArguments(call) {
 		return false, true
 	}
-	collapse := callCollapsesKeywordOptions(call, fn)
+	collapse := collapseOptionsHash
 	argIdx := 0
 	for i, param := range fn.Params {
 		switch param.Kind {
@@ -6160,22 +6176,6 @@ func callParamSupply(call *CallExpr, fn *ScriptFunction, paramIndex int) (option
 	return false, true
 }
 
-// callCollapsesKeywordOptions mirrors resolveKeywordOptionsHash's
-// preconditions: eligible keywords collapse into a trailing positional
-// options hash when the callee declares no keyword parameters. Which open
-// parameter receives it is the binding loop's bookkeeping above.
-func callCollapsesKeywordOptions(call *CallExpr, fn *ScriptFunction) bool {
-	if !call.KeywordOptionsHash || len(call.KwArgs) == 0 {
-		return false
-	}
-	for _, param := range fn.Params {
-		if param.Kind == ParamKeyword || param.Kind == ParamKeywordRest {
-			return false
-		}
-	}
-	return true
-}
-
 func callHasKeywordArg(call *CallExpr, name string) bool {
 	if name == "" {
 		return false
@@ -6196,8 +6196,8 @@ func callHasKeywordArg(call *CallExpr, name string) bool {
 // This call itself dispatched under the pre-mutation bindings, so its own
 // result fact pins before the write markers change the summary context for
 // the code after the call.
-func (c *scriptChecker) applyScriptFunctionNamespaceMutations(call *CallExpr, fn *ScriptFunction) {
-	members := c.scriptFunctionNamespaceMutations(call, fn)
+func (c *scriptChecker) applyScriptFunctionNamespaceMutations(call *CallExpr, target staticCallable) {
+	members := c.scriptFunctionNamespaceMutations(call, target)
 	if len(members) == 0 {
 		return
 	}
@@ -6217,7 +6217,7 @@ func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Iden
 	if !ok || len(fn.Params) != 0 {
 		return
 	}
-	members := c.scriptFunctionNamespaceMutations(nil, fn)
+	members := c.scriptFunctionNamespaceMutations(nil, staticCallable{fn: fn})
 	if len(members) == 0 {
 		return
 	}

@@ -70,6 +70,7 @@ func (c *scriptChecker) scriptFunctionReturnSummary(call *CallExpr, fn *ScriptFu
 func callRunnableDefaults(call *CallExpr, fn *ScriptFunction) ([]int, []int, bool) {
 	var indices []int
 	var hashSupplied []int
+	collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, staticCallable{fn: fn})
 	for i, param := range fn.Params {
 		if param.DefaultVal == nil {
 			continue
@@ -78,7 +79,7 @@ func callRunnableDefaults(call *CallExpr, fn *ScriptFunction) ([]int, []int, boo
 			indices = append(indices, i)
 			continue
 		}
-		optionsHash, mayDefault := callParamSupply(call, fn, i)
+		optionsHash, mayDefault := callParamSupply(call, fn, i, collapseOptionsHash)
 		if mayDefault {
 			indices = append(indices, i)
 		} else if optionsHash {

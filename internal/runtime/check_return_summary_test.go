@@ -713,6 +713,37 @@ end
 			warning: "call to takes_int argument value expected int, got string",
 		},
 		{
+			name: "parenless method options hash skips the positional default",
+			source: `
+def replacement(value)
+  1
+end
+
+def install_serializer()
+  JSON.stringify = replacement
+end
+
+class Mutator
+  def mutate(a = install_serializer(), b = 0)
+  end
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  Mutator.new.mutate b: 1
+  takes_int(serialize())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "empty body summarizes as nil",
 			source: `
 def nothing()
@@ -1082,6 +1113,41 @@ end
 def run()
   takes_string(serialize())
   wrapper()
+  takes_int(serialize())
+end
+`,
+		},
+		{
+			name: "parenthesized method keywords still run skipped positional defaults",
+			source: `
+def replacement(value)
+  1
+end
+
+def install_serializer()
+  JSON.stringify = replacement
+end
+
+class Mutator
+  def mutate(a = install_serializer(), b = 0)
+  end
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_string(serialize())
+  Mutator.new.mutate(b: 1)
   takes_int(serialize())
 end
 `,
