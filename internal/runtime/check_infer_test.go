@@ -9,6 +9,40 @@ import (
 // ADR-004: locals take the types of the expressions assigned to them, and the
 // checker errors wherever known types contradict a typed boundary.
 
+func TestCheckInferMixedClassCallableFactsStayGradual(t *testing.T) {
+	t.Parallel()
+
+	fn := &ScriptFunction{Name: "worker"}
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"value": nil}},
+		localClassValues: []checkClassValueFrame{{}},
+	}
+	states := []checkScopeState{
+		{classValues: []checkClassValueFrame{{
+			"value": {classNames: []string{"Holder"}},
+		}}},
+		{classValues: []checkClassValueFrame{{
+			"value": {callables: []*ScriptFunction{fn}},
+		}}},
+	}
+
+	checker.mergeLocalClassValueStates(states)
+	if fact, ok := checker.localValueFactFor("value"); ok {
+		t.Fatalf("merged mixed fact = %#v, want unknown", fact)
+	}
+
+	checker.localClassValues[0]["value"] = checkLocalValueFact{
+		classNames: []string{"Holder"},
+		callables:  []*ScriptFunction{fn},
+	}
+	if classes, ok := checker.localClassValuesFor("value"); ok {
+		t.Fatalf("localClassValuesFor() = %v, true, want unknown", classes)
+	}
+	if callables, ok := checker.localCallableValuesFor("value"); ok {
+		t.Fatalf("localCallableValuesFor() = %v, true, want unknown", callables)
+	}
+}
+
 func TestCheckInferLocalBindingFlowsToTypedArgument(t *testing.T) {
 	t.Parallel()
 

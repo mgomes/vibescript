@@ -94,7 +94,7 @@ func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 
 func (c *scriptChecker) localClassValuesFor(name string) ([]string, bool) {
 	fact, ok := c.localValueFactFor(name)
-	return fact.classNames, ok && len(fact.classNames) > 0
+	return fact.classNames, ok && len(fact.classNames) > 0 && len(fact.callables) == 0
 }
 
 func (c *scriptChecker) localValueFactFor(name string) (checkLocalValueFact, bool) {
@@ -146,7 +146,7 @@ func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, boo
 
 func (c *scriptChecker) localCallableValuesFor(name string) ([]*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
-	return fact.callables, ok && len(fact.callables) > 0
+	return fact.callables, ok && len(fact.callables) > 0 && len(fact.classNames) == 0
 }
 
 func (c *scriptChecker) bindLocalCallableValues(name string, fns []*ScriptFunction) {
@@ -715,6 +715,10 @@ func (c *scriptChecker) mergeLocalClassValueStates(states []checkScopeState) {
 				}
 				fact.classNames = normalizeCheckClassNames(append(fact.classNames, other.classNames...))
 				fact.callables = normalizeCheckCallables(append(fact.callables, other.callables...))
+				if len(fact.classNames) > 0 && len(fact.callables) > 0 {
+					delete(common, name)
+					continue
+				}
 				common[name] = fact
 			}
 		}
