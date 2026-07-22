@@ -663,6 +663,85 @@ end
 `), "write to @count expected int, got string")
 }
 
+// A scalar literal right-hand side becomes a one-element destructuring list:
+// the first target receives the literal and every later fixed target receives
+// nil. Dynamic sources stay gradual because they may evaluate to an array.
+func TestCheckScalarDestructuredIvarWrites(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		source  string
+		warning string
+	}{
+		{
+			name: "incompatible first target",
+			source: `
+class User
+  property name: string
+
+  def initialize
+    @name, other = 1
+    other
+  end
+end
+`,
+			warning: "write to @name expected string, got int",
+		},
+		{
+			name: "padded fixed target",
+			source: `
+class User
+  property count: int
+  property name: string
+
+  def initialize
+    @count, @name = 1
+  end
+end
+`,
+			warning: "write to @name expected string, got nil",
+		},
+		{
+			name: "compatible scalar and padding",
+			source: `
+class User
+  property count: int
+  property nickname: string?
+
+  def initialize
+    @count, @nickname = 1
+  end
+end
+`,
+		},
+		{
+			name: "unknown source",
+			source: `
+class User
+  property name: string
+
+  def initialize(value)
+    @name, other = value
+    other
+  end
+end
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, tc.source)
+			if tc.warning != "" {
+				requireCheckWarningContains(t, script, tc.warning)
+				return
+			}
+			requireNoCheckWarnings(t, script)
+		})
+	}
+}
+
 // An ||= write on a falsey (in particular unset) property assigns the RHS
 // through the same runtime guard as a plain write, so a provably
 // incompatible RHS warns; compatible and callable-preserving spellings stay
