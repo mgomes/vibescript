@@ -3568,19 +3568,30 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 		}
 		return false
 	case TypeShape:
-		// Runtime shape normalization matches fields by display name with
-		// the entry count pinned to the declared field count, so an exact
-		// shape fact satisfies a shape annotation when the key sets match
-		// and every witnessed field satisfies its declared type.
-		if written.Kind != TypeShape || len(written.Shape) != len(declared.Shape) {
+		// Runtime shape normalization rejects extra and missing required
+		// fields but permits optional fields to be absent. An exact shape
+		// fact satisfies the annotation when every required field is
+		// guaranteed present and every possible field satisfies its bound.
+		if written.Kind != TypeShape {
 			return false
 		}
-		for field, fieldType := range written.Shape {
-			declaredField, ok := declared.Shape[field]
+		for field, declaredField := range declared.Shape {
+			writtenField, ok := written.Shape[field]
 			if !ok {
+				if shapeFieldOptional(declaredField) {
+					continue
+				}
 				return false
 			}
-			if !typeExprSatisfies(fieldType, declaredField, resolve) {
+			if shapeFieldOptional(writtenField) && !shapeFieldOptional(declaredField) {
+				return false
+			}
+			if !typeExprSatisfies(shapeFieldValueType(writtenField), shapeFieldValueType(declaredField), resolve) {
+				return false
+			}
+		}
+		for field := range written.Shape {
+			if _, ok := declared.Shape[field]; !ok {
 				return false
 			}
 		}

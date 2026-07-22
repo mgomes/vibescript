@@ -217,6 +217,16 @@ end
 			warning: "write to items expected element { amount: int }, got string",
 		},
 		{
+			name: "omitted optional shape field preserves the bound",
+			source: `
+def f(items: array<{ name: string, age?: int }>)
+  items << { name: "Ada" }
+  items << 1
+end
+`,
+			warning: "write to items expected element { age?: int, name: string }, got int",
+		},
+		{
 			name: "appended child local keeps the bound until it mutates",
 			source: `
 def f(rows: array<array<int>>)
@@ -821,6 +831,16 @@ end
 			source: `
 def f(items: array<{ amount: int }>, v)
   items << { amount: v }
+end
+`,
+		},
+		{
+			name: "optional written field weakens a required shape bound",
+			source: `
+def f(items: array<{ amount: int }>, raw: string)
+  item = JSON.parse_as(raw, { amount?: int })
+  items << item
+  items << "bad"
 end
 `,
 		},
