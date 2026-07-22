@@ -133,14 +133,10 @@ func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaul
 	c.summaryInProgress[key] = struct{}{}
 	defer delete(c.summaryInProgress, key)
 
+	collector := c.collectFunctionReturnFacts(fn, runnableDefaults, hashSuppliedParams, definiteDefaults)
 	var summary *TypeExpr
-	if len(fn.Body) == 0 {
-		summary = checkTypeNil
-	} else {
-		collector := c.collectFunctionReturnFacts(fn, runnableDefaults, hashSuppliedParams, definiteDefaults)
-		if !collector.unknown && len(collector.arms) > 0 {
-			summary = unionTypeExprs(collector.arms...)
-		}
+	if !collector.unknown && len(collector.arms) > 0 {
+		summary = unionTypeExprs(collector.arms...)
 	}
 	if c.returnSummaries == nil {
 		c.returnSummaries = make(map[returnSummaryCacheKey]*TypeExpr)

@@ -831,6 +831,22 @@ end
 `,
 			warning: "call to takes_string argument value expected string, got nil",
 		},
+		{
+			name: "supplied argument skips empty body return default",
+			source: `
+def nothing(value = [1].each { return 1 })
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(nothing(0))
+end
+`,
+			warning: "call to takes_string argument value expected string, got nil",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -847,6 +863,21 @@ func TestCheckFunctionReturnSummariesStayGradual(t *testing.T) {
 		name   string
 		source string
 	}{
+		{
+			name: "empty body return default poisons nil summary",
+			source: `
+def build(value = [1].each { return 1 })
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build())
+end
+`,
+		},
 		{
 			name: "recursive functions stay unknown",
 			source: `
