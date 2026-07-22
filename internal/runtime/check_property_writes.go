@@ -37,11 +37,13 @@ func (c *scriptChecker) ivarContractFact(ty *TypeExpr) *TypeExpr {
 }
 
 // seedInstanceIvarFacts binds entry facts for every typed accessor-backed
-// instance variable of the class under check. The seed widens the declared
-// contract with nil: an instance variable that was never written reads as
-// nil regardless of its declared type, while every executed write satisfies
-// the contract — statically or through the runtime guard.
-func (c *scriptChecker) seedInstanceIvarFacts() {
+// instance variable of the class under check. An initializer starts with an
+// empty ivar map, so every typed ivar reads as exactly nil before its first
+// write. Other methods widen the declared contract with nil: an instance
+// variable that was never written reads as nil regardless of its declared
+// type, while every executed write satisfies the contract — statically or
+// through the runtime guard.
+func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 	if c.selfClass == nil || c.selfClassContext {
 		return
 	}
@@ -49,11 +51,48 @@ func (c *scriptChecker) seedInstanceIvarFacts() {
 		if method.Accessor == functionAccessorNone || method.AccessorName == "" {
 			continue
 		}
-		fact := c.ivarContractFact(c.instanceIvarContract(method.AccessorName))
+		ty := c.instanceIvarContract(method.AccessorName)
+		if ty == nil {
+			continue
+		}
+		if fn.Name == "initialize" {
+			c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), checkTypeNil)
+			continue
+		}
+		fact := c.ivarContractFact(ty)
 		if fact == nil {
 			continue
 		}
 		c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), unionTypeExprs(fact, checkTypeNil))
+	}
+}
+
+// widenUnsetInstanceIvarFacts drops initializer-only certainty after code
+// that may have written self. A scalar contract widens from nil to its normal
+// method-entry contract-or-nil fact; container contracts become unknown
+// because their stable post-write shape is not tracked.
+func (c *scriptChecker) widenUnsetInstanceIvarFacts() {
+	if c.assignmentTargetDepth > 0 || c.selfClass == nil || c.selfClassContext {
+		return
+	}
+	for _, method := range c.selfClass.Methods {
+		if method.Accessor == functionAccessorNone || method.AccessorName == "" {
+			continue
+		}
+		name := method.AccessorName
+		if !typeExprIsNilOnly(c.localTypeFor(ivarFactKey(name))) {
+			continue
+		}
+		ty := c.instanceIvarContract(name)
+		if ty == nil {
+			continue
+		}
+		fact := c.ivarContractFact(ty)
+		if fact == nil {
+			c.bindLocalType(ivarFactKey(name), nil)
+			continue
+		}
+		c.bindLocalType(ivarFactKey(name), unionTypeExprs(fact, checkTypeNil))
 	}
 }
 
@@ -88,9 +127,7 @@ func (c *scriptChecker) checkIvarParamBinding(function string, fn *ScriptFunctio
 				subject, formatTypeExpr(ty), formatTypeExpr(inferred))
 		}
 	}
-	if fact := c.ivarContractFact(ty); fact != nil {
-		c.bindLocalTypeInCurrentFrame(ivarFactKey(param.Name), fact)
-	}
+	c.bindLocalTypeInCurrentFrame(ivarFactKey(param.Name), c.ivarContractFact(ty))
 }
 
 // ivarParamContract returns the property contract backing an ivar parameter
@@ -221,9 +258,7 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 			}
 		}
 	}
-	if fact := c.ivarContractFact(ty); fact != nil {
-		c.bindLocalType(ivarFactKey(name), fact)
-	}
+	c.bindLocalType(ivarFactKey(name), c.ivarContractFact(ty))
 }
 
 // inferDestructureIvarWrites routes instance-variable targets inside a

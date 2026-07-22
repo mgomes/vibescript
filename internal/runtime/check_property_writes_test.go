@@ -829,3 +829,214 @@ class Grab
 end
 `))
 }
+
+// Class.new allocates an empty ivar map before initialize runs, so every
+// typed property reads as definitely nil until its first write. Ordinary
+// methods retain the declared-type-or-nil entry fact because either state is
+// possible when they are called.
+func TestCheckInitializerIvarFactsStartUnset(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    @a = @b
+  end
+end
+`), "write to @a expected int, got nil")
+
+	// Binding a local is not a call and cannot initialize an instance
+	// variable as a side effect. Reading a known scalar or dispatching one of
+	// its pure registered members cannot do so either.
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    x = 1
+    x
+    x.to_s
+    @a = @b
+  end
+end
+`), "write to @a expected int, got nil")
+
+	// Container contracts do not produce stable ordinary-method facts, but
+	// their initial value is still exactly nil on a fresh instance.
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property name: string
+  property tags: array<string>
+
+  def initialize
+    @name = @tags
+  end
+end
+`), "write to @name expected string, got nil")
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+module State
+  property b: int
+end
+
+class User
+  include State
+  property a: int
+
+  def initialize
+    @a = @b
+  end
+end
+`), "write to @a expected int, got nil")
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize(@a = @b, @b = 1)
+  end
+end
+`), "default value for @a expected int, got nil")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def copy
+    @a = @b
+  end
+end
+`))
+}
+
+// Once code may have written an initializer ivar, the constructor-only nil
+// fact must not survive. Direct container writes and ivar parameters become
+// unknown because container interiors are not stable facts, while calls and
+// repeated regions conservatively widen any still-unset facts.
+func TestCheckInitializerIvarFactsWidenAfterPossibleWrites(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property copy: array<string>
+  property tags: array<string>
+
+  def initialize
+    @tags = []
+    @copy = @tags
+  end
+end
+`))
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def seed
+  User.current.b = 1
+end
+
+class User
+  property a: int
+  property b: int
+
+  def self.current
+    @@current
+  end
+
+  def initialize
+    @@current = self
+    seed
+    @a = @b
+  end
+end
+`))
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property copy: array<string>
+  property tags: array<string>
+
+  def initialize(@tags)
+    @copy = @tags
+  end
+end
+`))
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    seed
+    @a = @b
+  end
+
+  def seed
+    @b = 1
+  end
+end
+`))
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    self.b = 1
+    @a = @b
+  end
+end
+`))
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize(values)
+    for value in values
+      @b = value
+    end
+    @a = @b
+  end
+end
+`))
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize(values)
+    values.each do |value|
+      @b = value
+    end
+    @a = @b
+  end
+end
+`))
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    yield self
+    @a = @b
+  end
+end
+
+def make
+  User.new do |user|
+    user.b = 1
+  end
+end
+`))
+}

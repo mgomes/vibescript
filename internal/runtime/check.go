@@ -128,6 +128,7 @@ type scriptChecker struct {
 	containerSelections        map[string]checkContainerSelection
 	degradedContainerBindings  map[string]struct{}
 	mutationRegionDepth        int
+	assignmentTargetDepth      int
 	speculativeInference       int
 	expressionStatementRoot    Expression
 	callArgumentFacts          map[Expression]*TypeExpr
@@ -1551,7 +1552,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 	defer popScope()
 	popNameScope := c.pushFunctionNameScope(fn)
 	defer popNameScope()
-	c.seedInstanceIvarFacts()
+	c.seedInstanceIvarFacts(fn)
 
 	var usedKw map[string]bool
 	if len(kwargs) > 0 {
@@ -2535,7 +2536,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		defer popScope()
 		popNameScope := c.pushFunctionNameScope(fn)
 		defer popNameScope()
-		c.seedInstanceIvarFacts()
+		c.seedInstanceIvarFacts(fn)
 
 		c.linkReachableParamAliases(fn.Params)
 		for i, param := range fn.Params {
@@ -2826,6 +2827,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				return
 			}
 			if !c.checkPlainAssignmentTarget(function, typed.Target, typed.Value) {
+				if _, ivar := typed.Target.(*IvarExpr); ivar {
+					c.inferAssignStatementTypes(function, typed, indexedReceiverFact, nil)
+				}
 				c.recordNonCompletingExpression()
 				return
 			}
@@ -3010,6 +3014,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		if targetMayWrite {
 			c.recordRuntimeBindingTarget(typed.Target)
+		}
+		if typed.Operator == "" && assignmentTargetMayInvokeCode(typed.Target) {
+			c.widenUnsetInstanceIvarFacts()
 		}
 		c.recordBindingTarget(typed.Target)
 		c.captureImplicitReturnState(typed)
@@ -3847,6 +3854,20 @@ func (c *scriptChecker) checkExpression(function string, expr Expression) bool {
 	return c.checkExpressionWithAuto(function, expr, true)
 }
 
+func assignmentTargetMayInvokeCode(target Expression) bool {
+	switch typed := target.(type) {
+	case *MemberExpr, *IndexExpr:
+		return true
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			if assignmentTargetMayInvokeCode(element.Target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c *scriptChecker) checkExpressionWithExpectation(
 	function string,
 	expr Expression,
@@ -3942,6 +3963,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if autoCall {
 			c.enqueueReachableIdentifierCall(typed)
 			c.applyAutoInvokedIdentifierNamespaceMutations(typed)
+			if !c.pureCallArgument(typed) {
+				c.widenUnsetInstanceIvarFacts()
+			}
 			return c.autoInvokedIdentifierMayComplete(typed)
 		}
 	case *ArrayLiteral:
@@ -4390,6 +4414,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				c.mergeScopeStates(argumentScopeState, []checkScopeState{argumentScopeState, evaluatedScopeState})
 			}
 		}
+		_, memberCall := typed.Callee.(*MemberExpr)
+		memberCallPreservesFacts := memberCall && c.memberCallPreservesReceiverFacts(typed)
 		// Containers pass by reference, so a callee may mutate an argument
 		// in place; the caller's structural facts stop holding. Dispatch
 		// happens after the arguments evaluate, so the receiver's facts
@@ -4400,6 +4426,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		// and may preserve a still-compatible declared fact, and everything
 		// else keeps poisoning.
 		if targetMayEnter {
+			if !memberCallPreservesFacts {
+				c.widenUnsetInstanceIvarFacts()
+			}
 			shovelEscapeMayMutate := callMayComplete ||
 				!c.nonCompletingScriptCallLeavesParametersUnused(checkedCall, target, targetResolved)
 			c.applyKeywordSplatDeleteFact(typed)
@@ -4501,6 +4530,10 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 				return false
 			}
+			dispatchPreservesFacts := c.memberDispatchPreservesReceiverFacts(typed)
+			if (invoked || !resolved) && !dispatchPreservesFacts {
+				c.widenUnsetInstanceIvarFacts()
+			}
 			if invoked {
 				if target.fn != nil && !c.scriptFunctionClassConstantEffectsProvenAbsent(target.fn) {
 					c.markOpaqueClassConstants()
@@ -4519,7 +4552,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			// dispatch proven pure by its registered member contract
 			// preserves the receiver fact that outer inference or
 			// narrowing consumes next.
-			if !c.memberDispatchPreservesReceiverFacts(typed) {
+			if !dispatchPreservesFacts {
 				c.poisonEscapedCallValue(typed.Object, true)
 			}
 		}
@@ -4669,6 +4702,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if c.summaryYieldsActive {
 			c.summaryYieldCollector.record(nil)
 		}
+		c.widenUnsetInstanceIvarFacts()
 	case *InterpolatedString:
 		return c.checkStringParts(function, typed.Parts)
 	case *InterpolatedSymbol:
@@ -5488,6 +5522,9 @@ func (c *scriptChecker) checkPlainAssignmentTarget(
 	target Expression,
 	value Expression,
 ) bool {
+	c.assignmentTargetDepth++
+	defer func() { c.assignmentTargetDepth-- }()
+
 	switch typed := target.(type) {
 	case nil, *Identifier, *ClassVarExpr:
 		return true
@@ -5593,19 +5630,25 @@ func (c *scriptChecker) replayDestructureAssignment(
 				indexedReceiverFact = c.localTypeFor(ident.Name)
 			}
 		}
-		completed := true
-		c.withCapturedDestructureArgumentFact(leafValue, fact, func() {
-			completed = c.checkPlainAssignmentTarget(function, fact.target, leafValue)
-		})
-		if !completed {
-			return false
-		}
 		leaf := &AssignStmt{
 			Target:   fact.target,
 			Value:    leafValue,
 			Position: fact.target.Pos(),
 		}
+		completed := true
+		c.withCapturedDestructureArgumentFact(leafValue, fact, func() {
+			completed = c.checkPlainAssignmentTarget(function, fact.target, leafValue)
+		})
+		if !completed {
+			if _, ivar := fact.target.(*IvarExpr); ivar {
+				c.inferAssignStatementTypes(function, leaf, indexedReceiverFact, nil)
+			}
+			return false
+		}
 		c.inferAssignStatementTypes(function, leaf, indexedReceiverFact, nil)
+		if assignmentTargetMayInvokeCode(fact.target) {
+			c.widenUnsetInstanceIvarFacts()
+		}
 		c.recordRuntimeBindingTarget(fact.target)
 		c.recordBindingTarget(fact.target)
 	}

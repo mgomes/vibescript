@@ -1613,6 +1613,7 @@ func (c *scriptChecker) bindForTargetType(stmt *ForStmt, elemType *TypeExpr) {
 // to a shadowing block parameter writes the block-local, so the outer fact
 // still holds.
 func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
+	c.widenUnsetInstanceIvarFacts()
 	names := make(map[string]struct{})
 	collectLocalBindings(block.Body, names)
 	collectMutatedContainerRoots(block.Body, names)
@@ -1902,6 +1903,7 @@ func (c *scriptChecker) degradeMutationCandidates(statements []Statement, names 
 // execution count the checker cannot know — loop and block bodies — so a
 // first-iteration fact cannot leak into the region or survive it.
 func (c *scriptChecker) degradeLocalTypesForBindings(statements []Statement, extraTargets ...Expression) {
+	c.widenUnsetInstanceIvarFacts()
 	names := make(map[string]struct{})
 	collectLocalBindings(statements, names)
 	collectMutatedContainerRoots(statements, names)
