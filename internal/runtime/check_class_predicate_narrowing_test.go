@@ -1844,6 +1844,60 @@ end
 	}
 }
 
+func TestCheckDynamicModuleConstructorDoesNotReachInstanceMethods(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+module Factory
+  def build(value)
+    JSON.stringify = replacement
+    takes_bool(value)
+  end
+end
+
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def takes_bool(value: bool)
+  value
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def run()
+  takes_int(serialize())
+  target = Factory
+  begin
+    target.new.build("bad")
+  rescue RuntimeError
+    nil
+  end
+  takes_int(serialize())
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	intWarnings := 0
+	boolWarnings := 0
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			intWarnings++
+		}
+		if strings.Contains(warning.Message, "call to takes_bool argument value expected bool, got string") {
+			boolWarnings++
+		}
+	}
+	if intWarnings != 2 || boolWarnings != 0 {
+		t.Fatalf("CheckWarningsForFunction() = %#v, want two int warnings and no bool warning", warnings)
+	}
+}
+
 func TestCheckClassPredicateNarrowingRespectsClassSetters(t *testing.T) {
 	t.Parallel()
 

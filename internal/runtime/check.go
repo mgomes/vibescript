@@ -6121,7 +6121,17 @@ func (c *scriptChecker) instanceClassExpressionNames(receiver Expression) ([]str
 		member = typed
 	}
 	if member != nil && member.Property == "new" {
-		return c.dispatchClassValueExpressionNames(member.Object)
+		classes, exact := c.dispatchClassValueExpressionNames(member.Object)
+		if !exact || c.script == nil {
+			return nil, false
+		}
+		for _, className := range classes {
+			classDef := c.script.classes[className]
+			if classDef == nil || classDef.IsModule {
+				return nil, false
+			}
+		}
+		return classes, len(classes) > 0
 	}
 	arms, ok := typeExprArms(c.inferExpressionType(receiver), 0)
 	if !ok || len(arms) == 0 {
