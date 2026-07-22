@@ -322,6 +322,21 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "store field on a literal hash does not shadow the builtin",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f
+  h = { store: 0 }
+  h.store(:store, "bad")
+  takes_int(h[:store])
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "merge on a declared shape rejects an extra field",
 			source: `
 def f(user: { name: string })
@@ -866,6 +881,22 @@ end
 `,
 		},
 		{
+			name: "shape store shadowed by a data field stays gradual",
+			source: `
+def f(user: { store: int })
+  user.store(:extra, 1)
+end
+`,
+		},
+		{
+			name: "shape merge shadowed by a data field stays gradual",
+			source: `
+def f(user: { "merge!": int })
+  user.merge!({ extra: 1 })
+end
+`,
+		},
+		{
 			name: "conflict-block shape merge keeps escape semantics",
 			source: `
 def f(user: { name: string }, other: hash<symbol, array<int>>)
@@ -1080,6 +1111,33 @@ def f(raw: string)
   body = JSON.parse_as(raw, { name: string })
   body[:name] = 1
   g(body)
+end
+`,
+		},
+		{
+			name: "open shape receiver mutators stay gradual",
+			source: `
+def f(user: { name: string, ... })
+  user.store(:extra, 1)
+  user.merge!({ extra: 2 })
+end
+`,
+		},
+		{
+			name: "open empty shape merge source may write",
+			source: `
+def f(h: hash<string, int>, patch: { ... })
+  h.merge!(patch)
+  h[:symbol] = 1
+end
+`,
+		},
+		{
+			name: "union with open shape merge source may write",
+			source: `
+def f(h: hash<string, int>, patch: hash<string, int> | { ... })
+  h.merge!(patch)
+  h[:symbol] = 1
 end
 `,
 		},

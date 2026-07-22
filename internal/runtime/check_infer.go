@@ -4814,6 +4814,19 @@ func typeExprHashLikeOnly(ty *TypeExpr) bool {
 	})
 }
 
+func typeExprHasOpenShapeArm(ty *TypeExpr) bool {
+	arms, ok := typeExprArms(ty, 0)
+	if !ok {
+		return false
+	}
+	for _, arm := range arms {
+		if arm.Kind == TypeShape && arm.Open {
+			return true
+		}
+	}
+	return false
+}
+
 func typeExprArmsAll(ty *TypeExpr, pred func(*TypeExpr) bool) bool {
 	arms, ok := typeExprArms(ty, 0)
 	if !ok || len(arms) == 0 {
@@ -6438,7 +6451,7 @@ func (c *scriptChecker) hashMergeArgumentMayWrite(
 		return len(hash.Pairs) != 0
 	}
 	written := c.mutatorCallArgumentFact(arg, argumentFacts)
-	return written == nil || written.Kind != TypeShape || written.Nullable ||
+	return written == nil || written.Kind != TypeShape || written.Nullable || written.Open ||
 		len(written.Shape) != 0
 }
 
@@ -6475,8 +6488,17 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallEx
 	if len(call.KwArgs) != 0 {
 		return false, false
 	}
-	if field, present := shape.Shape[member.Property]; present && typeExprMayIncludeCallable(field) {
-		return false, false
+	// A declared shape may be backed by KindObject, whose stored fields resolve
+	// before hash builtins. Any same-named field can therefore prevent the
+	// mutator from dispatching; its value need not be callable. Witnessed shape
+	// markers pin a KindHash, where the builtin wins over stored data.
+	if shape.Name == "" {
+		if shape.Open {
+			return false, false
+		}
+		if _, present := shape.Shape[member.Property]; present {
+			return false, false
+		}
 	}
 	switch member.Property {
 	case "store":
@@ -7002,7 +7024,10 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 				preserved = false
 				continue
 			}
-			if !typeExprSatisfies(written, hashFact, resolve) {
+			// An open shape's declared fields may satisfy the hash bounds,
+			// but its undisclosed entries can still violate them.
+			if typeExprHasOpenShapeArm(written) ||
+				!typeExprSatisfies(written, hashFact, resolve) {
 				preserved = false
 			}
 		}
