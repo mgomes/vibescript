@@ -224,6 +224,17 @@ predicate — `{ "respond_to?": 1 }.respond_to?(:keys)` still calls the predicat
   `false`. The argument must be a class.
 - `instance_of?(class) -> bool` – reports whether the receiver is an instance of
   exactly the given script class.
+- `is_type?(atom) -> bool` – tests the receiver against a type atom without
+  coercion. The atom is a symbol or string naming a primitive (`:int`,
+  `:float`, `:number`, `:string`, `:bool`, `:symbol`, `:nil`, `:duration`,
+  `:time`, `:money`), a bare container (`:array`, `:hash`/`:object`, `:range`,
+  `:function`), or a class or enum name matched by exact name (no module
+  ancestry — use `is_a?` for that). A module alias qualifies a name the way
+  annotations do: `v.is_type?("lv.Level")` tests against the enum the
+  required module exports, and an unknown qualified name is an error. A trailing `?` tests the nullable form:
+  `'int?'` is int or nil. Parameterized spellings such as `array<int>` and
+  unknown lowercase names are errors. `"5".is_type?(:int)` is `false` — the
+  test never converts.
 
 ```vibe
 "Ada".respond_to?(:length)   # true
@@ -239,6 +250,12 @@ user.is_a?(User)        # true
 user.kind_of?(User)     # true
 user.instance_of?(User) # true
 42.is_a?(User)          # false
+
+1.is_type?(:int)        # true
+1.is_type?(:number)     # true
+"5".is_type?(:int)      # false (no coercion)
+nil.is_type?('int?')    # true
+user.is_type?(:User)    # true (exact name)
 ```
 
 ## Strings

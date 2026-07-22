@@ -2481,9 +2481,13 @@ func (c *scriptChecker) applyConditionOutcomeEffects(expr Expression, truthy boo
 		return c.narrowNilPredicateMember(typed, truthy)
 	case *CallExpr:
 		if member, ok := typed.Callee.(*MemberExpr); ok &&
-			len(typed.Args) == 0 && len(typed.KwArgs) == 0 &&
-			typed.Block == nil && typed.BlockArg == nil {
-			return c.narrowNilPredicateMember(member, truthy)
+			len(typed.KwArgs) == 0 && typed.Block == nil && typed.BlockArg == nil {
+			switch len(typed.Args) {
+			case 0:
+				return c.narrowNilPredicateMember(member, truthy)
+			case 1:
+				return c.narrowIsTypePredicateMember(member, typed.Args[0], truthy)
+			}
 		}
 	case *BinaryExpr:
 		switch typed.Operator {
@@ -4503,6 +4507,40 @@ func (c *scriptChecker) checkCallResolved(function string, call *CallExpr, targe
 	}
 	if _, isClassPredicate := classPredicateNames[target.name]; isClassPredicate {
 		c.checkClassPredicateArgument(function, call, target.name)
+	}
+	if target.name == isTypeMemberName {
+		c.checkIsTypeAtomArgument(function, call)
+	}
+}
+
+// checkIsTypeAtomArgument reports a literal is_type? atom the runtime always
+// rejects. Non-literal atoms stay gradual, and the paramTypes contract already
+// rejects provably non-symbol/string arguments.
+func (c *scriptChecker) checkIsTypeAtomArgument(function string, call *CallExpr) {
+	if len(call.Args) != 1 || callExpandsArguments(call) {
+		return
+	}
+	arg := call.Args[0]
+	val, ok := staticLiteralValue(arg)
+	if !ok {
+		return
+	}
+	text, ok := typeAtomArg(val)
+	if !ok {
+		return
+	}
+	ty, err := parseTypeAtom(text)
+	if err != nil {
+		c.add(function, arg.Pos(), "%s", err)
+		return
+	}
+	if ty.Kind == TypeEnum && strings.Contains(ty.Name, ".") {
+		// An unresolved qualified atom raises unconditionally at runtime,
+		// even for nil receivers, so a literal spelling that fails to
+		// resolve in the checked context is a deterministic failure.
+		if _, ok, lookupErr := lookupNamedTypeForType(ty, c.runtimeTypeContext()); lookupErr != nil || !ok {
+			c.add(function, arg.Pos(), "unknown type atom %q in %s", text, isTypeMemberName)
+		}
 	}
 }
 

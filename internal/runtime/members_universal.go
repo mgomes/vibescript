@@ -23,10 +23,11 @@ import (
 //     and returns the receiver (threading side effects through a pipeline without
 //     changing the value), while `yield_self` yields the receiver and returns the
 //     block's result (rewriting a value inline).
-//   - respond_to?/is_a?/kind_of?/instance_of? — the introspection predicates:
-//     `respond_to?` reports whether the receiver has a callable member,
-//     `is_a?`/`kind_of?` test class ancestry, and `instance_of?` tests exact
-//     class identity (see members_introspect.go).
+//   - respond_to?/is_a?/kind_of?/instance_of?/is_type? — the introspection
+//     predicates: `respond_to?` reports whether the receiver has a callable
+//     member, `is_a?`/`kind_of?` test class ancestry, `instance_of?` tests
+//     exact class identity (see members_introspect.go), and `is_type?` tests
+//     the receiver against a type atom without coercion (members_istype.go).
 //
 // Unlike the per-type member tables these are resolved centrally, after
 // type-specific members and user-defined methods, so a value's own members (and
@@ -53,6 +54,7 @@ var universalMemberNames = []string{
 	isAMemberName,
 	kindOfMemberName,
 	instanceOfMemberName,
+	isTypeMemberName,
 }
 
 // isUniversalMember reports whether property names one of the Object-level
@@ -118,7 +120,7 @@ func isCallableMember(val Value) bool {
 // universalValueMember.
 func (exec *Execution) universalMember(obj Value, property string, callerIsReceiver bool) (Value, bool) {
 	switch property {
-	case respondToMemberName, isAMemberName, kindOfMemberName, instanceOfMemberName:
+	case respondToMemberName, isAMemberName, kindOfMemberName, instanceOfMemberName, isTypeMemberName:
 		return exec.universalPredicate(property, callerIsReceiver), true
 	default:
 		return universalValueMember(obj, property)

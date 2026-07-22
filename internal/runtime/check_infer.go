@@ -999,6 +999,88 @@ func (c *scriptChecker) narrowNilPredicateMember(member *MemberExpr, truthy bool
 	return c.narrowLocalNilness(ident.Name, truthy)
 }
 
+// narrowIsTypePredicateMember narrows `x.is_type?(:atom)` on a plain local
+// with a literal builtin atom. Both branches refine: the true path keeps arms
+// that may satisfy the atom, the false path drops arms that always satisfy
+// it. Named atoms, non-literal atoms, and receivers without proven universal
+// dispatch stay unchanged.
+func (c *scriptChecker) narrowIsTypePredicateMember(member *MemberExpr, arg Expression, truthy bool) bool {
+	if member == nil || member.Safe || member.Property != isTypeMemberName {
+		return true
+	}
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return true
+	}
+	if c.memberDispatchEffect(member) != effectPure {
+		return true
+	}
+	atomValue, ok := staticLiteralValue(arg)
+	if !ok {
+		return true
+	}
+	text, ok := typeAtomArg(atomValue)
+	if !ok {
+		return true
+	}
+	atom, err := parseTypeAtom(text)
+	if err != nil || atom.Kind == TypeEnum {
+		return true
+	}
+	if truthy {
+		return c.narrowLocalArms(ident.Name, func(arm *TypeExpr) bool {
+			may, _ := typeArmAtomMatch(arm, atom)
+			return may
+		})
+	}
+	return c.narrowLocalArms(ident.Name, func(arm *TypeExpr) bool {
+		_, must := typeArmAtomMatch(arm, atom)
+		return !must
+	})
+}
+
+// typeArmAtomMatch reports whether a known fact arm may and must satisfy a
+// builtin is_type? atom. Arms reaching this point passed the universal
+// dispatch proof, so only plain data kinds appear. A number arm may hold an
+// int or a float, so it may — but does not have to — satisfy either atom.
+func typeArmAtomMatch(arm, atom *TypeExpr) (may, must bool) {
+	if atom.Nullable {
+		if arm.Kind == TypeNil {
+			return true, true
+		}
+		bare := *atom
+		bare.Nullable = false
+		return typeArmAtomMatch(arm, &bare)
+	}
+	switch atom.Kind {
+	case TypeNumber:
+		switch arm.Kind {
+		case TypeInt, TypeFloat, TypeNumber:
+			return true, true
+		}
+		return false, false
+	case TypeInt, TypeFloat:
+		if arm.Kind == atom.Kind {
+			return true, true
+		}
+		if arm.Kind == TypeNumber {
+			return true, false
+		}
+		return false, false
+	case TypeHash:
+		// Hash atoms cover hash and object receivers, and shape facts
+		// describe hash-shaped data.
+		switch arm.Kind {
+		case TypeHash, TypeShape:
+			return true, true
+		}
+		return false, false
+	default:
+		exact := arm.Kind == atom.Kind
+		return exact, exact
+	}
+}
+
 // memberDispatchEffect resolves the registered receiver effect of a member
 // dispatch from the receiver's known arms: effectPure only when every arm
 // that can dispatch proves a pure registered contract, effectMutatesReceiver
