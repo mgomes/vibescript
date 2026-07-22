@@ -668,31 +668,7 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 				target.Name, formatTypeExpr(current), formatTypeExpr(next))
 		}
 		c.bindLocalType(target.Name, next)
-		switch value := stmt.Value.(type) {
-		case *Identifier:
-			if next != nil && typeExprHasContainerArm(next) {
-				if root, ok := rootIdentifierName(stmt.Value); ok {
-					c.linkContainerAlias(target.Name, root)
-				}
-			}
-		case *IndexExpr, *MemberExpr:
-			// A projection may hand out a nested mutable container, so the
-			// root's structural facts share its fate; unknown projections
-			// link conservatively.
-			if next == nil || typeExprHasContainerArm(next) {
-				if root, ok := rootIdentifierName(stmt.Value); ok {
-					c.linkContainerAlias(target.Name, root)
-				}
-			}
-		case *BinaryExpr:
-			// A shovel value evaluates to its mutated receiver, so the
-			// target shares that container with the chain's root local.
-			if value.Operator == tokenShovel {
-				if root, ok := rootIdentifierName(unwrapShovelChain(value.Left)); ok {
-					c.linkContainerAlias(target.Name, root)
-				}
-			}
-		}
+		c.linkContainerAssignmentAlias(target.Name, stmt.Value, next)
 	case *DestructureTarget:
 		for _, element := range target.Elements {
 			c.bindDestructureElementType(element)
@@ -2615,14 +2591,40 @@ func blockLiteralMayRun(e Expression, invocable bool) bool {
 	return false
 }
 
-// linkContainerWriteAlias links a receiver whose fact a compatible write
-// preserved to the retained roots exposed by the written expression: a later
-// mutation or escape through an original name invalidates the receiver's
-// bound and must weaken both facts. Container literals expose their elements
-// and entries recursively, while value-producing branches expose whichever
-// result is selected. Calls can return an untracked alias, so a
-// container-valued call conservatively weakens the receiver instead.
+// linkContainerAssignmentAlias records retained roots for a container bound
+// to a local. Unknown projections and shovel results keep their previous
+// conservative root links, while other unknown expressions remain unlinked.
+// Calls keep their existing declared-return inference because their retained
+// roots are not statically visible here.
+func (c *scriptChecker) linkContainerAssignmentAlias(target string, value Expression, assigned *TypeExpr) {
+	if assigned == nil {
+		switch typed := value.(type) {
+		case *IndexExpr, *MemberExpr:
+		case *BinaryExpr:
+			if typed.Operator != tokenShovel {
+				return
+			}
+		default:
+			return
+		}
+	} else if !typeExprHasContainerArm(assigned) {
+		return
+	}
+	c.linkRetainedContainerAliases(target, value, assigned, false)
+}
+
+// linkContainerWriteAlias records retained roots for a container write. A
+// container-valued call can return an untracked alias, so it conservatively
+// weakens the enclosing receiver.
 func (c *scriptChecker) linkContainerWriteAlias(receiver string, value Expression, written *TypeExpr) {
+	c.linkRetainedContainerAliases(receiver, value, written, true)
+}
+
+// linkRetainedContainerAliases links a container to the retained roots
+// exposed by its value expression. Container literals expose their elements
+// and entries recursively, while value-producing branches expose whichever
+// result is selected.
+func (c *scriptChecker) linkRetainedContainerAliases(receiver string, value Expression, written *TypeExpr, poisonUntracked bool) {
 	if written != nil && !typeExprHasContainerArm(written) {
 		return
 	}
@@ -2633,40 +2635,45 @@ func (c *scriptChecker) linkContainerWriteAlias(receiver string, value Expressio
 		}
 	case *ArrayLiteral:
 		for _, element := range typed.Elements {
-			c.linkContainerWriteAlias(receiver, element, c.inferExpressionType(element))
+			c.linkRetainedContainerAliases(receiver, element, c.inferExpressionType(element), poisonUntracked)
 		}
 	case *HashLiteral:
+		if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
+			return
+		}
 		for _, pair := range typed.Pairs {
-			c.linkContainerWriteAlias(receiver, pair.Key, c.inferExpressionType(pair.Key))
-			c.linkContainerWriteAlias(receiver, pair.Value, c.inferExpressionType(pair.Value))
+			c.linkRetainedContainerAliases(receiver, pair.Key, c.inferExpressionType(pair.Key), poisonUntracked)
+			c.linkRetainedContainerAliases(receiver, pair.Value, c.inferExpressionType(pair.Value), poisonUntracked)
 		}
 	case *ConditionalExpr:
-		c.linkContainerWriteAlias(receiver, typed.Consequent, c.inferExpressionType(typed.Consequent))
-		c.linkContainerWriteAlias(receiver, typed.Alternate, c.inferExpressionType(typed.Alternate))
+		c.linkRetainedContainerAliases(receiver, typed.Consequent, c.inferExpressionType(typed.Consequent), poisonUntracked)
+		c.linkRetainedContainerAliases(receiver, typed.Alternate, c.inferExpressionType(typed.Alternate), poisonUntracked)
 	case *IfExpr:
-		c.linkContainerWriteAlias(receiver, typed.Consequent, c.inferExpressionType(typed.Consequent))
+		c.linkRetainedContainerAliases(receiver, typed.Consequent, c.inferExpressionType(typed.Consequent), poisonUntracked)
 		for _, branch := range typed.ElseIf {
-			c.linkContainerWriteAlias(receiver, branch.Result, c.inferExpressionType(branch.Result))
+			c.linkRetainedContainerAliases(receiver, branch.Result, c.inferExpressionType(branch.Result), poisonUntracked)
 		}
-		c.linkContainerWriteAlias(receiver, typed.Alternate, c.inferExpressionType(typed.Alternate))
+		c.linkRetainedContainerAliases(receiver, typed.Alternate, c.inferExpressionType(typed.Alternate), poisonUntracked)
 	case *RescueExpr:
-		c.linkContainerWriteAlias(receiver, typed.Body, c.inferExpressionType(typed.Body))
-		c.linkContainerWriteAlias(receiver, typed.Fallback, c.inferExpressionType(typed.Fallback))
+		c.linkRetainedContainerAliases(receiver, typed.Body, c.inferExpressionType(typed.Body), poisonUntracked)
+		c.linkRetainedContainerAliases(receiver, typed.Fallback, c.inferExpressionType(typed.Fallback), poisonUntracked)
 	case *CaseExpr:
 		for _, clause := range typed.Clauses {
-			c.linkContainerWriteAlias(receiver, clause.Result, c.inferExpressionType(clause.Result))
+			c.linkRetainedContainerAliases(receiver, clause.Result, c.inferExpressionType(clause.Result), poisonUntracked)
 		}
-		c.linkContainerWriteAlias(receiver, typed.ElseExpr, c.inferExpressionType(typed.ElseExpr))
+		c.linkRetainedContainerAliases(receiver, typed.ElseExpr, c.inferExpressionType(typed.ElseExpr), poisonUntracked)
 	case *BinaryExpr:
 		switch typed.Operator {
 		case tokenAnd, tokenOr, tokenPlus, tokenShovel:
-			c.linkContainerWriteAlias(receiver, typed.Left, c.inferExpressionType(typed.Left))
-			c.linkContainerWriteAlias(receiver, typed.Right, c.inferExpressionType(typed.Right))
+			c.linkRetainedContainerAliases(receiver, typed.Left, c.inferExpressionType(typed.Left), poisonUntracked)
+			c.linkRetainedContainerAliases(receiver, typed.Right, c.inferExpressionType(typed.Right), poisonUntracked)
 		case tokenMinus, tokenAmpersand:
-			c.linkContainerWriteAlias(receiver, typed.Left, c.inferExpressionType(typed.Left))
+			c.linkRetainedContainerAliases(receiver, typed.Left, c.inferExpressionType(typed.Left), poisonUntracked)
 		}
 	case *CallExpr:
-		c.poisonLocalType(receiver)
+		if poisonUntracked {
+			c.poisonLocalType(receiver)
+		}
 	}
 }
 

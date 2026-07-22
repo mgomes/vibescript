@@ -761,6 +761,28 @@ end
 `,
 		},
 		{
+			name: "mutating a child retained by an assigned literal weakens the outer bound",
+			source: `
+def takes_string(value: string)
+  value
+end
+
+def f(rows: array<array<array<int>>>, v)
+  child = [1]
+  box = [child]
+  rows << box
+  child << v
+  for group in rows
+    for row in group
+      for value in row
+        takes_string(value)
+      end
+    end
+  end
+end
+`,
+		},
+		{
 			name: "mutating a conditional child retained inside an array literal weakens the outer bound",
 			source: `
 def takes_string(value: string)

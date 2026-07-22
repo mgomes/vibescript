@@ -93,6 +93,29 @@ end
 `))
 }
 
+func TestLinkRetainedContainerAliasesSkipsShapeLiteralPairs(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{}
+	literal := &HashLiteral{
+		ShapeType: &TypeExpr{
+			Kind: TypeShape,
+			Shape: map[string]*TypeExpr{
+				"value": checkTypeString,
+			},
+		},
+		Pairs: []HashPair{{
+			Key:   &SymbolLiteral{Name: "value"},
+			Value: &Identifier{Name: "string"},
+		}},
+	}
+
+	checker.linkRetainedContainerAliases("schema", literal, checkTypeHash, false)
+	if len(checker.typeAliases) != 0 {
+		t.Fatalf("typeAliases = %#v, want no aliases for unevaluated shape pairs", checker.typeAliases)
+	}
+}
+
 func TestCheckInferCompoundAssignment(t *testing.T) {
 	t.Parallel()
 
