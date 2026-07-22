@@ -194,6 +194,15 @@ end
 			warning: "write to h expected key string, got symbol",
 		},
 		{
+			name: "string and symbol merge keys with the same spelling stay distinct",
+			source: `
+def f(h: hash<string, int>)
+  h.merge!({ a: 1, "a": 2 })
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
 			name: "compatible mixed-key merge preserves the fact",
 			source: `
 def f(h: hash<string | symbol, int>)
@@ -618,6 +627,22 @@ end
 def f(h: hash<string, int>)
   h.merge!(1)
   takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "typed hash merge ignores an overwritten literal value",
+			source: `
+def f(h: hash<string, int>)
+  h.merge!({ "a": "bad", "a": 1 })
+end
+`,
+		},
+		{
+			name: "shape merge ignores an overwritten literal field",
+			source: `
+def f(user: { name: string })
+  user.merge!({ name: 1, name: "ok" })
 end
 `,
 		},

@@ -6517,7 +6517,7 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallEx
 						if !isHash || hashLit.ShapeType != nil {
 							continue
 						}
-						for _, pair := range hashLit.Pairs {
+						for _, pair := range effectiveHashLiteralPairs(hashLit) {
 							key, keyOK := staticLiteralHashKey(pair.Key)
 							if !keyOK {
 								continue
@@ -6530,7 +6530,7 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallEx
 				continue
 			}
 			if lit, isLiteral := arg.(*HashLiteral); isLiteral && lit.ShapeType == nil {
-				for _, pair := range lit.Pairs {
+				for _, pair := range effectiveHashLiteralPairs(lit) {
 					key, keyOK := staticLiteralHashKey(pair.Key)
 					if !keyOK {
 						continue
@@ -7508,6 +7508,58 @@ func (c *scriptChecker) linkPossibleDirectContainerAlias(
 	}
 }
 
+// effectiveHashLiteralPairs returns the entries that survive construction
+// when the runtime identity of a literal key is statically known. Runtime
+// HashSet keeps an equal key's first insertion-order slot but replaces the
+// stored entry with the last pair; unknown keys stay distinct so the checker
+// does not discard a write it cannot prove is overwritten.
+func effectiveHashLiteralPairs(lit *HashLiteral) []HashPair {
+	if len(lit.Pairs) < 2 {
+		return lit.Pairs
+	}
+	lastPairIndex := make(map[string]int, len(lit.Pairs))
+	hasDuplicate := false
+	for i, pair := range lit.Pairs {
+		key, ok := staticLiteralHashIdentity(pair.Key)
+		if !ok {
+			continue
+		}
+		if _, present := lastPairIndex[key]; present {
+			hasDuplicate = true
+		}
+		lastPairIndex[key] = i
+	}
+	if !hasDuplicate {
+		return lit.Pairs
+	}
+	effectivePairs := make([]HashPair, 0, len(lit.Pairs)-1)
+	for _, pair := range lit.Pairs {
+		key, ok := staticLiteralHashIdentity(pair.Key)
+		if !ok {
+			effectivePairs = append(effectivePairs, pair)
+			continue
+		}
+		lastIndex := lastPairIndex[key]
+		if lastIndex < 0 {
+			continue
+		}
+		effectivePairs = append(effectivePairs, lit.Pairs[lastIndex])
+		lastPairIndex[key] = -1
+	}
+	return effectivePairs
+}
+
+// staticLiteralHashIdentity preserves the key-kind distinctions HashSet uses;
+// display keys intentionally collapse same-spelled strings and symbols.
+func staticLiteralHashIdentity(expr Expression) (string, bool) {
+	value, ok := staticLiteralValue(expr)
+	if !ok {
+		return "", false
+	}
+	key, err := canonicalHashKey(value)
+	return key, err == nil
+}
+
 // checkHashLiteralMergeEntries checks a literal merge!/update argument entry
 // by entry against the receiver's declared bounds and reports whether every
 // entry provably satisfies both. With a conflict block, a value only lands
@@ -7542,7 +7594,7 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 		}
 		return false
 	}
-	for _, pair := range lit.Pairs {
+	for _, pair := range effectiveHashLiteralPairs(lit) {
 		keyDisjoint := check(pair.Key, keyBound, "key", true)
 		check(pair.Value, valueBound, "value", !blockConflicts || keyDisjoint)
 	}
