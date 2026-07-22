@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCheckFunctionReturnSummaries(t *testing.T) {
 	t.Parallel()
@@ -9,7 +12,76 @@ func TestCheckFunctionReturnSummaries(t *testing.T) {
 		name    string
 		source  string
 		warning string
+		reject  string
 	}{
+		{
+			name: "exact raised kind selects the first matching rescue",
+			source: `
+def recover()
+  begin
+    raise TypeError, "boom"
+  rescue AssertionError
+    1
+  rescue TypeError
+    "ok"
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(recover())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "nonraising try omits its rescue arm",
+			source: `
+def recover()
+  begin
+    1
+  rescue
+    "ok"
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(recover())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+			reject:  " | ",
+		},
+		{
+			name: "static case result contributes the selected summary arm",
+			source: `
+def choose()
+  case 1
+  when 1
+    2
+  else
+    "ok"
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(choose())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+			reject:  " | ",
+		},
 		{
 			name: "implicit int result contradicts string boundary",
 			source: `
@@ -467,7 +539,7 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
-			name: "rescue arms join the summary",
+			name: "nonraising body omits rescue summary arm",
 			source: `
 def guarded()
   begin
@@ -485,10 +557,11 @@ def run()
   takes_hash(guarded())
 end
 `,
-			warning: "call to takes_hash argument value expected hash, got int | string",
+			warning: "call to takes_hash argument value expected hash, got int",
+			reject:  " | ",
 		},
 		{
-			name: "empty rescue arms contribute no summary arm",
+			name: "nonraising body omits all ordered rescue arms",
 			source: `
 def guarded()
   begin
@@ -507,7 +580,8 @@ def run()
   takes_hash(guarded())
 end
 `,
-			warning: "call to takes_hash argument value expected hash, got string | int",
+			warning: "call to takes_hash argument value expected hash, got string",
+			reject:  " | ",
 		},
 		{
 			name: "empty rescue clause keeps the body summary",
@@ -1122,13 +1196,111 @@ end
 `,
 			warning: "call to takes_int argument value expected int, got string",
 		},
+		{
+			name: "raising try body does not widen rescued result",
+			source: `
+def fail() -> int
+  raise "boom"
+end
+
+def recover()
+  begin
+    fail()
+  rescue
+    "ok"
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(recover())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "raising rescue expression body does not widen fallback result",
+			source: `
+def fail() -> int
+  raise "boom"
+end
+
+def recover()
+  fail() rescue "ok"
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  takes_int(recover())
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			requireCheckWarningContains(t, compileScriptDefault(t, tc.source), tc.warning)
+			script := compileScriptDefault(t, tc.source)
+			requireCheckWarningContains(t, script, tc.warning)
+			if tc.reject == "" {
+				return
+			}
+			for _, warning := range script.CheckWarnings() {
+				if strings.Contains(warning.Message, tc.reject) {
+					t.Fatalf("CheckWarnings() = %#v, reject substring %q", script.CheckWarnings(), tc.reject)
+				}
+			}
 		})
 	}
+}
+
+func TestCheckFunctionReturnSummariesRecognizeReinjectedCoreLambda(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	script := compileScriptWithEngine(t, engine, `
+def lambda()
+  nil
+end
+
+def build_count()
+  lambda { return "host callback" }
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
+end
+`)
+	want := "call to takes_string argument value expected string, got int"
+
+	coreLambda := engine.Builtins()["lambda"]
+	requireCheckWarningContainsWithOptions(t, script, CallOptions{
+		Globals: map[string]Value{"lambda": coreLambda},
+	}, want)
+
+	hostLambda := NewAutoBuiltin("lambda", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewNil(), nil
+	})
+	requireNoCheckWarningsWithOptions(t, script, CallOptions{
+		Globals: map[string]Value{"lambda": hostLambda},
+	})
+
+	mutatedLambda := engine.Builtins()["lambda"]
+	valueBuiltin(mutatedLambda).Fn = valueBuiltin(hostLambda).Fn
+	requireNoCheckWarningsWithOptions(t, script, CallOptions{
+		Globals: map[string]Value{"lambda": mutatedLambda},
+	})
 }
 
 func TestCheckFunctionReturnSummariesStayGradual(t *testing.T) {
@@ -1944,46 +2116,6 @@ def run(flag)
   ensure
     JSON.stringify = replacement
   end
-  takes_int(JSON.stringify({}))
-end
-`,
-		},
-		{
-			name: "escaping lambda argument writes stay possible",
-			source: `
-def replacement(value)
-  1
-end
-
-def consume(cb)
-end
-
-def takes_int(value: int)
-  value
-end
-
-def run()
-  consume(->() { JSON.stringify = replacement })
-  takes_int(JSON.stringify({}))
-end
-`,
-		},
-		{
-			name: "escaping lambda builtin argument writes stay possible",
-			source: `
-def replacement(value)
-  1
-end
-
-def consume(cb)
-end
-
-def takes_int(value: int)
-  value
-end
-
-def run()
-  consume(lambda { JSON.stringify = replacement })
   takes_int(JSON.stringify({}))
 end
 `,

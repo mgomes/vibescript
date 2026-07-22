@@ -53,8 +53,11 @@ var (
 type checkTypeFrame map[string]*TypeExpr
 
 type checkLocalValueFact struct {
-	classNames []string
-	callables  []*ScriptFunction
+	classNames              []string
+	callables               []*ScriptFunction
+	staticVals              []Expression
+	keywordSplatFails       bool
+	invalidKeywordSplatKeys map[string]struct{}
 }
 
 type checkClassValueFrame map[string]checkLocalValueFact
@@ -77,8 +80,11 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 	clone := make(checkClassValueFrame, len(frame))
 	for name, fact := range frame {
 		clone[name] = checkLocalValueFact{
-			classNames: append([]string(nil), fact.classNames...),
-			callables:  append([]*ScriptFunction(nil), fact.callables...),
+			classNames:              append([]string(nil), fact.classNames...),
+			callables:               append([]*ScriptFunction(nil), fact.callables...),
+			staticVals:              append([]Expression(nil), fact.staticVals...),
+			keywordSplatFails:       fact.keywordSplatFails,
+			invalidKeywordSplatKeys: cloneCheckStringSet(fact.invalidKeywordSplatKeys),
 		}
 	}
 	return clone
@@ -86,7 +92,8 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 
 func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 	fact, ok := c.localValueFactFor(name)
-	if !ok || len(fact.classNames) != 1 || len(fact.callables) > 0 {
+	if !ok || len(fact.classNames) != 1 || len(fact.callables) > 0 || len(fact.staticVals) > 0 ||
+		fact.keywordSplatFails {
 		return "", false
 	}
 	return fact.classNames[0], true
@@ -94,7 +101,8 @@ func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 
 func (c *scriptChecker) localClassValuesFor(name string) ([]string, bool) {
 	fact, ok := c.localValueFactFor(name)
-	return fact.classNames, ok && len(fact.classNames) > 0 && len(fact.callables) == 0
+	return fact.classNames, ok && len(fact.classNames) > 0 && len(fact.callables) == 0 &&
+		len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
 
 func (c *scriptChecker) localValueFactFor(name string) (checkLocalValueFact, bool) {
@@ -138,7 +146,8 @@ func (c *scriptChecker) bindLocalClassValues(name string, classNames []string) {
 
 func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
-	if !ok || len(fact.callables) != 1 || len(fact.classNames) > 0 {
+	if !ok || len(fact.callables) != 1 || len(fact.classNames) > 0 || len(fact.staticVals) > 0 ||
+		fact.keywordSplatFails {
 		return nil, false
 	}
 	return fact.callables[0], true
@@ -146,7 +155,8 @@ func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, boo
 
 func (c *scriptChecker) localCallableValuesFor(name string) ([]*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
-	return fact.callables, ok && len(fact.callables) > 0 && len(fact.classNames) == 0
+	return fact.callables, ok && len(fact.callables) > 0 && len(fact.classNames) == 0 &&
+		len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
 
 func (c *scriptChecker) bindLocalCallableValues(name string, fns []*ScriptFunction) {
@@ -167,6 +177,139 @@ func (c *scriptChecker) bindLocalCallableValues(name string, fns []*ScriptFuncti
 		c.localClassValues[i][name] = checkLocalValueFact{callables: normalizeCheckCallables(fns)}
 		return
 	}
+}
+
+func (c *scriptChecker) localStaticValuesFor(name string) ([]Expression, bool) {
+	if _, poisoned := c.typePoison[name]; poisoned {
+		return nil, false
+	}
+	fact, ok := c.localValueFactFor(name)
+	return append([]Expression(nil), fact.staticVals...), ok && len(fact.staticVals) > 0 &&
+		len(fact.classNames) == 0 && len(fact.callables) == 0 && !fact.keywordSplatFails
+}
+
+func (c *scriptChecker) bindLocalStaticValues(name string, values []Expression) {
+	if name == "" || len(c.localTypes) == 0 {
+		return
+	}
+	for i := len(c.localTypes) - 1; i >= 0; i-- {
+		if _, tracked := c.localTypes[i][name]; !tracked {
+			continue
+		}
+		if len(values) == 0 {
+			delete(c.localClassValues[i], name)
+			return
+		}
+		if c.localClassValues[i] == nil {
+			c.localClassValues[i] = make(checkClassValueFrame)
+		}
+		c.localClassValues[i][name] = checkLocalValueFact{
+			staticVals: normalizeCheckStaticValues(values),
+		}
+		return
+	}
+}
+
+func (c *scriptChecker) localKeywordSplatFails(name string) bool {
+	fact, ok := c.localValueFactFor(name)
+	return ok && fact.keywordSplatFails
+}
+
+func (c *scriptChecker) bindLocalKeywordSplatFailure(name string, keys ...string) {
+	if name == "" || len(c.localTypes) == 0 {
+		return
+	}
+	for i := len(c.localTypes) - 1; i >= 0; i-- {
+		if _, tracked := c.localTypes[i][name]; !tracked {
+			continue
+		}
+		if c.localClassValues[i] == nil {
+			c.localClassValues[i] = make(checkClassValueFrame)
+		}
+		fact := c.localClassValues[i][name]
+		if !fact.keywordSplatFails || len(fact.invalidKeywordSplatKeys) > 0 {
+			if len(keys) == 0 {
+				fact.invalidKeywordSplatKeys = nil
+			} else {
+				if fact.invalidKeywordSplatKeys == nil {
+					fact.invalidKeywordSplatKeys = make(map[string]struct{}, len(keys))
+				}
+				for _, key := range keys {
+					fact.invalidKeywordSplatKeys[key] = struct{}{}
+				}
+			}
+		}
+		fact.classNames = nil
+		fact.callables = nil
+		fact.staticVals = nil
+		fact.keywordSplatFails = true
+		c.localClassValues[i][name] = fact
+		return
+	}
+}
+
+func (c *scriptChecker) bindLocalKeywordSplatFailureAliases(name string, keys ...string) {
+	seen := make(map[string]struct{})
+	var bind func(string)
+	bind = func(current string) {
+		if current == "" {
+			return
+		}
+		if _, visited := seen[current]; visited {
+			return
+		}
+		seen[current] = struct{}{}
+		c.bindLocalKeywordSplatFailure(current, keys...)
+		for alias := range c.typeAliases[current] {
+			bind(alias)
+		}
+	}
+	bind(name)
+}
+
+func (c *scriptChecker) applyKeywordSplatDeleteFact(call *CallExpr) {
+	if call == nil || len(call.Args) != 1 || len(call.KwArgs) != 0 || call.BlockArg != nil {
+		return
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || member.Property != "delete" {
+		return
+	}
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return
+	}
+	key, ok := staticLiteralHashKey(call.Args[0])
+	if !ok {
+		return
+	}
+	seen := make(map[string]struct{})
+	var update func(string)
+	update = func(name string) {
+		if _, visited := seen[name]; visited {
+			return
+		}
+		seen[name] = struct{}{}
+		for i := len(c.localTypes) - 1; i >= 0; i-- {
+			if _, tracked := c.localTypes[i][name]; !tracked {
+				continue
+			}
+			fact, exists := c.localClassValues[i][name]
+			if exists && fact.keywordSplatFails && len(fact.invalidKeywordSplatKeys) > 0 {
+				delete(fact.invalidKeywordSplatKeys, key)
+				if len(fact.invalidKeywordSplatKeys) == 0 {
+					delete(c.localClassValues[i], name)
+				} else {
+					c.localClassValues[i][name] = fact
+				}
+			}
+			break
+		}
+		for alias := range c.typeAliases[name] {
+			update(alias)
+		}
+	}
+	update(ident.Name)
 }
 
 // localTypeFor returns the innermost inferred type fact for name, or nil when
@@ -266,13 +409,16 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousPoison := c.typePoison
 	previousAliases := c.typeAliases
 	previousPinned := c.pinnedExpressionFacts
+	previousConstructors := c.constructorInstanceFacts
 	c.typePoison = nil
 	c.typeAliases = nil
 	c.pinnedExpressionFacts = nil
+	c.constructorInstanceFacts = nil
 	return func() {
 		c.typePoison = previousPoison
 		c.typeAliases = previousAliases
 		c.pinnedExpressionFacts = previousPinned
+		c.constructorInstanceFacts = previousConstructors
 	}
 }
 
@@ -713,9 +859,25 @@ func (c *scriptChecker) mergeLocalClassValueStates(states []checkScopeState) {
 					delete(common, name)
 					continue
 				}
-				fact.classNames = normalizeCheckClassNames(append(fact.classNames, other.classNames...))
-				fact.callables = normalizeCheckCallables(append(fact.callables, other.callables...))
-				if len(fact.classNames) > 0 && len(fact.callables) > 0 {
+				switch {
+				case len(fact.classNames) > 0 && len(other.classNames) > 0:
+					fact.classNames = normalizeCheckClassNames(append(fact.classNames, other.classNames...))
+				case len(fact.callables) > 0 && len(other.callables) > 0:
+					fact.callables = normalizeCheckCallables(append(fact.callables, other.callables...))
+				case len(fact.staticVals) > 0 && len(other.staticVals) > 0:
+					fact.staticVals = normalizeCheckStaticValues(append(fact.staticVals, other.staticVals...))
+				case fact.keywordSplatFails && other.keywordSplatFails:
+					commonKeys := make(map[string]struct{})
+					for key := range fact.invalidKeywordSplatKeys {
+						if _, ok := other.invalidKeywordSplatKeys[key]; ok {
+							commonKeys[key] = struct{}{}
+						}
+					}
+					fact.invalidKeywordSplatKeys = commonKeys
+					if len(commonKeys) == 0 {
+						fact.invalidKeywordSplatKeys = nil
+					}
+				default:
 					delete(common, name)
 					continue
 				}
@@ -739,6 +901,51 @@ func normalizeCheckClassNames(names []string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeCheckStaticValues(values []Expression) []Expression {
+	const maxStaticValueAlternatives = 32
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make([]Expression, 0, len(values))
+	for _, candidate := range values {
+		value, static := staticLiteralValue(candidate)
+		if !static {
+			continue
+		}
+		duplicate := false
+		for _, existing := range normalized {
+			if staticLiteralHasMutableIdentity(candidate) || staticLiteralHasMutableIdentity(existing) {
+				duplicate = candidate == existing
+				if duplicate {
+					break
+				}
+				continue
+			}
+			existingValue, _ := staticLiteralValue(existing)
+			if reflect.DeepEqual(existingValue, value) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			normalized = append(normalized, candidate)
+			if len(normalized) > maxStaticValueAlternatives {
+				return nil
+			}
+		}
+	}
+	return normalized
+}
+
+func staticLiteralHasMutableIdentity(expr Expression) bool {
+	switch expr.(type) {
+	case *ArrayLiteral, *HashLiteral:
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeCheckCallables(fns []*ScriptFunction) []*ScriptFunction {
@@ -855,7 +1062,7 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 		next := c.inferExpressionType(stmt.Value)
 		if stmt.Operator == tokenOrAssign || stmt.Operator == tokenAndAssign {
 			c.bindLocalType(target.Name, logicalAssignmentFact(stmt.Operator, current, next))
-			c.bindLogicalAssignmentClassValueFact(target.Name, stmt.Operator, current, stmt.Value)
+			c.bindLogicalAssignmentValueFact(target.Name, stmt.Operator, current, stmt.Value)
 			return
 		}
 		if stmt.Operator != "" {
@@ -873,28 +1080,10 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 				target.Name, formatTypeExpr(current), formatTypeExpr(next))
 		}
 		c.bindLocalType(target.Name, next)
-		if classNames, ok := c.classValueExpressionNames(stmt.Value); ok {
-			c.bindLocalClassValues(target.Name, classNames)
-		} else if fns, ok := c.callableExpressionFunctions(stmt.Value); ok {
-			c.bindLocalCallableValues(target.Name, fns)
-		} else {
-			c.bindLocalClassValue(target.Name, "")
-		}
-		switch stmt.Value.(type) {
-		case *Identifier:
-			if next != nil && typeExprHasContainerArm(next) {
-				if root, ok := rootIdentifierName(stmt.Value); ok {
-					c.linkContainerAlias(target.Name, root)
-				}
-			}
-		case *IndexExpr, *MemberExpr:
-			// A projection may hand out a nested mutable container, so the
-			// root's structural facts share its fate; unknown projections
-			// link conservatively.
-			if next == nil || typeExprHasContainerArm(next) {
-				if root, ok := rootIdentifierName(stmt.Value); ok {
-					c.linkContainerAlias(target.Name, root)
-				}
+		c.bindExpressionLocalValueFact(target.Name, stmt.Value)
+		if next == nil || typeExprHasContainerArm(next) {
+			for _, root := range containerAliasRoots(stmt.Value) {
+				c.linkContainerAlias(target.Name, root)
 			}
 		}
 	case *DestructureTarget:
@@ -902,13 +1091,255 @@ func (c *scriptChecker) inferAssignStatementTypes(function string, stmt *AssignS
 			c.bindDestructureElementType(element)
 		}
 		c.bindDestructureValueFacts(target, stmt.Value)
-	case *IndexExpr, *MemberExpr:
+	case *IndexExpr:
 		// An index or member write mutates the container in place, so any
 		// structural fact about the root local (shape exactness in
 		// particular) no longer holds.
 		if name, ok := rootIdentifierName(stmt.Target); ok {
+			object, direct := target.Object.(*Identifier)
+			badKeywordSplatKey, invalidKey := indexWriteInvalidKeywordSplatKey(target)
+			badKeywordSplatKey = direct && object.Name == name &&
+				typeExprHashLikeOnly(c.inferExpressionType(target.Object)) && badKeywordSplatKey
+			if !c.applyExactStaticArrayIndexWrite(name, target, stmt.Value) {
+				c.poisonLocalType(name)
+			}
+			if badKeywordSplatKey {
+				if invalidKey == "" {
+					c.bindLocalKeywordSplatFailureAliases(name)
+				} else {
+					c.bindLocalKeywordSplatFailureAliases(name, invalidKey)
+				}
+			}
+		}
+	case *MemberExpr:
+		if name, ok := rootIdentifierName(stmt.Target); ok {
 			c.poisonLocalType(name)
 		}
+	}
+}
+
+func containerAliasRoots(expr Expression) []string {
+	seen := make(map[string]struct{})
+	var collect func(Expression)
+	collect = func(expr Expression) {
+		switch typed := expr.(type) {
+		case *Identifier, *IndexExpr, *MemberExpr:
+			if root, ok := rootIdentifierName(expr); ok {
+				seen[root] = struct{}{}
+			}
+		case *ConditionalExpr:
+			if branch, known := staticConditionalExpressionBranch(typed); known {
+				collect(branch)
+				return
+			}
+			collect(typed.Consequent)
+			collect(typed.Alternate)
+		case *IfExpr:
+			if branch, known := staticIfExpressionBranch(typed); known {
+				collect(branch)
+				return
+			}
+			collect(typed.Consequent)
+			for _, branch := range typed.ElseIf {
+				collect(branch.Result)
+			}
+			collect(typed.Alternate)
+		case *RescueExpr:
+			collect(typed.Body)
+			collect(typed.Fallback)
+		}
+	}
+	collect(expr)
+	roots := make([]string, 0, len(seen))
+	for name := range seen {
+		roots = append(roots, name)
+	}
+	sort.Strings(roots)
+	return roots
+}
+
+func (c *scriptChecker) applyExactStaticArrayIndexWrite(
+	name string,
+	target *IndexExpr,
+	value Expression,
+) bool {
+	if c.mutationRegionDepth != 0 || target == nil {
+		return false
+	}
+	_, valueStatic := staticLiteralValue(value)
+	if !valueStatic {
+		return false
+	}
+	indices, root, exactPath := staticArrayIndexWritePath(target)
+	if !exactPath || root != name {
+		return false
+	}
+	rootValues, exact := c.localStaticValuesFor(name)
+	if !exact || len(rootValues) == 0 {
+		return false
+	}
+	replacements := make(map[Expression]Expression, len(rootValues))
+	for _, candidate := range rootValues {
+		updated, ok := replaceStaticArrayIndexPath(candidate, indices, value)
+		if !ok {
+			return false
+		}
+		replacements[candidate] = updated
+	}
+
+	group := map[string]struct{}{name: {}}
+	queue := []string{name}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for alias := range c.typeAliases[current] {
+			if _, seen := group[alias]; seen {
+				continue
+			}
+			group[alias] = struct{}{}
+			queue = append(queue, alias)
+		}
+	}
+	updated := make(map[string][]Expression, len(group))
+	for alias := range group {
+		values, exact := c.localStaticValuesFor(alias)
+		if !exact {
+			return false
+		}
+		for i, candidate := range values {
+			if replacement, matched := replaceStaticLiteralAliases(candidate, replacements); matched {
+				values[i] = replacement
+			}
+		}
+		updated[alias] = values
+	}
+	for alias, values := range updated {
+		c.bindLocalType(alias, nil)
+		c.bindLocalStaticValues(alias, values)
+	}
+	return true
+}
+
+func staticArrayIndexWritePath(target *IndexExpr) ([]int, string, bool) {
+	var reversed []int
+	for current := target; current != nil; {
+		if len(current.Indices) != 1 {
+			return nil, "", false
+		}
+		indexValue, static := staticLiteralValue(current.Indices[0])
+		if !static || indexValue.Kind() != KindInt || indexValue.Int() < 0 {
+			return nil, "", false
+		}
+		reversed = append(reversed, int(indexValue.Int()))
+		switch object := current.Object.(type) {
+		case *Identifier:
+			indices := make([]int, len(reversed))
+			for i, index := range reversed {
+				indices[len(reversed)-1-i] = index
+			}
+			return indices, object.Name, true
+		case *IndexExpr:
+			current = object
+		default:
+			return nil, "", false
+		}
+	}
+	return nil, "", false
+}
+
+func replaceStaticArrayIndexPath(expr Expression, indices []int, value Expression) (Expression, bool) {
+	if len(indices) == 0 {
+		return value, true
+	}
+	array, ok := expr.(*ArrayLiteral)
+	if !ok || indices[0] >= len(array.Elements) {
+		return nil, false
+	}
+	replacement, ok := replaceStaticArrayIndexPath(array.Elements[indices[0]], indices[1:], value)
+	if !ok {
+		return nil, false
+	}
+	clone := *array
+	clone.Elements = append([]Expression(nil), array.Elements...)
+	clone.Elements[indices[0]] = replacement
+	return &clone, true
+}
+
+func replaceStaticLiteralAliases(
+	expr Expression,
+	replacements map[Expression]Expression,
+) (Expression, bool) {
+	if replacement, ok := replacements[expr]; ok {
+		return replacement, true
+	}
+	switch typed := expr.(type) {
+	case *ArrayLiteral:
+		elements := append([]Expression(nil), typed.Elements...)
+		matched := false
+		for i, element := range elements {
+			if replacement, ok := replaceStaticLiteralAliases(element, replacements); ok {
+				elements[i] = replacement
+				matched = true
+			}
+		}
+		if matched {
+			clone := *typed
+			clone.Elements = elements
+			return &clone, true
+		}
+	case *HashLiteral:
+		pairs := append([]HashPair(nil), typed.Pairs...)
+		matched := false
+		for i, pair := range pairs {
+			if replacement, ok := replaceStaticLiteralAliases(pair.Value, replacements); ok {
+				pairs[i].Value = replacement
+				matched = true
+			}
+		}
+		if matched {
+			clone := *typed
+			clone.Pairs = pairs
+			return &clone, true
+		}
+	}
+	return expr, false
+}
+
+func indexWriteInvalidKeywordSplatKey(target *IndexExpr) (bool, string) {
+	if target == nil || len(target.Indices) != 1 {
+		return false, ""
+	}
+	key, static := staticLiteralValue(target.Indices[0])
+	if !static {
+		return false, ""
+	}
+	if key.Kind() == KindString || key.Kind() == KindSymbol {
+		return false, ""
+	}
+	hashKey, err := valueToHashKey(key)
+	if err != nil {
+		return true, ""
+	}
+	return true, hashKey
+}
+
+func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expression) {
+	identityExpr, autoInvoked := c.evaluatedIdentityExpression(expr, true)
+	classNames, classExact := c.classValueExpressionNames(identityExpr)
+	if autoInvoked {
+		classNames, classExact = c.dispatchClassValueExpressionNames(identityExpr)
+	}
+	if classExact {
+		c.bindLocalClassValues(name, classNames)
+	} else if fns, ok := c.callableExpressionFunctions(identityExpr); ok {
+		c.bindLocalCallableValues(name, fns)
+	} else if values, ok := c.staticValueExpressionAlternatives(expr); ok {
+		c.bindLocalStaticValues(name, values)
+	} else if c.keywordSplatExpressionAlwaysFails(expr) &&
+		c.expressionMayHaveExpansionType(expr, KindHash, checkTypeHash) {
+		c.bindLocalKeywordSplatFailure(name)
+	} else {
+		c.bindLocalClassValue(name, "")
 	}
 }
 
@@ -939,45 +1370,69 @@ func logicalAssignmentFact(operator TokenType, current, next *TypeExpr) *TypeExp
 	return unionTypeExprs(current, next)
 }
 
-// bindLogicalAssignmentClassValueFact mirrors logicalAssignmentFact for exact
-// class objects, which are always truthy even though they have no TypeExpr.
-func (c *scriptChecker) bindLogicalAssignmentClassValueFact(
+// bindLogicalAssignmentValueFact mirrors logicalAssignmentFact for exact
+// class, callable, and literal facts whose truthiness may be known even when
+// their TypeExpr is absent or less precise.
+func (c *scriptChecker) bindLogicalAssignmentValueFact(
 	name string,
 	operator TokenType,
 	currentType *TypeExpr,
 	next Expression,
 ) {
 	currentFact, currentTracked := c.localValueFactFor(name)
-	currentExact := currentTracked && len(currentFact.classNames) > 0 && len(currentFact.callables) == 0
 	bindNext := func() {
-		if classNames, ok := c.classValueExpressionNames(next); ok {
-			c.bindLocalClassValues(name, classNames)
-			return
+		c.bindExpressionLocalValueFact(name, next)
+	}
+	currentTruthy, currentKnown := localValueFactTruthiness(currentFact, currentTracked)
+	if !currentKnown {
+		switch {
+		case typeExprDefinitelyTruthy(currentType):
+			currentTruthy, currentKnown = true, true
+		case typeExprIsNilOnly(currentType):
+			currentTruthy, currentKnown = false, true
 		}
-		c.bindLocalClassValue(name, "")
 	}
 
 	switch operator {
 	case tokenOrAssign:
-		if currentExact {
-			c.bindLocalClassValues(name, currentFact.classNames)
+		if currentKnown && currentTruthy {
 			return
 		}
-		if typeExprIsNilOnly(currentType) {
+		if currentKnown {
 			bindNext()
 			return
 		}
 	case tokenAndAssign:
-		if currentExact || typeExprDefinitelyTruthy(currentType) {
+		if currentKnown && currentTruthy {
 			bindNext()
 			return
 		}
-		if typeExprIsNilOnly(currentType) {
-			c.bindLocalClassValue(name, "")
+		if currentKnown {
 			return
 		}
 	}
 	c.bindLocalClassValue(name, "")
+}
+
+func localValueFactTruthiness(fact checkLocalValueFact, tracked bool) (bool, bool) {
+	if !tracked || fact.keywordSplatFails {
+		return false, false
+	}
+	if len(fact.classNames) > 0 || len(fact.callables) > 0 {
+		return true, true
+	}
+	if len(fact.staticVals) == 0 {
+		return false, false
+	}
+	var truthy bool
+	for i, value := range fact.staticVals {
+		candidate, known := staticExpressionTruthiness(value)
+		if !known || i > 0 && candidate != truthy {
+			return false, false
+		}
+		truthy = candidate
+	}
+	return truthy, true
 }
 
 func (c *scriptChecker) bindDestructureElementType(element DestructureElement) {
@@ -1020,12 +1475,140 @@ func (c *scriptChecker) bindDestructureElementValueFact(element DestructureEleme
 	case *Identifier:
 		if classNames, ok := c.classValueExpressionNames(value); ok {
 			c.bindLocalClassValues(target.Name, classNames)
-		} else if fns, ok := c.callableExpressionFunctions(value); ok {
+		} else if fns, ok := c.callableExpressionFunctionsAfterEvaluation(value, true); ok {
 			c.bindLocalCallableValues(target.Name, fns)
+		} else if values, ok := c.staticValueExpressionAlternatives(value); ok {
+			c.bindLocalStaticValues(target.Name, values)
 		}
 	case *DestructureTarget:
 		c.bindDestructureValueFacts(target, value)
 	}
+}
+
+func (c *scriptChecker) staticValueExpressionAlternatives(expr Expression) ([]Expression, bool) {
+	const maxAlternatives = 32
+	merge := func(left []Expression, leftOK bool, right []Expression, rightOK bool) ([]Expression, bool) {
+		if !leftOK || !rightOK || len(left)+len(right) > maxAlternatives {
+			return nil, false
+		}
+		merged := normalizeCheckStaticValues(append(append([]Expression(nil), left...), right...))
+		return merged, len(merged) > 0
+	}
+
+	switch typed := expr.(type) {
+	case *Identifier:
+		return c.localStaticValuesFor(typed.Name)
+	case *ConditionalExpr:
+		if branch, ok := staticConditionalExpressionBranch(typed); ok {
+			return c.staticValueExpressionAlternatives(branch)
+		}
+		left, leftOK := c.staticValueExpressionAlternatives(typed.Consequent)
+		right, rightOK := c.staticValueExpressionAlternatives(typed.Alternate)
+		return merge(left, leftOK, right, rightOK)
+	case *IfExpr:
+		if branch, known := c.inferredIfExpressionBranch(typed); known {
+			return c.staticValueExpressionAlternatives(branch)
+		}
+		branches := make([]Expression, 0, len(typed.ElseIf)+2)
+		branches = append(branches, typed.Consequent)
+		for _, branch := range typed.ElseIf {
+			branches = append(branches, branch.Result)
+		}
+		branches = append(branches, typed.Alternate)
+		var alternatives []Expression
+		for _, branch := range branches {
+			values, ok := c.staticValueExpressionAlternatives(branch)
+			if !ok || len(alternatives)+len(values) > maxAlternatives {
+				return nil, false
+			}
+			alternatives = normalizeCheckStaticValues(append(alternatives, values...))
+		}
+		return alternatives, len(alternatives) > 0
+	case *RescueExpr:
+		left, leftOK := c.staticValueExpressionAlternatives(typed.Body)
+		right, rightOK := c.staticValueExpressionAlternatives(typed.Fallback)
+		return merge(left, leftOK, right, rightOK)
+	case *BinaryExpr:
+		if typed.Operator != tokenAnd && typed.Operator != tokenOr {
+			break
+		}
+		truthy, known := staticExpressionTruthiness(typed.Left)
+		if !known {
+			break
+		}
+		if truthy == (typed.Operator == tokenAnd) {
+			return c.staticValueExpressionAlternatives(typed.Right)
+		}
+		return c.staticValueExpressionAlternatives(typed.Left)
+	case *IndexExpr:
+		projected, ok := c.staticLiteralProjections(typed)
+		if !ok {
+			break
+		}
+		var alternatives []Expression
+		for _, candidate := range projected {
+			values, exact := c.staticValueExpressionAlternatives(candidate)
+			if !exact {
+				return nil, false
+			}
+			alternatives = normalizeCheckStaticValues(append(alternatives, values...))
+		}
+		return alternatives, len(alternatives) > 0
+	case *CaseExpr:
+		if result, ok := c.inferredCaseExpressionResult(typed); ok {
+			return c.staticValueExpressionAlternatives(result)
+		}
+	}
+	if _, ok := staticLiteralValue(expr); ok {
+		return []Expression{expr}, true
+	}
+	return nil, false
+}
+
+// keywordSplatExpressionAlwaysFails recognizes values that are guaranteed to
+// abort `**` expansion. The dedicated local witness covers a hash that was
+// successfully mutated with a non-string/non-symbol key; its ordinary type is
+// intentionally poisoned because the mutation invalidates structural facts.
+func (c *scriptChecker) keywordSplatExpressionAlwaysFails(expr Expression) bool {
+	switch typed := expr.(type) {
+	case nil:
+		return true
+	case *Identifier:
+		if c.localKeywordSplatFails(typed.Name) {
+			return true
+		}
+	case *ConditionalExpr:
+		if branch, ok := staticConditionalExpressionBranch(typed); ok {
+			return c.keywordSplatExpressionAlwaysFails(branch)
+		}
+		return c.keywordSplatExpressionAlwaysFails(typed.Consequent) &&
+			c.keywordSplatExpressionAlwaysFails(typed.Alternate)
+	case *IfExpr:
+		if !c.keywordSplatExpressionAlwaysFails(typed.Consequent) ||
+			!c.keywordSplatExpressionAlwaysFails(typed.Alternate) {
+			return false
+		}
+		for _, branch := range typed.ElseIf {
+			if !c.keywordSplatExpressionAlwaysFails(branch.Result) {
+				return false
+			}
+		}
+		return true
+	case *RescueExpr:
+		return c.keywordSplatExpressionAlwaysFails(typed.Body) &&
+			c.keywordSplatExpressionAlwaysFails(typed.Fallback)
+	case *HashLiteral:
+		if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
+			return true
+		}
+		for _, pair := range typed.Pairs {
+			key, static := staticLiteralValue(pair.Key)
+			if static && key.Kind() != KindString && key.Kind() != KindSymbol {
+				return true
+			}
+		}
+	}
+	return !c.expressionMayHaveExpansionType(expr, KindHash, checkTypeHash)
 }
 
 // classValueExpressionNames returns the exhaustive script-class identities an
@@ -1071,6 +1654,9 @@ func (c *scriptChecker) classValueExpressionNamesSeen(
 		right, rightOK := c.classValueExpressionNamesSeen(typed.Alternate, seen, allowFunctionReturns)
 		return mergeCheckStringCandidates(left, leftOK, right, rightOK)
 	case *IfExpr:
+		if branch, known := c.inferredIfExpressionBranch(typed); known {
+			return c.classValueExpressionNamesSeen(branch, seen, allowFunctionReturns)
+		}
 		branches := make([]Expression, 0, len(typed.ElseIf)+2)
 		branches = append(branches, typed.Consequent)
 		for _, branch := range typed.ElseIf {
@@ -1100,11 +1686,23 @@ func (c *scriptChecker) classValueExpressionNamesSeen(
 		}
 		return nil, false
 	case *IndexExpr:
-		projected, ok := c.staticLiteralProjection(typed)
+		projected, ok := c.staticLiteralProjections(typed)
 		if !ok {
 			return nil, false
 		}
-		return c.classValueExpressionNamesSeen(projected, seen, allowFunctionReturns)
+		var merged []string
+		for _, candidate := range projected {
+			names, exact := c.classValueExpressionNamesSeen(candidate, seen, allowFunctionReturns)
+			if !exact {
+				return nil, false
+			}
+			if merged == nil {
+				merged = names
+				continue
+			}
+			merged, _ = mergeCheckStringCandidates(merged, true, names, true)
+		}
+		return merged, len(merged) > 0
 	case *CallExpr:
 		if member, ok := typed.Callee.(*MemberExpr); ok && member.Property == "itself" &&
 			len(typed.Args) == 0 && len(typed.KwArgs) == 0 && typed.Block == nil && typed.BlockArg == nil {
@@ -1184,18 +1782,40 @@ func mergeCheckStringCandidates(left []string, leftOK bool, right []string, righ
 	return normalizeCheckClassNames(merged), true
 }
 
-func (c *scriptChecker) staticLiteralProjection(expr *IndexExpr) (Expression, bool) {
+func (c *scriptChecker) staticLiteralProjections(expr *IndexExpr) ([]Expression, bool) {
 	if expr == nil || len(expr.Indices) != 1 {
 		return nil, false
 	}
-	switch object := expr.Object.(type) {
+	objects := []Expression{expr.Object}
+	switch expr.Object.(type) {
+	case *ArrayLiteral, *HashLiteral:
+	default:
+		var exact bool
+		objects, exact = c.staticValueExpressionAlternatives(expr.Object)
+		if !exact {
+			return nil, false
+		}
+	}
+	projected := make([]Expression, 0, len(objects))
+	for _, object := range objects {
+		value, ok := c.staticLiteralProjectionFrom(object, expr.Indices[0])
+		if !ok {
+			return nil, false
+		}
+		projected = append(projected, value)
+	}
+	return projected, len(projected) > 0
+}
+
+func (c *scriptChecker) staticLiteralProjectionFrom(object, indexExpr Expression) (Expression, bool) {
+	switch object := object.(type) {
 	case *ArrayLiteral:
 		for _, element := range object.Elements {
 			if _, splat := element.(*SplatArg); splat {
 				return nil, false
 			}
 		}
-		value, ok := staticLiteralValue(expr.Indices[0])
+		value, ok := staticLiteralValue(indexExpr)
 		if !ok {
 			return nil, false
 		}
@@ -1214,17 +1834,17 @@ func (c *scriptChecker) staticLiteralProjection(expr *IndexExpr) (Expression, bo
 		if object.ShapeType != nil && !c.hashShapeStaticallyShadowed(object) {
 			return nil, false
 		}
-		want, ok := staticLiteralHashKey(expr.Indices[0])
+		want, ok := staticLiteralValue(indexExpr)
 		if !ok {
 			return nil, false
 		}
 		var projected Expression
 		for _, pair := range object.Pairs {
-			key, ok := staticLiteralHashKey(pair.Key)
+			key, ok := staticLiteralValue(pair.Key)
 			if !ok {
 				return nil, false
 			}
-			if key == want {
+			if key.Equal(want) {
 				projected = pair.Value
 			}
 		}
@@ -2431,8 +3051,18 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		return c.inferConditionalExpressionType(typed)
 	case *IfExpr:
 		return c.inferIfExpressionType(typed)
+	case *CaseExpr:
+		if result, known := c.inferredCaseExpressionResult(typed); known {
+			return c.inferExpressionType(result)
+		}
+		branches := make([]Expression, 0, len(typed.Clauses)+1)
+		for _, clause := range typed.Clauses {
+			branches = append(branches, clause.Result)
+		}
+		branches = append(branches, typed.ElseExpr)
+		return c.inferExpectedBranchUnion(expressionExpectation{}, branches...)
 	case *RescueExpr:
-		return c.inferBranchUnionType(typed.Body, typed.Fallback)
+		return c.inferRescueExpressionTypeWithExpectation(typed, expressionExpectation{})
 	case *CallExpr:
 		return c.inferCallExprType(typed)
 	case *IndexExpr:
@@ -2463,6 +3093,9 @@ func (c *scriptChecker) inferExpressionTypeWithExpectation(expr Expression, expe
 	case *IfExpr:
 		return c.inferIfExpressionTypeWithExpectation(typed, expectation)
 	case *CaseExpr:
+		if result, known := c.inferredCaseExpressionResult(typed); known {
+			return c.inferExpectedBranchUnion(expectation, result)
+		}
 		branches := make([]Expression, 0, len(typed.Clauses)+1)
 		for _, clause := range typed.Clauses {
 			branches = append(branches, clause.Result)
@@ -2470,7 +3103,10 @@ func (c *scriptChecker) inferExpressionTypeWithExpectation(expr Expression, expe
 		branches = append(branches, typed.ElseExpr)
 		return c.inferExpectedBranchUnion(expectation, branches...)
 	case *RescueExpr:
-		return c.inferExpectedBranchUnion(autoCallExpectation(!expectation.includesCallable()), typed.Body, typed.Fallback)
+		return c.inferRescueExpressionTypeWithExpectation(
+			typed,
+			autoCallExpectation(!expectation.includesCallable()),
+		)
 	case *ArrayLiteral:
 		return c.inferExpectedArrayLiteralType(typed, expectation)
 	case *HashLiteral:
@@ -2671,10 +3307,21 @@ func (c *scriptChecker) inferredConditionTruthiness(condition Expression) (bool,
 	if truthy, known := staticExpressionTruthiness(condition); known {
 		return truthy, known
 	}
+	if member, ok := condition.(*MemberExpr); ok {
+		if target, resolved := c.resolveMemberCallable(member); resolved &&
+			target.fn != nil && !target.constructor {
+			if result, static := scriptFunctionLiteralReturnExpression(target.fn); static {
+				if truthy, known := staticExpressionTruthiness(result); known {
+					return truthy, true
+				}
+			}
+		}
+	}
 	if ident, ok := condition.(*Identifier); ok {
-		if fact, exact := c.localValueFactFor(ident.Name); exact &&
-			len(fact.classNames) > 0 && len(fact.callables) == 0 {
-			return true, true
+		if fact, exact := c.localValueFactFor(ident.Name); exact {
+			if truthy, known := localValueFactTruthiness(fact, true); known {
+				return truthy, true
+			}
 		}
 	}
 	ty := c.inferExpressionType(condition)
@@ -2687,28 +3334,54 @@ func (c *scriptChecker) inferredConditionTruthiness(condition Expression) (bool,
 	return false, false
 }
 
-// inferBranchUnionType joins branch result types; a missing branch (an if
-// expression without an else) contributes nil.
-func (c *scriptChecker) inferBranchUnionType(branches ...Expression) *TypeExpr {
-	var merged *TypeExpr
-	for i, branch := range branches {
-		arm := checkTypeNil
-		if branch != nil {
-			arm = c.inferExpressionType(branch)
+func (c *scriptChecker) inferredIfExpressionBranch(expr *IfExpr) (Expression, bool) {
+	if expr == nil {
+		return nil, false
+	}
+	truthy, known := c.inferredConditionTruthiness(expr.Condition)
+	if !known {
+		return nil, false
+	}
+	if truthy {
+		return expr.Consequent, true
+	}
+	for _, branch := range expr.ElseIf {
+		truthy, known = c.inferredConditionTruthiness(branch.Condition)
+		if !known {
+			return nil, false
 		}
-		if arm == nil {
-			return nil
-		}
-		if i == 0 {
-			merged = arm
-			continue
-		}
-		merged = unionTypeExprs(merged, arm)
-		if merged == nil {
-			return nil
+		if truthy {
+			return branch.Result, true
 		}
 	}
-	return merged
+	return expr.Alternate, true
+}
+
+func (c *scriptChecker) inferRescueExpressionTypeWithExpectation(
+	expr *RescueExpr,
+	expectation expressionExpectation,
+) *TypeExpr {
+	if expr == nil {
+		return nil
+	}
+	if expressionProvenNonRaising(expr.Body) {
+		return c.inferExpressionTypeWithExpectation(expr.Body, expectation)
+	}
+	if errorKind, exact := c.staticallyRaisedExpressionErrorKind(expr.Body); exact &&
+		!staticErrorKindMatchesRescue(errorKind, nil) {
+		return c.inferExpressionTypeWithExpectation(expr.Body, expectation)
+	}
+	branches := make([]Expression, 0, 2)
+	if c.expressionMayCompleteForBinding(expr.Body) {
+		branches = append(branches, expr.Body)
+	}
+	if c.expressionMayCompleteForBinding(expr.Fallback) {
+		branches = append(branches, expr.Fallback)
+	}
+	if len(branches) == 0 {
+		return nil
+	}
+	return c.inferExpectedBranchUnion(expectation, branches...)
 }
 
 // inferHashLiteralType infers an exact shape for a hash literal whose keys
@@ -2799,6 +3472,14 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 	if !ok {
 		return nil
 	}
+	return c.inferResolvedCallExprType(call, target)
+}
+
+func (c *scriptChecker) inferResolvedCallExprType(call *CallExpr, target staticCallable) *TypeExpr {
+	member, memberCall := call.Callee.(*MemberExpr)
+	if memberCall && member.Safe && typeExprIsNilOnly(c.safeNavigationReceiverFact(member.Object)) {
+		return checkTypeNil
+	}
 	var result *TypeExpr
 	if target.constructorClass != "" {
 		result = &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
@@ -2827,6 +3508,34 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 	return result
 }
 
+func (c *scriptChecker) inferDynamicCallExprType(
+	resolution checkDynamicCallResolution,
+) (*TypeExpr, bool) {
+	if resolution.nonScriptMayComplete {
+		return nil, false
+	}
+	results := make([]*TypeExpr, 0, len(resolution.targets))
+	for _, candidate := range resolution.targets {
+		if !candidate.mayEnter || !c.scriptFunctionCallMayComplete(
+			candidate.call,
+			candidate.target.fn,
+			candidate.target.constructor,
+		) {
+			continue
+		}
+		result := c.inferResolvedCallExprType(candidate.call, candidate.target)
+		if result == nil {
+			return nil, false
+		}
+		results = append(results, result)
+	}
+	if len(results) == 0 {
+		return nil, false
+	}
+	result := unionTypeExprs(results...)
+	return result, result != nil
+}
+
 // memberResultFact reports the result of a bare member read that auto-invokes
 // in a value context: constructors carry their nominal class, script methods
 // expose an explicit return annotation, builtins expose their invariant
@@ -2853,6 +3562,28 @@ func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
 		result = target.spec.resultType
 	}
 	return c.safeNavigationMemberResultFact(member, result)
+}
+
+func scriptFunctionLiteralReturnExpression(fn *ScriptFunction) (Expression, bool) {
+	if fn == nil || len(fn.Body) != 1 {
+		return nil, false
+	}
+	var result Expression
+	switch stmt := fn.Body[0].(type) {
+	case *ExprStmt:
+		result = stmt.Expr
+	case *ReturnStmt:
+		result = stmt.Value
+	default:
+		return nil, false
+	}
+	if result == nil {
+		return &NilLiteral{Position: fn.Pos}, true
+	}
+	if _, static := staticLiteralValue(result); !static {
+		return nil, false
+	}
+	return result, true
 }
 
 func (c *scriptChecker) safeNavigationMemberResultFact(member *MemberExpr, result *TypeExpr) *TypeExpr {
@@ -3020,6 +3751,7 @@ func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
 	if current == nil {
 		return
 	}
+	c.updateShoveledStaticArrayValues(ident.Name, expr.Right)
 	// Inside a loop or block body the walk's retypes are rolled back by the
 	// region's state restore, so an in-place append there must poison
 	// (monotone, survives the restore) rather than refine; an aliased
@@ -3037,6 +3769,33 @@ func (c *scriptChecker) applyShovelMutationFacts(expr *BinaryExpr) {
 	if typeExprHasContainerArm(current) {
 		c.poisonLocalType(ident.Name)
 	}
+}
+
+// updateShoveledStaticArrayValues advances an exact local array value through
+// one unaliased shovel. Forwarded-call names are read from these whole-value
+// facts, so leaving the pre-mutation array in place would resolve a later
+// send/public_send against a value the runtime no longer holds.
+func (c *scriptChecker) updateShoveledStaticArrayValues(name string, appended Expression) {
+	values, exact := c.localStaticValuesFor(name)
+	if !exact {
+		return
+	}
+	if _, static := staticLiteralValue(appended); !static {
+		c.bindLocalStaticValues(name, nil)
+		return
+	}
+	updated := make([]Expression, 0, len(values))
+	for _, value := range values {
+		array, ok := value.(*ArrayLiteral)
+		if !ok {
+			c.bindLocalStaticValues(name, nil)
+			return
+		}
+		clone := *array
+		clone.Elements = append(append([]Expression(nil), array.Elements...), appended)
+		updated = append(updated, &clone)
+	}
+	c.bindLocalStaticValues(name, updated)
 }
 
 func unwrapShovelChain(expr Expression) Expression {
@@ -3283,6 +4042,24 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 	if len(expr.Indices) != 1 {
 		return nil
 	}
+	if projected, exact := c.staticLiteralProjections(expr); exact {
+		var result *TypeExpr
+		for _, candidate := range projected {
+			candidateType := c.inferExpressionType(candidate)
+			if candidateType == nil {
+				result = nil
+				break
+			}
+			if result == nil {
+				result = candidateType
+			} else {
+				result = unionTypeExprs(result, candidateType)
+			}
+		}
+		if result != nil {
+			return result
+		}
+	}
 	objectType := c.inferExpressionType(expr.Object)
 	if objectType == nil || objectType.Nullable {
 		return nil
@@ -3463,6 +4240,24 @@ func (c *scriptChecker) checkUnaryOperandTypes(function string, expr *UnaryExpr)
 	}
 }
 
+func (c *scriptChecker) unaryExpressionMayComplete(expr *UnaryExpr) bool {
+	if expr == nil {
+		return true
+	}
+	kind, known := staticOperandKind(c.inferExpressionType(expr.Right))
+	if !known {
+		return true
+	}
+	switch expr.Operator {
+	case tokenMinus:
+		return kind == TypeInt || kind == TypeFloat || kind == TypeNumber
+	case tokenPlus:
+		return kind == TypeInt || kind == TypeFloat || kind == TypeNumber || kind == TypeString
+	default:
+		return true
+	}
+}
+
 // poisonEscapedIdentifier drops tracking for a mutable container local whose
 // value escapes into code the checker cannot follow: a member call that may
 // mutate it in place, or a by-reference argument position. An indexed or
@@ -3492,6 +4287,9 @@ func (c *scriptChecker) escapePoisonTarget(expr Expression) (string, bool) {
 	name, ok := rootIdentifierName(expr)
 	if !ok {
 		return "", false
+	}
+	if _, isIdent := expr.(*Identifier); isIdent && c.localKeywordSplatFails(name) {
+		return name, true
 	}
 	rootType := c.localTypeFor(name)
 	if rootType == nil || !typeExprHasContainerArm(rootType) {

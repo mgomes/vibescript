@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -107,64 +108,71 @@ func (s *Script) checkWarningsWithGlobals(optionGlobals map[string]Value, opts C
 }
 
 type scriptChecker struct {
-	script                  *Script
-	callOptions             CallOptions
-	optionGlobals           map[string]Value
-	optionGlobalsOverride   bool
-	typeRoot                *Env
-	runtimeTypeRoot         *Env
-	hostGlobals             map[string]struct{}
-	warnings                []CheckWarning
-	scopes                  []map[string]struct{}
-	localTypes              []checkTypeFrame
-	localClassValues        []checkClassValueFrame
-	typePoison              map[string]struct{}
-	typeAliases             map[string]map[string]struct{}
-	mutationRegionDepth     int
-	speculativeInference    int
-	callArgumentFacts       map[Expression]*TypeExpr
-	callArgumentClassValues map[Expression][]string
-	callArgumentCallables   map[Expression][]*ScriptFunction
-	reachableParamFacts     map[string]checkReachableParamFact
-	deferredReturnSites     *[]deferredReturnSite
-	exceptionExitSites      *[]checkStateSnapshot
-	ensureExitSites         *[]checkStateSnapshot
-	implicitReturnLeaves    map[Statement]struct{}
-	implicitReturnStates    map[Statement]checkStateSnapshot
-	returnSummaries         map[returnSummaryCacheKey]*TypeExpr
-	summaryInProgress       map[returnSummaryCacheKey]struct{}
-	returnCollector         *returnSummaryCollector
-	summaryYieldCollector   *returnSummaryCollector
-	summaryYieldBlock       *BlockLiteral
-	summaryYieldsActive     bool
-	pinnedExpressionFacts   map[Expression]*TypeExpr
-	requiredModules         map[string]struct{}
-	runtimeModules          map[string]struct{}
-	runtimeNamespaceMembers map[string]struct{}
-	opaqueClassConstants    bool
-	classConstantContext    checkClassConstantEffects
-	classConstantCaptures   []checkClassConstantEffects
-	loopExitEffects         *checkLoopExitEffects
-	moduleEntries           map[string]moduleEntry
-	moduleExportValues      map[string]Value
-	moduleCheckedFunctions  map[string]struct{}
-	moduleCheckContext      string
-	moduleCaller            *moduleContext
-	moduleExportRoot        *Env
-	runtimeTypeRootParent   *Env
-	checkReachableCalls     bool
-	checkedReachableFuncs   map[string]struct{}
-	reachableFuncQueue      []reachableFunction
-	selfScope               bool
-	selfClass               *ClassDef
-	selfClassContext        bool
-	selfScopeFnClasses      map[*ScriptFunction]*ClassDef
-	selfScopeClassFns       map[*ScriptFunction]struct{}
-	localNameUnions         []map[string]struct{}
-	liveLocalNames          []map[string]struct{}
-	nameFactsCache          *checkNameFacts
-	selfScopeFns            map[*ScriptFunction]struct{}
-	orderIndependentOnly    bool
+	script                   *Script
+	callOptions              CallOptions
+	optionGlobals            map[string]Value
+	optionGlobalsOverride    bool
+	typeRoot                 *Env
+	runtimeTypeRoot          *Env
+	hostGlobals              map[string]struct{}
+	warnings                 []CheckWarning
+	scopes                   []map[string]struct{}
+	localTypes               []checkTypeFrame
+	localClassValues         []checkClassValueFrame
+	typePoison               map[string]struct{}
+	typeAliases              map[string]map[string]struct{}
+	mutationRegionDepth      int
+	speculativeInference     int
+	callArgumentFacts        map[Expression]*TypeExpr
+	callArgumentClassValues  map[Expression][]string
+	callArgumentCallables    map[Expression][]*ScriptFunction
+	callArgumentStaticValues map[Expression][]Expression
+	reachableParamFacts      map[string]checkReachableParamFact
+	reachableBindingPlan     *scriptCallBindingPlan
+	deferredReturnSites      *[]deferredReturnSite
+	exceptionExitSites       *[]checkStateSnapshot
+	expressionExitSites      *[]checkStateSnapshot
+	ensureExitSites          *[]checkStateSnapshot
+	retryExitSites           *[]checkStateSnapshot
+	implicitReturnLeaves     map[Statement]struct{}
+	implicitReturnStates     map[Statement]checkStateSnapshot
+	returnAnalyses           map[returnSummaryCacheKey]functionReturnAnalysis
+	summaryInProgress        map[returnSummaryCacheKey]struct{}
+	bindingCompletionProbes  map[Expression]struct{}
+	returnCollector          *returnSummaryCollector
+	summaryYieldCollector    *returnSummaryCollector
+	summaryYieldBlock        *BlockLiteral
+	summaryYieldsActive      bool
+	summaryBlockAvailable    bool
+	pinnedExpressionFacts    map[Expression]*TypeExpr
+	constructorInstanceFacts map[Expression]checkInstanceClassFact
+	requiredModules          map[string]struct{}
+	runtimeModules           map[string]struct{}
+	runtimeNamespaceMembers  map[string]struct{}
+	opaqueClassConstants     bool
+	classConstantContext     checkClassConstantEffects
+	classConstantCaptures    []checkClassConstantEffects
+	loopExitEffects          *checkLoopExitEffects
+	moduleEntries            map[string]moduleEntry
+	moduleExportValues       map[string]Value
+	moduleCheckedFunctions   map[string]struct{}
+	moduleCheckContext       string
+	moduleCaller             *moduleContext
+	moduleExportRoot         *Env
+	runtimeTypeRootParent    *Env
+	checkReachableCalls      bool
+	checkedReachableFuncs    map[string]struct{}
+	reachableFuncQueue       []reachableFunction
+	selfScope                bool
+	selfClass                *ClassDef
+	selfClassContext         bool
+	selfScopeFnClasses       map[*ScriptFunction]*ClassDef
+	selfScopeClassFns        map[*ScriptFunction]struct{}
+	localNameUnions          []map[string]struct{}
+	liveLocalNames           []map[string]struct{}
+	nameFactsCache           *checkNameFacts
+	selfScopeFns             map[*ScriptFunction]struct{}
+	orderIndependentOnly     bool
 	// implicitIfDecisions records, per if statement of an armed
 	// implicit-return walk, the branch reachability the walker decided at
 	// each condition's own evaluation point (index 0 the main condition,
@@ -209,18 +217,36 @@ type reachableFunction struct {
 	fn           *ScriptFunction
 	runtimeState checkRuntimeState
 	paramFacts   map[string]checkReachableParamFact
+	bindingPlan  *scriptCallBindingPlan
 }
 
 type checkReachableParamFact struct {
 	typeExpr    *TypeExpr
 	classNames  []string
 	callables   []*ScriptFunction
+	staticVals  []Expression
 	usesDefault bool
+}
+
+type checkInstanceClassFact struct {
+	classNames []string
+	exact      bool
+}
+
+type checkDynamicCallResolution struct {
+	targets              []checkDynamicCallTarget
+	exact                bool
+	diagnoseTargets      bool
+	targetExists         bool
+	targetMayEnter       bool
+	nonScriptMayComplete bool
+	lookupFails          bool
 }
 
 type checkDynamicCallCandidates struct {
 	instanceClasses  []string
 	instancesExact   bool
+	instancesMayNil  bool
 	classValues      []string
 	classValuesExact bool
 	callables        []*ScriptFunction
@@ -228,8 +254,29 @@ type checkDynamicCallCandidates struct {
 }
 
 type checkDynamicCallTarget struct {
+	call          *CallExpr
+	target        staticCallable
+	bindingStarts bool
+	mayEnter      bool
+}
+
+type checkForwardedCallVariant struct {
 	call   *CallExpr
-	target staticCallable
+	method string
+	known  bool
+	valid  bool
+}
+
+func (c *scriptChecker) callStaticValueAlternatives(expr Expression) ([]Expression, bool) {
+	if values, captured := c.callArgumentStaticValues[expr]; captured {
+		return append([]Expression(nil), values...), len(values) > 0
+	}
+	return c.staticValueExpressionAlternatives(expr)
+}
+
+type scriptCallBindingPlan struct {
+	defaultParams []int
+	bodyMayEnter  bool
 }
 
 // checkOptionGlobals resolves the host globals a call would receive. Bind
@@ -614,14 +661,22 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
 			c.collectRequiredModuleExportsFromExpression(elem)
+			if !c.expressionMayCompleteForBinding(elem) {
+				return
+			}
 		}
 	case *HashLiteral:
 		for _, pair := range typed.Pairs {
 			c.collectRequiredModuleExportsFromExpression(pair.Key)
+			if !c.expressionMayCompleteForBinding(pair.Key) {
+				return
+			}
 			c.collectRequiredModuleExportsFromExpression(pair.Value)
+			if !c.expressionMayCompleteForBinding(pair.Value) {
+				return
+			}
 		}
 	case *CallExpr:
-		c.collectRequireCallExports(typed)
 		callSkipsInferred := c.safeNavigationCallSkipsInferred(typed)
 		argumentsAlwaysEvaluate := c.safeNavigationArgumentsAlwaysEvaluateInferred(typed)
 		if member, ok := typed.Callee.(*MemberExpr); ok {
@@ -630,6 +685,9 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 			c.collectRequiredModuleExportsFromExpression(member.Object)
 		} else {
 			c.collectRequiredModuleExportsFromExpression(typed.Callee)
+		}
+		if !c.expressionMayCompleteForBinding(typed.Callee) {
+			return
 		}
 		if staticNilSafeNavigationCall(typed) || callSkipsInferred {
 			return
@@ -647,6 +705,10 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		} else {
 			c.collectRequiredModuleExportsFromCallArguments(typed)
 		}
+		if !c.callArgumentsMayCompleteForBinding(typed) {
+			return
+		}
+		c.collectRequireCallExports(typed)
 		if c.isolatedCollectInference {
 			if typed.Block != nil {
 				c.degradeBlockBodyBindings(typed.Block)
@@ -670,8 +732,14 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
 	case *IndexExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Object)
+		if !c.expressionMayCompleteForBinding(typed.Object) {
+			return
+		}
 		for _, index := range typed.Indices {
 			c.collectRequiredModuleExportsFromExpression(index)
+			if !c.expressionMayCompleteForBinding(index) {
+				return
+			}
 		}
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
@@ -710,6 +778,9 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		c.collectRequiredModuleExportsFromIfExpression(typed)
 	case *RangeExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Start)
+		if !c.expressionMayCompleteForBinding(typed.Start) {
+			return
+		}
 		c.collectRequiredModuleExportsFromExpression(typed.End)
 	case *CaseExpr:
 		c.collectRequiredModuleExportsFromCaseExpression(typed)
@@ -718,6 +789,9 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 	case *YieldExpr:
 		for _, arg := range typed.Args {
 			c.collectRequiredModuleExportsFromExpression(arg)
+			if !c.expressionMayCompleteForBinding(arg) {
+				return
+			}
 		}
 	case *InterpolatedString:
 		c.collectStringPartRequiredModuleExports(typed.Parts)
@@ -730,6 +804,11 @@ func (c *scriptChecker) collectRequiredModuleExportsFromConditionalExpression(ex
 	baseState := c.snapshotModuleCollectionState()
 	baseScopeState := c.snapshotScopeState()
 	c.collectRequiredModuleExportsFromExpression(expr.Condition)
+	if !c.expressionMayCompleteForBinding(expr.Condition) {
+		c.restoreModuleCollectionState(baseState)
+		c.restoreScopeState(baseScopeState)
+		return
+	}
 	conditionState := c.snapshotModuleCollectionState()
 	conditionScopeState := c.snapshotScopeState()
 	branchStates := make([]checkModuleCollectionState, 0, 2)
@@ -773,6 +852,11 @@ func (c *scriptChecker) collectRequiredModuleExportsFromIfExpression(expr *IfExp
 	baseState := c.snapshotModuleCollectionState()
 	baseScopeState := c.snapshotScopeState()
 	c.collectRequiredModuleExportsFromExpression(expr.Condition)
+	if !c.expressionMayCompleteForBinding(expr.Condition) {
+		c.restoreModuleCollectionState(baseState)
+		c.restoreScopeState(baseScopeState)
+		return
+	}
 	conditionState := c.snapshotModuleCollectionState()
 	conditionScopeState := c.snapshotScopeState()
 	branchStates := make([]checkModuleCollectionState, 0, len(expr.ElseIf)+2)
@@ -814,6 +898,10 @@ func (c *scriptChecker) collectRequiredModuleExportsFromIfExpression(expr *IfExp
 		c.restoreModuleCollectionState(falseState)
 		c.restoreScopeState(falseScopeState)
 		c.collectRequiredModuleExportsFromExpression(branch.Condition)
+		if !c.expressionMayCompleteForBinding(branch.Condition) {
+			finish()
+			return
+		}
 		conditionState = c.snapshotModuleCollectionState()
 		conditionScopeState = c.snapshotScopeState()
 		branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
@@ -852,18 +940,45 @@ func (c *scriptChecker) collectRequiredModuleExportsFromIfExpression(expr *IfExp
 func (c *scriptChecker) collectRequiredModuleExportsFromCallArguments(call *CallExpr) {
 	for _, arg := range call.Args {
 		c.collectRequiredModuleExportsFromExpression(arg)
+		if !c.expressionMayCompleteForBinding(arg) || !c.positionalArgumentExpansionMaySucceed(arg) {
+			return
+		}
 	}
 	for _, kwarg := range call.KwArgs {
 		c.collectRequiredModuleExportsFromExpression(kwarg.Value)
+		if !c.expressionMayCompleteForBinding(kwarg.Value) || !c.keywordArgumentExpansionMaySucceed(kwarg) {
+			return
+		}
 	}
 	if call.BlockArg != nil {
 		c.collectRequiredModuleExportsFromExpression(call.BlockArg)
 	}
 }
 
+func (c *scriptChecker) callArgumentsMayCompleteForBinding(call *CallExpr) bool {
+	if call == nil {
+		return true
+	}
+	for _, arg := range call.Args {
+		if !c.expressionMayCompleteForBinding(arg) || !c.positionalArgumentExpansionMaySucceed(arg) {
+			return false
+		}
+	}
+	for _, kwarg := range call.KwArgs {
+		if !c.expressionMayCompleteForBinding(kwarg.Value) || !c.keywordArgumentExpansionMaySucceed(kwarg) {
+			return false
+		}
+	}
+	return c.expressionMayCompleteForBinding(call.BlockArg)
+}
+
 func (c *scriptChecker) collectRequiredModuleExportsFromCaseExpression(expr *CaseExpr) {
 	baseState := c.snapshotModuleCollectionState()
 	c.collectRequiredModuleExportsFromExpression(expr.Target)
+	if !c.expressionMayCompleteForBinding(expr.Target) {
+		c.restoreModuleCollectionState(baseState)
+		return
+	}
 	fallthroughState := c.snapshotModuleCollectionState()
 	branchStates := make([]checkModuleCollectionState, 0, len(expr.Clauses)+1)
 
@@ -871,6 +986,11 @@ func (c *scriptChecker) collectRequiredModuleExportsFromCaseExpression(expr *Cas
 		for _, value := range clause.Values {
 			c.restoreModuleCollectionState(fallthroughState)
 			c.collectRequiredModuleExportsFromExpression(value.Expr)
+			if !c.expressionMayCompleteForBinding(value.Expr) ||
+				!c.caseWhenSplatExpansionMaySucceed(value.Expr, value.Splat) {
+				c.mergeModuleCollectionStates(baseState, branchStates)
+				return
+			}
 			matchState := c.snapshotModuleCollectionState()
 			c.collectRequiredModuleExportsFromExpression(clause.Result)
 			branchStates = append(branchStates, c.snapshotModuleCollectionState())
@@ -1560,6 +1680,35 @@ func (c *scriptChecker) enqueueReachableFunctionWithParamFacts(
 	})
 }
 
+func (c *scriptChecker) enqueueReachableFunctionBinding(
+	label string,
+	fn *ScriptFunction,
+	paramFacts map[string]checkReachableParamFact,
+	plan scriptCallBindingPlan,
+) {
+	if !c.checkReachableCalls || fn == nil || fn.owner != c.script {
+		return
+	}
+	key := c.reachableFunctionCheckKey(fn, paramFacts) + "\x00binding:" +
+		strconv.FormatBool(plan.bodyMayEnter) + ":" + fmt.Sprint(plan.defaultParams)
+	if c.checkedReachableFuncs == nil {
+		c.checkedReachableFuncs = make(map[string]struct{})
+	}
+	if _, checked := c.checkedReachableFuncs[key]; checked {
+		return
+	}
+	c.checkedReachableFuncs[key] = struct{}{}
+	planCopy := plan
+	planCopy.defaultParams = append([]int(nil), plan.defaultParams...)
+	c.reachableFuncQueue = append(c.reachableFuncQueue, reachableFunction{
+		label:        label,
+		fn:           fn,
+		runtimeState: c.snapshotRuntimeState(),
+		paramFacts:   cloneReachableParamFacts(paramFacts),
+		bindingPlan:  &planCopy,
+	})
+}
+
 // enqueueReachableIdentifierCall covers bare auto-calls: a top-level `run`
 // dispatches like run(), so the callee checks under the call-time runtime
 // root exactly as a spelled-out call does.
@@ -1568,6 +1717,17 @@ func (c *scriptChecker) enqueueReachableIdentifierCall(ident *Identifier) {
 		return
 	}
 	if _, ok := c.localClassValueFor(ident.Name); ok {
+		return
+	}
+	if fns, exact := c.localCallableValuesFor(ident.Name); exact {
+		for _, fn := range fns {
+			if len(fn.Params) == 0 {
+				c.enqueueReachableFunction(ident.Name, fn)
+				if !c.scriptFunctionClassConstantEffectsProvenAbsent(fn) {
+					c.markOpaqueClassConstants()
+				}
+			}
+		}
 		return
 	}
 	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
@@ -1579,6 +1739,7 @@ func (c *scriptChecker) enqueueReachableIdentifierCall(ident *Identifier) {
 	if _, ok := c.staticClassArgument(ident); ok {
 		return
 	}
+	implicitSelf := false
 	fn := c.script.functions[ident.Name]
 	if fn == nil {
 		fn, _ = c.typeRootFunction(ident.Name)
@@ -1591,16 +1752,71 @@ func (c *scriptChecker) enqueueReachableIdentifierCall(ident *Identifier) {
 			return
 		}
 		fn = c.implicitSelfFunction(ident.Name)
+		implicitSelf = fn != nil
 	}
 	if fn == nil {
 		return
 	}
-	if c.checkReachableCalls {
+	if !implicitSelf && len(fn.Params) > 0 {
+		return
+	}
+	bindingStarts := true
+	if implicitSelf {
+		call := &CallExpr{Callee: ident, Position: ident.Pos()}
+		target := staticCallable{name: ident.Name, fn: fn}
+		plan := c.scriptCallBindingPlan(call, target)
+		bindingStarts = plan.bodyMayEnter || plan.defaultParams != nil
+		if plan.bodyMayEnter {
+			c.enqueueReachableFunction(ident.Name, fn)
+		} else if plan.defaultParams != nil {
+			c.enqueueReachableFunctionBinding(ident.Name, fn, nil, plan)
+		}
+	} else if c.checkReachableCalls {
 		c.enqueueReachableFunction(ident.Name, fn)
 	}
-	if len(fn.Params) == 0 && !scriptFunctionClassConstantEffectsProvenAbsent(fn) {
+	if bindingStarts && !c.scriptFunctionClassConstantEffectsProvenAbsent(fn) {
 		c.markOpaqueClassConstants()
 	}
+}
+
+func (c *scriptChecker) autoInvokedIdentifierMayComplete(ident *Identifier) bool {
+	if ident == nil {
+		return true
+	}
+	if fns, exact := c.localCallableValuesFor(ident.Name); exact {
+		for _, fn := range fns {
+			if len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false) {
+				return true
+			}
+		}
+		return false
+	}
+	if _, classValue := c.localClassValueFor(ident.Name); classValue {
+		return true
+	}
+	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		return true
+	}
+	if fn := c.script.functions[ident.Name]; fn != nil {
+		return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+	}
+	if fn, ok := c.typeRootFunction(ident.Name); ok {
+		return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+	}
+	if c.typeRootHasBinding(ident.Name) || c.hostBuiltinOverrides(ident.Name) {
+		return true
+	}
+	if fn := c.implicitSelfFunction(ident.Name); fn != nil {
+		call := &CallExpr{Callee: ident, Position: ident.Pos()}
+		target := staticCallable{name: ident.Name, fn: fn}
+		plan := c.scriptCallBindingPlan(call, target)
+		return plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, fn, false)
+	}
+	if spec, ok := c.defaultBuiltinCallSpec(ident.Name); ok && spec.autoInvoke {
+		view := staticCallView{pos: ident.Pos()}
+		return c.builtinCallMayEnter(view, spec) && c.builtinCallMayComplete(spec)
+	}
+	return true
 }
 
 func (c *scriptChecker) markReachableFunctionChecked(fn *ScriptFunction) bool {
@@ -1662,6 +1878,7 @@ func cloneReachableParamFacts(facts map[string]checkReachableParamFact) map[stri
 	for name, fact := range facts {
 		fact.classNames = append([]string(nil), fact.classNames...)
 		fact.callables = append([]*ScriptFunction(nil), fact.callables...)
+		fact.staticVals = append([]Expression(nil), fact.staticVals...)
 		clone[name] = fact
 	}
 	return clone
@@ -1684,6 +1901,10 @@ func reachableParamFactsKey(facts map[string]checkReachableParamFact) string {
 		key.WriteByte(':')
 		for _, fn := range fact.callables {
 			fmt.Fprintf(&key, "%p,", fn)
+		}
+		key.WriteByte(':')
+		for _, value := range fact.staticVals {
+			fmt.Fprintf(&key, "%T:%p,", value, value)
 		}
 		key.WriteByte(':')
 		key.WriteString(strconv.FormatBool(fact.usesDefault))
@@ -1712,9 +1933,12 @@ func (c *scriptChecker) drainReachableFunctions(reached map[*ScriptFunction]stru
 		c.localTypes = nil
 		c.localClassValues = nil
 		previousParamFacts := c.reachableParamFacts
+		previousBindingPlan := c.reachableBindingPlan
 		c.reachableParamFacts = next.paramFacts
+		c.reachableBindingPlan = next.bindingPlan
 		c.checkFunction(next.label, next.fn)
 		c.reachableParamFacts = previousParamFacts
+		c.reachableBindingPlan = previousBindingPlan
 		c.restoreScopeState(scopeState)
 	}
 }
@@ -2263,9 +2487,13 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		popNameScope := c.pushFunctionNameScope(fn)
 		defer popNameScope()
 
-		for _, param := range fn.Params {
+		for i, param := range fn.Params {
 			expectation := typeExpressionExpectation(param.Type)
-			if c.reachableParamDefaultRuns(param) {
+			defaultRuns := c.reachableParamDefaultRuns(param)
+			if c.reachableBindingPlan != nil {
+				defaultRuns = slices.Contains(c.reachableBindingPlan.defaultParams, i)
+			}
+			if defaultRuns {
 				c.checkExpressionWithExpectation(label, param.DefaultVal, expectation)
 				c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
 			} else {
@@ -2285,6 +2513,9 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 			}
 			c.recordParamBinding(param)
 			c.applyReachableParamFact(param)
+		}
+		if c.reachableBindingPlan != nil && !c.reachableBindingPlan.bodyMayEnter {
+			return
 		}
 		c.checkStatements(label, fn.ReturnTy, fn.Body)
 		if fn.ReturnTy != nil {
@@ -2316,6 +2547,7 @@ func (c *scriptChecker) checkNonExecutingDefaultExpression(
 	}
 	runtimeState := c.snapshotRuntimeState()
 	scopeState := c.snapshotScopeState()
+	restoreInference := c.withFreshLocalInferenceScope()
 	reachableChecks := c.checkReachableCalls
 	captures := make([]checkClassConstantEffects, len(c.classConstantCaptures))
 	for i, capture := range c.classConstantCaptures {
@@ -2324,6 +2556,7 @@ func (c *scriptChecker) checkNonExecutingDefaultExpression(
 	c.checkReachableCalls = false
 	c.checkExpressionWithExpectation(function, expr, expectation)
 	c.checkReachableCalls = reachableChecks
+	restoreInference()
 	c.classConstantCaptures = captures
 	c.restoreRuntimeState(runtimeState)
 	c.restoreScopeState(scopeState)
@@ -2343,6 +2576,8 @@ func (c *scriptChecker) applyReachableParamFact(param Param) {
 			fact.classNames = classNames
 		} else if fns, exact := c.callableExpressionFunctions(param.DefaultVal); exact {
 			fact.callables = fns
+		} else if values, exact := c.staticValueExpressionAlternatives(param.DefaultVal); exact {
+			fact.staticVals = values
 		}
 	}
 	if fact.typeExpr != nil {
@@ -2356,6 +2591,8 @@ func (c *scriptChecker) applyReachableParamFact(param Param) {
 		c.bindLocalClassValues(param.Name, fact.classNames)
 	} else if len(fact.callables) > 0 {
 		c.bindLocalCallableValues(param.Name, fact.callables)
+	} else if len(fact.staticVals) > 0 {
+		c.bindLocalStaticValues(param.Name, fact.staticVals)
 	}
 }
 
@@ -2375,6 +2612,12 @@ func (c *scriptChecker) checkStatements(function string, returnType *TypeExpr, s
 	return true
 }
 
+func (c *scriptChecker) recordNonCompletingExpression() {
+	c.captureExceptionExitState()
+	c.captureEnsureExitState()
+	c.stmtNoFallthroughInferred = true
+}
+
 func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, stmt Statement) {
 	c.predeclareStatementLiveNames(stmt)
 	defer c.postdeclareStatementLiveNames(stmt)
@@ -2385,7 +2628,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// The return value's own side effects (a shovel append, for example)
 		// apply before the value leaves the function, so the expression is
 		// walked before the annotation check reads its inferred type.
-		c.checkExpression(function, typed.Value)
+		if !c.checkExpression(function, typed.Value) {
+			c.recordNonCompletingExpression()
+			return
+		}
 		if c.returnCollector != nil && c.deferredReturnSites == nil {
 			if typed.Value == nil {
 				c.returnCollector.record(checkTypeNil)
@@ -2409,33 +2655,63 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *RaiseStmt:
 		// raise RuntimeError, "boom" resolves a bare canonical error class
 		// name without an env binding, so it is not an identifier reference.
-		if !staticRaiseErrorClass(typed) {
-			c.checkExpression(function, typed.Value)
+		if !staticRaiseErrorClass(typed) && !c.checkExpression(function, typed.Value) {
+			c.recordNonCompletingExpression()
+			return
 		}
-		c.checkExpression(function, typed.Message)
+		if !c.checkExpression(function, typed.Message) {
+			c.recordNonCompletingExpression()
+			return
+		}
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Message)
 		c.captureExceptionExitState()
 		c.captureEnsureExitState()
 	case *BreakStmt:
-		c.checkExpression(function, typed.Value)
+		if !c.checkExpression(function, typed.Value) {
+			c.recordNonCompletingExpression()
+			return
+		}
 		c.captureLoopExitClassConstantEffects()
 		c.captureEnsureExitState()
 	case *NextStmt:
-		c.checkExpression(function, typed.Value)
+		if !c.checkExpression(function, typed.Value) {
+			c.recordNonCompletingExpression()
+			return
+		}
 		c.captureLoopExitClassConstantEffects()
 		c.captureEnsureExitState()
+	case *RetryStmt:
+		if c.retryExitSites != nil {
+			*c.retryExitSites = append(*c.retryExitSites, checkStateSnapshot{
+				runtimeState: c.snapshotRuntimeState(),
+				scopeState:   c.snapshotScopeState(),
+			})
+		}
+		c.stmtNoFallthroughInferred = true
+		return
 	case *AssignStmt:
 		targetMayWrite := true
+		inferWrite := true
 		switch typed.Operator {
 		case "":
 			// Plain assignment evaluates its value before the target receiver and
 			// selectors, and it dispatches only the setter (never [] or a getter).
-			c.checkExpression(function, typed.Value)
+			expectation := c.assignmentValueExpectation(typed.Target, typed.Value)
+			if !c.checkExpressionWithExpectation(function, typed.Value, expectation) {
+				c.recordNonCompletingExpression()
+				return
+			}
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
-			c.checkPlainAssignmentTarget(function, typed.Target)
+			if !c.checkPlainAssignmentTarget(function, typed.Target, typed.Value) {
+				c.recordNonCompletingExpression()
+				return
+			}
 		case tokenOrAssign, tokenAndAssign:
-			c.checkExpression(function, typed.Target)
+			if !c.checkExpression(function, typed.Target) {
+				c.recordNonCompletingExpression()
+				return
+			}
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
 			truthy, known := c.inferredConditionTruthiness(typed.Target)
 			rhsReachable := true
@@ -2465,8 +2741,20 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 					memberSetter = target
 					opaqueDispatch = c.memberSetterHasOpaqueClassConstantEffects(target)
 				}
-				c.checkExpression(function, typed.Value)
+				expectation := c.assignmentValueExpectation(typed.Target, typed.Value)
+				rhsCompleted := c.checkExpressionWithExpectation(function, typed.Value, expectation)
 				c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
+				if !rhsCompleted {
+					if rhsAlwaysEvaluates {
+						c.recordNonCompletingExpression()
+						return
+					}
+					targetMayWrite = false
+					inferWrite = false
+					c.restoreRuntimeState(runtimeState)
+					c.restoreScopeState(scopeState)
+					break
+				}
 				if indexSetterType != nil {
 					c.enqueueReachableInstanceDispatch(indexSetterType, "[]=")
 				}
@@ -2476,6 +2764,17 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				if opaqueDispatch {
 					c.markOpaqueClassConstants()
 				}
+				if !c.assignmentSetterMayComplete(typed.Target, typed.Value) {
+					if rhsAlwaysEvaluates {
+						c.recordNonCompletingExpression()
+						return
+					}
+					targetMayWrite = false
+					inferWrite = false
+					c.restoreRuntimeState(runtimeState)
+					c.restoreScopeState(scopeState)
+					break
+				}
 				if !rhsAlwaysEvaluates {
 					c.restoreRuntimeStatePreservingClassConstantEffects(runtimeState)
 					evaluatedScopeState := c.snapshotScopeState()
@@ -2483,7 +2782,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				}
 			}
 		default:
-			c.checkExpression(function, typed.Target)
+			if !c.checkExpression(function, typed.Target) {
+				c.recordNonCompletingExpression()
+				return
+			}
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
 			operatorType := c.inferExpressionType(typed.Target)
 			opaqueOperator := c.binaryDispatchHasOpaqueClassConstantEffects(operatorType, typed.Operator)
@@ -2501,11 +2803,25 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				memberSetter = target
 				opaqueSetter = c.memberSetterHasOpaqueClassConstantEffects(target)
 			}
-			c.checkExpression(function, typed.Value)
+			if !c.checkExpression(function, typed.Value) {
+				c.recordNonCompletingExpression()
+				return
+			}
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 			c.enqueueReachableInstanceDispatch(operatorType, binaryDispatchMethodNames(typed.Operator)...)
 			if opaqueOperator {
 				c.markOpaqueClassConstants()
+			}
+			operatorValue := &BinaryExpr{
+				Left:     typed.Target,
+				Operator: typed.Operator,
+				Right:    typed.Value,
+				Position: typed.Pos(),
+			}
+			if !c.binaryExpressionMayComplete(operatorValue) {
+				c.inferAssignStatementTypes(function, typed)
+				c.recordNonCompletingExpression()
+				return
 			}
 			if indexSetterType != nil {
 				c.enqueueReachableInstanceDispatch(indexSetterType, "[]=")
@@ -2516,16 +2832,26 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			if opaqueSetter {
 				c.markOpaqueClassConstants()
 			}
+			if !c.assignmentSetterMayComplete(typed.Target, operatorValue) {
+				c.recordNonCompletingExpression()
+				return
+			}
 		}
-		c.inferAssignStatementTypes(function, typed)
+		if inferWrite {
+			c.inferAssignStatementTypes(function, typed)
+		}
 		if targetMayWrite {
 			c.recordRuntimeBindingTarget(typed.Target)
 		}
 		c.recordBindingTarget(typed.Target)
 		c.captureImplicitReturnState(typed)
 	case *ExprStmt:
-		c.checkExpression(function, typed.Expr)
+		completed := c.checkExpression(function, typed.Expr)
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Expr)
+		if !completed {
+			c.recordNonCompletingExpression()
+			return
+		}
 		c.captureImplicitReturnState(typed)
 	case *ClassStmt:
 		classDef := c.script.classes[typed.Name]
@@ -2535,7 +2861,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 	case *IfStmt:
 		baseRuntimeState := c.snapshotRuntimeState()
 		baseScopeState := c.snapshotScopeState()
-		c.checkExpression(function, typed.Condition)
+		if !c.checkExpression(function, typed.Condition) {
+			c.recordNonCompletingExpression()
+			return
+		}
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
 		conditionRuntimeState := c.snapshotRuntimeState()
 		conditionScopeState := c.snapshotScopeState()
@@ -2577,7 +2906,12 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		for _, elseIf := range typed.ElseIf {
 			c.restoreRuntimeState(falseRuntimeState)
 			c.restoreScopeState(falseScopeState)
-			c.checkExpression(function, elseIf.Condition)
+			if !c.checkExpression(function, elseIf.Condition) {
+				c.captureExceptionExitState()
+				c.captureEnsureExitState()
+				finish()
+				return
+			}
 			c.collectRuntimeRequireCallExportsFromExpression(elseIf.Condition)
 			conditionRuntimeState = c.snapshotRuntimeState()
 			conditionScopeState = c.snapshotScopeState()
@@ -2622,7 +2956,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// body-assigned locals degrade; the body itself may run zero or many
 		// times, so those locals lose their facts for the walk and stay
 		// unknown after it.
-		c.checkExpression(function, typed.Iterable)
+		if !c.checkExpression(function, typed.Iterable) {
+			c.recordNonCompletingExpression()
+			return
+		}
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Iterable)
 		elemType := c.forTargetElementType(typed)
 		c.recordLiveStatementNames(typed.Body)
@@ -2644,7 +2981,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// checked before body-assigned locals degrade to unknown. Prove the
 		// body outcome reachable against those facts before degradation, then
 		// reapply it to the conservative loop-body state for the actual walk.
-		c.checkExpression(function, typed.Condition)
+		if !c.checkExpression(function, typed.Condition) {
+			c.recordNonCompletingExpression()
+			return
+		}
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
 		conditionRuntimeState := c.snapshotRuntimeState()
 		conditionScopeState := c.snapshotScopeState()
@@ -2671,7 +3011,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		c.recordLocalBindings(typed.Body)
 	case *UntilStmt:
-		c.checkExpression(function, typed.Condition)
+		if !c.checkExpression(function, typed.Condition) {
+			c.recordNonCompletingExpression()
+			return
+		}
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Condition)
 		conditionRuntimeState := c.snapshotRuntimeState()
 		conditionScopeState := c.snapshotScopeState()
@@ -2698,6 +3041,8 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		c.recordLocalBindings(typed.Body)
 	case *TryStmt:
+		selectedRescue, rescueSelectionExact := c.staticallySelectedRescue(typed.Body, typed.Rescues)
+		rescueBodiesReachable := !statementsProvenNonRaising(typed.Body)
 		ensureAlwaysExits := blockAlwaysExits(typed.Ensure)
 		deferReturnType := returnType != nil && len(typed.Ensure) > 0 && !ensureAlwaysExits
 		branchReturnType := returnType
@@ -2739,6 +3084,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.deferredReturnSites = &deferredSites
 		}
 		previousLoopExitEffects := c.loopExitEffects
+		previousRetryExitSites := c.retryExitSites
+		var retryExitSites []checkStateSnapshot
+		c.retryExitSites = &retryExitSites
 		var protectedLoopExitEffects *checkLoopExitEffects
 		if len(typed.Ensure) > 0 && previousLoopExitEffects != nil {
 			protectedLoopExitEffects = &checkLoopExitEffects{}
@@ -2768,12 +3116,33 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// its body locals as surrounding-scope nils, so each clause is checked
 		// with the accumulated locals of the clauses before it in scope.
 		earlierClauseLocals := map[string]struct{}{}
+		recordClauseLocals := func(clause *RescueClause) {
+			clauseLocals := map[string]struct{}{}
+			collectLocalBindings(clause.Body, clauseLocals)
+			delete(clauseLocals, clause.Binding)
+			for name := range clauseLocals {
+				earlierClauseLocals[name] = struct{}{}
+			}
+		}
 		for i := range typed.Rescues {
 			clause := &typed.Rescues[i]
+			if !rescueBodiesReachable || rescueSelectionExact && selectedRescue < 0 {
+				break
+			}
+			if rescueSelectionExact && i < selectedRescue {
+				recordClauseLocals(clause)
+				continue
+			}
+			if rescueSelectionExact && i > selectedRescue {
+				break
+			}
 			// An empty clause never falls through (the matched error propagates
 			// after ensure), so it must not merge the base state into the paths
 			// that reach the code after the block.
 			if len(clause.Body) == 0 {
+				if rescueSelectionExact {
+					break
+				}
 				continue
 			}
 			if len(exceptionExitSites) == 0 {
@@ -2806,13 +3175,33 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			mergeCheckClassConstantEffects(&ensureEffects, clauseEffects)
 			popScope()
 			popEarlier()
-			clauseLocals := map[string]struct{}{}
-			collectLocalBindings(clause.Body, clauseLocals)
-			delete(clauseLocals, clause.Binding)
-			for name := range clauseLocals {
-				earlierClauseLocals[name] = struct{}{}
-			}
+			recordClauseLocals(clause)
 			if clauseFallsThrough {
+				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
+				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
+			}
+			if rescueSelectionExact {
+				break
+			}
+		}
+		c.retryExitSites = previousRetryExitSites
+		for _, retrySite := range retryExitSites {
+			c.restoreRuntimeState(retrySite.runtimeState)
+			c.restoreScopeState(retrySite.scopeState)
+			retryBodyFallsThrough := false
+			retryEffects := c.captureClassConstantEffects(func() {
+				retryBodyFallsThrough = c.checkStatements(function, branchReturnType, typed.Body)
+			})
+			mergeCheckClassConstantEffects(&ensureEffects, retryEffects)
+			if !retryBodyFallsThrough {
+				continue
+			}
+			retryElseFallsThrough := false
+			retryElseEffects := c.captureClassConstantEffects(func() {
+				retryElseFallsThrough = c.checkStatements(function, branchReturnType, typed.Else)
+			})
+			mergeCheckClassConstantEffects(&ensureEffects, retryElseEffects)
+			if retryElseFallsThrough {
 				fallthroughRuntimeStates = append(fallthroughRuntimeStates, c.snapshotRuntimeState())
 				fallthroughScopeStates = append(fallthroughScopeStates, c.snapshotScopeState())
 			}
@@ -2904,6 +3293,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// unreachable: deferred returns exit through the ensure. An ensure
 		// the walk proves always exits blocks every path the same way.
 		c.stmtNoFallthroughInferred = len(fallthroughRuntimeStates) == 0 || !ensureFallsThrough
+		if !c.stmtNoFallthroughInferred {
+			c.bindUnreachedRescueLocalsAsNil(typed)
+		}
 	}
 }
 
@@ -2939,6 +3331,7 @@ func (c *scriptChecker) withImplicitReturnCapture(fn *ScriptFunction) func() {
 type checkStateSnapshot struct {
 	runtimeState checkRuntimeState
 	scopeState   checkScopeState
+	typePoison   map[string]struct{}
 }
 
 func (c *scriptChecker) captureExceptionExitState() {
@@ -3012,6 +3405,9 @@ func (c *scriptChecker) captureImplicitReturnState(stmt Statement) {
 func (c *scriptChecker) checkImplicitLeafAgainstType(function string, stmt Statement, expr Expression, ty *TypeExpr) {
 	state, ok := c.implicitReturnStates[stmt]
 	if !ok {
+		if c.implicitReturnStates != nil {
+			return
+		}
 		c.checkRuntimeExpressionAgainstType(function, expr, ty, "return value")
 		return
 	}
@@ -3179,70 +3575,73 @@ func (c *scriptChecker) checkReturnStatementType(function string, returnType *Ty
 	c.checkRuntimeExpressionAgainstType(function, stmt.Value, returnType, "return value")
 }
 
-func (c *scriptChecker) checkExpression(function string, expr Expression) {
-	c.checkExpressionWithAuto(function, expr, true)
+func (c *scriptChecker) checkExpression(function string, expr Expression) bool {
+	return c.checkExpressionWithAuto(function, expr, true)
 }
 
-func (c *scriptChecker) checkExpressionWithExpectation(function string, expr Expression, expectation expressionExpectation) {
+func (c *scriptChecker) checkExpressionWithExpectation(
+	function string,
+	expr Expression,
+	expectation expressionExpectation,
+) bool {
 	if expectation.empty() {
-		c.checkExpression(function, expr)
-		return
+		return c.checkExpression(function, expr)
 	}
 	if expectation.includesCallable() {
 		if _, bindable := c.bareMemberArgumentCallableFact(expr); bindable {
-			c.checkExpressionWithAuto(function, expr, false)
-			return
+			return c.checkExpressionWithAuto(function, expr, false)
 		}
 		if callableExpr, bindable := c.bareIdentifierCallableArgument(expr); bindable {
 			if call, ok := callableExpr.(*CallExpr); ok {
 				callableExpr = call.Callee
 			}
-			c.checkExpressionWithAuto(function, callableExpr, false)
-			return
+			return c.checkExpressionWithAuto(function, callableExpr, false)
 		}
 	}
 	switch typed := expr.(type) {
 	case *ConditionalExpr:
-		c.checkConditionalExpression(function, typed, expectation)
-		return
+		return c.checkConditionalExpression(function, typed, expectation)
 	case *IfExpr:
-		c.checkIfExpression(function, typed, expectation)
-		return
+		return c.checkIfExpression(function, typed, expectation)
 	case *CaseExpr:
-		c.checkCaseExpression(function, typed, expectation)
-		return
+		return c.checkCaseExpression(function, typed, expectation)
 	case *ArrayLiteral:
 		elementExpectation, ok := expectation.arrayElementExpectation()
 		if !ok {
 			break
 		}
 		for i, element := range typed.Elements {
-			c.checkExpressionWithExpectation(function, element, elementExpectation(i, len(typed.Elements)))
+			if !c.checkExpressionWithExpectation(function, element, elementExpectation(i, len(typed.Elements))) {
+				return false
+			}
 		}
-		return
+		return true
 	case *HashLiteral:
 		if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
-			return
+			return true
 		}
 		if !hashLiteralTypeHasValueSlots(expectation.ty) {
 			break
 		}
 		for _, pair := range typed.Pairs {
-			c.checkExpression(function, pair.Key)
+			if !c.checkExpression(function, pair.Key) {
+				return false
+			}
 			valueExpectation := expressionExpectation{}
 			if key, ok := staticLiteralValue(pair.Key); ok {
 				valueExpectation = typeExpressionExpectation(hashLiteralValueType(expectation.ty, key))
 			}
-			c.checkExpressionWithExpectation(function, pair.Value, valueExpectation)
+			if !c.checkExpressionWithExpectation(function, pair.Value, valueExpectation) {
+				return false
+			}
 		}
-		return
+		return true
 	case *MemberExpr:
 		// Callable expectations preserve bound script methods only. Runtime
 		// still auto-invokes generated getters and non-bindable builtins.
-		c.checkExpressionWithAuto(function, typed, true)
-		return
+		return c.checkExpressionWithAuto(function, typed, true)
 	}
-	c.checkExpressionWithAuto(function, expr, !expectation.includesCallable())
+	return c.checkExpressionWithAuto(function, expr, !expectation.includesCallable())
 }
 
 func autoCallExpectation(autoCall bool) expressionExpectation {
@@ -3252,38 +3651,57 @@ func autoCallExpectation(autoCall bool) expressionExpectation {
 	return typeExpressionExpectation(checkTypeFunction)
 }
 
-func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression, autoCall bool) {
+func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression, autoCall bool) bool {
+	completed := c.checkExpressionWithAutoInner(function, expr, autoCall)
+	if !completed && c.expressionExitSites != nil {
+		*c.expressionExitSites = append(*c.expressionExitSites, checkStateSnapshot{
+			runtimeState: c.snapshotRuntimeState(),
+			scopeState:   c.snapshotScopeState(),
+			typePoison:   cloneCheckStringSet(c.typePoison),
+		})
+	}
+	return completed
+}
+
+func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expression, autoCall bool) bool {
 	switch typed := expr.(type) {
 	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
-		return
+		return true
 	case *Identifier:
 		c.checkIdentifierResolved(function, typed)
 		if autoCall {
 			c.enqueueReachableIdentifierCall(typed)
 			c.applyAutoInvokedIdentifierNamespaceMutations(typed)
+			return c.autoInvokedIdentifierMayComplete(typed)
 		}
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
-			c.checkExpressionWithAuto(function, elem, true)
+			if !c.checkExpressionWithAuto(function, elem, true) {
+				return false
+			}
 		}
 	case *HashLiteral:
 		// A dual-reading braced group evaluates as a shape unless one of its
 		// type names is shadowed, so its identifier values are type spellings
 		// rather than variable reads and must not warn as undefined.
 		if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
-			return
+			return true
 		}
 		for _, pair := range typed.Pairs {
-			c.checkExpressionWithAuto(function, pair.Key, true)
-			c.checkExpressionWithAuto(function, pair.Value, true)
+			if !c.checkExpressionWithAuto(function, pair.Key, true) ||
+				!c.checkExpressionWithAuto(function, pair.Value, true) {
+				return false
+			}
 		}
 	case *TypeLiteral:
 		// An unshadowed type literal's identifiers are type spellings rather
 		// than variable reads and must not warn as undefined.
 		if !c.typeLiteralStaticallyShadowed(typed) {
-			return
+			return true
 		}
-		c.checkExpressionWithAuto(function, typed.Fallback, true)
+		if !c.checkExpressionWithAuto(function, typed.Fallback, true) {
+			return false
+		}
 	case *CallExpr:
 		// The receiver's nil-ness resolves from the facts at its evaluation
 		// point, before member dispatch poisons the receiver's own facts.
@@ -3293,9 +3711,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		if member, ok := typed.Callee.(*MemberExpr); ok && member.Property == "call" {
 			invokedLambda = c.resolveImmediateLambdaBlock(member.Object)
 		}
-		c.checkExpressionWithAuto(function, typed.Callee, false)
+		if !c.checkExpressionWithAuto(function, typed.Callee, false) {
+			return false
+		}
 		if staticNilSafeNavigationCall(typed) || callSkipsInferred {
-			return
+			return true
 		}
 		argumentsMayBeSkipped := safeNavigationCallMaySkipArguments(typed) && !argumentsAlwaysEvaluate
 		var argumentState checkRuntimeState
@@ -3320,7 +3740,31 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.pinExpressionFact(typed, result)
 		}
 		dynamicCandidates := c.captureDynamicCallCandidates(typed)
-		dynamicTargets := c.exactDynamicCallTargets(typed, target, targetResolved, dynamicCandidates)
+		if c.pinDirectConstructorInstanceFact(typed) {
+			// A direct member call resolves its callee before evaluating any
+			// argument. An exhaustive set of only plain modules therefore
+			// raises at `.new` without running argument or block effects.
+			return false
+		}
+		deferForwardedTargets := callResolvesForwardedTargetAfterArguments(typed, target, targetResolved)
+		var dynamicResolution checkDynamicCallResolution
+		if !deferForwardedTargets {
+			dynamicResolution = c.exactDynamicCallTargets(typed, target, targetResolved, dynamicCandidates)
+		}
+		if c.callCalleeLookupFails(
+			typed,
+			target,
+			targetResolved,
+			deferForwardedTargets,
+			dynamicCandidates,
+			dynamicResolution,
+		) {
+			if argumentsMayBeSkipped {
+				c.pinExpressionFact(typed, checkTypeNil)
+				return true
+			}
+			return false
+		}
 		opaqueCallEffects := c.callHasOpaqueClassConstantEffects(typed, target, targetResolved)
 		// Arguments evaluate left to right before the call dispatches, so
 		// each argument's inferred type is captured at its own evaluation
@@ -3331,7 +3775,39 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
 		argumentClassValues := make(map[Expression][]string, len(typed.Args)+len(typed.KwArgs))
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
+		argumentStaticValues := make(map[Expression][]Expression, len(typed.Args)+len(typed.KwArgs))
+		captureArgumentFacts := func(expr Expression, expectation expressionExpectation, autoCall bool) {
+			argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
+			identitySource := expr
+			if !autoCall {
+				if callableExpr, bindable := c.bareIdentifierCallableArgument(expr); bindable {
+					identitySource = callableExpr
+					if call, ok := identitySource.(*CallExpr); ok {
+						identitySource = call.Callee
+					}
+				}
+			}
+			identityExpr, autoInvoked := c.evaluatedIdentityExpression(identitySource, autoCall)
+			classNames, classExact := c.classValueExpressionNames(identityExpr)
+			if autoInvoked {
+				classNames, classExact = c.dispatchClassValueExpressionNames(identityExpr)
+			}
+			if classExact {
+				argumentClassValues[expr] = classNames
+			}
+			if fns, ok := c.callableExpressionFunctions(identityExpr); ok {
+				argumentCallables[expr] = fns
+			}
+			staticExpr := expr
+			if splat, ok := expr.(*SplatArg); ok {
+				staticExpr = splat.Value
+			}
+			if values, ok := c.staticValueExpressionAlternatives(staticExpr); ok {
+				argumentStaticValues[staticExpr] = append([]Expression(nil), values...)
+			}
+		}
 		positionalSplatSeen := false
+		argumentEvaluationFailed := false
 		for i, arg := range typed.Args {
 			expectation := expressionExpectation{}
 			_, isSplat := arg.(*SplatArg)
@@ -3340,38 +3816,101 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			} else if targetResolved && !positionalSplatSeen && !isSplat {
 				expectation = staticCallablePositionalArgumentExpectation(target, i)
 			}
-			c.checkExpressionWithExpectation(function, arg, expectation)
+			completed := true
+			manuallyWalked := false
+			if splat, ok := arg.(*SplatArg); ok {
+				if array, ok := splat.Value.(*ArrayLiteral); ok {
+					manuallyWalked = true
+					for _, elem := range array.Elements {
+						completed = c.checkExpressionWithAuto(function, elem, true)
+						c.collectRuntimeRequireCallExportsFromExpression(elem)
+						if !completed {
+							break
+						}
+						captureArgumentFacts(elem, expressionExpectation{}, true)
+					}
+				}
+			}
+			if !manuallyWalked {
+				completed = c.checkExpressionWithExpectation(function, arg, expectation)
+			}
 			// The argument's value and effects materialize once its own
 			// evaluation completes, before the next argument runs: a shovel
 			// append lands in the facts, and a require binds its exports
 			// for the arguments after it, never the ones before.
-			c.collectRuntimeRequireCallExportsFromExpression(arg)
-			argumentFacts[arg] = c.inferExpressionTypeWithExpectation(arg, expectation)
-			if classNames, ok := c.classValueExpressionNames(arg); ok {
-				argumentClassValues[arg] = classNames
+			if !manuallyWalked {
+				c.collectRuntimeRequireCallExportsFromExpression(arg)
 			}
-			if fns, ok := c.callableExpressionFunctions(arg); ok {
-				argumentCallables[arg] = fns
+			if !completed {
+				argumentEvaluationFailed = true
+				break
 			}
+			captureArgumentFacts(arg, expectation, !expectation.includesCallable())
 			positionalSplatSeen = positionalSplatSeen || isSplat
+			if !c.positionalArgumentExpansionMaySucceed(arg) {
+				argumentEvaluationFailed = true
+				break
+			}
 		}
 		for _, kwarg := range typed.KwArgs {
+			if argumentEvaluationFailed {
+				break
+			}
 			expectation := expressionExpectation{}
 			if targetResolved && !kwarg.Splat {
 				expectation = staticCallableKeywordArgumentExpectation(typed, target, kwarg.Name)
 			}
-			c.checkExpressionWithExpectation(function, kwarg.Value, expectation)
-			c.collectRuntimeRequireCallExportsFromExpression(kwarg.Value)
-			argumentFacts[kwarg.Value] = c.inferExpressionTypeWithExpectation(kwarg.Value, expectation)
-			if classNames, ok := c.classValueExpressionNames(kwarg.Value); ok {
-				argumentClassValues[kwarg.Value] = classNames
+			completed := true
+			manuallyWalked := false
+			if kwarg.Splat {
+				if hash, ok := kwarg.Value.(*HashLiteral); ok &&
+					(hash.ShapeType == nil || c.hashShapeStaticallyShadowed(hash)) {
+					manuallyWalked = true
+					for _, pair := range hash.Pairs {
+						completed = c.checkExpressionWithAuto(function, pair.Key, true)
+						c.collectRuntimeRequireCallExportsFromExpression(pair.Key)
+						if !completed {
+							break
+						}
+						completed = c.checkExpressionWithAuto(function, pair.Value, true)
+						c.collectRuntimeRequireCallExportsFromExpression(pair.Value)
+						if !completed {
+							break
+						}
+						captureArgumentFacts(pair.Value, expressionExpectation{}, true)
+					}
+				}
 			}
-			if fns, ok := c.callableExpressionFunctions(kwarg.Value); ok {
-				argumentCallables[kwarg.Value] = fns
+			if !manuallyWalked {
+				completed = c.checkExpressionWithExpectation(function, kwarg.Value, expectation)
+				c.collectRuntimeRequireCallExportsFromExpression(kwarg.Value)
+			}
+			if !completed {
+				argumentEvaluationFailed = true
+				break
+			}
+			captureArgumentFacts(kwarg.Value, expectation, !expectation.includesCallable())
+			if !c.keywordArgumentExpansionMaySucceed(kwarg) {
+				argumentEvaluationFailed = true
+				break
 			}
 		}
-		if typed.BlockArg != nil {
-			c.checkExpressionWithAuto(function, typed.BlockArg, false)
+		blockArgEvaluated := false
+		if !argumentEvaluationFailed && typed.BlockArg != nil {
+			blockArgEvaluated = true
+			completed := c.checkExpressionWithAuto(function, typed.BlockArg, false)
+			if !completed {
+				argumentEvaluationFailed = true
+			} else {
+				captureArgumentFacts(
+					typed.BlockArg,
+					typeExpressionExpectation(checkTypeFunction),
+					false,
+				)
+				if !c.blockArgumentConversionMaySucceed(typed.BlockArg, argumentFacts[typed.BlockArg]) {
+					argumentEvaluationFailed = true
+				}
+			}
 			// A block argument evaluates with the other arguments, before
 			// dispatch, so its require effects are live for the call checks.
 			c.collectRuntimeRequireCallExportsFromExpression(typed.BlockArg)
@@ -3379,32 +3918,127 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		previousFacts := c.callArgumentFacts
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
+		previousStaticValues := c.callArgumentStaticValues
 		c.callArgumentFacts = argumentFacts
 		c.callArgumentClassValues = argumentClassValues
 		c.callArgumentCallables = argumentCallables
-		c.checkCallResolved(function, typed, target, targetResolved, dynamicTargets)
-		c.callArgumentFacts = previousFacts
-		c.callArgumentClassValues = previousClassValues
-		c.callArgumentCallables = previousCallables
-		if c.returnCollector != nil && !targetResolved && c.callMayDispatchDynamicValue(typed) {
+		c.callArgumentStaticValues = argumentStaticValues
+		c.pinForwardedConstructorInstanceFact(typed, dynamicCandidates)
+		if deferForwardedTargets {
+			dynamicResolution = c.exactDynamicCallTargets(typed, target, targetResolved, dynamicCandidates)
+		}
+		callMayEnter := !argumentEvaluationFailed
+		checkedCall := typed
+		if expanded, exact := c.staticallyExpandedCall(typed); exact {
+			checkedCall = expanded
+		}
+		targetMayEnter := callMayEnter
+		callMayComplete := callMayEnter
+		if targetResolved && target.fn != nil {
+			targetMayEnter = targetMayEnter && c.scriptCallBindingPlan(checkedCall, target).bodyMayEnter
+			callMayComplete = targetMayEnter &&
+				c.scriptFunctionCallMayComplete(checkedCall, target.fn, target.constructor)
+		} else if targetResolved {
+			view := staticCallViewFor(checkedCall, target)
+			targetMayEnter = targetMayEnter && c.builtinCallMayEnter(view, target.spec)
+			targetMayEnter = targetMayEnter && c.specialBuiltinCallMayComplete(checkedCall, target.name)
+			callMayComplete = targetMayEnter && c.builtinCallMayComplete(target.spec)
+		} else if !targetResolved {
+			dynamicBodyMayEnter := c.refineDynamicCallTargetEntry(dynamicResolution.targets)
+			if dynamicResolution.exact {
+				targetMayEnter = targetMayEnter && (dynamicBodyMayEnter ||
+					dynamicResolution.nonScriptMayComplete)
+				callMayComplete = callMayEnter && (dynamicResolution.nonScriptMayComplete ||
+					c.dynamicScriptCallTargetsMayComplete(dynamicResolution.targets))
+			} else {
+				callMayComplete = targetMayEnter
+			}
+		}
+		if targetResolved && (callMayComplete || argumentsMayBeSkipped) {
+			result := c.inferResolvedCallExprType(checkedCall, target)
+			if argumentsMayBeSkipped {
+				if !callMayComplete {
+					result = checkTypeNil
+				} else {
+					result = unionTypeExprs(result, checkTypeNil)
+				}
+			}
+			c.pinExpressionFact(typed, result)
+		} else if !targetResolved && dynamicResolution.exact &&
+			(callMayComplete || argumentsMayBeSkipped) {
+			if !callMayComplete {
+				c.pinExpressionFact(typed, checkTypeNil)
+			} else if result, ok := c.inferDynamicCallExprType(dynamicResolution); ok {
+				if argumentsMayBeSkipped {
+					result = unionTypeExprs(result, checkTypeNil)
+				}
+				c.pinExpressionFact(typed, result)
+			}
+		}
+		if callMayEnter {
+			checkCall := checkedCall
+			if targetResolved && target.fn == nil && callExpandsArguments(typed) {
+				// Static expansion is precise enough to decide whether dispatch can
+				// run, but builtin argument diagnostics remain gradual for splat
+				// spellings because the runtime owns their normalized call shape.
+				checkCall = typed
+			}
+			c.checkCallResolved(
+				function,
+				checkCall,
+				target,
+				targetResolved,
+				dynamicResolution.targets,
+				dynamicResolution.diagnoseTargets,
+			)
+		}
+		if targetMayEnter && c.returnCollector != nil && !targetResolved && c.callMayDispatchDynamicValue(typed) {
 			c.returnCollector.record(nil)
 		}
-		if targetResolved && target.fn != nil {
+		if callMayEnter && targetResolved && target.fn != nil {
 			c.applyScriptFunctionNamespaceMutations(typed, target)
+			c.checkScriptCallInvokedLambdaSummaryYields(function, typed, target)
 		}
-		c.applyDynamicCallNamespaceMutations(typed, dynamicTargets)
-		if opaqueCallEffects {
+		if callMayEnter {
+			c.applyDynamicCallNamespaceMutations(typed, dynamicResolution.targets)
+			for _, candidate := range dynamicResolution.targets {
+				if candidate.bindingStarts {
+					c.checkScriptCallInvokedLambdaSummaryYields(
+						function,
+						candidate.call,
+						candidate.target,
+					)
+				}
+			}
+		}
+		if targetMayEnter && opaqueCallEffects {
 			c.markOpaqueClassConstants()
 		}
-		immediateLambdaEnters := c.immediateLambdaCallMayEnter(invokedLambda, typed)
+		callBlockMayRun := targetMayEnter && invokedLambda == nil && c.callMayEvaluateBlock(typed)
+		if callMayEnter && targetResolved && target.fn != nil &&
+			(typed.Block != nil || typed.BlockArg != nil) {
+			callBlockMayRun = c.scriptFunctionCallBlockMayRun(typed, target)
+		}
+		if callMayEnter && !targetResolved && (typed.Block != nil || typed.BlockArg != nil) {
+			for _, candidate := range dynamicResolution.targets {
+				if candidate.bindingStarts &&
+					c.functionMayEvaluateCallBlock(candidate.call, candidate.target, nil) {
+					callBlockMayRun = true
+					break
+				}
+			}
+		}
+		immediateLambdaEnters := targetMayEnter && c.immediateLambdaCallMayEnter(invokedLambda, typed)
 		if immediateLambdaEnters {
 			c.applyLambdaBlockNamespaceMutations(invokedLambda)
 			c.checkInvokedLambdaSummaryYields(function, invokedLambda)
 		}
-		// A lambda literal escaping into the call may run during it, so its
-		// possible namespace writes count here, unlike a bare definition.
-		// A rejected direct lambda call cannot invoke any of its callbacks.
-		if invokedLambda == nil || immediateLambdaEnters {
+		// Exact script targets carry callable arguments through their parameter
+		// facts, so their body scan applies a lambda only at an actual `.call`.
+		// Opaque dynamic and builtin targets may invoke any escaping lambda.
+		escapingLambdaMayRun := targetMayEnter &&
+			(targetResolved && target.fn == nil || !targetResolved && !dynamicResolution.exact)
+		if escapingLambdaMayRun && (invokedLambda == nil || immediateLambdaEnters) {
 			for _, arg := range typed.Args {
 				c.applyLambdaLiteralNamespaceMutations(arg)
 				c.checkLambdaLiteralSummaryYields(function, arg)
@@ -3415,23 +4049,39 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			}
 			c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
 			c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
+		} else if callBlockMayRun {
+			c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
+			c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
 		}
-		if invokedLambda == nil && c.callMayEvaluateBlock(typed) {
+		if callBlockMayRun {
+			c.applyCallableNamespaceMutations(argumentCallables[typed.BlockArg])
+		}
+		if callBlockMayRun && typed.Block != nil {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
 			// The lambda builtin converts its literal block to local return
 			// semantics, so those returns cannot unwind the enclosing
 			// function.
-			localReturns := typed.Block != nil && typed.Block.Lambda ||
-				targetResolved && target.fn == nil && target.name == "lambda"
+			localReturns := typed.Block.Lambda || c.callTargetsCoreLambda(typed, target, targetResolved)
 			c.checkBlockLiteral(function, typed.Block, localReturns)
 		}
+		c.callArgumentFacts = previousFacts
+		c.callArgumentClassValues = previousClassValues
+		c.callArgumentCallables = previousCallables
+		c.callArgumentStaticValues = previousStaticValues
 		if argumentsMayBeSkipped {
-			c.restoreRuntimeStatePreservingClassConstantEffects(argumentState)
-			// A nil receiver skips the arguments entirely, so type facts the
-			// argument walk established (a shovel append, for example) hold
-			// on only one of the two paths and must merge as a branch join.
-			evaluatedScopeState := c.snapshotScopeState()
-			c.mergeScopeStates(argumentScopeState, []checkScopeState{argumentScopeState, evaluatedScopeState})
+			if !callMayComplete {
+				// The non-nil arm cannot reach the expression result, so only
+				// the nil short-circuit contributes state after the call.
+				c.restoreRuntimeState(argumentState)
+				c.restoreScopeState(argumentScopeState)
+			} else {
+				c.restoreRuntimeStatePreservingClassConstantEffects(argumentState)
+				// A nil receiver skips the arguments entirely, so type facts the
+				// argument walk established (a shovel append, for example) hold
+				// on only one of the two paths and must merge as a branch join.
+				evaluatedScopeState := c.snapshotScopeState()
+				c.mergeScopeStates(argumentScopeState, []checkScopeState{argumentScopeState, evaluatedScopeState})
+			}
 		}
 		// Containers pass by reference, so a callee may mutate an argument
 		// in place; the caller's structural facts stop holding. Dispatch
@@ -3440,32 +4090,64 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		// proven pure by its registered member contract preserves the
 		// receiver's facts for outer inference and condition-outcome
 		// narrowing; known mutators and unknown dispatch keep poisoning.
-		if member, ok := typed.Callee.(*MemberExpr); ok && !c.memberCallPreservesReceiverFacts(typed) {
-			c.poisonEscapedIdentifier(member.Object)
+		if targetMayEnter {
+			c.applyKeywordSplatDeleteFact(typed)
+			if member, ok := typed.Callee.(*MemberExpr); ok && !c.memberCallPreservesReceiverFacts(typed) {
+				c.poisonEscapedIdentifier(member.Object)
+			}
+			if blockArgEvaluated {
+				if member, ok := typed.BlockArg.(*MemberExpr); ok {
+					c.poisonEscapedIdentifier(member.Object)
+				}
+			}
+			for arg := range argumentFacts {
+				c.poisonEscapedIdentifier(arg)
+			}
+			for _, kwarg := range typed.KwArgs {
+				if _, evaluated := argumentFacts[kwarg.Value]; evaluated {
+					c.poisonEscapedIdentifier(kwarg.Value)
+				}
+			}
 		}
-		if member, ok := typed.BlockArg.(*MemberExpr); ok {
-			c.poisonEscapedIdentifier(member.Object)
-		}
-		for _, arg := range typed.Args {
-			c.poisonEscapedIdentifier(arg)
-		}
-		for _, kwarg := range typed.KwArgs {
-			c.poisonEscapedIdentifier(kwarg.Value)
+		if (!callMayEnter || !callMayComplete) && !argumentsMayBeSkipped {
+			return false
 		}
 	case *MemberExpr:
 		var invokedLambda *BlockLiteral
 		if autoCall && typed.Property == "call" {
 			invokedLambda = c.resolveImmediateLambdaBlock(typed.Object)
 		}
-		c.checkExpressionWithAuto(function, typed.Object, true)
+		objectAutoCall := true
+		if typed.Property == "call" && typeExprMayIncludeCallable(c.inferExpressionType(typed.Object)) {
+			objectAutoCall = false
+		}
+		if !c.checkExpressionWithAuto(function, typed.Object, objectAutoCall) {
+			return false
+		}
 		if autoCall {
+			if typed.Property == "new" {
+				classes, exact := c.constructorInstanceClassNames(typed.Object, "")
+				c.pinConstructorInstanceFact(typed, classes, exact)
+				if exact && len(classes) == 0 {
+					// Parenless `.new` also resolves before any outer dispatch.
+					// Plain modules fail here and cannot contribute opaque effects.
+					return false
+				}
+			}
 			if lambdaLiteralArity(invokedLambda) == 0 {
 				c.applyLambdaBlockNamespaceMutations(invokedLambda)
 				c.checkInvokedLambdaSummaryYields(function, invokedLambda)
 			}
-			target, resolved, invoked := c.checkMemberAutoCall(function, typed)
+			target, resolved, invoked, completed := c.checkMemberAutoCall(function, typed)
+			if !completed {
+				if typed.Safe && !c.safeNavigationReceiverKnownNonNil(typed.Object) {
+					c.pinExpressionFact(typed, checkTypeNil)
+					return true
+				}
+				return false
+			}
 			if invoked {
-				if target.fn != nil && !scriptFunctionClassConstantEffectsProvenAbsent(target.fn) {
+				if target.fn != nil && !c.scriptFunctionClassConstantEffectsProvenAbsent(target.fn) {
 					c.markOpaqueClassConstants()
 				} else if target.fn == nil && target.spec.fromSignature {
 					c.markOpaqueClassConstants()
@@ -3487,29 +4169,43 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			}
 		}
 	case *ScopeExpr:
-		c.checkExpressionWithAuto(function, typed.Object, true)
+		if !c.checkExpressionWithAuto(function, typed.Object, true) {
+			return false
+		}
 	case *IndexExpr:
-		c.checkExpressionWithAuto(function, typed.Object, true)
+		if !c.checkExpressionWithAuto(function, typed.Object, true) {
+			return false
+		}
 		dispatchType := c.inferExpressionType(typed.Object)
 		opaqueDispatch := c.indexReadHasOpaqueClassConstantEffects(typed.Object)
 		for _, index := range typed.Indices {
-			c.checkExpressionWithAuto(function, index, true)
+			if !c.checkExpressionWithAuto(function, index, true) {
+				return false
+			}
 		}
 		c.enqueueReachableInstanceDispatch(dispatchType, "[]")
 		if opaqueDispatch {
 			c.markOpaqueClassConstants()
 		}
+		return c.indexExpressionMayComplete(typed)
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
-			c.checkExpressionWithAuto(function, element.Target, true)
+			if !c.checkExpressionWithAuto(function, element.Target, true) {
+				return false
+			}
 		}
 	case *SplatArg:
-		c.checkExpressionWithAuto(function, typed.Value, true)
+		return c.checkExpressionWithAuto(function, typed.Value, true)
 	case *UnaryExpr:
-		c.checkExpressionWithAuto(function, typed.Right, true)
+		if !c.checkExpressionWithAuto(function, typed.Right, true) {
+			return false
+		}
 		c.checkUnaryOperandTypes(function, typed)
+		return c.unaryExpressionMayComplete(typed)
 	case *BinaryExpr:
-		c.checkExpressionWithAuto(function, typed.Left, true)
+		if !c.checkExpressionWithAuto(function, typed.Left, true) {
+			return false
+		}
 		dispatchType := c.inferExpressionType(typed.Left)
 		opaqueDispatch := c.binaryDispatchHasOpaqueClassConstantEffects(dispatchType, typed.Operator)
 		if binaryRightMayEvaluate(typed) && !c.binaryRightUnreachable(typed) {
@@ -3531,10 +4227,17 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			case tokenOr:
 				rightReachable = c.collectRuntimeConditionOutcomeEffects(typed.Left, false)
 			}
+			rightCompleted := true
 			if rightReachable {
-				c.checkExpressionWithAuto(function, typed.Right, true)
+				rightCompleted = c.checkExpressionWithAuto(function, typed.Right, true)
 			}
 			if !rightReachable {
+				c.restoreRuntimeState(state)
+				c.restoreScopeState(scopeState)
+			} else if !rightCompleted {
+				if rightAlwaysRuns {
+					return false
+				}
 				c.restoreRuntimeState(state)
 				c.restoreScopeState(scopeState)
 			} else if !rightAlwaysRuns {
@@ -3558,28 +4261,38 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		if opaqueDispatch {
 			c.markOpaqueClassConstants()
 		}
+		if !c.binaryExpressionMayComplete(typed) {
+			return false
+		}
 	case *ConditionalExpr:
-		c.checkConditionalExpression(function, typed, autoCallExpectation(autoCall))
+		return c.checkConditionalExpression(function, typed, autoCallExpectation(autoCall))
 	case *RescueExpr:
-		c.checkRescueExpression(function, typed, autoCall)
+		return c.checkRescueExpression(function, typed, autoCall)
 	case *IfExpr:
-		c.checkIfExpression(function, typed, autoCallExpectation(autoCall))
+		return c.checkIfExpression(function, typed, autoCallExpectation(autoCall))
 	case *RangeExpr:
-		c.checkExpressionWithAuto(function, typed.Start, true)
-		c.checkExpressionWithAuto(function, typed.End, true)
+		if !c.checkExpressionWithAuto(function, typed.Start, true) ||
+			!c.checkExpressionWithAuto(function, typed.End, true) {
+			return false
+		}
 	case *CaseExpr:
-		c.checkCaseExpression(function, typed, autoCallExpectation(autoCall))
+		return c.checkCaseExpression(function, typed, autoCallExpectation(autoCall))
 	case *BlockLiteral:
 		// A standalone block literal is a stabby lambda; its body checks like a
 		// call block's. Plain call blocks are checked from the CallExpr case.
 		if typed.Lambda {
 			c.checkBlockLiteral(function, typed, true)
 		}
-		return
+		return true
 	case *YieldExpr:
 		for _, arg := range typed.Args {
-			c.checkExpressionWithAuto(function, arg, true)
+			if !c.checkExpressionWithAuto(function, arg, true) {
+				return false
+			}
 			c.poisonEscapedIdentifier(arg)
+		}
+		if c.returnCollector != nil && !c.summaryBlockAvailable {
+			return false
 		}
 		c.markOpaqueClassConstants()
 		// The caller-supplied block may return non-locally instead of
@@ -3588,10 +4301,11 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 			c.summaryYieldCollector.record(nil)
 		}
 	case *InterpolatedString:
-		c.checkStringParts(function, typed.Parts)
+		return c.checkStringParts(function, typed.Parts)
 	case *InterpolatedSymbol:
-		c.checkStringParts(function, typed.Parts)
+		return c.checkStringParts(function, typed.Parts)
 	}
+	return true
 }
 
 // callHasOpaqueClassConstantEffects reports calls whose implementation is not
@@ -3606,7 +4320,7 @@ func (c *scriptChecker) callHasOpaqueClassConstantEffects(call *CallExpr, target
 		if member, ok := call.Callee.(*MemberExpr); ok && c.memberDispatchEffect(member) == effectPure {
 			return false
 		}
-		if resolved && target.fn != nil && scriptCallClassConstantEffectsProvenAbsent(call, target) {
+		if resolved && target.fn != nil && c.scriptCallClassConstantEffectsProvenAbsent(call, target) {
 			return false
 		}
 		if resolved && target.fn == nil && !target.spec.fromSignature {
@@ -3619,7 +4333,7 @@ func (c *scriptChecker) callHasOpaqueClassConstantEffects(call *CallExpr, target
 				!c.typeRootHasBinding(ident.Name) &&
 				!c.hostBuiltinOverrides(ident.Name) {
 				fn := c.implicitSelfFunction(ident.Name)
-				if scriptCallClassConstantEffectsProvenAbsent(call, staticCallable{
+				if c.scriptCallClassConstantEffectsProvenAbsent(call, staticCallable{
 					name:       ident.Name,
 					fn:         fn,
 					resolution: calleeMemberMethod,
@@ -3638,6 +4352,38 @@ func (c *scriptChecker) callableExpressionFunctions(expr Expression) ([]*ScriptF
 	return c.callableExpressionFunctionsSeen(expr, nil)
 }
 
+func (c *scriptChecker) callableExpressionFunctionsAfterEvaluation(
+	expr Expression,
+	autoCall bool,
+) ([]*ScriptFunction, bool) {
+	identityExpr, _ := c.evaluatedIdentityExpression(expr, autoCall)
+	return c.callableExpressionFunctions(identityExpr)
+}
+
+func (c *scriptChecker) evaluatedIdentityExpression(expr Expression, autoCall bool) (Expression, bool) {
+	if !autoCall {
+		return expr, false
+	}
+	switch expr.(type) {
+	case *Identifier, *MemberExpr:
+	default:
+		return expr, false
+	}
+	fns, exact := c.callableExpressionFunctions(expr)
+	if !exact || len(fns) == 0 {
+		return expr, false
+	}
+	for _, fn := range fns {
+		if len(fn.Params) != 0 {
+			return expr, false
+		}
+	}
+	// Ordinary value evaluation auto-invokes an exact zero-parameter
+	// function. Reusing a synthetic call lets the existing single-return
+	// traversal recover the class or callable identity of its result.
+	return &CallExpr{Callee: expr, Position: expr.Pos()}, true
+}
+
 func (c *scriptChecker) callableExpressionFunctionsSeen(
 	expr Expression,
 	seen map[*ScriptFunction]struct{},
@@ -3653,11 +4399,16 @@ func (c *scriptChecker) callableExpressionFunctionsSeen(
 		if fn, ok := c.script.functions[typed.Name]; ok {
 			return []*ScriptFunction{fn}, true
 		}
-		fn, ok := c.typeRootFunction(typed.Name)
-		if !ok {
+		if fn, ok := c.typeRootFunction(typed.Name); ok {
+			return []*ScriptFunction{fn}, true
+		}
+		if c.typeRootHasBinding(typed.Name) || c.hostBuiltinOverrides(typed.Name) {
 			return nil, false
 		}
-		return []*ScriptFunction{fn}, true
+		if fn := c.implicitSelfFunction(typed.Name); fn != nil {
+			return []*ScriptFunction{fn}, true
+		}
+		return nil, false
 	case *MemberExpr:
 		target, ok := c.resolveMemberCallable(typed)
 		if !ok || target.fn == nil || target.constructor {
@@ -3672,6 +4423,9 @@ func (c *scriptChecker) callableExpressionFunctionsSeen(
 		right, rightOK := c.callableExpressionFunctionsSeen(typed.Alternate, seen)
 		return mergeCheckFunctionCandidates(left, leftOK, right, rightOK)
 	case *IfExpr:
+		if branch, known := c.inferredIfExpressionBranch(typed); known {
+			return c.callableExpressionFunctionsSeen(branch, seen)
+		}
 		branches := make([]Expression, 0, len(typed.ElseIf)+2)
 		branches = append(branches, typed.Consequent)
 		for _, branch := range typed.ElseIf {
@@ -3713,11 +4467,23 @@ func (c *scriptChecker) callableExpressionFunctionsSeen(
 		}
 		return nil, false
 	case *IndexExpr:
-		projected, ok := c.staticLiteralProjection(typed)
+		projected, ok := c.staticLiteralProjections(typed)
 		if !ok {
 			return nil, false
 		}
-		return c.callableExpressionFunctionsSeen(projected, seen)
+		var merged []*ScriptFunction
+		for _, candidate := range projected {
+			functions, exact := c.callableExpressionFunctionsSeen(candidate, seen)
+			if !exact {
+				return nil, false
+			}
+			if merged == nil {
+				merged = functions
+				continue
+			}
+			merged, _ = mergeCheckFunctionCandidates(merged, true, functions, true)
+		}
+		return merged, len(merged) > 0
 	case *CallExpr:
 		if member, ok := typed.Callee.(*MemberExpr); ok && member.Property == "itself" &&
 			len(typed.Args) == 0 && len(typed.KwArgs) == 0 && typed.Block == nil && typed.BlockArg == nil {
@@ -3779,19 +4545,44 @@ func (c *scriptChecker) implicitSelfFunction(name string) *ScriptFunction {
 	return c.selfClass.Methods[name]
 }
 
-// scriptFunctionClassConstantEffectsProvenAbsent recognizes the deliberately
-// small subset of script functions whose bodies cannot dispatch or write.
-// Everything richer remains opaque so dynamic and transitive effects stay
-// conservative.
-func scriptFunctionClassConstantEffectsProvenAbsent(fn *ScriptFunction) bool {
-	return scriptCallClassConstantEffectsProvenAbsent(nil, staticCallable{fn: fn})
+// scriptFunctionClassConstantEffectsProvenAbsent recognizes the bounded set
+// of script functions whose reachable expressions cannot write class state.
+// Unknown dispatch, callable bindings, control flow, and mutation all remain
+// opaque; exact owned calls recurse and resolved runtime builtins are safe.
+func (c *scriptChecker) scriptFunctionClassConstantEffectsProvenAbsent(fn *ScriptFunction) bool {
+	return c.scriptCallClassConstantEffectsProvenAbsent(nil, staticCallable{fn: fn})
 }
 
-func scriptCallClassConstantEffectsProvenAbsent(call *CallExpr, target staticCallable) bool {
+func (c *scriptChecker) scriptCallClassConstantEffectsProvenAbsent(
+	call *CallExpr,
+	target staticCallable,
+) bool {
+	return c.scriptCallClassConstantEffectsProvenAbsentSeen(
+		call,
+		target,
+		make(map[*ScriptFunction]struct{}),
+	)
+}
+
+func (c *scriptChecker) scriptCallClassConstantEffectsProvenAbsentSeen(
+	call *CallExpr,
+	target staticCallable,
+	seen map[*ScriptFunction]struct{},
+) bool {
 	fn := target.fn
-	if fn == nil {
+	if fn == nil || fn.owner != c.script {
 		return false
 	}
+	if _, recursive := seen[fn]; recursive {
+		return false
+	}
+	seen[fn] = struct{}{}
+	defer delete(seen, fn)
+
+	bindings := scriptFunctionBindings(fn)
+	restoreResolution := c.withClassConstantProofResolution(fn, bindings)
+	defer restoreResolution()
+
 	collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
 	for i, param := range fn.Params {
 		if param.DefaultVal == nil {
@@ -3800,7 +4591,7 @@ func scriptCallClassConstantEffectsProvenAbsent(call *CallExpr, target staticCal
 		if call != nil && !callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
 			continue
 		}
-		if _, literal := staticLiteralValue(param.DefaultVal); !literal {
+		if !c.scriptExpressionClassConstantEffectsProvenAbsent(param.DefaultVal, bindings, seen) {
 			return false
 		}
 	}
@@ -3814,14 +4605,158 @@ func scriptCallClassConstantEffectsProvenAbsent(call *CallExpr, target staticCal
 		default:
 			return false
 		}
-		if expr == nil {
-			continue
-		}
-		if _, literal := staticLiteralValue(expr); !literal {
+		if !c.scriptExpressionClassConstantEffectsProvenAbsent(expr, bindings, seen) {
 			return false
 		}
 	}
 	return true
+}
+
+func scriptFunctionBindings(fn *ScriptFunction) map[string]*TypeExpr {
+	if fn == nil {
+		return nil
+	}
+	bindings := make(map[string]*TypeExpr, len(fn.Params))
+	for _, param := range fn.Params {
+		if param.Name != "" {
+			bindings[param.Name] = param.Type
+		}
+		bound := make(map[string]struct{})
+		collectBindingTarget(param.Target, bound)
+		for name := range bound {
+			bindings[name] = nil
+		}
+	}
+	locals := make(map[string]struct{})
+	collectLocalBindings(fn.Body, locals)
+	for name := range locals {
+		if _, param := bindings[name]; !param {
+			bindings[name] = nil
+		}
+	}
+	return bindings
+}
+
+// withClassConstantProofResolution isolates a callee proof from the caller's
+// local facts and resolves bare method calls under the callee's actual self.
+func (c *scriptChecker) withClassConstantProofResolution(
+	fn *ScriptFunction,
+	bindings map[string]*TypeExpr,
+) func() {
+	previousScopes := c.scopes
+	previousTypes := c.localTypes
+	previousClassValues := c.localClassValues
+	previousLive := c.liveLocalNames
+	previousUnions := c.localNameUnions
+	previousSelfScope := c.selfScope
+	previousSelfClass := c.selfClass
+	previousSelfClassContext := c.selfClassContext
+
+	scope := make(map[string]struct{}, len(bindings))
+	for name := range bindings {
+		scope[name] = struct{}{}
+	}
+	c.scopes = []map[string]struct{}{scope}
+	c.localTypes = []checkTypeFrame{nil}
+	c.localClassValues = []checkClassValueFrame{nil}
+	c.liveLocalNames = []map[string]struct{}{nil}
+	c.localNameUnions = nil
+	c.selfScope = false
+	c.selfClass = nil
+	c.selfClassContext = false
+	if c.functionHasSelfScope(fn) {
+		c.selfScope = true
+		c.selfClass = c.selfScopeFnClasses[fn]
+		_, c.selfClassContext = c.selfScopeClassFns[fn]
+	}
+
+	return func() {
+		c.scopes = previousScopes
+		c.localTypes = previousTypes
+		c.localClassValues = previousClassValues
+		c.liveLocalNames = previousLive
+		c.localNameUnions = previousUnions
+		c.selfScope = previousSelfScope
+		c.selfClass = previousSelfClass
+		c.selfClassContext = previousSelfClassContext
+	}
+}
+
+func (c *scriptChecker) scriptExpressionClassConstantEffectsProvenAbsent(
+	expr Expression,
+	bindings map[string]*TypeExpr,
+	seen map[*ScriptFunction]struct{},
+) bool {
+	if expr == nil {
+		return true
+	}
+	if _, literal := staticLiteralValue(expr); literal {
+		return true
+	}
+	switch typed := expr.(type) {
+	case *Identifier:
+		ty, bound := bindings[typed.Name]
+		return bound && ty != nil && !typeExprMayIncludeCallable(ty)
+	case *ArrayLiteral:
+		for _, element := range typed.Elements {
+			if !c.scriptExpressionClassConstantEffectsProvenAbsent(element, bindings, seen) {
+				return false
+			}
+		}
+		return true
+	case *HashLiteral:
+		for _, pair := range typed.Pairs {
+			if !c.scriptExpressionClassConstantEffectsProvenAbsent(pair.Key, bindings, seen) ||
+				!c.scriptExpressionClassConstantEffectsProvenAbsent(pair.Value, bindings, seen) {
+				return false
+			}
+		}
+		return true
+	case *TypeLiteral:
+		return typed.Fallback == nil ||
+			c.scriptExpressionClassConstantEffectsProvenAbsent(typed.Fallback, bindings, seen)
+	case *SplatArg:
+		return c.scriptExpressionClassConstantEffectsProvenAbsent(typed.Value, bindings, seen)
+	case *CallExpr:
+		if typed.Block != nil || typed.BlockArg != nil {
+			return false
+		}
+		switch callee := typed.Callee.(type) {
+		case *Identifier:
+			if _, bound := bindings[callee.Name]; bound {
+				return false
+			}
+		case *MemberExpr:
+			ident, plain := callee.Object.(*Identifier)
+			if !plain {
+				return false
+			}
+			if _, bound := bindings[ident.Name]; bound {
+				return false
+			}
+		default:
+			return false
+		}
+		for _, arg := range typed.Args {
+			if !c.scriptExpressionClassConstantEffectsProvenAbsent(arg, bindings, seen) {
+				return false
+			}
+		}
+		for _, kwarg := range typed.KwArgs {
+			if !c.scriptExpressionClassConstantEffectsProvenAbsent(kwarg.Value, bindings, seen) {
+				return false
+			}
+		}
+		target, resolved := c.resolveCallable(typed)
+		if !resolved {
+			return false
+		}
+		if target.fn != nil {
+			return c.scriptCallClassConstantEffectsProvenAbsentSeen(typed, target, seen)
+		}
+		return !target.spec.fromSignature && target.name != "send" && target.name != "public_send"
+	}
+	return false
 }
 
 func (c *scriptChecker) binaryDispatchHasOpaqueClassConstantEffects(ty *TypeExpr, operator TokenType) bool {
@@ -3839,6 +4774,76 @@ func binaryDispatchMethodNames(operator TokenType) []string {
 	default:
 		return nil
 	}
+}
+
+func (c *scriptChecker) binaryExpressionMayComplete(expr *BinaryExpr) bool {
+	if expr == nil || expr.Operator == tokenAnd || expr.Operator == tokenOr {
+		return true
+	}
+	if c.binaryOperationOutcome(
+		expr.Operator,
+		c.inferExpressionType(expr.Left),
+		c.inferExpressionType(expr.Right),
+	).invalid {
+		return false
+	}
+	methods := binaryDispatchMethodNames(expr.Operator)
+	if len(methods) == 0 {
+		return true
+	}
+	for _, method := range methods {
+		call := &CallExpr{
+			Callee: &MemberExpr{
+				Object:   expr.Left,
+				Property: method,
+				Position: expr.Pos(),
+			},
+			Args:     []Expression{expr.Right},
+			Position: expr.Pos(),
+		}
+		if c.expressionMayCompleteForBinding(call) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) indexExpressionMayComplete(expr *IndexExpr) bool {
+	if expr == nil {
+		return true
+	}
+	call := &CallExpr{
+		Callee: &MemberExpr{
+			Object:   expr.Object,
+			Property: "[]",
+			Position: expr.Pos(),
+		},
+		Args:     append([]Expression(nil), expr.Indices...),
+		Position: expr.Pos(),
+	}
+	target, resolved := c.resolveCallable(call)
+	if resolved {
+		if target.fn != nil {
+			plan := c.scriptCallBindingPlan(call, target)
+			return plan.bodyMayEnter &&
+				c.scriptFunctionCallMayComplete(call, target.fn, target.constructor)
+		}
+		view := staticCallViewFor(call, target)
+		return c.builtinCallMayEnter(view, target.spec) &&
+			c.specialBuiltinCallMayComplete(call, target.name) &&
+			c.builtinCallMayComplete(target.spec)
+	}
+	candidates := c.captureDynamicCallCandidates(call)
+	resolution := c.exactDynamicCallTargets(call, target, false, candidates)
+	if resolution.lookupFails {
+		return false
+	}
+	if !resolution.exact {
+		return true
+	}
+	c.refineDynamicCallTargetEntry(resolution.targets)
+	return resolution.nonScriptMayComplete ||
+		c.dynamicScriptCallTargetsMayComplete(resolution.targets)
 }
 
 func (c *scriptChecker) instanceDispatchHasOpaqueClassConstantEffects(ty *TypeExpr, methods ...string) bool {
@@ -3866,7 +4871,7 @@ func (c *scriptChecker) instanceDispatchHasOpaqueClassConstantEffects(ty *TypeEx
 			if !exists {
 				continue
 			}
-			if !scriptFunctionClassConstantEffectsProvenAbsent(fn) {
+			if !c.scriptFunctionClassConstantEffectsProvenAbsent(fn) {
 				return true
 			}
 			break
@@ -3929,11 +4934,11 @@ func (c *scriptChecker) memberSetterHasOpaqueClassConstantEffects(member *Member
 				methods = c.selfClass.ClassMethods
 			}
 			fn, exists := methods[setter]
-			return exists && !scriptFunctionClassConstantEffectsProvenAbsent(fn)
+			return exists && !c.scriptFunctionClassConstantEffectsProvenAbsent(fn)
 		}
 		if classDef, ok := c.staticClassArgument(ident); ok {
 			fn, exists := classDef.ClassMethods[setter]
-			return exists && !scriptFunctionClassConstantEffectsProvenAbsent(fn)
+			return exists && !c.scriptFunctionClassConstantEffectsProvenAbsent(fn)
 		}
 	}
 	return c.instanceDispatchHasOpaqueClassConstantEffects(c.inferExpressionType(member.Object), setter)
@@ -3967,20 +4972,29 @@ func (c *scriptChecker) enqueueReachableMemberSetter(member *MemberExpr) {
 	c.enqueueReachableInstanceDispatch(c.inferExpressionType(member.Object), setter)
 }
 
-func (c *scriptChecker) checkPlainAssignmentTarget(function string, target Expression) {
+func (c *scriptChecker) checkPlainAssignmentTarget(
+	function string,
+	target Expression,
+	value Expression,
+) bool {
 	switch typed := target.(type) {
 	case nil, *Identifier, *IvarExpr, *ClassVarExpr:
-		return
+		return true
 	case *MemberExpr:
-		c.checkExpressionWithAuto(function, typed.Object, true)
+		if !c.checkExpressionWithAuto(function, typed.Object, true) {
+			return false
+		}
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Object)
 		c.enqueueReachableMemberSetter(typed)
 		if c.memberSetterHasOpaqueClassConstantEffects(typed) {
 			c.markOpaqueClassConstants()
 		}
 		c.recordRuntimeBindingTarget(typed)
+		return c.assignmentSetterMayComplete(typed, value)
 	case *IndexExpr:
-		c.checkExpressionWithAuto(function, typed.Object, true)
+		if !c.checkExpressionWithAuto(function, typed.Object, true) {
+			return false
+		}
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Object)
 		dispatchType := c.inferExpressionType(typed.Object)
 		opaqueDispatch := c.instanceDispatchHasOpaqueClassConstantEffects(
@@ -3988,21 +5002,270 @@ func (c *scriptChecker) checkPlainAssignmentTarget(function string, target Expre
 			"[]=",
 		)
 		for _, index := range typed.Indices {
-			c.checkExpressionWithAuto(function, index, true)
+			if !c.checkExpressionWithAuto(function, index, true) {
+				return false
+			}
 			c.collectRuntimeRequireCallExportsFromExpression(index)
 		}
 		c.enqueueReachableInstanceDispatch(dispatchType, "[]=")
 		if opaqueDispatch {
 			c.markOpaqueClassConstants()
 		}
+		return c.assignmentSetterMayComplete(typed, value)
 	case *DestructureTarget:
-		for _, element := range typed.Elements {
-			c.checkPlainAssignmentTarget(function, element.Target)
+		values := destructureAssignmentExpressions(typed, value)
+		for i, element := range typed.Elements {
+			var elementValue Expression
+			if i < len(values) {
+				elementValue = values[i]
+			}
+			if !c.checkPlainAssignmentTarget(function, element.Target, elementValue) {
+				return false
+			}
 		}
 	default:
-		c.checkExpression(function, target)
+		if !c.checkExpression(function, target) {
+			return false
+		}
 		c.collectRuntimeRequireCallExportsFromExpression(target)
 	}
+	return true
+}
+
+func destructureAssignmentExpressions(target *DestructureTarget, value Expression) []Expression {
+	if target == nil {
+		return nil
+	}
+	var source []Expression
+	if array, ok := value.(*ArrayLiteral); ok {
+		for _, element := range array.Elements {
+			if _, splat := element.(*SplatArg); splat {
+				return make([]Expression, len(target.Elements))
+			}
+		}
+		source = array.Elements
+	} else if value != nil {
+		source = []Expression{value}
+	}
+	missing := func() Expression {
+		return &NilLiteral{Position: target.Pos()}
+	}
+	valueAt := func(index int) Expression {
+		if index < 0 || index >= len(source) {
+			return missing()
+		}
+		return source[index]
+	}
+
+	result := make([]Expression, len(target.Elements))
+	restIndex := -1
+	for i, element := range target.Elements {
+		if element.Rest {
+			restIndex = i
+			break
+		}
+	}
+	if restIndex < 0 {
+		for i := range target.Elements {
+			result[i] = valueAt(i)
+		}
+		return result
+	}
+
+	trailing := len(target.Elements) - restIndex - 1
+	restStart := min(restIndex, len(source))
+	restEnd := max(restStart, len(source)-trailing)
+	for i, element := range target.Elements {
+		switch {
+		case i < restIndex:
+			result[i] = valueAt(i)
+		case i == restIndex:
+			if element.Target != nil {
+				result[i] = &ArrayLiteral{
+					Elements: append([]Expression(nil), source[restStart:restEnd]...),
+					Position: target.Pos(),
+				}
+			}
+		default:
+			result[i] = valueAt(restEnd + i - restIndex - 1)
+		}
+	}
+	return result
+}
+
+type assignmentMemberReceiver struct {
+	class       *ClassDef
+	classMethod bool
+}
+
+func (c *scriptChecker) exactAssignmentMemberReceivers(
+	member *MemberExpr,
+) ([]assignmentMemberReceiver, bool) {
+	if member == nil {
+		return nil, false
+	}
+	call := &CallExpr{
+		Callee: &MemberExpr{
+			Object:   member.Object,
+			Property: member.Property + "=",
+			Position: member.Pos(),
+		},
+		Position: member.Pos(),
+	}
+	candidates := c.captureDynamicCallCandidates(call)
+	receivers := make([]assignmentMemberReceiver, 0, len(candidates.instanceClasses)+len(candidates.classValues))
+	exact := false
+	if candidates.instancesExact {
+		exact = true
+		for _, className := range candidates.instanceClasses {
+			classDef := c.script.classes[className]
+			if classDef == nil {
+				return nil, false
+			}
+			receivers = append(receivers, assignmentMemberReceiver{class: classDef})
+		}
+	}
+	if candidates.classValuesExact {
+		exact = true
+		for _, className := range candidates.classValues {
+			classDef := c.script.classes[className]
+			if classDef == nil {
+				return nil, false
+			}
+			receivers = append(receivers, assignmentMemberReceiver{
+				class:       classDef,
+				classMethod: true,
+			})
+		}
+	}
+	return receivers, exact
+}
+
+func (c *scriptChecker) assignmentValueExpectation(
+	target Expression,
+	value Expression,
+) expressionExpectation {
+	member, ok := target.(*MemberExpr)
+	if !ok || !memberAssignmentValueCanUseExpectation(value) {
+		return expressionExpectation{}
+	}
+	receivers, exact := c.exactAssignmentMemberReceivers(member)
+	if !exact || len(receivers) == 0 {
+		return expressionExpectation{}
+	}
+	var merged *TypeExpr
+	var sole expressionExpectation
+	for _, receiver := range receivers {
+		methods := receiver.class.Methods
+		if receiver.classMethod {
+			methods = receiver.class.ClassMethods
+		}
+		fn := methods[member.Property+"="]
+		if fn == nil {
+			return expressionExpectation{}
+		}
+		expectation := setterFunctionValueExpectation(fn)
+		if expectation.empty() {
+			return expressionExpectation{}
+		}
+		if len(receivers) == 1 {
+			sole = expectation
+		}
+		if expectation.ty == nil {
+			return expressionExpectation{}
+		}
+		merged = unionTypeExprs(merged, expectation.ty)
+	}
+	if len(receivers) == 1 {
+		return sole
+	}
+	return typeExpressionExpectation(merged)
+}
+
+func (c *scriptChecker) assignmentSetterMayComplete(target, value Expression) bool {
+	var call *CallExpr
+	rawMemberWrite := false
+	switch typed := target.(type) {
+	case *MemberExpr:
+		rawMemberWrite = true
+		setter := *typed
+		setter.Property += "="
+		call = &CallExpr{
+			Callee:   &setter,
+			Args:     []Expression{value},
+			Position: typed.Pos(),
+		}
+	case *IndexExpr:
+		args := append([]Expression(nil), typed.Indices...)
+		args = append(args, value)
+		call = &CallExpr{
+			Callee: &MemberExpr{
+				Object:   typed.Object,
+				Property: "[]=",
+				Position: typed.Pos(),
+			},
+			Args:     args,
+			Position: typed.Pos(),
+		}
+	default:
+		return true
+	}
+	if member, ok := target.(*MemberExpr); ok {
+		if receivers, exact := c.exactAssignmentMemberReceivers(member); exact {
+			for _, receiver := range receivers {
+				methods := receiver.class.Methods
+				resolution := calleeMemberMethod
+				name := receiver.class.Name + "#" + member.Property + "="
+				if receiver.classMethod {
+					methods = receiver.class.ClassMethods
+					name = receiver.class.Name + "." + member.Property + "="
+				}
+				fn := methods[member.Property+"="]
+				if fn == nil {
+					if methods[member.Property] == nil {
+						return true
+					}
+					continue
+				}
+				target := staticCallable{name: name, fn: fn, resolution: resolution}
+				if !c.dynamicCallTargetVisible(receiver.class, receiver.classMethod, fn, false) {
+					continue
+				}
+				plan := c.scriptCallBindingPlan(call, target)
+				if plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, fn, false) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+
+	resolvedTarget, resolved := c.resolveCallable(call)
+	if resolved {
+		if resolvedTarget.fn != nil {
+			plan := c.scriptCallBindingPlan(call, resolvedTarget)
+			return plan.bodyMayEnter &&
+				c.scriptFunctionCallMayComplete(call, resolvedTarget.fn, resolvedTarget.constructor)
+		}
+		view := staticCallViewFor(call, resolvedTarget)
+		return c.builtinCallMayEnter(view, resolvedTarget.spec) &&
+			c.specialBuiltinCallMayComplete(call, resolvedTarget.name) &&
+			c.builtinCallMayComplete(resolvedTarget.spec)
+	}
+
+	candidates := c.captureDynamicCallCandidates(call)
+	resolution := c.exactDynamicCallTargets(call, resolvedTarget, false, candidates)
+	if resolution.lookupFails {
+		// A missing member setter falls back to binding the member itself;
+		// a missing []= implementation raises instead.
+		return rawMemberWrite
+	}
+	if !resolution.exact {
+		return true
+	}
+	c.refineDynamicCallTargetEntry(resolution.targets)
+	return resolution.nonScriptMayComplete ||
+		c.dynamicScriptCallTargetsMayComplete(resolution.targets)
 }
 
 func staticCallablePositionalArgumentExpectation(target staticCallable, index int) expressionExpectation {
@@ -4042,10 +5305,16 @@ func staticCallableKeywordArgumentExpectation(call *CallExpr, target staticCalla
 	return typeExpressionExpectation(target.spec.keywordTypes[name])
 }
 
-func (c *scriptChecker) checkConditionalExpression(function string, expr *ConditionalExpr, expectation expressionExpectation) {
+func (c *scriptChecker) checkConditionalExpression(
+	function string,
+	expr *ConditionalExpr,
+	expectation expressionExpectation,
+) bool {
 	baseRuntimeState := c.snapshotRuntimeState()
 	baseScopeState := c.snapshotScopeState()
-	c.checkExpressionWithAuto(function, expr.Condition, true)
+	if !c.checkExpressionWithAuto(function, expr.Condition, true) {
+		return false
+	}
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Condition)
 	conditionRuntimeState := c.snapshotRuntimeState()
 	conditionScopeState := c.snapshotScopeState()
@@ -4062,10 +5331,15 @@ func (c *scriptChecker) checkConditionalExpression(function string, expr *Condit
 		trueReachable = c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
 	}
 	if trueReachable {
-		c.checkExpressionWithExpectation(function, expr.Consequent, expectation)
+		completed := c.checkExpressionWithExpectation(function, expr.Consequent, expectation)
 		c.collectRuntimeRequireCallExportsFromExpression(expr.Consequent)
-		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		if completed {
+			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		}
+		if conditionKnown && conditionTruthy {
+			return completed
+		}
 	}
 
 	c.restoreRuntimeState(conditionRuntimeState)
@@ -4075,21 +5349,39 @@ func (c *scriptChecker) checkConditionalExpression(function string, expr *Condit
 		falseReachable = c.collectRuntimeConditionOutcomeEffects(expr.Condition, false)
 	}
 	if !falseReachable {
+		if len(branchRuntimeStates) == 0 {
+			return false
+		}
 		finish()
-		return
+		return true
 	}
-	c.checkExpressionWithExpectation(function, expr.Alternate, expectation)
+	completed := c.checkExpressionWithExpectation(function, expr.Alternate, expectation)
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Alternate)
-	branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+	if completed {
+		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+	}
+	if conditionKnown {
+		return completed
+	}
 
+	if len(branchRuntimeStates) == 0 {
+		return false
+	}
 	finish()
+	return true
 }
 
-func (c *scriptChecker) checkIfExpression(function string, expr *IfExpr, expectation expressionExpectation) {
+func (c *scriptChecker) checkIfExpression(
+	function string,
+	expr *IfExpr,
+	expectation expressionExpectation,
+) bool {
 	baseRuntimeState := c.snapshotRuntimeState()
 	baseScopeState := c.snapshotScopeState()
-	c.checkExpressionWithAuto(function, expr.Condition, true)
+	if !c.checkExpressionWithAuto(function, expr.Condition, true) {
+		return false
+	}
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Condition)
 	conditionRuntimeState := c.snapshotRuntimeState()
 	conditionScopeState := c.snapshotScopeState()
@@ -4106,9 +5398,14 @@ func (c *scriptChecker) checkIfExpression(function string, expr *IfExpr, expecta
 		trueReachable = c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
 	}
 	if trueReachable {
-		c.checkExpressionWithExpectation(function, expr.Consequent, expectation)
-		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		completed := c.checkExpressionWithExpectation(function, expr.Consequent, expectation)
+		if completed {
+			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+		}
+		if conditionKnown && conditionTruthy {
+			return completed
+		}
 	}
 	c.restoreRuntimeState(conditionRuntimeState)
 	c.restoreScopeState(conditionScopeState)
@@ -4117,15 +5414,24 @@ func (c *scriptChecker) checkIfExpression(function string, expr *IfExpr, expecta
 		falseReachable = c.collectRuntimeConditionOutcomeEffects(expr.Condition, false)
 	}
 	if !falseReachable {
+		if len(branchRuntimeStates) == 0 {
+			return false
+		}
 		finish()
-		return
+		return true
 	}
 	falseRuntimeState := c.snapshotRuntimeState()
 	falseScopeState := c.snapshotScopeState()
 	for _, branch := range expr.ElseIf {
 		c.restoreRuntimeState(falseRuntimeState)
 		c.restoreScopeState(falseScopeState)
-		c.checkExpressionWithAuto(function, branch.Condition, true)
+		if !c.checkExpressionWithAuto(function, branch.Condition, true) {
+			if len(branchRuntimeStates) == 0 {
+				return false
+			}
+			finish()
+			return true
+		}
 		c.collectRuntimeRequireCallExportsFromExpression(branch.Condition)
 		conditionRuntimeState = c.snapshotRuntimeState()
 		conditionScopeState = c.snapshotScopeState()
@@ -4135,9 +5441,18 @@ func (c *scriptChecker) checkIfExpression(function string, expr *IfExpr, expecta
 			trueReachable = c.collectRuntimeConditionOutcomeEffects(branch.Condition, true)
 		}
 		if trueReachable {
-			c.checkExpressionWithExpectation(function, branch.Result, expectation)
-			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+			completed := c.checkExpressionWithExpectation(function, branch.Result, expectation)
+			if completed {
+				branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+				branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+			}
+			if branchKnown && branchTruthy {
+				if len(branchRuntimeStates) == 0 {
+					return false
+				}
+				finish()
+				return true
+			}
 		}
 		c.restoreRuntimeState(conditionRuntimeState)
 		c.restoreScopeState(conditionScopeState)
@@ -4146,47 +5461,129 @@ func (c *scriptChecker) checkIfExpression(function string, expr *IfExpr, expecta
 			falseReachable = c.collectRuntimeConditionOutcomeEffects(branch.Condition, false)
 		}
 		if !falseReachable {
+			if len(branchRuntimeStates) == 0 {
+				return false
+			}
 			finish()
-			return
+			return true
 		}
 		falseRuntimeState = c.snapshotRuntimeState()
 		falseScopeState = c.snapshotScopeState()
 	}
 	c.restoreRuntimeState(falseRuntimeState)
 	c.restoreScopeState(falseScopeState)
-	c.checkExpressionWithExpectation(function, expr.Alternate, expectation)
-	branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+	if c.checkExpressionWithExpectation(function, expr.Alternate, expectation) {
+		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+	}
+	if len(branchRuntimeStates) == 0 {
+		return false
+	}
 	finish()
+	return true
 }
 
-func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr, autoCall bool) {
+func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr, autoCall bool) bool {
 	baseRuntimeState := c.snapshotRuntimeState()
 	baseScopeState := c.snapshotScopeState()
+	baseTypePoison := cloneCheckStringSet(c.typePoison)
+	failureArgumentFacts := c.scriptCallFailureArgumentFacts(expr.Body)
+	bodyCompleted := false
+	previousExpressionExitSites := c.expressionExitSites
+	var expressionExitSites []checkStateSnapshot
+	c.expressionExitSites = &expressionExitSites
 	bodyEffects := c.captureClassConstantEffects(func() {
-		c.checkExpressionWithAuto(function, expr.Body, autoCall)
+		bodyCompleted = c.checkExpressionWithAuto(function, expr.Body, autoCall)
 		c.collectRuntimeRequireCallExportsFromExpression(expr.Body)
 	})
+	c.expressionExitSites = previousExpressionExitSites
 	bodyRuntimeState := c.snapshotRuntimeState()
 	bodyScopeState := c.snapshotScopeState()
+	bodyTypePoison := cloneCheckStringSet(c.typePoison)
+	if expressionProvenNonRaising(expr.Body) {
+		return bodyCompleted
+	}
+	if errorKind, exact := c.staticallyRaisedExpressionErrorKind(expr.Body); exact &&
+		!staticErrorKindMatchesRescue(errorKind, nil) {
+		return false
+	}
 
-	c.restoreRuntimeState(baseRuntimeState)
-	c.applyClassConstantEffects(bodyEffects)
-	c.restoreScopeState(baseScopeState)
-	c.checkExpressionWithAuto(function, expr.Fallback, autoCall)
+	if len(expressionExitSites) > 0 {
+		runtimeStates := make([]checkRuntimeState, 0, len(expressionExitSites))
+		scopeStates := make([]checkScopeState, 0, len(expressionExitSites))
+		for _, site := range expressionExitSites {
+			runtimeStates = append(runtimeStates, site.runtimeState)
+			scopeStates = append(scopeStates, site.scopeState)
+		}
+		c.mergeRuntimeStates(baseRuntimeState, runtimeStates)
+		c.mergeScopeStates(baseScopeState, scopeStates)
+	} else if bodyCompleted {
+		c.restoreRuntimeState(baseRuntimeState)
+		c.applyClassConstantEffects(bodyEffects)
+		c.restoreScopeState(baseScopeState)
+	} else {
+		// A definitely failing body reaches the fallback after every operand
+		// and argument the checker already walked. Preserve those completed
+		// mutations instead of rewinding to the pre-body scope.
+		c.restoreRuntimeState(bodyRuntimeState)
+		c.restoreScopeState(bodyScopeState)
+	}
+	for name, fact := range failureArgumentFacts {
+		if _, alreadyPoisoned := baseTypePoison[name]; alreadyPoisoned {
+			continue
+		}
+		delete(c.typePoison, name)
+		c.bindLocalType(name, fact.typeExpr)
+		c.bindLocalClassValue(name, "")
+		switch {
+		case len(fact.classNames) > 0:
+			c.bindLocalClassValues(name, fact.classNames)
+		case len(fact.callables) > 0:
+			c.bindLocalCallableValues(name, fact.callables)
+		case len(fact.staticVals) > 0:
+			c.bindLocalStaticValues(name, fact.staticVals)
+		}
+	}
+	fallbackCompleted := c.checkExpressionWithAuto(function, expr.Fallback, autoCall)
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Fallback)
 	fallbackRuntimeState := c.snapshotRuntimeState()
 	fallbackScopeState := c.snapshotScopeState()
+	c.typePoison = unionCheckStringSet(bodyTypePoison, c.typePoison)
 
-	c.mergeRuntimeStates(baseRuntimeState, []checkRuntimeState{bodyRuntimeState, fallbackRuntimeState})
-	c.mergeScopeStates(baseScopeState, []checkScopeState{bodyScopeState, fallbackScopeState})
+	runtimeStates := make([]checkRuntimeState, 0, 2)
+	scopeStates := make([]checkScopeState, 0, 2)
+	if bodyCompleted {
+		runtimeStates = append(runtimeStates, bodyRuntimeState)
+		scopeStates = append(scopeStates, bodyScopeState)
+	}
+	if fallbackCompleted {
+		runtimeStates = append(runtimeStates, fallbackRuntimeState)
+		scopeStates = append(scopeStates, fallbackScopeState)
+	}
+	if len(runtimeStates) == 0 {
+		return false
+	}
+	c.mergeRuntimeStates(baseRuntimeState, runtimeStates)
+	c.mergeScopeStates(baseScopeState, scopeStates)
+	return true
 }
 
-func (c *scriptChecker) checkCaseExpression(function string, expr *CaseExpr, expectation expressionExpectation) {
+func (c *scriptChecker) checkCaseExpression(
+	function string,
+	expr *CaseExpr,
+	expectation expressionExpectation,
+) bool {
 	baseRuntimeState := c.snapshotRuntimeState()
 	baseScopeState := c.snapshotScopeState()
-	c.checkExpressionWithAuto(function, expr.Target, true)
+	if !c.checkExpressionWithAuto(function, expr.Target, true) {
+		return false
+	}
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Target)
+	if result, known := c.inferredCaseExpressionResult(expr); known {
+		completed := c.checkExpressionWithExpectation(function, result, expectation)
+		c.collectRuntimeRequireCallExportsFromExpression(result)
+		return completed
+	}
 	fallthroughRuntimeState := c.snapshotRuntimeState()
 	fallthroughScopeState := c.snapshotScopeState()
 	branchRuntimeStates := make([]checkRuntimeState, 0, len(expr.Clauses)+1)
@@ -4196,15 +5593,32 @@ func (c *scriptChecker) checkCaseExpression(function string, expr *CaseExpr, exp
 		for _, value := range clause.Values {
 			c.restoreRuntimeState(fallthroughRuntimeState)
 			c.restoreScopeState(fallthroughScopeState)
-			c.checkExpressionWithAuto(function, value.Expr, true)
+			if !c.checkExpressionWithAuto(function, value.Expr, true) {
+				if len(branchRuntimeStates) == 0 {
+					return false
+				}
+				c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+				c.mergeScopeStates(baseScopeState, branchScopeStates)
+				return true
+			}
 			c.collectRuntimeRequireCallExportsFromExpression(value.Expr)
+			if !c.caseWhenSplatExpansionMaySucceed(value.Expr, value.Splat) {
+				if len(branchRuntimeStates) == 0 {
+					return false
+				}
+				c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
+				c.mergeScopeStates(baseScopeState, branchScopeStates)
+				return true
+			}
 			matchRuntimeState := c.snapshotRuntimeState()
 			matchScopeState := c.snapshotScopeState()
 
-			c.checkExpressionWithExpectation(function, clause.Result, expectation)
+			completed := c.checkExpressionWithExpectation(function, clause.Result, expectation)
 			c.collectRuntimeRequireCallExportsFromExpression(clause.Result)
-			branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-			branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+			if completed {
+				branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+				branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+			}
 			fallthroughRuntimeState = matchRuntimeState
 			fallthroughScopeState = matchScopeState
 		}
@@ -4212,13 +5626,19 @@ func (c *scriptChecker) checkCaseExpression(function string, expr *CaseExpr, exp
 
 	c.restoreRuntimeState(fallthroughRuntimeState)
 	c.restoreScopeState(fallthroughScopeState)
-	c.checkExpressionWithExpectation(function, expr.ElseExpr, expectation)
+	completed := c.checkExpressionWithExpectation(function, expr.ElseExpr, expectation)
 	c.collectRuntimeRequireCallExportsFromExpression(expr.ElseExpr)
-	branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
-	branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+	if completed {
+		branchRuntimeStates = append(branchRuntimeStates, c.snapshotRuntimeState())
+		branchScopeStates = append(branchScopeStates, c.snapshotScopeState())
+	}
+	if len(branchRuntimeStates) == 0 {
+		return false
+	}
 
 	c.mergeRuntimeStates(baseRuntimeState, branchRuntimeStates)
 	c.mergeScopeStates(baseScopeState, branchScopeStates)
+	return true
 }
 
 func staticNilSafeNavigationCall(call *CallExpr) bool {
@@ -4245,28 +5665,71 @@ func safeNavigationCallMaySkipArguments(call *CallExpr) bool {
 	return !ok || val.Kind() == KindNil
 }
 
-func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr) (staticCallable, bool, bool) {
+func (c *scriptChecker) checkMemberAutoCall(
+	function string,
+	member *MemberExpr,
+) (staticCallable, bool, bool, bool) {
 	target, ok := c.resolveMemberCallable(member)
 	if !ok {
-		return staticCallable{}, false, false
+		call := &CallExpr{Callee: member, Position: member.Pos()}
+		candidates := c.captureDynamicCallCandidates(call)
+		resolution := c.exactMemberCallTargets(member.Property, call, candidates)
+		if resolution.lookupFails {
+			return staticCallable{}, false, false, false
+		}
+		previousFacts := c.callArgumentFacts
+		previousClassValues := c.callArgumentClassValues
+		previousCallables := c.callArgumentCallables
+		previousStaticValues := c.callArgumentStaticValues
+		c.callArgumentFacts = map[Expression]*TypeExpr{}
+		c.callArgumentClassValues = map[Expression][]string{}
+		c.callArgumentCallables = map[Expression][]*ScriptFunction{}
+		c.callArgumentStaticValues = map[Expression][]Expression{}
+		bodyMayEnter := c.refineDynamicCallTargetEntry(resolution.targets)
+		c.checkDynamicCallTargets(function, resolution.targets, resolution.diagnoseTargets)
+		c.applyDynamicCallNamespaceMutations(call, resolution.targets)
+		c.callArgumentFacts = previousFacts
+		c.callArgumentClassValues = previousClassValues
+		c.callArgumentCallables = previousCallables
+		c.callArgumentStaticValues = previousStaticValues
+		if !resolution.exact {
+			return staticCallable{}, false, true, true
+		}
+		invoked := bodyMayEnter || resolution.nonScriptMayComplete
+		completed := resolution.nonScriptMayComplete ||
+			c.dynamicScriptCallTargetsMayComplete(resolution.targets)
+		return staticCallable{}, false, invoked, completed
 	}
 	view := staticCallView{pos: member.Pos()}
 	if target.fn != nil {
+		if !c.staticScriptCallTargetVisible(target) {
+			return target, true, false, false
+		}
 		// A bare member read dispatches like a call, so snapshot the callee's
 		// call-time runtime root before carrying its possible writes forward.
-		c.enqueueReachableFunction(target.name, target.fn)
 		autoInvokes := target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0
 		if autoInvokes {
 			c.checkCallShape(function, view, target.name, target.fn)
-			c.applyAutoInvokedMemberNamespaceMutations(member, target)
+			call := &CallExpr{Callee: member, Position: member.Pos()}
+			plan := c.scriptCallBindingPlan(call, target)
+			if plan.bodyMayEnter {
+				c.enqueueReachableFunction(target.name, target.fn)
+			} else if plan.defaultParams != nil {
+				c.enqueueReachableFunctionBinding(target.name, target.fn, nil, plan)
+			}
+			c.applyAutoInvokedMemberNamespaceMutations(member, call, target)
+			completed := plan.bodyMayEnter &&
+				c.scriptFunctionCallMayComplete(call, target.fn, target.constructor)
+			return target, true, true, completed
 		}
-		return target, true, autoInvokes
+		return target, true, false, true
 	}
 	if target.spec.autoInvoke {
 		c.checkBuiltinCallShape(function, view, target.name, target.spec)
-		return target, true, true
+		mayEnter := builtinCallShapeMayEnter(view, target.spec)
+		return target, true, true, mayEnter && c.builtinCallMayComplete(target.spec)
 	}
-	return target, true, false
+	return target, true, false, true
 }
 
 // checkBlockLiteral walks a block or lambda body. localReturns marks blocks
@@ -4817,16 +6280,43 @@ func (c *scriptChecker) functionMayEvaluateCallBlock(
 	seen[fn] = struct{}{}
 	defer delete(seen, fn)
 
-	collapseOptionsHash := staticCallCollapsesOptionsHash(call, target)
-	for i, param := range fn.Params {
-		if param.DefaultVal == nil || !callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
+	plan := c.scriptCallBindingPlan(call, target)
+	for _, paramIndex := range plan.defaultParams {
+		if paramIndex < 0 || paramIndex >= len(fn.Params) {
 			continue
 		}
-		if c.expressionMayEvaluateCallBlock(param.DefaultVal, seen) {
+		if c.expressionMayEvaluateCallBlock(fn.Params[paramIndex].DefaultVal, seen) {
 			return true
 		}
 	}
+	if !plan.bodyMayEnter {
+		return false
+	}
 	return c.statementsMayEvaluateCallBlock(fn.Body, seen)
+}
+
+func (c *scriptChecker) scriptFunctionCallBlockMayRun(call *CallExpr, target staticCallable) bool {
+	if target.fn == nil {
+		return false
+	}
+	restoreFresh := c.withFreshLocalInferenceScope()
+	defer restoreFresh()
+	popScope := c.pushScope(make(map[string]struct{}))
+	defer popScope()
+	popNameScope := c.pushFunctionNameScope(target.fn)
+	defer popNameScope()
+	restoreResolution := c.withClassConstantProofResolution(target.fn, scriptFunctionBindings(target.fn))
+	defer restoreResolution()
+
+	facts := c.reachableCallParamFacts(call, target)
+	previousFacts := c.reachableParamFacts
+	c.reachableParamFacts = facts
+	defer func() { c.reachableParamFacts = previousFacts }()
+	for _, param := range target.fn.Params {
+		c.recordParamBinding(param)
+		c.applyReachableParamFact(param)
+	}
+	return c.functionMayEvaluateCallBlock(call, target, nil)
 }
 
 func (c *scriptChecker) statementsMayEvaluateCallBlock(statements []Statement, seen map[*ScriptFunction]struct{}) bool {
@@ -4834,11 +6324,124 @@ func (c *scriptChecker) statementsMayEvaluateCallBlock(statements []Statement, s
 		if c.statementMayEvaluateCallBlock(stmt, seen) {
 			return true
 		}
-		if statementAlwaysExits(stmt) {
+		if statementAlwaysExits(stmt) || !c.statementMayCompleteForBinding(stmt) {
 			return false
 		}
 	}
 	return false
+}
+
+func (c *scriptChecker) statementMayCompleteForBinding(stmt Statement) bool {
+	switch typed := stmt.(type) {
+	case nil:
+		return true
+	case *ExprStmt:
+		return c.expressionMayCompleteForBinding(typed.Expr)
+	case *AssignStmt:
+		if typed.Operator == "" {
+			return c.expressionMayCompleteForBinding(typed.Value) &&
+				c.plainAssignmentTargetMayCompleteForBinding(typed.Target, typed.Value)
+		}
+		if !c.expressionMayCompleteForBinding(typed.Target) {
+			return false
+		}
+		if typed.Operator == tokenOrAssign || typed.Operator == tokenAndAssign {
+			truthy, known := c.inferredConditionTruthiness(typed.Target)
+			rhsReachable := !known ||
+				(typed.Operator == tokenOrAssign && !truthy) ||
+				(typed.Operator == tokenAndAssign && truthy)
+			if !rhsReachable {
+				return true
+			}
+			rhsCompletes := c.expressionMayCompleteForBinding(typed.Value) &&
+				c.assignmentSetterMayComplete(typed.Target, typed.Value)
+			return !known || rhsCompletes
+		}
+		if !c.expressionMayCompleteForBinding(typed.Value) {
+			return false
+		}
+		operatorValue := &BinaryExpr{
+			Left:     typed.Target,
+			Operator: typed.Operator,
+			Right:    typed.Value,
+			Position: typed.Pos(),
+		}
+		return c.binaryExpressionMayComplete(operatorValue) &&
+			c.assignmentSetterMayComplete(typed.Target, operatorValue)
+	case *IfStmt:
+		if !c.expressionMayCompleteForBinding(typed.Condition) {
+			return false
+		}
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if !known {
+			return true
+		}
+		if truthy {
+			return c.statementsMayCompleteForBinding(typed.Consequent)
+		}
+		for _, branch := range typed.ElseIf {
+			if !c.expressionMayCompleteForBinding(branch.Condition) {
+				return false
+			}
+			truthy, known = c.inferredConditionTruthiness(branch.Condition)
+			if !known {
+				return true
+			}
+			if truthy {
+				return c.statementsMayCompleteForBinding(branch.Consequent)
+			}
+		}
+		return c.statementsMayCompleteForBinding(typed.Alternate)
+	case *ReturnStmt, *RaiseStmt, *BreakStmt, *NextStmt, *RetryStmt:
+		return false
+	default:
+		return true
+	}
+}
+
+func (c *scriptChecker) statementsMayCompleteForBinding(statements []Statement) bool {
+	for _, stmt := range statements {
+		if statementAlwaysExits(stmt) || !c.statementMayCompleteForBinding(stmt) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *scriptChecker) plainAssignmentTargetMayCompleteForBinding(
+	target, value Expression,
+) bool {
+	switch typed := target.(type) {
+	case nil, *Identifier, *IvarExpr, *ClassVarExpr:
+		return true
+	case *MemberExpr:
+		return c.expressionMayCompleteForBinding(typed.Object) &&
+			c.assignmentSetterMayComplete(typed, value)
+	case *IndexExpr:
+		if !c.expressionMayCompleteForBinding(typed.Object) {
+			return false
+		}
+		for _, index := range typed.Indices {
+			if !c.expressionMayCompleteForBinding(index) {
+				return false
+			}
+		}
+		return c.assignmentSetterMayComplete(typed, value)
+	case *DestructureTarget:
+		values := destructureAssignmentExpressions(typed, value)
+		for i, element := range typed.Elements {
+			var elementValue Expression
+			if i < len(values) {
+				elementValue = values[i]
+			}
+			if !c.plainAssignmentTargetMayCompleteForBinding(element.Target, elementValue) {
+				return false
+			}
+		}
+		return true
+	default:
+		return c.expressionMayCompleteForBinding(target)
+	}
 }
 
 func (c *scriptChecker) statementMayEvaluateCallBlock(stmt Statement, seen map[*ScriptFunction]struct{}) bool {
@@ -5060,12 +6663,15 @@ func (c *scriptChecker) stringPartsMayEvaluateCallBlock(parts []StringPart, seen
 	return false
 }
 
-func (c *scriptChecker) checkStringParts(function string, parts []StringPart) {
+func (c *scriptChecker) checkStringParts(function string, parts []StringPart) bool {
 	for _, part := range parts {
 		if exprPart, ok := part.(StringExpr); ok {
-			c.checkExpression(function, exprPart.Expr)
+			if !c.checkExpression(function, exprPart.Expr) {
+				return false
+			}
 		}
 	}
+	return true
 }
 
 func (c *scriptChecker) checkRuntimeTypeAnnotation(function string, ty *TypeExpr) bool {
@@ -5152,11 +6758,15 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 		}
 		c.checkImplicitLeafAgainstType(function, typed, typed.Expr, ty)
 	case *AssignStmt:
-		if expressionCanImplicitlyYieldNil(typed.Value) {
+		result := typed.Value
+		if typed.Operator != "" {
+			result = typed.Target
+		}
+		if expressionCanImplicitlyYieldNil(result) {
 			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 			return
 		}
-		c.checkImplicitLeafAgainstType(function, typed, typed.Value, ty)
+		c.checkImplicitLeafAgainstType(function, typed, result, ty)
 	case *IfStmt:
 		c.checkImplicitFinalIfStatement(function, ty, typed)
 	case *ForStmt, *WhileStmt, *UntilStmt:
@@ -5176,7 +6786,14 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 			// the body always exits, the else is unreachable dead code.
 			c.checkImplicitFinalBlock(function, ty, typed.Body, typed.Pos())
 		}
+		if statementsProvenNonRaising(typed.Body) {
+			return
+		}
+		selected, exact := c.staticallySelectedRescue(typed.Body, typed.Rescues)
 		for i := range typed.Rescues {
+			if exact && i != selected {
+				continue
+			}
 			clause := &typed.Rescues[i]
 			if len(clause.Body) > 0 {
 				c.checkImplicitFinalBlock(function, ty, clause.Body, clause.Position)
@@ -5544,7 +7161,7 @@ func stringPartsExceedCheckDepth(parts []StringPart, remaining int) bool {
 // warning.
 func statementAlwaysExits(stmt Statement) bool {
 	switch typed := stmt.(type) {
-	case *ReturnStmt, *RaiseStmt, *BreakStmt, *NextStmt:
+	case *ReturnStmt, *RaiseStmt, *BreakStmt, *NextStmt, *RetryStmt:
 		return true
 	case *IfStmt:
 		truthy, known := staticExpressionTruthiness(typed.Condition)
@@ -5723,13 +7340,14 @@ func (c *scriptChecker) checkCallResolved(
 	target staticCallable,
 	ok bool,
 	dynamicTargets []checkDynamicCallTarget,
+	diagnoseDynamicTargets bool,
 ) {
 	if !ok {
-		c.enqueueReachableDynamicCallTargets(dynamicTargets)
+		c.checkDynamicCallTargets(function, dynamicTargets, diagnoseDynamicTargets)
 		return
 	}
 	if target.fn == nil && (target.name == "send" || target.name == "public_send") {
-		c.enqueueReachableDynamicCallTargets(dynamicTargets)
+		c.checkDynamicCallTargets(function, dynamicTargets, diagnoseDynamicTargets)
 	}
 	if callExpandsArguments(call) {
 		// Splat expansion makes the argument shape dynamic: the runtime
@@ -5744,11 +7362,17 @@ func (c *scriptChecker) checkCallResolved(
 		view := staticCallViewFor(call, target)
 		c.checkCallShape(function, view, target.name, target.fn)
 		c.checkCallArgumentTypes(function, view, target.name, target.fn)
-		c.enqueueReachableFunctionWithParamFacts(
-			target.name,
-			target.fn,
-			c.reachableCallParamFacts(call, target),
-		)
+		plan := c.scriptCallBindingPlan(call, target)
+		facts := c.reachableCallParamFacts(call, target)
+		if plan.bodyMayEnter {
+			c.enqueueReachableFunctionWithParamFacts(
+				target.name,
+				target.fn,
+				facts,
+			)
+		} else if plan.defaultParams != nil {
+			c.enqueueReachableFunctionBinding(target.name, target.fn, facts, plan)
+		}
 		return
 	}
 	view := staticCallViewFor(call, target)
@@ -5765,6 +7389,38 @@ func (c *scriptChecker) checkCallResolved(
 	}
 }
 
+func (c *scriptChecker) checkDynamicCallTargets(
+	function string,
+	targets []checkDynamicCallTarget,
+	diagnose bool,
+) {
+	for _, candidate := range targets {
+		if candidate.target.fn == nil || candidate.call == nil {
+			continue
+		}
+		if diagnose && !callExpandsArguments(candidate.call) {
+			view := staticCallViewFor(candidate.call, candidate.target)
+			c.checkCallShape(function, view, candidate.target.name, candidate.target.fn)
+			c.checkCallArgumentTypes(function, view, candidate.target.name, candidate.target.fn)
+		}
+		facts := c.reachableCallParamFacts(candidate.call, candidate.target)
+		if candidate.mayEnter {
+			c.enqueueReachableFunctionWithParamFacts(
+				candidate.target.name,
+				candidate.target.fn,
+				facts,
+			)
+		} else if candidate.bindingStarts {
+			c.enqueueReachableFunctionBinding(
+				candidate.target.name,
+				candidate.target.fn,
+				facts,
+				c.scriptCallBindingPlan(candidate.call, candidate.target),
+			)
+		}
+	}
+}
+
 // checkIsTypeAtomArgument reports a literal is_type? atom the runtime always
 // rejects. Non-literal atoms stay gradual, and the paramTypes contract already
 // rejects provably non-symbol/string arguments.
@@ -5773,26 +7429,31 @@ func (c *scriptChecker) checkIsTypeAtomArgument(function string, call *CallExpr)
 		return
 	}
 	arg := call.Args[0]
-	val, ok := staticLiteralValue(arg)
-	if !ok {
+	values, exact := c.callStaticValueAlternatives(arg)
+	if !exact {
 		return
 	}
-	text, ok := typeAtomArg(val)
-	if !ok {
-		return
-	}
-	ty, err := parseTypeAtom(text)
-	if err != nil {
-		c.add(function, arg.Pos(), "%s", err)
-		return
-	}
-	if ty.Kind == TypeEnum && strings.Contains(ty.Name, ".") {
-		// An unresolved qualified atom raises unconditionally at runtime,
-		// even for nil receivers, so a literal spelling that fails to
-		// resolve in the checked context is a deterministic failure.
-		if _, ok, lookupErr := lookupNamedTypeForType(ty, c.runtimeTypeContext()); lookupErr != nil || !ok {
-			c.add(function, arg.Pos(), "unknown type atom %q in %s", text, isTypeMemberName)
+	var firstErr error
+	sawAtomArg := false
+	for _, candidate := range values {
+		value, static := staticLiteralValue(candidate)
+		if !static {
+			return
 		}
+		if _, validArg := typeAtomArg(value); !validArg {
+			continue
+		}
+		sawAtomArg = true
+		err := c.isTypeAtomValueError(value)
+		if err == nil {
+			return
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if sawAtomArg && firstErr != nil {
+		c.add(function, arg.Pos(), "%s", firstErr)
 	}
 }
 
@@ -5807,6 +7468,7 @@ func (c *scriptChecker) captureDynamicCallCandidates(call *CallExpr) checkDynami
 		return checkDynamicCallCandidates{}
 	}
 	instances, instancesExact := c.instanceClassExpressionNames(member.Object)
+	instancesMayNil := instancesExact && !c.instanceExpressionNeverNil(member.Object)
 	classes, classesExact := c.dispatchClassValueExpressionNames(member.Object)
 	var callables []*ScriptFunction
 	callablesExact := false
@@ -5816,6 +7478,7 @@ func (c *scriptChecker) captureDynamicCallCandidates(call *CallExpr) checkDynami
 	return checkDynamicCallCandidates{
 		instanceClasses:  instances,
 		instancesExact:   instancesExact,
+		instancesMayNil:  instancesMayNil,
 		classValues:      classes,
 		classValuesExact: classesExact,
 		callables:        callables,
@@ -5823,27 +7486,143 @@ func (c *scriptChecker) captureDynamicCallCandidates(call *CallExpr) checkDynami
 	}
 }
 
-// exactDynamicCallTargets resolves the exhaustive target set at callee
-// evaluation time. Arguments may mutate the receiver's facts before the body
-// runs, so both reachable checking and effect propagation reuse this snapshot.
+func (c *scriptChecker) instanceExpressionNeverNil(expr Expression) bool {
+	if fact, ok := c.constructorInstanceFacts[expr]; ok && fact.exact && len(fact.classNames) > 0 {
+		// A constructor fact describes only calls that successfully produced
+		// an instance. Their general expression type can remain unknown for a
+		// dynamically selected class, but the successful result is still
+		// necessarily non-nil.
+		return true
+	}
+	return typeExprNeverNil(c.inferExpressionType(expr))
+}
+
+func callResolvesForwardedTargetAfterArguments(
+	call *CallExpr,
+	target staticCallable,
+	resolved bool,
+) bool {
+	if call == nil {
+		return false
+	}
+	if resolved {
+		return target.fn == nil && (target.name == "send" || target.name == "public_send")
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	return ok && (member.Property == "send" || member.Property == "public_send")
+}
+
+func (c *scriptChecker) callCalleeLookupFails(
+	call *CallExpr,
+	target staticCallable,
+	resolved bool,
+	deferredForwarder bool,
+	candidates checkDynamicCallCandidates,
+	resolution checkDynamicCallResolution,
+) bool {
+	if call == nil {
+		return false
+	}
+	if resolved {
+		return target.fn != nil && !c.staticMemberCallTargetVisible(call, target)
+	}
+	if deferredForwarder {
+		member, ok := call.Callee.(*MemberExpr)
+		return ok && c.forwarderCalleeLookupFails(member.Property, candidates)
+	}
+	return resolution.lookupFails
+}
+
+func (c *scriptChecker) staticMemberCallTargetVisible(call *CallExpr, target staticCallable) bool {
+	if call == nil || target.fn == nil || target.constructor {
+		return true
+	}
+	if _, memberCall := call.Callee.(*MemberExpr); !memberCall {
+		return true
+	}
+	return c.staticScriptCallTargetVisible(target)
+}
+
+func (c *scriptChecker) staticScriptCallTargetVisible(target staticCallable) bool {
+	if target.fn == nil || target.constructor {
+		return true
+	}
+	c.prepareSelfScopeFunctions()
+	classDef := c.selfScopeFnClasses[target.fn]
+	if classDef == nil {
+		return true
+	}
+	_, classMethod := c.selfScopeClassFns[target.fn]
+	return c.dynamicCallTargetVisible(classDef, classMethod, target.fn, false)
+}
+
+func (c *scriptChecker) forwarderCalleeLookupFails(
+	property string,
+	candidates checkDynamicCallCandidates,
+) bool {
+	if c.script == nil {
+		return false
+	}
+	if candidates.instancesExact {
+		if len(candidates.instanceClasses) == 0 {
+			return false
+		}
+		for _, className := range candidates.instanceClasses {
+			classDef := c.script.classes[className]
+			if classDef == nil {
+				return false
+			}
+			override := classDef.Methods[property]
+			if override == nil || c.dynamicCallTargetVisible(classDef, false, override, false) {
+				return false
+			}
+		}
+		return true
+	}
+	if !candidates.classValuesExact || len(candidates.classValues) == 0 {
+		return false
+	}
+	for _, className := range candidates.classValues {
+		classDef := c.script.classes[className]
+		if classDef == nil {
+			return false
+		}
+		override := classDef.ClassMethods[property]
+		if override == nil || c.dynamicCallTargetVisible(classDef, true, override, false) {
+			return false
+		}
+	}
+	return true
+}
+
+// exactDynamicCallTargets resolves the known dynamic targets and records
+// whether they exhaust every callable body the runtime may enter. Arguments
+// may mutate forwarded member lookup before the body runs, while constructor
+// result exactness is a separate question from callable-target exactness.
 func (c *scriptChecker) exactDynamicCallTargets(
 	call *CallExpr,
 	resolvedTarget staticCallable,
 	resolved bool,
 	dynamicCandidates checkDynamicCallCandidates,
-) []checkDynamicCallTarget {
+) checkDynamicCallResolution {
 	if call == nil {
-		return nil
+		return checkDynamicCallResolution{}
+	}
+	if !c.callArgumentExpansionMaySucceed(call) {
+		return checkDynamicCallResolution{exact: true}
+	}
+	if expanded, exact := c.staticallyExpandedCall(call); exact {
+		call = expanded
 	}
 	if resolved {
 		if resolvedTarget.fn == nil && (resolvedTarget.name == "send" || resolvedTarget.name == "public_send") {
 			return c.exactForwardedCallTargets(call, resolvedTarget.name == "send", dynamicCandidates)
 		}
-		return nil
+		return checkDynamicCallResolution{}
 	}
 	member, ok := call.Callee.(*MemberExpr)
 	if !ok {
-		return nil
+		return checkDynamicCallResolution{}
 	}
 	if member.Property == "send" || member.Property == "public_send" {
 		return c.exactForwardedCallTargets(call, member.Property == "send", dynamicCandidates)
@@ -5857,7 +7636,11 @@ func (c *scriptChecker) exactDynamicCallTargets(
 				resolution: calleeDirect,
 			}, true)
 		}
-		return targets
+		return finalizeDynamicCallResolution(checkDynamicCallResolution{
+			targets:         targets,
+			exact:           true,
+			diagnoseTargets: true,
+		})
 	}
 	return c.exactMemberCallTargets(member.Property, call, dynamicCandidates)
 }
@@ -5868,32 +7651,15 @@ func (c *scriptChecker) exactForwardedCallTargets(
 	call *CallExpr,
 	allowPrivate bool,
 	dynamicCandidates checkDynamicCallCandidates,
-) []checkDynamicCallTarget {
-	if call == nil || len(call.Args) == 0 || c.script == nil {
-		return nil
+) checkDynamicCallResolution {
+	if call == nil || c.script == nil {
+		return checkDynamicCallResolution{}
 	}
 	member, ok := call.Callee.(*MemberExpr)
 	if !ok {
-		return nil
+		return checkDynamicCallResolution{}
 	}
-	method := ""
-	methodKnown := false
-	methodValid := true
-	if val, literal := staticLiteralValue(call.Args[0]); literal {
-		method, methodValid = methodNameArg(val)
-		methodKnown = true
-	}
-	forwarded := *call
-	if _, nameSplat := call.Args[0].(*SplatArg); nameSplat {
-		// The expanded first argument may contain both the method name and
-		// forwarded values. Preserve the dynamic shape rather than treating
-		// every target as an exact zero-argument call.
-		forwarded.Args = call.Args
-	} else {
-		forwarded.Args = call.Args[1:]
-	}
-	forwarded.Parenthesized = true
-	forwarded.KeywordOptionsHash = len(call.KwArgs) > 0
+	variants, variantsExact := c.forwardedCallVariants(call)
 	appendTarget := func(
 		targets []checkDynamicCallTarget,
 		effectiveCall *CallExpr,
@@ -5909,108 +7675,172 @@ func (c *scriptChecker) exactForwardedCallTargets(
 		)
 		return appendDynamicCallTarget(targets, effectiveCall, target, visible)
 	}
-	var targets []checkDynamicCallTarget
+	mergeNested := func(resolution *checkDynamicCallResolution, nested checkDynamicCallResolution) {
+		resolution.targets = append(resolution.targets, nested.targets...)
+		resolution.exact = resolution.exact && nested.exact
+		resolution.diagnoseTargets = resolution.diagnoseTargets && nested.diagnoseTargets
+		resolution.targetExists = resolution.targetExists || nested.targetExists
+		resolution.targetMayEnter = resolution.targetMayEnter || nested.targetMayEnter
+		resolution.nonScriptMayComplete = resolution.nonScriptMayComplete || nested.nonScriptMayComplete
+	}
+	resolution := checkDynamicCallResolution{exact: true}
 	if dynamicCandidates.instancesExact {
+		resolution.diagnoseTargets = !dynamicCandidates.instancesMayNil
 		for _, className := range dynamicCandidates.instanceClasses {
 			classDef := c.script.classes[className]
 			if classDef == nil {
+				resolution.exact = false
 				continue
 			}
 			if override := classDef.Methods[member.Property]; override != nil {
-				targets = appendDynamicCallTarget(targets, call, staticCallable{
+				visible := c.dynamicCallTargetVisible(classDef, false, override, false)
+				resolution.targets = appendDynamicCallTarget(resolution.targets, call, staticCallable{
 					name:       classDef.Name + "#" + member.Property,
 					fn:         override,
 					resolution: calleeMemberMethod,
-				}, c.dynamicCallTargetVisible(classDef, false, override, false))
+				}, visible)
+				resolution.targetMayEnter = resolution.targetMayEnter ||
+					visible && scriptCallBodyMayEnter(call, staticCallable{fn: override})
 				continue
 			}
-			if !methodValid {
-				continue
-			}
-			if !methodKnown {
-				for _, fn := range sortedCheckFunctions(classDef.Methods) {
-					targets = appendTarget(targets, &forwarded, classDef, false, staticCallable{
-						name:       classDef.Name + "#" + fn.Name,
-						fn:         fn,
-						resolution: calleeForwardedMethod,
-					})
-				}
-				continue
-			}
-			targets = appendTarget(targets, &forwarded, classDef, false, staticCallable{
-				name:       classDef.Name + "#" + method,
-				fn:         classDef.Methods[method],
-				resolution: calleeForwardedMethod,
-			})
-		}
-		return targets
-	}
-	if !dynamicCandidates.classValuesExact {
-		return nil
-	}
-	for _, className := range dynamicCandidates.classValues {
-		classDef := c.script.classes[className]
-		if classDef == nil {
-			continue
-		}
-		if override := classDef.ClassMethods[member.Property]; override != nil {
-			targets = appendDynamicCallTarget(targets, call, staticCallable{
-				name:       classDef.Name + "." + member.Property,
-				fn:         override,
-				resolution: calleeMemberMethod,
-			}, c.dynamicCallTargetVisible(classDef, true, override, false))
-			continue
-		}
-		if !methodValid {
-			continue
-		}
-		if methodKnown && method == "new" && !classDef.IsModule {
-			targets = appendTarget(targets, &forwarded, classDef, true, dynamicConstructorTarget(classDef, calleeForwardedMethod))
-			continue
-		}
-		if !methodKnown {
-			if !classDef.IsModule {
-				targets = appendTarget(targets, &forwarded, classDef, true, dynamicConstructorTarget(classDef, calleeForwardedMethod))
-			}
-			for _, fn := range sortedCheckFunctions(classDef.ClassMethods) {
-				if fn.Name == "new" && !classDef.IsModule {
+			for _, variant := range variants {
+				if !variant.valid {
 					continue
 				}
-				targets = appendTarget(targets, &forwarded, classDef, true, staticCallable{
-					name:       classDef.Name + "." + fn.Name,
+				if !variant.known {
+					resolution.exact = false
+					resolution.targetMayEnter = true
+					resolution.nonScriptMayComplete = true
+					continue
+				}
+				method := variant.method
+				if (method == "send" || method == "public_send") && classDef.Methods[method] == nil {
+					mergeNested(&resolution, c.exactForwardedCallTargets(
+						variant.call,
+						method == "send",
+						dynamicCandidates,
+					))
+					continue
+				}
+				fn := classDef.Methods[method]
+				visible := c.dynamicCallTargetVisible(classDef, false, fn, allowPrivate)
+				resolution.targets = appendTarget(resolution.targets, variant.call, classDef, false, staticCallable{
+					name:       classDef.Name + "#" + method,
 					fn:         fn,
 					resolution: calleeForwardedMethod,
 				})
+				resolution.targetMayEnter = resolution.targetMayEnter ||
+					visible && scriptCallBodyMayEnter(variant.call, staticCallable{fn: fn})
+				if fn == nil && !isUniversalDataSafe(method) && method != "class" {
+					// An instance field may supply an unmodeled callable member.
+					resolution.exact = false
+					resolution.targetMayEnter = true
+					resolution.nonScriptMayComplete = true
+				} else if fn == nil {
+					resolution.targetMayEnter = true
+					resolution.nonScriptMayComplete = true
+				}
 			}
+		}
+		resolution.exact = resolution.exact && variantsExact
+		return finalizeDynamicCallResolution(resolution)
+	}
+	if !dynamicCandidates.classValuesExact {
+		return checkDynamicCallResolution{}
+	}
+	resolution.diagnoseTargets = true
+	for _, className := range dynamicCandidates.classValues {
+		classDef := c.script.classes[className]
+		if classDef == nil {
+			resolution.exact = false
 			continue
 		}
-		targets = appendTarget(targets, &forwarded, classDef, true, staticCallable{
-			name:       classDef.Name + "." + method,
-			fn:         classDef.ClassMethods[method],
-			resolution: calleeForwardedMethod,
-		})
+		if override := classDef.ClassMethods[member.Property]; override != nil {
+			visible := c.dynamicCallTargetVisible(classDef, true, override, false)
+			resolution.targets = appendDynamicCallTarget(resolution.targets, call, staticCallable{
+				name:       classDef.Name + "." + member.Property,
+				fn:         override,
+				resolution: calleeMemberMethod,
+			}, visible)
+			resolution.targetMayEnter = resolution.targetMayEnter ||
+				visible && scriptCallBodyMayEnter(call, staticCallable{fn: override})
+			continue
+		}
+		for _, variant := range variants {
+			if !variant.valid {
+				continue
+			}
+			if !variant.known {
+				resolution.exact = false
+				resolution.targetMayEnter = true
+				resolution.nonScriptMayComplete = true
+				continue
+			}
+			method := variant.method
+			if method == "new" && !classDef.IsModule {
+				constructor := dynamicConstructorTarget(classDef, calleeForwardedMethod)
+				resolution.targetExists = true
+				resolution.targets = appendTarget(resolution.targets, variant.call, classDef, true, constructor)
+				constructorMayEnter := dynamicCallableTargetMayEnter(variant.call, constructor)
+				resolution.targetMayEnter = resolution.targetMayEnter || constructorMayEnter
+				resolution.nonScriptMayComplete = resolution.nonScriptMayComplete || constructorMayEnter && constructor.fn == nil
+				continue
+			}
+			if (method == "send" || method == "public_send") && classDef.ClassMethods[method] == nil {
+				mergeNested(&resolution, c.exactForwardedCallTargets(
+					variant.call,
+					method == "send",
+					dynamicCandidates,
+				))
+				continue
+			}
+			fn := classDef.ClassMethods[method]
+			visible := c.dynamicCallTargetVisible(classDef, true, fn, allowPrivate)
+			resolution.targets = appendTarget(resolution.targets, variant.call, classDef, true, staticCallable{
+				name:       classDef.Name + "." + method,
+				fn:         fn,
+				resolution: calleeForwardedMethod,
+			})
+			resolution.targetMayEnter = resolution.targetMayEnter ||
+				visible && scriptCallBodyMayEnter(variant.call, staticCallable{fn: fn})
+			if fn == nil && c.classValueMemberMayChange(classDef, method) {
+				resolution.exact = false
+				resolution.targetMayEnter = true
+				resolution.nonScriptMayComplete = true
+			} else if fn == nil && isUniversalMember(method) {
+				resolution.targetMayEnter = true
+				resolution.nonScriptMayComplete = true
+			}
+		}
 	}
-	return targets
+	resolution.exact = resolution.exact && variantsExact
+	return finalizeDynamicCallResolution(resolution)
 }
 
 func (c *scriptChecker) exactMemberCallTargets(
 	method string,
 	call *CallExpr,
 	dynamicCandidates checkDynamicCallCandidates,
-) []checkDynamicCallTarget {
+) checkDynamicCallResolution {
 	if c.script == nil {
-		return nil
+		return checkDynamicCallResolution{}
 	}
-	var targets []checkDynamicCallTarget
+	resolution := checkDynamicCallResolution{}
 	if dynamicCandidates.instancesExact {
+		resolution.exact = true
+		resolution.diagnoseTargets = !dynamicCandidates.instancesMayNil
 		for _, className := range dynamicCandidates.instanceClasses {
 			classDef := c.script.classes[className]
 			if classDef == nil {
+				resolution.exact = false
 				continue
 			}
 			if method == "" {
+				resolution.exact = false
+				resolution.targetMayEnter = true
+				resolution.nonScriptMayComplete = true
 				for _, fn := range sortedCheckFunctions(classDef.Methods) {
-					targets = appendDynamicCallTarget(targets, call, staticCallable{
+					resolution.targets = appendDynamicCallTarget(resolution.targets, call, staticCallable{
 						name:       classDef.Name + "#" + fn.Name,
 						fn:         fn,
 						resolution: calleeMemberMethod,
@@ -6018,30 +7848,54 @@ func (c *scriptChecker) exactMemberCallTargets(
 				}
 			} else {
 				fn := classDef.Methods[method]
-				targets = appendDynamicCallTarget(targets, call, staticCallable{
+				visible := c.dynamicCallTargetVisible(classDef, false, fn, false)
+				resolution.targets = appendDynamicCallTarget(resolution.targets, call, staticCallable{
 					name:       classDef.Name + "#" + method,
 					fn:         fn,
 					resolution: calleeMemberMethod,
-				}, c.dynamicCallTargetVisible(classDef, false, fn, false))
+				}, visible)
+				resolution.targetMayEnter = resolution.targetMayEnter ||
+					visible && scriptCallBodyMayEnter(call, staticCallable{fn: fn})
+				if fn == nil && !isUniversalDataSafe(method) && method != "class" {
+					resolution.exact = false
+					resolution.targetMayEnter = true
+					resolution.nonScriptMayComplete = true
+				} else if fn == nil {
+					resolution.targetMayEnter = true
+					resolution.nonScriptMayComplete = true
+				}
 			}
 		}
-		return targets
+		return finalizeDynamicCallResolution(resolution)
 	}
 	if !dynamicCandidates.classValuesExact {
-		return nil
+		return checkDynamicCallResolution{}
 	}
+	resolution.exact = true
+	resolution.diagnoseTargets = true
 	for _, className := range dynamicCandidates.classValues {
 		classDef := c.script.classes[className]
 		if classDef == nil {
+			resolution.exact = false
 			continue
 		}
 		if method == "new" && !classDef.IsModule {
-			targets = appendDynamicCallTarget(targets, call, dynamicConstructorTarget(classDef, calleeMemberValue), true)
+			constructor := dynamicConstructorTarget(classDef, calleeMemberValue)
+			resolution.targetExists = true
+			resolution.targets = appendDynamicCallTarget(resolution.targets, call, constructor, true)
+			constructorMayEnter := dynamicCallableTargetMayEnter(call, constructor)
+			resolution.targetMayEnter = resolution.targetMayEnter || constructorMayEnter
+			resolution.nonScriptMayComplete = resolution.nonScriptMayComplete || constructorMayEnter && constructor.fn == nil
 			continue
 		}
 		if method == "" {
+			resolution.targetMayEnter = true
+			resolution.nonScriptMayComplete = true
+			if c.classValueHasDynamicCallableMembers(classDef) {
+				resolution.exact = false
+			}
 			for _, fn := range sortedCheckFunctions(classDef.ClassMethods) {
-				targets = appendDynamicCallTarget(targets, call, staticCallable{
+				resolution.targets = appendDynamicCallTarget(resolution.targets, call, staticCallable{
 					name:       classDef.Name + "." + fn.Name,
 					fn:         fn,
 					resolution: calleeMemberMethod,
@@ -6050,13 +7904,36 @@ func (c *scriptChecker) exactMemberCallTargets(
 			continue
 		}
 		fn := classDef.ClassMethods[method]
-		targets = appendDynamicCallTarget(targets, call, staticCallable{
+		visible := c.dynamicCallTargetVisible(classDef, true, fn, false)
+		resolution.targets = appendDynamicCallTarget(resolution.targets, call, staticCallable{
 			name:       classDef.Name + "." + method,
 			fn:         fn,
 			resolution: calleeMemberMethod,
-		}, c.dynamicCallTargetVisible(classDef, true, fn, false))
+		}, visible)
+		resolution.targetMayEnter = resolution.targetMayEnter ||
+			visible && scriptCallBodyMayEnter(call, staticCallable{fn: fn})
+		if fn == nil && c.classValueMemberMayChange(classDef, method) {
+			resolution.exact = false
+			resolution.targetMayEnter = true
+			resolution.nonScriptMayComplete = true
+		} else if fn == nil && isUniversalMember(method) {
+			resolution.targetMayEnter = true
+			resolution.nonScriptMayComplete = true
+		}
 	}
-	return targets
+	return finalizeDynamicCallResolution(resolution)
+}
+
+func finalizeDynamicCallResolution(resolution checkDynamicCallResolution) checkDynamicCallResolution {
+	resolution.targetExists = resolution.targetExists || resolution.targetMayEnter
+	for _, candidate := range resolution.targets {
+		resolution.targetExists = true
+		if candidate.mayEnter {
+			resolution.targetMayEnter = true
+		}
+	}
+	resolution.lookupFails = resolution.exact && !resolution.targetExists
+	return resolution
 }
 
 func dynamicConstructorTarget(classDef *ClassDef, resolution calleeResolution) staticCallable {
@@ -6099,20 +7976,42 @@ func appendDynamicCallTarget(
 	if !include || call == nil || target.fn == nil {
 		return targets
 	}
-	return append(targets, checkDynamicCallTarget{call: call, target: target})
+	return append(targets, checkDynamicCallTarget{
+		call:          call,
+		target:        target,
+		bindingStarts: scriptCallBodyMayEnter(call, target),
+		mayEnter:      scriptCallBodyMayEnter(call, target),
+	})
 }
 
-func (c *scriptChecker) enqueueReachableDynamicCallTargets(targets []checkDynamicCallTarget) {
-	for _, candidate := range targets {
-		c.enqueueReachableFunctionWithParamFacts(
-			candidate.target.name,
-			candidate.target.fn,
-			c.reachableCallParamFacts(candidate.call, candidate.target),
-		)
+func (c *scriptChecker) refineDynamicCallTargetEntry(targets []checkDynamicCallTarget) bool {
+	mayEnter := false
+	for i := range targets {
+		candidate := &targets[i]
+		candidate.mayEnter = candidate.bindingStarts &&
+			c.scriptCallBindingPlan(candidate.call, candidate.target).bodyMayEnter
+		mayEnter = mayEnter || candidate.mayEnter
 	}
+	return mayEnter
+}
+
+func (c *scriptChecker) dynamicScriptCallTargetsMayComplete(targets []checkDynamicCallTarget) bool {
+	for _, candidate := range targets {
+		if candidate.mayEnter && c.scriptFunctionCallMayComplete(
+			candidate.call,
+			candidate.target.fn,
+			candidate.target.constructor,
+		) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *scriptChecker) instanceClassExpressionNames(receiver Expression) ([]string, bool) {
+	if fact, ok := c.constructorInstanceFacts[receiver]; ok {
+		return append([]string(nil), fact.classNames...), fact.exact
+	}
 	var member *MemberExpr
 	switch typed := receiver.(type) {
 	case *CallExpr:
@@ -6123,18 +8022,20 @@ func (c *scriptChecker) instanceClassExpressionNames(receiver Expression) ([]str
 	if member != nil {
 		switch member.Property {
 		case "new":
+			if call, ok := receiver.(*CallExpr); ok && !c.callArgumentExpansionMaySucceed(call) {
+				return nil, true
+			}
 			return c.constructorInstanceClassNames(member.Object, "")
 		case "send", "public_send":
 			call, ok := receiver.(*CallExpr)
-			if !ok || len(call.Args) == 0 {
+			if !ok {
 				break
 			}
-			method, valid := staticLiteralValue(call.Args[0])
-			if !valid {
-				break
+			if !c.callArgumentExpansionMaySucceed(call) {
+				return nil, true
 			}
-			name, valid := methodNameArg(method)
-			if !valid || name != "new" {
+			name, known, valid, _ := forwardedCallMethodName(call)
+			if !known || !valid || name != "new" {
 				break
 			}
 			return c.constructorInstanceClassNames(member.Object, member.Property)
@@ -6168,6 +8069,14 @@ func (c *scriptChecker) instanceClassExpressionNames(receiver Expression) ([]str
 
 func (c *scriptChecker) constructorInstanceClassNames(receiver Expression, forwarder string) ([]string, bool) {
 	classes, exact := c.dispatchClassValueExpressionNames(receiver)
+	return c.constructorInstanceClassNamesForClasses(classes, exact, forwarder)
+}
+
+func (c *scriptChecker) constructorInstanceClassNamesForClasses(
+	classes []string,
+	exact bool,
+	forwarder string,
+) ([]string, bool) {
 	if !exact || c.script == nil {
 		return nil, false
 	}
@@ -6177,14 +8086,16 @@ func (c *scriptChecker) constructorInstanceClassNames(receiver Expression, forwa
 		if classDef == nil {
 			return nil, false
 		}
-		if forwarder != "" && classValueMemberMayOverride(classDef, forwarder) {
+		if forwarder != "" && classValueMethodMayOverride(classDef, forwarder) {
 			return nil, false
 		}
 		if classDef.IsModule {
 			// A plain module raises before producing a receiver, so it can be
 			// removed from the successful-path set. A module-provided new may
 			// return any value, making every downstream receiver gradual.
-			if classValueMemberMayOverride(classDef, "new") {
+			if classValueMemberMayOverride(classDef, "new") ||
+				c.opaqueClassConstants || c.classConstantContext.opaque ||
+				c.namespaceMemberMutated(classDef.Name, "new") {
 				return nil, false
 			}
 			continue
@@ -6192,6 +8103,176 @@ func (c *scriptChecker) constructorInstanceClassNames(receiver Expression, forwa
 		instances = append(instances, classDef.Name)
 	}
 	return instances, true
+}
+
+// pinDirectConstructorInstanceFact captures the receiver set when a direct
+// `new` member is resolved, before arguments or the call itself can change
+// class constants that govern the lookup.
+func (c *scriptChecker) pinDirectConstructorInstanceFact(call *CallExpr) bool {
+	if call == nil {
+		return false
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || member.Property != "new" {
+		return false
+	}
+	classes, exact := c.constructorInstanceClassNames(member.Object, "")
+	lookupFails := exact && len(classes) == 0
+	if c.callArgumentExpansionMaySucceed(call) {
+		c.pinConstructorInstanceFact(call, classes, exact)
+	} else {
+		// The callee resolves, but argument expansion prevents construction.
+		// Its operands still run before this exact-empty result is observed.
+		c.pinConstructorInstanceFact(call, nil, true)
+	}
+	return lookupFails
+}
+
+// pinForwardedConstructorInstanceFact captures `send(:new)` after its
+// arguments run because forwarding performs the nested `new` lookup then.
+func (c *scriptChecker) pinForwardedConstructorInstanceFact(
+	call *CallExpr,
+	candidates checkDynamicCallCandidates,
+) {
+	if call == nil {
+		return
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || (member.Property != "send" && member.Property != "public_send") {
+		return
+	}
+	if !c.callArgumentExpansionMaySucceed(call) {
+		c.pinConstructorInstanceFact(call, nil, true)
+		return
+	}
+	classes, exact := c.forwardedConstructorInstanceClassNames(call, candidates, 0)
+	c.pinConstructorInstanceFact(call, classes, exact)
+}
+
+func (c *scriptChecker) forwardedConstructorInstanceClassNames(
+	call *CallExpr,
+	candidates checkDynamicCallCandidates,
+	depth int,
+) ([]string, bool) {
+	if call == nil || depth >= maxCheckNestingDepth {
+		return nil, false
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || (member.Property != "send" && member.Property != "public_send") ||
+		!candidates.classValuesExact {
+		return nil, false
+	}
+	for _, className := range candidates.classValues {
+		classDef := c.script.classes[className]
+		if classDef == nil || c.classValueMemberMayChange(classDef, member.Property) {
+			return nil, false
+		}
+	}
+	variants, exact := c.forwardedCallVariants(call)
+	if !exact {
+		return nil, false
+	}
+	var instances []string
+	for _, variant := range variants {
+		if !variant.valid {
+			continue
+		}
+		if !variant.known {
+			return nil, false
+		}
+		switch variant.method {
+		case "new":
+			classes, classesExact := c.constructorInstanceClassNamesForClasses(
+				candidates.classValues,
+				true,
+				"",
+			)
+			if !classesExact {
+				return nil, false
+			}
+			instances = append(instances, classes...)
+		case "send", "public_send":
+			nested := *variant.call
+			nested.Callee = &MemberExpr{
+				Object:   member.Object,
+				Property: variant.method,
+				Position: member.Pos(),
+			}
+			classes, classesExact := c.forwardedConstructorInstanceClassNames(&nested, candidates, depth+1)
+			if !classesExact {
+				return nil, false
+			}
+			instances = append(instances, classes...)
+		default:
+			provablyFails := true
+			for _, className := range candidates.classValues {
+				classDef := c.script.classes[className]
+				if classDef == nil || classDef.ClassMethods[variant.method] != nil ||
+					isUniversalMember(variant.method) ||
+					c.classValueMemberMayChange(classDef, variant.method) {
+					provablyFails = false
+					break
+				}
+			}
+			if !provablyFails {
+				return nil, false
+			}
+		}
+	}
+	return normalizeCheckClassNames(instances), true
+}
+
+func (c *scriptChecker) pinConstructorInstanceFact(expr Expression, classes []string, exact bool) {
+	if expr == nil {
+		return
+	}
+	if c.constructorInstanceFacts == nil {
+		c.constructorInstanceFacts = make(map[Expression]checkInstanceClassFact)
+	}
+	c.constructorInstanceFacts[expr] = checkInstanceClassFact{
+		classNames: append([]string(nil), classes...),
+		exact:      exact,
+	}
+}
+
+func classValueMethodMayOverride(classDef *ClassDef, member string) bool {
+	if classDef == nil {
+		return false
+	}
+	_, ok := classDef.ClassMethods[member]
+	return ok
+}
+
+func (c *scriptChecker) classValueMemberMayChange(classDef *ClassDef, member string) bool {
+	if classDef == nil || isUniversalDataSafe(member) {
+		return false
+	}
+	if _, ok := classDef.ClassVars[member]; ok {
+		return true
+	}
+	return c.opaqueClassConstants || c.classConstantContext.opaque ||
+		c.namespaceMemberMutated(classDef.Name, member)
+}
+
+func (c *scriptChecker) classValueHasDynamicCallableMembers(classDef *ClassDef) bool {
+	if classDef == nil {
+		return true
+	}
+	if len(classDef.ClassVars) > 0 || c.opaqueClassConstants || c.classConstantContext.opaque {
+		return true
+	}
+	prefix := classDef.Name + "."
+	for member := range c.classConstantContext.namespaceMembers {
+		if strings.HasPrefix(member, prefix) {
+			return true
+		}
+	}
+	for member := range c.runtimeNamespaceMembers {
+		if strings.HasPrefix(member, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func classValueMemberMayOverride(classDef *ClassDef, member string) bool {
@@ -6214,7 +8295,38 @@ func (c *scriptChecker) reachableCallParamFacts(
 		return nil
 	}
 	view := staticCallViewFor(call, target)
+	argumentIdentityFacts := func(
+		expr Expression,
+		expectation expressionExpectation,
+	) ([]string, []*ScriptFunction) {
+		identitySource := expr
+		if expectation.includesCallable() {
+			if callableExpr, bindable := c.bareIdentifierCallableArgument(expr); bindable {
+				identitySource = callableExpr
+				if call, ok := identitySource.(*CallExpr); ok {
+					identitySource = call.Callee
+				}
+			}
+		}
+		identityExpr, autoInvoked := c.evaluatedIdentityExpression(
+			identitySource,
+			!expectation.includesCallable(),
+		)
+		classNames, classExact := c.classValueExpressionNames(identityExpr)
+		if autoInvoked {
+			classNames, classExact = c.dispatchClassValueExpressionNames(identityExpr)
+		}
+		if !classExact {
+			classNames = nil
+		}
+		callables, callableExact := c.callableExpressionFunctions(identityExpr)
+		if !callableExact {
+			callables = nil
+		}
+		return classNames, callables
+	}
 	facts := make(map[string]checkReachableParamFact)
+	positionallyBound := make(map[string]struct{})
 	for i, arg := range view.args {
 		param, ok := positionalCallableParam(fn.Params, i)
 		if !ok || param.Name == "" {
@@ -6226,17 +8338,32 @@ func (c *scriptChecker) reachableCallParamFacts(
 		if param.Kind == ParamRest {
 			continue
 		}
+		positionallyBound[param.Name] = struct{}{}
 		fact := c.callArgumentFacts[arg]
 		if fact == nil {
 			fact = c.inferExpressionType(arg)
 		}
-		classNames := c.callArgumentClassValues[arg]
-		callables := c.callArgumentCallables[arg]
-		if fact != nil || len(classNames) > 0 || len(callables) > 0 {
+		classNames, classCaptured := c.callArgumentClassValues[arg]
+		callables, callablesCaptured := c.callArgumentCallables[arg]
+		if !classCaptured || !callablesCaptured {
+			fallbackClasses, fallbackCallables := argumentIdentityFacts(
+				arg,
+				staticCallablePositionalArgumentExpectation(target, i),
+			)
+			if !classCaptured {
+				classNames = fallbackClasses
+			}
+			if !callablesCaptured {
+				callables = fallbackCallables
+			}
+		}
+		staticVals, staticExact := c.callStaticValueAlternatives(arg)
+		if fact != nil || len(classNames) > 0 || len(callables) > 0 || staticExact {
 			facts[param.Name] = checkReachableParamFact{
 				typeExpr:   fact,
 				classNames: append([]string(nil), classNames...),
 				callables:  append([]*ScriptFunction(nil), callables...),
+				staticVals: append([]Expression(nil), staticVals...),
 			}
 		}
 	}
@@ -6248,6 +8375,11 @@ func (c *scriptChecker) reachableCallParamFacts(
 			if param.Name != kwarg.Name || (param.Kind != ParamNormal && param.Kind != ParamKeyword) {
 				continue
 			}
+			if param.Kind == ParamNormal {
+				if _, supplied := positionallyBound[param.Name]; supplied {
+					continue
+				}
+			}
 			if _, exists := facts[param.Name]; !exists {
 				facts[param.Name] = checkReachableParamFact{}
 			}
@@ -6255,13 +8387,27 @@ func (c *scriptChecker) reachableCallParamFacts(
 			if fact == nil {
 				fact = c.inferExpressionType(kwarg.Value)
 			}
-			classNames := c.callArgumentClassValues[kwarg.Value]
-			callables := c.callArgumentCallables[kwarg.Value]
-			if fact != nil || len(classNames) > 0 || len(callables) > 0 {
+			classNames, classCaptured := c.callArgumentClassValues[kwarg.Value]
+			callables, callablesCaptured := c.callArgumentCallables[kwarg.Value]
+			if !classCaptured || !callablesCaptured {
+				fallbackClasses, fallbackCallables := argumentIdentityFacts(
+					kwarg.Value,
+					staticCallableKeywordArgumentExpectation(call, target, kwarg.Name),
+				)
+				if !classCaptured {
+					classNames = fallbackClasses
+				}
+				if !callablesCaptured {
+					callables = fallbackCallables
+				}
+			}
+			staticVals, staticExact := c.callStaticValueAlternatives(kwarg.Value)
+			if fact != nil || len(classNames) > 0 || len(callables) > 0 || staticExact {
 				facts[param.Name] = checkReachableParamFact{
 					typeExpr:   fact,
 					classNames: append([]string(nil), classNames...),
 					callables:  append([]*ScriptFunction(nil), callables...),
+					staticVals: append([]Expression(nil), staticVals...),
 				}
 			}
 			break
@@ -6295,6 +8441,55 @@ func (c *scriptChecker) reachableCallParamFacts(
 	return facts
 }
 
+func callableParamLambdaArguments(
+	call *CallExpr,
+	target staticCallable,
+	facts map[string]checkReachableParamFact,
+) map[string][]Expression {
+	if call == nil || target.fn == nil || callExpandsArguments(call) {
+		return nil
+	}
+	view := staticCallViewFor(call, target)
+	lambdas := make(map[string][]Expression)
+	positionallyBound := make(map[string]struct{})
+	for i, arg := range view.args {
+		param, ok := positionalCallableParam(target.fn.Params, i)
+		if !ok || param.Name == "" || param.Kind == ParamRest {
+			continue
+		}
+		positionallyBound[param.Name] = struct{}{}
+		if lambdaLiteralBlock(arg) != nil {
+			lambdas[param.Name] = append(lambdas[param.Name], arg)
+		}
+	}
+	lastKeyword := make(map[string]int, len(view.kwargs))
+	for i, kwarg := range view.kwargs {
+		lastKeyword[kwarg.Name] = i
+	}
+	for i, kwarg := range view.kwargs {
+		if kwarg.Splat || lastKeyword[kwarg.Name] != i {
+			continue
+		}
+		if _, supplied := positionallyBound[kwarg.Name]; supplied {
+			continue
+		}
+		if lambdaLiteralBlock(kwarg.Value) != nil {
+			lambdas[kwarg.Name] = append(lambdas[kwarg.Name], kwarg.Value)
+		}
+	}
+	for _, param := range target.fn.Params {
+		fact, ok := facts[param.Name]
+		if !ok || !fact.usesDefault || lambdaLiteralBlock(param.DefaultVal) == nil {
+			continue
+		}
+		lambdas[param.Name] = append(lambdas[param.Name], param.DefaultVal)
+	}
+	if len(lambdas) == 0 {
+		return nil
+	}
+	return lambdas
+}
+
 // checkParseAsShapeArgument reports a JSON.parse_as call whose second
 // argument is provably not a shape value — a scalar, a data hash, or any
 // other fully known non-shape type — since the runtime always rejects it.
@@ -6303,6 +8498,9 @@ func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExp
 		return
 	}
 	raw := call.Args[0]
+	if classes, exact := c.classValueExpressionNames(raw); exact && len(classes) > 0 {
+		c.add(function, raw.Pos(), "call to JSON.parse_as expects a JSON string as its first argument, got class %s", strings.Join(classes, " or "))
+	}
 	rawType, rawCaptured := c.callArgumentFacts[raw]
 	if !rawCaptured {
 		rawType = c.inferExpressionType(raw)
@@ -6311,6 +8509,10 @@ func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExp
 		c.add(function, raw.Pos(), "call to JSON.parse_as expects a JSON string as its first argument, got %s", formatTypeExpr(rawType))
 	}
 	arg := call.Args[1]
+	if classes, exact := c.classValueExpressionNames(arg); exact && len(classes) > 0 {
+		c.add(function, arg.Pos(), "call to JSON.parse_as expects a type literal as its second argument, got class %s", strings.Join(classes, " or "))
+		return
+	}
 	inferred, captured := c.callArgumentFacts[arg]
 	if !captured {
 		inferred = c.inferExpressionType(arg)
@@ -6390,6 +8592,892 @@ func callExpandsArguments(call *CallExpr) bool {
 		}
 	}
 	return callHasSplatArg(call)
+}
+
+// callArgumentExpansionMaySucceed proves expansion failures from literals and
+// evaluation-point type facts. Unknown or compatible union arms remain
+// possible so their dispatch effects stay conservative.
+func (c *scriptChecker) callArgumentExpansionMaySucceed(call *CallExpr) bool {
+	if call == nil {
+		return false
+	}
+	for _, arg := range call.Args {
+		if !c.positionalArgumentExpansionMaySucceed(arg) {
+			return false
+		}
+	}
+	for _, kwarg := range call.KwArgs {
+		if !c.keywordArgumentExpansionMaySucceed(kwarg) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *scriptChecker) positionalArgumentExpansionMaySucceed(arg Expression) bool {
+	splat, ok := arg.(*SplatArg)
+	if !ok {
+		return true
+	}
+	return c.expressionMayHaveExpansionType(splat.Value, KindArray, checkTypeArray)
+}
+
+func (c *scriptChecker) keywordArgumentExpansionMaySucceed(kwarg KeywordArg) bool {
+	if !kwarg.Splat {
+		return true
+	}
+	if c.keywordSplatExpressionAlwaysFails(kwarg.Value) {
+		return false
+	}
+	return c.expressionMayHaveExpansionType(kwarg.Value, KindHash, checkTypeHash)
+}
+
+func (c *scriptChecker) blockArgumentConversionMaySucceed(expr Expression, inferred *TypeExpr) bool {
+	if expr == nil {
+		return true
+	}
+	if classNames, exact := c.classValueExpressionNames(expr); exact && len(classNames) > 0 {
+		return false
+	}
+	if value, literal := staticLiteralValue(expr); literal {
+		switch value.Kind() {
+		case KindNil, KindSymbol, KindFunction, KindBuiltin, KindBlock:
+			return true
+		default:
+			return false
+		}
+	}
+	if inferred == nil {
+		return true
+	}
+	allowed := unionTypeExprs(checkTypeNil, checkTypeSymbol, checkTypeFunction)
+	return !typeExprsDisjoint(inferred, allowed, c.checkNamedTypeResolver())
+}
+
+func (c *scriptChecker) expressionMayHaveExpansionType(
+	expr Expression,
+	kind ValueKind,
+	typeExpr *TypeExpr,
+) bool {
+	if classNames, exact := c.classValueExpressionNames(expr); exact && len(classNames) > 0 {
+		return false
+	}
+	if value, literal := staticLiteralValue(expr); literal {
+		return value.Kind() == kind
+	}
+	inferred := c.inferExpressionType(expr)
+	return inferred == nil || !typeExprsDisjoint(inferred, typeExpr, c.checkNamedTypeResolver())
+}
+
+func (c *scriptChecker) caseWhenSplatExpansionMaySucceed(expr Expression, splat bool) bool {
+	return !splat || c.expressionMayHaveExpansionType(expr, KindArray, checkTypeArray)
+}
+
+// staticallyExpandedCall rewrites literal array/hash splats into the argument
+// shape the callee receives. The original expressions are retained so type and
+// effect facts still refer to their evaluation-point AST nodes.
+func (c *scriptChecker) staticallyExpandedCall(call *CallExpr) (*CallExpr, bool) {
+	if call == nil {
+		return nil, false
+	}
+	if !callExpandsArguments(call) {
+		return call, true
+	}
+	expanded := *call
+	expanded.Args = make([]Expression, 0, len(call.Args))
+	for _, arg := range call.Args {
+		splat, ok := arg.(*SplatArg)
+		if !ok {
+			expanded.Args = append(expanded.Args, arg)
+			continue
+		}
+		array, ok := splat.Value.(*ArrayLiteral)
+		if !ok {
+			values, exact := c.callStaticValueAlternatives(splat.Value)
+			if !exact || len(values) != 1 {
+				return call, false
+			}
+			array, ok = values[0].(*ArrayLiteral)
+			if !ok {
+				return call, false
+			}
+		}
+		expanded.Args = append(expanded.Args, array.Elements...)
+	}
+	expanded.KwArgs = make([]KeywordArg, 0, len(call.KwArgs))
+	for _, kwarg := range call.KwArgs {
+		if !kwarg.Splat {
+			expanded.KwArgs = append(expanded.KwArgs, kwarg)
+			continue
+		}
+		hash, ok := kwarg.Value.(*HashLiteral)
+		if !ok {
+			values, exact := c.callStaticValueAlternatives(kwarg.Value)
+			if !exact || len(values) != 1 {
+				return call, false
+			}
+			hash, ok = values[0].(*HashLiteral)
+		}
+		if !ok || hash.ShapeType != nil && !c.hashShapeStaticallyShadowed(hash) {
+			return call, false
+		}
+		for _, pair := range hash.Pairs {
+			key, literal := staticLiteralValue(pair.Key)
+			if !literal || (key.Kind() != KindString && key.Kind() != KindSymbol) {
+				return call, false
+			}
+			expanded.KwArgs = append(expanded.KwArgs, KeywordArg{
+				Name:  key.String(),
+				Value: pair.Value,
+			})
+		}
+	}
+	return &expanded, true
+}
+
+func dynamicCallableTargetMayEnter(call *CallExpr, target staticCallable) bool {
+	if target.fn != nil {
+		return scriptCallBodyMayEnter(call, target)
+	}
+	if !target.constructor || call == nil || callExpandsArguments(call) {
+		return false
+	}
+	return len(call.Args) == 0 && len(call.KwArgs) == 0
+}
+
+// scriptCallBodyMayEnter mirrors function argument binding without checking
+// types. A shape failure raises before defaults or the function body execute.
+func scriptCallBodyMayEnter(call *CallExpr, target staticCallable) bool {
+	if call == nil || target.fn == nil {
+		return false
+	}
+	if callExpandsArguments(call) {
+		return true
+	}
+	view := staticCallViewFor(call, target)
+	usedKeywords := make(map[string]struct{}, len(view.kwargs))
+	argIndex := 0
+	for _, param := range target.fn.Params {
+		switch param.Kind {
+		case ParamKeyword:
+			if keywordIndex(view, param.Name) >= 0 {
+				usedKeywords[param.Name] = struct{}{}
+			} else if param.DefaultVal == nil {
+				return false
+			}
+		case ParamRest:
+			argIndex = len(view.args)
+		case ParamKeywordRest:
+			for _, kwarg := range view.kwargs {
+				usedKeywords[kwarg.Name] = struct{}{}
+			}
+		case ParamBlock:
+		case ParamNormal:
+			if argIndex < len(view.args) {
+				argIndex++
+			} else if keywordIndex(view, param.Name) >= 0 {
+				usedKeywords[param.Name] = struct{}{}
+			} else if param.DefaultVal == nil {
+				return false
+			}
+		}
+	}
+	if argIndex < len(view.args) {
+		return false
+	}
+	for _, kwarg := range view.kwargs {
+		if _, used := usedKeywords[kwarg.Name]; !used {
+			return false
+		}
+	}
+	return true
+}
+
+// scriptCallBindingPlan mirrors the runtime's post-evaluation binding pass.
+// The runtime validates the complete shape before evaluating any defaults,
+// then binds parameters in declaration order and stops at the first
+// deterministic normalization failure. The plan therefore distinguishes the
+// default prefix that can run from entry into the function body itself.
+func (c *scriptChecker) scriptCallBindingPlan(call *CallExpr, target staticCallable) scriptCallBindingPlan {
+	if call == nil || target.fn == nil {
+		return scriptCallBindingPlan{}
+	}
+	if callExpandsArguments(call) {
+		defaults := make([]int, 0, len(target.fn.Params))
+		for i, param := range target.fn.Params {
+			if param.DefaultVal != nil {
+				defaults = append(defaults, i)
+			}
+		}
+		return scriptCallBindingPlan{defaultParams: defaults, bodyMayEnter: true}
+	}
+	if !scriptCallBodyMayEnter(call, target) {
+		return scriptCallBindingPlan{}
+	}
+
+	view := staticCallViewFor(call, target)
+	usedKeywords := make(map[string]struct{}, len(view.kwargs))
+	argIndex := 0
+	plan := scriptCallBindingPlan{bodyMayEnter: true}
+	for i, param := range target.fn.Params {
+		switch param.Kind {
+		case ParamNormal:
+			var value Expression
+			if argIndex < len(view.args) {
+				value = view.args[argIndex]
+				argIndex++
+			} else if kwIndex := keywordIndex(view, param.Name); kwIndex >= 0 {
+				value = view.kwargs[kwIndex].Value
+				usedKeywords[param.Name] = struct{}{}
+			} else {
+				plan.defaultParams = append(plan.defaultParams, i)
+				value = param.DefaultVal
+				if !c.defaultExpressionMayBindType(value, param.Type) ||
+					!c.expressionMayCompleteForBinding(value) {
+					plan.bodyMayEnter = false
+					return plan
+				}
+				continue
+			}
+			if !c.callArgumentMayBindType(value, param.Type) {
+				plan.bodyMayEnter = false
+				return plan
+			}
+		case ParamKeyword:
+			if kwIndex := keywordIndex(view, param.Name); kwIndex >= 0 {
+				usedKeywords[param.Name] = struct{}{}
+				if !c.callArgumentMayBindType(view.kwargs[kwIndex].Value, param.Type) {
+					plan.bodyMayEnter = false
+					return plan
+				}
+				continue
+			}
+			plan.defaultParams = append(plan.defaultParams, i)
+			if !c.defaultExpressionMayBindType(param.DefaultVal, param.Type) ||
+				!c.expressionMayCompleteForBinding(param.DefaultVal) {
+				plan.bodyMayEnter = false
+				return plan
+			}
+		case ParamRest:
+			if !c.callRestArgumentsMayBindType(view.args[argIndex:], param.Type) {
+				plan.bodyMayEnter = false
+				return plan
+			}
+			argIndex = len(view.args)
+		case ParamKeywordRest:
+			if !c.callKeywordRestArgumentsMayBindType(view.kwargs, usedKeywords, param.Type) {
+				plan.bodyMayEnter = false
+				return plan
+			}
+			for _, kwarg := range view.kwargs {
+				usedKeywords[kwarg.Name] = struct{}{}
+			}
+		case ParamBlock:
+			if !c.callBlockMayBindType(call, param.Type) {
+				plan.bodyMayEnter = false
+				return plan
+			}
+		}
+	}
+	return plan
+}
+
+func (c *scriptChecker) callArgumentMayBindType(expr Expression, ty *TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
+		return false
+	}
+	if value, literal := staticLiteralValue(expr); literal {
+		return c.checkRuntimeStaticValueType(value, ty) == nil
+	}
+	inferred, captured := c.callArgumentFacts[expr]
+	if !captured {
+		inferred = c.inferExpressionTypeWithExpectation(expr, typeExpressionExpectation(ty))
+	}
+	return inferred == nil || !typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver())
+}
+
+func (c *scriptChecker) defaultExpressionMayBindType(expr Expression, ty *TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
+		return false
+	}
+	if value, literal := staticLiteralValue(expr); literal {
+		return c.checkRuntimeStaticValueType(value, ty) == nil
+	}
+	inferred := c.inferExpressionTypeWithExpectation(expr, typeExpressionExpectation(ty))
+	return inferred == nil || !typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver())
+}
+
+// expressionMayCompleteForBinding is a side-effect-free completion probe for
+// parameter defaults. It is deliberately conservative outside statically
+// resolved calls: false is used to stop later defaults and the function body,
+// so an unknown expression must remain potentially completing.
+func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
+	if expr == nil {
+		return true
+	}
+	if c.bindingCompletionProbes == nil {
+		c.bindingCompletionProbes = make(map[Expression]struct{})
+	}
+	if _, busy := c.bindingCompletionProbes[expr]; busy {
+		return true
+	}
+	c.bindingCompletionProbes[expr] = struct{}{}
+	defer delete(c.bindingCompletionProbes, expr)
+
+	switch typed := expr.(type) {
+	case *CallExpr:
+		if member, ok := typed.Callee.(*MemberExpr); ok {
+			if !c.expressionMayCompleteForBinding(member.Object) {
+				return false
+			}
+			if member.Safe && !c.safeNavigationReceiverKnownNonNil(member.Object) {
+				return true
+			}
+			if member.Property == "new" {
+				classes, exact := c.constructorInstanceClassNames(member.Object, "")
+				if exact && len(classes) == 0 {
+					return false
+				}
+			}
+		} else if nested, ok := typed.Callee.(*CallExpr); ok &&
+			!c.expressionMayCompleteForBinding(nested) {
+			return false
+		}
+		for _, arg := range typed.Args {
+			if !c.expressionMayCompleteForBinding(arg) ||
+				!c.positionalArgumentExpansionMaySucceed(arg) {
+				return false
+			}
+		}
+		for _, kwarg := range typed.KwArgs {
+			if !c.expressionMayCompleteForBinding(kwarg.Value) ||
+				!c.keywordArgumentExpansionMaySucceed(kwarg) {
+				return false
+			}
+		}
+		if !c.expressionMayCompleteForBinding(typed.BlockArg) ||
+			!c.blockArgumentConversionMaySucceed(typed.BlockArg, c.inferExpressionType(typed.BlockArg)) {
+			return false
+		}
+		target, resolved := c.resolveCallable(typed)
+		if !resolved {
+			candidates := c.captureDynamicCallCandidates(typed)
+			resolution := c.exactDynamicCallTargets(typed, target, false, candidates)
+			if resolution.lookupFails {
+				return false
+			}
+			if resolution.exact {
+				c.refineDynamicCallTargetEntry(resolution.targets)
+				return resolution.nonScriptMayComplete ||
+					c.dynamicScriptCallTargetsMayComplete(resolution.targets)
+			}
+			return true
+		}
+		checkedCall := typed
+		if expanded, exact := c.staticallyExpandedCall(typed); exact {
+			checkedCall = expanded
+		}
+		if target.fn != nil {
+			plan := c.scriptCallBindingPlan(checkedCall, target)
+			return plan.bodyMayEnter &&
+				c.scriptFunctionCallMayComplete(checkedCall, target.fn, target.constructor)
+		}
+		view := staticCallViewFor(checkedCall, target)
+		return c.builtinCallMayEnter(view, target.spec) &&
+			c.specialBuiltinCallMayComplete(checkedCall, target.name) &&
+			c.builtinCallMayComplete(target.spec)
+	case *Identifier:
+		if fns, exact := c.localCallableValuesFor(typed.Name); exact {
+			for _, fn := range fns {
+				if len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false) {
+					return true
+				}
+			}
+			return false
+		}
+		if c.identifierShadowed(typed.Name) || c.hostGlobalShadows(typed.Name) {
+			return true
+		}
+		if fn := c.script.functions[typed.Name]; fn != nil {
+			return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+		}
+		if fn, ok := c.typeRootFunction(typed.Name); ok {
+			return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+		}
+		if fn := c.implicitSelfFunction(typed.Name); fn != nil {
+			call := &CallExpr{Callee: typed, Position: typed.Pos()}
+			target := staticCallable{name: typed.Name, fn: fn}
+			plan := c.scriptCallBindingPlan(call, target)
+			return plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, fn, false)
+		}
+		if spec, ok := c.defaultBuiltinCallSpec(typed.Name); ok && spec.autoInvoke {
+			view := staticCallView{pos: typed.Pos()}
+			return c.builtinCallMayEnter(view, spec) && c.builtinCallMayComplete(spec)
+		}
+		return true
+	case *MemberExpr:
+		if !c.expressionMayCompleteForBinding(typed.Object) {
+			return false
+		}
+		if typed.Safe && !c.safeNavigationReceiverKnownNonNil(typed.Object) {
+			return true
+		}
+		if typed.Property == "new" {
+			classes, exact := c.constructorInstanceClassNames(typed.Object, "")
+			if exact && len(classes) == 0 {
+				return false
+			}
+		}
+		target, resolved := c.resolveMemberCallable(typed)
+		if !resolved {
+			return true
+		}
+		if target.fn != nil {
+			autoInvokes := target.resolution != calleeMemberValue || target.constructor || len(target.fn.Params) == 0
+			if !autoInvokes {
+				return true
+			}
+			call := &CallExpr{Callee: typed, Position: typed.Pos()}
+			plan := c.scriptCallBindingPlan(call, target)
+			return plan.bodyMayEnter &&
+				c.scriptFunctionCallMayComplete(call, target.fn, target.constructor)
+		}
+		if !target.spec.autoInvoke {
+			return true
+		}
+		view := staticCallView{pos: typed.Pos()}
+		return c.builtinCallMayEnter(view, target.spec) && c.builtinCallMayComplete(target.spec)
+	case *IndexExpr:
+		if !c.expressionMayCompleteForBinding(typed.Object) {
+			return false
+		}
+		for _, index := range typed.Indices {
+			if !c.expressionMayCompleteForBinding(index) {
+				return false
+			}
+		}
+		return c.indexExpressionMayComplete(typed)
+	case *ArrayLiteral:
+		for _, element := range typed.Elements {
+			if !c.expressionMayCompleteForBinding(element) {
+				return false
+			}
+		}
+	case *HashLiteral:
+		if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
+			return true
+		}
+		for _, pair := range typed.Pairs {
+			if !c.expressionMayCompleteForBinding(pair.Key) ||
+				!c.expressionMayCompleteForBinding(pair.Value) {
+				return false
+			}
+		}
+	case *TypeLiteral:
+		return !c.typeLiteralStaticallyShadowed(typed) ||
+			c.expressionMayCompleteForBinding(typed.Fallback)
+	case *SplatArg:
+		return c.expressionMayCompleteForBinding(typed.Value)
+	case *UnaryExpr:
+		return c.expressionMayCompleteForBinding(typed.Right) &&
+			c.unaryExpressionMayComplete(typed)
+	case *BinaryExpr:
+		if !c.expressionMayCompleteForBinding(typed.Left) {
+			return false
+		}
+		if typed.Operator != tokenAnd && typed.Operator != tokenOr {
+			return c.expressionMayCompleteForBinding(typed.Right) &&
+				c.binaryExpressionMayComplete(typed)
+		}
+		truthy, known := c.inferredConditionTruthiness(typed.Left)
+		if !known || truthy != (typed.Operator == tokenAnd) {
+			return true
+		}
+		return c.expressionMayCompleteForBinding(typed.Right)
+	case *ConditionalExpr:
+		if !c.expressionMayCompleteForBinding(typed.Condition) {
+			return false
+		}
+		if branch, known := staticConditionalExpressionBranch(typed); known {
+			return c.expressionMayCompleteForBinding(branch)
+		}
+		return c.expressionMayCompleteForBinding(typed.Consequent) ||
+			c.expressionMayCompleteForBinding(typed.Alternate)
+	case *IfExpr:
+		if !c.expressionMayCompleteForBinding(typed.Condition) {
+			return false
+		}
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if (!known || truthy) && c.expressionMayCompleteForBinding(typed.Consequent) {
+			return true
+		}
+		if known && truthy {
+			return false
+		}
+		for _, branch := range typed.ElseIf {
+			if !c.expressionMayCompleteForBinding(branch.Condition) {
+				return false
+			}
+			branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
+			if (!branchKnown || branchTruthy) && c.expressionMayCompleteForBinding(branch.Result) {
+				return true
+			}
+			if branchKnown && branchTruthy {
+				return false
+			}
+		}
+		return c.expressionMayCompleteForBinding(typed.Alternate)
+	case *CaseExpr:
+		if !c.expressionMayCompleteForBinding(typed.Target) {
+			return false
+		}
+		if result, known := c.inferredCaseExpressionResult(typed); known {
+			return c.expressionMayCompleteForBinding(result)
+		}
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				if !c.expressionMayCompleteForBinding(value.Expr) ||
+					!c.caseWhenSplatExpansionMaySucceed(value.Expr, value.Splat) {
+					return false
+				}
+				if c.expressionMayCompleteForBinding(clause.Result) {
+					return true
+				}
+			}
+		}
+		return c.expressionMayCompleteForBinding(typed.ElseExpr)
+	case *RescueExpr:
+		bodyCompletes := c.expressionMayCompleteForBinding(typed.Body)
+		if errorKind, exact := c.staticallyRaisedExpressionErrorKind(typed.Body); exact &&
+			!staticErrorKindMatchesRescue(errorKind, nil) {
+			return bodyCompletes
+		}
+		return bodyCompletes || c.expressionMayCompleteForBinding(typed.Fallback)
+	case *RangeExpr:
+		return c.expressionMayCompleteForBinding(typed.Start) &&
+			c.expressionMayCompleteForBinding(typed.End)
+	case *InterpolatedString:
+		for _, part := range typed.Parts {
+			if expression, ok := part.(StringExpr); ok &&
+				!c.expressionMayCompleteForBinding(expression.Expr) {
+				return false
+			}
+		}
+	case *InterpolatedSymbol:
+		for _, part := range typed.Parts {
+			if expression, ok := part.(StringExpr); ok &&
+				!c.expressionMayCompleteForBinding(expression.Expr) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (c *scriptChecker) callRestArgumentsMayBindType(args []Expression, ty *TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
+		return false
+	}
+	values := make([]Value, 0, len(args))
+	allStatic := true
+	for _, arg := range args {
+		value, literal := staticLiteralValue(arg)
+		if !literal {
+			allStatic = false
+			break
+		}
+		values = append(values, value)
+	}
+	if allStatic {
+		return c.checkRuntimeStaticValueType(NewArray(values), ty) == nil
+	}
+	if typeExprsDisjoint(checkTypeArray, ty, c.checkNamedTypeResolver()) {
+		return false
+	}
+	return c.restArgumentsMayBindTypeArm(args, ty)
+}
+
+func (c *scriptChecker) restArgumentsMayBindTypeArm(args []Expression, ty *TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	switch ty.Kind {
+	case TypeAny, TypeUnknown:
+		return true
+	case TypeArray:
+		if len(ty.TypeArgs) != 1 {
+			return true
+		}
+		for _, arg := range args {
+			if !c.callArgumentMayBindType(arg, ty.TypeArgs[0]) {
+				return false
+			}
+		}
+		return true
+	case TypeUnion:
+		for _, arm := range ty.Union {
+			if c.restArgumentsMayBindTypeArm(args, arm) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) callKeywordRestArgumentsMayBindType(
+	kwargs []KeywordArg,
+	used map[string]struct{},
+	ty *TypeExpr,
+) bool {
+	if ty == nil {
+		return true
+	}
+	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
+		return false
+	}
+	last := make(map[string]Expression, len(kwargs))
+	for _, kwarg := range kwargs {
+		if _, consumed := used[kwarg.Name]; !consumed {
+			last[kwarg.Name] = kwarg.Value
+		}
+	}
+	values := make(map[string]Value, len(last))
+	allStatic := true
+	for name, expr := range last {
+		value, literal := staticLiteralValue(expr)
+		if !literal {
+			allStatic = false
+			break
+		}
+		values[name] = value
+	}
+	if allStatic {
+		return c.checkRuntimeStaticValueType(NewHash(values), ty) == nil
+	}
+	return c.keywordRestArgumentsMayBindTypeArm(last, ty)
+}
+
+func (c *scriptChecker) keywordRestArgumentsMayBindTypeArm(
+	values map[string]Expression,
+	ty *TypeExpr,
+) bool {
+	if ty == nil {
+		return true
+	}
+	switch ty.Kind {
+	case TypeAny, TypeUnknown:
+		return true
+	case TypeHash:
+		if len(ty.TypeArgs) != 2 {
+			return true
+		}
+		if typeExprsDisjoint(checkTypeString, ty.TypeArgs[0], c.checkNamedTypeResolver()) {
+			return false
+		}
+		for _, expr := range values {
+			if !c.callArgumentMayBindType(expr, ty.TypeArgs[1]) {
+				return false
+			}
+		}
+		return true
+	case TypeShape:
+		for name, fieldType := range ty.Shape {
+			if _, supplied := values[name]; !supplied && !shapeFieldOptional(fieldType) {
+				return false
+			}
+		}
+		for name, expr := range values {
+			fieldType, known := ty.Shape[name]
+			if !known {
+				if !ty.Open {
+					return false
+				}
+				continue
+			}
+			if !c.callArgumentMayBindType(expr, fieldType) {
+				return false
+			}
+		}
+		return true
+	case TypeUnion:
+		for _, arm := range ty.Union {
+			if c.keywordRestArgumentsMayBindTypeArm(values, arm) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) callBlockMayBindType(call *CallExpr, ty *TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
+		return false
+	}
+	boundType := checkTypeNil
+	if call.Block != nil {
+		boundType = checkTypeFunction
+	} else if call.BlockArg != nil {
+		inferred, captured := c.callArgumentFacts[call.BlockArg]
+		if !captured {
+			inferred = c.inferExpressionTypeWithExpectation(call.BlockArg, typeExpressionExpectation(checkTypeFunction))
+		}
+		if inferred == nil {
+			return true
+		}
+		if typeExprIsNilOnly(inferred) {
+			boundType = checkTypeNil
+		} else if typeExprNeverNil(inferred) {
+			boundType = checkTypeFunction
+		} else {
+			boundType = unionTypeExprs(checkTypeFunction, checkTypeNil)
+		}
+	}
+	return !typeExprsDisjoint(boundType, ty, c.checkNamedTypeResolver())
+}
+
+func (c *scriptChecker) forwardedCallVariants(call *CallExpr) ([]checkForwardedCallVariant, bool) {
+	if call == nil {
+		return []checkForwardedCallVariant{{known: true}}, true
+	}
+	const maxVariants = 32
+	makeCall := func(args []Expression) *CallExpr {
+		forwarded := *call
+		forwarded.Args = append([]Expression(nil), args...)
+		forwarded.Parenthesized = true
+		forwarded.KeywordOptionsHash = len(call.KwArgs) > 0
+		return &forwarded
+	}
+	classify := func(methodExpr Expression, args []Expression) ([]checkForwardedCallVariant, bool) {
+		if values, exact := c.callStaticValueAlternatives(methodExpr); exact {
+			variants := make([]checkForwardedCallVariant, 0, len(values))
+			for _, expression := range values {
+				value, _ := staticLiteralValue(expression)
+				method, valid := methodNameArg(value)
+				variants = append(variants, checkForwardedCallVariant{
+					call:   makeCall(args),
+					method: method,
+					known:  true,
+					valid:  valid,
+				})
+			}
+			return variants, true
+		}
+		inferred, captured := c.callArgumentFacts[methodExpr]
+		if !captured {
+			inferred = c.inferExpressionType(methodExpr)
+		}
+		if inferred != nil && typeExprsDisjoint(inferred, checkTypeMethodName, c.checkNamedTypeResolver()) {
+			return []checkForwardedCallVariant{{call: makeCall(args), known: true}}, true
+		}
+		return []checkForwardedCallVariant{{call: makeCall(args), valid: true}}, false
+	}
+
+	var walk func(int) ([]checkForwardedCallVariant, bool)
+	walk = func(index int) ([]checkForwardedCallVariant, bool) {
+		if index >= len(call.Args) {
+			return []checkForwardedCallVariant{{call: makeCall(nil), known: true}}, true
+		}
+		arg := call.Args[index]
+		splat, isSplat := arg.(*SplatArg)
+		if !isSplat {
+			return classify(arg, call.Args[index+1:])
+		}
+		values, exact := c.callStaticValueAlternatives(splat.Value)
+		if !exact {
+			return []checkForwardedCallVariant{{call: makeCall(call.Args[index:]), valid: true}}, false
+		}
+		variants := make([]checkForwardedCallVariant, 0, len(values))
+		allExact := true
+		for _, expression := range values {
+			value, _ := staticLiteralValue(expression)
+			if value.Kind() != KindArray {
+				variants = append(variants, checkForwardedCallVariant{call: makeCall(nil), known: true})
+				if len(variants) > maxVariants {
+					return []checkForwardedCallVariant{{call: makeCall(call.Args[index:]), valid: true}}, false
+				}
+				continue
+			}
+			array, ok := expression.(*ArrayLiteral)
+			if !ok {
+				allExact = false
+				continue
+			}
+			if len(array.Elements) == 0 {
+				next, nextExact := walk(index + 1)
+				variants = append(variants, next...)
+				allExact = allExact && nextExact
+				if len(variants) > maxVariants {
+					return []checkForwardedCallVariant{{call: makeCall(call.Args[index:]), valid: true}}, false
+				}
+				continue
+			}
+			args := append(append([]Expression(nil), array.Elements[1:]...), call.Args[index+1:]...)
+			resolved, resolvedExact := classify(array.Elements[0], args)
+			variants = append(variants, resolved...)
+			allExact = allExact && resolvedExact
+			if len(variants) > maxVariants {
+				return []checkForwardedCallVariant{{call: makeCall(call.Args[index:]), valid: true}}, false
+			}
+		}
+		return variants, allExact
+	}
+	return walk(0)
+}
+
+// forwardedCallMethodName resolves the first positional value after static
+// splat expansion. A dynamic splat is distinguished from an ordinary dynamic
+// name because it may expand to no method name at all.
+func forwardedCallMethodName(call *CallExpr) (name string, known, valid, dynamicSplat bool) {
+	if call == nil {
+		return "", true, false, false
+	}
+	for _, arg := range call.Args {
+		if splat, ok := arg.(*SplatArg); ok {
+			if array, ok := splat.Value.(*ArrayLiteral); ok {
+				if len(array.Elements) == 0 {
+					continue
+				}
+				value, literal := staticLiteralValue(array.Elements[0])
+				if !literal {
+					return "", false, true, false
+				}
+				name, valid := methodNameArg(value)
+				return name, true, valid, false
+			}
+			value, literal := staticLiteralValue(splat.Value)
+			if !literal {
+				return "", false, true, true
+			}
+			if value.Kind() != KindArray {
+				return "", true, false, false
+			}
+			elements := value.Array()
+			if len(elements) == 0 {
+				continue
+			}
+			name, valid := methodNameArg(elements[0])
+			return name, true, valid, false
+		}
+		value, literal := staticLiteralValue(arg)
+		if !literal {
+			return "", false, true, false
+		}
+		name, valid := methodNameArg(value)
+		return name, true, valid, false
+	}
+	return "", true, false, false
 }
 
 func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
@@ -6635,6 +9723,10 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 					fn:         fn,
 					resolution: calleeMemberMethod,
 				}, true
+			}
+			if spec, exists := universalMemberSpecs[member.Property]; exists &&
+				!c.classValueMemberMayChange(classDef, member.Property) {
+				return staticCallable{name: member.Property, spec: spec}, true
 			}
 		}
 		if c.identifierShadowed(ident.Name) {
@@ -7092,6 +10184,202 @@ func (c *scriptChecker) checkBuiltinCallShape(function string, call staticCallVi
 	}
 }
 
+func builtinCallShapeMayEnter(call staticCallView, spec staticCallSpec) bool {
+	if len(call.args) < spec.minArgs || spec.maxArgs >= 0 && len(call.args) > spec.maxArgs {
+		return false
+	}
+	if spec.rejectKeywords && len(call.kwargs) > 0 {
+		return false
+	}
+	if len(spec.allowedKeywords) > 0 {
+		for _, kwarg := range call.kwargs {
+			if _, allowed := spec.allowedKeywords[kwarg.Name]; !allowed {
+				return false
+			}
+		}
+	}
+	if spec.rejectBlock && (call.block != nil || call.blockArg != nil) {
+		return false
+	}
+	return true
+}
+
+func (c *scriptChecker) builtinCallMayEnter(call staticCallView, spec staticCallSpec) bool {
+	if len(call.args) < spec.minArgs || spec.maxArgs >= 0 && len(call.args) > spec.maxArgs {
+		return false
+	}
+	if spec.rejectKeywords && len(call.kwargs) > 0 {
+		return false
+	}
+	if len(spec.allowedKeywords) > 0 {
+		for _, kwarg := range call.kwargs {
+			if _, allowed := spec.allowedKeywords[kwarg.Name]; !allowed {
+				return false
+			}
+		}
+	}
+	if spec.rejectBlock {
+		if call.block != nil {
+			return false
+		}
+		if call.blockArg != nil {
+			blockType, captured := c.callArgumentFacts[call.blockArg]
+			if !captured {
+				blockType = c.inferExpressionTypeWithExpectation(
+					call.blockArg,
+					typeExpressionExpectation(checkTypeFunction),
+				)
+			}
+			if typeExprNeverNil(blockType) {
+				return false
+			}
+		}
+	}
+	for i, arg := range call.args {
+		if i >= len(spec.paramTypes) {
+			break
+		}
+		if !c.callArgumentMayBindType(arg, spec.paramTypes[i]) {
+			return false
+		}
+	}
+	seenKeywords := make(map[string]struct{}, len(call.kwargs))
+	for i := len(call.kwargs) - 1; i >= 0; i-- {
+		kwarg := call.kwargs[i]
+		if _, duplicate := seenKeywords[kwarg.Name]; duplicate {
+			continue
+		}
+		seenKeywords[kwarg.Name] = struct{}{}
+		if !c.callArgumentMayBindType(kwarg.Value, spec.keywordTypes[kwarg.Name]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *scriptChecker) builtinCallMayComplete(spec staticCallSpec) bool {
+	if !spec.fromSignature || spec.resultType == nil {
+		return true
+	}
+	return validateTypeExprResolved(spec.resultType, c.runtimeTypeContext()) == nil
+}
+
+// specialBuiltinCallMayComplete mirrors deterministic validation that lives
+// outside staticCallSpec. All call arguments have already evaluated when this
+// runs; false therefore stops only the enclosing expression's continuation.
+func (c *scriptChecker) specialBuiltinCallMayComplete(call *CallExpr, name string) bool {
+	switch name {
+	case "JSON.parse_as":
+		return c.parseAsCallMayComplete(call)
+	case isTypeMemberName:
+		return c.isTypeCallMayComplete(call)
+	default:
+		if _, predicate := classPredicateNames[name]; predicate {
+			return c.classPredicateCallMayComplete(call)
+		}
+		return true
+	}
+}
+
+func (c *scriptChecker) parseAsCallMayComplete(call *CallExpr) bool {
+	if call == nil || len(call.Args) != 2 || callExpandsArguments(call) {
+		return true
+	}
+	raw := call.Args[0]
+	if classNames, exact := c.classValueExpressionNames(raw); exact && len(classNames) > 0 {
+		return false
+	}
+	rawType, captured := c.callArgumentFacts[raw]
+	if !captured {
+		rawType = c.inferExpressionType(raw)
+	}
+	if rawType != nil && typeExprsDisjoint(rawType, checkTypeString, c.checkNamedTypeResolver()) {
+		return false
+	}
+	shapeArg := call.Args[1]
+	if classNames, exact := c.classValueExpressionNames(shapeArg); exact && len(classNames) > 0 {
+		return false
+	}
+	shapeType, captured := c.callArgumentFacts[shapeArg]
+	if !captured {
+		shapeType = c.inferExpressionType(shapeArg)
+	}
+	arms, known := typeExprArms(shapeType, 0)
+	if !known || len(arms) == 0 {
+		return true
+	}
+	for _, arm := range arms {
+		if _, shape := shapeValuePayload(arm); shape {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) classPredicateCallMayComplete(call *CallExpr) bool {
+	if call == nil || len(call.Args) != 1 || callExpandsArguments(call) {
+		return true
+	}
+	arg := call.Args[0]
+	if classNames, exact := c.classValueExpressionNames(arg); exact && len(classNames) > 0 {
+		return true
+	}
+	inferred, captured := c.callArgumentFacts[arg]
+	if !captured {
+		inferred = c.inferExpressionType(arg)
+	}
+	arms, known := typeExprArms(inferred, 0)
+	if !known || len(arms) == 0 {
+		return true
+	}
+	for _, arm := range arms {
+		if !typeArmProvablyNotClass(arm) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) isTypeCallMayComplete(call *CallExpr) bool {
+	if call == nil || len(call.Args) != 1 || callExpandsArguments(call) {
+		return true
+	}
+	values, exact := c.callStaticValueAlternatives(call.Args[0])
+	if !exact {
+		return true
+	}
+	for _, candidate := range values {
+		value, static := staticLiteralValue(candidate)
+		if !static || c.isTypeAtomValueMayComplete(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) isTypeAtomValueMayComplete(value Value) bool {
+	return c.isTypeAtomValueError(value) == nil
+}
+
+func (c *scriptChecker) isTypeAtomValueError(value Value) error {
+	text, validArg := typeAtomArg(value)
+	if !validArg {
+		return fmt.Errorf("%s expects a symbol or string type atom, got %s", isTypeMemberName, value.Kind())
+	}
+	typeAtom, err := parseTypeAtom(text)
+	if err != nil {
+		return err
+	}
+	if typeAtom.Kind != TypeEnum || !strings.Contains(typeAtom.Name, ".") {
+		return nil
+	}
+	match, ok, lookupErr := lookupNamedTypeForType(typeAtom, c.runtimeTypeContext())
+	if lookupErr != nil || !ok || !typeAtomSpellingExact(typeAtom.Name, match) {
+		return fmt.Errorf("unknown type atom %q in %s", text, isTypeMemberName)
+	}
+	return nil
+}
+
 // checkBuiltinArgumentTypes reports call arguments whose inferred types are
 // provably disjoint from the builtin's declared parameter types. Positions
 // past the declared list and keywords without a declared type stay unknown.
@@ -7238,8 +10526,12 @@ func (c *scriptChecker) checkCallShape(function string, call staticCallView, nam
 		c.add(function, call.pos, "call to %s has unexpected positional arguments", name)
 	}
 	if usedKw != nil {
-		for _, kwarg := range call.kwargs {
-			if !usedKw[kwarg.Name] {
+		lastIndex := make(map[string]int, len(call.kwargs))
+		for i, kwarg := range call.kwargs {
+			lastIndex[kwarg.Name] = i
+		}
+		for i, kwarg := range call.kwargs {
+			if lastIndex[kwarg.Name] == i && !usedKw[kwarg.Name] {
 				c.add(function, kwarg.Value.Pos(), "call to %s has unexpected keyword argument %s", name, kwarg.Name)
 			}
 		}
@@ -7381,6 +10673,11 @@ func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Positi
 			// The collected values are no longer fully static: fall back to
 			// checking each argument's inferred type against the rest
 			// annotation's element type.
+			if ty.Kind == TypeUnion && !c.restArgumentsMayBindTypeArm(args, ty) {
+				c.add(function, arg.Pos(), "call to %s argument %s expected %s, got incompatible rest arguments",
+					callName, paramName, formatTypeExpr(ty))
+				return
+			}
 			if ty.Kind == TypeArray && len(ty.TypeArgs) == 1 {
 				for _, rest := range args {
 					c.checkInferredArgument(function, rest, ty.TypeArgs[0], callName, paramName)
@@ -7408,6 +10705,17 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
 		return
 	}
+	lastIndex := make(map[string]int, len(kwargs))
+	for i, kwarg := range kwargs {
+		lastIndex[kwarg.Name] = i
+	}
+	canonical := make([]KeywordArg, 0, len(lastIndex))
+	for i, kwarg := range kwargs {
+		if lastIndex[kwarg.Name] == i {
+			canonical = append(canonical, kwarg)
+		}
+	}
+	kwargs = canonical
 	values := make(map[string]Value)
 	var warningPos Position
 	for _, kwarg := range kwargs {
@@ -7423,6 +10731,19 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 			// back to inferred checks. Rest keywords bind as a string-keyed
 			// hash at runtime, so a disjoint declared key type always fails
 			// at call binding, and an exact shape checks per field.
+			if ty.Kind == TypeUnion {
+				last := make(map[string]Expression, len(kwargs))
+				for _, rest := range kwargs {
+					if usedKw == nil || !usedKw[rest.Name] {
+						last[rest.Name] = rest.Value
+					}
+				}
+				if !c.keywordRestArgumentsMayBindTypeArm(last, ty) {
+					c.add(function, kwarg.Value.Pos(), "call to %s argument %s expected %s, got incompatible keyword rest arguments",
+						callName, paramName, formatTypeExpr(ty))
+				}
+				return
+			}
 			switch {
 			case ty.Kind == TypeHash && len(ty.TypeArgs) == 2:
 				if typeExprsDisjoint(checkTypeString, ty.TypeArgs[0], c.checkNamedTypeResolver()) {
@@ -7547,8 +10868,8 @@ func (c *scriptChecker) checkArgumentExpression(function string, expr Expression
 }
 
 func keywordIndex(call staticCallView, name string) int {
-	for i, kwarg := range call.kwargs {
-		if kwarg.Name == name {
+	for i := len(call.kwargs) - 1; i >= 0; i-- {
+		if call.kwargs[i].Name == name {
 			return i
 		}
 	}
@@ -7648,6 +10969,121 @@ func staticConditionalExpressionBranch(expr *ConditionalExpr) (Expression, bool)
 		return expr.Consequent, true
 	}
 	return expr.Alternate, true
+}
+
+func staticIfExpressionBranch(expr *IfExpr) (Expression, bool) {
+	if expr == nil {
+		return nil, false
+	}
+	truthy, known := staticExpressionTruthiness(expr.Condition)
+	if !known {
+		return nil, false
+	}
+	if truthy {
+		return expr.Consequent, true
+	}
+	for _, branch := range expr.ElseIf {
+		truthy, known = staticExpressionTruthiness(branch.Condition)
+		if !known {
+			return nil, false
+		}
+		if truthy {
+			return branch.Result, true
+		}
+	}
+	return expr.Alternate, true
+}
+
+func staticCaseExpressionResult(expr *CaseExpr) (Expression, bool) {
+	if expr == nil {
+		return nil, false
+	}
+	var target Value
+	if expr.Target != nil {
+		var ok bool
+		target, ok = staticLiteralValue(expr.Target)
+		if !ok {
+			return nil, false
+		}
+	}
+	for _, clause := range expr.Clauses {
+		for _, candidate := range clause.Values {
+			if candidate.Splat {
+				return nil, false
+			}
+			value, ok := staticLiteralValue(candidate.Expr)
+			if !ok {
+				return nil, false
+			}
+			matched := value.Truthy()
+			if expr.Target != nil {
+				var err error
+				matched, err = caseCandidateMatches(target, value)
+				if err != nil {
+					return nil, false
+				}
+			}
+			if matched {
+				return clause.Result, true
+			}
+		}
+	}
+	return expr.ElseExpr, true
+}
+
+func (c *scriptChecker) inferredCaseExpressionResult(expr *CaseExpr) (Expression, bool) {
+	if result, known := staticCaseExpressionResult(expr); known {
+		return result, true
+	}
+	if expr == nil || expr.Target == nil {
+		return nil, false
+	}
+	targets, exact := c.staticValueExpressionAlternatives(expr.Target)
+	if !exact || len(targets) == 0 {
+		return nil, false
+	}
+	var selected Expression
+	selectedSet := false
+	for _, targetExpr := range targets {
+		target, static := staticLiteralValue(targetExpr)
+		if !static {
+			return nil, false
+		}
+		result := expr.ElseExpr
+		matched := false
+		for _, clause := range expr.Clauses {
+			for _, candidate := range clause.Values {
+				if candidate.Splat {
+					return nil, false
+				}
+				value, static := staticLiteralValue(candidate.Expr)
+				if !static {
+					return nil, false
+				}
+				candidateMatched, err := caseCandidateMatches(target, value)
+				if err != nil {
+					return nil, false
+				}
+				if candidateMatched {
+					result = clause.Result
+					matched = true
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if !selectedSet {
+			selected = result
+			selectedSet = true
+			continue
+		}
+		if selected != result {
+			return nil, false
+		}
+	}
+	return selected, selectedSet
 }
 
 func staticRequireModuleName(expr Expression) (string, bool) {
@@ -7892,26 +11328,29 @@ func (c *scriptChecker) scriptFunctionNamespaceMutations(
 	call *CallExpr,
 	target staticCallable,
 ) map[string]struct{} {
+	scan := c.scriptFunctionEffectScan(call, target)
+	if scan == nil {
+		return nil
+	}
+	return scan.out
+}
+
+func (c *scriptChecker) scriptFunctionEffectScan(
+	call *CallExpr,
+	target staticCallable,
+) *namespaceMutationScan {
 	fn := target.fn
 	if fn == nil || fn.owner != c.script {
 		return nil
 	}
 	scan := c.newNamespaceMutationScan()
-	scan.withFunctionSelf(fn, func() {
-		scan.withNominalReceiverParams(fn.Params, false, func() {
-			collapseOptionsHash := call != nil && staticCallCollapsesOptionsHash(call, target)
-			for i, param := range fn.Params {
-				if param.DefaultVal == nil {
-					continue
-				}
-				if call == nil || callMayEvaluateParamDefault(call, fn, i, collapseOptionsHash) {
-					scan.expression(param.DefaultVal)
-				}
-			}
-			scan.statements(fn.Body)
-		})
-	})
-	return scan.out
+	if call == nil {
+		scan.active[fn] = struct{}{}
+		scan.function(fn)
+	} else {
+		scan.scanFunctionCall(fn, call, target)
+	}
+	return scan
 }
 
 // callMayEvaluateParamDefault mirrors the runtime's binding bookkeeping
@@ -8013,7 +11452,11 @@ func callHasKeywordArg(call *CallExpr, name string) bool {
 // result fact pins before the write markers change the summary context for
 // the code after the call.
 func (c *scriptChecker) applyScriptFunctionNamespaceMutations(call *CallExpr, target staticCallable) {
-	members := c.scriptFunctionNamespaceMutations(call, target)
+	effectCall := call
+	if expanded, exact := c.staticallyExpandedCall(call); exact {
+		effectCall = expanded
+	}
+	members := c.scriptFunctionNamespaceMutations(effectCall, target)
 	if len(members) == 0 {
 		return
 	}
@@ -8035,6 +11478,9 @@ func (c *scriptChecker) applyDynamicCallNamespaceMutations(
 ) {
 	var members map[string]struct{}
 	for _, candidate := range targets {
+		if !candidate.bindingStarts {
+			continue
+		}
 		for member := range c.scriptFunctionNamespaceMutations(candidate.call, candidate.target) {
 			if members == nil {
 				members = make(map[string]struct{})
@@ -8053,15 +11499,50 @@ func (c *scriptChecker) applyDynamicCallNamespaceMutations(
 	}
 }
 
+func (c *scriptChecker) applyCallableNamespaceMutations(fns []*ScriptFunction) {
+	for _, fn := range fns {
+		for member := range c.scriptFunctionNamespaceMutations(nil, staticCallable{fn: fn}) {
+			c.recordRuntimeNamespaceMember(member)
+		}
+	}
+}
+
 func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Identifier) {
-	if ident == nil || c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+	if ident == nil {
 		return
 	}
-	fn, ok := c.script.functions[ident.Name]
-	if !ok || len(fn.Params) != 0 {
+	if fns, exact := c.localCallableValuesFor(ident.Name); exact {
+		for _, fn := range fns {
+			if len(fn.Params) != 0 {
+				continue
+			}
+			for member := range c.scriptFunctionNamespaceMutations(nil, staticCallable{fn: fn}) {
+				c.recordRuntimeNamespaceMember(member)
+			}
+		}
 		return
 	}
-	members := c.scriptFunctionNamespaceMutations(nil, staticCallable{fn: fn})
+	if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		return
+	}
+	fn := c.script.functions[ident.Name]
+	call := (*CallExpr)(nil)
+	target := staticCallable{name: ident.Name, fn: fn}
+	if fn == nil {
+		fn, _ = c.typeRootFunction(ident.Name)
+		target.fn = fn
+	}
+	if fn == nil {
+		fn = c.implicitSelfFunction(ident.Name)
+		if fn == nil {
+			return
+		}
+		call = &CallExpr{Callee: ident, Position: ident.Pos()}
+		target.fn = fn
+	} else if len(fn.Params) != 0 {
+		return
+	}
+	members := c.scriptFunctionNamespaceMutations(call, target)
 	if len(members) == 0 {
 		return
 	}
@@ -8071,8 +11552,12 @@ func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Iden
 	}
 }
 
-func (c *scriptChecker) applyAutoInvokedMemberNamespaceMutations(member *MemberExpr, target staticCallable) {
-	members := c.scriptFunctionNamespaceMutations(nil, target)
+func (c *scriptChecker) applyAutoInvokedMemberNamespaceMutations(
+	member *MemberExpr,
+	call *CallExpr,
+	target staticCallable,
+) {
+	members := c.scriptFunctionNamespaceMutations(call, target)
 	if len(members) == 0 {
 		return
 	}
@@ -8095,7 +11580,7 @@ func (c *scriptChecker) resolveImmediateLambdaBlock(expr Expression) *BlockLiter
 		callee, ok := typed.Callee.(*Identifier)
 		if !ok || callee.Name != "lambda" || typed.Block == nil || typed.BlockArg != nil ||
 			len(typed.Args) != 0 || len(typed.KwArgs) != 0 ||
-			c.hostGlobalShadows("lambda") || c.hostBuiltinOverrides("lambda") {
+			!c.coreLambdaBinding() {
 			return nil
 		}
 		target, resolved := c.resolveCallable(typed)
@@ -8104,6 +11589,35 @@ func (c *scriptChecker) resolveImmediateLambdaBlock(expr Expression) *BlockLiter
 		}
 	}
 	return nil
+}
+
+func (c *scriptChecker) callTargetsCoreLambda(
+	call *CallExpr,
+	target staticCallable,
+	resolved bool,
+) bool {
+	if call == nil || !resolved || target.fn != nil || target.name != "lambda" ||
+		!c.coreLambdaBinding() {
+		return false
+	}
+	callee, ok := call.Callee.(*Identifier)
+	return ok && callee.Name == "lambda"
+}
+
+// coreLambdaBinding reports whether a bare lambda call resolves to the
+// language's lambda constructor. Call-option globals normally shadow core
+// builtins, but a host may pass back the cloned lambda value returned by
+// Engine.Builtins; its function identity preserves the same local-return
+// semantics. Checking the function itself avoids treating a mutated snapshot
+// as core.
+func (c *scriptChecker) coreLambdaBinding() bool {
+	if c.hostGlobalShadows("lambda") &&
+		(c.optionGlobalsOverride || c.optionGlobalSeeded("lambda")) {
+		builtin := valueBuiltin(c.optionGlobals["lambda"])
+		return builtin != nil && builtin.Fn != nil &&
+			reflect.ValueOf(builtin.Fn).Pointer() == reflect.ValueOf(BuiltinFunc(builtinLambda)).Pointer()
+	}
+	return !c.hostBuiltinOverrides("lambda")
 }
 
 func lambdaLiteralArity(block *BlockLiteral) int {
@@ -8203,6 +11717,23 @@ func (c *scriptChecker) checkLambdaLiteralSummaryYields(function string, arg Exp
 	c.checkInvokedLambdaSummaryYields(function, lambdaLiteralBlock(arg))
 }
 
+func (c *scriptChecker) checkScriptCallInvokedLambdaSummaryYields(
+	function string,
+	call *CallExpr,
+	target staticCallable,
+) {
+	if c.summaryYieldCollector == nil {
+		return
+	}
+	scan := c.scriptFunctionEffectScan(call, target)
+	if scan == nil {
+		return
+	}
+	for block := range scan.invokedLambdas {
+		c.checkInvokedLambdaSummaryYields(function, block)
+	}
+}
+
 // checkInvokedLambdaSummaryYields rechecks an executed lambda with local
 // return semantics intact while allowing reachable yields to poison the
 // enclosing function summary. Merely defining a lambda keeps yields inert.
@@ -8223,10 +11754,7 @@ func (c *scriptChecker) applyLambdaBlockNamespaceMutations(block *BlockLiteral) 
 		return
 	}
 	scan := c.newNamespaceMutationScan()
-	for _, param := range block.Params {
-		scan.expression(param.DefaultVal)
-	}
-	scan.statements(block.Body)
+	scan.scanLambdaBlock(block)
 	for member := range scan.out {
 		c.recordRuntimeNamespaceMember(member)
 	}
@@ -8336,6 +11864,33 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 	}
 }
 
+func (c *scriptChecker) bindUnreachedRescueLocalsAsNil(stmt *TryStmt) {
+	if stmt == nil {
+		return
+	}
+	locals := make(map[string]struct{})
+	for i := range stmt.Rescues {
+		clause := &stmt.Rescues[i]
+		if clause.Binding != "" {
+			locals[clause.Binding] = struct{}{}
+		}
+		collectLocalBindings(clause.Body, locals)
+	}
+	for name := range locals {
+		tracked := false
+		for i := len(c.localTypes) - 1; i >= 0; i-- {
+			if _, tracked = c.localTypes[i][name]; tracked {
+				break
+			}
+		}
+		if tracked {
+			continue
+		}
+		c.bindLocalType(name, checkTypeNil)
+		c.bindLocalClassValue(name, "")
+	}
+}
+
 // namespaceMutationScan records every builtin namespace member a function's
 // execution can reassign, descending into any code the body may run — block
 // and lambda bodies, statement expressions, and nested definitions — so a
@@ -8346,10 +11901,12 @@ func collectLocalBindings(statements []Statement, out map[string]struct{}) {
 // transitive calls still count. Exact class parameter facts keep same-named
 // instance methods separated while the scan descends through helper calls.
 type namespaceMutationScan struct {
+	checker          *scriptChecker
 	out              map[string]struct{}
 	functions        map[string]*ScriptFunction
 	classes          map[string]*ClassDef
-	visited          map[*ScriptFunction]struct{}
+	active           map[*ScriptFunction]struct{}
+	activeDefaults   map[*ScriptFunction]map[int]struct{}
 	methodClasses    map[*ScriptFunction]*ClassDef
 	classMethodFns   map[*ScriptFunction]struct{}
 	selfClass        *ClassDef
@@ -8357,19 +11914,25 @@ type namespaceMutationScan struct {
 	// A nil class records a parameter that shadows a class name without
 	// proving one exact instance dispatch.
 	nominalReceivers map[string]*ClassDef
+	callableParams   map[string][]*ScriptFunction
+	callableLambdas  map[string][]Expression
+	invokedLambdas   map[*BlockLiteral]struct{}
 }
 
 func (c *scriptChecker) newNamespaceMutationScan() *namespaceMutationScan {
 	c.prepareSelfScopeFunctions()
 	scan := &namespaceMutationScan{
+		checker:          c,
 		out:              make(map[string]struct{}),
 		functions:        c.script.functions,
 		classes:          c.script.classes,
-		visited:          make(map[*ScriptFunction]struct{}),
+		active:           make(map[*ScriptFunction]struct{}),
+		activeDefaults:   make(map[*ScriptFunction]map[int]struct{}),
 		methodClasses:    c.selfScopeFnClasses,
 		classMethodFns:   c.selfScopeClassFns,
 		selfClass:        c.selfClass,
 		selfClassContext: c.selfClassContext,
+		invokedLambdas:   make(map[*BlockLiteral]struct{}),
 	}
 	return scan
 }
@@ -8378,10 +11941,11 @@ func (s *namespaceMutationScan) visit(fn *ScriptFunction) {
 	if fn == nil {
 		return
 	}
-	if _, seen := s.visited[fn]; seen {
+	if _, active := s.active[fn]; active {
 		return
 	}
-	s.visited[fn] = struct{}{}
+	s.active[fn] = struct{}{}
+	defer delete(s.active, fn)
 	s.function(fn)
 }
 
@@ -8390,25 +11954,88 @@ func (s *namespaceMutationScan) visit(fn *ScriptFunction) {
 // bare auto-invoke, or escaping value — since a stored function can run later;
 // a shadowed name only over-invalidates, which is the sound direction.
 func (s *namespaceMutationScan) functionReference(name string) {
-	if fn, ok := s.functions[name]; ok {
-		s.visit(fn)
+	if fns, bound := s.callableParams[name]; bound {
+		for _, fn := range fns {
+			if len(fn.Params) == 0 {
+				s.scanFunctionCall(fn, nil, staticCallable{fn: fn})
+			}
+		}
+		return
 	}
-	s.selfReference(name)
+	if _, bound := s.callableLambdas[name]; bound {
+		return
+	}
+	if fn := s.functions[name]; fn != nil {
+		s.scanFunctionCall(fn, nil, staticCallable{name: name, fn: fn})
+		return
+	}
+	if s.selfClass != nil {
+		var fn *ScriptFunction
+		if s.selfClassContext {
+			fn = s.selfClass.ClassMethods[name]
+		} else {
+			fn = s.selfClass.Methods[name]
+		}
+		if fn != nil {
+			s.scanFunctionCall(fn, nil, staticCallable{name: name, fn: fn})
+		}
+	}
+}
+
+func (s *namespaceMutationScan) functionReferenceWithCall(name string, call *CallExpr) {
+	if fns, bound := s.callableParams[name]; bound {
+		for _, fn := range fns {
+			s.scanFunctionCall(fn, call, staticCallable{name: fn.Name + ".call", fn: fn})
+		}
+		return
+	}
+	if lambdas, bound := s.callableLambdas[name]; bound {
+		for _, lambda := range lambdas {
+			if block := lambdaLiteralBlock(lambda); block != nil &&
+				s.checker.immediateLambdaCallMayEnter(block, call) {
+				s.invokedLambdas[block] = struct{}{}
+				s.scanLambdaBlock(block)
+			}
+		}
+		return
+	}
+	if fn, ok := s.functions[name]; ok {
+		s.scanFunctionCall(fn, call, staticCallable{name: name, fn: fn})
+		return
+	}
+	s.selfCallReference(name, call)
 }
 
 func (s *namespaceMutationScan) selfReference(name string) {
+	s.selfCallReference(name, &CallExpr{})
+}
+
+func (s *namespaceMutationScan) selfCallReference(name string, call *CallExpr) {
 	if s.selfClass == nil {
 		return
 	}
 	if s.selfClassContext {
 		if name == "new" && !s.selfClass.IsModule {
-			s.visit(s.selfClass.Methods["initialize"])
+			fn := s.selfClass.Methods["initialize"]
+			if fn != nil {
+				s.scanFunctionCall(fn, call, staticCallable{
+					name:        s.selfClass.Name + ".new",
+					fn:          fn,
+					constructor: true,
+				})
+			}
 			return
 		}
-		s.visit(s.selfClass.ClassMethods[name])
+		fn := s.selfClass.ClassMethods[name]
+		if fn != nil {
+			s.scanFunctionCall(fn, call, staticCallable{name: s.selfClass.Name + "." + name, fn: fn})
+		}
 		return
 	}
-	s.visit(s.selfClass.Methods[name])
+	fn := s.selfClass.Methods[name]
+	if fn != nil {
+		s.scanFunctionCall(fn, call, staticCallable{name: s.selfClass.Name + "#" + name, fn: fn})
+	}
 }
 
 // memberReference descends into the statically resolvable methods a member
@@ -8477,12 +12104,180 @@ func staticConstructorReceiverClass(call *CallExpr) (string, bool) {
 // function scans everything a call may execute: parameter defaults run
 // before the body when the caller omits the argument.
 func (s *namespaceMutationScan) function(fn *ScriptFunction) {
-	s.withFunctionSelf(fn, func() {
-		s.withNominalReceiverParams(fn.Params, false, func() {
-			for _, param := range fn.Params {
-				s.expression(param.DefaultVal)
-			}
+	s.withFunctionContext(fn, nil, nil, func() {
+		for _, param := range fn.Params {
+			s.expression(param.DefaultVal)
+		}
+		s.statements(fn.Body)
+	})
+}
+
+func (s *namespaceMutationScan) scanFunctionCall(
+	fn *ScriptFunction,
+	call *CallExpr,
+	target staticCallable,
+) {
+	if fn == nil || fn.owner != s.checker.script {
+		return
+	}
+	if call == nil {
+		call = &CallExpr{}
+	}
+	if expanded, exact := s.checker.staticallyExpandedCall(call); exact {
+		call = expanded
+	}
+	plan := s.checker.scriptCallBindingPlan(call, target)
+	if !plan.bodyMayEnter && len(plan.defaultParams) == 0 {
+		return
+	}
+	facts := s.checker.reachableCallParamFacts(call, target)
+	lambdas := callableParamLambdaArguments(call, target, facts)
+	if _, active := s.active[fn]; active {
+		s.withFunctionContext(fn, facts, lambdas, func() {
+			s.scanFunctionDefaults(fn, plan.defaultParams)
+		})
+		return
+	}
+	s.active[fn] = struct{}{}
+	defer delete(s.active, fn)
+	s.withFunctionContext(fn, facts, lambdas, func() {
+		if !s.scanFunctionDefaults(fn, plan.defaultParams) {
+			return
+		}
+		if plan.bodyMayEnter {
 			s.statements(fn.Body)
+		}
+	})
+}
+
+func (s *namespaceMutationScan) scanFunctionDefaults(fn *ScriptFunction, indices []int) bool {
+	if fn == nil {
+		return true
+	}
+	active := s.activeDefaults[fn]
+	if active == nil {
+		active = make(map[int]struct{})
+		s.activeDefaults[fn] = active
+	}
+	for _, paramIndex := range indices {
+		if _, scanning := active[paramIndex]; scanning {
+			continue
+		}
+		active[paramIndex] = struct{}{}
+		completed := s.expression(fn.Params[paramIndex].DefaultVal)
+		delete(active, paramIndex)
+		if !completed {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *namespaceMutationScan) withFunctionContext(
+	fn *ScriptFunction,
+	facts map[string]checkReachableParamFact,
+	lambdas map[string][]Expression,
+	walk func(),
+) {
+	restoreResolution := s.checker.withClassConstantProofResolution(fn, scriptFunctionBindings(fn))
+	defer restoreResolution()
+	previousFacts := s.checker.reachableParamFacts
+	s.checker.reachableParamFacts = facts
+	defer func() { s.checker.reachableParamFacts = previousFacts }()
+	for _, param := range fn.Params {
+		if param.Type != nil && param.Name != "" {
+			s.checker.bindLocalTypeInCurrentFrame(param.Name, param.Type)
+		}
+		s.checker.applyReachableParamFact(param)
+	}
+	s.withCallableParamFacts(fn.Params, facts, lambdas, func() {
+		s.withFunctionSelf(fn, func() {
+			s.withNominalReceiverParams(fn.Params, false, walk)
+		})
+	})
+}
+
+func (s *namespaceMutationScan) withCallableParamFacts(
+	params []Param,
+	facts map[string]checkReachableParamFact,
+	lambdas map[string][]Expression,
+	walk func(),
+) {
+	previous := s.callableParams
+	previousLambdas := s.callableLambdas
+	s.callableParams = make(map[string][]*ScriptFunction, len(facts))
+	for name, fact := range facts {
+		if len(fact.callables) > 0 {
+			s.callableParams[name] = fact.callables
+		}
+	}
+	s.callableLambdas = make(map[string][]Expression, len(params)+len(lambdas))
+	for _, param := range params {
+		if param.Name != "" {
+			s.callableLambdas[param.Name] = nil
+		}
+	}
+	for name, values := range lambdas {
+		s.callableLambdas[name] = values
+	}
+	defer func() {
+		s.callableParams = previous
+		s.callableLambdas = previousLambdas
+	}()
+	walk()
+}
+
+func (s *namespaceMutationScan) withCallableParamShadows(params []Param, walk func()) {
+	previous := s.callableParams
+	previousLambdas := s.callableLambdas
+	shadowed := make(map[string]struct{}, len(params))
+	for _, param := range params {
+		if param.Name != "" {
+			shadowed[param.Name] = struct{}{}
+		}
+	}
+	s.callableParams = make(map[string][]*ScriptFunction, len(previous))
+	for name, fns := range previous {
+		if _, shadow := shadowed[name]; !shadow {
+			s.callableParams[name] = fns
+		}
+	}
+	s.callableLambdas = make(map[string][]Expression, len(previousLambdas))
+	for name, lambdas := range previousLambdas {
+		if _, shadow := shadowed[name]; !shadow {
+			s.callableLambdas[name] = lambdas
+		}
+	}
+	for name := range shadowed {
+		s.callableLambdas[name] = nil
+	}
+	defer func() {
+		s.callableParams = previous
+		s.callableLambdas = previousLambdas
+	}()
+	walk()
+}
+
+func (s *namespaceMutationScan) scanLambdaBlock(block *BlockLiteral) {
+	if block == nil {
+		return
+	}
+	popScope := s.checker.pushBlockCheckScope(block)
+	defer popScope()
+	popNameScope := s.checker.pushBlockNameScope(block)
+	defer popNameScope()
+	for _, name := range block.ImplicitParams {
+		s.checker.bindLocalTypeInCurrentFrame(name, nil)
+	}
+	s.withCallableParamShadows(block.Params, func() {
+		s.withNominalReceiverParams(block.Params, true, func() {
+			for _, param := range block.Params {
+				if !s.expression(param.DefaultVal) {
+					return
+				}
+				s.checker.recordParamBinding(param)
+			}
+			s.statements(block.Body)
 		})
 	})
 }
@@ -8546,53 +12341,132 @@ func (s *namespaceMutationScan) nominalReceiverClass(ty *TypeExpr) *ClassDef {
 	return resolved
 }
 
-func (s *namespaceMutationScan) statements(statements []Statement) {
+func (s *namespaceMutationScan) statements(statements []Statement) bool {
 	for _, stmt := range statements {
-		s.statement(stmt)
+		if !s.statement(stmt) || statementAlwaysExits(stmt) {
+			return false
+		}
 	}
+	return true
 }
 
-func (s *namespaceMutationScan) statement(stmt Statement) {
+func (s *namespaceMutationScan) statementMayComplete(stmt Statement) bool {
+	if s == nil || s.checker == nil {
+		return true
+	}
+	return s.checker.statementMayCompleteForBinding(stmt)
+}
+
+func (s *namespaceMutationScan) statement(stmt Statement) bool {
 	switch typed := stmt.(type) {
 	case nil:
+		return true
 	case *AssignStmt:
-		s.recordRuntimeNamespaceAssignment(typed.Target)
-		s.expression(typed.Target)
-		s.expression(typed.Value)
+		assignedValue := typed.Value
+		setterReachable := true
+		switch typed.Operator {
+		case "":
+			if !s.expression(typed.Value) || !s.assignmentTarget(typed.Target) {
+				return false
+			}
+		case tokenOrAssign, tokenAndAssign:
+			if !s.expression(typed.Target) {
+				return false
+			}
+			truthy, known := s.checker.inferredConditionTruthiness(typed.Target)
+			rhsReachable := !known ||
+				(typed.Operator == tokenOrAssign && !truthy) ||
+				(typed.Operator == tokenAndAssign && truthy)
+			if !rhsReachable {
+				setterReachable = false
+				break
+			}
+			if !s.expression(typed.Value) {
+				return !known
+			}
+		default:
+			if !s.expression(typed.Target) || !s.expression(typed.Value) {
+				return false
+			}
+			operatorValue := &BinaryExpr{
+				Left:     typed.Target,
+				Operator: typed.Operator,
+				Right:    typed.Value,
+				Position: typed.Pos(),
+			}
+			if !s.checker.binaryExpressionMayComplete(operatorValue) {
+				return false
+			}
+			assignedValue = operatorValue
+		}
+		s.checker.withSuppressedWarnings(func() {
+			s.checker.inferAssignStatementTypes("", typed)
+		})
+		if setterReachable {
+			s.recordRuntimeNamespaceAssignment(typed.Target, assignedValue)
+		}
+		return s.statementMayComplete(typed)
 	case *ExprStmt:
-		s.expression(typed.Expr)
+		return s.expression(typed.Expr)
 	case *ReturnStmt:
 		s.expression(typed.Value)
+		return false
 	case *RaiseStmt:
-		s.expression(typed.Value)
+		if !s.expression(typed.Value) {
+			return false
+		}
 		s.expression(typed.Message)
+		return false
 	case *BreakStmt:
 		s.expression(typed.Value)
+		return false
 	case *NextStmt:
 		s.expression(typed.Value)
+		return false
+	case *RetryStmt:
+		return false
 	case *IfStmt:
-		s.expression(typed.Condition)
-		s.statements(typed.Consequent)
-		for _, elseIf := range typed.ElseIf {
-			s.statement(elseIf)
-		}
-		s.statements(typed.Alternate)
+		return s.ifStatement(typed)
 	case *ForStmt:
-		s.expression(typed.Iterable)
-		s.statements(typed.Body)
-	case *WhileStmt:
-		s.expression(typed.Condition)
-		s.statements(typed.Body)
-	case *UntilStmt:
-		s.expression(typed.Condition)
-		s.statements(typed.Body)
-	case *TryStmt:
-		s.statements(typed.Body)
-		for i := range typed.Rescues {
-			s.statements(typed.Rescues[i].Body)
+		if !s.expression(typed.Iterable) {
+			return false
 		}
-		s.statements(typed.Else)
-		s.statements(typed.Ensure)
+		s.statements(typed.Body)
+		return true
+	case *WhileStmt:
+		if !s.expression(typed.Condition) {
+			return false
+		}
+		s.statements(typed.Body)
+		return true
+	case *UntilStmt:
+		if !s.expression(typed.Condition) {
+			return false
+		}
+		s.statements(typed.Body)
+		return true
+	case *TryStmt:
+		bodyCompletes := s.statements(typed.Body)
+		rescueCompletes := false
+		selected, exact := s.checker.staticallySelectedRescue(typed.Body, typed.Rescues)
+		if !statementsProvenNonRaising(typed.Body) && exact && selected >= 0 {
+			clause := &typed.Rescues[selected]
+			if len(clause.Body) > 0 {
+				rescueCompletes = s.statements(clause.Body)
+			}
+		} else if !statementsProvenNonRaising(typed.Body) && !exact {
+			for i := range typed.Rescues {
+				body := typed.Rescues[i].Body
+				if len(body) > 0 && s.statements(body) {
+					rescueCompletes = true
+				}
+			}
+		}
+		if bodyCompletes {
+			bodyCompletes = s.statements(typed.Else)
+		}
+		ensureCompletes := s.statements(typed.Ensure)
+		return ensureCompletes && (bodyCompletes || rescueCompletes)
 	case *FunctionStmt:
 		// A nested definition's writes fire only when it is called, but a
 		// missed invalidation is unsound while an extra one only widens, so
@@ -8603,15 +12477,188 @@ func (s *namespaceMutationScan) statement(stmt Statement) {
 			}
 			s.statements(typed.Body)
 		})
+		return true
 	case *ClassStmt:
-		s.statements(typed.Body)
+		return s.statements(typed.Body)
+	}
+	return true
+}
+
+func (c *scriptChecker) staticallyRaisedErrorKind(statements []Statement) (string, bool) {
+	if len(statements) != 1 {
+		return "", false
+	}
+	raise, ok := statements[0].(*RaiseStmt)
+	if !ok {
+		return "", false
+	}
+	if raise.Message == nil {
+		if value, static := staticLiteralValue(raise.Value); static && value.Kind() == KindString {
+			return runtimeErrorTypeBase, true
+		}
+		return "", false
+	}
+	if !staticRaiseErrorClass(raise) || !expressionProvenNonRaising(raise.Message) {
+		return "", false
+	}
+	if message, static := staticLiteralValue(raise.Message); static && message.Kind() != KindString {
+		return runtimeErrorTypeType, true
+	}
+	root := c.runtimeTypeRoot
+	if root == nil {
+		root = c.typeRoot
+	}
+	return raiseErrorTypeName(raise.Value, root)
+}
+
+func (c *scriptChecker) staticallyRaisedExpressionErrorKind(expr Expression) (string, bool) {
+	call, ok := expr.(*CallExpr)
+	if !ok || call == nil || callExpandsArguments(call) || call.BlockArg != nil || call.Block != nil {
+		return "", false
+	}
+	if _, direct := call.Callee.(*Identifier); !direct {
+		return "", false
+	}
+	for _, arg := range call.Args {
+		if !expressionProvenNonRaising(arg) {
+			return "", false
+		}
+	}
+	for _, kwarg := range call.KwArgs {
+		if !expressionProvenNonRaising(kwarg.Value) {
+			return "", false
+		}
+	}
+	target, resolved := c.resolveCallable(call)
+	if !resolved || target.fn == nil || target.fn.owner != c.script {
+		return "", false
+	}
+	plan := c.scriptCallBindingPlan(call, target)
+	if !plan.bodyMayEnter {
+		return "", false
+	}
+	for _, index := range plan.defaultParams {
+		if index < 0 || index >= len(target.fn.Params) ||
+			!expressionProvenNonRaising(target.fn.Params[index].DefaultVal) {
+			return "", false
+		}
+	}
+	return c.staticallyRaisedErrorKind(target.fn.Body)
+}
+
+func (c *scriptChecker) staticallySelectedRescue(
+	body []Statement,
+	rescues []RescueClause,
+) (int, bool) {
+	errorKind, exact := c.staticallyRaisedErrorKind(body)
+	if !exact {
+		return -1, false
+	}
+	for i := range rescues {
+		if staticErrorKindMatchesRescue(errorKind, rescues[i].Ty) {
+			return i, true
+		}
+	}
+	return -1, true
+}
+
+func expressionProvenNonRaising(expr Expression) bool {
+	switch expr.(type) {
+	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral,
+		*NilLiteral, *SymbolLiteral:
+		return true
+	default:
+		return false
 	}
 }
 
-func (s *namespaceMutationScan) recordRuntimeNamespaceAssignment(target Expression) {
+func statementsProvenNonRaising(statements []Statement) bool {
+	for _, stmt := range statements {
+		exprStmt, ok := stmt.(*ExprStmt)
+		if !ok || !expressionProvenNonRaising(exprStmt.Expr) {
+			return false
+		}
+	}
+	return true
+}
+
+func staticErrorKindMatchesRescue(errorKind string, rescueType *TypeExpr) bool {
+	if rescueType == nil {
+		return errorKind != runtimeErrorTypeLimit
+	}
+	return rescueTypeMatchesErrorKind(rescueType, errorKind)
+}
+
+func (s *namespaceMutationScan) assignmentTarget(target Expression) bool {
+	switch typed := target.(type) {
+	case nil, *Identifier, *IvarExpr, *ClassVarExpr:
+		return true
+	case *MemberExpr:
+		return s.expression(typed.Object)
+	case *IndexExpr:
+		if !s.expression(typed.Object) {
+			return false
+		}
+		for _, index := range typed.Indices {
+			if !s.expression(index) {
+				return false
+			}
+		}
+		return true
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			if !s.assignmentTarget(element.Target) {
+				return false
+			}
+		}
+		return true
+	default:
+		return s.expression(target)
+	}
+}
+
+func (s *namespaceMutationScan) ifStatement(stmt *IfStmt) bool {
+	if stmt == nil || !s.expression(stmt.Condition) {
+		return false
+	}
+	truthy, known := s.checker.inferredConditionTruthiness(stmt.Condition)
+	mayComplete := false
+	if !known || truthy {
+		mayComplete = s.statements(stmt.Consequent)
+		if known {
+			return mayComplete
+		}
+	}
+	if !known || !truthy {
+		for _, branch := range stmt.ElseIf {
+			if !s.expression(branch.Condition) {
+				return mayComplete
+			}
+			branchTruthy, branchKnown := s.checker.inferredConditionTruthiness(branch.Condition)
+			if !branchKnown || branchTruthy {
+				mayComplete = s.statements(branch.Consequent) || mayComplete
+				if branchKnown {
+					return mayComplete
+				}
+			}
+			if branchKnown && branchTruthy {
+				return mayComplete
+			}
+		}
+		mayComplete = s.statements(stmt.Alternate) || mayComplete
+	}
+	return mayComplete
+}
+
+func (s *namespaceMutationScan) recordRuntimeNamespaceAssignment(target, value Expression) {
 	if destructure, ok := target.(*DestructureTarget); ok {
-		for _, element := range destructure.Elements {
-			s.recordRuntimeNamespaceAssignment(element.Target)
+		values := destructureAssignmentExpressions(destructure, value)
+		for i, element := range destructure.Elements {
+			var elementValue Expression
+			if i < len(values) {
+				elementValue = values[i]
+			}
+			s.recordRuntimeNamespaceAssignment(element.Target, elementValue)
 		}
 		return
 	}
@@ -8645,7 +12692,22 @@ func (s *namespaceMutationScan) recordRuntimeNamespaceAssignment(target Expressi
 	}
 	if classDef != nil {
 		if setter := classDef.ClassMethods[member.Property+"="]; setter != nil {
-			s.visit(setter)
+			if setter.Private || setter.Protected &&
+				(s.selfClass != classDef || !s.selfClassContext) {
+				return
+			}
+			callee := *member
+			callee.Property += "="
+			call := &CallExpr{
+				Callee:   &callee,
+				Args:     []Expression{value},
+				Position: member.Pos(),
+			}
+			s.scanFunctionCall(setter, call, staticCallable{
+				name:       namespace + "." + callee.Property,
+				fn:         setter,
+				resolution: calleeMemberMethod,
+			})
 			return
 		}
 		if classDef.ClassMethods[member.Property] != nil {
@@ -8655,102 +12717,378 @@ func (s *namespaceMutationScan) recordRuntimeNamespaceAssignment(target Expressi
 	s.out[namespace+"."+member.Property] = struct{}{}
 }
 
-func (s *namespaceMutationScan) expression(expr Expression) {
+func (s *namespaceMutationScan) expression(expr Expression) bool {
+	return s.expressionWithAuto(expr, true)
+}
+
+func (s *namespaceMutationScan) expressionWithAuto(expr Expression, autoCall bool) bool {
 	switch typed := expr.(type) {
 	case nil:
+		return true
 	case *Identifier:
-		s.functionReference(typed.Name)
+		if autoCall {
+			s.functionReference(typed.Name)
+			return s.checker.expressionMayCompleteForBinding(typed)
+		}
+		return true
+	case *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral,
+		*SymbolLiteral, *IvarExpr, *ClassVarExpr, *TypeLiteral:
+		return true
 	case *TryStmt, *IfStmt, *WhileStmt, *UntilStmt, *ForStmt:
-		s.statement(typed.(Statement))
+		return s.statement(typed.(Statement))
 	case *BlockLiteral:
-		s.withNominalReceiverParams(typed.Params, true, func() {
-			for _, param := range typed.Params {
-				s.expression(param.DefaultVal)
-			}
-			s.statements(typed.Body)
-		})
+		return true
 	case *CallExpr:
-		s.expression(typed.Callee)
-		for _, arg := range typed.Args {
-			s.expression(arg)
+		if !s.callCalleeExpression(typed) {
+			return false
+		}
+		if staticNilSafeNavigationCall(typed) || s.checker.safeNavigationCallSkipsInferred(typed) {
+			return true
+		}
+		argumentsAlwaysEvaluate := s.checker.safeNavigationArgumentsAlwaysEvaluateInferred(typed)
+		argumentsMayBeSkipped := safeNavigationCallMaySkipArguments(typed) && !argumentsAlwaysEvaluate
+		target, targetResolved := s.checker.resolveCallable(typed)
+		dynamicCandidates := s.checker.captureDynamicCallCandidates(typed)
+		deferForwardedTargets := callResolvesForwardedTargetAfterArguments(typed, target, targetResolved)
+		var dynamicResolution checkDynamicCallResolution
+		if !targetResolved && !deferForwardedTargets {
+			dynamicResolution = s.checker.exactDynamicCallTargets(
+				typed,
+				target,
+				false,
+				dynamicCandidates,
+			)
+		}
+		if s.checker.callCalleeLookupFails(
+			typed,
+			target,
+			targetResolved,
+			deferForwardedTargets,
+			dynamicCandidates,
+			dynamicResolution,
+		) {
+			return argumentsMayBeSkipped
+		}
+		positionalSplatSeen := false
+		for i, arg := range typed.Args {
+			expectation := expressionExpectation{}
+			_, isSplat := arg.(*SplatArg)
+			if targetResolved && !positionalSplatSeen && !isSplat {
+				expectation = staticCallablePositionalArgumentExpectation(target, i)
+			}
+			if !s.callArgumentExpression(arg, expectation) ||
+				!s.checker.positionalArgumentExpansionMaySucceed(arg) {
+				return argumentsMayBeSkipped
+			}
+			positionalSplatSeen = positionalSplatSeen || isSplat
 		}
 		for _, kwarg := range typed.KwArgs {
-			s.expression(kwarg.Value)
+			expectation := expressionExpectation{}
+			if targetResolved && !kwarg.Splat {
+				expectation = staticCallableKeywordArgumentExpectation(typed, target, kwarg.Name)
+			}
+			if !s.callArgumentExpression(kwarg.Value, expectation) ||
+				!s.checker.keywordArgumentExpansionMaySucceed(kwarg) {
+				return argumentsMayBeSkipped
+			}
 		}
-		s.expression(typed.BlockArg)
-		if typed.Block != nil {
-			s.expression(typed.Block)
+		if !s.expressionWithAuto(typed.BlockArg, false) ||
+			!s.checker.blockArgumentConversionMaySucceed(typed.BlockArg, s.checker.inferExpressionType(typed.BlockArg)) {
+			return argumentsMayBeSkipped
 		}
+		if deferForwardedTargets {
+			dynamicResolution = s.checker.exactDynamicCallTargets(
+				typed,
+				target,
+				targetResolved,
+				dynamicCandidates,
+			)
+		}
+		s.callResolvedCallee(typed, target, targetResolved, dynamicResolution)
+		if typed.Block != nil && s.resolvedCallBlockMayRun(
+			typed,
+			target,
+			targetResolved,
+			dynamicResolution,
+		) {
+			s.scanLambdaBlock(typed.Block)
+		}
+		return argumentsMayBeSkipped || s.checker.expressionMayCompleteForBinding(typed)
 	case *SplatArg:
-		s.expression(typed.Value)
+		return s.expression(typed.Value)
 	case *UnaryExpr:
-		s.expression(typed.Right)
+		return s.expression(typed.Right) && s.checker.unaryExpressionMayComplete(typed)
 	case *BinaryExpr:
-		s.expression(typed.Left)
-		s.expression(typed.Right)
-	case *ConditionalExpr:
-		s.expression(typed.Condition)
-		s.expression(typed.Consequent)
-		s.expression(typed.Alternate)
-	case *IfExpr:
-		s.expression(typed.Condition)
-		s.expression(typed.Consequent)
-		for _, branch := range typed.ElseIf {
-			s.expression(branch.Condition)
-			s.expression(branch.Result)
+		if !s.expression(typed.Left) {
+			return false
 		}
-		s.expression(typed.Alternate)
+		if binaryRightMayEvaluate(typed) && !s.checker.binaryRightUnreachable(typed) {
+			if !s.expression(typed.Right) &&
+				(binaryRightAlwaysEvaluates(typed) || s.checker.binaryRightAlwaysEvaluatesInferred(typed)) {
+				return false
+			}
+		}
+		return s.checker.expressionMayCompleteForBinding(typed)
+	case *ConditionalExpr:
+		if !s.expression(typed.Condition) {
+			return false
+		}
+		truthy, known := s.checker.inferredConditionTruthiness(typed.Condition)
+		if !known || truthy {
+			s.expression(typed.Consequent)
+		}
+		if !known || !truthy {
+			s.expression(typed.Alternate)
+		}
+		return s.checker.expressionMayCompleteForBinding(typed)
+	case *IfExpr:
+		if !s.expression(typed.Condition) {
+			return false
+		}
+		truthy, known := s.checker.inferredConditionTruthiness(typed.Condition)
+		if !known || truthy {
+			s.expression(typed.Consequent)
+		}
+		falseReachable := !known || !truthy
+		for _, branch := range typed.ElseIf {
+			if !falseReachable || !s.expression(branch.Condition) {
+				break
+			}
+			branchTruthy, branchKnown := s.checker.inferredConditionTruthiness(branch.Condition)
+			if !branchKnown || branchTruthy {
+				s.expression(branch.Result)
+			}
+			falseReachable = !branchKnown || !branchTruthy
+		}
+		if falseReachable {
+			s.expression(typed.Alternate)
+		}
+		return s.checker.expressionMayCompleteForBinding(typed)
 	case *RescueExpr:
-		s.expression(typed.Body)
+		bodyCompletes := s.expression(typed.Body)
+		if errorKind, exact := s.checker.staticallyRaisedExpressionErrorKind(typed.Body); exact &&
+			!staticErrorKindMatchesRescue(errorKind, nil) {
+			return bodyCompletes
+		}
 		s.expression(typed.Fallback)
+		return s.checker.expressionMayCompleteForBinding(typed)
 	case *RangeExpr:
-		s.expression(typed.Start)
-		s.expression(typed.End)
+		return s.expression(typed.Start) && s.expression(typed.End)
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
-			s.expression(elem)
+			if !s.expression(elem) {
+				return false
+			}
 		}
+		return true
 	case *HashLiteral:
 		for _, pair := range typed.Pairs {
-			s.expression(pair.Key)
-			s.expression(pair.Value)
+			if !s.expression(pair.Key) || !s.expression(pair.Value) {
+				return false
+			}
 		}
+		return true
 	case *IndexExpr:
-		s.expression(typed.Object)
-		for _, index := range typed.Indices {
-			s.expression(index)
+		if !s.expression(typed.Object) {
+			return false
 		}
+		for _, index := range typed.Indices {
+			if !s.expression(index) {
+				return false
+			}
+		}
+		call := &CallExpr{Callee: &MemberExpr{Object: typed.Object, Property: "[]", Position: typed.Pos()}, Args: typed.Indices, Position: typed.Pos()}
+		s.callCallee(call)
+		return s.checker.expressionMayCompleteForBinding(typed)
 	case *MemberExpr:
-		s.memberReference(typed)
-		s.expression(typed.Object)
+		objectAutoCall := true
+		if typed.Property == "call" && typeExprMayIncludeCallable(s.checker.inferExpressionType(typed.Object)) {
+			objectAutoCall = false
+		}
+		if !s.expressionWithAuto(typed.Object, objectAutoCall) {
+			return false
+		}
+		if autoCall {
+			s.callCallee(&CallExpr{Callee: typed, Position: typed.Pos()})
+			return s.checker.expressionMayCompleteForBinding(typed)
+		}
+		return true
 	case *ScopeExpr:
-		s.expression(typed.Object)
+		return s.expression(typed.Object)
 	case *CaseExpr:
-		s.expression(typed.Target)
+		if !s.expression(typed.Target) {
+			return false
+		}
+		if result, known := s.checker.inferredCaseExpressionResult(typed); known {
+			s.expression(result)
+			return s.checker.expressionMayCompleteForBinding(typed)
+		}
 		for _, clause := range typed.Clauses {
 			for _, value := range clause.Values {
-				s.expression(value.Expr)
+				if !s.expression(value.Expr) ||
+					!s.checker.caseWhenSplatExpansionMaySucceed(value.Expr, value.Splat) {
+					return false
+				}
 			}
 			s.expression(clause.Result)
 		}
 		s.expression(typed.ElseExpr)
+		return s.checker.expressionMayCompleteForBinding(typed)
 	case *YieldExpr:
 		for _, arg := range typed.Args {
-			s.expression(arg)
+			if !s.expression(arg) {
+				return false
+			}
 		}
+		return true
 	case *InterpolatedString:
-		s.stringParts(typed.Parts)
+		return s.stringParts(typed.Parts)
 	case *InterpolatedSymbol:
-		s.stringParts(typed.Parts)
+		return s.stringParts(typed.Parts)
+	}
+	return true
+}
+
+func (s *namespaceMutationScan) callArgumentExpression(
+	expr Expression,
+	expectation expressionExpectation,
+) bool {
+	autoCall := !expectation.includesCallable()
+	if !autoCall {
+		if callableExpr, bindable := s.checker.bareIdentifierCallableArgument(expr); bindable {
+			if call, ok := callableExpr.(*CallExpr); ok {
+				callableExpr = call.Callee
+			}
+			return s.expressionWithAuto(callableExpr, false)
+		}
+	}
+	return s.expressionWithAuto(expr, autoCall)
+}
+
+func (s *namespaceMutationScan) callResolvedCallee(
+	call *CallExpr,
+	target staticCallable,
+	resolved bool,
+	dynamicResolution checkDynamicCallResolution,
+) {
+	if resolved {
+		if target.fn != nil {
+			s.scanFunctionCall(target.fn, call, target)
+		}
+		return
+	}
+	if dynamicResolution.exact {
+		for _, candidate := range dynamicResolution.targets {
+			s.scanFunctionCall(candidate.target.fn, candidate.call, candidate.target)
+		}
+		return
+	}
+	s.callCallee(call)
+}
+
+func (s *namespaceMutationScan) resolvedCallBlockMayRun(
+	call *CallExpr,
+	target staticCallable,
+	resolved bool,
+	dynamicResolution checkDynamicCallResolution,
+) bool {
+	if call == nil || call.Block == nil {
+		return false
+	}
+	if resolved {
+		if target.fn != nil {
+			return s.functionCallBlockMayRun(call, target)
+		}
+		return s.checker.callMayEvaluateBlock(call)
+	}
+	if !dynamicResolution.exact {
+		return true
+	}
+	for _, candidate := range dynamicResolution.targets {
+		if s.functionCallBlockMayRun(candidate.call, candidate.target) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *namespaceMutationScan) functionCallBlockMayRun(
+	call *CallExpr,
+	target staticCallable,
+) bool {
+	return s.checker.scriptFunctionCallBlockMayRun(call, target)
+}
+
+func (s *namespaceMutationScan) callCalleeExpression(call *CallExpr) bool {
+	if call == nil {
+		return true
+	}
+	switch callee := call.Callee.(type) {
+	case *Identifier:
+		return true
+	case *MemberExpr:
+		objectAutoCall := true
+		if callee.Property == "call" && typeExprMayIncludeCallable(s.checker.inferExpressionType(callee.Object)) {
+			objectAutoCall = false
+		}
+		return s.expressionWithAuto(callee.Object, objectAutoCall)
+	default:
+		return s.expressionWithAuto(callee, false)
 	}
 }
 
-func (s *namespaceMutationScan) stringParts(parts []StringPart) {
-	for _, part := range parts {
-		if exprPart, ok := part.(StringExpr); ok {
-			s.expression(exprPart.Expr)
+func (s *namespaceMutationScan) callCallee(call *CallExpr) {
+	if call == nil {
+		return
+	}
+	if member, ok := call.Callee.(*MemberExpr); ok && member.Property == "call" {
+		if ident, ok := member.Object.(*Identifier); ok {
+			if _, bound := s.callableParams[ident.Name]; bound {
+				s.functionReferenceWithCall(ident.Name, call)
+				return
+			}
+			if _, bound := s.callableLambdas[ident.Name]; bound {
+				s.functionReferenceWithCall(ident.Name, call)
+				return
+			}
 		}
 	}
+	target, resolved := s.checker.resolveCallable(call)
+	if resolved {
+		if target.fn != nil {
+			s.scanFunctionCall(target.fn, call, target)
+		}
+		return
+	}
+	candidates := s.checker.captureDynamicCallCandidates(call)
+	resolution := s.checker.exactDynamicCallTargets(call, target, false, candidates)
+	if resolution.exact {
+		for _, candidate := range resolution.targets {
+			s.scanFunctionCall(candidate.target.fn, candidate.call, candidate.target)
+		}
+		return
+	}
+	switch callee := call.Callee.(type) {
+	case *Identifier:
+		s.functionReferenceWithCall(callee.Name, call)
+	case *MemberExpr:
+		if ident, ok := callee.Object.(*Identifier); ok && ident.Name == "self" {
+			s.selfCallReference(callee.Property, call)
+			return
+		}
+		s.memberReference(callee)
+	}
+}
+
+func (s *namespaceMutationScan) stringParts(parts []StringPart) bool {
+	for _, part := range parts {
+		if exprPart, ok := part.(StringExpr); ok {
+			if !s.expression(exprPart.Expr) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func collectBindingTarget(target Expression, out map[string]struct{}) {

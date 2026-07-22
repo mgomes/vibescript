@@ -1832,6 +1832,73 @@ def run(dynamic)
   accept(limit: dynamic)
 end
 `))
+
+	unionRest := compileScript(t, `
+def collect(*items: array<int> | nil)
+  items
+end
+
+def run()
+  value = "bad"
+  collect(value)
+end
+`)
+	requireCheckWarningContains(t, unionRest, "call to collect argument items expected array<int> | nil, got incompatible rest arguments")
+
+	unionKeywordRest := compileScript(t, `
+def accept(**opts: hash<string, int> | nil)
+  opts
+end
+
+def run()
+  value = "bad"
+  accept(limit: value)
+end
+`)
+	requireCheckWarningContains(t, unionKeywordRest, "call to accept argument opts expected hash<string, int> | nil, got incompatible keyword rest arguments")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def dynamic_string()
+  "bad"
+end
+
+def accept(**opts: hash<string, int>)
+  opts
+end
+
+def run()
+  accept(value: dynamic_string(), value: 1)
+end
+`))
+}
+
+func TestCheckReachableParamFactsPreferPositionalArgumentOverSameNameKeyword(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def consume_int(value: int)
+  value
+end
+
+def target(value, **rest)
+  consume_int(value)
+end
+
+def run()
+  target(1, value: "bad")
+  target("bad", value: 1)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	count := 0
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to consume_int argument value expected int, got string") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("CheckWarningsForFunction(%q) reported positional boundary warning %d times, want 1: %#v", "run", count, warnings)
+	}
 }
 
 func TestCheckInferEarlierArgumentsKeepPreMutationFacts(t *testing.T) {
@@ -2080,6 +2147,25 @@ def run(v)
   takes_int(v)
 end
 `))
+
+	// A callable is truthy even when it has no ordinary TypeExpr, so ||=
+	// preserves its exact target rather than widening to the unreachable RHS.
+	callable := compileScript(t, `
+def first(value: int)
+  value
+end
+
+def second(value: string)
+  value
+end
+
+def run
+  callback = first
+  callback ||= second
+  callback.call("bad")
+end
+`)
+	requireCheckWarningContains(t, callable, "call to first.call argument value expected int, got string")
 }
 
 func TestCheckInferHostKeywordsSeedKeywordRestParams(t *testing.T) {

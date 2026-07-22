@@ -60,6 +60,13 @@ def named_after_splat_wins
   kw(1, **{x: 3}, x: 2)
 end
 
+def emptied_bad_key_hash
+  opts = {}
+  opts[2] = 1
+  opts.delete(2)
+  kw(1, **opts)
+end
+
 def with_block(a, b)
   yield a + b
 end
@@ -104,6 +111,8 @@ end`)
 		[]Value{NewInt(1), NewInt(3), NewInt(0)})
 	compareArrays(t, callScript(t, ctx, script, "named_after_splat_wins", nil, CallOptions{}),
 		[]Value{NewInt(1), NewInt(2), NewInt(0)})
+	compareArrays(t, callScript(t, ctx, script, "emptied_bad_key_hash", nil, CallOptions{}),
+		[]Value{NewInt(1), NewInt(0), NewInt(0)})
 	if got := callScript(t, ctx, script, "splat_with_block", nil, CallOptions{}); got.Int() != 42 {
 		t.Fatalf("splat_with_block = %v, want 42", got)
 	}

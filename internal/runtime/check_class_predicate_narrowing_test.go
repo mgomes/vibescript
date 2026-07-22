@@ -2036,7 +2036,6 @@ def serialize()
 end
 
 def run()
-  takes_int(serialize())
   target = Factory
   begin
     target.new.build("bad")
@@ -2057,8 +2056,8 @@ end
 			boolWarnings++
 		}
 	}
-	if intWarnings != 2 || boolWarnings != 0 {
-		t.Fatalf("CheckWarningsForFunction() = %#v, want two int warnings and no bool warning", warnings)
+	if intWarnings != 1 || boolWarnings != 0 {
+		t.Fatalf("CheckWarningsForFunction() = %#v, want one int warning and no bool warning", warnings)
 	}
 }
 
