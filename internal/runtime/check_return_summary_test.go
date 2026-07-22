@@ -1537,6 +1537,60 @@ end
 	}
 }
 
+func TestCheckFunctionReturnSummariesDoNotEnqueueUnreachableCalls(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def helper() -> int
+  "bad"
+end
+
+def wrapper()
+  helper()
+end
+
+def takes_bool(value: bool)
+  value
+end
+
+def run()
+  takes_bool(true || wrapper())
+end
+`)
+
+	if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+		t.Errorf("CheckWarningsForFunction(%q) = %#v, want none for short-circuited wrapper", "run", warnings)
+	}
+}
+
+func TestCheckFunctionReturnSummariesDoNotCapturePreRequireCallState(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithEngine(t, moduleTestEngine(t), `
+def helper() -> Status
+  :draft
+end
+
+def wrapper()
+  helper()
+end
+
+def takes_bool(value: bool)
+  value
+end
+
+def run()
+  takes_bool(true || wrapper())
+  require("enum_status")
+  helper()
+end
+`)
+
+	if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+		t.Errorf("CheckWarningsForFunction(%q) = %#v, want none after require", "run", warnings)
+	}
+}
+
 func TestCheckFunctionReturnSummariesUseEntrypointImports(t *testing.T) {
 	t.Parallel()
 

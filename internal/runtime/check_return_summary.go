@@ -205,6 +205,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 		previousDecisions := c.implicitIfDecisions
 		previousCollector := c.returnCollector
 		previousPinned := c.pinnedExpressionFacts
+		previousReachableChecks := c.checkReachableCalls
 		restoreFresh := c.withFreshLocalInferenceScope()
 		c.scopes = nil
 		c.localTypes = nil
@@ -215,6 +216,10 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 		c.deferredReturnSites = nil
 		c.returnCollector = collector
 		c.pinnedExpressionFacts = nil
+		// Summary inference may inspect calls on paths the real checker has
+		// already proved unreachable. Those synthetic walks must not enqueue
+		// callees or mark them checked under the speculative runtime state.
+		c.checkReachableCalls = false
 		leaves := make(map[Statement]struct{})
 		collectImplicitReturnLeaves(fn.Body, leaves)
 		c.implicitReturnLeaves = leaves
@@ -233,6 +238,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 			c.implicitIfDecisions = previousDecisions
 			c.returnCollector = previousCollector
 			c.pinnedExpressionFacts = previousPinned
+			c.checkReachableCalls = previousReachableChecks
 			restoreFresh()
 		}()
 
