@@ -3183,23 +3183,6 @@ func (c *scriptChecker) checkExpression(function string, expr Expression) {
 	c.checkExpressionWithAuto(function, expr, true)
 }
 
-// checkAssignTargetExpression walks a plain assignment target. Binding roots
-// (identifiers and destructure elements) are never evaluated at runtime, so
-// they must not auto-invoke a same-named zero-arg function; index and member
-// targets still evaluate their objects and indices as ordinary reads.
-func (c *scriptChecker) checkAssignTargetExpression(function string, target Expression) {
-	switch typed := target.(type) {
-	case *Identifier:
-		c.checkExpressionWithAuto(function, typed, false)
-	case *DestructureTarget:
-		for _, element := range typed.Elements {
-			c.checkAssignTargetExpression(function, element.Target)
-		}
-	default:
-		c.checkExpression(function, target)
-	}
-}
-
 func (c *scriptChecker) checkExpressionWithExpectation(function string, expr Expression, expectation expressionExpectation) {
 	if expectation.empty() {
 		c.checkExpression(function, expr)
