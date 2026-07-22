@@ -48,6 +48,60 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "unused lambda yield preserves the implicit result",
+			source: `
+def build_count()
+  handler = -> { yield }
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count() { return "unused" })
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "unused nested lambda yield preserves the implicit result",
+			source: `
+def build_count()
+  -> { handler = -> { yield } }.call
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count() { return "unused" })
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "unreachable invoked lambda yield preserves the implicit result",
+			source: `
+def build_count()
+  -> { false && yield }.call
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count() { return "unused" })
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "bare parenless call carries the summary",
 			source: `
 def build_count()
@@ -1959,6 +2013,78 @@ end
 			source: `
 def invoke()
   yield
+  0
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(invoke() { return "s" })
+end
+`,
+		},
+		{
+			name: "immediate lambda yield poisons the summary",
+			source: `
+def invoke()
+  -> { yield }.call
+  0
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(invoke() { return "s" })
+end
+`,
+		},
+		{
+			name: "immediate lambda builtin yield poisons the summary",
+			source: `
+def invoke()
+  lambda { yield }.call
+  0
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(invoke() { return "s" })
+end
+`,
+		},
+		{
+			name: "nested immediate lambda yield poisons the summary",
+			source: `
+def invoke()
+  -> { -> { yield }.call }.call
+  0
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(invoke() { return "s" })
+end
+`,
+		},
+		{
+			name: "escaping lambda yield poisons the summary",
+			source: `
+def consume(callback)
+  callback.call
+end
+
+def invoke()
+  consume(-> { yield })
   0
 end
 

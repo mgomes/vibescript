@@ -185,6 +185,9 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 		previousStates := c.implicitReturnStates
 		previousDecisions := c.implicitIfDecisions
 		previousCollector := c.returnCollector
+		previousYieldCollector := c.summaryYieldCollector
+		previousYieldBlock := c.summaryYieldBlock
+		previousYieldsActive := c.summaryYieldsActive
 		previousPinned := c.pinnedExpressionFacts
 		previousReachableChecks := c.checkReachableCalls
 		restoreFresh := c.withFreshLocalInferenceScope()
@@ -196,6 +199,9 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 		c.callArgumentFacts = nil
 		c.deferredReturnSites = nil
 		c.returnCollector = collector
+		c.summaryYieldCollector = collector
+		c.summaryYieldBlock = nil
+		c.summaryYieldsActive = true
 		c.pinnedExpressionFacts = nil
 		// Summary inference may inspect calls on paths the real checker has
 		// already proved unreachable. Those synthetic walks must not enqueue
@@ -218,6 +224,9 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 			c.implicitReturnStates = previousStates
 			c.implicitIfDecisions = previousDecisions
 			c.returnCollector = previousCollector
+			c.summaryYieldCollector = previousYieldCollector
+			c.summaryYieldBlock = previousYieldBlock
+			c.summaryYieldsActive = previousYieldsActive
 			c.pinnedExpressionFacts = previousPinned
 			c.checkReachableCalls = previousReachableChecks
 			restoreFresh()

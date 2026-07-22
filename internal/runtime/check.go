@@ -128,6 +128,9 @@ type scriptChecker struct {
 	returnSummaries         map[returnSummaryCacheKey]*TypeExpr
 	summaryInProgress       map[returnSummaryCacheKey]struct{}
 	returnCollector         *returnSummaryCollector
+	summaryYieldCollector   *returnSummaryCollector
+	summaryYieldBlock       *BlockLiteral
+	summaryYieldsActive     bool
 	pinnedExpressionFacts   map[Expression]*TypeExpr
 	requiredModules         map[string]struct{}
 	runtimeModules          map[string]struct{}
@@ -2836,6 +2839,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		immediateLambdaEnters := c.immediateLambdaCallMayEnter(invokedLambda, typed)
 		if immediateLambdaEnters {
 			c.applyLambdaBlockNamespaceMutations(invokedLambda)
+			c.checkInvokedLambdaSummaryYields(function, invokedLambda)
 		}
 		// A lambda literal escaping into the call may run during it, so its
 		// possible namespace writes count here, unlike a bare definition.
@@ -2843,11 +2847,14 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		if invokedLambda == nil || immediateLambdaEnters {
 			for _, arg := range typed.Args {
 				c.applyLambdaLiteralNamespaceMutations(arg)
+				c.checkLambdaLiteralSummaryYields(function, arg)
 			}
 			for _, kwarg := range typed.KwArgs {
 				c.applyLambdaLiteralNamespaceMutations(kwarg.Value)
+				c.checkLambdaLiteralSummaryYields(function, kwarg.Value)
 			}
 			c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
+			c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
 		}
 		if invokedLambda == nil && c.callMayEvaluateBlock(typed) {
 			c.checkLiteralArrayBlockParamTypes(function, typed)
@@ -2898,6 +2905,7 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		if autoCall {
 			if lambdaLiteralArity(invokedLambda) == 0 {
 				c.applyLambdaBlockNamespaceMutations(invokedLambda)
+				c.checkInvokedLambdaSummaryYields(function, invokedLambda)
 			}
 			c.checkMemberAutoCall(function, typed)
 			// Member dispatch on a container may mutate it in place (push,
@@ -2993,8 +3001,8 @@ func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression
 		}
 		// The caller-supplied block may return non-locally instead of
 		// letting the summarized function produce its later result.
-		if c.returnCollector != nil {
-			c.returnCollector.record(nil)
+		if c.summaryYieldsActive {
+			c.summaryYieldCollector.record(nil)
 		}
 	case *InterpolatedString:
 		c.checkStringParts(function, typed.Parts)
@@ -3270,6 +3278,11 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, 
 	if block == nil {
 		return
 	}
+	previousSummaryYieldsActive := c.summaryYieldsActive
+	if localReturns {
+		c.summaryYieldsActive = block == c.summaryYieldBlock
+	}
+	defer func() { c.summaryYieldsActive = previousSummaryYieldsActive }()
 	// The restore models a block that may run zero times, but a namespace
 	// write inside a call block that does run must keep governing dispatch,
 	// so possible-write markers survive the restore. A lambda's body does
@@ -6431,22 +6444,43 @@ func (c *scriptChecker) immediateLambdaCallMayEnter(block *BlockLiteral, call *C
 // invoke it during the call. A bare lambda definition leaks nothing — its
 // body runs only if a later resolvable call reaches it.
 func (c *scriptChecker) applyLambdaLiteralNamespaceMutations(arg Expression) {
-	var block *BlockLiteral
-	switch typed := arg.(type) {
-	case *BlockLiteral:
-		if typed.Lambda {
-			block = typed
-		}
-	case *CallExpr:
-		callee, ok := typed.Callee.(*Identifier)
-		if ok && callee.Name == "lambda" {
-			block = typed.Block
-		}
-	}
+	block := lambdaLiteralBlock(arg)
 	if block == nil {
 		return
 	}
 	c.applyLambdaBlockNamespaceMutations(block)
+}
+
+func lambdaLiteralBlock(arg Expression) *BlockLiteral {
+	switch typed := arg.(type) {
+	case *BlockLiteral:
+		if typed.Lambda {
+			return typed
+		}
+	case *CallExpr:
+		callee, ok := typed.Callee.(*Identifier)
+		if ok && callee.Name == "lambda" {
+			return typed.Block
+		}
+	}
+	return nil
+}
+
+func (c *scriptChecker) checkLambdaLiteralSummaryYields(function string, arg Expression) {
+	c.checkInvokedLambdaSummaryYields(function, lambdaLiteralBlock(arg))
+}
+
+// checkInvokedLambdaSummaryYields rechecks an executed lambda with local
+// return semantics intact while allowing reachable yields to poison the
+// enclosing function summary. Merely defining a lambda keeps yields inert.
+func (c *scriptChecker) checkInvokedLambdaSummaryYields(function string, block *BlockLiteral) {
+	if block == nil || c.summaryYieldCollector == nil || !c.summaryYieldsActive {
+		return
+	}
+	previousBlock := c.summaryYieldBlock
+	c.summaryYieldBlock = block
+	defer func() { c.summaryYieldBlock = previousBlock }()
+	c.checkBlockLiteral(function, block, true)
 }
 
 // applyLambdaBlockNamespaceMutations records the namespace members a lambda
