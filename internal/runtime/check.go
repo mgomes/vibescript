@@ -4952,6 +4952,12 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			}
 		}
 		immediateLambdaEnters := targetMayEnter && invokedLambda != nil
+		oneShotBlockEnters := immediateLambdaEnters ||
+			targetMayEnter && storedBlockCallExact
+		var oneShotBlockBaseScopeState checkScopeState
+		if oneShotBlockEnters {
+			oneShotBlockBaseScopeState = c.snapshotScopeState()
+		}
 		if immediateLambdaEnters {
 			c.applyLambdaBlockNamespaceMutations(invokedLambda)
 			c.checkInvokedLambdaSummaryYields(function, invokedLambda)
@@ -4972,6 +4978,26 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			}
 			if storedBlockMayFail {
 				c.captureNonCompletingExpressionArm()
+			}
+		}
+		if callMayComplete && oneShotBlockEnters {
+			// A safe call refines only its entered non-nil arm here. The
+			// argumentsMayBeSkipped join below adds the untouched nil arm.
+			if immediateLambdaEnters {
+				c.refineOneShotBlockIvarFacts(
+					oneShotBlockBaseScopeState,
+					[]capturedBlockLiteralValue{{
+						block:  invokedLambda,
+						strict: true,
+					}},
+					[]blockLiteralCallEntryOutcome{immediateLambdaEntry},
+				)
+			} else {
+				c.refineOneShotBlockIvarFacts(
+					oneShotBlockBaseScopeState,
+					evaluatedStoredBlocks,
+					storedBlockEntries,
+				)
 			}
 		}
 		// Exact script targets carry callable arguments through their parameter
@@ -5170,7 +5196,10 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					return false
 				}
 			}
-			if lambdaLiteralArity(invokedLambda) == 0 {
+			immediateLambdaEnters := lambdaLiteralArity(invokedLambda) == 0
+			var oneShotBlockBaseScopeState checkScopeState
+			if immediateLambdaEnters {
+				oneShotBlockBaseScopeState = c.snapshotScopeState()
 				c.applyLambdaBlockNamespaceMutations(invokedLambda)
 				c.checkInvokedLambdaSummaryYields(function, invokedLambda)
 				c.widenRepeatedRegionBlockIvarFacts(invokedLambda)
@@ -5188,6 +5217,16 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					return true
 				}
 				return false
+			}
+			if immediateLambdaEnters {
+				c.refineOneShotBlockIvarFacts(
+					oneShotBlockBaseScopeState,
+					[]capturedBlockLiteralValue{{
+						block:  invokedLambda,
+						strict: true,
+					}},
+					[]blockLiteralCallEntryOutcome{{mayEnter: true}},
+				)
 			}
 			dispatchPreservesFacts := c.memberDispatchPreservesReceiverFacts(typed)
 			if !blockCapturingBuiltin &&

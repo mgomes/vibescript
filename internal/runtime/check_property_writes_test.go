@@ -6080,6 +6080,235 @@ end
 	}
 }
 
+func TestCheckInitializerIvarOneShotCallbacksPreserveExactFacts(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		parameters string
+		invocation string
+		arguments  string
+	}{
+		{
+			name: "stored proc",
+			invocation: `    callback = proc { @flag = true }
+    callback.call()`,
+		},
+		{
+			name: "untyped write before exact write",
+			invocation: `    callback = proc { @scratch = true; @flag = true }
+    callback.call()`,
+		},
+		{
+			name:       "immediate lambda",
+			invocation: `    -> { @flag = true }.call()`,
+		},
+		{
+			name:       "parenless immediate lambda",
+			invocation: `    -> { @flag = true }.call`,
+		},
+		{
+			name:       "immediate proc",
+			invocation: `    proc { @flag = true }.call()`,
+		},
+		{
+			name:       "identical exact alternatives",
+			parameters: "(choose: bool)",
+			invocation: `    callback = choose ?
+      proc { @flag = true } :
+      lambda { @flag = true }
+    callback.call()`,
+			arguments: "true",
+		},
+		{
+			name:       "noncompleting exact alternative",
+			parameters: "(choose: bool)",
+			invocation: `    callback = choose ?
+      proc { @flag = true } :
+      proc { raise "stop" }
+    callback.call()`,
+			arguments: "true",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def initialize`+tc.parameters+`
+    @flag = false
+`+tc.invocation+`
+    unless @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  User.new(`+tc.arguments+`).flag
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindBool || !got.Bool() {
+				t.Fatalf("run() = %v, want true", got)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarOneShotCallbackControlsStayConservative(t *testing.T) {
+	t.Parallel()
+
+	t.Run("differing exact alternatives", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def initialize(choose: bool)
+    @flag = false
+    callback = choose ?
+      proc { @flag = true } :
+      proc { @flag = false }
+    callback.call()
+    unless @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run(choose: bool)
+  User.new(choose).flag
+end
+`)
+		requireCheckWarningContains(
+			t,
+			script,
+			"call to takes_int argument value expected int, got string",
+		)
+		got := callScript(
+			t,
+			context.Background(),
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+		)
+		if got.Kind() != KindBool || !got.Bool() {
+			t.Fatalf("run(true) = %v, want true", got)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(false)},
+			CallOptions{},
+			"argument value expected int, got string",
+		)
+	})
+
+	t.Run("maybe skipped safe call", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def initialize(invoke: bool)
+    @flag = false
+    callback = invoke ? proc { @flag = true } : nil
+    callback&.call()
+    unless @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run(invoke: bool)
+  User.new(invoke).flag
+end
+`)
+		requireCheckWarningContains(
+			t,
+			script,
+			"call to takes_int argument value expected int, got string",
+		)
+		got := callScript(
+			t,
+			context.Background(),
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+		)
+		if got.Kind() != KindBool || !got.Bool() {
+			t.Fatalf("run(true) = %v, want true", got)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(false)},
+			CallOptions{},
+			"argument value expected int, got string",
+		)
+	})
+
+	t.Run("repeated call site", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def initialize
+    @flag = false
+    callback = proc { @flag = true }
+    for item in [1, 2]
+      callback.call()
+    end
+    unless @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  User.new().flag
+end
+`)
+		requireCheckWarningContains(
+			t,
+			script,
+			"call to takes_int argument value expected int, got string",
+		)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindBool || !got.Bool() {
+			t.Fatalf("run() = %v, want true", got)
+		}
+	})
+}
+
 func TestCheckInitializerIvarImmediateLambdaPreEntryFailuresPreserveUnsetFacts(t *testing.T) {
 	t.Parallel()
 

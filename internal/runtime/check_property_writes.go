@@ -463,6 +463,10 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 // bindWrittenIvarFact keeps a compatible nil or boolean literal's exact
 // truthiness while retaining the declared contract for every other write.
 func (c *scriptChecker) bindWrittenIvarFact(name string, ty *TypeExpr, value Expression) {
+	c.bindLocalType(ivarFactKey(name), c.writtenIvarFact(ty, value))
+}
+
+func (c *scriptChecker) writtenIvarFact(ty *TypeExpr, value Expression) *TypeExpr {
 	fact := c.ivarContractFact(ty)
 	if value != nil {
 		if values, exact := c.staticLiteralValueAlternatives(value); exact {
@@ -494,7 +498,7 @@ func (c *scriptChecker) bindWrittenIvarFact(name string, ty *TypeExpr, value Exp
 			}
 		}
 	}
-	c.bindLocalType(ivarFactKey(name), fact)
+	return fact
 }
 
 // narrowLogicalIvarFact selects the truthiness arm that a logical ivar

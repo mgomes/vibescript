@@ -4947,6 +4947,95 @@ func (c *scriptChecker) widenRepeatedRegionBlockIvarFacts(block *BlockLiteral) {
 	c.widenRegionIvarFacts(effects)
 }
 
+// refineOneShotBlockIvarFacts restores exact scalar facts only on a normally
+// completing direct-call arm. Failure exits already captured the ordinary
+// widened state, and repeated regions keep that state unchanged.
+func (c *scriptChecker) refineOneShotBlockIvarFacts(
+	base checkScopeState,
+	blocks []capturedBlockLiteralValue,
+	entries []blockLiteralCallEntryOutcome,
+) {
+	if c.mutationRegionDepth != 0 || len(blocks) == 0 || len(blocks) != len(entries) {
+		return
+	}
+
+	completing := make([]map[string]*TypeExpr, 0, len(blocks))
+	written := make(map[string]struct{})
+	for i, value := range blocks {
+		if !entries[i].mayEnter ||
+			!c.blockLiteralBodyMayComplete(value.block, value.strict) {
+			continue
+		}
+		facts, exact := c.straightLineBlockIvarFacts(value.block)
+		if !exact {
+			return
+		}
+		completing = append(completing, facts)
+		for name := range facts {
+			written[name] = struct{}{}
+		}
+	}
+	if len(completing) == 0 || len(written) == 0 {
+		return
+	}
+
+	for name := range written {
+		facts := make([]*TypeExpr, 0, len(completing))
+		exact := true
+		for _, candidate := range completing {
+			fact, assigned := candidate[name]
+			if !assigned {
+				fact = scopeStateLocalType(base, ivarFactKey(name))
+			}
+			if fact == nil {
+				exact = false
+				break
+			}
+			facts = append(facts, fact)
+		}
+		if exact {
+			c.bindLocalType(ivarFactKey(name), unionTypeExprs(facts...))
+		}
+	}
+}
+
+// straightLineBlockIvarFacts accepts only writes whose value and successful
+// store are statically known. Every other body shape retains normal widening.
+func (c *scriptChecker) straightLineBlockIvarFacts(
+	block *BlockLiteral,
+) (map[string]*TypeExpr, bool) {
+	if block == nil {
+		return nil, false
+	}
+	facts := make(map[string]*TypeExpr)
+	for _, stmt := range block.Body {
+		assign, ok := stmt.(*AssignStmt)
+		if !ok || assign.Operator != "" || !expressionProvenNonRaising(assign.Value) {
+			return nil, false
+		}
+		target, ok := assign.Target.(*IvarExpr)
+		if !ok || !c.ivarWriteProvablyCompletes(target.Name, assign.Value) {
+			return nil, false
+		}
+		ty := c.instanceIvarContract(target.Name)
+		if ty == nil {
+			facts[target.Name] = nil
+			continue
+		}
+		facts[target.Name] = c.writtenIvarFact(ty, assign.Value)
+	}
+	return facts, true
+}
+
+func scopeStateLocalType(state checkScopeState, name string) *TypeExpr {
+	for i := len(state.types) - 1; i >= 0; i-- {
+		if ty, ok := state.types[i][name]; ok {
+			return ty
+		}
+	}
+	return nil
+}
+
 func (c *scriptChecker) widenRegionIvarFacts(effects regionIvarEffects) {
 	if effects.unknown {
 		c.widenUnsetInstanceIvarFacts()
