@@ -302,12 +302,17 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 func (c *scriptChecker) bindWrittenIvarFact(name string, ty *TypeExpr, value Expression) {
 	fact := c.ivarContractFact(ty)
 	if value != nil {
-		if literal, ok := staticLiteralValue(value); ok && literal.Kind() == KindBool &&
+		if literal, ok := staticLiteralValue(value); ok &&
 			c.checkRuntimeStaticValueType(literal, ty) == nil {
-			if literal.Bool() {
-				fact = checkTypeTrue
-			} else {
-				fact = checkTypeFalse
+			switch literal.Kind() {
+			case KindNil:
+				fact = checkTypeNil
+			case KindBool:
+				if literal.Bool() {
+					fact = checkTypeTrue
+				} else {
+					fact = checkTypeFalse
+				}
 			}
 		}
 	}

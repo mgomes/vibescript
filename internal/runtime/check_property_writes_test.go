@@ -1320,6 +1320,37 @@ end
 `))
 }
 
+func TestCheckLogicalIvarWritesPreserveLiteralNilTruthiness(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int?
+  property b: int
+  property c: int
+
+  def initialize
+    @a = nil
+    @a &&= -> { @b = 1 }.call()
+    @c = @b
+  end
+end
+
+def run
+  User.new()
+end
+`)
+	requireCheckWarningContains(t, script, "write to @c expected int, got nil")
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		nil,
+		CallOptions{},
+		"instance variable @c expected int, got nil",
+	)
+}
+
 // Logical-assignment right-hand sides run only when the current ivar picks
 // the assignment branch. A proven short circuit preserves other unset ivar
 // facts; a proven or possible assignment still walks the RHS effects.
