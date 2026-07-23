@@ -72,7 +72,7 @@ func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 // method-entry contract-or-nil fact; container contracts become unknown
 // because their stable post-write shape is not tracked.
 func (c *scriptChecker) widenUnsetInstanceIvarFacts() {
-	if c.assignmentTargetDepth > 0 || c.selfClass == nil || c.selfClassContext {
+	if c.selfClass == nil || c.selfClassContext {
 		return
 	}
 	for _, method := range c.selfClass.Methods {
@@ -88,7 +88,7 @@ func (c *scriptChecker) widenUnsetInstanceIvarFacts() {
 // direct ivar assignments can preserve unrelated unset facts through this
 // narrower path.
 func (c *scriptChecker) widenUnsetInstanceIvarFact(name string) {
-	if c.assignmentTargetDepth > 0 || c.selfClass == nil || c.selfClassContext ||
+	if c.selfClass == nil || c.selfClassContext ||
 		!typeExprIsNilOnly(c.localTypeFor(ivarFactKey(name))) {
 		return
 	}

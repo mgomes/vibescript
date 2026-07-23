@@ -535,19 +535,15 @@ func mutableStaticContainers(expr Expression) map[Expression]struct{} {
 	return containers
 }
 
-// capturedDestructureProjectionContainer recognizes exact rest-array snapshots
-// whose non-literal leaves are durable evaluated-value projections.
+// capturedDestructureProjectionContainer recognizes exact array snapshots
+// whose non-literal leaves have durable checker identities.
 func (c *scriptChecker) capturedDestructureProjectionContainer(expr Expression) bool {
 	array, ok := expr.(*ArrayLiteral)
 	if !ok {
 		return false
 	}
 	for _, element := range array.Elements {
-		if _, static := staticLiteralValue(element); static {
-			continue
-		}
-		nested, nestedArray := element.(*ArrayLiteral)
-		if nestedArray && c.capturedDestructureProjectionContainer(nested) {
+		if c.checkStaticValueCandidate(element) {
 			continue
 		}
 		fact, captured := c.destructureProjectionFacts[element]
@@ -563,6 +559,16 @@ func (c *scriptChecker) capturedDestructureProjectionContainer(expr Expression) 
 		return false
 	}
 	return true
+}
+
+func (c *scriptChecker) checkStaticValueCandidate(expr Expression) bool {
+	if _, static := staticLiteralValue(expr); static {
+		return true
+	}
+	if lambdaLiteralBlock(expr) != nil {
+		return true
+	}
+	return c.capturedDestructureProjectionContainer(expr)
 }
 
 func (c *scriptChecker) localKeywordSplatFails(name string) bool {
@@ -1620,6 +1626,13 @@ func (c *scriptChecker) bindForTargetType(stmt *ForStmt, elemType *TypeExpr) {
 // to a shadowing block parameter writes the block-local, so the outer fact
 // still holds.
 func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
+	c.degradeBlockBodyBindingsWithIvarWidening(block, true)
+}
+
+func (c *scriptChecker) degradeBlockBodyBindingsWithIvarWidening(
+	block *BlockLiteral,
+	widenIvars bool,
+) {
 	names := make(map[string]struct{})
 	collectLocalBindings(block.Body, names)
 	for _, frame := range c.localTypes {
@@ -1651,7 +1664,9 @@ func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
 		c.bindLocalType(name, nil)
 		c.bindLocalClassValue(name, "")
 	}
-	c.widenRepeatedRegionBlockIvarFacts(block)
+	if widenIvars {
+		c.widenRepeatedRegionBlockIvarFacts(block)
+	}
 }
 
 // binaryRightUnreachable reports whether inferred facts prove a short-circuit
@@ -1975,6 +1990,26 @@ type regionIvarEffects struct {
 	unknown bool
 }
 
+type directCoreHashDefaultCapture struct {
+	direct  bool
+	block   *BlockLiteral
+	strict  bool
+	unknown bool
+}
+
+func mergeRegionIvarEffects(dst *regionIvarEffects, src regionIvarEffects) {
+	if dst == nil {
+		return
+	}
+	dst.unknown = dst.unknown || src.unknown
+	for name := range src.writes {
+		if dst.writes == nil {
+			dst.writes = make(map[string]struct{})
+		}
+		dst.writes[name] = struct{}{}
+	}
+}
+
 // collectRepeatedRegionIvarEffects gathers the initializer-ivar effects a
 // loop or block must apply before its first checker walk. Reachability pruning
 // uses syntax-static outcomes only: inferred entry facts may be changed by an
@@ -1996,18 +2031,14 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffects(
 		case *NextStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
 		case *AssignStmt:
-			collectRegionIvarWriteTargets(typed.Target, effects)
-			if assignmentTargetMayInvokeCode(typed.Target) {
-				effects.unknown = true
+			if !c.collectRepeatedRegionAssignmentIvarEffects(typed, effects) {
+				return
 			}
-			c.collectRepeatedRegionIvarEffectsFromExpression(
-				typed.Target,
-				effects,
-				typed.Operator != "",
-			)
-			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
 		case *ExprStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Expr, effects, true)
+			if !c.expressionMayCompleteForBinding(typed.Expr) {
+				return
+			}
 		case *IfStmt:
 			c.collectRepeatedRegionIvarEffectsFromIfStatement(typed, effects)
 		case *ForStmt:
@@ -2036,6 +2067,236 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffects(
 		if statementAlwaysExits(stmt) {
 			return
 		}
+	}
+}
+
+func (c *scriptChecker) collectRepeatedRegionAssignmentIvarEffects(
+	stmt *AssignStmt,
+	effects *regionIvarEffects,
+) bool {
+	if stmt == nil {
+		return true
+	}
+	previousEvaluatedFacts := c.evaluatedDestructureFacts
+	if previousEvaluatedFacts == nil {
+		c.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
+		defer func() { c.evaluatedDestructureFacts = previousEvaluatedFacts }()
+	}
+	switch stmt.Operator {
+	case "":
+		c.collectRepeatedRegionIvarEffectsFromExpression(stmt.Value, effects, true)
+		if !c.expressionMayCompleteForBinding(stmt.Value) {
+			return false
+		}
+		c.captureEvaluatedDestructureFact(stmt.Value)
+		return c.collectRepeatedRegionPlainAssignmentTargetIvarEffects(
+			stmt.Target,
+			stmt.Value,
+			effects,
+		)
+	case tokenOrAssign, tokenAndAssign:
+		receiver, targetCompletes := c.collectRepeatedRegionAssignmentReadIvarEffects(
+			stmt.Target,
+			effects,
+		)
+		if !targetCompletes {
+			return false
+		}
+		truthy, known := staticExpressionTruthiness(stmt.Target)
+		rhsReachable := !known ||
+			stmt.Operator == tokenOrAssign && !truthy ||
+			stmt.Operator == tokenAndAssign && truthy
+		if !rhsReachable {
+			return true
+		}
+		c.collectRepeatedRegionIvarEffectsFromExpression(stmt.Value, effects, true)
+		rhsCompletes := c.expressionMayCompleteForBinding(stmt.Value)
+		if !rhsCompletes {
+			return !known
+		}
+		c.captureEvaluatedDestructureFact(stmt.Value)
+		storeCompletes := c.collectRepeatedRegionStoreIvarEffects(
+			stmt.Target,
+			stmt.Value,
+			receiver,
+			effects,
+		)
+		if target, ok := stmt.Target.(*Identifier); ok {
+			if known && storeCompletes {
+				c.bindLocalType(target.Name, c.inferExpressionType(stmt.Value))
+				c.bindExpressionLocalValueFact(target.Name, stmt.Value)
+			} else {
+				c.bindLocalType(target.Name, nil)
+				c.bindLocalClassValue(target.Name, "")
+			}
+		}
+		return storeCompletes || !known
+	default:
+		receiver, targetCompletes := c.collectRepeatedRegionAssignmentReadIvarEffects(
+			stmt.Target,
+			effects,
+		)
+		if !targetCompletes {
+			return false
+		}
+		operatorType := c.inferExpressionType(stmt.Target)
+		c.collectRepeatedRegionIvarEffectsFromExpression(stmt.Value, effects, true)
+		if !c.expressionMayCompleteForBinding(stmt.Value) {
+			return false
+		}
+		c.captureEvaluatedDestructureFact(stmt.Value)
+		operatorValue := &BinaryExpr{
+			Left:     stmt.Target,
+			Operator: stmt.Operator,
+			Right:    stmt.Value,
+			Position: stmt.Pos(),
+		}
+		dispatch := c.binaryScriptDispatch(operatorValue, operatorType)
+		if dispatch.mayEnter() {
+			mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
+		}
+		if !c.binaryExpressionMayCompleteWithReceiver(operatorValue, operatorType) {
+			return false
+		}
+		c.captureEvaluatedDestructureFact(operatorValue)
+		storeCompletes := c.collectRepeatedRegionStoreIvarEffects(
+			stmt.Target,
+			operatorValue,
+			receiver,
+			effects,
+		)
+		if target, ok := stmt.Target.(*Identifier); ok {
+			c.bindLocalType(target.Name, nil)
+			c.bindLocalClassValue(target.Name, "")
+		}
+		return storeCompletes
+	}
+}
+
+func (c *scriptChecker) collectRepeatedRegionAssignmentReadIvarEffects(
+	target Expression,
+	effects *regionIvarEffects,
+) (checkAssignmentReceiverCapture, bool) {
+	previous := c.assignmentReceiverCapture
+	capture := &checkAssignmentReceiverCapture{target: target}
+	c.assignmentReceiverCapture = capture
+	defer func() { c.assignmentReceiverCapture = previous }()
+	c.collectRepeatedRegionIvarEffectsFromExpression(target, effects, true)
+	if indexed, ok := target.(*IndexExpr); ok && capture.captured {
+		return *capture, c.indexExpressionMayCompleteWithReceiver(
+			indexed,
+			capture.receiverType,
+		)
+	}
+	return *capture, c.expressionMayCompleteForBinding(target)
+}
+
+func (c *scriptChecker) collectRepeatedRegionPlainAssignmentTargetIvarEffects(
+	target Expression,
+	value Expression,
+	effects *regionIvarEffects,
+) bool {
+	switch typed := target.(type) {
+	case nil, *ClassVarExpr:
+		return true
+	case *Identifier:
+		c.bindLocalType(typed.Name, c.inferExpressionType(value))
+		c.bindExpressionLocalValueFact(typed.Name, value)
+		return true
+	case *IvarExpr:
+		return c.collectRepeatedRegionStoreIvarEffects(
+			typed,
+			value,
+			checkAssignmentReceiverCapture{},
+			effects,
+		)
+	case *MemberExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
+		if !c.expressionMayCompleteForBinding(typed.Object) {
+			return false
+		}
+		receiver, _ := c.assignmentReceiverSnapshot(typed)
+		return c.collectRepeatedRegionStoreIvarEffects(typed, value, receiver, effects)
+	case *IndexExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
+		if !c.expressionMayCompleteForBinding(typed.Object) {
+			return false
+		}
+		receiver, _ := c.assignmentReceiverSnapshot(typed)
+		for _, index := range typed.Indices {
+			c.collectRepeatedRegionIvarEffectsFromExpression(index, effects, true)
+			if !c.expressionMayCompleteForBinding(index) {
+				return false
+			}
+			c.captureEvaluatedDestructureFact(index)
+		}
+		return c.collectRepeatedRegionStoreIvarEffects(typed, value, receiver, effects)
+	case *DestructureTarget:
+		values := destructureAssignmentExpressions(typed, value)
+		for i, element := range typed.Elements {
+			var elementValue Expression
+			if i < len(values) {
+				elementValue = values[i]
+			}
+			if !c.collectRepeatedRegionPlainAssignmentTargetIvarEffects(
+				element.Target,
+				elementValue,
+				effects,
+			) {
+				return false
+			}
+		}
+		return true
+	default:
+		c.collectRepeatedRegionIvarEffectsFromExpression(target, effects, true)
+		return c.expressionMayCompleteForBinding(target)
+	}
+}
+
+func (c *scriptChecker) collectRepeatedRegionStoreIvarEffects(
+	target Expression,
+	value Expression,
+	receiver checkAssignmentReceiverCapture,
+	effects *regionIvarEffects,
+) bool {
+	switch typed := target.(type) {
+	case nil, *Identifier, *ClassVarExpr:
+		return true
+	case *IvarExpr:
+		if !c.ivarAssignmentMayComplete(typed, value) {
+			return false
+		}
+		collectRegionIvarWriteTargets(typed, effects)
+		return true
+	case *MemberExpr, *IndexExpr:
+		completed := true
+		c.withEvaluatedAssignmentSetterArgumentFacts(target, value, func() {
+			selection := c.assignmentSetterScriptDispatch(target, value, receiver)
+			if selection.mayEnter() {
+				mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(selection))
+			}
+			completed = c.assignmentSetterMayCompleteWithReceiver(target, value, receiver)
+		})
+		return completed
+	case *DestructureTarget:
+		values := destructureAssignmentExpressions(typed, value)
+		for i, element := range typed.Elements {
+			var elementValue Expression
+			if i < len(values) {
+				elementValue = values[i]
+			}
+			if !c.collectRepeatedRegionStoreIvarEffects(
+				element.Target,
+				elementValue,
+				checkAssignmentReceiverCapture{},
+				effects,
+			) {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
 	}
 }
 
@@ -2118,26 +2379,64 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			c.collectRepeatedRegionIvarEffectsFromExpression(pair.Value, effects, true)
 		}
 	case *CallExpr:
+		target, resolved := c.resolveCallable(typed)
+		blockCapturingBuiltin := c.callTargetsBlockCapturingBuiltin(typed, target, resolved)
+		var invokedLambda *BlockLiteral
+		unknownDispatch := false
 		if member, ok := typed.Callee.(*MemberExpr); ok {
-			c.collectRepeatedRegionIvarEffectsFromExpression(member.Object, effects, true)
+			c.collectRepeatedRegionIvarEffectsFromExpression(
+				member.Object,
+				effects,
+				!blockCapturingBuiltin,
+			)
+			if !c.expressionMayCompleteForBinding(member.Object) {
+				return
+			}
 			if staticNilSafeNavigationCall(typed) {
 				return
 			}
-			if c.memberCallMayWriteUnknownIvar(typed) {
-				effects.unknown = true
+			if member.Property == "call" {
+				invokedLambda = c.resolveImmediateLambdaBlock(member.Object)
 			}
+			unknownDispatch = invokedLambda == nil && !blockCapturingBuiltin &&
+				c.memberCallMayWriteUnknownIvar(typed)
 		} else {
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Callee, effects, false)
-			effects.unknown = true
+			if !c.expressionMayCompleteForBindingWithAuto(typed.Callee, false) {
+				return
+			}
+			unknownDispatch = !blockCapturingBuiltin
 		}
 		for _, arg := range typed.Args {
 			c.collectRepeatedRegionIvarEffectsFromExpression(arg, effects, true)
+			if !c.expressionMayCompleteForBinding(arg) ||
+				!c.positionalArgumentExpansionMaySucceed(arg) {
+				return
+			}
 		}
 		for _, kwarg := range typed.KwArgs {
 			c.collectRepeatedRegionIvarEffectsFromExpression(kwarg.Value, effects, true)
+			if !c.expressionMayCompleteForBinding(kwarg.Value) ||
+				!c.keywordArgumentExpansionMaySucceed(kwarg) {
+				return
+			}
 		}
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.BlockArg, effects, false)
-		blockMayRun := c.callMayInvokeSuppliedBlock(typed)
+		if !c.expressionMayCompleteForBindingWithAuto(typed.BlockArg, false) ||
+			!c.blockArgumentConversionMaySucceed(
+				typed.BlockArg,
+				c.inferExpressionType(typed.BlockArg),
+			) {
+			return
+		}
+		if invokedLambda != nil {
+			if c.immediateLambdaCallEntry(invokedLambda, typed).mayEnter {
+				c.collectRepeatedRegionIvarEffectsFromBlock(invokedLambda, effects)
+			}
+		} else if unknownDispatch {
+			effects.unknown = true
+		}
+		blockMayRun := invokedLambda == nil && c.callMayInvokeSuppliedBlock(typed)
 		if blockMayRun && typed.BlockArg != nil {
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.BlockArg, effects, true)
 			effects.unknown = true
@@ -2147,11 +2446,23 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		}
 	case *MemberExpr:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
+		if !c.expressionMayCompleteForBinding(typed.Object) {
+			return
+		}
+		c.captureAssignmentReceiver(typed)
 		if autoCall {
 			if staticNilSafeNavigationMember(typed) {
 				return
 			}
-			if c.memberDispatchEffect(typed) == effectUnknown {
+			var invokedLambda *BlockLiteral
+			if typed.Property == "call" {
+				invokedLambda = c.resolveImmediateLambdaBlock(typed.Object)
+			}
+			if invokedLambda != nil {
+				if lambdaLiteralArity(invokedLambda) == 0 {
+					c.collectRepeatedRegionIvarEffectsFromBlock(invokedLambda, effects)
+				}
+			} else if c.memberDispatchEffect(typed) == effectUnknown {
 				effects.unknown = true
 			}
 		}
@@ -2159,8 +2470,30 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
 	case *IndexExpr:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
+		if !c.expressionMayCompleteForBinding(typed.Object) {
+			return
+		}
+		c.captureAssignmentReceiver(typed)
+		dispatchType := c.inferExpressionType(typed.Object)
+		hashDefault := c.captureDirectCoreHashDefault(typed.Object)
 		for _, index := range typed.Indices {
 			c.collectRepeatedRegionIvarEffectsFromExpression(index, effects, true)
+			if !c.expressionMayCompleteForBinding(index) {
+				return
+			}
+			c.captureEvaluatedDestructureFact(index)
+		}
+		dispatch := c.indexScriptDispatch(typed, dispatchType)
+		if dispatch.mayEnter() {
+			mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
+		}
+		defaultEffects, defaultMayRun, _ := c.indexReadIvarEffects(
+			typed,
+			dispatchType,
+			hashDefault,
+		)
+		if defaultMayRun {
+			mergeRegionIvarEffects(effects, defaultEffects)
 		}
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
@@ -2174,8 +2507,18 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Right, effects, true)
 	case *BinaryExpr:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Left, effects, true)
+		if !c.expressionMayCompleteForBinding(typed.Left) {
+			return
+		}
 		if binaryRightMayEvaluate(typed) {
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Right, effects, true)
+			if !c.expressionMayCompleteForBinding(typed.Right) {
+				return
+			}
+		}
+		dispatch := c.binaryScriptDispatch(typed, c.inferExpressionType(typed.Left))
+		if dispatch.mayEnter() {
+			mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
 		}
 	case *ConditionalExpr:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Condition, effects, true)
@@ -2204,7 +2547,8 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		}
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.ElseExpr, effects, autoCall)
 	case *BlockLiteral:
-		c.collectRepeatedRegionIvarEffectsFromBlock(typed, effects)
+		// Evaluating a lambda only constructs its closure. Call sites and
+		// dispatches that may invoke it account for those effects separately.
 	case *YieldExpr:
 		for _, arg := range typed.Args {
 			c.collectRepeatedRegionIvarEffectsFromExpression(arg, effects, true)
@@ -2225,6 +2569,255 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
 		c.collectRepeatedRegionIvarEffects([]Statement{typed.(Statement)}, effects)
 	}
+}
+
+// instanceOperatorMayRun reports whether an operator can enter script code,
+// which may invoke a stored closure that captures the current self.
+func (c *scriptChecker) instanceOperatorMayRun(
+	receiver Expression,
+	operator TokenType,
+) bool {
+	methods := binaryDispatchMethodNames(operator)
+	if len(methods) == 0 {
+		return false
+	}
+	return c.instanceMethodMayRun(receiver, methods...)
+}
+
+// indexReadIvarEffects recognizes hash default callbacks while retaining pure
+// builtin and fresh-literal reads. Direct Hash.new provenance is captured when
+// the object evaluates so a later index expression cannot change it.
+func (c *scriptChecker) indexReadIvarEffects(
+	expr *IndexExpr,
+	receiverType *TypeExpr,
+	direct directCoreHashDefaultCapture,
+) (regionIvarEffects, bool, bool) {
+	var effects regionIvarEffects
+	if expr == nil {
+		return effects, false, false
+	}
+	if _, literal := expr.Object.(*HashLiteral); literal {
+		return effects, false, false
+	}
+	if direct.direct {
+		if len(expr.Indices) != 1 {
+			return effects, false, false
+		}
+		if c.indexedHashOperationProvablyAbortsWithReceiver(expr, receiverType) {
+			return effects, false, true
+		}
+		if direct.block != nil {
+			args := []Expression{expr.Object, expr.Indices[0]}
+			receiverValue := NewHashWithDefault(
+				make(map[string]Value),
+				NewNil(),
+				wrapBlock(&Block{}),
+			)
+			mayRun := c.blockLiteralArgumentsMayBind(
+				direct.block,
+				args,
+				direct.strict,
+				&receiverValue,
+			)
+			mayReject := !c.blockLiteralArgumentsMustBind(
+				direct.block,
+				args,
+				direct.strict,
+				&receiverValue,
+			)
+			if mayRun {
+				c.collectRepeatedRegionIvarEffectsFromBlock(direct.block, &effects)
+			}
+			return effects, mayRun, mayReject
+		}
+		if direct.unknown {
+			effects.unknown = true
+			return effects, true, true
+		}
+		return effects, false, false
+	}
+	arms, ok := typeExprArms(receiverType, 0)
+	if !ok || len(arms) == 0 {
+		effects.unknown = true
+		return effects, true, true
+	}
+	for _, arm := range arms {
+		if arm.Kind == TypeHash || arm.Kind == TypeShape {
+			if len(expr.Indices) == 1 {
+				effects.unknown = true
+				return effects, true, true
+			}
+			return effects, false, false
+		}
+	}
+	return effects, false, false
+}
+
+func (c *scriptChecker) captureDirectCoreHashDefault(
+	expr Expression,
+) directCoreHashDefaultCapture {
+	var capture directCoreHashDefaultCapture
+	var call *CallExpr
+	switch typed := expr.(type) {
+	case *CallExpr:
+		call = typed
+	case *MemberExpr:
+		if typed.Property != "new" {
+			return capture
+		}
+		call = &CallExpr{Callee: typed, Position: typed.Pos()}
+	default:
+		return capture
+	}
+	target, resolved := c.resolveCallable(call)
+	if !c.callTargetsBlockCapturingBuiltin(call, target, resolved) ||
+		target.name != "Hash.new" {
+		return capture
+	}
+	capture.direct = true
+	if call.Block == nil && call.BlockArg == nil {
+		return capture
+	}
+	checkedCall, exact := c.staticallyExpandedCall(call)
+	if !exact {
+		capture.unknown = true
+		return capture
+	}
+	if len(checkedCall.KwArgs) != 0 || len(checkedCall.Args) > 1 {
+		return capture
+	}
+	if checkedCall.Block != nil {
+		if len(checkedCall.Args) != 0 || checkedCall.BlockArg != nil {
+			return capture
+		}
+		capture.block = checkedCall.Block
+		capture.strict = checkedCall.Block.Lambda
+		return capture
+	}
+	if checkedCall.BlockArg == nil || len(checkedCall.Args) != 0 {
+		return capture
+	}
+	if block := c.resolveImmediateLambdaBlock(checkedCall.BlockArg); block != nil {
+		capture.block = block
+		capture.strict = true
+		return capture
+	}
+	blockType, captured := c.callArgumentFacts[checkedCall.BlockArg]
+	if !captured {
+		blockType = c.inferExpressionTypeWithExpectation(
+			checkedCall.BlockArg,
+			typeExpressionExpectation(checkTypeFunction),
+		)
+	}
+	capture.unknown = !typeExprIsNilOnly(blockType)
+	return capture
+}
+
+func (c *scriptChecker) blockLiteralArgumentsMayBind(
+	block *BlockLiteral,
+	args []Expression,
+	strict bool,
+	firstValue *Value,
+) bool {
+	if block == nil {
+		return false
+	}
+	if (strict || block.Lambda) && len(args) != lambdaLiteralArity(block) {
+		return false
+	}
+	for i, param := range block.Params {
+		if param.Kind != ParamNormal {
+			return true
+		}
+		var arg Expression = &NilLiteral{}
+		if i < len(args) {
+			arg = args[i]
+		}
+		if i == 0 && firstValue != nil {
+			if param.Type != nil &&
+				c.checkRuntimeStaticValueType(*firstValue, param.Type) != nil {
+				return false
+			}
+			continue
+		}
+		if !c.callArgumentMayBindType(arg, param.Type) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *scriptChecker) blockLiteralArgumentsMustBind(
+	block *BlockLiteral,
+	args []Expression,
+	strict bool,
+	firstValue *Value,
+) bool {
+	if block == nil {
+		return false
+	}
+	if (strict || block.Lambda) && len(args) != lambdaLiteralArity(block) {
+		return false
+	}
+	for i, param := range block.Params {
+		if param.Kind != ParamNormal {
+			return false
+		}
+		var arg Expression = &NilLiteral{}
+		if i < len(args) {
+			arg = args[i]
+		}
+		if i == 0 && firstValue != nil {
+			if param.Type != nil &&
+				c.checkRuntimeStaticValueType(*firstValue, param.Type) != nil {
+				return false
+			}
+			continue
+		}
+		if !c.callArgumentMustBindType(arg, param.Type) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *scriptChecker) instanceMethodMayRun(receiver Expression, methods ...string) bool {
+	return c.instanceTypeMethodMayRun(c.inferExpressionType(receiver), methods...)
+}
+
+func (c *scriptChecker) instanceTypeMethodMayRun(
+	receiverType *TypeExpr,
+	methods ...string,
+) bool {
+	if len(methods) == 0 {
+		return false
+	}
+	arms, ok := typeExprArms(receiverType, 0)
+	if !ok || len(arms) == 0 {
+		return true
+	}
+	resolve := c.checkNamedTypeResolver()
+	for _, arm := range arms {
+		if arm.Kind != TypeEnum {
+			continue
+		}
+		match, ok := resolve(arm)
+		if !ok {
+			return true
+		}
+		if match.enum != nil {
+			continue
+		}
+		if match.class == nil || match.class.IsModule {
+			return true
+		}
+		for _, method := range methods {
+			if _, ok := match.class.Methods[method]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func collectRegionIvarWriteTargets(target Expression, effects *regionIvarEffects) {
@@ -2278,8 +2871,7 @@ func (c *scriptChecker) widenRepeatedRegionIvarFacts(
 	statements []Statement,
 	repeated ...Expression,
 ) {
-	typesState := c.snapshotLocalTypes()
-	classValuesState := c.snapshotLocalClassValues()
+	scopeState := c.snapshotScopeState()
 	bindings := make(map[string]struct{})
 	collectLocalBindings(statements, bindings)
 	for name := range bindings {
@@ -2291,8 +2883,7 @@ func (c *scriptChecker) widenRepeatedRegionIvarFacts(
 	for _, expr := range repeated {
 		c.collectRepeatedRegionIvarEffectsFromExpression(expr, &effects, true)
 	}
-	c.restoreLocalTypes(typesState)
-	c.restoreLocalClassValues(classValuesState)
+	c.restoreScopeState(scopeState)
 	c.widenRegionIvarFacts(effects)
 }
 
@@ -2308,8 +2899,10 @@ func (c *scriptChecker) widenRepeatedLoopIvarFacts(
 }
 
 func (c *scriptChecker) widenRepeatedRegionBlockIvarFacts(block *BlockLiteral) {
+	scopeState := c.snapshotScopeState()
 	var effects regionIvarEffects
 	c.collectRepeatedRegionIvarEffectsFromBlock(block, &effects)
+	c.restoreScopeState(scopeState)
 	c.widenRegionIvarFacts(effects)
 }
 
@@ -2386,7 +2979,14 @@ func (c *scriptChecker) degradeLocalTypesForRegion(
 			}
 		}
 	}
-	collectMutatedContainerRoots(statements, names)
+	mutatedContainers := make(map[string]struct{})
+	collectMutatedContainerRoots(statements, mutatedContainers)
+	for name := range mutatedContainers {
+		ty := c.localTypeFor(name)
+		if ty == nil || typeExprHasContainerArm(ty) {
+			names[name] = struct{}{}
+		}
+	}
 	c.degradeMutationCandidates(statements, names, repeated...)
 	for _, target := range extraTargets {
 		if target != nil {
@@ -2520,8 +3120,7 @@ func (c *scriptChecker) normalizeCheckStaticValues(values []Expression) []Expres
 	}
 	normalized := make([]Expression, 0, len(values))
 	for _, candidate := range values {
-		_, static := staticLiteralValue(candidate)
-		if !static && !c.capturedDestructureProjectionContainer(candidate) {
+		if !c.checkStaticValueCandidate(candidate) {
 			continue
 		}
 		duplicate := false
@@ -3740,6 +4339,20 @@ func (c *scriptChecker) staticValueExpressionAlternatives(expr Expression) ([]Ex
 	}
 
 	switch typed := expr.(type) {
+	case *ArrayLiteral:
+		if c.checkStaticValueCandidate(typed) {
+			return []Expression{typed}, true
+		}
+		for _, element := range typed.Elements {
+			if _, splat := element.(*SplatArg); splat {
+				return nil, false
+			}
+			values, exact := c.staticValueExpressionAlternatives(element)
+			if !exact || len(values) != 1 {
+				return nil, false
+			}
+		}
+		return []Expression{typed}, true
 	case *Identifier:
 		return c.localStaticValuesFor(typed.Name)
 	case *ConditionalExpr:
@@ -3803,7 +4416,10 @@ func (c *scriptChecker) staticValueExpressionAlternatives(expr Expression) ([]Ex
 			return c.staticValueExpressionAlternatives(result)
 		}
 	}
-	if _, ok := staticLiteralValue(expr); ok || c.capturedDestructureProjectionContainer(expr) {
+	if lambdaLiteralBlock(expr) != nil {
+		return []Expression{expr}, true
+	}
+	if c.checkStaticValueCandidate(expr) {
 		return []Expression{expr}, true
 	}
 	return nil, false
