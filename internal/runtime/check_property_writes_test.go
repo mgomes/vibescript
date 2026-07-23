@@ -5018,6 +5018,137 @@ func TestCheckInitializerIvarRepeatedEvaluationStopsAfterFailures(t *testing.T) 
         nil
       end
     end`,
+		"range endpoint": `    for value in [1]
+      begin
+        (1 / 0)..(-> { @b = 1; 2 }.call())
+      rescue
+        nil
+      end
+    end`,
+		"invalid range start": `    for value in [1]
+      begin
+        "bad"..(-> { @b = 1; 2 }.call())
+      rescue
+        nil
+      end
+    end`,
+		"oversized range start": `    for value in [1]
+      begin
+        9223372036854775808..(-> { @b = 1; 2 }.call())
+      rescue
+        nil
+      end
+    end`,
+		"conditional branches": `    for value in [1]
+      begin
+        -> { raise "stop" }.call() ? -> { @b = 1 }.call() : -> { @b = 1 }.call()
+      rescue
+        nil
+      end
+    end`,
+		"if statement branches and tail": `    for value in [1]
+      begin
+        if -> { raise "stop" }.call()
+          -> { @b = 1 }.call()
+        else
+          -> { @b = 1 }.call()
+        end
+        -> { @b = 1 }.call()
+      rescue
+        nil
+      end
+    end`,
+		"if expression later branch": `    for value in [1]
+      begin
+        selected = if false
+          0
+        elsif -> { raise "stop" }.call()
+          1
+        else
+          -> { @b = 1; 2 }.call()
+        end
+      rescue
+        nil
+      end
+    end`,
+		"raise message": `    for value in [1]
+      begin
+        raise -> { raise "stop" }.call(), -> { @b = 1; "message" }.call()
+      rescue
+        nil
+      end
+    end`,
+		"for iterable body and tail": `    for value in [1]
+      begin
+        for nested in -> { raise "stop" }.call()
+          -> { @b = 1 }.call()
+        end
+        -> { @b = 1 }.call()
+      rescue
+        nil
+      end
+    end`,
+		"while condition body and tail": `    for value in [1]
+      begin
+        while -> { raise "stop" }.call()
+          -> { @b = 1 }.call()
+        end
+        -> { @b = 1 }.call()
+      rescue
+        nil
+      end
+    end`,
+		"until condition body and tail": `    for value in [1]
+      begin
+        until -> { raise "stop" }.call()
+          -> { @b = 1 }.call()
+        end
+        -> { @b = 1 }.call()
+      rescue
+        nil
+      end
+    end`,
+		"yield argument": `    for value in [1]
+      begin
+        yield -> { raise "stop" }.call(), -> { @b = 1 }.call()
+      rescue
+        nil
+      end
+    end`,
+		"interpolation part": `    for value in [1]
+      begin
+        "#{-> { raise "stop" }.call()}#{-> { @b = 1 }.call()}"
+      rescue
+        nil
+      end
+    end`,
+		"case target": `    for value in [1]
+      begin
+        case -> { raise "stop" }.call()
+        when -> { @b = 1; 1 }.call()
+          -> { @b = 1 }.call()
+        else
+          -> { @b = 1 }.call()
+        end
+      rescue
+        nil
+      end
+    end`,
+		"case value": `    for value in [1]
+      begin
+        case 1
+        when -> { raise "stop" }.call(), -> { @b = 1; 1 }.call()
+          -> { @b = 1 }.call()
+        else
+          -> { @b = 1 }.call()
+        end
+      rescue
+        nil
+      end
+    end`,
+		"unreachable rescue fallback": `    for value in [1]
+      1 rescue -> { @b = 1 }.call()
+    end`,
 	}
 
 	for name, region := range regions {
@@ -5040,6 +5171,75 @@ end
 				t.Fatalf("CheckWarnings() = %#v, want the unset @b warning", warnings)
 			}
 		})
+	}
+}
+
+func TestCheckInitializerIvarRangeStartFailureSkipsEndEffects(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    for value in [1]
+      begin
+        (1 / 0)..(-> { @b = 1; 2 }.call())
+      rescue
+        nil
+      end
+    end
+    @a = @b
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+	requireCheckWarningContains(t, script, "write to @a expected int, got nil")
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		nil,
+		CallOptions{},
+		"instance variable @a expected int, got nil",
+	)
+}
+
+func TestCheckInitializerIvarCaseKeepsLaterCandidateEffects(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize(target: int)
+    for value in [1]
+      begin
+        case target
+        when 1, -> { @b = 1; 2 }.call()
+          -> { raise "stop" }.call()
+        end
+      rescue
+        nil
+      end
+    end
+    @a = @b
+  end
+end
+
+def run
+  User.new(2).a
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run() = %v, want 1", got)
 	}
 }
 

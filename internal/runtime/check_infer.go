@@ -2013,18 +2013,24 @@ func mergeRegionIvarEffects(dst *regionIvarEffects, src regionIvarEffects) {
 // collectRepeatedRegionIvarEffects gathers the initializer-ivar effects a
 // loop or block must apply before its first checker walk. Reachability pruning
 // uses syntax-static outcomes only: inferred entry facts may be changed by an
-// earlier statement or a later iteration.
+// earlier statement or a later iteration. It reports whether any path may
+// reach the end of the statement list.
 func (c *scriptChecker) collectRepeatedRegionIvarEffects(
 	statements []Statement,
 	effects *regionIvarEffects,
-) {
+) bool {
 	for _, stmt := range statements {
 		switch typed := stmt.(type) {
 		case nil:
 		case *ReturnStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
 		case *RaiseStmt:
-			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
+			if !staticRaiseErrorClass(typed) {
+				c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
+				if !c.expressionMayCompleteForBinding(typed.Value) {
+					return false
+				}
+			}
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Message, effects, true)
 		case *BreakStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
@@ -2032,30 +2038,40 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffects(
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
 		case *AssignStmt:
 			if !c.collectRepeatedRegionAssignmentIvarEffects(typed, effects) {
-				return
+				return false
 			}
 		case *ExprStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Expr, effects, true)
 			if !c.expressionMayCompleteForBinding(typed.Expr) {
-				return
+				return false
 			}
 		case *IfStmt:
-			c.collectRepeatedRegionIvarEffectsFromIfStatement(typed, effects)
+			if !c.collectRepeatedRegionIvarEffectsFromIfStatement(typed, effects) {
+				return false
+			}
 		case *ForStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Iterable, effects, true)
-			if !c.expressionMayCompleteForBinding(typed.Iterable) ||
-				c.exactIterableProvablyEmpty(typed.Iterable) {
-				break
+			if !c.expressionMayCompleteForBinding(typed.Iterable) {
+				return false
+			}
+			if c.exactIterableProvablyEmpty(typed.Iterable) {
+				continue
 			}
 			c.collectRepeatedRegionIvarEffects(typed.Body, effects)
 		case *WhileStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Condition, effects, true)
+			if !c.expressionMayCompleteForBinding(typed.Condition) {
+				return false
+			}
 			truthy, known := staticExpressionTruthiness(typed.Condition)
 			if !known || truthy {
 				c.collectRepeatedRegionIvarEffects(typed.Body, effects)
 			}
 		case *UntilStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Condition, effects, true)
+			if !c.expressionMayCompleteForBinding(typed.Condition) {
+				return false
+			}
 			truthy, known := staticExpressionTruthiness(typed.Condition)
 			if !known || !truthy {
 				c.collectRepeatedRegionIvarEffects(typed.Body, effects)
@@ -2069,9 +2085,10 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffects(
 			c.collectRepeatedRegionIvarEffects(typed.Ensure, effects)
 		}
 		if statementAlwaysExits(stmt) {
-			return
+			return false
 		}
 	}
+	return true
 }
 
 func (c *scriptChecker) collectRepeatedRegionAssignmentIvarEffects(
@@ -2440,29 +2457,37 @@ func (c *scriptChecker) collectRepeatedRegionStoreIvarEffects(
 func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromIfStatement(
 	stmt *IfStmt,
 	effects *regionIvarEffects,
-) {
+) bool {
 	if stmt == nil {
-		return
+		return true
 	}
 	c.collectRepeatedRegionIvarEffectsFromExpression(stmt.Condition, effects, true)
+	if !c.expressionMayCompleteForBinding(stmt.Condition) {
+		return false
+	}
+	mayComplete := false
 	truthy, known := staticExpressionTruthiness(stmt.Condition)
 	if !known || truthy {
-		c.collectRepeatedRegionIvarEffects(stmt.Consequent, effects)
+		mayComplete = c.collectRepeatedRegionIvarEffects(stmt.Consequent, effects)
 	}
 	if known && truthy {
-		return
+		return mayComplete
 	}
 	for _, branch := range stmt.ElseIf {
 		c.collectRepeatedRegionIvarEffectsFromExpression(branch.Condition, effects, true)
+		if !c.expressionMayCompleteForBinding(branch.Condition) {
+			return mayComplete
+		}
 		truthy, known = staticExpressionTruthiness(branch.Condition)
 		if !known || truthy {
-			c.collectRepeatedRegionIvarEffects(branch.Consequent, effects)
+			mayComplete = c.collectRepeatedRegionIvarEffects(branch.Consequent, effects) ||
+				mayComplete
 		}
 		if known && truthy {
-			return
+			return mayComplete
 		}
 	}
-	c.collectRepeatedRegionIvarEffects(stmt.Alternate, effects)
+	return c.collectRepeatedRegionIvarEffects(stmt.Alternate, effects) || mayComplete
 }
 
 func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromIfExpression(
@@ -2474,6 +2499,9 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromIfExpression(
 		return
 	}
 	c.collectRepeatedRegionIvarEffectsFromExpression(expr.Condition, effects, true)
+	if !c.expressionMayCompleteForBinding(expr.Condition) {
+		return
+	}
 	truthy, known := staticExpressionTruthiness(expr.Condition)
 	if !known || truthy {
 		c.collectRepeatedRegionIvarEffectsFromExpression(expr.Consequent, effects, autoCall)
@@ -2483,6 +2511,9 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromIfExpression(
 	}
 	for _, branch := range expr.ElseIf {
 		c.collectRepeatedRegionIvarEffectsFromExpression(branch.Condition, effects, true)
+		if !c.expressionMayCompleteForBinding(branch.Condition) {
+			return
+		}
 		truthy, known = staticExpressionTruthiness(branch.Condition)
 		if !known || truthy {
 			c.collectRepeatedRegionIvarEffectsFromExpression(branch.Result, effects, autoCall)
@@ -2684,6 +2715,9 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
 			c.collectRepeatedRegionIvarEffectsFromExpression(element.Target, effects, false)
+			if !c.expressionMayCompleteForBindingWithAuto(element.Target, false) {
+				return
+			}
 		}
 	case *SplatArg:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
@@ -2716,6 +2750,9 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		})
 	case *ConditionalExpr:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Condition, effects, true)
+		if !c.expressionMayCompleteForBinding(typed.Condition) {
+			return
+		}
 		truthy, known := staticExpressionTruthiness(typed.Condition)
 		if !known || truthy {
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Consequent, effects, autoCall)
@@ -2725,19 +2762,45 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		}
 	case *RescueExpr:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Body, effects, autoCall)
+		if expressionProvenNonRaising(typed.Body) {
+			return
+		}
+		if errorKind, exact := c.staticallyRaisedExpressionErrorKind(typed.Body); exact &&
+			!staticErrorKindMatchesRescue(errorKind, nil) {
+			return
+		}
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Fallback, effects, autoCall)
 	case *IfExpr:
 		c.collectRepeatedRegionIvarEffectsFromIfExpression(typed, effects, autoCall)
 	case *RangeExpr:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Start, effects, true)
+		if !c.expressionMayCompleteForBinding(typed.Start) ||
+			!c.rangeEndpointConversionMaySucceed(typed.Start) {
+			return
+		}
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.End, effects, true)
 	case *CaseExpr:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Target, effects, true)
+		if !c.expressionMayCompleteForBinding(typed.Target) {
+			return
+		}
+		if result, known := staticCaseExpressionResult(typed); known {
+			c.collectRepeatedRegionIvarEffectsFromExpression(result, effects, autoCall)
+			return
+		}
 		for _, clause := range typed.Clauses {
 			for _, value := range clause.Values {
 				c.collectRepeatedRegionIvarEffectsFromExpression(value.Expr, effects, true)
+				if !c.expressionMayCompleteForBinding(value.Expr) ||
+					!c.caseWhenSplatExpansionMaySucceed(value.Expr, value.Splat) {
+					return
+				}
+				c.collectRepeatedRegionIvarEffectsFromExpression(
+					clause.Result,
+					effects,
+					autoCall,
+				)
 			}
-			c.collectRepeatedRegionIvarEffectsFromExpression(clause.Result, effects, autoCall)
 		}
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.ElseExpr, effects, autoCall)
 	case *BlockLiteral:
@@ -2746,18 +2809,27 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 	case *YieldExpr:
 		for _, arg := range typed.Args {
 			c.collectRepeatedRegionIvarEffectsFromExpression(arg, effects, true)
+			if !c.expressionMayCompleteForBinding(arg) {
+				return
+			}
 		}
 		effects.unknown = true
 	case *InterpolatedString:
 		for _, part := range typed.Parts {
 			if exprPart, ok := part.(StringExpr); ok {
 				c.collectRepeatedRegionIvarEffectsFromExpression(exprPart.Expr, effects, true)
+				if !c.expressionMayCompleteForBinding(exprPart.Expr) {
+					return
+				}
 			}
 		}
 	case *InterpolatedSymbol:
 		for _, part := range typed.Parts {
 			if exprPart, ok := part.(StringExpr); ok {
 				c.collectRepeatedRegionIvarEffectsFromExpression(exprPart.Expr, effects, true)
+				if !c.expressionMayCompleteForBinding(exprPart.Expr) {
+					return
+				}
 			}
 		}
 	case *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:

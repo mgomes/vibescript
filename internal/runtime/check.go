@@ -834,7 +834,8 @@ func (c *scriptChecker) collectRequiredModuleExportsFromExpression(expr Expressi
 		c.collectRequiredModuleExportsFromIfExpression(typed)
 	case *RangeExpr:
 		c.collectRequiredModuleExportsFromExpression(typed.Start)
-		if !c.expressionMayCompleteForBinding(typed.Start) {
+		if !c.expressionMayCompleteForBinding(typed.Start) ||
+			!c.rangeEndpointConversionMaySucceed(typed.Start) {
 			return
 		}
 		c.collectRequiredModuleExportsFromExpression(typed.End)
@@ -4935,7 +4936,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		return c.checkIfExpression(function, typed, expressionExpectation{})
 	case *RangeExpr:
 		if !c.checkExpressionWithAuto(function, typed.Start, true) ||
-			!c.checkExpressionWithAuto(function, typed.End, true) {
+			!c.rangeEndpointConversionMaySucceed(typed.Start) ||
+			!c.checkExpressionWithAuto(function, typed.End, true) ||
+			!c.rangeEndpointConversionMaySucceed(typed.End) {
 			return false
 		}
 	case *CaseExpr:
@@ -8925,11 +8928,14 @@ func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map
 		}
 		return c.expressionMayEvaluateCallBlock(typed.Alternate, seen)
 	case *RangeExpr:
-		mayEvaluate, _ := c.expressionsMayEvaluateCallBlockInOrder(
-			[]Expression{typed.Start, typed.End},
-			seen,
-		)
-		return mayEvaluate
+		if c.expressionMayEvaluateCallBlock(typed.Start, seen) {
+			return true
+		}
+		if !c.expressionMayCompleteForBinding(typed.Start) ||
+			!c.rangeEndpointConversionMaySucceed(typed.Start) {
+			return false
+		}
+		return c.expressionMayEvaluateCallBlock(typed.End, seen)
 	case *CaseExpr:
 		if c.expressionMayEvaluateCallBlock(typed.Target, seen) {
 			return true
@@ -11188,6 +11194,33 @@ func (c *scriptChecker) caseWhenSplatExpansionMaySucceed(expr Expression, splat 
 	return !splat || c.expressionMayHaveExpansionType(expr, KindArray, checkTypeArray)
 }
 
+func (c *scriptChecker) rangeEndpointConversionMaySucceed(expr Expression) bool {
+	if expr == nil {
+		return true
+	}
+	if rangeEndpointIsBigIntegerLiteral(expr) {
+		return false
+	}
+	if value, literal := staticLiteralValue(expr); literal {
+		_, err := valueToInt64(value)
+		return err == nil
+	}
+	inferred := c.inferExpressionType(expr)
+	return inferred == nil ||
+		!typeExprsDisjoint(inferred, checkTypeNumber, c.checkNamedTypeResolver())
+}
+
+func rangeEndpointIsBigIntegerLiteral(expr Expression) bool {
+	switch typed := expr.(type) {
+	case *IntegerLiteral:
+		return typed.Big != nil
+	case *UnaryExpr:
+		return rangeEndpointIsBigIntegerLiteral(typed.Right)
+	default:
+		return false
+	}
+}
+
 // staticallyExpandedCall rewrites literal array/hash splats into the argument
 // shape the callee receives. The original expressions are retained so type and
 // effect facts still refer to their evaluation-point AST nodes.
@@ -12122,7 +12155,9 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 		return bodyCompletes || c.expressionMayCompleteForBinding(typed.Fallback)
 	case *RangeExpr:
 		return c.expressionMayCompleteForBinding(typed.Start) &&
-			c.expressionMayCompleteForBinding(typed.End)
+			c.rangeEndpointConversionMaySucceed(typed.Start) &&
+			c.expressionMayCompleteForBinding(typed.End) &&
+			c.rangeEndpointConversionMaySucceed(typed.End)
 	case *InterpolatedString:
 		for _, part := range typed.Parts {
 			if expression, ok := part.(StringExpr); ok &&
@@ -17444,7 +17479,10 @@ func (s *namespaceMutationScan) expressionWithAuto(expr Expression, autoCall boo
 		s.expressionWithAuto(typed.Fallback, autoCall)
 		return s.checker.expressionMayCompleteForBindingWithAuto(typed, autoCall)
 	case *RangeExpr:
-		return s.expression(typed.Start) && s.expression(typed.End)
+		return s.expression(typed.Start) &&
+			s.checker.rangeEndpointConversionMaySucceed(typed.Start) &&
+			s.expression(typed.End) &&
+			s.checker.rangeEndpointConversionMaySucceed(typed.End)
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
 			if !s.expression(elem) {
