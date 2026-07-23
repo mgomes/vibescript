@@ -357,6 +357,141 @@ end
 			warning: "write to user adds field extra to exact shape { name: string }",
 		},
 		{
+			name: "member write to typed hash value",
+			source: `
+def f(h: hash<string, int>)
+  h.value = "bad"
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "compound member write to typed hash value",
+			source: `
+def f(h: hash<string, int>)
+  h.value += 0.5
+end
+`,
+			warning: "write to h expected value int, got float",
+		},
+		{
+			name: "logical member write to typed hash value",
+			source: `
+def f(h: hash<string, int>)
+  h.value &&= "bad"
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "member write has a string or symbol hash key",
+			source: `
+def f(h: hash<int, int>)
+  h.value = 1
+end
+`,
+			warning: "write to h expected key int, got string | symbol",
+		},
+		{
+			name: "compatible member write preserves a dual-key hash",
+			source: `
+def f(h: hash<string | symbol, int>)
+  h.value = 1
+  h["bad"] = "bad"
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "member write to declared shape field",
+			source: `
+def f(user: { name: string })
+  user.name = 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "member write adds a declared shape field",
+			source: `
+def f(user: { name: string })
+  user.extra = 1
+end
+`,
+			warning: "write to user adds field extra to exact shape { name: string }",
+		},
+		{
+			name: "compound member write to declared shape field",
+			source: `
+def f(user: { count: int })
+  user.count += 0.5
+end
+`,
+			warning: "write to user field count expected int, got float",
+		},
+		{
+			name: "and assignment writes a declared shape field",
+			source: `
+def f(user: { name: string })
+  user.name &&= 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "or assignment may write a nullable declared shape field",
+			source: `
+def f(user: { name: string? })
+  user.name ||= 1
+end
+`,
+			warning: "write to user field name expected string?, got int",
+		},
+		{
+			name: "skipped member assignment preserves a declared shape",
+			source: `
+def f(user: { name: string })
+  user.name ||= 1
+  user[:name] = 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "skipped member assignment preserves a typed hash",
+			source: `
+def f(h: hash<string, int>)
+  h.value ||= 1
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "rescued missing member assignment preserves a declared shape",
+			source: `
+def f(user: { name: string })
+  begin
+    user.extra ||= 1
+  rescue
+    nil
+  end
+  user[:name] = 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "member assignment does not weaken its newly retained child",
+			source: `
+def f(user: { child: hash<string, int> }, child: hash<string, int>)
+  user.child = child
+  child[:bad] = 1
+end
+`,
+			warning: "write to child expected key string, got symbol",
+		},
+		{
 			name: "compatible entry write preserves the fact",
 			source: `
 def f(h: hash<string, int>)
@@ -872,6 +1007,39 @@ end
 `,
 		},
 		{
+			name: "skipped member or assignment does not write",
+			source: `
+def f(user: { name: string })
+  user.name ||= 1
+end
+`,
+		},
+		{
+			name: "missing compound member aborts before an extra field write",
+			source: `
+def f(user: { name: string })
+  user.extra += 1
+end
+`,
+		},
+		{
+			name: "missing logical member aborts before an extra field write",
+			source: `
+def f(user: { name: string })
+  user.extra ||= 1
+end
+`,
+		},
+		{
+			name: "single-key typed hash member write weakens gradually",
+			source: `
+def f(h: hash<string, int>)
+  h.value = 1
+  h[:bad] = 1
+end
+`,
+		},
+		{
 			name: "unknown keys and values stay silent",
 			source: `
 def f(h: hash<string, int>, k, v)
@@ -1344,5 +1512,65 @@ end
 	compareArrays(t, callFunc(t, script, "empty_merge_splat", nil), []Value{
 		NewBool(true),
 		NewInt(1),
+	})
+}
+
+func TestHashMemberAssignmentMatchesRuntimeKeySelection(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def existing_symbol
+  h = { name: "before" }
+  h.name = 1
+  [h[:name], h["name"]]
+end
+
+def existing_string
+  h = { "name": "before" }
+  h.name = 1
+  [h[:name], h["name"]]
+end
+
+def symbol_wins
+  h = { name: "symbol", "name": "string" }
+  h.name = 1
+  [h[:name], h["name"]]
+end
+
+def missing_key
+  h = {}
+  h.name = 1
+  [h[:name], h["name"]]
+end
+
+def compound_and_logical
+  h = { count: 1, name: "before", fallback: nil }
+  h.count += 2
+  h.name &&= "after"
+  h.fallback ||= "set"
+  [h[:count], h[:name], h[:fallback]]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "existing_symbol", nil), []Value{
+		NewInt(1),
+		NewNil(),
+	})
+	compareArrays(t, callFunc(t, script, "existing_string", nil), []Value{
+		NewNil(),
+		NewInt(1),
+	})
+	compareArrays(t, callFunc(t, script, "symbol_wins", nil), []Value{
+		NewInt(1),
+		NewString("string"),
+	})
+	compareArrays(t, callFunc(t, script, "missing_key", nil), []Value{
+		NewInt(1),
+		NewNil(),
+	})
+	compareArrays(t, callFunc(t, script, "compound_and_logical", nil), []Value{
+		NewInt(3),
+		NewString("after"),
+		NewString("set"),
 	})
 }

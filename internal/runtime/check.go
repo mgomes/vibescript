@@ -2777,19 +2777,27 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				defer func() { c.evaluatedDestructureFacts = nil }()
 			}
 		}
-		// The runtime selects an indexed write's receiver object before the
-		// index selectors run, so the fact the write is checked against is
-		// captured before the selector expressions walk: a selector side
-		// effect (an inline block rebinding the local) lands after the
-		// original receiver was selected and must not erase its bound.
-		var indexedReceiverFact *TypeExpr
-		var indexedReceiverName string
+		// Compound and logical writes select their receiver before the getter,
+		// selectors, and right side run. Capture the declared container fact at
+		// that point so later effects cannot erase the bound the eventual write
+		// targets. Plain assignment evaluates its value first; the capture stays
+		// valid unless an inline block can actually rebind the local.
+		var assignmentReceiverFact *TypeExpr
+		var assignmentReceiverName string
 		var logicalTargetFact *logicalAssignmentTargetFact
-		if index, ok := typed.Target.(*IndexExpr); ok {
-			if ident, ok := index.Object.(*Identifier); ok {
-				indexedReceiverFact = c.localTypeFor(ident.Name)
-				indexedReceiverName = ident.Name
-			}
+		var receiver Expression
+		switch target := typed.Target.(type) {
+		case *IndexExpr:
+			receiver = target.Object
+		case *MemberExpr:
+			receiver = target.Object
+		}
+		if ident, ok := receiver.(*Identifier); ok {
+			assignmentReceiverFact = c.localTypeFor(ident.Name)
+			assignmentReceiverName = ident.Name
+		}
+		if assignmentReceiverFact == nil {
+			assignmentReceiverName = ""
 		}
 		targetMayWrite := true
 		inferWrite := true
@@ -2808,10 +2816,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			// that value can rebind the receiver local before the target
 			// resolves; ordinary escapes cannot rebind a caller local, so the
 			// condition-time bound remains useful for the write diagnosis.
-			if indexedReceiverFact != nil &&
-				expressionMayRunBlockLiteralAssigning(typed.Value, indexedReceiverName) {
-				indexedReceiverFact = nil
-				c.poisonLocalType(indexedReceiverName)
+			if assignmentReceiverFact != nil &&
+				expressionMayRunBlockLiteralAssigning(typed.Value, assignmentReceiverName) {
+				assignmentReceiverFact = nil
+				c.poisonLocalType(assignmentReceiverName)
 			}
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 			if destructure, ok := typed.Target.(*DestructureTarget); ok {
@@ -3003,7 +3011,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			}
 		}
 		if inferWrite {
-			c.inferAssignStatementTypes(function, typed, indexedReceiverFact, logicalTargetFact)
+			c.inferAssignStatementTypes(function, typed, assignmentReceiverFact, logicalTargetFact)
 		}
 		if targetMayWrite {
 			c.recordRuntimeBindingTarget(typed.Target)
@@ -6376,6 +6384,9 @@ func (c *scriptChecker) checkMemberAutoCall(
 	function string,
 	member *MemberExpr,
 ) (staticCallable, bool, bool, bool) {
+	if c.exactShapeMemberLookupProvablyFails(member) {
+		return staticCallable{}, false, false, false
+	}
 	target, ok := c.resolveMemberCallable(member)
 	if !ok {
 		call := &CallExpr{Callee: member, Position: member.Pos()}
@@ -9900,6 +9911,9 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 		}
 		if typed.Safe && !c.safeNavigationReceiverKnownNonNil(typed.Object) {
 			return true
+		}
+		if c.exactShapeMemberLookupProvablyFails(typed) {
+			return false
 		}
 		if typed.Property == "new" {
 			classes, exact := c.constructorInstanceClassNames(typed.Object, "")

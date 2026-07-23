@@ -2189,7 +2189,7 @@ func (c *scriptChecker) mergeLocalTypeStates(base checkScopeState, states []chec
 // inferAssignStatementTypes updates the local type environment for an
 // assignment and reports a reassignment that contradicts the local's known
 // type (ADR-004: sequential reassignment to a conflicting type is an error).
-// indexedReceiverFact carries the target local's declared bound from before
+// assignmentReceiverFact carries the target local's declared bound from before
 // the value expression walked. Plain assignment selects the receiver after
 // the value, but ordinary escapes cannot rebind a caller local; the caller
 // clears this fact only when an inline block can rebind it. Nil defers to the
@@ -2204,7 +2204,7 @@ type logicalAssignmentTargetFact struct {
 func (c *scriptChecker) inferAssignStatementTypes(
 	function string,
 	stmt *AssignStmt,
-	indexedReceiverFact *TypeExpr,
+	assignmentReceiverFact *TypeExpr,
 	logicalTargetFact *logicalAssignmentTargetFact,
 ) {
 	switch target := stmt.Target.(type) {
@@ -2345,7 +2345,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 			writeMayLand := false
 			abortsBeforeWrite := false
 			applyDeclaredWrite := func() {
-				receiverFact := indexedReceiverFact
+				receiverFact := assignmentReceiverFact
 				if receiverFact == nil {
 					receiverFact = c.inferExpressionType(target.Object)
 				}
@@ -2369,7 +2369,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 					function,
 					writeStmt,
 					target,
-					indexedReceiverFact,
+					assignmentReceiverFact,
 				)
 			}
 			applyDeclaredWrite()
@@ -2413,17 +2413,143 @@ func (c *scriptChecker) inferAssignStatementTypes(
 			}
 		}
 	case *MemberExpr:
-		// A member write mutates the container in place, so any structural
-		// fact about the root local (shape exactness in particular) no
-		// longer holds.
 		if name, ok := rootIdentifierName(stmt.Target); ok {
 			if (stmt.Operator == tokenOrAssign || stmt.Operator == tokenAndAssign) &&
 				logicalTargetFact != nil && logicalTargetFact.known && !logicalTargetFact.rhsReachable {
 				return
 			}
-			c.poisonLocalType(name)
+			receiverFact := assignmentReceiverFact
+			if receiverFact == nil {
+				receiverFact = c.inferExpressionType(target.Object)
+			}
+			preserved, written, mayWrite := c.applyMemberWriteFacts(
+				function,
+				stmt,
+				target,
+				name,
+				receiverFact,
+			)
+			if !mayWrite {
+				return
+			}
+			if preserved {
+				c.invalidateElementWriteAliases(name, written)
+			} else {
+				c.poisonLocalType(name)
+			}
+			c.clearLocalStaticValueAliases(name)
+			// Invalidate the pre-write graph before recording the newly retained
+			// value, so weakening this receiver cannot poison a child that was
+			// not reachable from it until the setter completed.
+			c.linkContainerWriteAlias(name, stmt.Value, written)
 		}
 	}
+}
+
+// applyMemberWriteFacts checks hash/object field assignment syntax against a
+// local-rooted receiver's declared hash or shape fact. At runtime a hash
+// setter updates an existing symbol key first, then an existing string key,
+// and otherwise inserts a symbol; an object setter uses a string key. A
+// generic typed hash therefore has a string-or-symbol key, while a declared
+// shape checks the property's logical field name independent of its backing
+// representation.
+func (c *scriptChecker) applyMemberWriteFacts(
+	function string,
+	stmt *AssignStmt,
+	target *MemberExpr,
+	name string,
+	receiverFact *TypeExpr,
+) (preserved bool, written *TypeExpr, mayWrite bool) {
+	if stmt == nil || target == nil {
+		return false, nil, false
+	}
+	contentFact := nonNilMutatorReceiverFact(receiverFact)
+	if contentFact == nil {
+		return false, nil, false
+	}
+
+	current, getterMayResolve := memberWriteCurrentType(contentFact, target.Property)
+	switch stmt.Operator {
+	case "":
+		written = c.inferExpressionType(stmt.Value)
+	case tokenOrAssign, tokenAndAssign:
+		if !getterMayResolve {
+			return false, nil, false
+		}
+		if typeExprDefinitelyTruthy(current) {
+			if stmt.Operator == tokenOrAssign {
+				return true, nil, false
+			}
+		} else if typeExprIsNilOnly(current) {
+			if stmt.Operator == tokenAndAssign {
+				return true, nil, false
+			}
+		}
+		written = c.inferExpressionType(stmt.Value)
+	default:
+		if !getterMayResolve {
+			return false, nil, false
+		}
+		right := c.inferExpressionType(stmt.Value)
+		outcome := c.binaryOperationOutcome(stmt.Operator, current, right)
+		if outcome.invalid {
+			return false, nil, false
+		}
+		written = outcome.result
+	}
+
+	if keyBound, valueBound := declaredHashEntryTypes(contentFact); keyBound != nil {
+		resolve := c.checkNamedTypeResolver()
+		keyType := unionTypeExprs(checkTypeString, checkTypeSymbol)
+		keyCompatible := typeExprSatisfies(keyType, keyBound, resolve)
+		valueCompatible := written != nil && typeExprSatisfies(written, valueBound, resolve)
+		if typeExprsDisjoint(keyType, keyBound, resolve) {
+			c.add(function, stmt.Pos(), "write to %s expected key %s, got %s",
+				name, formatTypeExpr(keyBound), formatTypeExpr(keyType))
+		}
+		if written != nil && typeExprsDisjoint(written, valueBound, resolve) {
+			c.add(function, stmt.Pos(), "write to %s expected value %s, got %s",
+				name, formatTypeExpr(valueBound), formatTypeExpr(written))
+		}
+		return keyCompatible && valueCompatible &&
+			mutatorReceiverFactIntact(c.localTypeFor(name), receiverFact), written, true
+	}
+
+	if contentFact.Kind == TypeShape && !contentFact.Nullable && contentFact.Name == "" {
+		field, present := contentFact.Shape[target.Property]
+		if !present {
+			if !contentFact.Open {
+				c.add(function, stmt.Pos(), "write to %s adds field %s to exact shape %s",
+					name, target.Property, formatTypeExpr(contentFact))
+			}
+			return false, written, true
+		}
+		if written != nil &&
+			typeExprsDisjoint(written, shapeFieldValueType(field), c.checkNamedTypeResolver()) {
+			c.add(function, stmt.Pos(), "write to %s field %s expected %s, got %s",
+				name, target.Property, formatTypeExpr(field), formatTypeExpr(written))
+		}
+	}
+	return false, written, true
+}
+
+// memberWriteCurrentType reports the value a compound/logical member target
+// can read on a path that reaches its setter. Declared shape fields are exact
+// logical names; a typed hash member may resolve an existing entry whose value
+// satisfies the hash's value bound. A missing closed-shape field cannot reach
+// the setter because member lookup raises before the right side runs.
+func memberWriteCurrentType(receiver *TypeExpr, property string) (*TypeExpr, bool) {
+	if _, valueBound := declaredHashEntryTypes(receiver); valueBound != nil {
+		return valueBound, true
+	}
+	if receiver == nil || receiver.Kind != TypeShape || receiver.Nullable {
+		return nil, false
+	}
+	field, present := receiver.Shape[property]
+	if !present {
+		return nil, false
+	}
+	return shapeFieldValueType(field), true
 }
 
 func (c *scriptChecker) bindInvalidKeywordSplatKey(name, invalidKey string) {
@@ -4544,6 +4670,9 @@ func combineMemberEffects(a, b memberEffect) memberEffect {
 // projection escapePoisonTarget could trace back to the root, so the deep
 // fact would silently go stale.
 func (c *scriptChecker) memberDispatchPreservesReceiverFacts(member *MemberExpr) bool {
+	if result, ok := c.hashDataMemberResultFact(member); ok {
+		return !typeExprMayEscapeReceiverInterior(result)
+	}
 	if c.memberDispatchEffect(member) != effectPure {
 		return false
 	}
@@ -5460,6 +5589,9 @@ func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
 	if member.Safe && typeExprIsNilOnly(c.safeNavigationReceiverFact(member.Object)) {
 		return checkTypeNil
 	}
+	if result, ok := c.hashDataMemberResultFact(member); ok {
+		return c.safeNavigationMemberResultFact(member, result)
+	}
 	if result := c.staticMemberValueResultFact(member); result != nil {
 		return c.safeNavigationMemberResultFact(member, result)
 	}
@@ -5476,6 +5608,57 @@ func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
 		result = target.spec.resultType
 	}
 	return c.safeNavigationMemberResultFact(member, result)
+}
+
+// hashDataMemberResultFact resolves a non-callable hash/object data field when
+// both possible backing kinds use data lookup for the property. Hash builtins
+// and universal helpers stay on the normal dispatch path because a KindHash
+// may choose the builtin where a KindObject chooses stored data.
+func (c *scriptChecker) hashDataMemberResultFact(member *MemberExpr) (*TypeExpr, bool) {
+	if member == nil || memberKindOwns("hash", member.Property) ||
+		isUniversalMember(member.Property) {
+		return nil, false
+	}
+	receiver := nonNilMutatorReceiverFact(c.inferExpressionType(member.Object))
+	var result *TypeExpr
+	if _, valueBound := declaredHashEntryTypes(receiver); valueBound != nil {
+		result = valueBound
+	} else if receiver != nil && receiver.Kind == TypeShape && !receiver.Nullable {
+		field, present := receiver.Shape[member.Property]
+		if !present {
+			return nil, false
+		}
+		result = shapeFieldValueType(field)
+	} else {
+		return nil, false
+	}
+	if result == nil || typeExprMayIncludeCallable(result) {
+		return nil, false
+	}
+	return result, true
+}
+
+// exactShapeMemberLookupProvablyFails reports a non-builtin data member that
+// is absent from every exact shape arm. Both hash and object receivers raise
+// on that miss, so compound and logical assignment cannot reach their setter.
+// A safe-navigation nil arm is handled by the caller as the one completing
+// path; nil on a plain member read also fails the lookup.
+func (c *scriptChecker) exactShapeMemberLookupProvablyFails(member *MemberExpr) bool {
+	if member == nil || memberKindOwns("hash", member.Property) ||
+		isUniversalMember(member.Property) {
+		return false
+	}
+	receiver := c.inferExpressionType(member.Object)
+	return typeExprArmsAll(receiver, func(arm *TypeExpr) bool {
+		if arm.Kind == TypeNil {
+			return true
+		}
+		if arm.Kind != TypeShape || arm.Open {
+			return false
+		}
+		_, present := arm.Shape[member.Property]
+		return !present
+	})
 }
 
 func scriptFunctionLiteralReturnExpression(fn *ScriptFunction) (Expression, bool) {
