@@ -5854,7 +5854,13 @@ func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string,
 // same local cannot erase the bound the writes contradict. Preservation
 // additionally requires the local's fact to have survived the argument walk
 // unchanged.
-func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallExpr, member *MemberExpr, argumentFacts map[Expression]*TypeExpr, receiverFact *TypeExpr) (preserved, modeled, mayWrite bool) {
+func (c *scriptChecker) applyArrayMutatorCallFacts(
+	function string,
+	call, checkedCall *CallExpr,
+	member *MemberExpr,
+	argumentFacts map[Expression]*TypeExpr,
+	receiverFact *TypeExpr,
+) (preserved, modeled, mayWrite bool) {
 	ident, ok := member.Object.(*Identifier)
 	if !ok {
 		return false, false, false
@@ -5865,7 +5871,11 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 	}) {
 		return false, false, false
 	}
-	elements, preservable, ok := arrayMutatorElementWrites(call, member.Property)
+	writesCall := call
+	if member.Property == "insert" && checkedCall != nil {
+		writesCall = checkedCall
+	}
+	elements, preservable, ok := arrayMutatorElementWrites(writesCall, member.Property)
 	if !ok {
 		return false, false, false
 	}
@@ -5875,12 +5885,12 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(function string, call *CallEx
 	// diagnosis nor preservation applies. A splatted index makes the
 	// argument positions (and an empty expansion, which raises) unknowable.
 	if member.Property == "insert" {
-		if _, isSplat := call.Args[0].(*SplatArg); isSplat {
+		if _, isSplat := writesCall.Args[0].(*SplatArg); isSplat {
 			return false, true, false
 		}
-		index, captured := argumentFacts[call.Args[0]]
+		index, captured := argumentFacts[writesCall.Args[0]]
 		if !captured {
-			index = c.inferExpressionType(call.Args[0])
+			index = c.inferExpressionType(writesCall.Args[0])
 		}
 		if kind, known := staticOperandKind(index); known &&
 			kind != TypeInt && kind != TypeFloat && kind != TypeNumber {

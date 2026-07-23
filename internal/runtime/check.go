@@ -4379,6 +4379,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				preserved, modeled, mayWrite := c.applyArrayMutatorCallFacts(
 					function,
 					typed,
+					checkedCall,
 					member,
 					argumentFacts,
 					receiverFact,

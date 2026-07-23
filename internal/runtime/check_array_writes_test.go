@@ -180,6 +180,61 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "literal splat supplies the insert index",
+			source: `
+def f(items: array<int>)
+  items.insert(*[0], "bad")
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "literal splat supplies the complete insert call",
+			source: `
+def f(items: array<int>)
+  items.insert(*[0, "bad"])
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "static local splat supplies the insert index",
+			source: `
+def f(items: array<int>)
+  args = [0]
+  items.insert(*args, "bad")
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "later argument rebind keeps the evaluated splat index",
+			source: `
+def later() -> string
+  yield
+  "bad"
+end
+
+def f(items: array<int>)
+  args = [0]
+  items.insert(*args, later() do
+    args = ["x"]
+  end)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "index only literal splat preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.insert(*[0])
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "union element type rejects a disjoint value",
 			source: `
 def f(items: array<int | string>)
@@ -562,6 +617,38 @@ def f(items: array<int>, v)
   items << v
   items[0] = v
   items.push(v)
+end
+`,
+		},
+		{
+			name: "invalid literal splatted insert index never writes",
+			source: `
+def f(items: array<int>)
+  items.insert(*["x"], "bad")
+end
+`,
+		},
+		{
+			name: "later argument rebind cannot repair an evaluated invalid splat index",
+			source: `
+def later() -> string
+  yield
+  "bad"
+end
+
+def f(items: array<int>)
+  args = ["x"]
+  items.insert(*args, later() do
+    args = [0]
+  end)
+end
+`,
+		},
+		{
+			name: "empty literal splatted insert aborts",
+			source: `
+def f(items: array<int>)
+  items.insert(*[])
 end
 `,
 		},
