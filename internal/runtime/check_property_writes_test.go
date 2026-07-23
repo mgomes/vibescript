@@ -4318,6 +4318,69 @@ end
 	}
 }
 
+func TestCheckInitializerIvarOperatorUsesEvaluatedRightValue(t *testing.T) {
+	t.Parallel()
+
+	right := `callbacks[
+      -> {
+        callbacks = [-> { @c = "set" }]
+        true
+      }.call() ? 0 : 0
+    ]`
+	cases := []struct {
+		name      string
+		statement string
+	}{
+		{name: "direct", statement: `    invoker + ` + right},
+		{name: "compound", statement: `    current = invoker
+    current += ` + right},
+		{name: "repeated", statement: `    for value in [1]
+      callbacks = [-> { @b = 1 }]
+      invoker + ` + right + `
+    end`},
+		{name: "repeated compound", statement: `    for value in [1]
+      callbacks = [-> { @b = 1 }]
+      current = invoker
+      current += ` + right + `
+    end`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+class Invoker
+  def +(callback: function)
+    callback.call()
+    self
+  end
+end
+
+class User
+  property a: int
+  property b: int
+  property c: string
+  property d: string
+
+  def initialize(invoker: Invoker, flag: bool)
+    callbacks = [-> { @b = 1 }]
+`+tc.statement+`
+    if flag
+      @a = @b
+    else
+      @d = @c
+    end
+  end
+end
+`)
+			warnings := script.CheckWarnings()
+			if len(warnings) != 1 ||
+				warnings[0].Message != "write to @d expected string, got nil" {
+				t.Fatalf("CheckWarnings() = %#v, want only the unset @c warning", warnings)
+			}
+		})
+	}
+}
+
 func initializerIvarSeedMethod(param, value string) string {
 	if param != "" {
 		param = "(" + param + ")"

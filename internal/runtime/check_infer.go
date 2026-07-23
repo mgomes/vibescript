@@ -2180,21 +2180,30 @@ func (c *scriptChecker) collectRepeatedRegionAssignmentIvarEffects(
 		if !c.expressionMayCompleteForBinding(stmt.Value) {
 			return false
 		}
-		c.captureEvaluatedDestructureFact(stmt.Value)
+		c.captureEvaluatedDestructureFactOnce(stmt.Value)
 		operatorValue := &BinaryExpr{
 			Left:     stmt.Target,
 			Operator: stmt.Operator,
 			Right:    stmt.Value,
 			Position: stmt.Pos(),
 		}
-		dispatch := c.binaryScriptDispatch(operatorValue, operatorType)
-		if dispatch.mayRunScript() {
-			mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
-		}
-		if !c.binaryExpressionMayCompleteWithReceiver(operatorValue, operatorType) {
+		operatorCompletes := true
+		c.withEvaluatedDestructureArgumentFacts([]Expression{stmt.Value}, func() {
+			dispatch := c.binaryScriptDispatch(operatorValue, operatorType)
+			if dispatch.mayRunScript() {
+				mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
+			}
+			operatorCompletes = c.binaryExpressionMayCompleteWithReceiver(
+				operatorValue,
+				operatorType,
+			)
+			if operatorCompletes {
+				c.captureEvaluatedDestructureFact(operatorValue)
+			}
+		})
+		if !operatorCompletes {
 			return false
 		}
-		c.captureEvaluatedDestructureFact(operatorValue)
 		storeCompletes := c.collectRepeatedRegionStoreIvarEffects(
 			stmt.Target,
 			operatorValue,
@@ -2640,6 +2649,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		if !c.expressionMayCompleteForBinding(typed.Object) {
 			return
 		}
+		c.captureEvaluatedDestructureFactOnce(typed.Object)
 		c.captureAssignmentReceiver(typed)
 		dispatchType := c.inferExpressionType(typed.Object)
 		hashDefault := c.captureDirectCoreHashDefault(typed.Object)
@@ -2648,7 +2658,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			if !c.expressionMayCompleteForBinding(index) {
 				return
 			}
-			c.captureEvaluatedDestructureFact(index)
+			c.captureEvaluatedDestructureFactOnce(index)
 		}
 		c.withEvaluatedDestructureArgumentFacts(typed.Indices, func() {
 			dispatch := c.indexScriptDispatch(typed, dispatchType)
@@ -2664,6 +2674,10 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 				mergeRegionIvarEffects(effects, defaultEffects)
 			}
 		})
+		c.withEvaluatedDestructureArgumentFacts(
+			append([]Expression{typed.Object}, typed.Indices...),
+			func() { c.captureEvaluatedDestructureFact(typed) },
+		)
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
 			c.collectRepeatedRegionIvarEffectsFromExpression(element.Target, effects, false)
@@ -2675,6 +2689,11 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 	case *UnaryExpr:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Right, effects, true)
 	case *BinaryExpr:
+		previousEvaluatedFacts := c.evaluatedDestructureFacts
+		if previousEvaluatedFacts == nil {
+			c.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
+			defer func() { c.evaluatedDestructureFacts = previousEvaluatedFacts }()
+		}
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Left, effects, true)
 		if !c.expressionMayCompleteForBinding(typed.Left) {
 			return
@@ -2684,11 +2703,14 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			if !c.expressionMayCompleteForBinding(typed.Right) {
 				return
 			}
+			c.captureEvaluatedDestructureFactOnce(typed.Right)
 		}
-		dispatch := c.binaryScriptDispatch(typed, c.inferExpressionType(typed.Left))
-		if dispatch.mayRunScript() {
-			mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
-		}
+		c.withEvaluatedDestructureArgumentFacts([]Expression{typed.Right}, func() {
+			dispatch := c.binaryScriptDispatch(typed, c.inferExpressionType(typed.Left))
+			if dispatch.mayRunScript() {
+				mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
+			}
+		})
 	case *ConditionalExpr:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Condition, effects, true)
 		truthy, known := staticExpressionTruthiness(typed.Condition)
@@ -4261,6 +4283,13 @@ func (c *scriptChecker) captureEvaluatedDestructureFactWithAuto(
 	c.evaluatedDestructureFacts[expr] = fact
 }
 
+func (c *scriptChecker) captureEvaluatedDestructureFactOnce(expr Expression) {
+	if _, captured := c.evaluatedDestructureFacts[expr]; captured {
+		return
+	}
+	c.captureEvaluatedDestructureFact(expr)
+}
+
 func (c *scriptChecker) captureDestructureValueFacts(target *DestructureTarget, value Expression) []capturedDestructureValueFact {
 	if target == nil {
 		return nil
@@ -4870,18 +4899,28 @@ func (c *scriptChecker) staticLiteralProjections(expr *IndexExpr) ([]Expression,
 	case *ArrayLiteral, *HashLiteral:
 	default:
 		var exact bool
-		objects, exact = c.staticValueExpressionAlternatives(expr.Object)
+		objects, exact = c.callStaticValueAlternatives(expr.Object)
 		if !exact {
 			return nil, false
 		}
 	}
-	projected := make([]Expression, 0, len(objects))
+	indices, exact := c.callStaticValueAlternatives(expr.Indices[0])
+	if !exact {
+		return nil, false
+	}
+	const maxProjectionAlternatives = 32
+	if len(indices) == 0 || len(objects) > maxProjectionAlternatives/len(indices) {
+		return nil, false
+	}
+	projected := make([]Expression, 0, len(objects)*len(indices))
 	for _, object := range objects {
-		value, ok := c.staticLiteralProjectionFrom(object, expr.Indices[0])
-		if !ok {
-			return nil, false
+		for _, index := range indices {
+			value, ok := c.staticLiteralProjectionFrom(object, index)
+			if !ok {
+				return nil, false
+			}
+			projected = append(projected, value)
 		}
-		projected = append(projected, value)
 	}
 	return projected, len(projected) > 0
 }

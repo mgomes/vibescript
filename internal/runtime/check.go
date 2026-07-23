@@ -3071,7 +3071,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				return
 			}
 			c.pinExpressionFact(typed.Value, c.inferExpressionType(typed.Value))
-			c.captureEvaluatedDestructureFact(typed.Value)
+			c.captureEvaluatedDestructureFactOnce(typed.Value)
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 			c.enqueueReachableInstanceDispatch(operatorType, binaryDispatchMethodNames(typed.Operator)...)
 			if opaqueOperator {
@@ -3083,15 +3083,27 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				Right:    typed.Value,
 				Position: typed.Pos(),
 			}
-			dispatch := c.binaryScriptDispatch(operatorValue, operatorType)
-			if dispatch.mayReject() {
-				c.captureNonCompletingExpressionArm()
-			}
-			if dispatch.mayRunScript() {
-				c.widenRegionIvarFacts(c.scriptDispatchIvarEffects(dispatch))
-				c.captureNonCompletingExpressionArm()
-			}
-			if !c.binaryExpressionMayCompleteWithReceiver(operatorValue, operatorType) {
+			operatorCompletes := true
+			operatorProvablyCompletes := false
+			c.withEvaluatedDestructureArgumentFacts([]Expression{typed.Value}, func() {
+				dispatch := c.binaryScriptDispatch(operatorValue, operatorType)
+				if dispatch.mayReject() {
+					c.captureNonCompletingExpressionArm()
+				}
+				if dispatch.mayRunScript() {
+					c.widenRegionIvarFacts(c.scriptDispatchIvarEffects(dispatch))
+					c.captureNonCompletingExpressionArm()
+				}
+				operatorCompletes = c.binaryExpressionMayCompleteWithReceiver(
+					operatorValue,
+					operatorType,
+				)
+				operatorProvablyCompletes = c.binaryExpressionProvablyCompletes(operatorValue)
+				if operatorCompletes {
+					c.captureEvaluatedDestructureFact(operatorValue)
+				}
+			})
+			if !operatorCompletes {
 				if _, ivar := typed.Target.(*IvarExpr); !ivar {
 					c.inferAssignStatementTypes(function, typed, nil, nil)
 				}
@@ -3099,7 +3111,6 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				return
 			}
 			c.pinExpressionFact(operatorValue, c.inferExpressionType(operatorValue))
-			c.captureEvaluatedDestructureFact(operatorValue)
 			if indexSetterType != nil {
 				c.enqueueReachableInstanceDispatch(indexSetterType, "[]=")
 			}
@@ -3119,7 +3130,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				return
 			}
 			if ivar, ok := typed.Target.(*IvarExpr); ok &&
-				(!c.binaryExpressionProvablyCompletes(operatorValue) ||
+				(!operatorProvablyCompletes ||
 					!c.ivarWriteProvablyCompletes(ivar.Name, operatorValue)) {
 				c.captureNonCompletingExpressionArm()
 			}
@@ -4762,6 +4773,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if !c.checkExpressionWithAuto(function, typed.Object, true) {
 			return false
 		}
+		c.captureEvaluatedDestructureFactOnce(typed.Object)
 		hashDefault := c.captureDirectCoreHashDefault(typed.Object)
 		c.captureAssignmentReceiver(typed)
 		dispatchType := c.inferExpressionType(typed.Object)
@@ -4771,7 +4783,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				return false
 			}
 			c.pinExpressionFact(index, c.inferExpressionType(index))
-			c.captureEvaluatedDestructureFact(index)
+			c.captureEvaluatedDestructureFactOnce(index)
 		}
 		var dispatch instanceScriptDispatchSelection
 		var effects regionIvarEffects
@@ -4804,6 +4816,10 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			len(typed.Indices) == 1 && !defaultMayRun {
 			return false
 		}
+		c.withEvaluatedDestructureArgumentFacts(
+			append([]Expression{typed.Object}, typed.Indices...),
+			func() { c.captureEvaluatedDestructureFact(typed) },
+		)
 		return completed
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
@@ -4820,6 +4836,11 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		c.checkUnaryOperandTypes(function, typed)
 		return c.unaryExpressionMayComplete(typed)
 	case *BinaryExpr:
+		previousEvaluatedFacts := c.evaluatedDestructureFacts
+		if previousEvaluatedFacts == nil {
+			c.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
+			defer func() { c.evaluatedDestructureFacts = previousEvaluatedFacts }()
+		}
 		if !c.checkExpressionWithAuto(function, typed.Left, true) {
 			return false
 		}
@@ -4859,6 +4880,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				rightCompleted = c.checkExpressionWithAuto(function, typed.Right, true)
 				if rightCompleted {
 					c.pinExpressionFact(typed.Right, c.inferExpressionType(typed.Right))
+					c.captureEvaluatedDestructureFactOnce(typed.Right)
 				}
 			}
 			if !rightReachable {
@@ -4883,25 +4905,29 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				c.mergeScopeStates(scopeState, []checkScopeState{scopeState, evaluatedScopeState})
 			}
 		}
-		dispatch := c.binaryScriptDispatch(typed, dispatchType)
-		if dispatch.mayReject() {
-			c.captureNonCompletingExpressionArm()
-		}
-		c.checkBinaryOperandTypes(function, typed)
-		c.checkShovelElementWrite(function, typed, shovelReceiverFact)
-		c.applyShovelMutationFacts(typed)
-		c.enqueueReachableInstanceDispatch(
-			dispatchType,
-			binaryDispatchMethodNames(typed.Operator)...,
-		)
-		if opaqueDispatch {
-			c.markOpaqueClassConstants()
-		}
-		if dispatch.mayRunScript() {
-			c.widenRegionIvarFacts(c.scriptDispatchIvarEffects(dispatch))
-			c.captureNonCompletingExpressionArm()
-		}
-		if !c.binaryExpressionMayCompleteWithReceiver(typed, dispatchType) {
+		completed := true
+		c.withEvaluatedDestructureArgumentFacts([]Expression{typed.Right}, func() {
+			dispatch := c.binaryScriptDispatch(typed, dispatchType)
+			if dispatch.mayReject() {
+				c.captureNonCompletingExpressionArm()
+			}
+			c.checkBinaryOperandTypes(function, typed)
+			c.checkShovelElementWrite(function, typed, shovelReceiverFact)
+			c.applyShovelMutationFacts(typed)
+			c.enqueueReachableInstanceDispatch(
+				dispatchType,
+				binaryDispatchMethodNames(typed.Operator)...,
+			)
+			if opaqueDispatch {
+				c.markOpaqueClassConstants()
+			}
+			if dispatch.mayRunScript() {
+				c.widenRegionIvarFacts(c.scriptDispatchIvarEffects(dispatch))
+				c.captureNonCompletingExpressionArm()
+			}
+			completed = c.binaryExpressionMayCompleteWithReceiver(typed, dispatchType)
+		})
+		if !completed {
 			return false
 		}
 	case *ConditionalExpr:
