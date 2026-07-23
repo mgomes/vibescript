@@ -4576,6 +4576,32 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			targetMayEnter = false
 			callMayComplete = false
 		}
+		storedBlockCallExact := targetMayEnter && invokedLambda == nil &&
+			evaluatedStoredBlocksExact
+		var storedBlockEntries []blockLiteralCallEntryOutcome
+		if storedBlockCallExact {
+			storedBlockEntries = make(
+				[]blockLiteralCallEntryOutcome,
+				len(evaluatedStoredBlocks),
+			)
+			storedBlockMayEnter := false
+			storedBlockMayReject := false
+			storedBlockMayComplete := false
+			for i, block := range evaluatedStoredBlocks {
+				entry := c.capturedBlockLiteralCallEntry(block, typed)
+				storedBlockEntries[i] = entry
+				storedBlockMayEnter = storedBlockMayEnter || entry.mayEnter
+				storedBlockMayReject = storedBlockMayReject || entry.mayReject
+				storedBlockMayComplete = storedBlockMayComplete ||
+					entry.mayEnter &&
+						c.blockLiteralBodyMayComplete(block.block, block.strict)
+			}
+			if storedBlockMayReject {
+				c.captureNonCompletingExpressionArm()
+			}
+			targetMayEnter = storedBlockMayEnter
+			callMayComplete = storedBlockMayComplete
+		}
 		immediateLambdaEntry := c.immediateLambdaCallEntry(invokedLambda, typed)
 		if targetMayEnter && invokedLambda != nil {
 			if immediateLambdaEntry.mayReject {
@@ -4679,14 +4705,16 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			c.widenRepeatedRegionBlockIvarFacts(invokedLambda)
 			c.captureNonCompletingExpressionArm()
 		}
-		if targetMayEnter && invokedLambda == nil && evaluatedStoredBlocksExact {
-			for _, block := range evaluatedStoredBlocks {
-				if c.capturedBlockLiteralCallMayEnter(block, typed) {
+		if targetMayEnter && storedBlockCallExact {
+			for i, block := range evaluatedStoredBlocks {
+				if storedBlockEntries[i].mayEnter {
 					if c.applyLambdaBlockNamespaceMutations(block.block) {
 						c.markOpaqueClassConstants()
 					}
+					c.widenRepeatedRegionBlockIvarFacts(block.block)
 				}
 			}
+			c.captureNonCompletingExpressionArm()
 		}
 		// Exact script targets carry callable arguments through their parameter
 		// facts, so their body scan applies a lambda only at an actual `.call`.
@@ -4763,7 +4791,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		// else keeps poisoning.
 		if targetMayEnter {
 			forwardedBlockMayRun := typed.BlockArg != nil && c.callMayInvokeSuppliedBlock(typed)
-			if !blockCapturingBuiltin && invokedLambda == nil &&
+			if !blockCapturingBuiltin && invokedLambda == nil && !storedBlockCallExact &&
 				(!memberCall || c.memberCallMayWriteUnknownIvar(typed) || forwardedBlockMayRun) {
 				preciseImplicitSelfDispatch := false
 				if !memberCall {
@@ -15330,7 +15358,7 @@ func lambdaLiteralArity(block *BlockLiteral) int {
 	return implicitBlockParamArity(block.ImplicitParams)
 }
 
-type immediateLambdaCallEntryOutcome struct {
+type blockLiteralCallEntryOutcome struct {
 	mayEnter  bool
 	mayReject bool
 }
@@ -15349,15 +15377,15 @@ type blockLiteralBindingOutcome struct {
 func (c *scriptChecker) immediateLambdaCallEntry(
 	block *BlockLiteral,
 	call *CallExpr,
-) immediateLambdaCallEntryOutcome {
+) blockLiteralCallEntryOutcome {
 	if block == nil || call == nil {
-		return immediateLambdaCallEntryOutcome{}
+		return blockLiteralCallEntryOutcome{}
 	}
 	if call.Block != nil {
-		return immediateLambdaCallEntryOutcome{mayReject: true}
+		return blockLiteralCallEntryOutcome{mayReject: true}
 	}
 
-	outcome := immediateLambdaCallEntryOutcome{}
+	outcome := blockLiteralCallEntryOutcome{}
 	if call.BlockArg != nil {
 		blockType, captured := c.callArgumentFacts[call.BlockArg]
 		if !captured {
@@ -15367,7 +15395,7 @@ func (c *scriptChecker) immediateLambdaCallEntry(
 			)
 		}
 		if typeExprNeverNil(blockType) {
-			return immediateLambdaCallEntryOutcome{mayReject: true}
+			return blockLiteralCallEntryOutcome{mayReject: true}
 		}
 		outcome.mayReject = !typeExprIsNilOnly(blockType) ||
 			!c.blockArgumentConversionMustSucceed(call.BlockArg, blockType)
@@ -15375,7 +15403,7 @@ func (c *scriptChecker) immediateLambdaCallEntry(
 
 	for _, kwarg := range call.KwArgs {
 		if !c.keywordArgumentMayExpandEmpty(kwarg) {
-			return immediateLambdaCallEntryOutcome{mayReject: true}
+			return blockLiteralCallEntryOutcome{mayReject: true}
 		}
 		if !c.keywordArgumentMustExpandEmpty(kwarg) {
 			outcome.mayReject = true
@@ -15384,7 +15412,7 @@ func (c *scriptChecker) immediateLambdaCallEntry(
 
 	binding := c.immediateLambdaPositionalBindingOutcome(block, call)
 	if !binding.mayBind {
-		return immediateLambdaCallEntryOutcome{mayReject: true}
+		return blockLiteralCallEntryOutcome{mayReject: true}
 	}
 	outcome.mayEnter = true
 	if !binding.mustBind {

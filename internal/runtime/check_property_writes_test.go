@@ -3021,6 +3021,98 @@ end
 	}
 }
 
+func TestCheckStoredProcAutosplatBindingEffects(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		invocation string
+		wantB      int64
+	}{
+		{
+			name: "proc autosplats before nested typed binding",
+			invocation: `proc { |((value: int): array<int>), ignored: string|
+        @b = 1
+      }.call([[[1]], "ok"])`,
+			wantB: 1,
+		},
+		{
+			name: "repeated proc call keeps unrelated ivar exact",
+			invocation: `for item in [1]
+        proc { |((value: int): array<int>), ignored: string|
+          @b = 1
+        }.call([[[item]], "ok"])
+      end`,
+			wantB: 1,
+		},
+		{
+			name: "lambda keeps strict arity and does not autosplat",
+			invocation: `callback = lambda { |((value: int): array<int>), ignored: string|
+        @b = 1
+      }
+      callback.call([[[1]], "ok"])`,
+			wantB: 0,
+		},
+		{
+			name: "single proc parameter does not autosplat",
+			invocation: `proc { |((value: int): array<int>)|
+        @b = 1
+      }.call([[[1]], "ok"])`,
+			wantB: 0,
+		},
+		{
+			name: "proc stops before body on nested type failure",
+			invocation: `proc { |((value: string): array<int>), ignored: string|
+        @b = 1
+      }.call([[[1]], "ok"])`,
+			wantB: 0,
+		},
+		{
+			name: "proc stops before body on later parameter failure",
+			invocation: `proc { |((value: int): array<int>), ignored: int|
+        @b = 1
+      }.call([[[1]], "ok"])`,
+			wantB: 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property b: int
+  property flag: bool
+
+  def initialize
+    @b = 0
+    @flag = false
+    begin
+      `+tc.invocation+`
+    rescue
+      nil
+    end
+    if @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  user = User.new()
+  [user.b, user.flag]
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			compareArrays(t, got, []Value{NewInt(tc.wantB), NewBool(false)})
+		})
+	}
+}
+
 func TestCheckStoredBlockCallUsesEvaluatedCalleeIdentity(t *testing.T) {
 	t.Parallel()
 

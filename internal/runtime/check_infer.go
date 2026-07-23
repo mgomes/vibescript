@@ -2851,6 +2851,8 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		target, resolved := c.resolveCallable(typed)
 		blockCapturingBuiltin := c.callTargetsBlockCapturingBuiltin(typed, target, resolved)
 		var invokedLambda *BlockLiteral
+		var invokedStoredBlocks []capturedBlockLiteralValue
+		storedBlocksExact := false
 		unknownDispatch := false
 		implicitSelfCall := false
 		if member, ok := typed.Callee.(*MemberExpr); ok {
@@ -2867,8 +2869,13 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			}
 			if member.Property == "call" {
 				invokedLambda = c.resolveImmediateLambdaBlock(member.Object)
+				if invokedLambda == nil {
+					invokedStoredBlocks, storedBlocksExact =
+						c.capturedBlockLiteralValueAlternatives(member.Object)
+				}
 			}
-			unknownDispatch = invokedLambda == nil && !blockCapturingBuiltin &&
+			unknownDispatch = invokedLambda == nil && !storedBlocksExact &&
+				!blockCapturingBuiltin &&
 				c.memberCallMayWriteUnknownIvar(typed)
 		} else {
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Callee, effects, false)
@@ -2927,6 +2934,12 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		if invokedLambda != nil {
 			if c.immediateLambdaCallEntry(invokedLambda, typed).mayEnter {
 				c.collectRepeatedRegionIvarEffectsFromBlock(invokedLambda, effects)
+			}
+		} else if storedBlocksExact {
+			for _, block := range invokedStoredBlocks {
+				if c.capturedBlockLiteralCallEntry(block, typed).mayEnter {
+					c.collectRepeatedRegionIvarEffectsFromBlock(block.block, effects)
+				}
 			}
 		} else if dispatch, exact := c.implicitSelfCallDispatch(typed); exact {
 			implicitSelfCall = true
@@ -3226,38 +3239,57 @@ func (c *scriptChecker) applyDirectCoreHashDefaultNamespaceMutations(
 	}
 }
 
-func (c *scriptChecker) capturedBlockLiteralCallMayEnter(
+func (c *scriptChecker) capturedBlockLiteralCallEntry(
 	value capturedBlockLiteralValue,
 	call *CallExpr,
-) bool {
+) blockLiteralCallEntryOutcome {
 	if value.block == nil || call == nil || call.Block != nil {
-		return false
+		return blockLiteralCallEntryOutcome{mayReject: true}
 	}
-	checkedCall, exact := c.staticallyExpandedCall(call)
-	if !exact {
-		return true
-	}
-	if checkedCall.BlockArg != nil {
-		blockType, captured := c.callArgumentFacts[checkedCall.BlockArg]
+
+	outcome := blockLiteralCallEntryOutcome{}
+	if call.BlockArg != nil {
+		blockType, captured := c.callArgumentFacts[call.BlockArg]
 		if !captured {
 			blockType = c.inferExpressionTypeWithExpectation(
-				checkedCall.BlockArg,
+				call.BlockArg,
 				typeExpressionExpectation(checkTypeFunction),
 			)
 		}
 		if typeExprNeverNil(blockType) {
-			return false
+			return blockLiteralCallEntryOutcome{mayReject: true}
+		}
+		outcome.mayReject = !typeExprIsNilOnly(blockType) ||
+			!c.blockArgumentConversionMustSucceed(call.BlockArg, blockType)
+	}
+	for _, kwarg := range call.KwArgs {
+		if !c.keywordArgumentMayExpandEmpty(kwarg) {
+			return blockLiteralCallEntryOutcome{mayReject: true}
+		}
+		if !c.keywordArgumentMustExpandEmpty(kwarg) {
+			outcome.mayReject = true
 		}
 	}
-	if len(checkedCall.KwArgs) != 0 {
-		return false
+
+	checkedCall, exact := c.staticallyExpandedCall(call)
+	if !exact {
+		return blockLiteralCallEntryOutcome{
+			mayEnter:  true,
+			mayReject: true,
+		}
 	}
-	return c.blockLiteralBindingOutcome(
+	binding := c.blockLiteralBindingOutcome(
 		value.block,
 		checkedCall.Args,
 		value.strict,
 		nil,
-	).mayBind
+	)
+	if !binding.mayBind {
+		return blockLiteralCallEntryOutcome{mayReject: true}
+	}
+	outcome.mayEnter = true
+	outcome.mayReject = outcome.mayReject || !binding.mustBind
+	return outcome
 }
 
 func (c *scriptChecker) indexReadIvarEffects(
@@ -3724,9 +3756,95 @@ func (c *scriptChecker) blockLiteralBindingOutcome(
 	if block == nil {
 		return blockLiteralBindingOutcome{}
 	}
-	if (strict || block.Lambda) && len(args) != lambdaLiteralArity(block) {
+	strict = strict || block.Lambda
+	if strict && len(args) != lambdaLiteralArity(block) {
 		return blockLiteralBindingOutcome{}
 	}
+
+	inputs := make([]blockLiteralBindingInput, len(args))
+	for i, arg := range args {
+		inputs[i].expression = arg
+	}
+	if firstValue != nil && len(inputs) > 0 {
+		inputs[0].value = firstValue
+	}
+	if !strict && len(inputs) == 1 &&
+		rubyBlockPositionalBindCount(block.Params) > 1 {
+		return c.blockLiteralProcAutosplatBindingOutcome(block, inputs[0])
+	}
+	return c.blockLiteralBindingInputsOutcome(block, inputs)
+}
+
+type blockLiteralBindingInput struct {
+	expression Expression
+	value      *Value
+}
+
+func (c *scriptChecker) blockLiteralProcAutosplatBindingOutcome(
+	block *BlockLiteral,
+	input blockLiteralBindingInput,
+) blockLiteralBindingOutcome {
+	if input.value != nil {
+		if input.value.Kind() != KindArray {
+			return c.blockLiteralBindingInputsOutcome(
+				block,
+				[]blockLiteralBindingInput{input},
+			)
+		}
+		values := input.value.Array()
+		inputs := make([]blockLiteralBindingInput, len(values))
+		for i := range values {
+			inputs[i].value = &values[i]
+		}
+		return c.blockLiteralBindingInputsOutcome(block, inputs)
+	}
+
+	if alternatives, exact := c.callStaticValueAlternatives(input.expression); exact {
+		outcomes := make([]blockLiteralBindingOutcome, 0, len(alternatives))
+		for _, alternative := range alternatives {
+			if array, ok := alternative.(*ArrayLiteral); ok {
+				inputs := make([]blockLiteralBindingInput, len(array.Elements))
+				for i, element := range array.Elements {
+					inputs[i].expression = element
+				}
+				outcomes = append(
+					outcomes,
+					c.blockLiteralBindingInputsOutcome(block, inputs),
+				)
+				continue
+			}
+			outcomes = append(
+				outcomes,
+				c.blockLiteralBindingInputsOutcome(
+					block,
+					[]blockLiteralBindingInput{{expression: alternative}},
+				),
+			)
+		}
+		return mergeBlockLiteralBindingAlternatives(outcomes)
+	}
+
+	inferred, captured := c.callArgumentFacts[input.expression]
+	if !captured {
+		inferred = c.inferExpressionType(input.expression)
+	}
+	if inferred != nil &&
+		typeExprsDisjoint(inferred, checkTypeArray, c.checkNamedTypeResolver()) {
+		return c.blockLiteralBindingInputsOutcome(
+			block,
+			[]blockLiteralBindingInput{input},
+		)
+	}
+	// An abstract value that may be an array can take either the ordinary
+	// single-argument path or Ruby's element-wise proc binding path. Without
+	// exact elements or cardinality, either binding result remains possible.
+	return blockLiteralBindingOutcome{mayBind: true}
+}
+
+func (c *scriptChecker) blockLiteralBindingInputsOutcome(
+	block *BlockLiteral,
+	inputs []blockLiteralBindingInput,
+) blockLiteralBindingOutcome {
 	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
 	for i, param := range block.Params {
 		if param.Kind != ParamNormal {
@@ -3734,16 +3852,16 @@ func (c *scriptChecker) blockLiteralBindingOutcome(
 			continue
 		}
 		var binding blockLiteralBindingOutcome
-		if i == 0 && firstValue != nil {
+		if i < len(inputs) && inputs[i].value != nil {
 			binding = c.blockLiteralValueBindingOutcome(
-				*firstValue,
+				*inputs[i].value,
 				param.Type,
 				param.Target,
 			)
 		} else {
 			var arg Expression = &NilLiteral{}
-			if i < len(args) {
-				arg = args[i]
+			if i < len(inputs) && inputs[i].expression != nil {
+				arg = inputs[i].expression
 			}
 			binding = c.blockLiteralExpressionBindingOutcome(
 				arg,

@@ -169,6 +169,94 @@ end
 	}
 }
 
+func TestBlockLiteralBindingOutcomeAppliesProcAutosplat(t *testing.T) {
+	t.Parallel()
+
+	arrayOf := func(element *TypeExpr) *TypeExpr {
+		return &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{element}}
+	}
+	nestedParam := func(inner *TypeExpr) Param {
+		return Param{Target: &DestructureTarget{Elements: []DestructureElement{{
+			Type: arrayOf(checkTypeInt),
+			Target: &DestructureTarget{Elements: []DestructureElement{{
+				Target: &Identifier{Name: "value"},
+				Type:   inner,
+			}}},
+		}}}}
+	}
+	argument := &ArrayLiteral{Elements: []Expression{
+		&ArrayLiteral{Elements: []Expression{
+			&ArrayLiteral{Elements: []Expression{&IntegerLiteral{Value: 1}}},
+		}},
+		&StringLiteral{Value: "ok"},
+	}}
+
+	for _, tc := range []struct {
+		name     string
+		params   []Param
+		strict   bool
+		mayBind  bool
+		mustBind bool
+	}{
+		{
+			name: "proc autosplats before nested binding",
+			params: []Param{
+				nestedParam(checkTypeInt),
+				{Name: "ignored", Type: checkTypeString},
+			},
+			mayBind:  true,
+			mustBind: true,
+		},
+		{
+			name: "strict lambda rejects before autosplat",
+			params: []Param{
+				nestedParam(checkTypeInt),
+				{Name: "ignored", Type: checkTypeString},
+			},
+			strict: true,
+		},
+		{
+			name:   "single proc parameter does not autosplat",
+			params: []Param{nestedParam(checkTypeInt)},
+		},
+		{
+			name: "nested failure stops proc entry",
+			params: []Param{
+				nestedParam(checkTypeString),
+				{Name: "ignored", Type: checkTypeString},
+			},
+		},
+		{
+			name: "later failure stops proc entry",
+			params: []Param{
+				nestedParam(checkTypeInt),
+				{Name: "ignored", Type: checkTypeInt},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			checker := &scriptChecker{}
+			outcome := checker.blockLiteralBindingOutcome(
+				&BlockLiteral{Params: tc.params},
+				[]Expression{argument},
+				tc.strict,
+				nil,
+			)
+			if outcome.mayBind != tc.mayBind || outcome.mustBind != tc.mustBind {
+				t.Errorf(
+					"blockLiteralBindingOutcome(%s) = %#v, want mayBind=%t, mustBind=%t",
+					tc.name,
+					outcome,
+					tc.mayBind,
+					tc.mustBind,
+				)
+			}
+		})
+	}
+}
+
 func TestBlockLiteralBindingOutcomeRecursesThroughAbstractDestructures(t *testing.T) {
 	t.Parallel()
 
