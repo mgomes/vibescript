@@ -18,13 +18,21 @@ import (
 // can yield a value during a summary walk. A single unknown path poisons the
 // collector: the summary must describe every possible result or none.
 type returnSummaryCollector struct {
-	arms    []*TypeExpr
-	unknown bool
+	arms              []*TypeExpr
+	unknown           bool
+	failureParamFacts map[string]checkReachableParamFact
 }
 
 type returnSummaryCacheKey struct {
 	fn      *ScriptFunction
 	context string
+}
+
+type functionReturnAnalysis struct {
+	result            *TypeExpr
+	mayComplete       bool
+	bodyMayComplete   bool
+	failureParamFacts map[string]checkReachableParamFact
 }
 
 func (r *returnSummaryCollector) record(fact *TypeExpr) {
@@ -54,7 +62,128 @@ func (c *scriptChecker) scriptFunctionReturnSummary(call *CallExpr, fn *ScriptFu
 		return nil
 	}
 	runnable, hashSupplied, definite := callRunnableDefaults(call, owned)
-	return c.functionReturnSummary(owned, runnable, hashSupplied, definite)
+	paramFacts := c.summaryCallParamFacts(call, staticCallable{fn: owned}, definite)
+	return c.functionReturnAnalysis(
+		owned,
+		runnable,
+		hashSupplied,
+		definite,
+		paramFacts,
+		callMaySupplyBlock(call),
+	).result
+}
+
+// scriptFunctionCallMayComplete reports whether an owned script function has
+// any normal result for this call shape. Foreign functions and recursive
+// in-progress analyses remain gradual.
+func (c *scriptChecker) scriptFunctionCallMayComplete(
+	call *CallExpr,
+	fn *ScriptFunction,
+	ignoreReturnType bool,
+) bool {
+	if fn == nil || fn.owner != c.script {
+		return true
+	}
+	runnable, hashSupplied, definite := callRunnableDefaults(call, fn)
+	paramFacts := c.summaryCallParamFacts(call, staticCallable{fn: fn, constructor: ignoreReturnType}, definite)
+	analysis := c.functionReturnAnalysis(
+		fn,
+		runnable,
+		hashSupplied,
+		definite,
+		paramFacts,
+		callMaySupplyBlock(call),
+	)
+	if ignoreReturnType {
+		return analysis.bodyMayComplete
+	}
+	return analysis.mayComplete
+}
+
+func (c *scriptChecker) summaryCallParamFacts(
+	call *CallExpr,
+	target staticCallable,
+	definite bool,
+) map[string]checkReachableParamFact {
+	if !definite || call == nil {
+		return nil
+	}
+	return c.reachableCallParamFacts(call, target)
+}
+
+func callMaySupplyBlock(call *CallExpr) bool {
+	return call != nil && (call.Block != nil || call.BlockArg != nil)
+}
+
+func (c *scriptChecker) scriptCallFailureArgumentFacts(expr Expression) map[string]checkReachableParamFact {
+	call, ok := expr.(*CallExpr)
+	if !ok || call == nil || callExpandsArguments(call) {
+		return nil
+	}
+	target, resolved := c.resolveCallable(call)
+	if !resolved || target.fn == nil || target.fn.owner != c.script ||
+		!c.scriptCallBindingPlan(call, target).bodyMayEnter ||
+		staticCallCollapsesOptionsHash(call, target) {
+		return nil
+	}
+	runnable, hashSupplied, definite := callRunnableDefaults(call, target.fn)
+	paramFacts := c.summaryCallParamFacts(call, target, definite)
+	analysis := c.functionReturnAnalysis(
+		target.fn,
+		runnable,
+		hashSupplied,
+		definite,
+		paramFacts,
+		callMaySupplyBlock(call),
+	)
+	if len(analysis.failureParamFacts) == 0 {
+		return nil
+	}
+	view := staticCallViewFor(call, target)
+	result := make(map[string]checkReachableParamFact)
+	ambiguous := make(map[string]struct{})
+	bind := func(param Param, arg Expression) {
+		if param.Name == "" || param.Kind == ParamRest || param.Kind == ParamKeywordRest {
+			return
+		}
+		ident, ok := arg.(*Identifier)
+		if !ok || !typeExprHasContainerArm(c.localTypeFor(ident.Name)) {
+			return
+		}
+		if _, skip := ambiguous[ident.Name]; skip {
+			return
+		}
+		fact, ok := analysis.failureParamFacts[param.Name]
+		if !ok {
+			return
+		}
+		if _, duplicate := result[ident.Name]; duplicate {
+			delete(result, ident.Name)
+			ambiguous[ident.Name] = struct{}{}
+			return
+		}
+		result[ident.Name] = fact
+	}
+	for i, arg := range view.args {
+		if param, ok := positionalCallableParam(target.fn.Params, i); ok {
+			bind(param, arg)
+		}
+	}
+	for _, kwarg := range view.kwargs {
+		if kwarg.Splat {
+			continue
+		}
+		for _, param := range target.fn.Params {
+			if param.Name == kwarg.Name && (param.Kind == ParamNormal || param.Kind == ParamKeyword) {
+				bind(param, kwarg.Value)
+				break
+			}
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // callRunnableDefaults reports the defaulted parameter indices this call
@@ -109,37 +238,67 @@ func (c *scriptChecker) resolveOwnedPlainFunction(fn *ScriptFunction) (*ScriptFu
 	return nil, false
 }
 
-// functionReturnSummary computes (and caches) the summary for one function
-// under one set of runnable defaults. A recursive or mutually recursive call
-// reaches the in-progress guard, infers as unknown, and poisons the
-// dependent summary, so cycles terminate with the conservative answer.
-func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaults, hashSuppliedParams []int, definiteDefaults bool) *TypeExpr {
-	if fn == nil || fn.ReturnTy != nil {
-		return nil
+func (c *scriptChecker) functionReturnAnalysis(
+	fn *ScriptFunction,
+	runnableDefaults, hashSuppliedParams []int,
+	definiteDefaults bool,
+	paramFacts map[string]checkReachableParamFact,
+	blockAvailable bool,
+) functionReturnAnalysis {
+	if fn == nil {
+		return functionReturnAnalysis{mayComplete: true, bodyMayComplete: true}
 	}
-	key := c.returnSummaryCacheKey(fn, runnableDefaults, hashSuppliedParams, definiteDefaults)
-	if summary, ok := c.returnSummaries[key]; ok {
-		return summary
+	key := c.returnSummaryCacheKey(
+		fn,
+		runnableDefaults,
+		hashSuppliedParams,
+		definiteDefaults,
+		paramFacts,
+		blockAvailable,
+	)
+	if analysis, ok := c.returnAnalyses[key]; ok {
+		return analysis
 	}
 	if c.summaryInProgress == nil {
 		c.summaryInProgress = make(map[returnSummaryCacheKey]struct{})
 	}
 	if _, busy := c.summaryInProgress[key]; busy {
-		return nil
+		return functionReturnAnalysis{mayComplete: true, bodyMayComplete: true}
 	}
 	c.summaryInProgress[key] = struct{}{}
 	defer delete(c.summaryInProgress, key)
 
-	collector := c.collectFunctionReturnFacts(fn, runnableDefaults, hashSuppliedParams, definiteDefaults)
-	var summary *TypeExpr
+	collector := c.collectFunctionReturnFacts(
+		fn,
+		runnableDefaults,
+		hashSuppliedParams,
+		definiteDefaults,
+		paramFacts,
+		blockAvailable,
+	)
+	analysis := functionReturnAnalysis{
+		mayComplete:       collector.unknown || len(collector.arms) > 0,
+		bodyMayComplete:   collector.unknown || len(collector.arms) > 0,
+		failureParamFacts: cloneReachableParamFacts(collector.failureParamFacts),
+	}
 	if !collector.unknown && len(collector.arms) > 0 {
-		summary = unionTypeExprs(collector.arms...)
+		if fn.ReturnTy == nil {
+			analysis.result = unionTypeExprs(collector.arms...)
+		} else if validateTypeExprResolved(fn.ReturnTy, c.runtimeTypeContext()) == nil {
+			analysis.mayComplete = false
+			for _, arm := range collector.arms {
+				if !typeExprsDisjoint(arm, fn.ReturnTy, c.checkNamedTypeResolver()) {
+					analysis.mayComplete = true
+					break
+				}
+			}
+		}
 	}
-	if c.returnSummaries == nil {
-		c.returnSummaries = make(map[returnSummaryCacheKey]*TypeExpr)
+	if c.returnAnalyses == nil {
+		c.returnAnalyses = make(map[returnSummaryCacheKey]functionReturnAnalysis)
 	}
-	c.returnSummaries[key] = summary
-	return summary
+	c.returnAnalyses[key] = analysis
+	return analysis
 }
 
 // returnSummaryCacheKey separates summaries computed under different runtime
@@ -147,7 +306,13 @@ func (c *scriptChecker) functionReturnSummary(fn *ScriptFunction, runnableDefaul
 // callee from statically known to dynamic, so reusing a fact across those
 // states would make the checker unsound; different call shapes run different
 // parameter defaults, so their effects separate the key too.
-func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaults, hashSuppliedParams []int, definiteDefaults bool) returnSummaryCacheKey {
+func (c *scriptChecker) returnSummaryCacheKey(
+	fn *ScriptFunction,
+	runnableDefaults, hashSuppliedParams []int,
+	definiteDefaults bool,
+	paramFacts map[string]checkReachableParamFact,
+	blockAvailable bool,
+) returnSummaryCacheKey {
 	context := c.runtimeCheckContextKey()
 	if len(runnableDefaults) > 0 {
 		context += "\x01defaults:" + fmt.Sprint(runnableDefaults)
@@ -161,6 +326,12 @@ func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaul
 			context += "!"
 		}
 	}
+	if factsKey := reachableParamFactsKey(paramFacts); factsKey != "" {
+		context += "\x01params:" + factsKey
+	}
+	if blockAvailable {
+		context += "\x01block"
+	}
 	return returnSummaryCacheKey{fn: fn, context: context}
 }
 
@@ -168,7 +339,13 @@ func (c *scriptChecker) returnSummaryCacheKey(fn *ScriptFunction, runnableDefaul
 // suppressed and every piece of walk state walled off, recording return-site
 // facts as the walk reaches them and implicit-final facts afterwards. Only
 // the defaults the summarized call shape may evaluate are walked.
-func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableDefaults, hashSuppliedParams []int, definiteDefaults bool) *returnSummaryCollector {
+func (c *scriptChecker) collectFunctionReturnFacts(
+	fn *ScriptFunction,
+	runnableDefaults, hashSuppliedParams []int,
+	definiteDefaults bool,
+	paramFacts map[string]checkReachableParamFact,
+	blockAvailable bool,
+) *returnSummaryCollector {
 	collector := &returnSummaryCollector{}
 	c.withSuppressedWarnings(func() {
 		runtimeState := c.snapshotRuntimeState()
@@ -176,11 +353,21 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 
 		previousScopes := c.scopes
 		previousLocalTypes := c.localTypes
+		previousLocalClassValues := c.localClassValues
 		previousLive := c.liveLocalNames
 		previousUnions := c.localNameUnions
 		previousDepth := c.mutationRegionDepth
 		previousArgFacts := c.callArgumentFacts
+		previousArgClassValues := c.callArgumentClassValues
+		previousArgCallables := c.callArgumentCallables
+		previousArgStaticValues := c.callArgumentStaticValues
+		previousReachableParamFacts := c.reachableParamFacts
 		previousDeferred := c.deferredReturnSites
+		previousExceptionExits := c.exceptionExitSites
+		previousExpressionExits := c.expressionExitSites
+		previousEnsureExits := c.ensureExitSites
+		previousClassConstantCaptures := c.classConstantCaptures
+		previousLoopExitEffects := c.loopExitEffects
 		previousLeaves := c.implicitReturnLeaves
 		previousStates := c.implicitReturnStates
 		previousDecisions := c.implicitIfDecisions
@@ -188,20 +375,33 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 		previousYieldCollector := c.summaryYieldCollector
 		previousYieldBlock := c.summaryYieldBlock
 		previousYieldsActive := c.summaryYieldsActive
+		previousBlockAvailable := c.summaryBlockAvailable
 		previousPinned := c.pinnedExpressionFacts
 		previousReachableChecks := c.checkReachableCalls
 		restoreFresh := c.withFreshLocalInferenceScope()
 		c.scopes = nil
 		c.localTypes = nil
+		c.localClassValues = nil
 		c.liveLocalNames = nil
 		c.localNameUnions = nil
 		c.mutationRegionDepth = 0
 		c.callArgumentFacts = nil
+		c.callArgumentClassValues = nil
+		c.callArgumentCallables = nil
+		c.callArgumentStaticValues = nil
+		c.reachableParamFacts = cloneReachableParamFacts(paramFacts)
 		c.deferredReturnSites = nil
+		c.exceptionExitSites = nil
+		var expressionExitSites []checkStateSnapshot
+		c.expressionExitSites = &expressionExitSites
+		c.ensureExitSites = nil
+		c.classConstantCaptures = nil
+		c.loopExitEffects = nil
 		c.returnCollector = collector
 		c.summaryYieldCollector = collector
 		c.summaryYieldBlock = nil
 		c.summaryYieldsActive = true
+		c.summaryBlockAvailable = blockAvailable
 		c.pinnedExpressionFacts = nil
 		// Summary inference may inspect calls on paths the real checker has
 		// already proved unreachable. Those synthetic walks must not enqueue
@@ -215,11 +415,21 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 		defer func() {
 			c.scopes = previousScopes
 			c.localTypes = previousLocalTypes
+			c.localClassValues = previousLocalClassValues
 			c.liveLocalNames = previousLive
 			c.localNameUnions = previousUnions
 			c.mutationRegionDepth = previousDepth
 			c.callArgumentFacts = previousArgFacts
+			c.callArgumentClassValues = previousArgClassValues
+			c.callArgumentCallables = previousArgCallables
+			c.callArgumentStaticValues = previousArgStaticValues
+			c.reachableParamFacts = previousReachableParamFacts
 			c.deferredReturnSites = previousDeferred
+			c.exceptionExitSites = previousExceptionExits
+			c.expressionExitSites = previousExpressionExits
+			c.ensureExitSites = previousEnsureExits
+			c.classConstantCaptures = previousClassConstantCaptures
+			c.loopExitEffects = previousLoopExitEffects
 			c.implicitReturnLeaves = previousLeaves
 			c.implicitReturnStates = previousStates
 			c.implicitIfDecisions = previousDecisions
@@ -227,6 +437,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 			c.summaryYieldCollector = previousYieldCollector
 			c.summaryYieldBlock = previousYieldBlock
 			c.summaryYieldsActive = previousYieldsActive
+			c.summaryBlockAvailable = previousBlockAvailable
 			c.pinnedExpressionFacts = previousPinned
 			c.checkReachableCalls = previousReachableChecks
 			restoreFresh()
@@ -253,13 +464,17 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 			// runs and contributes nothing.
 			_, mayRun := runnable[i]
 			if mayRun {
-				c.checkExpressionWithExpectation(fn.Name, param.DefaultVal, expectation)
+				completed := c.checkExpressionWithExpectation(fn.Name, param.DefaultVal, expectation)
 				c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
+				if definiteDefaults && !completed {
+					return
+				}
 			}
 			c.recordParamBinding(param)
 			if !definiteDefaults {
 				continue
 			}
+			c.applyReachableParamFact(param)
 			// A literal call shape omits or supplies the parameter outright:
 			// an omitted default is exactly the value the runtime binds, and
 			// a collapsed keyword options hash always binds a hash. A
@@ -278,8 +493,125 @@ func (c *scriptChecker) collectFunctionReturnFacts(fn *ScriptFunction, runnableD
 		if c.checkStatements(fn.Name, nil, fn.Body) {
 			c.collectImplicitResultFacts(fn.Body)
 		}
+		rebound := make(map[string]struct{})
+		collectLocalBindings(fn.Body, rebound)
+		collector.failureParamFacts = mergedFailureParamFacts(fn.Params, expressionExitSites, rebound)
 	})
 	return collector
+}
+
+func mergedFailureParamFacts(
+	params []Param,
+	sites []checkStateSnapshot,
+	rebound map[string]struct{},
+) map[string]checkReachableParamFact {
+	if len(sites) == 0 {
+		return nil
+	}
+	result := make(map[string]checkReachableParamFact)
+	for _, param := range params {
+		if param.Name == "" {
+			continue
+		}
+		if _, assigned := rebound[param.Name]; assigned {
+			continue
+		}
+		facts := make([]checkReachableParamFact, 0, len(sites))
+		complete := true
+		for _, site := range sites {
+			if _, poisoned := site.typePoison[param.Name]; poisoned {
+				complete = false
+				break
+			}
+			fact, ok := scopeStateParamFact(site.scopeState, param.Name)
+			if !ok {
+				complete = false
+				break
+			}
+			facts = append(facts, fact)
+		}
+		if !complete {
+			continue
+		}
+		fact, ok := mergeFailureParamFactAlternatives(facts)
+		if ok {
+			result[param.Name] = fact
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func scopeStateParamFact(state checkScopeState, name string) (checkReachableParamFact, bool) {
+	for i := len(state.types) - 1; i >= 0; i-- {
+		ty, tracked := state.types[i][name]
+		if !tracked {
+			continue
+		}
+		fact := checkReachableParamFact{typeExpr: ty}
+		if i < len(state.classValues) {
+			value := state.classValues[i][name]
+			fact.classNames = append([]string(nil), value.classNames...)
+			fact.callables = append([]*ScriptFunction(nil), value.callables...)
+			fact.staticVals = append([]Expression(nil), value.staticVals...)
+		}
+		return fact, true
+	}
+	return checkReachableParamFact{}, false
+}
+
+func mergeFailureParamFactAlternatives(
+	facts []checkReachableParamFact,
+) (checkReachableParamFact, bool) {
+	if len(facts) == 0 {
+		return checkReachableParamFact{}, false
+	}
+	merged := checkReachableParamFact{typeExpr: facts[0].typeExpr}
+	knownType := merged.typeExpr != nil
+	staticExact := len(facts[0].staticVals) > 0
+	classExact := len(facts[0].classNames) > 0
+	callableExact := len(facts[0].callables) > 0
+	merged.staticVals = append([]Expression(nil), facts[0].staticVals...)
+	merged.classNames = append([]string(nil), facts[0].classNames...)
+	merged.callables = append([]*ScriptFunction(nil), facts[0].callables...)
+	for _, fact := range facts[1:] {
+		if knownType {
+			if fact.typeExpr == nil {
+				knownType = false
+				merged.typeExpr = nil
+			} else {
+				merged.typeExpr = unionTypeExprs(merged.typeExpr, fact.typeExpr)
+				knownType = merged.typeExpr != nil
+			}
+		}
+		if staticExact {
+			if len(fact.staticVals) == 0 {
+				staticExact = false
+				merged.staticVals = nil
+			} else {
+				merged.staticVals = normalizeCheckStaticValues(append(merged.staticVals, fact.staticVals...))
+			}
+		}
+		if classExact {
+			if len(fact.classNames) == 0 {
+				classExact = false
+				merged.classNames = nil
+			} else {
+				merged.classNames = normalizeCheckClassNames(append(merged.classNames, fact.classNames...))
+			}
+		}
+		if callableExact {
+			if len(fact.callables) == 0 {
+				callableExact = false
+				merged.callables = nil
+			} else {
+				merged.callables = normalizeCheckCallables(append(merged.callables, fact.callables...))
+			}
+		}
+	}
+	return merged, knownType || staticExact || classExact || callableExact
 }
 
 // recordDeferredReturnSummaryFacts records returns after a non-exiting
@@ -348,7 +680,14 @@ func (c *scriptChecker) collectImplicitResultStatementFacts(stmt Statement) {
 		} else {
 			c.collectImplicitResultFacts(typed.Body)
 		}
+		if statementsProvenNonRaising(typed.Body) {
+			return
+		}
+		selected, exact := c.staticallySelectedRescue(typed.Body, typed.Rescues)
 		for i := range typed.Rescues {
+			if exact && i != selected {
+				continue
+			}
 			clause := &typed.Rescues[i]
 			// An empty matched clause propagates the error after ensure
 			// instead of yielding a value (the fallthrough merge skips these
@@ -401,10 +740,15 @@ func (c *scriptChecker) collectImplicitResultIfFacts(stmt *IfStmt) {
 // captured at the leaf's own walk, adding the nil arm when the expression
 // can implicitly yield nil.
 func (c *scriptChecker) recordImplicitLeafFact(stmt Statement, expr Expression) {
+	state, ok := c.implicitReturnStates[stmt]
+	if !ok && c.implicitReturnStates != nil {
+		// The real walk did not reach a normal result for this syntactic
+		// leaf, so it cannot contribute to the function's return summary.
+		return
+	}
 	if expressionCanImplicitlyYieldNil(expr) {
 		c.returnCollector.record(checkTypeNil)
 	}
-	state, ok := c.implicitReturnStates[stmt]
 	if !ok {
 		c.returnCollector.record(c.inferExpressionType(expr))
 		return
