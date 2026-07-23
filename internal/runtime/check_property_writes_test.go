@@ -1652,6 +1652,74 @@ end
 `))
 }
 
+func TestCheckTypedIvarParamStoreUsesNormalizedValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		source       string
+		checkWarning string
+	}{
+		{
+			name: "supplied argument",
+			source: `
+enum Status
+  Draft
+end
+
+class User
+  property status: symbol
+
+  def initialize(@status: Status)
+  end
+end
+
+def build
+  User.new(:draft)
+end
+`,
+			checkWarning: "call to User.new argument status expected symbol, got Status",
+		},
+		{
+			name: "default argument",
+			source: `
+enum Status
+  Draft
+end
+
+class User
+  property status: symbol
+
+  def initialize(@status: Status = :draft)
+  end
+end
+
+def build
+  User.new
+end
+`,
+			checkWarning: "default value for @status expected symbol, got Status",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, test.source)
+			requireCheckWarningContains(t, script, test.checkWarning)
+			requireCallErrorContains(
+				t,
+				script,
+				"build",
+				nil,
+				CallOptions{},
+				"instance variable @status expected symbol, got Status",
+			)
+		})
+	}
+}
+
 // An ivar parameter default checks against the property contract with the
 // facts of the parameters bound before it, matching the runtime's binding
 // order.

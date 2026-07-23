@@ -11871,7 +11871,11 @@ func (c *scriptChecker) scriptCallBindingPlan(call *CallExpr, target staticCalla
 				inputs[i].mayBind = false
 			}
 			if ty := c.ivarParamContract(target.fn, param); ty != nil &&
-				!c.callArgumentMayBindType(value, ty) {
+				!c.ivarParamBindingFactMayStore(
+					c.ivarParamArgumentBindingFact(value, param),
+					param,
+					ty,
+				) {
 				inputs[i].mayBind = false
 			}
 		case ParamKeyword:
@@ -11882,7 +11886,11 @@ func (c *scriptChecker) scriptCallBindingPlan(call *CallExpr, target staticCalla
 					inputs[i].mayBind = false
 				}
 				if ty := c.ivarParamContract(target.fn, param); ty != nil &&
-					!c.callArgumentMayBindType(value, ty) {
+					!c.ivarParamBindingFactMayStore(
+						c.ivarParamArgumentBindingFact(value, param),
+						param,
+						ty,
+					) {
 					inputs[i].mayBind = false
 				}
 				continue
@@ -11945,7 +11953,7 @@ func (c *scriptChecker) scriptCallBodyMustEnter(
 					return false
 				}
 				if ty := c.ivarParamContract(target.fn, param); ty != nil &&
-					!c.defaultBindingFactMustBindType(fact, ty) {
+					!c.ivarParamBindingFactMustStore(fact, param, ty) {
 					return false
 				}
 				continue
@@ -11954,7 +11962,11 @@ func (c *scriptChecker) scriptCallBodyMustEnter(
 				return false
 			}
 			if ty := c.ivarParamContract(target.fn, param); ty != nil &&
-				!c.callArgumentMustBindType(value, ty) {
+				!c.ivarParamBindingFactMustStore(
+					c.ivarParamArgumentBindingFact(value, param),
+					param,
+					ty,
+				) {
 				return false
 			}
 		case ParamKeyword:
@@ -11973,7 +11985,7 @@ func (c *scriptChecker) scriptCallBodyMustEnter(
 					return false
 				}
 				if ty := c.ivarParamContract(target.fn, param); ty != nil &&
-					!c.defaultBindingFactMustBindType(fact, ty) {
+					!c.ivarParamBindingFactMustStore(fact, param, ty) {
 					return false
 				}
 				continue
@@ -11982,7 +11994,11 @@ func (c *scriptChecker) scriptCallBodyMustEnter(
 				return false
 			}
 			if ty := c.ivarParamContract(target.fn, param); ty != nil &&
-				!c.callArgumentMustBindType(value, ty) {
+				!c.ivarParamBindingFactMustStore(
+					c.ivarParamArgumentBindingFact(value, param),
+					param,
+					ty,
+				) {
 				return false
 			}
 		case ParamRest:
@@ -12075,7 +12091,7 @@ func (c *scriptChecker) scriptCallBindingPlanInContext(
 				return plan
 			}
 			if ty := c.ivarParamContract(fn, param); ty != nil &&
-				!c.defaultBindingFactMayBindType(fact, ty) {
+				!c.ivarParamBindingFactMayStore(fact, param, ty) {
 				return plan
 			}
 		} else if !input.mayBind {
@@ -16471,7 +16487,8 @@ func (s *namespaceMutationScan) functionParamDefaultMayBind(fn *ScriptFunction, 
 		return false
 	}
 	ty := s.checker.ivarParamContract(fn, param)
-	return ty == nil || s.checker.defaultBindingFactMayBindType(fact, ty)
+	return ty == nil ||
+		s.checker.ivarParamBindingFactMayStore(fact, param, ty)
 }
 
 func (s *namespaceMutationScan) scanFunctionDefaults(fn *ScriptFunction, indices []int) bool {

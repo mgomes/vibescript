@@ -109,12 +109,12 @@ func (c *scriptChecker) widenUnsetInstanceIvarFact(name string) {
 
 // checkIvarParamBinding checks one ivar parameter as the direct write it
 // performs when it binds, at its own position in the parameter walk so
-// earlier defaults still read later ivars as unset. An annotation that
-// provably contradicts the property contract warns at the definition (every
-// call would fail during binding), the default value checks under the same
-// expectation the runtime evaluates it with (a callable-typed contract
-// keeps a bare callable un-invoked), and the ivar's fact refines to the
-// bare contract once the parameter has bound.
+// earlier defaults still read later ivars as unset. An annotation whose
+// normalized output cannot satisfy the property contract warns at the
+// definition (every call would fail during binding), the default value checks
+// after the same ordered normalization the runtime performs (while preserving
+// callable expectations), and the ivar's fact refines to the bare contract
+// once the parameter has bound.
 func (c *scriptChecker) checkIvarParamBinding(function string, fn *ScriptFunction, param Param) {
 	ty := c.ivarParamContract(fn, param)
 	if ty == nil || validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
@@ -122,20 +122,15 @@ func (c *scriptChecker) checkIvarParamBinding(function string, fn *ScriptFunctio
 	}
 	if param.Type != nil &&
 		validateTypeExprResolved(param.Type, c.runtimeTypeContext()) == nil &&
-		typeExprsDisjoint(param.Type, ty, c.checkNamedTypeResolver()) {
+		!c.blockLiteralTypeMayNormalize(param.Type, ty) {
 		c.add(function, param.Type.Position, "write to @%s expected %s, got %s",
 			param.Name, formatTypeExpr(ty), formatTypeExpr(param.Type))
 	}
 	if param.DefaultVal != nil {
 		subject := "default value for @" + param.Name
-		if val, ok := staticLiteralValue(param.DefaultVal); ok {
-			if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
-				c.addValueTypeWarning(function, param.DefaultVal.Pos(), subject, err)
-			}
-		} else if inferred := c.inferExpressionTypeWithExpectation(param.DefaultVal, positionalArgumentExpectation(param)); inferred != nil &&
-			typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver()) {
-			c.add(function, param.DefaultVal.Pos(), "%s expected %s, got %s",
-				subject, formatTypeExpr(ty), formatTypeExpr(inferred))
+		fact := c.defaultExpressionBindingFact(param)
+		if err := c.ivarParamBindingFactMismatch(fact, param, ty); err != nil {
+			c.addValueTypeWarning(function, param.DefaultVal.Pos(), subject, err)
 		}
 	}
 	c.bindLocalTypeInCurrentFrame(ivarFactKey(param.Name), c.ivarContractFact(ty))
@@ -162,11 +157,10 @@ func (c *scriptChecker) ivarParamContract(fn *ScriptFunction, param Param) *Type
 	return ty
 }
 
-// checkIvarParamArgument checks a known call argument against both boundary
-// contracts a parameter carries: its own annotation, and the property
-// contract an ivar parameter stores into. A value can satisfy the annotation
-// and still provably fail the ivar store, so both apply; the store check is
-// skipped when the annotation already rejected the argument.
+// checkIvarParamArgument checks a known call argument against both ordered
+// boundary contracts a parameter carries: its own annotation first, then the
+// property contract against the normalized parameter value. The store check
+// is skipped when the annotation already rejected the argument.
 func (c *scriptChecker) checkIvarParamArgument(function string, arg Expression, fn *ScriptFunction, param Param, callName string) {
 	before := len(c.warnings)
 	c.checkArgumentExpression(function, arg, param.Type, callName, param.Name)
@@ -177,7 +171,162 @@ func (c *scriptChecker) checkIvarParamArgument(function string, arg Expression, 
 	if ty == nil {
 		return
 	}
-	c.checkArgumentExpression(function, arg, ty, callName, param.Name)
+	fact := c.ivarParamArgumentBindingFact(arg, param)
+	if err := c.ivarParamBindingFactMismatch(fact, param, ty); err != nil {
+		c.addArgumentValueWarning(function, arg.Pos(), callName, param.Name, err)
+	}
+}
+
+// ivarParamArgumentBindingFact captures the argument at its evaluation
+// point. The parameter expectation may keep callable values un-invoked, so
+// inference must use the same expectation when no captured fact is present.
+func (c *scriptChecker) ivarParamArgumentBindingFact(arg Expression, param Param) defaultBindingFact {
+	if value, literal := staticLiteralValue(arg); literal {
+		return defaultBindingFact{value: value, static: true}
+	}
+	inferred, captured := c.callArgumentFacts[arg]
+	if !captured {
+		inferred = c.inferExpressionTypeWithExpectation(
+			arg,
+			positionalArgumentExpectation(param),
+		)
+	}
+	return defaultBindingFact{inferred: inferred}
+}
+
+// normalizeIvarParamBindingFact applies the parameter annotation to a binding
+// fact exactly once. Static values use the runtime normalizer so coercions and
+// union ordering stay exact; inferred facts retain every plausible normalized
+// output and remain unknown when the checker cannot prove one.
+func (c *scriptChecker) normalizeIvarParamBindingFact(
+	fact defaultBindingFact,
+	param Param,
+) (defaultBindingFact, bool) {
+	if param.Type == nil {
+		return fact, true
+	}
+	if validateTypeExprResolved(param.Type, c.runtimeTypeContext()) != nil {
+		return defaultBindingFact{}, false
+	}
+	if fact.static {
+		normalized, err := normalizeValueForType(
+			fact.value,
+			param.Type,
+			c.runtimeTypeContext(),
+		)
+		if err != nil {
+			return defaultBindingFact{}, false
+		}
+		fact.value = normalized
+		return fact, true
+	}
+	if !c.blockLiteralTypeMayNormalize(fact.inferred, param.Type) {
+		return defaultBindingFact{}, false
+	}
+	fact.inferred = c.blockLiteralNormalizedType(fact.inferred, param.Type)
+	return fact, true
+}
+
+// ivarParamBindingFactMismatch checks the property guard against the value
+// left by parameter normalization. A parameter mismatch is reported by the
+// parameter boundary itself, so it does not also become a property warning.
+func (c *scriptChecker) ivarParamBindingFactMismatch(
+	fact defaultBindingFact,
+	param Param,
+	ty *TypeExpr,
+) error {
+	if ty == nil || validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
+		return nil
+	}
+	normalized, ok := c.normalizeIvarParamBindingFact(fact, param)
+	if !ok {
+		return nil
+	}
+	if normalized.static {
+		_, err := normalizeValueForType(
+			normalized.value,
+			ty,
+			c.runtimeTypeContext(),
+		)
+		return err
+	}
+	if normalized.inferred == nil ||
+		c.blockLiteralTypeMayNormalize(normalized.inferred, ty) {
+		return nil
+	}
+	return &typeMismatchError{
+		Expected: formatTypeExpr(ty),
+		Actual:   formatTypeExpr(normalized.inferred),
+	}
+}
+
+// ivarParamBindingFactMayStore reports whether some value represented by the
+// raw binding fact can pass the parameter annotation and then the property
+// guard. It preserves unknown facts as possible while keeping exact literals
+// on the runtime normalization path.
+func (c *scriptChecker) ivarParamBindingFactMayStore(
+	fact defaultBindingFact,
+	param Param,
+	ty *TypeExpr,
+) bool {
+	normalized, ok := c.normalizeIvarParamBindingFact(fact, param)
+	if !ok {
+		return false
+	}
+	return c.bindingFactMayNormalizeType(normalized, ty)
+}
+
+// ivarParamBindingFactMustStore reports whether every value represented by
+// the raw binding fact passes both normalization stages.
+func (c *scriptChecker) ivarParamBindingFactMustStore(
+	fact defaultBindingFact,
+	param Param,
+	ty *TypeExpr,
+) bool {
+	if !c.bindingFactMustNormalizeType(fact, param.Type) {
+		return false
+	}
+	normalized, ok := c.normalizeIvarParamBindingFact(fact, param)
+	if !ok {
+		return false
+	}
+	return c.bindingFactMustNormalizeType(normalized, ty)
+}
+
+func (c *scriptChecker) bindingFactMayNormalizeType(
+	fact defaultBindingFact,
+	ty *TypeExpr,
+) bool {
+	if ty == nil {
+		return true
+	}
+	if validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
+		return false
+	}
+	if fact.static {
+		_, err := normalizeValueForType(fact.value, ty, c.runtimeTypeContext())
+		return err == nil
+	}
+	return fact.inferred == nil ||
+		c.blockLiteralTypeMayNormalize(fact.inferred, ty)
+}
+
+func (c *scriptChecker) bindingFactMustNormalizeType(
+	fact defaultBindingFact,
+	ty *TypeExpr,
+) bool {
+	if ty == nil {
+		return true
+	}
+	if validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
+		return false
+	}
+	if fact.static {
+		_, err := normalizeValueForType(fact.value, ty, c.runtimeTypeContext())
+		return err == nil
+	}
+	return fact.inferred != nil &&
+		c.blockLiteralTypeMustNormalize(fact.inferred, ty)
 }
 
 // addIvarWriteWarning reports a direct-write contradiction in the standard
