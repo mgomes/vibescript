@@ -4063,7 +4063,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
 		argumentStaticValues := make(map[Expression][]Expression, len(typed.Args)+len(typed.KwArgs))
 		argumentRetainedAliases := make(map[Expression]checkRetainedContainerCapture, len(typed.Args))
-		argumentSplatOrigins := make(map[Expression]*SplatArg)
+		argumentSplatOrigins := make(map[Expression][]*SplatArg)
 		captureArgumentFacts := func(expr Expression, expectation expressionExpectation, autoCall bool) {
 			argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
 			retainedValue := expr
@@ -4108,7 +4108,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 							if _, captured := argumentFacts[element]; !captured {
 								argumentFacts[element] = c.inferExpressionType(element)
 							}
-							argumentSplatOrigins[element] = splat
+							argumentSplatOrigins[element] = append(argumentSplatOrigins[element], splat)
 						}
 					}
 				}

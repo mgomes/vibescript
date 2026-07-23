@@ -1853,6 +1853,49 @@ end
 	}
 }
 
+func TestArrayMutatorRepeatedSplatsKeepDiagnosticOrigins(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run(items: array<int>)
+  args = ["bad"]
+  items.push(
+    *args,
+    *args
+  )
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	wantLines := []int{4, 5}
+	if len(warnings) != len(wantLines) {
+		t.Fatalf("CheckWarningsForFunction(run) = %#v, want two incompatible write warnings", warnings)
+	}
+	for i, warning := range warnings {
+		if warning.Pos.Line != wantLines[i] ||
+			!strings.Contains(warning.Message, "write to items expected element int, got string") {
+			t.Errorf(
+				"CheckWarningsForFunction(run)[%d] = %#v, want incompatible write warning on line %d",
+				i,
+				warning,
+				wantLines[i],
+			)
+		}
+	}
+
+	got := callScript(
+		t,
+		context.Background(),
+		script,
+		"run",
+		[]Value{NewArray([]Value{NewInt(1)})},
+		CallOptions{},
+	)
+	want := NewArray([]Value{NewInt(1), NewString("bad"), NewString("bad")})
+	if !got.Equal(want) {
+		t.Fatalf("run([1]) = %s, want %s", got.String(), want.String())
+	}
+}
+
 func TestCheckArrayMutatorExactSplatsKeepRetainedElementProvenance(t *testing.T) {
 	t.Parallel()
 

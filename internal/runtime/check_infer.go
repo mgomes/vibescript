@@ -6250,7 +6250,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
 	argumentRetainedAliases map[Expression]checkRetainedContainerCapture,
-	argumentSplatOrigins map[Expression]*SplatArg,
+	argumentSplatOrigins map[Expression][]*SplatArg,
 	blockResultFact *TypeExpr,
 	receiverFact *TypeExpr,
 ) (preserved, modeled, mayWrite bool) {
@@ -6321,8 +6321,18 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	if !mayWrite {
 		return preserved, true, false
 	}
-	linkRetainedElement := func(arg Expression, written *TypeExpr) {
-		if splat := argumentSplatOrigins[arg]; splat != nil {
+	splatOriginOffsets := make(map[Expression]int)
+	nextSplatOrigin := func(arg Expression) *SplatArg {
+		origins := argumentSplatOrigins[arg]
+		offset := splatOriginOffsets[arg]
+		if offset >= len(origins) {
+			return nil
+		}
+		splatOriginOffsets[arg]++
+		return origins[offset]
+	}
+	linkRetainedElement := func(arg Expression, written *TypeExpr, splat *SplatArg) {
+		if splat != nil {
 			if captured, ok := argumentRetainedAliases[splat]; ok {
 				c.linkCapturedContainerWriteAliases(ident.Name, captured)
 				return
@@ -6343,7 +6353,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			if !captured {
 				written = c.inferExpressionType(arg)
 			}
-			linkRetainedElement(arg, written)
+			linkRetainedElement(arg, written, nextSplatOrigin(arg))
 		}
 		return false, true, true
 	}
@@ -6361,6 +6371,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			}
 			continue
 		}
+		splatOrigin := nextSplatOrigin(arg)
 		written, captured := argumentFacts[arg]
 		if _, blockResult := arg.(*BlockLiteral); blockResult {
 			written, captured = blockResultFact, true
@@ -6368,7 +6379,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			written = c.inferExpressionType(arg)
 		}
 		if written == nil {
-			linkRetainedElement(arg, written)
+			linkRetainedElement(arg, written, splatOrigin)
 			preserved = false
 			continue
 		}
@@ -6390,11 +6401,11 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		// The receiver retains every written element regardless of
 		// compatibility, so a container-rooted element's local links in: a
 		// later mutation through it weakens both.
-		linkRetainedElement(arg, written)
+		linkRetainedElement(arg, written, splatOrigin)
 		if disjoint {
 			pos := arg.Pos()
-			if splat := argumentSplatOrigins[arg]; splat != nil {
-				pos = splat.Pos()
+			if splatOrigin != nil {
+				pos = splatOrigin.Pos()
 			}
 			c.reportIncompatibleElementWrite(function, pos, ident.Name, elem, written)
 			preserved = false
