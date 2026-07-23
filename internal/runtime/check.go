@@ -1759,8 +1759,16 @@ func (c *scriptChecker) enqueueReachableFunctionForCall(
 		label,
 		fn,
 		paramFacts,
-		call != nil && call.Block == nil && call.BlockArg == nil,
+		c.callBlockKnownAbsent(call),
 	)
+}
+
+func (c *scriptChecker) callBlockKnownAbsent(call *CallExpr) bool {
+	if call == nil || call.Block != nil {
+		return false
+	}
+	return call.BlockArg == nil ||
+		typeExprIsNilOnly(c.inferExpressionType(call.BlockArg))
 }
 
 func (c *scriptChecker) enqueueReachableFunctionWithContext(
@@ -1805,7 +1813,7 @@ func (c *scriptChecker) enqueueReachableFunctionBindingForCall(
 		fn,
 		paramFacts,
 		plan,
-		call != nil && call.Block == nil && call.BlockArg == nil,
+		c.callBlockKnownAbsent(call),
 	)
 }
 
@@ -8323,7 +8331,7 @@ func (c *scriptChecker) resolvedCallMayInvokeSuppliedBlockWithSeen(
 	dynamicResolution checkDynamicCallResolution,
 	seen map[*ScriptFunction]struct{},
 ) bool {
-	if call == nil || (call.Block == nil && call.BlockArg == nil) ||
+	if call == nil || c.callBlockKnownAbsent(call) ||
 		staticNilSafeNavigationCall(call) {
 		return false
 	}

@@ -6278,6 +6278,96 @@ end
 		)
 	})
 
+	t.Run("explicit nil block", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    for value in [1]
+      begin
+        yield
+      rescue
+        nil
+      end
+    end
+    @a = @b
+  end
+end
+
+def run
+  User.new(&nil).a
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		gotWarnings := strings.Join(checkWarningMessages(warnings), "\n")
+		if !strings.Contains(gotWarnings, "write to @a expected int, got nil") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %q, want the unset @b warning",
+				"run",
+				gotWarnings,
+			)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @a expected int, got nil",
+		)
+	})
+
+	t.Run("forwarded explicit nil block", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def callback
+    yield
+  end
+
+  def initialize
+    for value in [1]
+      begin
+        callback(&nil)
+      rescue
+        nil
+      end
+    end
+    @a = @b
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		gotWarnings := strings.Join(checkWarningMessages(warnings), "\n")
+		if !strings.Contains(gotWarnings, "write to @a expected int, got nil") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %q, want the unset @b warning",
+				"run",
+				gotWarnings,
+			)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @a expected int, got nil",
+		)
+	})
+
 	t.Run("constructor with block", func(t *testing.T) {
 		t.Parallel()
 
