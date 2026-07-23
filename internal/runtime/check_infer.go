@@ -2879,22 +2879,16 @@ func (c *scriptChecker) indexReadIvarEffects(
 				NewNil(),
 				wrapBlock(&Block{}),
 			)
-			mayRun := c.blockLiteralArgumentsMayBind(
+			binding := c.blockLiteralBindingOutcome(
 				direct.block,
 				args,
 				direct.strict,
 				&receiverValue,
 			)
-			mayReject := !c.blockLiteralArgumentsMustBind(
-				direct.block,
-				args,
-				direct.strict,
-				&receiverValue,
-			)
-			if mayRun {
+			if binding.mayBind {
 				c.collectRepeatedRegionIvarEffectsFromBlock(direct.block, &effects)
 			}
-			return effects, mayRun, mayReject
+			return effects, binding.mayBind, !binding.mustBind
 		}
 		if direct.unknown {
 			effects.unknown = true
@@ -2979,72 +2973,980 @@ func (c *scriptChecker) captureDirectCoreHashDefault(
 	return capture
 }
 
-func (c *scriptChecker) blockLiteralArgumentsMayBind(
+// blockLiteralBindingOutcome reports whether a block's complete binding phase
+// can succeed and whether it succeeds for every represented argument value.
+// It follows runtime order: parameter normalization precedes its target, and
+// each destructure element normalizes before recursion into a nested target.
+func (c *scriptChecker) blockLiteralBindingOutcome(
 	block *BlockLiteral,
 	args []Expression,
 	strict bool,
 	firstValue *Value,
-) bool {
+) blockLiteralBindingOutcome {
 	if block == nil {
-		return false
+		return blockLiteralBindingOutcome{}
 	}
 	if (strict || block.Lambda) && len(args) != lambdaLiteralArity(block) {
-		return false
+		return blockLiteralBindingOutcome{}
 	}
+	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
 	for i, param := range block.Params {
 		if param.Kind != ParamNormal {
-			return true
-		}
-		var arg Expression = &NilLiteral{}
-		if i < len(args) {
-			arg = args[i]
-		}
-		if i == 0 && firstValue != nil {
-			if param.Type != nil &&
-				c.checkRuntimeStaticValueType(*firstValue, param.Type) != nil {
-				return false
-			}
+			outcome.mustBind = false
 			continue
 		}
-		if !c.callArgumentMayBindType(arg, param.Type) {
-			return false
+		var binding blockLiteralBindingOutcome
+		if i == 0 && firstValue != nil {
+			binding = c.blockLiteralValueBindingOutcome(
+				*firstValue,
+				param.Type,
+				param.Target,
+			)
+		} else {
+			var arg Expression = &NilLiteral{}
+			if i < len(args) {
+				arg = args[i]
+			}
+			binding = c.blockLiteralExpressionBindingOutcome(
+				arg,
+				param.Type,
+				param.Target,
+			)
+		}
+		outcome = combineBlockLiteralBindingOutcomes(outcome, binding)
+		if !outcome.mayBind {
+			return outcome
 		}
 	}
-	return true
+	return outcome
 }
 
-func (c *scriptChecker) blockLiteralArgumentsMustBind(
+func (c *scriptChecker) lambdaLiteralParamBindingOutcome(
 	block *BlockLiteral,
-	args []Expression,
-	strict bool,
-	firstValue *Value,
+	index int,
+	arg Expression,
+) blockLiteralBindingOutcome {
+	if block == nil || index < 0 {
+		return blockLiteralBindingOutcome{}
+	}
+	if index >= len(block.Params) {
+		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	}
+	param := block.Params[index]
+	return c.blockLiteralExpressionBindingOutcome(arg, param.Type, param.Target)
+}
+
+func (c *scriptChecker) lambdaLiteralParamTypeBindingOutcome(
+	block *BlockLiteral,
+	index int,
+	ty *TypeExpr,
+) blockLiteralBindingOutcome {
+	if block == nil || index < 0 {
+		return blockLiteralBindingOutcome{}
+	}
+	if index >= len(block.Params) {
+		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	}
+	param := block.Params[index]
+	return c.blockLiteralTypeBindingOutcome(ty, param.Type, param.Target)
+}
+
+func combineBlockLiteralBindingOutcomes(
+	left blockLiteralBindingOutcome,
+	right blockLiteralBindingOutcome,
+) blockLiteralBindingOutcome {
+	return blockLiteralBindingOutcome{
+		mayBind:  left.mayBind && right.mayBind,
+		mustBind: left.mustBind && right.mustBind,
+	}
+}
+
+func mergeBlockLiteralBindingAlternatives(
+	alternatives []blockLiteralBindingOutcome,
+) blockLiteralBindingOutcome {
+	if len(alternatives) == 0 {
+		return blockLiteralBindingOutcome{}
+	}
+	outcome := blockLiteralBindingOutcome{mustBind: true}
+	for _, alternative := range alternatives {
+		outcome.mayBind = outcome.mayBind || alternative.mayBind
+		outcome.mustBind = outcome.mustBind && alternative.mustBind
+	}
+	return outcome
+}
+
+func (c *scriptChecker) blockLiteralExpressionBindingOutcome(
+	expr Expression,
+	ty *TypeExpr,
+	target Expression,
+) blockLiteralBindingOutcome {
+	if alternatives, exact := c.callStaticValueAlternatives(expr); exact {
+		outcomes := make([]blockLiteralBindingOutcome, 0, len(alternatives))
+		for _, alternative := range alternatives {
+			outcomes = append(
+				outcomes,
+				c.blockLiteralExpressionBindingCandidateOutcome(alternative, ty, target),
+			)
+		}
+		return mergeBlockLiteralBindingAlternatives(outcomes)
+	}
+	return c.blockLiteralExpressionBindingCandidateOutcome(expr, ty, target)
+}
+
+func (c *scriptChecker) blockLiteralExpressionBindingCandidateOutcome(
+	expr Expression,
+	ty *TypeExpr,
+	target Expression,
+) blockLiteralBindingOutcome {
+	if value, exact := staticLiteralValue(expr); exact {
+		return c.blockLiteralValueBindingOutcome(value, ty, target)
+	}
+	normalization := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	var valueType *TypeExpr
+	if ty != nil {
+		var captured bool
+		valueType, captured = c.callArgumentFacts[expr]
+		if !captured {
+			valueType = c.inferExpressionTypeWithExpectation(
+				expr,
+				typeExpressionExpectation(ty),
+			)
+		}
+		normalization = blockLiteralBindingOutcome{
+			mayBind:  c.blockLiteralTypeMayNormalize(valueType, ty),
+			mustBind: c.blockLiteralTypeMustNormalize(valueType, ty),
+		}
+	}
+	if !normalization.mayBind || target == nil {
+		return normalization
+	}
+
+	var targetOutcome blockLiteralBindingOutcome
+	switch typed := target.(type) {
+	case *Identifier:
+		targetOutcome = blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	case *DestructureTarget:
+		if ty != nil {
+			return c.blockLiteralTypeBindingOutcome(valueType, ty, typed)
+		} else {
+			targetOutcome = c.blockLiteralDestructureExpressionOutcome(
+				typed,
+				expr,
+				c.inferExpressionType(expr),
+			)
+		}
+	default:
+		return blockLiteralBindingOutcome{}
+	}
+	return combineBlockLiteralBindingOutcomes(normalization, targetOutcome)
+}
+
+func (c *scriptChecker) blockLiteralValueBindingOutcome(
+	value Value,
+	ty *TypeExpr,
+	target Expression,
+) blockLiteralBindingOutcome {
+	if ty != nil {
+		normalized, err := normalizeValueForType(value, ty, c.runtimeTypeContext())
+		if err != nil {
+			return blockLiteralBindingOutcome{}
+		}
+		value = normalized
+	}
+	if target == nil {
+		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	}
+	switch typed := target.(type) {
+	case *Identifier:
+		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	case *DestructureTarget:
+		err := assignDestructureWithNormalizer(
+			typed,
+			value,
+			func(Expression, Value) error { return nil },
+			destructureCharge{check: noopDestructureCheck, liveRoot: value},
+			func(element DestructureElement, elementValue Value) (Value, error) {
+				return normalizeValueForType(
+					elementValue,
+					element.Type,
+					c.runtimeTypeContext(),
+				)
+			},
+		)
+		if err == nil {
+			return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+		}
+	}
+	return blockLiteralBindingOutcome{}
+}
+
+func (c *scriptChecker) blockLiteralDestructureExpressionOutcome(
+	target *DestructureTarget,
+	value Expression,
+	effectiveType *TypeExpr,
+) blockLiteralBindingOutcome {
+	if target == nil {
+		return blockLiteralBindingOutcome{}
+	}
+	array, exactArray := value.(*ArrayLiteral)
+	if exactArray {
+		for _, element := range array.Elements {
+			if _, splat := element.(*SplatArg); splat {
+				exactArray = false
+				break
+			}
+		}
+	}
+	if !exactArray && !c.checkStaticValueCandidate(value) {
+		return c.blockLiteralDestructureTypeOutcome(target, effectiveType)
+	}
+
+	values := destructureAssignmentExpressions(target, value)
+	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	for i, element := range target.Elements {
+		if element.Rest && element.Target == nil {
+			continue
+		}
+		var elementValue Expression
+		if i < len(values) {
+			elementValue = values[i]
+		}
+		binding := c.blockLiteralExpressionBindingOutcome(
+			elementValue,
+			element.Type,
+			element.Target,
+		)
+		outcome = combineBlockLiteralBindingOutcomes(outcome, binding)
+		if !outcome.mayBind {
+			return outcome
+		}
+	}
+	return outcome
+}
+
+func (c *scriptChecker) blockLiteralTypeBindingOutcome(
+	valueType *TypeExpr,
+	ty *TypeExpr,
+	target Expression,
+) blockLiteralBindingOutcome {
+	if arms, exact := typeExprArms(valueType, 0); exact {
+		outcomes := make([]blockLiteralBindingOutcome, 0, len(arms))
+		for _, arm := range arms {
+			outcomes = append(
+				outcomes,
+				c.blockLiteralTypeBindingCandidateOutcome(arm, ty, target),
+			)
+		}
+		return mergeBlockLiteralBindingAlternatives(outcomes)
+	}
+	return c.blockLiteralTypeBindingCandidateOutcome(valueType, ty, target)
+}
+
+func (c *scriptChecker) blockLiteralTypeBindingCandidateOutcome(
+	valueType *TypeExpr,
+	ty *TypeExpr,
+	target Expression,
+) blockLiteralBindingOutcome {
+	normalization := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	effectiveType := valueType
+	if ty != nil {
+		if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
+			return blockLiteralBindingOutcome{}
+		}
+		if valueType != nil && valueType.Kind == TypeArray {
+			if destructure, ok := target.(*DestructureTarget); ok {
+				return c.blockLiteralArrayTypeBindingOutcome(
+					valueType,
+					ty,
+					destructure,
+				)
+			}
+		}
+		normalization.mustBind = c.blockLiteralTypeMustNormalize(valueType, ty)
+		normalization.mayBind = c.blockLiteralTypeMayNormalize(valueType, ty)
+		if !normalization.mayBind {
+			return normalization
+		}
+		effectiveType = c.blockLiteralNormalizedType(valueType, ty)
+	}
+	if target == nil {
+		return normalization
+	}
+
+	var targetOutcome blockLiteralBindingOutcome
+	switch typed := target.(type) {
+	case *Identifier:
+		targetOutcome = blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	case *DestructureTarget:
+		targetOutcome = c.blockLiteralDestructureTypeOutcome(typed, effectiveType)
+	default:
+		return blockLiteralBindingOutcome{}
+	}
+	return combineBlockLiteralBindingOutcomes(normalization, targetOutcome)
+}
+
+func (c *scriptChecker) blockLiteralTypeMayNormalize(
+	valueType *TypeExpr,
+	ty *TypeExpr,
 ) bool {
-	if block == nil {
+	if ty == nil {
+		return true
+	}
+	if blockLiteralTypeAcceptsAny(ty) {
+		return true
+	}
+	if valueType == nil || valueType.Kind == TypeAny || valueType.Kind == TypeUnknown {
+		return true
+	}
+	if arms, exact := typeExprArms(valueType, 0); exact && len(arms) > 1 {
+		for _, arm := range arms {
+			if c.blockLiteralTypeMayNormalize(arm, ty) {
+				return true
+			}
+		}
 		return false
 	}
-	if (strict || block.Lambda) && len(args) != lambdaLiteralArity(block) {
-		return false
-	}
-	for i, param := range block.Params {
-		if param.Kind != ParamNormal {
-			return false
-		}
-		var arg Expression = &NilLiteral{}
-		if i < len(args) {
-			arg = args[i]
-		}
-		if i == 0 && firstValue != nil {
-			if param.Type != nil &&
-				c.checkRuntimeStaticValueType(*firstValue, param.Type) != nil {
-				return false
+	resolve := c.checkNamedTypeResolver()
+	for _, option := range blockLiteralNormalizationTypeOptions(ty) {
+		if empty, constrained := c.blockLiteralEmptyContainerNormalization(
+			valueType,
+			option,
+		); constrained {
+			if empty != nil {
+				return true
 			}
 			continue
 		}
-		if !c.callArgumentMustBindType(arg, param.Type) {
-			return false
+		if option.Kind == TypeAny {
+			return true
+		}
+		if valueType.Kind == TypeEnum || option.Kind == TypeEnum {
+			if valueType.Kind == TypeSymbol && option.Kind == TypeEnum {
+				match, resolved := resolve(option)
+				if resolved && match.enum != nil {
+					return true
+				}
+			}
+			if valueType.Kind == TypeEnum && option.Kind == TypeEnum &&
+				!typeExprsDisjoint(valueType, option, resolve) {
+				return true
+			}
+			continue
+		}
+		if !typeExprsDisjoint(valueType, option, resolve) {
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+func (c *scriptChecker) blockLiteralTypeMustNormalize(
+	valueType *TypeExpr,
+	ty *TypeExpr,
+) bool {
+	if ty == nil {
+		return true
+	}
+	if blockLiteralTypeAcceptsAny(ty) {
+		return true
+	}
+	if valueType == nil || valueType.Kind == TypeAny || valueType.Kind == TypeUnknown {
+		return false
+	}
+	if arms, exact := typeExprArms(valueType, 0); exact && len(arms) > 1 {
+		for _, arm := range arms {
+			if !c.blockLiteralTypeMustNormalize(arm, ty) {
+				return false
+			}
+		}
+		return true
+	}
+	options := blockLiteralNormalizationTypeOptions(ty)
+	if valueType.Kind == TypeSymbol {
+		for _, option := range options {
+			if option.Kind == TypeAny || option.Kind == TypeSymbol {
+				return true
+			}
+		}
+		return false
+	}
+	if valueType.Kind == TypeEnum {
+		nonSymbol := make([]*TypeExpr, 0, len(options))
+		for _, option := range options {
+			if option.Kind != TypeSymbol {
+				nonSymbol = append(nonSymbol, option)
+			}
+		}
+		return typeExprSatisfies(
+			valueType,
+			unionTypeExprs(nonSymbol...),
+			c.checkNamedTypeResolver(),
+		)
+	}
+	return typeExprSatisfies(valueType, ty, c.checkNamedTypeResolver())
+}
+
+func blockLiteralTypeAcceptsAny(ty *TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	if ty.Kind == TypeAny {
+		return true
+	}
+	if ty.Kind != TypeUnion {
+		return false
+	}
+	for _, option := range ty.Union {
+		if blockLiteralTypeAcceptsAny(option) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) blockLiteralNormalizedType(
+	valueType *TypeExpr,
+	ty *TypeExpr,
+) *TypeExpr {
+	if ty == nil {
+		return valueType
+	}
+	if arms, exact := typeExprArms(valueType, 0); exact && len(arms) > 1 {
+		normalized := make([]*TypeExpr, 0, len(arms))
+		for _, arm := range arms {
+			if next := c.blockLiteralNormalizedType(arm, ty); next != nil {
+				normalized = append(normalized, next)
+			}
+		}
+		return unionTypeExprs(normalized...)
+	}
+	options := blockLiteralNormalizationTypeOptions(ty)
+	normalized := make([]*TypeExpr, 0, len(options))
+	resolve := c.checkNamedTypeResolver()
+	for _, option := range options {
+		if empty, constrained := c.blockLiteralEmptyContainerNormalization(
+			valueType,
+			option,
+		); constrained {
+			if empty != nil {
+				normalized = append(normalized, empty)
+			}
+			continue
+		}
+		if valueType != nil && !c.blockLiteralTypeMayNormalize(valueType, option) {
+			continue
+		}
+		if valueType == nil {
+			if option.Kind == TypeAny {
+				return nil
+			}
+			normalized = append(normalized, option)
+			continue
+		}
+		if option.Kind == TypeEnum && valueType.Kind == TypeSymbol {
+			if match, resolved := resolve(option); resolved && match.enum != nil {
+				normalized = append(normalized, option)
+				continue
+			}
+		}
+		if typeExprSatisfies(valueType, option, resolve) {
+			normalized = append(normalized, valueType)
+		} else {
+			normalized = append(normalized, option)
+		}
+	}
+	return unionTypeExprs(normalized...)
+}
+
+// blockLiteralEmptyContainerNormalization recognizes typed hashes whose
+// entries can never satisfy a hash or closed-shape option. Such an option can
+// accept only the empty hash (and only when the shape has no required field);
+// retaining that fact prevents a later nested target from inventing fields.
+func (c *scriptChecker) blockLiteralEmptyContainerNormalization(
+	valueType *TypeExpr,
+	option *TypeExpr,
+) (*TypeExpr, bool) {
+	if valueType == nil || option == nil ||
+		valueType.Kind != TypeHash || len(valueType.TypeArgs) != 2 {
+		return nil, false
+	}
+	inputKey := valueType.TypeArgs[0]
+	inputValue := valueType.TypeArgs[1]
+	constrained := false
+	switch option.Kind {
+	case TypeHash:
+		if len(option.TypeArgs) != 2 {
+			return nil, false
+		}
+		constrained = !c.blockLiteralTypeMayNormalize(inputKey, option.TypeArgs[0]) ||
+			!c.blockLiteralTypeMayNormalize(inputValue, option.TypeArgs[1])
+	case TypeShape:
+		if option.Open {
+			return nil, false
+		}
+		shapeKey := unionTypeExprs(checkTypeString, checkTypeSymbol)
+		keyCompatible := c.blockLiteralTypeMayNormalize(inputKey, shapeKey)
+		valueCompatible := false
+		for _, fieldType := range option.Shape {
+			if c.blockLiteralTypeMayNormalize(
+				inputValue,
+				shapeFieldValueType(fieldType),
+			) {
+				valueCompatible = true
+				break
+			}
+		}
+		constrained = !keyCompatible || !valueCompatible
+		if constrained {
+			for _, fieldType := range option.Shape {
+				if !shapeFieldOptional(fieldType) {
+					return nil, true
+				}
+			}
+		}
+	}
+	if !constrained {
+		return nil, false
+	}
+	return &TypeExpr{
+		Kind:  TypeShape,
+		Name:  shapeKeysStringMarker,
+		Shape: map[string]*TypeExpr{},
+	}, true
+}
+
+func blockLiteralNormalizationTypeOptions(ty *TypeExpr) []*TypeExpr {
+	if ty == nil {
+		return nil
+	}
+	if ty.Kind == TypeUnion {
+		var options []*TypeExpr
+		for _, option := range unionNormalizationOrder(ty.Union) {
+			options = append(options, blockLiteralNormalizationTypeOptions(option)...)
+		}
+		return options
+	}
+	if !ty.Nullable {
+		return []*TypeExpr{ty}
+	}
+	nonNil := *ty
+	nonNil.Nullable = false
+	return []*TypeExpr{&nonNil, checkTypeNil}
+}
+
+const (
+	maxBlockLiteralBindingDepth              = 6
+	maxBlockLiteralArrayRepresentativeLength = 24
+	maxBlockLiteralConservativeElements      = 512
+)
+
+func (c *scriptChecker) blockLiteralDestructureTypeOutcome(
+	target *DestructureTarget,
+	valueType *TypeExpr,
+) blockLiteralBindingOutcome {
+	if target == nil {
+		return blockLiteralBindingOutcome{}
+	}
+	if c.blockLiteralBindingDepth >= maxBlockLiteralBindingDepth {
+		return c.conservativeBlockLiteralDestructureOutcome(target)
+	}
+	c.blockLiteralBindingDepth++
+	defer func() { c.blockLiteralBindingDepth-- }()
+
+	if arms, exact := typeExprArms(valueType, 0); exact {
+		outcomes := make([]blockLiteralBindingOutcome, 0, len(arms))
+		for _, arm := range arms {
+			outcomes = append(
+				outcomes,
+				c.blockLiteralDestructureTypeArmOutcome(target, arm),
+			)
+		}
+		return mergeBlockLiteralBindingAlternatives(outcomes)
+	}
+	return c.blockLiteralDestructureUnknownTypeOutcome(target)
+}
+
+func (c *scriptChecker) conservativeBlockLiteralDestructureOutcome(
+	target *DestructureTarget,
+) blockLiteralBindingOutcome {
+	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	stack := []*DestructureTarget{target}
+	visited := 0
+	for len(stack) > 0 {
+		if visited >= maxBlockLiteralConservativeElements {
+			outcome.mustBind = false
+			return outcome
+		}
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, element := range current.Elements {
+			visited++
+			if element.Rest && element.Target == nil {
+				continue
+			}
+			if element.Type != nil {
+				if err := validateTypeExprResolved(
+					element.Type,
+					c.runtimeTypeContext(),
+				); err != nil {
+					return blockLiteralBindingOutcome{}
+				}
+				if !blockLiteralTypeAcceptsAny(element.Type) {
+					outcome.mustBind = false
+				}
+			}
+			if nested, ok := element.Target.(*DestructureTarget); ok {
+				stack = append(stack, nested)
+			}
+		}
+	}
+	return outcome
+}
+
+type blockLiteralBindingValue struct {
+	typeExpr       *TypeExpr
+	normalizations []*TypeExpr
+}
+
+func (c *scriptChecker) blockLiteralDestructureTypeArmOutcome(
+	target *DestructureTarget,
+	arm *TypeExpr,
+) blockLiteralBindingOutcome {
+	if arm == nil {
+		return c.blockLiteralDestructureUnknownTypeOutcome(target)
+	}
+	if arm.Kind == TypeArray {
+		return c.blockLiteralArrayTypeBindingOutcome(
+			arm,
+			nil,
+			target,
+		)
+	}
+	return c.blockLiteralDestructureArrayElementsOutcome(
+		target,
+		[]blockLiteralBindingValue{{typeExpr: arm}},
+	)
+}
+
+func (c *scriptChecker) blockLiteralDestructureUnknownTypeOutcome(
+	target *DestructureTarget,
+) blockLiteralBindingOutcome {
+	return mergeBlockLiteralBindingAlternatives([]blockLiteralBindingOutcome{
+		c.blockLiteralDestructureArrayElementsOutcome(
+			target,
+			[]blockLiteralBindingValue{{}},
+		),
+		c.blockLiteralArrayTypeBindingOutcome(
+			checkTypeArray,
+			nil,
+			target,
+		),
+	})
+}
+
+func (c *scriptChecker) blockLiteralArrayTypeBindingOutcome(
+	valueType *TypeExpr,
+	ty *TypeExpr,
+	target Expression,
+) blockLiteralBindingOutcome {
+	var normalizations []*TypeExpr
+	if ty != nil {
+		normalizations = []*TypeExpr{ty}
+	}
+	return c.blockLiteralArrayTypeSequenceOutcome(
+		valueType,
+		normalizations,
+		target,
+	)
+}
+
+func (c *scriptChecker) blockLiteralArrayTypeSequenceOutcome(
+	valueType *TypeExpr,
+	normalizations []*TypeExpr,
+	target Expression,
+) blockLiteralBindingOutcome {
+	limit := 1
+	complete := true
+	if destructure, ok := target.(*DestructureTarget); ok {
+		limit, complete = blockLiteralArrayRepresentativeLength(destructure, 0)
+	}
+	if !complete {
+		return blockLiteralBindingOutcome{mayBind: true}
+	}
+	elementType := splattedElementBound(valueType)
+	outcomes := make([]blockLiteralBindingOutcome, 0, limit+1)
+	for length := range limit + 1 {
+		elements := make([]blockLiteralBindingValue, length)
+		for i := range elements {
+			elements[i].typeExpr = elementType
+		}
+		outcomes = append(
+			outcomes,
+			c.blockLiteralArrayElementsSequenceOutcome(
+				elements,
+				normalizations,
+				target,
+			),
+		)
+	}
+	return mergeBlockLiteralBindingAlternatives(outcomes)
+}
+
+func blockLiteralArrayRepresentativeLength(
+	target *DestructureTarget,
+	depth int,
+) (int, bool) {
+	if target == nil || depth >= maxBlockLiteralBindingDepth {
+		return 0, false
+	}
+	restIndex := -1
+	for i, element := range target.Elements {
+		if element.Rest {
+			restIndex = i
+			break
+		}
+	}
+	limit := len(target.Elements) + 1
+	complete := true
+	if restIndex >= 0 {
+		restLength := 1
+		if nested, ok := target.Elements[restIndex].Target.(*DestructureTarget); ok {
+			restLength, complete = blockLiteralArrayRepresentativeLength(
+				nested,
+				depth+1,
+			)
+			restLength = max(restLength, 1)
+		}
+		limit = len(target.Elements) - 1 + restLength
+	}
+	if limit > maxBlockLiteralArrayRepresentativeLength {
+		return maxBlockLiteralArrayRepresentativeLength, false
+	}
+	return limit, complete
+}
+
+func (c *scriptChecker) blockLiteralArrayElementsBindingOutcome(
+	elements []blockLiteralBindingValue,
+	ty *TypeExpr,
+	target Expression,
+) blockLiteralBindingOutcome {
+	var normalizations []*TypeExpr
+	if ty != nil {
+		normalizations = []*TypeExpr{ty}
+	}
+	return c.blockLiteralArrayElementsSequenceOutcome(
+		elements,
+		normalizations,
+		target,
+	)
+}
+
+func (c *scriptChecker) blockLiteralArrayElementsSequenceOutcome(
+	elements []blockLiteralBindingValue,
+	normalizations []*TypeExpr,
+	target Expression,
+) blockLiteralBindingOutcome {
+	if len(normalizations) == 0 {
+		return c.blockLiteralArrayElementsTargetOutcome(elements, target)
+	}
+	ty := normalizations[0]
+	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
+		return blockLiteralBindingOutcome{}
+	}
+
+	options := blockLiteralNormalizationTypeOptions(ty)
+	outcome := blockLiteralBindingOutcome{mustBind: true}
+	remaining := true
+	for _, option := range options {
+		normalization, normalized := c.blockLiteralArrayNormalizationOptionOutcome(
+			elements,
+			option,
+		)
+		if !normalization.mayBind {
+			continue
+		}
+		targetOutcome := c.blockLiteralArrayElementsSequenceOutcome(
+			normalized,
+			normalizations[1:],
+			target,
+		)
+		success := combineBlockLiteralBindingOutcomes(
+			normalization,
+			targetOutcome,
+		)
+		outcome.mayBind = outcome.mayBind || success.mayBind
+		if !targetOutcome.mustBind {
+			outcome.mustBind = false
+		}
+		if normalization.mustBind {
+			remaining = false
+			break
+		}
+	}
+	if remaining {
+		outcome.mustBind = false
+	}
+	return outcome
+}
+
+func (c *scriptChecker) blockLiteralArrayNormalizationOptionOutcome(
+	elements []blockLiteralBindingValue,
+	option *TypeExpr,
+) (blockLiteralBindingOutcome, []blockLiteralBindingValue) {
+	if option == nil {
+		return blockLiteralBindingOutcome{}, nil
+	}
+	if option.Kind == TypeAny {
+		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}, elements
+	}
+	if option.Kind != TypeArray {
+		return blockLiteralBindingOutcome{}, nil
+	}
+	if len(option.TypeArgs) == 0 || len(elements) == 0 {
+		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}, elements
+	}
+	if len(option.TypeArgs) != 1 {
+		return blockLiteralBindingOutcome{}, nil
+	}
+
+	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	normalized := make([]blockLiteralBindingValue, len(elements))
+	for i, element := range elements {
+		normalized[i] = element
+		normalized[i].normalizations = append(
+			append([]*TypeExpr(nil), element.normalizations...),
+			option.TypeArgs[0],
+		)
+		binding := c.blockLiteralBindingValueOutcome(normalized[i], nil, nil)
+		outcome = combineBlockLiteralBindingOutcomes(outcome, binding)
+		if !outcome.mayBind {
+			return outcome, nil
+		}
+	}
+	return outcome, normalized
+}
+
+func (c *scriptChecker) blockLiteralBindingValueOutcome(
+	value blockLiteralBindingValue,
+	ty *TypeExpr,
+	target Expression,
+) blockLiteralBindingOutcome {
+	normalizations := append([]*TypeExpr(nil), value.normalizations...)
+	if ty != nil {
+		normalizations = append(normalizations, ty)
+	}
+	if value.typeExpr != nil && value.typeExpr.Kind == TypeArray {
+		return c.blockLiteralArrayTypeSequenceOutcome(
+			value.typeExpr,
+			normalizations,
+			target,
+		)
+	}
+
+	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	effectiveType := value.typeExpr
+	for _, normalization := range normalizations {
+		binding := c.blockLiteralTypeBindingCandidateOutcome(
+			effectiveType,
+			normalization,
+			nil,
+		)
+		outcome = combineBlockLiteralBindingOutcomes(outcome, binding)
+		if !outcome.mayBind {
+			return outcome
+		}
+		effectiveType = c.blockLiteralNormalizedType(
+			effectiveType,
+			normalization,
+		)
+	}
+	targetOutcome := c.blockLiteralTypeBindingCandidateOutcome(
+		effectiveType,
+		nil,
+		target,
+	)
+	return combineBlockLiteralBindingOutcomes(outcome, targetOutcome)
+}
+
+func (c *scriptChecker) blockLiteralArrayElementsTargetOutcome(
+	elements []blockLiteralBindingValue,
+	target Expression,
+) blockLiteralBindingOutcome {
+	if target == nil {
+		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	}
+	switch typed := target.(type) {
+	case *Identifier:
+		return blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	case *DestructureTarget:
+		if c.blockLiteralBindingDepth >= maxBlockLiteralBindingDepth {
+			return c.conservativeBlockLiteralDestructureOutcome(typed)
+		}
+		c.blockLiteralBindingDepth++
+		defer func() { c.blockLiteralBindingDepth-- }()
+		return c.blockLiteralDestructureArrayElementsOutcome(typed, elements)
+	default:
+		return blockLiteralBindingOutcome{}
+	}
+}
+
+func (c *scriptChecker) blockLiteralDestructureArrayElementsOutcome(
+	target *DestructureTarget,
+	elements []blockLiteralBindingValue,
+) blockLiteralBindingOutcome {
+	restIndex := -1
+	for i, element := range target.Elements {
+		if element.Rest {
+			restIndex = i
+			break
+		}
+	}
+	valueAt := func(index int) blockLiteralBindingValue {
+		if index >= 0 && index < len(elements) {
+			return elements[index]
+		}
+		return blockLiteralBindingValue{typeExpr: checkTypeNil}
+	}
+	restStart := 0
+	restEnd := 0
+	if restIndex >= 0 {
+		trailing := len(target.Elements) - restIndex - 1
+		restStart = min(restIndex, len(elements))
+		restEnd = max(restStart, len(elements)-trailing)
+	}
+
+	outcome := blockLiteralBindingOutcome{mayBind: true, mustBind: true}
+	for i, element := range target.Elements {
+		if element.Rest && element.Target == nil {
+			continue
+		}
+		var binding blockLiteralBindingOutcome
+		switch {
+		case restIndex < 0 || i < restIndex:
+			binding = c.blockLiteralBindingValueOutcome(
+				valueAt(i),
+				element.Type,
+				element.Target,
+			)
+		case i == restIndex:
+			binding = c.blockLiteralArrayElementsBindingOutcome(
+				elements[restStart:restEnd],
+				element.Type,
+				element.Target,
+			)
+		default:
+			binding = c.blockLiteralBindingValueOutcome(
+				valueAt(restEnd+i-restIndex-1),
+				element.Type,
+				element.Target,
+			)
+		}
+		outcome = combineBlockLiteralBindingOutcomes(outcome, binding)
+		if !outcome.mayBind {
+			return outcome
+		}
+	}
+	return outcome
 }
 
 func (c *scriptChecker) instanceMethodMayRun(receiver Expression, methods ...string) bool {

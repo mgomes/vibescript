@@ -4238,6 +4238,239 @@ end
 	}
 }
 
+func TestCheckInitializerIvarNestedTypedBlockBindingSuccessKeepsPostEntryEffects(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		expression string
+	}{
+		{
+			name: "immediate lambda success",
+			expression: `      ->(((value: int): array<int>)) {
+        @b = 1
+        raise "stop"
+      }.call([[1]])`,
+		},
+		{
+			name: "hash default success",
+			expression: `      Hash.new { |hash: hash, ((key: symbol): symbol)|
+        @b = 1
+        raise "stop"
+      }[:missing]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    begin
+`+tc.expression+`
+    rescue
+      @a = @b
+    end
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 1 {
+				t.Fatalf("run() = %v, want 1", got)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarNestedTypedBlockBindingRejectionKeepsPreEntryFacts(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		expression string
+	}{
+		{
+			name: "immediate lambda outer element type",
+			expression: `      ->(((value: string): array<int>)) {
+        @b = true
+      }.call([["ok"]])`,
+		},
+		{
+			name: "immediate lambda nested element type",
+			expression: `      ->(((value: int): array<string>)) {
+        @b = true
+      }.call([["bad"]])`,
+		},
+		{
+			name: "immediate lambda exact splat",
+			expression: `      ->(((value: string): array<int>)) {
+        @b = true
+      }.call(*[[["ok"]]])`,
+		},
+		{
+			name: "hash default outer element type",
+			expression: `      Hash.new { |hash: hash, ((key: symbol): int)|
+        @b = true
+      }[:missing]`,
+		},
+		{
+			name: "hash default nested element type",
+			expression: `      Hash.new { |hash: hash, ((key: int): symbol)|
+        @b = true
+      }[:missing]`,
+		},
+		{
+			name: "hash default receiver nested element type",
+			expression: `      Hash.new { |((value: int): hash), key|
+        @b = true
+      }[:missing]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: bool
+  property c: int
+
+  def initialize
+    @a = 1
+    begin
+`+tc.expression+`
+    rescue
+      @b = false
+    end
+    if @b
+      @a = @c
+    end
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 1 {
+				t.Fatalf("run() = %v, want 1", got)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarNestedTypedBlockBindingRejectsAbstractSplatAndRest(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		param      string
+		expression string
+		argument   string
+	}{
+		{
+			name:  "abstract splat nested rejection",
+			param: "values: array<array<array<string>>>",
+			expression: `      ->(((value: int): array<string>)) {
+        @b = true
+      }.call(*values)`,
+			argument: `[[["bad"]]]`,
+		},
+		{
+			name:  "abstract splat exact rest cardinality",
+			param: "values: array<int>",
+			expression: `      ->((*(first: int, second: int))) {
+        @b = true
+      }.call(*values)`,
+			argument: `[1]`,
+		},
+		{
+			name:  "recursive array normalization keeps source cardinality",
+			param: "values: array<array<int>>",
+			expression: `      ->((((leaf: string)): array<array<string> | any>)) {
+        @b = true
+      }.call([values])`,
+			argument: `[[1]]`,
+		},
+		{
+			name:  "hash normalization keeps empty shape correlation",
+			param: "items: hash<int, int>",
+			expression: `      ->(((value: {foo: string}): {foo?: string} | any)) {
+        @b = true
+      }.call([items])`,
+			argument: `{}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: bool
+
+  def initialize(`+tc.param+`)
+    @a = 1
+    begin
+`+tc.expression+`
+    rescue
+      nil
+    end
+    @a = @b
+  end
+end
+
+def run
+  User.new(`+tc.argument+`).a
+end
+`)
+			requireCheckWarningContains(t, script, "write to @a expected int, got nil")
+		})
+	}
+}
+
+func TestCheckInitializerIvarNestedTypedBlockBindingKeepsPartialArraysGradual(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize(values: array)
+    values << "bad"
+    begin
+      ->((first: int)) {
+        @b = 1
+        raise "stop"
+      }.call(values)
+    rescue
+      @a = @b
+    end
+  end
+end
+
+def run
+  User.new([1]).a
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run() = %v, want 1", got)
+	}
+}
+
 func TestCheckInitializerIvarHashDefaultWaitsForSelectorCompletion(t *testing.T) {
 	t.Parallel()
 

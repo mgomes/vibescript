@@ -151,6 +151,7 @@ type scriptChecker struct {
 	returnAnalyses             map[returnSummaryCacheKey]functionReturnAnalysis
 	summaryInProgress          map[returnSummaryCacheKey]struct{}
 	bindingCompletionProbes    map[Expression]struct{}
+	blockLiteralBindingDepth   int
 	returnCollector            *returnSummaryCollector
 	summaryYieldCollector      *returnSummaryCollector
 	summaryYieldBlock          *BlockLiteral
@@ -14750,6 +14751,13 @@ type immediateLambdaCallEntryOutcome struct {
 	mayReject bool
 }
 
+// blockLiteralBindingOutcome separates a reachable binding arm from one that
+// is guaranteed to bind, so callers can retain both body and rejection paths.
+type blockLiteralBindingOutcome struct {
+	mayBind  bool
+	mustBind bool
+}
+
 // immediateLambdaCallEntry separates the arm that enters a direct lambda body
 // from arms rejected by block.call before entry. The runtime rejects keywords
 // and a non-nil supplied block, then enforces exact lambda arity and parameter
@@ -14790,41 +14798,34 @@ func (c *scriptChecker) immediateLambdaCallEntry(
 		}
 	}
 
-	if !c.immediateLambdaPositionalMayBind(block, call) {
+	binding := c.immediateLambdaPositionalBindingOutcome(block, call)
+	if !binding.mayBind {
 		return immediateLambdaCallEntryOutcome{mayReject: true}
 	}
 	outcome.mayEnter = true
-	if !c.immediateLambdaPositionalMustBind(block, call) {
+	if !binding.mustBind {
 		outcome.mayReject = true
 	}
 	return outcome
 }
 
-func (c *scriptChecker) immediateLambdaPositionalMayBind(
+func (c *scriptChecker) immediateLambdaPositionalBindingOutcome(
 	block *BlockLiteral,
 	call *CallExpr,
-) bool {
+) blockLiteralBindingOutcome {
 	arity := lambdaLiteralArity(block)
 	if arity < 0 {
-		return false
+		return blockLiteralBindingOutcome{}
 	}
 	if variants, exact, correlated := c.exactPositionalArgumentVariants(call, 32); exact && correlated {
+		alternatives := make([]blockLiteralBindingOutcome, 0, len(variants))
 		for _, arguments := range variants {
-			if len(arguments) != arity {
-				continue
-			}
-			mayBind := true
-			for i, argument := range arguments {
-				if !c.callArgumentMayBindType(argument, lambdaLiteralParamType(block, i)) {
-					mayBind = false
-					break
-				}
-			}
-			if mayBind {
-				return true
-			}
+			alternatives = append(
+				alternatives,
+				c.blockLiteralBindingOutcome(block, arguments, true, nil),
+			)
 		}
-		return false
+		return mergeBlockLiteralBindingAlternatives(alternatives)
 	}
 	reachable := make([]bool, arity+1)
 	reachable[0] = true
@@ -14835,7 +14836,7 @@ func (c *scriptChecker) immediateLambdaPositionalMayBind(
 			if !possible || position == arity {
 				continue
 			}
-			if c.callArgumentMayBindType(argument, lambdaLiteralParamType(block, position)) {
+			if c.lambdaLiteralParamBindingOutcome(block, position, argument).mayBind {
 				next[position+1] = true
 			}
 		}
@@ -14867,7 +14868,7 @@ func (c *scriptChecker) immediateLambdaPositionalMayBind(
 			continue
 		}
 		if !c.positionalArgumentExpansionMaySucceed(argument) {
-			return false
+			return blockLiteralBindingOutcome{}
 		}
 		elementType := c.positionalSplatElementType(splat)
 		next := make([]bool, arity+1)
@@ -14877,9 +14878,11 @@ func (c *scriptChecker) immediateLambdaPositionalMayBind(
 			}
 			next[start] = true
 			for end := start; end < arity; end++ {
-				paramType := lambdaLiteralParamType(block, end)
-				if elementType != nil && paramType != nil &&
-					typeExprsDisjoint(elementType, paramType, c.checkNamedTypeResolver()) {
+				if !c.lambdaLiteralParamTypeBindingOutcome(
+					block,
+					end,
+					elementType,
+				).mayBind {
 					break
 				}
 				next[end+1] = true
@@ -14887,31 +14890,28 @@ func (c *scriptChecker) immediateLambdaPositionalMayBind(
 		}
 		reachable = next
 	}
-	return reachable[arity]
-}
-
-func (c *scriptChecker) immediateLambdaPositionalMustBind(
-	block *BlockLiteral,
-	call *CallExpr,
-) bool {
+	outcome := blockLiteralBindingOutcome{mayBind: reachable[arity]}
 	variants, exact, _ := c.exactPositionalArgumentVariants(call, 32)
 	if !exact || len(variants) == 0 {
-		return false
+		return outcome
 	}
+	outcome.mustBind = true
 	for _, arguments := range variants {
 		if len(arguments) != lambdaLiteralArity(block) {
-			return false
+			outcome.mustBind = false
+			break
 		}
 		for i, argument := range arguments {
-			if i < len(block.Params) && block.Params[i].Target != nil {
-				return false
-			}
-			if !c.callArgumentMustBindType(argument, lambdaLiteralParamType(block, i)) {
-				return false
+			if !c.lambdaLiteralParamBindingOutcome(block, i, argument).mustBind {
+				outcome.mustBind = false
+				break
 			}
 		}
+		if !outcome.mustBind {
+			break
+		}
 	}
-	return true
+	return outcome
 }
 
 func (c *scriptChecker) exactPositionalArgumentVariants(
@@ -15025,13 +15025,6 @@ func sameCheckCallSplatSource(left, right checkCallSplatSource) bool {
 		}
 	}
 	return true
-}
-
-func lambdaLiteralParamType(block *BlockLiteral, index int) *TypeExpr {
-	if block == nil || index < 0 || index >= len(block.Params) {
-		return nil
-	}
-	return block.Params[index].Type
 }
 
 func (c *scriptChecker) positionalSplatElementType(splat *SplatArg) *TypeExpr {

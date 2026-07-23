@@ -43,6 +43,302 @@ func TestCheckInferMixedClassCallableFactsStayGradual(t *testing.T) {
 	}
 }
 
+func TestBlockLiteralBindingOutcomeNormalizesParamBeforeTarget(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+enum Status
+  Draft
+end
+
+def accept(value: Status)
+  value
+end
+`)
+	statusType := script.functions["accept"].Params[0].Type
+	checker := &scriptChecker{
+		script:          script,
+		typeRoot:        checkTypeRoot(script, nil),
+		runtimeTypeRoot: checkTypeRoot(script, nil),
+	}
+	target := &DestructureTarget{Elements: []DestructureElement{{
+		Target: &Identifier{Name: "status"},
+		Type:   statusType,
+	}}}
+	block := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{
+			Type:   statusType,
+			Target: target,
+		}},
+	}
+	outcome := checker.blockLiteralBindingOutcome(
+		block,
+		[]Expression{&SymbolLiteral{Name: "draft"}},
+		true,
+		nil,
+	)
+	if !outcome.mayBind || !outcome.mustBind {
+		t.Fatalf("blockLiteralBindingOutcome(:draft) = %#v, want exact success", outcome)
+	}
+
+	paramNormalizedBlock := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{
+			Type: statusType,
+			Target: &DestructureTarget{Elements: []DestructureElement{{
+				Target: &Identifier{Name: "value"},
+				Type:   checkTypeSymbol,
+			}}},
+		}},
+	}
+	outcome = checker.blockLiteralBindingOutcome(
+		paramNormalizedBlock,
+		[]Expression{&SymbolLiteral{Name: "draft"}},
+		true,
+		nil,
+	)
+	if outcome.mayBind {
+		t.Fatalf(
+			"blockLiteralBindingOutcome(Status -> symbol target) = %#v, want guaranteed rejection",
+			outcome,
+		)
+	}
+
+	normalizedTarget := &DestructureTarget{Elements: []DestructureElement{{
+		Type: statusType,
+		Target: &DestructureTarget{Elements: []DestructureElement{{
+			Target: &Identifier{Name: "value"},
+			Type:   checkTypeSymbol,
+		}}},
+	}}}
+	normalizedBlock := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{Target: normalizedTarget}},
+	}
+	outcome = checker.lambdaLiteralParamTypeBindingOutcome(
+		normalizedBlock,
+		0,
+		&TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{checkTypeSymbol}},
+	)
+	if outcome.mayBind {
+		t.Fatalf(
+			"lambdaLiteralParamTypeBindingOutcome(array<symbol>) = %#v, want guaranteed nested rejection",
+			outcome,
+		)
+	}
+
+	symbolOrAny := &TypeExpr{
+		Kind:  TypeUnion,
+		Union: []*TypeExpr{checkTypeSymbol, {Kind: TypeAny}},
+	}
+	unionElementBlock := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{Target: &DestructureTarget{
+			Elements: []DestructureElement{{
+				Type: &TypeExpr{
+					Kind:     TypeArray,
+					TypeArgs: []*TypeExpr{symbolOrAny},
+				},
+				Target: &DestructureTarget{Elements: []DestructureElement{{
+					Target: &Identifier{Name: "value"},
+					Type:   checkTypeSymbol,
+				}}},
+			}},
+		}}},
+	}
+	outcome = checker.lambdaLiteralParamTypeBindingOutcome(
+		unionElementBlock,
+		0,
+		&TypeExpr{
+			Kind: TypeArray,
+			TypeArgs: []*TypeExpr{{
+				Kind: TypeArray,
+				TypeArgs: []*TypeExpr{{
+					Kind:  TypeUnion,
+					Union: []*TypeExpr{statusType, checkTypeString},
+				}},
+			}},
+		},
+	)
+	if outcome.mayBind {
+		t.Fatalf(
+			"lambdaLiteralParamTypeBindingOutcome(array<Status|string>) = %#v, want union arms to retain their normalized outputs",
+			outcome,
+		)
+	}
+}
+
+func TestBlockLiteralBindingOutcomeRecursesThroughAbstractDestructures(t *testing.T) {
+	t.Parallel()
+
+	arrayOf := func(element *TypeExpr) *TypeExpr {
+		return &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{element}}
+	}
+	target := func(outer, inner *TypeExpr) *DestructureTarget {
+		return &DestructureTarget{Elements: []DestructureElement{{
+			Type: outer,
+			Target: &DestructureTarget{Elements: []DestructureElement{{
+				Target: &Identifier{Name: "value"},
+				Type:   inner,
+			}}},
+		}}}
+	}
+	for _, tc := range []struct {
+		name     string
+		value    *TypeExpr
+		target   *DestructureTarget
+		mayBind  bool
+		mustBind bool
+	}{
+		{
+			name:     "matching nested arrays may be nonempty",
+			value:    arrayOf(arrayOf(checkTypeInt)),
+			target:   target(arrayOf(checkTypeInt), checkTypeInt),
+			mayBind:  true,
+			mustBind: false,
+		},
+		{
+			name:     "disjoint nested leaf always rejects",
+			value:    arrayOf(arrayOf(checkTypeString)),
+			target:   target(arrayOf(checkTypeString), checkTypeInt),
+			mayBind:  false,
+			mustBind: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			checker := &scriptChecker{}
+			block := &BlockLiteral{
+				Lambda: true,
+				Params: []Param{{Target: tc.target}},
+			}
+			outcome := checker.lambdaLiteralParamTypeBindingOutcome(block, 0, tc.value)
+			if outcome.mayBind != tc.mayBind || outcome.mustBind != tc.mustBind {
+				t.Errorf(
+					"lambdaLiteralParamTypeBindingOutcome() = %#v, want mayBind=%t, mustBind=%t",
+					outcome,
+					tc.mayBind,
+					tc.mustBind,
+				)
+			}
+		})
+	}
+
+	t.Run("array length alternatives stay correlated", func(t *testing.T) {
+		t.Parallel()
+
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: &DestructureTarget{
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "first"}, Type: checkTypeNil},
+					{Target: &Identifier{Name: "second"}, Type: checkTypeInt},
+				},
+			}}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(
+			block,
+			0,
+			arrayOf(checkTypeInt),
+		)
+		if outcome.mayBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(array<int>) = %#v, want no compatible length",
+				outcome,
+			)
+		}
+	})
+
+	t.Run("union normalization retains the input arm", func(t *testing.T) {
+		t.Parallel()
+
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: &DestructureTarget{
+				Elements: []DestructureElement{{
+					Type: &TypeExpr{
+						Kind:  TypeUnion,
+						Union: []*TypeExpr{checkTypeInt, checkTypeString},
+					},
+					Target: &DestructureTarget{Elements: []DestructureElement{{
+						Target: &Identifier{Name: "value"},
+						Type:   checkTypeString,
+					}}},
+				}},
+			}}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(
+			block,
+			0,
+			checkTypeInt,
+		)
+		if outcome.mayBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(int) = %#v, want normalized int to reject nested string",
+				outcome,
+			)
+		}
+	})
+
+	t.Run("rest target retains exact scalar cardinality", func(t *testing.T) {
+		t.Parallel()
+
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: &DestructureTarget{
+				Elements: []DestructureElement{{
+					Rest: true,
+					Target: &DestructureTarget{Elements: []DestructureElement{
+						{Target: &Identifier{Name: "first"}, Type: checkTypeInt},
+						{Target: &Identifier{Name: "second"}, Type: checkTypeInt},
+					}},
+				}},
+			}}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(
+			block,
+			0,
+			checkTypeInt,
+		)
+		if outcome.mayBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(int rest) = %#v, want exact-length rejection",
+				outcome,
+			)
+		}
+	})
+
+	t.Run("deep unknown nesting stays bounded", func(t *testing.T) {
+		t.Parallel()
+
+		var nested Expression = &Identifier{Name: "value"}
+		for depth := range 32 {
+			element := DestructureElement{Target: nested}
+			if depth == 0 {
+				element.Type = checkTypeInt
+			}
+			nested = &DestructureTarget{Elements: []DestructureElement{element}}
+		}
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: nested}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(block, 0, nil)
+		if !outcome.mayBind || outcome.mustBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(unknown) = %#v, want conservative may-only result",
+				outcome,
+			)
+		}
+	})
+}
+
 func TestCheckInferDisjointKeywordSplatFailuresStayRepairable(t *testing.T) {
 	t.Parallel()
 
