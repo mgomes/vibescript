@@ -197,6 +197,19 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "fill exact proc block result",
+			source: `
+def f(items: array<int>)
+  callback = proc do |index|
+    "bad"
+  end
+  items.fill(&callback)
+  items
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "compatible fill literal block result preserves the bound",
 			source: `
 def f(items: array<int>)
@@ -204,6 +217,48 @@ def f(items: array<int>)
     1
   end
   items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible exact proc fill result preserves the bound",
+			source: `
+def f(items: array<int>)
+  callback = proc do |index|
+    1
+  end
+  items.fill(&callback)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "exact proc fill uses compatible invocation-time capture",
+			source: `
+def f(items: array<int>)
+  value = "stale"
+  callback = proc do |index|
+    value
+  end
+  value = 1
+  items.fill(&callback)
+  items << true
+end
+`,
+			warning: "write to items expected element int, got bool",
+		},
+		{
+			name: "exact proc fill uses incompatible invocation-time capture",
+			source: `
+def f(items: array<int>)
+  value = 1
+  callback = proc do |index|
+    value
+  end
+  value = "bad"
+  items.fill(&callback)
 end
 `,
 			warning: "write to items expected element int, got string",
@@ -1007,6 +1062,14 @@ end
 def f(items: array<int>, start)
   items.fill("bad", start)
   items << "bad"
+end
+`,
+		},
+		{
+			name: "dynamic fill block argument stays gradual",
+			source: `
+def f(items: array<int>, callback: function)
+  items.fill(&callback)
 end
 `,
 		},
@@ -2307,9 +2370,14 @@ def run()
   next_blocked.fill() do
     next "bad"
   end
+  callback = proc do |index|
+    "bad"
+  end
+  proc_blocked = [1, 2]
+  proc_blocked.fill(&callback)
   nil_block = [1, 2]
   nil_block.fill("bad", &nil)
-  [selected, value, blocked, next_blocked, nil_block]
+  [selected, value, blocked, next_blocked, proc_blocked, nil_block]
 end
 `)
 
@@ -2318,6 +2386,7 @@ end
 	want := NewArray([]Value{
 		NewArray([]Value{mutatedValue}),
 		mutatedValue,
+		NewArray([]Value{NewString("bad"), NewString("bad")}),
 		NewArray([]Value{NewString("bad"), NewString("bad")}),
 		NewArray([]Value{NewString("bad"), NewString("bad")}),
 		NewArray([]Value{NewString("bad"), NewString("bad")}),

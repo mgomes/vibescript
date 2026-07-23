@@ -4385,6 +4385,10 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			// function.
 			localReturns := typed.Block.Lambda || c.callTargetsCoreLambda(typed, target, targetResolved)
 			blockResultFact = c.checkBlockLiteral(function, typed.Block, localReturns)
+		} else if targetMayEnter && typed.BlockArg != nil {
+			if blocks, exact := c.callableBlockLiteralValues(typed.BlockArg); exact {
+				blockResultFact = c.blockLiteralValuesResultFact(function, blocks)
+			}
 		}
 		c.callArgumentFacts = previousFacts
 		c.callArgumentClassValues = previousClassValues
@@ -6618,6 +6622,27 @@ func (c *scriptChecker) blockImplicitResultFact(statements []Statement) *TypeExp
 		return nil
 	}
 	return unionTypeExprs(collector.arms...)
+}
+
+func (c *scriptChecker) blockLiteralValuesResultFact(
+	function string,
+	blocks []*BlockLiteral,
+) *TypeExpr {
+	if len(blocks) == 0 {
+		return nil
+	}
+	results := make([]*TypeExpr, 0, len(blocks))
+	for _, block := range blocks {
+		var result *TypeExpr
+		c.withSuppressedWarnings(func() {
+			result = c.checkBlockLiteral(function, block, false)
+		})
+		if result == nil {
+			return nil
+		}
+		results = append(results, result)
+	}
+	return unionTypeExprs(results...)
 }
 
 // literalArrayElementYieldMethods are the builtin array iterators that yield
@@ -12604,6 +12629,27 @@ func lambdaLiteralBlock(arg Expression) *BlockLiteral {
 		}
 	}
 	return nil
+}
+
+func (c *scriptChecker) callableBlockLiteralValues(expr Expression) ([]*BlockLiteral, bool) {
+	switch typed := expr.(type) {
+	case *Identifier:
+		return c.localBlockLiteralValuesFor(typed.Name)
+	case *CallExpr:
+		if typed.Block == nil || typed.BlockArg != nil ||
+			len(typed.Args) != 0 || len(typed.KwArgs) != 0 {
+			return nil, false
+		}
+		target, resolved := c.resolveCallable(typed)
+		if !resolved || target.fn != nil {
+			return nil, false
+		}
+		switch target.name {
+		case "proc", "Proc.new":
+			return []*BlockLiteral{typed.Block}, true
+		}
+	}
+	return nil, false
 }
 
 func (c *scriptChecker) checkLambdaLiteralSummaryYields(function string, arg Expression) {

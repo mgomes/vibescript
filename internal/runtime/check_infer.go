@@ -56,6 +56,7 @@ type checkTypeFrame map[string]*TypeExpr
 type checkLocalValueFact struct {
 	classNames              []string
 	callables               []*ScriptFunction
+	blocks                  []*BlockLiteral
 	staticVals              []Expression
 	keywordSplatFails       bool
 	invalidKeywordSplatKeys map[string]struct{}
@@ -112,7 +113,7 @@ func (c *scriptChecker) directLocalConditionTruthiness(condition Expression) (bo
 		return false, false
 	}
 	if fact, exact := c.localValueFactFor(ident.Name); exact {
-		if len(fact.callables) > 0 {
+		if len(fact.callables) > 0 || len(fact.blocks) > 0 {
 			return false, false
 		}
 		if truthy, known := localValueFactTruthiness(fact, true); known {
@@ -308,6 +309,7 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 		clone[name] = checkLocalValueFact{
 			classNames:              append([]string(nil), fact.classNames...),
 			callables:               append([]*ScriptFunction(nil), fact.callables...),
+			blocks:                  append([]*BlockLiteral(nil), fact.blocks...),
 			staticVals:              append([]Expression(nil), fact.staticVals...),
 			keywordSplatFails:       fact.keywordSplatFails,
 			invalidKeywordSplatKeys: cloneCheckStringSet(fact.invalidKeywordSplatKeys),
@@ -318,8 +320,8 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 
 func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 	fact, ok := c.localValueFactFor(name)
-	if !ok || len(fact.classNames) != 1 || len(fact.callables) > 0 || len(fact.staticVals) > 0 ||
-		fact.keywordSplatFails {
+	if !ok || len(fact.classNames) != 1 || len(fact.callables) > 0 ||
+		len(fact.blocks) > 0 || len(fact.staticVals) > 0 || fact.keywordSplatFails {
 		return "", false
 	}
 	return fact.classNames[0], true
@@ -328,7 +330,7 @@ func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 func (c *scriptChecker) localClassValuesFor(name string) ([]string, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return fact.classNames, ok && len(fact.classNames) > 0 && len(fact.callables) == 0 &&
-		len(fact.staticVals) == 0 && !fact.keywordSplatFails
+		len(fact.blocks) == 0 && len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
 
 func (c *scriptChecker) localValueFactFor(name string) (checkLocalValueFact, bool) {
@@ -372,8 +374,8 @@ func (c *scriptChecker) bindLocalClassValues(name string, classNames []string) {
 
 func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
-	if !ok || len(fact.callables) != 1 || len(fact.classNames) > 0 || len(fact.staticVals) > 0 ||
-		fact.keywordSplatFails {
+	if !ok || len(fact.callables) != 1 || len(fact.classNames) > 0 ||
+		len(fact.blocks) > 0 || len(fact.staticVals) > 0 || fact.keywordSplatFails {
 		return nil, false
 	}
 	return fact.callables[0], true
@@ -382,7 +384,7 @@ func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, boo
 func (c *scriptChecker) localCallableValuesFor(name string) ([]*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return fact.callables, ok && len(fact.callables) > 0 && len(fact.classNames) == 0 &&
-		len(fact.staticVals) == 0 && !fact.keywordSplatFails
+		len(fact.blocks) == 0 && len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
 
 func (c *scriptChecker) bindLocalCallableValues(name string, fns []*ScriptFunction) {
@@ -405,6 +407,35 @@ func (c *scriptChecker) bindLocalCallableValues(name string, fns []*ScriptFuncti
 	}
 }
 
+func (c *scriptChecker) localBlockLiteralValuesFor(name string) ([]*BlockLiteral, bool) {
+	fact, ok := c.localValueFactFor(name)
+	return append([]*BlockLiteral(nil), fact.blocks...), ok && len(fact.blocks) > 0 &&
+		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
+		len(fact.staticVals) == 0 && !fact.keywordSplatFails
+}
+
+func (c *scriptChecker) bindLocalBlockLiteralValues(name string, blocks []*BlockLiteral) {
+	if name == "" || len(c.localTypes) == 0 {
+		return
+	}
+	for i := len(c.localTypes) - 1; i >= 0; i-- {
+		if _, tracked := c.localTypes[i][name]; !tracked {
+			continue
+		}
+		if len(blocks) == 0 {
+			delete(c.localClassValues[i], name)
+			return
+		}
+		if c.localClassValues[i] == nil {
+			c.localClassValues[i] = make(checkClassValueFrame)
+		}
+		c.localClassValues[i][name] = checkLocalValueFact{
+			blocks: normalizeCheckBlockLiterals(blocks),
+		}
+		return
+	}
+}
+
 func (c *scriptChecker) localStaticValuesFor(name string) ([]Expression, bool) {
 	if _, poisoned := c.typePoison[name]; poisoned {
 		return nil, false
@@ -414,7 +445,8 @@ func (c *scriptChecker) localStaticValuesFor(name string) ([]Expression, bool) {
 	}
 	fact, ok := c.localValueFactFor(name)
 	return append([]Expression(nil), fact.staticVals...), ok && len(fact.staticVals) > 0 &&
-		len(fact.classNames) == 0 && len(fact.callables) == 0 && !fact.keywordSplatFails
+		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
+		len(fact.blocks) == 0 && !fact.keywordSplatFails
 }
 
 func (c *scriptChecker) bindLocalStaticValues(name string, values []Expression) {
@@ -582,6 +614,7 @@ func (c *scriptChecker) bindLocalKeywordSplatFailure(name string, keys ...string
 		}
 		fact.classNames = nil
 		fact.callables = nil
+		fact.blocks = nil
 		fact.staticVals = nil
 		fact.keywordSplatFails = true
 		c.localClassValues[i][name] = fact
@@ -1980,6 +2013,8 @@ func (c *scriptChecker) mergeLocalClassValueStates(states []checkScopeState) {
 					fact.classNames = normalizeCheckClassNames(append(fact.classNames, other.classNames...))
 				case len(fact.callables) > 0 && len(other.callables) > 0:
 					fact.callables = normalizeCheckCallables(append(fact.callables, other.callables...))
+				case len(fact.blocks) > 0 && len(other.blocks) > 0:
+					fact.blocks = normalizeCheckBlockLiterals(append(fact.blocks, other.blocks...))
 				case len(fact.staticVals) > 0 && len(other.staticVals) > 0:
 					fact.staticVals = c.normalizeCheckStaticValues(append(fact.staticVals, other.staticVals...))
 				case fact.keywordSplatFails && other.keywordSplatFails:
@@ -2087,6 +2122,23 @@ func normalizeCheckCallables(fns []*ScriptFunction) []*ScriptFunction {
 	for _, fn := range normalized {
 		if len(out) == 0 || out[len(out)-1] != fn {
 			out = append(out, fn)
+		}
+	}
+	return out
+}
+
+func normalizeCheckBlockLiterals(blocks []*BlockLiteral) []*BlockLiteral {
+	if len(blocks) == 0 {
+		return nil
+	}
+	normalized := append([]*BlockLiteral(nil), blocks...)
+	sort.Slice(normalized, func(i, j int) bool {
+		return reflect.ValueOf(normalized[i]).Pointer() < reflect.ValueOf(normalized[j]).Pointer()
+	})
+	out := normalized[:0]
+	for _, block := range normalized {
+		if len(out) == 0 || out[len(out)-1] != block {
+			out = append(out, block)
 		}
 	}
 	return out
@@ -2734,6 +2786,8 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 		c.bindLocalClassValues(name, classNames)
 	} else if fns, ok := c.callableExpressionFunctions(identityExpr); ok {
 		c.bindLocalCallableValues(name, fns)
+	} else if blocks, ok := c.callableBlockLiteralValues(identityExpr); ok {
+		c.bindLocalBlockLiteralValues(name, blocks)
 	} else if values, ok := c.staticValueExpressionAlternatives(expr); ok {
 		c.bindLocalStaticValues(name, values)
 	} else if c.keywordSplatExpressionAlwaysFails(expr) &&
@@ -2840,7 +2894,7 @@ func localValueFactTruthiness(fact checkLocalValueFact, tracked bool) (bool, boo
 	if !tracked || fact.keywordSplatFails {
 		return false, false
 	}
-	if len(fact.classNames) > 0 || len(fact.callables) > 0 {
+	if len(fact.classNames) > 0 || len(fact.callables) > 0 || len(fact.blocks) > 0 {
 		return true, true
 	}
 	if len(fact.staticVals) == 0 {
@@ -5874,6 +5928,7 @@ func arrayMutatorElementWrites(
 	property string,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
+	blockResultFact *TypeExpr,
 ) (arrayMutatorWriteModel, bool) {
 	if len(call.KwArgs) != 0 {
 		return arrayMutatorWriteModel{}, false
@@ -5898,7 +5953,7 @@ func arrayMutatorElementWrites(
 			mayWrite:    len(call.Args) > 1,
 		}, true
 	case "fill":
-		return arrayFillElementWrites(call, argumentFacts, argumentStaticValues)
+		return arrayFillElementWrites(call, argumentFacts, argumentStaticValues, blockResultFact)
 	}
 	return arrayMutatorWriteModel{}, false
 }
@@ -5907,6 +5962,7 @@ func arrayFillElementWrites(
 	call *CallExpr,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
+	blockResultFact *TypeExpr,
 ) (arrayMutatorWriteModel, bool) {
 	if call == nil {
 		return arrayMutatorWriteModel{}, false
@@ -5919,6 +5975,11 @@ func arrayFillElementWrites(
 			return arrayMutatorWriteModel{}, false
 		}
 		element = call.Block
+	case call.BlockArg != nil && !arrayFillBlockArgumentIsNil(call.BlockArg, argumentFacts):
+		if blockResultFact == nil || len(selectors) > 2 {
+			return arrayMutatorWriteModel{}, false
+		}
+		element = call.BlockArg
 	case call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, argumentFacts):
 		if len(selectors) < 1 || len(selectors) > 3 {
 			return arrayMutatorWriteModel{}, false
@@ -6301,7 +6362,7 @@ func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string,
 	}) {
 		return false
 	}
-	model, ok := arrayMutatorElementWrites(call, property, nil, nil)
+	model, ok := arrayMutatorElementWrites(call, property, nil, nil, nil)
 	if !ok {
 		return false
 	}
@@ -6439,6 +6500,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		member.Property,
 		argumentFacts,
 		argumentStaticValues,
+		blockResultFact,
 	)
 	if !ok {
 		return false, false, false
@@ -6539,7 +6601,8 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		}
 		splatOrigin := nextSplatOrigin(arg)
 		written, captured := argumentFacts[arg]
-		if _, blockResult := arg.(*BlockLiteral); blockResult {
+		if member.Property == "fill" && blockResultFact != nil &&
+			(arg == writesCall.Block || arg == writesCall.BlockArg) {
 			written, captured = blockResultFact, true
 		} else if !captured {
 			written = c.inferExpressionType(arg)
