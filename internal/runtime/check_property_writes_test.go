@@ -5442,6 +5442,33 @@ end
 	)
 }
 
+func TestCheckInitializerIvarMinimumRangeStartReachesEndEffects(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    for value in [1]
+      (-9223372036854775808)..(-> { @b = 1; 2 }.call())
+    end
+    @a = @b
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run() = %v, want 1", got)
+	}
+}
+
 func TestCheckInitializerIvarCaseKeepsLaterCandidateEffects(t *testing.T) {
 	t.Parallel()
 

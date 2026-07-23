@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"slices"
 	"sort"
@@ -11199,16 +11200,44 @@ func (c *scriptChecker) rangeEndpointConversionMaySucceed(expr Expression) bool 
 	if expr == nil {
 		return true
 	}
-	if rangeEndpointIsBigIntegerLiteral(expr) {
-		return false
-	}
 	if value, literal := staticLiteralValue(expr); literal {
 		_, err := valueToInt64(value)
 		return err == nil
 	}
+	if value, literal := staticBigIntegerLiteralValue(expr); literal {
+		return value.IsInt64()
+	}
+	if rangeEndpointIsBigIntegerLiteral(expr) {
+		return false
+	}
 	inferred := c.inferExpressionType(expr)
 	return inferred == nil ||
 		!typeExprsDisjoint(inferred, checkTypeNumber, c.checkNamedTypeResolver())
+}
+
+func staticBigIntegerLiteralValue(expr Expression) (*big.Int, bool) {
+	switch typed := expr.(type) {
+	case *IntegerLiteral:
+		if typed.Big == nil {
+			return nil, false
+		}
+		return new(big.Int).Set(typed.Big), true
+	case *UnaryExpr:
+		value, literal := staticBigIntegerLiteralValue(typed.Right)
+		if !literal {
+			return nil, false
+		}
+		switch typed.Operator {
+		case tokenMinus:
+			return new(big.Int).Neg(value), true
+		case tokenPlus:
+			return value, true
+		default:
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
 }
 
 func rangeEndpointIsBigIntegerLiteral(expr Expression) bool {
