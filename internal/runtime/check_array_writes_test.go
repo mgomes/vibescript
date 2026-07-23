@@ -153,6 +153,122 @@ end
 			warning: "write to items expected element string, got int",
 		},
 		{
+			name: "fill value",
+			source: `
+def f(items: array<int>)
+  items.fill("bad")
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill value after the receiver escapes as an argument",
+			source: `
+def returns_string(items) -> string
+  "bad"
+end
+
+def f(items: array<int>)
+  items.fill(returns_string(items))
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible fill preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.fill(1)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill value with start",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", 0)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill value with start and length",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", 0, 1)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill value with exact range",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", 0..1)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill value with exact local range",
+			source: `
+def f(items: array<int>)
+  window = 0..1
+  items.fill("bad", window)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill uses selector captured before a later argument rebind",
+			source: `
+def later() -> int
+  yield
+  1
+end
+
+def f(items: array<int>)
+  start = 0
+  items.fill("bad", start, later() do
+    start = "invalid"
+  end)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible non-padding fill selectors preserve the bound",
+			source: `
+def f(items: array<int>)
+  items.fill(1, 2)
+  items.fill(2, 0, 1)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible nil fill length preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.fill(1, 2, nil)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "exact splat supplies the fill value",
+			source: `
+def f(items: array<int>)
+  items.fill(*["bad"])
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "splatted literal element",
 			source: `
 def f(items: array<int>)
@@ -669,6 +785,51 @@ def f(items: array<int>, v)
   items << v
   items[0] = v
   items.push(v)
+end
+`,
+		},
+		{
+			name: "unknown fill value stays silent and weakens",
+			source: `
+def f(items: array<int>, v)
+  items.fill(v)
+  items << "bad"
+end
+`,
+		},
+		{
+			name: "dynamic fill selector stays gradual",
+			source: `
+def f(items: array<int>, start)
+  items.fill("bad", start)
+  items << "bad"
+end
+`,
+		},
+		{
+			name: "padding only fill window weakens without a value warning",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", 5, 0)
+  items << "bad"
+end
+`,
+		},
+		{
+			name: "compatible fill window that may pad weakens",
+			source: `
+def f(items: array<int>)
+  items.fill(1, 5, 1)
+  items << "bad"
+end
+`,
+		},
+		{
+			name: "compatible fill range that may pad weakens",
+			source: `
+def f(items: array<int>)
+  items.fill(1, 2..2)
+  items << "bad"
 end
 `,
 		},
@@ -1281,6 +1442,114 @@ end
 	})
 	if !got.Equal(want) {
 		t.Fatalf("run() = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestArrayFillMutationMatchesCheckerModel(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run()
+  items = [1, 2]
+  alias_items = items
+  returned = items.fill("bad")
+  returned << "tail"
+  empty = []
+  empty.fill("bad")
+  [items, alias_items, returned, empty]
+end
+`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	filled := NewArray([]Value{NewString("bad"), NewString("bad"), NewString("tail")})
+	want := NewArray([]Value{
+		filled,
+		filled,
+		filled,
+		NewArray([]Value{}),
+	})
+	if !got.Equal(want) {
+		t.Fatalf("run() = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestArrayFillSelectorSafetyBoundaryMatchesRuntime(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run()
+  bare_start = []
+  bare_start.fill(1, 2)
+  safe_window = []
+  safe_window.fill(1, 0, 1)
+  negative_length = [1]
+  negative_length.fill("bad", 0, -1)
+  padding_only = []
+  padding_only.fill(1, 2, 0)
+  range_window = []
+  range_window.fill(1, 0..1)
+  range_padding = []
+  range_padding.fill(1, 2..2)
+  range_empty = []
+  range_empty.fill(1, 0...0)
+  [
+    bare_start,
+    safe_window,
+    negative_length,
+    padding_only,
+    range_window,
+    range_padding,
+    range_empty,
+  ]
+end
+`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	want := NewArray([]Value{
+		NewArray([]Value{}),
+		NewArray([]Value{NewInt(1)}),
+		NewArray([]Value{NewInt(1)}),
+		NewArray([]Value{NewNil(), NewNil()}),
+		NewArray([]Value{NewInt(1), NewInt(1)}),
+		NewArray([]Value{NewNil(), NewNil(), NewInt(1)}),
+		NewArray([]Value{}),
+	})
+	if !got.Equal(want) {
+		t.Fatalf("run() = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestCheckArrayFillNoOpSelectorsPreserveBound(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		fillCall string
+	}{
+		{name: "negative length", fillCall: `items.fill("bad", 0, -1)`},
+		{name: "zero length", fillCall: `items.fill("bad", 0, 0)`},
+		{name: "empty range", fillCall: `items.fill("bad", 0...0)`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def f(items: array<int>)
+  `+tc.fillCall+`
+  items << "later"
+end
+`)
+
+			warnings := script.CheckWarnings()
+			if len(warnings) != 1 {
+				t.Fatalf("CheckWarnings() = %#v, want one later write warning", warnings)
+			}
+			if warnings[0].Pos.Line != 4 ||
+				!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+				t.Fatalf("CheckWarnings() = %#v, want the warning on the later write", warnings)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"math"
 	"reflect"
 	"sort"
 	"strconv"
@@ -5859,10 +5860,16 @@ func (c *scriptChecker) applyIndexedElementWriteFacts(
 
 // arrayMutatorElementWrites returns the argument expressions an in-place
 // builtin array mutator call writes as new elements, and whether a fully
-// compatible call can preserve the receiver's declared fact. insert may pad
-// the gap to a beyond-end index with nils, so its fact never survives; a
-// keyword argument makes every mutator raise before writing.
-func arrayMutatorElementWrites(call *CallExpr, property string) (elements []Expression, preservable, ok bool) {
+// compatible call can preserve the receiver's declared fact. insert defaults
+// to non-preservable because a beyond-end index may pad with nils; the caller
+// upgrades a statically non-padding index. A keyword argument makes every
+// mutator raise before writing.
+func arrayMutatorElementWrites(
+	call *CallExpr,
+	property string,
+	argumentFacts map[Expression]*TypeExpr,
+	argumentStaticValues map[Expression][]Expression,
+) (elements []Expression, preservable, ok bool) {
 	if len(call.KwArgs) != 0 {
 		return nil, false, false
 	}
@@ -5877,8 +5884,161 @@ func arrayMutatorElementWrites(call *CallExpr, property string) (elements []Expr
 		// receiver unchanged after validating the index, so the fact
 		// survives. With values the beyond-end nil padding still applies.
 		return call.Args[1:], len(call.Args) == 1, true
+	case "fill":
+		return arrayFillValueElementWrites(call, argumentFacts, argumentStaticValues)
 	}
 	return nil, false, false
+}
+
+func arrayFillValueElementWrites(
+	call *CallExpr,
+	argumentFacts map[Expression]*TypeExpr,
+	argumentStaticValues map[Expression][]Expression,
+) (elements []Expression, preservable, ok bool) {
+	if call.Block != nil || call.BlockArg != nil || len(call.Args) < 1 || len(call.Args) > 3 {
+		return nil, false, false
+	}
+	for _, arg := range call.Args {
+		if _, splat := arg.(*SplatArg); splat {
+			return nil, false, false
+		}
+	}
+	if len(call.Args) == 1 {
+		return call.Args[:1], true, true
+	}
+
+	startValue, startStatic := staticArrayFillSelectorValue(call.Args[1], argumentStaticValues)
+	if startStatic && startValue.Kind() == KindRange {
+		if len(call.Args) != 2 {
+			return nil, false, false
+		}
+		mayWrite, preservable, known := staticArrayFillRangeWrites(startValue.Range())
+		if !known {
+			return nil, false, false
+		}
+		if !mayWrite {
+			return nil, preservable, true
+		}
+		return call.Args[:1], preservable, true
+	}
+	start, _, startKnown := staticArrayFillInteger(startValue)
+	if startStatic && !startKnown {
+		// A statically invalid selector raises before fill writes anything.
+		return nil, false, false
+	}
+	if !startStatic && !arrayFillSelectorHasNumericFact(call.Args[1], argumentFacts) {
+		return nil, false, false
+	}
+	if len(call.Args) == 2 {
+		// A bare start at or before the end replaces only existing slots;
+		// a start past the end is a no-op rather than a padding operation.
+		return call.Args[:1], true, true
+	}
+
+	countValue, countStatic := staticArrayFillSelectorValue(call.Args[2], argumentStaticValues)
+	count, nilLength, countKnown := staticArrayFillInteger(countValue)
+	if countStatic && !countKnown {
+		return nil, false, false
+	}
+	if !countStatic && !arrayFillSelectorHasNumericFact(call.Args[2], argumentFacts) {
+		return nil, false, false
+	}
+	if countStatic && nilLength {
+		return call.Args[:1], true, true
+	}
+	if countStatic && count < 0 {
+		// A negative explicit length is a true no-op for every receiver
+		// length, so no value lands and the existing bound survives.
+		return nil, true, true
+	}
+	if startStatic && start > 0 {
+		// A positive explicit start can pad a shorter receiver with nil.
+		// When count is zero no fill value lands, so leave that padding-only
+		// mutation to the generic gradual model.
+		if countStatic && count == 0 {
+			return nil, false, false
+		}
+		return call.Args[:1], false, true
+	}
+	if countStatic && count == 0 {
+		if !startStatic {
+			// An unknown positive start may still add nil padding even
+			// though the explicit value never lands.
+			return nil, false, false
+		}
+		return nil, true, true
+	}
+	return call.Args[:1], startStatic, true
+}
+
+func staticArrayFillSelectorValue(
+	expr Expression,
+	argumentStaticValues map[Expression][]Expression,
+) (Value, bool) {
+	if value, static := staticLiteralValue(expr); static {
+		return value, true
+	}
+	values, captured := argumentStaticValues[expr]
+	if !captured || len(values) != 1 {
+		return NewNil(), false
+	}
+	return staticLiteralValue(values[0])
+}
+
+func staticArrayFillInteger(value Value) (n int, nilValue, valid bool) {
+	if value.Kind() == KindNil {
+		return 0, true, true
+	}
+	if value.Kind() != KindInt && value.Kind() != KindFloat {
+		return 0, false, false
+	}
+	n, err := valueToInt(value)
+	return n, false, err == nil
+}
+
+func arrayFillSelectorHasNumericFact(
+	expr Expression,
+	argumentFacts map[Expression]*TypeExpr,
+) bool {
+	fact, captured := argumentFacts[expr]
+	if !captured {
+		return false
+	}
+	kind, known := staticOperandKind(fact)
+	return known && (kind == TypeInt || kind == TypeFloat || kind == TypeNumber)
+}
+
+func staticArrayFillRangeWrites(rng Range) (mayWrite, preservable, known bool) {
+	start := rng.Start
+	if rng.Beginless {
+		start = 0
+	}
+	if start < 0 {
+		return false, false, false
+	}
+	preservable = start == 0
+	if rng.Endless {
+		return true, preservable, true
+	}
+	if rng.End < 0 || rng.End > int64(math.MaxInt) {
+		return false, false, false
+	}
+	end := rng.End
+	if !rng.Exclusive {
+		if end == int64(math.MaxInt) {
+			return false, false, false
+		}
+		end++
+	}
+	if end <= start {
+		if preservable {
+			return false, true, true
+		}
+		// A positive empty range can still pad a shorter receiver up to
+		// its start, so the generic model must weaken the bound.
+		return false, false, false
+	}
+	return true, preservable, true
 }
 
 func arrayInsertIndexCannotPad(index Expression) bool {
@@ -5897,7 +6057,7 @@ func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string,
 	}) {
 		return false
 	}
-	elements, _, ok := arrayMutatorElementWrites(call, property)
+	elements, _, ok := arrayMutatorElementWrites(call, property, nil, nil)
 	if !ok {
 		return false
 	}
@@ -5919,17 +6079,17 @@ func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string,
 // generic argument escape poison that would otherwise cascade through those
 // aliases and undo the preservation. mayWrite reports that at least one
 // element position can be mutated, so true no-op calls keep exact value
-// facts. Both the receiver fact and the
-// argument facts are read as captured at their own evaluation points: the
-// receiver evaluates before any argument, so an argument that escapes the
-// same local cannot erase the bound the writes contradict. Preservation
-// additionally requires the local's fact to have survived the argument walk
-// unchanged.
+// facts. The receiver fact and argument type/static facts are read as captured
+// at their own evaluation points: the receiver evaluates before any argument,
+// so an argument that escapes the same local cannot erase the bound the writes
+// contradict. Preservation additionally requires the local's fact to have
+// survived the argument walk unchanged.
 func (c *scriptChecker) applyArrayMutatorCallFacts(
 	function string,
 	call, checkedCall *CallExpr,
 	member *MemberExpr,
 	argumentFacts map[Expression]*TypeExpr,
+	argumentStaticValues map[Expression][]Expression,
 	receiverFact *TypeExpr,
 ) (preserved, modeled, mayWrite bool) {
 	ident, ok := member.Object.(*Identifier)
@@ -5946,7 +6106,12 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	if checkedCall != nil {
 		writesCall = checkedCall
 	}
-	elements, preservable, ok := arrayMutatorElementWrites(writesCall, member.Property)
+	elements, preservable, ok := arrayMutatorElementWrites(
+		writesCall,
+		member.Property,
+		argumentFacts,
+		argumentStaticValues,
+	)
 	if !ok {
 		return false, false, false
 	}

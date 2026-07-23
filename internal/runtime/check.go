@@ -4389,6 +4389,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					checkedCall,
 					member,
 					argumentFacts,
+					argumentStaticValues,
 					receiverFact,
 				)
 				mutatorArgsModeled = modeled || arrayMutatorRetainsArgumentsWithoutCalling(
