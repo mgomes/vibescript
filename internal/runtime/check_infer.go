@@ -5859,136 +5859,183 @@ func (c *scriptChecker) applyIndexedElementWriteFacts(
 	return preserved, written, true, false
 }
 
-// arrayMutatorElementWrites returns the argument expressions an in-place
-// builtin array mutator call writes as new elements, and whether a fully
-// compatible call can preserve the receiver's declared fact. insert defaults
-// to non-preservable because a beyond-end index may pad with nils; the caller
-// upgrades a statically non-padding index. A keyword argument makes every
-// mutator raise before writing.
+type arrayMutatorWriteModel struct {
+	elements    []Expression
+	preservable bool
+	mayWrite    bool
+}
+
+// arrayMutatorElementWrites returns the writes an in-place builtin array
+// mutator may perform. insert and fill can mutate through implicit nil padding
+// without writing an explicit element expression, so mayWrite is independent
+// from elements. A keyword argument makes every mutator raise before writing.
 func arrayMutatorElementWrites(
 	call *CallExpr,
 	property string,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
-) (elements []Expression, preservable, ok bool) {
+) (arrayMutatorWriteModel, bool) {
 	if len(call.KwArgs) != 0 {
-		return nil, false, false
+		return arrayMutatorWriteModel{}, false
 	}
 	switch property {
 	case "push", "append", "prepend", "unshift":
-		return call.Args, true, true
+		return arrayMutatorWriteModel{
+			elements:    call.Args,
+			preservable: true,
+			mayWrite:    len(call.Args) > 0,
+		}, true
 	case "insert":
 		if len(call.Args) == 0 {
-			return nil, false, false
+			return arrayMutatorWriteModel{}, false
 		}
 		// An index-only insert writes nothing: the runtime returns the
 		// receiver unchanged after validating the index, so the fact
 		// survives. With values the beyond-end nil padding still applies.
-		return call.Args[1:], len(call.Args) == 1, true
+		return arrayMutatorWriteModel{
+			elements:    call.Args[1:],
+			preservable: len(call.Args) == 1,
+			mayWrite:    len(call.Args) > 1,
+		}, true
 	case "fill":
-		return arrayFillValueElementWrites(call, argumentFacts, argumentStaticValues)
+		return arrayFillElementWrites(call, argumentFacts, argumentStaticValues)
 	}
-	return nil, false, false
+	return arrayMutatorWriteModel{}, false
 }
 
-func arrayFillValueElementWrites(
+func arrayFillElementWrites(
 	call *CallExpr,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
-) (elements []Expression, preservable, ok bool) {
+) (arrayMutatorWriteModel, bool) {
 	if call == nil {
-		return nil, false, false
+		return arrayMutatorWriteModel{}, false
 	}
 	var element Expression
 	selectors := call.Args
 	switch {
 	case call.Block != nil:
 		if len(selectors) > 2 {
-			return nil, false, false
+			return arrayMutatorWriteModel{}, false
 		}
 		element = call.Block
 	case call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, argumentFacts):
 		if len(selectors) < 1 || len(selectors) > 3 {
-			return nil, false, false
+			return arrayMutatorWriteModel{}, false
 		}
 		element = selectors[0]
 		selectors = selectors[1:]
 	default:
-		return nil, false, false
+		return arrayMutatorWriteModel{}, false
 	}
 	for _, arg := range call.Args {
 		if _, splat := arg.(*SplatArg); splat {
-			return nil, false, false
+			return arrayMutatorWriteModel{}, false
 		}
 	}
 	if len(selectors) == 0 {
-		return []Expression{element}, true, true
+		return arrayMutatorWriteModel{
+			elements:    []Expression{element},
+			preservable: true,
+			mayWrite:    true,
+		}, true
+	}
+
+	var count int
+	var nilLength, countStatic bool
+	if len(selectors) == 2 {
+		countExpr := selectors[1]
+		if literalBignum(countExpr) {
+			return arrayMutatorWriteModel{}, false
+		}
+		countValue, static := staticMutatorArgumentValue(countExpr, argumentStaticValues)
+		countStatic = static
+		var countKnown bool
+		count, nilLength, countKnown = staticArrayFillInteger(countValue)
+		if countStatic && !countKnown {
+			return arrayMutatorWriteModel{}, false
+		}
+		if countStatic && count < 0 && !nilLength {
+			// Runtime validates the start first, but either that validation
+			// raises or the negative length is a no-op. No element can land.
+			return arrayMutatorWriteModel{preservable: true}, true
+		}
 	}
 
 	startExpr := selectors[0]
+	if literalBignum(startExpr) {
+		return arrayMutatorWriteModel{}, false
+	}
 	startValue, startStatic := staticMutatorArgumentValue(startExpr, argumentStaticValues)
 	if startStatic && startValue.Kind() == KindRange {
 		if len(selectors) != 1 {
-			return nil, false, false
+			return arrayMutatorWriteModel{}, false
 		}
-		mayWrite, preservable, known := staticArrayFillRangeWrites(startValue.Range())
+		effect, known := staticArrayFillRangeWrites(startValue.Range())
 		if !known {
-			return nil, false, false
+			return arrayMutatorWriteModel{}, false
 		}
-		if !mayWrite {
-			return nil, preservable, true
+		model := arrayMutatorWriteModel{
+			preservable: effect.preservable,
+			mayWrite:    effect.mayWrite,
 		}
-		return []Expression{element}, preservable, true
+		if effect.writesValue {
+			model.elements = []Expression{element}
+		}
+		return model, true
 	}
 	start, _, startKnown := staticArrayFillInteger(startValue)
 	if startStatic && !startKnown {
 		// A statically invalid selector raises before fill writes anything.
-		return nil, false, false
+		return arrayMutatorWriteModel{}, false
 	}
 	if !startStatic && !arrayFillSelectorHasNumericFact(startExpr, argumentFacts) {
-		return nil, false, false
+		return arrayMutatorWriteModel{}, false
 	}
 	if len(selectors) == 1 {
 		// A bare start at or before the end replaces only existing slots;
 		// a start past the end is a no-op rather than a padding operation.
-		return []Expression{element}, true, true
+		return arrayMutatorWriteModel{
+			elements:    []Expression{element},
+			preservable: true,
+			mayWrite:    true,
+		}, true
 	}
 
 	countExpr := selectors[1]
-	countValue, countStatic := staticMutatorArgumentValue(countExpr, argumentStaticValues)
-	count, nilLength, countKnown := staticArrayFillInteger(countValue)
-	if countStatic && !countKnown {
-		return nil, false, false
-	}
 	if !countStatic && !arrayFillSelectorHasNumericFact(countExpr, argumentFacts) {
-		return nil, false, false
+		return arrayMutatorWriteModel{}, false
 	}
 	if countStatic && nilLength {
-		return []Expression{element}, true, true
-	}
-	if countStatic && count < 0 {
-		// A negative explicit length is a true no-op for every receiver
-		// length, so no value lands and the existing bound survives.
-		return nil, true, true
+		return arrayMutatorWriteModel{
+			elements:    []Expression{element},
+			preservable: true,
+			mayWrite:    true,
+		}, true
 	}
 	if startStatic && start > 0 {
 		// A positive explicit start can pad a shorter receiver with nil.
-		// When count is zero no fill value lands, so leave that padding-only
-		// mutation to the generic gradual model.
 		if countStatic && count == 0 {
-			return nil, false, false
+			return arrayMutatorWriteModel{mayWrite: true}, true
 		}
-		return []Expression{element}, false, true
+		return arrayMutatorWriteModel{
+			elements: []Expression{element},
+			mayWrite: true,
+		}, true
 	}
 	if countStatic && count == 0 {
 		if !startStatic {
 			// An unknown positive start may still add nil padding even
 			// though the explicit value never lands.
-			return nil, false, false
+			return arrayMutatorWriteModel{mayWrite: true}, true
 		}
-		return nil, true, true
+		return arrayMutatorWriteModel{preservable: true}, true
 	}
-	return []Expression{element}, startStatic, true
+	return arrayMutatorWriteModel{
+		elements:    []Expression{element},
+		preservable: startStatic,
+		mayWrite:    true,
+	}, true
 }
 
 func arrayFillBlockArgumentIsNil(
@@ -6045,6 +6092,17 @@ func staticArrayFillInteger(value Value) (n int, nilValue, valid bool) {
 	return n, false, err == nil
 }
 
+func literalBignum(expr Expression) bool {
+	switch typed := expr.(type) {
+	case *IntegerLiteral:
+		return typed.Big != nil
+	case *UnaryExpr:
+		return (typed.Operator == tokenMinus || typed.Operator == tokenPlus) &&
+			literalBignum(typed.Right)
+	}
+	return false
+}
+
 func arrayFillSelectorHasNumericFact(
 	expr Expression,
 	argumentFacts map[Expression]*TypeExpr,
@@ -6057,37 +6115,59 @@ func arrayFillSelectorHasNumericFact(
 	return known && (kind == TypeInt || kind == TypeFloat || kind == TypeNumber)
 }
 
-func staticArrayFillRangeWrites(rng Range) (mayWrite, preservable, known bool) {
+type arrayFillRangeWriteEffect struct {
+	writesValue bool
+	mayWrite    bool
+	preservable bool
+}
+
+func staticArrayFillRangeWrites(rng Range) (arrayFillRangeWriteEffect, bool) {
 	start := rng.Start
 	if rng.Beginless {
 		start = 0
 	}
-	if start < 0 {
-		return false, false, false
+	if start > int64(math.MaxInt) {
+		return arrayFillRangeWriteEffect{preservable: true}, true
 	}
-	preservable = start == 0
+	preservable := start <= 0
 	if rng.Endless {
-		return true, preservable, true
+		return arrayFillRangeWriteEffect{
+			writesValue: true,
+			mayWrite:    true,
+			preservable: preservable,
+		}, true
 	}
-	if rng.End < 0 || rng.End > int64(math.MaxInt) {
-		return false, false, false
+	if rng.End > int64(math.MaxInt) {
+		return arrayFillRangeWriteEffect{preservable: true}, true
 	}
 	end := rng.End
 	if !rng.Exclusive {
 		if end == int64(math.MaxInt) {
-			return false, false, false
+			return arrayFillRangeWriteEffect{preservable: true}, true
 		}
 		end++
 	}
-	if end <= start {
-		if preservable {
-			return false, true, true
-		}
-		// A positive empty range can still pad a shorter receiver up to
-		// its start, so the generic model must weaken the bound.
-		return false, false, false
+	var writesValue bool
+	switch {
+	case start >= 0 && rng.End >= 0:
+		writesValue = end > start
+	case start >= 0:
+		// A negative end is relative to the receiver length. Some receiver
+		// length always makes the resolved end exceed a finite start.
+		writesValue = true
+	case rng.End < 0:
+		// Both bounds shift by the receiver length, so their ordering is
+		// independent of that length once the negative start is valid.
+		writesValue = end > start
+	default:
+		// A negative start first becomes valid with resolved begin zero.
+		writesValue = end > 0
 	}
-	return true, preservable, true
+	return arrayFillRangeWriteEffect{
+		writesValue: writesValue,
+		mayWrite:    writesValue || start > 0,
+		preservable: preservable,
+	}, true
 }
 
 func arrayInsertIndexCannotPad(
@@ -6117,11 +6197,11 @@ func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string,
 	}) {
 		return false
 	}
-	elements, _, ok := arrayMutatorElementWrites(call, property, nil, nil)
+	model, ok := arrayMutatorElementWrites(call, property, nil, nil)
 	if !ok {
 		return false
 	}
-	for _, element := range elements {
+	for _, element := range model.elements {
 		if _, splat := element.(*SplatArg); splat {
 			return false
 		}
@@ -6168,7 +6248,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	if checkedCall != nil {
 		writesCall = checkedCall
 	}
-	elements, preservable, ok := arrayMutatorElementWrites(
+	model, ok := arrayMutatorElementWrites(
 		writesCall,
 		member.Property,
 		argumentFacts,
@@ -6177,7 +6257,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	if !ok {
 		return false, false, false
 	}
-	mayWrite = len(elements) > 0
+	mayWrite = model.mayWrite
 	elem := declaredArrayElementType(receiver)
 	resolve := c.checkNamedTypeResolver()
 	// insert validates its index before any element lands, so a provably
@@ -6196,15 +6276,19 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			kind != TypeInt && kind != TypeFloat && kind != TypeNumber {
 			return false, true, false
 		}
-		if len(elements) > 0 &&
+		if len(model.elements) > 0 &&
 			(arrayInsertIndexCannotPad(writesCall.Args[0], argumentStaticValues) ||
 				elem != nil && typeExprSatisfies(checkTypeNil, elem, resolve)) {
 			// Zero inserts at the front and every negative index either
 			// resolves inside the array or raises before writing. Neither
 			// successful case can introduce nil padding. An element bound
 			// that already admits nil also survives any padding.
-			preservable = true
+			model.preservable = true
 		}
+	}
+	if member.Property == "fill" && !model.preservable && elem != nil &&
+		typeExprSatisfies(checkTypeNil, elem, resolve) {
+		model.preservable = true
 	}
 	// The mutators return their receiver, so a consumed result (a chained
 	// call, an argument, an assignment value) hands the array to code the
@@ -6212,7 +6296,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	// discarded, can keep the declared bound — and only when the argument
 	// walk left the local's fact unchanged (an argument may poison or
 	// rebind the same local).
-	preserved = preservable && Expression(call) == c.expressionStatementRoot &&
+	preserved = model.preservable && Expression(call) == c.expressionStatementRoot &&
 		mutatorReceiverFactIntact(c.localTypeFor(ident.Name), receiverFact)
 	if !mayWrite {
 		return preserved, true, false
@@ -6227,7 +6311,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		}
 	}
 	if elem == nil {
-		for _, arg := range elements {
+		for _, arg := range model.elements {
 			if _, splat := arg.(*SplatArg); splat {
 				return false, false, true
 			}
@@ -6239,7 +6323,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		}
 		return false, true, true
 	}
-	for _, arg := range elements {
+	for _, arg := range model.elements {
 		if splat, isSplat := arg.(*SplatArg); isSplat {
 			compatible, aborts := c.applySplattedElementWriteFacts(function, splat, ident.Name, elem, resolve)
 			if aborts {

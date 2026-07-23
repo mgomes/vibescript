@@ -254,6 +254,93 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "fill value with exact beginless range",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", ..1)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill value with exact float range",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", 0.0..1.9)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill value with exact negative end range",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", 0..-1)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible exact beginless range preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.fill(1, ..1)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible exact float range preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.fill(1, 0.0..1.9)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible exact negative end range preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.fill(1, 0..-1)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "nullable element bound admits fill padding",
+			source: `
+def f(items: array<int?>)
+  items.fill(1, 5, 1)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int?, got string",
+		},
+		{
+			name: "nullable element bound admits padding only fill",
+			source: `
+def f(items: array<int?>)
+  items.fill("unused", 5, 0)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int?, got string",
+		},
+		{
+			name: "nullable element bound admits range fill padding",
+			source: `
+def f(items: array<int?>)
+  items.fill(1, 2..2)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int?, got string",
+		},
+		{
 			name: "fill uses selector captured before a later argument rebind",
 			source: `
 def later() -> int
@@ -899,6 +986,30 @@ end
 def f(items: array<array<int>>, value: array<int>, extra)
   items.fill(value, selector(value, extra))
   items << "bad"
+end
+`,
+		},
+		{
+			name: "literal bignum fill start aborts before writes",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", 9223372036854775808)
+end
+`,
+		},
+		{
+			name: "literal bignum fill length aborts before writes",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", 0, 9223372036854775808)
+end
+`,
+		},
+		{
+			name: "negative literal bignum fill selector aborts before writes",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", -9223372036854775809)
 end
 `,
 		},
@@ -1790,6 +1901,14 @@ def run()
   range_padding.fill(1, 2..2)
   range_empty = []
   range_empty.fill(1, 0...0)
+  beginless = [1, 2, 3]
+  beginless.fill(4, ..1)
+  float_range = [1, 2, 3]
+  float_range.fill(5, 0.0..1.9)
+  negative_end = [1, 2, 3]
+  negative_end.fill(6, 0..-1)
+  padding = [1]
+  padding.fill(7, 3, 1)
   [
     bare_start,
     safe_window,
@@ -1798,6 +1917,10 @@ def run()
     range_window,
     range_padding,
     range_empty,
+    beginless,
+    float_range,
+    negative_end,
+    padding,
   ]
 end
 `)
@@ -1811,6 +1934,10 @@ end
 		NewArray([]Value{NewInt(1), NewInt(1)}),
 		NewArray([]Value{NewNil(), NewNil(), NewInt(1)}),
 		NewArray([]Value{}),
+		NewArray([]Value{NewInt(4), NewInt(4), NewInt(3)}),
+		NewArray([]Value{NewInt(5), NewInt(5), NewInt(3)}),
+		NewArray([]Value{NewInt(6), NewInt(6), NewInt(6)}),
+		NewArray([]Value{NewInt(1), NewNil(), NewNil(), NewInt(7)}),
 	})
 	if !got.Equal(want) {
 		t.Fatalf("run() = %s, want %s", got.String(), want.String())
@@ -1884,6 +2011,26 @@ end
 				t.Fatalf("CheckWarnings() = %#v, want the warning on the later write", warnings)
 			}
 		})
+	}
+}
+
+func TestCheckArrayFillNegativeLengthPrecedesUnknownStart(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def f(items: array<int>, start)
+  items.fill("unused", start, -1)
+  items << "later"
+end
+`)
+
+	warnings := script.CheckWarnings()
+	if len(warnings) != 1 {
+		t.Fatalf("CheckWarnings() = %#v, want one later write warning", warnings)
+	}
+	if warnings[0].Pos.Line != 4 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf("CheckWarnings() = %#v, want the warning on the later write", warnings)
 	}
 }
 

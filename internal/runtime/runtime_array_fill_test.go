@@ -527,6 +527,46 @@ func TestArrayFillArgumentRejection(t *testing.T) {
 	}
 }
 
+func TestArrayFillBignumSelectorsAbortBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def big_start(values)
+  values.fill("bad", 9223372036854775808)
+end
+
+def big_length(values)
+  values.fill("bad", 0, 9223372036854775808)
+end
+
+def negative_big_start(values)
+  values.fill("bad", -9223372036854775809)
+end
+`)
+
+	tests := []struct {
+		name string
+		fn   string
+		want string
+	}{
+		{name: "start", fn: "big_start", want: "array.fill start must be integer"},
+		{name: "length", fn: "big_length", want: "array.fill length must be integer"},
+		{name: "negative start", fn: "negative_big_start", want: "array.fill start must be integer"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			values := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+			requireCallErrorContains(t, script, tc.fn, []Value{values}, CallOptions{}, tc.want)
+			want := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+			if !values.Equal(want) {
+				t.Fatalf("%s() receiver = %s after error, want %s", tc.fn, values.String(), want.String())
+			}
+		})
+	}
+}
+
 // TestArrayFillRejectsHugeWindow confirms an oversized window (one whose end
 // overflows the native int range) is rejected up front rather than wrapping
 // into a silent no-op or panicking on allocation.

@@ -11792,15 +11792,26 @@ func staticLiteralValue(expr Expression) (Value, bool) {
 		}
 		return NewHash(entries), true
 	case *RangeExpr:
-		start, ok := staticLiteralRangeEndpoint(typed.Start)
-		if !ok {
-			return NewNil(), false
+		rng := Range{
+			Exclusive: typed.Exclusive,
+			Beginless: typed.Start == nil,
+			Endless:   typed.End == nil,
 		}
-		end, ok := staticLiteralRangeEndpoint(typed.End)
-		if !ok {
-			return NewNil(), false
+		if typed.Start != nil {
+			start, ok := staticLiteralRangeEndpoint(typed.Start)
+			if !ok {
+				return NewNil(), false
+			}
+			rng.Start = start
 		}
-		return NewRange(Range{Start: start, End: end, Exclusive: typed.Exclusive}), true
+		if typed.End != nil {
+			end, ok := staticLiteralRangeEndpoint(typed.End)
+			if !ok {
+				return NewNil(), false
+			}
+			rng.End = end
+		}
+		return NewRange(rng), true
 	}
 	return NewNil(), false
 }
@@ -11987,10 +11998,11 @@ func staticLiteralHashKey(expr Expression) (string, bool) {
 
 func staticLiteralRangeEndpoint(expr Expression) (int64, bool) {
 	val, ok := staticLiteralValue(expr)
-	if !ok || val.Kind() != KindInt {
+	if !ok || val.Kind() != KindInt && val.Kind() != KindFloat {
 		return 0, false
 	}
-	return val.Int(), true
+	endpoint, err := valueToInt64(val)
+	return endpoint, err == nil
 }
 
 func typeExprPosition(ty *TypeExpr) Position {
