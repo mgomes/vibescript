@@ -273,6 +273,8 @@ type checkAssignmentReceiverCapture struct {
 	receiverType      *TypeExpr
 	staticValues      []Expression
 	staticValuesExact bool
+	rootName          string
+	rootGeneration    uint64
 	captured          bool
 }
 
@@ -9814,14 +9816,27 @@ func (c *scriptChecker) assignmentReceiverSnapshot(
 		return checkAssignmentReceiverCapture{}, false
 	}
 	staticValues, staticValuesExact := c.staticValueExpressionAlternatives(member.Object)
+	rootName, _ := rootIdentifierName(member.Object)
 	return checkAssignmentReceiverCapture{
 		target:            target,
 		candidates:        c.captureDynamicCallCandidates(call),
 		receiverType:      c.inferExpressionType(member.Object),
 		staticValues:      staticValues,
 		staticValuesExact: staticValuesExact,
+		rootName:          rootName,
+		rootGeneration:    c.localBindingGenerations[rootName],
 		captured:          true,
 	}, true
+}
+
+func (c *scriptChecker) assignmentReceiverRootCurrent(
+	receiver checkAssignmentReceiverCapture,
+) bool {
+	// A logical or compound RHS can rebind the target's root after the
+	// receiver was selected. Inference must not invalidate that new value.
+	return !receiver.captured ||
+		receiver.rootName == "" ||
+		c.localBindingGenerations[receiver.rootName] == receiver.rootGeneration
 }
 
 func (c *scriptChecker) instanceExpressionNeverNil(expr Expression) bool {
@@ -16140,9 +16155,11 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 				return true
 			}
 		}
-		s.checker.withSuppressedWarnings(func() {
-			s.checker.inferAssignStatementTypes("", typed, nil, logicalTargetFact)
-		})
+		if !setterAssignment || s.checker.assignmentReceiverRootCurrent(setterReceiver) {
+			s.checker.withSuppressedWarnings(func() {
+				s.checker.inferAssignStatementTypes("", typed, nil, logicalTargetFact)
+			})
+		}
 		if setterReachable && !setterAssignment {
 			s.recordRuntimeNamespaceAssignment(typed.Target, assignedValue)
 		}
@@ -16491,9 +16508,11 @@ func (s *namespaceMutationScan) replayDestructureAssignment(
 				s.captureFailureScope()
 			}
 			completed = s.assignmentSetter(fact.target, leafValue, setterReceiver)
-			s.checker.withSuppressedWarnings(func() {
-				s.checker.inferAssignStatementTypes("", leaf, indexedReceiverFact, nil)
-			})
+			if s.checker.assignmentReceiverRootCurrent(setterReceiver) {
+				s.checker.withSuppressedWarnings(func() {
+					s.checker.inferAssignStatementTypes("", leaf, indexedReceiverFact, nil)
+				})
+			}
 		})
 		if !completed {
 			return false
@@ -16614,9 +16633,56 @@ func (s *namespaceMutationScan) assignmentSetter(
 	return completed
 }
 
+func (s *namespaceMutationScan) capturedIndexGetter(
+	target *IndexExpr,
+	receiver checkAssignmentReceiverCapture,
+) bool {
+	call := &CallExpr{
+		Callee: &MemberExpr{
+			Object:   target.Object,
+			Property: "[]",
+			Position: target.Pos(),
+		},
+		Args:     target.Indices,
+		Position: target.Pos(),
+	}
+	selection := s.checker.indexScriptDispatch(target, receiver.receiverType)
+	if selection.unknown {
+		if member, ok := call.Callee.(*MemberExpr); ok {
+			s.memberReference(member)
+		}
+	} else {
+		for _, selected := range selection.targets {
+			if selected.bindingStarts {
+				s.scanFunctionCall(selected.target.fn, selected.call, selected.target)
+			}
+		}
+	}
+	return s.checker.indexExpressionMayCompleteWithReceiver(
+		target,
+		receiver.receiverType,
+	)
+}
+
 func (s *namespaceMutationScan) logicalAssignmentTargetTruthiness(
 	target Expression,
 ) (bool, bool) {
+	if fact, captured := s.checker.evaluatedDestructureFacts[target]; captured {
+		valueFact := checkLocalValueFact{
+			classNames: fact.classNames,
+			callables:  fact.callables,
+			staticVals: fact.staticVals,
+		}
+		if truthy, known := localValueFactTruthiness(valueFact, fact.known); known {
+			return truthy, true
+		}
+		if typeExprDefinitelyTruthy(fact.assigned) {
+			return true, true
+		}
+		if typeExprDefinitelyFalsey(fact.assigned) {
+			return false, true
+		}
+	}
 	ident, ok := target.(*Identifier)
 	if !ok {
 		return s.checker.inferredConditionTruthiness(target)
@@ -16890,19 +16956,52 @@ func (s *namespaceMutationScan) expressionWithAuto(expr Expression, autoCall boo
 		}
 		return true
 	case *IndexExpr:
+		previousEvaluatedFacts := s.checker.evaluatedDestructureFacts
+		if previousEvaluatedFacts == nil {
+			s.checker.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
+			defer func() {
+				s.checker.evaluatedDestructureFacts = previousEvaluatedFacts
+			}()
+		}
 		if !s.expression(typed.Object) {
 			return false
 		}
+		s.checker.captureEvaluatedDestructureFactOnce(typed.Object)
+		getterReceiver, _ := s.checker.assignmentReceiverSnapshot(typed)
 		s.checker.captureAssignmentReceiver(typed)
 		for _, index := range typed.Indices {
 			if !s.expression(index) {
 				return false
 			}
-			s.checker.captureEvaluatedDestructureFact(index)
+			s.checker.captureEvaluatedDestructureFactOnce(index)
 		}
-		call := &CallExpr{Callee: &MemberExpr{Object: typed.Object, Property: "[]", Position: typed.Pos()}, Args: typed.Indices, Position: typed.Pos()}
-		s.callCallee(call)
-		return s.checker.expressionMayCompleteForBinding(typed)
+		argumentFacts := make(
+			map[Expression]capturedDestructureValueFact,
+			len(typed.Indices)+1,
+		)
+		for _, expression := range append([]Expression{typed.Object}, typed.Indices...) {
+			if fact, captured := s.checker.evaluatedDestructureFacts[expression]; captured {
+				argumentFacts[expression] = fact
+			}
+		}
+		if getterReceiver.staticValuesExact && len(getterReceiver.staticValues) > 0 {
+			argumentFacts[typed.Object] = capturedDestructureValueFact{
+				value:      typed.Object,
+				assigned:   getterReceiver.receiverType,
+				known:      true,
+				evaluated:  true,
+				staticVals: append([]Expression(nil), getterReceiver.staticValues...),
+				factKind:   destructureStaticFact,
+			}
+		}
+		completed := true
+		s.checker.withCapturedDestructureArgumentFacts(argumentFacts, func() {
+			completed = s.capturedIndexGetter(typed, getterReceiver)
+			if completed {
+				s.checker.captureEvaluatedDestructureFact(typed)
+			}
+		})
+		return completed
 	case *MemberExpr:
 		objectAutoCall := true
 		if typed.Property == "call" && typeExprMayIncludeCallable(s.checker.inferExpressionType(typed.Object)) {

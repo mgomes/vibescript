@@ -1377,6 +1377,110 @@ def install(flag: bool)
 end`,
 			want: []string{"JSON.stringify"},
 		},
+		{
+			name: "logical index getter retains its evaluated receiver",
+			source: `def replacement(value)
+  1
+end
+
+class Writer
+  def [](index)
+    JSON.stringify = replacement
+    nil
+  end
+
+  def []=(index, value)
+    nil
+  end
+end
+
+class Passive
+  def [](index)
+    JSON.parse = replacement
+    nil
+  end
+
+  def []=(index, value)
+    nil
+  end
+end
+
+def install()
+  box = Writer.new
+  box[begin
+    box = Passive.new
+    0
+  end] ||= 1
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "logical index truthiness uses its evaluated receiver",
+			source: `def replacement(value)
+  1
+end
+
+def mutate()
+  JSON.parse = replacement
+  1
+end
+
+class Unrelated
+  def [](index)
+    JSON.stringify = replacement
+    nil
+  end
+end
+
+def install()
+  values = [1]
+  values[-> {
+    values = [nil]
+    true
+  }.call() ? 0 : 0] ||= mutate()
+end`,
+			reject: []string{"JSON.parse", "JSON.stringify"},
+		},
+		{
+			name: "logical setter keeps rebound receiver facts",
+			source: `def replacement(value)
+  1
+end
+
+class Box
+  def value() -> int
+    1
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+class Writer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Passive
+  def install()
+    JSON.parse = replacement
+  end
+end
+
+def install()
+  box = Box.new
+  box.value &&= -> {
+    box = Writer.new
+    1
+  }.call()
+  box.install()
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
 	}
 
 	for _, tc := range cases {
