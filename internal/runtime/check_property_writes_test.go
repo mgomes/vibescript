@@ -3261,6 +3261,118 @@ end
 	}
 }
 
+func TestCheckInitializerIvarCallUsesArgumentEvaluationCallableIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		parameters string
+		invocation string
+	}{
+		{
+			name:       "positional",
+			parameters: "callback: function, ignored",
+			invocation: `    invoke(
+      choose_b ? -> { @b = 1 } : -> { @c = 1 },
+      -> { choose_b = false; nil }.call(),
+    )`,
+		},
+		{
+			name:       "keyword",
+			parameters: "callback: function, ignored: int",
+			invocation: `    invoke(
+      callback: choose_b ? -> { @b = 1 } : -> { @c = 1 },
+      ignored: -> { choose_b = false; 0 }.call(),
+    )`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def invoke(`+tc.parameters+`)
+    callback.call()
+  end
+
+  def initialize
+    choose_b = true
+`+tc.invocation+`
+    @a = @c
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+			warnings := script.CheckWarnings()
+			if len(warnings) != 1 ||
+				warnings[0].Message != "write to @a expected int, got nil" {
+				t.Fatalf("CheckWarnings() = %#v, want only the unset @c warning", warnings)
+			}
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"instance variable @a expected int, got nil",
+			)
+		})
+	}
+
+	t.Run("distinct same-class receiver remains conservative", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def invoke(callback: function, ignored)
+    callback.call()
+  end
+
+  def seed(value: int)
+    @b = value
+  end
+
+  def initialize(other: User? = nil)
+    if other
+      choose_other = true
+      invoke(
+        choose_other ? -> { other.seed(1) } : -> { @c = 1 },
+        -> { choose_other = false; nil }.call(),
+      )
+      @a = @c
+    else
+      @a = 1
+    end
+  end
+end
+
+def run
+  other = User.new()
+  User.new(other).a
+end
+`)
+		requireNoCheckWarnings(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @a expected int, got nil",
+		)
+	})
+}
+
 func TestCheckBlockConstructorBodyUsesCurrentCapturedFacts(t *testing.T) {
 	t.Parallel()
 

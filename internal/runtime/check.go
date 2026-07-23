@@ -134,6 +134,7 @@ type scriptChecker struct {
 	callArgumentFacts          map[Expression]*TypeExpr
 	callArgumentClassValues    map[Expression][]string
 	callArgumentCallables      map[Expression][]*ScriptFunction
+	callArgumentSelfBindings   map[Expression]checkCallableSelfBinding
 	callArgumentStaticValues   map[Expression][]Expression
 	callArgumentSplatSources   map[*SplatArg]checkCallSplatSource
 	evaluatedBlockValues       map[Expression][]capturedBlockLiteralValue
@@ -248,12 +249,16 @@ type reachableFunction struct {
 }
 
 type checkReachableParamFact struct {
-	typeExpr          *TypeExpr
-	classNames        []string
-	callables         []*ScriptFunction
-	staticVals        []Expression
-	containerIdentity string
-	usesDefault       bool
+	typeExpr              *TypeExpr
+	classNames            []string
+	callables             []*ScriptFunction
+	callableIdentityExact bool
+	selfCallables         []*ScriptFunction
+	selfCallablesCaptured bool
+	selfCallableAmbiguous bool
+	staticVals            []Expression
+	containerIdentity     string
+	usesDefault           bool
 }
 
 type checkInstanceClassFact struct {
@@ -310,6 +315,11 @@ type checkCallSplatSource struct {
 	name         string
 	generation   uint64
 	alternatives []Expression
+}
+
+type checkCallableSelfBinding struct {
+	functions []*ScriptFunction
+	ambiguous bool
 }
 
 func (c *scriptChecker) callStaticValueAlternatives(expr Expression) ([]Expression, bool) {
@@ -2075,6 +2085,7 @@ func cloneReachableParamFacts(facts map[string]checkReachableParamFact) map[stri
 	for name, fact := range facts {
 		fact.classNames = append([]string(nil), fact.classNames...)
 		fact.callables = append([]*ScriptFunction(nil), fact.callables...)
+		fact.selfCallables = append([]*ScriptFunction(nil), fact.selfCallables...)
 		fact.staticVals = append([]Expression(nil), fact.staticVals...)
 		clone[name] = fact
 	}
@@ -2099,6 +2110,16 @@ func reachableParamFactsKey(facts map[string]checkReachableParamFact) string {
 		for _, fn := range fact.callables {
 			fmt.Fprintf(&key, "%p,", fn)
 		}
+		key.WriteByte(':')
+		key.WriteString(strconv.FormatBool(fact.callableIdentityExact))
+		key.WriteByte(':')
+		for _, fn := range fact.selfCallables {
+			fmt.Fprintf(&key, "%p,", fn)
+		}
+		key.WriteByte(':')
+		key.WriteString(strconv.FormatBool(fact.selfCallablesCaptured))
+		key.WriteByte(':')
+		key.WriteString(strconv.FormatBool(fact.selfCallableAmbiguous))
 		key.WriteByte(':')
 		for _, value := range fact.staticVals {
 			fmt.Fprintf(&key, "%T:%p,", value, value)
@@ -4450,6 +4471,24 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		// callee body still checks under the post-argument state: dispatch
 		// happens after the arguments (and their requires) evaluate.
 		target, targetResolved := c.resolveCallable(typed)
+		// The exact current-self effect path can resolve calls that the
+		// general call checker deliberately leaves dynamic. Recover that
+		// target only for evaluation-time callable identity; argument
+		// checking below continues to use the general resolution.
+		argumentTarget := target
+		argumentTargetResolved := targetResolved
+		if !argumentTargetResolved {
+			switch callee := typed.Callee.(type) {
+			case *Identifier:
+				if dispatch, exact := c.implicitSelfCallDispatch(typed); exact &&
+					len(dispatch.targets) == 1 {
+					argumentTarget = dispatch.targets[0].target
+					argumentTargetResolved = true
+				}
+			case *MemberExpr:
+				argumentTarget, argumentTargetResolved = c.explicitSelfMemberCallable(callee)
+			}
+		}
 		blockCapturingBuiltin := c.callTargetsBlockCapturingBuiltin(
 			typed,
 			target,
@@ -4505,29 +4544,41 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			opaqueCallEffects = false
 		}
 		// Arguments evaluate left to right before the call dispatches, so
-		// each argument's inferred type is captured at its own evaluation
-		// point: a mutating earlier argument (h.delete(:name)) poisons its
-		// container's facts for later arguments, while a mutating later
-		// argument cannot erase the facts an earlier argument was evaluated
-		// under. checkCall consumes the captured facts afterwards.
+		// each argument's inferred type and retained callable identity are
+		// captured at its own evaluation point: a mutating earlier argument
+		// (h.delete(:name)) poisons its container's facts for later arguments,
+		// while a mutating later argument cannot erase or replace the facts
+		// an earlier argument was evaluated under. checkCall and the effect
+		// scanner consume the captured facts afterwards.
 		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
 		argumentClassValues := make(map[Expression][]string, len(typed.Args)+len(typed.KwArgs))
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
+		argumentSelfBindings := make(
+			map[Expression]checkCallableSelfBinding,
+			len(typed.Args)+len(typed.KwArgs),
+		)
 		argumentStaticValues := make(map[Expression][]Expression, len(typed.Args)+len(typed.KwArgs))
 		argumentSplatSources := make(map[*SplatArg]checkCallSplatSource, len(typed.Args))
-		captureArgumentFacts := func(expr Expression, expectation expressionExpectation, autoCall bool) {
+		var argumentSelfScan *namespaceMutationScan
+		captureArgumentFacts := func(
+			expr Expression,
+			expectation expressionExpectation,
+			autoCall bool,
+			retainsCallable bool,
+		) {
 			if splat, ok := expr.(*SplatArg); ok {
 				argumentFacts[expr] = c.inferExpressionType(splat.Value)
 			} else {
 				argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
 			}
+			identityAutoCall := autoCall && !retainsCallable
 			identitySource := expr
-			if !autoCall {
+			if !identityAutoCall {
 				if callableExpr, bindable := bareIdentifierCallableValue(expr); bindable {
 					identitySource = callableExpr
 				}
 			}
-			identityExpr, autoInvoked := c.evaluatedIdentityExpression(identitySource, autoCall)
+			identityExpr, autoInvoked := c.evaluatedIdentityExpression(identitySource, identityAutoCall)
 			classNames, classExact := c.classValueExpressionNames(identityExpr)
 			if autoInvoked {
 				classNames, classExact = c.dispatchClassValueExpressionNames(identityExpr)
@@ -4535,14 +4586,30 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			if classExact {
 				argumentClassValues[expr] = classNames
 			}
-			if fns, ok := c.callableExpressionFunctions(identityExpr); ok {
+			callableIdentityExpr := identityExpr
+			if retainsCallable {
+				callableIdentityExpr = c.evaluatedCallableIdentityExpression(identitySource)
+			}
+			if fns, ok := c.callableExpressionFunctions(callableIdentityExpr); ok {
 				argumentCallables[expr] = fns
+			}
+			if retainsCallable {
+				if argumentSelfScan == nil {
+					argumentSelfScan = c.newNamespaceMutationScan()
+				}
+				if binding, exact := argumentSelfScan.exactCallableSelfBinding(callableIdentityExpr); exact {
+					argumentSelfBindings[expr] = binding
+				}
 			}
 			staticExpr := expr
 			if splat, ok := expr.(*SplatArg); ok {
 				staticExpr = splat.Value
 			}
-			if values, ok := c.staticValueExpressionAlternatives(staticExpr); ok {
+			values, staticExact := c.staticValueExpressionAlternatives(staticExpr)
+			if retainsCallable {
+				values, staticExact = c.evaluatedStaticValueExpressionAlternatives(staticExpr)
+			}
+			if staticExact {
 				argumentStaticValues[staticExpr] = append([]Expression(nil), values...)
 				if splat, expanded := expr.(*SplatArg); expanded {
 					if ident, directLocal := splat.Value.(*Identifier); directLocal {
@@ -4582,7 +4649,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 						if !completed {
 							break
 						}
-						captureArgumentFacts(elem, expressionExpectation{}, true)
+						captureArgumentFacts(elem, expressionExpectation{}, true, false)
 					}
 				}
 			}
@@ -4600,7 +4667,16 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				argumentEvaluationFailed = true
 				break
 			}
-			captureArgumentFacts(arg, expectation, !expectation.includesCallable())
+			identityExpectation := expectation
+			if argumentTargetResolved && !positionalSplatSeen && !isSplat {
+				identityExpectation = staticCallablePositionalArgumentExpectation(argumentTarget, i)
+			}
+			captureArgumentFacts(
+				arg,
+				expectation,
+				!expectation.includesCallable(),
+				identityExpectation.includesCallable(),
+			)
 			positionalSplatSeen = positionalSplatSeen || isSplat
 			if !c.positionalArgumentExpansionMaySucceed(arg) {
 				argumentEvaluationFailed = true
@@ -4637,7 +4713,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 						if !completed {
 							break
 						}
-						captureArgumentFacts(pair.Value, expressionExpectation{}, true)
+						captureArgumentFacts(pair.Value, expressionExpectation{}, true, false)
 					}
 				}
 			}
@@ -4649,7 +4725,20 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				argumentEvaluationFailed = true
 				break
 			}
-			captureArgumentFacts(kwarg.Value, expectation, !expectation.includesCallable())
+			identityExpectation := expectation
+			if argumentTargetResolved && !kwarg.Splat {
+				identityExpectation = staticCallableKeywordArgumentExpectation(
+					typed,
+					argumentTarget,
+					kwarg.Name,
+				)
+			}
+			captureArgumentFacts(
+				kwarg.Value,
+				expectation,
+				!expectation.includesCallable(),
+				identityExpectation.includesCallable(),
+			)
 			if !c.keywordArgumentExpansionMaySucceed(kwarg) {
 				argumentEvaluationFailed = true
 				break
@@ -4666,6 +4755,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					typed.BlockArg,
 					typeExpressionExpectation(checkTypeFunction),
 					false,
+					true,
 				)
 				if !c.blockArgumentConversionMaySucceed(typed.BlockArg, argumentFacts[typed.BlockArg]) {
 					argumentEvaluationFailed = true
@@ -4678,11 +4768,13 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		previousFacts := c.callArgumentFacts
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
+		previousSelfBindings := c.callArgumentSelfBindings
 		previousStaticValues := c.callArgumentStaticValues
 		previousSplatSources := c.callArgumentSplatSources
 		c.callArgumentFacts = argumentFacts
 		c.callArgumentClassValues = argumentClassValues
 		c.callArgumentCallables = argumentCallables
+		c.callArgumentSelfBindings = argumentSelfBindings
 		c.callArgumentStaticValues = argumentStaticValues
 		c.callArgumentSplatSources = argumentSplatSources
 		c.pinForwardedConstructorInstanceFact(typed, dynamicCandidates)
@@ -4926,6 +5018,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		c.callArgumentFacts = previousFacts
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
+		c.callArgumentSelfBindings = previousSelfBindings
 		c.callArgumentStaticValues = previousStaticValues
 		c.callArgumentSplatSources = previousSplatSources
 		if storedBlockMayReturnNonLocally && !callMayComplete {
@@ -4967,6 +5060,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					c.callArgumentFacts = argumentFacts
 					c.callArgumentClassValues = argumentClassValues
 					c.callArgumentCallables = argumentCallables
+					c.callArgumentSelfBindings = argumentSelfBindings
 					c.callArgumentStaticValues = argumentStaticValues
 					c.callArgumentSplatSources = argumentSplatSources
 					if dispatch, exact := c.implicitSelfCallDispatch(typed); exact {
@@ -4978,6 +5072,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					c.callArgumentFacts = previousFacts
 					c.callArgumentClassValues = previousClassValues
 					c.callArgumentCallables = previousCallables
+					c.callArgumentSelfBindings = previousSelfBindings
 					c.callArgumentStaticValues = previousStaticValues
 					c.callArgumentSplatSources = previousSplatSources
 				}
@@ -5483,6 +5578,37 @@ func (c *scriptChecker) evaluatedIdentityExpression(expr Expression, autoCall bo
 	// function. Reusing a synthetic call lets the existing single-return
 	// traversal recover the class or callable identity of its result.
 	return &CallExpr{Callee: expr, Position: expr.Pos()}, true
+}
+
+func (c *scriptChecker) evaluatedCallableIdentityExpression(expr Expression) Expression {
+	switch typed := expr.(type) {
+	case *ConditionalExpr:
+		if truthy, known := c.inferredConditionTruthiness(typed.Condition); known {
+			if truthy {
+				return c.evaluatedCallableIdentityExpression(typed.Consequent)
+			}
+			return c.evaluatedCallableIdentityExpression(typed.Alternate)
+		}
+	case *IfExpr:
+		if branch, known := c.inferredIfExpressionBranch(typed); known {
+			return c.evaluatedCallableIdentityExpression(branch)
+		}
+	case *CaseExpr:
+		if result, known := c.inferredCaseExpressionResult(typed); known {
+			return c.evaluatedCallableIdentityExpression(result)
+		}
+	case *BinaryExpr:
+		if typed.Operator != tokenAnd && typed.Operator != tokenOr {
+			break
+		}
+		if truthy, known := c.inferredConditionTruthiness(typed.Left); known {
+			if truthy == (typed.Operator == tokenAnd) {
+				return c.evaluatedCallableIdentityExpression(typed.Right)
+			}
+			return c.evaluatedCallableIdentityExpression(typed.Left)
+		}
+	}
+	return expr
 }
 
 func (c *scriptChecker) callableExpressionFunctionsSeen(
@@ -8046,11 +8172,13 @@ func (c *scriptChecker) checkMemberAutoCall(
 		previousFacts := c.callArgumentFacts
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
+		previousSelfBindings := c.callArgumentSelfBindings
 		previousStaticValues := c.callArgumentStaticValues
 		previousSplatSources := c.callArgumentSplatSources
 		c.callArgumentFacts = map[Expression]*TypeExpr{}
 		c.callArgumentClassValues = map[Expression][]string{}
 		c.callArgumentCallables = map[Expression][]*ScriptFunction{}
+		c.callArgumentSelfBindings = map[Expression]checkCallableSelfBinding{}
 		c.callArgumentStaticValues = map[Expression][]Expression{}
 		c.callArgumentSplatSources = map[*SplatArg]checkCallSplatSource{}
 		bodyMayEnter := c.refineDynamicCallTargetEntry(resolution.targets)
@@ -8062,6 +8190,7 @@ func (c *scriptChecker) checkMemberAutoCall(
 		c.callArgumentFacts = previousFacts
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
+		c.callArgumentSelfBindings = previousSelfBindings
 		c.callArgumentStaticValues = previousStaticValues
 		c.callArgumentSplatSources = previousSplatSources
 		if !resolution.exact {
@@ -11783,6 +11912,8 @@ func (c *scriptChecker) reachableCallParamFacts(
 		}
 		classNames, classCaptured := c.callArgumentClassValues[arg]
 		callables, callablesCaptured := c.callArgumentCallables[arg]
+		selfBinding, selfCaptured := c.callArgumentSelfBindings[arg]
+		_, staticValuesCaptured := c.callArgumentStaticValues[arg]
 		if !classCaptured || !callablesCaptured {
 			fallbackClasses, fallbackCallables := argumentIdentityFacts(
 				arg,
@@ -11796,13 +11927,19 @@ func (c *scriptChecker) reachableCallParamFacts(
 			}
 		}
 		staticVals, staticExact := c.callStaticValueAlternatives(arg)
-		if fact != nil || len(classNames) > 0 || len(callables) > 0 || staticExact || containerIdentity != "" {
+		callableIdentityExact := callablesCaptured || selfCaptured || staticValuesCaptured
+		if fact != nil || len(classNames) > 0 || len(callables) > 0 || callableIdentityExact ||
+			staticExact || containerIdentity != "" {
 			facts[param.Name] = checkReachableParamFact{
-				typeExpr:          fact,
-				classNames:        append([]string(nil), classNames...),
-				callables:         append([]*ScriptFunction(nil), callables...),
-				staticVals:        append([]Expression(nil), staticVals...),
-				containerIdentity: containerIdentity,
+				typeExpr:              fact,
+				classNames:            append([]string(nil), classNames...),
+				callables:             append([]*ScriptFunction(nil), callables...),
+				callableIdentityExact: callableIdentityExact,
+				selfCallables:         append([]*ScriptFunction(nil), selfBinding.functions...),
+				selfCallablesCaptured: selfCaptured,
+				selfCallableAmbiguous: selfBinding.ambiguous,
+				staticVals:            append([]Expression(nil), staticVals...),
+				containerIdentity:     containerIdentity,
 			}
 		}
 	}
@@ -11829,6 +11966,8 @@ func (c *scriptChecker) reachableCallParamFacts(
 			}
 			classNames, classCaptured := c.callArgumentClassValues[kwarg.Value]
 			callables, callablesCaptured := c.callArgumentCallables[kwarg.Value]
+			selfBinding, selfCaptured := c.callArgumentSelfBindings[kwarg.Value]
+			_, staticValuesCaptured := c.callArgumentStaticValues[kwarg.Value]
 			if !classCaptured || !callablesCaptured {
 				fallbackClasses, fallbackCallables := argumentIdentityFacts(
 					kwarg.Value,
@@ -11842,13 +11981,19 @@ func (c *scriptChecker) reachableCallParamFacts(
 				}
 			}
 			staticVals, staticExact := c.callStaticValueAlternatives(kwarg.Value)
-			if fact != nil || len(classNames) > 0 || len(callables) > 0 || staticExact || containerIdentity != "" {
+			callableIdentityExact := callablesCaptured || selfCaptured || staticValuesCaptured
+			if fact != nil || len(classNames) > 0 || len(callables) > 0 || callableIdentityExact ||
+				staticExact || containerIdentity != "" {
 				facts[param.Name] = checkReachableParamFact{
-					typeExpr:          fact,
-					classNames:        append([]string(nil), classNames...),
-					callables:         append([]*ScriptFunction(nil), callables...),
-					staticVals:        append([]Expression(nil), staticVals...),
-					containerIdentity: containerIdentity,
+					typeExpr:              fact,
+					classNames:            append([]string(nil), classNames...),
+					callables:             append([]*ScriptFunction(nil), callables...),
+					callableIdentityExact: callableIdentityExact,
+					selfCallables:         append([]*ScriptFunction(nil), selfBinding.functions...),
+					selfCallablesCaptured: selfCaptured,
+					selfCallableAmbiguous: selfBinding.ambiguous,
+					staticVals:            append([]Expression(nil), staticVals...),
+					containerIdentity:     containerIdentity,
 				}
 			}
 			break
@@ -12111,7 +12256,7 @@ func callableParamLambdaArguments(
 	if call == nil || target.fn == nil {
 		return nil
 	}
-	arguments := callableParamArgumentExpressions(call, target, facts, true)
+	arguments := callableParamArgumentExpressions(call, target, facts, true, true)
 	lambdas := make(map[string][]Expression)
 	for name, expressions := range arguments {
 		for _, expression := range expressions {
@@ -12139,6 +12284,7 @@ func callableParamArgumentExpressions(
 	target staticCallable,
 	facts map[string]checkReachableParamFact,
 	includeDefaults bool,
+	preferCapturedIdentity bool,
 ) map[string][]Expression {
 	if call == nil || target.fn == nil || callExpandsArguments(call) {
 		return nil
@@ -12159,8 +12305,11 @@ func callableParamArgumentExpressions(
 			continue
 		}
 		positionallyBound[param.Name] = struct{}{}
-		appendExpressions(param.Name, arg)
-		if fact, ok := facts[param.Name]; ok {
+		fact, captured := facts[param.Name]
+		if !preferCapturedIdentity || !captured || !fact.callableIdentityExact {
+			appendExpressions(param.Name, arg)
+		}
+		if captured {
 			appendExpressions(param.Name, fact.staticVals...)
 		}
 	}
@@ -12175,8 +12324,11 @@ func callableParamArgumentExpressions(
 		if _, supplied := positionallyBound[kwarg.Name]; supplied {
 			continue
 		}
-		appendExpressions(kwarg.Name, kwarg.Value)
-		if fact, ok := facts[kwarg.Name]; ok {
+		fact, captured := facts[kwarg.Name]
+		if !preferCapturedIdentity || !captured || !fact.callableIdentityExact {
+			appendExpressions(kwarg.Name, kwarg.Value)
+		}
+		if captured {
 			appendExpressions(kwarg.Name, fact.staticVals...)
 		}
 	}
@@ -16614,10 +16766,15 @@ func (c *scriptChecker) withCapturedDestructureArgumentFacts(
 	previousFacts := c.callArgumentFacts
 	previousClassValues := c.callArgumentClassValues
 	previousCallables := c.callArgumentCallables
+	previousSelfBindings := c.callArgumentSelfBindings
 	previousStaticValues := c.callArgumentStaticValues
 	c.callArgumentFacts = make(map[Expression]*TypeExpr, len(previousFacts)+len(facts))
 	c.callArgumentClassValues = make(map[Expression][]string, len(previousClassValues)+len(facts))
 	c.callArgumentCallables = make(map[Expression][]*ScriptFunction, len(previousCallables)+len(facts))
+	c.callArgumentSelfBindings = make(
+		map[Expression]checkCallableSelfBinding,
+		len(previousSelfBindings),
+	)
 	c.callArgumentStaticValues = make(map[Expression][]Expression, len(previousStaticValues)+len(facts))
 	for expr, fact := range previousFacts {
 		c.callArgumentFacts[expr] = fact
@@ -16627,6 +16784,9 @@ func (c *scriptChecker) withCapturedDestructureArgumentFacts(
 	}
 	for expr, callables := range previousCallables {
 		c.callArgumentCallables[expr] = callables
+	}
+	for expr, binding := range previousSelfBindings {
+		c.callArgumentSelfBindings[expr] = binding
 	}
 	for expr, values := range previousStaticValues {
 		c.callArgumentStaticValues[expr] = values
@@ -16641,6 +16801,7 @@ func (c *scriptChecker) withCapturedDestructureArgumentFacts(
 		c.callArgumentFacts = previousFacts
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
+		c.callArgumentSelfBindings = previousSelfBindings
 		c.callArgumentStaticValues = previousStaticValues
 	}()
 	walk()
@@ -16927,6 +17088,39 @@ func (s *namespaceMutationScan) callableParamSelfBindings(
 	return bindings
 }
 
+func capturedCallableParamSelfBindings(
+	bindings callableSelfBindings,
+	facts map[string]checkReachableParamFact,
+) callableSelfBindings {
+	// Evaluation-time facts replace, rather than union with, the raw
+	// expression scan: a later argument may have rebound the expression's
+	// source local before dispatch starts.
+	for name, fact := range facts {
+		if !fact.selfCallablesCaptured {
+			continue
+		}
+		if len(fact.selfCallables) == 0 {
+			delete(bindings.functions, name)
+		} else {
+			if bindings.functions == nil {
+				bindings.functions = make(map[string][]*ScriptFunction)
+			}
+			bindings.functions[name] = normalizeCheckCallables(
+				append([]*ScriptFunction(nil), fact.selfCallables...),
+			)
+		}
+		if !fact.selfCallableAmbiguous {
+			delete(bindings.ambiguous, name)
+			continue
+		}
+		if bindings.ambiguous == nil {
+			bindings.ambiguous = make(map[string]struct{})
+		}
+		bindings.ambiguous[name] = struct{}{}
+	}
+	return bindings
+}
+
 func (s *namespaceMutationScan) currentSelfCallableFunctions(
 	expr Expression,
 ) ([]*ScriptFunction, bool) {
@@ -16970,6 +17164,29 @@ func (s *namespaceMutationScan) currentSelfCallableFunctions(
 	default:
 		return nil, false
 	}
+}
+
+func (s *namespaceMutationScan) exactCallableSelfBinding(
+	expr Expression,
+) (checkCallableSelfBinding, bool) {
+	if functions, exact := s.currentSelfCallableFunctions(expr); exact {
+		return checkCallableSelfBinding{
+			functions: append([]*ScriptFunction(nil), functions...),
+		}, true
+	}
+	functions, exact := s.checker.callableExpressionFunctions(expr)
+	if !exact || len(functions) == 0 {
+		if lambdaLiteralBlock(expr) != nil {
+			return checkCallableSelfBinding{}, true
+		}
+		return checkCallableSelfBinding{}, false
+	}
+	for _, fn := range functions {
+		if s.functionMayRunOnEffectSelf(fn) {
+			return checkCallableSelfBinding{ambiguous: true}, true
+		}
+	}
+	return checkCallableSelfBinding{}, true
 }
 
 func (s *namespaceMutationScan) functionMayRunOnEffectSelf(fn *ScriptFunction) bool {
@@ -17243,8 +17460,9 @@ func (s *namespaceMutationScan) scanFunctionCall(
 	facts := s.checker.reachableCallParamFacts(call, target)
 	lambdas := callableParamLambdaArguments(call, target, facts)
 	selfBindings := s.callableParamSelfBindings(
-		callableParamArgumentExpressions(call, target, facts, false),
+		callableParamArgumentExpressions(call, target, facts, false, false),
 	)
+	selfBindings = capturedCallableParamSelfBindings(selfBindings, facts)
 	if _, active := s.active[fn]; active {
 		s.withFunctionContext(fn, facts, lambdas, selfBindings, func() {
 			s.scanFunctionBindings(
