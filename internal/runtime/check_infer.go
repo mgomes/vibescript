@@ -6187,6 +6187,15 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	if !mayWrite {
 		return preserved, true, false
 	}
+	linkRetainedElement := func(arg Expression, written *TypeExpr) {
+		c.linkContainerWriteAlias(ident.Name, arg, written)
+		if splat := argumentSplatOrigins[arg]; splat != nil {
+			// Exact expansion substitutes the stored element's AST for the
+			// splat. Keep the source container as provenance for nested
+			// mutable elements that remain reachable through it.
+			c.linkContainerWriteAlias(ident.Name, splat.Value, written)
+		}
+	}
 	if elem == nil {
 		for _, arg := range elements {
 			if _, splat := arg.(*SplatArg); splat {
@@ -6196,7 +6205,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			if !captured {
 				written = c.inferExpressionType(arg)
 			}
-			c.linkContainerWriteAlias(ident.Name, arg, written)
+			linkRetainedElement(arg, written)
 		}
 		return false, true, true
 	}
@@ -6219,7 +6228,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			written = c.inferExpressionType(arg)
 		}
 		if written == nil {
-			c.linkContainerWriteAlias(ident.Name, arg, written)
+			linkRetainedElement(arg, written)
 			preserved = false
 			continue
 		}
@@ -6231,7 +6240,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		// The receiver retains every written element regardless of
 		// compatibility, so a container-rooted element's local links in: a
 		// later mutation through it weakens both.
-		c.linkContainerWriteAlias(ident.Name, arg, written)
+		linkRetainedElement(arg, written)
 		if disjoint {
 			pos := arg.Pos()
 			if splat := argumentSplatOrigins[arg]; splat != nil {

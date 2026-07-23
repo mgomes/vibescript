@@ -1542,6 +1542,114 @@ end
 	}
 }
 
+func TestCheckArrayMutatorExactSplatsKeepRetainedElementProvenance(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		call string
+	}{
+		{name: "push", call: "rows.push(*args)"},
+		{name: "append", call: "rows.append(*args)"},
+		{name: "prepend", call: "rows.prepend(*args)"},
+		{name: "unshift", call: "rows.unshift(*args)"},
+		{name: "fill", call: "rows.fill(*args)"},
+		{name: "non-padding insert", call: "rows.insert(0, *args)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			requireNoCheckWarnings(t, compileScriptDefault(t, `
+def takes_string(value: string)
+  value
+end
+
+def f(rows: array<array<int>>, value)
+  args = [[1]]
+  `+tc.call+`
+  args[0] << value
+  for row in rows
+    for item in row
+      takes_string(item)
+    end
+  end
+end
+`))
+		})
+	}
+}
+
+func TestArrayMutatorExactSplatsRetainNestedAliases(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run()
+  push_rows = [[0]]
+  push_args = [[1]]
+  push_rows.push(*push_args)
+  push_args[0] << 2
+
+  append_rows = [[0]]
+  append_args = [[1]]
+  append_rows.append(*append_args)
+  append_args[0] << 2
+
+  prepend_rows = [[0]]
+  prepend_args = [[1]]
+  prepend_rows.prepend(*prepend_args)
+  prepend_args[0] << 2
+
+  unshift_rows = [[0]]
+  unshift_args = [[1]]
+  unshift_rows.unshift(*unshift_args)
+  unshift_args[0] << 2
+
+  fill_rows = [[0]]
+  fill_args = [[1]]
+  fill_rows.fill(*fill_args)
+  fill_args[0] << 2
+
+  insert_rows = [[0]]
+  insert_args = [[1]]
+  insert_rows.insert(0, *insert_args)
+  insert_args[0] << 2
+
+  [push_rows, append_rows, prepend_rows, unshift_rows, fill_rows, insert_rows]
+end
+`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	want := NewArray([]Value{
+		NewArray([]Value{
+			NewArray([]Value{NewInt(0)}),
+			NewArray([]Value{NewInt(1), NewInt(2)}),
+		}),
+		NewArray([]Value{
+			NewArray([]Value{NewInt(0)}),
+			NewArray([]Value{NewInt(1), NewInt(2)}),
+		}),
+		NewArray([]Value{
+			NewArray([]Value{NewInt(1), NewInt(2)}),
+			NewArray([]Value{NewInt(0)}),
+		}),
+		NewArray([]Value{
+			NewArray([]Value{NewInt(1), NewInt(2)}),
+			NewArray([]Value{NewInt(0)}),
+		}),
+		NewArray([]Value{
+			NewArray([]Value{NewInt(1), NewInt(2)}),
+		}),
+		NewArray([]Value{
+			NewArray([]Value{NewInt(1), NewInt(2)}),
+			NewArray([]Value{NewInt(0)}),
+		}),
+	})
+	if !got.Equal(want) {
+		t.Fatalf("run() = %s, want %s", got.String(), want.String())
+	}
+}
+
 func TestArrayInsertPaddingBoundaryMatchesRuntime(t *testing.T) {
 	t.Parallel()
 
