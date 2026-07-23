@@ -4506,6 +4506,16 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 				return false
 			}
+			if resolved && invoked && target.fn == nil && target.spec.resultType != nil {
+				// The target is selected from the receiver fact before
+				// dispatch effects can weaken that fact. Preserve its
+				// invariant result for outer inference even when the sole
+				// completing arm is nil and exact shape arms raise.
+				c.pinExpressionFact(
+					typed,
+					c.safeNavigationMemberResultFact(typed, target.spec.resultType),
+				)
+			}
 			if invoked {
 				if target.fn != nil && !c.scriptFunctionClassConstantEffectsProvenAbsent(target.fn) {
 					c.markOpaqueClassConstants()
@@ -10673,6 +10683,9 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 func (c *scriptChecker) factReceiverMemberCallable(member *MemberExpr) (staticCallable, bool) {
 	kinds, ok := c.staticMemberReceiverKinds(member)
 	if !ok {
+		if target, resolved := c.factReceiverNilOnlyMemberCallable(member); resolved {
+			return target, true
+		}
 		return c.factReceiverUniversalMemberCallable(member)
 	}
 	uniform := true
@@ -10714,6 +10727,47 @@ func (c *scriptChecker) factReceiverMemberCallable(member *MemberExpr) (staticCa
 		return staticCallable{name: member.Property, spec: typedSpec}, true
 	}
 	return staticCallable{name: member.Property, spec: universalSpec}, true
+}
+
+// factReceiverNilOnlyMemberCallable resolves nil's typed contract when every
+// non-nil receiver arm is an exact shape that provably lacks the member.
+// Those shape paths raise before producing a value, so they do not make the
+// sole completing scalar dispatch's invariant result gradual.
+func (c *scriptChecker) factReceiverNilOnlyMemberCallable(member *MemberExpr) (staticCallable, bool) {
+	if member == nil || member.Safe ||
+		memberKindOwns("hash", member.Property) ||
+		isUniversalMember(member.Property) {
+		return staticCallable{}, false
+	}
+	arms, ok := typeExprArms(c.inferExpressionType(member.Object), 0)
+	if !ok || len(arms) == 0 {
+		return staticCallable{}, false
+	}
+	sawNil, sawShapeMiss := false, false
+	for _, arm := range arms {
+		switch arm.Kind {
+		case TypeNil:
+			sawNil = true
+		case TypeShape:
+			if arm.Open {
+				return staticCallable{}, false
+			}
+			if _, present := arm.Shape[member.Property]; present {
+				return staticCallable{}, false
+			}
+			sawShapeMiss = true
+		default:
+			return staticCallable{}, false
+		}
+	}
+	if !sawNil || !sawShapeMiss {
+		return staticCallable{}, false
+	}
+	spec, ok := staticMemberSpecs["nil."+member.Property]
+	if !ok {
+		return staticCallable{}, false
+	}
+	return staticCallable{name: "nil." + member.Property, spec: spec}, true
 }
 
 // factReceiverUniversalMemberCallable resolves a universal contract when the
