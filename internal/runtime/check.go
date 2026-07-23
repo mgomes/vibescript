@@ -4102,7 +4102,13 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			c.enqueueReachableIdentifierCall(typed)
 			c.applyAutoInvokedIdentifierNamespaceMutations(typed)
 			if !c.pureCallArgument(typed) {
-				c.widenUnsetInstanceIvarFacts()
+				if dispatch, exact := c.implicitSelfIdentifierDispatch(typed); exact {
+					if dispatch.mayRunScript() {
+						c.widenRegionIvarFacts(c.scriptDispatchIvarEffects(dispatch))
+					}
+				} else {
+					c.widenUnsetInstanceIvarFacts()
+				}
 			}
 			return c.autoInvokedIdentifierMayComplete(typed)
 		}
@@ -4646,7 +4652,28 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			forwardedBlockMayRun := typed.BlockArg != nil && c.callMayInvokeSuppliedBlock(typed)
 			if !blockCapturingBuiltin && invokedLambda == nil &&
 				(!memberCall || c.memberCallMayWriteUnknownIvar(typed) || forwardedBlockMayRun) {
-				c.widenUnsetInstanceIvarFacts()
+				preciseImplicitSelfDispatch := false
+				if !memberCall {
+					c.callArgumentFacts = argumentFacts
+					c.callArgumentClassValues = argumentClassValues
+					c.callArgumentCallables = argumentCallables
+					c.callArgumentStaticValues = argumentStaticValues
+					c.callArgumentSplatSources = argumentSplatSources
+					if dispatch, exact := c.implicitSelfCallDispatch(typed); exact {
+						preciseImplicitSelfDispatch = true
+						if dispatch.mayRunScript() {
+							c.widenRegionIvarFacts(c.scriptDispatchIvarEffects(dispatch))
+						}
+					}
+					c.callArgumentFacts = previousFacts
+					c.callArgumentClassValues = previousClassValues
+					c.callArgumentCallables = previousCallables
+					c.callArgumentStaticValues = previousStaticValues
+					c.callArgumentSplatSources = previousSplatSources
+				}
+				if !preciseImplicitSelfDispatch {
+					c.widenUnsetInstanceIvarFacts()
+				}
 			}
 			shovelEscapeMayMutate := callMayComplete ||
 				!c.nonCompletingScriptCallLeavesParametersUnused(checkedCall, target, targetResolved)
@@ -5954,6 +5981,71 @@ func (c *scriptChecker) scriptDispatchRunsOnCurrentSelf(
 func sameScriptClass(left, right *ClassDef) bool {
 	return left != nil && right != nil &&
 		left.owner == right.owner && left.Name == right.Name
+}
+
+func (c *scriptChecker) implicitSelfIdentifierDispatch(
+	ident *Identifier,
+) (instanceScriptDispatchSelection, bool) {
+	if ident == nil {
+		return instanceScriptDispatchSelection{}, false
+	}
+	return c.implicitSelfCallDispatch(&CallExpr{
+		Callee:   ident,
+		Position: ident.Pos(),
+	})
+}
+
+func (c *scriptChecker) implicitSelfCallDispatch(
+	call *CallExpr,
+) (instanceScriptDispatchSelection, bool) {
+	if call == nil || c.selfClass == nil {
+		return instanceScriptDispatchSelection{}, false
+	}
+	ident, ok := call.Callee.(*Identifier)
+	if !ok || c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		return instanceScriptDispatchSelection{}, false
+	}
+	if c.script.functions[ident.Name] != nil {
+		return instanceScriptDispatchSelection{}, false
+	}
+	if _, ok := c.typeRootFunction(ident.Name); ok {
+		return instanceScriptDispatchSelection{}, false
+	}
+	if c.typeRootHasBinding(ident.Name) || c.hostBuiltinOverrides(ident.Name) {
+		return instanceScriptDispatchSelection{}, false
+	}
+	fn := c.implicitSelfFunction(ident.Name)
+	if fn == nil {
+		return instanceScriptDispatchSelection{}, false
+	}
+	separator := "#"
+	if c.selfClassContext {
+		separator = "."
+	}
+	effectiveCall := *call
+	effectiveCall.Callee = &MemberExpr{
+		Object:   &Identifier{Name: "self", Position: ident.Pos()},
+		Property: ident.Name,
+		Position: ident.Pos(),
+	}
+	call = &effectiveCall
+	target := staticCallable{
+		name:       c.selfClass.Name + separator + ident.Name,
+		fn:         fn,
+		resolution: calleeMemberMethod,
+	}
+	plan := c.scriptCallBindingPlan(call, target)
+	return instanceScriptDispatchSelection{
+		targets: []instanceScriptDispatchTarget{{
+			call:          call,
+			target:        target,
+			classDef:      c.selfClass,
+			classMethod:   c.selfClassContext,
+			bindingStarts: plan.bindingStarts,
+			mayEnter:      plan.bodyMayEnter,
+			mayReject:     !c.scriptCallBodyMustEnter(call, target),
+		}},
+	}, true
 }
 
 // scriptDispatchIvarEffects reports only effects that can reach the caller's

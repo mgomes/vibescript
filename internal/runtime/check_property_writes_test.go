@@ -2589,6 +2589,83 @@ end
 			"argument value expected int, got string",
 		)
 	})
+
+	t.Run("unrelated self call", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+  property b: int
+
+  def set_b
+    @b = 1
+  end
+
+  def initialize
+    @flag = false
+    set_b
+    if @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  User.new().b
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
+
+	t.Run("rejected self write", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def set_flag
+    @flag = "bad"
+  end
+
+  def initialize
+    @flag = false
+    begin
+      set_flag()
+    rescue
+      nil
+    end
+    if @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  User.new().flag
+end
+`)
+		warnings := script.CheckWarnings()
+		if len(warnings) != 1 ||
+			warnings[0].Message != "write to @flag expected bool, got string" {
+			t.Fatalf("CheckWarnings() = %#v, want only the rejected @flag write", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindBool || got.Bool() {
+			t.Fatalf("run() = %v, want false", got)
+		}
+	})
 }
 
 func TestCheckInitializerIvarBlockConstructorBodiesRemainChecked(t *testing.T) {

@@ -2641,7 +2641,13 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		*BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 	case *Identifier:
 		if autoCall && !c.pureCallArgument(typed) {
-			effects.unknown = true
+			if dispatch, exact := c.implicitSelfIdentifierDispatch(typed); exact {
+				if dispatch.mayRunScript() {
+					mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
+				}
+			} else {
+				effects.unknown = true
+			}
 		}
 	case *ArrayLiteral:
 		for _, element := range typed.Elements {
@@ -2666,6 +2672,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		blockCapturingBuiltin := c.callTargetsBlockCapturingBuiltin(typed, target, resolved)
 		var invokedLambda *BlockLiteral
 		unknownDispatch := false
+		implicitSelfCall := false
 		if member, ok := typed.Callee.(*MemberExpr); ok {
 			c.collectRepeatedRegionIvarEffectsFromExpression(
 				member.Object,
@@ -2741,7 +2748,13 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			if c.immediateLambdaCallEntry(invokedLambda, typed).mayEnter {
 				c.collectRepeatedRegionIvarEffectsFromBlock(invokedLambda, effects)
 			}
-		} else if unknownDispatch {
+		} else if dispatch, exact := c.implicitSelfCallDispatch(typed); exact {
+			implicitSelfCall = true
+			if dispatch.mayRunScript() {
+				mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
+			}
+		}
+		if unknownDispatch && !implicitSelfCall {
 			effects.unknown = true
 		}
 		blockMayRun := invokedLambda == nil && c.callMayInvokeSuppliedBlock(typed)
