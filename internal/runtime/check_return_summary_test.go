@@ -1406,6 +1406,37 @@ end
 `,
 		},
 		{
+			name: "nested ensures preserve the propagated failure state",
+			source: `
+def mutate(values)
+  begin
+    begin
+      begin
+        values[0] = "ok"
+        raise "first"
+      ensure
+        nil
+      end
+    ensure
+      nil
+    end
+  rescue
+    raise "second"
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_int(values[0])
+end
+`,
+			want: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "rescue consumes a noncompleting expression failure",
 			source: `
 def crash()

@@ -3449,6 +3449,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			mergeRuntimeStates = append(mergeRuntimeStates, site.runtimeState)
 			mergeScopeStates = append(mergeScopeStates, site.scopeState)
 		}
+		for _, site := range pendingExceptionExitSites {
+			mergeRuntimeStates = append(mergeRuntimeStates, site.runtimeState)
+			mergeScopeStates = append(mergeScopeStates, site.scopeState)
+		}
 		for _, site := range pendingExpressionExitSites {
 			mergeRuntimeStates = append(mergeRuntimeStates, site.runtimeState)
 			mergeScopeStates = append(mergeScopeStates, site.scopeState)
