@@ -1097,6 +1097,312 @@ end
 	}
 }
 
+func TestScriptFunctionNamespaceMutationsPreserveAssignmentEvaluationState(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+		want   []string
+		reject []string
+	}{
+		{
+			name: "plain index setter retains its evaluated receiver and completion",
+			source: `def replacement(value)
+  1
+end
+
+class Stopping
+  def []=(index, value)
+    JSON.stringify = replacement
+    raise "stop"
+  end
+end
+
+class Completing
+  def []=(index, value)
+    nil
+  end
+end
+
+def install()
+  box = Stopping.new
+  box[begin
+    box = Completing.new
+    0
+  end] = 1
+  JSON.parse = replacement
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "plain index setter retains its evaluated value callback",
+			source: `def replacement(value)
+  1
+end
+
+def writer(value)
+  JSON.stringify = replacement
+end
+
+def noop(value)
+  JSON.parse = replacement
+end
+
+class Box
+  def []=(index, callback: function)
+    callback.call(1)
+  end
+end
+
+def install()
+  callback = writer
+  box = Box.new
+  box[begin
+    callback, ignored = [noop, nil]
+    0
+  end] = callback
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "compound index setter retains its evaluated selector callback",
+			source: `def replacement(value)
+  1
+end
+
+def writer(value)
+  JSON.stringify = replacement
+end
+
+def noop(value)
+  JSON.parse = replacement
+end
+
+class Box
+  def [](callback)
+    0
+  end
+
+  def []=(callback, value)
+    callback.call(value)
+  end
+end
+
+def install()
+  callback = writer
+  box = Box.new
+  box[callback] += begin
+    callback = noop
+    1
+  end
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "logical index setter retains its evaluated selector callback",
+			source: `def replacement(value)
+  1
+end
+
+def writer(value)
+  JSON.stringify = replacement
+end
+
+def noop(value)
+  JSON.parse = replacement
+end
+
+class Box
+  def [](callback)
+    nil
+  end
+
+  def []=(callback, value)
+    callback.call(value)
+  end
+end
+
+def install()
+  callback = writer
+  box = Box.new
+  box[callback] ||= begin
+    callback = noop
+    1
+  end
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "compound index setter retains exact receiver bounds",
+			source: `def replacement(value)
+  1
+end
+
+def install()
+  values = [1]
+  values[0] += begin
+    values, ignored = [[], nil]
+    1
+  end
+  JSON.stringify = replacement
+end`,
+			want: []string{"JSON.stringify"},
+		},
+		{
+			name: "logical index setter retains exact receiver bounds",
+			source: `def replacement(value)
+  1
+end
+
+def install()
+  values = [nil]
+  values[0] ||= begin
+    values, ignored = [[], nil]
+    1
+  end
+  JSON.stringify = replacement
+end`,
+			want: []string{"JSON.stringify"},
+		},
+		{
+			name: "destructure index setter retains its evaluated receiver and completion",
+			source: `def replacement(value)
+  1
+end
+
+class Stopping
+  def []=(index, value)
+    JSON.stringify = replacement
+    raise "stop"
+  end
+end
+
+class Completing
+  def []=(index, value)
+    nil
+  end
+end
+
+def install()
+  box = Stopping.new
+  box[begin
+    box = Completing.new
+    0
+  end], ignored = [1, 0]
+  JSON.parse = replacement
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "logical identifier target does not auto invoke",
+			source: `def replacement(value)
+  1
+end
+
+def setting()
+  JSON.stringify = replacement
+  1
+end
+
+def assign_parse()
+  JSON.parse = replacement
+  1
+end
+
+def install()
+  setting ||= assign_parse()
+end`,
+			want:   []string{"JSON.parse"},
+			reject: []string{"JSON.stringify"},
+		},
+		{
+			name: "unknown logical or keeps the skipped receiver state",
+			source: `def replacement(value)
+  1
+end
+
+class Writer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Passive
+  def install()
+    nil
+  end
+end
+
+def install(flag: bool)
+  box = Writer.new
+  flag ||= begin
+    box, ignored = [Passive.new, nil]
+    true
+  end
+  box.install()
+end`,
+			want: []string{"JSON.stringify"},
+		},
+		{
+			name: "unknown logical and keeps the skipped receiver state",
+			source: `def replacement(value)
+  1
+end
+
+class Writer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Passive
+  def install()
+    nil
+  end
+end
+
+def install(flag: bool)
+  box = Writer.new
+  flag &&= begin
+    box, ignored = [Passive.new, nil]
+    false
+  end
+  box.install()
+end`,
+			want: []string{"JSON.stringify"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			fn := script.functions["install"]
+			checker := &scriptChecker{script: script}
+			got := checker.scriptFunctionNamespaceMutations(nil, staticCallable{
+				name: "install",
+				fn:   fn,
+			})
+			for _, member := range tc.want {
+				if _, ok := got[member]; !ok {
+					t.Errorf("scriptFunctionNamespaceMutations(%q) = %v, want member %q", tc.name, got, member)
+				}
+			}
+			for _, member := range tc.reject {
+				if _, ok := got[member]; ok {
+					t.Errorf("scriptFunctionNamespaceMutations(%q) = %v, do not want member %q", tc.name, got, member)
+				}
+			}
+		})
+	}
+}
+
 func TestCheckWarningsForFunctionClearsPinnedFactsBetweenReachableChecks(t *testing.T) {
 	t.Parallel()
 

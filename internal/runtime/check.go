@@ -15726,17 +15726,15 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 			captureBoundary = false
 			s.restoreFailureScopeCheckpoint(failureCheckpoint)
 		}
-		if typed.Operator == "" {
-			if preciseDestructure &&
-				s.checker.evaluatedDestructureFacts == nil {
-				s.checker.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
-				defer func() { s.checker.evaluatedDestructureFacts = nil }()
-			}
-		}
+		previousEvaluatedFacts := s.checker.evaluatedDestructureFacts
+		s.checker.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
+		defer func() { s.checker.evaluatedDestructureFacts = previousEvaluatedFacts }()
 		assignedValue := typed.Value
 		setterReachable := true
 		var logicalTargetFact *logicalAssignmentTargetFact
-		var setterReceiverCandidates []checkDynamicCallCandidates
+		var setterReceiver checkAssignmentReceiverCapture
+		var logicalBaseScopeState checkScopeState
+		logicalUnknown := false
 		switch typed.Operator {
 		case "":
 			rhsFailureCheckpoint := s.failureScopeCheckpoint()
@@ -15747,7 +15745,7 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 			if (preciseDestructure || preciseIvar) && expressionProvenNonRaising(typed.Value) {
 				s.restoreFailureScopeCheckpoint(rhsFailureCheckpoint)
 			}
-			s.checker.captureEvaluatedDestructureFact(typed.Value)
+			s.checker.captureEvaluatedDestructureFactWithExpectation(typed.Value, expectation)
 			if preciseDestructure {
 				return s.replayDestructureAssignment(destructure, typed.Value)
 			}
@@ -15761,24 +15759,29 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 				})
 				return setterCompletes
 			}
-			if !s.assignmentTarget(typed.Target) {
-				return false
-			}
-		case tokenOrAssign, tokenAndAssign:
-			targetCompleted, setterReceiver := s.checker.withAssignmentReceiverCapture(
+			var targetCompleted bool
+			targetCompleted, setterReceiver = s.checker.withAssignmentReceiverCapture(
 				typed.Target,
-				func() bool { return s.expression(typed.Target) },
+				func() bool { return s.assignmentTarget(typed.Target) },
 			)
 			if !targetCompleted {
 				return false
 			}
-			if setterReceiver.captured {
-				setterReceiverCandidates = append(
-					setterReceiverCandidates,
-					setterReceiver.candidates,
-				)
+		case tokenOrAssign, tokenAndAssign:
+			var targetCompleted bool
+			targetCompleted, setterReceiver = s.checker.withAssignmentReceiverCapture(
+				typed.Target,
+				func() bool {
+					if _, ident := typed.Target.(*Identifier); ident {
+						return s.expressionWithAuto(typed.Target, false)
+					}
+					return s.expression(typed.Target)
+				},
+			)
+			if !targetCompleted {
+				return false
 			}
-			truthy, known := s.checker.inferredConditionTruthiness(typed.Target)
+			truthy, known := s.logicalAssignmentTargetTruthiness(typed.Target)
 			rhsReachable := !known ||
 				(typed.Operator == tokenOrAssign && !truthy) ||
 				(typed.Operator == tokenAndAssign && truthy)
@@ -15869,23 +15872,27 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 				setterReachable = false
 				break
 			}
+			if !known {
+				logicalBaseScopeState = s.checker.snapshotScopeState()
+				logicalUnknown = true
+			}
 			expectation := s.checker.assignmentValueExpectation(typed.Target, typed.Value)
 			if !s.callArgumentExpression(typed.Value, expectation) {
-				return !known
+				if logicalUnknown {
+					s.checker.restoreScopeState(logicalBaseScopeState)
+					return true
+				}
+				return false
 			}
+			s.checker.captureEvaluatedDestructureFactWithExpectation(typed.Value, expectation)
 		default:
-			targetCompleted, setterReceiver := s.checker.withAssignmentReceiverCapture(
+			var targetCompleted bool
+			targetCompleted, setterReceiver = s.checker.withAssignmentReceiverCapture(
 				typed.Target,
 				func() bool { return s.expression(typed.Target) },
 			)
 			if !targetCompleted {
 				return false
-			}
-			if setterReceiver.captured {
-				setterReceiverCandidates = append(
-					setterReceiverCandidates,
-					setterReceiver.candidates,
-				)
 			}
 			compoundIvar, preciseCompoundIvar := typed.Target.(*IvarExpr)
 			if preciseCompoundIvar {
@@ -15898,6 +15905,7 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 			if !s.expression(typed.Value) {
 				return false
 			}
+			s.checker.captureEvaluatedDestructureFact(typed.Value)
 			if preciseCompoundIvar && expressionProvenNonRaising(typed.Value) {
 				s.restoreFailureScopeCheckpoint(rhsFailureCheckpoint)
 			}
@@ -15916,6 +15924,7 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 			if !s.checker.binaryExpressionMayComplete(operatorValue) {
 				return false
 			}
+			s.checker.captureEvaluatedDestructureFact(operatorValue)
 			if preciseCompoundIvar {
 				setterCompletes := s.checker.assignmentSetterMayComplete(compoundIvar, operatorValue)
 				if !s.checker.ivarWriteProvablyCompletes(compoundIvar.Name, operatorValue) {
@@ -15933,18 +15942,14 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 		setterAssignment := memberAssignment || indexAssignment
 		setterAssignmentCompletes := true
 		if setterReachable && setterAssignment {
-			s.recordRuntimeNamespaceAssignment(
+			setterAssignmentCompletes = s.assignmentSetter(
 				typed.Target,
 				assignedValue,
-				setterReceiverCandidates...,
+				setterReceiver,
 			)
-			setterAssignmentCompletes = s.checker.assignmentSetterMayComplete(
-				typed.Target,
-				assignedValue,
-				setterReceiverCandidates...,
-			)
-			if logicalTargetFact != nil && !logicalTargetFact.known {
-				setterAssignmentCompletes = true
+			if logicalUnknown && !setterAssignmentCompletes {
+				s.checker.restoreScopeState(logicalBaseScopeState)
+				return true
 			}
 		}
 		s.checker.withSuppressedWarnings(func() {
@@ -15952,6 +15957,14 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 		})
 		if setterReachable && !setterAssignment {
 			s.recordRuntimeNamespaceAssignment(typed.Target, assignedValue)
+		}
+		if logicalUnknown {
+			writtenScopeState := s.checker.snapshotScopeState()
+			s.checker.restoreScopeState(logicalBaseScopeState)
+			s.checker.mergeScopeStates(
+				logicalBaseScopeState,
+				[]checkScopeState{logicalBaseScopeState, writtenScopeState},
+			)
 		}
 		if setterAssignment {
 			return setterAssignmentCompletes
@@ -16202,12 +16215,17 @@ func (s *namespaceMutationScan) assignmentTarget(target Expression) bool {
 	case nil, *Identifier, *IvarExpr, *ClassVarExpr:
 		return true
 	case *MemberExpr:
-		return s.expression(typed.Object)
+		if !s.expression(typed.Object) {
+			return false
+		}
+		s.checker.captureAssignmentReceiver(typed)
+		return true
 	case *IndexExpr:
 		if !s.expression(typed.Object) {
 			return false
 		}
 		s.checker.captureEvaluatedDestructureFact(typed.Object)
+		s.checker.captureAssignmentReceiver(typed)
 		for _, index := range typed.Indices {
 			if !s.expression(index) {
 				return false
@@ -16263,7 +16281,11 @@ func (s *namespaceMutationScan) replayDestructureAssignment(
 			Value:    leafValue,
 			Position: fact.target.Pos(),
 		}
-		if !s.assignmentTarget(fact.target) {
+		targetCompleted, setterReceiver := s.checker.withAssignmentReceiverCapture(
+			fact.target,
+			func() bool { return s.assignmentTarget(fact.target) },
+		)
+		if !targetCompleted {
 			return false
 		}
 		argumentFacts := map[Expression]capturedDestructureValueFact{leafValue: fact}
@@ -16280,8 +16302,7 @@ func (s *namespaceMutationScan) replayDestructureAssignment(
 			if !ivarTarget || !s.checker.ivarWriteProvablyCompletes(ivar.Name, leafValue) {
 				s.captureFailureScope()
 			}
-			s.recordRuntimeNamespaceAssignment(fact.target, leafValue)
-			completed = s.checker.assignmentSetterMayComplete(fact.target, leafValue)
+			completed = s.assignmentSetter(fact.target, leafValue, setterReceiver)
 			s.checker.withSuppressedWarnings(func() {
 				s.checker.inferAssignStatementTypes("", leaf, indexedReceiverFact, nil)
 			})
@@ -16382,6 +16403,55 @@ func (s *namespaceMutationScan) recordRuntimeNamespaceAssignment(
 		}
 		s.out[s.selfClass.Name+"."+member.Property] = struct{}{}
 	}
+}
+
+func (s *namespaceMutationScan) assignmentSetter(
+	target, value Expression,
+	receiver checkAssignmentReceiverCapture,
+) bool {
+	completed := true
+	s.checker.withEvaluatedAssignmentSetterArgumentFacts(target, value, func() {
+		if receiver.captured {
+			s.recordRuntimeNamespaceAssignment(target, value, receiver.candidates)
+			completed = s.checker.assignmentSetterMayCompleteWithReceiver(
+				target,
+				value,
+				receiver,
+			)
+			return
+		}
+		s.recordRuntimeNamespaceAssignment(target, value)
+		completed = s.checker.assignmentSetterMayComplete(target, value)
+	})
+	return completed
+}
+
+func (s *namespaceMutationScan) logicalAssignmentTargetTruthiness(
+	target Expression,
+) (bool, bool) {
+	ident, ok := target.(*Identifier)
+	if !ok {
+		return s.checker.inferredConditionTruthiness(target)
+	}
+	if !s.checker.localTypeTracked(ident.Name) {
+		if !isConstantIdentifier(ident.Name) {
+			return false, true
+		}
+		return s.checker.inferredConditionTruthiness(target)
+	}
+	if fact, exact := s.checker.localValueFactFor(ident.Name); exact {
+		if truthy, known := localValueFactTruthiness(fact, true); known {
+			return truthy, true
+		}
+	}
+	ty := s.checker.localTypeFor(ident.Name)
+	if typeExprDefinitelyTruthy(ty) {
+		return true, true
+	}
+	if typeExprDefinitelyFalsey(ty) {
+		return false, true
+	}
+	return false, false
 }
 
 func (s *namespaceMutationScan) recordResolvedAssignmentMember(
@@ -16640,6 +16710,7 @@ func (s *namespaceMutationScan) expressionWithAuto(expr Expression, autoCall boo
 			if !s.expression(index) {
 				return false
 			}
+			s.checker.captureEvaluatedDestructureFact(index)
 		}
 		call := &CallExpr{Callee: &MemberExpr{Object: typed.Object, Property: "[]", Position: typed.Pos()}, Args: typed.Indices, Position: typed.Pos()}
 		s.callCallee(call)

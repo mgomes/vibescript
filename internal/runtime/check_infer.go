@@ -4186,12 +4186,31 @@ func (c *scriptChecker) newDestructureProjection(
 }
 
 func (c *scriptChecker) captureEvaluatedDestructureFact(expr Expression) {
+	c.captureEvaluatedDestructureFactWithAuto(expr, c.inferExpressionType(expr), true)
+}
+
+func (c *scriptChecker) captureEvaluatedDestructureFactWithExpectation(
+	expr Expression,
+	expectation expressionExpectation,
+) {
+	c.captureEvaluatedDestructureFactWithAuto(
+		expr,
+		c.inferExpressionTypeWithExpectation(expr, expectation),
+		!typeExprIncludesCallable(expectation.ty),
+	)
+}
+
+func (c *scriptChecker) captureEvaluatedDestructureFactWithAuto(
+	expr Expression,
+	assigned *TypeExpr,
+	autoCall bool,
+) {
 	if expr == nil || c.evaluatedDestructureFacts == nil {
 		return
 	}
 	fact := capturedDestructureValueFact{
 		value:     expr,
-		assigned:  c.inferExpressionType(expr),
+		assigned:  assigned,
 		known:     true,
 		evaluated: true,
 	}
@@ -4214,10 +4233,13 @@ func (c *scriptChecker) captureEvaluatedDestructureFact(expr Expression) {
 		}
 	}
 	c.pinExpressionFact(expr, fact.assigned)
-	if classNames, exact := c.classValueExpressionNames(expr); exact {
+	if callables, exact := c.callableExpressionFunctionsAfterEvaluation(expr, autoCall); !autoCall && exact {
+		fact.factKind = destructureCallableFact
+		fact.callables = append([]*ScriptFunction(nil), callables...)
+	} else if classNames, exact := c.classValueExpressionNames(expr); exact {
 		fact.factKind = destructureClassFact
 		fact.classNames = append([]string(nil), classNames...)
-	} else if callables, exact := c.callableExpressionFunctionsAfterEvaluation(expr, true); exact {
+	} else if callables, exact := c.callableExpressionFunctionsAfterEvaluation(expr, autoCall); exact {
 		fact.factKind = destructureCallableFact
 		fact.callables = append([]*ScriptFunction(nil), callables...)
 	} else if staticVals, exact := c.staticValueExpressionAlternatives(expr); exact {
