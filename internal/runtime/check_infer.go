@@ -6093,14 +6093,33 @@ func staticArrayFillInteger(value Value) (n int, nilValue, valid bool) {
 }
 
 func literalBignum(expr Expression) bool {
+	value, exact := integerLiteralValue(expr)
+	return exact && value.IsBigInt()
+}
+
+func integerLiteralValue(expr Expression) (Value, bool) {
 	switch typed := expr.(type) {
 	case *IntegerLiteral:
-		return typed.Big != nil
+		if typed.Big != nil {
+			return newBigIntValue(typed.Big), true
+		}
+		return NewInt(typed.Value), true
 	case *UnaryExpr:
-		return (typed.Operator == tokenMinus || typed.Operator == tokenPlus) &&
-			literalBignum(typed.Right)
+		value, exact := integerLiteralValue(typed.Right)
+		if !exact {
+			return NewNil(), false
+		}
+		switch typed.Operator {
+		case tokenPlus:
+			return value, true
+		case tokenMinus:
+			if value.IsBigInt() || value.Int() == math.MinInt64 {
+				return negIntValueBig(value), true
+			}
+			return NewInt(-value.Int()), true
+		}
 	}
-	return false
+	return NewNil(), false
 }
 
 func arrayFillSelectorHasNumericFact(
@@ -6127,7 +6146,7 @@ func staticArrayFillRangeWrites(rng Range) (arrayFillRangeWriteEffect, bool) {
 		start = 0
 	}
 	if start > int64(math.MaxInt) {
-		return arrayFillRangeWriteEffect{preservable: true}, true
+		return arrayFillRangeWriteEffect{}, false
 	}
 	preservable := start <= 0
 	if rng.Endless {
@@ -6138,12 +6157,12 @@ func staticArrayFillRangeWrites(rng Range) (arrayFillRangeWriteEffect, bool) {
 		}, true
 	}
 	if rng.End > int64(math.MaxInt) {
-		return arrayFillRangeWriteEffect{preservable: true}, true
+		return arrayFillRangeWriteEffect{}, false
 	}
 	end := rng.End
 	if !rng.Exclusive {
 		if end == int64(math.MaxInt) {
-			return arrayFillRangeWriteEffect{preservable: true}, true
+			return arrayFillRangeWriteEffect{}, false
 		}
 		end++
 	}

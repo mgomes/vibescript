@@ -226,6 +226,15 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "minimum int literal remains a valid fill start",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", -9223372036854775808)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "fill value with start and length",
 			source: `
 def f(items: array<int>)

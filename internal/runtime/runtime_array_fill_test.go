@@ -542,6 +542,10 @@ end
 def negative_big_start(values)
   values.fill("bad", -9223372036854775809)
 end
+
+def minimum_start(values)
+  values.fill("bad", -9223372036854775808)
+end
 `)
 
 	tests := []struct {
@@ -564,6 +568,13 @@ end
 				t.Fatalf("%s() receiver = %s after error, want %s", tc.fn, values.String(), want.String())
 			}
 		})
+	}
+
+	values := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+	got := callScript(t, context.Background(), script, "minimum_start", []Value{values}, CallOptions{})
+	want := NewArray([]Value{NewString("bad"), NewString("bad"), NewString("bad")})
+	if !got.Equal(want) {
+		t.Fatalf("minimum_start() = %s, want %s", got.String(), want.String())
 	}
 }
 
