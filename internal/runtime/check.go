@@ -143,6 +143,7 @@ type scriptChecker struct {
 	localBindingGenerations    map[string]uint64
 	reachableParamFacts        map[string]checkReachableParamFact
 	reachableBindingPlan       *scriptCallBindingPlan
+	reachableBlockKnownAbsent  bool
 	pendingBindingParams       map[string]struct{}
 	deferredReturnSites        *[]deferredReturnSite
 	exceptionExitSites         *[]checkStateSnapshot
@@ -230,11 +231,12 @@ func conditionDecisionFromOutcomes(truthy, known, trueReachable, falseReachable 
 }
 
 type reachableFunction struct {
-	label        string
-	fn           *ScriptFunction
-	runtimeState checkRuntimeState
-	paramFacts   map[string]checkReachableParamFact
-	bindingPlan  *scriptCallBindingPlan
+	label            string
+	fn               *ScriptFunction
+	runtimeState     checkRuntimeState
+	paramFacts       map[string]checkReachableParamFact
+	bindingPlan      *scriptCallBindingPlan
+	blockKnownAbsent bool
 }
 
 type checkReachableParamFact struct {
@@ -1740,26 +1742,45 @@ func (c *scriptChecker) withReachableCallChecks(check func()) {
 	check()
 }
 
+// enqueueReachableFunction covers runtime-generated calls without a CallExpr,
+// such as host entry and auto-invocation paths; those calls always pass nil as
+// their block. Spelled call expressions use enqueueReachableFunctionForCall.
 func (c *scriptChecker) enqueueReachableFunction(label string, fn *ScriptFunction) {
-	c.enqueueReachableFunctionWithParamFacts(label, fn, nil)
+	c.enqueueReachableFunctionWithContext(label, fn, nil, true)
 }
 
-func (c *scriptChecker) enqueueReachableFunctionWithParamFacts(
+func (c *scriptChecker) enqueueReachableFunctionForCall(
 	label string,
 	fn *ScriptFunction,
 	paramFacts map[string]checkReachableParamFact,
+	call *CallExpr,
+) {
+	c.enqueueReachableFunctionWithContext(
+		label,
+		fn,
+		paramFacts,
+		call != nil && call.Block == nil && call.BlockArg == nil,
+	)
+}
+
+func (c *scriptChecker) enqueueReachableFunctionWithContext(
+	label string,
+	fn *ScriptFunction,
+	paramFacts map[string]checkReachableParamFact,
+	blockKnownAbsent bool,
 ) {
 	if !c.checkReachableCalls || fn == nil || fn.owner != c.script {
 		return
 	}
-	if !c.markReachableFunctionCheckedWithParamFacts(fn, paramFacts) {
+	if !c.markReachableFunctionCheckedWithContext(fn, paramFacts, blockKnownAbsent) {
 		return
 	}
 	c.reachableFuncQueue = append(c.reachableFuncQueue, reachableFunction{
-		label:        label,
-		fn:           fn,
-		runtimeState: c.snapshotRuntimeState(),
-		paramFacts:   cloneReachableParamFacts(paramFacts),
+		label:            label,
+		fn:               fn,
+		runtimeState:     c.snapshotRuntimeState(),
+		paramFacts:       cloneReachableParamFacts(paramFacts),
+		blockKnownAbsent: blockKnownAbsent,
 	})
 }
 
@@ -1769,10 +1790,36 @@ func (c *scriptChecker) enqueueReachableFunctionBinding(
 	paramFacts map[string]checkReachableParamFact,
 	plan scriptCallBindingPlan,
 ) {
+	c.enqueueReachableFunctionBindingWithContext(label, fn, paramFacts, plan, true)
+}
+
+func (c *scriptChecker) enqueueReachableFunctionBindingForCall(
+	label string,
+	fn *ScriptFunction,
+	paramFacts map[string]checkReachableParamFact,
+	plan scriptCallBindingPlan,
+	call *CallExpr,
+) {
+	c.enqueueReachableFunctionBindingWithContext(
+		label,
+		fn,
+		paramFacts,
+		plan,
+		call != nil && call.Block == nil && call.BlockArg == nil,
+	)
+}
+
+func (c *scriptChecker) enqueueReachableFunctionBindingWithContext(
+	label string,
+	fn *ScriptFunction,
+	paramFacts map[string]checkReachableParamFact,
+	plan scriptCallBindingPlan,
+	blockKnownAbsent bool,
+) {
 	if !c.checkReachableCalls || fn == nil || fn.owner != c.script {
 		return
 	}
-	key := c.reachableFunctionCheckKey(fn, paramFacts) + "\x00binding:" +
+	key := c.reachableFunctionCheckContextKey(fn, paramFacts, blockKnownAbsent) + "\x00binding:" +
 		strconv.FormatBool(plan.bindingStarts) + ":" +
 		strconv.FormatBool(plan.exactBindings) + ":" +
 		strconv.FormatBool(plan.bodyMayEnter) + ":" +
@@ -1787,11 +1834,12 @@ func (c *scriptChecker) enqueueReachableFunctionBinding(
 	planCopy := plan
 	planCopy.defaultParams = append([]int(nil), plan.defaultParams...)
 	c.reachableFuncQueue = append(c.reachableFuncQueue, reachableFunction{
-		label:        label,
-		fn:           fn,
-		runtimeState: c.snapshotRuntimeState(),
-		paramFacts:   cloneReachableParamFacts(paramFacts),
-		bindingPlan:  &planCopy,
+		label:            label,
+		fn:               fn,
+		runtimeState:     c.snapshotRuntimeState(),
+		paramFacts:       cloneReachableParamFacts(paramFacts),
+		bindingPlan:      &planCopy,
+		blockKnownAbsent: blockKnownAbsent,
 	})
 }
 
@@ -1913,13 +1961,21 @@ func (c *scriptChecker) markReachableFunctionCheckedWithParamFacts(
 	fn *ScriptFunction,
 	paramFacts map[string]checkReachableParamFact,
 ) bool {
+	return c.markReachableFunctionCheckedWithContext(fn, paramFacts, false)
+}
+
+func (c *scriptChecker) markReachableFunctionCheckedWithContext(
+	fn *ScriptFunction,
+	paramFacts map[string]checkReachableParamFact,
+	blockKnownAbsent bool,
+) bool {
 	if fn == nil {
 		return false
 	}
 	if c.checkedReachableFuncs == nil {
 		c.checkedReachableFuncs = make(map[string]struct{})
 	}
-	key := c.reachableFunctionCheckKey(fn, paramFacts)
+	key := c.reachableFunctionCheckContextKey(fn, paramFacts, blockKnownAbsent)
 	if _, ok := c.checkedReachableFuncs[key]; ok {
 		return false
 	}
@@ -1927,8 +1983,25 @@ func (c *scriptChecker) markReachableFunctionCheckedWithParamFacts(
 	return true
 }
 
-func (c *scriptChecker) reachableFunctionCheckKey(fn *ScriptFunction, paramFacts map[string]checkReachableParamFact) string {
-	return fmt.Sprintf("%p\x00%s\x00%s", fn, c.runtimeCheckContextKey(), reachableParamFactsKey(paramFacts))
+func (c *scriptChecker) reachableFunctionCheckKey(
+	fn *ScriptFunction,
+	paramFacts map[string]checkReachableParamFact,
+) string {
+	return c.reachableFunctionCheckContextKey(fn, paramFacts, false)
+}
+
+func (c *scriptChecker) reachableFunctionCheckContextKey(
+	fn *ScriptFunction,
+	paramFacts map[string]checkReachableParamFact,
+	blockKnownAbsent bool,
+) string {
+	return fmt.Sprintf(
+		"%p\x00%s\x00%s\x00block-absent:%t",
+		fn,
+		c.runtimeCheckContextKey(),
+		reachableParamFactsKey(paramFacts),
+		blockKnownAbsent,
+	)
 }
 
 func (c *scriptChecker) runtimeCheckContextKey() string {
@@ -2022,11 +2095,14 @@ func (c *scriptChecker) drainReachableFunctions(reached map[*ScriptFunction]stru
 		c.localClassValues = nil
 		previousParamFacts := c.reachableParamFacts
 		previousBindingPlan := c.reachableBindingPlan
+		previousBlockKnownAbsent := c.reachableBlockKnownAbsent
 		c.reachableParamFacts = next.paramFacts
 		c.reachableBindingPlan = next.bindingPlan
+		c.reachableBlockKnownAbsent = next.blockKnownAbsent
 		c.checkFunction(next.label, next.fn)
 		c.reachableParamFacts = previousParamFacts
 		c.reachableBindingPlan = previousBindingPlan
+		c.reachableBlockKnownAbsent = previousBlockKnownAbsent
 		c.restoreScopeState(scopeState)
 	}
 }
@@ -5027,14 +5103,14 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		}
 		return true
 	case *YieldExpr:
+		if c.yieldBlockKnownAbsent() {
+			return false
+		}
 		for _, arg := range typed.Args {
 			if !c.checkExpressionWithAuto(function, arg, true) {
 				return false
 			}
 			c.poisonEscapedCallValue(arg, true)
-		}
-		if c.returnCollector != nil && !c.summaryBlockAvailable {
-			return false
 		}
 		c.markOpaqueClassConstants()
 		// The caller-supplied block may return non-locally instead of
@@ -5049,6 +5125,17 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		return c.checkStringParts(function, typed.Parts)
 	}
 	return true
+}
+
+// yieldBlockKnownAbsent distinguishes an exact blockless call from a pristine
+// function walk, where a caller may still supply a block. Return summaries
+// carry their own call shape and take precedence over the enclosing reachable
+// check while their synthetic body walk is active.
+func (c *scriptChecker) yieldBlockKnownAbsent() bool {
+	if c.returnCollector != nil {
+		return !c.summaryBlockAvailable
+	}
+	return c.reachableBlockKnownAbsent
 }
 
 // callHasOpaqueClassConstantEffects reports calls whose implementation is not
@@ -9975,7 +10062,7 @@ func (c *scriptChecker) checkCallResolved(
 		// validates the expanded call with the same binding errors a literal
 		// spelling would raise, so static shape checks step aside.
 		if target.fn != nil {
-			c.enqueueReachableFunction(target.name, target.fn)
+			c.enqueueReachableFunctionForCall(target.name, target.fn, nil, call)
 		}
 		return
 	}
@@ -9986,13 +10073,20 @@ func (c *scriptChecker) checkCallResolved(
 		plan := c.scriptCallBindingPlan(call, target)
 		facts := c.reachableCallParamFacts(call, target)
 		if plan.bodyMayEnter {
-			c.enqueueReachableFunctionWithParamFacts(
+			c.enqueueReachableFunctionForCall(
 				target.name,
 				target.fn,
 				facts,
+				call,
 			)
 		} else if plan.bindingStarts {
-			c.enqueueReachableFunctionBinding(target.name, target.fn, facts, plan)
+			c.enqueueReachableFunctionBindingForCall(
+				target.name,
+				target.fn,
+				facts,
+				plan,
+				call,
+			)
 		}
 		return
 	}
@@ -10026,17 +10120,19 @@ func (c *scriptChecker) checkDynamicCallTargets(
 		}
 		facts := c.reachableCallParamFacts(candidate.call, candidate.target)
 		if candidate.mayEnter {
-			c.enqueueReachableFunctionWithParamFacts(
+			c.enqueueReachableFunctionForCall(
 				candidate.target.name,
 				candidate.target.fn,
 				facts,
+				candidate.call,
 			)
 		} else if candidate.bindingStarts {
-			c.enqueueReachableFunctionBinding(
+			c.enqueueReachableFunctionBindingForCall(
 				candidate.target.name,
 				candidate.target.fn,
 				facts,
 				c.scriptCallBindingPlan(candidate.call, candidate.target),
+				candidate.call,
 			)
 		}
 	}
@@ -12205,6 +12301,16 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 	defer delete(c.bindingCompletionProbes, expr)
 
 	switch typed := expr.(type) {
+	case *YieldExpr:
+		if c.yieldBlockKnownAbsent() {
+			return false
+		}
+		for _, arg := range typed.Args {
+			if !c.expressionMayCompleteForBinding(arg) {
+				return false
+			}
+		}
+		return true
 	case *CallExpr:
 		if member, ok := typed.Callee.(*MemberExpr); ok {
 			if !c.expressionMayCompleteForBinding(member.Object) {
@@ -17094,10 +17200,15 @@ func (c *scriptChecker) staticallyRaisedErrorKind(statements []Statement) (strin
 		}
 		return "", false
 	}
-	if !staticRaiseErrorClass(raise) || !expressionProvenNonRaising(raise.Message) {
+	if !c.unshadowedStaticRaiseErrorClass(raise) ||
+		!expressionProvenNonRaising(raise.Message) {
 		return "", false
 	}
-	if message, static := staticLiteralValue(raise.Message); static && message.Kind() != KindString {
+	message, static := staticLiteralValue(raise.Message)
+	if !static {
+		return "", false
+	}
+	if message.Kind() != KindString {
 		return runtimeErrorTypeType, true
 	}
 	root := c.runtimeTypeRoot
@@ -17105,6 +17216,14 @@ func (c *scriptChecker) staticallyRaisedErrorKind(statements []Statement) (strin
 		root = c.typeRoot
 	}
 	return raiseErrorTypeName(raise.Value, root)
+}
+
+func (c *scriptChecker) unshadowedStaticRaiseErrorClass(stmt *RaiseStmt) bool {
+	if !staticRaiseErrorClass(stmt) {
+		return false
+	}
+	ident, ok := stmt.Value.(*Identifier)
+	return ok && !c.staticNameShadowed(ident.Name)
 }
 
 func (c *scriptChecker) staticallyRaisedExpressionErrorKind(expr Expression) (string, bool) {

@@ -6226,6 +6226,381 @@ end
 	)
 }
 
+func TestCheckInitializerIvarBlocklessYieldDoesNotWidenRepeatedFacts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("blockless constructor", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    for value in [1]
+      begin
+        yield
+      rescue
+        nil
+      end
+    end
+    @a = @b
+  end
+end
+
+def run
+  User.new() do |value|
+    value.b = 1
+  end
+  User.new().a
+end
+`)
+		if warnings := script.CheckWarnings(); len(warnings) != 0 {
+			t.Fatalf("CheckWarnings() = %#v, want the pristine block path to stay conservative", warnings)
+		}
+		warnings := script.CheckWarningsForFunction("run")
+		gotWarnings := strings.Join(checkWarningMessages(warnings), "\n")
+		if !strings.Contains(gotWarnings, "write to @a expected int, got nil") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %q, want the unset @b warning",
+				"run",
+				gotWarnings,
+			)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @a expected int, got nil",
+		)
+	})
+
+	t.Run("constructor with block", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    for value in [1]
+      yield self
+    end
+    @a = @b
+  end
+end
+
+def run
+  user = User.new() do |value|
+    value.b = 1
+  end
+  user.a
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
+}
+
+func TestCheckInitializerIvarRepeatedTryFollowsRuntimePaths(t *testing.T) {
+	t.Parallel()
+
+	regions := map[string]string{
+		"exact rescue selection": `    for value in [1]
+      begin
+        raise TypeError, "stop"
+      rescue ArgumentError
+        @b = 1
+      rescue TypeError
+        nil
+      end
+    end`,
+		"else only follows normal completion": `    for value in [1]
+      begin
+        raise TypeError, "stop"
+      rescue TypeError
+        nil
+      else
+        @b = 1
+      end
+    end`,
+		"unmatched error stops the protected tail": `    for value in [1]
+      begin
+        begin
+          raise TypeError, "stop"
+        rescue ArgumentError
+          nil
+        end
+        @b = 1
+      rescue TypeError
+        nil
+      end
+    end`,
+		"break does not enter rescue": `    for value in [1]
+      begin
+        break
+      rescue
+        @b = 1
+      end
+      @b = 1
+    end`,
+	}
+
+	for name, region := range regions {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+`+region+`
+    @a = @b
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+			requireCheckWarningContains(t, script, "write to @a expected int, got nil")
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"instance variable @a expected int, got nil",
+			)
+		})
+	}
+}
+
+func TestCheckInitializerIvarRepeatedTryKeepsDynamicRaiseKindsConservative(t *testing.T) {
+	t.Parallel()
+
+	regions := map[string]string{
+		"shadowed error class": `    ArgumentError = "not a class"
+    for value in [1]
+      begin
+        raise ArgumentError, "stop"
+      rescue ArgumentError
+        nil
+      rescue TypeError
+        @b = 1
+      end
+    end`,
+		"oversized error message": `    for value in [1]
+      begin
+        raise ArgumentError, 9223372036854775808
+      rescue ArgumentError
+        nil
+      rescue TypeError
+        @b = 1
+      end
+    end`,
+	}
+
+	for name, region := range regions {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+`+region+`
+    @a = @b
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 1 {
+				t.Fatalf("run() = %v, want 1", got)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarRepeatedTryAlwaysRunsEnsure(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    for value in [1]
+      begin
+        begin
+          raise TypeError, "stop"
+        rescue ArgumentError
+          nil
+        ensure
+          @b = 1
+        end
+      rescue TypeError
+        nil
+      end
+    end
+    @a = @b
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run() = %v, want 1", got)
+	}
+}
+
+func TestCheckInitializerIvarStaticallyEnteredLoopStopsUnreachableTail(t *testing.T) {
+	t.Parallel()
+
+	regions := map[string]string{
+		"nonempty for": `      begin
+        for nested in [1]
+          raise "stop"
+        end
+        @b = 1
+      rescue
+        nil
+      end`,
+		"while true": `      begin
+        while true
+          raise "stop"
+        end
+        @b = 1
+      rescue
+        nil
+      end`,
+		"until false": `      begin
+        until false
+          raise "stop"
+        end
+        @b = 1
+      rescue
+        nil
+      end`,
+	}
+
+	for name, region := range regions {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    for value in [1]
+`+region+`
+    end
+    @a = @b
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+			requireCheckWarningContains(t, script, "write to @a expected int, got nil")
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"instance variable @a expected int, got nil",
+			)
+		})
+	}
+}
+
+func TestCheckInitializerIvarStaticallyEnteredLoopControlReachesTail(t *testing.T) {
+	t.Parallel()
+
+	regions := map[string]string{
+		"nonempty for": `    for nested in [1]
+      break
+    end`,
+		"nonempty for protected next": `    for nested in [1]
+      begin
+        next
+      ensure
+        nil
+      end
+    end`,
+		"while true": `    while true
+      break
+    end`,
+		"while true protected break": `    while true
+      begin
+        break
+      ensure
+        nil
+      end
+    end`,
+		"until false": `    until false
+      break
+    end`,
+	}
+
+	for name, region := range regions {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    for value in [1]
+`+region+`
+    @b = 1
+    end
+    @a = @b
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 1 {
+				t.Fatalf("run() = %v, want 1", got)
+			}
+		})
+	}
+}
+
 func TestCheckInitializerIvarMinimumRangeStartReachesEndEffects(t *testing.T) {
 	t.Parallel()
 

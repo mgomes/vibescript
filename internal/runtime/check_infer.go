@@ -1810,6 +1810,7 @@ func collectMutatedContainerTargetRoots(target Expression, out map[string]struct
 
 type loopBackedgeFlow struct {
 	reachesBackedge bool
+	exitsLoop       bool
 	fallsThrough    bool
 }
 
@@ -1829,6 +1830,7 @@ func loopBackedgeFlowForStatements(statements []Statement) loopBackedgeFlow {
 		}
 		stmtFlow := loopBackedgeFlowForStatement(stmt)
 		flow.reachesBackedge = flow.reachesBackedge || stmtFlow.reachesBackedge
+		flow.exitsLoop = flow.exitsLoop || stmtFlow.exitsLoop
 		flow.fallsThrough = stmtFlow.fallsThrough
 	}
 	return flow
@@ -1836,12 +1838,16 @@ func loopBackedgeFlowForStatements(statements []Statement) loopBackedgeFlow {
 
 func loopBackedgeFlowForStatement(stmt Statement) loopBackedgeFlow {
 	switch typed := stmt.(type) {
-	case *BreakStmt, *ReturnStmt, *RaiseStmt:
+	case *BreakStmt:
+		return loopBackedgeFlow{exitsLoop: true}
+	case *ReturnStmt, *RaiseStmt:
 		return loopBackedgeFlow{}
 	case *NextStmt:
 		return loopBackedgeFlow{reachesBackedge: true}
 	case *IfStmt:
 		return loopBackedgeFlowForIf(typed)
+	case *TryStmt:
+		return loopBackedgeControlFlowForTry(typed)
 	default:
 		return loopBackedgeFlow{fallsThrough: true}
 	}
@@ -1851,6 +1857,7 @@ func loopBackedgeFlowForIf(stmt *IfStmt) loopBackedgeFlow {
 	var flow loopBackedgeFlow
 	merge := func(branch loopBackedgeFlow) {
 		flow.reachesBackedge = flow.reachesBackedge || branch.reachesBackedge
+		flow.exitsLoop = flow.exitsLoop || branch.exitsLoop
 		flow.fallsThrough = flow.fallsThrough || branch.fallsThrough
 	}
 
@@ -1871,6 +1878,22 @@ func loopBackedgeFlowForIf(stmt *IfStmt) loopBackedgeFlow {
 		}
 	}
 	merge(loopBackedgeFlowForStatements(stmt.Alternate))
+	return flow
+}
+
+func loopBackedgeControlFlowForTry(stmt *TryStmt) loopBackedgeFlow {
+	flow := loopBackedgeFlow{fallsThrough: true}
+	merge := func(statements []Statement) {
+		branch := loopBackedgeFlowForStatements(statements)
+		flow.reachesBackedge = flow.reachesBackedge || branch.reachesBackedge
+		flow.exitsLoop = flow.exitsLoop || branch.exitsLoop
+	}
+	merge(stmt.Body)
+	merge(stmt.Else)
+	for i := range stmt.Rescues {
+		merge(stmt.Rescues[i].Body)
+	}
+	merge(stmt.Ensure)
 	return flow
 }
 
@@ -2131,7 +2154,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffects(
 		case *ReturnStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
 		case *RaiseStmt:
-			if !staticRaiseErrorClass(typed) {
+			if !c.unshadowedStaticRaiseErrorClass(typed) {
 				c.collectRepeatedRegionIvarEffectsFromExpression(typed.Value, effects, true)
 				if !c.expressionMayCompleteForBinding(typed.Value) {
 					return false
@@ -2163,7 +2186,13 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffects(
 			if c.exactIterableProvablyEmpty(typed.Iterable) {
 				continue
 			}
-			c.collectRepeatedRegionIvarEffects(typed.Body, effects)
+			bodyCompletes := c.collectRepeatedRegionIvarEffects(typed.Body, effects)
+			if !bodyCompletes && c.exactIterableProvablyNonEmpty(typed.Iterable) {
+				flow := loopBackedgeFlowForStatements(typed.Body)
+				if !flow.reachesBackedge && !flow.exitsLoop {
+					return false
+				}
+			}
 		case *WhileStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Condition, effects, true)
 			if !c.expressionMayCompleteForBinding(typed.Condition) {
@@ -2172,6 +2201,9 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffects(
 			truthy, known := staticExpressionTruthiness(typed.Condition)
 			if !known || truthy {
 				c.collectRepeatedRegionIvarEffects(typed.Body, effects)
+			}
+			if known && truthy && !loopBackedgeFlowForStatements(typed.Body).exitsLoop {
+				return false
 			}
 		case *UntilStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Condition, effects, true)
@@ -2182,19 +2214,145 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffects(
 			if !known || !truthy {
 				c.collectRepeatedRegionIvarEffects(typed.Body, effects)
 			}
-		case *TryStmt:
-			c.collectRepeatedRegionIvarEffects(typed.Body, effects)
-			for i := range typed.Rescues {
-				c.collectRepeatedRegionIvarEffects(typed.Rescues[i].Body, effects)
+			if known && !truthy && !loopBackedgeFlowForStatements(typed.Body).exitsLoop {
+				return false
 			}
-			c.collectRepeatedRegionIvarEffects(typed.Else, effects)
-			c.collectRepeatedRegionIvarEffects(typed.Ensure, effects)
+		case *TryStmt:
+			if !c.collectRepeatedRegionIvarEffectsFromTryStatement(typed, effects) {
+				return false
+			}
 		}
 		if statementAlwaysExits(stmt) {
 			return false
 		}
 	}
 	return true
+}
+
+func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromTryStatement(
+	stmt *TryStmt,
+	effects *regionIvarEffects,
+) bool {
+	if stmt == nil {
+		return true
+	}
+
+	// Body completion reaches else, errors reach only the selected rescue, and
+	// every non-retry outcome reaches ensure. Keep the branch inference states
+	// separate until ensure; unknown failure prefixes degrade assigned locals
+	// rather than letting the syntactically last branch dictate its effects.
+	baseScopeState := c.snapshotScopeState()
+	selectedRescue, rescueSelectionExact := c.staticallySelectedRescue(
+		stmt.Body,
+		stmt.Rescues,
+	)
+	bodyProvenNonRaising := repeatedRegionStatementsProvenNonRaising(stmt.Body)
+	rescueBodiesReachable := !bodyProvenNonRaising
+	bodyCompletes := c.collectRepeatedRegionIvarEffects(stmt.Body, effects)
+	bodyScopeState := c.snapshotScopeState()
+
+	normalCompletes := false
+	ensureScopeStates := make([]checkScopeState, 0, len(stmt.Rescues)+2)
+	if bodyCompletes {
+		normalCompletes = c.collectRepeatedRegionIvarEffects(stmt.Else, effects)
+		ensureScopeStates = append(ensureScopeStates, c.snapshotScopeState())
+	} else if bodyProvenNonRaising {
+		ensureScopeStates = append(ensureScopeStates, bodyScopeState)
+	}
+
+	rescueCompletes := false
+	var reachableRescueBodies [][]Statement
+	if rescueBodiesReachable {
+		failureScopeState := bodyScopeState
+		if !rescueSelectionExact {
+			c.restoreScopeStateWithObservedBindings(baseScopeState, bodyScopeState)
+			c.degradeLocalTypesForBindings(stmt.Body)
+			failureScopeState = c.snapshotScopeState()
+			ensureScopeStates = append(ensureScopeStates, failureScopeState)
+		} else if selectedRescue < 0 ||
+			len(stmt.Rescues[selectedRescue].Body) == 0 {
+			ensureScopeStates = append(ensureScopeStates, bodyScopeState)
+		}
+		for i := range stmt.Rescues {
+			if rescueSelectionExact && i != selectedRescue {
+				continue
+			}
+			clause := &stmt.Rescues[i]
+			if len(clause.Body) == 0 {
+				continue
+			}
+			reachableRescueBodies = append(reachableRescueBodies, clause.Body)
+			c.restoreScopeState(failureScopeState)
+			popScope := c.pushRescueScope(clause)
+			if clause.Binding != "" {
+				c.bindLocalTypeInCurrentFrame(clause.Binding, nil)
+				c.bindLocalClassValue(clause.Binding, "")
+			}
+			clauseCompletes := c.collectRepeatedRegionIvarEffects(clause.Body, effects)
+			popScope()
+			ensureScopeStates = append(ensureScopeStates, c.snapshotScopeState())
+			if clauseCompletes {
+				rescueCompletes = true
+			}
+			if rescueSelectionExact {
+				break
+			}
+		}
+	}
+
+	if rescueSelectionExact && selectedRescue >= 0 &&
+		repeatedRegionBlockAlwaysRetries(stmt.Rescues[selectedRescue].Body) {
+		c.restoreScopeState(baseScopeState)
+		c.degradeLocalTypesForBindings(stmt.Body)
+		c.degradeLocalTypesForBindings(stmt.Rescues[selectedRescue].Body)
+		return false
+	}
+
+	c.mergeScopeStates(baseScopeState, ensureScopeStates)
+	if rescueBodiesReachable && !rescueSelectionExact {
+		c.degradeLocalTypesForBindings(stmt.Body)
+	}
+	if bodyCompletes {
+		c.degradeLocalTypesForBindings(stmt.Else)
+	}
+	for _, body := range reachableRescueBodies {
+		c.degradeLocalTypesForBindings(body)
+	}
+	ensureCompletes := c.collectRepeatedRegionIvarEffects(stmt.Ensure, effects)
+	return ensureCompletes && (normalCompletes || rescueCompletes)
+}
+
+func repeatedRegionStatementsProvenNonRaising(statements []Statement) bool {
+	for _, stmt := range statements {
+		switch typed := stmt.(type) {
+		case nil:
+		case *ExprStmt:
+			if !expressionProvenNonRaising(typed.Expr) {
+				return false
+			}
+		case *ReturnStmt:
+			return expressionProvenNonRaising(typed.Value)
+		case *BreakStmt:
+			return expressionProvenNonRaising(typed.Value)
+		case *NextStmt:
+			return expressionProvenNonRaising(typed.Value)
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func repeatedRegionBlockAlwaysRetries(statements []Statement) bool {
+	for _, stmt := range statements {
+		if _, retries := stmt.(*RetryStmt); retries {
+			return true
+		}
+		if statementAlwaysExits(stmt) {
+			return false
+		}
+	}
+	return false
 }
 
 func (c *scriptChecker) collectRepeatedRegionAssignmentIvarEffects(
@@ -2390,6 +2548,20 @@ func (c *scriptChecker) exactIterableProvablyEmpty(expr Expression) bool {
 	for _, value := range values {
 		array, ok := value.(*ArrayLiteral)
 		if !ok || len(array.Elements) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *scriptChecker) exactIterableProvablyNonEmpty(expr Expression) bool {
+	values, exact := c.staticValueExpressionAlternatives(expr)
+	if !exact || len(values) == 0 {
+		return false
+	}
+	for _, value := range values {
+		literal, static := staticLiteralValue(value)
+		if !static || literal.Kind() != KindArray || len(literal.Array()) == 0 {
 			return false
 		}
 	}
@@ -2926,6 +3098,9 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		// Evaluating a lambda only constructs its closure. Call sites and
 		// dispatches that may invoke it account for those effects separately.
 	case *YieldExpr:
+		if c.yieldBlockKnownAbsent() {
+			return
+		}
 		for _, arg := range typed.Args {
 			c.collectRepeatedRegionIvarEffectsFromExpression(arg, effects, true)
 			if !c.expressionMayCompleteForBinding(arg) {
