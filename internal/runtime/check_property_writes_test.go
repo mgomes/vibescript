@@ -3113,6 +3113,213 @@ end
 	}
 }
 
+func TestCheckStoredProcCallsUseRetainedArgumentExpectations(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name          string
+		setup         string
+		invocation    string
+		falseMayWrite bool
+	}{
+		{
+			name:       "positional",
+			setup:      `    callback = proc { |fn: function| nil }`,
+			invocation: `    callback.call(seed)`,
+		},
+		{
+			name:       "destructure",
+			setup:      `    callback = proc { |(fn: function)| nil }`,
+			invocation: `    callback.call([seed])`,
+		},
+		{
+			name:       "destructure rest",
+			setup:      `    callback = proc { |(head: int, *fns: array<function>)| nil }`,
+			invocation: `    callback.call([1, seed])`,
+		},
+		{
+			name:       "proc autosplat",
+			setup:      `    callback = proc { |fn: function, ignored: int| nil }`,
+			invocation: `    callback.call([seed, 1])`,
+		},
+		{
+			name:       "keyword",
+			setup:      `    callback = proc { |fn: function| nil }`,
+			invocation: `    callback.call(fn: seed)`,
+		},
+		{
+			name: `mixed exact alternatives`,
+			setup: `    callback = flag ?
+      proc { |fn: function| nil } :
+      proc { |value: int| nil }`,
+			invocation:    `    callback.call(seed)`,
+			falseMayWrite: true,
+		},
+		{
+			name: `mixed exact destructure alternatives`,
+			setup: `    callback = flag ?
+      proc { |(fn: function)| nil } :
+      proc { |(value: int)| nil }`,
+			invocation:    `    callback.call([seed])`,
+			falseMayWrite: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def seed
+    @b = 1
+    7
+  end
+
+  def initialize(flag: bool)
+`+tc.setup+`
+    begin
+`+tc.invocation+`
+    rescue
+      nil
+    end
+    @a = @b
+  end
+end
+
+def run(flag: bool)
+  User.new(flag).a
+end
+`)
+			requireCheckWarningContains(t, script, "write to @a expected int, got nil")
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				[]Value{NewBool(true)},
+				CallOptions{},
+				"instance variable @a expected int, got nil",
+			)
+			if tc.falseMayWrite {
+				got := callScript(
+					t,
+					context.Background(),
+					script,
+					"run",
+					[]Value{NewBool(false)},
+					CallOptions{},
+				)
+				if got.Kind() != KindInt || got.Int() != 1 {
+					t.Fatalf("run(false) = %v, want 1", got)
+				}
+			}
+		})
+	}
+}
+
+func TestRetainedBlockArgumentExpectationKeepsCallableAcrossLargeUnion(t *testing.T) {
+	t.Parallel()
+
+	types := []*TypeExpr{
+		checkTypeInt,
+		checkTypeFloat,
+		checkTypeString,
+		checkTypeBool,
+		checkTypeSymbol,
+		checkTypeNil,
+		checkTypeFunction,
+	}
+	blocks := make([]capturedBlockLiteralValue, 0, len(types))
+	for _, ty := range types {
+		blocks = append(blocks, capturedBlockLiteralValue{
+			block: &BlockLiteral{Params: []Param{{Name: "value", Type: ty}}},
+		})
+	}
+
+	got := retainedBlockPositionalArgumentExpectation(blocks, 0, 1)
+	if !got.includesCallable() {
+		t.Fatalf("retainedBlockPositionalArgumentExpectation() = %s, want callable expectation", formatTypeExpr(got.ty))
+	}
+}
+
+func TestCheckStoredProcArgumentExpectationBoundaries(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		setup      string
+		invocation string
+	}{
+		{
+			name:       "non-callable parameter",
+			setup:      `    callback = proc { |value: int| nil }`,
+			invocation: `    callback.call(seed)`,
+		},
+		{
+			name:       "positional splat",
+			setup:      `    callback = proc { |fn: function| nil }`,
+			invocation: `    callback.call(*[seed])`,
+		},
+		{
+			name:       "keyword splat",
+			setup:      `    callback = proc { |fn: function| nil }`,
+			invocation: `    callback.call(**{ fn: seed })`,
+		},
+		{
+			name: `non-callable exact alternatives`,
+			setup: `    callback = flag ?
+      proc { |value: int| nil } :
+      proc { |value: string| nil }`,
+			invocation: `    callback.call(seed)`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def seed
+    @b = 1
+    7
+  end
+
+  def initialize(flag: bool)
+`+tc.setup+`
+    begin
+`+tc.invocation+`
+    rescue
+      nil
+    end
+    @a = @b
+  end
+end
+
+def run(flag: bool)
+  User.new(flag).a
+end
+`)
+			requireNoCheckWarnings(t, script)
+			for _, flag := range []bool{false, true} {
+				got := callScript(
+					t,
+					context.Background(),
+					script,
+					"run",
+					[]Value{NewBool(flag)},
+					CallOptions{},
+				)
+				if got.Kind() != KindInt || got.Int() != 1 {
+					t.Fatalf("run(%t) = %v, want 1", flag, got)
+				}
+			}
+		})
+	}
+}
+
 func TestCheckStoredBlockCallUsesEvaluatedCalleeIdentity(t *testing.T) {
 	t.Parallel()
 

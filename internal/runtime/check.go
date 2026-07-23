@@ -4418,7 +4418,13 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		for i, arg := range typed.Args {
 			expectation := expressionExpectation{}
 			_, isSplat := arg.(*SplatArg)
-			if invokedLambda != nil && !positionalSplatSeen && !isSplat {
+			if evaluatedStoredBlocksExact && !positionalSplatSeen && !isSplat {
+				expectation = retainedBlockPositionalArgumentExpectation(
+					evaluatedStoredBlocks,
+					i,
+					len(typed.Args),
+				)
+			} else if invokedLambda != nil && !positionalSplatSeen && !isSplat {
 				expectation = blockArgumentExpectation(invokedLambda.Params, i, len(typed.Args))
 			} else if targetResolved && !positionalSplatSeen && !isSplat {
 				expectation = staticCallablePositionalArgumentExpectation(target, i)
@@ -4464,7 +4470,12 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				break
 			}
 			expectation := expressionExpectation{}
-			if targetResolved && !kwarg.Splat {
+			if evaluatedStoredBlocksExact && !kwarg.Splat {
+				expectation = retainedBlockKeywordArgumentExpectation(
+					evaluatedStoredBlocks,
+					kwarg.Name,
+				)
+			} else if targetResolved && !kwarg.Splat {
 				expectation = staticCallableKeywordArgumentExpectation(typed, target, kwarg.Name)
 			}
 			completed := true
@@ -7305,6 +7316,84 @@ func staticCallablePositionalArgumentExpectation(target staticCallable, index in
 		return typeExpressionExpectation(target.spec.paramTypes[index])
 	}
 	return expressionExpectation{}
+}
+
+func retainedBlockPositionalArgumentExpectation(
+	blocks []capturedBlockLiteralValue,
+	index int,
+	count int,
+) expressionExpectation {
+	expectations := make([]expressionExpectation, 0, len(blocks))
+	for _, block := range blocks {
+		if block.block == nil {
+			expectations = append(expectations, expressionExpectation{})
+			continue
+		}
+		expectations = append(
+			expectations,
+			blockArgumentExpectation(block.block.Params, index, count),
+		)
+	}
+	return mergeExpressionExpectations(expectations)
+}
+
+func retainedBlockKeywordArgumentExpectation(
+	blocks []capturedBlockLiteralValue,
+	name string,
+) expressionExpectation {
+	expectations := make([]expressionExpectation, 0, len(blocks))
+	for _, block := range blocks {
+		if block.block == nil {
+			expectations = append(expectations, expressionExpectation{})
+			continue
+		}
+		expectations = append(
+			expectations,
+			typeExpressionExpectation(keywordArgumentExpectedType(block.block.Params, name)),
+		)
+	}
+	return mergeExpressionExpectations(expectations)
+}
+
+func mergeExpressionExpectations(expectations []expressionExpectation) expressionExpectation {
+	merged := expressionExpectation{}
+	types := make([]*TypeExpr, 0, len(expectations))
+	hasCallableType := false
+	hasArrayElement := false
+	for _, expectation := range expectations {
+		if expectation.ty != nil {
+			types = append(types, expectation.ty)
+			hasCallableType = hasCallableType ||
+				typeExprIncludesCallable(expectation.ty)
+		}
+		if _, ok := expectation.arrayElementExpectation(); ok {
+			hasArrayElement = true
+		}
+	}
+	if len(types) > 0 {
+		merged.ty = unionTypeExprs(types...)
+		if merged.ty == nil && hasCallableType {
+			// An oversized union still has to retain the one property that
+			// changes evaluation: any callable arm suppresses bare auto-call.
+			merged.ty = checkTypeFunction
+		}
+	}
+	if !hasArrayElement {
+		return merged
+	}
+	merged.arrayElement = func(index, count int) expressionExpectation {
+		elements := make([]expressionExpectation, 0, len(expectations))
+		for _, expectation := range expectations {
+			elementExpectation, ok := expectation.arrayElementExpectation()
+			if !ok {
+				elements = append(elements, expressionExpectation{})
+				continue
+			}
+			elements = append(elements, elementExpectation(index, count))
+		}
+		return mergeExpressionExpectations(elements)
+	}
+	return merged
 }
 
 func staticCallableKeywordArgumentExpectation(call *CallExpr, target staticCallable, name string) expressionExpectation {
