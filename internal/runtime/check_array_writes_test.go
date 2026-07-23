@@ -262,6 +262,48 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "fill exact conditional proc results",
+			source: `
+def f(items: array<int>, flag)
+  callback = flag ? proc { |index| "left" } : proc { |index| "right" }
+  items.fill(&callback)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill exact stored lambda result",
+			source: `
+def f(items: array<int>)
+  callback = lambda { |index| "bad" }
+  items.fill(&callback)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill exact stored stabby lambda result",
+			source: `
+def f(items: array<int>)
+  callback = ->(index) { "bad" }
+  items.fill(&callback)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill exact stored lambda return result",
+			source: `
+def f(items: array<int>)
+  callback = lambda do |index|
+    return "bad"
+  end
+  items.fill(&callback)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "compatible fill literal block result preserves the bound",
 			source: `
 def f(items: array<int>)
@@ -285,6 +327,43 @@ def f(items: array<int>)
 end
 `,
 			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible conditional proc fill results preserve the bound",
+			source: `
+def f(items: array<int>, flag)
+  callback = flag ? proc { |index| 1 } : proc { |index| 2 }
+  items.fill(&callback)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible stored lambda fill result preserves the bound",
+			source: `
+def f(items: array<int>)
+  callback = lambda { |index| 1 }
+  items.fill(&callback)
+  items << true
+end
+`,
+			warning: "write to items expected element int, got bool",
+		},
+		{
+			name: "stored lambda arity failure leaves fill receiver bound intact",
+			source: `
+def f(items: array<int>)
+  callback = lambda { "bad" }
+  begin
+    items.fill(&callback)
+  rescue
+    nil
+  end
+  items << true
+end
+`,
+			warning: "write to items expected element int, got bool",
 		},
 		{
 			name: "exact proc fill uses compatible invocation-time capture",
@@ -1122,6 +1201,19 @@ end
 			source: `
 def f(items: array<int>, callback: function)
   items.fill(&callback)
+end
+`,
+		},
+		{
+			name: "stored lambda arity failure does not write",
+			source: `
+def f(items: array<int>)
+  callback = lambda { "bad" }
+  begin
+    items.fill(&callback)
+  rescue
+    nil
+  end
 end
 `,
 		},
@@ -2548,6 +2640,90 @@ end
 			fn:   "conditionally_raise",
 			args: []Value{NewBool(false)},
 			want: NewArray([]Value{NewString("bad"), NewString("bad")}),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callScript(t, context.Background(), script, tc.fn, tc.args, CallOptions{})
+			if !got.Equal(tc.want) {
+				t.Errorf("%s(%v) = %s, want %s", tc.fn, tc.args, got.String(), tc.want.String())
+			}
+		})
+	}
+}
+
+func TestArrayFillExactStoredCallableResults(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def conditional_proc(flag: bool)
+  callback = flag ? proc { |index| "left" } : proc { |index| "right" }
+  items = [1, 2]
+  items.fill(&callback)
+  items
+end
+
+def lambda_with_index()
+  callback = lambda { |index| "bad" }
+  items = [1, 2]
+  items.fill(&callback)
+  items
+end
+
+def lambda_with_return()
+  callback = lambda do |index|
+    return "returned"
+  end
+  items = [1, 2]
+  items.fill(&callback)
+  items
+end
+
+def lambda_wrong_arity()
+  callback = lambda { "bad" }
+  items = [1, 2]
+  begin
+    items.fill(&callback)
+  rescue
+    nil
+  end
+  items
+end
+`)
+
+	tests := []struct {
+		name string
+		fn   string
+		args []Value
+		want Value
+	}{
+		{
+			name: "first conditional proc",
+			fn:   "conditional_proc",
+			args: []Value{NewBool(true)},
+			want: NewArray([]Value{NewString("left"), NewString("left")}),
+		},
+		{
+			name: "second conditional proc",
+			fn:   "conditional_proc",
+			args: []Value{NewBool(false)},
+			want: NewArray([]Value{NewString("right"), NewString("right")}),
+		},
+		{
+			name: "lambda accepts fill index",
+			fn:   "lambda_with_index",
+			want: NewArray([]Value{NewString("bad"), NewString("bad")}),
+		},
+		{
+			name: "lambda returns fill value",
+			fn:   "lambda_with_return",
+			want: NewArray([]Value{NewString("returned"), NewString("returned")}),
+		},
+		{
+			name: "lambda rejects fill index",
+			fn:   "lambda_wrong_arity",
+			want: NewArray([]Value{NewInt(1), NewInt(2)}),
 		},
 	}
 	for _, tc := range tests {

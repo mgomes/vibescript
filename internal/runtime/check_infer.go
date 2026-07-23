@@ -53,10 +53,15 @@ var (
 
 type checkTypeFrame map[string]*TypeExpr
 
+type checkBlockLiteralValue struct {
+	block  *BlockLiteral
+	lambda bool
+}
+
 type checkLocalValueFact struct {
 	classNames              []string
 	callables               []*ScriptFunction
-	blocks                  []*BlockLiteral
+	blocks                  []checkBlockLiteralValue
 	staticVals              []Expression
 	keywordSplatFails       bool
 	invalidKeywordSplatKeys map[string]struct{}
@@ -309,7 +314,7 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 		clone[name] = checkLocalValueFact{
 			classNames:              append([]string(nil), fact.classNames...),
 			callables:               append([]*ScriptFunction(nil), fact.callables...),
-			blocks:                  append([]*BlockLiteral(nil), fact.blocks...),
+			blocks:                  append([]checkBlockLiteralValue(nil), fact.blocks...),
 			staticVals:              append([]Expression(nil), fact.staticVals...),
 			keywordSplatFails:       fact.keywordSplatFails,
 			invalidKeywordSplatKeys: cloneCheckStringSet(fact.invalidKeywordSplatKeys),
@@ -407,14 +412,14 @@ func (c *scriptChecker) bindLocalCallableValues(name string, fns []*ScriptFuncti
 	}
 }
 
-func (c *scriptChecker) localBlockLiteralValuesFor(name string) ([]*BlockLiteral, bool) {
+func (c *scriptChecker) localBlockLiteralValuesFor(name string) ([]checkBlockLiteralValue, bool) {
 	fact, ok := c.localValueFactFor(name)
-	return append([]*BlockLiteral(nil), fact.blocks...), ok && len(fact.blocks) > 0 &&
+	return append([]checkBlockLiteralValue(nil), fact.blocks...), ok && len(fact.blocks) > 0 &&
 		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
 		len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
 
-func (c *scriptChecker) bindLocalBlockLiteralValues(name string, blocks []*BlockLiteral) {
+func (c *scriptChecker) bindLocalBlockLiteralValues(name string, blocks []checkBlockLiteralValue) {
 	if name == "" || len(c.localTypes) == 0 {
 		return
 	}
@@ -2127,13 +2132,18 @@ func normalizeCheckCallables(fns []*ScriptFunction) []*ScriptFunction {
 	return out
 }
 
-func normalizeCheckBlockLiterals(blocks []*BlockLiteral) []*BlockLiteral {
+func normalizeCheckBlockLiterals(blocks []checkBlockLiteralValue) []checkBlockLiteralValue {
 	if len(blocks) == 0 {
 		return nil
 	}
-	normalized := append([]*BlockLiteral(nil), blocks...)
+	normalized := append([]checkBlockLiteralValue(nil), blocks...)
 	sort.Slice(normalized, func(i, j int) bool {
-		return reflect.ValueOf(normalized[i]).Pointer() < reflect.ValueOf(normalized[j]).Pointer()
+		left := reflect.ValueOf(normalized[i].block).Pointer()
+		right := reflect.ValueOf(normalized[j].block).Pointer()
+		if left != right {
+			return left < right
+		}
+		return !normalized[i].lambda && normalized[j].lambda
 	})
 	out := normalized[:0]
 	for _, block := range normalized {
