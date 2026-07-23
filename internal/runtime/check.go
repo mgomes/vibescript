@@ -6533,7 +6533,7 @@ func (c *scriptChecker) assignmentValueExpectation(
 		return typeExpressionExpectation(ty)
 	}
 	member, ok := target.(*MemberExpr)
-	if !ok {
+	if !ok || !memberAssignmentReceiverCanUseExpectation(member.Object) {
 		return expressionExpectation{}
 	}
 	receivers, exact := c.exactAssignmentMemberReceivers(member)
@@ -6567,6 +6567,42 @@ func (c *scriptChecker) assignmentValueExpectation(
 		return sole
 	}
 	return typeExpressionExpectation(merged)
+}
+
+func memberAssignmentReceiverCanUseExpectation(expr Expression) bool {
+	return staticMemberAssignmentReceiverCanUseExpectation(expr) ||
+		boundMemberAssignmentReceiverCanUseExpectation(expr)
+}
+
+func staticMemberAssignmentReceiverCanUseExpectation(expr Expression) bool {
+	switch typed := expr.(type) {
+	case *Identifier, *IvarExpr, *ClassVarExpr, *CallExpr:
+		return true
+	case *MemberExpr:
+		return staticMemberAssignmentReceiverCanUseExpectation(typed.Object)
+	default:
+		return false
+	}
+}
+
+func boundMemberAssignmentReceiverCanUseExpectation(expr Expression) bool {
+	switch typed := expr.(type) {
+	case *Identifier, *IvarExpr, *ClassVarExpr:
+		return true
+	case *IndexExpr:
+		if len(typed.Indices) != 1 ||
+			!boundMemberAssignmentReceiverCanUseExpectation(typed.Object) {
+			return false
+		}
+		switch typed.Indices[0].(type) {
+		case *IntegerLiteral, *StringLiteral, *SymbolLiteral:
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
 }
 
 func (c *scriptChecker) assignmentSetterMayComplete(

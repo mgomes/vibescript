@@ -447,6 +447,60 @@ end
 `))
 }
 
+func TestCheckConditionalMemberReceiverDoesNotShapeRHS(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class Box
+  property callback: function
+end
+
+class User
+  property a: int
+  property b: int
+
+  def initialize(left: Box, right: Box, flag: bool)
+    (flag ? left : right).callback = seed
+    @a = @b
+  end
+
+  def seed
+    @b = 1
+  end
+end
+`)
+	requireNoCheckWarnings(t, script)
+}
+
+func TestCheckUnannotatedCallReceiverDoesNotShapeRHS(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class Box
+  property callback: function
+end
+
+def make_box
+  Box.new
+end
+
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    make_box().callback = seed
+    @a = @b
+  end
+
+  def seed
+    @b = 1
+  end
+end
+`)
+	requireNoCheckWarnings(t, script)
+}
+
 // Ivar parameter facts bind at each parameter's own position, so an earlier
 // default reads later ivars as still unset while a later default sees the
 // earlier binding.
