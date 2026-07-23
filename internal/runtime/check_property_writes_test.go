@@ -3803,6 +3803,64 @@ end
 	}
 }
 
+func TestCheckInitializerIvarIndexGetterUsesEvaluatedSelectors(t *testing.T) {
+	t.Parallel()
+
+	for _, expression := range []string{
+		`    box[
+      choose_b ? -> { @b = 1 } : -> { @c = 1 },
+      -> {
+        choose_b = false
+        0
+      }.call()
+    ]`,
+		`    for value in [1]
+      choose_b = true
+      box[
+        choose_b ? -> { @b = 1 } : -> { @c = 1 },
+        -> {
+          choose_b = false
+          0
+        }.call()
+      ]
+    end`,
+	} {
+		script := compileScriptDefault(t, `
+class Box
+  def [](callback: function, index: int) -> int
+    callback.call()
+    0
+  end
+
+  def []=(callback: function, index: int, value: int)
+    nil
+  end
+end
+
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def initialize(box: Box, flag: bool)
+    choose_b = true
+`+expression+`
+    if flag
+      @a = @b
+    else
+      @a = @c
+    end
+  end
+end
+`)
+		warnings := script.CheckWarnings()
+		if len(warnings) != 1 ||
+			warnings[0].Message != "write to @a expected int, got nil" {
+			t.Fatalf("CheckWarnings() = %#v, want only the unset @c warning", warnings)
+		}
+	}
+}
+
 func initializerIvarSeedMethod(param, value string) string {
 	if param != "" {
 		param = "(" + param + ")"

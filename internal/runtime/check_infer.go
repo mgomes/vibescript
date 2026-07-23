@@ -2341,6 +2341,11 @@ func (c *scriptChecker) collectRepeatedRegionPlainAssignmentTargetIvarEffects(
 		receiver, _ := c.assignmentReceiverSnapshot(typed)
 		return c.collectRepeatedRegionStoreIvarEffects(typed, value, receiver, effects)
 	case *IndexExpr:
+		previousEvaluatedFacts := c.evaluatedDestructureFacts
+		if previousEvaluatedFacts == nil {
+			c.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
+			defer func() { c.evaluatedDestructureFacts = previousEvaluatedFacts }()
+		}
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
 		if !c.expressionMayCompleteForBinding(typed.Object) {
 			return false
@@ -2640,18 +2645,20 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			}
 			c.captureEvaluatedDestructureFact(index)
 		}
-		dispatch := c.indexScriptDispatch(typed, dispatchType)
-		if dispatch.mayEnter() {
-			mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
-		}
-		defaultEffects, defaultMayRun, _ := c.indexReadIvarEffects(
-			typed,
-			dispatchType,
-			hashDefault,
-		)
-		if defaultMayRun {
-			mergeRegionIvarEffects(effects, defaultEffects)
-		}
+		c.withEvaluatedDestructureArgumentFacts(typed.Indices, func() {
+			dispatch := c.indexScriptDispatch(typed, dispatchType)
+			if dispatch.mayEnter() {
+				mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
+			}
+			defaultEffects, defaultMayRun, _ := c.indexReadIvarEffects(
+				typed,
+				dispatchType,
+				hashDefault,
+			)
+			if defaultMayRun {
+				mergeRegionIvarEffects(effects, defaultEffects)
+			}
+		})
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
 			c.collectRepeatedRegionIvarEffectsFromExpression(element.Target, effects, false)
@@ -4513,7 +4520,11 @@ func (c *scriptChecker) staticValueExpressionAlternatives(expr Expression) ([]Ex
 	case *Identifier:
 		return c.localStaticValuesFor(typed.Name)
 	case *ConditionalExpr:
-		if branch, ok := staticConditionalExpressionBranch(typed); ok {
+		if truthy, known := c.inferredConditionTruthiness(typed.Condition); known {
+			branch := typed.Alternate
+			if truthy {
+				branch = typed.Consequent
+			}
 			return c.staticValueExpressionAlternatives(branch)
 		}
 		left, leftOK := c.staticValueExpressionAlternatives(typed.Consequent)

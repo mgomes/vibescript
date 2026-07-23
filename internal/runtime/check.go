@@ -4734,6 +4734,11 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			return false
 		}
 	case *IndexExpr:
+		previousEvaluatedFacts := c.evaluatedDestructureFacts
+		if previousEvaluatedFacts == nil {
+			c.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
+			defer func() { c.evaluatedDestructureFacts = previousEvaluatedFacts }()
+		}
 		if !c.checkExpressionWithAuto(function, typed.Object, true) {
 			return false
 		}
@@ -4748,17 +4753,25 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			c.pinExpressionFact(index, c.inferExpressionType(index))
 			c.captureEvaluatedDestructureFact(index)
 		}
-		dispatch := c.indexScriptDispatch(typed, dispatchType)
-		if dispatch.mayReject() {
-			c.captureNonCompletingExpressionArm()
-		}
-		effects := c.scriptDispatchIvarEffects(dispatch)
-		defaultEffects, defaultMayRun, defaultMayReject :=
-			c.indexReadIvarEffects(typed, dispatchType, hashDefault)
-		if defaultMayReject {
-			c.captureNonCompletingExpressionArm()
-		}
-		mergeRegionIvarEffects(&effects, defaultEffects)
+		var dispatch instanceScriptDispatchSelection
+		var effects regionIvarEffects
+		var defaultMayRun bool
+		var completed bool
+		c.withEvaluatedDestructureArgumentFacts(typed.Indices, func() {
+			dispatch = c.indexScriptDispatch(typed, dispatchType)
+			if dispatch.mayReject() {
+				c.captureNonCompletingExpressionArm()
+			}
+			effects = c.scriptDispatchIvarEffects(dispatch)
+			defaultEffects, mayRun, defaultMayReject :=
+				c.indexReadIvarEffects(typed, dispatchType, hashDefault)
+			defaultMayRun = mayRun
+			if defaultMayReject {
+				c.captureNonCompletingExpressionArm()
+			}
+			mergeRegionIvarEffects(&effects, defaultEffects)
+			completed = c.indexExpressionMayCompleteWithReceiver(typed, dispatchType)
+		})
 		c.enqueueReachableInstanceDispatch(dispatchType, "[]")
 		if opaqueDispatch {
 			c.markOpaqueClassConstants()
@@ -4771,7 +4784,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			len(typed.Indices) == 1 && !defaultMayRun {
 			return false
 		}
-		return c.indexExpressionMayCompleteWithReceiver(typed, dispatchType)
+		return completed
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
 			if !c.checkExpressionWithAuto(function, element.Target, true) {
