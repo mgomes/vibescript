@@ -8,6 +8,65 @@ import "testing"
 // JSON.parse_as shapes carry their store's key representation and refine in
 // place instead of warning: they are evidence, not contracts.
 
+func TestTypeExprSatisfiesRejectsOpenShapeForTypedHash(t *testing.T) {
+	t.Parallel()
+
+	declared := &TypeExpr{
+		Kind:     TypeHash,
+		TypeArgs: []*TypeExpr{checkTypeString, checkTypeInt},
+	}
+	openEmpty := &TypeExpr{
+		Kind:  TypeShape,
+		Name:  shapeKeysStringMarker,
+		Shape: map[string]*TypeExpr{},
+		Open:  true,
+	}
+	openWitnessed := &TypeExpr{
+		Kind: TypeShape,
+		Name: shapeKeysStringMarker,
+		Shape: map[string]*TypeExpr{
+			"id": checkTypeInt,
+		},
+		Open: true,
+	}
+	cases := []struct {
+		name    string
+		written *TypeExpr
+	}{
+		{
+			name:    "empty",
+			written: openEmpty,
+		},
+		{
+			name:    "witnessed field",
+			written: openWitnessed,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if typeExprSatisfies(tc.written, declared, nil) {
+				t.Fatal("open shape satisfies typed hash")
+			}
+		})
+	}
+	if !typeExprSatisfies(openEmpty, &TypeExpr{Kind: TypeHash}, nil) {
+		t.Fatal("open shape does not satisfy bare hash")
+	}
+	anyValues := &TypeExpr{
+		Kind:     TypeHash,
+		TypeArgs: []*TypeExpr{checkTypeString, {Kind: TypeAny}},
+	}
+	if !typeExprSatisfies(openEmpty, anyValues, nil) {
+		t.Fatal("string-keyed open shape does not satisfy hash<string, any>")
+	}
+	closedEmpty := *openEmpty
+	closedEmpty.Open = false
+	if !typeExprSatisfies(&closedEmpty, declared, nil) {
+		t.Fatal("exact empty shape does not satisfy typed hash")
+	}
+}
+
 func TestCheckHashWriteContradictions(t *testing.T) {
 	t.Parallel()
 

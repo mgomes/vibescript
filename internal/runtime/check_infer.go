@@ -8961,7 +8961,8 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 		case TypeShape:
 			// A shape is a hash at runtime; with a known key representation
 			// its keys and witnessed fields can be checked against the hash
-			// bounds, while an unknown representation only satisfies a bare
+			// bounds. Open shapes may contain unwitnessed values, so they can
+			// prove only an any-valued typed hash; any shape satisfies a bare
 			// hash annotation.
 			if len(declared.TypeArgs) == 0 {
 				return true
@@ -8971,7 +8972,7 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 			}
 			// An exact shape witnesses every entry, so an empty shape has
 			// none and satisfies any hash bounds.
-			if len(written.Shape) == 0 {
+			if !written.Open && len(written.Shape) == 0 {
 				return true
 			}
 			var keyType *TypeExpr
@@ -9003,6 +9004,13 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 				return false
 			}
 			if !typeExprSatisfies(keyType, declared.TypeArgs[0], resolve) {
+				return false
+			}
+			if written.Open && !typeExprSatisfies(
+				&TypeExpr{Kind: TypeAny},
+				declared.TypeArgs[1],
+				resolve,
+			) {
 				return false
 			}
 			for _, field := range written.Shape {

@@ -1934,6 +1934,18 @@ def run(raw: string)
 end`,
 		},
 		{
+			name: "open empty shape weakens a typed hash element bound",
+			source: `def f(items: array<hash<string, int>>, raw: string)
+  item = JSON.parse_as(raw, { ... })
+  items.push(item)
+  items.push("bad")
+end
+
+def run(raw: string)
+  f([], raw)
+end`,
+		},
+		{
 			name: "open shape may hide an omitted optional field",
 			source: `def f(items: array<{ id: int, tag?: string, ... }>, raw: string)
   item = JSON.parse_as(raw, { id: int, ... })
