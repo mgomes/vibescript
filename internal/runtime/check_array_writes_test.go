@@ -349,6 +349,17 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "non-padding index alternatives preserve the bound",
+			source: `
+def f(items: array<int>, flag: bool)
+  index = flag ? 0 : -1
+  items.insert(index, 1)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "insert uses index captured before a later argument rebind",
 			source: `
 def later() -> int
@@ -1467,6 +1478,13 @@ def later()
   1
 end
 
+def insert_at(flag: bool)
+  items = []
+  index = flag ? 0 : -1
+  items.insert(index, 1)
+  items
+end
+
 def run()
   zero = []
   zero.insert(0, 1)
@@ -1479,7 +1497,7 @@ def run()
   captured.insert(index, later() do
     index = 5
   end)
-  [zero, negative, positive, captured, index]
+  [zero, negative, positive, captured, index, insert_at(true), insert_at(false)]
 end
 `)
 
@@ -1490,6 +1508,8 @@ end
 		NewArray([]Value{NewNil(), NewInt(1)}),
 		NewArray([]Value{NewInt(1)}),
 		NewInt(5),
+		NewArray([]Value{NewInt(1)}),
+		NewArray([]Value{NewInt(1)}),
 	})
 	if !got.Equal(want) {
 		t.Fatalf("run() = %s, want %s", got.String(), want.String())

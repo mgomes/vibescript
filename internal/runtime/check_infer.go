@@ -5975,14 +5975,33 @@ func staticMutatorArgumentValue(
 	expr Expression,
 	argumentStaticValues map[Expression][]Expression,
 ) (Value, bool) {
-	if value, static := staticLiteralValue(expr); static {
-		return value, true
-	}
-	values, captured := argumentStaticValues[expr]
-	if !captured || len(values) != 1 {
+	values, static := staticMutatorArgumentValues(expr, argumentStaticValues)
+	if !static || len(values) != 1 {
 		return NewNil(), false
 	}
-	return staticLiteralValue(values[0])
+	return values[0], true
+}
+
+func staticMutatorArgumentValues(
+	expr Expression,
+	argumentStaticValues map[Expression][]Expression,
+) ([]Value, bool) {
+	if value, static := staticLiteralValue(expr); static {
+		return []Value{value}, true
+	}
+	values, captured := argumentStaticValues[expr]
+	if !captured || len(values) == 0 {
+		return nil, false
+	}
+	result := make([]Value, 0, len(values))
+	for _, candidate := range values {
+		value, static := staticLiteralValue(candidate)
+		if !static {
+			return nil, false
+		}
+		result = append(result, value)
+	}
+	return result, true
 }
 
 func staticArrayFillInteger(value Value) (n int, nilValue, valid bool) {
@@ -6045,12 +6064,20 @@ func arrayInsertIndexCannotPad(
 	index Expression,
 	argumentStaticValues map[Expression][]Expression,
 ) bool {
-	value, static := staticMutatorArgumentValue(index, argumentStaticValues)
-	if !static || (value.Kind() != KindInt && value.Kind() != KindFloat) {
+	values, static := staticMutatorArgumentValues(index, argumentStaticValues)
+	if !static {
 		return false
 	}
-	n, err := valueToInt(value)
-	return err == nil && n <= 0
+	for _, value := range values {
+		if value.Kind() != KindInt && value.Kind() != KindFloat {
+			return false
+		}
+		n, err := valueToInt(value)
+		if err != nil || n > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string, receiver *TypeExpr) bool {
