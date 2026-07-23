@@ -3080,7 +3080,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			if dispatch.mayReject() {
 				c.captureNonCompletingExpressionArm()
 			}
-			if dispatch.mayEnter() {
+			if dispatch.mayRunScript() {
 				c.widenRegionIvarFacts(c.scriptDispatchIvarEffects(dispatch))
 				c.captureNonCompletingExpressionArm()
 			}
@@ -4776,7 +4776,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if opaqueDispatch {
 			c.markOpaqueClassConstants()
 		}
-		if dispatch.mayEnter() || defaultMayRun {
+		if dispatch.mayRunScript() || defaultMayRun {
 			c.widenRegionIvarFacts(effects)
 			c.captureNonCompletingExpressionArm()
 		}
@@ -4877,7 +4877,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if opaqueDispatch {
 			c.markOpaqueClassConstants()
 		}
-		if dispatch.mayEnter() {
+		if dispatch.mayRunScript() {
 			c.widenRegionIvarFacts(c.scriptDispatchIvarEffects(dispatch))
 			c.captureNonCompletingExpressionArm()
 		}
@@ -5531,12 +5531,13 @@ func binaryDispatchCall(expr *BinaryExpr, method string) *CallExpr {
 }
 
 type instanceScriptDispatchTarget struct {
-	call        *CallExpr
-	target      staticCallable
-	classDef    *ClassDef
-	classMethod bool
-	mayEnter    bool
-	mayReject   bool
+	call          *CallExpr
+	target        staticCallable
+	classDef      *ClassDef
+	classMethod   bool
+	bindingStarts bool
+	mayEnter      bool
+	mayReject     bool
 }
 
 type instanceScriptDispatchSelection struct {
@@ -5554,6 +5555,18 @@ func (s instanceScriptDispatchSelection) mayEnter() bool {
 	}
 	for _, target := range s.targets {
 		if target.mayEnter {
+			return true
+		}
+	}
+	return false
+}
+
+func (s instanceScriptDispatchSelection) mayRunScript() bool {
+	if s.unknown {
+		return true
+	}
+	for _, target := range s.targets {
+		if target.bindingStarts {
 			return true
 		}
 	}
@@ -5644,11 +5657,12 @@ func (c *scriptChecker) instanceScriptDispatch(
 		plan := c.scriptCallBindingPlan(call, target)
 		mayEnter := visible && plan.bodyMayEnter
 		selection.targets = append(selection.targets, instanceScriptDispatchTarget{
-			call:      call,
-			target:    target,
-			classDef:  match.class,
-			mayEnter:  mayEnter,
-			mayReject: !visible || !c.scriptCallBodyMustEnter(call, target),
+			call:          call,
+			target:        target,
+			classDef:      match.class,
+			bindingStarts: visible && plan.bindingStarts,
+			mayEnter:      mayEnter,
+			mayReject:     !visible || !c.scriptCallBodyMustEnter(call, target),
 		})
 	}
 	return selection
@@ -5758,12 +5772,13 @@ func (c *scriptChecker) assignmentSetterScriptDispatch(
 			)
 			plan := c.scriptCallBindingPlan(call, staticTarget)
 			selection.targets = append(selection.targets, instanceScriptDispatchTarget{
-				call:        call,
-				target:      staticTarget,
-				classDef:    receiver.class,
-				classMethod: receiver.classMethod,
-				mayEnter:    visible && plan.bodyMayEnter,
-				mayReject:   !visible || !c.scriptCallBodyMustEnter(call, staticTarget),
+				call:          call,
+				target:        staticTarget,
+				classDef:      receiver.class,
+				classMethod:   receiver.classMethod,
+				bindingStarts: visible && plan.bindingStarts,
+				mayEnter:      visible && plan.bodyMayEnter,
+				mayReject:     !visible || !c.scriptCallBodyMustEnter(call, staticTarget),
 			})
 		}
 		return selection
@@ -5795,8 +5810,10 @@ func (c *scriptChecker) memberSetterFallbackSelection(
 }
 
 // scriptDispatchIvarEffects reports only effects that can reach the caller's
-// current self. A method running on a distinct receiver has a different self;
-// it affects the caller only by invoking a captured callable argument.
+// current self. Parameter defaults may run after binding starts even when a
+// later default prevents the method body from starting. A method running on a
+// distinct receiver has a different self; it affects the caller only by
+// invoking a captured callable argument.
 func (c *scriptChecker) scriptDispatchIvarEffects(
 	selection instanceScriptDispatchSelection,
 ) regionIvarEffects {
@@ -5806,11 +5823,13 @@ func (c *scriptChecker) scriptDispatchIvarEffects(
 		return effects
 	}
 	for _, selected := range selection.targets {
-		if !selected.mayEnter {
+		if !selected.bindingStarts {
 			continue
 		}
-		if !selected.classMethod && c.selfClass != nil && !c.selfClassContext &&
-			selected.classDef == c.selfClass {
+		sameInstanceClass := !selected.classMethod &&
+			c.selfClass != nil && !c.selfClassContext &&
+			selected.classDef == c.selfClass
+		if sameInstanceClass && selected.mayEnter {
 			effects.unknown = true
 			continue
 		}
@@ -5819,7 +5838,16 @@ func (c *scriptChecker) scriptDispatchIvarEffects(
 			effects.unknown = true
 			continue
 		}
+		var callerLambdas map[*BlockLiteral]struct{}
+		if !selected.mayEnter {
+			callerLambdas = callerLambdaArgumentBlocks(selected.call)
+		}
 		for block := range scan.invokedLambdas {
+			if !selected.mayEnter {
+				if _, callerOwned := callerLambdas[block]; !callerOwned {
+					continue
+				}
+			}
 			c.collectRepeatedRegionIvarEffectsFromBlock(block, &effects)
 		}
 	}
@@ -6606,7 +6634,7 @@ func (c *scriptChecker) applyAssignmentSetterIvarEffects(
 	if selection.mayReject() {
 		c.captureNonCompletingExpressionArm()
 	}
-	if !selection.mayEnter() {
+	if !selection.mayRunScript() {
 		return
 	}
 	c.widenRegionIvarFacts(c.scriptDispatchIvarEffects(selection))
@@ -14702,6 +14730,25 @@ func lambdaLiteralBlock(arg Expression) *BlockLiteral {
 		}
 	}
 	return nil
+}
+
+func callerLambdaArgumentBlocks(call *CallExpr) map[*BlockLiteral]struct{} {
+	if call == nil {
+		return nil
+	}
+	blocks := make(map[*BlockLiteral]struct{})
+	record := func(expr Expression) {
+		if block := lambdaLiteralBlock(expr); block != nil {
+			blocks[block] = struct{}{}
+		}
+	}
+	for _, arg := range call.Args {
+		record(arg)
+	}
+	for _, kwarg := range call.KwArgs {
+		record(kwarg.Value)
+	}
+	return blocks
 }
 
 func (c *scriptChecker) checkLambdaLiteralSummaryYields(function string, arg Expression) {

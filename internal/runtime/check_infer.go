@@ -2188,7 +2188,7 @@ func (c *scriptChecker) collectRepeatedRegionAssignmentIvarEffects(
 			Position: stmt.Pos(),
 		}
 		dispatch := c.binaryScriptDispatch(operatorValue, operatorType)
-		if dispatch.mayEnter() {
+		if dispatch.mayRunScript() {
 			mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
 		}
 		if !c.binaryExpressionMayCompleteWithReceiver(operatorValue, operatorType) {
@@ -2400,7 +2400,7 @@ func (c *scriptChecker) collectRepeatedRegionStoreIvarEffects(
 		completed := true
 		c.withEvaluatedAssignmentSetterArgumentFacts(target, value, func() {
 			selection := c.assignmentSetterScriptDispatch(target, value, receiver)
-			if selection.mayEnter() {
+			if selection.mayRunScript() {
 				mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(selection))
 			}
 			completed = c.assignmentSetterMayCompleteWithReceiver(target, value, receiver)
@@ -2647,7 +2647,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		}
 		c.withEvaluatedDestructureArgumentFacts(typed.Indices, func() {
 			dispatch := c.indexScriptDispatch(typed, dispatchType)
-			if dispatch.mayEnter() {
+			if dispatch.mayRunScript() {
 				mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
 			}
 			defaultEffects, defaultMayRun, _ := c.indexReadIvarEffects(
@@ -2681,7 +2681,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			}
 		}
 		dispatch := c.binaryScriptDispatch(typed, c.inferExpressionType(typed.Left))
-		if dispatch.mayEnter() {
+		if dispatch.mayRunScript() {
 			mergeRegionIvarEffects(effects, c.scriptDispatchIvarEffects(dispatch))
 		}
 	case *ConditionalExpr:

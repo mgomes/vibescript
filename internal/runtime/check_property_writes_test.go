@@ -2785,6 +2785,134 @@ end
 	}
 }
 
+func TestCheckInitializerIvarDispatchDefaultPrefixesRetainCallbackWrites(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		method     string
+		expression string
+	}{
+		{
+			name: "binary operator",
+			method: `  def +(callback, own: -> { @c = "set" }, trigger: callback.call(), own_run: own.call(), failure: stop_now())
+    self
+  end`,
+			expression: `      invoker + -> { @b = 1 }`,
+		},
+		{
+			name: "index getter",
+			method: `  def [](callback, own: -> { @c = "set" }, trigger: callback.call(), own_run: own.call(), failure: stop_now())
+    nil
+  end`,
+			expression: `      invoker[-> { @b = 1 }]`,
+		},
+		{
+			name: "member setter",
+			method: `  def value=(callback, own: -> { @c = "set" }, trigger: callback.call(), own_run: own.call(), failure: stop_now())
+    callback
+  end`,
+			expression: `      invoker.value = -> { @b = 1 }`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+def stop_now
+  raise "stop"
+end
+
+class Invoker
+`+tc.method+`
+end
+
+class User
+  property a: int
+  property b: int
+  property s: string
+  property c: string
+
+  def initialize(invoker: Invoker)
+    begin
+`+tc.expression+`
+    rescue
+      @a = @b
+      @s = @c
+    end
+  end
+end
+
+def run
+  User.new(Invoker.new())
+end
+`)
+			warnings := script.CheckWarnings()
+			if len(warnings) != 1 ||
+				warnings[0].Message != "write to @s expected string, got nil" {
+				t.Fatalf("CheckWarnings() = %#v, want only the unrelated @c warning", warnings)
+			}
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"instance variable @s expected string, got nil",
+			)
+		})
+	}
+
+	t.Run("same-class body remains gated", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+def stop_now
+  raise "stop"
+end
+
+class User
+  property a: int
+  property b: int
+  property s: string
+  property c: string
+
+  def +(callback, trigger: callback.call(), failure: stop_now())
+    @c = "set"
+    self
+  end
+
+  def initialize(active: bool, other: User | nil = nil)
+    if !active
+      return
+    end
+    begin
+      other + -> { @b = 1 }
+    rescue
+      @a = @b
+      @s = @c
+    end
+  end
+end
+
+def run
+  User.new(true, User.new(false))
+end
+`)
+		warnings := script.CheckWarnings()
+		if len(warnings) != 1 ||
+			warnings[0].Message != "write to @s expected string, got nil" {
+			t.Fatalf("CheckWarnings() = %#v, want only the unreachable-body @c warning", warnings)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @s expected string, got nil",
+		)
+	})
+}
+
 func TestCheckInitializerIvarNotEqualDispatchUsesRuntimePrecedence(t *testing.T) {
 	t.Parallel()
 
