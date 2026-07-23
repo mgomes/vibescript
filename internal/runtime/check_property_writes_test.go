@@ -817,6 +817,349 @@ end
 	}
 }
 
+func TestCheckPossibleIvarWriteFailuresPreserveFailureFacts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		write string
+	}{
+		{name: "plain", write: `      @label = flag ? "ok" : 1`},
+		{name: "destructured", write: `      @label, ignored = [flag ? "ok" : 1, 0]`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+def takes_string(value: string)
+  value
+end
+
+class Counter
+  property label: string
+
+  def initialize(flag: bool)
+    begin
+`+tc.write+`
+    rescue
+      takes_string(@label)
+    end
+  end
+end
+`)
+			warnings := script.CheckWarnings()
+			const want = "call to takes_string argument value expected string, got nil"
+			if len(warnings) != 1 || warnings[0].Message != want {
+				t.Fatalf("CheckWarnings() = %#v, want only %q", warnings, want)
+			}
+		})
+	}
+}
+
+// Logical and compound assignments still pass their derived value through
+// the property guard. A guard that cannot complete terminates that execution
+// arm, so later unreachable diagnostics must not leak through it.
+func TestCheckRejectedIvarSettersStopControlFlow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		warning string
+	}{
+		{
+			name: "or assign",
+			source: `
+class Counter
+  property label: string
+
+  def initialize
+    @label ||= 1
+    takes_int("bad")
+  end
+end
+`,
+			warning: "write to @label expected string, got int",
+		},
+		{
+			name: "and assign",
+			source: `
+class Counter
+  property label: string
+
+  def probe
+    @label = "ok"
+    @label &&= 1
+    takes_int("bad")
+  end
+end
+`,
+			warning: "write to @label expected string, got int",
+		},
+		{
+			name: "compound rescue",
+			source: `
+class Counter
+  property count: int
+
+  def probe
+    @count = 1
+    begin
+      @count += 1.5
+    rescue
+      @count = "bad"
+    end
+    takes_int("bad")
+  end
+end
+`,
+			warning: "write to @count expected int, got string",
+		},
+		{
+			name: "possible or assign keeps the skipped truthy arm",
+			source: `
+class Counter
+  property label: string
+
+  def probe
+    @label ||= 1
+    if @label
+      "set"
+    else
+      1 + nil
+    end
+  end
+end
+`,
+			warning: "write to @label expected string, got int",
+		},
+		{
+			name: "possible and assign keeps the skipped falsey arm",
+			source: `
+class Counter
+  property flag: bool
+
+  def probe
+    @flag &&= 1
+    if @flag
+      1 + nil
+    else
+      takes_int("bad")
+    end
+  end
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "successful or assign joins its exact write with the skipped arm",
+			source: `
+class Counter
+  property flag: bool
+
+  def probe
+    @flag ||= false
+    if @flag
+      takes_int("bad")
+    end
+  end
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+`+tc.source)
+			warnings := script.CheckWarnings()
+			if len(warnings) != 1 || warnings[0].Message != tc.warning {
+				t.Fatalf("CheckWarnings() = %#v, want only %q", warnings, tc.warning)
+			}
+		})
+	}
+}
+
+// A compound target is captured before its RHS evaluates. Even if an inline
+// lambda mutates the same ivar, the operator still sees the original value;
+// an invalid operator remains quiet but terminates that execution path.
+func TestCheckCompoundIvarTargetPrecedesRHSEffects(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class Counter
+  property value: bool | int
+
+  def probe
+    @value = true
+    @value += (-> { @value = 1; true }.call() ? 1 : 1)
+    takes_int("bad")
+  end
+end
+`))
+}
+
+func TestCheckCompoundIvarRHSTypeFollowsRHSEffects(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_string(value: string)
+  value
+end
+
+class Counter
+  property count: int
+
+  def probe
+    @count = 1
+    @count += (-> { JSON.stringify = replacement; true }.call() ? JSON.stringify({}) : JSON.stringify({}))
+    takes_string(@count)
+  end
+end
+`)
+	const want = "call to takes_string argument value expected string, got int"
+	warnings := script.CheckWarnings()
+	if len(warnings) != 1 || warnings[0].Message != want {
+		t.Fatalf("CheckWarnings() = %#v, want only %q", warnings, want)
+	}
+}
+
+// A rejected logical store propagates through rescue and ensure like its
+// runtime property guard: the body stops at the store, rescue sees the
+// failure, and ensure still executes before the method exits.
+func TestCheckRejectedIvarSetterFlowsThroughRescueAndEnsure(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def takes_string(value: string)
+  value
+end
+
+def takes_bool(value: bool)
+  value
+end
+
+class Counter
+  property label: string
+
+  def initialize
+    begin
+      @label ||= 1
+      takes_int("body")
+    rescue
+      takes_string(2)
+    ensure
+      takes_bool(3)
+    end
+  end
+end
+`)
+	warnings := script.CheckWarnings()
+	if len(warnings) != 3 {
+		t.Fatalf("CheckWarnings() = %#v, want the store, rescue, and ensure warnings", warnings)
+	}
+	want := map[string]bool{
+		"write to @label expected string, got int":                     false,
+		"call to takes_string argument value expected string, got int": false,
+		"call to takes_bool argument value expected bool, got int":     false,
+	}
+	for _, warning := range warnings {
+		if _, ok := want[warning.Message]; !ok {
+			t.Fatalf("CheckWarnings() = %#v, unexpected warning %q", warnings, warning.Message)
+		}
+		want[warning.Message] = true
+	}
+	for message, found := range want {
+		if !found {
+			t.Fatalf("CheckWarnings() = %#v, missing %q", warnings, message)
+		}
+	}
+}
+
+// When only one logical-assignment arm evaluates the RHS or setter, a
+// failure snapshot carries that selected arm into rescue. The skipped arm
+// remains the only ordinary continuation.
+func TestCheckLogicalIvarFailureSnapshotsUseTheWritingArm(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		rhs  string
+		want []string
+	}{
+		{
+			name: "setter rejects",
+			rhs:  "1",
+			want: []string{
+				"write to @label expected string, got int",
+				"call to takes_string argument value expected string, got nil",
+			},
+		},
+		{
+			name: "rhs aborts",
+			rhs:  "1 + nil",
+			want: []string{
+				"unsupported addition operands int and nil",
+				"call to takes_string argument value expected string, got nil",
+			},
+		},
+		{
+			name: "setter may reject",
+			rhs:  `(flag ? "ok" : 1)`,
+			want: []string{
+				"call to takes_string argument value expected string, got nil",
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+def takes_string(value: string)
+  value
+end
+
+class Counter
+  property label: string
+
+  def probe(flag: bool)
+    begin
+      @label ||= `+tc.rhs+`
+    rescue
+      takes_string(@label)
+    end
+  end
+end
+`)
+			warnings := script.CheckWarnings()
+			if len(warnings) != len(tc.want) {
+				t.Fatalf("CheckWarnings() = %#v, want %q", warnings, tc.want)
+			}
+			for i, warning := range warnings {
+				if warning.Message != tc.want[i] {
+					t.Fatalf("CheckWarnings()[%d] = %q, want %q", i, warning.Message, tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 // Logical ivar writes consult the current fact's truthiness: a definitely
 // truthy fact makes &&= always assign (so its RHS checks) and makes ||=
 // always short-circuit (so its RHS never warns).

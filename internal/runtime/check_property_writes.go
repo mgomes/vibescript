@@ -193,7 +193,16 @@ func (c *scriptChecker) addIvarWriteWarning(function string, pos Position, name 
 // fact. Plain writes warn when the value's known type is provably
 // incompatible with the contract; compound and logical writes stay quiet
 // and rely on the runtime guard.
-func (c *scriptChecker) inferIvarAssignStatementTypes(function string, stmt *AssignStmt, target *IvarExpr) {
+func (c *scriptChecker) inferIvarAssignStatementTypes(
+	function string,
+	stmt *AssignStmt,
+	target *IvarExpr,
+	logicalTargetFact *logicalAssignmentTargetFact,
+) {
+	current := c.localTypeFor(ivarFactKey(target.Name))
+	if logicalTargetFact != nil {
+		current = logicalTargetFact.current
+	}
 	switch stmt.Operator {
 	case tokenAndAssign:
 		// &&= assigns only when the current value is truthy. A definitely
@@ -204,7 +213,7 @@ func (c *scriptChecker) inferIvarAssignStatementTypes(function string, stmt *Ass
 		// cannot prove a falsey current (a written nil refines to the
 		// nullable contract, not to nil), so warning here would flag writes
 		// that provably never run.
-		if !typeExprDefinitelyTruthy(c.localTypeFor(ivarFactKey(target.Name))) {
+		if !typeExprDefinitelyTruthy(current) {
 			return
 		}
 		c.checkIvarWrite(function, stmt.Pos(), target.Name, stmt.Value)
@@ -215,7 +224,7 @@ func (c *scriptChecker) inferIvarAssignStatementTypes(function string, stmt *Ass
 		// runtime guard as a plain write, so a known RHS checks against the
 		// contract, and the fact refines either way: a skipped write means
 		// the current value was truthy and already within the contract.
-		if typeExprDefinitelyTruthy(c.localTypeFor(ivarFactKey(target.Name))) {
+		if typeExprDefinitelyTruthy(current) {
 			return
 		}
 		c.checkIvarWrite(function, stmt.Pos(), target.Name, stmt.Value)
@@ -223,8 +232,18 @@ func (c *scriptChecker) inferIvarAssignStatementTypes(function string, stmt *Ass
 		c.checkIvarWrite(function, stmt.Pos(), target.Name, stmt.Value)
 	default:
 		// Arithmetic compounds derive their stored value from both operands
-		// and stay unknown, but the executed write still lands within the
-		// contract.
+		// and stay diagnostically quiet. Only a completing operator and
+		// property guard can commit the post-write contract fact.
+		value := &BinaryExpr{
+			Left:     target,
+			Operator: stmt.Operator,
+			Right:    stmt.Value,
+			Position: stmt.Pos(),
+		}
+		if !c.binaryExpressionMayComplete(value) ||
+			!c.assignmentSetterMayComplete(target, value) {
+			return
+		}
 		c.checkIvarWrite(function, stmt.Pos(), target.Name, nil)
 	}
 }
@@ -291,6 +310,97 @@ func (c *scriptChecker) bindWrittenIvarFact(name string, ty *TypeExpr, value Exp
 		}
 	}
 	c.bindLocalType(ivarFactKey(name), fact)
+}
+
+// narrowLogicalIvarFact selects the truthiness arm that a logical ivar
+// assignment is currently walking. Unlike general local narrowing, it splits
+// an unknown bool contract into its exact true or false fact so failure and
+// skipped continuations cannot retain the opposite boolean value.
+func (c *scriptChecker) narrowLogicalIvarFact(name string, truthy bool) bool {
+	key := ivarFactKey(name)
+	current := c.localTypeFor(key)
+	if current == nil {
+		return true
+	}
+	arms, ok := typeExprArms(current, 0)
+	if !ok || len(arms) == 0 {
+		return true
+	}
+	kept := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		switch arm.Kind {
+		case TypeNil:
+			if !truthy {
+				kept = append(kept, arm)
+			}
+		case TypeBool:
+			switch arm.Name {
+			case boolTrueFactMarker:
+				if truthy {
+					kept = append(kept, arm)
+				}
+			case boolFalseFactMarker:
+				if !truthy {
+					kept = append(kept, arm)
+				}
+			default:
+				if truthy {
+					kept = append(kept, checkTypeTrue)
+				} else {
+					kept = append(kept, checkTypeFalse)
+				}
+			}
+		default:
+			if truthy {
+				kept = append(kept, arm)
+			}
+		}
+	}
+	if len(kept) == 0 {
+		return false
+	}
+	c.bindLocalType(key, unionTypeExprs(kept...))
+	return true
+}
+
+// commitLogicalIvarWritingArm records the successful store on the arm that
+// evaluated a logical assignment's RHS. A maybe-skipped &&= keeps its legacy
+// no-warning policy, but its successful arm still receives the written fact;
+// the caller later merges that arm with the separately narrowed skip arm.
+func (c *scriptChecker) commitLogicalIvarWritingArm(
+	function string,
+	stmt *AssignStmt,
+	target *IvarExpr,
+	current *TypeExpr,
+) {
+	if stmt.Operator != tokenAndAssign || typeExprDefinitelyTruthy(current) {
+		c.checkIvarWrite(function, stmt.Pos(), target.Name, stmt.Value)
+		return
+	}
+	ty := c.instanceIvarContract(target.Name)
+	if ty == nil || !c.callArgumentMayBindType(stmt.Value, ty) {
+		return
+	}
+	c.bindWrittenIvarFact(target.Name, ty, stmt.Value)
+}
+
+func (c *scriptChecker) ivarWriteProvablyCompletes(name string, value Expression) bool {
+	ty := c.instanceIvarContract(name)
+	if ty == nil {
+		return true
+	}
+	if value == nil || validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
+		return false
+	}
+	if literal, ok := staticLiteralValue(value); ok {
+		return c.checkRuntimeStaticValueType(literal, ty) == nil
+	}
+	expectation := expressionExpectation{}
+	if memberAssignmentValueCanUseExpectation(value) {
+		expectation = typeExpressionExpectation(ty)
+	}
+	inferred := c.inferExpressionTypeWithExpectation(value, expectation)
+	return inferred != nil && typeExprSatisfies(inferred, ty, c.checkNamedTypeResolver())
 }
 
 // inferDestructureIvarWrites routes instance-variable targets inside a

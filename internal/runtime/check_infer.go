@@ -1622,6 +1622,13 @@ func (c *scriptChecker) bindForTargetType(stmt *ForStmt, elemType *TypeExpr) {
 func (c *scriptChecker) degradeBlockBodyBindings(block *BlockLiteral) {
 	names := make(map[string]struct{})
 	collectLocalBindings(block.Body, names)
+	for _, frame := range c.localTypes {
+		for name := range frame {
+			if statementsMayAssignName(block.Body, name) {
+				names[name] = struct{}{}
+			}
+		}
+	}
 	collectMutatedContainerRoots(block.Body, names)
 	c.degradeMutationCandidates(block.Body, names)
 	blockBound := make(map[string]struct{})
@@ -2365,6 +2372,20 @@ func (c *scriptChecker) degradeLocalTypesForRegion(
 ) {
 	names := make(map[string]struct{})
 	collectLocalBindings(statements, names)
+	for _, frame := range c.localTypes {
+		for name := range frame {
+			if statementsMayAssignName(statements, name) {
+				names[name] = struct{}{}
+				continue
+			}
+			for _, expr := range repeated {
+				if expressionMayRunBlockLiteralAssigning(expr, name) {
+					names[name] = struct{}{}
+					break
+				}
+			}
+		}
+	}
 	collectMutatedContainerRoots(statements, names)
 	c.degradeMutationCandidates(statements, names, repeated...)
 	for _, target := range extraTargets {
@@ -2770,7 +2791,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 			}
 		}
 	case *IvarExpr:
-		c.inferIvarAssignStatementTypes(function, stmt, target)
+		c.inferIvarAssignStatementTypes(function, stmt, target, logicalTargetFact)
 	case *DestructureTarget:
 		valueFacts := c.captureDestructureValueFacts(target, stmt.Value)
 		c.bindCapturedDestructureValueFacts(valueFacts)
@@ -5473,8 +5494,11 @@ func (c *scriptChecker) inferExpressionTypeWithExpectation(expr Expression, expe
 		return c.inferExpressionType(expr)
 	}
 	if expectation.includesCallable() {
-		if _, ok := c.bareIdentifierCallableArgument(expr); ok {
-			return checkTypeFunction
+		if identity, ok := bareIdentifierCallableValue(expr); ok {
+			if _, resolved := c.bareIdentifierCallableArgument(expr); resolved {
+				return checkTypeFunction
+			}
+			return c.inferExpressionType(identity)
 		}
 		if callableFact, ok := c.bareMemberArgumentCallableFact(expr); ok {
 			return callableFact
@@ -5509,29 +5533,66 @@ func (c *scriptChecker) inferExpressionTypeWithExpectation(expr Expression, expe
 	}
 }
 
+func (c *scriptChecker) inferExpressionTypeWithAuto(expr Expression, autoCall bool) *TypeExpr {
+	if autoCall {
+		return c.inferExpressionType(expr)
+	}
+	if callableFact, ok := c.bareMemberArgumentCallableFact(expr); ok {
+		return callableFact
+	}
+	if identity, ok := bareIdentifierCallableValue(expr); ok {
+		if _, resolved := c.bareIdentifierCallableArgument(expr); resolved {
+			return checkTypeFunction
+		}
+		return c.inferExpressionType(identity)
+	}
+	switch typed := expr.(type) {
+	case *RescueExpr:
+		return c.inferRescueExpressionTypeWithExpectation(
+			typed,
+			typeExpressionExpectation(checkTypeFunction),
+		)
+	case *TypeLiteral:
+		if c.typeLiteralStaticallyShadowed(typed) {
+			return c.inferExpressionTypeWithAuto(typed.Fallback, false)
+		}
+	}
+	return c.inferExpressionType(expr)
+}
+
 // bareIdentifierCallableArgument matches the identifier forms the runtime
 // preserves under a callable expectation (`accept(rand)`).
 func (c *scriptChecker) bareIdentifierCallableArgument(expr Expression) (Expression, bool) {
-	var call *CallExpr
+	identity, ok := bareIdentifierCallableValue(expr)
+	if !ok {
+		return nil, false
+	}
+	call := &CallExpr{Callee: identity}
+	if _, ok := c.resolveCallable(call); !ok {
+		ident := identity.(*Identifier)
+		if c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) ||
+			c.typeRootHasBinding(ident.Name) || c.hostBuiltinOverrides(ident.Name) ||
+			c.implicitSelfFunction(ident.Name) == nil {
+			return nil, false
+		}
+	}
+	return expr, true
+}
+
+func bareIdentifierCallableValue(expr Expression) (Expression, bool) {
 	switch typed := expr.(type) {
 	case *Identifier:
-		call = &CallExpr{Callee: typed}
+		return typed, true
 	case *CallExpr:
 		if typed.Parenthesized || len(typed.Args) > 0 || len(typed.KwArgs) > 0 ||
 			typed.Block != nil || typed.BlockArg != nil {
 			return nil, false
 		}
-		if _, ok := typed.Callee.(*Identifier); !ok {
-			return nil, false
-		}
-		call = typed
+		ident, ok := typed.Callee.(*Identifier)
+		return ident, ok
 	default:
 		return nil, false
 	}
-	if _, ok := c.resolveCallable(call); !ok {
-		return nil, false
-	}
-	return expr, true
 }
 
 func (c *scriptChecker) inferExpectedBranchUnion(expectation expressionExpectation, branches ...Expression) *TypeExpr {
@@ -5757,24 +5818,25 @@ func (c *scriptChecker) inferRescueExpressionTypeWithExpectation(
 	if expr == nil {
 		return nil
 	}
+	autoCall := !expectation.includesCallable()
 	if expressionProvenNonRaising(expr.Body) {
-		return c.inferExpressionTypeWithExpectation(expr.Body, expectation)
+		return c.inferExpressionTypeWithAuto(expr.Body, autoCall)
 	}
 	if errorKind, exact := c.staticallyRaisedExpressionErrorKind(expr.Body); exact &&
 		!staticErrorKindMatchesRescue(errorKind, nil) {
-		return c.inferExpressionTypeWithExpectation(expr.Body, expectation)
+		return c.inferExpressionTypeWithAuto(expr.Body, autoCall)
 	}
-	branches := make([]Expression, 0, 2)
-	if c.expressionMayCompleteForBinding(expr.Body) {
-		branches = append(branches, expr.Body)
+	branches := make([]*TypeExpr, 0, 2)
+	if c.expressionMayCompleteForBindingWithAuto(expr.Body, autoCall) {
+		branches = append(branches, c.inferExpressionTypeWithAuto(expr.Body, autoCall))
 	}
-	if c.expressionMayCompleteForBinding(expr.Fallback) {
-		branches = append(branches, expr.Fallback)
+	if c.expressionMayCompleteForBindingWithAuto(expr.Fallback, autoCall) {
+		branches = append(branches, c.inferExpressionTypeWithAuto(expr.Fallback, autoCall))
 	}
 	if len(branches) == 0 {
 		return nil
 	}
-	return c.inferExpectedBranchUnion(expectation, branches...)
+	return unionTypeExprs(branches...)
 }
 
 // inferHashLiteralType infers an exact shape for a hash literal whose keys

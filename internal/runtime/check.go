@@ -140,6 +140,7 @@ type scriptChecker struct {
 	localBindingGenerations    map[string]uint64
 	reachableParamFacts        map[string]checkReachableParamFact
 	reachableBindingPlan       *scriptCallBindingPlan
+	pendingBindingParams       map[string]struct{}
 	deferredReturnSites        *[]deferredReturnSite
 	exceptionExitSites         *[]checkStateSnapshot
 	expressionExitSites        *[]checkStateSnapshot
@@ -294,8 +295,16 @@ func (c *scriptChecker) callStaticValueAlternatives(expr Expression) ([]Expressi
 }
 
 type scriptCallBindingPlan struct {
-	defaultParams []int
-	bodyMayEnter  bool
+	defaultParams   []int
+	boundParamCount int
+	bindingStarts   bool
+	exactBindings   bool
+	bodyMayEnter    bool
+}
+
+type scriptParamBindingInput struct {
+	usesDefault bool
+	mayBind     bool
 }
 
 // checkOptionGlobals resolves the host globals a call would receive. Bind
@@ -994,6 +1003,27 @@ func (c *scriptChecker) callArgumentsMayCompleteForBinding(call *CallExpr) bool 
 		}
 	}
 	return c.expressionMayCompleteForBinding(call.BlockArg)
+}
+
+func (c *scriptChecker) callCalleeExpressionMayCompleteForBinding(call *CallExpr) bool {
+	if call == nil {
+		return true
+	}
+	switch callee := call.Callee.(type) {
+	case *Identifier:
+		return true
+	case *MemberExpr:
+		expectation := expressionExpectation{}
+		if callee.Property == "call" && typeExprMayIncludeCallable(c.inferExpressionType(callee.Object)) {
+			expectation = typeExpressionExpectation(checkTypeFunction)
+		}
+		return c.expressionMayCompleteForBindingWithExpectation(callee.Object, expectation)
+	default:
+		return c.expressionMayCompleteForBindingWithExpectation(
+			callee,
+			typeExpressionExpectation(checkTypeFunction),
+		)
+	}
 }
 
 func (c *scriptChecker) collectRequiredModuleExportsFromCaseExpression(expr *CaseExpr) {
@@ -1715,7 +1745,10 @@ func (c *scriptChecker) enqueueReachableFunctionBinding(
 		return
 	}
 	key := c.reachableFunctionCheckKey(fn, paramFacts) + "\x00binding:" +
-		strconv.FormatBool(plan.bodyMayEnter) + ":" + fmt.Sprint(plan.defaultParams)
+		strconv.FormatBool(plan.bindingStarts) + ":" +
+		strconv.FormatBool(plan.exactBindings) + ":" +
+		strconv.FormatBool(plan.bodyMayEnter) + ":" +
+		strconv.Itoa(plan.boundParamCount) + ":" + fmt.Sprint(plan.defaultParams)
 	if c.checkedReachableFuncs == nil {
 		c.checkedReachableFuncs = make(map[string]struct{})
 	}
@@ -1790,10 +1823,10 @@ func (c *scriptChecker) enqueueReachableIdentifierCall(ident *Identifier) {
 		call := &CallExpr{Callee: ident, Position: ident.Pos()}
 		target := staticCallable{name: ident.Name, fn: fn}
 		plan := c.scriptCallBindingPlan(call, target)
-		bindingStarts = plan.bodyMayEnter || plan.defaultParams != nil
+		bindingStarts = plan.bindingStarts
 		if plan.bodyMayEnter {
 			c.enqueueReachableFunction(ident.Name, fn)
-		} else if plan.defaultParams != nil {
+		} else if plan.bindingStarts {
 			c.enqueueReachableFunctionBinding(ident.Name, fn, nil, plan)
 		}
 	} else if c.checkReachableCalls {
@@ -2545,7 +2578,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 
 		c.linkReachableParamAliases(fn.Params)
 		for i, param := range fn.Params {
-			expectation := typeExpressionExpectation(param.Type)
+			expectation := bindingDefaultExpectation(param)
 			defaultRuns := c.reachableParamDefaultRuns(param)
 			if c.reachableBindingPlan != nil {
 				defaultRuns = slices.Contains(c.reachableBindingPlan.defaultParams, i)
@@ -2569,6 +2602,9 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 				}
 			}
 			c.checkIvarParamBinding(label, fn, param)
+			if c.reachableBindingPlan != nil && i >= c.reachableBindingPlan.boundParamCount {
+				return
+			}
 			c.recordParamBinding(param)
 			c.applyReachableParamFact(param)
 		}
@@ -2823,6 +2859,11 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				c.poisonLocalType(indexedReceiverName)
 			}
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
+			if ivar, ok := typed.Target.(*IvarExpr); ok &&
+				c.ivarAssignmentMayComplete(ivar, typed.Value) &&
+				!c.ivarWriteProvablyCompletes(ivar.Name, typed.Value) {
+				c.captureNonCompletingExpressionArm()
+			}
 			if destructure, ok := typed.Target.(*DestructureTarget); ok {
 				if !c.replayDestructureAssignment(function, destructure, typed.Value) {
 					c.recordNonCompletingExpression()
@@ -2866,15 +2907,24 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				rhsReachable: rhsReachable,
 				known:        known,
 			}
-			if ident, ok := typed.Target.(*Identifier); ok {
-				logicalTargetFact.current = c.localTypeFor(ident.Name)
+			switch target := typed.Target.(type) {
+			case *Identifier:
+				logicalTargetFact.current = c.localTypeFor(target.Name)
 				if typed.Operator == tokenOrAssign && !known {
-					logicalTargetFact.priorAliasTransfer = c.captureContainerAliasTransfer(ident)
+					logicalTargetFact.priorAliasTransfer = c.captureContainerAliasTransfer(target)
 				}
+			case *IvarExpr:
+				logicalTargetFact.current = c.localTypeFor(ivarFactKey(target.Name))
 			}
 			if rhsReachable {
 				runtimeState := c.snapshotRuntimeState()
 				scopeState := c.snapshotScopeState()
+				if ivar, ok := typed.Target.(*IvarExpr); ok && !known {
+					// Walk the RHS under the arm that actually evaluates it. A
+					// failure snapshot must retain that selected pre-RHS fact,
+					// while RHS side effects remain free to replace it.
+					c.narrowLogicalIvarFact(ivar.Name, typed.Operator == tokenAndAssign)
+				}
 				opaqueDispatch := false
 				var indexSetterType *TypeExpr
 				var memberSetter *MemberExpr
@@ -2902,6 +2952,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 					inferWrite = false
 					c.restoreRuntimeState(runtimeState)
 					c.restoreScopeState(scopeState)
+					if ivar, ok := typed.Target.(*IvarExpr); ok {
+						c.narrowLogicalIvarFact(ivar.Name, typed.Operator == tokenOrAssign)
+					}
 					break
 				}
 				if indexSetterType != nil {
@@ -2924,6 +2977,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 					c.markOpaqueClassConstants()
 				}
 				if !setterCompletes {
+					if _, ivar := typed.Target.(*IvarExpr); ivar {
+						c.inferAssignStatementTypes(function, typed, nil, logicalTargetFact)
+					}
 					if rhsAlwaysEvaluates {
 						c.recordNonCompletingExpression()
 						return
@@ -2933,12 +2989,36 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 					inferWrite = false
 					c.restoreRuntimeState(runtimeState)
 					c.restoreScopeState(scopeState)
+					if ivar, ok := typed.Target.(*IvarExpr); ok {
+						c.narrowLogicalIvarFact(ivar.Name, typed.Operator == tokenOrAssign)
+					}
 					break
 				}
+				if ivar, ok := typed.Target.(*IvarExpr); ok &&
+					!c.ivarWriteProvablyCompletes(ivar.Name, typed.Value) {
+					c.captureNonCompletingExpressionArm()
+				}
 				if !rhsAlwaysEvaluates {
-					c.restoreRuntimeStatePreservingClassConstantEffects(runtimeState)
+					if ivar, ok := typed.Target.(*IvarExpr); ok {
+						c.commitLogicalIvarWritingArm(
+							function,
+							typed,
+							ivar,
+							logicalTargetFact.current,
+						)
+						inferWrite = false
+					}
 					evaluatedScopeState := c.snapshotScopeState()
-					c.mergeScopeStates(scopeState, []checkScopeState{scopeState, evaluatedScopeState})
+					c.restoreRuntimeStatePreservingClassConstantEffects(runtimeState)
+					c.restoreScopeState(scopeState)
+					if ivar, ok := typed.Target.(*IvarExpr); ok {
+						c.narrowLogicalIvarFact(ivar.Name, typed.Operator == tokenOrAssign)
+					}
+					skippedScopeState := c.snapshotScopeState()
+					c.mergeScopeStates(
+						scopeState,
+						[]checkScopeState{skippedScopeState, evaluatedScopeState},
+					)
 				}
 			}
 		default:
@@ -2955,6 +3035,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			}
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
 			operatorType := c.inferExpressionType(typed.Target)
+			c.pinExpressionFact(typed.Target, operatorType)
 			opaqueOperator := c.binaryDispatchHasOpaqueClassConstantEffects(operatorType, typed.Operator)
 			opaqueSetter := false
 			var indexSetterType *TypeExpr
@@ -2986,7 +3067,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				Position: typed.Pos(),
 			}
 			if !c.binaryExpressionMayComplete(operatorValue) {
-				c.inferAssignStatementTypes(function, typed, nil, nil)
+				if _, ivar := typed.Target.(*IvarExpr); !ivar {
+					c.inferAssignStatementTypes(function, typed, nil, nil)
+				}
 				c.recordNonCompletingExpression()
 				return
 			}
@@ -3012,6 +3095,11 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			if !setterCompletes {
 				c.recordNonCompletingExpression()
 				return
+			}
+			if ivar, ok := typed.Target.(*IvarExpr); ok &&
+				(!c.binaryExpressionProvablyCompletes(operatorValue) ||
+					!c.ivarWriteProvablyCompletes(ivar.Name, operatorValue)) {
+				c.captureNonCompletingExpressionArm()
 			}
 		}
 		if inferWrite {
@@ -3888,10 +3976,7 @@ func (c *scriptChecker) checkExpressionWithExpectation(
 		if _, bindable := c.bareMemberArgumentCallableFact(expr); bindable {
 			return c.checkExpressionWithAuto(function, expr, false)
 		}
-		if callableExpr, bindable := c.bareIdentifierCallableArgument(expr); bindable {
-			if call, ok := callableExpr.(*CallExpr); ok {
-				callableExpr = call.Callee
-			}
+		if callableExpr, bindable := bareIdentifierCallableValue(expr); bindable {
 			return c.checkExpressionWithAuto(function, callableExpr, false)
 		}
 	}
@@ -4101,11 +4186,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			}
 			identitySource := expr
 			if !autoCall {
-				if callableExpr, bindable := c.bareIdentifierCallableArgument(expr); bindable {
+				if callableExpr, bindable := bareIdentifierCallableValue(expr); bindable {
 					identitySource = callableExpr
-					if call, ok := identitySource.(*CallExpr); ok {
-						identitySource = call.Callee
-					}
 				}
 			}
 			identityExpr, autoInvoked := c.evaluatedIdentityExpression(identitySource, autoCall)
@@ -4351,7 +4433,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if opaqueCallEffectsMayRun {
 			c.markOpaqueClassConstants()
 		}
-		callBlockMayRun := targetMayEnter && invokedLambda == nil && c.callMayEvaluateBlock(typed)
+		callBlockMayRun := targetMayEnter && invokedLambda == nil && c.callMayInvokeSuppliedBlock(typed)
 		if callMayEnter && targetResolved && target.fn != nil &&
 			(typed.Block != nil || typed.BlockArg != nil) {
 			callBlockMayRun = c.scriptFunctionCallBlockMayRun(typed, target)
@@ -4675,18 +4757,18 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			return false
 		}
 	case *ConditionalExpr:
-		return c.checkConditionalExpression(function, typed, autoCallExpectation(autoCall))
+		return c.checkConditionalExpression(function, typed, expressionExpectation{})
 	case *RescueExpr:
 		return c.checkRescueExpression(function, typed, autoCall)
 	case *IfExpr:
-		return c.checkIfExpression(function, typed, autoCallExpectation(autoCall))
+		return c.checkIfExpression(function, typed, expressionExpectation{})
 	case *RangeExpr:
 		if !c.checkExpressionWithAuto(function, typed.Start, true) ||
 			!c.checkExpressionWithAuto(function, typed.End, true) {
 			return false
 		}
 	case *CaseExpr:
-		return c.checkCaseExpression(function, typed, autoCallExpectation(autoCall))
+		return c.checkCaseExpression(function, typed, expressionExpectation{})
 	case *BlockLiteral:
 		// A standalone block literal is a stabby lambda; its body checks like a
 		// call block's. Plain call blocks are checked from the CallExpr case.
@@ -5304,9 +5386,27 @@ func binaryDispatchMethodNames(operator TokenType) []string {
 	}
 }
 
+func binaryDispatchCall(expr *BinaryExpr, method string) *CallExpr {
+	if expr == nil {
+		return nil
+	}
+	return &CallExpr{
+		Callee: &MemberExpr{
+			Object:   expr.Left,
+			Property: method,
+			Position: expr.Pos(),
+		},
+		Args:     []Expression{expr.Right},
+		Position: expr.Pos(),
+	}
+}
+
 func (c *scriptChecker) binaryExpressionMayComplete(expr *BinaryExpr) bool {
 	if expr == nil || expr.Operator == tokenAnd || expr.Operator == tokenOr {
 		return true
+	}
+	if c.binaryExpressionProvablyAborts(expr) {
+		return false
 	}
 	if c.binaryOperationOutcome(
 		expr.Operator,
@@ -5320,20 +5420,50 @@ func (c *scriptChecker) binaryExpressionMayComplete(expr *BinaryExpr) bool {
 		return true
 	}
 	for _, method := range methods {
-		call := &CallExpr{
-			Callee: &MemberExpr{
-				Object:   expr.Left,
-				Property: method,
-				Position: expr.Pos(),
-			},
-			Args:     []Expression{expr.Right},
-			Position: expr.Pos(),
-		}
-		if c.expressionMayCompleteForBinding(call) {
+		if c.expressionMayCompleteForBinding(binaryDispatchCall(expr, method)) {
 			return true
 		}
 	}
 	return false
+}
+
+func (c *scriptChecker) binaryExpressionProvablyAborts(expr *BinaryExpr) bool {
+	if expr == nil || expr.Operator != tokenSlash && expr.Operator != tokenPercent {
+		return false
+	}
+	right, static := staticLiteralValue(expr.Right)
+	if !static || right.Kind() != KindInt || !intValueIsZero(right) {
+		return false
+	}
+	leftKind, known := staticOperandKind(c.inferExpressionType(expr.Left))
+	return known && leftKind == TypeInt
+}
+
+func (c *scriptChecker) binaryExpressionProvablyCompletes(expr *BinaryExpr) bool {
+	if expr == nil || expr.Operator == tokenAnd || expr.Operator == tokenOr {
+		return true
+	}
+	switch expr.Operator {
+	case tokenPlus, tokenMinus, tokenAsterisk:
+	default:
+		return false
+	}
+	leftKind, leftOK := staticOperandKind(c.inferExpressionType(expr.Left))
+	rightKind, rightOK := staticOperandKind(c.inferExpressionType(expr.Right))
+	if !leftOK || !rightOK {
+		return false
+	}
+	for _, left := range expandNumericKinds(leftKind) {
+		for _, right := range expandNumericKinds(rightKind) {
+			if left != TypeInt && left != TypeFloat || right != TypeInt && right != TypeFloat {
+				return false
+			}
+			if _, valid := binaryScalarOutcome(expr.Operator, left, right); !valid {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (c *scriptChecker) indexExpressionMayComplete(expr *IndexExpr) bool {
@@ -5645,6 +5775,11 @@ func (c *scriptChecker) replayDestructureAssignment(
 		}
 		completed := true
 		c.withCapturedDestructureArgumentFact(leafValue, fact, func() {
+			if ivar, ok := fact.target.(*IvarExpr); ok &&
+				c.ivarAssignmentMayComplete(ivar, leafValue) &&
+				!c.ivarWriteProvablyCompletes(ivar.Name, leafValue) {
+				c.captureNonCompletingExpressionArm()
+			}
 			completed = c.checkPlainAssignmentTarget(function, fact.target, leafValue)
 		})
 		if !completed {
@@ -5838,7 +5973,9 @@ func (c *scriptChecker) assignmentSetterMayComplete(
 		}
 	}
 	rawMemberWrite := false
-	switch target.(type) {
+	switch typed := target.(type) {
+	case *IvarExpr:
+		return c.ivarAssignmentMayComplete(typed, value)
 	case *MemberExpr:
 		rawMemberWrite = true
 	case *IndexExpr:
@@ -6483,7 +6620,7 @@ func (c *scriptChecker) checkMemberAutoCall(
 			plan := c.scriptCallBindingPlan(call, target)
 			if plan.bodyMayEnter {
 				c.enqueueReachableFunction(target.name, target.fn)
-			} else if plan.defaultParams != nil {
+			} else if plan.bindingStarts {
 				c.enqueueReachableFunctionBinding(target.name, target.fn, nil, plan)
 			}
 			if plan.bodyMayEnter {
@@ -7028,16 +7165,66 @@ func (c *scriptChecker) callMayEvaluateBlockWithSeen(call *CallExpr, seen map[*S
 }
 
 func (c *scriptChecker) callMayInvokeSuppliedBlock(call *CallExpr) bool {
+	return c.callMayInvokeSuppliedBlockWithSeen(call, nil)
+}
+
+func (c *scriptChecker) callMayInvokeSuppliedBlockWithSeen(
+	call *CallExpr,
+	seen map[*ScriptFunction]struct{},
+) bool {
+	target, resolved := c.resolveCallable(call)
+	var dynamicResolution checkDynamicCallResolution
+	if !resolved {
+		dynamicResolution = c.exactDynamicCallTargets(
+			call,
+			target,
+			false,
+			c.captureDynamicCallCandidates(call),
+		)
+	}
+	return c.resolvedCallMayInvokeSuppliedBlockWithSeen(
+		call,
+		target,
+		resolved,
+		dynamicResolution,
+		seen,
+	)
+}
+
+func (c *scriptChecker) resolvedCallMayInvokeSuppliedBlockWithSeen(
+	call *CallExpr,
+	target staticCallable,
+	resolved bool,
+	dynamicResolution checkDynamicCallResolution,
+	seen map[*ScriptFunction]struct{},
+) bool {
 	if call == nil || (call.Block == nil && call.BlockArg == nil) ||
 		staticNilSafeNavigationCall(call) {
 		return false
 	}
-	target, ok := c.resolveCallable(call)
-	if !ok {
-		return !staticallyNonCallableCallee(call.Callee)
+	if !resolved {
+		if dynamicResolution.lookupFails {
+			return false
+		}
+		if !dynamicResolution.exact {
+			return !staticallyNonCallableCallee(call.Callee)
+		}
+		if dynamicResolution.nonScriptMayComplete {
+			return true
+		}
+		for _, candidate := range dynamicResolution.targets {
+			if candidate.bindingStarts && c.functionMayEvaluateCallBlock(
+				candidate.call,
+				candidate.target,
+				seen,
+			) {
+				return true
+			}
+		}
+		return false
 	}
 	if target.fn != nil {
-		return c.functionMayEvaluateCallBlock(call, target, nil)
+		return c.functionMayEvaluateCallBlock(call, target, seen)
 	}
 	if target.name == "array.fetch" {
 		return staticArrayFetchBlockMayEvaluate(call)
@@ -7120,43 +7307,79 @@ func (c *scriptChecker) functionMayEvaluateCallBlock(
 	defer delete(seen, fn)
 
 	plan := c.scriptCallBindingPlan(call, target)
-	for _, paramIndex := range plan.defaultParams {
-		if paramIndex < 0 || paramIndex >= len(fn.Params) {
-			continue
-		}
-		if c.expressionMayEvaluateCallBlock(fn.Params[paramIndex].DefaultVal, seen) {
-			return true
-		}
-	}
-	if !plan.bodyMayEnter {
-		return false
-	}
-	return c.statementsMayEvaluateCallBlock(fn.Body, seen)
+	facts := c.reachableCallParamFacts(call, target)
+	return c.functionBindingMayEvaluateCallBlock(fn, plan, facts, seen)
 }
 
 func (c *scriptChecker) scriptFunctionCallBlockMayRun(call *CallExpr, target staticCallable) bool {
-	if target.fn == nil {
+	return c.functionMayEvaluateCallBlock(call, target, nil)
+}
+
+func (c *scriptChecker) functionBindingMayEvaluateCallBlock(
+	fn *ScriptFunction,
+	plan scriptCallBindingPlan,
+	facts map[string]checkReachableParamFact,
+	seen map[*ScriptFunction]struct{},
+) bool {
+	if fn == nil || !plan.bindingStarts {
 		return false
 	}
-	restoreFresh := c.withFreshLocalInferenceScope()
-	defer restoreFresh()
-	popScope := c.pushScope(make(map[string]struct{}))
-	defer popScope()
-	popNameScope := c.pushFunctionNameScope(target.fn)
-	defer popNameScope()
-	restoreResolution := c.withClassConstantProofResolution(target.fn, scriptFunctionBindings(target.fn))
+	restoreResolution := c.withClassConstantProofResolution(fn, nil)
 	defer restoreResolution()
-
-	facts := c.reachableCallParamFacts(call, target)
+	previousScopes := c.scopes
+	restoreInference := c.withIsolatedLocalInference()
+	c.scopes = nil
+	popScope := c.pushScope(make(map[string]struct{}))
+	defer func() {
+		popScope()
+		restoreInference()
+		c.scopes = previousScopes
+	}()
 	previousFacts := c.reachableParamFacts
 	c.reachableParamFacts = facts
 	defer func() { c.reachableParamFacts = previousFacts }()
-	c.linkReachableParamAliases(target.fn.Params)
-	for _, param := range target.fn.Params {
+	previousPending := c.pendingBindingParams
+	c.pendingBindingParams = functionParamBindingNames(fn)
+	defer func() { c.pendingBindingParams = previousPending }()
+
+	c.seedInstanceIvarFacts(fn)
+	c.linkReachableParamAliases(fn.Params)
+	defaults := make(map[int]struct{}, len(plan.defaultParams))
+	for _, index := range plan.defaultParams {
+		defaults[index] = struct{}{}
+	}
+	for i, param := range fn.Params {
+		if _, runs := defaults[i]; runs &&
+			c.defaultExpressionMayEvaluateCallBlock(param, seen) {
+			return true
+		}
+		if i >= plan.boundParamCount {
+			return false
+		}
+		c.withSuppressedWarnings(func() {
+			c.checkIvarParamBinding("", fn, param)
+		})
 		c.recordParamBinding(param)
 		c.applyReachableParamFact(param)
+		removeFunctionParamBindingNames(c.pendingBindingParams, param)
 	}
-	return c.functionMayEvaluateCallBlock(call, target, nil)
+	return plan.bodyMayEnter && c.statementsMayEvaluateCallBlock(fn.Body, seen)
+}
+
+func (c *scriptChecker) defaultExpressionMayEvaluateCallBlock(
+	param Param,
+	seen map[*ScriptFunction]struct{},
+) bool {
+	expr := param.DefaultVal
+	if bindingDefaultExpectation(param).includesCallable() {
+		if _, bindable := c.bareMemberArgumentCallableFact(expr); bindable {
+			return false
+		}
+		if _, bindable := bareIdentifierCallableValue(expr); bindable {
+			return false
+		}
+	}
+	return c.expressionMayEvaluateCallBlock(expr, seen)
 }
 
 func (c *scriptChecker) statementsMayEvaluateCallBlock(statements []Statement, seen map[*ScriptFunction]struct{}) bool {
@@ -7167,8 +7390,72 @@ func (c *scriptChecker) statementsMayEvaluateCallBlock(statements []Statement, s
 		if statementAlwaysExits(stmt) || !c.statementMayCompleteForBinding(stmt) {
 			return false
 		}
+		c.replayCallBlockStatementFacts(stmt)
 	}
 	return false
+}
+
+// replayCallBlockStatementFacts keeps exact callable dispatch synchronized
+// with assignments already passed by the ordered block-evaluation scan.
+// Direct assignments can reuse normal inference. Regions with multiple or
+// repeated paths must instead discard every fact they might replace; keeping
+// the state from whichever branch happened to be scanned last can otherwise
+// prove incorrectly that a later call will ignore its supplied block.
+func (c *scriptChecker) replayCallBlockStatementFacts(stmt Statement) {
+	switch typed := stmt.(type) {
+	case *AssignStmt:
+		c.recordBindingTarget(typed.Target)
+		switch typed.Target.(type) {
+		case *Identifier, *DestructureTarget:
+			c.withSuppressedWarnings(func() {
+				c.inferAssignStatementTypes("", typed, nil, nil)
+			})
+		}
+	case *IfStmt:
+		if !c.ifStatementHasExactBranch(typed) {
+			c.degradeLocalTypesForBindings([]Statement{typed})
+		}
+		c.recordLocalBindings([]Statement{typed})
+	case *ForStmt:
+		if !staticIterableProvenEmpty(typed.Iterable) &&
+			!staticIterableProvenSingle(typed.Iterable) &&
+			loopBodyMayReachBackedge(typed.Body) {
+			c.degradeLocalTypesForBindings(typed.Body, typed.Target)
+		}
+		c.recordLocalBindings([]Statement{typed})
+	case *WhileStmt:
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if !known || truthy {
+			c.degradeLocalTypesForRepeatedLoop(typed.Condition, typed.Body)
+		}
+		c.recordLocalBindings([]Statement{typed})
+	case *UntilStmt:
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if !known || !truthy {
+			c.degradeLocalTypesForRepeatedLoop(typed.Condition, typed.Body)
+		}
+		c.recordLocalBindings([]Statement{typed})
+	case *TryStmt:
+		c.degradeLocalTypesForBindings([]Statement{typed})
+		c.recordLocalBindings([]Statement{typed})
+	}
+}
+
+func (c *scriptChecker) ifStatementHasExactBranch(stmt *IfStmt) bool {
+	if stmt == nil {
+		return true
+	}
+	truthy, known := c.inferredConditionTruthiness(stmt.Condition)
+	if !known || truthy {
+		return known
+	}
+	for _, branch := range stmt.ElseIf {
+		truthy, known = c.inferredConditionTruthiness(branch.Condition)
+		if !known || truthy {
+			return known
+		}
+	}
+	return true
 }
 
 func (c *scriptChecker) statementMayCompleteForBinding(stmt Statement) bool {
@@ -7312,73 +7599,241 @@ func (c *scriptChecker) applyAssignmentNamespaceMutations(
 
 func (c *scriptChecker) statementMayEvaluateCallBlock(stmt Statement, seen map[*ScriptFunction]struct{}) bool {
 	switch typed := stmt.(type) {
-	case nil, *NextStmt, *EnumStmt:
+	case nil, *EnumStmt:
 		return false
 	case *ReturnStmt:
 		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
 	case *RaiseStmt:
-		return c.expressionMayEvaluateCallBlock(typed.Value, seen) ||
-			c.expressionMayEvaluateCallBlock(typed.Message, seen)
+		if !staticRaiseErrorClass(typed) {
+			if c.expressionMayEvaluateCallBlock(typed.Value, seen) {
+				return true
+			}
+			if !c.expressionMayCompleteForBinding(typed.Value) {
+				return false
+			}
+		}
+		return c.expressionMayEvaluateCallBlock(typed.Message, seen)
 	case *BreakStmt:
 		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
+	case *NextStmt:
+		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
 	case *AssignStmt:
-		return c.expressionMayEvaluateCallBlock(typed.Target, seen) ||
-			c.expressionMayEvaluateCallBlock(typed.Value, seen)
+		// Assignment targets are locals before their values evaluate. Keep a
+		// same-named global function from winning callable resolution during
+		// this statement or any statement that follows it.
+		c.recordBindingTarget(typed.Target)
+		expectation := c.assignmentValueExpectation(typed.Target, typed.Value)
+		if typed.Operator == "" {
+			if c.expressionMayEvaluateCallBlock(typed.Value, seen) {
+				return true
+			}
+			if !c.expressionMayCompleteForBindingWithExpectation(typed.Value, expectation) {
+				return false
+			}
+			return c.expressionMayEvaluateCallBlock(typed.Target, seen)
+		}
+		if c.expressionMayEvaluateCallBlock(typed.Target, seen) {
+			return true
+		}
+		if !c.expressionMayCompleteForBinding(typed.Target) {
+			return false
+		}
+		if typed.Operator == tokenOrAssign || typed.Operator == tokenAndAssign {
+			truthy, known := c.inferredConditionTruthiness(typed.Target)
+			rhsReachable := !known ||
+				(typed.Operator == tokenOrAssign && !truthy) ||
+				(typed.Operator == tokenAndAssign && truthy)
+			if !rhsReachable {
+				return false
+			}
+		}
+		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
 	case *ExprStmt:
 		return c.expressionMayEvaluateCallBlock(typed.Expr, seen)
 	case *IfStmt:
 		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) {
 			return true
 		}
-		truthy, known := staticExpressionTruthiness(typed.Condition)
-		if !known || truthy {
+		if !c.expressionMayCompleteForBinding(typed.Condition) {
+			return false
+		}
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if known && truthy {
+			return c.statementsMayEvaluateCallBlock(typed.Consequent, seen)
+		}
+		if !known {
+			falsePathState := c.snapshotScopeState()
 			if c.statementsMayEvaluateCallBlock(typed.Consequent, seen) {
 				return true
 			}
-			if known {
-				return false
-			}
+			c.restoreScopeState(falsePathState)
 		}
 		for _, branch := range typed.ElseIf {
 			if c.expressionMayEvaluateCallBlock(branch.Condition, seen) {
 				return true
 			}
-			truthy, known = staticExpressionTruthiness(branch.Condition)
-			if known && !truthy {
+			if !c.expressionMayCompleteForBinding(branch.Condition) {
+				return false
+			}
+			truthy, known = c.inferredConditionTruthiness(branch.Condition)
+			if known && truthy {
+				return c.statementsMayEvaluateCallBlock(branch.Consequent, seen)
+			}
+			if known {
 				continue
 			}
+			falsePathState := c.snapshotScopeState()
 			if c.statementsMayEvaluateCallBlock(branch.Consequent, seen) {
 				return true
 			}
-			if known {
-				return false
-			}
+			c.restoreScopeState(falsePathState)
 		}
 		return c.statementsMayEvaluateCallBlock(typed.Alternate, seen)
 	case *ForStmt:
+		if c.expressionMayEvaluateCallBlock(typed.Iterable, seen) {
+			return true
+		}
+		if !c.expressionMayCompleteForBinding(typed.Iterable) ||
+			staticIterableProvenEmpty(typed.Iterable) {
+			return false
+		}
+		if staticIterableProvenSingle(typed.Iterable) ||
+			!loopBodyMayReachBackedge(typed.Body) {
+			c.degradeLocalTypesForBindings(nil, typed.Target)
+			c.recordBindingTarget(typed.Target)
+		} else {
+			c.degradeLocalTypesForBindings(typed.Body, typed.Target)
+			c.recordLocalBindings([]Statement{typed})
+		}
 		return c.expressionMayEvaluateCallBlock(typed.Target, seen) ||
-			c.expressionMayEvaluateCallBlock(typed.Iterable, seen) ||
 			c.statementsMayEvaluateCallBlock(typed.Body, seen)
 	case *WhileStmt:
-		return c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
-			c.statementsMayEvaluateCallBlock(typed.Body, seen)
-	case *UntilStmt:
-		return c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
-			c.statementsMayEvaluateCallBlock(typed.Body, seen)
-	case *TryStmt:
-		for i := range typed.Rescues {
-			if c.statementsMayEvaluateCallBlock(typed.Rescues[i].Body, seen) {
+		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) {
+			return true
+		}
+		if !c.expressionMayCompleteForBinding(typed.Condition) {
+			return false
+		}
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if known && !truthy {
+			return false
+		}
+		if loopBodyMayReachBackedge(typed.Body) {
+			c.degradeLocalTypesForRepeatedLoop(typed.Condition, typed.Body)
+			c.recordLocalBindings([]Statement{typed})
+			if c.expressionMayEvaluateCallBlock(typed.Condition, seen) {
 				return true
 			}
 		}
-		return c.statementsMayEvaluateCallBlock(typed.Body, seen) ||
-			c.statementsMayEvaluateCallBlock(typed.Else, seen) ||
-			c.statementsMayEvaluateCallBlock(typed.Ensure, seen)
-	case *ClassStmt:
 		return c.statementsMayEvaluateCallBlock(typed.Body, seen)
+	case *UntilStmt:
+		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) {
+			return true
+		}
+		if !c.expressionMayCompleteForBinding(typed.Condition) {
+			return false
+		}
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if known && truthy {
+			return false
+		}
+		if loopBodyMayReachBackedge(typed.Body) {
+			c.degradeLocalTypesForRepeatedLoop(typed.Condition, typed.Body)
+			c.recordLocalBindings([]Statement{typed})
+			if c.expressionMayEvaluateCallBlock(typed.Condition, seen) {
+				return true
+			}
+		}
+		return c.statementsMayEvaluateCallBlock(typed.Body, seen)
+	case *TryStmt:
+		entryState := c.snapshotScopeState()
+		if c.statementsMayEvaluateCallBlock(typed.Body, seen) {
+			return true
+		}
+		bodyState := c.snapshotScopeState()
+		if c.statementsMayCompleteForBinding(typed.Body) &&
+			c.statementsMayEvaluateCallBlock(typed.Else, seen) {
+			return true
+		}
+		c.restoreScopeState(entryState)
+		c.degradeLocalTypesForBindings([]Statement{typed})
+		failureEntryState := c.snapshotScopeState()
+		if !statementsProvenNonRaising(typed.Body) {
+			selected, exact := c.staticallySelectedRescue(typed.Body, typed.Rescues)
+			for i := range typed.Rescues {
+				if exact && i != selected {
+					continue
+				}
+				c.restoreScopeStateWithObservedBindings(failureEntryState, bodyState)
+				clause := &typed.Rescues[i]
+				popScope := c.pushRescueScope(clause)
+				if clause.Binding != "" {
+					c.bindLocalTypeInCurrentFrame(clause.Binding, nil)
+				}
+				mayEvaluate := c.statementsMayEvaluateCallBlock(clause.Body, seen)
+				popScope()
+				if mayEvaluate {
+					return true
+				}
+			}
+		}
+		c.restoreScopeState(failureEntryState)
+		c.recordLocalBindings([]Statement{typed})
+		return c.statementsMayEvaluateCallBlock(typed.Ensure, seen)
+	case *ClassStmt:
+		return c.isolatedStatementsMayEvaluateCallBlock(typed.Body, seen)
 	default:
 		return false
 	}
+}
+
+func (c *scriptChecker) isolatedStatementsMayEvaluateCallBlock(
+	statements []Statement,
+	seen map[*ScriptFunction]struct{},
+) bool {
+	previousScopes := c.scopes
+	restoreInference := c.withIsolatedLocalInference()
+	c.scopes = nil
+	popScope := c.pushScope(make(map[string]struct{}))
+	defer func() {
+		popScope()
+		restoreInference()
+		c.scopes = previousScopes
+	}()
+	return c.statementsMayEvaluateCallBlock(statements, seen)
+}
+
+func (c *scriptChecker) restoreScopeStateWithObservedBindings(
+	base checkScopeState,
+	observed checkScopeState,
+) {
+	c.restoreScopeState(base)
+	for i, bindings := range observed.defined {
+		if i >= len(c.scopes) {
+			break
+		}
+		if c.scopes[i] == nil && len(bindings) > 0 {
+			c.scopes[i] = make(map[string]struct{}, len(bindings))
+		}
+		for name := range bindings {
+			c.scopes[i][name] = struct{}{}
+		}
+	}
+}
+
+func (c *scriptChecker) expressionsMayEvaluateCallBlockInOrder(
+	expressions []Expression,
+	seen map[*ScriptFunction]struct{},
+) (mayEvaluateBlock, completes bool) {
+	for _, expr := range expressions {
+		if c.expressionMayEvaluateCallBlock(expr, seen) {
+			return true, false
+		}
+		if !c.expressionMayCompleteForBinding(expr) {
+			return false, false
+		}
+	}
+	return false, true
 }
 
 func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map[*ScriptFunction]struct{}) bool {
@@ -7386,17 +7841,22 @@ func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map
 	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		return false
 	case *ArrayLiteral:
-		for _, elem := range typed.Elements {
-			if c.expressionMayEvaluateCallBlock(elem, seen) {
+		mayEvaluate, _ := c.expressionsMayEvaluateCallBlockInOrder(typed.Elements, seen)
+		return mayEvaluate
+	case *HashLiteral:
+		if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
+			return false
+		}
+		for _, pair := range typed.Pairs {
+			mayEvaluate, completes := c.expressionsMayEvaluateCallBlockInOrder(
+				[]Expression{pair.Key, pair.Value},
+				seen,
+			)
+			if mayEvaluate {
 				return true
 			}
-		}
-		return false
-	case *HashLiteral:
-		for _, pair := range typed.Pairs {
-			if c.expressionMayEvaluateCallBlock(pair.Key, seen) ||
-				c.expressionMayEvaluateCallBlock(pair.Value, seen) {
-				return true
+			if !completes {
+				return false
 			}
 		}
 		return false
@@ -7404,44 +7864,128 @@ func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map
 		if c.expressionMayEvaluateCallBlock(typed.Callee, seen) {
 			return true
 		}
-		for _, arg := range typed.Args {
+		if !c.callCalleeExpressionMayCompleteForBinding(typed) {
+			return false
+		}
+		if staticNilSafeNavigationCall(typed) || c.safeNavigationCallSkipsInferred(typed) {
+			return false
+		}
+		target, resolved := c.resolveCallable(typed)
+		dynamicCandidates := c.captureDynamicCallCandidates(typed)
+		deferForwardedTargets := callResolvesForwardedTargetAfterArguments(
+			typed,
+			target,
+			resolved,
+		)
+		var dynamicResolution checkDynamicCallResolution
+		if !deferForwardedTargets {
+			dynamicResolution = c.exactDynamicCallTargets(
+				typed,
+				target,
+				resolved,
+				dynamicCandidates,
+			)
+		}
+		if c.callCalleeLookupFails(
+			typed,
+			target,
+			resolved,
+			deferForwardedTargets,
+			dynamicCandidates,
+			dynamicResolution,
+		) {
+			return false
+		}
+		positionalSplatSeen := false
+		for i, arg := range typed.Args {
 			if c.expressionMayEvaluateCallBlock(arg, seen) {
 				return true
 			}
+			expectation := expressionExpectation{}
+			_, splat := arg.(*SplatArg)
+			if resolved && !positionalSplatSeen && !splat {
+				expectation = staticCallablePositionalArgumentExpectation(target, i)
+			}
+			if !c.expressionMayCompleteForBindingWithExpectation(arg, expectation) ||
+				!c.positionalArgumentExpansionMaySucceed(arg) {
+				return false
+			}
+			positionalSplatSeen = positionalSplatSeen || splat
 		}
 		for _, kwarg := range typed.KwArgs {
 			if c.expressionMayEvaluateCallBlock(kwarg.Value, seen) {
 				return true
 			}
+			expectation := expressionExpectation{}
+			if resolved && !kwarg.Splat {
+				expectation = staticCallableKeywordArgumentExpectation(typed, target, kwarg.Name)
+			}
+			if !c.expressionMayCompleteForBindingWithExpectation(kwarg.Value, expectation) ||
+				!c.keywordArgumentExpansionMaySucceed(kwarg) {
+				return false
+			}
 		}
 		if typed.BlockArg != nil {
-			// A forwarded block argument may wrap or be the current call
-			// block, and the callee may invoke it.
-			return true
+			if c.expressionMayEvaluateCallBlock(typed.BlockArg, seen) {
+				return true
+			}
+			if !c.expressionMayCompleteForBindingWithExpectation(
+				typed.BlockArg,
+				typeExpressionExpectation(checkTypeFunction),
+			) || !c.blockArgumentConversionMaySucceed(
+				typed.BlockArg,
+				c.inferExpressionTypeWithExpectation(
+					typed.BlockArg,
+					typeExpressionExpectation(checkTypeFunction),
+				),
+			) {
+				return false
+			}
 		}
-		return c.callMayEvaluateBlockWithSeen(typed, seen) &&
+		if deferForwardedTargets {
+			dynamicResolution = c.exactDynamicCallTargets(
+				typed,
+				target,
+				resolved,
+				dynamicCandidates,
+			)
+		}
+		if typed.BlockArg != nil {
+			if c.resolvedCallMayInvokeSuppliedBlockWithSeen(
+				typed,
+				target,
+				resolved,
+				dynamicResolution,
+				seen,
+			) {
+				return true
+			}
+		}
+		return c.resolvedCallMayInvokeSuppliedBlockWithSeen(
+			typed,
+			target,
+			resolved,
+			dynamicResolution,
+			seen,
+		) &&
 			c.blockLiteralMayEvaluateCallBlock(typed.Block, seen)
 	case *MemberExpr:
 		return c.expressionMayEvaluateCallBlock(typed.Object, seen)
 	case *ScopeExpr:
 		return c.expressionMayEvaluateCallBlock(typed.Object, seen)
 	case *IndexExpr:
-		if c.expressionMayEvaluateCallBlock(typed.Object, seen) {
-			return true
-		}
-		for _, index := range typed.Indices {
-			if c.expressionMayEvaluateCallBlock(index, seen) {
-				return true
-			}
-		}
-		return false
+		expressions := make([]Expression, 0, len(typed.Indices)+1)
+		expressions = append(expressions, typed.Object)
+		expressions = append(expressions, typed.Indices...)
+		mayEvaluate, _ := c.expressionsMayEvaluateCallBlockInOrder(expressions, seen)
+		return mayEvaluate
 	case *DestructureTarget:
+		targets := make([]Expression, 0, len(typed.Elements))
 		for _, element := range typed.Elements {
-			if c.expressionMayEvaluateCallBlock(element.Target, seen) {
-				return true
-			}
+			targets = append(targets, element.Target)
 		}
-		return false
+		mayEvaluate, _ := c.expressionsMayEvaluateCallBlockInOrder(targets, seen)
+		return mayEvaluate
 	case *SplatArg:
 		return c.expressionMayEvaluateCallBlock(typed.Value, seen)
 	case *UnaryExpr:
@@ -7450,51 +7994,102 @@ func (c *scriptChecker) expressionMayEvaluateCallBlock(expr Expression, seen map
 		if c.expressionMayEvaluateCallBlock(typed.Left, seen) {
 			return true
 		}
-		return binaryRightMayEvaluate(typed) && c.expressionMayEvaluateCallBlock(typed.Right, seen)
+		if !c.expressionMayCompleteForBinding(typed.Left) ||
+			!binaryRightMayEvaluate(typed) || c.binaryRightUnreachable(typed) {
+			return false
+		}
+		return c.expressionMayEvaluateCallBlock(typed.Right, seen)
 	case *ConditionalExpr:
 		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) {
 			return true
 		}
-		if branch, ok := staticConditionalExpressionBranch(typed); ok {
+		if !c.expressionMayCompleteForBinding(typed.Condition) {
+			return false
+		}
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if known {
+			branch := typed.Alternate
+			if truthy {
+				branch = typed.Consequent
+			}
 			return c.expressionMayEvaluateCallBlock(branch, seen)
 		}
 		return c.expressionMayEvaluateCallBlock(typed.Consequent, seen) ||
 			c.expressionMayEvaluateCallBlock(typed.Alternate, seen)
 	case *RescueExpr:
-		return c.expressionMayEvaluateCallBlock(typed.Body, seen) ||
-			c.expressionMayEvaluateCallBlock(typed.Fallback, seen)
-	case *IfExpr:
-		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) ||
-			c.expressionMayEvaluateCallBlock(typed.Consequent, seen) ||
-			c.expressionMayEvaluateCallBlock(typed.Alternate, seen) {
+		if c.expressionMayEvaluateCallBlock(typed.Body, seen) {
 			return true
 		}
+		if expressionProvenNonRaising(typed.Body) {
+			return false
+		}
+		if errorKind, exact := c.staticallyRaisedExpressionErrorKind(typed.Body); exact &&
+			!staticErrorKindMatchesRescue(errorKind, nil) {
+			return false
+		}
+		return c.expressionMayEvaluateCallBlock(typed.Fallback, seen)
+	case *IfExpr:
+		if c.expressionMayEvaluateCallBlock(typed.Condition, seen) {
+			return true
+		}
+		if !c.expressionMayCompleteForBinding(typed.Condition) {
+			return false
+		}
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if (!known || truthy) && c.expressionMayEvaluateCallBlock(typed.Consequent, seen) {
+			return true
+		}
+		if known && truthy {
+			return false
+		}
 		for _, branch := range typed.ElseIf {
-			if c.expressionMayEvaluateCallBlock(branch.Condition, seen) ||
+			if c.expressionMayEvaluateCallBlock(branch.Condition, seen) {
+				return true
+			}
+			if !c.expressionMayCompleteForBinding(branch.Condition) {
+				return false
+			}
+			branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
+			if (!branchKnown || branchTruthy) &&
 				c.expressionMayEvaluateCallBlock(branch.Result, seen) {
 				return true
 			}
+			if branchKnown && branchTruthy {
+				return false
+			}
 		}
-		return false
+		return c.expressionMayEvaluateCallBlock(typed.Alternate, seen)
 	case *RangeExpr:
-		return c.expressionMayEvaluateCallBlock(typed.Start, seen) ||
-			c.expressionMayEvaluateCallBlock(typed.End, seen)
+		mayEvaluate, _ := c.expressionsMayEvaluateCallBlockInOrder(
+			[]Expression{typed.Start, typed.End},
+			seen,
+		)
+		return mayEvaluate
 	case *CaseExpr:
-		if c.expressionMayEvaluateCallBlock(typed.Target, seen) ||
-			c.expressionMayEvaluateCallBlock(typed.ElseExpr, seen) {
+		if c.expressionMayEvaluateCallBlock(typed.Target, seen) {
 			return true
+		}
+		if !c.expressionMayCompleteForBinding(typed.Target) {
+			return false
+		}
+		if result, known := c.inferredCaseExpressionResult(typed); known {
+			return c.expressionMayEvaluateCallBlock(result, seen)
 		}
 		for _, clause := range typed.Clauses {
 			for _, value := range clause.Values {
 				if c.expressionMayEvaluateCallBlock(value.Expr, seen) {
 					return true
 				}
+				if !c.expressionMayCompleteForBinding(value.Expr) ||
+					!c.caseWhenSplatExpansionMaySucceed(value.Expr, value.Splat) {
+					return false
+				}
 			}
 			if c.expressionMayEvaluateCallBlock(clause.Result, seen) {
 				return true
 			}
 		}
-		return false
+		return c.expressionMayEvaluateCallBlock(typed.ElseExpr, seen)
 	case *BlockLiteral:
 		return false
 	case *YieldExpr:
@@ -7512,21 +8107,41 @@ func (c *scriptChecker) blockLiteralMayEvaluateCallBlock(block *BlockLiteral, se
 	if block == nil {
 		return false
 	}
+	// Literal call blocks close over the surrounding locals but may run zero
+	// or many times. Degrade captured bindings up front, then keep the walk's
+	// final iteration state from escaping as a definite fact. Block-bound
+	// parameters live in a nested scope and never overwrite same-named outer
+	// locals.
+	c.degradeBlockBodyBindings(block)
+	entryState := c.snapshotScopeState()
+	popScope := c.pushBlockCheckScope(block)
+	popNameScope := c.pushBlockNameScope(block)
+	defer func() {
+		popNameScope()
+		popScope()
+		c.restoreScopeState(entryState)
+	}()
+	for _, name := range block.ImplicitParams {
+		c.bindLocalTypeInCurrentFrame(name, nil)
+	}
 	for _, param := range block.Params {
 		if c.expressionMayEvaluateCallBlock(param.DefaultVal, seen) {
 			return true
 		}
+		c.recordParamBinding(param)
 	}
 	return c.statementsMayEvaluateCallBlock(block.Body, seen)
 }
 
 func (c *scriptChecker) stringPartsMayEvaluateCallBlock(parts []StringPart, seen map[*ScriptFunction]struct{}) bool {
+	expressions := make([]Expression, 0, len(parts))
 	for _, part := range parts {
-		if exprPart, ok := part.(StringExpr); ok && c.expressionMayEvaluateCallBlock(exprPart.Expr, seen) {
-			return true
+		if exprPart, ok := part.(StringExpr); ok {
+			expressions = append(expressions, exprPart.Expr)
 		}
 	}
-	return false
+	mayEvaluate, _ := c.expressionsMayEvaluateCallBlockInOrder(expressions, seen)
+	return mayEvaluate
 }
 
 func (c *scriptChecker) checkStringParts(function string, parts []StringPart) bool {
@@ -8236,7 +8851,7 @@ func (c *scriptChecker) checkCallResolved(
 				target.fn,
 				facts,
 			)
-		} else if plan.defaultParams != nil {
+		} else if plan.bindingStarts {
 			c.enqueueReachableFunctionBinding(target.name, target.fn, facts, plan)
 		}
 		return
@@ -9219,11 +9834,8 @@ func (c *scriptChecker) reachableCallParamFacts(
 	) ([]string, []*ScriptFunction) {
 		identitySource := expr
 		if expectation.includesCallable() {
-			if callableExpr, bindable := c.bareIdentifierCallableArgument(expr); bindable {
+			if callableExpr, bindable := bareIdentifierCallableValue(expr); bindable {
 				identitySource = callableExpr
-				if call, ok := identitySource.(*CallExpr); ok {
-					identitySource = call.Callee
-				}
 			}
 		}
 		identityExpr, autoInvoked := c.evaluatedIdentityExpression(
@@ -9758,7 +10370,12 @@ func (c *scriptChecker) scriptCallBindingPlan(call *CallExpr, target staticCalla
 				defaults = append(defaults, i)
 			}
 		}
-		return scriptCallBindingPlan{defaultParams: defaults, bodyMayEnter: true}
+		return scriptCallBindingPlan{
+			defaultParams:   defaults,
+			boundParamCount: len(target.fn.Params),
+			bindingStarts:   true,
+			bodyMayEnter:    true,
+		}
 	}
 	if !scriptCallBodyMayEnter(call, target) {
 		return scriptCallBindingPlan{}
@@ -9767,7 +10384,10 @@ func (c *scriptChecker) scriptCallBindingPlan(call *CallExpr, target staticCalla
 	view := staticCallViewFor(call, target)
 	usedKeywords := make(map[string]struct{}, len(view.kwargs))
 	argIndex := 0
-	plan := scriptCallBindingPlan{bodyMayEnter: true}
+	inputs := make([]scriptParamBindingInput, len(target.fn.Params))
+	for i := range inputs {
+		inputs[i].mayBind = true
+	}
 	for i, param := range target.fn.Params {
 		switch param.Kind {
 		case ParamNormal:
@@ -9779,56 +10399,301 @@ func (c *scriptChecker) scriptCallBindingPlan(call *CallExpr, target staticCalla
 				value = view.kwargs[kwIndex].Value
 				usedKeywords[param.Name] = struct{}{}
 			} else {
-				plan.defaultParams = append(plan.defaultParams, i)
-				value = param.DefaultVal
-				if !c.defaultExpressionMayBindType(value, param.Type) ||
-					!c.expressionMayCompleteForBinding(value) {
-					plan.bodyMayEnter = false
-					return plan
-				}
+				inputs[i].usesDefault = true
 				continue
 			}
 			if !c.callArgumentMayBindType(value, param.Type) {
-				plan.bodyMayEnter = false
-				return plan
+				inputs[i].mayBind = false
+			}
+			if ty := c.ivarParamContract(target.fn, param); ty != nil &&
+				!c.callArgumentMayBindType(value, ty) {
+				inputs[i].mayBind = false
 			}
 		case ParamKeyword:
 			if kwIndex := keywordIndex(view, param.Name); kwIndex >= 0 {
 				usedKeywords[param.Name] = struct{}{}
-				if !c.callArgumentMayBindType(view.kwargs[kwIndex].Value, param.Type) {
-					plan.bodyMayEnter = false
-					return plan
+				value := view.kwargs[kwIndex].Value
+				if !c.callArgumentMayBindType(value, param.Type) {
+					inputs[i].mayBind = false
+				}
+				if ty := c.ivarParamContract(target.fn, param); ty != nil &&
+					!c.callArgumentMayBindType(value, ty) {
+					inputs[i].mayBind = false
 				}
 				continue
 			}
-			plan.defaultParams = append(plan.defaultParams, i)
-			if !c.defaultExpressionMayBindType(param.DefaultVal, param.Type) ||
-				!c.expressionMayCompleteForBinding(param.DefaultVal) {
-				plan.bodyMayEnter = false
-				return plan
-			}
+			inputs[i].usesDefault = true
 		case ParamRest:
 			if !c.callRestArgumentsMayBindType(view.args[argIndex:], param.Type) {
-				plan.bodyMayEnter = false
-				return plan
+				inputs[i].mayBind = false
 			}
 			argIndex = len(view.args)
 		case ParamKeywordRest:
 			if !c.callKeywordRestArgumentsMayBindType(view.kwargs, usedKeywords, param.Type) {
-				plan.bodyMayEnter = false
-				return plan
+				inputs[i].mayBind = false
 			}
 			for _, kwarg := range view.kwargs {
 				usedKeywords[kwarg.Name] = struct{}{}
 			}
 		case ParamBlock:
 			if !c.callBlockMayBindType(call, param.Type) {
-				plan.bodyMayEnter = false
-				return plan
+				inputs[i].mayBind = false
 			}
 		}
 	}
+	facts := c.reachableCallParamFacts(call, target)
+	return c.scriptCallBindingPlanInContext(target.fn, inputs, facts)
+}
+
+func (c *scriptChecker) scriptCallBindingPlanInContext(
+	fn *ScriptFunction,
+	inputs []scriptParamBindingInput,
+	facts map[string]checkReachableParamFact,
+) (plan scriptCallBindingPlan) {
+	if fn == nil || len(inputs) != len(fn.Params) {
+		return plan
+	}
+	plan.bindingStarts = true
+	plan.exactBindings = true
+	restoreResolution := c.withClassConstantProofResolution(fn, nil)
+	defer restoreResolution()
+	previousScopes := c.scopes
+	restoreInference := c.withIsolatedLocalInference()
+	c.scopes = nil
+	popScope := c.pushScope(make(map[string]struct{}))
+	defer func() {
+		popScope()
+		restoreInference()
+		c.scopes = previousScopes
+	}()
+	previousFacts := c.reachableParamFacts
+	c.reachableParamFacts = facts
+	defer func() { c.reachableParamFacts = previousFacts }()
+	previousPending := c.pendingBindingParams
+	c.pendingBindingParams = functionParamBindingNames(fn)
+	defer func() { c.pendingBindingParams = previousPending }()
+
+	c.seedInstanceIvarFacts(fn)
+	c.linkReachableParamAliases(fn.Params)
+	for i, param := range fn.Params {
+		input := inputs[i]
+		if input.usesDefault {
+			plan.defaultParams = append(plan.defaultParams, i)
+			if !c.defaultExpressionMayCompleteForBinding(param) ||
+				!c.defaultExpressionMayBindType(param.DefaultVal, param.Type) {
+				return plan
+			}
+			if ty := c.ivarParamContract(fn, param); ty != nil &&
+				!c.defaultExpressionMayBindType(param.DefaultVal, ty) {
+				return plan
+			}
+		} else if !input.mayBind {
+			return plan
+		}
+		c.withSuppressedWarnings(func() {
+			c.checkIvarParamBinding("", fn, param)
+		})
+		c.recordParamBinding(param)
+		c.applyReachableParamFact(param)
+		removeFunctionParamBindingNames(c.pendingBindingParams, param)
+		plan.boundParamCount = i + 1
+	}
+	plan.bodyMayEnter = true
 	return plan
+}
+
+func functionParamBindingNames(fn *ScriptFunction) map[string]struct{} {
+	if fn == nil {
+		return nil
+	}
+	names := make(map[string]struct{}, len(fn.Params))
+	for _, param := range fn.Params {
+		if param.Name != "" {
+			names[param.Name] = struct{}{}
+		}
+		collectBindingTarget(param.Target, names)
+	}
+	return names
+}
+
+func removeFunctionParamBindingNames(names map[string]struct{}, param Param) {
+	delete(names, param.Name)
+	bound := make(map[string]struct{})
+	collectBindingTarget(param.Target, bound)
+	for name := range bound {
+		delete(names, name)
+	}
+}
+
+func bindingDefaultExpectation(param Param) expressionExpectation {
+	if param.Kind == ParamKeyword {
+		return typeExpressionExpectation(param.Type)
+	}
+	return positionalArgumentExpectation(param)
+}
+
+func (c *scriptChecker) defaultExpressionMayCompleteForBinding(param Param) bool {
+	return c.expressionMayCompleteForBindingWithExpectation(
+		param.DefaultVal,
+		bindingDefaultExpectation(param),
+	)
+}
+
+func (c *scriptChecker) expressionMayCompleteForBindingWithAuto(
+	expr Expression,
+	autoCall bool,
+) bool {
+	if autoCall {
+		return c.expressionMayCompleteForBinding(expr)
+	}
+	if _, bindable := c.bareMemberArgumentCallableFact(expr); bindable {
+		return c.expressionMayCompleteForBinding(expr.(*MemberExpr).Object)
+	}
+	if identity, bindable := bareIdentifierCallableValue(expr); bindable {
+		ident := identity.(*Identifier)
+		if _, pending := c.pendingBindingParams[ident.Name]; pending &&
+			!c.staticNameShadowed(ident.Name) {
+			return false
+		}
+		return true
+	}
+	switch typed := expr.(type) {
+	case *RescueExpr:
+		bodyCompletes := c.expressionMayCompleteForBindingWithAuto(typed.Body, false)
+		if errorKind, exact := c.staticallyRaisedExpressionErrorKind(typed.Body); exact &&
+			!staticErrorKindMatchesRescue(errorKind, nil) {
+			return bodyCompletes
+		}
+		return bodyCompletes || c.expressionMayCompleteForBindingWithAuto(typed.Fallback, false)
+	case *TypeLiteral:
+		return !c.typeLiteralStaticallyShadowed(typed) ||
+			c.expressionMayCompleteForBindingWithAuto(typed.Fallback, false)
+	default:
+		return c.expressionMayCompleteForBinding(expr)
+	}
+}
+
+func (c *scriptChecker) expressionMayCompleteForBindingWithExpectation(
+	expr Expression,
+	expectation expressionExpectation,
+) bool {
+	if expectation.empty() {
+		return c.expressionMayCompleteForBinding(expr)
+	}
+	if expectation.includesCallable() {
+		if _, bindable := c.bareMemberArgumentCallableFact(expr); bindable {
+			return c.expressionMayCompleteForBinding(expr.(*MemberExpr).Object)
+		}
+		if identity, bindable := bareIdentifierCallableValue(expr); bindable {
+			ident := identity.(*Identifier)
+			if _, pending := c.pendingBindingParams[ident.Name]; pending &&
+				!c.staticNameShadowed(ident.Name) {
+				return false
+			}
+			return true
+		}
+	}
+	switch typed := expr.(type) {
+	case *ConditionalExpr:
+		if !c.expressionMayCompleteForBinding(typed.Condition) {
+			return false
+		}
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if known {
+			branch := typed.Alternate
+			if truthy {
+				branch = typed.Consequent
+			}
+			return c.expressionMayCompleteForBindingWithExpectation(branch, expectation)
+		}
+		return c.expressionMayCompleteForBindingWithExpectation(typed.Consequent, expectation) ||
+			c.expressionMayCompleteForBindingWithExpectation(typed.Alternate, expectation)
+	case *IfExpr:
+		if !c.expressionMayCompleteForBinding(typed.Condition) {
+			return false
+		}
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if (!known || truthy) &&
+			c.expressionMayCompleteForBindingWithExpectation(typed.Consequent, expectation) {
+			return true
+		}
+		if known && truthy {
+			return false
+		}
+		for _, branch := range typed.ElseIf {
+			if !c.expressionMayCompleteForBinding(branch.Condition) {
+				return false
+			}
+			branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
+			if (!branchKnown || branchTruthy) &&
+				c.expressionMayCompleteForBindingWithExpectation(branch.Result, expectation) {
+				return true
+			}
+			if branchKnown && branchTruthy {
+				return false
+			}
+		}
+		return c.expressionMayCompleteForBindingWithExpectation(typed.Alternate, expectation)
+	case *CaseExpr:
+		if !c.expressionMayCompleteForBinding(typed.Target) {
+			return false
+		}
+		if result, known := c.inferredCaseExpressionResult(typed); known {
+			return c.expressionMayCompleteForBindingWithExpectation(result, expectation)
+		}
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				if !c.expressionMayCompleteForBinding(value.Expr) ||
+					!c.caseWhenSplatExpansionMaySucceed(value.Expr, value.Splat) {
+					return false
+				}
+				if c.expressionMayCompleteForBindingWithExpectation(clause.Result, expectation) {
+					return true
+				}
+			}
+		}
+		return c.expressionMayCompleteForBindingWithExpectation(typed.ElseExpr, expectation)
+	case *RescueExpr:
+		return c.expressionMayCompleteForBindingWithAuto(
+			typed,
+			!expectation.includesCallable(),
+		)
+	case *ArrayLiteral:
+		elementExpectation, ok := expectation.arrayElementExpectation()
+		if !ok {
+			break
+		}
+		for i, element := range typed.Elements {
+			if !c.expressionMayCompleteForBindingWithExpectation(
+				element,
+				elementExpectation(i, len(typed.Elements)),
+			) {
+				return false
+			}
+		}
+		return true
+	case *HashLiteral:
+		if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
+			return true
+		}
+		if !hashLiteralTypeHasValueSlots(expectation.ty) {
+			break
+		}
+		for _, pair := range typed.Pairs {
+			if !c.expressionMayCompleteForBinding(pair.Key) {
+				return false
+			}
+			valueExpectation := expressionExpectation{}
+			if key, ok := staticLiteralValue(pair.Key); ok {
+				valueExpectation = typeExpressionExpectation(hashLiteralValueType(expectation.ty, key))
+			}
+			if !c.expressionMayCompleteForBindingWithExpectation(pair.Value, valueExpectation) {
+				return false
+			}
+		}
+		return true
+	}
+	return c.expressionMayCompleteForBinding(expr)
 }
 
 func (c *scriptChecker) callArgumentMayBindType(expr Expression, ty *TypeExpr) bool {
@@ -9942,6 +10807,10 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 			c.specialBuiltinCallMayComplete(checkedCall, target.name) &&
 			c.builtinCallMayComplete(target.spec)
 	case *Identifier:
+		if _, pending := c.pendingBindingParams[typed.Name]; pending &&
+			!c.staticNameShadowed(typed.Name) {
+			return false
+		}
 		if fns, exact := c.localCallableValuesFor(typed.Name); exact {
 			for _, fn := range fns {
 				if len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false) {
@@ -10053,7 +10922,12 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 		if !c.expressionMayCompleteForBinding(typed.Condition) {
 			return false
 		}
-		if branch, known := staticConditionalExpressionBranch(typed); known {
+		truthy, known := c.inferredConditionTruthiness(typed.Condition)
+		if known {
+			branch := typed.Alternate
+			if truthy {
+				branch = typed.Consequent
+			}
 			return c.expressionMayCompleteForBinding(branch)
 		}
 		return c.expressionMayCompleteForBinding(typed.Consequent) ||
@@ -11948,6 +12822,16 @@ func staticConditionalExpressionBranch(expr *ConditionalExpr) (Expression, bool)
 	return expr.Alternate, true
 }
 
+func staticIterableProvenEmpty(expr Expression) bool {
+	array, ok := expr.(*ArrayLiteral)
+	return ok && len(array.Elements) == 0
+}
+
+func staticIterableProvenSingle(expr Expression) bool {
+	array, ok := expr.(*ArrayLiteral)
+	return ok && len(array.Elements) == 1
+}
+
 func staticIfExpressionBranch(expr *IfExpr) (Expression, bool) {
 	if expr == nil {
 		return nil, false
@@ -12941,6 +13825,7 @@ type namespaceMutationScan struct {
 	nominalReceivers map[string]*ClassDef
 	callableParams   map[string][]*ScriptFunction
 	callableLambdas  map[string][]Expression
+	unboundParams    map[string]struct{}
 	invokedLambdas   map[*BlockLiteral]struct{}
 	failureScopes    [][]checkScopeState
 }
@@ -13130,9 +14015,15 @@ func staticConstructorReceiverClass(call *CallExpr) (string, bool) {
 // function scans everything a call may execute: parameter defaults run
 // before the body when the caller omits the argument.
 func (s *namespaceMutationScan) function(fn *ScriptFunction) {
+	defaults := make([]int, 0, len(fn.Params))
+	for i, param := range fn.Params {
+		if param.DefaultVal != nil {
+			defaults = append(defaults, i)
+		}
+	}
 	s.withFunctionContext(fn, nil, nil, func() {
-		for _, param := range fn.Params {
-			s.expression(param.DefaultVal)
+		if !s.scanFunctionBindings(fn, defaults, len(fn.Params), nil, nil, false) {
+			return
 		}
 		s.statements(fn.Body)
 	})
@@ -13153,27 +14044,95 @@ func (s *namespaceMutationScan) scanFunctionCall(
 		call = expanded
 	}
 	plan := s.checker.scriptCallBindingPlan(call, target)
-	if !plan.bodyMayEnter && len(plan.defaultParams) == 0 {
+	if !plan.bindingStarts {
 		return
 	}
 	facts := s.checker.reachableCallParamFacts(call, target)
 	lambdas := callableParamLambdaArguments(call, target, facts)
 	if _, active := s.active[fn]; active {
 		s.withFunctionContext(fn, facts, lambdas, func() {
-			s.scanFunctionDefaults(fn, plan.defaultParams)
+			s.scanFunctionBindings(
+				fn,
+				plan.defaultParams,
+				plan.boundParamCount,
+				facts,
+				lambdas,
+				plan.exactBindings,
+			)
 		})
 		return
 	}
 	s.active[fn] = struct{}{}
 	defer delete(s.active, fn)
 	s.withFunctionContext(fn, facts, lambdas, func() {
-		if !s.scanFunctionDefaults(fn, plan.defaultParams) {
+		if !s.scanFunctionBindings(
+			fn,
+			plan.defaultParams,
+			plan.boundParamCount,
+			facts,
+			lambdas,
+			plan.exactBindings,
+		) {
 			return
 		}
 		if plan.bodyMayEnter {
 			s.statements(fn.Body)
 		}
 	})
+}
+
+func (s *namespaceMutationScan) scanFunctionBindings(
+	fn *ScriptFunction,
+	defaultParams []int,
+	boundParamCount int,
+	facts map[string]checkReachableParamFact,
+	lambdas map[string][]Expression,
+	gateDefaults bool,
+) bool {
+	defaults := make(map[int]struct{}, len(defaultParams))
+	for _, index := range defaultParams {
+		defaults[index] = struct{}{}
+	}
+	for i, param := range fn.Params {
+		_, defaultPossible := defaults[i]
+		if defaultPossible {
+			beforeDefault := s.checker.snapshotScopeState()
+			completed := s.scanFunctionDefaults(fn, []int{i})
+			if gateDefaults {
+				if !completed || !s.functionParamDefaultMayBind(fn, param) {
+					return false
+				}
+			} else if completed {
+				afterDefault := s.checker.snapshotScopeState()
+				s.checker.mergeScopeStates(
+					beforeDefault,
+					[]checkScopeState{beforeDefault, afterDefault},
+				)
+			} else {
+				s.checker.restoreScopeState(beforeDefault)
+			}
+		}
+		if i >= boundParamCount {
+			return false
+		}
+		s.checker.withSuppressedWarnings(func() {
+			s.checker.checkIvarParamBinding("", fn, param)
+		})
+		s.checker.recordParamBinding(param)
+		s.checker.applyReachableParamFact(param)
+		s.markFunctionParamBound(param)
+		s.bindCallableParamFact(param, facts, lambdas, defaultPossible)
+		s.bindNominalReceiverParam(param)
+	}
+	return true
+}
+
+func (s *namespaceMutationScan) functionParamDefaultMayBind(fn *ScriptFunction, param Param) bool {
+	if !s.checker.defaultExpressionMayBindType(param.DefaultVal, param.Type) {
+		return false
+	}
+	ty := s.checker.ivarParamContract(fn, param)
+	return ty == nil || s.checker.defaultExpressionMayBindType(param.DefaultVal, ty)
 }
 
 func (s *namespaceMutationScan) scanFunctionDefaults(fn *ScriptFunction, indices []int) bool {
@@ -13190,7 +14149,11 @@ func (s *namespaceMutationScan) scanFunctionDefaults(fn *ScriptFunction, indices
 			continue
 		}
 		active[paramIndex] = struct{}{}
-		completed := s.expression(fn.Params[paramIndex].DefaultVal)
+		param := fn.Params[paramIndex]
+		completed := s.callArgumentExpression(
+			param.DefaultVal,
+			bindingDefaultExpectation(param),
+		)
 		delete(active, paramIndex)
 		if !completed {
 			return false
@@ -13212,7 +14175,7 @@ func (s *namespaceMutationScan) withFunctionContext(
 	previousFailureScopes := s.failureScopes
 	s.failureScopes = nil
 	defer func() { s.failureScopes = previousFailureScopes }()
-	restoreResolution := s.checker.withClassConstantProofResolution(fn, scriptFunctionBindings(fn))
+	restoreResolution := s.checker.withClassConstantProofResolution(fn, nil)
 	defer restoreResolution()
 	previousScopes := s.checker.scopes
 	restoreInference := s.checker.withIsolatedLocalInference()
@@ -13226,14 +14189,19 @@ func (s *namespaceMutationScan) withFunctionContext(
 	previousFacts := s.checker.reachableParamFacts
 	s.checker.reachableParamFacts = facts
 	defer func() { s.checker.reachableParamFacts = previousFacts }()
-	s.checker.linkReachableParamAliases(fn.Params)
-	for _, param := range fn.Params {
-		s.checker.recordParamBinding(param)
-		s.checker.applyReachableParamFact(param)
-	}
-	s.withCallableParamFacts(fn.Params, facts, lambdas, func() {
-		s.withFunctionSelf(fn, func() {
-			s.withNominalReceiverParams(fn.Params, false, walk)
+	previousUnbound := s.unboundParams
+	previousPending := s.checker.pendingBindingParams
+	s.unboundParams = functionParamBindingNames(fn)
+	s.checker.pendingBindingParams = s.unboundParams
+	defer func() {
+		s.unboundParams = previousUnbound
+		s.checker.pendingBindingParams = previousPending
+	}()
+	s.withFunctionSelf(fn, func() {
+		s.checker.seedInstanceIvarFacts(fn)
+		s.checker.linkReachableParamAliases(fn.Params)
+		s.withCallableParamFacts(fn.Params, facts, lambdas, func() {
+			s.withNominalReceiverParamShadows(fn.Params, walk)
 		})
 	})
 }
@@ -13247,25 +14215,62 @@ func (s *namespaceMutationScan) withCallableParamFacts(
 	previous := s.callableParams
 	previousLambdas := s.callableLambdas
 	s.callableParams = make(map[string][]*ScriptFunction, len(facts))
-	for name, fact := range facts {
-		if len(fact.callables) > 0 {
-			s.callableParams[name] = fact.callables
-		}
-	}
 	s.callableLambdas = make(map[string][]Expression, len(params)+len(lambdas))
-	for _, param := range params {
-		if param.Name != "" {
-			s.callableLambdas[param.Name] = nil
-		}
-	}
-	for name, values := range lambdas {
-		s.callableLambdas[name] = values
-	}
 	defer func() {
 		s.callableParams = previous
 		s.callableLambdas = previousLambdas
 	}()
 	walk()
+}
+
+func (s *namespaceMutationScan) bindCallableParamFact(
+	param Param,
+	facts map[string]checkReachableParamFact,
+	lambdas map[string][]Expression,
+	defaultPossible bool,
+) {
+	if param.Name == "" {
+		return
+	}
+	delete(s.callableParams, param.Name)
+	var candidates []*ScriptFunction
+	if fns, exact := s.checker.localCallableValuesFor(param.Name); exact && len(fns) > 0 {
+		candidates = append(candidates, fns...)
+	}
+	if fact, ok := facts[param.Name]; ok && len(fact.callables) > 0 {
+		candidates = append(candidates, fact.callables...)
+	}
+	if defaultPossible {
+		if fns, exact := s.checker.callableExpressionFunctions(param.DefaultVal); exact {
+			candidates = append(candidates, fns...)
+		}
+	}
+	if len(candidates) > 0 {
+		seen := make(map[*ScriptFunction]struct{}, len(candidates))
+		unique := candidates[:0]
+		for _, fn := range candidates {
+			if fn == nil {
+				continue
+			}
+			if _, exists := seen[fn]; exists {
+				continue
+			}
+			seen[fn] = struct{}{}
+			unique = append(unique, fn)
+		}
+		if len(unique) > 0 {
+			s.callableParams[param.Name] = unique
+		}
+	}
+	boundLambdas := append([]Expression(nil), lambdas[param.Name]...)
+	if defaultPossible && lambdaLiteralBlock(param.DefaultVal) != nil {
+		boundLambdas = append(boundLambdas, param.DefaultVal)
+	}
+	s.callableLambdas[param.Name] = boundLambdas
+}
+
+func (s *namespaceMutationScan) markFunctionParamBound(param Param) {
+	removeFunctionParamBindingNames(s.unboundParams, param)
 }
 
 func (s *namespaceMutationScan) withCallableParamShadows(params []Param, walk func()) {
@@ -13360,6 +14365,26 @@ func (s *namespaceMutationScan) withNominalReceiverParams(params []Param, inheri
 	walk()
 }
 
+func (s *namespaceMutationScan) withNominalReceiverParamShadows(params []Param, walk func()) {
+	previous := s.nominalReceivers
+	s.nominalReceivers = make(map[string]*ClassDef, len(params))
+	defer func() { s.nominalReceivers = previous }()
+	walk()
+}
+
+func (s *namespaceMutationScan) bindNominalReceiverParam(param Param) {
+	if param.Name == "" {
+		return
+	}
+	s.nominalReceivers[param.Name] = nil
+	if param.Kind != ParamNormal && param.Kind != ParamKeyword {
+		return
+	}
+	if classDef := s.nominalReceiverClass(param.Type); classDef != nil {
+		s.nominalReceivers[param.Name] = classDef
+	}
+}
+
 func (s *namespaceMutationScan) nominalReceiverClass(ty *TypeExpr) *ClassDef {
 	arms, ok := typeExprArms(ty, 0)
 	if !ok || len(arms) == 0 {
@@ -13408,26 +14433,55 @@ func (s *namespaceMutationScan) captureFailureScope() {
 	}
 }
 
+func (s *namespaceMutationScan) failureScopeCheckpoint() []int {
+	checkpoint := make([]int, len(s.failureScopes))
+	for i := range s.failureScopes {
+		checkpoint[i] = len(s.failureScopes[i])
+	}
+	return checkpoint
+}
+
+func (s *namespaceMutationScan) restoreFailureScopeCheckpoint(checkpoint []int) {
+	for i, length := range checkpoint {
+		if i >= len(s.failureScopes) || length > len(s.failureScopes[i]) {
+			continue
+		}
+		s.failureScopes[i] = s.failureScopes[i][:length]
+	}
+}
+
 func (s *namespaceMutationScan) collectFailureScopes(walk func() bool) (bool, []checkScopeState) {
 	s.failureScopes = append(s.failureScopes, nil)
 	index := len(s.failureScopes) - 1
-	s.captureFailureScope()
 	completed := walk()
-	s.captureFailureScope()
 	states := s.failureScopes[index]
 	s.failureScopes = s.failureScopes[:index]
 	return completed, states
 }
 
 func (s *namespaceMutationScan) statement(stmt Statement) bool {
+	failureCheckpoint := s.failureScopeCheckpoint()
+	captureBoundary := true
 	s.captureFailureScope()
-	defer s.captureFailureScope()
+	defer func() {
+		if captureBoundary {
+			s.captureFailureScope()
+		}
+	}()
 	switch typed := stmt.(type) {
 	case nil:
 		return true
 	case *AssignStmt:
+		destructure, preciseDestructure := typed.Target.(*DestructureTarget)
+		preciseDestructure = preciseDestructure && typed.Operator == ""
+		plainIvar, preciseIvar := typed.Target.(*IvarExpr)
+		preciseIvar = preciseIvar && typed.Operator == ""
+		if preciseDestructure || preciseIvar {
+			captureBoundary = false
+			s.restoreFailureScopeCheckpoint(failureCheckpoint)
+		}
 		if typed.Operator == "" {
-			if _, destructure := typed.Target.(*DestructureTarget); destructure &&
+			if preciseDestructure &&
 				s.checker.evaluatedDestructureFacts == nil {
 				s.checker.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
 				defer func() { s.checker.evaluatedDestructureFacts = nil }()
@@ -13439,13 +14493,27 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 		var setterReceiverCandidates []checkDynamicCallCandidates
 		switch typed.Operator {
 		case "":
+			rhsFailureCheckpoint := s.failureScopeCheckpoint()
 			expectation := s.checker.assignmentValueExpectation(typed.Target, typed.Value)
 			if !s.callArgumentExpression(typed.Value, expectation) {
 				return false
 			}
+			if (preciseDestructure || preciseIvar) && expressionProvenNonRaising(typed.Value) {
+				s.restoreFailureScopeCheckpoint(rhsFailureCheckpoint)
+			}
 			s.checker.captureEvaluatedDestructureFact(typed.Value)
-			if destructure, ok := typed.Target.(*DestructureTarget); ok {
+			if preciseDestructure {
 				return s.replayDestructureAssignment(destructure, typed.Value)
+			}
+			if preciseIvar {
+				setterCompletes := s.checker.assignmentSetterMayComplete(plainIvar, typed.Value)
+				if !s.checker.ivarWriteProvablyCompletes(plainIvar.Name, typed.Value) {
+					s.captureFailureScope()
+				}
+				s.checker.withSuppressedWarnings(func() {
+					s.checker.inferAssignStatementTypes("", typed, nil, nil)
+				})
+				return setterCompletes
 			}
 			if !s.assignmentTarget(typed.Target) {
 				return false
@@ -13469,11 +14537,84 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 				rhsReachable: rhsReachable,
 				known:        known,
 			}
-			if ident, ok := typed.Target.(*Identifier); ok {
-				logicalTargetFact.current = s.checker.localTypeFor(ident.Name)
+			switch target := typed.Target.(type) {
+			case *Identifier:
+				logicalTargetFact.current = s.checker.localTypeFor(target.Name)
 				if typed.Operator == tokenOrAssign && !known {
-					logicalTargetFact.priorAliasTransfer = s.checker.captureContainerAliasTransfer(ident)
+					logicalTargetFact.priorAliasTransfer = s.checker.captureContainerAliasTransfer(target)
 				}
+			case *IvarExpr:
+				logicalTargetFact.current = s.checker.localTypeFor(ivarFactKey(target.Name))
+			}
+			if ivar, ok := typed.Target.(*IvarExpr); ok {
+				// Ivar reads themselves cannot fail. Replace the generic
+				// statement boundary with the two runtime logical arms so rescue
+				// receives only failures from the writing arm and ordinary flow
+				// receives only successful-write or skipped states.
+				captureBoundary = false
+				s.restoreFailureScopeCheckpoint(failureCheckpoint)
+				baseScopeState := s.checker.snapshotScopeState()
+				if !rhsReachable {
+					return true
+				}
+				if !known {
+					s.checker.narrowLogicalIvarFact(
+						ivar.Name,
+						typed.Operator == tokenAndAssign,
+					)
+				}
+				rhsFailureCheckpoint := s.failureScopeCheckpoint()
+				expectation := s.checker.assignmentValueExpectation(typed.Target, typed.Value)
+				if !s.callArgumentExpression(typed.Value, expectation) {
+					if !known {
+						s.checker.restoreScopeState(baseScopeState)
+						s.checker.narrowLogicalIvarFact(
+							ivar.Name,
+							typed.Operator == tokenOrAssign,
+						)
+					}
+					return !known
+				}
+				if expressionProvenNonRaising(typed.Value) {
+					s.restoreFailureScopeCheckpoint(rhsFailureCheckpoint)
+				}
+				setterCompletes := s.checker.assignmentSetterMayComplete(typed.Target, typed.Value)
+				if !s.checker.ivarWriteProvablyCompletes(ivar.Name, typed.Value) {
+					s.captureFailureScope()
+				}
+				if !setterCompletes {
+					if !known {
+						s.checker.restoreScopeState(baseScopeState)
+						s.checker.narrowLogicalIvarFact(
+							ivar.Name,
+							typed.Operator == tokenOrAssign,
+						)
+						return true
+					}
+					return false
+				}
+				s.checker.withSuppressedWarnings(func() {
+					s.checker.commitLogicalIvarWritingArm(
+						"",
+						typed,
+						ivar,
+						logicalTargetFact.current,
+					)
+				})
+				if !known {
+					writtenScopeState := s.checker.snapshotScopeState()
+					s.checker.restoreScopeState(baseScopeState)
+					s.checker.narrowLogicalIvarFact(
+						ivar.Name,
+						typed.Operator == tokenOrAssign,
+					)
+					skippedScopeState := s.checker.snapshotScopeState()
+					s.checker.mergeScopeStates(
+						baseScopeState,
+						[]checkScopeState{skippedScopeState, writtenScopeState},
+					)
+				}
+				return true
 			}
 			if !rhsReachable {
 				setterReachable = false
@@ -13488,11 +14629,25 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 				typed.Target,
 				func() bool { return s.expression(typed.Target) },
 			)
-			if !targetCompleted || !s.expression(typed.Value) {
+			if !targetCompleted {
 				return false
 			}
 			if captured {
 				setterReceiverCandidates = append(setterReceiverCandidates, candidates)
+			}
+			compoundIvar, preciseCompoundIvar := typed.Target.(*IvarExpr)
+			if preciseCompoundIvar {
+				captureBoundary = false
+				s.restoreFailureScopeCheckpoint(failureCheckpoint)
+			}
+			operatorType := s.checker.inferExpressionType(typed.Target)
+			s.checker.pinExpressionFact(typed.Target, operatorType)
+			rhsFailureCheckpoint := s.failureScopeCheckpoint()
+			if !s.expression(typed.Value) {
+				return false
+			}
+			if preciseCompoundIvar && expressionProvenNonRaising(typed.Value) {
+				s.restoreFailureScopeCheckpoint(rhsFailureCheckpoint)
 			}
 			operatorValue := &BinaryExpr{
 				Left:     typed.Target,
@@ -13500,8 +14655,24 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 				Right:    typed.Value,
 				Position: typed.Pos(),
 			}
+			for _, method := range binaryDispatchMethodNames(operatorValue.Operator) {
+				s.callCallee(binaryDispatchCall(operatorValue, method))
+			}
+			if preciseCompoundIvar && !s.checker.binaryExpressionProvablyCompletes(operatorValue) {
+				s.captureFailureScope()
+			}
 			if !s.checker.binaryExpressionMayComplete(operatorValue) {
 				return false
+			}
+			if preciseCompoundIvar {
+				setterCompletes := s.checker.assignmentSetterMayComplete(compoundIvar, operatorValue)
+				if !s.checker.ivarWriteProvablyCompletes(compoundIvar.Name, operatorValue) {
+					s.captureFailureScope()
+				}
+				s.checker.withSuppressedWarnings(func() {
+					s.checker.inferAssignStatementTypes("", typed, nil, nil)
+				})
+				return setterCompletes
 			}
 			assignedValue = operatorValue
 		}
@@ -13580,7 +14751,7 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 		})
 		bodyScopeState := s.checker.snapshotScopeState()
 		rescueCompletes := false
-		rescueReachable := !statementsProvenNonRaising(typed.Body)
+		rescueReachable := len(bodyFailureStates) > 0 && !statementsProvenNonRaising(typed.Body)
 		selected, exact := s.checker.staticallySelectedRescue(typed.Body, typed.Rescues)
 		failureScopeState := bodyScopeState
 		if rescueReachable && !exact {
@@ -13741,9 +14912,16 @@ func tryBodyExceptionsMayEscape(rescues []RescueClause, selected int, exact bool
 }
 
 func expressionProvenNonRaising(expr Expression) bool {
-	switch expr.(type) {
+	switch typed := expr.(type) {
 	case nil, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral,
 		*NilLiteral, *SymbolLiteral:
+		return true
+	case *ArrayLiteral:
+		for _, element := range typed.Elements {
+			if _, splat := element.(*SplatArg); splat || !expressionProvenNonRaising(element) {
+				return false
+			}
+		}
 		return true
 	default:
 		return false
@@ -13803,7 +14981,6 @@ func (s *namespaceMutationScan) replayDestructureAssignment(
 ) bool {
 	facts := s.checker.captureDestructureValueFacts(target, value)
 	for _, fact := range facts {
-		s.captureFailureScope()
 		if fact.target == nil {
 			continue
 		}
@@ -13847,6 +15024,10 @@ func (s *namespaceMutationScan) replayDestructureAssignment(
 		}
 		completed := true
 		s.checker.withCapturedDestructureArgumentFacts(argumentFacts, func() {
+			ivar, ivarTarget := fact.target.(*IvarExpr)
+			if !ivarTarget || !s.checker.ivarWriteProvablyCompletes(ivar.Name, leafValue) {
+				s.captureFailureScope()
+			}
 			s.recordRuntimeNamespaceAssignment(fact.target, leafValue)
 			completed = s.checker.assignmentSetterMayComplete(fact.target, leafValue)
 			s.checker.withSuppressedWarnings(func() {
@@ -14031,6 +15212,10 @@ func (s *namespaceMutationScan) expressionWithAuto(expr Expression, autoCall boo
 	case nil:
 		return true
 	case *Identifier:
+		if _, pending := s.unboundParams[typed.Name]; pending &&
+			!s.checker.staticNameShadowed(typed.Name) {
+			return false
+		}
 		if autoCall {
 			s.functionReference(typed.Name)
 			return s.checker.expressionMayCompleteForBinding(typed)
@@ -14170,13 +15355,13 @@ func (s *namespaceMutationScan) expressionWithAuto(expr Expression, autoCall boo
 		}
 		return s.checker.expressionMayCompleteForBinding(typed)
 	case *RescueExpr:
-		bodyCompletes := s.expression(typed.Body)
+		bodyCompletes := s.expressionWithAuto(typed.Body, autoCall)
 		if errorKind, exact := s.checker.staticallyRaisedExpressionErrorKind(typed.Body); exact &&
 			!staticErrorKindMatchesRescue(errorKind, nil) {
 			return bodyCompletes
 		}
-		s.expression(typed.Fallback)
-		return s.checker.expressionMayCompleteForBinding(typed)
+		s.expressionWithAuto(typed.Fallback, autoCall)
+		return s.checker.expressionMayCompleteForBindingWithAuto(typed, autoCall)
 	case *RangeExpr:
 		return s.expression(typed.Start) && s.expression(typed.End)
 	case *ArrayLiteral:
@@ -14261,16 +15446,115 @@ func (s *namespaceMutationScan) callArgumentExpression(
 	expr Expression,
 	expectation expressionExpectation,
 ) bool {
-	autoCall := !expectation.includesCallable()
-	if !autoCall {
-		if callableExpr, bindable := s.checker.bareIdentifierCallableArgument(expr); bindable {
-			if call, ok := callableExpr.(*CallExpr); ok {
-				callableExpr = call.Callee
-			}
+	if expectation.empty() {
+		return s.expression(expr)
+	}
+	if expectation.includesCallable() {
+		if _, bindable := s.checker.bareMemberArgumentCallableFact(expr); bindable {
+			return s.expressionWithAuto(expr, false)
+		}
+		if callableExpr, bindable := bareIdentifierCallableValue(expr); bindable {
 			return s.expressionWithAuto(callableExpr, false)
 		}
 	}
-	return s.expressionWithAuto(expr, autoCall)
+	switch typed := expr.(type) {
+	case *ConditionalExpr:
+		if !s.expression(typed.Condition) {
+			return false
+		}
+		truthy, known := s.checker.inferredConditionTruthiness(typed.Condition)
+		if !known || truthy {
+			s.callArgumentExpression(typed.Consequent, expectation)
+		}
+		if !known || !truthy {
+			s.callArgumentExpression(typed.Alternate, expectation)
+		}
+		return s.checker.expressionMayCompleteForBindingWithExpectation(expr, expectation)
+	case *IfExpr:
+		if !s.expression(typed.Condition) {
+			return false
+		}
+		truthy, known := s.checker.inferredConditionTruthiness(typed.Condition)
+		if !known || truthy {
+			s.callArgumentExpression(typed.Consequent, expectation)
+		}
+		falseReachable := !known || !truthy
+		for _, branch := range typed.ElseIf {
+			if !falseReachable || !s.expression(branch.Condition) {
+				break
+			}
+			branchTruthy, branchKnown := s.checker.inferredConditionTruthiness(branch.Condition)
+			if !branchKnown || branchTruthy {
+				s.callArgumentExpression(branch.Result, expectation)
+			}
+			falseReachable = !branchKnown || !branchTruthy
+		}
+		if falseReachable {
+			s.callArgumentExpression(typed.Alternate, expectation)
+		}
+		return s.checker.expressionMayCompleteForBindingWithExpectation(expr, expectation)
+	case *CaseExpr:
+		if !s.expression(typed.Target) {
+			return false
+		}
+		if result, known := s.checker.inferredCaseExpressionResult(typed); known {
+			s.callArgumentExpression(result, expectation)
+			return s.checker.expressionMayCompleteForBindingWithExpectation(expr, expectation)
+		}
+		for _, clause := range typed.Clauses {
+			for _, value := range clause.Values {
+				if !s.expression(value.Expr) ||
+					!s.checker.caseWhenSplatExpansionMaySucceed(value.Expr, value.Splat) {
+					return false
+				}
+			}
+			s.callArgumentExpression(clause.Result, expectation)
+		}
+		s.callArgumentExpression(typed.ElseExpr, expectation)
+		return s.checker.expressionMayCompleteForBindingWithExpectation(expr, expectation)
+	case *RescueExpr:
+		autoCall := !expectation.includesCallable()
+		s.expressionWithAuto(typed.Body, autoCall)
+		if errorKind, exact := s.checker.staticallyRaisedExpressionErrorKind(typed.Body); exact &&
+			!staticErrorKindMatchesRescue(errorKind, nil) {
+			return s.checker.expressionMayCompleteForBindingWithAuto(expr, autoCall)
+		}
+		s.expressionWithAuto(typed.Fallback, autoCall)
+		return s.checker.expressionMayCompleteForBindingWithAuto(expr, autoCall)
+	case *ArrayLiteral:
+		elementExpectation, ok := expectation.arrayElementExpectation()
+		if !ok {
+			break
+		}
+		for i, element := range typed.Elements {
+			if !s.callArgumentExpression(element, elementExpectation(i, len(typed.Elements))) {
+				return false
+			}
+			s.checker.captureEvaluatedDestructureFact(element)
+		}
+		return true
+	case *HashLiteral:
+		if typed.ShapeType != nil && !s.checker.hashShapeStaticallyShadowed(typed) {
+			return true
+		}
+		if !hashLiteralTypeHasValueSlots(expectation.ty) {
+			break
+		}
+		for _, pair := range typed.Pairs {
+			if !s.expression(pair.Key) {
+				return false
+			}
+			valueExpectation := expressionExpectation{}
+			if key, ok := staticLiteralValue(pair.Key); ok {
+				valueExpectation = typeExpressionExpectation(hashLiteralValueType(expectation.ty, key))
+			}
+			if !s.callArgumentExpression(pair.Value, valueExpectation) {
+				return false
+			}
+		}
+		return true
+	}
+	return s.expressionWithAuto(expr, !expectation.includesCallable())
 }
 
 func (s *namespaceMutationScan) callResolvedCallee(
