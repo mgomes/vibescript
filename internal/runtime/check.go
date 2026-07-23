@@ -149,6 +149,7 @@ type scriptChecker struct {
 	deferredReturnSites        *[]deferredReturnSite
 	exceptionExitSites         *[]checkStateSnapshot
 	expressionExitSites        *[]checkStateSnapshot
+	nonLocalReturnExitSites    *[]checkStateSnapshot
 	ensureExitSites            *[]checkStateSnapshot
 	retryExitSites             *[]checkStateSnapshot
 	implicitReturnLeaves       map[Statement]struct{}
@@ -206,6 +207,11 @@ type scriptChecker struct {
 	// does for statically exiting statements. Statement-list loops consume
 	// and reset it after every statement.
 	stmtNoFallthroughInferred bool
+	// expressionReturnsNonLocally reports that an exact retained proc call
+	// failed to produce a value only because it returned from the enclosing
+	// function. Expression wrappers propagate the marker to the statement
+	// boundary instead of misclassifying that exit as a rescueable failure.
+	expressionReturnsNonLocally bool
 	// isolatedCollectInference marks a module collection pass running on its
 	// own walled-off type-fact environment (seedEntrypointRequireExports,
 	// module entrypoints). The pass then maintains facts itself; the runtime
@@ -2235,8 +2241,10 @@ type checkClassConstantEffects struct {
 }
 
 type checkLoopExitEffects struct {
-	effects checkClassConstantEffects
-	seen    bool
+	effects   checkClassConstantEffects
+	seen      bool
+	breakSeen bool
+	nextSeen  bool
 }
 
 type checkBindingEdge struct {
@@ -2373,24 +2381,58 @@ func (c *scriptChecker) captureClassConstantEffects(check func()) checkClassCons
 	return cloneCheckClassConstantEffects(c.classConstantCaptures[index])
 }
 
-func (c *scriptChecker) checkLoopStatements(function string, returnType *TypeExpr, statements []Statement) checkClassConstantEffects {
-	previous := c.loopExitEffects
-	var exits checkLoopExitEffects
-	c.loopExitEffects = &exits
-	defer func() {
-		c.loopExitEffects = previous
-	}()
-	if c.checkStatements(function, returnType, statements) {
-		mergeCheckClassConstantEffects(&exits.effects, c.currentClassConstantEffects())
-	}
-	return exits.effects
+type checkLoopFlow struct {
+	effects                checkClassConstantEffects
+	bodyFallsThrough       bool
+	breakSeen              bool
+	nextSeen               bool
+	nonLocalReturnExitSeen bool
 }
 
-func (c *scriptChecker) captureLoopExitClassConstantEffects() {
+func (c *scriptChecker) checkLoopStatements(
+	function string,
+	returnType *TypeExpr,
+	statements []Statement,
+) checkLoopFlow {
+	previous := c.loopExitEffects
+	previousNonLocalReturnExitSites := c.nonLocalReturnExitSites
+	var exits checkLoopExitEffects
+	var nonLocalReturnExitSites []checkStateSnapshot
+	c.loopExitEffects = &exits
+	c.nonLocalReturnExitSites = &nonLocalReturnExitSites
+	defer func() {
+		c.loopExitEffects = previous
+		c.nonLocalReturnExitSites = previousNonLocalReturnExitSites
+	}()
+	bodyFallsThrough := c.checkStatements(function, returnType, statements)
+	if bodyFallsThrough {
+		mergeCheckClassConstantEffects(&exits.effects, c.currentClassConstantEffects())
+	}
+	if previousNonLocalReturnExitSites != nil {
+		*previousNonLocalReturnExitSites = append(
+			*previousNonLocalReturnExitSites,
+			nonLocalReturnExitSites...,
+		)
+	}
+	return checkLoopFlow{
+		effects:                exits.effects,
+		bodyFallsThrough:       bodyFallsThrough,
+		breakSeen:              exits.breakSeen,
+		nextSeen:               exits.nextSeen,
+		nonLocalReturnExitSeen: len(nonLocalReturnExitSites) > 0,
+	}
+}
+
+func (c *scriptChecker) captureLoopExitClassConstantEffects(breaks bool) {
 	if c.loopExitEffects == nil {
 		return
 	}
 	c.loopExitEffects.seen = true
+	if breaks {
+		c.loopExitEffects.breakSeen = true
+	} else {
+		c.loopExitEffects.nextSeen = true
+	}
 	mergeCheckClassConstantEffects(&c.loopExitEffects.effects, c.currentClassConstantEffects())
 	mergeCheckClassConstantEffects(&c.loopExitEffects.effects, c.classConstantContext)
 }
@@ -2869,12 +2911,16 @@ func (c *scriptChecker) checkStatements(function string, returnType *TypeExpr, s
 }
 
 func (c *scriptChecker) recordNonCompletingExpression() {
-	if c.expressionExitSites != nil {
-		c.captureExpressionExitState()
+	if c.expressionReturnsNonLocally {
+		c.expressionReturnsNonLocally = false
 	} else {
-		c.captureExceptionExitState()
+		if c.expressionExitSites != nil {
+			c.captureExpressionExitState()
+		} else {
+			c.captureExceptionExitState()
+		}
+		c.captureEnsureExitState()
 	}
-	c.captureEnsureExitState()
 	c.stmtNoFallthroughInferred = true
 }
 
@@ -2932,14 +2978,14 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.recordNonCompletingExpression()
 			return
 		}
-		c.captureLoopExitClassConstantEffects()
+		c.captureLoopExitClassConstantEffects(true)
 		c.captureEnsureExitState()
 	case *NextStmt:
 		if !c.checkExpression(function, typed.Value) {
 			c.recordNonCompletingExpression()
 			return
 		}
-		c.captureLoopExitClassConstantEffects()
+		c.captureLoopExitClassConstantEffects(false)
 		c.captureEnsureExitState()
 	case *RetryStmt:
 		if c.retryExitSites != nil {
@@ -3430,15 +3476,22 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		bodyRuntimeState := c.snapshotRuntimeState()
 		bodyScopeState := c.snapshotScopeState()
 		c.mutationRegionDepth++
-		loopEffects := c.checkLoopStatements(function, returnType, typed.Body)
+		loopFlow := c.checkLoopStatements(function, returnType, typed.Body)
 		c.mutationRegionDepth--
 		bodyExitScopeState := c.snapshotScopeState()
 		c.restoreRuntimeState(bodyRuntimeState)
-		c.applyClassConstantEffects(loopEffects)
+		c.applyClassConstantEffects(loopFlow.effects)
 		c.restoreScopeState(bodyScopeState)
 		c.mergeScopeBindingRelations([]checkScopeState{bodyScopeState, bodyExitScopeState})
 		c.degradeLocalTypesForBindings(nil, typed.Target)
 		c.recordLocalBindings(typed.Body)
+		if c.exactIterableProvablyNonEmpty(typed.Iterable) &&
+			loopFlow.nonLocalReturnExitSeen &&
+			!loopFlow.bodyFallsThrough &&
+			!loopFlow.breakSeen &&
+			!loopFlow.nextSeen {
+			c.stmtNoFallthroughInferred = true
+		}
 	case *WhileStmt:
 		// The condition's first evaluation sees pre-loop facts, so it is
 		// checked before body-assigned locals degrade to unknown. Prove the
@@ -3464,20 +3517,26 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)
 			var bodyExitScopeState checkScopeState
 			bodyWalked := false
+			var loopFlow checkLoopFlow
 			if c.collectRuntimeConditionOutcomeEffects(typed.Condition, true) {
 				c.mutationRegionDepth++
-				loopEffects := c.checkLoopStatements(function, returnType, typed.Body)
+				loopFlow = c.checkLoopStatements(function, returnType, typed.Body)
 				c.mutationRegionDepth--
 				bodyExitScopeState = c.snapshotScopeState()
 				bodyWalked = true
 				c.restoreRuntimeState(bodyRuntimeState)
-				c.applyClassConstantEffects(loopEffects)
+				c.applyClassConstantEffects(loopFlow.effects)
 			} else {
 				c.restoreRuntimeState(bodyRuntimeState)
 			}
 			c.restoreScopeState(bodyScopeState)
 			if bodyWalked {
 				c.mergeScopeBindingRelations([]checkScopeState{bodyScopeState, bodyExitScopeState})
+				if truthy, known := staticExpressionTruthiness(typed.Condition); known &&
+					truthy && loopFlow.nonLocalReturnExitSeen &&
+					!loopFlow.breakSeen {
+					c.stmtNoFallthroughInferred = true
+				}
 			}
 		}
 		c.recordLocalBindings(typed.Body)
@@ -3502,20 +3561,26 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.applyLoopEntryTypeRefinements(conditionScopeState.types, conditionRefinedScopeState.types)
 			var bodyExitScopeState checkScopeState
 			bodyWalked := false
+			var loopFlow checkLoopFlow
 			if c.collectRuntimeConditionOutcomeEffects(typed.Condition, false) {
 				c.mutationRegionDepth++
-				loopEffects := c.checkLoopStatements(function, returnType, typed.Body)
+				loopFlow = c.checkLoopStatements(function, returnType, typed.Body)
 				c.mutationRegionDepth--
 				bodyExitScopeState = c.snapshotScopeState()
 				bodyWalked = true
 				c.restoreRuntimeState(bodyRuntimeState)
-				c.applyClassConstantEffects(loopEffects)
+				c.applyClassConstantEffects(loopFlow.effects)
 			} else {
 				c.restoreRuntimeState(bodyRuntimeState)
 			}
 			c.restoreScopeState(bodyScopeState)
 			if bodyWalked {
 				c.mergeScopeBindingRelations([]checkScopeState{bodyScopeState, bodyExitScopeState})
+				if truthy, known := staticExpressionTruthiness(typed.Condition); known &&
+					!truthy && loopFlow.nonLocalReturnExitSeen &&
+					!loopFlow.breakSeen {
+					c.stmtNoFallthroughInferred = true
+				}
 			}
 		}
 		c.recordLocalBindings(typed.Body)
@@ -3562,6 +3627,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if transformExpressionExitsThroughEnsure {
 			expressionExitTarget = &pendingExpressionExitSites
 		}
+		previousNonLocalReturnExitSites := c.nonLocalReturnExitSites
+		localizeNonLocalReturns := len(typed.Rescues) > 0 ||
+			len(typed.Ensure) > 0 && previousNonLocalReturnExitSites != nil
+		var bodyNonLocalReturnExitSites []checkStateSnapshot
+		if localizeNonLocalReturns {
+			c.nonLocalReturnExitSites = &bodyNonLocalReturnExitSites
+		}
 		previousEnsureExitSites := c.ensureExitSites
 		var ensureExitSites []checkStateSnapshot
 		if len(typed.Ensure) > 0 {
@@ -3600,6 +3672,21 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		if localizeExpressionExits {
 			c.expressionExitSites = expressionExitTarget
+		}
+		if localizeNonLocalReturns {
+			c.nonLocalReturnExitSites = previousNonLocalReturnExitSites
+		}
+		bodyHasFailureExit := len(bodyExceptionExitSites) > 0 ||
+			len(bodyExpressionExitSites) > 0
+		if !bodyFallsThrough && !bodyHasFailureExit &&
+			len(bodyNonLocalReturnExitSites) > 0 {
+			rescueBodiesReachable = false
+		}
+		if len(typed.Ensure) == 0 && previousNonLocalReturnExitSites != nil {
+			*previousNonLocalReturnExitSites = append(
+				*previousNonLocalReturnExitSites,
+				bodyNonLocalReturnExitSites...,
+			)
 		}
 		if tryBodyExceptionsMayEscape(typed.Rescues, selectedRescue, rescueSelectionExact) {
 			if exceptionExitTarget != nil {
@@ -3780,6 +3867,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			if transformExpressionExitsThroughEnsure {
 				c.expressionExitSites = previousExpressionExitSites
 			}
+			c.nonLocalReturnExitSites = previousNonLocalReturnExitSites
 			previousContext := cloneCheckClassConstantEffects(c.classConstantContext)
 			mergeCheckClassConstantEffects(&c.classConstantContext, ensureEffects)
 			ensureFallsThrough = c.checkStatements(function, returnType, typed.Ensure)
@@ -3792,12 +3880,22 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				len(pendingExpressionExitSites) > 0 {
 				c.captureExpressionExitState()
 			}
+			if ensureFallsThrough && previousNonLocalReturnExitSites != nil &&
+				len(bodyNonLocalReturnExitSites) > 0 {
+				c.captureFailureExitState(previousNonLocalReturnExitSites)
+			}
 			if ensureFallsThrough && protectedLoopExitEffects != nil && protectedLoopExitEffects.seen {
 				mergeCheckClassConstantEffects(
 					&protectedLoopExitEffects.effects,
 					c.currentClassConstantEffects(),
 				)
 				previousLoopExitEffects.seen = true
+				previousLoopExitEffects.breakSeen =
+					previousLoopExitEffects.breakSeen ||
+						protectedLoopExitEffects.breakSeen
+				previousLoopExitEffects.nextSeen =
+					previousLoopExitEffects.nextSeen ||
+						protectedLoopExitEffects.nextSeen
 				mergeCheckClassConstantEffects(
 					&previousLoopExitEffects.effects,
 					protectedLoopExitEffects.effects,
@@ -3878,6 +3976,18 @@ func (c *scriptChecker) captureExpressionExitState() {
 	c.captureFailureExitState(c.expressionExitSites)
 }
 
+func (c *scriptChecker) captureNonLocalReturnExitState() {
+	c.captureFailureExitState(c.nonLocalReturnExitSites)
+	c.captureEnsureExitState()
+	if c.deferredReturnSites == nil {
+		return
+	}
+	*c.deferredReturnSites = append(*c.deferredReturnSites, deferredReturnSite{
+		runtimeState: c.snapshotRuntimeState(),
+		scopeState:   c.snapshotScopeState(),
+	})
+}
+
 func (c *scriptChecker) captureFailureExitState(sites *[]checkStateSnapshot) {
 	if sites == nil {
 		return
@@ -3904,6 +4014,10 @@ func (c *scriptChecker) captureEnsureExitState() {
 // expression restores another arm. An inline rescue consumes the failure;
 // otherwise it propagates to the surrounding rescue and ensure.
 func (c *scriptChecker) captureNonCompletingExpressionArm() {
+	if c.expressionReturnsNonLocally {
+		c.expressionReturnsNonLocally = false
+		return
+	}
 	if c.expressionExitSites != nil {
 		c.captureExpressionExitState()
 		return
@@ -3997,6 +4111,9 @@ func (c *scriptChecker) checkDeferredReturnSitesAfterEnsure(function string, ret
 	}()
 
 	for _, site := range sites {
+		if site.stmt == nil {
+			continue
+		}
 		c.restoreRuntimeState(site.runtimeState)
 		c.restoreScopeState(site.scopeState)
 		c.withSuppressedWarnings(func() {
@@ -4224,7 +4341,7 @@ func autoCallExpectation(autoCall bool) expressionExpectation {
 
 func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression, autoCall bool) bool {
 	completed := c.checkExpressionWithAutoInner(function, expr, autoCall)
-	if !completed && c.expressionExitSites != nil {
+	if !completed && !c.expressionReturnsNonLocally && c.expressionExitSites != nil {
 		c.captureExpressionExitState()
 	}
 	return completed
@@ -4615,6 +4732,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		storedBlockCallExact := targetMayEnter && invokedLambda == nil &&
 			evaluatedStoredBlocksExact
 		var storedBlockEntries []blockLiteralCallEntryOutcome
+		storedBlockMayReturnNonLocally := false
+		storedBlockMayFail := false
 		if storedBlockCallExact {
 			storedBlockEntries = make(
 				[]blockLiteralCallEntryOutcome,
@@ -4625,12 +4744,18 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			storedBlockMayComplete := false
 			for i, block := range evaluatedStoredBlocks {
 				entry := c.capturedBlockLiteralCallEntry(block, typed)
+				flow := c.blockLiteralBodyCompletionFlow(block.block, block.strict)
 				storedBlockEntries[i] = entry
 				storedBlockMayEnter = storedBlockMayEnter || entry.mayEnter
 				storedBlockMayReject = storedBlockMayReject || entry.mayReject
 				storedBlockMayComplete = storedBlockMayComplete ||
 					entry.mayEnter &&
-						c.blockLiteralBodyMayComplete(block.block, block.strict)
+						(flow.fallsThrough || flow.completes)
+				storedBlockMayReturnNonLocally =
+					storedBlockMayReturnNonLocally ||
+						entry.mayEnter && flow.returnsNonLocally
+				storedBlockMayFail =
+					storedBlockMayFail || entry.mayEnter && flow.fails
 			}
 			if storedBlockMayReject {
 				c.captureNonCompletingExpressionArm()
@@ -4750,7 +4875,12 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					c.widenRepeatedRegionBlockIvarFacts(block.block)
 				}
 			}
-			c.captureNonCompletingExpressionArm()
+			if storedBlockMayReturnNonLocally {
+				c.captureNonLocalReturnExitState()
+			}
+			if storedBlockMayFail {
+				c.captureNonCompletingExpressionArm()
+			}
 		}
 		// Exact script targets carry callable arguments through their parameter
 		// facts, so their body scan applies a lambda only at an actual `.call`.
@@ -4798,6 +4928,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
 		c.callArgumentSplatSources = previousSplatSources
+		if storedBlockMayReturnNonLocally && !callMayComplete {
+			c.expressionReturnsNonLocally = true
+		}
 		if argumentsMayBeSkipped {
 			if !callMayComplete {
 				// The failed non-nil arm still reaches rescue and ensure with any
@@ -8028,14 +8161,20 @@ func (c *scriptChecker) checkBlockLiteralWithIvarWidening(
 	// not capture them either (a lambda return is local to the lambda).
 	previousSites := c.deferredReturnSites
 	previousExceptionExitSites := c.exceptionExitSites
+	previousNonLocalReturnExitSites := c.nonLocalReturnExitSites
 	previousEnsureExitSites := c.ensureExitSites
+	previousExpressionReturnsNonLocally := c.expressionReturnsNonLocally
 	c.deferredReturnSites = nil
 	c.exceptionExitSites = nil
+	c.nonLocalReturnExitSites = nil
 	c.ensureExitSites = nil
+	c.expressionReturnsNonLocally = false
 	defer func() {
 		c.deferredReturnSites = previousSites
 		c.exceptionExitSites = previousExceptionExitSites
+		c.nonLocalReturnExitSites = previousNonLocalReturnExitSites
 		c.ensureExitSites = previousEnsureExitSites
+		c.expressionReturnsNonLocally = previousExpressionReturnsNonLocally
 	}()
 	// The enclosing call already accounts for any block effects that can run.
 	// Keep the out-of-order block walk from reporting inert lambda effects as
@@ -8952,22 +9091,31 @@ func (c *scriptChecker) statementsMayCompleteForBinding(statements []Statement) 
 }
 
 type blockLiteralCompletionFlow struct {
-	fallsThrough bool
-	completes    bool
+	fallsThrough      bool
+	completes         bool
+	returnsNonLocally bool
+	fails             bool
 }
 
 func (c *scriptChecker) blockLiteralBodyMayComplete(
 	block *BlockLiteral,
 	strict bool,
 ) bool {
+	flow := c.blockLiteralBodyCompletionFlow(block, strict)
+	return flow.fallsThrough || flow.completes
+}
+
+func (c *scriptChecker) blockLiteralBodyCompletionFlow(
+	block *BlockLiteral,
+	strict bool,
+) blockLiteralCompletionFlow {
 	if block == nil {
-		return false
+		return blockLiteralCompletionFlow{}
 	}
-	flow := c.blockLiteralStatementsCompletionFlow(
+	return c.blockLiteralStatementsCompletionFlow(
 		block.Body,
 		strict || block.Lambda,
 	)
-	return flow.fallsThrough || flow.completes
 }
 
 func (c *scriptChecker) blockLiteralStatementsCompletionFlow(
@@ -8981,6 +9129,9 @@ func (c *scriptChecker) blockLiteralStatementsCompletionFlow(
 		}
 		current := c.blockLiteralStatementCompletionFlow(stmt, localControl)
 		flow.completes = flow.completes || current.completes
+		flow.returnsNonLocally =
+			flow.returnsNonLocally || current.returnsNonLocally
+		flow.fails = flow.fails || current.fails
 		flow.fallsThrough = current.fallsThrough
 	}
 	return flow
@@ -8994,19 +9145,55 @@ func (c *scriptChecker) blockLiteralStatementCompletionFlow(
 	case nil:
 		return blockLiteralCompletionFlow{fallsThrough: true}
 	case *NextStmt:
-		return blockLiteralCompletionFlow{completes: true}
+		return c.blockLiteralControlExpressionCompletionFlow(typed.Value, true, false)
 	case *ReturnStmt:
-		return blockLiteralCompletionFlow{completes: localControl}
+		return c.blockLiteralControlExpressionCompletionFlow(
+			typed.Value,
+			localControl,
+			!localControl,
+		)
 	case *BreakStmt:
-		return blockLiteralCompletionFlow{completes: localControl}
+		flow := c.blockLiteralControlExpressionCompletionFlow(typed.Value, localControl, false)
+		if !localControl {
+			flow.fails = true
+		}
+		return flow
 	case *RaiseStmt, *RetryStmt:
-		return blockLiteralCompletionFlow{}
+		return blockLiteralCompletionFlow{fails: true}
 	case *IfStmt:
 		return c.blockLiteralIfCompletionFlow(typed, localControl)
 	case *TryStmt:
 		return c.blockLiteralTryCompletionFlow(typed, localControl)
+	case *ExprStmt:
+		return c.blockLiteralExpressionCompletionFlow(typed.Expr)
 	default:
-		return blockLiteralCompletionFlow{fallsThrough: true}
+		return blockLiteralCompletionFlow{
+			fallsThrough: true,
+			fails:        true,
+		}
+	}
+}
+
+func (c *scriptChecker) blockLiteralControlExpressionCompletionFlow(
+	expr Expression,
+	completes bool,
+	returnsNonLocally bool,
+) blockLiteralCompletionFlow {
+	flow := blockLiteralCompletionFlow{
+		fails: !expressionProvenNonRaising(expr),
+	}
+	if !c.expressionMayCompleteForBinding(expr) {
+		return flow
+	}
+	flow.completes = completes
+	flow.returnsNonLocally = returnsNonLocally
+	return flow
+}
+
+func (c *scriptChecker) blockLiteralExpressionCompletionFlow(expr Expression) blockLiteralCompletionFlow {
+	return blockLiteralCompletionFlow{
+		fallsThrough: true,
+		fails:        !expressionProvenNonRaising(expr),
 	}
 }
 
@@ -9021,8 +9208,13 @@ func (c *scriptChecker) blockLiteralIfCompletionFlow(
 	merge := func(branch blockLiteralCompletionFlow) {
 		flow.fallsThrough = flow.fallsThrough || branch.fallsThrough
 		flow.completes = flow.completes || branch.completes
+		flow.returnsNonLocally = flow.returnsNonLocally || branch.returnsNonLocally
+		flow.fails = flow.fails || branch.fails
 	}
 
+	if !expressionProvenNonRaising(stmt.Condition) {
+		flow.fails = true
+	}
 	truthy, known := staticExpressionTruthiness(stmt.Condition)
 	if !known || truthy {
 		merge(c.blockLiteralStatementsCompletionFlow(
@@ -9059,10 +9251,14 @@ func (c *scriptChecker) blockLiteralTryCompletionFlow(
 	bodyFlow := c.blockLiteralStatementsCompletionFlow(stmt.Body, localControl)
 	var protectedFlow blockLiteralCompletionFlow
 	protectedFlow.completes = bodyFlow.completes
+	protectedFlow.returnsNonLocally = bodyFlow.returnsNonLocally
 	if bodyFlow.fallsThrough {
 		elseFlow := c.blockLiteralStatementsCompletionFlow(stmt.Else, localControl)
 		protectedFlow.fallsThrough = elseFlow.fallsThrough
 		protectedFlow.completes = protectedFlow.completes || elseFlow.completes
+		protectedFlow.returnsNonLocally =
+			protectedFlow.returnsNonLocally || elseFlow.returnsNonLocally
+		protectedFlow.fails = protectedFlow.fails || elseFlow.fails
 	}
 	mergeRescue := func(body []Statement) {
 		if len(body) == 0 {
@@ -9071,14 +9267,20 @@ func (c *scriptChecker) blockLiteralTryCompletionFlow(
 		flow := c.blockLiteralStatementsCompletionFlow(body, localControl)
 		protectedFlow.fallsThrough = protectedFlow.fallsThrough || flow.fallsThrough
 		protectedFlow.completes = protectedFlow.completes || flow.completes
+		protectedFlow.returnsNonLocally =
+			protectedFlow.returnsNonLocally || flow.returnsNonLocally
+		protectedFlow.fails = protectedFlow.fails || flow.fails
 	}
-	if !statementsProvenNonRaising(stmt.Body) {
+	if bodyFlow.fails {
 		selected, exact := c.staticallySelectedRescue(stmt.Body, stmt.Rescues)
 		if exact {
-			if selected >= 0 {
+			if selected >= 0 && len(stmt.Rescues[selected].Body) > 0 {
 				mergeRescue(stmt.Rescues[selected].Body)
+			} else {
+				protectedFlow.fails = true
 			}
 		} else {
+			protectedFlow.fails = true
 			for i := range stmt.Rescues {
 				mergeRescue(stmt.Rescues[i].Body)
 			}
@@ -9089,6 +9291,10 @@ func (c *scriptChecker) blockLiteralTryCompletionFlow(
 		fallsThrough: protectedFlow.fallsThrough && ensureFlow.fallsThrough,
 		completes: ensureFlow.completes ||
 			protectedFlow.completes && ensureFlow.fallsThrough,
+		returnsNonLocally: ensureFlow.returnsNonLocally ||
+			protectedFlow.returnsNonLocally && ensureFlow.fallsThrough,
+		fails: ensureFlow.fails ||
+			protectedFlow.fails && ensureFlow.fallsThrough,
 	}
 }
 

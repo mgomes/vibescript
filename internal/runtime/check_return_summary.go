@@ -365,7 +365,9 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		previousDeferred := c.deferredReturnSites
 		previousExceptionExits := c.exceptionExitSites
 		previousExpressionExits := c.expressionExitSites
+		previousNonLocalReturnExits := c.nonLocalReturnExitSites
 		previousEnsureExits := c.ensureExitSites
+		previousExpressionReturnsNonLocally := c.expressionReturnsNonLocally
 		previousClassConstantCaptures := c.classConstantCaptures
 		previousLoopExitEffects := c.loopExitEffects
 		previousLeaves := c.implicitReturnLeaves
@@ -395,7 +397,9 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		c.exceptionExitSites = &exceptionExitSites
 		var expressionExitSites []checkStateSnapshot
 		c.expressionExitSites = &expressionExitSites
+		c.nonLocalReturnExitSites = nil
 		c.ensureExitSites = nil
+		c.expressionReturnsNonLocally = false
 		c.classConstantCaptures = nil
 		c.loopExitEffects = nil
 		c.returnCollector = collector
@@ -428,7 +432,9 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 			c.deferredReturnSites = previousDeferred
 			c.exceptionExitSites = previousExceptionExits
 			c.expressionExitSites = previousExpressionExits
+			c.nonLocalReturnExitSites = previousNonLocalReturnExits
 			c.ensureExitSites = previousEnsureExits
+			c.expressionReturnsNonLocally = previousExpressionReturnsNonLocally
 			c.classConstantCaptures = previousClassConstantCaptures
 			c.loopExitEffects = previousLoopExitEffects
 			c.implicitReturnLeaves = previousLeaves
@@ -642,6 +648,9 @@ func (c *scriptChecker) recordDeferredReturnSummaryFacts(sites []deferredReturnS
 	}()
 
 	for _, site := range sites {
+		if site.stmt == nil {
+			continue
+		}
 		c.restoreRuntimeState(site.runtimeState)
 		c.restoreScopeState(site.scopeState)
 		if site.stmt.Value == nil {

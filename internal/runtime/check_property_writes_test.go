@@ -7826,6 +7826,200 @@ end
 	}
 }
 
+func TestCheckInitializerIvarRetainedProcReturnBypassesRescueAndRunsEnsure(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    @a = 1
+    begin
+      proc { return }.call()
+    rescue
+      @a = "rescued"
+    ensure
+      @b = 2
+    end
+    @a = "continued"
+  end
+end
+
+def run
+  user = User.new()
+  user.a + user.b
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 3 {
+		t.Fatalf("run() = %v, want 3", got)
+	}
+}
+
+func TestCheckInitializerIvarRetainedBlockLocalAndFailureCompletion(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		region string
+	}{
+		{
+			name: "raise reaches rescue",
+			region: `    callback = proc { raise "stop" }
+    begin
+      callback.call()
+    rescue
+      @b = 2
+    end`,
+		},
+		{
+			name: "lambda return stays local",
+			region: `    callback = lambda { return }
+    callback.call()
+    @b = 2`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    @a = 1
+`+tc.region+`
+    @a = @b
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 2 {
+				t.Fatalf("run() = %v, want 2", got)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarRetainedProcReturnStopsKnownEnteredLoop(t *testing.T) {
+	t.Parallel()
+
+	loops := map[string]string{
+		"nonempty for": `    for item in [1]
+      callback.call()
+    end`,
+		"while true": `    while true
+      callback.call()
+    end`,
+		"until false": `    until false
+      callback.call()
+    end`,
+	}
+
+	for name, loop := range loops {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize
+    @a = 1
+    callback = proc { return }
+`+loop+`
+    @a = "continued"
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 1 {
+				t.Fatalf("run() = %v, want 1", got)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarRetainedProcReturnKeepsMaybeZeroLoopTail(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		param      string
+		loop       string
+		runtimeArg Value
+	}{
+		{
+			name:  "for unknown collection",
+			param: "items: array<int>",
+			loop: `    for item in items
+      callback.call()
+    end`,
+			runtimeArg: NewArray(nil),
+		},
+		{
+			name:  "while unknown condition",
+			param: "flag: bool",
+			loop: `    while flag
+      callback.call()
+    end`,
+			runtimeArg: NewBool(false),
+		},
+		{
+			name:  "until unknown condition",
+			param: "flag: bool",
+			loop: `    until flag
+      callback.call()
+    end`,
+			runtimeArg: NewBool(true),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize(`+tc.param+`)
+    @a = 1
+    callback = proc { return }
+`+tc.loop+`
+    @a = "continued"
+  end
+end
+
+def run(value)
+  User.new(value).a
+end
+`)
+			requireCheckWarningContains(t, script, "write to @a expected int, got string")
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				[]Value{tc.runtimeArg},
+				CallOptions{},
+				"instance variable @a expected int, got string",
+			)
+		})
+	}
+}
+
 func TestCheckInitializerIvarMinimumRangeStartReachesEndEffects(t *testing.T) {
 	t.Parallel()
 
