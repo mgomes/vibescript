@@ -2043,6 +2043,10 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffects(
 			c.collectRepeatedRegionIvarEffectsFromIfStatement(typed, effects)
 		case *ForStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Iterable, effects, true)
+			if !c.expressionMayCompleteForBinding(typed.Iterable) ||
+				c.exactIterableProvablyEmpty(typed.Iterable) {
+				break
+			}
 			c.collectRepeatedRegionIvarEffects(typed.Body, effects)
 		case *WhileStmt:
 			c.collectRepeatedRegionIvarEffectsFromExpression(typed.Condition, effects, true)
@@ -2084,8 +2088,13 @@ func (c *scriptChecker) collectRepeatedRegionAssignmentIvarEffects(
 	}
 	switch stmt.Operator {
 	case "":
-		c.collectRepeatedRegionIvarEffectsFromExpression(stmt.Value, effects, true)
-		if !c.expressionMayCompleteForBinding(stmt.Value) {
+		expectation := c.assignmentValueExpectation(stmt.Target, stmt.Value)
+		c.collectRepeatedRegionIvarEffectsFromExpressionWithExpectation(
+			stmt.Value,
+			effects,
+			expectation,
+		)
+		if !c.expressionMayCompleteForBindingWithExpectation(stmt.Value, expectation) {
 			return false
 		}
 		c.captureEvaluatedDestructureFact(stmt.Value)
@@ -2098,20 +2107,33 @@ func (c *scriptChecker) collectRepeatedRegionAssignmentIvarEffects(
 		receiver, targetCompletes := c.collectRepeatedRegionAssignmentReadIvarEffects(
 			stmt.Target,
 			effects,
+			false,
 		)
 		if !targetCompletes {
 			return false
 		}
-		truthy, known := staticExpressionTruthiness(stmt.Target)
+		truthy, known := c.logicalAssignmentTargetTruthiness(stmt.Target)
 		rhsReachable := !known ||
 			stmt.Operator == tokenOrAssign && !truthy ||
 			stmt.Operator == tokenAndAssign && truthy
 		if !rhsReachable {
 			return true
 		}
-		c.collectRepeatedRegionIvarEffectsFromExpression(stmt.Value, effects, true)
-		rhsCompletes := c.expressionMayCompleteForBinding(stmt.Value)
+		baseScopeState := c.snapshotScopeState()
+		expectation := c.assignmentValueExpectation(stmt.Target, stmt.Value)
+		c.collectRepeatedRegionIvarEffectsFromExpressionWithExpectation(
+			stmt.Value,
+			effects,
+			expectation,
+		)
+		rhsCompletes := c.expressionMayCompleteForBindingWithExpectation(
+			stmt.Value,
+			expectation,
+		)
 		if !rhsCompletes {
+			if !known {
+				c.restoreScopeState(baseScopeState)
+			}
 			return !known
 		}
 		c.captureEvaluatedDestructureFact(stmt.Value)
@@ -2130,11 +2152,25 @@ func (c *scriptChecker) collectRepeatedRegionAssignmentIvarEffects(
 				c.bindLocalClassValue(target.Name, "")
 			}
 		}
+		if !known {
+			if !storeCompletes {
+				c.restoreScopeState(baseScopeState)
+				return true
+			}
+			writtenScopeState := c.snapshotScopeState()
+			c.restoreScopeState(baseScopeState)
+			c.mergeScopeStates(
+				baseScopeState,
+				[]checkScopeState{baseScopeState, writtenScopeState},
+			)
+			return true
+		}
 		return storeCompletes || !known
 	default:
 		receiver, targetCompletes := c.collectRepeatedRegionAssignmentReadIvarEffects(
 			stmt.Target,
 			effects,
+			true,
 		)
 		if !targetCompletes {
 			return false
@@ -2176,12 +2212,13 @@ func (c *scriptChecker) collectRepeatedRegionAssignmentIvarEffects(
 func (c *scriptChecker) collectRepeatedRegionAssignmentReadIvarEffects(
 	target Expression,
 	effects *regionIvarEffects,
+	autoCall bool,
 ) (checkAssignmentReceiverCapture, bool) {
 	previous := c.assignmentReceiverCapture
 	capture := &checkAssignmentReceiverCapture{target: target}
 	c.assignmentReceiverCapture = capture
 	defer func() { c.assignmentReceiverCapture = previous }()
-	c.collectRepeatedRegionIvarEffectsFromExpression(target, effects, true)
+	c.collectRepeatedRegionIvarEffectsFromExpression(target, effects, autoCall)
 	if indexed, ok := target.(*IndexExpr); ok && capture.captured {
 		return *capture, c.indexExpressionMayCompleteWithReceiver(
 			indexed,
@@ -2189,6 +2226,92 @@ func (c *scriptChecker) collectRepeatedRegionAssignmentReadIvarEffects(
 		)
 	}
 	return *capture, c.expressionMayCompleteForBinding(target)
+}
+
+func (c *scriptChecker) logicalAssignmentTargetTruthiness(
+	target Expression,
+) (bool, bool) {
+	ident, local := target.(*Identifier)
+	if !local {
+		return c.inferredConditionTruthiness(target)
+	}
+	fact, tracked := c.localValueFactFor(ident.Name)
+	if truthy, known := localValueFactTruthiness(fact, tracked); known {
+		return truthy, true
+	}
+	current := c.localTypeFor(ident.Name)
+	switch {
+	case typeExprDefinitelyTruthy(current):
+		return true, true
+	case typeExprIsNilOnly(current):
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func (c *scriptChecker) exactIterableProvablyEmpty(expr Expression) bool {
+	values, exact := c.staticValueExpressionAlternatives(expr)
+	if !exact || len(values) == 0 {
+		return false
+	}
+	for _, value := range values {
+		array, ok := value.(*ArrayLiteral)
+		if !ok || len(array.Elements) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpressionWithExpectation(
+	expr Expression,
+	effects *regionIvarEffects,
+	expectation expressionExpectation,
+) {
+	if expectation.empty() {
+		c.collectRepeatedRegionIvarEffectsFromExpression(expr, effects, true)
+		return
+	}
+	if expectation.includesCallable() {
+		if _, bindable := c.bareMemberArgumentCallableFact(expr); bindable {
+			c.collectRepeatedRegionIvarEffectsFromExpression(expr, effects, false)
+			return
+		}
+		if callableExpr, bindable := bareIdentifierCallableValue(expr); bindable {
+			c.collectRepeatedRegionIvarEffectsFromExpression(callableExpr, effects, false)
+			return
+		}
+	}
+	switch typed := expr.(type) {
+	case *ArrayLiteral:
+		elementExpectation, ok := expectation.arrayElementExpectation()
+		if !ok {
+			break
+		}
+		for i, element := range typed.Elements {
+			c.collectRepeatedRegionIvarEffectsFromExpressionWithExpectation(
+				element,
+				effects,
+				elementExpectation(i, len(typed.Elements)),
+			)
+			if !c.expressionMayCompleteForBindingWithExpectation(
+				element,
+				elementExpectation(i, len(typed.Elements)),
+			) {
+				return
+			}
+		}
+		return
+	case *MemberExpr:
+		c.collectRepeatedRegionIvarEffectsFromExpression(typed, effects, true)
+		return
+	}
+	c.collectRepeatedRegionIvarEffectsFromExpression(
+		expr,
+		effects,
+		!expectation.includesCallable(),
+	)
 }
 
 func (c *scriptChecker) collectRepeatedRegionPlainAssignmentTargetIvarEffects(
@@ -2372,11 +2495,20 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 	case *ArrayLiteral:
 		for _, element := range typed.Elements {
 			c.collectRepeatedRegionIvarEffectsFromExpression(element, effects, true)
+			if !c.expressionMayCompleteForBinding(element) {
+				return
+			}
 		}
 	case *HashLiteral:
 		for _, pair := range typed.Pairs {
 			c.collectRepeatedRegionIvarEffectsFromExpression(pair.Key, effects, true)
+			if !c.expressionMayCompleteForBinding(pair.Key) {
+				return
+			}
 			c.collectRepeatedRegionIvarEffectsFromExpression(pair.Value, effects, true)
+			if !c.expressionMayCompleteForBinding(pair.Value) {
+				return
+			}
 		}
 	case *CallExpr:
 		target, resolved := c.resolveCallable(typed)
@@ -2406,6 +2538,31 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 				return
 			}
 			unknownDispatch = !blockCapturingBuiltin
+		}
+		dynamicCandidates := c.captureDynamicCallCandidates(typed)
+		deferForwardedTargets := callResolvesForwardedTargetAfterArguments(
+			typed,
+			target,
+			resolved,
+		)
+		var dynamicResolution checkDynamicCallResolution
+		if !resolved && !deferForwardedTargets {
+			dynamicResolution = c.exactDynamicCallTargets(
+				typed,
+				target,
+				false,
+				dynamicCandidates,
+			)
+		}
+		if c.callCalleeLookupFails(
+			typed,
+			target,
+			resolved,
+			deferForwardedTargets,
+			dynamicCandidates,
+			dynamicResolution,
+		) {
+			return
 		}
 		for _, arg := range typed.Args {
 			c.collectRepeatedRegionIvarEffectsFromExpression(arg, effects, true)

@@ -3714,6 +3714,95 @@ end
 	}
 }
 
+func TestCheckInitializerIvarRepeatedEvaluationStopsAfterFailures(t *testing.T) {
+	t.Parallel()
+
+	regions := map[string]string{
+		"empty for": `    for value in []
+      @b = 1
+    end`,
+		"array element": `    for value in [1]
+      begin
+        [-> { raise "stop" }.call(), -> { @b = 1 }.call()]
+      rescue
+        nil
+      end
+    end`,
+		"hash value": `    for value in [1]
+      begin
+        {
+          "first": -> { raise "stop" }.call(),
+          "second": -> { @b = 1 }.call()
+        }
+      rescue
+        nil
+      end
+    end`,
+		"missing callee": `    for value in [1]
+      begin
+        nil.missing(-> { @b = 1 }.call())
+      rescue
+        nil
+      end
+    end`,
+	}
+
+	for name, region := range regions {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+`+region+`
+    @a = @b
+  end
+end
+`)
+			warnings := script.CheckWarnings()
+			if len(warnings) != 1 ||
+				warnings[0].Message != "write to @a expected int, got nil" {
+				t.Fatalf("CheckWarnings() = %#v, want the unset @b warning", warnings)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarAssignmentReadsDoNotInvokeStoredCallbacks(t *testing.T) {
+	t.Parallel()
+
+	for _, region := range []string{
+		`    callback ||= nil`,
+		`    for value in [1]
+      callback ||= nil
+    end`,
+		`    for value in [1]
+      @callback = callback
+    end`,
+	} {
+		script := compileScriptDefault(t, `
+class User
+  property callback: function
+  property a: int
+  property b: int
+
+  def initialize
+    callback = -> { @b = 1 }
+`+region+`
+    @a = @b
+  end
+end
+`)
+		warnings := script.CheckWarnings()
+		if len(warnings) != 1 ||
+			warnings[0].Message != "write to @a expected int, got nil" {
+			t.Fatalf("CheckWarnings() = %#v, want the unset @b warning", warnings)
+		}
+	}
+}
+
 func initializerIvarSeedMethod(param, value string) string {
 	if param != "" {
 		param = "(" + param + ")"

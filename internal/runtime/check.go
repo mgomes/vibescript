@@ -579,6 +579,12 @@ func (c *scriptChecker) collectRequiredModuleExportsFromStatement(stmt Statement
 		finish()
 	case *ForStmt:
 		c.collectRequiredModuleExportsFromExpression(typed.Iterable)
+		if c.exactIterableProvablyEmpty(typed.Iterable) {
+			c.recordBindingTarget(typed.Target)
+			c.degradeLocalTypesForBindings(nil, typed.Target)
+			c.recordLocalBindings(typed.Body)
+			break
+		}
 		if c.isolatedCollectInference {
 			elemType := c.forTargetElementType(typed)
 			c.recordLiveStatementNames(typed.Body)
@@ -2881,7 +2887,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		case tokenOrAssign, tokenAndAssign:
 			targetCompleted, setterReceiver := c.withAssignmentReceiverCapture(
 				typed.Target,
-				func() bool { return c.checkExpression(function, typed.Target) },
+				func() bool { return c.checkLogicalAssignmentTarget(function, typed.Target) },
 			)
 			if !targetCompleted {
 				c.recordNonCompletingExpression()
@@ -2894,7 +2900,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				)
 			}
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
-			truthy, known := c.inferredConditionTruthiness(typed.Target)
+			truthy, known := c.logicalAssignmentTargetTruthiness(typed.Target)
 			rhsReachable := true
 			if known {
 				if typed.Operator == tokenOrAssign {
@@ -3240,6 +3246,12 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			return
 		}
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Iterable)
+		if c.exactIterableProvablyEmpty(typed.Iterable) {
+			c.recordBindingTarget(typed.Target)
+			c.degradeLocalTypesForBindings(nil, typed.Target)
+			c.recordLocalBindings(typed.Body)
+			return
+		}
 		elemType := c.forTargetElementType(typed)
 		c.recordLiveStatementNames(typed.Body)
 		c.degradeLocalTypesForBindings(typed.Body, typed.Target)
@@ -3954,6 +3966,16 @@ func (c *scriptChecker) checkReturnStatementType(function string, returnType *Ty
 
 func (c *scriptChecker) checkExpression(function string, expr Expression) bool {
 	return c.checkExpressionWithAuto(function, expr, true)
+}
+
+func (c *scriptChecker) checkLogicalAssignmentTarget(
+	function string,
+	target Expression,
+) bool {
+	if _, local := target.(*Identifier); local {
+		return c.checkExpressionWithAuto(function, target, false)
+	}
+	return c.checkExpression(function, target)
 }
 
 func assignmentTargetMayInvokeCode(target Expression) bool {
@@ -9713,6 +9735,9 @@ func (c *scriptChecker) callCalleeLookupFails(
 	if call == nil {
 		return false
 	}
+	if c.staticNilCallCalleeLookupFails(call) {
+		return true
+	}
 	if resolved {
 		return target.fn != nil && !c.staticMemberCallTargetVisible(call, target)
 	}
@@ -9721,6 +9746,25 @@ func (c *scriptChecker) callCalleeLookupFails(
 		return ok && c.forwarderCalleeLookupFails(member.Property, candidates)
 	}
 	return resolution.lookupFails
+}
+
+func (c *scriptChecker) staticNilCallCalleeLookupFails(call *CallExpr) bool {
+	if call == nil {
+		return false
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || member.Safe || !typeExprIsNilOnly(c.inferExpressionType(member.Object)) {
+		return false
+	}
+	if isUniversalMember(member.Property) {
+		return false
+	}
+	switch member.Property {
+	case "inspect", "to_s", "string":
+		return false
+	default:
+		return true
+	}
 }
 
 func (c *scriptChecker) staticMemberCallTargetVisible(call *CallExpr, target staticCallable) bool {
