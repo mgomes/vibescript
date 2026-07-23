@@ -448,6 +448,24 @@ end
 			warning: "write to user field name expected string?, got int",
 		},
 		{
+			name: "logical universal member write adds an exact shape field",
+			source: `
+def f(user: { name: string })
+  user.nil? ||= 1
+end
+`,
+			warning: "write to user adds field nil? to exact shape { name: string }",
+		},
+		{
+			name: "logical universal member write checks a typed hash key",
+			source: `
+def f(h: hash<int, int>)
+  h.nil? ||= 1
+end
+`,
+			warning: "write to h expected key int, got string | symbol",
+		},
+		{
 			name: "skipped member assignment preserves a declared shape",
 			source: `
 def f(user: { name: string })
@@ -1181,6 +1199,14 @@ end
 			source: `
 def f(user: { name: string })
   user.name ||= 1
+end
+`,
+		},
+		{
+			name: "false universal member skips and assignment",
+			source: `
+def f(user: { name: string })
+  user.nil? &&= 1
 end
 `,
 		},

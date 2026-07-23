@@ -2468,13 +2468,24 @@ func (c *scriptChecker) applyMemberWriteFacts(
 		return false, nil, false
 	}
 
-	current, getterMayResolve := memberWriteCurrentType(contentFact, target.Property)
+	current, getterMayResolve := c.memberWriteCurrentType(target, contentFact)
 	switch stmt.Operator {
 	case "":
 		written = c.inferExpressionType(stmt.Value)
 	case tokenOrAssign, tokenAndAssign:
 		if !getterMayResolve {
 			return false, nil, false
+		}
+		if target.Property == "nil?" {
+			if _, universal := c.factReceiverUniversalMemberCallable(target); universal {
+				// A member setter only dispatches on the non-nil receiver path,
+				// where the universal nil? result is always false.
+				if stmt.Operator == tokenAndAssign {
+					return true, nil, false
+				}
+				written = c.inferExpressionType(stmt.Value)
+				break
+			}
 		}
 		if typeExprDefinitelyTruthy(current) {
 			if stmt.Operator == tokenOrAssign {
@@ -2534,11 +2545,26 @@ func (c *scriptChecker) applyMemberWriteFacts(
 }
 
 // memberWriteCurrentType reports the value a compound/logical member target
-// can read on a path that reaches its setter. Declared shape fields are exact
-// logical names; a typed hash member may resolve an existing entry whose value
-// satisfies the hash's value bound. A missing closed-shape field cannot reach
-// the setter because member lookup raises before the right side runs.
-func memberWriteCurrentType(receiver *TypeExpr, property string) (*TypeExpr, bool) {
+// can read on a path that reaches its setter. Universal helpers dispatch ahead
+// of non-callable hash/object data, while ordinary data members use the typed
+// hash value bound or declared shape field. A missing closed-shape field cannot
+// reach the setter because member lookup raises before the right side runs.
+func (c *scriptChecker) memberWriteCurrentType(target *MemberExpr, receiver *TypeExpr) (*TypeExpr, bool) {
+	if target == nil {
+		return nil, false
+	}
+	property := target.Property
+	if isUniversalMember(property) {
+		if callable, resolved := c.resolveMemberCallable(target); resolved {
+			if callable.fn == nil {
+				if callable.spec.autoInvoke {
+					return callable.spec.resultType, true
+				}
+				return checkTypeFunction, true
+			}
+			return c.inferExpressionType(target), true
+		}
+	}
 	if _, valueBound := declaredHashEntryTypes(receiver); valueBound != nil {
 		return valueBound, true
 	}
