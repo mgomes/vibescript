@@ -2997,6 +2997,31 @@ func TestCheckInitializerIvarNestedSelfDispatchesRemainConservative(t *testing.T
     self
   end`,
 		},
+		{
+			name:   "nested index getter",
+			invoke: "    self + 1",
+			methods: `  def +(value: int)
+    self[0]
+    self
+  end
+
+  def [](index: int)
+    @b = 1
+    index
+  end`,
+		},
+		{
+			name:   "nested index setter",
+			invoke: "    self + 1",
+			methods: `  def +(value: int)
+    self[0] = value
+    self
+  end
+
+  def []=(index: int, value: int)
+    @b = value
+  end`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

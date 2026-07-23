@@ -16996,7 +16996,7 @@ func (s *namespaceMutationScan) recordRuntimeNamespaceAssignment(
 			)
 			if resolution.exact {
 				for _, candidate := range resolution.targets {
-					s.scanFunctionCall(candidate.target.fn, candidate.call, candidate.target)
+					s.scanResolvedFunctionCall(candidate.call, candidate.target)
 				}
 			}
 			return
@@ -17035,7 +17035,11 @@ func (s *namespaceMutationScan) assignmentSetter(
 	completed := true
 	s.checker.withEvaluatedAssignmentSetterArgumentFacts(target, value, func() {
 		if receiver.captured {
-			s.recordRuntimeNamespaceAssignment(target, value, receiver.candidates)
+			if index, ok := target.(*IndexExpr); ok {
+				s.capturedIndexSetter(index, value, receiver)
+			} else {
+				s.recordRuntimeNamespaceAssignment(target, value, receiver.candidates)
+			}
 			completed = s.checker.assignmentSetterMayCompleteWithReceiver(
 				target,
 				value,
@@ -17047,6 +17051,26 @@ func (s *namespaceMutationScan) assignmentSetter(
 		completed = s.checker.assignmentSetterMayComplete(target, value)
 	})
 	return completed
+}
+
+func (s *namespaceMutationScan) capturedIndexSetter(
+	target *IndexExpr,
+	value Expression,
+	receiver checkAssignmentReceiverCapture,
+) {
+	selection := s.checker.assignmentSetterScriptDispatch(target, value, receiver)
+	if selection.unknown {
+		if s.checker.expressionIsCurrentInstanceSelf(target.Object) {
+			s.markUnknownDirectIvarEffects()
+		}
+		s.callCallee(assignmentSetterCall(target, value))
+		return
+	}
+	for _, selected := range selection.targets {
+		if selected.bindingStarts {
+			s.scanResolvedFunctionCall(selected.call, selected.target)
+		}
+	}
 }
 
 func (s *namespaceMutationScan) capturedIndexGetter(
@@ -17070,7 +17094,7 @@ func (s *namespaceMutationScan) capturedIndexGetter(
 	} else {
 		for _, selected := range selection.targets {
 			if selected.bindingStarts {
-				s.scanFunctionCall(selected.target.fn, selected.call, selected.target)
+				s.scanResolvedFunctionCall(selected.call, selected.target)
 			}
 		}
 	}
