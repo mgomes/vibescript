@@ -318,6 +318,12 @@ type scriptParamBindingInput struct {
 	mayBind     bool
 }
 
+type defaultBindingFact struct {
+	value    Value
+	inferred *TypeExpr
+	static   bool
+}
+
 // checkOptionGlobals resolves the host globals a call would receive. Bind
 // failures leave the adapter's names unbound and are also returned so a
 // combined check-and-call gate can surface them; the pure CheckWarnings*
@@ -11420,11 +11426,18 @@ func (c *scriptChecker) scriptCallBodyMustEnter(
 				usedKeywords[param.Name] = struct{}{}
 			} else {
 				if param.DefaultVal == nil ||
-					!expressionProvenNonRaising(param.DefaultVal) ||
-					!c.callArgumentMustBindType(param.DefaultVal, param.Type) {
+					!expressionProvenNonRaising(param.DefaultVal) {
 					return false
 				}
-				value = param.DefaultVal
+				fact := c.defaultExpressionBindingFact(param)
+				if !c.defaultBindingFactMustBindType(fact, param.Type) {
+					return false
+				}
+				if ty := c.ivarParamContract(target.fn, param); ty != nil &&
+					!c.defaultBindingFactMustBindType(fact, ty) {
+					return false
+				}
+				continue
 			}
 			if !c.callArgumentMustBindType(value, param.Type) {
 				return false
@@ -11441,11 +11454,18 @@ func (c *scriptChecker) scriptCallBodyMustEnter(
 				usedKeywords[param.Name] = struct{}{}
 			} else {
 				if param.DefaultVal == nil ||
-					!expressionProvenNonRaising(param.DefaultVal) ||
-					!c.callArgumentMustBindType(param.DefaultVal, param.Type) {
+					!expressionProvenNonRaising(param.DefaultVal) {
 					return false
 				}
-				value = param.DefaultVal
+				fact := c.defaultExpressionBindingFact(param)
+				if !c.defaultBindingFactMustBindType(fact, param.Type) {
+					return false
+				}
+				if ty := c.ivarParamContract(target.fn, param); ty != nil &&
+					!c.defaultBindingFactMustBindType(fact, ty) {
+					return false
+				}
+				continue
 			}
 			if !c.callArgumentMustBindType(value, param.Type) {
 				return false
@@ -11536,12 +11556,15 @@ func (c *scriptChecker) scriptCallBindingPlanInContext(
 		input := inputs[i]
 		if input.usesDefault {
 			plan.defaultParams = append(plan.defaultParams, i)
-			if !c.defaultExpressionMayCompleteForBinding(param) ||
-				!c.defaultExpressionMayBindType(param.DefaultVal, param.Type) {
+			if !c.defaultExpressionMayCompleteForBinding(param) {
+				return plan
+			}
+			fact := c.defaultExpressionBindingFact(param)
+			if !c.defaultBindingFactMayBindType(fact, param.Type) {
 				return plan
 			}
 			if ty := c.ivarParamContract(fn, param); ty != nil &&
-				!c.defaultExpressionMayBindType(param.DefaultVal, ty) {
+				!c.defaultBindingFactMayBindType(fact, ty) {
 				return plan
 			}
 		} else if !input.mayBind {
@@ -11794,18 +11817,44 @@ func (c *scriptChecker) callArgumentMustBindType(expr Expression, ty *TypeExpr) 
 		typeExprSatisfies(inferred, ty, c.checkNamedTypeResolver())
 }
 
-func (c *scriptChecker) defaultExpressionMayBindType(expr Expression, ty *TypeExpr) bool {
+func (c *scriptChecker) defaultExpressionBindingFact(param Param) defaultBindingFact {
+	if value, literal := staticLiteralValue(param.DefaultVal); literal {
+		return defaultBindingFact{value: value, static: true}
+	}
+	return defaultBindingFact{
+		inferred: c.inferExpressionTypeWithExpectation(
+			param.DefaultVal,
+			bindingDefaultExpectation(param),
+		),
+	}
+}
+
+func (c *scriptChecker) defaultBindingFactMayBindType(fact defaultBindingFact, ty *TypeExpr) bool {
 	if ty == nil {
 		return true
 	}
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return false
 	}
-	if value, literal := staticLiteralValue(expr); literal {
-		return c.checkRuntimeStaticValueType(value, ty) == nil
+	if fact.static {
+		return c.checkRuntimeStaticValueType(fact.value, ty) == nil
 	}
-	inferred := c.inferExpressionTypeWithExpectation(expr, typeExpressionExpectation(ty))
-	return inferred == nil || !typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver())
+	return fact.inferred == nil ||
+		!typeExprsDisjoint(fact.inferred, ty, c.checkNamedTypeResolver())
+}
+
+func (c *scriptChecker) defaultBindingFactMustBindType(fact defaultBindingFact, ty *TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
+		return false
+	}
+	if fact.static {
+		return c.checkRuntimeStaticValueType(fact.value, ty) == nil
+	}
+	return fact.inferred != nil &&
+		typeExprSatisfies(fact.inferred, ty, c.checkNamedTypeResolver())
 }
 
 // expressionMayCompleteForBinding is a side-effect-free completion probe for
@@ -15895,11 +15944,12 @@ func (s *namespaceMutationScan) scanFunctionBindings(
 }
 
 func (s *namespaceMutationScan) functionParamDefaultMayBind(fn *ScriptFunction, param Param) bool {
-	if !s.checker.defaultExpressionMayBindType(param.DefaultVal, param.Type) {
+	fact := s.checker.defaultExpressionBindingFact(param)
+	if !s.checker.defaultBindingFactMayBindType(fact, param.Type) {
 		return false
 	}
 	ty := s.checker.ivarParamContract(fn, param)
-	return ty == nil || s.checker.defaultExpressionMayBindType(param.DefaultVal, ty)
+	return ty == nil || s.checker.defaultBindingFactMayBindType(fact, ty)
 }
 
 func (s *namespaceMutationScan) scanFunctionDefaults(fn *ScriptFunction, indices []int) bool {

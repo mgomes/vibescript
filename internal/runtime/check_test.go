@@ -2154,6 +2154,22 @@ end`,
 			wantCount: 2,
 		},
 		{
+			name: "evaluated ivar default rejection skips initializer body",
+			definitions: `def make()
+  "bad"
+end
+
+class Installer
+  property callback: function | int
+
+  def initialize(@callback: string | int = make)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    `begin; Installer.new(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
 			name: "compatible ivar parameter reaches initializer body",
 			definitions: `class Installer
   property flag: bool

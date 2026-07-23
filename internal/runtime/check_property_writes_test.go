@@ -1641,6 +1641,54 @@ end
 `))
 }
 
+func TestCheckIvarParamDefaultUsesOneEvaluatedValueForBothContracts(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def make()
+  "bad"
+end
+
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Installer
+  property callback: function | int
+
+  def initialize(@callback: string | int = make)
+    JSON.stringify = replacement
+  end
+end
+
+def run()
+  begin
+    Installer.new()
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end
+`)
+	requireCheckWarningContains(
+		t,
+		script,
+		"call to takes_int argument value expected int, got string",
+	)
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		nil,
+		CallOptions{},
+		"argument value expected int, got string",
+	)
+}
+
 // Reads observe the seeded contract: an unwritten typed ivar reads as the
 // declared type or nil, and a checked write drops the entry nil arm.
 func TestCheckTypedPropertyReadFacts(t *testing.T) {
