@@ -5649,16 +5649,19 @@ func (c *scriptChecker) exactShapeMemberLookupProvablyFails(member *MemberExpr) 
 		return false
 	}
 	receiver := c.inferExpressionType(member.Object)
-	return typeExprArmsAll(receiver, func(arm *TypeExpr) bool {
+	sawShape := false
+	allFail := typeExprArmsAll(receiver, func(arm *TypeExpr) bool {
 		if arm.Kind == TypeNil {
-			return true
+			return member.Safe || !memberKindOwns("nil", member.Property)
 		}
 		if arm.Kind != TypeShape || arm.Open {
 			return false
 		}
+		sawShape = true
 		_, present := arm.Shape[member.Property]
 		return !present
 	})
+	return sawShape && allFail
 }
 
 func scriptFunctionLiteralReturnExpression(fn *ScriptFunction) (Expression, bool) {
