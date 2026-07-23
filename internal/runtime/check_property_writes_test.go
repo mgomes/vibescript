@@ -4524,6 +4524,115 @@ end
 	}
 }
 
+func TestCheckInitializerIvarImplicitSelfCallableBindingsPreserveUnrelatedFacts(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		invoke     string
+		invocation string
+	}{
+		{
+			name: "attached block",
+			invoke: `  def invoke(&block: function)
+    block.call()
+  end`,
+			invocation: `    invoke do
+      @b = 1
+    end`,
+		},
+		{
+			name: "positional rest",
+			invoke: `  def invoke(*callbacks: array<function>)
+    callbacks[0].call()
+  end`,
+			invocation: `    invoke(-> { @b = 1 })`,
+		},
+		{
+			name: "keyword rest",
+			invoke: `  def invoke(**callbacks: hash<string, function>)
+    callbacks["cb"].call()
+  end`,
+			invocation: `    invoke(cb: -> { @b = 1 })`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+  property b: int
+
+  def initialize
+    @flag = false
+`+tc.invocation+`
+    if @flag
+      takes_int("bad")
+    end
+  end
+
+`+tc.invoke+`
+end
+
+def run
+  User.new().b
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 1 {
+				t.Fatalf("run() = %v, want 1", got)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarUnknownVariadicCallableRemainsConservative(t *testing.T) {
+	t.Parallel()
+
+	requireCheckWarningContains(t, compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def initialize(callback: function)
+    @flag = false
+    invoke(callback)
+    if @flag
+      takes_int("bad")
+    end
+  end
+
+  def invoke(*callbacks: array<function>)
+    callbacks[0].call()
+  end
+end
+`), "call to takes_int argument value expected int, got string")
+}
+
+func TestCheckRecursiveVariadicCallableFactsTerminate(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def recur(n: int, *callbacks: array<function>) -> nil
+  if n > 0
+    recur(n - 1, -> {})
+  end
+end
+
+def run
+  recur(1, -> {})
+end
+`))
+}
+
 func TestCheckInitializerIvarDistinctSameClassSetterRemainsConservative(t *testing.T) {
 	t.Parallel()
 

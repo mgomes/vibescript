@@ -553,30 +553,47 @@ func mutableStaticContainers(expr Expression) map[Expression]struct{} {
 	return containers
 }
 
-// capturedDestructureProjectionContainer recognizes exact array snapshots
+// capturedDestructureProjectionContainer recognizes exact container snapshots
 // whose non-literal leaves have durable checker identities.
 func (c *scriptChecker) capturedDestructureProjectionContainer(expr Expression) bool {
-	array, ok := expr.(*ArrayLiteral)
-	if !ok {
-		return false
-	}
-	for _, element := range array.Elements {
+	validLeaf := func(element Expression) bool {
 		if c.checkStaticValueCandidate(element) {
-			continue
+			return true
 		}
 		fact, captured := c.destructureProjectionFacts[element]
 		if !captured {
 			return false
 		}
 		if fact.factKind == destructureClassFact && len(fact.classNames) > 0 {
-			continue
+			return true
 		}
 		if fact.factKind == destructureCallableFact && len(fact.callables) > 0 {
-			continue
+			return true
 		}
 		return false
 	}
-	return true
+	switch typed := expr.(type) {
+	case *ArrayLiteral:
+		for _, element := range typed.Elements {
+			if !validLeaf(element) {
+				return false
+			}
+		}
+		return true
+	case *HashLiteral:
+		if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
+			return false
+		}
+		for _, pair := range typed.Pairs {
+			if _, static := staticLiteralValue(pair.Key); !static ||
+				!validLeaf(pair.Value) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *scriptChecker) checkStaticValueCandidate(expr Expression) bool {

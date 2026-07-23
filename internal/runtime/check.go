@@ -140,6 +140,7 @@ type scriptChecker struct {
 	evaluatedHashDefaults      map[Expression][]directCoreHashDefaultCapture
 	evaluatedDestructureFacts  map[Expression]capturedDestructureValueFact
 	destructureProjectionFacts map[Expression]capturedDestructureValueFact
+	variadicParamStaticValues  map[string][]Expression
 	localBindingGenerations    map[string]uint64
 	reachableParamFacts        map[string]checkReachableParamFact
 	reachableBindingPlan       *scriptCallBindingPlan
@@ -11647,6 +11648,7 @@ func (c *scriptChecker) reachableCallParamFacts(
 			break
 		}
 	}
+	c.bindVariadicReachableParamFacts(view, fn, facts)
 	// The normalized view supplies inferred values, while callParamSupply is
 	// authoritative about defaults. In particular, an options-hash collapse
 	// consumes every raw keyword, so a later same-named parameter must discard
@@ -11675,17 +11677,248 @@ func (c *scriptChecker) reachableCallParamFacts(
 	return facts
 }
 
+// evaluatedCallArgumentStaticAlternatives freezes an evaluated argument's
+// exact literal, class, or callable identity for aggregate parameter bindings.
+func (c *scriptChecker) evaluatedCallArgumentStaticAlternatives(
+	expr Expression,
+) ([]Expression, bool) {
+	if values, captured := c.callArgumentStaticValues[expr]; captured &&
+		len(values) > 0 {
+		return append([]Expression(nil), values...), true
+	}
+	fact := capturedDestructureValueFact{
+		value:     expr,
+		assigned:  c.callArgumentFacts[expr],
+		known:     true,
+		evaluated: true,
+	}
+	if classNames, captured := c.callArgumentClassValues[expr]; captured &&
+		len(classNames) > 0 {
+		fact.classNames = append([]string(nil), classNames...)
+		fact.factKind = destructureClassFact
+	} else if callables, captured := c.callArgumentCallables[expr]; captured &&
+		len(callables) > 0 {
+		fact.callables = append([]*ScriptFunction(nil), callables...)
+		fact.factKind = destructureCallableFact
+	} else {
+		return nil, false
+	}
+	projection := c.newDestructureProjection(fact, expr.Pos())
+	values := []Expression{projection}
+	if c.callArgumentStaticValues == nil {
+		c.callArgumentStaticValues = make(map[Expression][]Expression)
+	}
+	c.callArgumentStaticValues[expr] = values
+	return append([]Expression(nil), values...), true
+}
+
+// internVariadicParamStaticValues gives synthesized aggregates a durable
+// identity so recursive call and return-summary cache keys converge.
+func (c *scriptChecker) internVariadicParamStaticValues(
+	fn *ScriptFunction,
+	param Param,
+	values []Expression,
+) []Expression {
+	if fn == nil || param.Name == "" || len(values) == 0 {
+		return values
+	}
+	var key strings.Builder
+	fmt.Fprintf(&key, "%p:%d:%s:", fn, len(param.Name), param.Name)
+	for _, value := range values {
+		c.writeVariadicStaticValueKey(&key, value)
+		key.WriteByte(',')
+	}
+	cacheKey := key.String()
+	if cached, ok := c.variadicParamStaticValues[cacheKey]; ok {
+		return append([]Expression(nil), cached...)
+	}
+	if c.variadicParamStaticValues == nil {
+		c.variadicParamStaticValues = make(map[string][]Expression)
+	}
+	c.variadicParamStaticValues[cacheKey] = append([]Expression(nil), values...)
+	return values
+}
+
+func (c *scriptChecker) writeVariadicStaticValueKey(
+	key *strings.Builder,
+	expr Expression,
+) {
+	if identity, static := staticLiteralHashIdentity(expr); static {
+		fmt.Fprintf(key, "literal:%d:%s", len(identity), identity)
+		return
+	}
+	if fact, projected := c.destructureProjectionFacts[expr]; projected {
+		fmt.Fprintf(key, "projection:%d:%s:", fact.factKind, typeFactKey(fact.assigned))
+		for _, className := range fact.classNames {
+			fmt.Fprintf(key, "%d:%s,", len(className), className)
+		}
+		key.WriteByte(':')
+		for _, callable := range fact.callables {
+			fmt.Fprintf(key, "%p,", callable)
+		}
+		return
+	}
+	switch typed := expr.(type) {
+	case *ArrayLiteral:
+		key.WriteString("array[")
+		for _, element := range typed.Elements {
+			c.writeVariadicStaticValueKey(key, element)
+			key.WriteByte(';')
+		}
+		key.WriteByte(']')
+	case *HashLiteral:
+		key.WriteString("hash:")
+		key.WriteString(typeFactKey(typed.ShapeType))
+		key.WriteByte('{')
+		for _, pair := range typed.Pairs {
+			c.writeVariadicStaticValueKey(key, pair.Key)
+			key.WriteByte('=')
+			c.writeVariadicStaticValueKey(key, pair.Value)
+			key.WriteByte(';')
+		}
+		key.WriteByte('}')
+	default:
+		fmt.Fprintf(key, "%T:%p", expr, expr)
+	}
+}
+
+// bindVariadicReachableParamFacts mirrors the runtime's rest parameter binding
+// so indexing the aggregate can recover exact evaluated argument identities.
+func (c *scriptChecker) bindVariadicReachableParamFacts(
+	view staticCallView,
+	fn *ScriptFunction,
+	facts map[string]checkReachableParamFact,
+) {
+	if fn == nil {
+		return
+	}
+	const maxAlternatives = 32
+	argIndex := 0
+	usedKeywords := make(map[string]struct{}, len(view.kwargs))
+	lastKeyword := make(map[string]int, len(view.kwargs))
+	for i, kwarg := range view.kwargs {
+		lastKeyword[kwarg.Name] = i
+	}
+	for _, param := range fn.Params {
+		switch param.Kind {
+		case ParamNormal:
+			if argIndex < len(view.args) {
+				argIndex++
+			} else if keywordIndex(view, param.Name) >= 0 {
+				usedKeywords[param.Name] = struct{}{}
+			}
+		case ParamKeyword:
+			if keywordIndex(view, param.Name) >= 0 {
+				usedKeywords[param.Name] = struct{}{}
+			}
+		case ParamRest:
+			alternatives := []*ArrayLiteral{{Position: view.pos}}
+			exact := true
+			for _, arg := range view.args[argIndex:] {
+				values, ok := c.evaluatedCallArgumentStaticAlternatives(arg)
+				if !ok || len(alternatives) > maxAlternatives/len(values) {
+					exact = false
+					break
+				}
+				next := make([]*ArrayLiteral, 0, len(alternatives)*len(values))
+				for _, prefix := range alternatives {
+					for _, value := range values {
+						next = append(next, &ArrayLiteral{
+							Elements: append(
+								append([]Expression(nil), prefix.Elements...),
+								value,
+							),
+							Position: view.pos,
+						})
+					}
+				}
+				alternatives = next
+			}
+			if exact && param.Name != "" {
+				staticVals := make([]Expression, len(alternatives))
+				for i, alternative := range alternatives {
+					staticVals[i] = alternative
+				}
+				staticVals = c.internVariadicParamStaticValues(fn, param, staticVals)
+				facts[param.Name] = checkReachableParamFact{
+					typeExpr:   checkTypeArray,
+					staticVals: staticVals,
+				}
+			}
+			argIndex = len(view.args)
+		case ParamKeywordRest:
+			alternatives := []*HashLiteral{{Position: view.pos}}
+			exact := true
+			for i, kwarg := range view.kwargs {
+				if _, used := usedKeywords[kwarg.Name]; used ||
+					kwarg.Splat || lastKeyword[kwarg.Name] != i {
+					continue
+				}
+				values, ok := c.evaluatedCallArgumentStaticAlternatives(kwarg.Value)
+				if !ok || len(alternatives) > maxAlternatives/len(values) {
+					exact = false
+					break
+				}
+				next := make([]*HashLiteral, 0, len(alternatives)*len(values))
+				for _, prefix := range alternatives {
+					for _, value := range values {
+						next = append(next, &HashLiteral{
+							Pairs: append(
+								append([]HashPair(nil), prefix.Pairs...),
+								HashPair{
+									Key: &StringLiteral{
+										Value:    kwarg.Name,
+										Position: kwarg.Value.Pos(),
+									},
+									Value: value,
+								},
+							),
+							Position: view.pos,
+						})
+					}
+				}
+				alternatives = next
+			}
+			if exact && param.Name != "" {
+				staticVals := make([]Expression, len(alternatives))
+				for i, alternative := range alternatives {
+					staticVals[i] = alternative
+				}
+				staticVals = c.internVariadicParamStaticValues(fn, param, staticVals)
+				facts[param.Name] = checkReachableParamFact{
+					typeExpr:   checkTypeHash,
+					staticVals: staticVals,
+				}
+			}
+			for _, kwarg := range view.kwargs {
+				usedKeywords[kwarg.Name] = struct{}{}
+			}
+		}
+	}
+}
+
 func callableParamLambdaArguments(
 	call *CallExpr,
 	target staticCallable,
 	facts map[string]checkReachableParamFact,
 ) map[string][]Expression {
+	if call == nil || target.fn == nil {
+		return nil
+	}
 	arguments := callableParamArgumentExpressions(call, target, facts, true)
 	lambdas := make(map[string][]Expression)
 	for name, expressions := range arguments {
 		for _, expression := range expressions {
 			if lambdaLiteralBlock(expression) != nil {
 				lambdas[name] = append(lambdas[name], expression)
+			}
+		}
+	}
+	if call.Block != nil {
+		for _, param := range target.fn.Params {
+			if param.Kind == ParamBlock && param.Name != "" {
+				lambdas[param.Name] = append(lambdas[param.Name], call.Block)
+				break
 			}
 		}
 	}
@@ -16603,7 +16836,7 @@ func (s *namespaceMutationScan) functionReferenceWithCall(name string, call *Cal
 	if lambdas, bound := s.callableLambdas[name]; bound {
 		resolved := false
 		for _, lambda := range lambdas {
-			if block := lambdaLiteralBlock(lambda); block != nil &&
+			if block := callableArgumentBlock(lambda); block != nil &&
 				s.checker.immediateLambdaCallEntry(block, call).mayEnter {
 				resolved = true
 				s.invokedLambdas[block] = struct{}{}
@@ -16622,6 +16855,13 @@ func (s *namespaceMutationScan) functionReferenceWithCall(name string, call *Cal
 		return
 	}
 	s.selfCallReference(name, call)
+}
+
+func callableArgumentBlock(expr Expression) *BlockLiteral {
+	if block, ok := expr.(*BlockLiteral); ok {
+		return block
+	}
+	return lambdaLiteralBlock(expr)
 }
 
 func (s *namespaceMutationScan) scanExactLambdaCall(
