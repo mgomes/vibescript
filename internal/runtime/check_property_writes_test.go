@@ -2694,6 +2694,150 @@ end
 	}
 }
 
+func TestCheckRejectedStoredBlockCallDoesNotApplyBodyEffects(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run
+  handler = proc { JSON.stringify = replacement }
+  begin
+    handler.call(value: 1)
+  rescue
+    nil
+  end
+  takes_string(JSON.stringify({}))
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindString {
+		t.Fatalf("run() = %v, want string", got)
+	}
+}
+
+func TestCheckStoredBlockCallUsesEvaluatedCalleeIdentity(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def replacement_int(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run
+  callback = proc { |ignored| nil }
+  callback.call(-> {
+    callback = proc { |ignored| JSON.stringify = replacement_int }
+    nil
+  }.call())
+  takes_int(JSON.stringify({}))
+end
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		nil,
+		CallOptions{},
+		"argument value expected int, got string",
+	)
+}
+
+func TestCheckCapturedBlockConstructorIdentityDoesNotEscapeValidationWalk(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run
+  Hash.new do |hash, key|
+    callback = proc { nil }
+    Hash.new do |nested, nested_key|
+      nil
+    end
+  end
+end
+`)
+	fn := script.functions["run"]
+	outerStatement, ok := fn.Body[0].(*ExprStmt)
+	if !ok {
+		t.Fatalf("run body statement = %T, want *ExprStmt", fn.Body[0])
+	}
+	outer, ok := outerStatement.Expr.(*CallExpr)
+	if !ok || outer.Block == nil {
+		t.Fatalf("run body expression = %T, want blocked *CallExpr", outerStatement.Expr)
+	}
+	procStatement, ok := outer.Block.Body[0].(*AssignStmt)
+	if !ok {
+		t.Fatalf("outer block statement 0 = %T, want *AssignStmt", outer.Block.Body[0])
+	}
+	procCall, ok := procStatement.Value.(*CallExpr)
+	if !ok {
+		t.Fatalf("proc assignment value = %T, want *CallExpr", procStatement.Value)
+	}
+	hashStatement, ok := outer.Block.Body[1].(*ExprStmt)
+	if !ok {
+		t.Fatalf("outer block statement 1 = %T, want *ExprStmt", outer.Block.Body[1])
+	}
+	hashCall, ok := hashStatement.Expr.(*CallExpr)
+	if !ok {
+		t.Fatalf("nested Hash.new expression = %T, want *CallExpr", hashStatement.Expr)
+	}
+
+	checker := scriptChecker{
+		script:          script,
+		typeRoot:        checkTypeRoot(script, nil),
+		runtimeTypeRoot: checkTypeRoot(script, nil),
+		evaluatedBlockValues: map[Expression][]capturedBlockLiteralValue{
+			outer: {{block: outer.Block}},
+		},
+		evaluatedHashDefaults: map[Expression][]directCoreHashDefaultCapture{
+			outer: {{freshEmpty: true}},
+		},
+	}
+	checker.checkCapturedBlockLiteral("run", outer.Block, false)
+	if len(checker.evaluatedBlockValues) != 1 ||
+		len(checker.evaluatedBlockValues[outer]) != 1 {
+		t.Fatalf(
+			"evaluatedBlockValues = %#v, want only the enclosing evaluation fact",
+			checker.evaluatedBlockValues,
+		)
+	}
+	if len(checker.evaluatedHashDefaults) != 1 ||
+		len(checker.evaluatedHashDefaults[outer]) != 1 {
+		t.Fatalf(
+			"evaluatedHashDefaults = %#v, want only the enclosing evaluation fact",
+			checker.evaluatedHashDefaults,
+		)
+	}
+
+	globals := map[string]Value{
+		"Hash": NewInt(1),
+		"proc": NewInt(1),
+	}
+	checker.optionGlobals = globals
+	checker.optionGlobalsOverride = true
+	checker.hostGlobals = checkHostGlobals(globals)
+	checker.typeRoot = checkTypeRoot(script, globals)
+	checker.runtimeTypeRoot = checkTypeRoot(script, globals)
+	if values, exact := checker.capturedBlockLiteralValueAlternatives(procCall); exact {
+		t.Fatalf("capturedBlockLiteralValueAlternatives() = %#v, want shadowed proc", values)
+	}
+	if defaults, exact := checker.captureDirectCoreHashDefaults(hashCall); exact {
+		t.Fatalf("captureDirectCoreHashDefaults() = %#v, want shadowed Hash.new", defaults)
+	}
+}
+
 func TestCheckInitializerIvarBlockConstructorsDoNotExportFacts(t *testing.T) {
 	t.Parallel()
 
@@ -4005,6 +4149,515 @@ end
 `), "write to @a expected int, got nil")
 		})
 	}
+}
+
+func TestCheckCapturedBlockValidationDoesNotMutateOuterInference(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def initialize
+    defaults = Hash.new { |hash, key| @b = 1 }
+    proc { defaults = Hash.new() }
+    defaults[:missing]
+    @a = @b
+    @a = @c
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+	warnings := script.CheckWarnings()
+	if len(warnings) != 1 ||
+		!strings.Contains(warnings[0].Message, "write to @a expected int, got nil") {
+		t.Fatalf("CheckWarnings() = %#v, want only the @c nil write", warnings)
+	}
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		nil,
+		CallOptions{},
+		"instance variable @a expected int, got nil",
+	)
+}
+
+func TestCheckInitializerIvarHashDefaultAliasesPreserveExactEffects(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		setup        string
+		wantBWarning bool
+		runWritesB   bool
+	}{
+		{
+			name:         "hash literal",
+			setup:        `    defaults = {}`,
+			wantBWarning: true,
+		},
+		{
+			name:         "bare Hash new",
+			setup:        `    defaults = Hash.new()`,
+			wantBWarning: true,
+		},
+		{
+			name:         "value Hash new",
+			setup:        `    defaults = Hash.new(0)`,
+			wantBWarning: true,
+		},
+		{
+			name: "lambda callback",
+			setup: `    callback = lambda { |hash, key| @b = 1 }
+    defaults = Hash.new(&callback)`,
+			runWritesB: true,
+		},
+		{
+			name: "proc callback",
+			setup: `    callback = proc { |hash, key| @b = 1 }
+    defaults = Hash.new(&callback)`,
+			runWritesB: true,
+		},
+		{
+			name: "Proc new callback",
+			setup: `    callback = Proc.new { |hash, key| @b = 1 }
+    defaults = Hash.new(&callback)`,
+			runWritesB: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+  property c: int
+  property control: int
+
+  def initialize
+`+tc.setup+`
+    alias_defaults = defaults
+    alias_defaults[:missing]
+    @a = @b
+    @control = @c
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+			warnings := script.CheckWarnings()
+			if len(warnings) != 1 {
+				t.Fatalf("CheckWarnings() = %#v, want one nil write warning", warnings)
+			}
+			want := "write to @control expected int, got nil"
+			if tc.wantBWarning {
+				want = "write to @a expected int, got nil"
+			}
+			if !strings.Contains(warnings[0].Message, want) {
+				t.Fatalf("CheckWarnings() = %#v, want %q", warnings, want)
+			}
+			if tc.runWritesB {
+				requireCallErrorContains(
+					t,
+					script,
+					"run",
+					nil,
+					CallOptions{},
+					"instance variable @control expected int, got nil",
+				)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarHashDefaultFreezesConstructorIdentity(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run
+  Hash.new { |hash, key| @b = 1 }
+end
+`)
+	fn := script.functions["run"]
+	statement, ok := fn.Body[0].(*ExprStmt)
+	if !ok {
+		t.Fatalf("run body statement = %T, want *ExprStmt", fn.Body[0])
+	}
+	call, ok := statement.Expr.(*CallExpr)
+	if !ok {
+		t.Fatalf("run body expression = %T, want *CallExpr", statement.Expr)
+	}
+
+	checker := scriptChecker{
+		script:          script,
+		typeRoot:        checkTypeRoot(script, nil),
+		runtimeTypeRoot: checkTypeRoot(script, nil),
+	}
+	target, resolved := checker.resolveCallable(call)
+	if !checker.callTargetsBlockCapturingBuiltin(call, target, resolved) {
+		t.Fatal("Hash.new did not initially resolve to the core constructor")
+	}
+	checker.captureEvaluatedRetainedConstructor(call, target, true)
+
+	globals := map[string]Value{"Hash": NewInt(1)}
+	checker.optionGlobals = globals
+	checker.optionGlobalsOverride = true
+	checker.hostGlobals = checkHostGlobals(globals)
+	checker.typeRoot = checkTypeRoot(script, globals)
+	checker.runtimeTypeRoot = checkTypeRoot(script, globals)
+	reboundTarget, reboundResolved := checker.resolveCallable(call)
+	if checker.callTargetsBlockCapturingBuiltin(call, reboundTarget, reboundResolved) {
+		t.Fatal("shadowed Hash.new still resolved to the core constructor")
+	}
+
+	defaults, exact := checker.captureDirectCoreHashDefaults(call)
+	if !exact || len(defaults) != 1 || defaults[0].block != call.Block ||
+		defaults[0].unknown {
+		t.Fatalf("captureDirectCoreHashDefaults() = %#v, want the evaluated block", defaults)
+	}
+	index := &IndexExpr{
+		Object:  call,
+		Indices: []Expression{&SymbolLiteral{Name: "missing"}},
+	}
+	effects, mayRun, _ := checker.indexReadIvarEffects(
+		index,
+		checkTypeHash,
+		defaults,
+	)
+	if !mayRun || effects.unknown {
+		t.Fatalf(
+			"indexReadIvarEffects() = (%#v, %t), want exact effects",
+			effects,
+			mayRun,
+		)
+	}
+	if _, written := effects.writes["b"]; !written || len(effects.writes) != 1 {
+		t.Fatalf("indexReadIvarEffects().writes = %#v, want only b", effects.writes)
+	}
+}
+
+func TestCheckInitializerIvarAliasedHashDefaultCompletion(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		constructor string
+	}{
+		{
+			name:        "attached block next",
+			constructor: `Hash.new { |hash, key| next 1 }`,
+		},
+		{
+			name:        "proc next",
+			constructor: `Hash.new(&proc { |hash, key| next 1 })`,
+		},
+		{
+			name:        "Proc new next",
+			constructor: `Hash.new(&Proc.new { |hash, key| next 1 })`,
+		},
+		{
+			name:        "lambda return",
+			constructor: `Hash.new(&lambda { |hash, key| return 1 })`,
+		},
+		{
+			name:        "lambda break",
+			constructor: `Hash.new(&lambda { |hash, key| break 1 })`,
+		},
+		{
+			name:        "nested lambda return",
+			constructor: `Hash.new(&proc { |hash, key| -> { return 1 }.call() })`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize
+    defaults = `+tc.constructor+`
+    defaults[:missing]
+    @a = "bad"
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+			requireCheckWarningContains(t, script, "write to @a expected int, got string")
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"instance variable @a expected int, got string",
+			)
+		})
+	}
+
+	t.Run("callback body raises", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+  property c: int
+  property control: int
+
+  def initialize
+    defaults = Hash.new do |hash, key|
+      @b = 1
+      raise "stop"
+    end
+    alias_defaults = defaults
+    begin
+      alias_defaults[:missing]
+      @c = "unreachable"
+    rescue
+      @a = @b
+      @control = @c
+    end
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+		warnings := script.CheckWarnings()
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to @control expected int, got nil") {
+			t.Fatalf("CheckWarnings() = %#v, want one unrelated nil write warning", warnings)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @control expected int, got nil",
+		)
+	})
+
+	t.Run("strict callback rejects arguments", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def initialize
+    callback = lambda { |hash, key, extra| @b = 1 }
+    defaults = Hash.new(&callback)
+    alias_defaults = defaults
+    begin
+      alias_defaults[:missing]
+      @c = "unreachable"
+    rescue
+      @a = @b
+    end
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+		warnings := script.CheckWarnings()
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to @a expected int, got nil") {
+			t.Fatalf("CheckWarnings() = %#v, want one rejected-callback nil write warning", warnings)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @a expected int, got nil",
+		)
+	})
+}
+
+func TestCheckInitializerIvarHashDefaultFreshness(t *testing.T) {
+	t.Parallel()
+
+	t.Run("callback mutation invalidates every alias", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize
+    defaults = Hash.new do |hash, key|
+      hash[key] = 1
+      raise "stop"
+    end
+    alias_defaults = defaults
+    begin
+      alias_defaults[:missing]
+    rescue
+      nil
+    end
+    defaults[:missing]
+    @a = "bad"
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+		requireCheckWarningContains(t, script, "write to @a expected int, got string")
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @a expected int, got string",
+		)
+	})
+
+	t.Run("selector mutation is observed before lookup", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize
+    defaults = Hash.new do |hash, key|
+      raise "stop"
+    end
+    defaults[defaults.store(:missing, :missing)]
+    @a = "bad"
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+		warnings := script.CheckWarnings()
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to @a expected int, got string") {
+			t.Fatalf("CheckWarnings() = %#v, want one reached bad write warning", warnings)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @a expected int, got string",
+		)
+	})
+
+	t.Run("case receiver aliases observe selector mutation", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize(flag: bool)
+    defaults = Hash.new { |hash, key| raise "stop" }
+    other = Hash.new { |hash, key| raise "stop" }
+    (case flag
+     when true
+       defaults
+     else
+       other
+     end)[defaults.store(:missing, :missing)]
+    @a = "bad"
+  end
+end
+
+def run
+  User.new(true).a
+end
+`)
+		requireCheckWarningContains(t, script, "write to @a expected int, got string")
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @a expected int, got string",
+		)
+	})
+
+	t.Run("selector rebind keeps the evaluated receiver", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize
+    defaults = Hash.new do |hash, key|
+      raise "stop"
+    end
+    begin
+      defaults[-> { defaults = Hash.new(); :missing }.call()]
+      @a = "bad"
+    rescue
+      @a = 1
+    end
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
+
+	t.Run("conditional keeps its evaluated constructor arm", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize
+    flag = true
+    defaults = flag ?
+      Hash.new(-> { flag = false; 0 }.call()) :
+      Hash.new { |hash, key| raise "stop" }
+    defaults[:missing]
+    @a = "bad"
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+		requireCheckWarningContains(t, script, "write to @a expected int, got string")
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @a expected int, got string",
+		)
+	})
 }
 
 func TestCheckInitializerIvarImmediateLambdaWidensOnlyWrittenFactsWithoutLoop(t *testing.T) {

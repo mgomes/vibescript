@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"maps"
 	"reflect"
 	"sort"
 	"strconv"
@@ -63,6 +64,8 @@ type checkLocalValueFact struct {
 	classNames              []string
 	callables               []*ScriptFunction
 	staticVals              []Expression
+	blockValues             []capturedBlockLiteralValue
+	hashDefaults            []directCoreHashDefaultCapture
 	keywordSplatFails       bool
 	invalidKeywordSplatKeys map[string]struct{}
 }
@@ -118,7 +121,11 @@ func (c *scriptChecker) directLocalConditionTruthiness(condition Expression) (bo
 		return false, false
 	}
 	if fact, exact := c.localValueFactFor(ident.Name); exact {
-		if len(fact.callables) > 0 {
+		blockMayAutoInvoke := false
+		for _, value := range fact.blockValues {
+			blockMayAutoInvoke = blockMayAutoInvoke || value.block != nil
+		}
+		if len(fact.callables) > 0 || blockMayAutoInvoke {
 			return false, false
 		}
 		if truthy, known := localValueFactTruthiness(fact, true); known {
@@ -315,6 +322,8 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 			classNames:              append([]string(nil), fact.classNames...),
 			callables:               append([]*ScriptFunction(nil), fact.callables...),
 			staticVals:              append([]Expression(nil), fact.staticVals...),
+			blockValues:             append([]capturedBlockLiteralValue(nil), fact.blockValues...),
+			hashDefaults:            append([]directCoreHashDefaultCapture(nil), fact.hashDefaults...),
 			keywordSplatFails:       fact.keywordSplatFails,
 			invalidKeywordSplatKeys: cloneCheckStringSet(fact.invalidKeywordSplatKeys),
 		}
@@ -325,7 +334,7 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 	fact, ok := c.localValueFactFor(name)
 	if !ok || len(fact.classNames) != 1 || len(fact.callables) > 0 || len(fact.staticVals) > 0 ||
-		fact.keywordSplatFails {
+		len(fact.blockValues) > 0 || len(fact.hashDefaults) > 0 || fact.keywordSplatFails {
 		return "", false
 	}
 	return fact.classNames[0], true
@@ -334,7 +343,8 @@ func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 func (c *scriptChecker) localClassValuesFor(name string) ([]string, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return fact.classNames, ok && len(fact.classNames) > 0 && len(fact.callables) == 0 &&
-		len(fact.staticVals) == 0 && !fact.keywordSplatFails
+		len(fact.staticVals) == 0 && len(fact.blockValues) == 0 &&
+		len(fact.hashDefaults) == 0 && !fact.keywordSplatFails
 }
 
 func (c *scriptChecker) localValueFactFor(name string) (checkLocalValueFact, bool) {
@@ -379,7 +389,7 @@ func (c *scriptChecker) bindLocalClassValues(name string, classNames []string) {
 func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
 	if !ok || len(fact.callables) != 1 || len(fact.classNames) > 0 || len(fact.staticVals) > 0 ||
-		fact.keywordSplatFails {
+		len(fact.blockValues) > 0 || len(fact.hashDefaults) > 0 || fact.keywordSplatFails {
 		return nil, false
 	}
 	return fact.callables[0], true
@@ -388,7 +398,8 @@ func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, boo
 func (c *scriptChecker) localCallableValuesFor(name string) ([]*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return fact.callables, ok && len(fact.callables) > 0 && len(fact.classNames) == 0 &&
-		len(fact.staticVals) == 0 && !fact.keywordSplatFails
+		len(fact.staticVals) == 0 && len(fact.blockValues) == 0 &&
+		len(fact.hashDefaults) == 0 && !fact.keywordSplatFails
 }
 
 func (c *scriptChecker) bindLocalCallableValues(name string, fns []*ScriptFunction) {
@@ -424,6 +435,10 @@ func (c *scriptChecker) localStaticValuesFor(name string) ([]Expression, bool) {
 }
 
 func (c *scriptChecker) bindLocalStaticValues(name string, values []Expression) {
+	c.bindLocalExactValueFact(name, checkLocalValueFact{staticVals: values})
+}
+
+func (c *scriptChecker) bindLocalExactValueFact(name string, valueFact checkLocalValueFact) {
 	if name == "" || len(c.localTypes) == 0 {
 		return
 	}
@@ -431,21 +446,26 @@ func (c *scriptChecker) bindLocalStaticValues(name string, values []Expression) 
 		if _, tracked := c.localTypes[i][name]; !tracked {
 			continue
 		}
-		if len(values) == 0 {
+		valueFact.staticVals = c.normalizeCheckStaticValues(valueFact.staticVals)
+		valueFact.blockValues = normalizeCapturedBlockLiteralValues(valueFact.blockValues)
+		valueFact.hashDefaults = normalizeDirectCoreHashDefaultCaptures(valueFact.hashDefaults)
+		if len(valueFact.staticVals) == 0 && len(valueFact.blockValues) == 0 &&
+			len(valueFact.hashDefaults) == 0 {
 			delete(c.localClassValues[i], name)
 			return
 		}
-		values = c.normalizeCheckStaticValues(values)
 		for _, frame := range c.localClassValues {
-			for otherName, fact := range frame {
+			for otherName, otherFact := range frame {
 				if otherName == name {
 					continue
 				}
-				sameRoot, newContainsOther, otherContainsNew, sharesNested := staticValueMutableRelationships(values, fact.staticVals)
+				sameRoot, newContainsOther, otherContainsNew, sharesNested :=
+					staticValueMutableRelationships(valueFact.staticVals, otherFact.staticVals)
 				if !sameRoot && !newContainsOther && !otherContainsNew && !sharesNested {
 					continue
 				}
-				definiteRoot := sameRoot && len(values) == 1 && len(fact.staticVals) == 1
+				definiteRoot := sameRoot && len(valueFact.staticVals) == 1 &&
+					len(otherFact.staticVals) == 1
 				if definiteRoot {
 					c.linkContainerIdentityAlias(name, otherName)
 				} else {
@@ -467,9 +487,7 @@ func (c *scriptChecker) bindLocalStaticValues(name string, values []Expression) 
 		if c.localClassValues[i] == nil {
 			c.localClassValues[i] = make(checkClassValueFrame)
 		}
-		c.localClassValues[i][name] = checkLocalValueFact{
-			staticVals: values,
-		}
+		c.localClassValues[i][name] = valueFact
 		return
 	}
 }
@@ -603,6 +621,8 @@ func (c *scriptChecker) bindLocalKeywordSplatFailure(name string, keys ...string
 		fact.classNames = nil
 		fact.callables = nil
 		fact.staticVals = nil
+		fact.blockValues = nil
+		fact.hashDefaults = nil
 		fact.keywordSplatFails = true
 		c.localClassValues[i][name] = fact
 		return
@@ -1529,6 +1549,8 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousPinned := c.pinnedExpressionFacts
 	previousConstructors := c.constructorInstanceFacts
 	previousIfClassFacts := c.evaluatedIfClassFacts
+	previousBlockValues := c.evaluatedBlockValues
+	previousHashDefaults := c.evaluatedHashDefaults
 	c.typePoison = nil
 	c.staticValuePoison = nil
 	c.staticValueDependents = nil
@@ -1540,6 +1562,8 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	c.pinnedExpressionFacts = nil
 	c.constructorInstanceFacts = nil
 	c.evaluatedIfClassFacts = nil
+	c.evaluatedBlockValues = nil
+	c.evaluatedHashDefaults = nil
 	return func() {
 		c.typePoison = previousPoison
 		c.staticValuePoison = previousStaticValuePoison
@@ -1552,7 +1576,43 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 		c.pinnedExpressionFacts = previousPinned
 		c.constructorInstanceFacts = previousConstructors
 		c.evaluatedIfClassFacts = previousIfClassFacts
+		c.evaluatedBlockValues = previousBlockValues
+		c.evaluatedHashDefaults = previousHashDefaults
 	}
+}
+
+// withClonedLocalInferenceScope lets an out-of-order validation walk read the
+// current facts while restoring every mutable inference-side fact afterward.
+func (c *scriptChecker) withClonedLocalInferenceScope() func() {
+	scopeState := c.snapshotScopeState()
+	typePoison := cloneCheckStringSet(c.typePoison)
+	staticValuePoison := cloneCheckStringSet(c.staticValuePoison)
+	bindingGenerations := maps.Clone(c.localBindingGenerations)
+	pinnedFacts := maps.Clone(c.pinnedExpressionFacts)
+	constructorFacts := maps.Clone(c.constructorInstanceFacts)
+	ifClassFacts := maps.Clone(c.evaluatedIfClassFacts)
+	blockValues := maps.Clone(c.evaluatedBlockValues)
+	hashDefaults := maps.Clone(c.evaluatedHashDefaults)
+	destructureFacts := maps.Clone(c.evaluatedDestructureFacts)
+	projectionFacts := maps.Clone(c.destructureProjectionFacts)
+	stmtNoFallthrough := c.stmtNoFallthroughInferred
+
+	restore := func() {
+		c.localBindingGenerations = maps.Clone(bindingGenerations)
+		c.restoreScopeState(scopeState)
+		c.typePoison = cloneCheckStringSet(typePoison)
+		c.staticValuePoison = cloneCheckStringSet(staticValuePoison)
+		c.pinnedExpressionFacts = maps.Clone(pinnedFacts)
+		c.constructorInstanceFacts = maps.Clone(constructorFacts)
+		c.evaluatedIfClassFacts = maps.Clone(ifClassFacts)
+		c.evaluatedBlockValues = maps.Clone(blockValues)
+		c.evaluatedHashDefaults = maps.Clone(hashDefaults)
+		c.evaluatedDestructureFacts = maps.Clone(destructureFacts)
+		c.destructureProjectionFacts = maps.Clone(projectionFacts)
+		c.stmtNoFallthroughInferred = stmtNoFallthrough
+	}
+	restore()
+	return restore
 }
 
 // withIsolatedLocalInference walls off the local type-fact environment so a
@@ -1990,11 +2050,57 @@ type regionIvarEffects struct {
 	unknown bool
 }
 
+type capturedBlockLiteralValue struct {
+	block  *BlockLiteral
+	strict bool
+}
+
 type directCoreHashDefaultCapture struct {
-	direct  bool
-	block   *BlockLiteral
-	strict  bool
-	unknown bool
+	block      *BlockLiteral
+	strict     bool
+	unknown    bool
+	freshEmpty bool
+}
+
+func normalizeCapturedBlockLiteralValues(
+	values []capturedBlockLiteralValue,
+) []capturedBlockLiteralValue {
+	var normalized []capturedBlockLiteralValue
+	for _, candidate := range values {
+		duplicate := false
+		for _, existing := range normalized {
+			if candidate.block == existing.block && candidate.strict == existing.strict {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			normalized = append(normalized, candidate)
+		}
+	}
+	return normalized
+}
+
+func normalizeDirectCoreHashDefaultCaptures(
+	captures []directCoreHashDefaultCapture,
+) []directCoreHashDefaultCapture {
+	var normalized []directCoreHashDefaultCapture
+	for _, candidate := range captures {
+		duplicate := false
+		for _, existing := range normalized {
+			if candidate.block == existing.block &&
+				candidate.strict == existing.strict &&
+				candidate.unknown == existing.unknown &&
+				candidate.freshEmpty == existing.freshEmpty {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			normalized = append(normalized, candidate)
+		}
+	}
+	return normalized
 }
 
 func mergeRegionIvarEffects(dst *regionIvarEffects, src regionIvarEffects) {
@@ -2686,7 +2792,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			typed.Object,
 			c.inferExpressionType(typed.Object),
 		)
-		hashDefault := c.captureDirectCoreHashDefault(typed.Object)
+		hashDefault, _ := c.captureDirectCoreHashDefaults(typed.Object)
 		for _, index := range typed.Indices {
 			c.collectRepeatedRegionIvarEffectsFromExpression(index, effects, true)
 			if !c.expressionMayCompleteForBinding(index) {
@@ -2853,10 +2959,115 @@ func (c *scriptChecker) instanceOperatorMayRun(
 // indexReadIvarEffects recognizes hash default callbacks while retaining pure
 // builtin and fresh-literal reads. Direct Hash.new provenance is captured when
 // the object evaluates so a later index expression cannot change it.
+func (c *scriptChecker) directCoreHashDefaultMayComplete(
+	expr *IndexExpr,
+	receiverType *TypeExpr,
+	defaults []directCoreHashDefaultCapture,
+) bool {
+	if expr == nil || len(defaults) == 0 {
+		return true
+	}
+	if len(expr.Indices) != 1 ||
+		c.indexedHashOperationProvablyAbortsWithReceiver(expr, receiverType) {
+		return false
+	}
+	for _, capture := range defaults {
+		if capture.block == nil {
+			return true
+		}
+		if !capture.freshEmpty {
+			return true
+		}
+		args := []Expression{expr.Object, expr.Indices[0]}
+		receiverValue := NewHashWithDefault(
+			make(map[string]Value),
+			NewNil(),
+			wrapBlock(&Block{}),
+		)
+		binding := c.blockLiteralBindingOutcome(
+			capture.block,
+			args,
+			capture.strict,
+			&receiverValue,
+		)
+		if binding.mayBind &&
+			c.blockLiteralBodyMayComplete(capture.block, capture.strict) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) applyDirectCoreHashDefaultNamespaceMutations(
+	expr *IndexExpr,
+	receiverType *TypeExpr,
+	defaults []directCoreHashDefaultCapture,
+) {
+	if expr == nil || len(expr.Indices) != 1 ||
+		c.indexedHashOperationProvablyAbortsWithReceiver(expr, receiverType) {
+		return
+	}
+	for _, capture := range defaults {
+		if capture.block == nil {
+			continue
+		}
+		args := []Expression{expr.Object, expr.Indices[0]}
+		receiverValue := NewHashWithDefault(
+			make(map[string]Value),
+			NewNil(),
+			wrapBlock(&Block{}),
+		)
+		binding := c.blockLiteralBindingOutcome(
+			capture.block,
+			args,
+			capture.strict,
+			&receiverValue,
+		)
+		if binding.mayBind &&
+			c.applyLambdaBlockNamespaceMutations(capture.block) {
+			c.markOpaqueClassConstants()
+		}
+	}
+}
+
+func (c *scriptChecker) capturedBlockLiteralCallMayEnter(
+	value capturedBlockLiteralValue,
+	call *CallExpr,
+) bool {
+	if value.block == nil || call == nil || call.Block != nil {
+		return false
+	}
+	checkedCall, exact := c.staticallyExpandedCall(call)
+	if !exact {
+		return true
+	}
+	if checkedCall.BlockArg != nil {
+		blockType, captured := c.callArgumentFacts[checkedCall.BlockArg]
+		if !captured {
+			blockType = c.inferExpressionTypeWithExpectation(
+				checkedCall.BlockArg,
+				typeExpressionExpectation(checkTypeFunction),
+			)
+		}
+		if typeExprNeverNil(blockType) {
+			return false
+		}
+	}
+	if len(checkedCall.KwArgs) != 0 {
+		return false
+	}
+	return c.blockLiteralBindingOutcome(
+		value.block,
+		checkedCall.Args,
+		value.strict,
+		nil,
+	).mayBind
+}
+
 func (c *scriptChecker) indexReadIvarEffects(
 	expr *IndexExpr,
 	receiverType *TypeExpr,
-	direct directCoreHashDefaultCapture,
+	direct []directCoreHashDefaultCapture,
 ) (regionIvarEffects, bool, bool) {
 	var effects regionIvarEffects
 	if expr == nil {
@@ -2865,36 +3076,45 @@ func (c *scriptChecker) indexReadIvarEffects(
 	if _, literal := expr.Object.(*HashLiteral); literal {
 		return effects, false, false
 	}
-	if direct.direct {
+	if len(direct) > 0 {
 		if len(expr.Indices) != 1 {
 			return effects, false, false
 		}
 		if c.indexedHashOperationProvablyAbortsWithReceiver(expr, receiverType) {
 			return effects, false, true
 		}
-		if direct.block != nil {
-			args := []Expression{expr.Object, expr.Indices[0]}
-			receiverValue := NewHashWithDefault(
-				make(map[string]Value),
-				NewNil(),
-				wrapBlock(&Block{}),
-			)
-			binding := c.blockLiteralBindingOutcome(
-				direct.block,
-				args,
-				direct.strict,
-				&receiverValue,
-			)
-			if binding.mayBind {
-				c.collectRepeatedRegionIvarEffectsFromBlock(direct.block, &effects)
+		mayRun := false
+		mayReject := false
+		for _, capture := range direct {
+			switch {
+			case capture.block != nil:
+				args := []Expression{expr.Object, expr.Indices[0]}
+				receiverValue := NewHashWithDefault(
+					make(map[string]Value),
+					NewNil(),
+					wrapBlock(&Block{}),
+				)
+				binding := c.blockLiteralBindingOutcome(
+					capture.block,
+					args,
+					capture.strict,
+					&receiverValue,
+				)
+				captureMayComplete := binding.mayBind &&
+					c.blockLiteralBodyMayComplete(capture.block, capture.strict)
+				if binding.mayBind {
+					c.collectRepeatedRegionIvarEffectsFromBlock(capture.block, &effects)
+				}
+				mayRun = mayRun || binding.mayBind
+				mayReject = mayReject || !binding.mustBind ||
+					binding.mayBind && !captureMayComplete
+			case capture.unknown:
+				effects.unknown = true
+				mayRun = true
+				mayReject = true
 			}
-			return effects, binding.mayBind, !binding.mustBind
 		}
-		if direct.unknown {
-			effects.unknown = true
-			return effects, true, true
-		}
-		return effects, false, false
+		return effects, mayRun, mayReject
 	}
 	arms, ok := typeExprArms(receiverType, 0)
 	if !ok || len(arms) == 0 {
@@ -2913,54 +3133,371 @@ func (c *scriptChecker) indexReadIvarEffects(
 	return effects, false, false
 }
 
-func (c *scriptChecker) captureDirectCoreHashDefault(
+func (c *scriptChecker) captureDirectCoreHashDefaults(
 	expr Expression,
-) directCoreHashDefaultCapture {
-	var capture directCoreHashDefaultCapture
+) ([]directCoreHashDefaultCapture, bool) {
+	if captures, evaluated := c.evaluatedHashDefaults[expr]; evaluated {
+		return append([]directCoreHashDefaultCapture(nil), captures...), true
+	}
+	switch typed := expr.(type) {
+	case *HashLiteral:
+		if typed.ShapeType == nil || c.hashShapeStaticallyShadowed(typed) {
+			return []directCoreHashDefaultCapture{{
+				freshEmpty: len(typed.Pairs) == 0,
+			}}, true
+		}
+		return nil, false
+	case *Identifier:
+		if _, poisoned := c.typePoison[typed.Name]; poisoned {
+			return nil, false
+		}
+		if _, poisoned := c.staticValuePoison[typed.Name]; poisoned {
+			return nil, false
+		}
+		fact, exact := c.localValueFactFor(typed.Name)
+		if !exact || len(fact.hashDefaults) == 0 {
+			return nil, false
+		}
+		return append([]directCoreHashDefaultCapture(nil), fact.hashDefaults...), true
+	case *ConditionalExpr:
+		if branch, known := staticConditionalExpressionBranch(typed); known {
+			return c.captureDirectCoreHashDefaults(branch)
+		}
+		return c.mergeDirectCoreHashDefaultExpressionList(
+			[]Expression{typed.Consequent, typed.Alternate},
+		)
+	case *IfExpr:
+		if branch, known := staticIfExpressionBranch(typed); known {
+			return c.captureDirectCoreHashDefaults(branch)
+		}
+		expressions := make([]Expression, 0, len(typed.ElseIf)+2)
+		expressions = append(expressions, typed.Consequent)
+		for _, branch := range typed.ElseIf {
+			expressions = append(expressions, branch.Result)
+		}
+		expressions = append(expressions, typed.Alternate)
+		return c.mergeDirectCoreHashDefaultExpressionList(expressions)
+	case *RescueExpr:
+		if expressionProvenNonRaising(typed.Body) {
+			return c.captureDirectCoreHashDefaults(typed.Body)
+		}
+		return c.mergeDirectCoreHashDefaultExpressionList(
+			[]Expression{typed.Body, typed.Fallback},
+		)
+	case *CaseExpr:
+		if result, known := staticCaseExpressionResult(typed); known {
+			return c.captureDirectCoreHashDefaults(result)
+		}
+		expressions := make([]Expression, 0, len(typed.Clauses)+1)
+		for _, clause := range typed.Clauses {
+			expressions = append(expressions, clause.Result)
+		}
+		expressions = append(expressions, typed.ElseExpr)
+		return c.mergeDirectCoreHashDefaultExpressionList(expressions)
+	}
 	var call *CallExpr
 	switch typed := expr.(type) {
 	case *CallExpr:
 		call = typed
 	case *MemberExpr:
 		if typed.Property != "new" {
-			return capture
+			return nil, false
 		}
 		call = &CallExpr{Callee: typed, Position: typed.Pos()}
 	default:
-		return capture
+		return nil, false
 	}
 	target, resolved := c.resolveCallable(call)
-	if !c.callTargetsBlockCapturingBuiltin(call, target, resolved) ||
-		target.name != "Hash.new" {
-		return capture
+	return c.captureResolvedCoreHashDefaults(
+		call,
+		target,
+		c.callTargetsBlockCapturingBuiltin(call, target, resolved),
+	)
+}
+
+func (c *scriptChecker) directCoreHashDefaultReceiverAliasNames(
+	expr Expression,
+) []string {
+	aliases := make(map[string]struct{})
+	for _, root := range c.containerAliasRoots(expr) {
+		for alias := range c.containerAliasNames(root) {
+			aliases[alias] = struct{}{}
+		}
 	}
-	capture.direct = true
+	names := make([]string, 0, len(aliases))
+	for name := range aliases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (c *scriptChecker) poisonDirectCoreHashDefaultReceiverAliases(aliases []string) {
+	for _, alias := range aliases {
+		c.poisonLocalStaticValues(alias)
+	}
+}
+
+func (c *scriptChecker) validateEvaluatedDirectCoreHashDefaults(
+	evaluated []directCoreHashDefaultCapture,
+	exact bool,
+	aliases []string,
+) ([]directCoreHashDefaultCapture, bool) {
+	if !exact {
+		return nil, false
+	}
+	validated := append([]directCoreHashDefaultCapture(nil), evaluated...)
+	for _, alias := range aliases {
+		_, typePoisoned := c.typePoison[alias]
+		_, valuePoisoned := c.staticValuePoison[alias]
+		if !typePoisoned && !valuePoisoned {
+			continue
+		}
+		// The receiver object was selected before the index expressions ran,
+		// so a later local rebind cannot replace its default callback. A
+		// mutation or escape through any alias can make the selected Hash
+		// non-empty. Keep the callback identity while dropping only the
+		// missing-key guarantee used for completion.
+		for i := range validated {
+			validated[i].freshEmpty = false
+		}
+		break
+	}
+	return validated, true
+}
+
+func (c *scriptChecker) mergeDirectCoreHashDefaultExpressionList(
+	expressions []Expression,
+) ([]directCoreHashDefaultCapture, bool) {
+	var captures []directCoreHashDefaultCapture
+	for _, expression := range expressions {
+		alternatives, exact := c.captureDirectCoreHashDefaults(expression)
+		if !exact || len(captures)+len(alternatives) > 32 {
+			return nil, false
+		}
+		captures = append(captures, alternatives...)
+	}
+	captures = normalizeDirectCoreHashDefaultCaptures(captures)
+	return captures, len(captures) > 0
+}
+
+func (c *scriptChecker) capturedBlockLiteralValueAlternatives(
+	expr Expression,
+) ([]capturedBlockLiteralValue, bool) {
+	if values, evaluated := c.evaluatedBlockValues[expr]; evaluated {
+		return append([]capturedBlockLiteralValue(nil), values...), true
+	}
+	switch typed := expr.(type) {
+	case *NilLiteral:
+		return []capturedBlockLiteralValue{{}}, true
+	case *BlockLiteral:
+		if typed.Lambda {
+			return []capturedBlockLiteralValue{{block: typed, strict: true}}, true
+		}
+		return nil, false
+	case *Identifier:
+		if _, poisoned := c.typePoison[typed.Name]; poisoned {
+			return nil, false
+		}
+		if _, poisoned := c.staticValuePoison[typed.Name]; poisoned {
+			return nil, false
+		}
+		fact, exact := c.localValueFactFor(typed.Name)
+		if !exact || len(fact.blockValues) == 0 {
+			return nil, false
+		}
+		return append([]capturedBlockLiteralValue(nil), fact.blockValues...), true
+	case *ConditionalExpr:
+		if branch, known := staticConditionalExpressionBranch(typed); known {
+			return c.capturedBlockLiteralValueAlternatives(branch)
+		}
+		return c.mergeCapturedBlockLiteralExpressions(
+			[]Expression{typed.Consequent, typed.Alternate},
+		)
+	case *IfExpr:
+		if branch, known := staticIfExpressionBranch(typed); known {
+			return c.capturedBlockLiteralValueAlternatives(branch)
+		}
+		expressions := make([]Expression, 0, len(typed.ElseIf)+2)
+		expressions = append(expressions, typed.Consequent)
+		for _, branch := range typed.ElseIf {
+			expressions = append(expressions, branch.Result)
+		}
+		expressions = append(expressions, typed.Alternate)
+		return c.mergeCapturedBlockLiteralExpressions(expressions)
+	case *RescueExpr:
+		if expressionProvenNonRaising(typed.Body) {
+			return c.capturedBlockLiteralValueAlternatives(typed.Body)
+		}
+		return c.mergeCapturedBlockLiteralExpressions(
+			[]Expression{typed.Body, typed.Fallback},
+		)
+	case *CaseExpr:
+		if result, known := staticCaseExpressionResult(typed); known {
+			return c.capturedBlockLiteralValueAlternatives(result)
+		}
+		expressions := make([]Expression, 0, len(typed.Clauses)+1)
+		for _, clause := range typed.Clauses {
+			expressions = append(expressions, clause.Result)
+		}
+		expressions = append(expressions, typed.ElseExpr)
+		return c.mergeCapturedBlockLiteralExpressions(expressions)
+	case *CallExpr:
+		target, resolved := c.resolveCallable(typed)
+		return c.captureResolvedCoreBlockValues(
+			typed,
+			target,
+			c.callTargetsBlockCapturingBuiltin(typed, target, resolved),
+		)
+	}
+	return nil, false
+}
+
+func (c *scriptChecker) mergeCapturedBlockLiteralExpressions(
+	expressions []Expression,
+) ([]capturedBlockLiteralValue, bool) {
+	var values []capturedBlockLiteralValue
+	for _, expression := range expressions {
+		alternatives, exact := c.capturedBlockLiteralValueAlternatives(expression)
+		if !exact || len(values)+len(alternatives) > 32 {
+			return nil, false
+		}
+		values = append(values, alternatives...)
+	}
+	values = normalizeCapturedBlockLiteralValues(values)
+	return values, len(values) > 0
+}
+
+func (c *scriptChecker) captureResolvedCoreBlockValues(
+	call *CallExpr,
+	target staticCallable,
+	blockCapturing bool,
+) ([]capturedBlockLiteralValue, bool) {
+	if !blockCapturing {
+		return nil, false
+	}
+	switch target.name {
+	case "lambda", "proc", "Proc.new":
+	default:
+		return nil, false
+	}
+	checkedCall, exact := c.staticallyExpandedCall(call)
+	if !exact || len(checkedCall.Args) != 0 || len(checkedCall.KwArgs) != 0 {
+		return nil, false
+	}
+	strict := target.name == "lambda"
+	if checkedCall.Block != nil {
+		if checkedCall.BlockArg != nil {
+			return nil, false
+		}
+		return []capturedBlockLiteralValue{{
+			block:  checkedCall.Block,
+			strict: strict || checkedCall.Block.Lambda,
+		}}, true
+	}
+	if checkedCall.BlockArg == nil {
+		return nil, false
+	}
+	values, exact := c.capturedBlockLiteralValueAlternatives(checkedCall.BlockArg)
+	if !exact {
+		return nil, false
+	}
+	converted := make([]capturedBlockLiteralValue, 0, len(values))
+	for _, value := range values {
+		if value.block == nil {
+			continue
+		}
+		if strict {
+			value.strict = true
+		}
+		converted = append(converted, value)
+	}
+	converted = normalizeCapturedBlockLiteralValues(converted)
+	return converted, len(converted) > 0
+}
+
+func (c *scriptChecker) captureEvaluatedRetainedConstructor(
+	call *CallExpr,
+	target staticCallable,
+	blockCapturing bool,
+) {
+	if call == nil {
+		return
+	}
+	delete(c.evaluatedBlockValues, call)
+	delete(c.evaluatedHashDefaults, call)
+	if values, exact := c.captureResolvedCoreBlockValues(
+		call,
+		target,
+		blockCapturing,
+	); exact {
+		if c.evaluatedBlockValues == nil {
+			c.evaluatedBlockValues = make(map[Expression][]capturedBlockLiteralValue)
+		}
+		c.evaluatedBlockValues[call] = append([]capturedBlockLiteralValue(nil), values...)
+	}
+	if captures, exact := c.captureResolvedCoreHashDefaults(
+		call,
+		target,
+		blockCapturing,
+	); exact {
+		if c.evaluatedHashDefaults == nil {
+			c.evaluatedHashDefaults = make(map[Expression][]directCoreHashDefaultCapture)
+		}
+		c.evaluatedHashDefaults[call] = append(
+			[]directCoreHashDefaultCapture(nil),
+			captures...,
+		)
+	}
+}
+
+func (c *scriptChecker) captureResolvedCoreHashDefaults(
+	call *CallExpr,
+	target staticCallable,
+	blockCapturing bool,
+) ([]directCoreHashDefaultCapture, bool) {
+	if !blockCapturing || target.name != "Hash.new" {
+		return nil, false
+	}
+	pure := directCoreHashDefaultCapture{freshEmpty: true}
 	if call.Block == nil && call.BlockArg == nil {
-		return capture
+		return []directCoreHashDefaultCapture{pure}, true
 	}
 	checkedCall, exact := c.staticallyExpandedCall(call)
 	if !exact {
-		capture.unknown = true
-		return capture
+		return []directCoreHashDefaultCapture{{
+			unknown:    true,
+			freshEmpty: true,
+		}}, true
 	}
 	if len(checkedCall.KwArgs) != 0 || len(checkedCall.Args) > 1 {
-		return capture
+		return nil, false
 	}
 	if checkedCall.Block != nil {
 		if len(checkedCall.Args) != 0 || checkedCall.BlockArg != nil {
-			return capture
+			return nil, false
 		}
-		capture.block = checkedCall.Block
-		capture.strict = checkedCall.Block.Lambda
-		return capture
+		return []directCoreHashDefaultCapture{{
+			block:      checkedCall.Block,
+			strict:     checkedCall.Block.Lambda,
+			freshEmpty: true,
+		}}, true
 	}
 	if checkedCall.BlockArg == nil || len(checkedCall.Args) != 0 {
-		return capture
+		return nil, false
 	}
-	if block := c.resolveImmediateLambdaBlock(checkedCall.BlockArg); block != nil {
-		capture.block = block
-		capture.strict = true
-		return capture
+	blocks, exact := c.capturedBlockLiteralValueAlternatives(checkedCall.BlockArg)
+	if exact {
+		captures := make([]directCoreHashDefaultCapture, 0, len(blocks))
+		for _, block := range blocks {
+			captures = append(captures, directCoreHashDefaultCapture{
+				block:      block.block,
+				strict:     block.strict,
+				freshEmpty: true,
+			})
+		}
+		captures = normalizeDirectCoreHashDefaultCaptures(captures)
+		return captures, len(captures) > 0
 	}
 	blockType, captured := c.callArgumentFacts[checkedCall.BlockArg]
 	if !captured {
@@ -2969,8 +3506,13 @@ func (c *scriptChecker) captureDirectCoreHashDefault(
 			typeExpressionExpectation(checkTypeFunction),
 		)
 	}
-	capture.unknown = !typeExprIsNilOnly(blockType)
-	return capture
+	if typeExprIsNilOnly(blockType) {
+		return []directCoreHashDefaultCapture{pure}, true
+	}
+	return []directCoreHashDefaultCapture{{
+		unknown:    true,
+		freshEmpty: true,
+	}}, true
 }
 
 // blockLiteralBindingOutcome reports whether a block's complete binding phase
@@ -4232,30 +4774,8 @@ func (c *scriptChecker) mergeLocalClassValueStates(states []checkScopeState) {
 					delete(common, name)
 					continue
 				}
-				switch {
-				case len(fact.classNames) > 0 && len(other.classNames) > 0:
-					fact.classNames = normalizeCheckClassNames(append(fact.classNames, other.classNames...))
-				case len(fact.callables) > 0 && len(other.callables) > 0:
-					fact.callables = normalizeCheckCallables(append(fact.callables, other.callables...))
-				case len(fact.staticVals) > 0 && len(other.staticVals) > 0:
-					fact.staticVals = c.normalizeCheckStaticValues(append(fact.staticVals, other.staticVals...))
-				case fact.keywordSplatFails && other.keywordSplatFails:
-					if len(fact.invalidKeywordSplatKeys) == 0 || len(other.invalidKeywordSplatKeys) == 0 {
-						fact.invalidKeywordSplatKeys = nil
-						break
-					}
-					commonKeys := make(map[string]struct{})
-					for key := range fact.invalidKeywordSplatKeys {
-						if _, ok := other.invalidKeywordSplatKeys[key]; ok {
-							commonKeys[key] = struct{}{}
-						}
-					}
-					if len(commonKeys) == 0 {
-						delete(common, name)
-						continue
-					}
-					fact.invalidKeywordSplatKeys = commonKeys
-				default:
+				fact, ok = c.mergeLocalValueFacts(fact, other)
+				if !ok {
 					delete(common, name)
 					continue
 				}
@@ -4264,6 +4784,58 @@ func (c *scriptChecker) mergeLocalClassValueStates(states []checkScopeState) {
 		}
 		c.localClassValues[i] = common
 	}
+}
+
+func (c *scriptChecker) mergeLocalValueFacts(
+	left checkLocalValueFact,
+	right checkLocalValueFact,
+) (checkLocalValueFact, bool) {
+	var merged checkLocalValueFact
+	if len(left.classNames) > 0 && len(right.classNames) > 0 {
+		merged.classNames = normalizeCheckClassNames(append(left.classNames, right.classNames...))
+	}
+	if len(left.callables) > 0 && len(right.callables) > 0 {
+		merged.callables = normalizeCheckCallables(append(left.callables, right.callables...))
+	}
+	if len(left.staticVals) > 0 && len(right.staticVals) > 0 {
+		merged.staticVals = c.normalizeCheckStaticValues(append(left.staticVals, right.staticVals...))
+	}
+	if len(left.blockValues) > 0 && len(right.blockValues) > 0 {
+		merged.blockValues = normalizeCapturedBlockLiteralValues(
+			append(left.blockValues, right.blockValues...),
+		)
+	}
+	if len(left.hashDefaults) > 0 && len(right.hashDefaults) > 0 {
+		merged.hashDefaults = normalizeDirectCoreHashDefaultCaptures(
+			append(left.hashDefaults, right.hashDefaults...),
+		)
+	}
+	if left.keywordSplatFails && right.keywordSplatFails {
+		merged.keywordSplatFails = true
+		switch {
+		case len(left.invalidKeywordSplatKeys) == 0 ||
+			len(right.invalidKeywordSplatKeys) == 0:
+		case len(left.invalidKeywordSplatKeys) > 0 &&
+			len(right.invalidKeywordSplatKeys) > 0:
+			merged.invalidKeywordSplatKeys = make(map[string]struct{})
+			for key := range left.invalidKeywordSplatKeys {
+				if _, common := right.invalidKeywordSplatKeys[key]; common {
+					merged.invalidKeywordSplatKeys[key] = struct{}{}
+				}
+			}
+			if len(merged.invalidKeywordSplatKeys) == 0 {
+				merged.keywordSplatFails = false
+				merged.invalidKeywordSplatKeys = nil
+			}
+		}
+	}
+	exact := len(merged.classNames) > 0 ||
+		len(merged.callables) > 0 ||
+		len(merged.staticVals) > 0 ||
+		len(merged.blockValues) > 0 ||
+		len(merged.hashDefaults) > 0 ||
+		merged.keywordSplatFails
+	return merged, exact
 }
 
 func normalizeCheckClassNames(names []string) []string {
@@ -4730,6 +5302,15 @@ func (c *scriptChecker) containerAliasRoots(expr Expression) []string {
 		case *RescueExpr:
 			collect(typed.Body)
 			collect(typed.Fallback)
+		case *CaseExpr:
+			if result, known := staticCaseExpressionResult(typed); known {
+				collect(result)
+				return
+			}
+			for _, clause := range typed.Clauses {
+				collect(clause.Result)
+			}
+			collect(typed.ElseExpr)
 		}
 	}
 	collect(expr)
@@ -5010,12 +5591,19 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 	if autoInvoked {
 		classNames, classExact = c.dispatchClassValueExpressionNames(identityExpr)
 	}
+	staticValues, staticExact := c.staticValueExpressionAlternatives(expr)
+	blockValues, blockExact := c.capturedBlockLiteralValueAlternatives(expr)
+	hashDefaults, hashExact := c.captureDirectCoreHashDefaults(expr)
 	if classExact {
 		c.bindLocalClassValues(name, classNames)
 	} else if fns, ok := c.callableExpressionFunctions(identityExpr); ok {
 		c.bindLocalCallableValues(name, fns)
-	} else if values, ok := c.staticValueExpressionAlternatives(expr); ok {
-		c.bindLocalStaticValues(name, values)
+	} else if staticExact || blockExact || hashExact {
+		c.bindLocalExactValueFact(name, checkLocalValueFact{
+			staticVals:   staticValues,
+			blockValues:  blockValues,
+			hashDefaults: hashDefaults,
+		})
 	} else if c.keywordSplatExpressionAlwaysFails(expr) &&
 		c.expressionMayHaveExpansionType(expr, KindHash, checkTypeHash) {
 		c.bindLocalKeywordSplatFailure(name)
@@ -5120,8 +5708,18 @@ func localValueFactTruthiness(fact checkLocalValueFact, tracked bool) (bool, boo
 	if !tracked || fact.keywordSplatFails {
 		return false, false
 	}
-	if len(fact.classNames) > 0 || len(fact.callables) > 0 {
+	if len(fact.classNames) > 0 || len(fact.callables) > 0 ||
+		len(fact.hashDefaults) > 0 {
 		return true, true
+	}
+	if len(fact.blockValues) > 0 {
+		truthy := fact.blockValues[0].block != nil
+		for _, value := range fact.blockValues[1:] {
+			if (value.block != nil) != truthy {
+				return false, false
+			}
+		}
+		return truthy, true
 	}
 	if len(fact.staticVals) == 0 {
 		return false, false

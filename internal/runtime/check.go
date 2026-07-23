@@ -136,6 +136,8 @@ type scriptChecker struct {
 	callArgumentCallables      map[Expression][]*ScriptFunction
 	callArgumentStaticValues   map[Expression][]Expression
 	callArgumentSplatSources   map[*SplatArg]checkCallSplatSource
+	evaluatedBlockValues       map[Expression][]capturedBlockLiteralValue
+	evaluatedHashDefaults      map[Expression][]directCoreHashDefaultCapture
 	evaluatedDestructureFacts  map[Expression]capturedDestructureValueFact
 	destructureProjectionFacts map[Expression]capturedDestructureValueFact
 	localBindingGenerations    map[string]uint64
@@ -4138,6 +4140,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			return false
 		}
 	case *CallExpr:
+		delete(c.evaluatedBlockValues, typed)
+		delete(c.evaluatedHashDefaults, typed)
 		// The receiver's nil-ness resolves from the facts at its evaluation
 		// point, before member dispatch poisons the receiver's own facts.
 		callSkipsInferred := c.safeNavigationCallSkipsInferred(typed)
@@ -4165,6 +4169,12 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		}
 		if staticNilSafeNavigationCall(typed) || callSkipsInferred {
 			return true
+		}
+		var evaluatedStoredBlocks []capturedBlockLiteralValue
+		evaluatedStoredBlocksExact := false
+		if member, ok := typed.Callee.(*MemberExpr); ok && member.Property == "call" {
+			evaluatedStoredBlocks, evaluatedStoredBlocksExact =
+				c.capturedBlockLiteralValueAlternatives(member.Object)
 		}
 		argumentsMayBeSkipped := safeNavigationCallMaySkipArguments(typed) && !argumentsAlwaysEvaluate
 		var argumentState checkRuntimeState
@@ -4230,6 +4240,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			return false
 		}
 		opaqueCallEffects := c.callHasOpaqueClassConstantEffects(typed, target, targetResolved)
+		if evaluatedStoredBlocksExact {
+			opaqueCallEffects = false
+		}
 		// Arguments evaluate left to right before the call dispatches, so
 		// each argument's inferred type is captured at its own evaluation
 		// point: a mutating earlier argument (h.delete(:name)) poisons its
@@ -4409,6 +4422,13 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if expanded, exact := c.staticallyExpandedCall(typed); exact {
 			checkedCall = expanded
 		}
+		if !argumentEvaluationFailed {
+			c.captureEvaluatedRetainedConstructor(
+				typed,
+				target,
+				blockCapturingBuiltin,
+			)
+		}
 		targetMayEnter := callMayEnter
 		callMayComplete := callMayEnter
 		if targetResolved && target.fn != nil {
@@ -4539,6 +4559,15 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			c.checkInvokedLambdaSummaryYields(function, invokedLambda)
 			c.widenRepeatedRegionBlockIvarFacts(invokedLambda)
 			c.captureNonCompletingExpressionArm()
+		}
+		if targetMayEnter && invokedLambda == nil && evaluatedStoredBlocksExact {
+			for _, block := range evaluatedStoredBlocks {
+				if c.capturedBlockLiteralCallMayEnter(block, typed) {
+					if c.applyLambdaBlockNamespaceMutations(block.block) {
+						c.markOpaqueClassConstants()
+					}
+				}
+			}
 		}
 		// Exact script targets carry callable arguments through their parameter
 		// facts, so their body scan applies a lambda only at an actual `.call`.
@@ -4771,7 +4800,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			return false
 		}
 		c.captureEvaluatedDestructureFactOnce(typed.Object)
-		hashDefault := c.captureDirectCoreHashDefault(typed.Object)
+		hashDefaults, hashDefaultsExact := c.captureDirectCoreHashDefaults(typed.Object)
+		hashDefaultAliases := c.directCoreHashDefaultReceiverAliasNames(typed.Object)
 		c.captureAssignmentReceiver(typed)
 		dispatchType := c.instanceDispatchReceiverType(
 			typed.Object,
@@ -4795,14 +4825,35 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				c.captureNonCompletingExpressionArm()
 			}
 			effects = c.scriptDispatchIvarEffects(dispatch)
+			hashDefaults, hashDefaultsExact = c.validateEvaluatedDirectCoreHashDefaults(
+				hashDefaults,
+				hashDefaultsExact,
+				hashDefaultAliases,
+			)
 			defaultEffects, mayRun, defaultMayReject :=
-				c.indexReadIvarEffects(typed, dispatchType, hashDefault)
+				c.indexReadIvarEffects(typed, dispatchType, hashDefaults)
+			c.applyDirectCoreHashDefaultNamespaceMutations(
+				typed,
+				dispatchType,
+				hashDefaults,
+			)
 			defaultMayRun = mayRun
+			mergeRegionIvarEffects(&effects, defaultEffects)
+			completed = c.indexExpressionMayCompleteWithReceiverAndDefaults(
+				typed,
+				dispatchType,
+				hashDefaults,
+				hashDefaultsExact,
+			)
+			if defaultMayRun {
+				// A default callback receives the Hash itself and may retain or
+				// populate it before returning or raising. Later reads therefore
+				// cannot reuse the fresh-empty provenance observed by this read.
+				c.poisonDirectCoreHashDefaultReceiverAliases(hashDefaultAliases)
+			}
 			if defaultMayReject {
 				c.captureNonCompletingExpressionArm()
 			}
-			mergeRegionIvarEffects(&effects, defaultEffects)
-			completed = c.indexExpressionMayCompleteWithReceiver(typed, dispatchType)
 		})
 		c.enqueueReachableInstanceDispatch(dispatchType, "[]")
 		if opaqueDispatch {
@@ -4811,10 +4862,6 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if dispatch.mayRunScript() || defaultMayRun {
 			c.widenRegionIvarFacts(effects)
 			c.captureNonCompletingExpressionArm()
-		}
-		if hashDefault.direct && hashDefault.block != nil &&
-			len(typed.Indices) == 1 && !defaultMayRun {
-			return false
 		}
 		c.withEvaluatedDestructureArgumentFacts(
 			append([]Expression{typed.Object}, typed.Indices...),
@@ -6084,6 +6131,27 @@ func (c *scriptChecker) indexExpressionMayCompleteWithReceiver(
 ) bool {
 	if expr == nil {
 		return true
+	}
+	defaults, exact := c.captureDirectCoreHashDefaults(expr.Object)
+	return c.indexExpressionMayCompleteWithReceiverAndDefaults(
+		expr,
+		receiverType,
+		defaults,
+		exact,
+	)
+}
+
+func (c *scriptChecker) indexExpressionMayCompleteWithReceiverAndDefaults(
+	expr *IndexExpr,
+	receiverType *TypeExpr,
+	defaults []directCoreHashDefaultCapture,
+	defaultsExact bool,
+) bool {
+	if expr == nil {
+		return true
+	}
+	if defaultsExact {
+		return c.directCoreHashDefaultMayComplete(expr, receiverType, defaults)
 	}
 	if c.indexedHashOperationProvablyAbortsWithReceiver(expr, receiverType) {
 		return false
@@ -7637,21 +7705,28 @@ func (c *scriptChecker) checkBlockLiteralWithIvarWidening(
 	}
 }
 
-// checkCapturedBlockLiteral checks a constructor's retained block while
-// preserving the conservative local, namespace, and return effects required
-// if that value is invoked later. Ivar facts are handled at actual invocation
-// sites, so merely constructing the value does not widen them.
+// checkCapturedBlockLiteral validates a constructor's retained block without
+// treating its body as evaluated. Local, namespace, and ivar effects are
+// applied only at invocation sites; non-local returns still inform summaries.
 func (c *scriptChecker) checkCapturedBlockLiteral(
 	function string,
 	block *BlockLiteral,
 	localReturns bool,
 ) {
+	restoreInference := c.withClonedLocalInferenceScope()
+	defer restoreInference()
+	// This is an out-of-order validation walk, not an evaluation of the
+	// retained body. Nested constructor identities are valid only within this
+	// walk; the body must resolve them again under the namespace in effect
+	// when the retained block is actually invoked.
+	c.evaluatedBlockValues = nil
+	c.evaluatedHashDefaults = nil
 	c.checkBlockLiteralWithIvarWidening(
 		function,
 		block,
 		localReturns,
 		false,
-		!localReturns,
+		false,
 	)
 }
 
@@ -8403,6 +8478,102 @@ func (c *scriptChecker) statementsMayCompleteForBinding(statements []Statement) 
 		}
 	}
 	return true
+}
+
+type blockLiteralCompletionFlow struct {
+	fallsThrough bool
+	completes    bool
+}
+
+func (c *scriptChecker) blockLiteralBodyMayComplete(
+	block *BlockLiteral,
+	strict bool,
+) bool {
+	if block == nil {
+		return false
+	}
+	flow := c.blockLiteralStatementsCompletionFlow(
+		block.Body,
+		strict || block.Lambda,
+	)
+	return flow.fallsThrough || flow.completes
+}
+
+func (c *scriptChecker) blockLiteralStatementsCompletionFlow(
+	statements []Statement,
+	localControl bool,
+) blockLiteralCompletionFlow {
+	flow := blockLiteralCompletionFlow{fallsThrough: true}
+	for _, stmt := range statements {
+		if !flow.fallsThrough {
+			break
+		}
+		current := c.blockLiteralStatementCompletionFlow(stmt, localControl)
+		flow.completes = flow.completes || current.completes
+		flow.fallsThrough = current.fallsThrough
+	}
+	return flow
+}
+
+func (c *scriptChecker) blockLiteralStatementCompletionFlow(
+	stmt Statement,
+	localControl bool,
+) blockLiteralCompletionFlow {
+	switch typed := stmt.(type) {
+	case nil:
+		return blockLiteralCompletionFlow{fallsThrough: true}
+	case *NextStmt:
+		return blockLiteralCompletionFlow{completes: true}
+	case *ReturnStmt:
+		return blockLiteralCompletionFlow{completes: localControl}
+	case *BreakStmt:
+		return blockLiteralCompletionFlow{completes: localControl}
+	case *RaiseStmt, *RetryStmt:
+		return blockLiteralCompletionFlow{}
+	case *IfStmt:
+		return c.blockLiteralIfCompletionFlow(typed, localControl)
+	default:
+		return blockLiteralCompletionFlow{fallsThrough: true}
+	}
+}
+
+func (c *scriptChecker) blockLiteralIfCompletionFlow(
+	stmt *IfStmt,
+	localControl bool,
+) blockLiteralCompletionFlow {
+	if stmt == nil {
+		return blockLiteralCompletionFlow{}
+	}
+	var flow blockLiteralCompletionFlow
+	merge := func(branch blockLiteralCompletionFlow) {
+		flow.fallsThrough = flow.fallsThrough || branch.fallsThrough
+		flow.completes = flow.completes || branch.completes
+	}
+
+	truthy, known := staticExpressionTruthiness(stmt.Condition)
+	if !known || truthy {
+		merge(c.blockLiteralStatementsCompletionFlow(
+			stmt.Consequent,
+			localControl,
+		))
+	}
+	if known && truthy {
+		return flow
+	}
+	for _, branch := range stmt.ElseIf {
+		truthy, known = staticExpressionTruthiness(branch.Condition)
+		if !known || truthy {
+			merge(c.blockLiteralStatementsCompletionFlow(
+				branch.Consequent,
+				localControl,
+			))
+		}
+		if known && truthy {
+			return flow
+		}
+	}
+	merge(c.blockLiteralStatementsCompletionFlow(stmt.Alternate, localControl))
+	return flow
 }
 
 func (c *scriptChecker) plainAssignmentTargetMayCompleteForBinding(
@@ -15233,15 +15404,16 @@ func (c *scriptChecker) checkInvokedLambdaSummaryYields(function string, block *
 
 // applyLambdaBlockNamespaceMutations records the namespace members a lambda
 // may rewrite once its body can run.
-func (c *scriptChecker) applyLambdaBlockNamespaceMutations(block *BlockLiteral) {
+func (c *scriptChecker) applyLambdaBlockNamespaceMutations(block *BlockLiteral) bool {
 	if block == nil {
-		return
+		return false
 	}
 	scan := c.newNamespaceMutationScan()
 	scan.scanLambdaBlock(block)
 	for member := range scan.out {
 		c.recordRuntimeNamespaceMember(member)
 	}
+	return scan.invokedUnknownCallable
 }
 
 // pinExpressionFact fixes the fact of one walked expression node so later

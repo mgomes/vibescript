@@ -3379,6 +3379,79 @@ end
 `))
 }
 
+func TestMergeLocalValueFactsKeepsOnlyCommonProvenance(t *testing.T) {
+	t.Parallel()
+
+	hashLiteral := &HashLiteral{}
+	arrayLiteral := &ArrayLiteral{}
+	callback := &BlockLiteral{Lambda: true}
+	checker := &scriptChecker{}
+
+	for _, tc := range []struct {
+		name  string
+		left  checkLocalValueFact
+		right checkLocalValueFact
+	}{
+		{
+			name: "hash provenance first",
+			left: checkLocalValueFact{
+				staticVals:   []Expression{hashLiteral},
+				hashDefaults: []directCoreHashDefaultCapture{{freshEmpty: true}},
+			},
+			right: checkLocalValueFact{staticVals: []Expression{arrayLiteral}},
+		},
+		{
+			name: "hash provenance second",
+			left: checkLocalValueFact{staticVals: []Expression{arrayLiteral}},
+			right: checkLocalValueFact{
+				staticVals:   []Expression{hashLiteral},
+				hashDefaults: []directCoreHashDefaultCapture{{freshEmpty: true}},
+			},
+		},
+		{
+			name: "block provenance first",
+			left: checkLocalValueFact{
+				staticVals:  []Expression{callback},
+				blockValues: []capturedBlockLiteralValue{{block: callback, strict: true}},
+			},
+			right: checkLocalValueFact{staticVals: []Expression{&IntegerLiteral{Value: 1}}},
+		},
+		{
+			name: "block provenance second",
+			left: checkLocalValueFact{staticVals: []Expression{&IntegerLiteral{Value: 1}}},
+			right: checkLocalValueFact{
+				staticVals:  []Expression{callback},
+				blockValues: []capturedBlockLiteralValue{{block: callback, strict: true}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			merged, exact := checker.mergeLocalValueFacts(tc.left, tc.right)
+			if !exact || len(merged.staticVals) != 2 {
+				t.Fatalf("mergeLocalValueFacts() = %#v, %t, want two static alternatives", merged, exact)
+			}
+			if len(merged.blockValues) != 0 || len(merged.hashDefaults) != 0 {
+				t.Fatalf("mergeLocalValueFacts() = %#v, want no one-sided provenance", merged)
+			}
+		})
+	}
+
+	first := &BlockLiteral{Lambda: true}
+	second := &BlockLiteral{Lambda: true}
+	merged, exact := checker.mergeLocalValueFacts(
+		checkLocalValueFact{
+			hashDefaults: []directCoreHashDefaultCapture{{block: first, strict: true}},
+		},
+		checkLocalValueFact{
+			hashDefaults: []directCoreHashDefaultCapture{{block: second, strict: true}},
+		},
+	)
+	if !exact || len(merged.hashDefaults) != 2 {
+		t.Fatalf("mergeLocalValueFacts() = %#v, %t, want both exact hash defaults", merged, exact)
+	}
+}
+
 func TestCheckInferHashLiteralShapes(t *testing.T) {
 	t.Parallel()
 
