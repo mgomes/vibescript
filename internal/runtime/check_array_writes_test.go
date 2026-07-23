@@ -186,10 +186,36 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "fill literal block next result",
+			source: `
+def f(items: array<int>)
+  items.fill() do
+    next "bad"
+  end
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "compatible fill literal block result preserves the bound",
 			source: `
 def f(items: array<int>)
   items.fill() do
+    1
+  end
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "nested loop next is not the fill block result",
+			source: `
+def f(items: array<int>, repeat)
+  items.fill() do
+    while repeat
+      next "not a fill value"
+    end
     1
   end
   items << "bad"
@@ -1970,9 +1996,13 @@ def run()
   blocked.fill() do
     "bad"
   end
+  next_blocked = [1, 2]
+  next_blocked.fill() do
+    next "bad"
+  end
   nil_block = [1, 2]
   nil_block.fill("bad", &nil)
-  [selected, value, blocked, nil_block]
+  [selected, value, blocked, next_blocked, nil_block]
 end
 `)
 
@@ -1981,6 +2011,7 @@ end
 	want := NewArray([]Value{
 		NewArray([]Value{mutatedValue}),
 		mutatedValue,
+		NewArray([]Value{NewString("bad"), NewString("bad")}),
 		NewArray([]Value{NewString("bad"), NewString("bad")}),
 		NewArray([]Value{NewString("bad"), NewString("bad")}),
 	})

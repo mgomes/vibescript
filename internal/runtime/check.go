@@ -150,6 +150,7 @@ type scriptChecker struct {
 	summaryInProgress          map[returnSummaryCacheKey]struct{}
 	bindingCompletionProbes    map[Expression]struct{}
 	returnCollector            *returnSummaryCollector
+	blockResultCollector       *returnSummaryCollector
 	summaryYieldCollector      *returnSummaryCollector
 	summaryYieldBlock          *BlockLiteral
 	summaryYieldsActive        bool
@@ -2199,10 +2200,13 @@ func (c *scriptChecker) captureClassConstantEffects(check func()) checkClassCons
 
 func (c *scriptChecker) checkLoopStatements(function string, returnType *TypeExpr, statements []Statement) checkClassConstantEffects {
 	previous := c.loopExitEffects
+	previousBlockResultCollector := c.blockResultCollector
 	var exits checkLoopExitEffects
 	c.loopExitEffects = &exits
+	c.blockResultCollector = nil
 	defer func() {
 		c.loopExitEffects = previous
+		c.blockResultCollector = previousBlockResultCollector
 	}()
 	if c.checkStatements(function, returnType, statements) {
 		mergeCheckClassConstantEffects(&exits.effects, c.currentClassConstantEffects())
@@ -2757,6 +2761,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if !c.checkExpression(function, typed.Value) {
 			c.recordNonCompletingExpression()
 			return
+		}
+		if c.blockResultCollector != nil {
+			result := checkTypeNil
+			if typed.Value != nil {
+				result = c.inferExpressionType(typed.Value)
+			}
+			c.blockResultCollector.record(result)
 		}
 		c.captureLoopExitClassConstantEffects()
 		c.captureEnsureExitState()
@@ -6539,6 +6550,10 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, 
 		c.bindParamLocalType(param)
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
+	previousBlockResultCollector := c.blockResultCollector
+	blockResultCollector := &returnSummaryCollector{}
+	c.blockResultCollector = blockResultCollector
+	defer func() { c.blockResultCollector = previousBlockResultCollector }()
 	c.mutationRegionDepth++
 	fallsThrough := c.checkStatements(label, nil, block.Body)
 	c.mutationRegionDepth--
@@ -6566,10 +6581,13 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, 
 		)
 		c.mergeScopeBindingRelations([]checkScopeState{blockEntryScopeState, bodyExitScopeState})
 	}
-	if !fallsThrough {
+	if fallsThrough {
+		blockResultCollector.record(c.blockImplicitResultFact(block.Body))
+	}
+	if blockResultCollector.unknown || len(blockResultCollector.arms) == 0 {
 		return nil
 	}
-	return c.blockImplicitResultFact(block.Body)
+	return unionTypeExprs(blockResultCollector.arms...)
 }
 
 func (c *scriptChecker) blockImplicitResultFact(statements []Statement) *TypeExpr {
