@@ -188,6 +188,7 @@ type scriptChecker struct {
 	selfScopeClassFns          map[*ScriptFunction]struct{}
 	localNameUnions            []map[string]struct{}
 	liveLocalNames             []map[string]struct{}
+	localCallBypassScopes      []map[string]int
 	nameFactsCache             *checkNameFacts
 	selfScopeFns               map[*ScriptFunction]struct{}
 	orderIndependentOnly       bool
@@ -2952,7 +2953,18 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			// Plain assignment evaluates its value before the target receiver and
 			// selectors, and it dispatches only the setter (never [] or a getter).
 			expectation := c.assignmentValueExpectation(typed.Target, typed.Value)
-			if !c.checkExpressionWithExpectation(function, typed.Value, expectation) {
+			valueCompleted := c.withAssignmentLocalCallBypass(
+				typed.Target,
+				typed.Value,
+				func() bool {
+					return c.checkExpressionWithExpectation(
+						function,
+						typed.Value,
+						expectation,
+					)
+				},
+			)
+			if !valueCompleted {
 				c.recordNonCompletingExpression()
 				return
 			}
@@ -3052,7 +3064,17 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 					opaqueDispatch = c.memberSetterHasOpaqueClassConstantEffects(target)
 				}
 				expectation := c.assignmentValueExpectation(typed.Target, typed.Value)
-				rhsCompleted := c.checkExpressionWithExpectation(function, typed.Value, expectation)
+				rhsCompleted := c.withAssignmentLocalCallBypass(
+					typed.Target,
+					typed.Value,
+					func() bool {
+						return c.checkExpressionWithExpectation(
+							function,
+							typed.Value,
+							expectation,
+						)
+					},
+				)
 				c.collectRuntimeRequireCallExportsFromExpression(typed.Value)
 				if !rhsCompleted {
 					if rhsAlwaysEvaluates {
@@ -3163,7 +3185,14 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				memberSetter = target
 				opaqueSetter = c.memberSetterHasOpaqueClassConstantEffects(target)
 			}
-			if !c.checkExpression(function, typed.Value) {
+			valueCompleted := c.withAssignmentLocalCallBypass(
+				typed.Target,
+				typed.Value,
+				func() bool {
+					return c.checkExpression(function, typed.Value)
+				},
+			)
+			if !valueCompleted {
 				c.recordNonCompletingExpression()
 				return
 			}
@@ -6098,7 +6127,7 @@ func (c *scriptChecker) implicitSelfCallDispatch(
 	}
 	ident, ok := call.Callee.(*Identifier)
 	if !ok || ident.Name == blockGivenName ||
-		c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+		c.identifierCallShadowed(call, ident.Name) || c.hostGlobalShadows(ident.Name) {
 		return instanceScriptDispatchSelection{}, false
 	}
 	if c.script.functions[ident.Name] != nil {
@@ -6145,6 +6174,58 @@ func (c *scriptChecker) implicitSelfCallDispatch(
 			mayReject:     !c.scriptCallBodyMustEnter(call, target),
 		}},
 	}, true
+}
+
+func (c *scriptChecker) withAssignmentLocalCallBypass(
+	target Expression,
+	value Expression,
+	walk func() bool,
+) bool {
+	names := assignmentLocalCallBypassNames(target, value)
+	if len(names) == 0 {
+		return walk()
+	}
+	scopes := make(map[string]int, len(names))
+	for name := range names {
+		scope := len(c.scopes) - 1
+		for ; scope >= 0; scope-- {
+			if _, bound := c.scopes[scope][name]; bound {
+				break
+			}
+		}
+		if scope < 0 {
+			scope = len(c.scopes) - 1
+		}
+		scopes[name] = scope
+	}
+	c.localCallBypassScopes = append(c.localCallBypassScopes, scopes)
+	defer func() {
+		c.localCallBypassScopes =
+			c.localCallBypassScopes[:len(c.localCallBypassScopes)-1]
+	}()
+	return walk()
+}
+
+func (c *scriptChecker) identifierCallShadowed(call *CallExpr, name string) bool {
+	if !callUsesBypassableIdentifierResolution(call) ||
+		len(c.localCallBypassScopes) == 0 {
+		return c.identifierShadowed(name)
+	}
+	skipped := make(map[int]struct{})
+	for _, frame := range c.localCallBypassScopes {
+		if scope, bypassed := frame[name]; bypassed {
+			skipped[scope] = struct{}{}
+		}
+	}
+	for scope := len(c.scopes) - 1; scope >= 0; scope-- {
+		if _, bypassed := skipped[scope]; bypassed {
+			continue
+		}
+		if _, bound := c.scopes[scope][name]; bound {
+			return true
+		}
+	}
+	return false
 }
 
 // scriptDispatchIvarEffects reports only effects that can reach the caller's

@@ -2694,6 +2694,105 @@ end
 		}
 	})
 
+	t.Run("assignment call bypasses target binding", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+  property b: int
+
+  def touch
+    @b = 1
+  end
+
+  def initialize
+    @flag = false
+    touch = nil
+    touch = touch()
+    if @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  User.new().flag
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindBool || got.Bool() {
+			t.Fatalf("run() = %v, want false", got)
+		}
+	})
+
+	for _, tc := range []struct {
+		name       string
+		statements string
+	}{
+		{
+			name: "plain",
+			statements: `    touch = nil
+    touch = touch()`,
+		},
+		{
+			name: "or assignment",
+			statements: `    touch = nil
+    touch ||= touch()`,
+		},
+		{
+			name: "and assignment",
+			statements: `    touch = true
+    touch &&= touch()`,
+		},
+		{
+			name: "compound assignment",
+			statements: `    touch = 1
+    touch += touch()`,
+		},
+	} {
+		t.Run("assignment bypass effects/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def touch
+    @b = 1
+  end
+
+  def initialize(fail: bool)
+`+tc.statements+`
+    if fail
+      @a = @c
+    else
+      @a = @b
+    end
+  end
+end
+
+def run
+  User.new(false).a
+end
+`)
+			warnings := script.CheckWarnings()
+			if len(warnings) != 1 ||
+				warnings[0].Message != "write to @a expected int, got nil" {
+				t.Fatalf("CheckWarnings() = %#v, want only the unset @c warning", warnings)
+			}
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 1 {
+				t.Fatalf("run() = %v, want 1", got)
+			}
+		})
+	}
+
 	t.Run("rejected self write", func(t *testing.T) {
 		t.Parallel()
 		script := compileScriptDefault(t, `
