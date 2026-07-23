@@ -250,6 +250,13 @@ var memberContracts = []memberContract{
 		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, resultType: checkTypeBool},
 		effect:     effectPure,
 	},
+	{
+		receiver:   universalReceiverKind,
+		name:       "is_type?",
+		paramNames: []string{"atom"},
+		call:       staticCallSpec{minArgs: 1, maxArgs: 1, rejectKeywords: true, rejectBlock: true, autoInvoke: true, paramTypes: []*TypeExpr{checkTypeMethodName}, resultType: checkTypeBool},
+		effect:     effectPure,
+	},
 }
 
 // staticMemberSpecs indexes the registered typed-dispatch contracts by

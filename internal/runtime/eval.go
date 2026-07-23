@@ -111,6 +111,14 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalHashLiteral(e, env)
 	case *SplatArg:
 		return NewNil(), exec.errorAt(e.Pos(), "splat argument is only allowed in call arguments")
+	case *TypeLiteral:
+		if exec.typeLiteralShadowed(e, env) {
+			// The fallback inherits the caller's auto-call state: a callable
+			// bound to a type-spelled name still passes bare into a
+			// function-typed parameter instead of auto-invoking.
+			return exec.evalExpressionWithAuto(e.Fallback, env, autoCall)
+		}
+		return NewShape(e.Type), nil
 	case *UnaryExpr:
 		return exec.evalUnaryExpr(e, env)
 	case *BinaryExpr:
@@ -556,25 +564,47 @@ func (exec *Execution) hashShapeShadowed(lit *HashLiteral, env *Env) bool {
 	if len(lit.Pairs) == 0 {
 		return false
 	}
-	self, hasSelf := env.Get("self")
-	selfReceiver := hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass)
+	return exec.shapeTypeNamesShadowed(lit.ShapeType, env)
+}
+
+// shapeTypeNamesShadowed reports whether any type name of a dual-reading
+// group (a braced shape or an argument type literal) resolves to a runtime
+// binding, in which case the group keeps its value reading.
+func (exec *Execution) shapeTypeNamesShadowed(ty *TypeExpr, env *Env) bool {
 	shadowed := false
-	walkShapeTypeNames(lit.ShapeType, func(name string) {
-		if shadowed {
-			return
-		}
-		if _, ok := env.Get(name); ok {
-			shadowed = true
-			return
-		}
-		// Bare identifiers also resolve through implicit self (a zero-arity
-		// method named string, for example), matching evalExpression's
-		// identifier fallback.
-		if selfReceiver && exec.respondsTo(self, name, true) {
+	walkShapeTypeNames(ty, func(name string) {
+		if !shadowed && exec.runtimeNameShadowed(name, env) {
 			shadowed = true
 		}
 	})
 	return shadowed
+}
+
+// typeLiteralShadowed reports whether an argument type literal keeps its
+// value reading. A literal only carries a fallback when the whole group is a
+// bare identifier, so the sole binding that can change its meaning is that
+// identifier's verbatim spelling: `string?` is shadowed by a binding named
+// `string?`, not by an unrelated one named `string`.
+func (exec *Execution) typeLiteralShadowed(e *TypeLiteral, env *Env) bool {
+	ident, ok := e.Fallback.(*Identifier)
+	if !ok {
+		return false
+	}
+	return exec.runtimeNameShadowed(ident.Name, env)
+}
+
+// runtimeNameShadowed reports whether name resolves to a runtime binding: an
+// environment lookup, or implicit self (a zero-arity method named string, for
+// example), matching evalExpression's identifier fallback.
+func (exec *Execution) runtimeNameShadowed(name string, env *Env) bool {
+	if _, ok := env.Get(name); ok {
+		return true
+	}
+	self, hasSelf := env.Get("self")
+	if hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+		return exec.respondsTo(self, name, true)
+	}
+	return false
 }
 
 func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
@@ -1820,6 +1850,8 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 			return true
 		}
 		return false
+	case *TypeLiteral:
+		return e.Fallback != nil && expressionCapturesCurrentEnv(e.Fallback)
 	case *SplatArg:
 		return expressionCapturesCurrentEnv(e.Value)
 	case *MemberExpr:

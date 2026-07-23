@@ -61,6 +61,7 @@ func clonePrototypes() []Node {
 		&HashLiteral{},
 		&CallExpr{},
 		&SplatArg{},
+		&TypeLiteral{},
 		&MemberExpr{},
 		&ScopeExpr{},
 		&IndexExpr{},

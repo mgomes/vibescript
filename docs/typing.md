@@ -30,6 +30,10 @@ Shape types for object/hash payload contracts:
   present `nil`, while `age?: int?` allows the field to be absent or `nil`
 - Fields stay required by default; a field whose name literally ends in `?`
   is spelled with a string key (`{ "valid?": bool }`)
+- A trailing `...` marks the shape open: `{ name: string, ... }` validates the
+  declared fields and lets undeclared extra fields pass unchecked. Shapes stay
+  exact (closed) by default; `{ ... }` alone accepts any hash. Open and exact
+  shapes nest freely.
 
 Nullable: append `?` to allow `nil` (e.g., `string?`, `time?`, `int?`).
 
@@ -137,7 +141,8 @@ The governing rule is: **error on known contradictions, permit unknowns**.
 - Operators reject operands known to be invalid at runtime (`1 + nil`).
 - Shape-typed values carry field-level facts, so indexing with a known key
   yields the field's type. Reading an optional field infers the field type
-  joined with `nil`, since the field may be absent.
+  joined with `nil`, since the field may be absent. On an open shape, reads of
+  undeclared fields stay unknown rather than inferring `nil`.
 - Values the checker cannot prove (JSON payloads, host globals, dynamic
   dispatch) are never rejected; the runtime checks remain the final guard.
 - Core builtins with fixed contracts participate: `to_int("1")` is known to
@@ -156,10 +161,33 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   `unless`, `elsif`, negation, short-circuits, and guard clauses that exit
   early. Unknown values stay unknown, and branches re-join into the wider
   fact afterwards.
+- Unannotated script functions get inferred return summaries: every known
+  result path (explicit returns, the implicit final expression, and nil
+  fallthrough) joins into the call's result fact. A single unknown path —
+  recursion, dynamic dispatch, unmodeled constructs — keeps the whole result
+  unknown, and explicit return annotations always win.
 - Constructor results are nominal: `u = User.new` gives `u` the fact `User`,
   boundary checks compare it by class identity, and instance methods called
   on it check their argument shapes and expose their annotated return types.
   Shadowed class names and dynamic constructor dispatch stay unknown.
+- Class predicates narrow nominal unions: `u.is_a?(User)`,
+  `u.kind_of?(Payable)`, and `u.instance_of?(User)` against a statically
+  resolved class or module refine a known union local in both branches,
+  including guard clauses. Narrowing applies only when every arm provably
+  reaches the runtime universal predicate — an arm whose class overrides the
+  predicate, a module-typed arm, or a dynamic argument leaves the fact
+  unchanged.
+- `is_type?` narrows known unions: `value.is_type?(:int)` with a literal
+  built-in atom refines a known union local in both branches — the true path
+  keeps arms that may satisfy the atom, the false path drops arms that always
+  do. The atom is a symbol or string naming a primitive (`:int`, `:string`,
+  `:bool`, `:symbol`, `:nil`, `:number`, `:duration`, `:time`, `:money`), a
+  bare container (`:array`, `:hash`/`:object`, `:range`, `:function`), a class or enum
+  name (matched by exact name, no ancestry), or any of these with a trailing
+  `?` for the nullable form (`'int?'`). The test never coerces —
+  `"5".is_type?(:int)` is `false` — and parameterized spellings such as
+  `array<int>` are rejected. Class and enum atoms answer at runtime but do
+  not narrow yet, and receivers that may override `is_type?` stay unchanged.
 - Scalar member contracts resolve from receiver facts: `s.to_i` on a known
   string is an `int`, universal predicates such as `nil?` and `respond_to?`
   are `bool`, and safe navigation adds `nil` to the result (`x&.to_s` is
@@ -206,6 +234,34 @@ body = JSON.parse_as(raw, {
 
 body["age"]   # int | nil: present values validated as int, absent reads nil
 ```
+
+An open shape validates the fields you care about without enumerating the
+whole payload:
+
+```vibe
+body = JSON.parse_as(raw, { name: string, ... })
+
+body["name"]   # known string
+body["role"]   # unknown: undeclared fields pass through unchecked
+```
+
+JSON roots are not always objects. Array, primitive, nullable, and union
+contracts work at the root too, spelled directly as the second argument:
+
+```vibe
+scores = JSON.parse_as(raw, array<int>)
+count  = JSON.parse_as(raw, int)
+note   = JSON.parse_as(raw, string?)
+mixed  = JSON.parse_as(raw, int | string)
+rows   = JSON.parse_as(raw, array<{ id: string }>)
+```
+
+Validation uses the same normalization and diagnostics as shape roots
+(`JSON.parse_as value expected array<int>, got array<int | string>`), and the
+checker carries the declared root as the result fact. These non-shape type
+literals are recognized in parenthesized call arguments; a spelling that also
+reads as a value (a local named `int`, for example) keeps its value reading,
+mirroring the shape-literal shadowing rules below.
 
 Shape literals are legal in expression position: a braced group whose field
 values all name built-in types (including unions, `array<T>`/`hash<K, V>`
@@ -292,7 +348,8 @@ end
 
 Shapes are strict. Missing or extra keys fail checks. Mark a key that may be
 legitimately absent as optional (`points?: int`) instead of loosening the whole
-contract.
+contract, and use an open shape (`{ id: string, ... }`) when the payload
+carries extra fields you do not model.
 
 ### 4) Annotate block signatures where callbacks matter
 
@@ -377,5 +434,6 @@ Unknown keyword arguments are strict for all function calls, including typed sig
   `h[1] = "one"`, and `hash<string, string>` accepts `{ "name": "Ada" }` but
   rejects the symbol-keyed `{ name: "Ada" }`.
 - Shape types are strict: keys must match exactly, except fields marked
-  optional with `?`, which may be absent.
+  optional with `?`, which may be absent, and open shapes (trailing `...`),
+  which permit undeclared extra fields.
 - Type names are case-insensitive (`Int` == `int`).

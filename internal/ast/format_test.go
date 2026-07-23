@@ -67,6 +67,31 @@ func TestFormatTypeExprMarksOptionalShapeFields(t *testing.T) {
 	}
 }
 
+func TestFormatTypeExprMarksOpenShapes(t *testing.T) {
+	t.Parallel()
+
+	open := &TypeExpr{
+		Kind: TypeShape,
+		Open: true,
+		Shape: map[string]*TypeExpr{
+			"name": {Name: "string", Kind: TypeString},
+			"age":  {Name: "int", Kind: TypeInt, Optional: true},
+		},
+	}
+	if got, want := FormatTypeExpr(open), "{ age?: int, name: string, ... }"; got != want {
+		t.Fatalf("FormatTypeExpr(open) = %q, want %q", got, want)
+	}
+
+	empty := &TypeExpr{Kind: TypeShape, Open: true}
+	if got, want := FormatTypeExpr(empty), "{ ... }"; got != want {
+		t.Fatalf("FormatTypeExpr(empty open) = %q, want %q", got, want)
+	}
+	closed := &TypeExpr{Kind: TypeShape}
+	if got, want := FormatTypeExpr(closed), "{}"; got != want {
+		t.Fatalf("FormatTypeExpr(empty closed) = %q, want %q", got, want)
+	}
+}
+
 // A required field whose name literally ends in `?` (a string-key field) must
 // not render like the optional spelling of the shorter name: shape equality
 // compares formatted text, so the two contracts have to stay distinguishable.

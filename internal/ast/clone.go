@@ -354,6 +354,11 @@ func cloneExpression(expr Expression) Expression {
 		clone := *e
 		clone.Value = cloneExpression(e.Value)
 		return &clone
+	case *TypeLiteral:
+		clone := *e
+		clone.Type = CloneTypeExpr(e.Type)
+		clone.Fallback = cloneExpression(e.Fallback)
+		return &clone
 	case *MemberExpr:
 		clone := *e
 		clone.Object = cloneExpression(e.Object)

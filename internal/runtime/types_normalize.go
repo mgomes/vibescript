@@ -476,7 +476,7 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 
 	var entryBuf [smallHashKeyBufferSize]HashEntry
 	entries := val.HashEntriesInto(entryBuf[:])
-	if len(entries) > len(ty.Shape) {
+	if !ty.Open && len(entries) > len(ty.Shape) {
 		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 	}
 
@@ -487,14 +487,23 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 			return NewNil(), err
 		}
 		field := hashDisplayKey(entry.Key)
+		fieldType, declared := ty.Shape[field]
+		if !declared {
+			if !ty.Open {
+				return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+			}
+			// An undeclared field of an open shape passes through unvalidated.
+			if normalizedEntries != nil {
+				normalizedEntries[i] = entry
+			}
+			continue
+		}
 		if _, ok := seenFields[field]; ok {
+			// Two entries displaying as the same declared field (a symbol and
+			// string twin) leave the contract ambiguous.
 			return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 		}
 		seenFields[field] = struct{}{}
-		fieldType, ok := ty.Shape[field]
-		if !ok {
-			return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
-		}
 		normalized, err := normalizeValueForType(entry.Value, fieldType, ctx)
 		if err != nil {
 			var mismatch *typeMismatchError
@@ -536,7 +545,9 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 
 func normalizeStringKeyShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {
 	entries := val.Hash()
-	if len(entries) != len(ty.Shape) && shapeMissingRequiredField(ty, func(field string) bool {
+	// An open shape's entry count says nothing about coverage (extras may
+	// stand in for missing declared fields), so it always scans.
+	if (ty.Open || len(entries) != len(ty.Shape)) && shapeMissingRequiredField(ty, func(field string) bool {
 		_, ok := entries[field]
 		return ok
 	}) {
@@ -550,9 +561,13 @@ func normalizeStringKeyShapeForType(val Value, ty *TypeExpr, ctx typeContext) (V
 			return NewNil(), err
 		}
 		i++
-		fieldType, ok := ty.Shape[key]
-		if !ok {
-			return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+		fieldType, declared := ty.Shape[key]
+		if !declared {
+			if !ty.Open {
+				return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+			}
+			// An undeclared field of an open shape passes through unvalidated.
+			continue
 		}
 		normalized, err := normalizeValueForType(item, fieldType, ctx)
 		if err != nil {
@@ -578,9 +593,12 @@ func normalizeStringKeyShapeForType(val Value, ty *TypeExpr, ctx typeContext) (V
 			return NewNil(), err
 		}
 		i++
-		fieldType, ok := ty.Shape[key]
-		if !ok {
-			return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+		fieldType, declared := ty.Shape[key]
+		if !declared {
+			// Reachable only for open shapes: a closed shape already failed
+			// on the undeclared key in the detection pass above.
+			out[key] = item
+			continue
 		}
 		normalized, err := normalizeValueForType(item, fieldType, ctx)
 		if err != nil {

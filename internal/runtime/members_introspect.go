@@ -18,7 +18,7 @@ const (
 // introspection predicates.
 func isUniversalPredicate(property string) bool {
 	switch property {
-	case respondToMemberName, isAMemberName, kindOfMemberName, instanceOfMemberName:
+	case respondToMemberName, isAMemberName, kindOfMemberName, instanceOfMemberName, isTypeMemberName:
 		return true
 	default:
 		return false
@@ -35,6 +35,8 @@ func (exec *Execution) universalPredicate(property string, callerIsReceiver bool
 		return newRespondToBuiltin(callerIsReceiver)
 	case isAMemberName, kindOfMemberName, instanceOfMemberName:
 		return newClassPredicateBuiltin(property)
+	case isTypeMemberName:
+		return newIsTypePredicateBuiltin()
 	default:
 		// Unreachable: callers gate on isUniversalPredicate.
 		return NewNil()

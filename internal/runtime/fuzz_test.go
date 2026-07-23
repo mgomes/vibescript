@@ -1363,6 +1363,14 @@ func validateFuzzExpression(context string, expr Expression) error {
 		return validateFuzzStatement(context, e)
 	case *TryStmt:
 		return validateFuzzStatement(context, e)
+	case *TypeLiteral:
+		if e.Type == nil {
+			return fmt.Errorf("%s type literal has no type", context)
+		}
+		if e.Fallback != nil {
+			return validateFuzzExpression(context+".fallback", e.Fallback)
+		}
+		return nil
 	case *SplatArg:
 		if e.Value == nil {
 			return fmt.Errorf("%s splat argument has no value", context)

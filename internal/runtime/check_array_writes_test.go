@@ -328,6 +328,45 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "harmless value block keeps the declared bound",
+			source: `
+def helper -> int
+  yield
+  1
+end
+
+def f(items: array<int>)
+  items[0] = helper() do
+    1
+  end
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "rescue binding in the value block does not rebind the receiver",
+			source: `
+def helper -> int
+  yield
+  1
+end
+
+def f(items: array<int>)
+  items[0] = helper() do
+    begin
+      raise "stop"
+    rescue => items
+      items
+    end
+    1
+  end
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "chained shovel appends through the chain root",
 			source: `
 def f(items: array<int>)
@@ -902,14 +941,27 @@ end
 `,
 		},
 		{
-			name: "unknown shovel value that escapes the receiver weakens",
+			name: "nested called lambda in the value block can rebind the receiver",
 			source: `
-def unknown_fn(a)
-  a
+def helper -> string
+  yield
+  "bad"
 end
 
 def f(items: array<int>)
-  items << unknown_fn(items)
+  items[0] = helper() do
+    (->() {
+      items = ["s"]
+    }).call()
+  end
+end
+`,
+		},
+		{
+			name: "unknown shovel value that escapes the receiver weakens",
+			source: `
+def f(items: array<int>, producer)
+  items << producer.value(items)
   items << "bad"
 end
 `,
@@ -953,6 +1005,16 @@ end
 			source: `
 def f(items: array<int>)
   items.insert("x", "bad")
+end
+`,
+		},
+		{
+			name: "out of bounds exact index write stops later diagnostics",
+			source: `
+def run()
+  names = [:first]
+  names[2] = :third
+  names << 1
 end
 `,
 		},
@@ -1023,5 +1085,3861 @@ end
 	warnings := script.CheckWarnings()
 	if len(warnings) != 1 || !strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
 		t.Fatalf("CheckWarnings() = %#v, want only the write contradiction", warnings)
+	}
+}
+
+func TestCheckArrayWritesKeepForwardedValuesAndDeclaredBoundsConsistent(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def takes_int(value: int)
+  value
+end
+
+class UpdatedReceiver
+  def first(value)
+    value
+  end
+
+  def third(value)
+    takes_int(value)
+  end
+end
+
+class DynamicReceiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+class Strict
+  def check(value)
+    takes_int(value)
+  end
+end
+
+class Producer
+  def consume(values)
+    values[0] = :third
+  end
+end
+
+def exact_index(names: array<symbol>)
+  names[0] = :third
+  UpdatedReceiver.new.send(*names, "bad")
+end
+
+def exact_alias(names: array<symbol>)
+  copy = names
+  names[0] = :third
+  UpdatedReceiver.new.send(*copy, "bad")
+end
+
+def retain_index_bound(names: array<symbol>)
+  names[0] = :third
+  names << 1
+end
+
+def retain_alias_bound(names: array<symbol>)
+  copy = names
+  names[0] = :third
+  copy << 1
+end
+
+def rebound_alias(names: array<symbol>)
+  copy = names
+  copy = Strict
+  names << :third
+  copy.new.check("bad")
+end
+
+def dynamic_index(names: array<symbol>, index: int)
+  names[index] = :third
+  DynamicReceiver.new.send(*names, "bad")
+end
+
+def short_circuit_index(names: array<symbol>)
+  names[0] ||= :third
+  UpdatedReceiver.new.send(*names, "bad")
+end
+
+def retain_dynamic_index_bound(names: array<symbol>, index: int)
+  names[index] = :third
+  names << 1
+end
+
+def prepend_name(names: array<symbol>)
+  names.prepend(:third)
+  DynamicReceiver.new.send(*names, "bad")
+end
+
+def escaped_shovel(names: array<symbol>)
+  Producer.new.consume(names << :extra)
+  DynamicReceiver.new.send(*names, "bad")
+end
+
+def mutate_name_in_loop(names: array<symbol>, flag: bool)
+  while flag
+    names.prepend(:third)
+    break
+  end
+  DynamicReceiver.new.send(*names, "bad")
+end
+
+def shovel_name_in_loop(names: array<symbol>, flag: bool)
+  while flag
+    names << :third
+    break
+  end
+  DynamicReceiver.new.send(*names, "bad")
+end
+
+def retain_shovel_loop_bound(names: array<symbol>, flag: bool)
+  while flag
+    names << :third
+    break
+  end
+  names << 1
+end
+
+def run(index: int, flag: bool)
+  exact_index([:first])
+  exact_alias([:first])
+  retain_index_bound([:first])
+  retain_alias_bound([:first])
+  dynamic_index([:first], index)
+  short_circuit_index([:first])
+  retain_dynamic_index_bound([:first], index)
+  prepend_name([:first])
+  escaped_shovel([:first])
+  mutate_name_in_loop([:first], flag)
+  shovel_name_in_loop([:first], flag)
+  retain_shovel_loop_bound([:first], flag)
+  rebound_alias([:first])
+end`)
+
+	gotWarnings := script.CheckWarningsForFunction("run")
+	warnings := strings.Join(checkWarningMessages(gotWarnings), "\n")
+	if got := strings.Count(warnings, "call to takes_int argument value expected int, got string"); got != 3 {
+		t.Fatalf("forwarded diagnostics = %d in %#v, want 3 exact targets", got, gotWarnings)
+	}
+	if got := strings.Count(warnings, "write to names expected element symbol, got int"); got != 3 {
+		t.Fatalf("receiver write diagnostics = %d in %q, want 3 retained bounds", got, warnings)
+	}
+	if got := strings.Count(warnings, "write to copy expected element symbol, got int"); got != 1 {
+		t.Fatalf("alias write diagnostics = %d in %q, want 1 retained alias bound", got, warnings)
+	}
+}
+
+func TestCheckArrayWritesInvalidateOnlyDependentForwardedValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		source       string
+		want         string
+		wantFunction string
+	}{
+		{
+			name: "retained child stays exact when its parent changes",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def third(value)
+    takes_int(value)
+  end
+end
+
+def retained_child(items: array<array<symbol>>, child: array<symbol>)
+  items[0] = child
+  Receiver.new.send(*child, "bad")
+end
+
+def run()
+  retained_child([[:first]], [:third])
+end`,
+			want:         "call to takes_int argument value expected int, got string",
+			wantFunction: "Receiver#third",
+		},
+		{
+			name: "nested parent write updates a projected child alias",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    value
+  end
+
+  def third(value)
+    takes_int(value)
+  end
+end
+
+def nested_write(items: array<array<symbol>>)
+  child = items[0]
+  items[0][0] = :third
+  Receiver.new.send(*child, "bad")
+end
+
+def run()
+  nested_write([[:first]])
+end`,
+			want:         "call to takes_int argument value expected int, got string",
+			wantFunction: "Receiver#third",
+		},
+		{
+			name: "replacing a parent element preserves the detached child",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+def replace_parent(items: array<array<symbol>>)
+  child = items[0]
+  items[0] = [:third]
+  Receiver.new.send(*child, "bad")
+end
+
+def run()
+  replace_parent([[:first]])
+end`,
+			want:         "call to takes_int argument value expected int, got string",
+			wantFunction: "Receiver#first",
+		},
+		{
+			name: "destructured aliases share exact mutations",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    value
+  end
+
+  def third(value)
+    takes_int(value)
+  end
+end
+
+def destructured(names: array<symbol>)
+  copy, ignored = [names, 0]
+  names[0] = :third
+  Receiver.new.send(*copy, "bad")
+end
+
+def run()
+  destructured([:first])
+end`,
+			want:         "call to takes_int argument value expected int, got string",
+			wantFunction: "Receiver#third",
+		},
+		{
+			name: "destructuring captures every value before rebinding targets",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+def simultaneous(names: array<symbol>)
+  names, copy = [[:third], names]
+  Receiver.new.send(*copy, "bad")
+end
+
+def run()
+  simultaneous([:first])
+end`,
+			want:         "call to takes_int argument value expected int, got string",
+			wantFunction: "Receiver#first",
+		},
+		{
+			name: "duplicate destructure targets keep the last value",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    value
+  end
+
+  def third(value)
+    takes_int(value)
+  end
+end
+
+def duplicate_target()
+  names, names = [[:first], [:third]]
+  Receiver.new.send(*names, "bad")
+end
+
+def run()
+  duplicate_target()
+end`,
+			want:         "call to takes_int argument value expected int, got string",
+			wantFunction: "Receiver#third",
+		},
+		{
+			name: "shared call arguments keep alias identity",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    value
+  end
+
+  def third(value)
+    takes_int(value)
+  end
+end
+
+def mutate_first(a: array<symbol>, b: array<symbol>)
+  a[0] = :third
+  Receiver.new.send(*b, "bad")
+end
+
+def run()
+  names = [:first]
+  mutate_first(names, names)
+end`,
+			want:         "call to takes_int argument value expected int, got string",
+			wantFunction: "Receiver#third",
+		},
+		{
+			name: "logical assignment keeps selected alias identity",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    value
+  end
+
+  def third(value)
+    takes_int(value)
+  end
+end
+
+def logical_alias(names: array<symbol>)
+  copy = nil
+  copy ||= names
+  names[0] = :third
+  Receiver.new.send(*copy, "bad")
+end
+
+def run()
+  logical_alias([:first])
+end`,
+			want:         "call to takes_int argument value expected int, got string",
+			wantFunction: "Receiver#third",
+		},
+		{
+			name: "no-op insert keeps the exact forwarded name",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+end
+
+def no_op_mutator(names)
+  names.push()
+  names.insert(0)
+  Receiver.new.send(*names, "bad")
+end
+
+def run()
+  no_op_mutator([:first])
+end`,
+			want:         "call to takes_int argument value expected int, got string",
+			wantFunction: "Receiver#first",
+		},
+		{
+			name: "rebound alias keeps its unrelated class identity",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Strict
+  def check(value)
+    takes_int(value)
+  end
+end
+
+def rebound_alias(names: array<symbol>)
+  copy = names
+  copy = Strict
+  names << :third
+  copy.new.check("bad")
+end
+
+def run()
+  rebound_alias([:first])
+end`,
+			want:         "call to takes_int argument value expected int, got string",
+			wantFunction: "Strict#check",
+		},
+		{
+			name: "escaped shovel does not retain a stale forwarded name",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+class Producer
+  def consume(values)
+    values[0] = :third
+  end
+end
+
+def escaped_shovel(names: array<symbol>)
+  Producer.new.consume(names << :extra)
+  Receiver.new.send(*names, "bad")
+end
+
+def run()
+  escaped_shovel([:first])
+end`,
+		},
+		{
+			name: "parenless member mutation clears a shovel receiver value",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+def parenless_mutation()
+  names = [:first]
+  (names << :third).shift
+  Receiver.new.send(*names, "bad")
+end
+
+def run()
+  parenless_mutation()
+end`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			warnings := compileScript(t, tc.source).CheckWarningsForFunction("run")
+			got := strings.Join(checkWarningMessages(warnings), "\n")
+			if tc.want == "" {
+				if got != "" {
+					t.Fatalf("CheckWarningsForFunction(%q) = %q, want none", "run", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, tc.want)
+			}
+			if len(warnings) != 1 || warnings[0].Function != tc.wantFunction {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want one warning in %q", "run", warnings, tc.wantFunction)
+			}
+		})
+	}
+}
+
+func TestCheckArrayWriteDirectAliasTransfersRelations(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{
+		scopes: []map[string]struct{}{{
+			"base":   {},
+			"child":  {},
+			"copy":   {},
+			"parent": {},
+			"source": {},
+		}},
+		localTypes: []checkTypeFrame{{
+			"base":   checkTypeArray,
+			"child":  checkTypeArray,
+			"copy":   nil,
+			"parent": checkTypeArray,
+			"source": checkTypeArray,
+		}},
+		localClassValues: []checkClassValueFrame{nil},
+	}
+	checker.linkContainerIdentityAlias("source", "base")
+	checker.linkStaticValueAlias("source", "base")
+	checker.linkContainerAlias("base", "child")
+	checker.linkStaticValueDependency("child", "base")
+	checker.linkContainerAlias("base", "parent")
+	checker.linkStaticValueDependency("base", "parent")
+
+	transfer := checker.captureContainerAliasTransfer(&Identifier{Name: "source"})
+	checker.advanceLocalBindingGeneration("copy")
+	checker.bindLocalType("copy", checkTypeArray)
+	checker.applyContainerAliasTransfer("copy", transfer)
+	checker.advanceLocalBindingGeneration("source")
+
+	tests := []struct {
+		name      string
+		relations map[string]map[string]checkBindingEdge
+		from      string
+		to        string
+	}{
+		{
+			name:      "definite identity",
+			relations: checker.containerIdentityAliases,
+			from:      "copy",
+			to:        "base",
+		},
+		{
+			name:      "may alias reachability",
+			relations: checker.typeAliases,
+			from:      "copy",
+			to:        "child",
+		},
+		{
+			name:      "incoming static dependency",
+			relations: checker.staticValueDependents,
+			from:      "child",
+			to:        "copy",
+		},
+		{
+			name:      "outgoing static dependency",
+			relations: checker.staticValueDependents,
+			from:      "copy",
+			to:        "parent",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			edge, exists := tc.relations[tc.from][tc.to]
+			if !exists || !checker.bindingEdgeCurrent(tc.from, tc.to, edge) {
+				t.Errorf("transferred relation %q -> %q = %#v, %t, want current", tc.from, tc.to, edge, exists)
+			}
+		})
+	}
+}
+
+func TestCheckArrayWriteRegressionMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   []string
+		reject []string
+	}{
+		{
+			name: "closed shape extras preserve an open bound",
+			source: `def f(items: array<{ id: int, ... }>)
+  items.push({ id: 1, name: "ok" })
+  items.push({ id: "bad" })
+end
+
+def run()
+  f([])
+end`,
+			want: []string{"write to items expected element { id: int, ... }, got { id: string }"},
+		},
+		{
+			name: "open shape weakens a closed bound",
+			source: `def f(items: array<{ id: int }>, raw: string)
+  item = JSON.parse_as(raw, { id: int, ... })
+  items.push(item)
+  items.push({ id: "bad" })
+end
+
+def run(raw: string)
+  f([], raw)
+end`,
+		},
+		{
+			name: "open shape may hide an omitted optional field",
+			source: `def f(items: array<{ id: int, tag?: string, ... }>, raw: string)
+  item = JSON.parse_as(raw, { id: int, ... })
+  items.push(item)
+  items.push({ id: "bad" })
+end
+
+def run(raw: string)
+  f([], raw)
+end`,
+		},
+		{
+			name: "matching open shapes preserve the bound",
+			source: `def f(items: array<{ id: int, ... }>, raw: string)
+  item = JSON.parse_as(raw, { id: int, ... })
+  items.push(item)
+  items.push({ id: "bad" })
+end
+
+def run(raw: string)
+  f([], raw)
+end`,
+			want: []string{"write to items expected element { id: int, ... }, got { id: string }"},
+		},
+		{
+			name: "destructure keeps a known prefix before a missing value",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Strict
+  def check(value)
+    takes_int(value)
+  end
+end
+
+def run()
+  klass, missing = [Strict]
+  klass.new.check("bad")
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "destructure binds a missing value to nil",
+			source: `def takes_int(value: int)
+  value
+end
+
+def run()
+  first, missing = [1]
+  takes_int(missing)
+end`,
+			want: []string{"call to takes_int argument value expected int, got nil"},
+		},
+		{
+			name: "destructure rest keeps an evaluated value before rebind",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+def run()
+  names = [:first]
+  *rest, ignored = [names, -> { names = [:third] }.call()]
+  Receiver.new.send(*rest[0], "bad")
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "destructure snapshots an earlier value before a later rebind",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+def run()
+  names = [:first]
+  copy, ignored = [names, -> { names = [:third] }.call()]
+  Receiver.new.send(*copy, "bad")
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "destructure advances an earlier alias through a later write",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    value
+  end
+
+  def third(value)
+    takes_int(value)
+  end
+end
+
+def run()
+  names = []
+  copy, ignored = [names, names << :third]
+  Receiver.new.send(*copy, "bad")
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "array-valued identifier destructure stays gradual",
+			source: `def takes_symbol(value: symbol)
+  value
+end
+
+def run()
+  values = [:first, :second]
+  first, second = values
+  takes_symbol(first)
+  takes_symbol(second)
+end`,
+		},
+		{
+			name: "destructure checks an indexed leaf write",
+			source: `def probe(items: array<int>)
+  items[0], ignored = ["bad", 0]
+end
+
+def run()
+  probe([1])
+end`,
+			want: []string{"write to items expected element int, got string"},
+		},
+		{
+			name: "destructure applies leaf writes from left to right",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    value
+  end
+
+  def third(value)
+    takes_int(value)
+  end
+end
+
+def run()
+  names = [:first]
+  names[0], copy = [:third, names]
+  Receiver.new.send(*copy, "bad")
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "destructure rebinds a receiver before a later indexed write",
+			source: `def takes_int(value: int)
+  value
+end
+
+def run()
+  values = []
+  values, values[0] = [[1], 2]
+  takes_int("bad")
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "destructure rebind preserves a captured nonexact bound",
+			source: `def probe(names: array<symbol>)
+  names, copy = [[:third], names]
+  copy << 1
+end
+
+def run()
+  probe([:first])
+end`,
+			want: []string{"write to copy expected element symbol, got int"},
+		},
+		{
+			name: "destructure stops after a rebind makes a later index invalid",
+			source: `def takes_int(value: int)
+  value
+end
+
+def run()
+  values = [1, 2]
+  values, values[1] = [[], 2]
+  takes_int("bad")
+end`,
+		},
+		{
+			name: "destructure rescue observes an earlier completed leaf",
+			source: `def takes_string(value: string)
+  value
+end
+
+def run()
+  value = "old"
+  values = []
+  begin
+    value, values[0] = [1, 2]
+  rescue
+    takes_string(value)
+  end
+end`,
+			want: []string{"call to takes_string argument value expected string, got int"},
+		},
+		{
+			name: "destructure stops at an incompatible typed ivar write",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Counter
+  property label: string
+
+  def probe()
+    @label, ignored = [1, 0]
+    takes_int("bad")
+  end
+end
+
+def run()
+  Counter.new.probe()
+end`,
+		},
+		{
+			name: "destructure rescue observes a binding before a failing typed ivar write",
+			source: `def takes_string(value: string)
+  value
+end
+
+class Counter
+  property label: string
+
+  def probe()
+    value = "old"
+    begin
+      value, @label = [1, 0]
+    rescue
+      takes_string(value)
+    end
+  end
+end
+
+def run()
+  Counter.new.probe()
+end`,
+			want: []string{"call to takes_string argument value expected string, got int"},
+		},
+		{
+			name: "rescue keeps static poison from a completing body path",
+			source: `def crash()
+  raise "stop"
+end
+
+def maybe(flag: bool, values)
+  flag ? values.push("changed") : crash()
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(flag: bool)
+  values = [1]
+  begin
+    maybe(flag, values)
+  rescue
+    nil
+  end
+  takes_string(values[0])
+end`,
+		},
+		{
+			name: "failure summaries discard exact values poisoned on one exit",
+			source: `def crash()
+  raise "stop"
+end
+
+def maybe(flag: bool, values: array<int | string>)
+  flag ? [values.push("changed"), crash()][1] : crash()
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(flag: bool)
+  values = [1]
+  maybe(flag, values) rescue takes_string(values[0])
+end`,
+		},
+		{
+			name: "failure summaries retain exact values on every clean exit",
+			source: `def crash()
+  raise "stop"
+end
+
+def maybe(flag: bool, values: array<int | string>)
+  flag ? crash() : crash()
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(flag: bool)
+  values = [1]
+  maybe(flag, values) rescue takes_string(values[0])
+end`,
+			want: []string{"call to takes_string argument value expected string, got int"},
+		},
+		{
+			name: "nonexact destructure aliases retain mutation identity",
+			source: `def build() -> array<int>
+  [1]
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  names = build()
+  copy, ignored = [names, 0]
+  names.map! { "ok" }
+  takes_string(copy[0])
+end`,
+		},
+		{
+			name: "logical assignment uses its pre-RHS decision",
+			source: `def takes_string(value: string)
+  value
+end
+
+def run()
+  copy = nil
+  copy ||= (-> { copy = "temporary"; true }.call() ? 1 : 1)
+  takes_string(copy)
+end`,
+			want: []string{"call to takes_string argument value expected string, got int"},
+		},
+		{
+			name: "known skipped logical index keeps its bound",
+			source: `def f(names: array<symbol>)
+  names[0] ||= :third
+  names << 1
+end
+
+def run()
+  f([:first])
+end`,
+			want: []string{"write to names expected element symbol, got int"},
+		},
+		{
+			name: "known selected logical index checks its write",
+			source: `def f(names: array<symbol>)
+  names[0] &&= 1
+end
+
+def run()
+  f([:first])
+end`,
+			want: []string{"write to names expected element symbol, got int"},
+		},
+		{
+			name: "known selected logical index updates the exact value",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def third(value)
+    takes_int(value)
+  end
+end
+
+def run()
+  names = [nil]
+  names[0] ||= :third
+  Receiver.new.send(*names, "bad")
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "conditional exact aliases retain the unmodified path",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+def run(flag: bool)
+  original = [:first]
+  selected = flag ? original : [:first]
+  selected[0] = :third
+  Receiver.new.send(*original, "bad")
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "anti-correlated exact aliases retain both unmodified paths",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def other(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+def run(flag: bool)
+  x = [:first]
+  y = [:other]
+  a = flag ? x : y
+  b = flag ? y : x
+  b[0] = :third
+  Receiver.new.send(*a, "bad")
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "correlated exact aliases advance together",
+			source: `def takes_int(value: int)
+  value
+end
+
+def probe(flag: bool)
+  x = [1]
+  y = [2]
+  a = flag ? x : y
+  b = flag ? x : y
+  b[0] = "bad"
+  takes_int(a[0])
+end
+
+def run(flag: bool)
+  probe(flag)
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "exact child writes advance a containing parent",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+def probe(items: array<array<symbol>>)
+  child = items[0]
+  child[0] = :third
+  Receiver.new.send(*items[0], "bad")
+end
+
+def run()
+  probe([[:first]])
+end`,
+		},
+		{
+			name: "nonexact logical assignment retains alias identity",
+			source: `def build() -> array<int>
+  [1]
+end
+
+def takes_string(value: string)
+  value
+end
+
+def probe(names: array<int>)
+  copy = nil
+  copy ||= names
+  names.map! { "ok" }
+  takes_string(copy[0])
+end
+
+def run()
+  probe(build())
+end`,
+		},
+		{
+			name: "nonexact shared arguments retain identity",
+			source: `def build() -> array<int>
+  [1]
+end
+
+def takes_string(value: string)
+  value
+end
+
+def mutate(a: array<int>, b: array<int>)
+  a.map! { "ok" }
+  takes_string(b[0])
+end
+
+def run()
+  names = build()
+  mutate(names, names)
+end`,
+		},
+		{
+			name: "return summaries retain shared parameter identity",
+			source: `def build() -> array<int>
+  [1]
+end
+
+def takes_string(value: string)
+  value
+end
+
+def mutate_and_read(a: array<int>, b: array<int>)
+  a.map! { "ok" }
+  b[0]
+end
+
+def run()
+  names = build()
+  takes_string(mutate_and_read(names, names))
+end`,
+		},
+		{
+			name: "defaults observe shared parameter identity",
+			source: `def build() -> array<int>
+  [1]
+end
+
+def takes_string(value: string)
+  value
+end
+
+def mutate(values)
+  values.map! { "ok" }
+  0
+end
+
+def inspect_pair(a: array<int>, middle: int = mutate(a), b: array<int>)
+  takes_string(b[0])
+end
+
+def run()
+  names = build()
+  inspect_pair(a: names, b: names)
+end`,
+		},
+		{
+			name: "historical caller aliases do not imply current identity",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+class Producer
+  def consume(values)
+    values[0] = :third
+  end
+end
+
+def inspect_pair(a: array<symbol>, b: array<symbol>)
+  Producer.new.consume(a)
+  Receiver.new.send(*b, "bad")
+end
+
+def run()
+  first = [:third]
+  second = first
+  second = [:first]
+  inspect_pair(first, second)
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "intervening argument effects break repeated-name identity",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    takes_int(value)
+  end
+
+  def third(value)
+    value
+  end
+end
+
+class Producer
+  def consume(values)
+    values[0] = :third
+  end
+end
+
+def inspect_pair(a: array<symbol>, ignored, b: array<symbol>)
+  Producer.new.consume(a)
+  Receiver.new.send(*b, "bad")
+end
+
+def run()
+  first = [:third]
+  second = [:first]
+  inspect_pair(first, -> { first = second }.call(), first)
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "repeated auto calls do not imply result identity",
+			source: `def takes_string(value: string)
+  value
+end
+
+def maker() -> array<int>
+  [1]
+end
+
+def inspect_pair(a: array<int>, b: array<int>)
+  a.map! { "ok" }
+  takes_string(b[0])
+end
+
+def run()
+  inspect_pair(maker, maker)
+end`,
+			want: []string{"call to takes_string argument value expected string, got int"},
+		},
+		{
+			name: "container defaults retain earlier parameter identity",
+			source: `def takes_string(value: string)
+  value
+end
+
+def inspect_pair(a: array<int>, b: array<int> = a)
+  a.map! { "ok" }
+  takes_string(b[0])
+end
+
+def run()
+  inspect_pair([1])
+end`,
+		},
+		{
+			name: "bare member auto calls do not alias their receiver",
+			source: `def takes_int(value: int)
+  value
+end
+
+class Factory
+  def maker() -> array<string>
+    ["ok"]
+  end
+
+  def check(value)
+    takes_int(value)
+  end
+end
+
+def run()
+  factory = Factory.new
+  copy = factory.maker
+  copy << "more"
+  factory.check("bad")
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "appending to a parent preserves a retained child",
+			source: `def takes_string(value: string)
+  value
+end
+
+def probe(rows: array<array<int>>, child: array<int>)
+  rows << [2]
+  takes_string(child[0])
+end
+
+def run()
+  child = [1]
+  probe([child], child)
+end`,
+			want: []string{"call to takes_string argument value expected string, got int"},
+		},
+		{
+			name: "push retains a child for later nested writes",
+			source: `def takes_string(value: string)
+  value
+end
+
+def run()
+  rows = []
+  child = [1]
+  rows.push(child)
+  rows[0][0] = "fixed"
+  takes_string(child[0])
+end`,
+		},
+		{
+			name: "incompatible parent append preserves a retained child bound",
+			source: `def mutate(rows: array<array<int>>, child: array<int>)
+  rows << child
+  rows << "bad"
+  child << "also bad"
+end
+
+def run()
+  mutate([], [])
+end`,
+			want: []string{
+				"write to rows expected element array<int>, got string",
+				"write to child expected element int, got string",
+			},
+		},
+		{
+			name: "mutating an already poisoned alias weakens its peer",
+			source: `def mutate(a: array<number>, b: array<int>)
+  a << 1.5
+  b.push("bad")
+  a << "also bad"
+end
+
+def run()
+  values = [1]
+  mutate(values, values)
+end`,
+		},
+		{
+			name: "rebound historical alias does not weaken its new peer",
+			source: `def takes_string(value: string)
+  value
+end
+
+def probe(a: array<number>, b: array<int>)
+  selected = a
+  selected = b
+  a << 1.5
+  takes_string(b[0])
+end
+
+def run()
+  probe([1], [2])
+end`,
+			want: []string{"call to takes_string argument value expected string, got int"},
+		},
+		{
+			name: "direct alias survives intermediary rebind",
+			source: `def takes_string(value: string)
+  value
+end
+
+def mutate(values: array<int | string>)
+  values[0] = "ok"
+end
+
+def run(b: array<int>, c: array<int>)
+  y = b
+  x = y
+  y = c
+  mutate(x)
+  takes_string(b[0])
+end`,
+		},
+		{
+			name: "direct alias retains intermediary may aliases",
+			source: `def takes_string(value: string)
+  value
+end
+
+def mutate(values: array<int | string>)
+  values[0] = "ok"
+end
+
+def run(a: array<int>, b: array<int>, c: array<int>, flag: bool)
+  y = flag ? a : b
+  x = y
+  y = c
+  mutate(x)
+  takes_string(a[0])
+end`,
+		},
+		{
+			name: "sibling may alias does not leak mutation",
+			source: `def takes_string(value: string)
+  value
+end
+
+def mutate(values: array<int | string>)
+  values[0] = "ok"
+end
+
+def run(flag: bool)
+  a = [1]
+  x = [2]
+  if flag
+    a = x
+  else
+    mutate(x)
+  end
+  takes_string(a[0])
+end`,
+			want: []string{"call to takes_string argument value expected string, got int"},
+		},
+		{
+			name: "branch only correlated selection remains gradual",
+			source: `def takes_int(value: int)
+  value
+end
+
+def run(flag: bool, choose: bool)
+  a = [1]
+  b = [2]
+  x = a
+  y = b
+  if flag
+    x = choose ? a : b
+    y = choose ? a : b
+  end
+  x[0] = "ok"
+  takes_int(y[0])
+end`,
+		},
+		{
+			name: "conditional rebind retains a possible prior alias",
+			source: `def takes_string(value: string)
+  value
+end
+
+def probe(a: array<int>, b: array<int | string>, replacement: array<int>, flag: bool)
+  if flag
+    a = replacement
+  end
+  b[0] = "ok"
+  a << "also ok"
+  takes_string(a[0])
+end
+
+def run(values: array<int>, replacement: array<int>, flag: bool)
+  probe(values, values, replacement, flag)
+end`,
+		},
+		{
+			name: "branch local identity is not definite after the join",
+			source: `def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  a = [1]
+  b = [2]
+  selected = a
+  if flag
+    selected = b
+  end
+  selected[0] = "ok"
+  takes_int(b[0])
+end`,
+		},
+		{
+			name: "branch join retains aliases from every path",
+			source: `def takes_string(value: string)
+  value
+end
+
+def mutate(values: array<int | string>)
+  values[0] = "ok"
+end
+
+def run(
+  a: array<int>,
+  b: array<int>,
+  c: array<int>,
+  choose: bool,
+  flag: bool
+)
+  selected = choose ? a : c
+  if flag
+    selected = b
+  end
+  mutate(selected)
+  takes_string(a[0])
+end`,
+		},
+		{
+			name: "parent writes preserve conditionally retained children",
+			source: `def mutate(
+  rows: array<array<int>>,
+  child: array<int>,
+  other: array<int>,
+  flag: bool
+)
+  rows[0] = flag ? child : other
+  rows << [3]
+  child << "bad"
+end
+
+def run(flag: bool)
+  mutate([[0]], [1], [2], flag)
+end`,
+			want: []string{"write to child expected element int, got string"},
+		},
+		{
+			name: "shared parameters with divergent index bounds weaken together",
+			source: `def takes_float(value: float)
+  value
+end
+
+def mutate(a: array<number>, b: array<int>)
+  a[0] = 1.5
+  takes_float(b[0])
+end
+
+def run()
+  values = [1]
+  mutate(values, values)
+end`,
+		},
+		{
+			name: "shared parameters with divergent shovel bounds weaken together",
+			source: `def takes_float(value: float)
+  value
+end
+
+def mutate(a: array<number>, b: array<int>)
+  a << 1.5
+  takes_float(b[1])
+end
+
+def run()
+  values = [1]
+  mutate(values, values)
+end`,
+		},
+		{
+			name: "shared parameters with divergent push bounds weaken together",
+			source: `def takes_float(value: float)
+  value
+end
+
+def mutate(a: array<number>, b: array<int>)
+  a.push(1.5)
+  takes_float(b[1])
+end
+
+def run()
+  values = [1]
+  mutate(values, values)
+end`,
+		},
+		{
+			name: "mutating a contained alias weakens its parent bound",
+			source: `def takes_float(value: float)
+  value
+end
+
+def mutate(rows: array<array<int>>, child: array<number>)
+  child << 1.5
+  takes_float(rows[0][1])
+end
+
+def run()
+  rows = [[1]]
+  mutate(rows, rows[0])
+end`,
+		},
+		{
+			name: "custom push may mutate its argument",
+			source: `def strings(values: array<string>)
+  values
+end
+
+class Custom
+  def push(values)
+    values[0] = "fixed"
+  end
+end
+
+def run()
+  values = [1]
+  Custom.new.push(values)
+  strings(values)
+end`,
+		},
+		{
+			name: "unknown callback clears a shovel witness",
+			source: `def takes_int(value: int)
+  value
+end
+
+def run(callback: function)
+  values = [1]
+  callback(values << "bad")
+  takes_int(values[0])
+end`,
+		},
+		{
+			name: "unknown logical index checks its possible write",
+			source: `def mutate(items: array<symbol?>)
+  items[0] ||= 1
+end
+
+def run(items: array<symbol?>)
+  mutate(items)
+end`,
+			want: []string{"write to items expected element symbol?, got int"},
+		},
+		{
+			name: "skipped logical and assignment does not create an invalid keyword key",
+			source: `def replacement(value)
+  1
+end
+
+def install(**options)
+  JSON.stringify = replacement
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  options = {}
+  options[2] &&= "bad"
+  install(**options)
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "failed destructure index prevents a later namespace write",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = []
+  begin
+    values[0], JSON.stringify = [1, replacement]
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "failing destructure setter retains effects before the raise",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Bomb
+  def self.value=(value)
+    JSON.stringify = replacement
+    raise "stop"
+  end
+end
+
+def install()
+  Bomb.value, ignored = [1, 0]
+end
+
+def run()
+  begin
+    install()
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "destructure rescue state does not replace ensure receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class WriterB
+  def self.install()
+    nil
+  end
+end
+
+def install()
+  klass = WriterA
+  begin
+    kept, ignored = [1, 0]
+  rescue
+    klass = WriterB
+  ensure
+    klass.install()
+  end
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "unknown failure preserves the pre-body ensure receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class WriterB
+  def self.install()
+    nil
+  end
+end
+
+def maybe(flag: bool)
+  if flag
+    raise "stop"
+  end
+end
+
+def install(flag: bool)
+  klass = WriterA
+  begin
+    maybe(flag)
+    klass = WriterB
+  rescue
+    nil
+  ensure
+    klass.install()
+  end
+end
+
+def run(flag: bool)
+  install(flag)
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "unknown failure preserves an intermediate ensure receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    nil
+  end
+end
+
+class WriterB
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class WriterC
+  def self.install()
+    nil
+  end
+end
+
+def install(callback: function)
+  klass = WriterA
+  begin
+    klass = WriterB
+    callback.call()
+    klass = WriterC
+  rescue
+    nil
+  ensure
+    klass.install()
+  end
+end
+
+def run(callback: function)
+  install(callback)
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "exact rescue state replaces ensure receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class WriterB
+  def self.install()
+    nil
+  end
+end
+
+def install()
+  klass = WriterA
+  begin
+    raise "stop"
+  rescue
+    klass = WriterB
+  ensure
+    klass.install()
+  end
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "namespace scan uses the evaluated destructure value",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class WriterB
+  def self.install()
+    nil
+  end
+end
+
+class Holder
+  def self.value=(klass)
+    klass.install()
+  end
+end
+
+def install()
+  klass = WriterA
+  Holder.value, ignored = [klass, -> { klass = WriterB }.call()]
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "destructure rest retains evaluated class values",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class WriterB
+  def self.install()
+    nil
+  end
+end
+
+class Holder
+  def self.value=(classes)
+    classes[0].install()
+  end
+end
+
+def install()
+  klass = WriterA
+  ignored, *Holder.value, last = [0, klass, -> { klass = WriterB }.call()]
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "destructure rest class values survive delayed use",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class WriterB
+  def self.install()
+    nil
+  end
+end
+
+class Holder
+  def self.value=(classes)
+    classes[0].install()
+  end
+end
+
+def install()
+  klass = WriterA
+  ignored, *classes, last = [0, klass, 0]
+  klass = WriterB
+  Holder.value = classes
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "destructure rest projections survive exact writes",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class WriterB
+  def self.install()
+    nil
+  end
+end
+
+class Holder
+  def self.value=(classes)
+    classes[0].install()
+  end
+end
+
+def install()
+  klass = WriterA
+  ignored, *classes, last = [0, klass, 0, 0]
+  klass = WriterB
+  classes[1] = 1
+  Holder.value = classes
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "nested destructure rest retains evaluated class values",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class Holder
+  def self.value=(groups)
+    groups[0][0].install()
+  end
+end
+
+def install()
+  ignored, *groups, last = [0, [WriterA], 0]
+  Holder.value = groups
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "destructure rest callables survive delayed use",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def writer(value)
+  JSON.stringify = replacement
+end
+
+def noop(value)
+  nil
+end
+
+class Holder
+  def self.value=(callbacks)
+    callbacks[0].call(1)
+  end
+end
+
+def install()
+  callback = writer
+  ignored, *callbacks, last = [0, callback, -> { callback = noop; 0 }.call()]
+  Holder.value = callbacks
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "destructure rest projections survive branch joins",
+			source: `def writer(value)
+  value
+end
+
+def takes_function(value: function)
+  value
+end
+
+def run(flag: bool)
+  callback = writer
+  ignored, *callbacks, last = [0, callback, 0]
+  if flag
+    callbacks = [nil]
+  end
+  takes_function(callbacks[0])
+end`,
+		},
+		{
+			name: "destructure rest invalidates retained nonexact children",
+			source: `def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def check()
+    raise "stop"
+  end
+end
+
+class WriterB
+  def check()
+    nil
+  end
+end
+
+def mutate(names: array<WriterA>)
+  ignored, *groups, last = [0, names, 0]
+  names.map! { WriterB.new }
+  groups[0][0].check()
+  takes_int("bad")
+end
+
+def run()
+  mutate([WriterA.new])
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "destructure index setter contributes namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Box
+  def []=(index, value)
+    JSON.stringify = replacement
+  end
+end
+
+def install(box: Box)
+  box[0], ignored = [1, 0]
+end
+
+def run()
+  install(Box.new)
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "scalar destructure RHS retains its evaluated class value",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class Holder
+  def self.value=(klass)
+    klass.install()
+  end
+end
+
+def install()
+  Holder.value, ignored = WriterA
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "destructure index setter retains evaluated selectors",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class WriterB
+  def self.install()
+    nil
+  end
+end
+
+class Box
+  def []=(klass, ignored, value)
+    klass.install()
+  end
+end
+
+def install()
+  box = Box.new
+  klass = WriterA
+  box[klass, -> { klass = WriterB }.call()], ignored = [1, 0]
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "destructure index setter retains its evaluated receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def []=(index, value)
+    JSON.stringify = replacement
+  end
+end
+
+class BoxB
+  def []=(index, value)
+    nil
+  end
+end
+
+def install()
+  box = BoxA.new
+  box[-> { box = BoxB.new; 0 }.call()], ignored = [1, 0]
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+			want:   []string{"reassignment of box expected BoxA, got BoxB"},
+			reject: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "destructure member target resolves an evaluated class alias",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def self.value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  klass = Holder
+  klass.value, ignored = [1, 0]
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "typed ivar callable assignment does not invoke its value",
+			source: `def integer_encoder(value)
+  1
+end
+
+def replacement()
+  JSON.stringify = integer_encoder
+  nil
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  property callback: function
+
+  def install()
+    @callback = replacement
+  end
+end
+
+def run()
+  Holder.new.install()
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "typed ivar logical assignment does not invoke its value",
+			source: `def integer_encoder(value)
+  1
+end
+
+def replacement()
+  JSON.stringify = integer_encoder
+  nil
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  property callback: function
+
+  def install()
+    @callback ||= replacement
+  end
+end
+
+def run()
+  Holder.new.install()
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "compound member setter retains its pre-RHS receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def value()
+    0
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+class BoxB
+  def value()
+    0
+  end
+
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  box = BoxA.new
+  box.value += -> { box = BoxB.new; 1 }.call()
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "compound member setter does not follow an RHS rebind",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def value()
+    0
+  end
+
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+class BoxB
+  def value()
+    0
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+def install()
+  box = BoxA.new
+  box.value += -> { box = BoxB.new; 1 }.call()
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+			want:   []string{"reassignment of box expected BoxA, got BoxB"},
+			reject: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "logical member setter retains its pre-RHS receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def value()
+    nil
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+class BoxB
+  def value()
+    nil
+  end
+
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  box = BoxA.new
+  box.value ||= -> { box = BoxB.new; 1 }.call()
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "logical member setter does not follow an RHS rebind",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def value()
+    nil
+  end
+
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+class BoxB
+  def value()
+    nil
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+def install()
+  box = BoxA.new
+  box.value ||= -> { box = BoxB.new; 1 }.call()
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+			want:   []string{"reassignment of box expected BoxA, got BoxB"},
+			reject: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "compound index setter retains its pre-RHS receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def [](index)
+    0
+  end
+
+  def []=(index, value)
+    nil
+  end
+end
+
+class BoxB
+  def [](index)
+    0
+  end
+
+  def []=(index, value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  box = BoxA.new
+  box[0] += -> { box = BoxB.new; 1 }.call()
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "raising compound setter retains its pre-RHS receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def value()
+    0
+  end
+
+  def value=(value)
+    raise "stop"
+  end
+end
+
+class BoxB
+  def value()
+    0
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+def install()
+  box = BoxA.new
+  box.value += -> { box = BoxB.new; 1 }.call()
+  JSON.stringify = replacement
+end
+
+def run()
+  begin
+    install()
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "class-valued constant setter resolves its semantic class",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Target
+  def self.value=(value)
+    nil
+  end
+end
+
+class Actual
+  def self.value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+class Outer
+  Target = Actual
+
+  def self.install()
+    Target.value = 1
+  end
+end
+
+def run()
+  Outer.install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "class-valued constant setter ignores its syntactic tail",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Target
+  def self.value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+class Actual
+  def self.value=(value)
+    nil
+  end
+end
+
+class Outer
+  Target = Actual
+
+  def self.install()
+    Target.value = 1
+  end
+end
+
+def run()
+  Outer.install()
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "scoped class-valued constant setter resolves its semantic class",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Target
+  def self.value=(value)
+    nil
+  end
+end
+
+class Actual
+  def self.value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+class Outer
+  Target = Actual
+end
+
+def install()
+  Outer::Target.value = 1
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "local instance setter contributes namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  holder = Holder.new
+  holder.value = 1
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "raising local instance setter stops later namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def value=(value)
+    raise "stop"
+  end
+end
+
+def install()
+  holder = Holder.new
+  holder.value = 1
+  JSON.stringify = replacement
+end
+
+def run()
+  begin
+    install()
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "local index setter contributes namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Box
+  def []=(index, value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  box = Box.new
+  box[0] = 1
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "local destructure index setter contributes namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Box
+  def []=(index, value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  box = Box.new
+  box[0], ignored = [1, 0]
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "raising local index setter stops later namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Box
+  def []=(index, value)
+    raise "stop"
+  end
+end
+
+def install()
+  box = Box.new
+  box[0] = 1
+  JSON.stringify = replacement
+end
+
+def run()
+  begin
+    install()
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "typed parameter setter contributes namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def install(holder: Holder)
+  holder.value = 1
+end
+
+def run()
+  install(Holder.new)
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "self setter contributes namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def value=(value)
+    JSON.stringify = replacement
+  end
+
+  def install()
+    self.value = 1
+  end
+end
+
+def run()
+  Holder.new.install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "builtin namespace parameter shadow does not record a global write",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  property stringify
+end
+
+def install(JSON)
+  JSON.stringify = replacement
+end
+
+def run()
+  install(Holder.new)
+  takes_int(JSON.stringify({}))
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
+		},
+		{
+			name: "namespace scans do not alias same-named caller locals",
+			source: `def build() -> array<int>
+  [1]
+end
+
+def takes_string(value: string)
+  value
+end
+
+def noop(a, b)
+  0
+end
+
+def run()
+  a = build()
+  b = build()
+  shared = build()
+  noop(shared, shared)
+  a.map! { "ok" }
+  takes_string(b[0])
+end`,
+			want: []string{"call to takes_string argument value expected string, got int | nil"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			warnings := compileScript(t, tc.source).CheckWarningsForFunction("run")
+			got := strings.Join(checkWarningMessages(warnings), "\n")
+			if len(tc.want) == 0 {
+				if got != "" {
+					t.Fatalf("CheckWarningsForFunction(%q) = %q, want none", "run", got)
+				}
+				return
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)
+				}
+			}
+			for _, reject := range tc.reject {
+				if strings.Contains(got, reject) {
+					t.Fatalf("CheckWarningsForFunction(%q) = %q, reject substring %q", "run", got, reject)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckAssignmentNamespaceEffectsInWholeScript(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		source      string
+		wantWarning bool
+	}{
+		{
+			name: "ordinary member assignment control",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class Holder
+  def self.value=(klass)
+    klass.install()
+  end
+end
+
+def run()
+  Holder.value = WriterA
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "logical member assignment",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def self.value()
+    nil
+  end
+
+  def self.value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def run()
+  Holder.value ||= 1
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "skipped logical member assignment",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def self.value()
+    1
+  end
+
+  def self.value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def run()
+  Holder.value ||= 2
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "parameter shadows a class setter",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def self.value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def run(Holder)
+  Holder.value = 1
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "typed ivar callable assignment does not invoke its value",
+			source: `def integer_encoder(value)
+  1
+end
+
+def replacement()
+  JSON.stringify = integer_encoder
+  nil
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  property callback: function
+
+  def install()
+    @callback = replacement
+  end
+end
+
+def run()
+  Holder.new.install()
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "typed ivar logical assignment does not invoke its value",
+			source: `def integer_encoder(value)
+  1
+end
+
+def replacement()
+  JSON.stringify = integer_encoder
+  nil
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  property callback: function
+
+  def install()
+    @callback ||= replacement
+  end
+end
+
+def run()
+  Holder.new.install()
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "compound member setter retains its pre-RHS receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def value()
+    0
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+class BoxB
+  def value()
+    0
+  end
+
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  box = BoxA.new
+  box.value += -> { box = BoxB.new; 1 }.call()
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "compound member setter does not follow an RHS rebind",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def value()
+    0
+  end
+
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+class BoxB
+  def value()
+    0
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+def install()
+  box = BoxA.new
+  box.value += -> { box = BoxB.new; 1 }.call()
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "logical member setter retains its pre-RHS receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def value()
+    nil
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+class BoxB
+  def value()
+    nil
+  end
+
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  box = BoxA.new
+  box.value ||= -> { box = BoxB.new; 1 }.call()
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "logical member setter does not follow an RHS rebind",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def value()
+    nil
+  end
+
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+class BoxB
+  def value()
+    nil
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+def install()
+  box = BoxA.new
+  box.value ||= -> { box = BoxB.new; 1 }.call()
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "compound index setter retains its pre-RHS receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def [](index)
+    0
+  end
+
+  def []=(index, value)
+    nil
+  end
+end
+
+class BoxB
+  def [](index)
+    0
+  end
+
+  def []=(index, value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  box = BoxA.new
+  box[0] += -> { box = BoxB.new; 1 }.call()
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "raising compound setter retains its pre-RHS receiver",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class BoxA
+  def value()
+    0
+  end
+
+  def value=(value)
+    raise "stop"
+  end
+end
+
+class BoxB
+  def value()
+    0
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+def install()
+  box = BoxA.new
+  box.value += -> { box = BoxB.new; 1 }.call()
+  JSON.stringify = replacement
+end
+
+def run()
+  begin
+    install()
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "class-valued constant setter resolves its semantic class",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Target
+  def self.value=(value)
+    nil
+  end
+end
+
+class Actual
+  def self.value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+class Outer
+  Target = Actual
+
+  def self.install()
+    Target.value = 1
+  end
+end
+
+def run()
+  Outer.install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "class-valued constant setter ignores its syntactic tail",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Target
+  def self.value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+class Actual
+  def self.value=(value)
+    nil
+  end
+end
+
+class Outer
+  Target = Actual
+
+  def self.install()
+    Target.value = 1
+  end
+end
+
+def run()
+  Outer.install()
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "scoped class-valued constant setter resolves its semantic class",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Target
+  def self.value=(value)
+    nil
+  end
+end
+
+class Actual
+  def self.value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+class Outer
+  Target = Actual
+end
+
+def install()
+  Outer::Target.value = 1
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "local instance setter contributes namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  holder = Holder.new
+  holder.value = 1
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "typed parameter setter contributes namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def value=(value)
+    JSON.stringify = replacement
+  end
+end
+
+def install(holder: Holder)
+  holder.value = 1
+end
+
+def run()
+  install(Holder.new)
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "raising typed parameter setter stops later namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def value=(value)
+    raise "stop"
+  end
+end
+
+def install(holder: Holder)
+  holder.value = 1
+  JSON.stringify = replacement
+end
+
+def run()
+  begin
+    install(Holder.new)
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "local index setter contributes namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Box
+  def []=(index, value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  box = Box.new
+  box[0] = 1
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "local destructure index setter contributes namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Box
+  def []=(index, value)
+    JSON.stringify = replacement
+  end
+end
+
+def install()
+  box = Box.new
+  box[0], ignored = [1, 0]
+end
+
+def run()
+  install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "raising typed index setter stops later namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Box
+  def []=(index, value)
+    raise "stop"
+  end
+end
+
+def install(box: Box)
+  box[0] = 1
+  JSON.stringify = replacement
+end
+
+def run()
+  begin
+    install(Box.new)
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "self setter contributes namespace effects",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  def value=(value)
+    JSON.stringify = replacement
+  end
+
+  def install()
+    self.value = 1
+  end
+end
+
+def run()
+  Holder.new.install()
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "builtin namespace parameter shadow does not record a global write",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Holder
+  property stringify
+end
+
+def install(JSON)
+  JSON.stringify = replacement
+end
+
+def run()
+  install(Holder.new)
+  takes_int(JSON.stringify({}))
+end`,
+			wantWarning: true,
+		},
+		{
+			name: "compound index assignment",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Box
+  def [](index)
+    0
+  end
+
+  def []=(index, value)
+    JSON.stringify = replacement
+  end
+end
+
+def run()
+  box = Box.new
+  box[0] += 1
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "scalar value",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class Holder
+  def self.value=(klass)
+    klass.install()
+  end
+end
+
+def run()
+  Holder.value, ignored = WriterA
+  takes_int(JSON.stringify({}))
+end`,
+		},
+		{
+			name: "evaluated selector",
+			source: `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class WriterA
+  def self.install()
+    JSON.stringify = replacement
+  end
+end
+
+class WriterB
+  def self.install()
+    nil
+  end
+end
+
+class Box
+  def []=(klass, ignored, value)
+    klass.install()
+  end
+end
+
+def run()
+  box = Box.new
+  klass = WriterA
+  box[klass, -> { klass = WriterB }.call()], ignored = [1, 0]
+  takes_int(JSON.stringify({}))
+end`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			warnings := compileScript(t, tc.source).CheckWarnings()
+			got := strings.Join(checkWarningMessages(warnings), "\n")
+			staleWarning := strings.Contains(got, "call to takes_int argument value expected int, got string")
+			if tc.wantWarning && !staleWarning {
+				t.Fatalf("CheckWarnings() = %q, want unmodified namespace warning", got)
+			}
+			if !tc.wantWarning && staleWarning {
+				t.Fatalf("CheckWarnings() = %q, reject stale namespace warning", got)
+			}
+		})
 	}
 }

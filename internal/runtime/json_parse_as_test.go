@@ -88,7 +88,7 @@ def run()
   JSON.parse_as("{}", 1)
 end
 `,
-			wantErr: "JSON.parse_as expects a shape literal as its second argument",
+			wantErr: "JSON.parse_as expects a type literal as its second argument",
 		},
 	}
 	for _, tc := range cases {
@@ -177,6 +177,453 @@ def run()
 end
 `)
 
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindString || got.String() != "Ada" {
+		t.Fatalf("run() = %#v, want \"Ada\"", got)
+	}
+}
+
+func TestJSONParseAsValidatesNonObjectRoots(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+		check  func(t *testing.T, got Value)
+	}{
+		{
+			name: "array root",
+			source: `
+def run()
+  JSON.parse_as("[1, 2, 3]", array<int>)
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindArray || len(got.Array()) != 3 {
+					t.Fatalf("run() = %#v, want three-element array", got)
+				}
+			},
+		},
+		{
+			name: "array of shapes root",
+			source: `
+def run()
+  rows = JSON.parse_as("[{\"id\": \"a\"}, {\"id\": \"b\"}]", array<{ id: string }>)
+  rows[1]["id"]
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindString || got.String() != "b" {
+					t.Fatalf("run() = %#v, want \"b\"", got)
+				}
+			},
+		},
+		{
+			name: "scalar root",
+			source: `
+def run()
+  JSON.parse_as("42", int)
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindInt || got.Int() != 42 {
+					t.Fatalf("run() = %#v, want 42", got)
+				}
+			},
+		},
+		{
+			name: "nullable root null",
+			source: `
+def run()
+  JSON.parse_as("null", int?)
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindNil {
+					t.Fatalf("run() = %#v, want nil", got)
+				}
+			},
+		},
+		{
+			name: "nullable root value",
+			source: `
+def run()
+  JSON.parse_as("7", int?)
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindInt || got.Int() != 7 {
+					t.Fatalf("run() = %#v, want 7", got)
+				}
+			},
+		},
+		{
+			name: "union root",
+			source: `
+def run()
+  JSON.parse_as("\"ready\"", int | string)
+end
+`,
+			check: func(t *testing.T, got Value) {
+				if got.Kind() != KindString || got.String() != "ready" {
+					t.Fatalf("run() = %#v, want \"ready\"", got)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			requireNoCheckWarnings(t, script)
+			tc.check(t, callScript(t, context.Background(), script, "run", nil, CallOptions{}))
+		})
+	}
+}
+
+func TestJSONParseAsNonObjectRootDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{
+			// The actual type renders per-element detail, identifying the
+			// failing element kind.
+			name: "array element mismatch",
+			source: `
+def run()
+  JSON.parse_as("[1, \"x\"]", array<int>)
+end
+`,
+			wantErr: "JSON.parse_as value expected array<int>, got array<int | string>",
+		},
+		{
+			name: "nested shape field mismatch",
+			source: `
+def run()
+  JSON.parse_as("[{\"id\": 1}]", array<{ id: string }>)
+end
+`,
+			wantErr: "JSON.parse_as value expected array<{ id: string }>, got array<{ id: int }>",
+		},
+		{
+			name: "scalar mismatch",
+			source: `
+def run()
+  JSON.parse_as("\"x\"", int)
+end
+`,
+			wantErr: "JSON.parse_as value expected int, got string",
+		},
+		{
+			name: "union mismatch names the union",
+			source: `
+def run()
+  JSON.parse_as("true", int | string)
+end
+`,
+			wantErr: "JSON.parse_as value expected int | string, got bool",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			err := callScriptErr(t, context.Background(), script, "run", nil, CallOptions{})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("run() error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestArgumentTypeLiteralShadowing(t *testing.T) {
+	t.Parallel()
+
+	// A local sharing a type name keeps the value reading: the argument
+	// evaluates to the local, exactly as before type literals existed.
+	shadowed := compileScript(t, `
+def double(v)
+  v * 2
+end
+
+def run()
+  int = 21
+  double(int)
+end
+`)
+	got := callScript(t, context.Background(), shadowed, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 42 {
+		t.Fatalf("run() = %#v, want 42", got)
+	}
+
+	// The shadowed reading flows into JSON.parse_as too: the argument is the
+	// local's value, not a contract, and is rejected as such.
+	rejected := compileScript(t, `
+def run()
+  int = 21
+  JSON.parse_as("1", int)
+end
+`)
+	err := callScriptErr(t, context.Background(), rejected, "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expects a type literal as its second argument") {
+		t.Fatalf("run() error = %v, want type-literal rejection", err)
+	}
+
+	// A binding whose exact spelling matches the nullable atom (`string?` as
+	// a host global or zero-arity method) shadows the type reading too: leaf
+	// normalization strips the `?`, but the value reading reads the
+	// predicate-style name verbatim.
+	predicate := compileScript(t, `
+def echo(v)
+  v
+end
+
+def run()
+  echo(string?)
+end
+`)
+	got = callScript(t, context.Background(), predicate, "run", nil, CallOptions{
+		Globals: map[string]Value{"string?": NewString("shadowed")},
+	})
+	if got.Kind() != KindString || got.String() != "shadowed" {
+		t.Fatalf("run() = %#v, want \"shadowed\"", got)
+	}
+
+	// Unshadowed, the same spelling stays the nullable type literal.
+	unshadowed := compileScript(t, `
+def run()
+  JSON.parse_as("null", string?)
+end
+`)
+	if got := callScript(t, context.Background(), unshadowed, "run", nil, CallOptions{}); got.Kind() != KindNil {
+		t.Fatalf("run() = %#v, want nil", got)
+	}
+
+	// An unrelated binding of the BASE name does not shadow the nullable
+	// spelling: the fallback reads `string?` verbatim, never `string`.
+	baseName := compileScript(t, `
+def run(string: string)
+  JSON.parse_as("null", string?)
+end
+`)
+	got = callScript(t, context.Background(), baseName, "run", []Value{NewString("unrelated")}, CallOptions{})
+	if got.Kind() != KindNil {
+		t.Fatalf("run(\"unrelated\") = %#v, want nil", got)
+	}
+
+	// The static mirror agrees: the literal stays the nullable contract, so
+	// its result fact contradicts an int boundary.
+	baseNameStatic := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(string: string, raw: string)
+  takes_int(JSON.parse_as(raw, string?))
+end
+`)
+	requireCheckWarningContains(t, baseNameStatic, "call to takes_int argument value expected int, got string?")
+
+	// The static mirror sees implicit-self predicate methods the same way.
+	selfShadowed := compileScript(t, `
+class Probe
+  def string?
+    "predicate"
+  end
+
+  def run
+    JSON.parse_as("null", string?)
+  end
+end
+`)
+	requireNoCheckWarnings(t, selfShadowed)
+
+	// A zero-arity callable bound to a type-spelled name keeps the caller's
+	// auto-call state: a function-typed parameter receives it bare, while an
+	// untyped parameter auto-invokes it like any other identifier argument.
+	autoCall := compileScript(t, `
+def function
+  "invoked"
+end
+
+def take(cb: function)
+  cb.call
+end
+
+def echo(v)
+  v
+end
+
+def run()
+  [take(function), echo(function)]
+end
+`)
+	// Pre-fix, the argument auto-invoked and the string failed the
+	// `cb: function` boundary; bare passing must satisfy it and let the
+	// callee invoke.
+	got = callScript(t, context.Background(), autoCall, "run", nil, CallOptions{})
+	if got.Kind() != KindArray || len(got.Array()) != 2 {
+		t.Fatalf("run() = %#v, want two-element array", got)
+	}
+	if bare := got.Array()[0]; bare.Kind() != KindString || bare.String() != "invoked" {
+		t.Fatalf("take(function) = %#v, want \"invoked\"", bare)
+	}
+	if invoked := got.Array()[1]; invoked.Kind() != KindString || invoked.String() != "invoked" {
+		t.Fatalf("echo(function) = %#v, want auto-invoked \"invoked\"", invoked)
+	}
+
+	// A lambda-holding local behaves like any other local: passed bare to a
+	// callable-typed parameter.
+	lambdaLocal := compileScript(t, `
+def take(cb: function)
+  cb.call
+end
+
+def run()
+  function = -> { "from lambda" }
+  take(function)
+end
+`)
+	got = callScript(t, context.Background(), lambdaLocal, "run", nil, CallOptions{})
+	if got.Kind() != KindString || got.String() != "from lambda" {
+		t.Fatalf("take(lambda local) = %#v, want \"from lambda\"", got)
+	}
+
+	// Comparisons over non-type locals never read as types.
+	comparison := compileScript(t, `
+def truthy(v)
+  v
+end
+
+def run(threshold: int, value: int)
+  truthy(value < threshold)
+end
+`)
+	got = callScript(t, context.Background(), comparison, "run", []Value{NewInt(10), NewInt(3)}, CallOptions{})
+	if got.Kind() != KindBool || !got.Bool() {
+		t.Fatalf("run(10, 3) = %#v, want true", got)
+	}
+}
+
+func TestCheckInferParseAsNonObjectRootFacts(t *testing.T) {
+	t.Parallel()
+
+	// The declared root contract is the checker's result fact.
+	scalar := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(raw: string)
+  takes_string(JSON.parse_as(raw, int))
+end
+`)
+	requireCheckWarningContains(t, scalar, "call to takes_string argument value expected string, got int")
+
+	union := compileScript(t, `
+def takes_bool(value: bool)
+  value
+end
+
+def run(raw: string)
+  takes_bool(JSON.parse_as(raw, int | string))
+end
+`)
+	requireCheckWarningContains(t, union, "call to takes_bool argument value expected bool, got int | string")
+
+	// An array root's element reads infer the element type joined with nil,
+	// and nested shapes keep string-keyed field facts.
+	element := compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(raw: string)
+  values = JSON.parse_as(raw, array<int>)
+  takes_string(values[0])
+end
+`)
+	requireCheckWarningContains(t, element, "call to takes_string argument value expected string, got int | nil")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  takes_int(JSON.parse_as(raw, int?) || 0)
+end
+`))
+
+	// A statically shadowed spelling keeps the value reading, so the checker
+	// reports the non-contract argument like any other value.
+	shadowed := compileScript(t, `
+def run(raw: string)
+  int = 1
+  JSON.parse_as(raw, int)
+end
+`)
+	requireCheckWarningContains(t, shadowed, "call to JSON.parse_as expects a type literal as its second argument, got int")
+}
+
+func TestJSONParseAsSupportsOpenShapes(t *testing.T) {
+	t.Parallel()
+
+	// Declared fields validate; undeclared fields pass through and read back
+	// with their raw parsed values.
+	script := compileScript(t, `
+def run()
+  body = JSON.parse_as("{\"name\": \"Ada\", \"age\": 36, \"role\": \"captain\"}", { name: string, ... })
+  body["role"]
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindString || got.String() != "captain" {
+		t.Fatalf("run() = %#v, want \"captain\"", got)
+	}
+
+	invalid := compileScript(t, `
+def run()
+  JSON.parse_as("{\"name\": 1, \"role\": \"captain\"}", { name: string, ... })
+end
+`)
+	err := callScriptErr(t, context.Background(), invalid, "run", nil, CallOptions{})
+	want := "JSON.parse_as value expected { name: string, ... }"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("run() error = %v, want substring %q", err, want)
+	}
+
+	missing := compileScript(t, `
+def run()
+  JSON.parse_as("{\"role\": \"captain\"}", { name: string, ... })
+end
+`)
+	err = callScriptErr(t, context.Background(), missing, "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("run() error = %v, want substring %q", err, want)
+	}
+}
+
+func TestOpenShapeLiteralIgnoresLocalShadowing(t *testing.T) {
+	t.Parallel()
+
+	// The `...` marker removes the braced group's hash reading, so the open
+	// shape literal stays a contract even when a type name is shadowed by a
+	// local; the closed spelling keeps its established hash fallback.
+	script := compileScript(t, `
+def run()
+  string = "local"
+  body = JSON.parse_as("{\"name\": \"Ada\", \"extra\": 1}", { name: string, ... })
+  body["name"]
+end
+`)
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	if got.Kind() != KindString || got.String() != "Ada" {
 		t.Fatalf("run() = %#v, want \"Ada\"", got)
@@ -302,7 +749,7 @@ def run(raw: string)
 end
 `)
 	requireCheckWarningContains(t, checked, "call to takes_int argument value expected int, got string")
-	requireCheckWarningContainsWithOptions(t, checked, opts, "call to JSON.parse_as expects a shape literal as its second argument, got hash")
+	requireCheckWarningContainsWithOptions(t, checked, opts, "call to JSON.parse_as expects a type literal as its second argument, got hash")
 }
 
 func TestShapeLiteralImplicitSelfShadowKeepsHashSemantics(t *testing.T) {
@@ -571,7 +1018,7 @@ def run(raw: string)
   JSON.parse_as(raw, 1)
 end
 `)
-	requireCheckWarningContains(t, scalar, "call to JSON.parse_as expects a shape literal as its second argument, got int")
+	requireCheckWarningContains(t, scalar, "call to JSON.parse_as expects a type literal as its second argument, got int")
 
 	// A hash of data values is a hash at runtime, not a shape.
 	dataHash := compileScript(t, `
@@ -579,7 +1026,7 @@ def run(raw: string)
   JSON.parse_as(raw, { name: "Ada" })
 end
 `)
-	requireCheckWarningContains(t, dataHash, "call to JSON.parse_as expects a shape literal as its second argument")
+	requireCheckWarningContains(t, dataHash, "call to JSON.parse_as expects a type literal as its second argument")
 
 	// Dynamic schemas stay a runtime concern.
 	requireNoCheckWarnings(t, compileScript(t, `
@@ -684,12 +1131,12 @@ def run(raw: string)
   takes_string(body[:price])
 end
 `)
-	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a shape literal as its second argument, got hash")
+	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a type literal as its second argument, got hash")
 
 	// And at runtime the shadowed group really is a hash, which parse_as
 	// rejects as a schema.
 	err := callScriptErr(t, context.Background(), script, "run", []Value{NewString("{}")}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expects a shape literal as its second argument") {
+	if err == nil || !strings.Contains(err.Error(), "expects a type literal as its second argument") {
 		t.Fatalf("run() err = %v, want non-shape schema rejection", err)
 	}
 }
@@ -855,10 +1302,10 @@ def run(raw: string)
   takes_int(body["name"])
 end
 `)
-	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a shape literal as its second argument, got hash")
+	requireCheckWarningContains(t, script, "call to JSON.parse_as expects a type literal as its second argument, got hash")
 
 	err := callScriptErr(t, context.Background(), script, "run", []Value{NewString("{}")}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expects a shape literal as its second argument") {
+	if err == nil || !strings.Contains(err.Error(), "expects a type literal as its second argument") {
 		t.Fatalf("run() err = %v, want non-shape schema rejection", err)
 	}
 }

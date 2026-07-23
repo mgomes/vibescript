@@ -9,6 +9,68 @@ import (
 // ADR-004: locals take the types of the expressions assigned to them, and the
 // checker errors wherever known types contradict a typed boundary.
 
+func TestCheckInferMixedClassCallableFactsStayGradual(t *testing.T) {
+	t.Parallel()
+
+	fn := &ScriptFunction{Name: "worker"}
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"value": nil}},
+		localClassValues: []checkClassValueFrame{{}},
+	}
+	states := []checkScopeState{
+		{classValues: []checkClassValueFrame{{
+			"value": {classNames: []string{"Holder"}},
+		}}},
+		{classValues: []checkClassValueFrame{{
+			"value": {callables: []*ScriptFunction{fn}},
+		}}},
+	}
+
+	checker.mergeLocalClassValueStates(states)
+	if fact, ok := checker.localValueFactFor("value"); ok {
+		t.Fatalf("merged mixed fact = %#v, want unknown", fact)
+	}
+
+	checker.localClassValues[0]["value"] = checkLocalValueFact{
+		classNames: []string{"Holder"},
+		callables:  []*ScriptFunction{fn},
+	}
+	if classes, ok := checker.localClassValuesFor("value"); ok {
+		t.Fatalf("localClassValuesFor() = %v, true, want unknown", classes)
+	}
+	if callables, ok := checker.localCallableValuesFor("value"); ok {
+		t.Fatalf("localCallableValuesFor() = %v, true, want unknown", callables)
+	}
+}
+
+func TestCheckInferDisjointKeywordSplatFailuresStayRepairable(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"value": nil}},
+		localClassValues: []checkClassValueFrame{{}},
+	}
+	states := []checkScopeState{
+		{classValues: []checkClassValueFrame{{
+			"value": {
+				keywordSplatFails:       true,
+				invalidKeywordSplatKeys: map[string]struct{}{"i:1": {}},
+			},
+		}}},
+		{classValues: []checkClassValueFrame{{
+			"value": {
+				keywordSplatFails:       true,
+				invalidKeywordSplatKeys: map[string]struct{}{"i:2": {}},
+			},
+		}}},
+	}
+
+	checker.mergeLocalClassValueStates(states)
+	if checker.localKeywordSplatFails("value") {
+		t.Fatal("merged disjoint keyword splat failures must remain repairable")
+	}
+}
+
 func TestCheckInferLocalBindingFlowsToTypedArgument(t *testing.T) {
 	t.Parallel()
 
@@ -110,7 +172,7 @@ func TestLinkRetainedContainerAliasesSkipsShapeLiteralPairs(t *testing.T) {
 		}},
 	}
 
-	checker.linkRetainedContainerAliases("schema", literal, checkTypeHash, false)
+	checker.linkRetainedContainerAliases("schema", literal, checkTypeHash, false, true)
 	if len(checker.typeAliases) != 0 {
 		t.Fatalf("typeAliases = %#v, want no aliases for unevaluated shape pairs", checker.typeAliases)
 	}
@@ -539,6 +601,264 @@ def run(flag)
 end
 `)
 	requireNoCheckWarnings(t, unknown)
+}
+
+func TestCheckInferIfExpressionClassIdentityUsesConditionTimeFact(t *testing.T) {
+	t.Parallel()
+
+	const classes = `
+class Strict
+  def initialize()
+  end
+
+  def check(value: int)
+    value
+  end
+end
+
+class Loose
+  def initialize()
+  end
+
+  def check(value)
+    value
+  end
+end
+
+class OtherStrict
+  def initialize()
+  end
+
+  def check(value: bool)
+    value
+  end
+end
+`
+	requireOnlyStrict := func(script *Script) {
+		t.Helper()
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "call to Strict#check argument value expected int, got string") {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want only the selected Strict arm", "run", warnings)
+		}
+	}
+
+	selectedTrueArm := compileScript(t, classes+`
+def run()
+  klass = Strict
+  chosen = if klass
+    [[1].each { klass = nil }, Strict][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireOnlyStrict(selectedTrueArm)
+
+	for _, result := range []string{
+		"Strict.itself()",
+		"true ? Strict : Loose",
+		"nil || Strict",
+		"if true then Strict else Loose end",
+		"{ pick: Strict }[:pick]",
+	} {
+		source := strings.ReplaceAll(classes+`
+def run()
+  condition = Strict
+  chosen = if condition
+    [[1].each { condition = nil }, SELECTED_RESULT][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`, "SELECTED_RESULT", result)
+		requireOnlyStrict(compileScript(t, source))
+	}
+
+	typeKnownCondition := compileScript(t, classes+`
+def run(condition: string)
+  chosen = if condition
+    [[1].each { condition = nil }, Strict][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireOnlyStrict(typeKnownCondition)
+
+	selectedFalseArm := compileScript(t, classes+`
+def run()
+  klass = nil
+  chosen = if klass
+    Strict
+  else
+    [[1].each { klass = Strict }, Loose][1]
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedFalseArm)
+
+	inexactSelectedArm := compileScript(t, classes+`
+def run()
+  klass = nil
+  chosen = if klass
+    Strict
+  else
+    [Loose, [1].each { klass = Strict }][0]
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, inexactSelectedArm)
+
+	selectedBeforeElsif := compileScript(t, classes+`
+def run()
+  condition = Strict
+  chosen = if condition
+    [[1].each { condition = nil }, Loose][1]
+  elsif true
+    Strict
+  else
+    Strict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedBeforeElsif)
+
+	selectedElsif := compileScript(t, classes+`
+def run()
+  condition = nil
+  chosen = if condition
+    Strict
+  elsif true
+    [[1].each { condition = Strict }, Loose][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedElsif)
+
+	selectedLocalElsif := compileScript(t, classes+`
+def run()
+  condition = nil
+  elsif_condition = Strict
+  chosen = if condition
+    Strict
+  elsif elsif_condition
+    [[1].each { condition = Strict }, Loose][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedLocalElsif)
+
+	autoInvokedElsif := compileScript(t, classes+`
+def run()
+  condition = nil
+  elsif_condition = -> {
+    elsif_condition = Strict
+    nil
+  }
+  chosen = if condition
+    Loose
+  elsif elsif_condition
+    [[1].each { elsif_condition = nil }, Strict][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	warnings := autoInvokedElsif.CheckWarningsForFunction("run")
+	messages := make([]string, len(warnings))
+	for i, warning := range warnings {
+		messages[i] = warning.Message
+	}
+	joined := strings.Join(messages, "\n")
+	if len(warnings) != 2 ||
+		!strings.Contains(joined, "call to Strict#check argument value expected int, got string") ||
+		!strings.Contains(joined, "call to OtherStrict#check argument value expected bool, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want both conservative callable-elsif outcomes", "run", warnings)
+	}
+}
+
+func TestDirectLocalConditionTruthinessRejectsCallableType(t *testing.T) {
+	t.Parallel()
+
+	condition := &Identifier{Name: "condition"}
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"condition": checkTypeFunction}},
+		localClassValues: []checkClassValueFrame{{}},
+	}
+	if truthy, decided := checker.directLocalConditionTruthiness(condition); decided {
+		t.Fatalf("directLocalConditionTruthiness() = (%t, %t), want undecided for an auto-invoked callable", truthy, decided)
+	}
+}
+
+func TestStableEvaluatedClassNamesRejectsPostStateLocal(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{localTypes: []checkTypeFrame{{"result": nil}}}
+	expr := &IndexExpr{
+		Object: &ArrayLiteral{Elements: []Expression{
+			&Identifier{Name: "result"},
+			&Identifier{Name: "may_mutate"},
+		}},
+		Indices: []Expression{&IntegerLiteral{Value: 0}},
+	}
+	if classNames, exact := checker.stableEvaluatedClassNames(expr, false); exact {
+		t.Fatalf("stableEvaluatedClassNames() = (%v, %t), want inexact for a post-state local", classNames, exact)
+	}
+}
+
+func TestCheckInferIfExpressionClassIdentityClearsStaleReevaluation(t *testing.T) {
+	t.Parallel()
+
+	expr := &IfExpr{Condition: &Identifier{Name: "condition"}}
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"condition": nil}},
+		localClassValues: []checkClassValueFrame{{}},
+		evaluatedIfClassFacts: map[*IfExpr][]string{
+			expr: {"Stale"},
+		},
+	}
+
+	selected := checker.beginIfClassBranchCapture(expr)
+	checker.finishIfClassBranchCapture(expr, nil, selected, true)
+	if _, stale := checker.evaluatedIfClassFacts[expr]; stale {
+		t.Fatal("unknown re-evaluation retained a stale if-expression class fact")
+	}
+}
+
+func TestCheckInferIfExpressionClassIdentityClearsNestedReevaluation(t *testing.T) {
+	t.Parallel()
+
+	expr := &IfExpr{
+		Condition:  &Identifier{Name: "condition"},
+		Consequent: &Identifier{Name: "condition"},
+	}
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"condition": nil}},
+		localClassValues: []checkClassValueFrame{{}},
+	}
+	outerSelected := checker.beginIfClassBranchCapture(expr)
+	checker.localTypes[0]["condition"] = checkTypeString
+	checker.localClassValues[0]["condition"] = checkLocalValueFact{classNames: []string{"Strict"}}
+	innerSelected := checker.beginIfClassBranchCapture(expr)
+	checker.finishIfClassBranchCapture(expr, expr.Consequent, innerSelected, true)
+	checker.finishIfClassBranchCapture(expr, nil, outerSelected, true)
+	if _, stale := checker.evaluatedIfClassFacts[expr]; stale {
+		t.Fatal("outer unknown evaluation retained a nested class fact")
+	}
 }
 
 func TestCheckInferConditionArmsPruneByInferredTruthiness(t *testing.T) {
@@ -1221,6 +1541,148 @@ end
 	requireCheckWarningContains(t, invalid, "call to accept argument payload expected { age?: int, name: string }, got { age: string, name: string }")
 }
 
+func TestCheckInferOpenShapeFacts(t *testing.T) {
+	t.Parallel()
+
+	// Undeclared reads on an open-shape fact stay unknown (gradual), while
+	// declared fields keep exact facts.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string, ... })
+  takes_int(body["role"])
+end
+`))
+
+	declared := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string, ... })
+  takes_int(body["name"])
+end
+`)
+	requireCheckWarningContains(t, declared, "call to takes_int argument value expected int, got string")
+
+	// The same undeclared read on a closed shape is known to miss.
+	closed := compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  body = JSON.parse_as(raw, { name: string })
+  takes_int(body["role"])
+end
+`)
+	requireCheckWarningContains(t, closed, "call to takes_int argument value expected int, got nil")
+}
+
+func TestCheckInferOpenShapeCompatibility(t *testing.T) {
+	t.Parallel()
+
+	// A literal with extra fields satisfies an open shape boundary, and an
+	// open-shape fact can satisfy a boundary declaring fields it omits.
+	requireNoCheckWarnings(t, compileScript(t, `
+def accept(payload: { name: string, ... })
+  payload
+end
+
+def wants_role(payload: { name: string, role: string })
+  payload
+end
+
+def run(raw: string)
+  v = "Ada"
+  accept({ name: v, role: "captain", level: 3 })
+  wants_role(JSON.parse_as(raw, { name: string, ... }))
+end
+`))
+
+	// Declared fields still contradict.
+	invalid := compileScript(t, `
+def accept(payload: { name: string, ... })
+  payload
+end
+
+def run()
+  v = 1
+  accept({ name: v, role: "captain" })
+end
+`)
+	requireCheckWarningContains(t, invalid, "call to accept argument payload expected { name: string, ... }")
+
+	// A required field missing from a literal contradicts even an open shape.
+	missing := compileScript(t, `
+def accept(payload: { name: string, ... })
+  payload
+end
+
+def run()
+  v = "captain"
+  accept({ role: v })
+end
+`)
+	requireCheckWarningContains(t, missing, "call to accept argument payload expected { name: string, ... }")
+}
+
+func TestCheckInferOpenShapeKeepsMemberDispatchUnknown(t *testing.T) {
+	t.Parallel()
+
+	// An open shape may carry an undeclared callable export, so universal
+	// helpers like nil? stay unknown instead of inferring bool.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(value: { name: string, ... })
+  takes_string(value.nil?)
+end
+`))
+}
+
+func TestCheckInferShadowedTypeLiteralEscapePoisonsFacts(t *testing.T) {
+	t.Parallel()
+
+	// A container local named like a type escapes through its shadowed value
+	// reading, so the call degrades its facts exactly like a plain-named
+	// local's: no stale-witness warning after the callee may have mutated it.
+	requireNoCheckWarnings(t, compileScript(t, `
+def sneaky(values)
+  values << "text"
+end
+
+def strings(values: array<string>)
+  values
+end
+
+def run()
+  array = [1]
+  sneaky(array)
+  strings(array)
+end
+`))
+
+	// Without an escape the witnessed facts keep contradicting the boundary.
+	direct := compileScript(t, `
+def strings(values: array<string>)
+  values
+end
+
+def run()
+  array = [1]
+  strings(array)
+end
+`)
+	requireCheckWarningContains(t, direct, "call to strings argument values expected array<string>, got array<int>")
+}
+
 func TestCheckInferShovelAppendsWitnessElements(t *testing.T) {
 	t.Parallel()
 
@@ -1286,8 +1748,9 @@ def run(flag)
 end
 `))
 
-	// An unconditional append still contradicts the boundary.
-	script := compileScript(t, `
+	// An unconditional append runs, but the unknown call may replace or
+	// remove its witnessed elements before the later boundary.
+	requireNoCheckWarnings(t, compileScript(t, `
 def ints(values: array<int>)
   values
 end
@@ -1297,8 +1760,7 @@ def run(obj)
   obj.record(values << "bad")
   ints(values)
 end
-`)
-	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<int | string>")
+`))
 }
 
 func TestCheckInferShovelArgumentCarriesMutatedFact(t *testing.T) {
@@ -1673,6 +2135,73 @@ def run(dynamic)
   accept(limit: dynamic)
 end
 `))
+
+	unionRest := compileScript(t, `
+def collect(*items: array<int> | nil)
+  items
+end
+
+def run()
+  value = "bad"
+  collect(value)
+end
+`)
+	requireCheckWarningContains(t, unionRest, "call to collect argument items expected array<int> | nil, got incompatible rest arguments")
+
+	unionKeywordRest := compileScript(t, `
+def accept(**opts: hash<string, int> | nil)
+  opts
+end
+
+def run()
+  value = "bad"
+  accept(limit: value)
+end
+`)
+	requireCheckWarningContains(t, unionKeywordRest, "call to accept argument opts expected hash<string, int> | nil, got incompatible keyword rest arguments")
+
+	requireNoCheckWarnings(t, compileScript(t, `
+def dynamic_string()
+  "bad"
+end
+
+def accept(**opts: hash<string, int>)
+  opts
+end
+
+def run()
+  accept(value: dynamic_string(), value: 1)
+end
+`))
+}
+
+func TestCheckReachableParamFactsPreferPositionalArgumentOverSameNameKeyword(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def consume_int(value: int)
+  value
+end
+
+def target(value, **rest)
+  consume_int(value)
+end
+
+def run()
+  target(1, value: "bad")
+  target("bad", value: 1)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	count := 0
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to consume_int argument value expected int, got string") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("CheckWarningsForFunction(%q) reported positional boundary warning %d times, want 1: %#v", "run", count, warnings)
+	}
 }
 
 func TestCheckInferEarlierArgumentsKeepPreMutationFacts(t *testing.T) {
@@ -1921,6 +2450,25 @@ def run(v)
   takes_int(v)
 end
 `))
+
+	// A callable is truthy even when it has no ordinary TypeExpr, so ||=
+	// preserves its exact target rather than widening to the unreachable RHS.
+	callable := compileScript(t, `
+def first(value: int)
+  value
+end
+
+def second(value: string)
+  value
+end
+
+def run
+  callback = first
+  callback ||= second
+  callback.call("bad")
+end
+`)
+	requireCheckWarningContains(t, callable, "call to first.call argument value expected int, got string")
 }
 
 func TestCheckInferHostKeywordsSeedKeywordRestParams(t *testing.T) {

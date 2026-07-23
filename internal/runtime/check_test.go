@@ -815,6 +815,110 @@ end`,
 	}
 }
 
+func TestCheckWarningsForFunctionTracksCollapsedOptionsHashFacts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "binds synthesized hash",
+			source: `def takes_string(value: string)
+  value
+end
+
+def target(opts = "default")
+  takes_string(opts)
+end
+
+def run()
+  target(name: 1)
+end`,
+			want: "call to takes_string argument value expected string, got { name: int }",
+		},
+		{
+			name: "consumes later keyword names",
+			source: `def takes_string(value: string)
+  value
+end
+
+def target(opts = "unused", later = "safe")
+  takes_string(later)
+end
+
+def run()
+  target(name: 1, later: 2)
+end`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			warnings := script.CheckWarningsForFunction("run")
+			messages := make([]string, 0, len(warnings))
+			for _, warning := range warnings {
+				messages = append(messages, warning.Message)
+			}
+			got := strings.Join(messages, "\n")
+			if tc.want == "" {
+				if got != "" {
+					t.Fatalf("CheckWarningsForFunction(%q) = %q, want none", "run", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckWarningsForFunctionChecksBareMemberBeforeItsNamespaceEffects(t *testing.T) {
+	t.Parallel()
+
+	const source = `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class Installer
+  def self.fire
+    takes_int(JSON.stringify({}))
+    JSON.stringify = replacement
+  end
+end
+
+def run
+  $CALL
+end
+	`
+
+	for _, call := range []string{"Installer.fire", "Installer.fire()"} {
+		t.Run(call, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, strings.Replace(source, "$CALL", call, 1))
+			warnings := script.CheckWarningsForFunction("run")
+			messages := make([]string, 0, len(warnings))
+			for _, warning := range warnings {
+				messages = append(messages, warning.Message)
+			}
+			got := strings.Join(messages, "\n")
+			want := "call to takes_int argument value expected int, got string"
+			if !strings.Contains(got, want) {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)
+			}
+		})
+	}
+}
+
 func TestCheckWarningsForFunctionRechecksReachableFunctionsPerRuntimeState(t *testing.T) {
 	t.Parallel()
 
@@ -844,6 +948,1646 @@ end
 		t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, "unknown type Status")
 	}
 	requireCallErrorContains(t, script, "run", []Value{NewBool(false)}, CallOptions{}, "unknown type Status")
+}
+
+func TestCheckWarningsForFunctionRechecksReachableFunctionsPerNamespaceState(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def replacement(value)
+  value
+end
+
+def parse()
+  JSON.parse()
+end
+
+def run(flag: bool)
+  if flag
+    JSON.parse = replacement
+    parse()
+  else
+    parse()
+  end
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	messages := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		messages = append(messages, warning.Message)
+	}
+	got := strings.Join(messages, "\n")
+	want := "call to JSON.parse has too few arguments"
+	if !strings.Contains(got, want) {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)
+	}
+}
+
+func TestReachableFunctionCheckKeyIncludesNamespaceMutations(t *testing.T) {
+	t.Parallel()
+
+	checker := scriptChecker{}
+	fn := &ScriptFunction{}
+	before := checker.reachableFunctionCheckKey(fn, nil)
+	checker.runtimeNamespaceMembers = map[string]struct{}{"JSON.stringify": {}}
+	after := checker.reachableFunctionCheckKey(fn, nil)
+	if before == after {
+		t.Fatalf("reachable function key stayed %q after namespace mutation", before)
+	}
+}
+
+func TestScriptFunctionNamespaceMutationsResolveSelfClassAssignments(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+		want   []string
+	}{
+		{
+			name: "instance method",
+			source: `class Holder
+  def stash(value)
+    self.class.User = value
+  end
+end
+`,
+			want: []string{"Holder.User"},
+		},
+		{
+			name: "included method uses receiver class",
+			source: `module Mutator
+  def self.User=(value)
+    value
+  end
+
+  def stash(value)
+    self.class.User = value
+  end
+end
+
+class Holder
+  include Mutator
+end
+`,
+			want: []string{"Holder.User"},
+		},
+		{
+			name: "class setter effects",
+			source: `def replacement(value)
+  value
+end
+
+class Holder
+  def self.User=(value)
+    JSON.stringify = replacement
+  end
+
+  def stash(value)
+    self.class.User = value
+  end
+end
+`,
+			want: []string{"JSON.stringify"},
+		},
+		{
+			name: "getter-only member",
+			source: `class Holder
+  def self.User()
+    1
+  end
+
+  def stash(value)
+    self.class.User = value
+  end
+end
+`,
+		},
+		{
+			name: "destructured assignment",
+			source: `class Holder
+  def stash(value)
+    self.class.User, ignored = [value, nil]
+  end
+end
+`,
+			want: []string{"Holder.User"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			fn := script.classes["Holder"].Methods["stash"]
+			checker := &scriptChecker{script: script}
+			got := checker.scriptFunctionNamespaceMutations(nil, staticCallable{
+				name: "Holder#stash",
+				fn:   fn,
+			})
+			if len(got) != len(tc.want) {
+				t.Fatalf("scriptFunctionNamespaceMutations() = %v, want %v", got, tc.want)
+			}
+			for _, member := range tc.want {
+				if _, ok := got[member]; !ok {
+					t.Fatalf("scriptFunctionNamespaceMutations() = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckWarningsForFunctionClearsPinnedFactsBetweenReachableChecks(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def use()
+  takes_int(JSON.stringify({}))
+end
+
+def run(flag)
+  if flag
+    use()
+  else
+    require("enum_status")
+    JSON.stringify = replacement
+    use()
+  end
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	count := 0
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("CheckWarningsForFunction(%q) reported boundary warning %d times, want 1: %#v", "run", count, warnings)
+	}
+}
+
+func TestCheckWarningsForFunctionAppliesExactDynamicCallNamespaceMutations(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		definitions string
+		invoke      string
+		wantCount   int
+	}{
+		{
+			name: "constructor",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer][0].new()",
+		},
+		{
+			name: "instance method",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer.new][0].install()",
+		},
+		{
+			name: "self class setter",
+			definitions: `module Mutator
+  def stash(value)
+    self.class.User = value
+  end
+end
+
+class Holder
+  include Mutator
+
+  def self.User=(value)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Holder.new][0].stash(1)",
+		},
+		{
+			name: "class method",
+			definitions: `class Installer
+  def self.install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer][0].install()",
+		},
+		{
+			name: "ordinary call method",
+			definitions: `class Installer
+  def call()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer.new][0].call()",
+		},
+		{
+			name: "forwarded constructor",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer][0].public_send(:new)",
+		},
+		{
+			name: "forwarded constructor instance method",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer][0].public_send(:new).install()",
+		},
+		{
+			name: "send constructor instance method",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer][0].send(:new).install()",
+		},
+		{
+			name: "mixed class and plain module constructor",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+module Factory
+end`,
+			invoke: "begin; (flag ? Installer : Factory).new.install(); rescue; nil; end",
+		},
+		{
+			name: "module constructor override stays gradual",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Other
+  def install()
+    nil
+  end
+end
+
+module Factory
+  def self.new()
+    Other.new
+  end
+end`,
+			invoke:    "(flag ? Installer : Factory).new.install()",
+			wantCount: 2,
+		},
+		{
+			name: "direct plain module constructor skips positional argument effects",
+			definitions: `module Factory
+end
+
+def install()
+  JSON.stringify = replacement
+  []
+end`,
+			invoke:    "begin; Factory.new(*install()); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "forwarded plain module constructor evaluates positional argument effects",
+			definitions: `module Factory
+end
+
+def install()
+  JSON.stringify = replacement
+  []
+end`,
+			invoke: "begin; Factory.send(:new, *install()); rescue; nil; end",
+		},
+		{
+			name: "direct plain module constructor skips keyword argument effects",
+			definitions: `module Factory
+end
+
+def install()
+  JSON.stringify = replacement
+  {}
+end`,
+			invoke:    "begin; Factory.new(**install()); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "forwarded plain module constructor evaluates keyword argument effects",
+			definitions: `module Factory
+end
+
+def install()
+  JSON.stringify = replacement
+  {}
+end`,
+			invoke: "begin; Factory.public_send(:new, **install()); rescue; nil; end",
+		},
+		{
+			name: "invalid direct constructor positional splat blocks initializer effects",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; Installer.new(*1); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "invalid direct constructor keyword splat blocks initializer effects",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; Installer.new(**1); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "nonempty bad-key keyword splat blocks initializer effects",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `bad = {}
+bad[2] = "x"
+begin; Installer.new(**bad); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "bad-key or scalar keyword splat always blocks initializer effects",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `bad = {}
+bad[2] = "x"
+value = flag ? bad : 1
+begin; Installer.new(**value); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "bad-key or empty hash keyword splat may reach initializer",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `bad = {}
+bad[2] = "x"
+value = flag ? bad : {}
+begin; Installer.new(**value); rescue; nil; end`,
+		},
+		{
+			name: "nested bad-key hash does not poison outer keyword splat",
+			definitions: `class Installer
+  def initialize(nested:)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `outer = {nested: {}}
+outer[:nested][2] = "x"
+Installer.new(**outer)`,
+		},
+		{
+			name: "deleting bad key restores keyword splat reachability",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `bad = {}
+bad[2] = "x"
+bad.delete(2)
+Installer.new(**bad)`,
+		},
+		{
+			name: "alias deletion clears bad-key keyword splat witness",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `bad = {}
+bad[2] = "x"
+copy = bad
+copy.delete(2)
+Installer.new(**bad)`,
+		},
+		{
+			name: "empty bad-key typed hash can reach initializer",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end
+
+def empty() -> hash<int, int>
+  values = {}
+  values[2] = 1
+  values.delete(2)
+  values
+end`,
+			invoke: "Installer.new(**empty())",
+		},
+		{
+			name: "invalid forwarded constructor positional splat blocks initializer effects",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; Installer.send(:new, *1); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "invalid forwarded constructor keyword splat blocks initializer effects",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; Installer.public_send(:new, **1); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "builtin argument type failure skips later outer arguments",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke:    `begin; consume(Duration.build(weeks: "bad"), install()); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "builtin shape failure skips later outer arguments",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke:    `begin; consume(Duration.parse(), install()); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "raising script call skips later outer arguments",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def abort()
+  raise "boom"
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke:    `begin; consume(abort(), install()); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "raising bare zero arity function skips later statements",
+			definitions: `def abort()
+  raise "boom"
+end`,
+			invoke:    `begin; abort; rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "parameterized bare function remains a value",
+			definitions: `def callback(required)
+  JSON.stringify = replacement
+end`,
+			invoke:    `callback`,
+			wantCount: 2,
+		},
+		{
+			name: "exact zero arity callback parameter auto invokes",
+			definitions: `def callback()
+  JSON.stringify = replacement
+end
+
+def invoke(callback: function)
+  callback
+end`,
+			invoke: `invoke(callback)`,
+		},
+		{
+			name: "required implicit self bare method rejects before body",
+			definitions: `class Runner
+  def callback(required)
+    JSON.stringify = replacement
+  end
+
+  def run()
+    callback
+  end
+end`,
+			invoke:    `begin; Runner.new.run(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "optional implicit self bare method enters body",
+			definitions: `class Runner
+  def callback(value = 1)
+    JSON.stringify = replacement
+  end
+
+  def run()
+    callback
+  end
+end`,
+			invoke: `Runner.new.run()`,
+		},
+		{
+			name: "required function call member rejects before body",
+			definitions: `def callback(required)
+  JSON.stringify = replacement
+end`,
+			invoke:    `begin; callback.call; rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "namespace assignment after raise stays unreachable",
+			definitions: `def abort()
+  raise "boom"
+  JSON.stringify = replacement
+end`,
+			invoke:    `begin; abort(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "namespace assignment after raising call stays unreachable",
+			definitions: `def boom()
+  raise "boom"
+end
+
+def abort()
+  boom()
+  JSON.stringify = replacement
+end`,
+			invoke:    `begin; abort(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "namespace assignment before raise remains visible",
+			definitions: `def abort()
+  JSON.stringify = replacement
+  raise "boom"
+end`,
+			invoke: `begin; abort(); rescue; nil; end`,
+		},
+		{
+			name: "namespace assignment after return stays unreachable",
+			definitions: `def target()
+  return 1
+  JSON.stringify = replacement
+end`,
+			invoke:    `target()`,
+			wantCount: 2,
+		},
+		{
+			name: "bad annotated return skips later outer arguments",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def bad() -> int
+  "bad"
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke:    `begin; consume(bad(), install()); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "compatible annotated return arm keeps later arguments reachable",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def maybe(flag: bool) -> int
+  flag ? "bad" : 1
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke: `begin; consume(maybe(flag), install()); rescue; nil; end`,
+		},
+		{
+			name: "raising default skips later outer arguments",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def abort()
+  raise "boom"
+end
+
+def target(value = abort())
+  1
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke:    `begin; consume(target(), install()); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "raising default skips later default and body effects",
+			definitions: `def abort()
+  raise "boom"
+end
+
+def mutate()
+  JSON.stringify = replacement
+  1
+end
+
+def target(first = abort(), second = mutate())
+  JSON.stringify = replacement
+end`,
+			invoke:    `begin; target(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "effectful default prefix survives later raising default",
+			definitions: `def before()
+  JSON.stringify = replacement
+  1
+end
+
+def abort()
+  raise "boom"
+end
+
+def target(first = before(), second = abort())
+end`,
+			invoke: `begin; target(); rescue; nil; end`,
+		},
+		{
+			name: "constructor ignores initializer return annotation",
+			definitions: `class Installer
+  def initialize() -> int
+    JSON.stringify = replacement
+    "ignored"
+  end
+end`,
+			invoke: `Installer.new()`,
+		},
+		{
+			name: "parse as raw failure skips later outer arguments",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke:    `begin; consume(JSON.parse_as(1, {name: string}), install()); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "parse as shape failure skips later outer arguments",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke:    `begin; consume(JSON.parse_as("{}", 1), install()); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name:      "parse as rejection does not invoke lambda argument",
+			invoke:    `begin; JSON.parse_as("{}", -> { JSON.stringify = replacement }); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "class predicate argument failure skips later outer arguments",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke:    `begin; consume(1.is_a?(2), install()); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "is type atom failure skips later outer arguments",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke:    `begin; consume(1.is_type?("array<int>"), install()); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "assigned is type atom failure skips later outer arguments",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke:    `atom = "array<int>"; begin; consume(1.is_type?(atom), install()); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "special builtin literal splat failure skips later outer arguments",
+			definitions: `def consume(first, second)
+  nil
+end
+
+def install()
+  JSON.stringify = replacement
+  1
+end`,
+			invoke:    `begin; consume(1.is_a?(*[2]), install()); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "static splat preserves auto-invoked element type",
+			definitions: `def make()
+  1
+end
+
+def install(callback: function)
+  JSON.stringify = replacement
+end`,
+			invoke:    `begin; install(*[make]); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "exact class value cannot expand positionally",
+			definitions: `class Token
+end
+
+def install(*values)
+  JSON.stringify = replacement
+end`,
+			invoke:    `begin; klass = Token; install(*klass); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "exact class value cannot expand as keywords",
+			definitions: `class Token
+end
+
+def install(**values)
+  JSON.stringify = replacement
+end`,
+			invoke:    `begin; klass = Token; install(**klass); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "exact class value cannot convert to block",
+			definitions: `class Token
+end
+
+def install(&block)
+  JSON.stringify = replacement
+end`,
+			invoke:    `begin; klass = Token; install(&klass); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "yielding default runs literal block before later binding failure",
+			definitions: `def install(first = yield, later: int:)
+end`,
+			invoke: `begin
+  install(later: "bad") { JSON.stringify = replacement }
+rescue
+  nil
+end`,
+		},
+		{
+			name: "yielding default runs script block argument before later binding failure",
+			definitions: `def callback()
+  JSON.stringify = replacement
+end
+
+def install(first = yield, later: int:)
+end`,
+			invoke: `begin
+  install(later: "bad", &callback)
+rescue
+  nil
+end`,
+		},
+		{
+			name: "yielding default runs lambda block argument before later binding failure",
+			definitions: `def install(first = yield, later: int:)
+end`,
+			invoke: `begin
+  install(later: "bad", &-> { JSON.stringify = replacement })
+rescue
+  nil
+end`,
+		},
+		{
+			name: "default invokes named callback before later binding failure",
+			definitions: `def callback()
+  JSON.stringify = replacement
+end
+
+def install(callback: function, trigger = callback.call, later: int:)
+end`,
+			invoke: `begin
+  install(callback, later: "bad")
+rescue
+  nil
+end`,
+		},
+		{
+			name: "default invokes lambda callback before later binding failure",
+			definitions: `def install(callback: function, trigger = callback.call, later: int:)
+end`,
+			invoke: `begin
+  install(-> { JSON.stringify = replacement }, later: "bad")
+rescue
+  nil
+end`,
+		},
+		{
+			name: "unused lambda callback stays inert before later binding failure",
+			definitions: `def install(callback: function, trigger = 1, later: int:)
+end`,
+			invoke: `begin
+  install(-> { JSON.stringify = replacement }, later: "bad")
+rescue
+  nil
+end`,
+			wantCount: 2,
+		},
+		{
+			name: "successful body invokes exact callback parameter",
+			definitions: `def callback()
+  JSON.stringify = replacement
+end
+
+def install(callback: function)
+  callback.call()
+end`,
+			invoke: `install(callback)`,
+		},
+		{
+			name: "dynamic callable default yields before later binding failure",
+			definitions: `def first(value = yield, later: int:)
+end
+
+def second(value = yield, later: int:)
+end`,
+			invoke: `callback = flag ? first : second
+begin
+  callback.call(later: "bad") { JSON.stringify = replacement }
+rescue
+  nil
+end`,
+		},
+		{
+			name: "failed early default skips later default and body effects",
+			definitions: `def bad()
+  "bad"
+end
+
+def mutate()
+  JSON.stringify = replacement
+  1
+end
+
+def install(first: int = bad(), second = mutate())
+  JSON.stringify = replacement
+end`,
+			invoke:    `begin; install(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "failed safe navigation arm does not leak argument effects",
+			definitions: `class Installer
+  def install(value: int)
+  end
+end
+
+def mutate()
+  JSON.stringify = replacement
+  "bad"
+end`,
+			invoke: `target = flag ? nil : Installer.new
+target&.install(mutate())`,
+			wantCount: 2,
+		},
+		{
+			name: "empty forwarded name splat blocks initializer effects",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; Installer.send(*[]); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "invalid forwarded name splat blocks initializer effects",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; Installer.send(*[123]); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "non-array forwarded name splat blocks initializer effects",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; Installer.send(*1); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "static forwarded name splat reaches initializer",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "Installer.send(*[:new])",
+		},
+		{
+			name: "static forwarded name splat preserves constructor receiver",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "Installer.send(*[:new]).install()",
+		},
+		{
+			name: "assigned forwarded constructor name reaches initializer",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "name = :new; Installer.send(name)",
+		},
+		{
+			name: "assigned constructor name excludes unrelated class method effects",
+			definitions: `class Installer
+  def initialize()
+  end
+
+  def self.mutate()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "name = :new; Installer.send(name)",
+			wantCount: 2,
+		},
+		{
+			name: "assigned forwarded constructor name splat reaches initializer",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "names = [:new]; Installer.public_send(*names)",
+		},
+		{
+			name: "assigned forwarded constructor name splat preserves receiver",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "names = [:new]; Installer.send(*names).install()",
+		},
+		{
+			name: "branch-assigned forwarded names preserve exact alternatives",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `if flag
+  names = [:new]
+else
+  names = [:missing]
+end
+begin; Installer.send(*names); rescue; nil; end`,
+		},
+		{
+			name: "nested forwarded name alternatives stay correlated",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "names = flag ? [:send, :new] : [:new]; Installer.send(*names)",
+		},
+		{
+			name: "assigned empty forwarded name splat uses following name",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "names = []; Installer.send(*names, :new)",
+		},
+		{
+			name: "shovel-updated forwarded name splat reaches initializer",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "names = []; names << :new; Installer.send(*names)",
+		},
+		{
+			name: "aliased forwarded name mutation invalidates exact values",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `names = [:new]
+alias_names = names
+alias_names[0] = :missing
+begin; Installer.send(*names); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "forwarded name splat snapshots before later argument mutation",
+			definitions: `class Installer
+  def initialize(ignored)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "names = [:new]; Installer.send(*names, names.clear())",
+		},
+		{
+			name: "assigned empty forwarded name splat blocks dispatch",
+			definitions: `class Installer
+  def initialize()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; names = []; Installer.send(*names); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "assigned invalid forwarded name blocks unrelated effects",
+			definitions: `class Installer
+  def self.mutate()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; name = 123; Installer.send(name); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "assigned invalid forwarded name splat blocks unrelated effects",
+			definitions: `class Installer
+  def self.mutate()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; names = [123]; Installer.public_send(*names); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "dynamic forwarded name splat does not apply unrelated effects",
+			definitions: `class Installer
+  def self.mutate()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; Installer.send(*(flag ? [:missing] : [:other])); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "dynamic name splat still reaches explicit forwarding override",
+			definitions: `class Installer
+  def self.send(name)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "Installer.send(*(flag ? [:first] : [:second]))",
+		},
+		{
+			name: "static module constructor target effects remain exact",
+			definitions: `module Factory
+  def self.new()
+    JSON.stringify = replacement
+    nil
+  end
+end`,
+			invoke: "[Factory][0].send(:new)",
+		},
+		{
+			name: "aliased module constructor mutation keeps partial targets gradual",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Other
+  def install()
+    nil
+  end
+end
+
+module Factory
+end
+
+def mutate(target)
+  target.new = -> { Other.new }
+end`,
+			invoke:    "mutate(Factory); (flag ? Installer : Factory).new.install()",
+			wantCount: 2,
+		},
+		{
+			name: "forwarded instance method",
+			definitions: `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer.new][0].public_send(:install)",
+		},
+		{
+			name: "forwarding override",
+			definitions: `class Installer
+  def public_send(name)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "[Installer.new][0].public_send(:ignored)",
+		},
+		{
+			name: "forwarding override accepts non-name argument",
+			definitions: `class FirstInstaller
+  def public_send(name)
+    JSON.stringify = replacement
+  end
+end
+
+class SecondInstaller
+  def public_send(name)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "(flag ? FirstInstaller.new : SecondInstaller.new).public_send(123)",
+		},
+		{
+			name: "private send override blocks dispatch",
+			definitions: `class FirstInstaller
+  private def send(name)
+    JSON.stringify = replacement
+  end
+end
+
+class SecondInstaller
+  private def send(name)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; (flag ? FirstInstaller.new : SecondInstaller.new).send(:ignored); rescue; nil; end",
+			wantCount: 2,
+		},
+		{
+			name: "protected public send override blocks dispatch",
+			definitions: `class FirstInstaller
+  protected def public_send(name)
+    JSON.stringify = replacement
+  end
+end
+
+class SecondInstaller
+  protected def public_send(name)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    "begin; (flag ? FirstInstaller.new : SecondInstaller.new).public_send(:ignored); rescue; nil; end",
+			wantCount: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+def replacement(value)
+  1
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+`+tc.definitions+`
+
+def run(flag: bool)
+  `+tc.invoke+`
+  takes_int(serialize())
+end
+`)
+			warnings := script.CheckWarningsForFunction("run")
+			count := 0
+			for _, warning := range warnings {
+				if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+					count++
+				}
+			}
+			wantCount := 0
+			if tc.wantCount != 0 {
+				wantCount = 1
+			}
+			if count != wantCount {
+				t.Fatalf("CheckWarningsForFunction(%q) reported boundary warning %d times, want %d: %#v", "run", count, wantCount, warnings)
+			}
+		})
+	}
+}
+
+func TestCheckStaticSplatPreservesAutoInvokedResultIdentity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("callable", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, `
+def returned(value: int)
+  value
+end
+
+def make()
+  returned
+end
+
+def invoke(callback: function)
+  callback.call("bad")
+end
+
+def run()
+  invoke(*[make])
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if got := strings.Join(checkWarningMessages(warnings), "\n"); !strings.Contains(got, "call to returned.call argument value expected int, got string") {
+			t.Fatalf("CheckWarningsForFunction(%q) = %q, want returned callback mismatch", "run", got)
+		}
+	})
+
+	t.Run("class", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, `
+class User
+  def self.pick(value: int)
+    value
+  end
+end
+
+def make()
+  User
+end
+
+def invoke(klass)
+  klass.pick("bad")
+end
+
+def run()
+  invoke(*[make])
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if got := strings.Join(checkWarningMessages(warnings), "\n"); !strings.Contains(got, "call to User.pick argument value expected int, got string") {
+			t.Fatalf("CheckWarningsForFunction(%q) = %q, want returned class mismatch", "run", got)
+		}
+	})
+}
+
+func TestCheckDirectPlainModuleConstructorSkipsArguments(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		invoke    string
+		wantCount int
+	}{
+		{
+			name:   "direct",
+			invoke: "Factory.new(*[takes_int(\"bad\")])",
+		},
+		{
+			name:      "send",
+			invoke:    "Factory.send(:new, *[takes_int(\"bad\")])",
+			wantCount: 1,
+		},
+		{
+			name:      "public send",
+			invoke:    "Factory.public_send(:new, *[takes_int(\"bad\")])",
+			wantCount: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+module Factory
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  begin
+    `+tc.invoke+`
+  rescue
+    nil
+  end
+end
+`)
+			warnings := script.CheckWarningsForFunction("run")
+			count := 0
+			for _, warning := range warnings {
+				if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+					count++
+				}
+			}
+			if count != tc.wantCount {
+				t.Fatalf("CheckWarningsForFunction(%q) reported argument warning %d times, want %d: %#v", "run", count, tc.wantCount, warnings)
+			}
+		})
+	}
+}
+
+func TestClassConstantEffectProofUsesCalleeSelf(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def replacement(value)
+  1
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def mutate(target)
+  target.new = -> { Other.new }
+end
+
+class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Other
+  def install()
+    nil
+  end
+end
+
+module Factory
+end
+
+class C
+  def helper()
+    mutate(Factory)
+  end
+
+  def wrapper()
+    helper()
+  end
+end
+
+class D
+  def helper()
+    1
+  end
+
+  def run(flag: bool)
+    C.new.wrapper()
+    (flag ? Installer : Factory).new.install()
+    takes_int(serialize())
+  end
+end
+
+def run(flag: bool)
+  D.new.run(flag)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	count := 0
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("CheckWarningsForFunction(%q) reported boundary warning %d times, want 1: %#v", "run", count, warnings)
+	}
+}
+
+func TestCheckWarningsForFunctionAppliesExactCallableNamespaceMutations(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def replacement(value)
+  1
+end
+
+def install()
+  JSON.stringify = replacement
+end
+
+def serialize()
+  JSON.stringify({})
+end
+
+def takes_int(value: int)
+  value
+end
+
+def invoke(callback: function)
+  takes_int(serialize())
+  callback.call()
+  takes_int(serialize())
+end
+
+def run()
+  invoke(install)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	count := 0
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("CheckWarningsForFunction(%q) reported boundary warning %d times, want 1: %#v", "run", count, warnings)
+	}
+}
+
+func TestCheckWarningsForFunctionUnionsExactDynamicCallNamespaceMutations(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def replacement(value)
+  1
+end
+
+class JSONInstaller
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class MathInstaller
+  def install()
+    Math.sqrt = replacement
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  (flag ? JSONInstaller.new : MathInstaller.new).install()
+  takes_int(JSON.stringify({}))
+  takes_int(Math.sqrt(4))
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	wants := []string{
+		"call to takes_int argument value expected int, got string",
+		"call to takes_int argument value expected int, got float",
+	}
+	for _, want := range wants {
+		count := 0
+		for _, warning := range warnings {
+			if strings.Contains(warning.Message, want) {
+				count++
+			}
+		}
+		if count != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) reported %q %d times, want 0: %#v", "run", want, count, warnings)
+		}
+	}
+}
+
+func TestCheckWarningsForFunctionAllowsProtectedDynamicOverrideFromSameClass(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+class FirstInstaller
+  protected def public_send(name)
+    JSON.stringify = replacement
+  end
+
+  def exercise(first: FirstInstaller, other: SecondInstaller, flag: bool)
+    takes_int(JSON.stringify({}))
+    (flag ? first : other).public_send(:ignored)
+    takes_int(JSON.stringify({}))
+  end
+end
+
+class SecondInstaller
+  protected def public_send(name)
+    nil
+  end
+end
+
+def run(flag: bool)
+  FirstInstaller.new.exercise(FirstInstaller.new, SecondInstaller.new, flag)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	count := 0
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("CheckWarningsForFunction(%q) reported boundary warning %d times, want 1: %#v", "run", count, warnings)
+	}
 }
 
 func TestCheckWarningsForCallValidatesArguments(t *testing.T) {
@@ -1671,6 +3415,42 @@ shout(1)`, "main")
 	}
 }
 
+func TestCheckPlainAssignmentAppliesRequireEffectsInEvaluationOrder(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "right side before target",
+			source: `
+def run()
+  values = [0]
+  values[normalize(:bogus)] = require("enum_status")
+end
+`,
+		},
+		{
+			name: "destructured targets left to right",
+			source: `
+def run()
+  values = [0]
+  require("enum_status").foo, values[normalize(:bogus)] = [1, 2]
+end
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithEngine(t, engine, tc.source)
+			requireCheckWarningContains(t, script, "call to normalize argument status expected Status, got symbol")
+		})
+	}
+}
+
 func TestCheckCallBlockArgumentRequireEffectsApply(t *testing.T) {
 	t.Parallel()
 
@@ -1757,6 +3537,1015 @@ pair(require("helpers"), shout(1))`, "main")
 		t.Fatalf("compile: %v", err)
 	}
 	requireCheckWarningContains(t, after, "call to shout argument value expected string, got int")
+}
+
+func TestCheckCallArgumentRequireEffectsStopAfterNonCompletingArgument(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script, _, _, err := CompileSnippetWithProgram(engine, `def pair(first, second)
+  first
+end
+
+def abort
+  raise "boom"
+end
+
+pair(abort, require("enum_status")) rescue nil
+normalize(:bogus)`, "main")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	for _, warning := range script.CheckWarnings() {
+		if strings.Contains(warning.Message, "call to normalize argument status expected Status") {
+			t.Fatalf("CheckWarnings() = %#v, unreachable require exposed normalize contract", script.CheckWarnings())
+		}
+	}
+}
+
+func TestCheckCompletionFollowsExactDispatch(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		source      string
+		wantMissing bool
+		wantWarning string
+	}{
+		{
+			name: "safe call lookup failure keeps nil path",
+			source: `class Box
+  private
+
+  def secret()
+    1
+  end
+end
+
+def consume(first, second)
+end
+
+def run(value: Box | nil)
+  consume(value&.secret(), missing_name)
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "safe member lookup failure keeps nil path",
+			source: `class Box
+  private
+
+  def secret()
+    1
+  end
+end
+
+def consume(first, second)
+end
+
+def run(value: Box | nil)
+  consume(value&.secret, missing_name)
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "exact dynamic methods all raise",
+			source: `class Alpha
+  def boom()
+    raise "boom"
+  end
+end
+
+class Beta
+  def boom()
+    raise "boom"
+  end
+end
+
+def consume(first, second)
+end
+
+def run(value: Alpha | Beta)
+  consume(value.boom(), missing_name)
+end`,
+		},
+		{
+			name: "annotated return rejects supplied fact",
+			source: `def identity(value) -> int
+  value
+end
+
+def consume(first, second)
+end
+
+def run()
+  consume(identity("bad"), missing_name)
+end`,
+			wantWarning: "return value expected int, got string",
+		},
+		{
+			name: "invalid case splat stops every result arm",
+			source: `def run()
+  case 1
+  when *1
+    missing_name
+  else
+    missing_name
+  end
+end`,
+		},
+		{
+			name: "raising setter stops later statements",
+			source: `class Box
+  def value=(value)
+    raise "stop"
+  end
+end
+
+def run()
+  box = Box.new
+  box.value = 1
+			missing_name
+end`,
+		},
+		{
+			name: "raising compound setter stops later statements",
+			source: `class Box
+  def value()
+    1
+  end
+
+  def value=(value)
+    raise "stop"
+  end
+end
+
+def run()
+  box = Box.new
+  box.value += 1
+  missing_name
+end`,
+		},
+		{
+			name: "raising logical setter stops later statements",
+			source: `class Box
+  def value()
+    nil
+  end
+
+  def value=(value)
+    raise "stop"
+  end
+end
+
+def run()
+  box = Box.new
+  box.value ||= 1
+  missing_name
+end`,
+		},
+		{
+			name: "raising compound operator stops before assignment",
+			source: `class Box
+  def +(value)
+    raise "stop"
+  end
+end
+
+def run()
+  box = Box.new
+  box += 1
+  missing_name
+end`,
+		},
+		{
+			name: "raising index reader stops later statements",
+			source: `class Box
+  def [](index)
+    raise "stop"
+  end
+end
+
+def run()
+  Box.new[0]
+  missing_name
+end`,
+		},
+		{
+			name: "invalid unary operation stops later statements",
+			source: `def run()
+  -"bad"
+  missing_name
+end`,
+			wantWarning: "unsupported unary - operand string",
+		},
+		{
+			name: "blockless yield stops its caller",
+			source: `def consume()
+  yield
+end
+
+def run()
+  consume()
+  missing_name
+end`,
+		},
+		{
+			name: "retry stops the current rescue body",
+			source: `def run()
+  begin
+    raise "boom"
+  rescue
+    retry
+    missing_name
+  end
+end`,
+		},
+		{
+			name: "read only member rejects assignment",
+			source: `class Box
+  def value()
+    1
+  end
+end
+
+def run()
+  box = Box.new
+  box.value = 2
+  missing_name
+end`,
+		},
+		{
+			name: "private setter rejects assignment",
+			source: `class Box
+  private
+
+  def value=(value)
+    value
+  end
+end
+
+def run()
+  box = Box.new
+  box.value = 2
+  missing_name
+end`,
+		},
+		{
+			name: "destructure rest passes an array to setter",
+			source: `class Box
+  def value=(value: array<int>)
+    value
+  end
+end
+
+def run()
+  box = Box.new
+  first, *box.value, last = [1, 2, 3]
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "setter function expectation stores bare callable",
+			source: `def callback()
+  raise "stop"
+end
+
+class Box
+  property cb: function
+end
+
+def run()
+  box = Box.new
+  box.cb = callback
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "literal bool argument selects rejecting return arm",
+			source: `def choose(flag: bool) -> int
+  if flag then "bad" else 1 end
+end
+
+def run()
+  choose(true)
+  missing_name
+end`,
+			wantWarning: "return value expected int, got string",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			warnings := script.CheckWarningsForFunction("run")
+			gotMissing := false
+			gotWarning := tc.wantWarning == ""
+			for _, warning := range warnings {
+				gotMissing = gotMissing || strings.Contains(warning.Message, "missing_name")
+				gotWarning = gotWarning || strings.Contains(warning.Message, tc.wantWarning)
+			}
+			if gotMissing != tc.wantMissing {
+				t.Fatalf("CheckWarningsForFunction(%q) missing_name warning = %t, want %t: %#v", "run", gotMissing, tc.wantMissing, warnings)
+			}
+			if !gotWarning {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want warning containing %q", "run", warnings, tc.wantWarning)
+			}
+		})
+	}
+}
+
+func TestCheckNamespaceMutationEffectsRespectEvaluationOrder(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		setup  string
+		invoke string
+	}{
+		{
+			name: "later argument after raising helper",
+			setup: `def consume(first, second)
+end
+
+def abort()
+  raise "boom"
+end
+
+def mutate()
+  JSON.stringify = replacement
+end
+
+def wrapper()
+  consume(abort(), mutate())
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "assignment after raising right side",
+			setup: `def abort()
+  raise "boom"
+end
+
+def wrapper()
+  JSON.stringify = abort()
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "unused lambda argument",
+			setup: `def ignore(callback: function)
+  nil
+end
+
+def wrapper()
+  ignore(-> { JSON.stringify = replacement })
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "assigned empty positional splat",
+			setup: `def install(required)
+  JSON.stringify = replacement
+end
+
+def wrapper()
+  arguments = []
+  install(*arguments)
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "assigned empty keyword splat",
+			setup: `def install(required:)
+  JSON.stringify = replacement
+end
+
+def wrapper()
+  keywords = {}
+  install(**keywords)
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "class predicate failure skips later argument",
+			setup: `class Token
+end
+
+def consume(first, second)
+end
+
+def install()
+  JSON.stringify = replacement
+end
+
+def wrapper()
+  consume(Token.is_a?(2), install())
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "invalid splat in default stops later default",
+			setup: `def helper(required)
+end
+
+def install(first = helper(*1), second = begin
+  JSON.stringify = replacement
+end)
+end
+
+def wrapper()
+  install()
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "try else after raising body",
+			setup: `def abort()
+  raise "boom"
+end
+
+def wrapper()
+  begin
+    abort()
+  rescue
+    nil
+  else
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "required callback call rejects before body",
+			setup: `def callback(required)
+  JSON.stringify = replacement
+end
+
+def invoke(callback: function)
+  callback.call()
+end
+
+def wrapper()
+  invoke(callback)
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "aliased invalid keyword splat",
+			setup: `class Installer
+  def initialize(**options)
+    JSON.stringify = replacement
+  end
+end
+
+def wrapper()
+  bad = {}
+  copy = bad
+  bad[2] = "x"
+  Installer.new(**copy)
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "unrelated delete preserves invalid keyword splat",
+			setup: `class Installer
+  def initialize(**options)
+    JSON.stringify = replacement
+  end
+end
+
+def wrapper()
+  bad = {}
+  bad[2] = "x"
+  bad.delete(:other)
+  Installer.new(**bad)
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "block parameter shadows outer callable",
+			setup: `def callback()
+  JSON.stringify = replacement
+end
+
+def wrapper()
+  [1].each { |callback| callback }
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "ordinary parameter shadows outer callable",
+			setup: `def callback()
+  JSON.stringify = replacement
+end
+
+def ignore(callback)
+  callback
+end
+
+def wrapper()
+  ignore(1)
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "raising prefix prevents yield",
+			setup: `def abort()
+  raise "boom"
+end
+
+def consume()
+  abort()
+  yield
+end
+
+def wrapper()
+  consume() { JSON.stringify = replacement }
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "plain module constructor stops later default",
+			setup: `module Plain
+end
+
+def install(first = Plain.new, second = begin
+  JSON.stringify = replacement
+end)
+end
+
+def wrapper()
+  install()
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "raising compound assignment skips setter effect",
+			setup: `def abort()
+  raise "boom"
+end
+
+def wrapper()
+  JSON.stringify += abort()
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "class setter rejects value before body effect",
+			setup: `class Config
+  def self.value=(value: int)
+    JSON.stringify = replacement
+  end
+end
+
+def wrapper()
+  Config.value = "bad"
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "exact parameter branch prevents yield",
+			setup: `def consume(flag: bool)
+  if flag
+    raise "stop"
+  else
+    nil
+  end
+  yield
+end
+
+def wrapper()
+  consume(true) { JSON.stringify = replacement }
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "empty matching rescue propagates the exception",
+			setup: `def wrapper()
+  begin
+    raise TypeError, "boom"
+  rescue TypeError
+  rescue
+    nil
+  end
+  JSON.stringify = replacement
+end`,
+			invoke: "wrapper()",
+		},
+		{
+			name: "block call parameter shadows outer callable",
+			setup: `def mutate()
+  JSON.stringify = replacement
+end
+
+def invoke(callback: function)
+  [->() { 1 }].each { |callback| callback.call() }
+end
+
+def wrapper()
+  invoke(mutate)
+end`,
+			invoke: "wrapper()",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+`+tc.setup+`
+
+def run()
+  begin
+    `+tc.invoke+`
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end`)
+			requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+		})
+	}
+}
+
+func TestCheckEntrypointNamespaceMutationScanRespectsExactCallFacts(t *testing.T) {
+	t.Parallel()
+
+	script, err := MustNewEngine(Config{}).CompileSnippet(`def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def consume(flag: bool)
+  if flag
+    raise "stop"
+  else
+    nil
+  end
+  yield
+end
+
+def run()
+  begin
+    consume(true) { JSON.stringify = replacement }
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end
+
+run()`, "main")
+	if err != nil {
+		t.Fatalf("CompileSnippet failed: %v", err)
+	}
+
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+}
+
+func TestCheckReachableParamsPreserveForwardedStaticNames(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `class Installer
+  def self.install(value: int)
+    value
+  end
+end
+
+def dispatch(name)
+  Installer.send(name, "bad")
+end
+
+def run()
+  dispatch(:install)
+end`)
+
+	warnings := strings.Join(checkWarningMessages(script.CheckWarningsForFunction("run")), "\n")
+	if !strings.Contains(warnings, "call to Installer.install argument value expected int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want forwarded argument mismatch", "run", warnings)
+	}
+}
+
+func TestCheckStaticArrayWritesUpdateAliasedForwardedNames(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "conditional alias",
+			body: `names = [:first]
+  other = [:second]
+  copy = flag ? names : other
+  names[0] = :third
+  Receiver.new.send(*copy, "bad")`,
+		},
+		{
+			name: "equal valued conditional alias",
+			body: `names = [:first]
+  other = [:first]
+  copy = flag ? other : names
+  names[0] = :third
+  Receiver.new.send(*copy, "bad")`,
+		},
+		{
+			name: "nested array write",
+			body: `names = [[:first]]
+  names[0][0] = :third
+  Receiver.new.send(*names[0], "bad")`,
+		},
+		{
+			name: "projected alias",
+			body: `outer = [[:first]]
+  inner = outer[0]
+  inner[0] = :third
+  Receiver.new.send(*outer[0], "bad")`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `def takes_int(value: int)
+  value
+end
+
+class Receiver
+  def first(value)
+    value
+  end
+
+  def second(value)
+    value
+  end
+
+  def third(value)
+    takes_int(value)
+  end
+end
+
+def run(flag: bool)
+  `+tc.body+`
+end`)
+
+			warnings := strings.Join(checkWarningMessages(script.CheckWarningsForFunction("run")), "\n")
+			if !strings.Contains(warnings, "call to takes_int argument value expected int, got string") {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want forwarded argument mismatch", "run", warnings)
+			}
+		})
+	}
+}
+
+func TestCheckStaticIfExpressionSelectsExactClassValue(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def takes_int(value: int)
+  value
+end
+
+class Good
+  def run(value)
+    value
+  end
+end
+
+class Bad
+  def run(value)
+    takes_int(value)
+  end
+end
+
+def run()
+  target = if true then Good else Bad end
+  target.new.run("bad")
+end`)
+
+	if warnings := script.CheckWarningsForFunction("run"); len(warnings) > 0 {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want only the selected class target", "run", warnings)
+	}
+}
+
+func TestCheckForwardedConstructorFactsKeepSuccessfulArms(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  names = flag ? [:new] : [:missing]
+  begin
+    Installer.send(*names).install()
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end`)
+
+	for _, warning := range script.CheckWarningsForFunction("run") {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, successful constructor arm lost", "run", script.CheckWarningsForFunction("run"))
+		}
+	}
+}
+
+func TestCheckSkippedDefaultsDoNotPoisonBodyFacts(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def takes_int(value: int)
+  value
+end
+
+def inspect(value, skipped = value.delete(:name))
+  takes_int(value[:name])
+end
+
+def run()
+  inspect({name: "bad"}, 0)
+end`)
+
+	warnings := strings.Join(checkWarningMessages(script.CheckWarningsForFunction("run")), "\n")
+	if !strings.Contains(warnings, "call to takes_int argument value expected int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want preserved hash value mismatch", "run", warnings)
+	}
+}
+
+func TestCheckSafeNavigationResultKeepsCalleeNilArm(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "resolved target",
+			source: `class Box
+  def value(effect) -> string
+    "ok"
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  box = flag ? nil : Box.new
+  takes_int(box&.value(-> { box = Box.new }.call))
+end`,
+		},
+		{
+			name: "exact dynamic targets",
+			source: `class FirstBox
+  def value(effect) -> string
+    "first"
+  end
+end
+
+class SecondBox
+  def value(effect) -> string
+    "second"
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool, other: bool)
+  box = flag ? nil : (other ? FirstBox.new : SecondBox.new)
+  takes_int(box&.value(-> { box = FirstBox.new }.call))
+end`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			warnings := strings.Join(checkWarningMessages(script.CheckWarningsForFunction("run")), "\n")
+			if !strings.Contains(warnings, "call to takes_int argument value expected int, got string | nil") {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want captured nullable safe-navigation fact", "run", warnings)
+			}
+		})
+	}
+}
+
+func TestCheckSafeNavigationBareMemberPinsNilAfterFailedDispatch(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `class Box
+  private
+
+  def secret() -> string
+    "x"
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(value: Box | nil)
+  result = value&.secret
+  takes_string(result)
+end`)
+
+	warnings := strings.Join(checkWarningMessages(script.CheckWarningsForFunction("run")), "\n")
+	if !strings.Contains(warnings, "call to takes_string argument value expected string, got nil") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want failed safe-navigation nil result", "run", warnings)
+	}
+}
+
+func TestCheckNamespaceMutationScanUsesReachableReceiverFacts(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `class Installer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+def replacement(value)
+  1
+end
+
+def invoke(target)
+  target.install()
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  invoke(Installer.new)
+  takes_int(JSON.stringify({}))
+end`)
+
+	for _, warning := range script.CheckWarningsForFunction("run") {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, reachable receiver mutation was lost", "run", script.CheckWarningsForFunction("run"))
+		}
+	}
+
+	implicitCallable := compileScript(t, `def replacement(value)
+  1
+end
+
+def invoke(callback: function)
+  callback.call(1)
+end
+
+class Runner
+  def mutate(value)
+    JSON.stringify = replacement
+  end
+
+  def pass()
+    invoke(mutate)
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  Runner.new.pass()
+  takes_int(JSON.stringify({}))
+end`)
+
+	for _, warning := range implicitCallable.CheckWarningsForFunction("run") {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got string") {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, implicit-self callable mutation was lost", "run", implicitCallable.CheckWarningsForFunction("run"))
+		}
+	}
 }
 
 func TestCheckWarningsSkipReachedMethodsInSeededPass(t *testing.T) {
@@ -2742,6 +5531,14 @@ end`,
 			want: "return value expected int, got string",
 		},
 		{
+			name: "implicit logical assignment returns assigned target",
+			source: `def run() -> int
+  value = "bad"
+  value ||= 1
+end`,
+			want: "return value expected int, got string",
+		},
+		{
 			name: "empty typed function body",
 			source: `def run() -> int
 end`,
@@ -2781,6 +5578,47 @@ end`,
 			requireCheckWarningContains(t, script, tc.want)
 		})
 	}
+}
+
+func TestCheckWarningsSkipUnreachableImplicitTryBodyLeaf(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def fail() -> int
+  raise "stop"
+end
+
+def recover() -> string
+  begin
+    fail()
+  rescue
+    "ok"
+  end
+end`)
+
+	requireNoCheckWarnings(t, script)
+}
+
+func TestCheckWarningsFollowRetryIntoCompletingBody(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def takes_int(value: int)
+  value
+end
+
+def run()
+  flag = true
+  begin
+    if flag
+      raise "again"
+    end
+  rescue
+    flag = false
+    retry
+  end
+  takes_int("bad")
+end`)
+
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
 }
 
 func TestCheckWarningsPreserveTryReturnRequireStateForDeferredReturnChecks(t *testing.T) {
@@ -3028,9 +5866,9 @@ end`,
 		{
 			name: "try rescue return value",
 			source: `def run() -> int
-  begin
-    1
-  rescue RuntimeError
+	begin
+		1 + 0
+	rescue RuntimeError
     "bad"
   end
 end`,
@@ -3208,6 +6046,33 @@ end`,
     return "bad"
   ensure
     return 1
+  end
+end`,
+		},
+		{
+			name: "nested ensure return masks inner body return type",
+			source: `def run() -> int
+  begin
+    begin
+      return "bad"
+    ensure
+      return 1
+    end
+  ensure
+    cleanup = true
+  end
+end`,
+		},
+		{
+			name: "inferred exiting ensure masks body return type",
+			source: `def run() -> string
+  begin
+    return 1
+  ensure
+    value = nil
+    if value == nil
+      return "forced"
+    end
   end
 end`,
 		},
@@ -3670,6 +6535,178 @@ end
 `))
 }
 
+func TestCheckWarningsSkipUnreachableRescueClauses(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def takes_int(value: int)
+  value
+end
+
+def run()
+  begin
+    raise TypeError, "boom"
+  rescue TypeError
+    1
+  rescue
+    takes_int("bad")
+  end
+end`)
+
+	requireNoCheckWarnings(t, script)
+}
+
+func TestCheckWarningsKeepRaiseOperandFailureRescuesReachable(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def fail()
+  raise AssertionError, "inner"
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  begin
+    raise TypeError, fail()
+  rescue AssertionError
+    takes_int("bad")
+  rescue TypeError
+    nil
+  end
+end`)
+
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+}
+
+func TestCheckWarningsSelectTypeErrorRescueForInvalidRaiseMessage(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def takes_int(value: int)
+  value
+end
+
+def run()
+  begin
+    raise AssertionError, 1
+  rescue AssertionError
+    nil
+  rescue TypeError
+    takes_int("bad")
+  end
+end`)
+
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
+}
+
+func TestCheckWarningsInferOnlyReachableRescueAndCaseExpressions(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "nonraising rescue expression",
+			source: `def recover()
+  1 rescue "ok"
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(recover())
+end`,
+			want: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "static case selection under expectation",
+			source: `def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(case 1 when 1 then 2 else "ok" end)
+end`,
+			want: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "exact local case selection under expectation",
+			source: `def takes_string(value: string)
+  value
+end
+
+def run()
+  target = 1
+  takes_string(case target when 1 then 2 else "ok" end)
+end`,
+			want: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "rescue fallback sees effects before definite failure",
+			source: `def crash(value)
+  raise "stop"
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = []
+  crash(values << "bad") rescue takes_int(values[0])
+end`,
+			want: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "rescue fallback sees effects from failing conditional arm",
+			source: `def crash(value)
+  raise "stop"
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(flag)
+  values = []
+  (flag ? crash(values << "bad") : 1) rescue takes_int(values[0])
+end`,
+			want: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "rescue fallback sees callee parameter effects from failing arm",
+			source: `def crash(value)
+  raise "stop"
+end
+
+def takes_int(value: int)
+  value
+end
+
+def maybe(flag: bool, values)
+  flag ? crash(values << "bad") : 1
+end
+
+def run(flag: bool)
+  values = []
+  maybe(flag, values) rescue takes_int(values[0])
+end`,
+			want: "call to takes_int argument value expected int, got string",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCheckWarningContains(t, compileScript(t, tc.source), tc.want)
+		})
+	}
+}
+
 func TestCheckWarningsResolveRequiredModuleExportNames(t *testing.T) {
 	t.Parallel()
 
@@ -3994,6 +7031,44 @@ def run()
   [risky, first_fallback, second_fallback]
 end
 `))
+}
+
+func TestCheckWarningsInferNilForUnreachedRescueLocals(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def takes_string(value: string)
+  value
+end
+
+def run()
+  begin
+    1
+  rescue
+    skipped = 1
+  end
+  takes_string(skipped)
+end`)
+
+	warnings := strings.Join(checkWarningMessages(script.CheckWarningsForFunction("run")), "\n")
+	if !strings.Contains(warnings, "call to takes_string argument value expected string, got nil") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want unreached rescue local nil fact", "run", warnings)
+	}
+}
+
+func TestCheckWarningsDoNotFollowLimitErrorRescueModifierFallback(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScript(t, `def stop()
+  raise LimitError, "stop"
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(stop() rescue 1)
+end`))
 }
 
 func TestCheckWarningsResolveBlockParameterNames(t *testing.T) {
@@ -4481,7 +7556,34 @@ def run()
   end] = [1, 2]
   c
 end
-`))
+	`))
+}
+
+func TestCheckWarningsForFunctionDoesNotLeakBlockClassValueFacts(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+class Holder
+  def initialize()
+  end
+
+  def check(value: int)
+    value
+  end
+end
+
+def run()
+  klass = nil
+  [].each do
+    klass = Holder
+  end
+  klass.new.check("bad")
+end
+`)
+
+	if warnings := script.CheckWarningsForFunction("run"); len(warnings) > 0 {
+		t.Fatalf("CheckWarningsForFunction() = %#v, want none", warnings)
+	}
 }
 
 func requireNoCheckWarnings(t *testing.T, script *Script) {

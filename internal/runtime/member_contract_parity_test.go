@@ -66,6 +66,7 @@ var parityArguments = map[string][]string{
 	"universal.eql?":         {"1"},
 	"universal.equal?":       {"1"},
 	"universal.respond_to?":  {":to_s", "true"},
+	"universal.is_type?":     {":int"},
 	"universal.is_a?":        {"Foo"},
 	"universal.kind_of?":     {"Foo"},
 	"universal.instance_of?": {"Foo"},
