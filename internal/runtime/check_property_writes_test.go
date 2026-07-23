@@ -668,6 +668,41 @@ end
 			)
 		})
 	}
+
+	t.Run("implicit self array element", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property callback: function
+
+  def make() -> string
+    "not callable"
+  end
+
+  def initialize
+    @callback, ignored = [make, 1]
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+		requireCheckWarningContains(
+			t,
+			script,
+			"write to @callback expected function, got string",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @callback expected function, got string",
+		)
+	})
 }
 
 // A literal right-hand side makes the rest split deterministic: the rest

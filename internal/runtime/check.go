@@ -12947,6 +12947,12 @@ func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
 	if c.hostBuiltinOverrides(name) {
 		return nil
 	}
+	if fn := c.implicitSelfFunction(name); fn != nil {
+		if len(fn.Params) > 0 {
+			return checkTypeFunction
+		}
+		return fn.ReturnTy
+	}
 	spec, ok := c.defaultBuiltinCallSpec(name)
 	if !ok || !spec.autoInvoke {
 		return nil
