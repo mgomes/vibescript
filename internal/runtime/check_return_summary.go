@@ -47,6 +47,19 @@ func (r *returnSummaryCollector) record(fact *TypeExpr) {
 	r.arms = append(r.arms, fact)
 }
 
+func (r *returnSummaryCollector) mergeResultArms(other *returnSummaryCollector) {
+	if other == nil {
+		return
+	}
+	if other.unknown {
+		r.record(nil)
+		return
+	}
+	for _, arm := range other.arms {
+		r.record(arm)
+	}
+}
+
 // sawReturn reports whether the collector reached any return path at all.
 func (r *returnSummaryCollector) sawReturn() bool {
 	return r != nil && (r.unknown || len(r.arms) > 0)

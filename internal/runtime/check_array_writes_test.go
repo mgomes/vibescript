@@ -197,6 +197,58 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "fill next result survives falling through ensure",
+			source: `
+def f(items: array<int>)
+  items.fill() do
+    begin
+      next "bad"
+    ensure
+      1
+    end
+  end
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "fill next result survives conditionally raising ensure",
+			source: `
+def f(items: array<int>, stop)
+  items.fill() do
+    begin
+      next "bad"
+    ensure
+      if stop
+        raise "stop"
+      end
+    end
+  end
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "raising ensure leaves fill receiver bound intact",
+			source: `
+def f(items: array<int>)
+  begin
+    items.fill() do
+      begin
+        next "bad"
+      ensure
+        raise "stop"
+      end
+    end
+  rescue
+    nil
+  end
+  items << true
+end
+`,
+			warning: "write to items expected element int, got bool",
+		},
+		{
 			name: "fill exact proc block result",
 			source: `
 def f(items: array<int>)
@@ -1070,6 +1122,45 @@ end
 			source: `
 def f(items: array<int>, callback: function)
   items.fill(&callback)
+end
+`,
+		},
+		{
+			name: "raising ensure suppresses fill next result",
+			source: `
+def f(items: array<int>)
+  begin
+    items.fill() do
+      begin
+        next "bad"
+      ensure
+        raise "stop"
+      end
+    end
+  rescue
+    nil
+  end
+end
+`,
+		},
+		{
+			name: "exact raising ensure condition suppresses fill next result",
+			source: `
+def f(items: array<int>)
+  stop = true
+  begin
+    items.fill() do
+      begin
+        next "bad"
+      ensure
+        if stop
+          raise "stop"
+        end
+      end
+    end
+  rescue
+    nil
+  end
 end
 `,
 		},
@@ -2393,6 +2484,80 @@ end
 	})
 	if !got.Equal(want) {
 		t.Fatalf("run() = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestArrayFillNextResultRespectsEnsureCompletion(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def always_raise()
+  items = [1, 2]
+  begin
+    items.fill() do
+      begin
+        next "bad"
+      ensure
+        raise "stop"
+      end
+    end
+  rescue
+    nil
+  end
+  items
+end
+
+def conditionally_raise(stop: bool)
+  items = [1, 2]
+  begin
+    items.fill() do
+      begin
+        next "bad"
+      ensure
+        if stop
+          raise "stop"
+        end
+      end
+    end
+  rescue
+    nil
+  end
+  items
+end
+`)
+
+	tests := []struct {
+		name string
+		fn   string
+		args []Value
+		want Value
+	}{
+		{
+			name: "raising ensure",
+			fn:   "always_raise",
+			want: NewArray([]Value{NewInt(1), NewInt(2)}),
+		},
+		{
+			name: "conditional ensure raises",
+			fn:   "conditionally_raise",
+			args: []Value{NewBool(true)},
+			want: NewArray([]Value{NewInt(1), NewInt(2)}),
+		},
+		{
+			name: "conditional ensure falls through",
+			fn:   "conditionally_raise",
+			args: []Value{NewBool(false)},
+			want: NewArray([]Value{NewString("bad"), NewString("bad")}),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callScript(t, context.Background(), script, tc.fn, tc.args, CallOptions{})
+			if !got.Equal(tc.want) {
+				t.Errorf("%s(%v) = %s, want %s", tc.fn, tc.args, got.String(), tc.want.String())
+			}
+		})
 	}
 }
 

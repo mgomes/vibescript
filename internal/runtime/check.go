@@ -3243,6 +3243,12 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		selectedRescue, rescueSelectionExact := c.staticallySelectedRescue(typed.Body, typed.Rescues)
 		rescueBodiesReachable := !statementsProvenNonRaising(typed.Body)
 		ensureAlwaysExits := blockAlwaysExits(typed.Ensure)
+		previousBlockResultCollector := c.blockResultCollector
+		var protectedBlockResultCollector *returnSummaryCollector
+		if len(typed.Ensure) > 0 && previousBlockResultCollector != nil {
+			protectedBlockResultCollector = &returnSummaryCollector{}
+			c.blockResultCollector = protectedBlockResultCollector
+		}
 		deferReturnType := returnType != nil && len(typed.Ensure) > 0 && !ensureAlwaysExits
 		branchReturnType := returnType
 		if deferReturnType || ensureAlwaysExits {
@@ -3445,6 +3451,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if protectedLoopExitEffects != nil {
 			c.loopExitEffects = previousLoopExitEffects
 		}
+		if protectedBlockResultCollector != nil {
+			c.blockResultCollector = previousBlockResultCollector
+		}
 		if len(typed.Ensure) > 0 {
 			c.ensureExitSites = previousEnsureExitSites
 		}
@@ -3523,6 +3532,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 					protectedLoopExitEffects.effects,
 				)
 			}
+		}
+		if ensureFallsThrough {
+			previousBlockResultCollector.mergeResultArms(protectedBlockResultCollector)
 		}
 		// An ensure the walk proves always exits replaces every deferred
 		// body return, even when the proof is inferred rather than
@@ -4349,7 +4361,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 			}
 		}
-		var blockResultFact *TypeExpr
+		var blockResult checkBlockResult
 		immediateLambdaEnters := targetMayEnter && c.immediateLambdaCallMayEnter(invokedLambda, typed)
 		if immediateLambdaEnters {
 			c.applyLambdaBlockNamespaceMutations(invokedLambda)
@@ -4384,10 +4396,10 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			// semantics, so those returns cannot unwind the enclosing
 			// function.
 			localReturns := typed.Block.Lambda || c.callTargetsCoreLambda(typed, target, targetResolved)
-			blockResultFact = c.checkBlockLiteral(function, typed.Block, localReturns)
+			blockResult = c.checkBlockLiteral(function, typed.Block, localReturns)
 		} else if targetMayEnter && typed.BlockArg != nil {
 			if blocks, exact := c.callableBlockLiteralValues(typed.BlockArg); exact {
-				blockResultFact = c.blockLiteralValuesResultFact(function, blocks)
+				blockResult = c.blockLiteralValuesResult(function, blocks)
 			}
 		}
 		c.callArgumentFacts = previousFacts
@@ -4435,7 +4447,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					argumentStaticValues,
 					argumentRetainedAliases,
 					argumentSplatOrigins,
-					blockResultFact,
+					blockResult,
 					receiverFact,
 				)
 				mutatorArgsModeled = modeled || arrayMutatorRetainsArgumentsWithoutCalling(
@@ -6449,13 +6461,25 @@ func (c *scriptChecker) checkMemberAutoCall(
 	return target, true, false, true
 }
 
+// checkBlockResult distinguishes an unknown value from a block proven not to
+// complete normally.
+type checkBlockResult struct {
+	fact        *TypeExpr
+	exact       bool
+	mayComplete bool
+}
+
 // checkBlockLiteral walks a block or lambda body. localReturns marks blocks
 // whose returns stay inside the block itself (stabby lambdas and the lambda
 // builtin's literal block); a plain block's return unwinds the enclosing
 // function instead.
-func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, localReturns bool) *TypeExpr {
+func (c *scriptChecker) checkBlockLiteral(
+	function string,
+	block *BlockLiteral,
+	localReturns bool,
+) checkBlockResult {
 	if block == nil {
-		return nil
+		return checkBlockResult{}
 	}
 	previousSummaryYieldsActive := c.summaryYieldsActive
 	if localReturns {
@@ -6603,10 +6627,17 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, 
 	if fallsThrough {
 		blockResultCollector.record(c.blockImplicitResultFact(block.Body))
 	}
-	if blockResultCollector.unknown || len(blockResultCollector.arms) == 0 {
-		return nil
+	if blockResultCollector.unknown {
+		return checkBlockResult{mayComplete: true}
 	}
-	return unionTypeExprs(blockResultCollector.arms...)
+	if len(blockResultCollector.arms) == 0 {
+		return checkBlockResult{exact: true}
+	}
+	return checkBlockResult{
+		fact:        unionTypeExprs(blockResultCollector.arms...),
+		exact:       true,
+		mayComplete: true,
+	}
 }
 
 func (c *scriptChecker) blockImplicitResultFact(statements []Statement) *TypeExpr {
@@ -6624,25 +6655,35 @@ func (c *scriptChecker) blockImplicitResultFact(statements []Statement) *TypeExp
 	return unionTypeExprs(collector.arms...)
 }
 
-func (c *scriptChecker) blockLiteralValuesResultFact(
+func (c *scriptChecker) blockLiteralValuesResult(
 	function string,
 	blocks []*BlockLiteral,
-) *TypeExpr {
+) checkBlockResult {
 	if len(blocks) == 0 {
-		return nil
+		return checkBlockResult{}
 	}
 	results := make([]*TypeExpr, 0, len(blocks))
 	for _, block := range blocks {
-		var result *TypeExpr
+		var result checkBlockResult
 		c.withSuppressedWarnings(func() {
 			result = c.checkBlockLiteral(function, block, false)
 		})
-		if result == nil {
-			return nil
+		if !result.exact {
+			return checkBlockResult{mayComplete: true}
 		}
-		results = append(results, result)
+		if !result.mayComplete {
+			continue
+		}
+		results = append(results, result.fact)
 	}
-	return unionTypeExprs(results...)
+	if len(results) == 0 {
+		return checkBlockResult{exact: true}
+	}
+	return checkBlockResult{
+		fact:        unionTypeExprs(results...),
+		exact:       true,
+		mayComplete: true,
+	}
 }
 
 // literalArrayElementYieldMethods are the builtin array iterators that yield

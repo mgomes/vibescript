@@ -5928,7 +5928,7 @@ func arrayMutatorElementWrites(
 	property string,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
-	blockResultFact *TypeExpr,
+	blockResult checkBlockResult,
 ) (arrayMutatorWriteModel, bool) {
 	if len(call.KwArgs) != 0 {
 		return arrayMutatorWriteModel{}, false
@@ -5953,7 +5953,7 @@ func arrayMutatorElementWrites(
 			mayWrite:    len(call.Args) > 1,
 		}, true
 	case "fill":
-		return arrayFillElementWrites(call, argumentFacts, argumentStaticValues, blockResultFact)
+		return arrayFillElementWrites(call, argumentFacts, argumentStaticValues, blockResult)
 	}
 	return arrayMutatorWriteModel{}, false
 }
@@ -5962,7 +5962,7 @@ func arrayFillElementWrites(
 	call *CallExpr,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
-	blockResultFact *TypeExpr,
+	blockResult checkBlockResult,
 ) (arrayMutatorWriteModel, bool) {
 	if call == nil {
 		return arrayMutatorWriteModel{}, false
@@ -5971,13 +5971,19 @@ func arrayFillElementWrites(
 	selectors := call.Args
 	switch {
 	case call.Block != nil:
-		if len(selectors) > 2 {
+		if !blockResult.exact || len(selectors) > 2 {
 			return arrayMutatorWriteModel{}, false
+		}
+		if !blockResult.mayComplete {
+			return arrayMutatorWriteModel{preservable: true}, true
 		}
 		element = call.Block
 	case call.BlockArg != nil && !arrayFillBlockArgumentIsNil(call.BlockArg, argumentFacts):
-		if blockResultFact == nil || len(selectors) > 2 {
+		if !blockResult.exact || len(selectors) > 2 {
 			return arrayMutatorWriteModel{}, false
+		}
+		if !blockResult.mayComplete {
+			return arrayMutatorWriteModel{preservable: true}, true
 		}
 		element = call.BlockArg
 	case call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, argumentFacts):
@@ -6362,7 +6368,7 @@ func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string,
 	}) {
 		return false
 	}
-	model, ok := arrayMutatorElementWrites(call, property, nil, nil, nil)
+	model, ok := arrayMutatorElementWrites(call, property, nil, nil, checkBlockResult{})
 	if !ok {
 		return false
 	}
@@ -6468,7 +6474,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	argumentStaticValues map[Expression][]Expression,
 	argumentRetainedAliases map[Expression]checkRetainedContainerCapture,
 	argumentSplatOrigins map[Expression][]*SplatArg,
-	blockResultFact *TypeExpr,
+	blockResult checkBlockResult,
 	receiverFact *TypeExpr,
 ) (preserved, modeled, mayWrite bool) {
 	ident, ok := member.Object.(*Identifier)
@@ -6500,7 +6506,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		member.Property,
 		argumentFacts,
 		argumentStaticValues,
-		blockResultFact,
+		blockResult,
 	)
 	if !ok {
 		return false, false, false
@@ -6601,9 +6607,9 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		}
 		splatOrigin := nextSplatOrigin(arg)
 		written, captured := argumentFacts[arg]
-		if member.Property == "fill" && blockResultFact != nil &&
+		if member.Property == "fill" && blockResult.fact != nil &&
 			(arg == writesCall.Block || arg == writesCall.BlockArg) {
-			written, captured = blockResultFact, true
+			written, captured = blockResult.fact, true
 		} else if !captured {
 			written = c.inferExpressionType(arg)
 		}
