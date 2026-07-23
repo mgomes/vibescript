@@ -62,6 +62,222 @@ type checkLocalValueFact struct {
 
 type checkClassValueFrame map[string]checkLocalValueFact
 
+// beginIfClassBranchCapture arms condition-time selection when the main
+// condition is a decidable direct local and clears any fact from a prior walk.
+func (c *scriptChecker) beginIfClassBranchCapture(expr *IfExpr) bool {
+	delete(c.evaluatedIfClassFacts, expr)
+	if expr == nil {
+		return false
+	}
+	_, decided := c.directLocalConditionTruthiness(expr.Condition)
+	return decided
+}
+
+func (c *scriptChecker) finishIfClassBranchCapture(
+	expr *IfExpr,
+	branch Expression,
+	selected bool,
+	completed bool,
+) {
+	delete(c.evaluatedIfClassFacts, expr)
+	if !selected || !completed {
+		return
+	}
+	classNames, exact := c.stableEvaluatedClassNames(branch, false)
+	if !exact {
+		return
+	}
+	if c.evaluatedIfClassFacts == nil {
+		c.evaluatedIfClassFacts = make(map[*IfExpr][]string)
+	}
+	c.evaluatedIfClassFacts[expr] = append([]string(nil), classNames...)
+}
+
+func (c *scriptChecker) directLocalConditionTruthiness(condition Expression) (bool, bool) {
+	ident, ok := condition.(*Identifier)
+	if !ok {
+		return false, false
+	}
+	if !c.localTypeTracked(ident.Name) {
+		return false, false
+	}
+	if fact, exact := c.localValueFactFor(ident.Name); exact {
+		if len(fact.callables) > 0 {
+			return false, false
+		}
+		if truthy, known := localValueFactTruthiness(fact, true); known {
+			return truthy, true
+		}
+	}
+	ty := c.localTypeFor(ident.Name)
+	if typeExprMayIncludeCallable(ty) {
+		return false, false
+	}
+	if typeExprDefinitelyTruthy(ty) {
+		return true, true
+	}
+	if typeExprIsNilOnly(ty) {
+		return false, true
+	}
+	return false, false
+}
+
+func (c *scriptChecker) stableIfClassConditionTruthiness(condition Expression) (bool, bool) {
+	if truthy, known := staticExpressionTruthiness(condition); known {
+		return truthy, true
+	}
+	return c.directLocalConditionTruthiness(condition)
+}
+
+// stableEvaluatedClassNames resolves identities that remain valid after an
+// expression has completed. stateIndependent is set when later evaluation
+// may have changed local facts; tracked reads then stay unsupported instead
+// of being replayed from post-evaluation state.
+func (c *scriptChecker) stableEvaluatedClassNames(
+	expr Expression,
+	stateIndependent bool,
+) ([]string, bool) {
+	switch typed := expr.(type) {
+	case *Identifier:
+		if stateIndependent {
+			if c.localTypeTracked(typed.Name) {
+				return nil, false
+			}
+			classDef, ok := c.staticClassArgument(typed)
+			if !ok {
+				return nil, false
+			}
+			return []string{classDef.Name}, true
+		}
+		return c.classValueExpressionNames(typed)
+	case *ConditionalExpr:
+		branch, ok := staticConditionalExpressionBranch(typed)
+		if !ok {
+			return nil, false
+		}
+		return c.stableEvaluatedClassNames(branch, stateIndependent)
+	case *IfExpr:
+		if classNames, evaluated := c.evaluatedIfClassFacts[typed]; evaluated {
+			return append([]string(nil), classNames...), true
+		}
+		branch, ok := staticIfExpressionBranch(typed)
+		if !ok {
+			return nil, false
+		}
+		return c.stableEvaluatedClassNames(branch, stateIndependent)
+	case *BinaryExpr:
+		if typed.Operator != tokenAnd && typed.Operator != tokenOr {
+			return nil, false
+		}
+		truthy, known := staticExpressionTruthiness(typed.Left)
+		if !known {
+			return nil, false
+		}
+		if truthy == (typed.Operator == tokenAnd) {
+			return c.stableEvaluatedClassNames(typed.Right, stateIndependent)
+		}
+		return c.stableEvaluatedClassNames(typed.Left, stateIndependent)
+	case *IndexExpr:
+		return c.stableLiteralProjectionClassNames(typed, stateIndependent)
+	case *CallExpr:
+		member, ok := typed.Callee.(*MemberExpr)
+		if !ok || member.Property != "itself" || len(typed.Args) != 0 ||
+			len(typed.KwArgs) != 0 || typed.Block != nil || typed.BlockArg != nil {
+			return nil, false
+		}
+		classNames, exact := c.stableEvaluatedClassNames(member.Object, stateIndependent)
+		if !exact {
+			return nil, false
+		}
+		for _, className := range classNames {
+			classDef := c.script.classes[className]
+			if classDef == nil || classDef.ClassMethods["itself"] != nil {
+				return nil, false
+			}
+		}
+		return classNames, true
+	default:
+		return nil, false
+	}
+}
+
+func (c *scriptChecker) localTypeTracked(name string) bool {
+	for i := len(c.localTypes) - 1; i >= 0; i-- {
+		if _, tracked := c.localTypes[i][name]; tracked {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) stableLiteralProjectionClassNames(
+	expr *IndexExpr,
+	stateIndependent bool,
+) ([]string, bool) {
+	if expr == nil || len(expr.Indices) != 1 {
+		return nil, false
+	}
+	switch object := expr.Object.(type) {
+	case *ArrayLiteral:
+		for _, element := range object.Elements {
+			if _, splat := element.(*SplatArg); splat {
+				return nil, false
+			}
+		}
+		value, ok := staticLiteralValue(expr.Indices[0])
+		if !ok {
+			return nil, false
+		}
+		index, ok := staticArrayFetchIndex(value)
+		if !ok {
+			return nil, false
+		}
+		if index < 0 {
+			index += int64(len(object.Elements))
+		}
+		if index < 0 || index >= int64(len(object.Elements)) {
+			return nil, false
+		}
+		for _, later := range object.Elements[index+1:] {
+			if _, static := staticLiteralValue(later); !static {
+				stateIndependent = true
+				break
+			}
+		}
+		return c.stableEvaluatedClassNames(object.Elements[index], stateIndependent)
+	case *HashLiteral:
+		if object.ShapeType != nil && !c.hashShapeStaticallyShadowed(object) {
+			return nil, false
+		}
+		want, ok := staticLiteralValue(expr.Indices[0])
+		if !ok {
+			return nil, false
+		}
+		selected := -1
+		for i, pair := range object.Pairs {
+			key, static := staticLiteralValue(pair.Key)
+			if !static {
+				return nil, false
+			}
+			if key.Equal(want) {
+				selected = i
+			}
+		}
+		if selected < 0 {
+			return nil, false
+		}
+		for _, later := range object.Pairs[selected+1:] {
+			if _, static := staticLiteralValue(later.Value); !static {
+				stateIndependent = true
+				break
+			}
+		}
+		return c.stableEvaluatedClassNames(object.Pairs[selected].Value, stateIndependent)
+	default:
+		return nil, false
+	}
+}
+
 func cloneCheckTypeFrame(frame checkTypeFrame) checkTypeFrame {
 	if len(frame) == 0 {
 		return nil
@@ -410,15 +626,18 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousAliases := c.typeAliases
 	previousPinned := c.pinnedExpressionFacts
 	previousConstructors := c.constructorInstanceFacts
+	previousIfClassFacts := c.evaluatedIfClassFacts
 	c.typePoison = nil
 	c.typeAliases = nil
 	c.pinnedExpressionFacts = nil
 	c.constructorInstanceFacts = nil
+	c.evaluatedIfClassFacts = nil
 	return func() {
 		c.typePoison = previousPoison
 		c.typeAliases = previousAliases
 		c.pinnedExpressionFacts = previousPinned
 		c.constructorInstanceFacts = previousConstructors
+		c.evaluatedIfClassFacts = previousIfClassFacts
 	}
 }
 
@@ -1659,6 +1878,9 @@ func (c *scriptChecker) classValueExpressionNamesSeen(
 		right, rightOK := c.classValueExpressionNamesSeen(typed.Alternate, seen, allowFunctionReturns)
 		return mergeCheckStringCandidates(left, leftOK, right, rightOK)
 	case *IfExpr:
+		if classNames, evaluated := c.evaluatedIfClassFacts[typed]; evaluated {
+			return append([]string(nil), classNames...), true
+		}
 		if branch, known := c.inferredIfExpressionBranch(typed); known {
 			return c.classValueExpressionNamesSeen(branch, seen, allowFunctionReturns)
 		}

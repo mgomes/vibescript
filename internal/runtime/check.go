@@ -119,6 +119,7 @@ type scriptChecker struct {
 	scopes                   []map[string]struct{}
 	localTypes               []checkTypeFrame
 	localClassValues         []checkClassValueFrame
+	evaluatedIfClassFacts    map[*IfExpr][]string
 	typePoison               map[string]struct{}
 	typeAliases              map[string]map[string]struct{}
 	mutationRegionDepth      int
@@ -5528,7 +5529,19 @@ func (c *scriptChecker) checkIfExpression(
 	function string,
 	expr *IfExpr,
 	expectation expressionExpectation,
-) bool {
+) (expressionCompleted bool) {
+	captureClassBranch := c.beginIfClassBranchCapture(expr)
+	var selectedClassBranch Expression
+	selectedClassBranchKnown := false
+	defer func() {
+		c.finishIfClassBranchCapture(
+			expr,
+			selectedClassBranch,
+			selectedClassBranchKnown,
+			expressionCompleted,
+		)
+	}()
+
 	baseRuntimeState := c.snapshotRuntimeState()
 	baseScopeState := c.snapshotScopeState()
 	if !c.checkExpressionWithAuto(function, expr.Condition, true) {
@@ -5545,6 +5558,11 @@ func (c *scriptChecker) checkIfExpression(
 	}
 
 	conditionTruthy, conditionKnown := c.inferredConditionTruthiness(expr.Condition)
+	captureElseIfBranch := captureClassBranch && conditionKnown && !conditionTruthy
+	if captureClassBranch && conditionKnown && conditionTruthy {
+		selectedClassBranch = expr.Consequent
+		selectedClassBranchKnown = true
+	}
 	trueReachable := !conditionKnown || conditionTruthy
 	if trueReachable {
 		trueReachable = c.collectRuntimeConditionOutcomeEffects(expr.Condition, true)
@@ -5579,6 +5597,14 @@ func (c *scriptChecker) checkIfExpression(
 	for _, branch := range expr.ElseIf {
 		c.restoreRuntimeState(falseRuntimeState)
 		c.restoreScopeState(falseScopeState)
+		captureThisElseIf := captureElseIfBranch
+		captureThisElseIfTruthy := false
+		if captureThisElseIf {
+			captureThisElseIfTruthy, captureThisElseIf = c.stableIfClassConditionTruthiness(branch.Condition)
+			if !captureThisElseIf {
+				captureElseIfBranch = false
+			}
+		}
 		if !c.checkExpressionWithAuto(function, branch.Condition, true) {
 			c.captureNonCompletingExpressionArm()
 			if len(branchRuntimeStates) == 0 {
@@ -5591,6 +5617,16 @@ func (c *scriptChecker) checkIfExpression(
 		conditionRuntimeState = c.snapshotRuntimeState()
 		conditionScopeState = c.snapshotScopeState()
 		branchTruthy, branchKnown := c.inferredConditionTruthiness(branch.Condition)
+		if captureThisElseIf {
+			switch {
+			case !branchKnown || branchTruthy != captureThisElseIfTruthy:
+				captureElseIfBranch = false
+			case captureThisElseIfTruthy:
+				selectedClassBranch = branch.Result
+				selectedClassBranchKnown = true
+				captureElseIfBranch = false
+			}
+		}
 		trueReachable = !branchKnown || branchTruthy
 		if trueReachable {
 			trueReachable = c.collectRuntimeConditionOutcomeEffects(branch.Condition, true)
@@ -5626,6 +5662,10 @@ func (c *scriptChecker) checkIfExpression(
 		}
 		falseRuntimeState = c.snapshotRuntimeState()
 		falseScopeState = c.snapshotScopeState()
+	}
+	if captureElseIfBranch {
+		selectedClassBranch = expr.Alternate
+		selectedClassBranchKnown = true
 	}
 	c.restoreRuntimeState(falseRuntimeState)
 	c.restoreScopeState(falseScopeState)

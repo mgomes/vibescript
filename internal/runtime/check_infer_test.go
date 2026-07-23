@@ -580,6 +580,264 @@ end
 	requireNoCheckWarnings(t, unknown)
 }
 
+func TestCheckInferIfExpressionClassIdentityUsesConditionTimeFact(t *testing.T) {
+	t.Parallel()
+
+	const classes = `
+class Strict
+  def initialize()
+  end
+
+  def check(value: int)
+    value
+  end
+end
+
+class Loose
+  def initialize()
+  end
+
+  def check(value)
+    value
+  end
+end
+
+class OtherStrict
+  def initialize()
+  end
+
+  def check(value: bool)
+    value
+  end
+end
+`
+	requireOnlyStrict := func(script *Script) {
+		t.Helper()
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "call to Strict#check argument value expected int, got string") {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want only the selected Strict arm", "run", warnings)
+		}
+	}
+
+	selectedTrueArm := compileScript(t, classes+`
+def run()
+  klass = Strict
+  chosen = if klass
+    [[1].each { klass = nil }, Strict][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireOnlyStrict(selectedTrueArm)
+
+	for _, result := range []string{
+		"Strict.itself()",
+		"true ? Strict : Loose",
+		"nil || Strict",
+		"if true then Strict else Loose end",
+		"{ pick: Strict }[:pick]",
+	} {
+		source := strings.ReplaceAll(classes+`
+def run()
+  condition = Strict
+  chosen = if condition
+    [[1].each { condition = nil }, SELECTED_RESULT][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`, "SELECTED_RESULT", result)
+		requireOnlyStrict(compileScript(t, source))
+	}
+
+	typeKnownCondition := compileScript(t, classes+`
+def run(condition: string)
+  chosen = if condition
+    [[1].each { condition = nil }, Strict][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireOnlyStrict(typeKnownCondition)
+
+	selectedFalseArm := compileScript(t, classes+`
+def run()
+  klass = nil
+  chosen = if klass
+    Strict
+  else
+    [[1].each { klass = Strict }, Loose][1]
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedFalseArm)
+
+	inexactSelectedArm := compileScript(t, classes+`
+def run()
+  klass = nil
+  chosen = if klass
+    Strict
+  else
+    [Loose, [1].each { klass = Strict }][0]
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, inexactSelectedArm)
+
+	selectedBeforeElsif := compileScript(t, classes+`
+def run()
+  condition = Strict
+  chosen = if condition
+    [[1].each { condition = nil }, Loose][1]
+  elsif true
+    Strict
+  else
+    Strict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedBeforeElsif)
+
+	selectedElsif := compileScript(t, classes+`
+def run()
+  condition = nil
+  chosen = if condition
+    Strict
+  elsif true
+    [[1].each { condition = Strict }, Loose][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedElsif)
+
+	selectedLocalElsif := compileScript(t, classes+`
+def run()
+  condition = nil
+  elsif_condition = Strict
+  chosen = if condition
+    Strict
+  elsif elsif_condition
+    [[1].each { condition = Strict }, Loose][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedLocalElsif)
+
+	autoInvokedElsif := compileScript(t, classes+`
+def run()
+  condition = nil
+  elsif_condition = -> {
+    elsif_condition = Strict
+    nil
+  }
+  chosen = if condition
+    Loose
+  elsif elsif_condition
+    [[1].each { elsif_condition = nil }, Strict][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	warnings := autoInvokedElsif.CheckWarningsForFunction("run")
+	messages := make([]string, len(warnings))
+	for i, warning := range warnings {
+		messages[i] = warning.Message
+	}
+	joined := strings.Join(messages, "\n")
+	if len(warnings) != 2 ||
+		!strings.Contains(joined, "call to Strict#check argument value expected int, got string") ||
+		!strings.Contains(joined, "call to OtherStrict#check argument value expected bool, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want both conservative callable-elsif outcomes", "run", warnings)
+	}
+}
+
+func TestDirectLocalConditionTruthinessRejectsCallableType(t *testing.T) {
+	t.Parallel()
+
+	condition := &Identifier{Name: "condition"}
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"condition": checkTypeFunction}},
+		localClassValues: []checkClassValueFrame{{}},
+	}
+	if truthy, decided := checker.directLocalConditionTruthiness(condition); decided {
+		t.Fatalf("directLocalConditionTruthiness() = (%t, %t), want undecided for an auto-invoked callable", truthy, decided)
+	}
+}
+
+func TestStableEvaluatedClassNamesRejectsPostStateLocal(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{localTypes: []checkTypeFrame{{"result": nil}}}
+	expr := &IndexExpr{
+		Object: &ArrayLiteral{Elements: []Expression{
+			&Identifier{Name: "result"},
+			&Identifier{Name: "may_mutate"},
+		}},
+		Indices: []Expression{&IntegerLiteral{Value: 0}},
+	}
+	if classNames, exact := checker.stableEvaluatedClassNames(expr, false); exact {
+		t.Fatalf("stableEvaluatedClassNames() = (%v, %t), want inexact for a post-state local", classNames, exact)
+	}
+}
+
+func TestCheckInferIfExpressionClassIdentityClearsStaleReevaluation(t *testing.T) {
+	t.Parallel()
+
+	expr := &IfExpr{Condition: &Identifier{Name: "condition"}}
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"condition": nil}},
+		localClassValues: []checkClassValueFrame{{}},
+		evaluatedIfClassFacts: map[*IfExpr][]string{
+			expr: {"Stale"},
+		},
+	}
+
+	selected := checker.beginIfClassBranchCapture(expr)
+	checker.finishIfClassBranchCapture(expr, nil, selected, true)
+	if _, stale := checker.evaluatedIfClassFacts[expr]; stale {
+		t.Fatal("unknown re-evaluation retained a stale if-expression class fact")
+	}
+}
+
+func TestCheckInferIfExpressionClassIdentityClearsNestedReevaluation(t *testing.T) {
+	t.Parallel()
+
+	expr := &IfExpr{
+		Condition:  &Identifier{Name: "condition"},
+		Consequent: &Identifier{Name: "condition"},
+	}
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"condition": nil}},
+		localClassValues: []checkClassValueFrame{{}},
+	}
+	outerSelected := checker.beginIfClassBranchCapture(expr)
+	checker.localTypes[0]["condition"] = checkTypeString
+	checker.localClassValues[0]["condition"] = checkLocalValueFact{classNames: []string{"Strict"}}
+	innerSelected := checker.beginIfClassBranchCapture(expr)
+	checker.finishIfClassBranchCapture(expr, expr.Consequent, innerSelected, true)
+	checker.finishIfClassBranchCapture(expr, nil, outerSelected, true)
+	if _, stale := checker.evaluatedIfClassFacts[expr]; stale {
+		t.Fatal("outer unknown evaluation retained a nested class fact")
+	}
+}
+
 func TestCheckInferConditionArmsPruneByInferredTruthiness(t *testing.T) {
 	t.Parallel()
 
