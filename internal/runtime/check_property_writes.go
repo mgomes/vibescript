@@ -608,6 +608,9 @@ func (c *scriptChecker) inferredAssignmentValueType(
 // non-nullable contracts), and extra literal elements are dropped. Every other
 // spelling checks as an unknown write and still refines the ivar's fact.
 func (c *scriptChecker) inferDestructureIvarWrites(function string, value Expression, target *DestructureTarget) {
+	if retained, exact := c.exactEvaluatedDestructureValue(value); exact {
+		value = retained
+	}
 	values, known := destructureElementValueExprs(value, target)
 	for i, element := range target.Elements {
 		var elementValue Expression
@@ -628,6 +631,20 @@ func (c *scriptChecker) inferDestructureIvarWrites(function string, value Expres
 			c.inferDestructureIvarWrites(function, elementValue, elementTarget)
 		}
 	}
+}
+
+func (c *scriptChecker) exactEvaluatedDestructureValue(value Expression) (Expression, bool) {
+	if value == nil {
+		return nil, false
+	}
+	if _, literal := staticLiteralValue(value); literal {
+		return value, true
+	}
+	fact, evaluated := c.evaluatedDestructureFacts[value]
+	if !evaluated || fact.factKind != destructureStaticFact || len(fact.staticVals) != 1 {
+		return nil, false
+	}
+	return fact.staticVals[0], true
 }
 
 // destructureElementValueExprs returns per-target value expressions for a

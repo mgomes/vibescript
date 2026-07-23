@@ -6186,6 +6186,9 @@ func (c *scriptChecker) captureDestructureValueFacts(target *DestructureTarget, 
 	if value == nil {
 		return captureUnknownDestructureValueFacts(target)
 	}
+	if retained, exact := c.exactEvaluatedDestructureValue(value); exact {
+		value = retained
+	}
 	if _, array := value.(*ArrayLiteral); !array {
 		captured, evaluated := c.evaluatedDestructureFacts[value]
 		capturedScalar := evaluated &&

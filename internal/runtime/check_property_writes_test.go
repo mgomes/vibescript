@@ -607,6 +607,92 @@ end
 `))
 }
 
+func TestCheckDestructuredIvarWritesUseRetainedStaticArray(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class Pair
+  property a: int
+  property b: int
+
+  def initialize
+    values = ["bad", 2]
+    @a, @b = values
+  end
+end
+
+def run
+  Pair.new.a
+end
+`)
+	requireCheckWarningContains(t, script, "write to @a expected int, got string")
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		nil,
+		CallOptions{},
+		"instance variable @a expected int, got string",
+	)
+
+	script = compileScriptDefault(t, `
+class Pair
+  property a: int
+  property b: int
+
+  def initialize
+    values = [1, 2]
+    @a, @b = values
+  end
+end
+
+def run
+  Pair.new.b
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 2 {
+		t.Fatalf("run() = %v, want 2", got)
+	}
+
+	script = compileScriptDefault(t, `
+class Pair
+  property a: int
+  property b: int
+
+  def initialize(flag: bool)
+    values = flag ? ["bad", 2] : [1, 2]
+    @a, @b = values
+  end
+end
+
+def run(flag: bool)
+  Pair.new(flag).a
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got = callScript(
+		t,
+		context.Background(),
+		script,
+		"run",
+		[]Value{NewBool(false)},
+		CallOptions{},
+	)
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run(false) = %v, want 1", got)
+	}
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		[]Value{NewBool(true)},
+		CallOptions{},
+		"instance variable @a expected int, got string",
+	)
+}
+
 func TestCheckDestructuredIvarWritesUseEvaluatedCallableFacts(t *testing.T) {
 	t.Parallel()
 
