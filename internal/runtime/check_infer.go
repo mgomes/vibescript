@@ -5941,55 +5941,42 @@ func arrayFillElementWrites(
 		}, true
 	}
 
-	var count int
-	var nilLength, countStatic bool
+	var countValues []Value
+	var countStatic bool
 	if len(selectors) == 2 {
 		countExpr := selectors[1]
 		if literalBignum(countExpr) {
-			return arrayMutatorWriteModel{}, false
-		}
-		countValue, static := staticMutatorArgumentValue(countExpr, argumentStaticValues)
-		countStatic = static
-		var countKnown bool
-		count, nilLength, countKnown = staticArrayFillInteger(countValue)
-		if countStatic && !countKnown {
-			return arrayMutatorWriteModel{}, false
-		}
-		if countStatic && count < 0 && !nilLength {
-			// Runtime validates the start first, but either that validation
-			// raises or the negative length is a no-op. No element can land.
 			return arrayMutatorWriteModel{preservable: true}, true
 		}
+		countValues, countStatic = staticMutatorArgumentValues(countExpr, argumentStaticValues)
 	}
 
 	startExpr := selectors[0]
 	if literalBignum(startExpr) {
-		return arrayMutatorWriteModel{}, false
+		return arrayMutatorWriteModel{preservable: true}, true
 	}
-	startValue, startStatic := staticMutatorArgumentValue(startExpr, argumentStaticValues)
-	if startStatic && startValue.Kind() == KindRange {
-		if len(selectors) != 1 {
+	startValues, startStatic := staticMutatorArgumentValues(startExpr, argumentStaticValues)
+	if startStatic {
+		if len(selectors) == 1 || countStatic {
+			return staticArrayFillWriteModel(element, startValues, countValues, len(selectors) == 2), true
+		}
+		countExpr := selectors[1]
+		if !arrayFillSelectorHasNumericFact(countExpr, argumentFacts) {
 			return arrayMutatorWriteModel{}, false
 		}
-		effect, known := staticArrayFillRangeWrites(startValue.Range())
-		if !known {
+		return staticArrayFillUnknownCountWriteModel(element, startValues), true
+	}
+	if countStatic {
+		model := staticArrayFillUnknownStartWriteModel(element, countValues)
+		if !model.mayWrite {
+			return model, true
+		}
+		if !arrayFillSelectorHasNumericFact(startExpr, argumentFacts) {
 			return arrayMutatorWriteModel{}, false
-		}
-		model := arrayMutatorWriteModel{
-			preservable: effect.preservable,
-			mayWrite:    effect.mayWrite,
-		}
-		if effect.writesValue {
-			model.elements = []Expression{element}
 		}
 		return model, true
 	}
-	start, _, startKnown := staticArrayFillInteger(startValue)
-	if startStatic && !startKnown {
-		// A statically invalid selector raises before fill writes anything.
-		return arrayMutatorWriteModel{}, false
-	}
-	if !startStatic && !arrayFillSelectorHasNumericFact(startExpr, argumentFacts) {
+	if !arrayFillSelectorHasNumericFact(startExpr, argumentFacts) {
 		return arrayMutatorWriteModel{}, false
 	}
 	if len(selectors) == 1 {
@@ -6003,39 +5990,145 @@ func arrayFillElementWrites(
 	}
 
 	countExpr := selectors[1]
-	if !countStatic && !arrayFillSelectorHasNumericFact(countExpr, argumentFacts) {
+	if !arrayFillSelectorHasNumericFact(countExpr, argumentFacts) {
 		return arrayMutatorWriteModel{}, false
 	}
-	if countStatic && nilLength {
-		return arrayMutatorWriteModel{
-			elements:    []Expression{element},
-			preservable: true,
-			mayWrite:    true,
-		}, true
-	}
-	if startStatic && start > 0 {
-		// A positive explicit start can pad a shorter receiver with nil.
-		if countStatic && count == 0 {
-			return arrayMutatorWriteModel{mayWrite: true}, true
-		}
-		return arrayMutatorWriteModel{
-			elements: []Expression{element},
-			mayWrite: true,
-		}, true
-	}
-	if countStatic && count == 0 {
-		if !startStatic {
-			// An unknown positive start may still add nil padding even
-			// though the explicit value never lands.
-			return arrayMutatorWriteModel{mayWrite: true}, true
-		}
-		return arrayMutatorWriteModel{preservable: true}, true
-	}
 	return arrayMutatorWriteModel{
-		elements:    []Expression{element},
-		preservable: startStatic,
-		mayWrite:    true,
+		elements: []Expression{element},
+		mayWrite: true,
 	}, true
+}
+
+func staticArrayFillWriteModel(
+	element Expression,
+	startValues, countValues []Value,
+	hasCount bool,
+) arrayMutatorWriteModel {
+	model := arrayMutatorWriteModel{preservable: true}
+	for _, startValue := range startValues {
+		if !hasCount {
+			mergeArrayFillWriteEffect(
+				&model,
+				element,
+				staticArrayFillWriteEffect(startValue, NewNil(), false),
+			)
+			continue
+		}
+		for _, countValue := range countValues {
+			mergeArrayFillWriteEffect(
+				&model,
+				element,
+				staticArrayFillWriteEffect(startValue, countValue, true),
+			)
+		}
+	}
+	return model
+}
+
+func staticArrayFillUnknownCountWriteModel(
+	element Expression,
+	startValues []Value,
+) arrayMutatorWriteModel {
+	model := arrayMutatorWriteModel{preservable: true}
+	for _, startValue := range startValues {
+		if startValue.Kind() == KindRange {
+			continue
+		}
+		start, _, valid := staticArrayFillInteger(startValue)
+		if !valid {
+			continue
+		}
+		model.elements = []Expression{element}
+		model.mayWrite = true
+		if start > 0 {
+			model.preservable = false
+		}
+	}
+	return model
+}
+
+func staticArrayFillUnknownStartWriteModel(
+	element Expression,
+	countValues []Value,
+) arrayMutatorWriteModel {
+	model := arrayMutatorWriteModel{preservable: true}
+	for _, countValue := range countValues {
+		count, nilLength, valid := staticArrayFillInteger(countValue)
+		if !valid || count < 0 && !nilLength {
+			continue
+		}
+		model.mayWrite = true
+		if nilLength {
+			model.elements = []Expression{element}
+			continue
+		}
+		model.preservable = false
+		if count > 0 {
+			model.elements = []Expression{element}
+		}
+	}
+	return model
+}
+
+func staticArrayFillWriteEffect(
+	startValue, countValue Value,
+	hasCount bool,
+) arrayFillRangeWriteEffect {
+	if startValue.Kind() == KindRange {
+		if hasCount {
+			return arrayFillRangeWriteEffect{preservable: true}
+		}
+		effect, known := staticArrayFillRangeWrites(startValue.Range())
+		if !known {
+			return arrayFillRangeWriteEffect{preservable: true}
+		}
+		return effect
+	}
+	start, _, valid := staticArrayFillInteger(startValue)
+	if !valid {
+		return arrayFillRangeWriteEffect{preservable: true}
+	}
+	if !hasCount {
+		return arrayFillRangeWriteEffect{
+			writesValue: true,
+			mayWrite:    true,
+			preservable: true,
+		}
+	}
+	count, nilLength, valid := staticArrayFillInteger(countValue)
+	if !valid || count < 0 && !nilLength {
+		return arrayFillRangeWriteEffect{preservable: true}
+	}
+	if nilLength {
+		return arrayFillRangeWriteEffect{
+			writesValue: true,
+			mayWrite:    true,
+			preservable: true,
+		}
+	}
+	if count == 0 {
+		return arrayFillRangeWriteEffect{
+			mayWrite:    start > 0,
+			preservable: start <= 0,
+		}
+	}
+	return arrayFillRangeWriteEffect{
+		writesValue: true,
+		mayWrite:    true,
+		preservable: start <= 0,
+	}
+}
+
+func mergeArrayFillWriteEffect(
+	model *arrayMutatorWriteModel,
+	element Expression,
+	effect arrayFillRangeWriteEffect,
+) {
+	if effect.writesValue {
+		model.elements = []Expression{element}
+	}
+	model.mayWrite = model.mayWrite || effect.mayWrite
+	model.preservable = model.preservable && effect.preservable
 }
 
 func arrayFillBlockArgumentIsNil(
@@ -6048,26 +6141,18 @@ func arrayFillBlockArgumentIsNil(
 	return typeExprIsNilOnly(argumentFacts[blockArg])
 }
 
-func staticMutatorArgumentValue(
-	expr Expression,
-	argumentStaticValues map[Expression][]Expression,
-) (Value, bool) {
-	values, static := staticMutatorArgumentValues(expr, argumentStaticValues)
-	if !static || len(values) != 1 {
-		return NewNil(), false
-	}
-	return values[0], true
-}
-
 func staticMutatorArgumentValues(
 	expr Expression,
 	argumentStaticValues map[Expression][]Expression,
 ) ([]Value, bool) {
-	if value, static := staticLiteralValue(expr); static {
-		return []Value{value}, true
-	}
 	values, captured := argumentStaticValues[expr]
-	if !captured || len(values) == 0 {
+	if !captured {
+		if value, static := staticLiteralValue(expr); static {
+			return []Value{value}, true
+		}
+		return nil, false
+	}
+	if len(values) == 0 {
 		return nil, false
 	}
 	result := make([]Value, 0, len(values))
@@ -6228,6 +6313,77 @@ func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string,
 	return true
 }
 
+// staticallyExpandedArrayMutatorCall normalizes exact splat alternatives that
+// all have the same width. Each representative argument keeps the union of
+// the values captured at that position, so selector checks use every possible
+// evaluated value without losing the single call shape the runtime receives.
+func (c *scriptChecker) staticallyExpandedArrayMutatorCall(
+	call *CallExpr,
+	argumentFacts map[Expression]*TypeExpr,
+	argumentStaticValues map[Expression][]Expression,
+	argumentSplatOrigins map[Expression][]*SplatArg,
+) (*CallExpr, bool) {
+	if call == nil {
+		return nil, false
+	}
+	if !callExpandsArguments(call) {
+		return call, true
+	}
+	expanded := *call
+	expanded.Args = make([]Expression, 0, len(call.Args))
+	for _, arg := range call.Args {
+		splat, ok := arg.(*SplatArg)
+		if !ok {
+			expanded.Args = append(expanded.Args, arg)
+			continue
+		}
+		values, captured := argumentStaticValues[splat.Value]
+		if !captured || len(values) == 0 {
+			return call, false
+		}
+		arrays := make([]*ArrayLiteral, len(values))
+		width := -1
+		for i, value := range values {
+			array, ok := value.(*ArrayLiteral)
+			if !ok {
+				return call, false
+			}
+			if width < 0 {
+				width = len(array.Elements)
+			} else if len(array.Elements) != width {
+				return call, false
+			}
+			arrays[i] = array
+		}
+		for i := range width {
+			representative := arrays[0].Elements[i]
+			staticValues := make([]Expression, 0, len(arrays))
+			var types []*TypeExpr
+			for _, array := range arrays {
+				element := array.Elements[i]
+				staticValues = append(staticValues, element)
+				written, captured := argumentFacts[element]
+				if !captured {
+					written = c.inferExpressionType(element)
+				}
+				if written != nil {
+					types = append(types, written)
+				}
+			}
+			argumentStaticValues[representative] = staticValues
+			if len(types) > 0 {
+				argumentFacts[representative] = unionTypeExprs(types...)
+			}
+			argumentSplatOrigins[representative] = append(
+				argumentSplatOrigins[representative],
+				splat,
+			)
+			expanded.Args = append(expanded.Args, representative)
+		}
+	}
+	return &expanded, true
+}
+
 // applyArrayMutatorCallFacts checks the elements an in-place builtin array
 // mutator writes against the receiver's declared element type. preserved
 // reports whether every write is provably compatible, in which case the
@@ -6267,6 +6423,16 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	writesCall := call
 	if checkedCall != nil {
 		writesCall = checkedCall
+	}
+	if callExpandsArguments(writesCall) {
+		if expanded, exact := c.staticallyExpandedArrayMutatorCall(
+			writesCall,
+			argumentFacts,
+			argumentStaticValues,
+			argumentSplatOrigins,
+		); exact {
+			writesCall = expanded
+		}
 	}
 	model, ok := arrayMutatorElementWrites(
 		writesCall,

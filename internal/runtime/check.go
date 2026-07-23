@@ -4108,6 +4108,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 							if _, captured := argumentFacts[element]; !captured {
 								argumentFacts[element] = c.inferExpressionType(element)
 							}
+							if elementValues, exact := c.staticValueExpressionAlternatives(element); exact {
+								argumentStaticValues[element] = append([]Expression(nil), elementValues...)
+							}
 							argumentSplatOrigins[element] = append(argumentSplatOrigins[element], splat)
 						}
 					}
