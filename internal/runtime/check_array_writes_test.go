@@ -338,6 +338,35 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "exact local insert index preserves the bound",
+			source: `
+def f(items: array<int>)
+  index = 0
+  items.insert(index, 1)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "insert uses index captured before a later argument rebind",
+			source: `
+def later() -> int
+  yield
+  1
+end
+
+def f(items: array<int>)
+  index = 0
+  items.insert(index, later() do
+    index = 5
+  end)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "non-padding splatted insert preserves the bound",
 			source: `
 def f(items: array<int>)
@@ -1038,6 +1067,16 @@ end
 `,
 		},
 		{
+			name: "exact positive local insert may pad and weakens",
+			source: `
+def f(items: array<int>)
+  index = 5
+  items.insert(index, 1)
+  items << "bad"
+end
+`,
+		},
+		{
 			name: "mutating a shovel-valued pushed child weakens the outer bound",
 			source: `
 def takes_string(value: string)
@@ -1423,6 +1462,11 @@ func TestArrayInsertPaddingBoundaryMatchesRuntime(t *testing.T) {
 	t.Parallel()
 
 	script := compileScriptDefault(t, `
+def later()
+  yield
+  1
+end
+
 def run()
   zero = []
   zero.insert(0, 1)
@@ -1430,7 +1474,12 @@ def run()
   negative.insert(-1, 1)
   positive = []
   positive.insert(1, 1)
-  [zero, negative, positive]
+  index = 0
+  captured = []
+  captured.insert(index, later() do
+    index = 5
+  end)
+  [zero, negative, positive, captured, index]
 end
 `)
 
@@ -1439,6 +1488,8 @@ end
 		NewArray([]Value{NewInt(1)}),
 		NewArray([]Value{NewInt(1)}),
 		NewArray([]Value{NewNil(), NewInt(1)}),
+		NewArray([]Value{NewInt(1)}),
+		NewInt(5),
 	})
 	if !got.Equal(want) {
 		t.Fatalf("run() = %s, want %s", got.String(), want.String())

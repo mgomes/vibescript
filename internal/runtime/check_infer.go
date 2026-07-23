@@ -5907,7 +5907,7 @@ func arrayFillValueElementWrites(
 		return call.Args[:1], true, true
 	}
 
-	startValue, startStatic := staticArrayFillSelectorValue(call.Args[1], argumentStaticValues)
+	startValue, startStatic := staticMutatorArgumentValue(call.Args[1], argumentStaticValues)
 	if startStatic && startValue.Kind() == KindRange {
 		if len(call.Args) != 2 {
 			return nil, false, false
@@ -5935,7 +5935,7 @@ func arrayFillValueElementWrites(
 		return call.Args[:1], true, true
 	}
 
-	countValue, countStatic := staticArrayFillSelectorValue(call.Args[2], argumentStaticValues)
+	countValue, countStatic := staticMutatorArgumentValue(call.Args[2], argumentStaticValues)
 	count, nilLength, countKnown := staticArrayFillInteger(countValue)
 	if countStatic && !countKnown {
 		return nil, false, false
@@ -5971,7 +5971,7 @@ func arrayFillValueElementWrites(
 	return call.Args[:1], startStatic, true
 }
 
-func staticArrayFillSelectorValue(
+func staticMutatorArgumentValue(
 	expr Expression,
 	argumentStaticValues map[Expression][]Expression,
 ) (Value, bool) {
@@ -6041,8 +6041,11 @@ func staticArrayFillRangeWrites(rng Range) (mayWrite, preservable, known bool) {
 	return true, preservable, true
 }
 
-func arrayInsertIndexCannotPad(index Expression) bool {
-	value, static := staticLiteralValue(index)
+func arrayInsertIndexCannotPad(
+	index Expression,
+	argumentStaticValues map[Expression][]Expression,
+) bool {
+	value, static := staticMutatorArgumentValue(index, argumentStaticValues)
 	if !static || (value.Kind() != KindInt && value.Kind() != KindFloat) {
 		return false
 	}
@@ -6132,7 +6135,8 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			kind != TypeInt && kind != TypeFloat && kind != TypeNumber {
 			return false, true, false
 		}
-		if len(elements) > 0 && arrayInsertIndexCannotPad(writesCall.Args[0]) {
+		if len(elements) > 0 &&
+			arrayInsertIndexCannotPad(writesCall.Args[0], argumentStaticValues) {
 			// Zero inserts at the front and every negative index either
 			// resolves inside the array or raises before writing. Neither
 			// successful case can introduce nil padding.
