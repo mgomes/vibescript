@@ -6443,6 +6443,13 @@ func TestCheckInitializerIvarRepeatedTryFollowsRuntimePaths(t *testing.T) {
       end
       @b = 1
     end`,
+		"literal local assignment does not enter rescue": `    for value in [1]
+      begin
+        x = 1
+      rescue
+        @b = 1
+      end
+    end`,
 	}
 
 	for name, region := range regions {

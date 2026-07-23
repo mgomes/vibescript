@@ -2330,6 +2330,14 @@ func repeatedRegionStatementsProvenNonRaising(statements []Statement) bool {
 			if !expressionProvenNonRaising(typed.Expr) {
 				return false
 			}
+		case *AssignStmt:
+			if typed.Operator != "" {
+				return false
+			}
+			if _, local := typed.Target.(*Identifier); !local ||
+				!expressionProvenNonRaising(typed.Value) {
+				return false
+			}
 		case *ReturnStmt:
 			return expressionProvenNonRaising(typed.Value)
 		case *BreakStmt:
