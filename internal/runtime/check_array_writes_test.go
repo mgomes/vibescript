@@ -1479,6 +1479,69 @@ end
 	}
 }
 
+func TestCheckArrayMutatorExactSplatFacts(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		source   string
+		wantLine int
+	}{
+		{
+			name: "diagnostic uses splat expression position",
+			source: `def f(items: array<int>)
+  args = ["bad"]
+  items.push(*args)
+end
+`,
+			wantLine: 3,
+		},
+		{
+			name: "fill selectors keep their evaluation facts",
+			source: `def zero
+  0
+end
+
+def f(items: array<int>)
+  args = ["bad", zero(), 1]
+  items.fill(*args)
+end
+`,
+			wantLine: 7,
+		},
+		{
+			name: "direct fill selectors keep their evaluation facts",
+			source: `def zero
+  0
+end
+
+def f(items: array<int>)
+  items.fill("bad", zero(), 1)
+end
+`,
+			wantLine: 6,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			warnings := compileScriptDefault(t, tc.source).CheckWarnings()
+			if len(warnings) != 1 {
+				t.Fatalf("CheckWarnings() = %#v, want one incompatible write warning", warnings)
+			}
+			if warnings[0].Pos.Line != tc.wantLine ||
+				!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+				t.Fatalf(
+					"CheckWarnings() = %#v, want incompatible write warning on line %d",
+					warnings,
+					tc.wantLine,
+				)
+			}
+		})
+	}
+}
+
 func TestArrayInsertPaddingBoundaryMatchesRuntime(t *testing.T) {
 	t.Parallel()
 

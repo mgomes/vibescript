@@ -2770,7 +2770,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.stmtNoFallthroughInferred = true
 		return
 	case *AssignStmt:
-		if _, destructure := typed.Target.(*DestructureTarget); destructure && typed.Operator == "" {
+		_, destructure := typed.Target.(*DestructureTarget)
+		_, exactArrayValue := typed.Value.(*ArrayLiteral)
+		if typed.Operator == "" && (destructure || exactArrayValue) {
 			previousFacts := c.evaluatedDestructureFacts
 			if previousFacts == nil {
 				c.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
@@ -4049,6 +4051,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		argumentClassValues := make(map[Expression][]string, len(typed.Args)+len(typed.KwArgs))
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
 		argumentStaticValues := make(map[Expression][]Expression, len(typed.Args)+len(typed.KwArgs))
+		argumentSplatOrigins := make(map[Expression]*SplatArg)
 		captureArgumentFacts := func(expr Expression, expectation expressionExpectation, autoCall bool) {
 			argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
 			identitySource := expr
@@ -4077,6 +4080,16 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			}
 			if values, ok := c.staticValueExpressionAlternatives(staticExpr); ok {
 				argumentStaticValues[staticExpr] = append([]Expression(nil), values...)
+				if splat, isSplat := expr.(*SplatArg); isSplat && len(values) == 1 {
+					if array, isArray := values[0].(*ArrayLiteral); isArray {
+						for _, element := range array.Elements {
+							if _, captured := argumentFacts[element]; !captured {
+								argumentFacts[element] = c.inferExpressionType(element)
+							}
+							argumentSplatOrigins[element] = splat
+						}
+					}
+				}
 			}
 		}
 		positionalSplatSeen := false
@@ -4390,6 +4403,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					member,
 					argumentFacts,
 					argumentStaticValues,
+					argumentSplatOrigins,
 					receiverFact,
 				)
 				mutatorArgsModeled = modeled || arrayMutatorRetainsArgumentsWithoutCalling(

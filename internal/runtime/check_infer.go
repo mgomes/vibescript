@@ -529,7 +529,7 @@ func mutableStaticContainers(expr Expression) map[Expression]struct{} {
 	return containers
 }
 
-// capturedDestructureProjectionContainer recognizes exact rest-array snapshots
+// capturedDestructureProjectionContainer recognizes exact array snapshots
 // whose non-literal leaves are durable evaluated-value projections.
 func (c *scriptChecker) capturedDestructureProjectionContainer(expr Expression) bool {
 	array, ok := expr.(*ArrayLiteral)
@@ -544,17 +544,9 @@ func (c *scriptChecker) capturedDestructureProjectionContainer(expr Expression) 
 		if nestedArray && c.capturedDestructureProjectionContainer(nested) {
 			continue
 		}
-		fact, captured := c.destructureProjectionFacts[element]
-		if !captured {
+		if _, captured := c.destructureProjectionFacts[element]; !captured {
 			return false
 		}
-		if fact.factKind == destructureClassFact && len(fact.classNames) > 0 {
-			continue
-		}
-		if fact.factKind == destructureCallableFact && len(fact.callables) > 0 {
-			continue
-		}
-		return false
 	}
 	return true
 }
@@ -2907,12 +2899,15 @@ func (c *scriptChecker) newDestructureProjection(
 		c.destructureProjectionFacts = make(map[Expression]capturedDestructureValueFact)
 	}
 	c.destructureProjectionFacts[projection] = capturedDestructureValueFact{
-		assigned:   fact.assigned,
-		known:      true,
-		evaluated:  true,
-		classNames: append([]string(nil), fact.classNames...),
-		callables:  append([]*ScriptFunction(nil), fact.callables...),
-		factKind:   fact.factKind,
+		assigned:      fact.assigned,
+		known:         true,
+		evaluated:     true,
+		identityRoots: append([]capturedContainerRoot(nil), fact.identityRoots...),
+		retainedRoots: append([]capturedContainerRoot(nil), fact.retainedRoots...),
+		classNames:    append([]string(nil), fact.classNames...),
+		callables:     append([]*ScriptFunction(nil), fact.callables...),
+		staticVals:    append([]Expression(nil), fact.staticVals...),
+		factKind:      fact.factKind,
 	}
 	return projection
 }
@@ -3065,9 +3060,7 @@ func (c *scriptChecker) capturedDestructureArrayFact(array *ArrayLiteral) (captu
 			elementTypes = append(elementTypes, elementFact.assigned)
 		}
 		elementValues := elementFact.staticVals
-		if len(elementValues) == 0 &&
-			(elementFact.factKind == destructureClassFact ||
-				elementFact.factKind == destructureCallableFact) {
+		if len(elementValues) == 0 {
 			elementValues = []Expression{
 				c.newDestructureProjection(elementFact, element.Pos()),
 			}
@@ -3232,6 +3225,11 @@ func (c *scriptChecker) staticValueExpressionAlternatives(expr Expression) ([]Ex
 		}
 		merged := c.normalizeCheckStaticValues(append(append([]Expression(nil), left...), right...))
 		return merged, len(merged) > 0
+	}
+
+	if fact, captured := c.evaluatedDestructureFacts[expr]; captured &&
+		fact.factKind == destructureStaticFact && len(fact.staticVals) > 0 {
+		return append([]Expression(nil), fact.staticVals...), true
 	}
 
 	switch typed := expr.(type) {
@@ -4848,6 +4846,9 @@ func (c *scriptChecker) safeNavigationArgumentsAlwaysEvaluateInferred(call *Call
 // it is not statically known. It is pure: it never emits warnings and never
 // mutates checker state.
 func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
+	if fact, captured := c.destructureProjectionFacts[expr]; captured {
+		return fact.assigned
+	}
 	// A pinned node keeps the fact captured at its own walk: a call whose
 	// callee mutates a builtin namespace dispatched under the pre-mutation
 	// bindings, so its result must not recompute under the context its own
@@ -6120,6 +6121,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	member *MemberExpr,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
+	argumentSplatOrigins map[Expression]*SplatArg,
 	receiverFact *TypeExpr,
 ) (preserved, modeled, mayWrite bool) {
 	ident, ok := member.Object.(*Identifier)
@@ -6231,7 +6233,11 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		// later mutation through it weakens both.
 		c.linkContainerWriteAlias(ident.Name, arg, written)
 		if disjoint {
-			c.reportIncompatibleElementWrite(function, arg.Pos(), ident.Name, elem, written)
+			pos := arg.Pos()
+			if splat := argumentSplatOrigins[arg]; splat != nil {
+				pos = splat.Pos()
+			}
+			c.reportIncompatibleElementWrite(function, pos, ident.Name, elem, written)
 			preserved = false
 			continue
 		}
