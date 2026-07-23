@@ -360,6 +360,16 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "nullable element bound admits insert padding",
+			source: `
+def f(items: array<int?>)
+  items.insert(5, 1)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int?, got string",
+		},
+		{
 			name: "insert uses index captured before a later argument rebind",
 			source: `
 def later() -> int

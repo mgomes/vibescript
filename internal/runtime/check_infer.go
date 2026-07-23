@@ -6146,6 +6146,8 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		return false, false, false
 	}
 	mayWrite = len(elements) > 0
+	elem := declaredArrayElementType(receiver)
+	resolve := c.checkNamedTypeResolver()
 	// insert validates its index before any element lands, so a provably
 	// non-numeric index means the call raises without writing and neither
 	// diagnosis nor preservation applies. A splatted index makes the
@@ -6163,10 +6165,12 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			return false, true, false
 		}
 		if len(elements) > 0 &&
-			arrayInsertIndexCannotPad(writesCall.Args[0], argumentStaticValues) {
+			(arrayInsertIndexCannotPad(writesCall.Args[0], argumentStaticValues) ||
+				elem != nil && typeExprSatisfies(checkTypeNil, elem, resolve)) {
 			// Zero inserts at the front and every negative index either
 			// resolves inside the array or raises before writing. Neither
-			// successful case can introduce nil padding.
+			// successful case can introduce nil padding. An element bound
+			// that already admits nil also survives any padding.
 			preservable = true
 		}
 	}
@@ -6181,7 +6185,6 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	if !mayWrite {
 		return preserved, true, false
 	}
-	elem := declaredArrayElementType(receiver)
 	if elem == nil {
 		for _, arg := range elements {
 			if _, splat := arg.(*SplatArg); splat {
@@ -6195,7 +6198,6 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		}
 		return false, true, true
 	}
-	resolve := c.checkNamedTypeResolver()
 	for _, arg := range elements {
 		if splat, isSplat := arg.(*SplatArg); isSplat {
 			compatible, aborts := c.applySplattedElementWriteFacts(function, splat, ident.Name, elem, resolve)
