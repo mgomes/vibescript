@@ -1081,6 +1081,44 @@ func (c *scriptChecker) applyContainerAliasTransfer(target string, transfer chec
 	}
 }
 
+// applyPossibleContainerAliasTransfer retains only the may-relations from a
+// binding that survives on one branch of a logical assignment.
+func (c *scriptChecker) applyPossibleContainerAliasTransfer(target string, transfer checkContainerAliasTransfer) {
+	if len(transfer.identities) == 0 {
+		return
+	}
+	if c.localTypeFor(target) == nil {
+		if c.degradedContainerBindings == nil {
+			c.degradedContainerBindings = make(map[string]struct{})
+		}
+		c.degradedContainerBindings[target] = struct{}{}
+	}
+	for name := range transfer.identities {
+		if name != target {
+			c.linkContainerAlias(target, name)
+		}
+	}
+	for name := range transfer.aliases {
+		if name == target {
+			continue
+		}
+		if _, identical := transfer.identities[name]; identical {
+			continue
+		}
+		c.linkContainerAlias(target, name)
+	}
+	for source := range transfer.staticSources {
+		if source != target {
+			c.linkStaticValueDependency(source, target)
+		}
+	}
+	for dependent := range transfer.staticDependents {
+		if dependent != target {
+			c.linkStaticValueDependency(target, dependent)
+		}
+	}
+}
+
 func (c *scriptChecker) snapshotContainerIdentityRelations() checkNameRelations {
 	relations := make(checkNameRelations)
 	visited := make(map[string]struct{})
@@ -2157,9 +2195,10 @@ func (c *scriptChecker) mergeLocalTypeStates(base checkScopeState, states []chec
 // clears this fact only when an inline block can rebind it. Nil defers to the
 // current state.
 type logicalAssignmentTargetFact struct {
-	current      *TypeExpr
-	rhsReachable bool
-	known        bool
+	current            *TypeExpr
+	priorAliasTransfer checkContainerAliasTransfer
+	rhsReachable       bool
+	known              bool
 }
 
 func (c *scriptChecker) inferAssignStatementTypes(
@@ -2174,7 +2213,26 @@ func (c *scriptChecker) inferAssignStatementTypes(
 		if stmt.Operator == "" {
 			aliasTransfer = c.captureContainerAliasTransfer(stmt.Value)
 		}
-		c.advanceLocalBindingGeneration(target.Name)
+		var priorLogicalAliasTransfer checkContainerAliasTransfer
+		mayRebind := true
+		if stmt.Operator == tokenOrAssign || stmt.Operator == tokenAndAssign {
+			if logicalTargetFact == nil {
+				mayRebind = c.logicalAssignmentRHSReachable(
+					target.Name,
+					stmt.Operator,
+					c.localTypeFor(target.Name),
+				)
+				if stmt.Operator == tokenOrAssign && mayRebind {
+					priorLogicalAliasTransfer = c.captureContainerAliasTransfer(target)
+				}
+			} else {
+				mayRebind = !logicalTargetFact.known || logicalTargetFact.rhsReachable
+				priorLogicalAliasTransfer = logicalTargetFact.priorAliasTransfer
+			}
+		}
+		if mayRebind {
+			c.advanceLocalBindingGeneration(target.Name)
+		}
 		current := c.localTypeFor(target.Name)
 		next := c.inferExpressionType(stmt.Value)
 		if stmt.Operator == tokenOrAssign || stmt.Operator == tokenAndAssign {
@@ -2182,6 +2240,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 				rhsReachable := c.logicalAssignmentRHSReachable(target.Name, stmt.Operator, current)
 				c.bindLocalType(target.Name, logicalAssignmentFact(stmt.Operator, current, next))
 				c.bindLogicalAssignmentValueFact(target.Name, stmt.Operator, current, stmt.Value)
+				c.applyPossibleContainerAliasTransfer(target.Name, priorLogicalAliasTransfer)
 				if rhsReachable {
 					c.linkContainerAssignmentAlias(target.Name, stmt.Value, next)
 					if next == nil || typeExprHasContainerArm(next) {
@@ -2209,6 +2268,9 @@ func (c *scriptChecker) inferAssignStatementTypes(
 				}
 			} else {
 				c.bindLocalClassValue(target.Name, "")
+			}
+			if stmt.Operator == tokenOrAssign && !known {
+				c.applyPossibleContainerAliasTransfer(target.Name, priorLogicalAliasTransfer)
 			}
 			if rhsReachable {
 				if known {

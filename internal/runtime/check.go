@@ -2856,6 +2856,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			}
 			if ident, ok := typed.Target.(*Identifier); ok {
 				logicalTargetFact.current = c.localTypeFor(ident.Name)
+				if typed.Operator == tokenOrAssign && !known {
+					logicalTargetFact.priorAliasTransfer = c.captureContainerAliasTransfer(ident)
+				}
 			}
 			if rhsReachable {
 				runtimeState := c.snapshotRuntimeState()
@@ -13316,6 +13319,9 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 			}
 			if ident, ok := typed.Target.(*Identifier); ok {
 				logicalTargetFact.current = s.checker.localTypeFor(ident.Name)
+				if typed.Operator == tokenOrAssign && !known {
+					logicalTargetFact.priorAliasTransfer = s.checker.captureContainerAliasTransfer(ident)
+				}
 			}
 			if !rhsReachable {
 				setterReachable = false

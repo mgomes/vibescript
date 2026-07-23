@@ -1750,6 +1750,156 @@ func TestCheckArrayWriteDirectAliasTransfersRelations(t *testing.T) {
 	}
 }
 
+func TestCheckArrayWriteLogicalAssignmentBindingGeneration(t *testing.T) {
+	t.Parallel()
+
+	nullableIntArray := &TypeExpr{
+		Kind:     TypeArray,
+		Nullable: true,
+		TypeArgs: []*TypeExpr{checkTypeInt},
+	}
+	tests := []struct {
+		name         string
+		operator     TokenType
+		current      *TypeExpr
+		fact         *logicalAssignmentTargetFact
+		wantAdvance  bool
+		wantAlias    bool
+		wantIdentity bool
+		wantStatic   bool
+	}{
+		{
+			name:     "known truthy or assignment preserves identity",
+			operator: tokenOrAssign,
+			current:  checkTypeArray,
+			fact: &logicalAssignmentTargetFact{
+				current: checkTypeArray,
+				known:   true,
+			},
+			wantAlias:    true,
+			wantIdentity: true,
+			wantStatic:   true,
+		},
+		{
+			name:     "known truthy and assignment replaces identity",
+			operator: tokenAndAssign,
+			current:  checkTypeArray,
+			fact: &logicalAssignmentTargetFact{
+				current:      checkTypeArray,
+				rhsReachable: true,
+				known:        true,
+			},
+			wantAdvance: true,
+		},
+		{
+			name:     "unknown or assignment retains a possible alias",
+			operator: tokenOrAssign,
+			current:  nullableIntArray,
+			fact: &logicalAssignmentTargetFact{
+				current:      nullableIntArray,
+				rhsReachable: true,
+			},
+			wantAdvance: true,
+			wantAlias:   true,
+			wantStatic:  true,
+		},
+		{
+			name:     "unknown and assignment replaces a possible container",
+			operator: tokenAndAssign,
+			current:  nullableIntArray,
+			fact: &logicalAssignmentTargetFact{
+				current:      nullableIntArray,
+				rhsReachable: true,
+			},
+			wantAdvance: true,
+		},
+		{
+			name:         "collection fallback preserves known truthy identity",
+			operator:     tokenOrAssign,
+			current:      checkTypeArray,
+			wantAlias:    true,
+			wantIdentity: true,
+			wantStatic:   true,
+		},
+		{
+			name:        "collection fallback replaces known truthy identity",
+			operator:    tokenAndAssign,
+			current:     checkTypeArray,
+			wantAdvance: true,
+		},
+		{
+			name:        "collection fallback retains an unknown possible alias",
+			operator:    tokenOrAssign,
+			current:     nullableIntArray,
+			wantAdvance: true,
+			wantAlias:   true,
+			wantStatic:  true,
+		},
+		{
+			name:        "collection fallback and assignment replaces an unknown container",
+			operator:    tokenAndAssign,
+			current:     nullableIntArray,
+			wantAdvance: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checker := &scriptChecker{
+				scopes: []map[string]struct{}{{
+					"copy":  {},
+					"items": {},
+				}},
+				localTypes: []checkTypeFrame{{
+					"copy":  checkTypeArray,
+					"items": tc.current,
+				}},
+				localClassValues: []checkClassValueFrame{nil},
+			}
+			checker.linkContainerIdentityAlias("items", "copy")
+			checker.linkStaticValueAlias("items", "copy")
+			stmt := &AssignStmt{
+				Target:   &Identifier{Name: "items"},
+				Operator: tc.operator,
+				Value: &ArrayLiteral{
+					Elements: []Expression{&IntegerLiteral{Value: 1}},
+				},
+			}
+
+			fact := tc.fact
+			if fact != nil {
+				captured := *fact
+				if tc.operator == tokenOrAssign && !captured.known {
+					captured.priorAliasTransfer = checker.captureContainerAliasTransfer(stmt.Target)
+				}
+				fact = &captured
+			}
+			checker.inferAssignStatementTypes("", stmt, nil, fact)
+
+			if got := checker.localBindingGenerations["items"]; (got != 0) != tc.wantAdvance {
+				t.Errorf("binding generation = %d, want advance %t", got, tc.wantAdvance)
+			}
+			aliasEdge, aliasExists := checker.typeAliases["items"]["copy"]
+			aliasCurrent := aliasExists && checker.bindingEdgeCurrent("items", "copy", aliasEdge)
+			if aliasCurrent != tc.wantAlias {
+				t.Errorf("possible alias current = %t, want %t", aliasCurrent, tc.wantAlias)
+			}
+			identityEdge, identityExists := checker.containerIdentityAliases["items"]["copy"]
+			identityCurrent := identityExists && checker.bindingEdgeCurrent("items", "copy", identityEdge)
+			if identityCurrent != tc.wantIdentity {
+				t.Errorf("identity alias current = %t, want %t", identityCurrent, tc.wantIdentity)
+			}
+			forwardEdge, forwardExists := checker.staticValueDependents["items"]["copy"]
+			forwardCurrent := forwardExists && checker.bindingEdgeCurrent("items", "copy", forwardEdge)
+			reverseEdge, reverseExists := checker.staticValueDependents["copy"]["items"]
+			reverseCurrent := reverseExists && checker.bindingEdgeCurrent("copy", "items", reverseEdge)
+			if forwardCurrent != tc.wantStatic || reverseCurrent != tc.wantStatic {
+				t.Errorf("static dependencies current = (%t, %t), want (%t, %t)",
+					forwardCurrent, reverseCurrent, tc.wantStatic, tc.wantStatic)
+			}
+		})
+	}
+}
+
 func TestCheckArrayWriteRegressionMatrix(t *testing.T) {
 	t.Parallel()
 
@@ -2143,6 +2293,35 @@ def run()
   takes_string(copy)
 end`,
 			want: []string{"call to takes_string argument value expected string, got int"},
+		},
+		{
+			name: "skipped logical assignment preserves an existing alias",
+			source: `def takes_string(value: string)
+  value
+end
+
+def run()
+  items = [1]
+  copy = items
+  items ||= []
+  copy.map! { "ok" }
+  takes_string(items[0])
+end`,
+		},
+		{
+			name: "selected logical assignment rebinds an existing alias",
+			source: `def takes_int(value: int)
+  value
+end
+
+def run()
+  original = [1]
+  selected = original
+  selected &&= ["replacement"]
+  original.map! { 2 }
+  takes_int(selected[0])
+end`,
+			want: []string{"call to takes_int argument value expected int, got string"},
 		},
 		{
 			name: "known skipped logical index keeps its bound",
