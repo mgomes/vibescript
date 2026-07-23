@@ -1861,3 +1861,58 @@ end
 		NewInt(1),
 	})
 }
+
+func TestHashReplaceShapeCheckMatchesRuntimeKeyIdentity(t *testing.T) {
+	t.Parallel()
+
+	colliding := compileScriptDefault(t, `
+def replace_fields(user: { name: int })
+  user.replace({ name: 1, "name": 2 })
+end
+`)
+	requireCheckWarningContains(
+		t,
+		colliding,
+		"write to user adds field name to exact shape { name: int }",
+	)
+
+	receiver := NewTypedHash(1)
+	if err := receiver.HashSet(NewSymbol("name"), NewInt(0)); err != nil {
+		t.Fatalf("HashSet(:name, 0) error = %v", err)
+	}
+	got := callFunc(t, colliding, "replace_fields", []Value{receiver})
+	if got.HashLen() != 2 {
+		t.Fatalf("replace_fields({name: 0}).HashLen() = %d, want 2", got.HashLen())
+	}
+	if value, ok, err := got.HashGet(NewSymbol("name")); err != nil {
+		t.Fatalf("replace_fields({name: 0})[:name] error = %v", err)
+	} else if !ok || !value.Equal(NewInt(1)) {
+		t.Errorf("replace_fields({name: 0})[:name] = %v, %t, want 1, true", value, ok)
+	}
+	if value, ok, err := got.HashGet(NewString("name")); err != nil {
+		t.Fatalf(`replace_fields({name: 0})["name"] error = %v`, err)
+	} else if !ok || !value.Equal(NewInt(2)) {
+		t.Errorf(`replace_fields({name: 0})["name"] = %v, %t, want 2, true`, value, ok)
+	}
+
+	overwritten := compileScriptDefault(t, `
+def replace_fields(user: { name: int })
+  user.replace({ name: "discarded", name: 2 })
+end
+`)
+	requireNoCheckWarnings(t, overwritten)
+
+	receiver = NewTypedHash(1)
+	if err := receiver.HashSet(NewSymbol("name"), NewInt(0)); err != nil {
+		t.Fatalf("HashSet(:name, 0) error = %v", err)
+	}
+	got = callFunc(t, overwritten, "replace_fields", []Value{receiver})
+	if got.HashLen() != 1 {
+		t.Fatalf("replace_fields({name: 0}).HashLen() = %d, want 1", got.HashLen())
+	}
+	if value, ok, err := got.HashGet(NewSymbol("name")); err != nil {
+		t.Fatalf("replace_fields({name: 0})[:name] error = %v", err)
+	} else if !ok || !value.Equal(NewInt(2)) {
+		t.Errorf("replace_fields({name: 0})[:name] = %v, %t, want 2, true", value, ok)
+	}
+}

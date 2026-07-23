@@ -6880,27 +6880,35 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(
 
 // checkShapeReplacementLiteral validates every effective entry in a literal
 // replacement and also checks that every required declared field survives the
-// whole-store replacement. Member-style logical names intentionally ignore
-// string-versus-symbol representation, matching runtime shape validation.
+// whole-store replacement. Logical field lookup uses display names, while
+// physical keys remain distinct so a string/symbol display collision violates
+// exactness just as it does during runtime shape validation.
 func (c *scriptChecker) checkShapeReplacementLiteral(
 	function, name string,
 	shape *TypeExpr,
 	lit *HashLiteral,
 ) bool {
 	compatible := true
-	supplied := make(map[string]struct{}, len(lit.Pairs))
+	supplied := make(map[string]string, len(lit.Pairs))
 	resolve := c.checkNamedTypeResolver()
 	for _, pair := range effectiveHashLiteralPairs(lit) {
 		key, keyOK := staticLiteralHashKey(pair.Key)
+		physicalKey, physicalKeyOK := staticLiteralHashIdentity(pair.Key)
 		keyType := c.inferExpressionType(pair.Key)
 		valueType := c.inferExpressionType(pair.Value)
 		c.linkContainerWriteAlias(name, pair.Key, keyType)
 		c.linkContainerWriteAlias(name, pair.Value, valueType)
-		if !keyOK {
+		if !keyOK || !physicalKeyOK {
 			compatible = false
 			continue
 		}
-		supplied[key] = struct{}{}
+		if previous, present := supplied[key]; present && previous != physicalKey {
+			c.add(function, pair.Key.Pos(), "write to %s adds field %s to exact shape %s",
+				name, key, formatTypeExpr(shape))
+			compatible = false
+			continue
+		}
+		supplied[key] = physicalKey
 		field, present := shape.Shape[key]
 		if !present {
 			c.add(function, pair.Key.Pos(), "write to %s adds field %s to exact shape %s",
