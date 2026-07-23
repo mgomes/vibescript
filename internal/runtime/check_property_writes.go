@@ -230,9 +230,10 @@ func (c *scriptChecker) inferIvarAssignStatementTypes(function string, stmt *Ass
 }
 
 // checkIvarWrite applies the property-contract check for one direct write
-// to the named instance variable and refines its fact. value is nil when
-// the written value is not statically known (compound operators,
-// destructured elements without a literal source); unknown writes stay
+// to the named instance variable and refines its fact when the write can
+// complete. A nil value means the written value is not statically known, as
+// with compound operators or destructured elements without a literal source;
+// unknown writes stay
 // quiet and rely on the runtime guard. Any executed write leaves the ivar
 // satisfying its contract and a typed ivar can never return to the unset
 // state, so the post-write fact is the contract itself, without the entry
@@ -265,6 +266,12 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 					name, formatTypeExpr(ty), formatTypeExpr(next))
 			}
 		}
+	}
+	// Validation happens before the runtime mutates the ivar. Preserve the
+	// incoming fact on a statically rejected write so rescue and ensure paths
+	// observe the value that was actually left in the object.
+	if value != nil && !c.callArgumentMayBindType(value, ty) {
+		return
 	}
 	c.bindWrittenIvarFact(name, ty, value)
 }

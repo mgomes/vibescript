@@ -775,6 +775,48 @@ end
 `))
 }
 
+// A property guard rejects its value before mutating the ivar. Failure paths
+// therefore retain the pre-store fact, including across destructuring, so a
+// rescue write is checked against the value the runtime actually preserved.
+func TestCheckFailedIvarWritesPreserveFailureFacts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		write string
+	}{
+		{name: "plain", write: "      @label = 1"},
+		{name: "destructured", write: "      @label, ignored = [1, 0]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+class Counter
+  property label: string
+
+  def probe
+    begin
+`+tc.write+`
+    rescue
+      @label ||= 2
+    end
+  end
+end
+`)
+			warnings := script.CheckWarnings()
+			if len(warnings) != 2 {
+				t.Fatalf("CheckWarnings() = %#v, want two rejected writes", warnings)
+			}
+			for _, warning := range warnings {
+				if warning.Message != "write to @label expected string, got int" {
+					t.Fatalf("CheckWarnings() = %#v, want only rejected label writes", warnings)
+				}
+			}
+		})
+	}
+}
+
 // Logical ivar writes consult the current fact's truthiness: a definitely
 // truthy fact makes &&= always assign (so its RHS checks) and makes ||=
 // always short-circuit (so its RHS never warns).
