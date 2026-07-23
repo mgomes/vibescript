@@ -4062,9 +4062,20 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		argumentClassValues := make(map[Expression][]string, len(typed.Args)+len(typed.KwArgs))
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
 		argumentStaticValues := make(map[Expression][]Expression, len(typed.Args)+len(typed.KwArgs))
+		argumentRetainedAliases := make(map[Expression]checkRetainedContainerCapture, len(typed.Args))
 		argumentSplatOrigins := make(map[Expression]*SplatArg)
 		captureArgumentFacts := func(expr Expression, expectation expressionExpectation, autoCall bool) {
 			argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
+			retainedValue := expr
+			retainedFact := argumentFacts[expr]
+			if splat, ok := expr.(*SplatArg); ok {
+				retainedValue = splat.Value
+				retainedFact = c.inferExpressionType(splat.Value)
+			}
+			argumentRetainedAliases[expr] = c.captureRetainedContainerAliases(
+				retainedValue,
+				retainedFact,
+			)
 			identitySource := expr
 			if !autoCall {
 				if callableExpr, bindable := c.bareIdentifierCallableArgument(expr); bindable {
@@ -4415,6 +4426,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					member,
 					argumentFacts,
 					argumentStaticValues,
+					argumentRetainedAliases,
 					argumentSplatOrigins,
 					blockResultFact,
 					receiverFact,

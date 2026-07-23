@@ -6249,6 +6249,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	member *MemberExpr,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
+	argumentRetainedAliases map[Expression]checkRetainedContainerCapture,
 	argumentSplatOrigins map[Expression]*SplatArg,
 	blockResultFact *TypeExpr,
 	receiverFact *TypeExpr,
@@ -6321,13 +6322,17 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		return preserved, true, false
 	}
 	linkRetainedElement := func(arg Expression, written *TypeExpr) {
-		c.linkContainerWriteAlias(ident.Name, arg, written)
 		if splat := argumentSplatOrigins[arg]; splat != nil {
-			// Exact expansion substitutes the stored element's AST for the
-			// splat. Keep the source container as provenance for nested
-			// mutable elements that remain reachable through it.
-			c.linkContainerWriteAlias(ident.Name, splat.Value, written)
+			if captured, ok := argumentRetainedAliases[splat]; ok {
+				c.linkCapturedContainerWriteAliases(ident.Name, captured)
+				return
+			}
 		}
+		if captured, ok := argumentRetainedAliases[arg]; ok {
+			c.linkCapturedContainerWriteAliases(ident.Name, captured)
+			return
+		}
+		c.linkContainerWriteAlias(ident.Name, arg, written)
 	}
 	if elem == nil {
 		for _, arg := range model.elements {
@@ -6369,8 +6374,11 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		}
 		disjoint := typeExprsDisjoint(written, elem, resolve)
 		compatible := !disjoint && typeExprSatisfies(written, elem, resolve)
-		if member.Property == "fill" && typeExprHasContainerArm(written) &&
-			!mutatorReceiverFactIntact(c.inferExpressionType(arg), written) {
+		fillValueIntact := mutatorReceiverFactIntact(c.inferExpressionType(arg), written)
+		if captured, ok := argumentRetainedAliases[arg]; ok {
+			fillValueIntact = c.capturedContainerWriteFactIntact(captured, written)
+		}
+		if member.Property == "fill" && typeExprHasContainerArm(written) && !fillValueIntact {
 			// The explicit fill value evaluates before its selectors. A later
 			// selector can mutate that retained container before dispatch, so
 			// only its still-intact fact can preserve the receiver bound.
@@ -6852,6 +6860,176 @@ func (c *scriptChecker) linkContainerAssignmentAlias(target string, value Expres
 // weakens the enclosing receiver.
 func (c *scriptChecker) linkContainerWriteAlias(receiver string, value Expression, written *TypeExpr) {
 	c.linkRetainedContainerAliases(receiver, value, written, true, false)
+}
+
+type checkRetainedContainerCapture struct {
+	roots           []capturedContainerRoot
+	identityRoots   []capturedContainerRoot
+	poisonUntracked bool
+}
+
+// captureRetainedContainerAliases snapshots the mutable roots exposed by an
+// argument when it finishes evaluating. A later argument may rebind the same
+// local before dispatch, but the runtime retains the value already produced.
+func (c *scriptChecker) captureRetainedContainerAliases(
+	value Expression,
+	written *TypeExpr,
+) checkRetainedContainerCapture {
+	var capture checkRetainedContainerCapture
+	seen := make(map[capturedContainerRoot]struct{})
+	seenIdentity := make(map[capturedContainerRoot]struct{})
+	var collect func(Expression, *TypeExpr)
+	collect = func(value Expression, written *TypeExpr) {
+		if written != nil && !typeExprHasContainerArm(written) {
+			return
+		}
+		switch typed := value.(type) {
+		case *Identifier, *IndexExpr, *MemberExpr:
+			root, ok := c.retainedContainerRoot(value)
+			if !ok {
+				return
+			}
+			for name := range c.containerAliasNames(root) {
+				candidate := capturedContainerRoot{
+					name:       name,
+					generation: c.localBindingGenerations[name],
+				}
+				if _, duplicate := seen[candidate]; duplicate {
+					continue
+				}
+				seen[candidate] = struct{}{}
+				capture.roots = append(capture.roots, candidate)
+			}
+			if _, direct := value.(*Identifier); direct {
+				for name := range c.containerIdentityNames(root) {
+					candidate := capturedContainerRoot{
+						name:       name,
+						generation: c.localBindingGenerations[name],
+					}
+					if _, duplicate := seenIdentity[candidate]; duplicate {
+						continue
+					}
+					seenIdentity[candidate] = struct{}{}
+					capture.identityRoots = append(capture.identityRoots, candidate)
+				}
+			}
+		case *ArrayLiteral:
+			for _, element := range typed.Elements {
+				collect(element, c.inferExpressionType(element))
+			}
+		case *HashLiteral:
+			if typed.ShapeType != nil && !c.hashShapeStaticallyShadowed(typed) {
+				return
+			}
+			for _, pair := range typed.Pairs {
+				collect(pair.Key, c.inferExpressionType(pair.Key))
+				collect(pair.Value, c.inferExpressionType(pair.Value))
+			}
+		case *ConditionalExpr:
+			if branch, known := staticConditionalExpressionBranch(typed); known {
+				collect(branch, c.inferExpressionType(branch))
+				return
+			}
+			collect(typed.Consequent, c.inferExpressionType(typed.Consequent))
+			collect(typed.Alternate, c.inferExpressionType(typed.Alternate))
+		case *IfExpr:
+			if branch, known := staticIfExpressionBranch(typed); known {
+				collect(branch, c.inferExpressionType(branch))
+				return
+			}
+			collect(typed.Consequent, c.inferExpressionType(typed.Consequent))
+			for _, branch := range typed.ElseIf {
+				collect(branch.Result, c.inferExpressionType(branch.Result))
+			}
+			collect(typed.Alternate, c.inferExpressionType(typed.Alternate))
+		case *RescueExpr:
+			collect(typed.Body, c.inferExpressionType(typed.Body))
+			collect(typed.Fallback, c.inferExpressionType(typed.Fallback))
+		case *CaseExpr:
+			if result, known := staticCaseExpressionResult(typed); known {
+				collect(result, c.inferExpressionType(result))
+				return
+			}
+			for _, clause := range typed.Clauses {
+				collect(clause.Result, c.inferExpressionType(clause.Result))
+			}
+			collect(typed.ElseExpr, c.inferExpressionType(typed.ElseExpr))
+		case *BinaryExpr:
+			switch typed.Operator {
+			case tokenAnd, tokenOr:
+				collect(typed.Left, c.inferExpressionType(typed.Left))
+				collect(typed.Right, c.inferExpressionType(typed.Right))
+			case tokenShovel, tokenPlus:
+				collect(typed.Left, c.inferExpressionType(typed.Left))
+				collect(typed.Right, c.inferExpressionType(typed.Right))
+			case tokenMinus, tokenAmpersand:
+				collect(typed.Left, c.inferExpressionType(typed.Left))
+			}
+		case *CallExpr:
+			capture.poisonUntracked = true
+		}
+	}
+	collect(value, written)
+	sort.Slice(capture.roots, func(i, j int) bool {
+		if capture.roots[i].name != capture.roots[j].name {
+			return capture.roots[i].name < capture.roots[j].name
+		}
+		return capture.roots[i].generation < capture.roots[j].generation
+	})
+	sort.Slice(capture.identityRoots, func(i, j int) bool {
+		if capture.identityRoots[i].name != capture.identityRoots[j].name {
+			return capture.identityRoots[i].name < capture.identityRoots[j].name
+		}
+		return capture.identityRoots[i].generation < capture.identityRoots[j].generation
+	})
+	return capture
+}
+
+func (c *scriptChecker) linkCapturedContainerWriteAliases(
+	receiver string,
+	capture checkRetainedContainerCapture,
+) {
+	if capture.poisonUntracked {
+		c.poisonLocalType(receiver)
+	}
+	for _, root := range capture.roots {
+		if c.localBindingGenerations[root.name] != root.generation {
+			continue
+		}
+		c.linkContainerAlias(receiver, root.name)
+		c.linkStaticValueDependency(root.name, receiver)
+	}
+}
+
+func (c *scriptChecker) capturedContainerWriteFactIntact(
+	capture checkRetainedContainerCapture,
+	written *TypeExpr,
+) bool {
+	if capture.poisonUntracked {
+		return false
+	}
+	if len(capture.identityRoots) == 0 {
+		return true
+	}
+	current := false
+	for _, root := range capture.identityRoots {
+		if c.localBindingGenerations[root.name] != root.generation {
+			continue
+		}
+		current = true
+		if mutatorReceiverFactIntact(c.localTypeFor(root.name), written) {
+			return true
+		}
+	}
+	if current {
+		return false
+	}
+	for _, root := range capture.identityRoots {
+		if _, poisoned := c.typePoison[root.name]; poisoned {
+			return false
+		}
+	}
+	return true
 }
 
 // linkRetainedContainerAliases links a container to the retained roots

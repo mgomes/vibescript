@@ -1671,6 +1671,125 @@ end
 	}
 }
 
+func TestCheckArrayMutatorRetainedAliasesUseEvaluationTimeBindings(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		source   string
+		wantLine int
+	}{
+		{
+			name: "push splat",
+			source: `def later() -> int
+  yield
+  3
+end
+
+def f(rows: array<array<int> | int>)
+  args = [[1]]
+  rows.push(*args, later() do
+    args = [[2]]
+  end)
+  args[0] << "new"
+  rows << "bad"
+end
+`,
+			wantLine: 12,
+		},
+		{
+			name: "fill value",
+			source: `def selector() -> int
+  yield
+  0
+end
+
+def f(rows: array<array<int>>)
+  value = [1]
+  rows.fill(value, selector() do
+    value = [2]
+  end)
+  value << "new"
+  rows << "bad"
+end
+`,
+			wantLine: 12,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			warnings := compileScriptDefault(t, tc.source).CheckWarnings()
+			if len(warnings) != 1 {
+				t.Fatalf("CheckWarnings() = %#v, want one incompatible write warning", warnings)
+			}
+			if warnings[0].Pos.Line != tc.wantLine ||
+				!strings.Contains(warnings[0].Message, "write to rows expected element") ||
+				!strings.Contains(warnings[0].Message, "got string") {
+				t.Fatalf(
+					"CheckWarnings() = %#v, want incompatible write warning on line %d",
+					warnings,
+					tc.wantLine,
+				)
+			}
+		})
+	}
+}
+
+func TestArrayMutatorRetainedAliasesUseEvaluationTimeBindings(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def push_later() -> int
+  yield
+  3
+end
+
+def fill_selector() -> int
+  yield
+  0
+end
+
+def run()
+  push_rows = [[0]]
+  push_args = [[1]]
+  push_rows.push(*push_args, push_later() do
+    push_args = [[2]]
+  end)
+  push_args[0] << "new"
+
+  fill_rows = [[0]]
+  fill_value = [1]
+  fill_rows.fill(fill_value, fill_selector() do
+    fill_value = [2]
+  end)
+  fill_value << "new"
+
+  [push_rows, push_args, fill_rows, fill_value]
+end
+`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	want := NewArray([]Value{
+		NewArray([]Value{
+			NewArray([]Value{NewInt(0)}),
+			NewArray([]Value{NewInt(1)}),
+			NewInt(3),
+		}),
+		NewArray([]Value{
+			NewArray([]Value{NewInt(2), NewString("new")}),
+		}),
+		NewArray([]Value{
+			NewArray([]Value{NewInt(1)}),
+		}),
+		NewArray([]Value{NewInt(2), NewString("new")}),
+	})
+	if !got.Equal(want) {
+		t.Fatalf("run() = %s, want %s", got.String(), want.String())
+	}
+}
+
 func TestCheckArrayMutatorExactSplatFacts(t *testing.T) {
 	t.Parallel()
 
