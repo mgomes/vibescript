@@ -2003,6 +2003,26 @@ end
 `,
 			warning: "default value for status expected Status, got symbol",
 		},
+		{
+			name: "call-specific property default",
+			source: `
+enum Status
+  Draft
+end
+
+class User
+  property status: Status
+
+  def initialize(value: symbol, @status: symbol = value)
+  end
+end
+
+def run
+  User.new(:missing).status
+end
+`,
+			warning: "default value for @status expected Status, got symbol",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
