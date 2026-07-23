@@ -2514,6 +2514,83 @@ end
 	}
 }
 
+func TestCheckInitializerIvarEffectsWidenExactBooleanFacts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("repeated write", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property flag: bool
+  property a: int
+  property b: int
+
+  def initialize
+    @flag = false
+    for value in [1]
+      @flag = true
+    end
+    if @flag
+      @b = 1
+    end
+    @a = @b
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
+
+	t.Run("same self call", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def set_flag
+    @flag = true
+  end
+
+  def initialize
+    @flag = false
+    set_flag()
+    if @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  User.new()
+end
+`)
+		requireCheckWarningContains(
+			t,
+			script,
+			"call to takes_int argument value expected int, got string",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"argument value expected int, got string",
+		)
+	})
+}
+
 func TestCheckInitializerIvarBlockConstructorBodiesRemainChecked(t *testing.T) {
 	t.Parallel()
 

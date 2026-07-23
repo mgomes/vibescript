@@ -67,10 +67,10 @@ func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 	}
 }
 
-// widenUnsetInstanceIvarFacts drops initializer-only certainty after code
-// that may have written self. A scalar contract widens from nil to its normal
-// method-entry contract-or-nil fact; container contracts become unknown
-// because their stable post-write shape is not tracked.
+// widenUnsetInstanceIvarFacts drops facts narrower than the property contract
+// after code that may have written self. Scalar facts join with the contract;
+// container contracts become unknown because their stable post-write shape is
+// not tracked.
 func (c *scriptChecker) widenUnsetInstanceIvarFacts() {
 	if c.selfClass == nil || c.selfClassContext {
 		return
@@ -83,13 +83,16 @@ func (c *scriptChecker) widenUnsetInstanceIvarFacts() {
 	}
 }
 
-// widenUnsetInstanceIvarFact drops initializer-only certainty for one ivar a
-// repeated region may write. Unknown calls use widenUnsetInstanceIvarFacts;
-// direct ivar assignments can preserve unrelated unset facts through this
-// narrower path.
+// widenUnsetInstanceIvarFact drops narrow certainty for one ivar a repeated
+// region may write. Unknown calls use widenUnsetInstanceIvarFacts; direct ivar
+// assignments can preserve unrelated facts through this narrower path.
 func (c *scriptChecker) widenUnsetInstanceIvarFact(name string) {
-	if c.selfClass == nil || c.selfClassContext ||
-		!typeExprIsNilOnly(c.localTypeFor(ivarFactKey(name))) {
+	if c.selfClass == nil || c.selfClassContext {
+		return
+	}
+	key := ivarFactKey(name)
+	current := c.localTypeFor(key)
+	if current == nil {
 		return
 	}
 	ty := c.instanceIvarContract(name)
@@ -98,10 +101,10 @@ func (c *scriptChecker) widenUnsetInstanceIvarFact(name string) {
 	}
 	fact := c.ivarContractFact(ty)
 	if fact == nil {
-		c.bindLocalType(ivarFactKey(name), nil)
+		c.bindLocalType(key, nil)
 		return
 	}
-	c.bindLocalType(ivarFactKey(name), unionTypeExprs(fact, checkTypeNil))
+	c.bindLocalType(key, unionTypeExprs(current, fact))
 }
 
 // checkIvarParamBinding checks one ivar parameter as the direct write it
@@ -297,8 +300,8 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 	c.bindWrittenIvarFact(name, ty, value)
 }
 
-// bindWrittenIvarFact keeps a compatible boolean literal's exact truthiness
-// while retaining the declared contract for every other successful write.
+// bindWrittenIvarFact keeps a compatible nil or boolean literal's exact
+// truthiness while retaining the declared contract for every other write.
 func (c *scriptChecker) bindWrittenIvarFact(name string, ty *TypeExpr, value Expression) {
 	fact := c.ivarContractFact(ty)
 	if value != nil {
