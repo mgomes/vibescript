@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 )
@@ -2666,6 +2667,59 @@ end
 			t.Fatalf("run() = %v, want false", got)
 		}
 	})
+
+	for _, tc := range []struct {
+		name       string
+		method     string
+		invocation string
+	}{
+		{name: "builtin call", method: "puts", invocation: "puts()"},
+		{name: "builtin value", method: "puts", invocation: "puts"},
+		{name: "block predicate call", method: "block_given?", invocation: "block_given?()"},
+		{name: "block predicate value", method: "block_given?", invocation: "block_given?"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{OutputWriter: io.Discard}, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def `+tc.method+`
+    @flag = true
+  end
+
+  def initialize
+    @flag = false
+    `+tc.invocation+`
+    unless @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  User.new()
+end
+`)
+			requireCheckWarningContains(
+				t,
+				script,
+				"call to takes_int argument value expected int, got string",
+			)
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"argument value expected int, got string",
+			)
+		})
+	}
 }
 
 func TestCheckInitializerIvarBlockConstructorBodiesRemainChecked(t *testing.T) {

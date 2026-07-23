@@ -6002,7 +6002,8 @@ func (c *scriptChecker) implicitSelfCallDispatch(
 		return instanceScriptDispatchSelection{}, false
 	}
 	ident, ok := call.Callee.(*Identifier)
-	if !ok || c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
+	if !ok || ident.Name == blockGivenName ||
+		c.identifierShadowed(ident.Name) || c.hostGlobalShadows(ident.Name) {
 		return instanceScriptDispatchSelection{}, false
 	}
 	if c.script.functions[ident.Name] != nil {
@@ -6012,6 +6013,9 @@ func (c *scriptChecker) implicitSelfCallDispatch(
 		return instanceScriptDispatchSelection{}, false
 	}
 	if c.typeRootHasBinding(ident.Name) || c.hostBuiltinOverrides(ident.Name) {
+		return instanceScriptDispatchSelection{}, false
+	}
+	if _, ok := c.defaultBuiltinCallSpec(ident.Name); ok {
 		return instanceScriptDispatchSelection{}, false
 	}
 	fn := c.implicitSelfFunction(ident.Name)
