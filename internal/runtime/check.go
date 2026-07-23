@@ -4324,6 +4324,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 			}
 		}
+		var blockResultFact *TypeExpr
 		immediateLambdaEnters := targetMayEnter && c.immediateLambdaCallMayEnter(invokedLambda, typed)
 		if immediateLambdaEnters {
 			c.applyLambdaBlockNamespaceMutations(invokedLambda)
@@ -4358,7 +4359,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			// semantics, so those returns cannot unwind the enclosing
 			// function.
 			localReturns := typed.Block.Lambda || c.callTargetsCoreLambda(typed, target, targetResolved)
-			c.checkBlockLiteral(function, typed.Block, localReturns)
+			blockResultFact = c.checkBlockLiteral(function, typed.Block, localReturns)
 		}
 		c.callArgumentFacts = previousFacts
 		c.callArgumentClassValues = previousClassValues
@@ -4404,6 +4405,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					argumentFacts,
 					argumentStaticValues,
 					argumentSplatOrigins,
+					blockResultFact,
 					receiverFact,
 				)
 				mutatorArgsModeled = modeled || arrayMutatorRetainsArgumentsWithoutCalling(
@@ -6421,9 +6423,9 @@ func (c *scriptChecker) checkMemberAutoCall(
 // whose returns stay inside the block itself (stabby lambdas and the lambda
 // builtin's literal block); a plain block's return unwinds the enclosing
 // function instead.
-func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, localReturns bool) {
+func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, localReturns bool) *TypeExpr {
 	if block == nil {
-		return
+		return nil
 	}
 	previousSummaryYieldsActive := c.summaryYieldsActive
 	if localReturns {
@@ -6538,7 +6540,7 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, 
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
 	c.mutationRegionDepth++
-	c.checkStatements(label, nil, block.Body)
+	fallsThrough := c.checkStatements(label, nil, block.Body)
 	c.mutationRegionDepth--
 	if !block.Lambda {
 		bodyExitScopeState := c.snapshotScopeState()
@@ -6564,6 +6566,25 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, 
 		)
 		c.mergeScopeBindingRelations([]checkScopeState{blockEntryScopeState, bodyExitScopeState})
 	}
+	if !fallsThrough {
+		return nil
+	}
+	return c.blockImplicitResultFact(block.Body)
+}
+
+func (c *scriptChecker) blockImplicitResultFact(statements []Statement) *TypeExpr {
+	collector := &returnSummaryCollector{}
+	previousCollector := c.returnCollector
+	previousStates := c.implicitReturnStates
+	c.returnCollector = collector
+	c.implicitReturnStates = nil
+	c.collectImplicitResultFacts(statements)
+	c.returnCollector = previousCollector
+	c.implicitReturnStates = previousStates
+	if collector.unknown || len(collector.arms) == 0 {
+		return nil
+	}
+	return unionTypeExprs(collector.arms...)
 }
 
 // literalArrayElementYieldMethods are the builtin array iterators that yield

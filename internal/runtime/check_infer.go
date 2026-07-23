@@ -5896,7 +5896,24 @@ func arrayFillValueElementWrites(
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
 ) (elements []Expression, preservable, ok bool) {
-	if call.Block != nil || call.BlockArg != nil || len(call.Args) < 1 || len(call.Args) > 3 {
+	if call == nil {
+		return nil, false, false
+	}
+	var element Expression
+	selectors := call.Args
+	switch {
+	case call.Block != nil:
+		if len(selectors) > 2 {
+			return nil, false, false
+		}
+		element = call.Block
+	case call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, argumentFacts):
+		if len(selectors) < 1 || len(selectors) > 3 {
+			return nil, false, false
+		}
+		element = selectors[0]
+		selectors = selectors[1:]
+	default:
 		return nil, false, false
 	}
 	for _, arg := range call.Args {
@@ -5904,13 +5921,14 @@ func arrayFillValueElementWrites(
 			return nil, false, false
 		}
 	}
-	if len(call.Args) == 1 {
-		return call.Args[:1], true, true
+	if len(selectors) == 0 {
+		return []Expression{element}, true, true
 	}
 
-	startValue, startStatic := staticMutatorArgumentValue(call.Args[1], argumentStaticValues)
+	startExpr := selectors[0]
+	startValue, startStatic := staticMutatorArgumentValue(startExpr, argumentStaticValues)
 	if startStatic && startValue.Kind() == KindRange {
-		if len(call.Args) != 2 {
+		if len(selectors) != 1 {
 			return nil, false, false
 		}
 		mayWrite, preservable, known := staticArrayFillRangeWrites(startValue.Range())
@@ -5920,32 +5938,33 @@ func arrayFillValueElementWrites(
 		if !mayWrite {
 			return nil, preservable, true
 		}
-		return call.Args[:1], preservable, true
+		return []Expression{element}, preservable, true
 	}
 	start, _, startKnown := staticArrayFillInteger(startValue)
 	if startStatic && !startKnown {
 		// A statically invalid selector raises before fill writes anything.
 		return nil, false, false
 	}
-	if !startStatic && !arrayFillSelectorHasNumericFact(call.Args[1], argumentFacts) {
+	if !startStatic && !arrayFillSelectorHasNumericFact(startExpr, argumentFacts) {
 		return nil, false, false
 	}
-	if len(call.Args) == 2 {
+	if len(selectors) == 1 {
 		// A bare start at or before the end replaces only existing slots;
 		// a start past the end is a no-op rather than a padding operation.
-		return call.Args[:1], true, true
+		return []Expression{element}, true, true
 	}
 
-	countValue, countStatic := staticMutatorArgumentValue(call.Args[2], argumentStaticValues)
+	countExpr := selectors[1]
+	countValue, countStatic := staticMutatorArgumentValue(countExpr, argumentStaticValues)
 	count, nilLength, countKnown := staticArrayFillInteger(countValue)
 	if countStatic && !countKnown {
 		return nil, false, false
 	}
-	if !countStatic && !arrayFillSelectorHasNumericFact(call.Args[2], argumentFacts) {
+	if !countStatic && !arrayFillSelectorHasNumericFact(countExpr, argumentFacts) {
 		return nil, false, false
 	}
 	if countStatic && nilLength {
-		return call.Args[:1], true, true
+		return []Expression{element}, true, true
 	}
 	if countStatic && count < 0 {
 		// A negative explicit length is a true no-op for every receiver
@@ -5959,7 +5978,7 @@ func arrayFillValueElementWrites(
 		if countStatic && count == 0 {
 			return nil, false, false
 		}
-		return call.Args[:1], false, true
+		return []Expression{element}, false, true
 	}
 	if countStatic && count == 0 {
 		if !startStatic {
@@ -5969,7 +5988,17 @@ func arrayFillValueElementWrites(
 		}
 		return nil, true, true
 	}
-	return call.Args[:1], startStatic, true
+	return []Expression{element}, startStatic, true
+}
+
+func arrayFillBlockArgumentIsNil(
+	blockArg Expression,
+	argumentFacts map[Expression]*TypeExpr,
+) bool {
+	if _, literal := blockArg.(*NilLiteral); literal {
+		return true
+	}
+	return typeExprIsNilOnly(argumentFacts[blockArg])
 }
 
 func staticMutatorArgumentValue(
@@ -6122,6 +6151,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
 	argumentSplatOrigins map[Expression]*SplatArg,
+	blockResultFact *TypeExpr,
 	receiverFact *TypeExpr,
 ) (preserved, modeled, mayWrite bool) {
 	ident, ok := member.Object.(*Identifier)
@@ -6224,7 +6254,9 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			continue
 		}
 		written, captured := argumentFacts[arg]
-		if !captured {
+		if _, blockResult := arg.(*BlockLiteral); blockResult {
+			written, captured = blockResultFact, true
+		} else if !captured {
 			written = c.inferExpressionType(arg)
 		}
 		if written == nil {
@@ -6234,6 +6266,13 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		}
 		disjoint := typeExprsDisjoint(written, elem, resolve)
 		compatible := !disjoint && typeExprSatisfies(written, elem, resolve)
+		if member.Property == "fill" && typeExprHasContainerArm(written) &&
+			!mutatorReceiverFactIntact(c.inferExpressionType(arg), written) {
+			// The explicit fill value evaluates before its selectors. A later
+			// selector can mutate that retained container before dispatch, so
+			// only its still-intact fact can preserve the receiver bound.
+			preserved = false
+		}
 		if compatible {
 			c.invalidateElementWriteAliases(ident.Name, written)
 		}

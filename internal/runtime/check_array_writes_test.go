@@ -175,6 +175,38 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "fill literal block result",
+			source: `
+def f(items: array<int>)
+  items.fill() do
+    "bad"
+  end
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "compatible fill literal block result preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.fill() do
+    1
+  end
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "nil block argument keeps the value form",
+			source: `
+def f(items: array<int>)
+  items.fill("bad", &nil)
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "compatible fill preserves the bound",
 			source: `
 def f(items: array<int>)
@@ -852,6 +884,20 @@ end
 			source: `
 def f(items: array<int>, start)
   items.fill("bad", start)
+  items << "bad"
+end
+`,
+		},
+		{
+			name: "selector mutation of an evaluated fill value weakens the receiver",
+			source: `
+def selector(value, extra) -> int
+  value << extra
+  0
+end
+
+def f(items: array<array<int>>, value: array<int>, extra)
+  items.fill(value, selector(value, extra))
   items << "bad"
 end
 `,
@@ -1765,6 +1811,42 @@ end
 		NewArray([]Value{NewInt(1), NewInt(1)}),
 		NewArray([]Value{NewNil(), NewNil(), NewInt(1)}),
 		NewArray([]Value{}),
+	})
+	if !got.Equal(want) {
+		t.Fatalf("run() = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestArrayFillValueAndBlockEvaluationMatchesCheckerModel(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def selector(value, extra) -> int
+  value << extra
+  0
+end
+
+def run()
+  value = [1]
+  selected = [[0]]
+  selected.fill(value, selector(value, "bad"))
+  blocked = [1, 2]
+  blocked.fill() do
+    "bad"
+  end
+  nil_block = [1, 2]
+  nil_block.fill("bad", &nil)
+  [selected, value, blocked, nil_block]
+end
+`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	mutatedValue := NewArray([]Value{NewInt(1), NewString("bad")})
+	want := NewArray([]Value{
+		NewArray([]Value{mutatedValue}),
+		mutatedValue,
+		NewArray([]Value{NewString("bad"), NewString("bad")}),
+		NewArray([]Value{NewString("bad"), NewString("bad")}),
 	})
 	if !got.Equal(want) {
 		t.Fatalf("run() = %s, want %s", got.String(), want.String())
