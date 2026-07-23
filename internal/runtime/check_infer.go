@@ -2651,7 +2651,10 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		}
 		c.captureEvaluatedDestructureFactOnce(typed.Object)
 		c.captureAssignmentReceiver(typed)
-		dispatchType := c.inferExpressionType(typed.Object)
+		dispatchType := c.instanceDispatchReceiverType(
+			typed.Object,
+			c.inferExpressionType(typed.Object),
+		)
 		hashDefault := c.captureDirectCoreHashDefault(typed.Object)
 		for _, index := range typed.Indices {
 			c.collectRepeatedRegionIvarEffectsFromExpression(index, effects, true)
@@ -6112,6 +6115,9 @@ func (c *scriptChecker) pureCallArgument(expr Expression) bool {
 		*NilLiteral, *SymbolLiteral:
 		return true
 	case *Identifier:
+		if typed.Name == "self" && c.selfClass != nil {
+			return true
+		}
 		if _, autoCallable := c.resolveCallable(&CallExpr{Callee: typed}); autoCallable {
 			return false
 		}
@@ -9423,7 +9429,10 @@ func (c *scriptChecker) bareMemberArgumentCallableFact(expr Expression) (*TypeEx
 	if !ok {
 		return nil, false
 	}
-	target, ok := c.resolveMemberCallable(member)
+	target, ok := c.explicitSelfMemberCallable(member)
+	if !ok {
+		target, ok = c.resolveMemberCallable(member)
+	}
 	if !ok || target.fn == nil || target.fn.Accessor == functionAccessorGetter {
 		return nil, false
 	}

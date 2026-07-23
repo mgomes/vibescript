@@ -2614,6 +2614,584 @@ end
 	}
 }
 
+func TestCheckInitializerIvarCurrentSelfSetterWidensOnlyWrittenFact(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def initialize(flag: bool)
+    self.b = 1
+    if flag
+      @a = @b
+    else
+      @a = @c
+    end
+  end
+end
+
+def run(flag: bool)
+  User.new(flag).a
+end
+`)
+	warnings := script.CheckWarnings()
+	if len(warnings) != 1 ||
+		warnings[0].Message != "write to @a expected int, got nil" {
+		t.Fatalf("CheckWarnings() = %#v, want only the unset @c warning", warnings)
+	}
+
+	got := callScript(
+		t,
+		context.Background(),
+		script,
+		"run",
+		[]Value{NewBool(true)},
+		CallOptions{},
+	)
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run(true) = %v, want 1", got)
+	}
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		[]Value{NewBool(false)},
+		CallOptions{},
+		"instance variable @a expected int, got nil",
+	)
+}
+
+func TestCheckInitializerIvarCurrentSelfOperatorWidensOnlyWrittenFact(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def initialize(flag: bool)
+    self + 1
+    if flag
+      @a = @b
+    else
+      @a = @c
+    end
+  end
+
+  def +(value: int)
+    @b = value
+    self
+  end
+end
+
+def run(flag: bool)
+  User.new(flag).a
+end
+`)
+	warnings := script.CheckWarnings()
+	if len(warnings) != 1 ||
+		warnings[0].Message != "write to @a expected int, got nil" {
+		t.Fatalf("CheckWarnings() = %#v, want only the unset @c warning", warnings)
+	}
+
+	got := callScript(
+		t,
+		context.Background(),
+		script,
+		"run",
+		[]Value{NewBool(true)},
+		CallOptions{},
+	)
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run(true) = %v, want 1", got)
+	}
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		[]Value{NewBool(false)},
+		CallOptions{},
+		"instance variable @a expected int, got nil",
+	)
+}
+
+func TestCheckInitializerIvarCurrentSelfIndexWidensOnlyWrittenFact(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def initialize(flag: bool)
+    self[1]
+    if flag
+      @a = @b
+    else
+      @a = @c
+    end
+  end
+
+  def [](value: int)
+    @b = value
+    self
+  end
+end
+
+def run(flag: bool)
+  User.new(flag).a
+end
+`)
+	warnings := script.CheckWarnings()
+	if len(warnings) != 1 ||
+		warnings[0].Message != "write to @a expected int, got nil" {
+		t.Fatalf("CheckWarnings() = %#v, want only the unset @c warning", warnings)
+	}
+
+	got := callScript(
+		t,
+		context.Background(),
+		script,
+		"run",
+		[]Value{NewBool(true)},
+		CallOptions{},
+	)
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run(true) = %v, want 1", got)
+	}
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		[]Value{NewBool(false)},
+		CallOptions{},
+		"instance variable @a expected int, got nil",
+	)
+}
+
+func TestCheckInitializerIvarCurrentSelfDispatchBindingPrefixes(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		expression string
+		method     string
+	}{
+		{
+			name:       "binary operator",
+			expression: "      self + 1",
+			method: `  def +(@b: int, failure: int = stop_now())
+    self
+  end`,
+		},
+		{
+			name:       "index getter",
+			expression: "      self[1]",
+			method: `  def [](@b: int, failure: int = stop_now())
+    self
+  end`,
+		},
+		{
+			name:       "member setter",
+			expression: "      self.b = 1",
+			method: `  def b=(@b: int, failure: int = stop_now())
+    @b
+  end`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+def stop_now
+  raise "stop"
+end
+
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    begin
+`+tc.expression+`
+    rescue
+      @a = @b
+    end
+  end
+
+`+tc.method+`
+end
+
+def run
+  User.new().a
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 1 {
+				t.Fatalf("run() = %v, want 1", got)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarDefaultPrefixKeepsCallerLambdaOwnership(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def stop_now
+  raise "stop"
+end
+
+class Invoker
+  def +(callback, own: -> { @c = "set" }, trigger: callback.call(), own_run: own.call(), failure: stop_now())
+    self
+  end
+end
+
+class User
+  property a: int
+  property b: int
+  property s: string
+  property c: string
+
+  def initialize(invoker: Invoker)
+    begin
+      invoker + -> { @b = 1 }
+    rescue
+      @a = @b
+      @s = @c
+    end
+  end
+end
+
+def run
+  User.new(Invoker.new())
+end
+`)
+	warnings := script.CheckWarnings()
+	if len(warnings) != 1 ||
+		warnings[0].Message != "write to @s expected string, got nil" {
+		t.Fatalf("CheckWarnings() = %#v, want only the callee-owned @c warning", warnings)
+	}
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		nil,
+		CallOptions{},
+		"instance variable @s expected string, got nil",
+	)
+}
+
+func TestCheckInitializerIvarNestedSelfDispatchesRemainConservative(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		invoke  string
+		methods string
+	}{
+		{
+			name:   "bare implicit self helper",
+			invoke: "    self + 1",
+			methods: `  def +(value: int)
+    seed
+    self
+  end
+
+  def seed
+    @b = 1
+  end`,
+		},
+		{
+			name:   "same-class receiver may alias self",
+			invoke: "    self + self",
+			methods: `  def +(other: User)
+    other.seed()
+    self
+  end
+
+  def seed
+    @b = 1
+  end`,
+		},
+		{
+			name:   "nested overloaded operator",
+			invoke: "    self + 1",
+			methods: `  def +(value: int)
+    self - value
+    self
+  end
+
+  def -(value: int)
+    @b = value
+    self
+  end`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+`+tc.invoke+`
+    @a = @b
+  end
+
+`+tc.methods+`
+end
+
+def run
+  User.new().a
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 1 {
+				t.Fatalf("run() = %v, want 1", got)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarBoundSelfCallbackWidenOnlyWrittenFacts(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class Invoker
+  def callback=(callback: function)
+    callback.call(1)
+  end
+end
+
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def initialize(invoker: Invoker, flag: bool)
+    invoker.callback = seed
+    if flag
+      @a = @b
+    else
+      @a = @c
+    end
+  end
+
+  def seed(value: int)
+    @b = value
+  end
+end
+
+def run(flag: bool)
+  User.new(Invoker.new(), flag).a
+end
+`)
+	warnings := script.CheckWarnings()
+	if len(warnings) != 1 ||
+		warnings[0].Message != "write to @a expected int, got nil" {
+		t.Fatalf("CheckWarnings() = %#v, want only the unset @c warning", warnings)
+	}
+
+	got := callScript(
+		t,
+		context.Background(),
+		script,
+		"run",
+		[]Value{NewBool(true)},
+		CallOptions{},
+	)
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run(true) = %v, want 1", got)
+	}
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		[]Value{NewBool(false)},
+		CallOptions{},
+		"instance variable @a expected int, got nil",
+	)
+}
+
+func TestScriptFunctionEffectScanTracksCopiedSelfCallbackAliases(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def apply(callback: function)
+  alias_cb = callback
+  alias_cb.call(1)
+end
+
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    apply(self.seed)
+    @a = @b
+  end
+
+  def seed(value: int)
+    @b = value
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+	requireNoCheckWarnings(t, script)
+
+	user := script.classes["User"]
+	apply := script.functions["apply"]
+	initialize := user.Methods["initialize"]
+	stmt, ok := initialize.Body[0].(*ExprStmt)
+	if !ok {
+		t.Fatalf("initialize body = %T, want *ExprStmt", initialize.Body[0])
+	}
+	call, ok := stmt.Expr.(*CallExpr)
+	if !ok {
+		t.Fatalf("initialize expression = %T, want *CallExpr", stmt.Expr)
+	}
+	checker := &scriptChecker{
+		script:          script,
+		typeRoot:        checkTypeRoot(script, nil),
+		runtimeTypeRoot: checkTypeRoot(script, nil),
+		selfClass:       user,
+	}
+	scan := checker.scriptFunctionEffectScan(call, staticCallable{
+		name:       "apply",
+		fn:         apply,
+		resolution: calleeDirect,
+	})
+	seed := user.Methods["seed"]
+	if scan == nil {
+		t.Fatal("scriptFunctionEffectScan() = nil")
+	}
+	if _, invoked := scan.invokedSelfFunctions[seed]; !invoked {
+		t.Fatal("scriptFunctionEffectScan() lost current-self provenance through a local alias")
+	}
+	if _, written := scan.directIvarWrites[seed]["b"]; !written {
+		t.Fatalf("scriptFunctionEffectScan() writes = %#v, want @b", scan.directIvarWrites[seed])
+	}
+	if scan.invokedUnknownCallable {
+		t.Fatal("scriptFunctionEffectScan() marked an exact copied self callback unknown")
+	}
+}
+
+func TestScriptFunctionEffectScanTracksExplicitSelfCallback(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class Invoker
+  def invoke(callback: function)
+    callback.call()
+  end
+end
+
+class User
+  property b: int
+
+  def initialize(invoker: Invoker)
+    invoker.invoke(self.seed)
+  end
+
+  def seed
+    @b = 1
+  end
+end
+
+def run
+  User.new(Invoker.new()).b
+end
+`)
+	requireNoCheckWarnings(t, script)
+	user := script.classes["User"]
+	invoker := script.classes["Invoker"]
+	initialize := user.Methods["initialize"]
+	stmt, ok := initialize.Body[0].(*ExprStmt)
+	if !ok {
+		t.Fatalf("initialize body = %T, want *ExprStmt", initialize.Body[0])
+	}
+	call, ok := stmt.Expr.(*CallExpr)
+	if !ok {
+		t.Fatalf("initialize expression = %T, want *CallExpr", stmt.Expr)
+	}
+
+	checker := &scriptChecker{
+		script:          script,
+		typeRoot:        checkTypeRoot(script, nil),
+		runtimeTypeRoot: checkTypeRoot(script, nil),
+		selfClass:       user,
+	}
+	scan := checker.scriptFunctionEffectScan(call, staticCallable{
+		name:       "Invoker#invoke",
+		fn:         invoker.Methods["invoke"],
+		resolution: calleeMemberMethod,
+	})
+	seed := user.Methods["seed"]
+	if scan == nil {
+		t.Fatal("scriptFunctionEffectScan() = nil")
+	}
+	if _, invoked := scan.invokedSelfFunctions[seed]; !invoked {
+		t.Fatal("scriptFunctionEffectScan() did not retain the explicit-self callback receiver")
+	}
+	if _, written := scan.directIvarWrites[seed]["b"]; !written {
+		t.Fatalf("scriptFunctionEffectScan() writes = %#v, want @b", scan.directIvarWrites[seed])
+	}
+	if scan.invokedUnknownCallable {
+		t.Fatal("scriptFunctionEffectScan() marked an exact explicit-self callback unknown")
+	}
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run() = %v, want 1", got)
+	}
+}
+
+func TestCheckInitializerIvarDistinctSameClassSetterRemainsConservative(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+  property c: int
+
+  def initialize(other: User? = nil)
+    if other
+      other.b = 1
+      @a = @c
+    else
+      @a = 1
+    end
+  end
+end
+
+def run
+  User.new(User.new()).a
+end
+`)
+	requireNoCheckWarnings(t, script)
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		nil,
+		CallOptions{},
+		"instance variable @a expected int, got nil",
+	)
+}
+
 func TestCheckInitializerIvarDispatchesApplyEffectsWithoutLoop(t *testing.T) {
 	t.Parallel()
 

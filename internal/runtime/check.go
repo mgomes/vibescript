@@ -4764,7 +4764,10 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		c.captureEvaluatedDestructureFactOnce(typed.Object)
 		hashDefault := c.captureDirectCoreHashDefault(typed.Object)
 		c.captureAssignmentReceiver(typed)
-		dispatchType := c.inferExpressionType(typed.Object)
+		dispatchType := c.instanceDispatchReceiverType(
+			typed.Object,
+			c.inferExpressionType(typed.Object),
+		)
 		opaqueDispatch := c.indexReadHasOpaqueClassConstantEffects(typed.Object)
 		for _, index := range typed.Indices {
 			if !c.checkExpressionWithAuto(function, index, true) {
@@ -5619,6 +5622,16 @@ func (s instanceScriptDispatchSelection) mayReject() bool {
 	return false
 }
 
+func (c *scriptChecker) instanceDispatchReceiverType(
+	receiver Expression,
+	receiverType *TypeExpr,
+) *TypeExpr {
+	if c.expressionIsCurrentInstanceSelf(receiver) {
+		return &TypeExpr{Kind: TypeEnum, Name: c.selfClass.Name}
+	}
+	return receiverType
+}
+
 // instanceScriptDispatch selects the one user-defined method each receiver
 // arm would use. The method list is ordered so != stops at a defined != and
 // only falls back to == when != is absent, matching evalInstanceOperator.
@@ -5632,6 +5645,8 @@ func (c *scriptChecker) instanceScriptDispatch(
 	if len(methods) == 0 {
 		return selection
 	}
+	currentSelfReceiver := c.expressionIsCurrentInstanceSelf(receiver)
+	receiverType = c.instanceDispatchReceiverType(receiver, receiverType)
 	arms, exact := typeExprArms(receiverType, 0)
 	if !exact || len(arms) == 0 {
 		selection.unknown = true
@@ -5652,18 +5667,22 @@ func (c *scriptChecker) instanceScriptDispatch(
 			selection.instanceFallbacks++
 			continue
 		}
-		if match.class == nil {
+		classDef := match.class
+		if classDef == nil {
 			selection.unknown = true
 			continue
 		}
-		if match.class.IsModule {
+		if currentSelfReceiver {
+			classDef = c.selfClass
+		}
+		if classDef.IsModule {
 			selection.unknown = true
 			continue
 		}
 		var method string
 		var fn *ScriptFunction
 		for _, candidate := range methods {
-			if candidateFn := match.class.Methods[candidate]; candidateFn != nil {
+			if candidateFn := classDef.Methods[candidate]; candidateFn != nil {
 				method = candidate
 				fn = candidateFn
 				break
@@ -5683,17 +5702,17 @@ func (c *scriptChecker) instanceScriptDispatch(
 			Position: receiver.Pos(),
 		}
 		target := staticCallable{
-			name:       match.class.Name + "#" + method,
+			name:       classDef.Name + "#" + method,
 			fn:         fn,
 			resolution: calleeMemberMethod,
 		}
-		visible := c.dynamicCallTargetVisible(match.class, false, fn, false)
+		visible := c.dynamicCallTargetVisible(classDef, false, fn, false)
 		plan := c.scriptCallBindingPlan(call, target)
 		mayEnter := visible && plan.bodyMayEnter
 		selection.targets = append(selection.targets, instanceScriptDispatchTarget{
 			call:          call,
 			target:        target,
-			classDef:      match.class,
+			classDef:      classDef,
 			bindingStarts: visible && plan.bindingStarts,
 			mayEnter:      mayEnter,
 			mayReject:     !visible || !c.scriptCallBodyMustEnter(call, target),
@@ -5766,6 +5785,13 @@ func (c *scriptChecker) assignmentSetterScriptDispatch(
 		return selection
 	case *MemberExpr:
 		receivers, exact := c.assignmentMemberReceiversFromCandidates(receiver.candidates)
+		if (!exact || len(receivers) == 0) && c.expressionIsCurrentSelf(typed.Object) {
+			receivers = []assignmentMemberReceiver{{
+				class:       c.selfClass,
+				classMethod: c.selfClassContext,
+			}}
+			exact = true
+		}
 		if !exact {
 			return c.memberSetterFallbackSelection(receiver.receiverType)
 		}
@@ -5843,6 +5869,35 @@ func (c *scriptChecker) memberSetterFallbackSelection(
 	return selection
 }
 
+func expressionIsSelf(expr Expression) bool {
+	ident, ok := expr.(*Identifier)
+	return ok && ident.Name == "self"
+}
+
+func (c *scriptChecker) expressionIsCurrentSelf(expr Expression) bool {
+	return c.selfClass != nil && expressionIsSelf(expr)
+}
+
+func (c *scriptChecker) expressionIsCurrentInstanceSelf(expr Expression) bool {
+	return !c.selfClassContext && c.expressionIsCurrentSelf(expr)
+}
+
+func (c *scriptChecker) scriptDispatchRunsOnCurrentSelf(
+	selected instanceScriptDispatchTarget,
+) bool {
+	if !sameScriptClass(c.selfClass, selected.classDef) ||
+		c.selfClassContext != selected.classMethod {
+		return false
+	}
+	member, ok := selected.call.Callee.(*MemberExpr)
+	return ok && c.expressionIsCurrentSelf(member.Object)
+}
+
+func sameScriptClass(left, right *ClassDef) bool {
+	return left != nil && right != nil &&
+		left.owner == right.owner && left.Name == right.Name
+}
+
 // scriptDispatchIvarEffects reports only effects that can reach the caller's
 // current self. Parameter defaults may run after binding starts even when a
 // later default prevents the method body from starting. A method running on a
@@ -5860,24 +5915,34 @@ func (c *scriptChecker) scriptDispatchIvarEffects(
 		if !selected.bindingStarts {
 			continue
 		}
-		sameInstanceClass := !selected.classMethod &&
-			c.selfClass != nil && !c.selfClassContext &&
-			selected.classDef == c.selfClass
+		currentSelf := c.scriptDispatchRunsOnCurrentSelf(selected)
+		sameInstanceClass := !currentSelf && !selected.classMethod &&
+			!c.selfClassContext && sameScriptClass(selected.classDef, c.selfClass)
 		if sameInstanceClass && selected.mayEnter {
 			effects.unknown = true
 			continue
 		}
 		scan := c.scriptFunctionEffectScan(selected.call, selected.target)
-		if scan == nil || scan.invokedUnknownCallable {
+		if scan == nil {
 			effects.unknown = true
 			continue
 		}
+		if currentSelf || sameInstanceClass {
+			mergeScriptFunctionDirectIvarEffects(&effects, scan, selected.target.fn)
+		}
+		if scan.invokedUnknownCallable {
+			effects.unknown = true
+			continue
+		}
+		for fn := range scan.invokedSelfFunctions {
+			mergeScriptFunctionDirectIvarEffects(&effects, scan, fn)
+		}
 		var callerLambdas map[*BlockLiteral]struct{}
-		if !selected.mayEnter {
+		if !selected.mayEnter && !currentSelf && !sameInstanceClass {
 			callerLambdas = callerLambdaArgumentBlocks(selected.call)
 		}
 		for block := range scan.invokedLambdas {
-			if !selected.mayEnter {
+			if callerLambdas != nil {
 				if _, callerOwned := callerLambdas[block]; !callerOwned {
 					continue
 				}
@@ -5886,6 +5951,25 @@ func (c *scriptChecker) scriptDispatchIvarEffects(
 		}
 	}
 	return effects
+}
+
+func mergeScriptFunctionDirectIvarEffects(
+	effects *regionIvarEffects,
+	scan *namespaceMutationScan,
+	fn *ScriptFunction,
+) {
+	if effects == nil || scan == nil || fn == nil {
+		return
+	}
+	if _, unknown := scan.unknownDirectIvarEffects[fn]; unknown {
+		effects.unknown = true
+	}
+	for name := range scan.directIvarWrites[fn] {
+		if effects.writes == nil {
+			effects.writes = make(map[string]struct{})
+		}
+		effects.writes[name] = struct{}{}
+	}
 }
 
 func (c *scriptChecker) binaryExpressionMayComplete(expr *BinaryExpr) bool {
@@ -10835,15 +10919,36 @@ func callableParamLambdaArguments(
 	target staticCallable,
 	facts map[string]checkReachableParamFact,
 ) map[string][]Expression {
+	arguments := callableParamArgumentExpressions(call, target, facts, true)
+	lambdas := make(map[string][]Expression)
+	for name, expressions := range arguments {
+		for _, expression := range expressions {
+			if lambdaLiteralBlock(expression) != nil {
+				lambdas[name] = append(lambdas[name], expression)
+			}
+		}
+	}
+	if len(lambdas) == 0 {
+		return nil
+	}
+	return lambdas
+}
+
+func callableParamArgumentExpressions(
+	call *CallExpr,
+	target staticCallable,
+	facts map[string]checkReachableParamFact,
+	includeDefaults bool,
+) map[string][]Expression {
 	if call == nil || target.fn == nil || callExpandsArguments(call) {
 		return nil
 	}
 	view := staticCallViewFor(call, target)
-	lambdas := make(map[string][]Expression)
-	appendLambdas := func(name string, expressions ...Expression) {
+	arguments := make(map[string][]Expression)
+	appendExpressions := func(name string, expressions ...Expression) {
 		for _, expression := range expressions {
-			if lambdaLiteralBlock(expression) != nil {
-				lambdas[name] = append(lambdas[name], expression)
+			if expression != nil {
+				arguments[name] = append(arguments[name], expression)
 			}
 		}
 	}
@@ -10854,9 +10959,9 @@ func callableParamLambdaArguments(
 			continue
 		}
 		positionallyBound[param.Name] = struct{}{}
-		appendLambdas(param.Name, arg)
+		appendExpressions(param.Name, arg)
 		if fact, ok := facts[param.Name]; ok {
-			appendLambdas(param.Name, fact.staticVals...)
+			appendExpressions(param.Name, fact.staticVals...)
 		}
 	}
 	lastKeyword := make(map[string]int, len(view.kwargs))
@@ -10870,22 +10975,24 @@ func callableParamLambdaArguments(
 		if _, supplied := positionallyBound[kwarg.Name]; supplied {
 			continue
 		}
-		appendLambdas(kwarg.Name, kwarg.Value)
+		appendExpressions(kwarg.Name, kwarg.Value)
 		if fact, ok := facts[kwarg.Name]; ok {
-			appendLambdas(kwarg.Name, fact.staticVals...)
+			appendExpressions(kwarg.Name, fact.staticVals...)
 		}
 	}
-	for _, param := range target.fn.Params {
-		fact, ok := facts[param.Name]
-		if !ok || !fact.usesDefault || lambdaLiteralBlock(param.DefaultVal) == nil {
-			continue
+	if includeDefaults {
+		for _, param := range target.fn.Params {
+			fact, ok := facts[param.Name]
+			if !ok || !fact.usesDefault {
+				continue
+			}
+			appendExpressions(param.Name, param.DefaultVal)
 		}
-		appendLambdas(param.Name, param.DefaultVal)
 	}
-	if len(lambdas) == 0 {
+	if len(arguments) == 0 {
 		return nil
 	}
-	return lambdas
+	return arguments
 }
 
 // checkParseAsShapeArgument reports a JSON.parse_as call whose second
@@ -12475,6 +12582,29 @@ func builtinValueCallSpec(val Value) (staticCallSpec, bool) {
 		return staticCallSpec{}, false
 	}
 	return *builtin.checkSpec, true
+}
+
+func (c *scriptChecker) explicitSelfMemberCallable(
+	member *MemberExpr,
+) (staticCallable, bool) {
+	if member == nil || !c.expressionIsCurrentSelf(member.Object) {
+		return staticCallable{}, false
+	}
+	methods := c.selfClass.Methods
+	separator := "#"
+	if c.selfClassContext {
+		methods = c.selfClass.ClassMethods
+		separator = "."
+	}
+	fn := methods[member.Property]
+	if fn == nil {
+		return staticCallable{}, false
+	}
+	return staticCallable{
+		name:       c.selfClass.Name + separator + member.Property,
+		fn:         fn,
+		resolution: calleeMemberMethod,
+	}, true
 }
 
 func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallable, bool) {
@@ -15202,6 +15332,11 @@ func (c *scriptChecker) bindUnreachedRescueLocalsAsNil(stmt *TryStmt) {
 	}
 }
 
+type callableSelfBindings struct {
+	functions map[string][]*ScriptFunction
+	ambiguous map[string]struct{}
+}
+
 // namespaceMutationScan records every builtin namespace member a function's
 // execution can reassign, descending into any code the body may run — block
 // and lambda bodies, statement expressions, and nested definitions — so a
@@ -15222,31 +15357,45 @@ type namespaceMutationScan struct {
 	classMethodFns   map[*ScriptFunction]struct{}
 	selfClass        *ClassDef
 	selfClassContext bool
+	// The effect receiver stays fixed while selfClass follows nested callees.
+	effectSelfClass        *ClassDef
+	effectSelfClassContext bool
 	// A nil class records a parameter that shadows a class name without
 	// proving one exact instance dispatch.
-	nominalReceivers       map[string]*ClassDef
-	callableParams         map[string][]*ScriptFunction
-	callableLambdas        map[string][]Expression
-	unboundParams          map[string]struct{}
-	invokedLambdas         map[*BlockLiteral]struct{}
-	invokedUnknownCallable bool
-	failureScopes          [][]checkScopeState
+	nominalReceivers         map[string]*ClassDef
+	callableParams           map[string][]*ScriptFunction
+	callableLambdas          map[string][]Expression
+	callableSelfParams       map[string][]*ScriptFunction
+	ambiguousSelfCallables   map[string]struct{}
+	unboundParams            map[string]struct{}
+	invokedLambdas           map[*BlockLiteral]struct{}
+	invokedSelfFunctions     map[*ScriptFunction]struct{}
+	invokedUnknownCallable   bool
+	directIvarWrites         map[*ScriptFunction]map[string]struct{}
+	unknownDirectIvarEffects map[*ScriptFunction]struct{}
+	currentFunction          *ScriptFunction
+	failureScopes            [][]checkScopeState
 }
 
 func (c *scriptChecker) newNamespaceMutationScan() *namespaceMutationScan {
 	c.prepareSelfScopeFunctions()
 	scan := &namespaceMutationScan{
-		checker:          c,
-		out:              make(map[string]struct{}),
-		functions:        c.script.functions,
-		classes:          c.script.classes,
-		active:           make(map[*ScriptFunction]struct{}),
-		activeDefaults:   make(map[*ScriptFunction]map[int]struct{}),
-		methodClasses:    c.selfScopeFnClasses,
-		classMethodFns:   c.selfScopeClassFns,
-		selfClass:        c.selfClass,
-		selfClassContext: c.selfClassContext,
-		invokedLambdas:   make(map[*BlockLiteral]struct{}),
+		checker:                  c,
+		out:                      make(map[string]struct{}),
+		functions:                c.script.functions,
+		classes:                  c.script.classes,
+		active:                   make(map[*ScriptFunction]struct{}),
+		activeDefaults:           make(map[*ScriptFunction]map[int]struct{}),
+		methodClasses:            c.selfScopeFnClasses,
+		classMethodFns:           c.selfScopeClassFns,
+		selfClass:                c.selfClass,
+		selfClassContext:         c.selfClassContext,
+		effectSelfClass:          c.selfClass,
+		effectSelfClassContext:   c.selfClassContext,
+		invokedLambdas:           make(map[*BlockLiteral]struct{}),
+		invokedSelfFunctions:     make(map[*ScriptFunction]struct{}),
+		directIvarWrites:         make(map[*ScriptFunction]map[string]struct{}),
+		unknownDirectIvarEffects: make(map[*ScriptFunction]struct{}),
 	}
 	return scan
 }
@@ -15263,14 +15412,152 @@ func (s *namespaceMutationScan) visit(fn *ScriptFunction) {
 	s.function(fn)
 }
 
+func (s *namespaceMutationScan) recordDirectIvarWrite(name string) {
+	if s.currentFunction == nil || name == "" {
+		return
+	}
+	writes := s.directIvarWrites[s.currentFunction]
+	if writes == nil {
+		writes = make(map[string]struct{})
+		s.directIvarWrites[s.currentFunction] = writes
+	}
+	writes[name] = struct{}{}
+}
+
+func (s *namespaceMutationScan) recordDirectIvarTarget(target Expression) {
+	switch typed := target.(type) {
+	case *IvarExpr:
+		s.recordDirectIvarWrite(typed.Name)
+	case *DestructureTarget:
+		for _, element := range typed.Elements {
+			s.recordDirectIvarTarget(element.Target)
+		}
+	}
+}
+
+func (s *namespaceMutationScan) markUnknownDirectIvarEffects() {
+	if s.currentFunction != nil {
+		s.unknownDirectIvarEffects[s.currentFunction] = struct{}{}
+	}
+}
+
+func (s *namespaceMutationScan) withSuspendedDirectIvarAttribution(walk func()) {
+	previous := s.currentFunction
+	s.currentFunction = nil
+	defer func() { s.currentFunction = previous }()
+	walk()
+}
+
+func (s *namespaceMutationScan) callableParamSelfBindings(
+	arguments map[string][]Expression,
+) callableSelfBindings {
+	var bindings callableSelfBindings
+	for name, expressions := range arguments {
+		for _, expression := range expressions {
+			if ident, ok := expression.(*Identifier); ok {
+				if _, ambiguous := s.ambiguousSelfCallables[ident.Name]; ambiguous {
+					if bindings.ambiguous == nil {
+						bindings.ambiguous = make(map[string]struct{})
+					}
+					bindings.ambiguous[name] = struct{}{}
+				}
+			}
+			if functions, exact := s.currentSelfCallableFunctions(expression); exact {
+				if bindings.functions == nil {
+					bindings.functions = make(map[string][]*ScriptFunction)
+				}
+				bindings.functions[name] = append(bindings.functions[name], functions...)
+				continue
+			}
+			functions, exact := s.checker.callableExpressionFunctions(expression)
+			if !exact {
+				continue
+			}
+			for _, fn := range functions {
+				if s.functionMayRunOnEffectSelf(fn) {
+					if bindings.ambiguous == nil {
+						bindings.ambiguous = make(map[string]struct{})
+					}
+					bindings.ambiguous[name] = struct{}{}
+					break
+				}
+			}
+		}
+	}
+	for name, functions := range bindings.functions {
+		bindings.functions[name] = normalizeCheckCallables(functions)
+	}
+	return bindings
+}
+
+func (s *namespaceMutationScan) currentSelfCallableFunctions(
+	expr Expression,
+) ([]*ScriptFunction, bool) {
+	if ident, ok := expr.(*Identifier); ok {
+		if functions, bound := s.callableSelfParams[ident.Name]; bound {
+			return append([]*ScriptFunction(nil), functions...), len(functions) > 0
+		}
+	}
+	if call, ok := expr.(*CallExpr); ok {
+		if identity, bare := bareIdentifierCallableValue(call); bare {
+			return s.currentSelfCallableFunctions(identity)
+		}
+	}
+	if s.effectSelfClass == nil || s.effectSelfClassContext ||
+		!sameScriptClass(s.selfClass, s.effectSelfClass) || s.selfClassContext {
+		return nil, false
+	}
+	switch typed := expr.(type) {
+	case *Identifier:
+		functions, exact := s.checker.callableExpressionFunctions(typed)
+		fn := s.selfClass.Methods[typed.Name]
+		if !exact || fn == nil || fn.Accessor == functionAccessorGetter ||
+			len(functions) == 0 {
+			return nil, false
+		}
+		for _, candidate := range functions {
+			if candidate != fn {
+				return nil, false
+			}
+		}
+		return functions, true
+	case *MemberExpr:
+		if !expressionIsSelf(typed.Object) {
+			return nil, false
+		}
+		fn := s.selfClass.Methods[typed.Property]
+		if fn == nil || fn.Accessor == functionAccessorGetter {
+			return nil, false
+		}
+		return []*ScriptFunction{fn}, true
+	default:
+		return nil, false
+	}
+}
+
+func (s *namespaceMutationScan) functionMayRunOnEffectSelf(fn *ScriptFunction) bool {
+	if fn == nil || s.effectSelfClass == nil || s.effectSelfClassContext {
+		return false
+	}
+	classDef := s.methodClasses[fn]
+	_, classMethod := s.classMethodFns[fn]
+	return sameScriptClass(classDef, s.effectSelfClass) && !classMethod
+}
+
 // functionReference unions in the writes of an owned top-level function or
 // implicit-self method the scanned body mentions. Any mention counts — callee,
 // bare auto-invoke, or escaping value — since a stored function can run later;
 // a shadowed name only over-invalidates, which is the sound direction.
 func (s *namespaceMutationScan) functionReference(name string) {
 	if fns, bound := s.callableParams[name]; bound {
+		if _, ambiguous := s.ambiguousSelfCallables[name]; ambiguous {
+			s.invokedUnknownCallable = true
+		}
 		for _, fn := range fns {
 			if len(fn.Params) == 0 {
+				if functionInSet(fn, s.callableSelfParams[name]) {
+					s.invokedSelfFunctions[fn] = struct{}{}
+				}
 				s.scanFunctionCall(fn, nil, staticCallable{fn: fn})
 			}
 		}
@@ -15291,7 +15578,7 @@ func (s *namespaceMutationScan) functionReference(name string) {
 			fn = s.selfClass.Methods[name]
 		}
 		if fn != nil {
-			s.scanFunctionCall(fn, nil, staticCallable{name: name, fn: fn})
+			s.selfReference(name)
 		}
 	}
 }
@@ -15304,7 +15591,13 @@ func (s *namespaceMutationScan) functionReferenceWithCall(name string, call *Cal
 		return
 	}
 	if fns, bound := s.callableParams[name]; bound {
+		if _, ambiguous := s.ambiguousSelfCallables[name]; ambiguous {
+			s.invokedUnknownCallable = true
+		}
 		for _, fn := range fns {
+			if functionInSet(fn, s.callableSelfParams[name]) {
+				s.invokedSelfFunctions[fn] = struct{}{}
+			}
 			s.scanFunctionCall(fn, call, staticCallable{name: fn.Name + ".call", fn: fn})
 		}
 		return
@@ -15352,6 +15645,15 @@ func (s *namespaceMutationScan) scanExactLambdaCall(
 	return true
 }
 
+func functionInSet(fn *ScriptFunction, functions []*ScriptFunction) bool {
+	for _, candidate := range functions {
+		if candidate == fn {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *namespaceMutationScan) selfReference(name string) {
 	s.selfCallReference(name, &CallExpr{})
 }
@@ -15360,6 +15662,7 @@ func (s *namespaceMutationScan) selfCallReference(name string, call *CallExpr) {
 	if s.selfClass == nil {
 		return
 	}
+	s.markUnknownDirectIvarEffects()
 	if s.selfClassContext {
 		if name == "new" && !s.selfClass.IsModule {
 			fn := s.selfClass.Methods["initialize"]
@@ -15456,9 +15759,20 @@ func (s *namespaceMutationScan) function(fn *ScriptFunction) {
 			defaults = append(defaults, i)
 		}
 	}
-	s.withFunctionContext(fn, nil, nil, func() {
-		if !s.scanFunctionBindings(fn, defaults, len(fn.Params), nil, nil, false) {
+	s.withFunctionContext(fn, nil, nil, callableSelfBindings{}, func() {
+		if !s.scanFunctionBindings(
+			fn,
+			defaults,
+			len(fn.Params),
+			nil,
+			nil,
+			callableSelfBindings{},
+			false,
+		) {
 			return
+		}
+		if fn.Accessor == functionAccessorSetter {
+			s.recordDirectIvarWrite(fn.AccessorName)
 		}
 		s.statements(fn.Body)
 	})
@@ -15484,14 +15798,18 @@ func (s *namespaceMutationScan) scanFunctionCall(
 	}
 	facts := s.checker.reachableCallParamFacts(call, target)
 	lambdas := callableParamLambdaArguments(call, target, facts)
+	selfBindings := s.callableParamSelfBindings(
+		callableParamArgumentExpressions(call, target, facts, false),
+	)
 	if _, active := s.active[fn]; active {
-		s.withFunctionContext(fn, facts, lambdas, func() {
+		s.withFunctionContext(fn, facts, lambdas, selfBindings, func() {
 			s.scanFunctionBindings(
 				fn,
 				plan.defaultParams,
 				plan.boundParamCount,
 				facts,
 				lambdas,
+				selfBindings,
 				plan.exactBindings,
 			)
 		})
@@ -15499,18 +15817,22 @@ func (s *namespaceMutationScan) scanFunctionCall(
 	}
 	s.active[fn] = struct{}{}
 	defer delete(s.active, fn)
-	s.withFunctionContext(fn, facts, lambdas, func() {
+	s.withFunctionContext(fn, facts, lambdas, selfBindings, func() {
 		if !s.scanFunctionBindings(
 			fn,
 			plan.defaultParams,
 			plan.boundParamCount,
 			facts,
 			lambdas,
+			selfBindings,
 			plan.exactBindings,
 		) {
 			return
 		}
 		if plan.bodyMayEnter {
+			if fn.Accessor == functionAccessorSetter {
+				s.recordDirectIvarWrite(fn.AccessorName)
+			}
 			s.statements(fn.Body)
 		}
 	})
@@ -15522,6 +15844,7 @@ func (s *namespaceMutationScan) scanFunctionBindings(
 	boundParamCount int,
 	facts map[string]checkReachableParamFact,
 	lambdas map[string][]Expression,
+	selfBindings callableSelfBindings,
 	gateDefaults bool,
 ) bool {
 	defaults := make(map[int]struct{}, len(defaultParams))
@@ -15556,8 +15879,13 @@ func (s *namespaceMutationScan) scanFunctionBindings(
 		s.checker.recordParamBinding(param)
 		s.checker.applyReachableParamFact(param)
 		s.markFunctionParamBound(param)
-		s.bindCallableParamFact(param, facts, lambdas, defaultPossible)
+		s.bindCallableParamFact(param, facts, lambdas, selfBindings, defaultPossible)
 		s.bindNominalReceiverParam(param)
+		if param.IsIvar && s.methodClasses[fn] != nil {
+			if _, classMethod := s.classMethodFns[fn]; !classMethod {
+				s.recordDirectIvarWrite(param.Name)
+			}
+		}
 	}
 	return true
 }
@@ -15601,12 +15929,16 @@ func (s *namespaceMutationScan) withFunctionContext(
 	fn *ScriptFunction,
 	facts map[string]checkReachableParamFact,
 	lambdas map[string][]Expression,
+	selfBindings callableSelfBindings,
 	walk func(),
 ) {
 	// A called function runs in an isolated local scope. The caller-side
 	// expression walk already captures the state before and after dispatch;
 	// snapshots taken while walking the callee would otherwise be merged as
 	// though its unrelated local frame belonged to the caller's rescue.
+	previousFunction := s.currentFunction
+	s.currentFunction = fn
+	defer func() { s.currentFunction = previousFunction }()
 	previousFailureScopes := s.failureScopes
 	s.failureScopes = nil
 	defer func() { s.failureScopes = previousFailureScopes }()
@@ -15635,7 +15967,7 @@ func (s *namespaceMutationScan) withFunctionContext(
 	s.withFunctionSelf(fn, func() {
 		s.checker.seedInstanceIvarFacts(fn)
 		s.checker.linkReachableParamAliases(fn.Params)
-		s.withCallableParamFacts(fn.Params, facts, lambdas, func() {
+		s.withCallableParamFacts(fn.Params, facts, lambdas, selfBindings, func() {
 			s.withNominalReceiverParamShadows(fn.Params, walk)
 		})
 	})
@@ -15645,15 +15977,22 @@ func (s *namespaceMutationScan) withCallableParamFacts(
 	params []Param,
 	facts map[string]checkReachableParamFact,
 	lambdas map[string][]Expression,
+	selfBindings callableSelfBindings,
 	walk func(),
 ) {
 	previous := s.callableParams
 	previousLambdas := s.callableLambdas
+	previousSelf := s.callableSelfParams
+	previousAmbiguous := s.ambiguousSelfCallables
 	s.callableParams = make(map[string][]*ScriptFunction, len(facts))
 	s.callableLambdas = make(map[string][]Expression, len(params)+len(lambdas))
+	s.callableSelfParams = make(map[string][]*ScriptFunction, len(selfBindings.functions))
+	s.ambiguousSelfCallables = make(map[string]struct{}, len(selfBindings.ambiguous))
 	defer func() {
 		s.callableParams = previous
 		s.callableLambdas = previousLambdas
+		s.callableSelfParams = previousSelf
+		s.ambiguousSelfCallables = previousAmbiguous
 	}()
 	walk()
 }
@@ -15662,12 +16001,15 @@ func (s *namespaceMutationScan) bindCallableParamFact(
 	param Param,
 	facts map[string]checkReachableParamFact,
 	lambdas map[string][]Expression,
+	selfBindings callableSelfBindings,
 	defaultPossible bool,
 ) {
 	if param.Name == "" {
 		return
 	}
 	delete(s.callableParams, param.Name)
+	delete(s.callableSelfParams, param.Name)
+	delete(s.ambiguousSelfCallables, param.Name)
 	var candidates []*ScriptFunction
 	if fns, exact := s.checker.localCallableValuesFor(param.Name); exact && len(fns) > 0 {
 		candidates = append(candidates, fns...)
@@ -15680,6 +16022,7 @@ func (s *namespaceMutationScan) bindCallableParamFact(
 			candidates = append(candidates, fns...)
 		}
 	}
+	candidates = append(candidates, selfBindings.functions[param.Name]...)
 	if len(candidates) > 0 {
 		seen := make(map[*ScriptFunction]struct{}, len(candidates))
 		unique := candidates[:0]
@@ -15697,6 +16040,21 @@ func (s *namespaceMutationScan) bindCallableParamFact(
 			s.callableParams[param.Name] = unique
 		}
 	}
+	selfFunctions := append([]*ScriptFunction(nil), selfBindings.functions[param.Name]...)
+	defaultAmbiguous := false
+	if defaultPossible {
+		defaultBindings := s.callableParamSelfBindings(map[string][]Expression{
+			param.Name: {param.DefaultVal},
+		})
+		selfFunctions = append(selfFunctions, defaultBindings.functions[param.Name]...)
+		_, defaultAmbiguous = defaultBindings.ambiguous[param.Name]
+	}
+	if len(selfFunctions) > 0 {
+		s.callableSelfParams[param.Name] = normalizeCheckCallables(selfFunctions)
+	}
+	if _, ambiguous := selfBindings.ambiguous[param.Name]; ambiguous || defaultAmbiguous {
+		s.ambiguousSelfCallables[param.Name] = struct{}{}
+	}
 	boundLambdas := append([]Expression(nil), lambdas[param.Name]...)
 	if defaultPossible && lambdaLiteralBlock(param.DefaultVal) != nil {
 		boundLambdas = append(boundLambdas, param.DefaultVal)
@@ -15711,6 +16069,8 @@ func (s *namespaceMutationScan) markFunctionParamBound(param Param) {
 func (s *namespaceMutationScan) withCallableParamShadows(params []Param, walk func()) {
 	previous := s.callableParams
 	previousLambdas := s.callableLambdas
+	previousSelf := s.callableSelfParams
+	previousAmbiguous := s.ambiguousSelfCallables
 	shadowed := make(map[string]struct{}, len(params))
 	for _, param := range params {
 		if param.Name != "" {
@@ -15732,9 +16092,23 @@ func (s *namespaceMutationScan) withCallableParamShadows(params []Param, walk fu
 	for name := range shadowed {
 		s.callableLambdas[name] = nil
 	}
+	s.callableSelfParams = make(map[string][]*ScriptFunction, len(previousSelf))
+	for name, functions := range previousSelf {
+		if _, shadow := shadowed[name]; !shadow {
+			s.callableSelfParams[name] = functions
+		}
+	}
+	s.ambiguousSelfCallables = make(map[string]struct{}, len(previousAmbiguous))
+	for name := range previousAmbiguous {
+		if _, shadow := shadowed[name]; !shadow {
+			s.ambiguousSelfCallables[name] = struct{}{}
+		}
+	}
 	defer func() {
 		s.callableParams = previous
 		s.callableLambdas = previousLambdas
+		s.callableSelfParams = previousSelf
+		s.ambiguousSelfCallables = previousAmbiguous
 	}()
 	walk()
 }
@@ -15743,6 +16117,9 @@ func (s *namespaceMutationScan) scanLambdaBlock(block *BlockLiteral) {
 	if block == nil {
 		return
 	}
+	previousFunction := s.currentFunction
+	s.currentFunction = nil
+	defer func() { s.currentFunction = previousFunction }()
 	popScope := s.checker.pushBlockCheckScope(block)
 	defer popScope()
 	popNameScope := s.checker.pushBlockNameScope(block)
@@ -15946,6 +16323,9 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 				s.checker.withSuppressedWarnings(func() {
 					s.checker.inferAssignStatementTypes("", typed, nil, nil)
 				})
+				if setterCompletes {
+					s.recordDirectIvarWrite(plainIvar.Name)
+				}
 				return setterCompletes
 			}
 			var targetCompleted bool
@@ -16034,6 +16414,7 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 					}
 					return false
 				}
+				s.recordDirectIvarWrite(ivar.Name)
 				s.checker.withSuppressedWarnings(func() {
 					s.checker.commitLogicalIvarWritingArm(
 						"",
@@ -16122,6 +16503,9 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 				s.checker.withSuppressedWarnings(func() {
 					s.checker.inferAssignStatementTypes("", typed, nil, nil)
 				})
+				if setterCompletes {
+					s.recordDirectIvarWrite(compoundIvar.Name)
+				}
 				return setterCompletes
 			}
 			assignedValue = operatorValue
@@ -16145,6 +16529,9 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 			s.checker.withSuppressedWarnings(func() {
 				s.checker.inferAssignStatementTypes("", typed, nil, logicalTargetFact)
 			})
+		}
+		if setterReachable && typed.Operator == "" {
+			s.recordCallableAlias(typed.Target, assignedValue)
 		}
 		if setterReachable && !setterAssignment {
 			s.recordRuntimeNamespaceAssignment(typed.Target, assignedValue)
@@ -16257,17 +16644,55 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 		// A nested definition's writes fire only when it is called, but a
 		// missed invalidation is unsound while an extra one only widens, so
 		// the walk stays conservative.
-		s.withNominalReceiverParams(typed.Params, false, func() {
-			for _, param := range typed.Params {
-				s.expression(param.DefaultVal)
-			}
-			s.statements(typed.Body)
+		s.withSuspendedDirectIvarAttribution(func() {
+			s.withNominalReceiverParams(typed.Params, false, func() {
+				for _, param := range typed.Params {
+					s.expression(param.DefaultVal)
+				}
+				s.statements(typed.Body)
+			})
 		})
 		return true
 	case *ClassStmt:
-		return s.statements(typed.Body)
+		completed := true
+		s.withSuspendedDirectIvarAttribution(func() {
+			completed = s.statements(typed.Body)
+		})
+		return completed
 	}
 	return true
+}
+
+func (s *namespaceMutationScan) recordCallableAlias(target, value Expression) {
+	targetIdent, ok := target.(*Identifier)
+	if !ok || targetIdent.Name == "" {
+		return
+	}
+	sourceIdent, ok := value.(*Identifier)
+	if !ok || sourceIdent.Name == "" {
+		return
+	}
+	if functions, bound := s.callableParams[sourceIdent.Name]; bound {
+		s.callableParams[targetIdent.Name] = normalizeCheckCallables(append(
+			s.callableParams[targetIdent.Name],
+			functions...,
+		))
+	}
+	if lambdas, bound := s.callableLambdas[sourceIdent.Name]; bound {
+		s.callableLambdas[targetIdent.Name] = append(
+			s.callableLambdas[targetIdent.Name],
+			lambdas...,
+		)
+	}
+	if functions, bound := s.callableSelfParams[sourceIdent.Name]; bound {
+		s.callableSelfParams[targetIdent.Name] = normalizeCheckCallables(append(
+			s.callableSelfParams[targetIdent.Name],
+			functions...,
+		))
+	}
+	if _, ambiguous := s.ambiguousSelfCallables[sourceIdent.Name]; ambiguous {
+		s.ambiguousSelfCallables[targetIdent.Name] = struct{}{}
+	}
 }
 
 func (c *scriptChecker) staticallyRaisedErrorKind(statements []Statement) (string, bool) {
@@ -16503,6 +16928,7 @@ func (s *namespaceMutationScan) replayDestructureAssignment(
 		if !completed {
 			return false
 		}
+		s.recordDirectIvarTarget(fact.target)
 	}
 	return true
 }
@@ -16699,6 +17125,9 @@ func (s *namespaceMutationScan) recordResolvedAssignmentMember(
 	value Expression,
 	captured ...checkDynamicCallCandidates,
 ) bool {
+	if member != nil && expressionIsSelf(member.Object) {
+		s.markUnknownDirectIvarEffects()
+	}
 	receivers, exact := s.checker.exactAssignmentMemberReceivers(member, captured...)
 	if !exact {
 		switch object := member.Object.(type) {
@@ -16728,6 +17157,9 @@ func (s *namespaceMutationScan) recordResolvedAssignmentMember(
 		classDef := receiver.class
 		if classDef == nil {
 			continue
+		}
+		if !receiver.classMethod && sameScriptClass(classDef, s.effectSelfClass) {
+			s.markUnknownDirectIvarEffects()
 		}
 		methods := classDef.Methods
 		separator := "#"
@@ -16879,6 +17311,9 @@ func (s *namespaceMutationScan) expressionWithAuto(expr Expression, autoCall boo
 				(binaryRightAlwaysEvaluates(typed) || s.checker.binaryRightAlwaysEvaluatesInferred(typed)) {
 				return false
 			}
+		}
+		for _, method := range binaryDispatchMethodNames(typed.Operator) {
+			s.callCallee(binaryDispatchCall(typed, method))
 		}
 		return s.checker.expressionMayCompleteForBinding(typed)
 	case *ConditionalExpr:
@@ -17159,19 +17594,92 @@ func (s *namespaceMutationScan) callResolvedCallee(
 	resolved bool,
 	dynamicResolution checkDynamicCallResolution,
 ) {
+	if s.callableParamCall(call) {
+		return
+	}
+	if s.explicitSelfCall(call) {
+		return
+	}
 	if resolved {
 		if target.fn != nil {
-			s.scanFunctionCall(target.fn, call, target)
+			s.scanResolvedFunctionCall(call, target)
 		}
 		return
 	}
 	if dynamicResolution.exact {
 		for _, candidate := range dynamicResolution.targets {
-			s.scanFunctionCall(candidate.target.fn, candidate.call, candidate.target)
+			s.scanResolvedFunctionCall(candidate.call, candidate.target)
 		}
 		return
 	}
 	s.callCallee(call)
+}
+
+func (s *namespaceMutationScan) scanResolvedFunctionCall(
+	call *CallExpr,
+	target staticCallable,
+) {
+	if s.resolvedMethodMayRunOnEffectSelf(call, target) {
+		s.markUnknownDirectIvarEffects()
+	}
+	s.scanFunctionCall(target.fn, call, target)
+}
+
+func (s *namespaceMutationScan) resolvedMethodMayRunOnEffectSelf(
+	call *CallExpr,
+	target staticCallable,
+) bool {
+	if call == nil || target.fn == nil || target.constructor ||
+		s.currentFunction == nil || s.effectSelfClass == nil ||
+		s.effectSelfClassContext {
+		return false
+	}
+	if target.resolution != calleeMemberMethod &&
+		target.resolution != calleeForwardedMethod {
+		return false
+	}
+	if _, memberCall := call.Callee.(*MemberExpr); !memberCall {
+		return false
+	}
+	if s.functionMayRunOnEffectSelf(target.fn) {
+		return true
+	}
+	return target.name == s.effectSelfClass.Name+"#"+target.fn.Name
+}
+
+func (s *namespaceMutationScan) explicitSelfCall(call *CallExpr) bool {
+	if call == nil {
+		return false
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || !expressionIsSelf(member.Object) {
+		return false
+	}
+	s.selfCallReference(member.Property, call)
+	return true
+}
+
+func (s *namespaceMutationScan) callableParamCall(call *CallExpr) bool {
+	if call == nil {
+		return false
+	}
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok || member.Property != "call" {
+		return false
+	}
+	ident, ok := member.Object.(*Identifier)
+	if !ok {
+		return false
+	}
+	if _, bound := s.callableParams[ident.Name]; bound {
+		s.functionReferenceWithCall(ident.Name, call)
+		return true
+	}
+	if _, bound := s.callableLambdas[ident.Name]; bound {
+		s.functionReferenceWithCall(ident.Name, call)
+		return true
+	}
+	return false
 }
 
 func (s *namespaceMutationScan) resolvedCallBlockMayRun(
@@ -17233,21 +17741,17 @@ func (s *namespaceMutationScan) callCallee(call *CallExpr) {
 		if s.scanExactLambdaCall(member.Object, call) {
 			return
 		}
-		if ident, ok := member.Object.(*Identifier); ok {
-			if _, bound := s.callableParams[ident.Name]; bound {
-				s.functionReferenceWithCall(ident.Name, call)
-				return
-			}
-			if _, bound := s.callableLambdas[ident.Name]; bound {
-				s.functionReferenceWithCall(ident.Name, call)
-				return
-			}
-		}
+	}
+	if s.callableParamCall(call) {
+		return
+	}
+	if s.explicitSelfCall(call) {
+		return
 	}
 	target, resolved := s.checker.resolveCallable(call)
 	if resolved {
 		if target.fn != nil {
-			s.scanFunctionCall(target.fn, call, target)
+			s.scanResolvedFunctionCall(call, target)
 		}
 		return
 	}
@@ -17255,7 +17759,7 @@ func (s *namespaceMutationScan) callCallee(call *CallExpr) {
 	resolution := s.checker.exactDynamicCallTargets(call, target, false, candidates)
 	if resolution.exact {
 		for _, candidate := range resolution.targets {
-			s.scanFunctionCall(candidate.target.fn, candidate.call, candidate.target)
+			s.scanResolvedFunctionCall(candidate.call, candidate.target)
 		}
 		return
 	}
