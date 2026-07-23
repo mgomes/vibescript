@@ -312,6 +312,29 @@ func (c *scriptChecker) callStaticValueAlternatives(expr Expression) ([]Expressi
 	return c.staticValueExpressionAlternatives(expr)
 }
 
+func literalAlternativeValues(alternatives []Expression, exact bool) ([]Value, bool) {
+	if !exact || len(alternatives) == 0 {
+		return nil, false
+	}
+	values := make([]Value, 0, len(alternatives))
+	for _, alternative := range alternatives {
+		value, literal := staticLiteralValue(alternative)
+		if !literal {
+			return nil, false
+		}
+		values = append(values, value)
+	}
+	return values, true
+}
+
+func (c *scriptChecker) staticLiteralValueAlternatives(expr Expression) ([]Value, bool) {
+	return literalAlternativeValues(c.staticValueExpressionAlternatives(expr))
+}
+
+func (c *scriptChecker) callStaticLiteralValueAlternatives(expr Expression) ([]Value, bool) {
+	return literalAlternativeValues(c.callStaticValueAlternatives(expr))
+}
+
 type scriptCallBindingPlan struct {
 	defaultParams   []int
 	boundParamCount int
@@ -326,9 +349,8 @@ type scriptParamBindingInput struct {
 }
 
 type defaultBindingFact struct {
-	value    Value
+	values   []Value
 	inferred *TypeExpr
-	static   bool
 }
 
 // checkOptionGlobals resolves the host globals a call would receive. Bind
@@ -3100,6 +3122,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 					c.enqueueReachableMemberSetter(memberSetter, setterReceiverCandidates...)
 				}
 				setterCompletes := c.checkAssignmentSetterDispatch(
+					function,
 					typed.Target,
 					typed.Value,
 					setterReceiver,
@@ -3244,6 +3267,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				c.enqueueReachableMemberSetter(memberSetter, setterReceiverCandidates...)
 			}
 			setterCompletes := c.checkAssignmentSetterDispatch(
+				function,
 				typed.Target,
 				operatorValue,
 				setterReceiver,
@@ -6797,7 +6821,7 @@ func (c *scriptChecker) checkPlainAssignmentTarget(
 		receiver, _ := c.assignmentReceiverSnapshot(typed)
 		c.enqueueReachableMemberSetter(typed, receiver.candidates)
 		opaqueEffects := c.memberSetterHasOpaqueClassConstantEffects(typed)
-		completed := c.checkAssignmentSetterDispatch(typed, value, receiver)
+		completed := c.checkAssignmentSetterDispatch(function, typed, value, receiver)
 		if opaqueEffects {
 			c.markOpaqueClassConstants()
 		}
@@ -6823,7 +6847,7 @@ func (c *scriptChecker) checkPlainAssignmentTarget(
 			c.pinExpressionFact(index, c.inferExpressionType(index))
 		}
 		c.enqueueReachableInstanceDispatch(dispatchType, "[]=")
-		completed := c.checkAssignmentSetterDispatch(typed, value, receiver)
+		completed := c.checkAssignmentSetterDispatch(function, typed, value, receiver)
 		if opaqueDispatch {
 			c.markOpaqueClassConstants()
 		}
@@ -7190,6 +7214,7 @@ func (c *scriptChecker) applyAssignmentSetterIvarEffects(
 }
 
 func (c *scriptChecker) checkAssignmentSetterDispatch(
+	function string,
 	target Expression,
 	value Expression,
 	receiver checkAssignmentReceiverCapture,
@@ -7197,11 +7222,35 @@ func (c *scriptChecker) checkAssignmentSetterDispatch(
 	completed := true
 	c.withEvaluatedAssignmentSetterArgumentFacts(target, value, func() {
 		selection := c.assignmentSetterScriptDispatch(target, value, receiver)
+		c.checkGeneratedAssignmentSetterArgument(function, selection)
 		c.applyAssignmentSetterIvarEffects(selection)
 		completed = c.assignmentSetterMayCompleteWithReceiver(target, value, receiver)
 		c.applyAssignmentNamespaceMutations(target, value, receiver.candidates)
 	})
 	return completed
+}
+
+func (c *scriptChecker) checkGeneratedAssignmentSetterArgument(
+	function string,
+	selection instanceScriptDispatchSelection,
+) {
+	if selection.unknown || selection.instanceFallbacks > 0 ||
+		selection.pureFallbacks > 0 || selection.rejectingFallbacks > 0 ||
+		len(selection.fallbackArms) > 0 || len(selection.targets) != 1 {
+		return
+	}
+	selected := selection.targets[0]
+	if !selected.bindingStarts || selected.target.fn == nil ||
+		selected.target.fn.Accessor != functionAccessorSetter {
+		return
+	}
+	view := staticCallViewFor(selected.call, selected.target)
+	c.checkCallArgumentTypes(
+		function,
+		view,
+		selected.target.name,
+		selected.target.fn,
+	)
 }
 
 func (c *scriptChecker) indexedHashOperationProvablyAborts(target *IndexExpr) bool {
@@ -9696,12 +9745,25 @@ func (c *scriptChecker) checkRuntimeExpressionAgainstTypeWithExpectation(
 	subject string,
 	expectation expressionExpectation,
 ) {
-	val, ok := staticLiteralValue(expr)
-	if !ok {
-		c.checkInferredExpressionAgainstTypeWithExpectation(function, expr, ty, subject, expectation)
+	if value, literal := staticLiteralValue(expr); literal {
+		c.checkRuntimeValueAgainstType(function, expr.Pos(), value, ty, subject)
 		return
 	}
-	c.checkRuntimeValueAgainstType(function, expr.Pos(), val, ty, subject)
+	warningsBeforeInference := len(c.warnings)
+	c.checkInferredExpressionAgainstTypeWithExpectation(function, expr, ty, subject, expectation)
+	if len(c.warnings) > warningsBeforeInference {
+		return
+	}
+	values, exact := c.staticLiteralValueAlternatives(expr)
+	if !exact {
+		return
+	}
+	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
+		return
+	}
+	if err := c.staticValuesTypeMismatch(values, ty); err != nil {
+		c.addValueTypeWarning(function, expr.Pos(), subject, err)
+	}
 }
 
 func (c *scriptChecker) checkRuntimeNilAgainstType(function string, pos Position, ty *TypeExpr, subject string) {
@@ -9729,6 +9791,35 @@ func (c *scriptChecker) addValueTypeWarning(function string, pos Position, subje
 func (c *scriptChecker) checkRuntimeStaticValueType(val Value, ty *TypeExpr) error {
 	_, err := normalizeValueForType(val, ty, c.runtimeTypeContext())
 	return err
+}
+
+// staticValuesTypeMismatch returns nil when at least one exact alternative
+// passes the runtime normalizer. A checker diagnostic represents a guaranteed
+// rejection, so mixed compatible and incompatible alternatives stay gradual.
+func (c *scriptChecker) staticValuesTypeMismatch(values []Value, ty *TypeExpr) error {
+	var firstErr error
+	for _, value := range values {
+		err := c.checkRuntimeStaticValueType(value, ty)
+		if err == nil {
+			return nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (c *scriptChecker) staticValuesMustNormalizeType(values []Value, ty *TypeExpr) bool {
+	if len(values) == 0 {
+		return false
+	}
+	for _, value := range values {
+		if c.checkRuntimeStaticValueType(value, ty) != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *scriptChecker) checkImplicitReturn(function string, ty *TypeExpr, statements []Statement, pos Position) {
@@ -10355,6 +10446,12 @@ func (c *scriptChecker) checkCallResolved(
 		c.checkCallArgumentTypes(function, view, target.name, target.fn)
 		plan := c.scriptCallBindingPlan(call, target)
 		facts := c.reachableCallParamFacts(call, target)
+		c.checkScriptCallContextualDefaults(
+			target.name,
+			target.fn,
+			plan,
+			facts,
+		)
 		if plan.bodyMayEnter {
 			c.enqueueReachableFunctionForCall(
 				target.name,
@@ -12307,6 +12404,102 @@ func (c *scriptChecker) scriptCallBindingPlanInContext(
 	return plan
 }
 
+// checkScriptCallContextualDefaults diagnoses exact default values that only
+// become known after earlier call arguments bind. Definition-time checking
+// already covers defaults that are exact without call context.
+func (c *scriptChecker) checkScriptCallContextualDefaults(
+	function string,
+	fn *ScriptFunction,
+	plan scriptCallBindingPlan,
+	facts map[string]checkReachableParamFact,
+) {
+	if fn == nil || !plan.bindingStarts || len(plan.defaultParams) == 0 {
+		return
+	}
+	restoreResolution := c.withClassConstantProofResolution(fn, nil)
+	defer restoreResolution()
+	previousScopes := c.scopes
+	restoreInference := c.withIsolatedLocalInference()
+	c.scopes = nil
+	popScope := c.pushScope(make(map[string]struct{}))
+	defer func() {
+		popScope()
+		restoreInference()
+		c.scopes = previousScopes
+	}()
+	previousFacts := c.reachableParamFacts
+	c.reachableParamFacts = facts
+	defer func() { c.reachableParamFacts = previousFacts }()
+	previousPending := c.pendingBindingParams
+	c.pendingBindingParams = functionParamBindingNames(fn)
+	defer func() { c.pendingBindingParams = previousPending }()
+
+	defaults := make(map[int]struct{}, len(plan.defaultParams))
+	for _, index := range plan.defaultParams {
+		defaults[index] = struct{}{}
+	}
+	pristineExact := make(map[int]bool, len(defaults))
+	for index := range defaults {
+		_, pristineExact[index] = c.staticLiteralValueAlternatives(
+			fn.Params[index].DefaultVal,
+		)
+	}
+
+	c.seedInstanceIvarFacts(fn)
+	c.linkReachableParamAliases(fn.Params)
+	for i, param := range fn.Params {
+		_, defaultRuns := defaults[i]
+		if i >= plan.boundParamCount && !defaultRuns {
+			return
+		}
+		if defaultRuns {
+			if !c.defaultExpressionMayCompleteForBinding(param) {
+				return
+			}
+			fact := c.defaultExpressionBindingFact(param)
+			if !pristineExact[i] && len(fact.values) > 0 {
+				if param.Type != nil &&
+					validateTypeExprResolved(param.Type, c.runtimeTypeContext()) == nil {
+					if err := c.staticValuesTypeMismatch(fact.values, param.Type); err != nil {
+						c.addValueTypeWarning(
+							function,
+							param.DefaultVal.Pos(),
+							"default value for "+param.Name,
+							err,
+						)
+					}
+				}
+				if ty := c.ivarParamContract(fn, param); ty != nil {
+					if err := c.ivarParamBindingFactMismatch(fact, param, ty); err != nil {
+						c.addValueTypeWarning(
+							function,
+							param.DefaultVal.Pos(),
+							"default value for @"+param.Name,
+							err,
+						)
+					}
+				}
+			}
+			if !c.defaultBindingFactMayBindType(fact, param.Type) {
+				return
+			}
+			if ty := c.ivarParamContract(fn, param); ty != nil &&
+				!c.ivarParamBindingFactMayStore(fact, param, ty) {
+				return
+			}
+		}
+		if i >= plan.boundParamCount {
+			return
+		}
+		c.withSuppressedWarnings(func() {
+			c.checkIvarParamBinding("", fn, param)
+		})
+		c.recordParamBinding(param)
+		c.applyReachableParamFact(param)
+		removeFunctionParamBindingNames(c.pendingBindingParams, param)
+	}
+}
+
 func functionParamBindingNames(fn *ScriptFunction) map[string]struct{} {
 	if fn == nil {
 		return nil
@@ -12508,14 +12701,17 @@ func (c *scriptChecker) callArgumentMayBindType(expr Expression, ty *TypeExpr) b
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return false
 	}
-	if value, literal := staticLiteralValue(expr); literal {
-		return c.checkRuntimeStaticValueType(value, ty) == nil
-	}
 	inferred, captured := c.callArgumentFacts[expr]
 	if !captured {
 		inferred = c.inferExpressionTypeWithExpectation(expr, typeExpressionExpectation(ty))
 	}
-	return inferred == nil || !typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver())
+	if inferred != nil && typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver()) {
+		return false
+	}
+	if values, exact := c.callStaticLiteralValueAlternatives(expr); exact {
+		return c.staticValuesTypeMismatch(values, ty) == nil
+	}
+	return true
 }
 
 // callArgumentMustBindType reports whether every value represented by expr is
@@ -12528,8 +12724,8 @@ func (c *scriptChecker) callArgumentMustBindType(expr Expression, ty *TypeExpr) 
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return false
 	}
-	if value, literal := staticLiteralValue(expr); literal {
-		return c.checkRuntimeStaticValueType(value, ty) == nil
+	if values, exact := c.callStaticLiteralValueAlternatives(expr); exact {
+		return c.staticValuesMustNormalizeType(values, ty)
 	}
 	inferred, captured := c.callArgumentFacts[expr]
 	if !captured {
@@ -12543,15 +12739,16 @@ func (c *scriptChecker) callArgumentMustBindType(expr Expression, ty *TypeExpr) 
 }
 
 func (c *scriptChecker) defaultExpressionBindingFact(param Param) defaultBindingFact {
-	if value, literal := staticLiteralValue(param.DefaultVal); literal {
-		return defaultBindingFact{value: value, static: true}
-	}
-	return defaultBindingFact{
+	fact := defaultBindingFact{
 		inferred: c.inferExpressionTypeWithExpectation(
 			param.DefaultVal,
 			bindingDefaultExpectation(param),
 		),
 	}
+	if values, exact := c.staticLiteralValueAlternatives(param.DefaultVal); exact {
+		fact.values = values
+	}
+	return fact
 }
 
 func (c *scriptChecker) defaultBindingFactMayBindType(fact defaultBindingFact, ty *TypeExpr) bool {
@@ -12561,8 +12758,12 @@ func (c *scriptChecker) defaultBindingFactMayBindType(fact defaultBindingFact, t
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return false
 	}
-	if fact.static {
-		return c.checkRuntimeStaticValueType(fact.value, ty) == nil
+	if fact.inferred != nil &&
+		typeExprsDisjoint(fact.inferred, ty, c.checkNamedTypeResolver()) {
+		return false
+	}
+	if len(fact.values) > 0 {
+		return c.staticValuesTypeMismatch(fact.values, ty) == nil
 	}
 	return fact.inferred == nil ||
 		!typeExprsDisjoint(fact.inferred, ty, c.checkNamedTypeResolver())
@@ -12575,8 +12776,8 @@ func (c *scriptChecker) defaultBindingFactMustBindType(fact defaultBindingFact, 
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return false
 	}
-	if fact.static {
-		return c.checkRuntimeStaticValueType(fact.value, ty) == nil
+	if len(fact.values) > 0 {
+		return c.staticValuesMustNormalizeType(fact.values, ty)
 	}
 	return fact.inferred != nil &&
 		typeExprSatisfies(fact.inferred, ty, c.checkNamedTypeResolver())
@@ -14604,21 +14805,29 @@ func (c *scriptChecker) addArgumentValueWarning(function string, pos Position, c
 }
 
 func (c *scriptChecker) checkArgumentExpression(function string, expr Expression, ty *TypeExpr, callName, paramName string) {
-	val, ok := staticLiteralValue(expr)
-	if !ok {
-		c.checkInferredArgument(function, expr, ty, callName, paramName)
+	if value, literal := staticLiteralValue(expr); literal {
+		if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
+			return
+		}
+		if err := c.checkRuntimeStaticValueType(value, ty); err != nil {
+			c.addArgumentValueWarning(function, expr.Pos(), callName, paramName, err)
+		}
+		return
+	}
+	warningsBeforeInference := len(c.warnings)
+	c.checkInferredArgument(function, expr, ty, callName, paramName)
+	if len(c.warnings) > warningsBeforeInference {
+		return
+	}
+	values, exact := c.callStaticLiteralValueAlternatives(expr)
+	if !exact {
 		return
 	}
 	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
 		return
 	}
-	if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
-		var mismatch *typeMismatchError
-		if errors.As(err, &mismatch) {
-			c.add(function, expr.Pos(), "call to %s argument %s expected %s, got %s", callName, paramName, mismatch.Expected, mismatch.Actual)
-			return
-		}
-		c.add(function, expr.Pos(), "call to %s argument %s type check failed: %s", callName, paramName, err)
+	if err := c.staticValuesTypeMismatch(values, ty); err != nil {
+		c.addArgumentValueWarning(function, expr.Pos(), callName, paramName, err)
 	}
 }
 

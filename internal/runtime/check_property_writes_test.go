@@ -1619,6 +1619,154 @@ end
 `))
 }
 
+func TestCheckTypedPropertyRetainedStaticValueNormalizes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		write   string
+		warning string
+	}{
+		{
+			name:    "direct ivar write",
+			write:   "@status = value",
+			warning: "write to @status expected Status, got symbol",
+		},
+		{
+			name:    "generated setter",
+			write:   "self.status = value",
+			warning: "argument value expected Status, got symbol",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+enum Status
+  Draft
+end
+
+class User
+  property status: Status
+
+  def initialize
+    value = :missing
+    `+test.write+`
+  end
+end
+
+def run
+  User.new.status
+end
+`)
+			requireCheckWarningContains(t, script, test.warning)
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"expected Status, got symbol",
+			)
+		})
+	}
+
+	script := compileScriptDefault(t, `
+enum Status
+  Draft
+end
+
+class User
+  property status: Status
+
+  def initialize
+    value = :draft
+    @status = value
+  end
+end
+
+def run
+  User.new.status
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("run() = %v, want Status::Draft", got)
+	}
+
+	script = compileScriptDefault(t, `
+enum Status
+  Draft
+end
+
+class User
+  property status: Status
+
+  def initialize(flag: bool)
+    value = flag ? :draft : :missing
+    @status = value
+  end
+end
+
+def run(flag: bool)
+  User.new(flag).status
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got = callScript(
+		t,
+		context.Background(),
+		script,
+		"run",
+		[]Value{NewBool(true)},
+		CallOptions{},
+	)
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("run(true) = %v, want Status::Draft", got)
+	}
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		[]Value{NewBool(false)},
+		CallOptions{},
+		"expected Status, got symbol",
+	)
+}
+
+func TestCheckTypedPropertyRetainedFalsePreservesTruthiness(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def initialize
+    value = false
+    @flag = value
+    if @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  User.new.flag
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindBool || got.Bool() {
+		t.Fatalf("run() = %v, want false", got)
+	}
+}
+
 // An annotated ivar parameter's call sites check the property store contract
 // as well as the annotation: a value can satisfy the annotation and still
 // provably fail the ivar store at binding.
@@ -1717,6 +1865,97 @@ end
 				"instance variable @status expected symbol, got Status",
 			)
 		})
+	}
+}
+
+func TestCheckTypedIvarParamRetainedStaticValueNormalizes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		warning string
+	}{
+		{
+			name: "supplied argument",
+			source: `
+enum Status
+  Draft
+end
+
+class User
+  property status: Status
+
+  def initialize(@status: symbol)
+  end
+end
+
+def run
+  value = :missing
+  User.new(value).status
+end
+`,
+			warning: "call to User.new argument status expected Status, got symbol",
+		},
+		{
+			name: "call-specific default",
+			source: `
+enum Status
+  Draft
+end
+
+class User
+  property status: Status
+
+  def initialize(value: symbol, @status: Status = value)
+  end
+end
+
+def run
+  User.new(:missing).status
+end
+`,
+			warning: "default value for status expected Status, got symbol",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, test.source)
+			requireCheckWarningContains(t, script, test.warning)
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"expected Status, got symbol",
+			)
+		})
+	}
+
+	script := compileScriptDefault(t, `
+enum Status
+  Draft
+end
+
+class User
+  property status: Status
+
+  def initialize(@status: symbol)
+  end
+end
+
+def run
+  value = :draft
+  User.new(value).status
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindEnumValue || valueEnumValue(got).Name != "Draft" {
+		t.Fatalf("run() = %v, want Status::Draft", got)
 	}
 }
 

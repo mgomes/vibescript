@@ -181,9 +181,6 @@ func (c *scriptChecker) checkIvarParamArgument(function string, arg Expression, 
 // point. The parameter expectation may keep callable values un-invoked, so
 // inference must use the same expectation when no captured fact is present.
 func (c *scriptChecker) ivarParamArgumentBindingFact(arg Expression, param Param) defaultBindingFact {
-	if value, literal := staticLiteralValue(arg); literal {
-		return defaultBindingFact{value: value, static: true}
-	}
 	inferred, captured := c.callArgumentFacts[arg]
 	if !captured {
 		inferred = c.inferExpressionTypeWithExpectation(
@@ -191,7 +188,11 @@ func (c *scriptChecker) ivarParamArgumentBindingFact(arg Expression, param Param
 			positionalArgumentExpectation(param),
 		)
 	}
-	return defaultBindingFact{inferred: inferred}
+	fact := defaultBindingFact{inferred: inferred}
+	if values, exact := c.callStaticLiteralValueAlternatives(arg); exact {
+		fact.values = values
+	}
+	return fact
 }
 
 // normalizeIvarParamBindingFact applies the parameter annotation to a binding
@@ -208,22 +209,30 @@ func (c *scriptChecker) normalizeIvarParamBindingFact(
 	if validateTypeExprResolved(param.Type, c.runtimeTypeContext()) != nil {
 		return defaultBindingFact{}, false
 	}
-	if fact.static {
-		normalized, err := normalizeValueForType(
-			fact.value,
-			param.Type,
-			c.runtimeTypeContext(),
-		)
-		if err != nil {
+	if fact.inferred != nil {
+		if !c.blockLiteralTypeMayNormalize(fact.inferred, param.Type) {
 			return defaultBindingFact{}, false
 		}
-		fact.value = normalized
+		fact.inferred = c.blockLiteralNormalizedType(fact.inferred, param.Type)
+	}
+	if len(fact.values) > 0 {
+		normalizedValues := make([]Value, 0, len(fact.values))
+		for _, value := range fact.values {
+			normalized, err := normalizeValueForType(
+				value,
+				param.Type,
+				c.runtimeTypeContext(),
+			)
+			if err == nil {
+				normalizedValues = append(normalizedValues, normalized)
+			}
+		}
+		if len(normalizedValues) == 0 {
+			return defaultBindingFact{}, false
+		}
+		fact.values = normalizedValues
 		return fact, true
 	}
-	if !c.blockLiteralTypeMayNormalize(fact.inferred, param.Type) {
-		return defaultBindingFact{}, false
-	}
-	fact.inferred = c.blockLiteralNormalizedType(fact.inferred, param.Type)
 	return fact, true
 }
 
@@ -242,22 +251,17 @@ func (c *scriptChecker) ivarParamBindingFactMismatch(
 	if !ok {
 		return nil
 	}
-	if normalized.static {
-		_, err := normalizeValueForType(
-			normalized.value,
-			ty,
-			c.runtimeTypeContext(),
-		)
-		return err
+	if normalized.inferred != nil &&
+		!c.blockLiteralTypeMayNormalize(normalized.inferred, ty) {
+		return &typeMismatchError{
+			Expected: formatTypeExpr(ty),
+			Actual:   formatTypeExpr(normalized.inferred),
+		}
 	}
-	if normalized.inferred == nil ||
-		c.blockLiteralTypeMayNormalize(normalized.inferred, ty) {
-		return nil
+	if len(normalized.values) > 0 {
+		return c.staticValuesTypeMismatch(normalized.values, ty)
 	}
-	return &typeMismatchError{
-		Expected: formatTypeExpr(ty),
-		Actual:   formatTypeExpr(normalized.inferred),
-	}
+	return nil
 }
 
 // ivarParamBindingFactMayStore reports whether some value represented by the
@@ -303,9 +307,12 @@ func (c *scriptChecker) bindingFactMayNormalizeType(
 	if validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
 		return false
 	}
-	if fact.static {
-		_, err := normalizeValueForType(fact.value, ty, c.runtimeTypeContext())
-		return err == nil
+	if fact.inferred != nil &&
+		!c.blockLiteralTypeMayNormalize(fact.inferred, ty) {
+		return false
+	}
+	if len(fact.values) > 0 {
+		return c.staticValuesTypeMismatch(fact.values, ty) == nil
 	}
 	return fact.inferred == nil ||
 		c.blockLiteralTypeMayNormalize(fact.inferred, ty)
@@ -321,9 +328,8 @@ func (c *scriptChecker) bindingFactMustNormalizeType(
 	if validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
 		return false
 	}
-	if fact.static {
-		_, err := normalizeValueForType(fact.value, ty, c.runtimeTypeContext())
-		return err == nil
+	if len(fact.values) > 0 {
+		return c.staticValuesMustNormalizeType(fact.values, ty)
 	}
 	return fact.inferred != nil &&
 		c.blockLiteralTypeMustNormalize(fact.inferred, ty)
@@ -415,11 +421,8 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 		return
 	}
 	if value != nil && validateTypeExprResolved(ty, c.runtimeTypeContext()) == nil {
-		if val, ok := staticLiteralValue(value); ok {
-			// An exact literal validates through normalization, which keeps
-			// value-level checks kind disjointness would miss: a symbol that
-			// names no member of the declared enum, for example.
-			if err := c.checkRuntimeStaticValueType(val, ty); err != nil {
+		if literal, static := staticLiteralValue(value); static {
+			if err := c.checkRuntimeStaticValueType(literal, ty); err != nil {
 				c.addIvarWriteWarning(function, pos, name, err)
 			}
 		} else {
@@ -433,10 +436,18 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 			if memberAssignmentValueCanUseExpectation(value) {
 				expectation = typeExpressionExpectation(ty)
 			}
-			if next := c.inferredAssignmentValueType(value, expectation); next != nil &&
-				typeExprsDisjoint(next, ty, c.checkNamedTypeResolver()) {
+			next := c.inferredAssignmentValueType(value, expectation)
+			inferredMismatch := next != nil &&
+				typeExprsDisjoint(next, ty, c.checkNamedTypeResolver())
+			if inferredMismatch {
 				c.add(function, pos, "write to @%s expected %s, got %s",
 					name, formatTypeExpr(ty), formatTypeExpr(next))
+			} else if values, exact := c.staticLiteralValueAlternatives(value); exact {
+				// Retained exact values supplement kind-level inference with
+				// value-sensitive normalization, such as enum member lookup.
+				if err := c.staticValuesTypeMismatch(values, ty); err != nil {
+					c.addIvarWriteWarning(function, pos, name, err)
+				}
 			}
 		}
 	}
@@ -454,17 +465,32 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 func (c *scriptChecker) bindWrittenIvarFact(name string, ty *TypeExpr, value Expression) {
 	fact := c.ivarContractFact(ty)
 	if value != nil {
-		if literal, ok := staticLiteralValue(value); ok &&
-			c.checkRuntimeStaticValueType(literal, ty) == nil {
-			switch literal.Kind() {
-			case KindNil:
-				fact = checkTypeNil
-			case KindBool:
-				if literal.Bool() {
-					fact = checkTypeTrue
-				} else {
-					fact = checkTypeFalse
+		if values, exact := c.staticLiteralValueAlternatives(value); exact {
+			exactFacts := make([]*TypeExpr, 0, len(values))
+			for _, literal := range values {
+				normalized, err := normalizeValueForType(literal, ty, c.runtimeTypeContext())
+				if err != nil {
+					exactFacts = nil
+					break
 				}
+				switch normalized.Kind() {
+				case KindNil:
+					exactFacts = append(exactFacts, checkTypeNil)
+				case KindBool:
+					if normalized.Bool() {
+						exactFacts = append(exactFacts, checkTypeTrue)
+					} else {
+						exactFacts = append(exactFacts, checkTypeFalse)
+					}
+				default:
+					exactFacts = nil
+				}
+				if exactFacts == nil {
+					break
+				}
+			}
+			if len(exactFacts) > 0 {
+				fact = unionTypeExprs(exactFacts...)
 			}
 		}
 	}
@@ -551,8 +577,8 @@ func (c *scriptChecker) ivarWriteProvablyCompletes(name string, value Expression
 	if value == nil || validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
 		return false
 	}
-	if literal, ok := staticLiteralValue(value); ok {
-		return c.checkRuntimeStaticValueType(literal, ty) == nil
+	if values, exact := c.staticLiteralValueAlternatives(value); exact {
+		return c.staticValuesMustNormalizeType(values, ty)
 	}
 	expectation := expressionExpectation{}
 	if memberAssignmentValueCanUseExpectation(value) {
