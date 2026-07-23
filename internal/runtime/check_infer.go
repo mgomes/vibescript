@@ -5934,7 +5934,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		return false, false, false
 	}
 	writesCall := call
-	if member.Property == "insert" && checkedCall != nil {
+	if checkedCall != nil {
 		writesCall = checkedCall
 	}
 	elements, preservable, ok := arrayMutatorElementWrites(writesCall, member.Property)

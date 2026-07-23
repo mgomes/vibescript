@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -165,6 +166,27 @@ end
 			source: `
 def f(items: array<int>)
   items.push(*[1, 2])
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "empty literal splat preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.push(*[])
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "empty local splat with compatible argument preserves the bound",
+			source: `
+def f(items: array<int>)
+  args = []
+  items.push(*args, 1)
   items << "bad"
 end
 `,
@@ -640,6 +662,22 @@ def f(items: array<int>)
   args = ["x"]
   items.insert(*args, later() do
     args = [0]
+  end)
+end
+`,
+		},
+		{
+			name: "later argument rebind cannot change an evaluated empty splat",
+			source: `
+def later() -> int
+  yield
+  2
+end
+
+def f(items: array<int>)
+  args = []
+  items.push(*args, later() do
+    args = ["bad"]
   end)
 end
 `,
@@ -1150,6 +1188,43 @@ end
 			t.Parallel()
 			requireNoCheckWarnings(t, compileScriptDefault(t, tc.source))
 		})
+	}
+}
+
+func TestArrayMutatorSplatUsesEvaluationTimeValues(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def later()
+  yield
+  2
+end
+
+def run()
+  args = []
+  items = [1]
+  items.push(*args, later() do
+    args = ["bad"]
+  end)
+  [items, args]
+end
+`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindArray {
+		t.Fatalf("run() kind = %v, want array", got.Kind())
+	}
+	result := got.Array()
+	if len(result) != 2 {
+		t.Fatalf("run() length = %d, want 2", len(result))
+	}
+	wantItems := NewArray([]Value{NewInt(1), NewInt(2)})
+	if !result[0].Equal(wantItems) {
+		t.Fatalf("run() items = %s, want %s", result[0].String(), wantItems.String())
+	}
+	wantArgs := NewArray([]Value{NewString("bad")})
+	if !result[1].Equal(wantArgs) {
+		t.Fatalf("run() args = %s, want %s", result[1].String(), wantArgs.String())
 	}
 }
 
