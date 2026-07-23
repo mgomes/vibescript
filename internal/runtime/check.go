@@ -3998,20 +3998,6 @@ func (c *scriptChecker) checkLogicalAssignmentTarget(
 	return c.checkExpression(function, target)
 }
 
-func assignmentTargetMayInvokeCode(target Expression) bool {
-	switch typed := target.(type) {
-	case *MemberExpr, *IndexExpr:
-		return true
-	case *DestructureTarget:
-		for _, element := range typed.Elements {
-			if assignmentTargetMayInvokeCode(element.Target) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (c *scriptChecker) checkExpressionWithExpectation(
 	function string,
 	expr Expression,
