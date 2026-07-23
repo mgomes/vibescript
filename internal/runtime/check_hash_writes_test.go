@@ -569,6 +569,176 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
+			name: "replace checks a literal value",
+			source: `
+def f(h: hash<string, int>)
+  h.replace({ "a": "bad" })
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "replace checks a literal key",
+			source: `
+def f(h: hash<string, int>)
+  h.replace({ bad: 1 })
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "replace checks an exact local source",
+			source: `
+def f(h: hash<string, int>)
+  replacement = { "a": "bad" }
+  h.replace(replacement)
+end
+`,
+			warning: "write to h expected hash<string, int>, got { a: string }",
+		},
+		{
+			name: "replace exact splat checks its expanded hash",
+			source: `
+def f(h: hash<string, int>)
+  args = [{ "a": "bad" }]
+  h.replace(*args)
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "compatible replace exact splat preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  args = [{ "a": 1 }]
+  h.replace(*args)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "compatible replace preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  h.replace({ "a": 1 })
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "compatible exact local replace preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  replacement = { "a": 1 }
+  h.replace(replacement)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "empty replace preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  h.replace({})
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "replace does not retain a scalar source hash root",
+			source: `
+def consume(value)
+  value
+end
+
+def f(h: hash<string, int>, replacement: hash<string, int>)
+  h.replace(replacement)
+  consume(replacement)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "compatible typed replace source preserves the hash fact",
+			source: `
+def f(h: hash<string, int>, replacement: hash<string, int>)
+  h.replace(replacement)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "rescued non-hash replace preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  begin
+    h.replace(1)
+  rescue
+    nil
+  end
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "rescued empty replace splat preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  begin
+    h.replace(*[])
+  rescue
+    nil
+  end
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "replace checks a declared shape field",
+			source: `
+def f(user: { name: string })
+  user.replace({ name: 1 })
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "replace rejects an extra declared shape field",
+			source: `
+def f(user: { name: string })
+  user.replace({ name: "ok", extra: 1 })
+end
+`,
+			warning: "write to user adds field extra to exact shape { name: string }",
+		},
+		{
+			name: "replace requires every declared shape field",
+			source: `
+def f(user: { name: string })
+  user.replace({})
+end
+`,
+			warning: "write to user removes required field name from exact shape { name: string }",
+		},
+		{
+			name: "compatible replace preserves the declared shape",
+			source: `
+def f(user: { name: string })
+  user.replace({ name: "ok" })
+  user[:name] = 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
 			name: "store on a declared shape rejects an extra field",
 			source: `
 def f(user: { name: string })
@@ -1056,6 +1226,54 @@ def f(h)
   h[:a] = "s"
   h.store(:a, 1)
   h.merge!({ a: 1 })
+end
+`,
+		},
+		{
+			name: "possibly empty incompatible replace source stays gradual",
+			source: `
+def f(h: hash<string, int>, replacement: hash<string, string>)
+  h.replace(replacement)
+  h[:bad] = 1
+end
+`,
+		},
+		{
+			name: "unknown replace source weakens the fact",
+			source: `
+def f(h: hash<string, int>, replacement)
+  h.replace(replacement)
+  h[:bad] = 1
+end
+`,
+		},
+		{
+			name: "consumed replace result weakens the fact",
+			source: `
+def consume(value)
+  value
+end
+
+def f(h: hash<string, int>)
+  consume(h.replace({ "a": 1 }))
+  h[:bad] = 1
+end
+`,
+		},
+		{
+			name: "open shape replacement weakens an exact shape",
+			source: `
+def f(user: { name: string }, replacement: { ... })
+  user.replace(replacement)
+  user[:extra] = 1
+end
+`,
+		},
+		{
+			name: "shape replace shadowed by a data field stays gradual",
+			source: `
+def f(user: { replace: int })
+  user.replace({ extra: 1 })
 end
 `,
 		},
@@ -1572,5 +1790,48 @@ end
 		NewInt(3),
 		NewString("after"),
 		NewString("set"),
+	})
+}
+
+func TestHashReplaceMatchesRuntimeWholeStore(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def replace_entries
+  h = { "old": 1 }
+  replacement = { "a": 2 }
+  result = h.replace(replacement)
+  replacement["a"] = 3
+  [result.equal?(h), h["old"], h["a"], replacement["a"]]
+end
+
+def replace_exact_splat
+  h = { "old": 1 }
+  args = [{ "a": 2 }]
+  result = h.replace(*args)
+  [result.equal?(h), h["old"], h["a"]]
+end
+
+def replace_self
+  h = { name: 1 }
+  result = h.replace(h)
+  [result.equal?(h), h[:name]]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "replace_entries", nil), []Value{
+		NewBool(true),
+		NewNil(),
+		NewInt(2),
+		NewInt(3),
+	})
+	compareArrays(t, callFunc(t, script, "replace_exact_splat", nil), []Value{
+		NewBool(true),
+		NewNil(),
+		NewInt(2),
+	})
+	compareArrays(t, callFunc(t, script, "replace_self", nil), []Value{
+		NewBool(true),
+		NewInt(1),
 	})
 }

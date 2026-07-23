@@ -11164,7 +11164,7 @@ func (c *scriptChecker) specialBuiltinCallMayComplete(
 		return c.parseAsCallMayComplete(call)
 	case isTypeMemberName:
 		return c.isTypeCallMayComplete(call)
-	case "hash.store", "hash.merge!", "hash.update":
+	case "hash.store", "hash.merge!", "hash.update", "hash.replace":
 		if call == nil {
 			return true
 		}

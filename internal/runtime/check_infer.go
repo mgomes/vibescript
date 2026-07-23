@@ -6491,7 +6491,7 @@ func (c *scriptChecker) containerMutatorCallProvablyAborts(
 		return false
 	}
 	switch member.Property {
-	case "store", "merge!", "update":
+	case "store", "merge!", "update", "replace":
 		return c.hashMutatorCallProvablyAborts(
 			call,
 			"hash."+member.Property,
@@ -6525,6 +6525,8 @@ func (c *scriptChecker) hashMutatorCallProvablyAborts(
 		property = "merge!"
 	case "hash.update":
 		property = "update"
+	case "hash.replace":
+		property = "replace"
 	default:
 		return false
 	}
@@ -6556,6 +6558,23 @@ func (c *scriptChecker) hashMutatorCallProvablyAborts(
 	case "merge!", "update":
 		return len(call.KwArgs) != 0 ||
 			c.mergeArgumentsProvablyAbort(call, argumentFacts)
+	case "replace":
+		// An unresolved splat may still expand to exactly one hash or no
+		// keywords. Exact splats have already been expanded in checkedCall,
+		// so only the remaining dynamic shapes stay gradual here.
+		if callHasSplatArg(call) {
+			return false
+		}
+		for _, kwarg := range call.KwArgs {
+			if kwarg.Splat {
+				return false
+			}
+		}
+		if len(call.Args) != 1 || len(call.KwArgs) != 0 {
+			return true
+		}
+		written := c.mutatorCallArgumentFact(call.Args[0], argumentFacts)
+		return written != nil && typeExprProvablyNotHash(written)
 	default:
 		return false
 	}
@@ -6660,6 +6679,12 @@ func (c *scriptChecker) shapeMutatorCallMayWrite(
 		return keyType == nil || !typeExprProvablyUnstorableKey(keyType)
 	case "merge!", "update":
 		return c.hashMergeCallMayWrite(call, argumentFacts)
+	case "replace":
+		if len(call.Args) != 1 || callHasSplatArg(call) {
+			return false
+		}
+		written := c.mutatorCallArgumentFact(call.Args[0], argumentFacts)
+		return written == nil || !typeExprProvablyNotHash(written)
 	default:
 		return false
 	}
@@ -6667,11 +6692,10 @@ func (c *scriptChecker) shapeMutatorCallMayWrite(
 
 // applyShapeMutatorCallFacts checks the fields an in-place builtin hash
 // mutator writes against a shape receiver fact: store is index assignment,
-// so user.store(:extra, 1) violates a declared shape exactly like
-// user[:extra] = 1, and merge!/update literal entries check against a
-// declared contract's field types. Shape exactness also pins the
-// object-backed shadowing risk: dispatch can only be shadowed by a field
-// named like the mutator, and a non-callable one can only raise.
+// merge!/update fold entries into the existing store, and replace validates
+// the complete adopted hash. Shape exactness also pins the object-backed
+// shadowing risk: dispatch can only be shadowed by a field named like the
+// mutator, and a non-callable one can only raise.
 func (c *scriptChecker) applyShapeMutatorCallFacts(
 	function string,
 	call, checkedCall *CallExpr,
@@ -6786,8 +6810,110 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(
 		// A declared shape's key representation is unknown, so no merge
 		// preserves it.
 		return false, !blockConflicts
+	case "replace":
+		if len(writesCall.Args) != 1 || callHasSplatArg(writesCall) {
+			return false, false
+		}
+		arg := writesCall.Args[0]
+		written := c.mutatorCallArgumentFact(arg, argumentFacts)
+		if written != nil && typeExprProvablyNotHash(written) {
+			return false, true
+		}
+		// A witnessed shape pins a concrete key representation. Replacing it
+		// from another hash may change that representation even when the
+		// logical fields match, so only annotation-declared shapes preserve.
+		if shape.Name != "" {
+			return false, false
+		}
+		preserved = c.mutatorCallPreservable(call, name, receiverFact)
+		if lit, isLiteral := arg.(*HashLiteral); isLiteral && lit.ShapeType == nil {
+			compatible := c.checkShapeReplacementLiteral(function, name, shape, lit)
+			return preserved && compatible, true
+		}
+		// replace copies entries rather than retaining the source hash root,
+		// but the two stores can share nested container keys and values.
+		// Linking the source conservatively preserves that interior aliasing.
+		c.linkContainerWriteAlias(name, arg, written)
+		if written == nil {
+			return false, true
+		}
+		resolve := c.checkNamedTypeResolver()
+		if typeExprHashLikeOnly(written) && typeExprsDisjoint(written, shape, resolve) {
+			c.add(function, arg.Pos(), "write to %s expected %s, got %s",
+				name, formatTypeExpr(shape), formatTypeExpr(written))
+			return false, true
+		}
+		if typeExprHasOpenShapeArm(written) ||
+			!typeExprSatisfies(written, shape, resolve) {
+			return false, true
+		}
+		return preserved, true
 	}
 	return false, false
+}
+
+// checkShapeReplacementLiteral validates every effective entry in a literal
+// replacement and also checks that every required declared field survives the
+// whole-store replacement. Member-style logical names intentionally ignore
+// string-versus-symbol representation, matching runtime shape validation.
+func (c *scriptChecker) checkShapeReplacementLiteral(
+	function, name string,
+	shape *TypeExpr,
+	lit *HashLiteral,
+) bool {
+	compatible := true
+	supplied := make(map[string]struct{}, len(lit.Pairs))
+	resolve := c.checkNamedTypeResolver()
+	for _, pair := range effectiveHashLiteralPairs(lit) {
+		key, keyOK := staticLiteralHashKey(pair.Key)
+		keyType := c.inferExpressionType(pair.Key)
+		valueType := c.inferExpressionType(pair.Value)
+		c.linkContainerWriteAlias(name, pair.Key, keyType)
+		c.linkContainerWriteAlias(name, pair.Value, valueType)
+		if !keyOK {
+			compatible = false
+			continue
+		}
+		supplied[key] = struct{}{}
+		field, present := shape.Shape[key]
+		if !present {
+			c.add(function, pair.Key.Pos(), "write to %s adds field %s to exact shape %s",
+				name, key, formatTypeExpr(shape))
+			compatible = false
+			continue
+		}
+		field = shapeFieldValueType(field)
+		if valueType == nil {
+			compatible = false
+			continue
+		}
+		if typeExprsDisjoint(valueType, field, resolve) {
+			c.add(function, pair.Value.Pos(), "write to %s field %s expected %s, got %s",
+				name, key, formatTypeExpr(field), formatTypeExpr(valueType))
+			compatible = false
+			continue
+		}
+		if !typeExprSatisfies(valueType, field, resolve) {
+			compatible = false
+		}
+	}
+	fields := make([]string, 0, len(shape.Shape))
+	for field, fieldType := range shape.Shape {
+		if shapeFieldOptional(fieldType) {
+			continue
+		}
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	for _, field := range fields {
+		if _, present := supplied[field]; present {
+			continue
+		}
+		c.add(function, lit.Pos(), "write to %s removes required field %s from exact shape %s",
+			name, field, formatTypeExpr(shape))
+		compatible = false
+	}
+	return compatible
 }
 
 // checkShapeMergeEntry checks one statically known merge entry against a
@@ -7094,19 +7220,23 @@ func (c *scriptChecker) hashMutatorCallMayWrite(
 		return keyType == nil || !typeExprProvablyUnstorableKey(keyType)
 	case "merge!", "update":
 		return c.hashMergeCallMayWrite(call, argumentFacts)
+	case "replace":
+		if len(call.Args) != 1 || callHasSplatArg(call) {
+			return false
+		}
+		written := c.mutatorCallArgumentFact(call.Args[0], argumentFacts)
+		return written == nil || !typeExprProvablyNotHash(written)
 	default:
 		return false
 	}
 }
 
 // applyHashMutatorCallFacts checks the entries an in-place builtin hash
-// mutator writes against the receiver's declared hash<K, V> fact. store
-// writes one checked entry like h[k] = v; merge! and update fold whole hash
-// arguments in, so each argument fact is checked against the receiver's
-// type (an exact shape witnesses its entries, proving a contradiction). A
-// conflict block's results are unknown, so its presence checks nothing and
-// preserves nothing — and its calls may mutate retained entry values, so
-// only block-less calls report their arguments as modeled.
+// mutator writes against the receiver's declared hash<K, V> fact. store writes
+// one checked entry, merge!/update fold whole hash arguments into the existing
+// store, and replace validates the one hash whose complete contents are
+// adopted. A merge conflict block's results are unknown, so its presence
+// checks nothing and preserves nothing.
 func (c *scriptChecker) applyHashMutatorCallFacts(
 	function string,
 	call, checkedCall *CallExpr,
@@ -7242,6 +7372,47 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 			}
 		}
 		return preserved, !blockConflicts
+	case "replace":
+		if len(writesCall.Args) != 1 || callHasSplatArg(writesCall) {
+			return false, false
+		}
+		arg := writesCall.Args[0]
+		written := c.mutatorCallArgumentFact(arg, argumentFacts)
+		if written != nil && typeExprProvablyNotHash(written) {
+			return false, true
+		}
+		preserved = c.mutatorCallPreservable(call, name, receiverFact)
+		if lit, isLiteral := arg.(*HashLiteral); isLiteral && lit.ShapeType == nil {
+			compatible := c.checkHashLiteralMergeEntries(
+				function,
+				name,
+				lit,
+				keyBound,
+				valueBound,
+				resolve,
+				false,
+			)
+			return preserved && compatible, true
+		}
+		// replace copies the source's entries without retaining its root.
+		// Nested containers remain shared, so keep the same conservative
+		// interior link used for whole-hash merge arguments.
+		if !hashBoundsContainerFree(keyBound, valueBound) {
+			c.linkContainerWriteAlias(name, arg, written)
+		}
+		if written == nil {
+			return false, true
+		}
+		if typeExprHashLikeOnly(written) && typeExprsDisjoint(written, hashFact, resolve) {
+			c.add(function, arg.Pos(), "write to %s expected %s, got %s",
+				name, formatTypeExpr(hashFact), formatTypeExpr(written))
+			return false, true
+		}
+		if typeExprHasOpenShapeArm(written) ||
+			!typeExprSatisfies(written, hashFact, resolve) {
+			return false, true
+		}
+		return preserved, true
 	}
 	return false, false
 }
