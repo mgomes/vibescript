@@ -5881,6 +5881,15 @@ func arrayMutatorElementWrites(call *CallExpr, property string) (elements []Expr
 	return nil, false, false
 }
 
+func arrayInsertIndexCannotPad(index Expression) bool {
+	value, static := staticLiteralValue(index)
+	if !static || (value.Kind() != KindInt && value.Kind() != KindFloat) {
+		return false
+	}
+	n, err := valueToInt(value)
+	return err == nil && n <= 0
+}
+
 func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string, receiver *TypeExpr) bool {
 	receiver = nonNilMutatorReceiverFact(receiver)
 	if receiver == nil || !typeExprArmsAll(receiver, func(arm *TypeExpr) bool {
@@ -5957,6 +5966,12 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		if kind, known := staticOperandKind(index); known &&
 			kind != TypeInt && kind != TypeFloat && kind != TypeNumber {
 			return false, true, false
+		}
+		if len(elements) > 0 && arrayInsertIndexCannotPad(writesCall.Args[0]) {
+			// Zero inserts at the front and every negative index either
+			// resolves inside the array or raises before writing. Neither
+			// successful case can introduce nil padding.
+			preservable = true
 		}
 	}
 	// The mutators return their receiver, so a consumed result (a chained

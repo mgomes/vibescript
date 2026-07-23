@@ -202,6 +202,36 @@ end
 			warning: "write to items expected element int, got string",
 		},
 		{
+			name: "zero index insert preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.insert(0, 1)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "negative index insert preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.insert(-1, 1)
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
+			name: "non-padding splatted insert preserves the bound",
+			source: `
+def f(items: array<int>)
+  items.insert(*[0, 1])
+  items << "bad"
+end
+`,
+			warning: "write to items expected element int, got string",
+		},
+		{
 			name: "literal splat supplies the insert index",
 			source: `
 def f(items: array<int>)
@@ -838,7 +868,7 @@ end
 `,
 		},
 		{
-			name: "insert with values never preserves the bound",
+			name: "positive insert that may pad weakens the bound",
 			source: `
 def f(items: array<int>)
   items.insert(5, 1)
@@ -1225,6 +1255,32 @@ end
 	wantArgs := NewArray([]Value{NewString("bad")})
 	if !result[1].Equal(wantArgs) {
 		t.Fatalf("run() args = %s, want %s", result[1].String(), wantArgs.String())
+	}
+}
+
+func TestArrayInsertPaddingBoundaryMatchesRuntime(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run()
+  zero = []
+  zero.insert(0, 1)
+  negative = []
+  negative.insert(-1, 1)
+  positive = []
+  positive.insert(1, 1)
+  [zero, negative, positive]
+end
+`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	want := NewArray([]Value{
+		NewArray([]Value{NewInt(1)}),
+		NewArray([]Value{NewInt(1)}),
+		NewArray([]Value{NewNil(), NewInt(1)}),
+	})
+	if !got.Equal(want) {
+		t.Fatalf("run() = %s, want %s", got.String(), want.String())
 	}
 }
 
