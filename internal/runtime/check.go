@@ -18326,6 +18326,8 @@ func (s *namespaceMutationScan) capturedIndexGetter(
 	target *IndexExpr,
 	receiver checkAssignmentReceiverCapture,
 ) bool {
+	hashDefaults, hashDefaultsExact :=
+		s.checker.captureDirectCoreHashDefaults(target.Object)
 	call := &CallExpr{
 		Callee: &MemberExpr{
 			Object:   target.Object,
@@ -18347,9 +18349,26 @@ func (s *namespaceMutationScan) capturedIndexGetter(
 			}
 		}
 	}
-	return s.checker.indexExpressionMayCompleteWithReceiver(
+	if hashDefaultsExact {
+		effects, mayRun, _ := s.checker.indexReadIvarEffects(
+			target,
+			receiver.receiverType,
+			hashDefaults,
+		)
+		if mayRun {
+			if effects.unknown {
+				s.markUnknownDirectIvarEffects()
+			}
+			for name := range effects.writes {
+				s.recordDirectIvarWrite(name)
+			}
+		}
+	}
+	return s.checker.indexExpressionMayCompleteWithReceiverAndDefaults(
 		target,
 		receiver.receiverType,
+		hashDefaults,
+		hashDefaultsExact,
 	)
 }
 

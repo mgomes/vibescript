@@ -4633,6 +4633,179 @@ end
 `))
 }
 
+func TestCheckInitializerIvarHelperHashDefaultEffects(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		helper string
+	}{
+		{
+			name: "parameter default",
+			helper: `  def helper(trigger = Hash.new { |hash, key| @b = 1 }[:missing])
+    trigger
+  end`,
+		},
+		{
+			name: "method body",
+			helper: `  def helper
+    Hash.new { |hash, key| @b = 1 }[:missing]
+  end`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    helper()
+    @a = @b
+  end
+
+`+tc.helper+`
+end
+
+def run
+  User.new().a
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 1 {
+				t.Fatalf("run() = %v, want 1", got)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarHelperHashDefaultEffectBoundaries(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		helper string
+	}{
+		{
+			name: "present key",
+			helper: `  def helper
+    {present: 0}[:present]
+  end`,
+		},
+		{
+			name: "value default without callback",
+			helper: `  def helper
+    Hash.new(0)[:missing]
+  end`,
+		},
+		{
+			name: "selector does not complete",
+			helper: `  def helper
+    begin
+      Hash.new { |hash, key| @b = 1 }[
+        -> { raise "stop" }.call()
+      ]
+    rescue
+      nil
+    end
+  end`,
+		},
+		{
+			name: "callback exits before write",
+			helper: `  def helper
+    begin
+      Hash.new do |hash, key|
+        raise "stop"
+        @b = 1
+      end[:missing]
+    rescue
+      nil
+    end
+  end`,
+		},
+		{
+			name: "noncompleting default prevents body",
+			helper: `  def helper(trigger = Hash.new { |hash, key| raise "stop" }[:missing])
+    @b = 1
+  end`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    begin
+      helper()
+    rescue
+      nil
+    end
+    @a = @b
+  end
+
+`+tc.helper+`
+end
+
+def run
+  User.new().a
+end
+`)
+			requireCheckWarningContains(t, script, "write to @a expected int, got nil")
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"expected int, got nil",
+			)
+		})
+	}
+
+	t.Run("callback write survives noncompletion", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    begin
+      helper()
+    rescue
+      nil
+    end
+    @a = @b
+  end
+
+  def helper
+    Hash.new do |hash, key|
+      @b = 1
+      raise "stop"
+    end[:missing]
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
+}
+
 func TestCheckInitializerIvarDistinctSameClassSetterRemainsConservative(t *testing.T) {
 	t.Parallel()
 
