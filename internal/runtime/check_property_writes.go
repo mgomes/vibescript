@@ -274,12 +274,14 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 			// The runtime evaluates the right-hand side under the property
 			// expectation for the same value shapes as a member setter, so a
 			// bare callable assigned to a function-typed property is stored
-			// un-invoked; the inference mirrors that before comparing.
+			// un-invoked. Destructuring replays an already evaluated leaf, so
+			// prefer its captured fact instead of reinterpreting the source
+			// expression under a new callable expectation.
 			expectation := expressionExpectation{}
 			if memberAssignmentValueCanUseExpectation(value) {
 				expectation = typeExpressionExpectation(ty)
 			}
-			if next := c.inferExpressionTypeWithExpectation(value, expectation); next != nil &&
+			if next := c.inferredAssignmentValueType(value, expectation); next != nil &&
 				typeExprsDisjoint(next, ty, c.checkNamedTypeResolver()) {
 				c.add(function, pos, "write to @%s expected %s, got %s",
 					name, formatTypeExpr(ty), formatTypeExpr(next))
@@ -399,8 +401,18 @@ func (c *scriptChecker) ivarWriteProvablyCompletes(name string, value Expression
 	if memberAssignmentValueCanUseExpectation(value) {
 		expectation = typeExpressionExpectation(ty)
 	}
-	inferred := c.inferExpressionTypeWithExpectation(value, expectation)
+	inferred := c.inferredAssignmentValueType(value, expectation)
 	return inferred != nil && typeExprSatisfies(inferred, ty, c.checkNamedTypeResolver())
+}
+
+func (c *scriptChecker) inferredAssignmentValueType(
+	value Expression,
+	expectation expressionExpectation,
+) *TypeExpr {
+	if inferred, captured := c.callArgumentFacts[value]; captured {
+		return inferred
+	}
+	return c.inferExpressionTypeWithExpectation(value, expectation)
 }
 
 // inferDestructureIvarWrites routes instance-variable targets inside a

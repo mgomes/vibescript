@@ -606,6 +606,70 @@ end
 `))
 }
 
+func TestCheckDestructuredIvarWritesUseEvaluatedCallableFacts(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		property string
+		write    string
+		want     string
+	}{
+		{
+			name:     "array element",
+			property: "callback: function",
+			write:    "@callback, ignored = [factory.make, 1]",
+			want:     "write to @callback expected function, got string",
+		},
+		{
+			name:     "scalar",
+			property: "callback: function",
+			write:    "@callback, ignored = factory.make",
+			want:     "write to @callback expected function, got string",
+		},
+		{
+			name:     "rest array",
+			property: "callbacks: array<function>",
+			write:    "*@callbacks = [factory.make]",
+			want:     "write to @callbacks expected array<function>, got array<string>",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
+class Factory
+  def make() -> string
+    "not callable"
+  end
+end
+
+class User
+  property `+tc.property+`
+
+  def initialize
+    factory = Factory.new()
+    `+tc.write+`
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+			requireCheckWarningContains(t, script, tc.want)
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				strings.TrimPrefix(tc.want, "write to "),
+			)
+		})
+	}
+}
+
 // A literal right-hand side makes the rest split deterministic: the rest
 // ivar receives the materialized window as an array, fixed targets before
 // and trailing targets after the rest map to concrete indices (padding with

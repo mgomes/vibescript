@@ -6512,11 +6512,15 @@ func (c *scriptChecker) replayDestructureAssignment(
 		})
 		if !completed {
 			if _, ivar := fact.target.(*IvarExpr); ivar {
-				c.inferAssignStatementTypes(function, leaf, indexedReceiverFact, nil)
+				c.withCapturedDestructureArgumentFact(leafValue, fact, func() {
+					c.inferAssignStatementTypes(function, leaf, indexedReceiverFact, nil)
+				})
 			}
 			return false
 		}
-		c.inferAssignStatementTypes(function, leaf, indexedReceiverFact, nil)
+		c.withCapturedDestructureArgumentFact(leafValue, fact, func() {
+			c.inferAssignStatementTypes(function, leaf, indexedReceiverFact, nil)
+		})
 		c.recordRuntimeBindingTarget(fact.target)
 		c.recordBindingTarget(fact.target)
 	}
