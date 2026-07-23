@@ -2631,6 +2631,11 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 	case *ScopeExpr:
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
 	case *IndexExpr:
+		previousEvaluatedFacts := c.evaluatedDestructureFacts
+		if previousEvaluatedFacts == nil {
+			c.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
+			defer func() { c.evaluatedDestructureFacts = previousEvaluatedFacts }()
+		}
 		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
 		if !c.expressionMayCompleteForBinding(typed.Object) {
 			return
@@ -4242,7 +4247,7 @@ func (c *scriptChecker) captureEvaluatedDestructureFactWithAuto(
 	} else if callables, exact := c.callableExpressionFunctionsAfterEvaluation(expr, autoCall); exact {
 		fact.factKind = destructureCallableFact
 		fact.callables = append([]*ScriptFunction(nil), callables...)
-	} else if staticVals, exact := c.staticValueExpressionAlternatives(expr); exact {
+	} else if staticVals, exact := c.evaluatedStaticValueExpressionAlternatives(expr); exact {
 		fact.factKind = destructureStaticFact
 		fact.staticVals = append([]Expression(nil), staticVals...)
 	} else if array, ok := expr.(*ArrayLiteral); ok {
@@ -4514,6 +4519,21 @@ func (c *scriptChecker) bindCapturedDestructureValueFact(fact capturedDestructur
 	}
 }
 
+func (c *scriptChecker) evaluatedStaticValueExpressionAlternatives(
+	expr Expression,
+) ([]Expression, bool) {
+	if conditional, ok := expr.(*ConditionalExpr); ok {
+		if truthy, known := c.inferredConditionTruthiness(conditional.Condition); known {
+			branch := conditional.Alternate
+			if truthy {
+				branch = conditional.Consequent
+			}
+			return c.staticValueExpressionAlternatives(branch)
+		}
+	}
+	return c.staticValueExpressionAlternatives(expr)
+}
+
 func (c *scriptChecker) staticValueExpressionAlternatives(expr Expression) ([]Expression, bool) {
 	const maxAlternatives = 32
 	merge := func(left []Expression, leftOK bool, right []Expression, rightOK bool) ([]Expression, bool) {
@@ -4542,11 +4562,7 @@ func (c *scriptChecker) staticValueExpressionAlternatives(expr Expression) ([]Ex
 	case *Identifier:
 		return c.localStaticValuesFor(typed.Name)
 	case *ConditionalExpr:
-		if truthy, known := c.inferredConditionTruthiness(typed.Condition); known {
-			branch := typed.Alternate
-			if truthy {
-				branch = typed.Consequent
-			}
+		if branch, known := staticConditionalExpressionBranch(typed); known {
 			return c.staticValueExpressionAlternatives(branch)
 		}
 		left, leftOK := c.staticValueExpressionAlternatives(typed.Consequent)

@@ -14787,6 +14787,29 @@ func callerLambdaArgumentBlocks(call *CallExpr) map[*BlockLiteral]struct{} {
 	return blocks
 }
 
+func (c *scriptChecker) exactLambdaExpressionAlternatives(
+	expr Expression,
+) ([]Expression, bool) {
+	values, exact := c.callStaticValueAlternatives(expr)
+	if !exact || len(values) == 0 {
+		return nil, false
+	}
+	lambdas := make([]Expression, 0, len(values))
+	seen := make(map[*BlockLiteral]struct{}, len(values))
+	for _, value := range values {
+		block := lambdaLiteralBlock(value)
+		if block == nil {
+			return nil, false
+		}
+		if _, duplicate := seen[block]; duplicate {
+			continue
+		}
+		seen[block] = struct{}{}
+		lambdas = append(lambdas, value)
+	}
+	return lambdas, len(lambdas) > 0
+}
+
 func (c *scriptChecker) checkLambdaLiteralSummaryYields(function string, arg Expression) {
 	c.checkInvokedLambdaSummaryYields(function, lambdaLiteralBlock(arg))
 }
@@ -15133,6 +15156,12 @@ func (s *namespaceMutationScan) functionReference(name string) {
 }
 
 func (s *namespaceMutationScan) functionReferenceWithCall(name string, call *CallExpr) {
+	if s.scanExactLambdaCall(
+		&Identifier{Name: name, Position: call.Pos()},
+		call,
+	) {
+		return
+	}
 	if fns, bound := s.callableParams[name]; bound {
 		for _, fn := range fns {
 			s.scanFunctionCall(fn, call, staticCallable{name: fn.Name + ".call", fn: fn})
@@ -15161,6 +15190,25 @@ func (s *namespaceMutationScan) functionReferenceWithCall(name string, call *Cal
 		return
 	}
 	s.selfCallReference(name, call)
+}
+
+func (s *namespaceMutationScan) scanExactLambdaCall(
+	expr Expression,
+	call *CallExpr,
+) bool {
+	lambdas, exact := s.checker.exactLambdaExpressionAlternatives(expr)
+	if !exact {
+		return false
+	}
+	for _, lambda := range lambdas {
+		block := lambdaLiteralBlock(lambda)
+		if block == nil || !s.checker.immediateLambdaCallEntry(block, call).mayEnter {
+			continue
+		}
+		s.invokedLambdas[block] = struct{}{}
+		s.scanLambdaBlock(block)
+	}
+	return true
 }
 
 func (s *namespaceMutationScan) selfReference(name string) {
@@ -16957,6 +17005,9 @@ func (s *namespaceMutationScan) callCallee(call *CallExpr) {
 		return
 	}
 	if member, ok := call.Callee.(*MemberExpr); ok && member.Property == "call" {
+		if s.scanExactLambdaCall(member.Object, call) {
+			return
+		}
 		if ident, ok := member.Object.(*Identifier); ok {
 			if _, bound := s.callableParams[ident.Name]; bound {
 				s.functionReferenceWithCall(ident.Name, call)

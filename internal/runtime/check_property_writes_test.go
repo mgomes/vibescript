@@ -3988,15 +3988,23 @@ end
 func TestCheckInitializerIvarIndexGetterUsesEvaluatedSelectors(t *testing.T) {
 	t.Parallel()
 
-	for _, expression := range []string{
-		`    box[
+	for _, tc := range []struct {
+		name       string
+		expression string
+	}{
+		{
+			name: "direct",
+			expression: `    box[
       choose_b ? -> { @b = 1 } : -> { @c = 1 },
       -> {
         choose_b = false
         0
       }.call()
     ]`,
-		`    for value in [1]
+		},
+		{
+			name: "repeated",
+			expression: `    for value in [1]
       choose_b = true
       box[
         choose_b ? -> { @b = 1 } : -> { @c = 1 },
@@ -4006,8 +4014,11 @@ func TestCheckInitializerIvarIndexGetterUsesEvaluatedSelectors(t *testing.T) {
         }.call()
       ]
     end`,
+		},
 	} {
-		script := compileScriptDefault(t, `
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `
 class Box
   def [](callback: function, index: int) -> int
     callback.call()
@@ -4026,7 +4037,7 @@ class User
 
   def initialize(box: Box, flag: bool)
     choose_b = true
-`+expression+`
+`+tc.expression+`
     if flag
       @a = @b
     else
@@ -4035,11 +4046,42 @@ class User
   end
 end
 `)
-		warnings := script.CheckWarnings()
-		if len(warnings) != 1 ||
-			warnings[0].Message != "write to @a expected int, got nil" {
-			t.Fatalf("CheckWarnings() = %#v, want only the unset @c warning", warnings)
-		}
+			warnings := script.CheckWarnings()
+			if len(warnings) != 1 ||
+				warnings[0].Message != "write to @a expected int, got nil" {
+				t.Fatalf("CheckWarnings() = %#v, want only the unset @c warning", warnings)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarRejectedExactCallbacksPreserveUnsetFacts(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class Invoker
+  def +(callback: function)
+    callback.call(1)
+    self
+  end
+end
+
+class User
+  property a: int
+  property b: int
+
+  def initialize(invoker: Invoker)
+    for value in [1]
+      invoker + -> { @b = 1 }
+    end
+    @a = @b
+  end
+end
+`)
+	warnings := script.CheckWarnings()
+	if len(warnings) != 1 ||
+		warnings[0].Message != "write to @a expected int, got nil" {
+		t.Fatalf("CheckWarnings() = %#v, want the unset @b warning", warnings)
 	}
 }
 
