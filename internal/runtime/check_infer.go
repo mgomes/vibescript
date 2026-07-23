@@ -2476,16 +2476,13 @@ func (c *scriptChecker) applyMemberWriteFacts(
 		if !getterMayResolve {
 			return false, nil, false
 		}
-		if target.Property == "nil?" {
-			if _, universal := c.factReceiverUniversalMemberCallable(target); universal {
-				// A member setter only dispatches on the non-nil receiver path,
-				// where the universal nil? result is always false.
-				if stmt.Operator == tokenAndAssign {
-					return true, nil, false
-				}
-				written = c.inferExpressionType(stmt.Value)
-				break
+		if truthy, known := c.memberWriteUniversalGetterTruthiness(contentFact, target.Property); known {
+			if stmt.Operator == tokenOrAssign && truthy ||
+				stmt.Operator == tokenAndAssign && !truthy {
+				return true, nil, false
 			}
+			written = c.inferExpressionType(stmt.Value)
+			break
 		}
 		if typeExprDefinitelyTruthy(current) {
 			if stmt.Operator == tokenOrAssign {
@@ -2545,16 +2542,28 @@ func (c *scriptChecker) applyMemberWriteFacts(
 }
 
 // memberWriteCurrentType reports the value a compound/logical member target
-// can read on a path that reaches its setter. Universal helpers dispatch ahead
-// of non-callable hash/object data, while ordinary data members use the typed
-// hash value bound or declared shape field. A missing closed-shape field cannot
-// reach the setter because member lookup raises before the right side runs.
+// can read on a path that reaches its setter. Hash-owned readers and universal
+// helpers dispatch before ordinary hash/object data; only the latter uses a
+// typed hash value bound or declared shape field. A data getter whose hash key
+// is impossible, or a missing closed-shape field, raises before the right side
+// runs and cannot reach the setter.
 func (c *scriptChecker) memberWriteCurrentType(target *MemberExpr, receiver *TypeExpr) (*TypeExpr, bool) {
 	if target == nil {
 		return nil, false
 	}
 	property := target.Property
+	if current, resolved := c.hashOwnedMemberWriteCurrentType(receiver, property); resolved {
+		return current, true
+	}
 	if isUniversalMember(property) {
+		if c.memberWriteUsesUniversalDispatch(receiver, property) {
+			switch property {
+			case "itself", "dup", "clone", "freeze":
+				return receiver, true
+			case "frozen?", "nil?":
+				return checkTypeBool, true
+			}
+		}
 		if callable, resolved := c.resolveMemberCallable(target); resolved {
 			if callable.fn == nil {
 				if callable.spec.autoInvoke {
@@ -2565,7 +2574,7 @@ func (c *scriptChecker) memberWriteCurrentType(target *MemberExpr, receiver *Typ
 			return c.inferExpressionType(target), true
 		}
 	}
-	if _, valueBound := declaredHashEntryTypes(receiver); valueBound != nil {
+	if valueBound, getterMayResolve := c.declaredHashDataMemberResult(receiver); getterMayResolve {
 		return valueBound, true
 	}
 	if receiver == nil || receiver.Kind != TypeShape || receiver.Nullable {
@@ -2576,6 +2585,156 @@ func (c *scriptChecker) memberWriteCurrentType(target *MemberExpr, receiver *Typ
 		return nil, false
 	}
 	return shapeFieldValueType(field), true
+}
+
+func (c *scriptChecker) declaredHashDataMemberResult(receiver *TypeExpr) (*TypeExpr, bool) {
+	keyBound, valueBound := declaredHashEntryTypes(receiver)
+	if valueBound == nil ||
+		typeExprsDisjoint(checkTypeMethodName, keyBound, c.checkNamedTypeResolver()) {
+		return nil, false
+	}
+	return valueBound, true
+}
+
+// hashOwnedMemberWriteCurrentType derives the known result of hash-owned
+// readers used by compound assignment. KindHash always dispatches the builtin;
+// a declared shape or typed hash may also be backed by KindObject, where a
+// same-named string field wins. Join that field's bound when it can exist.
+func (c *scriptChecker) hashOwnedMemberWriteCurrentType(receiver *TypeExpr, property string) (*TypeExpr, bool) {
+	var builtin *TypeExpr
+	switch property {
+	case "size", "length":
+		builtin = checkTypeInt
+	default:
+		return nil, false
+	}
+
+	arms, ok := typeExprArms(receiver, 0)
+	if !ok || len(arms) == 0 {
+		return nil, false
+	}
+	currents := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		if arm.Kind != TypeHash && arm.Kind != TypeShape {
+			return nil, false
+		}
+		current := c.hashOwnedMemberWriteArmType(arm, property, builtin)
+		if current == nil {
+			return nil, true
+		}
+		currents = append(currents, current)
+	}
+	return unionTypeExprs(currents...), true
+}
+
+func (c *scriptChecker) hashOwnedMemberWriteArmType(
+	receiver *TypeExpr,
+	property string,
+	builtin *TypeExpr,
+) *TypeExpr {
+	if keyBound, valueBound := declaredHashEntryTypes(receiver); valueBound != nil {
+		if typeExprsDisjoint(checkTypeString, keyBound, c.checkNamedTypeResolver()) {
+			return builtin
+		}
+		if typeExprMayIncludeCallable(valueBound) {
+			return nil
+		}
+		return unionTypeExprs(builtin, valueBound)
+	}
+	if receiver == nil || receiver.Kind != TypeShape || receiver.Nullable {
+		return nil
+	}
+	if receiver.Name != "" {
+		return builtin
+	}
+	field, present := receiver.Shape[property]
+	if !present {
+		if receiver.Open {
+			return nil
+		}
+		return builtin
+	}
+	fieldType := shapeFieldValueType(field)
+	if typeExprMayIncludeCallable(fieldType) {
+		return nil
+	}
+	return unionTypeExprs(builtin, fieldType)
+}
+
+// memberWriteUsesUniversalDispatch reports that every non-nil hash-like
+// receiver arm reaches the universal helper rather than a callable object
+// export with the same name.
+func (c *scriptChecker) memberWriteUsesUniversalDispatch(receiver *TypeExpr, property string) bool {
+	if !isUniversalMember(property) || !typeExprHashLikeOnly(receiver) {
+		return false
+	}
+	return typeExprArmsAll(receiver, func(arm *TypeExpr) bool {
+		if isUniversalDataSafe(property) {
+			if arm.Kind == TypeShape && arm.Name != "" {
+				return true
+			}
+			if keyBound, valueBound := declaredHashEntryTypes(arm); valueBound != nil &&
+				typeExprsDisjoint(checkTypeString, keyBound, c.checkNamedTypeResolver()) {
+				return true
+			}
+		}
+		return typeArmUsesUniversalMemberDispatch(arm, property)
+	})
+}
+
+// memberWriteUniversalGetterTruthiness records the nullary universal helpers
+// whose result has fixed truthiness on the non-nil path that can reach a member
+// setter.
+func (c *scriptChecker) memberWriteUniversalGetterTruthiness(
+	receiver *TypeExpr,
+	property string,
+) (bool, bool) {
+	if !c.memberWriteUsesUniversalDispatch(receiver, property) {
+		return false, false
+	}
+	switch property {
+	case "nil?":
+		return false, true
+	case "itself", "dup", "clone", "freeze", "frozen?":
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+func (c *scriptChecker) hashLikeMemberGetterTruthiness(
+	member *MemberExpr,
+	receiver *TypeExpr,
+) (bool, bool) {
+	if member == nil || !typeExprNeverNil(receiver) || !typeExprHashLikeOnly(receiver) {
+		return false, false
+	}
+	if isUniversalMember(member.Property) {
+		return c.memberWriteUniversalGetterTruthiness(receiver, member.Property)
+	}
+	current, getterMayResolve := c.memberWriteCurrentType(member, receiver)
+	if !getterMayResolve || current == nil || typeExprMayIncludeCallable(current) {
+		return false, false
+	}
+	if typeExprDefinitelyTruthy(current) {
+		return true, true
+	}
+	if typeExprIsNilOnly(current) {
+		return false, true
+	}
+	return false, false
+}
+
+func (c *scriptChecker) logicalAssignmentTargetTruthiness(
+	target Expression,
+	receiverFact *TypeExpr,
+) (bool, bool) {
+	if member, ok := target.(*MemberExpr); ok && receiverFact != nil {
+		if truthy, known := c.hashLikeMemberGetterTruthiness(member, receiverFact); known {
+			return truthy, true
+		}
+	}
+	return c.inferredConditionTruthiness(target)
 }
 
 func (c *scriptChecker) bindInvalidKeywordSplatKey(name, invalidKey string) {
@@ -5647,7 +5806,7 @@ func (c *scriptChecker) hashDataMemberResultFact(member *MemberExpr) (*TypeExpr,
 	}
 	receiver := nonNilMutatorReceiverFact(c.inferExpressionType(member.Object))
 	var result *TypeExpr
-	if _, valueBound := declaredHashEntryTypes(receiver); valueBound != nil {
+	if valueBound, getterMayResolve := c.declaredHashDataMemberResult(receiver); getterMayResolve {
 		result = valueBound
 	} else if receiver != nil && receiver.Kind == TypeShape && !receiver.Nullable {
 		field, present := receiver.Shape[member.Property]
@@ -5664,30 +5823,39 @@ func (c *scriptChecker) hashDataMemberResultFact(member *MemberExpr) (*TypeExpr,
 	return result, true
 }
 
-// exactShapeMemberLookupProvablyFails reports a non-builtin data member that
-// is absent from every exact shape arm. Both hash and object receivers raise
-// on that miss, so compound and logical assignment cannot reach their setter.
-// A safe-navigation nil arm is handled by the caller as the one completing
-// path; nil on a plain member read also fails the lookup.
-func (c *scriptChecker) exactShapeMemberLookupProvablyFails(member *MemberExpr) bool {
+// hashLikeDataMemberLookupProvablyFails reports a non-builtin data member that
+// is absent from every exact shape arm or whose string/symbol key is excluded
+// by every declared hash arm. Both hash and object receivers raise on that
+// miss, so compound and logical assignment cannot evaluate their right side or
+// reach their setter. A safe-navigation nil arm is handled by the caller as the
+// one completing path; nil on a plain member read also fails the lookup.
+func (c *scriptChecker) hashLikeDataMemberLookupProvablyFails(member *MemberExpr) bool {
 	if member == nil || memberKindOwns("hash", member.Property) ||
 		isUniversalMember(member.Property) {
 		return false
 	}
 	receiver := c.inferExpressionType(member.Object)
-	sawShape := false
+	sawClosedHashLike := false
 	allFail := typeExprArmsAll(receiver, func(arm *TypeExpr) bool {
 		if arm.Kind == TypeNil {
 			return member.Safe || !memberKindOwns("nil", member.Property)
 		}
+		if arm.Kind == TypeHash {
+			if _, valueBound := declaredHashEntryTypes(arm); valueBound == nil {
+				return false
+			}
+			sawClosedHashLike = true
+			_, getterMayResolve := c.declaredHashDataMemberResult(arm)
+			return !getterMayResolve
+		}
 		if arm.Kind != TypeShape || arm.Open {
 			return false
 		}
-		sawShape = true
+		sawClosedHashLike = true
 		_, present := arm.Shape[member.Property]
 		return !present
 	})
-	return sawShape && allFail
+	return sawClosedHashLike && allFail
 }
 
 func scriptFunctionLiteralReturnExpression(fn *ScriptFunction) (Expression, bool) {

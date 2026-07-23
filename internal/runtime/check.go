@@ -2847,7 +2847,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				setterReceiverCandidates = append(setterReceiverCandidates, candidates)
 			}
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
-			truthy, known := c.inferredConditionTruthiness(typed.Target)
+			truthy, known := c.logicalAssignmentTargetTruthiness(
+				typed.Target,
+				assignmentReceiverFact,
+			)
 			rhsReachable := true
 			if known {
 				if typed.Operator == tokenOrAssign {
@@ -6394,7 +6397,7 @@ func (c *scriptChecker) checkMemberAutoCall(
 	function string,
 	member *MemberExpr,
 ) (staticCallable, bool, bool, bool) {
-	if c.exactShapeMemberLookupProvablyFails(member) {
+	if c.hashLikeDataMemberLookupProvablyFails(member) {
 		return staticCallable{}, false, false, false
 	}
 	target, ok := c.resolveMemberCallable(member)
@@ -9922,7 +9925,7 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 		if typed.Safe && !c.safeNavigationReceiverKnownNonNil(typed.Object) {
 			return true
 		}
-		if c.exactShapeMemberLookupProvablyFails(typed) {
+		if c.hashLikeDataMemberLookupProvablyFails(typed) {
 			return false
 		}
 		if typed.Property == "new" {
@@ -13443,6 +13446,12 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 				return false
 			}
 		case tokenOrAssign, tokenAndAssign:
+			var assignmentReceiverFact *TypeExpr
+			if member, ok := typed.Target.(*MemberExpr); ok {
+				if ident, ok := member.Object.(*Identifier); ok {
+					assignmentReceiverFact = s.checker.localTypeFor(ident.Name)
+				}
+			}
 			targetCompleted, candidates, captured := s.checker.withAssignmentReceiverCapture(
 				typed.Target,
 				func() bool { return s.expression(typed.Target) },
@@ -13453,7 +13462,10 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 			if captured {
 				setterReceiverCandidates = append(setterReceiverCandidates, candidates)
 			}
-			truthy, known := s.checker.inferredConditionTruthiness(typed.Target)
+			truthy, known := s.checker.logicalAssignmentTargetTruthiness(
+				typed.Target,
+				assignmentReceiverFact,
+			)
 			rhsReachable := !known ||
 				(typed.Operator == tokenOrAssign && !truthy) ||
 				(typed.Operator == tokenAndAssign && truthy)

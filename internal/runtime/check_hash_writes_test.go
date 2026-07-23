@@ -506,6 +506,42 @@ end
 			warning: "write to h expected key int, got string | symbol",
 		},
 		{
+			name: "hash-owned getter reaches an exact shape write",
+			source: `
+def f(user: { name: string })
+  user.size &&= 1
+end
+`,
+			warning: "write to user adds field size to exact shape { name: string }",
+		},
+		{
+			name: "universal identity getter reaches an exact shape write",
+			source: `
+def f(user: { name: string })
+  user.itself &&= 1
+end
+`,
+			warning: "write to user adds field itself to exact shape { name: string }",
+		},
+		{
+			name: "hash-owned getter precedes an impossible data key",
+			source: `
+def f(h: hash<int, bool>)
+  h.size &&= true
+end
+`,
+			warning: "write to h expected key int, got string | symbol",
+		},
+		{
+			name: "true universal getter reaches and assignment",
+			source: `
+def f(user: { name: string })
+  user.frozen? &&= 1
+end
+`,
+			warning: "write to user adds field frozen? to exact shape { name: string }",
+		},
+		{
 			name: "skipped member assignment preserves a declared shape",
 			source: `
 def f(user: { name: string })
@@ -1251,6 +1287,81 @@ end
 `,
 		},
 		{
+			name: "true universal member skips or assignment",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { name: string })
+  user.frozen? ||= takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "truthy hash-owned getter skips or assignment",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { name: string })
+  user.size ||= takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "truthy identity getter skips or assignment",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { name: string })
+  user.itself ||= takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "data-safe universal getter wins over literal hash data",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f
+  h = { "frozen?": lambda { false } }
+  h.frozen? ||= takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "impossible typed hash key skips logical member assignment",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<int, bool>)
+  h.value ||= takes_int("unreachable right side")
+  takes_int("unreachable continuation")
+end
+`,
+		},
+		{
+			name: "impossible typed hash key skips compound member assignment",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<int, int>)
+  h.value += takes_int("unreachable right side")
+  takes_int("unreachable continuation")
+end
+`,
+		},
+		{
 			name: "missing compound member aborts before an extra field write",
 			source: `
 def f(user: { name: string })
@@ -1940,6 +2051,41 @@ def compound_and_logical
   h.fallback ||= "set"
   [h[:count], h[:name], h[:fallback]]
 end
+
+def builtin_and_universal_getters
+  sized = { name: "before" }
+  sized.size &&= 1
+
+  identified = { name: "before" }
+  identified.itself &&= 2
+
+  frozen = { name: "before" }
+  frozen.frozen? ||= 3
+
+  frozen_and = { name: "before" }
+  frozen_and.frozen? &&= 4
+
+  shadowed = { "frozen?": lambda { false } }
+  shadowed.frozen? ||= fail_right_side()
+
+  [sized[:size], identified[:itself], frozen.size, frozen_and[:"frozen?"], shadowed["frozen?"].call()]
+end
+
+def impossible_key_getter
+  h = {}
+  h[1] = false
+  h.value ||= fail_right_side()
+end
+
+def impossible_compound_key_getter
+  h = {}
+  h[1] = 1
+  h.value += fail_right_side()
+end
+
+def fail_right_side
+  1 / 0
+end
 `)
 
 	compareArrays(t, callFunc(t, script, "existing_symbol", nil), []Value{
@@ -1963,6 +2109,15 @@ end
 		NewString("after"),
 		NewString("set"),
 	})
+	compareArrays(t, callFunc(t, script, "builtin_and_universal_getters", nil), []Value{
+		NewInt(1),
+		NewInt(2),
+		NewInt(1),
+		NewInt(4),
+		NewBool(false),
+	})
+	requireCallErrorContains(t, script, "impossible_key_getter", nil, CallOptions{}, "unknown hash method value")
+	requireCallErrorContains(t, script, "impossible_compound_key_getter", nil, CallOptions{}, "unknown hash method value")
 }
 
 func TestHashReplaceMatchesRuntimeWholeStore(t *testing.T) {
