@@ -140,6 +140,26 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
+			name: "dynamic store splat keeps a following write reachable",
+			source: `
+def f(h: hash<string, int>, other: hash<string, int>, args: array<any>)
+  h.store(*args)
+  other[:bad] = 1
+end
+`,
+			warning: "write to other expected key string, got symbol",
+		},
+		{
+			name: "empty store keyword splat keeps a following write reachable",
+			source: `
+def f(h: hash<string, int>, other: hash<string, int>, opts: {})
+  h.store("a", 1, **opts)
+  other[:bad] = 1
+end
+`,
+			warning: "write to other expected key string, got symbol",
+		},
+		{
 			name: "splatted literal merge entries are checked",
 			source: `
 def f(h: hash<string, int>)
@@ -318,6 +338,26 @@ def f(h: hash<symbol, int>)
 end
 `,
 			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "possibly empty merge keyword splat keeps a following write reachable",
+			source: `
+def f(h: hash<string, int>, other: hash<string, int>, opts: hash<string, int>)
+  h.merge!(**opts)
+  other[:bad] = 1
+end
+`,
+			warning: "write to other expected key string, got symbol",
+		},
+		{
+			name: "optional update keyword splat keeps a following write reachable",
+			source: `
+def f(h: hash<string, int>, other: hash<string, int>, opts: { extra?: int })
+  h.update(**opts)
+  other[:bad] = 1
+end
+`,
+			warning: "write to other expected key string, got symbol",
 		},
 		{
 			name: "merge with a local shape fact keeps the whole-shape check",
@@ -1535,6 +1575,47 @@ end
 `,
 		},
 		{
+			name: "too many fixed store arguments abort despite a dynamic splat",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<string, int>, args: array<any>)
+  h.store("a", 1, 2, *args)
+  takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "nonempty merge keyword splat stops the continuation",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<string, int>, opts: { extra: int })
+  h.merge!(**opts)
+  takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "invalid update keyword splat stops the continuation",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<string, int>)
+  opts = {}
+  opts[1] = 2
+  h.update(**opts)
+  takes_int("unreachable")
+end
+`,
+		},
+		{
 			name: "callable value bounds are not modeled as builtin mutators",
 			source: `
 def f(h: hash<string, function>, v)
@@ -1757,6 +1838,71 @@ end
 		NewBool(true),
 		NewInt(1),
 	})
+}
+
+func TestHashWriteDynamicExpansionsMatchReachableRuntimeCalls(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def store_expansion(h: hash<string, int>, other: hash<string, int>, args: array<any>, opts)
+  h.store(*args, **opts)
+  other[:bad] = 1
+  [h["stored"], other[:bad]]
+end
+
+def merge_expansion(h: hash<string, int>, other: hash<string, int>, args: array<any>, opts)
+  h.merge!(*args, **opts)
+  other[:bad] = 1
+  [h["merged"], other[:bad]]
+end
+
+def update_expansion(h: hash<string, int>, other: hash<string, int>, args: array<any>, opts)
+  h.update(*args, **opts)
+  other[:bad] = 1
+  [h["updated"], other[:bad]]
+end
+`)
+
+	cases := []struct {
+		name string
+		args []Value
+	}{
+		{
+			name: "store_expansion",
+			args: []Value{
+				NewHash(nil),
+				NewHash(nil),
+				NewArray([]Value{NewString("stored"), NewInt(1)}),
+				NewHash(nil),
+			},
+		},
+		{
+			name: "merge_expansion",
+			args: []Value{
+				NewHash(nil),
+				NewHash(nil),
+				NewArray([]Value{NewHash(map[string]Value{"merged": NewInt(1)})}),
+				NewHash(nil),
+			},
+		},
+		{
+			name: "update_expansion",
+			args: []Value{
+				NewHash(nil),
+				NewHash(nil),
+				NewArray([]Value{NewHash(map[string]Value{"updated": NewInt(1)})}),
+				NewHash(nil),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			compareArrays(t, callFunc(t, script, tc.name, tc.args), []Value{
+				NewInt(1),
+				NewInt(1),
+			})
+		})
+	}
 }
 
 func TestHashMemberAssignmentMatchesRuntimeKeySelection(t *testing.T) {

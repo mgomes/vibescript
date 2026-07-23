@@ -6576,13 +6576,20 @@ func (c *scriptChecker) hashMutatorCallProvablyAborts(
 	}
 	switch property {
 	case "store":
-		if len(call.Args) != 2 || len(call.KwArgs) != 0 {
+		if !c.hashMutatorCallMayHaveNoKeywords(call, argumentFacts) ||
+			!storeCallArityMayMatch(call) {
 			return true
+		}
+		// An unresolved splat may supply the missing positions (or expand
+		// empty beside two fixed arguments), so no individual AST argument
+		// is guaranteed to be the runtime key until expansion completes.
+		if callHasSplatArg(call) {
+			return false
 		}
 		keyType := c.mutatorCallArgumentFact(call.Args[0], argumentFacts)
 		return keyType != nil && typeExprProvablyUnstorableKey(keyType)
 	case "merge!", "update":
-		return len(call.KwArgs) != 0 ||
+		return !c.hashMutatorCallMayHaveNoKeywords(call, argumentFacts) ||
 			c.mergeArgumentsProvablyAbort(call, argumentFacts)
 	case "replace":
 		// An unresolved splat may still expand to exactly one hash or no
@@ -6604,6 +6611,77 @@ func (c *scriptChecker) hashMutatorCallProvablyAborts(
 	default:
 		return false
 	}
+}
+
+// storeCallArityMayMatch reports whether runtime splat expansion can produce
+// Hash#store's two positional arguments. Non-splat arguments set a minimum;
+// any unresolved splat may contribute the remaining positions, including none.
+func storeCallArityMayMatch(call *CallExpr) bool {
+	fixed := 0
+	hasSplat := false
+	for _, arg := range call.Args {
+		if _, splat := arg.(*SplatArg); splat {
+			hasSplat = true
+			continue
+		}
+		fixed++
+	}
+	return fixed <= 2 && (hasSplat || fixed == 2)
+}
+
+// hashMutatorCallMayHaveNoKeywords reports whether keyword expansion can leave
+// the runtime keyword map empty. Named keywords and required fields make the
+// rejected map provably nonempty; exact empty, optional-only, generic, and
+// unknown hash facts retain the successful empty-map path.
+func (c *scriptChecker) hashMutatorCallMayHaveNoKeywords(
+	call *CallExpr,
+	argumentFacts map[Expression]*TypeExpr,
+) bool {
+	for _, kwarg := range call.KwArgs {
+		if !kwarg.Splat {
+			return false
+		}
+		fact := c.mutatorCallArgumentFact(kwarg.Value, argumentFacts)
+		if !c.typeFactMayBeEmptyKeywordHash(fact) {
+			return false
+		}
+	}
+	return true
+}
+
+// typeFactMayBeEmptyKeywordHash reports whether a fact admits a hash whose
+// keyword expansion is valid and contributes no entries.
+func (c *scriptChecker) typeFactMayBeEmptyKeywordHash(fact *TypeExpr) bool {
+	if fact == nil {
+		return true
+	}
+	arms, ok := typeExprArms(fact, 0)
+	if !ok {
+		return true
+	}
+	resolve := c.checkNamedTypeResolver()
+	for _, arm := range arms {
+		if _, shapeValue := shapeValuePayload(arm); shapeValue {
+			continue
+		}
+		if arm.Kind != TypeShape {
+			if !typeExprsDisjoint(arm, checkTypeHash, resolve) {
+				return true
+			}
+			continue
+		}
+		empty := true
+		for _, fieldType := range arm.Shape {
+			if !shapeFieldOptional(fieldType) {
+				empty = false
+				break
+			}
+		}
+		if empty {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeArgumentsProvablyAbort reports whether a merge!/update call provably
