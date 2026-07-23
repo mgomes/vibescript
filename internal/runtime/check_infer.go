@@ -6254,6 +6254,7 @@ func (c *scriptChecker) applyContainerMutatorCallFacts(
 		preserved, modeled := c.applyHashMutatorCallFacts(
 			function,
 			call,
+			checkedCall,
 			member,
 			argumentFacts,
 			ident.Name,
@@ -6263,7 +6264,7 @@ func (c *scriptChecker) applyContainerMutatorCallFacts(
 			valueBound,
 		)
 		return preserved, modeled, c.hashMutatorCallMayWrite(
-			call,
+			checkedCall,
 			member.Property,
 			argumentFacts,
 		)
@@ -6272,6 +6273,7 @@ func (c *scriptChecker) applyContainerMutatorCallFacts(
 		preserved, modeled := c.applyShapeMutatorCallFacts(
 			function,
 			call,
+			checkedCall,
 			member,
 			argumentFacts,
 			ident.Name,
@@ -6279,7 +6281,7 @@ func (c *scriptChecker) applyContainerMutatorCallFacts(
 			contentFact,
 		)
 		return preserved, modeled, c.shapeMutatorCallMayWrite(
-			call,
+			checkedCall,
 			member.Property,
 			argumentFacts,
 		)
@@ -6361,12 +6363,12 @@ func (c *scriptChecker) hashMutatorCallProvablyAborts(
 	switch property {
 	case "store":
 		if len(call.Args) != 2 || len(call.KwArgs) != 0 {
-			return false
+			return true
 		}
 		keyType := c.mutatorCallArgumentFact(call.Args[0], argumentFacts)
 		return keyType != nil && typeExprProvablyUnstorableKey(keyType)
 	case "merge!", "update":
-		return len(call.KwArgs) == 0 &&
+		return len(call.KwArgs) != 0 ||
 			c.mergeArgumentsProvablyAbort(call, argumentFacts)
 	default:
 		return false
@@ -6484,8 +6486,19 @@ func (c *scriptChecker) shapeMutatorCallMayWrite(
 // declared contract's field types. Shape exactness also pins the
 // object-backed shadowing risk: dispatch can only be shadowed by a field
 // named like the mutator, and a non-callable one can only raise.
-func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallExpr, member *MemberExpr, argumentFacts map[Expression]*TypeExpr, name string, receiverFact, shape *TypeExpr) (preserved, modeled bool) {
-	if len(call.KwArgs) != 0 {
+func (c *scriptChecker) applyShapeMutatorCallFacts(
+	function string,
+	call, checkedCall *CallExpr,
+	member *MemberExpr,
+	argumentFacts map[Expression]*TypeExpr,
+	name string,
+	receiverFact, shape *TypeExpr,
+) (preserved, modeled bool) {
+	writesCall := call
+	if checkedCall != nil {
+		writesCall = checkedCall
+	}
+	if len(writesCall.KwArgs) != 0 {
 		return false, false
 	}
 	// A declared shape may be backed by KindObject, whose stored fields resolve
@@ -6502,22 +6515,22 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallEx
 	}
 	switch member.Property {
 	case "store":
-		if len(call.Args) != 2 {
+		if len(writesCall.Args) != 2 {
 			return false, false
 		}
 		// store canonicalizes its key before writing, so a provably
 		// unsupported key kind raises without storing anything.
-		if keyType := c.mutatorCallArgumentFact(call.Args[0], argumentFacts); keyType != nil &&
+		if keyType := c.mutatorCallArgumentFact(writesCall.Args[0], argumentFacts); keyType != nil &&
 			typeExprProvablyUnstorableKey(keyType) {
 			return false, true
 		}
-		return c.applyShapeFieldWrite(function, name, shape, call.Args[0], call.Args[1], call.Args[0].Pos(),
+		return c.applyShapeFieldWrite(function, name, shape, writesCall.Args[0], writesCall.Args[1], writesCall.Args[0].Pos(),
 			c.mutatorCallPreservable(call, name, receiverFact)), true
 	case "merge!", "update":
-		if c.mergeArgumentsProvablyAbort(call, argumentFacts) {
+		if c.mergeArgumentsProvablyAbort(writesCall, argumentFacts) {
 			return false, true
 		}
-		if !c.hashMergeCallMayWrite(call, argumentFacts) {
+		if !c.hashMergeCallMayWrite(writesCall, argumentFacts) {
 			return c.mutatorCallPreservable(call, name, receiverFact), true
 		}
 		// A conflict block runs user code that can mutate retained
@@ -6529,7 +6542,7 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(function string, call *CallEx
 			// hashes in weakens them without a report.
 			return false, !blockConflicts
 		}
-		for _, arg := range call.Args {
+		for _, arg := range writesCall.Args {
 			if splat, isSplat := arg.(*SplatArg); isSplat {
 				// A splatted array literal's hash-literal elements are
 				// statically known expanded arguments whose entries land
@@ -6908,19 +6921,30 @@ func (c *scriptChecker) hashMutatorCallMayWrite(
 // conflict block's results are unknown, so its presence checks nothing and
 // preserves nothing — and its calls may mutate retained entry values, so
 // only block-less calls report their arguments as modeled.
-func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExpr, member *MemberExpr, argumentFacts map[Expression]*TypeExpr, name string, receiverFact, hashFact, keyBound, valueBound *TypeExpr) (preserved, modeled bool) {
-	if len(call.KwArgs) != 0 {
+func (c *scriptChecker) applyHashMutatorCallFacts(
+	function string,
+	call, checkedCall *CallExpr,
+	member *MemberExpr,
+	argumentFacts map[Expression]*TypeExpr,
+	name string,
+	receiverFact, hashFact, keyBound, valueBound *TypeExpr,
+) (preserved, modeled bool) {
+	writesCall := call
+	if checkedCall != nil {
+		writesCall = checkedCall
+	}
+	if len(writesCall.KwArgs) != 0 {
 		return false, false
 	}
 	resolve := c.checkNamedTypeResolver()
 	switch member.Property {
 	case "store":
-		if len(call.Args) != 2 {
+		if len(writesCall.Args) != 2 {
 			return false, false
 		}
 		// store canonicalizes its key before writing, so a provably
 		// unsupported key kind raises without storing anything.
-		if keyType := c.mutatorCallArgumentFact(call.Args[0], argumentFacts); keyType != nil &&
+		if keyType := c.mutatorCallArgumentFact(writesCall.Args[0], argumentFacts); keyType != nil &&
 			typeExprProvablyUnstorableKey(keyType) {
 			return false, true
 		}
@@ -6949,18 +6973,18 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 			// weakens both.
 			c.linkContainerWriteAlias(name, arg, written)
 		}
-		checkEntry(call.Args[0], keyBound, "key")
-		checkEntry(call.Args[1], valueBound, "value")
+		checkEntry(writesCall.Args[0], keyBound, "key")
+		checkEntry(writesCall.Args[1], valueBound, "value")
 		return preserved, true
 	case "merge!", "update":
 		// The runtime expands splats and validates every positional
 		// argument before merging any entries, so a provably non-array
 		// splat or non-hash argument makes the call raise before any entry
 		// lands: nothing may be diagnosed or modeled.
-		if c.mergeArgumentsProvablyAbort(call, argumentFacts) {
+		if c.mergeArgumentsProvablyAbort(writesCall, argumentFacts) {
 			return false, true
 		}
-		if !c.hashMergeCallMayWrite(call, argumentFacts) {
+		if !c.hashMergeCallMayWrite(writesCall, argumentFacts) {
 			return c.mutatorCallPreservable(call, name, receiverFact), true
 		}
 		// A conflict block replaces the values of already-present keys with
@@ -6970,7 +6994,7 @@ func (c *scriptChecker) applyHashMutatorCallFacts(function string, call *CallExp
 		// only block-less calls report their arguments as modeled.
 		blockConflicts := call.Block != nil || call.BlockArg != nil
 		preserved = !blockConflicts && c.mutatorCallPreservable(call, name, receiverFact)
-		for _, arg := range call.Args {
+		for _, arg := range writesCall.Args {
 			if splat, isSplat := arg.(*SplatArg); isSplat {
 				preserved = false
 				// A splatted array literal's hash-literal elements are

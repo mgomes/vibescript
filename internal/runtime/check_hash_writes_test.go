@@ -121,10 +121,49 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
+			name: "store value from an exact literal splat",
+			source: `
+def f(h: hash<string, int>)
+  h.store(*["a", "bad"])
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "store value from an exact local splat",
+			source: `
+def f(h: hash<string, int>)
+  args = ["a", "bad"]
+  h.store(*args)
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
 			name: "splatted literal merge entries are checked",
 			source: `
 def f(h: hash<string, int>)
   h.merge!(*[{ "a": "bad" }])
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "splatted local merge entries are checked",
+			source: `
+def f(h: hash<string, int>)
+  args = [{ "a": "bad" }]
+  h.merge!(*args)
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "splatted local update entries are checked",
+			source: `
+def f(h: hash<string, int>)
+  args = [{ "a": "bad" }]
+  h.update(*args)
 end
 `,
 			warning: "write to h expected value int, got string",
@@ -336,6 +375,53 @@ def f(h: hash<string, int>)
 end
 `,
 			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "compatible exact store splat preserves the fact",
+			source: `
+def f(h: hash<string, int>)
+  args = ["a", 1]
+  h.store(*args)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "compatible exact merge splat preserves the fact",
+			source: `
+def f(h: hash<string, int>)
+  args = [{ "a": 1 }]
+  h.merge!(*args)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "empty exact merge splat preserves the fact",
+			source: `
+def f(h: hash<string, int>)
+  args = []
+  h.merge!(*args)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "rescued empty exact store splat preserves the fact",
+			source: `
+def f(h: hash<string, int>)
+  begin
+    h.store(*[])
+  rescue
+    nil
+  end
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
 		},
 		{
 			name: "compatible merge preserves the fact",
@@ -1207,4 +1293,56 @@ end
 			requireNoCheckWarnings(t, compileScriptDefault(t, tc.source))
 		})
 	}
+}
+
+func TestHashWriteExactSplatsMatchRuntimeArguments(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def store_splat
+  h = { "a": 1 }
+  args = ["a", 2]
+  result = h.store(*args)
+  [result, h["a"]]
+end
+
+def merge_splat
+  h = { "a": 1 }
+  args = [{ "b": 2 }, { "a": 3 }]
+  result = h.merge!(*args)
+  [result.equal?(h), h["a"], h["b"]]
+end
+
+def update_splat
+  h = { "a": 1 }
+  args = [{ "b": 2 }]
+  result = h.update(*args)
+  [result.equal?(h), h["a"], h["b"]]
+end
+
+def empty_merge_splat
+  h = { "a": 1 }
+  result = h.merge!(*[])
+  [result.equal?(h), h["a"]]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "store_splat", nil), []Value{
+		NewInt(2),
+		NewInt(2),
+	})
+	compareArrays(t, callFunc(t, script, "merge_splat", nil), []Value{
+		NewBool(true),
+		NewInt(3),
+		NewInt(2),
+	})
+	compareArrays(t, callFunc(t, script, "update_splat", nil), []Value{
+		NewBool(true),
+		NewInt(1),
+		NewInt(2),
+	})
+	compareArrays(t, callFunc(t, script, "empty_merge_splat", nil), []Value{
+		NewBool(true),
+		NewInt(1),
+	})
 }

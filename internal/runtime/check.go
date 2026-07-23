@@ -4242,7 +4242,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			}
 		}
 		if targetMayEnter &&
-			c.containerMutatorCallProvablyAborts(typed, receiverFact, argumentFacts) {
+			c.containerMutatorCallProvablyAborts(checkedCall, receiverFact, argumentFacts) {
 			targetMayEnter = false
 			callMayComplete = false
 		}
