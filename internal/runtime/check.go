@@ -134,6 +134,7 @@ type scriptChecker struct {
 	callArgumentClassValues    map[Expression][]string
 	callArgumentCallables      map[Expression][]*ScriptFunction
 	callArgumentStaticValues   map[Expression][]Expression
+	callArgumentSplatSources   map[*SplatArg]checkCallSplatSource
 	evaluatedDestructureFacts  map[Expression]capturedDestructureValueFact
 	destructureProjectionFacts map[Expression]capturedDestructureValueFact
 	localBindingGenerations    map[string]uint64
@@ -287,6 +288,12 @@ type checkForwardedCallVariant struct {
 	method string
 	known  bool
 	valid  bool
+}
+
+type checkCallSplatSource struct {
+	name         string
+	generation   uint64
+	alternatives []Expression
 }
 
 func (c *scriptChecker) callStaticValueAlternatives(expr Expression) ([]Expression, bool) {
@@ -4225,6 +4232,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		argumentClassValues := make(map[Expression][]string, len(typed.Args)+len(typed.KwArgs))
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
 		argumentStaticValues := make(map[Expression][]Expression, len(typed.Args)+len(typed.KwArgs))
+		argumentSplatSources := make(map[*SplatArg]checkCallSplatSource, len(typed.Args))
 		captureArgumentFacts := func(expr Expression, expectation expressionExpectation, autoCall bool) {
 			if splat, ok := expr.(*SplatArg); ok {
 				argumentFacts[expr] = c.inferExpressionType(splat.Value)
@@ -4254,6 +4262,15 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			}
 			if values, ok := c.staticValueExpressionAlternatives(staticExpr); ok {
 				argumentStaticValues[staticExpr] = append([]Expression(nil), values...)
+				if splat, expanded := expr.(*SplatArg); expanded {
+					if ident, directLocal := splat.Value.(*Identifier); directLocal {
+						argumentSplatSources[splat] = checkCallSplatSource{
+							name:         ident.Name,
+							generation:   c.localBindingGenerations[ident.Name],
+							alternatives: append([]Expression(nil), values...),
+						}
+					}
+				}
 			}
 		}
 		positionalSplatSeen := false
@@ -4369,10 +4386,12 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
 		previousStaticValues := c.callArgumentStaticValues
+		previousSplatSources := c.callArgumentSplatSources
 		c.callArgumentFacts = argumentFacts
 		c.callArgumentClassValues = argumentClassValues
 		c.callArgumentCallables = argumentCallables
 		c.callArgumentStaticValues = argumentStaticValues
+		c.callArgumentSplatSources = argumentSplatSources
 		c.pinForwardedConstructorInstanceFact(typed, dynamicCandidates)
 		if deferForwardedTargets {
 			dynamicResolution = c.exactDynamicCallTargets(typed, target, targetResolved, dynamicCandidates)
@@ -4558,6 +4577,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
+		c.callArgumentSplatSources = previousSplatSources
 		if argumentsMayBeSkipped {
 			if !callMayComplete {
 				// The failed non-nil arm still reaches rescue and ensure with any
@@ -7274,10 +7294,12 @@ func (c *scriptChecker) checkMemberAutoCall(
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
 		previousStaticValues := c.callArgumentStaticValues
+		previousSplatSources := c.callArgumentSplatSources
 		c.callArgumentFacts = map[Expression]*TypeExpr{}
 		c.callArgumentClassValues = map[Expression][]string{}
 		c.callArgumentCallables = map[Expression][]*ScriptFunction{}
 		c.callArgumentStaticValues = map[Expression][]Expression{}
+		c.callArgumentSplatSources = map[*SplatArg]checkCallSplatSource{}
 		bodyMayEnter := c.refineDynamicCallTargetEntry(resolution.targets)
 		if resolution.exact && c.exactDynamicCallHasOpaqueClassConstantEffects(resolution) {
 			c.markOpaqueClassConstants()
@@ -7288,6 +7310,7 @@ func (c *scriptChecker) checkMemberAutoCall(
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
+		c.callArgumentSplatSources = previousSplatSources
 		if !resolution.exact {
 			c.markOpaqueClassConstants()
 			return staticCallable{}, false, true, true
@@ -14534,6 +14557,24 @@ func (c *scriptChecker) immediateLambdaPositionalMayBind(
 	if arity < 0 {
 		return false
 	}
+	if variants, exact, correlated := c.exactPositionalArgumentVariants(call, 32); exact && correlated {
+		for _, arguments := range variants {
+			if len(arguments) != arity {
+				continue
+			}
+			mayBind := true
+			for i, argument := range arguments {
+				if !c.callArgumentMayBindType(argument, lambdaLiteralParamType(block, i)) {
+					mayBind = false
+					break
+				}
+			}
+			if mayBind {
+				return true
+			}
+		}
+		return false
+	}
 	reachable := make([]bool, arity+1)
 	reachable[0] = true
 
@@ -14602,7 +14643,7 @@ func (c *scriptChecker) immediateLambdaPositionalMustBind(
 	block *BlockLiteral,
 	call *CallExpr,
 ) bool {
-	variants, exact := c.exactPositionalArgumentVariants(call, 32)
+	variants, exact, _ := c.exactPositionalArgumentVariants(call, 32)
 	if !exact || len(variants) == 0 {
 		return false
 	}
@@ -14625,41 +14666,114 @@ func (c *scriptChecker) immediateLambdaPositionalMustBind(
 func (c *scriptChecker) exactPositionalArgumentVariants(
 	call *CallExpr,
 	limit int,
-) ([][]Expression, bool) {
+) ([][]Expression, bool, bool) {
 	if call == nil || limit <= 0 {
-		return nil, false
+		return nil, false, false
 	}
-	variants := [][]Expression{nil}
-	for _, argument := range call.Args {
+
+	sourceGroups := make([]int, len(call.Args))
+	for i := range sourceGroups {
+		sourceGroups[i] = -1
+	}
+	// Repeated reads of one unchanged direct local expand the same runtime
+	// array. Matching the ordered alternative nodes keeps branch identity
+	// exact without relating aliases or independently rebound locals.
+	var sources []checkCallSplatSource
+	correlated := false
+	for i, argument := range call.Args {
+		splat, expanded := argument.(*SplatArg)
+		if !expanded {
+			continue
+		}
+		source, captured := c.callArgumentSplatSources[splat]
+		if !captured {
+			continue
+		}
+		for group, existing := range sources {
+			if sameCheckCallSplatSource(source, existing) {
+				sourceGroups[i] = group
+				correlated = true
+				break
+			}
+		}
+		if sourceGroups[i] < 0 {
+			sourceGroups[i] = len(sources)
+			sources = append(sources, source)
+		}
+	}
+
+	type positionalArgumentVariant struct {
+		arguments []Expression
+		choices   []int
+	}
+	choices := make([]int, len(sources))
+	for i := range choices {
+		choices[i] = -1
+	}
+	variants := []positionalArgumentVariant{{choices: choices}}
+	for argumentIndex, argument := range call.Args {
 		splat, expanded := argument.(*SplatArg)
 		if !expanded {
 			for i := range variants {
-				variants[i] = append(variants[i], argument)
+				variants[i].arguments = append(variants[i].arguments, argument)
 			}
 			continue
 		}
 		alternatives, exact := c.callStaticValueAlternatives(splat.Value)
 		if !exact || len(alternatives) == 0 {
-			return nil, false
+			return nil, false, false
 		}
-		next := make([][]Expression, 0, len(variants)*len(alternatives))
+		group := sourceGroups[argumentIndex]
+		next := make([]positionalArgumentVariant, 0, len(variants)*len(alternatives))
 		for _, prefix := range variants {
-			for _, alternative := range alternatives {
+			firstAlternative := 0
+			lastAlternative := len(alternatives)
+			if group >= 0 && prefix.choices[group] >= 0 {
+				firstAlternative = prefix.choices[group]
+				lastAlternative = firstAlternative + 1
+			}
+			for offset := range lastAlternative - firstAlternative {
+				alternativeIndex := firstAlternative + offset
+				alternative := alternatives[alternativeIndex]
 				array, ok := alternative.(*ArrayLiteral)
 				if !ok {
-					return nil, false
+					return nil, false, false
 				}
-				candidate := append([]Expression(nil), prefix...)
-				candidate = append(candidate, array.Elements...)
+				candidate := positionalArgumentVariant{
+					arguments: append([]Expression(nil), prefix.arguments...),
+					choices:   append([]int(nil), prefix.choices...),
+				}
+				candidate.arguments = append(candidate.arguments, array.Elements...)
+				if group >= 0 && candidate.choices[group] < 0 {
+					candidate.choices[group] = alternativeIndex
+				}
 				next = append(next, candidate)
 				if len(next) > limit {
-					return nil, false
+					return nil, false, false
 				}
 			}
 		}
 		variants = next
 	}
-	return variants, true
+	arguments := make([][]Expression, len(variants))
+	for i, variant := range variants {
+		arguments[i] = variant.arguments
+	}
+	return arguments, true, correlated
+}
+
+func sameCheckCallSplatSource(left, right checkCallSplatSource) bool {
+	if left.name != right.name ||
+		left.generation != right.generation ||
+		len(left.alternatives) != len(right.alternatives) {
+		return false
+	}
+	for i := range left.alternatives {
+		if left.alternatives[i] != right.alternatives[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func lambdaLiteralParamType(block *BlockLiteral, index int) *TypeExpr {

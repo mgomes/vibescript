@@ -3524,6 +3524,239 @@ end
 	}
 }
 
+func TestCheckInitializerIvarRepeatedExactLambdaSplatsShareTheirSourceChoice(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unreachable cross-alternative arity", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize(flag: bool)
+    values = flag ? [1] : []
+    begin
+      ->(value: int) {
+        @b = 1
+      }.call(*values, *values)
+    rescue
+      @a = @b
+    end
+  end
+end
+
+def run(flag: bool)
+  User.new(flag).a
+end
+`)
+		warnings := script.CheckWarnings()
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to @a expected int, got nil") ||
+			strings.Contains(warnings[0].Message, " or ") {
+			t.Fatalf("CheckWarnings() = %#v, want one nil-only write warning", warnings)
+		}
+		for _, flag := range []bool{false, true} {
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				[]Value{NewBool(flag)},
+				CallOptions{},
+				"instance variable @a expected int, got nil",
+			)
+		}
+	})
+
+	t.Run("reachable correlated arity", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize(flag: bool)
+    values = flag ? [1] : []
+    begin
+      ->(left: int, right: int) {
+        @b = left + right
+      }.call(*values, *values)
+    rescue
+      nil
+    end
+    @a = @b
+  end
+end
+
+def run(flag: bool)
+  User.new(flag).a
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(
+			t,
+			context.Background(),
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+		)
+		if got.Kind() != KindInt || got.Int() != 2 {
+			t.Fatalf("run(true) = %v, want 2", got)
+		}
+	})
+
+	t.Run("independent sources retain cartesian choices", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize(left_flag: bool, right_flag: bool)
+    left = left_flag ? [1] : []
+    right = right_flag ? [2] : []
+    begin
+      ->(value: int) {
+        @b = value
+      }.call(*left, *right)
+    rescue
+      nil
+    end
+    @a = @b
+  end
+end
+
+def run(left_flag: bool, right_flag: bool)
+  User.new(left_flag, right_flag).a
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(
+			t,
+			context.Background(),
+			script,
+			"run",
+			[]Value{NewBool(false), NewBool(true)},
+			CallOptions{},
+		)
+		if got.Kind() != KindInt || got.Int() != 2 {
+			t.Fatalf("run(false, true) = %v, want 2", got)
+		}
+	})
+}
+
+func TestExactPositionalArgumentVariantsCorrelatesOnlyStableSources(t *testing.T) {
+	t.Parallel()
+
+	one := &ArrayLiteral{Elements: []Expression{&IntegerLiteral{Value: 1}}}
+	empty := &ArrayLiteral{}
+	firstAlternatives := []Expression{one, empty}
+	for _, tc := range []struct {
+		name             string
+		secondName       string
+		secondGeneration uint64
+		secondValues     []Expression
+		wantCorrelated   bool
+		wantLengths      map[int]int
+	}{
+		{
+			name:             "same binding and alternatives",
+			secondName:       "values",
+			secondGeneration: 7,
+			secondValues:     []Expression{one, empty},
+			wantCorrelated:   true,
+			wantLengths:      map[int]int{0: 1, 2: 1},
+		},
+		{
+			name:             "new binding generation",
+			secondName:       "values",
+			secondGeneration: 8,
+			secondValues:     []Expression{one, empty},
+			wantLengths:      map[int]int{0: 1, 1: 2, 2: 1},
+		},
+		{
+			name:             "different alternative order",
+			secondName:       "values",
+			secondGeneration: 7,
+			secondValues:     []Expression{empty, one},
+			wantLengths:      map[int]int{0: 1, 1: 2, 2: 1},
+		},
+		{
+			name:             "different local",
+			secondName:       "other",
+			secondGeneration: 7,
+			secondValues:     []Expression{one, empty},
+			wantLengths:      map[int]int{0: 1, 1: 2, 2: 1},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			firstValue := &Identifier{Name: "values"}
+			secondValue := &Identifier{Name: tc.secondName}
+			firstSplat := &SplatArg{Value: firstValue}
+			secondSplat := &SplatArg{Value: secondValue}
+			checker := scriptChecker{
+				callArgumentStaticValues: map[Expression][]Expression{
+					firstValue:  firstAlternatives,
+					secondValue: tc.secondValues,
+				},
+				callArgumentSplatSources: map[*SplatArg]checkCallSplatSource{
+					firstSplat: {
+						name:         "values",
+						generation:   7,
+						alternatives: firstAlternatives,
+					},
+					secondSplat: {
+						name:         tc.secondName,
+						generation:   tc.secondGeneration,
+						alternatives: tc.secondValues,
+					},
+				},
+			}
+			variants, exact, correlated := checker.exactPositionalArgumentVariants(
+				&CallExpr{Args: []Expression{firstSplat, secondSplat}},
+				32,
+			)
+			if !exact {
+				t.Fatalf("exactPositionalArgumentVariants(%q) exact = false, want true", tc.name)
+			}
+			if correlated != tc.wantCorrelated {
+				t.Fatalf(
+					"exactPositionalArgumentVariants(%q) correlated = %t, want %t",
+					tc.name,
+					correlated,
+					tc.wantCorrelated,
+				)
+			}
+			gotLengths := make(map[int]int)
+			for _, variant := range variants {
+				gotLengths[len(variant)]++
+			}
+			if len(gotLengths) != len(tc.wantLengths) {
+				t.Fatalf(
+					"exactPositionalArgumentVariants(%q) lengths = %v, want %v",
+					tc.name,
+					gotLengths,
+					tc.wantLengths,
+				)
+			}
+			for length, want := range tc.wantLengths {
+				if got := gotLengths[length]; got != want {
+					t.Fatalf(
+						"exactPositionalArgumentVariants(%q) length %d count = %d, want %d",
+						tc.name,
+						length,
+						got,
+						want,
+					)
+				}
+			}
+		})
+	}
+}
+
 func TestCheckInitializerIvarImmediateLambdaWidensOnlyWrittenFacts(t *testing.T) {
 	t.Parallel()
 
