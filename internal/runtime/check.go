@@ -8655,11 +8655,43 @@ func (c *scriptChecker) statementMayCompleteForBinding(stmt Statement) bool {
 			}
 		}
 		return c.statementsMayCompleteForBinding(typed.Alternate)
+	case *TryStmt:
+		return c.tryStatementMayCompleteForBinding(typed)
 	case *ReturnStmt, *RaiseStmt, *BreakStmt, *NextStmt, *RetryStmt:
 		return false
 	default:
 		return true
 	}
+}
+
+func (c *scriptChecker) tryStatementMayCompleteForBinding(stmt *TryStmt) bool {
+	if stmt == nil {
+		return true
+	}
+	if !c.statementsMayCompleteForBinding(stmt.Ensure) {
+		return false
+	}
+	if c.statementsMayCompleteForBinding(stmt.Body) &&
+		c.statementsMayCompleteForBinding(stmt.Else) {
+		return true
+	}
+	if statementsProvenNonRaising(stmt.Body) {
+		return false
+	}
+	selected, exact := c.staticallySelectedRescue(stmt.Body, stmt.Rescues)
+	if exact {
+		if selected < 0 || len(stmt.Rescues[selected].Body) == 0 {
+			return false
+		}
+		return c.statementsMayCompleteForBinding(stmt.Rescues[selected].Body)
+	}
+	for i := range stmt.Rescues {
+		if len(stmt.Rescues[i].Body) > 0 &&
+			c.statementsMayCompleteForBinding(stmt.Rescues[i].Body) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *scriptChecker) statementsMayCompleteForBinding(statements []Statement) bool {
@@ -8723,6 +8755,8 @@ func (c *scriptChecker) blockLiteralStatementCompletionFlow(
 		return blockLiteralCompletionFlow{}
 	case *IfStmt:
 		return c.blockLiteralIfCompletionFlow(typed, localControl)
+	case *TryStmt:
+		return c.blockLiteralTryCompletionFlow(typed, localControl)
 	default:
 		return blockLiteralCompletionFlow{fallsThrough: true}
 	}
@@ -8765,6 +8799,49 @@ func (c *scriptChecker) blockLiteralIfCompletionFlow(
 	}
 	merge(c.blockLiteralStatementsCompletionFlow(stmt.Alternate, localControl))
 	return flow
+}
+
+func (c *scriptChecker) blockLiteralTryCompletionFlow(
+	stmt *TryStmt,
+	localControl bool,
+) blockLiteralCompletionFlow {
+	if stmt == nil {
+		return blockLiteralCompletionFlow{fallsThrough: true}
+	}
+	bodyFlow := c.blockLiteralStatementsCompletionFlow(stmt.Body, localControl)
+	var protectedFlow blockLiteralCompletionFlow
+	protectedFlow.completes = bodyFlow.completes
+	if bodyFlow.fallsThrough {
+		elseFlow := c.blockLiteralStatementsCompletionFlow(stmt.Else, localControl)
+		protectedFlow.fallsThrough = elseFlow.fallsThrough
+		protectedFlow.completes = protectedFlow.completes || elseFlow.completes
+	}
+	mergeRescue := func(body []Statement) {
+		if len(body) == 0 {
+			return
+		}
+		flow := c.blockLiteralStatementsCompletionFlow(body, localControl)
+		protectedFlow.fallsThrough = protectedFlow.fallsThrough || flow.fallsThrough
+		protectedFlow.completes = protectedFlow.completes || flow.completes
+	}
+	if !statementsProvenNonRaising(stmt.Body) {
+		selected, exact := c.staticallySelectedRescue(stmt.Body, stmt.Rescues)
+		if exact {
+			if selected >= 0 {
+				mergeRescue(stmt.Rescues[selected].Body)
+			}
+		} else {
+			for i := range stmt.Rescues {
+				mergeRescue(stmt.Rescues[i].Body)
+			}
+		}
+	}
+	ensureFlow := c.blockLiteralStatementsCompletionFlow(stmt.Ensure, localControl)
+	return blockLiteralCompletionFlow{
+		fallsThrough: protectedFlow.fallsThrough && ensureFlow.fallsThrough,
+		completes: ensureFlow.completes ||
+			protectedFlow.completes && ensureFlow.fallsThrough,
+	}
 }
 
 func (c *scriptChecker) plainAssignmentTargetMayCompleteForBinding(

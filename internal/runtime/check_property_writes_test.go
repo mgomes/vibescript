@@ -4580,6 +4580,41 @@ end
 		)
 	})
 
+	t.Run("callback unmatched raise survives ensure", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize
+    defaults = Hash.new do |hash, key|
+      begin
+        raise "stop"
+      ensure
+        nil
+      end
+    end
+    begin
+      defaults[:missing]
+      @a = "bad"
+    rescue
+      nil
+    end
+  end
+end
+
+def run
+  User.new()
+  true
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindBool || !got.Bool() {
+			t.Fatalf("run() = %v, want true", got)
+		}
+	})
+
 	t.Run("strict callback rejects arguments", func(t *testing.T) {
 		t.Parallel()
 		script := compileScriptDefault(t, `
