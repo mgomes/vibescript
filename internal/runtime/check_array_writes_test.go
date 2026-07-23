@@ -2188,6 +2188,8 @@ end
 def run()
   Counter.new.probe()
 end`,
+			want:   []string{"write to @label expected string, got int"},
+			reject: []string{"call to takes_int argument value expected int, got string"},
 		},
 		{
 			name: "destructure rescue observes a binding before a failing typed ivar write",
