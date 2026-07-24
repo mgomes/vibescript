@@ -343,6 +343,68 @@ func TestArrayFillStartArgWithBlockIsStartNotValue(t *testing.T) {
 	compareArrays(t, got, []Value{NewInt(0), NewInt(10), NewInt(20)})
 }
 
+func TestArrayFillLambdaBreakResults(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def local_break()
+  callback = lambda { |index| break "broken" }
+  items = [1, 2]
+  items.fill(&callback)
+  items << "continued"
+  items
+end
+
+def nested_loop_break()
+  callback = lambda do |index|
+    while true
+      break "not a fill value"
+    end
+    1
+  end
+  items = [1, 2]
+  items.fill(&callback)
+  items << "continued"
+  items
+end
+`)
+
+	cases := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{
+			name: "lambda local break",
+			fn:   "local_break",
+			want: NewArray([]Value{
+				NewString("broken"),
+				NewString("broken"),
+				NewString("continued"),
+			}),
+		},
+		{
+			name: "nested loop break",
+			fn:   "nested_loop_break",
+			want: NewArray([]Value{
+				NewInt(1),
+				NewInt(1),
+				NewString("continued"),
+			}),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := callScript(t, context.Background(), script, tc.fn, nil, CallOptions{})
+			if !got.Equal(tc.want) {
+				t.Errorf("%s() = %s, want %s", tc.fn, got.String(), tc.want.String())
+			}
+		})
+	}
+}
+
 // TestArrayFillNilSelectors confirms a nil start or nil length is read as
 // omitted, matching Ruby's Array#fill: a nil start means 0 and a nil length
 // means "to the end". This covers code that forwards optional selectors stored
@@ -524,6 +586,57 @@ func TestArrayFillArgumentRejection(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, []Value{arr}, CallOptions{}, tc.want)
 		})
+	}
+}
+
+func TestArrayFillBignumSelectorsAbortBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def big_start(values)
+  values.fill("bad", 9223372036854775808)
+end
+
+def big_length(values)
+  values.fill("bad", 0, 9223372036854775808)
+end
+
+def negative_big_start(values)
+  values.fill("bad", -9223372036854775809)
+end
+
+def minimum_start(values)
+  values.fill("bad", -9223372036854775808)
+end
+`)
+
+	tests := []struct {
+		name string
+		fn   string
+		want string
+	}{
+		{name: "start", fn: "big_start", want: "array.fill start must be integer"},
+		{name: "length", fn: "big_length", want: "array.fill length must be integer"},
+		{name: "negative start", fn: "negative_big_start", want: "array.fill start must be integer"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			values := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+			requireCallErrorContains(t, script, tc.fn, []Value{values}, CallOptions{}, tc.want)
+			want := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+			if !values.Equal(want) {
+				t.Fatalf("%s() receiver = %s after error, want %s", tc.fn, values.String(), want.String())
+			}
+		})
+	}
+
+	values := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+	got := callScript(t, context.Background(), script, "minimum_start", []Value{values}, CallOptions{})
+	want := NewArray([]Value{NewString("bad"), NewString("bad"), NewString("bad")})
+	if !got.Equal(want) {
+		t.Fatalf("minimum_start() = %s, want %s", got.String(), want.String())
 	}
 }
 

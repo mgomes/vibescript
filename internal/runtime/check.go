@@ -134,6 +134,9 @@ type scriptChecker struct {
 	callArgumentClassValues    map[Expression][]string
 	callArgumentCallables      map[Expression][]*ScriptFunction
 	callArgumentStaticValues   map[Expression][]Expression
+	callArgumentStaticChoices  map[Expression]checkStaticChoiceFact
+	callArgumentSplatSources   map[Expression]checkCallSplatSource
+	callArrayReceiverLength    checkArrayReceiverLength
 	evaluatedDestructureFacts  map[Expression]capturedDestructureValueFact
 	destructureProjectionFacts map[Expression]capturedDestructureValueFact
 	localBindingGenerations    map[string]uint64
@@ -150,6 +153,9 @@ type scriptChecker struct {
 	summaryInProgress          map[returnSummaryCacheKey]struct{}
 	bindingCompletionProbes    map[Expression]struct{}
 	returnCollector            *returnSummaryCollector
+	blockResultCollector       *returnSummaryCollector
+	blockLocalReturnCollector  *returnSummaryCollector
+	blockLocalBreakCollector   *returnSummaryCollector
 	summaryYieldCollector      *returnSummaryCollector
 	summaryYieldBlock          *BlockLiteral
 	summaryYieldsActive        bool
@@ -283,6 +289,31 @@ type checkForwardedCallVariant struct {
 	method string
 	known  bool
 	valid  bool
+}
+
+type checkCallSplatSource struct {
+	identity     []capturedContainerRoot
+	alternatives []Expression
+	evaluation   Expression
+}
+
+type checkStaticChoiceFact struct {
+	source  checkCallSplatSource
+	indices []int
+}
+
+type checkArrayReceiverCapture struct {
+	name        string
+	generation  uint64
+	alternative Expression
+	length      int
+	literal     bool
+	exact       bool
+}
+
+type checkArrayReceiverLength struct {
+	length int
+	exact  bool
 }
 
 func (c *scriptChecker) callStaticValueAlternatives(expr Expression) ([]Expression, bool) {
@@ -2199,10 +2230,18 @@ func (c *scriptChecker) captureClassConstantEffects(check func()) checkClassCons
 
 func (c *scriptChecker) checkLoopStatements(function string, returnType *TypeExpr, statements []Statement) checkClassConstantEffects {
 	previous := c.loopExitEffects
+	previousBlockResultCollector := c.blockResultCollector
+	previousBlockLocalBreakCollector := c.blockLocalBreakCollector
 	var exits checkLoopExitEffects
 	c.loopExitEffects = &exits
+	// A nested loop consumes both next and break before either can become the
+	// surrounding block or lambda's result.
+	c.blockResultCollector = nil
+	c.blockLocalBreakCollector = nil
 	defer func() {
 		c.loopExitEffects = previous
+		c.blockResultCollector = previousBlockResultCollector
+		c.blockLocalBreakCollector = previousBlockLocalBreakCollector
 	}()
 	if c.checkStatements(function, returnType, statements) {
 		mergeCheckClassConstantEffects(&exits.effects, c.currentClassConstantEffects())
@@ -2718,6 +2757,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				c.returnCollector.record(c.inferExpressionType(typed.Value))
 			}
 		}
+		if c.blockLocalReturnCollector != nil {
+			result := checkTypeNil
+			if typed.Value != nil {
+				result = c.inferExpressionType(typed.Value)
+			}
+			c.blockLocalReturnCollector.record(result)
+		}
 		c.captureEnsureExitState()
 		if returnType != nil {
 			c.checkReturnStatementType(function, returnType, typed)
@@ -2751,12 +2797,26 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.recordNonCompletingExpression()
 			return
 		}
+		if c.blockLocalBreakCollector != nil {
+			result := checkTypeNil
+			if typed.Value != nil {
+				result = c.inferExpressionType(typed.Value)
+			}
+			c.blockLocalBreakCollector.record(result)
+		}
 		c.captureLoopExitClassConstantEffects()
 		c.captureEnsureExitState()
 	case *NextStmt:
 		if !c.checkExpression(function, typed.Value) {
 			c.recordNonCompletingExpression()
 			return
+		}
+		if c.blockResultCollector != nil {
+			result := checkTypeNil
+			if typed.Value != nil {
+				result = c.inferExpressionType(typed.Value)
+			}
+			c.blockResultCollector.record(result)
 		}
 		c.captureLoopExitClassConstantEffects()
 		c.captureEnsureExitState()
@@ -2770,7 +2830,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.stmtNoFallthroughInferred = true
 		return
 	case *AssignStmt:
-		if _, destructure := typed.Target.(*DestructureTarget); destructure && typed.Operator == "" {
+		_, destructure := typed.Target.(*DestructureTarget)
+		_, exactArrayValue := typed.Value.(*ArrayLiteral)
+		if typed.Operator == "" && (destructure || exactArrayValue) {
 			previousFacts := c.evaluatedDestructureFacts
 			if previousFacts == nil {
 				c.evaluatedDestructureFacts = make(map[Expression]capturedDestructureValueFact)
@@ -3241,6 +3303,35 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		selectedRescue, rescueSelectionExact := c.staticallySelectedRescue(typed.Body, typed.Rescues)
 		rescueBodiesReachable := !statementsProvenNonRaising(typed.Body)
 		ensureAlwaysExits := blockAlwaysExits(typed.Ensure)
+		previousBlockResultCollector := c.blockResultCollector
+		var protectedBlockResultCollector *returnSummaryCollector
+		if len(typed.Ensure) > 0 && previousBlockResultCollector != nil {
+			protectedBlockResultCollector = &returnSummaryCollector{}
+			c.blockResultCollector = protectedBlockResultCollector
+		}
+		previousBlockLocalReturnCollector := c.blockLocalReturnCollector
+		var protectedBlockLocalReturnCollector *returnSummaryCollector
+		if len(typed.Ensure) > 0 && previousBlockLocalReturnCollector != nil {
+			if previousBlockLocalReturnCollector == previousBlockResultCollector {
+				protectedBlockLocalReturnCollector = protectedBlockResultCollector
+			} else {
+				protectedBlockLocalReturnCollector = &returnSummaryCollector{}
+			}
+			c.blockLocalReturnCollector = protectedBlockLocalReturnCollector
+		}
+		previousBlockLocalBreakCollector := c.blockLocalBreakCollector
+		var protectedBlockLocalBreakCollector *returnSummaryCollector
+		if len(typed.Ensure) > 0 && previousBlockLocalBreakCollector != nil {
+			switch previousBlockLocalBreakCollector {
+			case previousBlockResultCollector:
+				protectedBlockLocalBreakCollector = protectedBlockResultCollector
+			case previousBlockLocalReturnCollector:
+				protectedBlockLocalBreakCollector = protectedBlockLocalReturnCollector
+			default:
+				protectedBlockLocalBreakCollector = &returnSummaryCollector{}
+			}
+			c.blockLocalBreakCollector = protectedBlockLocalBreakCollector
+		}
 		deferReturnType := returnType != nil && len(typed.Ensure) > 0 && !ensureAlwaysExits
 		branchReturnType := returnType
 		if deferReturnType || ensureAlwaysExits {
@@ -3443,6 +3534,15 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if protectedLoopExitEffects != nil {
 			c.loopExitEffects = previousLoopExitEffects
 		}
+		if protectedBlockResultCollector != nil {
+			c.blockResultCollector = previousBlockResultCollector
+		}
+		if protectedBlockLocalReturnCollector != nil {
+			c.blockLocalReturnCollector = previousBlockLocalReturnCollector
+		}
+		if protectedBlockLocalBreakCollector != nil {
+			c.blockLocalBreakCollector = previousBlockLocalBreakCollector
+		}
 		if len(typed.Ensure) > 0 {
 			c.ensureExitSites = previousEnsureExitSites
 		}
@@ -3520,6 +3620,16 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 					&previousLoopExitEffects.effects,
 					protectedLoopExitEffects.effects,
 				)
+			}
+		}
+		if ensureFallsThrough {
+			previousBlockResultCollector.mergeResultArms(protectedBlockResultCollector)
+			if protectedBlockLocalReturnCollector != protectedBlockResultCollector {
+				previousBlockLocalReturnCollector.mergeResultArms(protectedBlockLocalReturnCollector)
+			}
+			if protectedBlockLocalBreakCollector != protectedBlockResultCollector &&
+				protectedBlockLocalBreakCollector != protectedBlockLocalReturnCollector {
+				previousBlockLocalBreakCollector.mergeResultArms(protectedBlockLocalBreakCollector)
 			}
 		}
 		// An ensure the walk proves always exits replaces every deferred
@@ -4018,10 +4128,14 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		// captured now: an argument that escapes or reads the same local
 		// must not erase the bound the receiver was evaluated under.
 		var receiverFact *TypeExpr
+		var receiverLengthCapture checkArrayReceiverCapture
 		if member, ok := typed.Callee.(*MemberExpr); ok {
 			if ident, ok := member.Object.(*Identifier); ok {
 				receiverFact = c.localTypeFor(ident.Name)
+			} else {
+				receiverFact = c.inferExpressionType(member.Object)
 			}
+			receiverLengthCapture = c.captureArrayReceiverLength(member.Object)
 		}
 		if targetResolved && target.fn == nil && target.spec.resultType != nil && !callExpandsArguments(typed) {
 			// The invariant result belongs to the target selected before an
@@ -4069,12 +4183,23 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		argumentClassValues := make(map[Expression][]string, len(typed.Args)+len(typed.KwArgs))
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
 		argumentStaticValues := make(map[Expression][]Expression, len(typed.Args)+len(typed.KwArgs))
+		argumentStaticChoices := make(map[Expression]checkStaticChoiceFact)
+		argumentSplatSources := make(map[Expression]checkCallSplatSource)
+		argumentRetainedAliases := make(map[Expression]checkRetainedContainerCapture, len(typed.Args))
+		argumentSplatOrigins := make(map[Expression][]*SplatArg)
 		captureArgumentFacts := func(expr Expression, expectation expressionExpectation, autoCall bool) {
+			retainedValue := expr
 			if splat, ok := expr.(*SplatArg); ok {
 				argumentFacts[expr] = c.inferExpressionType(splat.Value)
+				retainedValue = splat.Value
 			} else {
 				argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
 			}
+			retainedFact := argumentFacts[expr]
+			argumentRetainedAliases[expr] = c.captureRetainedContainerAliases(
+				retainedValue,
+				retainedFact,
+			)
 			identitySource := expr
 			if !autoCall {
 				if callableExpr, bindable := c.bareIdentifierCallableArgument(expr); bindable {
@@ -4101,7 +4226,34 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			}
 			if values, ok := c.staticValueExpressionAlternatives(staticExpr); ok {
 				argumentStaticValues[staticExpr] = append([]Expression(nil), values...)
+				if choice, correlated := c.staticValueChoiceForExpression(staticExpr); correlated {
+					argumentStaticChoices[staticExpr] = cloneCheckStaticChoiceFact(choice)
+				}
+				if splat, isSplat := expr.(*SplatArg); isSplat && len(values) == 1 {
+					if array, isArray := values[0].(*ArrayLiteral); isArray {
+						for _, element := range array.Elements {
+							if _, captured := argumentFacts[element]; !captured {
+								argumentFacts[element] = c.inferExpressionType(element)
+							}
+							if elementValues, exact := c.staticValueExpressionAlternatives(element); exact {
+								argumentStaticValues[element] = append([]Expression(nil), elementValues...)
+								if choice, correlated := c.staticValueChoiceForExpression(element); correlated {
+									argumentStaticChoices[element] = cloneCheckStaticChoiceFact(choice)
+								}
+							}
+							argumentSplatOrigins[element] = append(argumentSplatOrigins[element], splat)
+						}
+					}
+				}
 			}
+		}
+		captureSplatSource := func(expr Expression) {
+			ident, directLocal := expr.(*Identifier)
+			values, exact := argumentStaticValues[expr]
+			if !directLocal || !exact || len(values) == 0 {
+				return
+			}
+			argumentSplatSources[expr] = c.checkCallSplatSourceForLocal(ident.Name, values)
 		}
 		positionalSplatSeen := false
 		argumentEvaluationFailed := false
@@ -4143,6 +4295,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				break
 			}
 			captureArgumentFacts(arg, expectation, !expectation.includesCallable())
+			if splat, expanded := arg.(*SplatArg); expanded {
+				captureSplatSource(splat.Value)
+			}
 			positionalSplatSeen = positionalSplatSeen || isSplat
 			if !c.positionalArgumentExpansionMaySucceed(arg) {
 				argumentEvaluationFailed = true
@@ -4187,6 +4342,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				break
 			}
 			captureArgumentFacts(kwarg.Value, expectation, !expectation.includesCallable())
+			if kwarg.Splat {
+				captureSplatSource(kwarg.Value)
+			}
 			if !c.keywordArgumentExpansionMaySucceed(kwarg) {
 				argumentEvaluationFailed = true
 				break
@@ -4216,10 +4374,17 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
 		previousStaticValues := c.callArgumentStaticValues
+		previousStaticChoices := c.callArgumentStaticChoices
+		previousSplatSources := c.callArgumentSplatSources
+		previousReceiverLength := c.callArrayReceiverLength
 		c.callArgumentFacts = argumentFacts
 		c.callArgumentClassValues = argumentClassValues
 		c.callArgumentCallables = argumentCallables
 		c.callArgumentStaticValues = argumentStaticValues
+		c.callArgumentStaticChoices = argumentStaticChoices
+		c.callArgumentSplatSources = argumentSplatSources
+		receiverLength := c.currentArrayReceiverLength(receiverLengthCapture)
+		c.callArrayReceiverLength = receiverLength
 		c.pinForwardedConstructorInstanceFact(typed, dynamicCandidates)
 		if deferForwardedTargets {
 			dynamicResolution = c.exactDynamicCallTargets(typed, target, targetResolved, dynamicCandidates)
@@ -4228,6 +4393,19 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		checkedCall := typed
 		if expanded, exact := c.staticallyExpandedCall(typed); exact {
 			checkedCall = expanded
+		}
+		arrayMutatorMayComplete := true
+		arrayMutatorProperty := ""
+		if member, ok := typed.Callee.(*MemberExpr); ok {
+			receiver := nonNilMutatorReceiverFact(receiverFact)
+			if receiver != nil && typeExprArmsAll(receiver, func(arm *TypeExpr) bool {
+				return arm.Kind == TypeArray
+			}) {
+				if _, modeled := arrayMutatorBuiltinProperty("array." + member.Property); modeled {
+					arrayMutatorProperty = member.Property
+					arrayMutatorMayComplete = c.arrayMutatorCallMayComplete(typed, member.Property)
+				}
+			}
 		}
 		targetMayEnter := callMayEnter
 		callMayComplete := callMayEnter
@@ -4257,6 +4435,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			targetMayEnter = false
 			callMayComplete = false
 		}
+		targetMayEnter = targetMayEnter && arrayMutatorMayComplete
+		callMayComplete = callMayComplete && arrayMutatorMayComplete
 		opaqueCallEffectsMayRun := targetMayEnter && opaqueCallEffects
 		// Binding can stop before the body after earlier parameter defaults
 		// have run, so carry only that evaluated prefix into the exception path.
@@ -4327,7 +4507,35 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if opaqueCallEffectsMayRun {
 			c.markOpaqueClassConstants()
 		}
-		callBlockMayRun := targetMayEnter && invokedLambda == nil && c.callMayEvaluateBlock(typed)
+		arrayFillBlockCall := arrayMutatorProperty == "fill" ||
+			targetResolved && target.name == "array.fill"
+		arrayFillBlockMayRun := !arrayFillBlockCall || c.arrayFillBlockMayEvaluate(typed)
+		arrayFillBlockBodyMayRun := arrayFillBlockMayRun
+		var arrayFillBlockValues []checkBlockLiteralValue
+		arrayFillBlockValuesExact := false
+		if arrayFillBlockCall && arrayFillBlockMayRun {
+			invocation := &checkBlockInvocation{
+				arguments: []*TypeExpr{checkTypeInt},
+			}
+			switch {
+			case typed.Block != nil:
+				invocation.strictArity = typed.Block.Lambda
+				arrayFillBlockBodyMayRun = c.blockLiteralInvocationMayEnter(typed.Block, invocation)
+			case typed.BlockArg != nil:
+				if blocks, _, exact := c.blockLiteralValueChoices(typed.BlockArg); exact {
+					arrayFillBlockValuesExact = true
+					for _, block := range blocks {
+						invocation.strictArity = block.lambda
+						if c.blockLiteralInvocationMayEnter(block.block, invocation) {
+							arrayFillBlockValues = append(arrayFillBlockValues, block)
+						}
+					}
+					arrayFillBlockBodyMayRun = len(arrayFillBlockValues) > 0
+				}
+			}
+		}
+		callBlockMayRun := targetMayEnter && invokedLambda == nil &&
+			arrayFillBlockMayRun && c.callMayEvaluateBlock(typed)
 		if callMayEnter && targetResolved && target.fn != nil &&
 			(typed.Block != nil || typed.BlockArg != nil) {
 			callBlockMayRun = c.scriptFunctionCallBlockMayRun(typed, target)
@@ -4341,6 +4549,11 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 			}
 		}
+		arrayMutatorIgnoresBlock := arrayMutatorProperty != "" && arrayMutatorProperty != "fill"
+		if arrayMutatorIgnoresBlock {
+			callBlockMayRun = false
+		}
+		var blockResult checkBlockResult
 		immediateLambdaEnters := targetMayEnter && c.immediateLambdaCallMayEnter(invokedLambda, typed)
 		if immediateLambdaEnters {
 			c.applyLambdaBlockNamespaceMutations(invokedLambda)
@@ -4352,21 +4565,35 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		escapingLambdaMayRun := targetMayEnter &&
 			(targetResolved && target.fn == nil || !targetResolved && !dynamicResolution.exact)
 		if escapingLambdaMayRun && (invokedLambda == nil || immediateLambdaEnters) {
-			for _, arg := range typed.Args {
-				c.applyLambdaLiteralNamespaceMutations(arg)
-				c.checkLambdaLiteralSummaryYields(function, arg)
+			if arrayMutatorProperty == "" {
+				for _, arg := range typed.Args {
+					c.applyLambdaLiteralNamespaceMutations(arg)
+					c.checkLambdaLiteralSummaryYields(function, arg)
+				}
+				for _, kwarg := range typed.KwArgs {
+					c.applyLambdaLiteralNamespaceMutations(kwarg.Value)
+					c.checkLambdaLiteralSummaryYields(function, kwarg.Value)
+				}
 			}
-			for _, kwarg := range typed.KwArgs {
-				c.applyLambdaLiteralNamespaceMutations(kwarg.Value)
-				c.checkLambdaLiteralSummaryYields(function, kwarg.Value)
+			if !arrayFillBlockCall && !arrayMutatorIgnoresBlock {
+				c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
+				c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
 			}
-			c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
-			c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
 		} else if callBlockMayRun {
 			c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
 			c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
 		}
-		if callBlockMayRun {
+		if arrayFillBlockCall && arrayFillBlockBodyMayRun && typed.BlockArg != nil {
+			if arrayFillBlockValuesExact {
+				for _, block := range arrayFillBlockValues {
+					c.applyLambdaBlockNamespaceMutations(block.block)
+				}
+			} else {
+				c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
+			}
+			c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
+			c.applyCallableNamespaceMutations(argumentCallables[typed.BlockArg])
+		} else if callBlockMayRun {
 			c.applyCallableNamespaceMutations(argumentCallables[typed.BlockArg])
 		}
 		if callBlockMayRun && typed.Block != nil {
@@ -4375,12 +4602,37 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			// semantics, so those returns cannot unwind the enclosing
 			// function.
 			localReturns := typed.Block.Lambda || c.callTargetsCoreLambda(typed, target, targetResolved)
-			c.checkBlockLiteral(function, typed.Block, localReturns)
+			if arrayFillBlockCall && !arrayFillBlockBodyMayRun {
+				for _, param := range typed.Block.Params {
+					c.checkRuntimeTypeAnnotation(function, param.Type)
+					c.checkDestructureTargetTypeAnnotations(function, param.Target)
+				}
+				blockResult = checkBlockResult{exact: true}
+			} else {
+				blockResult = c.checkBlockLiteral(function, typed.Block, localReturns)
+			}
+		} else if targetMayEnter && typed.BlockArg != nil && arrayFillBlockMayRun {
+			blocks, _, exact := c.blockLiteralValueChoices(typed.BlockArg)
+			if exact && arrayFillBlockValuesExact {
+				blocks = arrayFillBlockValues
+			}
+			if exact && len(blocks) == 0 {
+				blockResult = checkBlockResult{exact: true}
+			} else if exact {
+				blockResult = c.blockLiteralValuesResult(function, blocks)
+			}
+		}
+		if callMayComplete && arrayFillBlockCall &&
+			blockResult.exact && !blockResult.mayComplete {
+			callMayComplete = c.arrayFillCallMayCompleteWithoutInvokingBlock(typed)
 		}
 		c.callArgumentFacts = previousFacts
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
+		c.callArgumentStaticChoices = previousStaticChoices
+		c.callArgumentSplatSources = previousSplatSources
+		c.callArrayReceiverLength = previousReceiverLength
 		if argumentsMayBeSkipped {
 			if !callMayComplete {
 				// The failed non-nil arm still reaches rescue and ensure with any
@@ -4410,6 +4662,11 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if targetMayEnter {
 			shovelEscapeMayMutate := callMayComplete ||
 				!c.nonCompletingScriptCallLeavesParametersUnused(checkedCall, target, targetResolved)
+			exactScriptMutatedArguments := c.applyExactScriptArrayArgumentMutations(
+				checkedCall,
+				target,
+				targetResolved,
+			)
 			c.applyKeywordSplatDeleteFact(typed)
 			mutatorArgsModeled := false
 			if member, ok := typed.Callee.(*MemberExpr); ok && !c.memberCallPreservesReceiverFacts(typed) {
@@ -4419,7 +4676,14 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					checkedCall,
 					member,
 					argumentFacts,
+					argumentStaticValues,
+					argumentStaticChoices,
+					argumentRetainedAliases,
+					argumentSplatOrigins,
+					argumentSplatSources,
+					blockResult,
 					receiverFact,
+					receiverLength,
 				)
 				mutatorArgsModeled = modeled || arrayMutatorRetainsArgumentsWithoutCalling(
 					typed,
@@ -4453,6 +4717,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				// aliases, so generic escape poison would undo the compatible
 				// fact the mutator just preserved.
 				if mutatorArgsModeled {
+					continue
+				}
+				if _, modeled := exactScriptMutatedArguments[arg]; modeled {
 					continue
 				}
 				c.poisonEscapedCallValue(arg, shovelEscapeMayMutate)
@@ -5586,10 +5853,12 @@ func (c *scriptChecker) replayDestructureAssignment(
 		// Earlier LHS leaves may mutate an object captured by a later leaf.
 		// Re-read the evaluation snapshot now so the later binding observes the
 		// same live object after those writes without reevaluating the RHS.
-		refreshed := c.capturedDestructureValueFact(fact.value)
-		refreshed.target = fact.target
-		refreshed.declared = fact.declared
-		fact = refreshed
+		if !capturedDestructureStaticChoiceExact(fact) {
+			refreshed := c.capturedDestructureValueFact(fact.value)
+			refreshed.target = fact.target
+			refreshed.declared = fact.declared
+			fact = refreshed
+		}
 		if _, ident := fact.target.(*Identifier); ident {
 			c.bindCapturedDestructureValueFact(fact)
 			c.recordRuntimeBindingTarget(fact.target)
@@ -6412,10 +6681,16 @@ func (c *scriptChecker) checkMemberAutoCall(
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
 		previousStaticValues := c.callArgumentStaticValues
+		previousStaticChoices := c.callArgumentStaticChoices
+		previousSplatSources := c.callArgumentSplatSources
+		previousReceiverLength := c.callArrayReceiverLength
 		c.callArgumentFacts = map[Expression]*TypeExpr{}
 		c.callArgumentClassValues = map[Expression][]string{}
 		c.callArgumentCallables = map[Expression][]*ScriptFunction{}
 		c.callArgumentStaticValues = map[Expression][]Expression{}
+		c.callArgumentStaticChoices = map[Expression]checkStaticChoiceFact{}
+		c.callArgumentSplatSources = map[Expression]checkCallSplatSource{}
+		c.callArrayReceiverLength = checkArrayReceiverLength{}
 		bodyMayEnter := c.refineDynamicCallTargetEntry(resolution.targets)
 		if resolution.exact && c.exactDynamicCallHasOpaqueClassConstantEffects(resolution) {
 			c.markOpaqueClassConstants()
@@ -6426,6 +6701,9 @@ func (c *scriptChecker) checkMemberAutoCall(
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
+		c.callArgumentStaticChoices = previousStaticChoices
+		c.callArgumentSplatSources = previousSplatSources
+		c.callArrayReceiverLength = previousReceiverLength
 		if !resolution.exact {
 			c.markOpaqueClassConstants()
 			return staticCallable{}, false, true, true
@@ -6474,13 +6752,25 @@ func (c *scriptChecker) checkMemberAutoCall(
 	return target, true, false, true
 }
 
+// checkBlockResult distinguishes an unknown value from a block proven not to
+// complete normally.
+type checkBlockResult struct {
+	fact        *TypeExpr
+	exact       bool
+	mayComplete bool
+}
+
 // checkBlockLiteral walks a block or lambda body. localReturns marks blocks
 // whose returns stay inside the block itself (stabby lambdas and the lambda
 // builtin's literal block); a plain block's return unwinds the enclosing
 // function instead.
-func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, localReturns bool) {
+func (c *scriptChecker) checkBlockLiteral(
+	function string,
+	block *BlockLiteral,
+	localReturns bool,
+) checkBlockResult {
 	if block == nil {
-		return
+		return checkBlockResult{}
 	}
 	previousSummaryYieldsActive := c.summaryYieldsActive
 	if localReturns {
@@ -6594,8 +6884,25 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, 
 		c.bindParamLocalType(param)
 	}
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
+	previousBlockResultCollector := c.blockResultCollector
+	previousBlockLocalReturnCollector := c.blockLocalReturnCollector
+	previousBlockLocalBreakCollector := c.blockLocalBreakCollector
+	blockResultCollector := &returnSummaryCollector{}
+	c.blockResultCollector = blockResultCollector
+	// A plain nested block owns its breaks, while a lambda converts a direct
+	// break into its local return value just like an explicit return.
+	c.blockLocalBreakCollector = nil
+	if localReturns {
+		c.blockLocalReturnCollector = blockResultCollector
+		c.blockLocalBreakCollector = blockResultCollector
+	}
+	defer func() {
+		c.blockResultCollector = previousBlockResultCollector
+		c.blockLocalReturnCollector = previousBlockLocalReturnCollector
+		c.blockLocalBreakCollector = previousBlockLocalBreakCollector
+	}()
 	c.mutationRegionDepth++
-	c.checkStatements(label, nil, block.Body)
+	fallsThrough := c.checkStatements(label, nil, block.Body)
 	c.mutationRegionDepth--
 	if !block.Lambda {
 		bodyExitScopeState := c.snapshotScopeState()
@@ -6620,6 +6927,69 @@ func (c *scriptChecker) checkBlockLiteral(function string, block *BlockLiteral, 
 			blockBoundNames,
 		)
 		c.mergeScopeBindingRelations([]checkScopeState{blockEntryScopeState, bodyExitScopeState})
+	}
+	if fallsThrough {
+		blockResultCollector.record(c.blockImplicitResultFact(block.Body))
+	}
+	if blockResultCollector.unknown {
+		return checkBlockResult{mayComplete: true}
+	}
+	if len(blockResultCollector.arms) == 0 {
+		return checkBlockResult{exact: true}
+	}
+	return checkBlockResult{
+		fact:        unionTypeExprs(blockResultCollector.arms...),
+		exact:       true,
+		mayComplete: true,
+	}
+}
+
+func (c *scriptChecker) blockImplicitResultFact(statements []Statement) *TypeExpr {
+	collector := &returnSummaryCollector{}
+	previousCollector := c.returnCollector
+	previousStates := c.implicitReturnStates
+	c.returnCollector = collector
+	c.implicitReturnStates = nil
+	c.collectImplicitResultFacts(statements)
+	c.returnCollector = previousCollector
+	c.implicitReturnStates = previousStates
+	if collector.unknown || len(collector.arms) == 0 {
+		return nil
+	}
+	return unionTypeExprs(collector.arms...)
+}
+
+func (c *scriptChecker) blockLiteralValuesResult(
+	function string,
+	blocks []checkBlockLiteralValue,
+) checkBlockResult {
+	if len(blocks) == 0 {
+		return checkBlockResult{}
+	}
+	results := make([]*TypeExpr, 0, len(blocks))
+	for _, blockValue := range blocks {
+		if blockValue.lambda && lambdaLiteralArity(blockValue.block) != 1 {
+			continue
+		}
+		var result checkBlockResult
+		c.withSuppressedWarnings(func() {
+			result = c.checkBlockLiteral(function, blockValue.block, blockValue.lambda)
+		})
+		if !result.exact {
+			return checkBlockResult{mayComplete: true}
+		}
+		if !result.mayComplete {
+			continue
+		}
+		results = append(results, result.fact)
+	}
+	if len(results) == 0 {
+		return checkBlockResult{exact: true}
+	}
+	return checkBlockResult{
+		fact:        unionTypeExprs(results...),
+		exact:       true,
+		mayComplete: true,
 	}
 }
 
@@ -6970,6 +7340,9 @@ func (c *scriptChecker) resolvedCallMayEvaluateBlock(call *CallExpr, target stat
 	if target.name == "array.fetch" {
 		return staticArrayFetchBlockMayEvaluate(call)
 	}
+	if target.name == "array.fill" {
+		return c.arrayFillBlockMayEvaluate(call)
+	}
 	return target.spec.usesBlock
 }
 
@@ -6989,6 +7362,9 @@ func (c *scriptChecker) callMayEvaluateBlockWithSeen(call *CallExpr, seen map[*S
 	}
 	if target.name == "array.fetch" {
 		return staticArrayFetchBlockMayEvaluate(call)
+	}
+	if target.name == "array.fill" {
+		return c.arrayFillBlockMayEvaluate(call)
 	}
 	return target.spec.usesBlock
 }
@@ -11216,6 +11592,9 @@ func (c *scriptChecker) specialBuiltinCallMayComplete(
 	name string,
 	receiverFacts ...*TypeExpr,
 ) bool {
+	if property, mutator := arrayMutatorBuiltinProperty(name); mutator {
+		return c.arrayMutatorCallMayComplete(call, property)
+	}
 	switch name {
 	case "JSON.parse_as":
 		return c.parseAsCallMayComplete(call)
@@ -11903,15 +12282,26 @@ func staticLiteralValue(expr Expression) (Value, bool) {
 		}
 		return NewHash(entries), true
 	case *RangeExpr:
-		start, ok := staticLiteralRangeEndpoint(typed.Start)
-		if !ok {
-			return NewNil(), false
+		rng := Range{
+			Exclusive: typed.Exclusive,
+			Beginless: typed.Start == nil,
+			Endless:   typed.End == nil,
 		}
-		end, ok := staticLiteralRangeEndpoint(typed.End)
-		if !ok {
-			return NewNil(), false
+		if typed.Start != nil {
+			start, ok := staticLiteralRangeEndpoint(typed.Start)
+			if !ok {
+				return NewNil(), false
+			}
+			rng.Start = start
 		}
-		return NewRange(Range{Start: start, End: end, Exclusive: typed.Exclusive}), true
+		if typed.End != nil {
+			end, ok := staticLiteralRangeEndpoint(typed.End)
+			if !ok {
+				return NewNil(), false
+			}
+			rng.End = end
+		}
+		return NewRange(rng), true
 	}
 	return NewNil(), false
 }
@@ -12098,10 +12488,11 @@ func staticLiteralHashKey(expr Expression) (string, bool) {
 
 func staticLiteralRangeEndpoint(expr Expression) (int64, bool) {
 	val, ok := staticLiteralValue(expr)
-	if !ok || val.Kind() != KindInt {
+	if !ok || val.Kind() != KindInt && val.Kind() != KindFloat {
 		return 0, false
 	}
-	return val.Int(), true
+	endpoint, err := valueToInt64(val)
+	return endpoint, err == nil
 }
 
 func typeExprPosition(ty *TypeExpr) Position {
@@ -12672,6 +13063,87 @@ func lambdaLiteralBlock(arg Expression) *BlockLiteral {
 	return nil
 }
 
+func (c *scriptChecker) callableBlockLiteralValues(
+	expr Expression,
+) ([]checkBlockLiteralValue, bool) {
+	switch typed := expr.(type) {
+	case *Identifier:
+		return c.localBlockLiteralValuesFor(typed.Name)
+	case *BlockLiteral:
+		if typed.Lambda {
+			return []checkBlockLiteralValue{{block: typed, lambda: true}}, true
+		}
+	case *ConditionalExpr:
+		if branch, known := staticConditionalExpressionBranch(typed); known {
+			return c.callableBlockLiteralValues(branch)
+		}
+		left, leftExact := c.callableBlockLiteralValues(typed.Consequent)
+		right, rightExact := c.callableBlockLiteralValues(typed.Alternate)
+		if !leftExact || !rightExact || len(left) == 0 || len(right) == 0 {
+			return nil, false
+		}
+		return normalizeCheckBlockLiterals(append(left, right...)), true
+	case *CallExpr:
+		if typed.Block == nil || typed.BlockArg != nil ||
+			len(typed.Args) != 0 || len(typed.KwArgs) != 0 {
+			return nil, false
+		}
+		target, resolved := c.resolveCallable(typed)
+		if !resolved || target.fn != nil {
+			return nil, false
+		}
+		switch target.name {
+		case "proc", "Proc.new":
+			return []checkBlockLiteralValue{{block: typed.Block}}, true
+		case "lambda":
+			if c.callTargetsCoreLambda(typed, target, resolved) {
+				return []checkBlockLiteralValue{{block: typed.Block, lambda: true}}, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// blockLiteralValueChoices keeps exact non-nil literal blocks from a
+// conditional that may also produce nil. Ordinary callable resolution stays
+// gradual for that local; Array#fill uses the non-nil subset only after its
+// separate nil/value and block-form outcomes have both been modeled.
+func (c *scriptChecker) blockLiteralValueChoices(
+	expr Expression,
+) ([]checkBlockLiteralValue, bool, bool) {
+	if blocks, exact := c.callableBlockLiteralValues(expr); exact {
+		return blocks, false, true
+	}
+	switch typed := expr.(type) {
+	case *Identifier:
+		blocks, exact := c.localArrayFillBlockLiteralValuesFor(typed.Name)
+		if !exact {
+			return nil, false, false
+		}
+		fact, _ := c.localValueFactFor(typed.Name)
+		return blocks, fact.blockChoiceMayNil, true
+	case *ConditionalExpr:
+		if branch, known := staticConditionalExpressionBranch(typed); known {
+			return c.blockLiteralValueChoices(branch)
+		}
+		branchValues := func(branch Expression) ([]checkBlockLiteralValue, bool, bool) {
+			if value, exact := staticLiteralValue(branch); exact && value.Kind() == KindNil {
+				return nil, true, true
+			}
+			return c.blockLiteralValueChoices(branch)
+		}
+		left, leftMayNil, leftExact := branchValues(typed.Consequent)
+		right, rightMayNil, rightExact := branchValues(typed.Alternate)
+		if !leftExact || !rightExact || len(left)+len(right) == 0 {
+			return nil, false, false
+		}
+		return normalizeCheckBlockLiterals(append(left, right...)),
+			leftMayNil || rightMayNil,
+			true
+	}
+	return nil, false, false
+}
+
 func (c *scriptChecker) checkLambdaLiteralSummaryYields(function string, arg Expression) {
 	c.checkInvokedLambdaSummaryYields(function, lambdaLiteralBlock(arg))
 }
@@ -12757,10 +13229,15 @@ func (c *scriptChecker) withCapturedDestructureArgumentFacts(
 	previousClassValues := c.callArgumentClassValues
 	previousCallables := c.callArgumentCallables
 	previousStaticValues := c.callArgumentStaticValues
+	previousStaticChoices := c.callArgumentStaticChoices
 	c.callArgumentFacts = make(map[Expression]*TypeExpr, len(previousFacts)+len(facts))
 	c.callArgumentClassValues = make(map[Expression][]string, len(previousClassValues)+len(facts))
 	c.callArgumentCallables = make(map[Expression][]*ScriptFunction, len(previousCallables)+len(facts))
 	c.callArgumentStaticValues = make(map[Expression][]Expression, len(previousStaticValues)+len(facts))
+	c.callArgumentStaticChoices = make(
+		map[Expression]checkStaticChoiceFact,
+		len(previousStaticChoices),
+	)
 	for expr, fact := range previousFacts {
 		c.callArgumentFacts[expr] = fact
 	}
@@ -12773,17 +13250,24 @@ func (c *scriptChecker) withCapturedDestructureArgumentFacts(
 	for expr, values := range previousStaticValues {
 		c.callArgumentStaticValues[expr] = values
 	}
+	for expr, choice := range previousStaticChoices {
+		c.callArgumentStaticChoices[expr] = cloneCheckStaticChoiceFact(choice)
+	}
 	for expr, fact := range facts {
 		c.callArgumentFacts[expr] = fact.assigned
 		c.callArgumentClassValues[expr] = append([]string(nil), fact.classNames...)
 		c.callArgumentCallables[expr] = append([]*ScriptFunction(nil), fact.callables...)
 		c.callArgumentStaticValues[expr] = append([]Expression(nil), fact.staticVals...)
+		if capturedDestructureStaticChoiceExact(fact) {
+			c.callArgumentStaticChoices[expr] = cloneCheckStaticChoiceFact(fact.staticChoice)
+		}
 	}
 	defer func() {
 		c.callArgumentFacts = previousFacts
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
+		c.callArgumentStaticChoices = previousStaticChoices
 	}()
 	walk()
 }
@@ -13811,10 +14295,12 @@ func (s *namespaceMutationScan) replayDestructureAssignment(
 		if fact.target == nil {
 			continue
 		}
-		refreshed := s.checker.capturedDestructureValueFact(fact.value)
-		refreshed.target = fact.target
-		refreshed.declared = fact.declared
-		fact = refreshed
+		if !capturedDestructureStaticChoiceExact(fact) {
+			refreshed := s.checker.capturedDestructureValueFact(fact.value)
+			refreshed.target = fact.target
+			refreshed.declared = fact.declared
+			fact = refreshed
+		}
 		if _, ident := fact.target.(*Identifier); ident {
 			s.checker.bindCapturedDestructureValueFact(fact)
 			continue

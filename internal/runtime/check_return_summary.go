@@ -47,6 +47,19 @@ func (r *returnSummaryCollector) record(fact *TypeExpr) {
 	r.arms = append(r.arms, fact)
 }
 
+func (r *returnSummaryCollector) mergeResultArms(other *returnSummaryCollector) {
+	if other == nil {
+		return
+	}
+	if other.unknown {
+		r.record(nil)
+		return
+	}
+	for _, arm := range other.arms {
+		r.record(arm)
+	}
+}
+
 // sawReturn reports whether the collector reached any return path at all.
 func (r *returnSummaryCollector) sawReturn() bool {
 	return r != nil && (r.unknown || len(r.arms) > 0)
@@ -361,6 +374,8 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		previousArgClassValues := c.callArgumentClassValues
 		previousArgCallables := c.callArgumentCallables
 		previousArgStaticValues := c.callArgumentStaticValues
+		previousArgStaticChoices := c.callArgumentStaticChoices
+		previousReceiverLength := c.callArrayReceiverLength
 		previousReachableParamFacts := c.reachableParamFacts
 		previousDeferred := c.deferredReturnSites
 		previousExceptionExits := c.exceptionExitSites
@@ -389,6 +404,8 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		c.callArgumentClassValues = nil
 		c.callArgumentCallables = nil
 		c.callArgumentStaticValues = nil
+		c.callArgumentStaticChoices = nil
+		c.callArrayReceiverLength = checkArrayReceiverLength{}
 		c.reachableParamFacts = cloneReachableParamFacts(paramFacts)
 		c.deferredReturnSites = nil
 		var exceptionExitSites []checkStateSnapshot
@@ -424,6 +441,8 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 			c.callArgumentClassValues = previousArgClassValues
 			c.callArgumentCallables = previousArgCallables
 			c.callArgumentStaticValues = previousArgStaticValues
+			c.callArgumentStaticChoices = previousArgStaticChoices
+			c.callArrayReceiverLength = previousReceiverLength
 			c.reachableParamFacts = previousReachableParamFacts
 			c.deferredReturnSites = previousDeferred
 			c.exceptionExitSites = previousExceptionExits
