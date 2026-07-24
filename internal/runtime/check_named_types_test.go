@@ -211,8 +211,9 @@ func TestCheckNamedTypeCompatibilityPreserved(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name   string
-		source string
+		name    string
+		source  string
+		warning string
 	}{
 		{
 			name: "same enum stays compatible",
@@ -264,7 +265,7 @@ end
 `,
 		},
 		{
-			name: "nullable enum fact satisfies enum boundary",
+			name: "nullable enum fact requires nullable boundary",
 			source: `
 enum Color
   Red
@@ -278,9 +279,10 @@ def run(c: Color?)
   takes_color(c)
 end
 `,
+			warning: "call to takes_color argument value expected Color, got Color?",
 		},
 		{
-			name: "union fact keeps overlapping boundary",
+			name: "union fact requires full boundary assignability",
 			source: `
 enum Color
   Red
@@ -294,6 +296,7 @@ def run(v: Color | int)
   takes_int(v)
 end
 `,
+			warning: "call to takes_int argument value expected int, got Color | int",
 		},
 		{
 			name: "same class stays compatible",
@@ -422,7 +425,12 @@ end
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			requireNoCheckWarnings(t, compileScriptDefault(t, tc.source))
+			script := compileScriptDefault(t, tc.source)
+			if tc.warning != "" {
+				requireCheckWarningContains(t, script, tc.warning)
+				return
+			}
+			requireNoCheckWarnings(t, script)
 		})
 	}
 }

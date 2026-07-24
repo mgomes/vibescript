@@ -3078,7 +3078,7 @@ class User
 end
 `), "call to takes_int argument value expected int, got string")
 
-	requireNoCheckWarnings(t, compileScriptDefault(t, `
+	requireCheckWarningContains(t, compileScriptDefault(t, `
 def takes_string(value: string)
   value
 end
@@ -3090,7 +3090,7 @@ class User
     takes_string(@name)
   end
 end
-`))
+`), "call to takes_string argument value expected string, got string | nil")
 
 	// Reads of undeclared or untyped ivars stay unknown.
 	requireNoCheckWarnings(t, compileScriptDefault(t, `

@@ -1767,9 +1767,13 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 		// cannot happen.
 		return
 	}
-	c.checkStatements(label, fn.ReturnTy, fn.Body)
-	if fn.ReturnTy != nil {
-		c.checkImplicitReturn(label, fn.ReturnTy, fn.Body, fn.Pos)
+	returnType := fn.ReturnTy
+	if fn.Accessor == functionAccessorGetter {
+		returnType = nil
+	}
+	c.checkStatements(label, returnType, fn.Body)
+	if returnType != nil {
+		c.checkImplicitReturn(label, returnType, fn.Body, fn.Pos)
 	}
 }
 
@@ -2868,9 +2872,13 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		if c.reachableBindingPlan != nil && !c.reachableBindingPlan.bodyMayEnter {
 			return
 		}
-		c.checkStatements(label, fn.ReturnTy, fn.Body)
-		if fn.ReturnTy != nil {
-			c.checkImplicitReturn(label, fn.ReturnTy, fn.Body, fn.Pos)
+		returnType := fn.ReturnTy
+		if fn.Accessor == functionAccessorGetter {
+			returnType = nil
+		}
+		c.checkStatements(label, returnType, fn.Body)
+		if returnType != nil {
+			c.checkImplicitReturn(label, returnType, fn.Body, fn.Pos)
 		}
 	})
 }
@@ -10885,7 +10893,7 @@ func (c *scriptChecker) staticValuesMustNormalizeType(values []Value, ty *TypeEx
 }
 
 func (c *scriptChecker) checkImplicitReturn(function string, ty *TypeExpr, statements []Statement, pos Position) {
-	if !c.checkRuntimeTypeAnnotation(function, ty) || typeAllowsNilReturn(ty) {
+	if !c.checkRuntimeTypeAnnotation(function, ty) {
 		return
 	}
 	c.checkImplicitFinalBlock(function, ty, statements, pos)
@@ -10896,25 +10904,31 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 	case *ReturnStmt, *RaiseStmt:
 		return
 	case *ExprStmt:
-		if expressionCanImplicitlyYieldNil(typed.Expr) {
-			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
-			return
-		}
+		warningsBefore := len(c.warnings)
 		c.checkImplicitLeafAgainstType(function, typed, typed.Expr, ty)
+		if len(c.warnings) == warningsBefore &&
+			expressionCanImplicitlyYieldNil(typed.Expr) &&
+			!typeAllowsNilReturn(ty) {
+			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		}
 	case *AssignStmt:
 		result := typed.Value
 		if typed.Operator != "" {
 			result = typed.Target
 		}
-		if expressionCanImplicitlyYieldNil(result) {
-			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
-			return
-		}
+		warningsBefore := len(c.warnings)
 		c.checkImplicitLeafAgainstType(function, typed, result, ty)
+		if len(c.warnings) == warningsBefore &&
+			expressionCanImplicitlyYieldNil(result) &&
+			!typeAllowsNilReturn(ty) {
+			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		}
 	case *IfStmt:
 		c.checkImplicitFinalIfStatement(function, ty, typed)
 	case *ForStmt, *WhileStmt, *UntilStmt:
-		c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		if !typeAllowsNilReturn(ty) {
+			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		}
 	case *TryStmt:
 		if blockAlwaysExits(typed.Ensure) {
 			return
@@ -10948,7 +10962,9 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 
 func (c *scriptChecker) checkImplicitFinalIfStatement(function string, ty *TypeExpr, stmt *IfStmt) {
 	if stmt == nil {
-		c.add(function, Position{}, "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		if !typeAllowsNilReturn(ty) {
+			c.add(function, Position{}, "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		}
 		return
 	}
 	truthy, known := c.implicitConditionDecision(stmt, 0, stmt.Condition)
@@ -10969,7 +10985,9 @@ func (c *scriptChecker) checkImplicitFinalIfStatement(function string, ty *TypeE
 		}
 	}
 	if len(stmt.Alternate) == 0 {
-		c.add(function, stmt.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		if !typeAllowsNilReturn(ty) {
+			c.add(function, stmt.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		}
 		return
 	}
 	c.checkImplicitFinalBlock(function, ty, stmt.Alternate, stmt.Pos())
@@ -10988,7 +11006,9 @@ func (c *scriptChecker) implicitConditionDecision(stmt *IfStmt, index int, condi
 
 func (c *scriptChecker) checkImplicitFinalBlock(function string, ty *TypeExpr, statements []Statement, pos Position) {
 	if len(statements) == 0 {
-		c.add(function, pos, "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		if !typeAllowsNilReturn(ty) {
+			c.add(function, pos, "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		}
 		return
 	}
 	c.checkImplicitFinalStatement(function, ty, effectiveFinalStatement(statements))
@@ -13093,7 +13113,7 @@ func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExp
 	if !rawCaptured {
 		rawType = c.inferExpressionType(raw)
 	}
-	if rawType != nil && typeExprsDisjoint(rawType, checkTypeString, c.checkNamedTypeResolver()) {
+	if rawType != nil && boundaryTypeRejected(rawType, checkTypeString, c.checkNamedTypeResolver()) {
 		c.add(function, raw.Pos(), "call to JSON.parse_as expects a JSON string as its first argument, got %s", formatTypeExpr(rawType))
 	}
 	arg := call.Args[1]
@@ -13108,14 +13128,23 @@ func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExp
 	if inferred == nil {
 		return
 	}
-	arms, ok := typeExprArms(inferred, 0)
+	arms, ok := boundaryTypeExprArms(inferred, 0)
 	if !ok || len(arms) == 0 {
 		return
 	}
+	knownMismatch := false
 	for _, arm := range arms {
 		if _, isShape := shapeValuePayload(arm); isShape {
-			return
+			continue
 		}
+		if arm.Kind == TypeAny || arm.Kind == TypeUnknown {
+			continue
+		}
+		knownMismatch = true
+		break
+	}
+	if !knownMismatch {
+		return
 	}
 	c.add(function, arg.Pos(), "call to JSON.parse_as expects a type literal as its second argument, got %s", formatTypeExpr(inferred))
 }
@@ -13145,14 +13174,25 @@ func (c *scriptChecker) checkClassPredicateArgument(function string, call *CallE
 	if inferred == nil {
 		return
 	}
-	arms, ok := typeExprArms(inferred, 0)
+	arms, ok := boundaryTypeExprArms(inferred, 0)
 	if !ok || len(arms) == 0 {
 		return
 	}
+	knownMismatch := false
 	for _, arm := range arms {
-		if !typeArmProvablyNotClass(arm) {
-			return
+		if _, shapeValue := shapeValuePayload(arm); shapeValue {
+			knownMismatch = true
+			continue
 		}
+		if arm.Kind == TypeAny || arm.Kind == TypeUnknown {
+			continue
+		}
+		if typeArmProvablyNotClass(arm) {
+			knownMismatch = true
+		}
+	}
+	if !knownMismatch {
+		return
 	}
 	c.add(function, arg.Pos(), "call to %s expects a class argument, got %s", name, formatTypeExpr(inferred))
 }
@@ -16039,11 +16079,18 @@ func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Positi
 		val, ok := staticLiteralValue(arg)
 		if !ok {
 			// The collected values are no longer fully static: fall back to
-			// checking each argument's inferred type against the rest
-			// annotation's element type.
-			if ty.Kind == TypeUnion && !c.restArgumentsMayBindTypeArm(args, ty) {
-				c.add(function, arg.Pos(), "call to %s argument %s expected %s, got incompatible rest arguments",
-					callName, paramName, formatTypeExpr(ty))
+			// checking the collected array against a union contract, or each
+			// argument against a plain array's element contract.
+			if ty.Kind == TypeUnion {
+				inferred := c.inferredRestArgumentType(args, restElementBoundaryType(ty))
+				if inferred != nil && boundaryTypeRejected(inferred, ty, c.checkNamedTypeResolver()) {
+					warningPos := pos
+					if len(args) > 0 {
+						warningPos = args[0].Pos()
+					}
+					c.add(function, warningPos, "call to %s argument %s expected %s, got %s",
+						callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred))
+				}
 				return
 			}
 			if ty.Kind == TypeArray && len(ty.TypeArgs) == 1 {
@@ -16066,6 +16113,77 @@ func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Positi
 			return
 		}
 		c.add(function, warningPos, "call to %s argument %s type check failed: %s", callName, paramName, err)
+	}
+}
+
+func restElementBoundaryType(ty *TypeExpr) *TypeExpr {
+	if ty == nil {
+		return nil
+	}
+	var elements []*TypeExpr
+	var collect func(*TypeExpr)
+	collect = func(candidate *TypeExpr) {
+		if candidate == nil {
+			return
+		}
+		switch candidate.Kind {
+		case TypeArray:
+			if len(candidate.TypeArgs) == 1 {
+				elements = append(elements, candidate.TypeArgs[0])
+			}
+		case TypeUnion:
+			for _, arm := range candidate.Union {
+				collect(arm)
+			}
+		}
+	}
+	collect(ty)
+	return unionTypeExprs(elements...)
+}
+
+func (c *scriptChecker) inferredRestArgumentType(args []Expression, expected *TypeExpr) *TypeExpr {
+	elements := make([]*TypeExpr, 0, len(args))
+	seenFacts := make(map[*TypeExpr]struct{})
+	sawUnknown := false
+	for _, arg := range args {
+		var inferred *TypeExpr
+		if value, literal := staticLiteralValue(arg); literal {
+			inferred = typeFactForValue(value)
+		} else if captured, ok := c.callArgumentFacts[arg]; ok {
+			inferred = captured
+		} else if expected != nil {
+			inferred = c.inferExpressionTypeWithExpectation(arg, typeExpressionExpectation(expected))
+		} else {
+			inferred = c.inferExpressionType(arg)
+		}
+		if inferred == nil {
+			sawUnknown = true
+			continue
+		}
+		if _, identifier := arg.(*Identifier); identifier {
+			if _, duplicate := seenFacts[inferred]; duplicate {
+				continue
+			}
+			seenFacts[inferred] = struct{}{}
+		}
+		elements = append(elements, inferred)
+	}
+	if len(elements) == 0 {
+		return &TypeExpr{Kind: TypeArray}
+	}
+	marker := literalElementsMarker
+	if sawUnknown {
+		marker = literalPartialElementsMarker
+		if len(elements) == 1 {
+			marker = literalPartialAlternativeElementsMarker
+		}
+	} else if len(elements) == 1 {
+		marker = literalAlternativeElementsMarker
+	}
+	return &TypeExpr{
+		Kind:     TypeArray,
+		Name:     marker,
+		TypeArgs: []*TypeExpr{unionTypeExprs(elements...)},
 	}
 }
 
@@ -16106,9 +16224,10 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 						last[rest.Name] = rest.Value
 					}
 				}
-				if !c.keywordRestArgumentsMayBindTypeArm(last, ty) {
-					c.add(function, kwarg.Value.Pos(), "call to %s argument %s expected %s, got incompatible keyword rest arguments",
-						callName, paramName, formatTypeExpr(ty))
+				inferred := c.inferredKeywordRestArgumentType(last)
+				if boundaryTypeRejected(inferred, ty, c.checkNamedTypeResolver()) {
+					c.add(function, kwarg.Value.Pos(), "call to %s argument %s expected %s, got %s",
+						callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred))
 				}
 				return
 			}
@@ -16178,6 +16297,25 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 			return
 		}
 		c.add(function, warningPos, "call to %s argument %s type check failed: %s", callName, paramName, err)
+	}
+}
+
+func (c *scriptChecker) inferredKeywordRestArgumentType(values map[string]Expression) *TypeExpr {
+	fields := make(map[string]*TypeExpr, len(values))
+	for name, expr := range values {
+		inferred, captured := c.callArgumentFacts[expr]
+		if !captured {
+			inferred = c.inferExpressionType(expr)
+		}
+		if inferred == nil {
+			inferred = &TypeExpr{Kind: TypeUnknown}
+		}
+		fields[name] = inferred
+	}
+	return &TypeExpr{
+		Kind:  TypeShape,
+		Name:  shapeKeysStringMarker,
+		Shape: fields,
 	}
 }
 

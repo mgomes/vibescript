@@ -1,0 +1,404 @@
+package runtime
+
+import "testing"
+
+func TestCheckKnownUnionBoundaryAssignability(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		warning string
+	}{
+		{
+			name: "call argument",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  value = flag ? 1 : "bad"
+  takes_int(value)
+end
+`,
+			warning: "call to takes_int argument value expected int, got int | string",
+		},
+		{
+			name: "known arm beside any",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool, opaque: any)
+  value = flag ? opaque : "bad"
+  takes_int(value)
+end
+`,
+			warning: "call to takes_int argument value expected int, got any | string",
+		},
+		{
+			name: "parameter default",
+			source: `
+def run(flag: bool, value: int = flag ? 1 : "bad")
+  value
+end
+`,
+			warning: "default value for value expected int, got int | string",
+		},
+		{
+			name: "explicit return",
+			source: `
+def run(flag: bool) -> int
+  return flag ? 1 : "bad"
+end
+`,
+			warning: "return value expected int, got int | string",
+		},
+		{
+			name: "implicit return",
+			source: `
+def run(flag: bool) -> int
+  flag ? 1 : "bad"
+end
+`,
+			warning: "return value expected int, got int | string",
+		},
+		{
+			name: "nullable return",
+			source: `
+def run(flag: bool) -> int
+  flag ? 1 : nil
+end
+`,
+			warning: "return value expected int, got int | nil",
+		},
+		{
+			name: "nullable boundary",
+			source: `
+def run(flag: bool) -> int?
+  flag ? 1 : "bad"
+end
+`,
+			warning: "return value expected int?, got int | string",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireCheckWarningContains(t, compileScriptDefault(t, tt.source), tt.warning)
+		})
+	}
+}
+
+func TestCheckKnownUnionBoundaryAssignabilityRecurses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		warning string
+	}{
+		{
+			name: "nullable",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(value: int?)
+  takes_int(value)
+end
+`,
+			warning: "call to takes_int argument value expected int, got int?",
+		},
+		{
+			name: "array element",
+			source: `
+def takes_ints(values: array<int>)
+  values
+end
+
+def run(values: array<int | string>)
+  takes_ints(values)
+end
+`,
+			warning: "call to takes_ints argument values expected array<int>, got array<int | string>",
+		},
+		{
+			name: "hash value",
+			source: `
+def takes_counts(values: hash<string, int>)
+  values
+end
+
+def run(values: hash<string, int | string>)
+  takes_counts(values)
+end
+`,
+			warning: "call to takes_counts argument values expected hash<string, int>, got hash<string, int | string>",
+		},
+		{
+			name: "shape field",
+			source: `
+def takes_record(value: { count: int })
+  value
+end
+
+def run(value: { count: int | string })
+  takes_record(value)
+end
+`,
+			warning: "call to takes_record argument value expected { count: int }, got { count: int | string }",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireCheckWarningContains(t, compileScriptDefault(t, tt.source), tt.warning)
+		})
+	}
+}
+
+func TestCheckKnownUnionBoundaryAssignabilityStaysGradual(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "any value",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(value: any)
+  takes_int(value)
+end
+`,
+		},
+		{
+			name: "unknown value",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(value)
+  takes_int(value)
+end
+`,
+		},
+		{
+			name: "unknown JSON value",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(raw: string)
+  takes_int(JSON.parse(raw)["count"])
+end
+`,
+		},
+		{
+			name: "dynamic dispatch result",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def run(value)
+  takes_int(value.count)
+end
+`,
+		},
+		{
+			name: "nested any",
+			source: `
+def takes_ints(values: array<int>)
+  values
+end
+
+def run(values: array<any>)
+  takes_ints(values)
+end
+`,
+		},
+		{
+			name: "matching union",
+			source: `
+def accept(value: int | string)
+  value
+end
+
+def run(value: int | string)
+  accept(value)
+end
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireNoCheckWarnings(t, compileScriptDefault(t, tt.source))
+		})
+	}
+}
+
+func TestCheckKnownUnionRestAggregateAssignability(t *testing.T) {
+	t.Parallel()
+
+	rest := compileScriptDefault(t, `
+def collect(*values: array<int> | array<string>)
+  values
+end
+
+def run(count: int, label: string)
+  collect(count, label)
+end
+`)
+	requireCheckWarningContains(t, rest, "call to collect argument values expected array<int> | array<string>, got array<int | string>")
+
+	keywords := compileScriptDefault(t, `
+def collect(**values: { count: int, label: int } | { count: string, label: string })
+  values
+end
+
+def run(count: int, label: string)
+  collect(count:, label:)
+end
+`)
+	requireCheckWarningContains(t, keywords, "call to collect argument values expected { count: int, label: int } | { count: string, label: string }, got { count: int, label: string }")
+}
+
+func TestCheckKnownUnionRestAggregateCorrelation(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def collect(*values: array<int> | array<string>)
+  values
+end
+
+def run(value: int | string, unknown)
+  collect(value)
+  collect(value, value)
+  collect(value, unknown)
+end
+`))
+
+	independent := compileScriptDefault(t, `
+def collect(*values: array<int> | array<string>)
+  values
+end
+
+def run(left: int | string, right: int | string)
+  collect(left, right)
+end
+`)
+	requireCheckWarningContains(t, independent, "call to collect argument values expected array<int> | array<string>, got array<int | string>")
+}
+
+func TestCheckKnownUnionArrayLiteralCorrelation(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def accept(values: array<int> | array<string>)
+  values
+end
+
+def run(value: int | string)
+  accept([value])
+  alias = value
+  accept([value, alias])
+end
+`))
+
+	mixed := compileScriptDefault(t, `
+def accept(values: array<int> | array<string>)
+  values
+end
+
+def run()
+  accept([1, "bad"])
+end
+`)
+	requireCheckWarningContains(t, mixed, "call to accept argument values expected array<int> | array<string>, got array<int | string>")
+}
+
+func TestCheckKnownUnionShapeCorrelation(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: string, right: string })
+  value
+end
+
+def run(value: int | string)
+  accept({ left: value, right: value })
+end
+`))
+
+	independent := compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: string, right: string })
+  value
+end
+
+def run(left: int | string, right: int | string)
+  accept({ left:, right: })
+end
+`)
+	requireCheckWarningContains(t, independent, "call to accept argument value expected { left: int, right: int } | { left: string, right: string }, got { left: int | string, right: int | string }")
+}
+
+func TestCheckKnownUnionSpecialBoundaries(t *testing.T) {
+	t.Parallel()
+
+	raw := compileScriptDefault(t, `
+def run(raw: string | int)
+  JSON.parse_as(raw, int)
+end
+`)
+	requireCheckWarningContains(t, raw, "call to JSON.parse_as expects a JSON string as its first argument, got string | int")
+
+	schema := compileScriptDefault(t, `
+def run(raw: string, flag: bool, opaque: any)
+  candidate = flag ? opaque : 1
+  JSON.parse_as(raw, candidate)
+end
+`)
+	requireCheckWarningContains(t, schema, "call to JSON.parse_as expects a type literal as its second argument, got any | int")
+
+	classPredicate := compileScriptDefault(t, `
+def run(flag: bool, opaque: any)
+  candidate = flag ? opaque : 1
+  "value".is_a?(candidate)
+end
+`)
+	requireCheckWarningContains(t, classPredicate, "call to is_a? expects a class argument, got any | int")
+}
+
+func TestBoundaryTypeRejectedRecursesPastDisjointnessDepth(t *testing.T) {
+	t.Parallel()
+
+	inferred := &TypeExpr{Kind: TypeUnion, Union: []*TypeExpr{checkTypeInt, checkTypeString}}
+	required := checkTypeInt
+	for range maxTypeArmDepth + 2 {
+		inferred = &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{inferred}}
+		required = &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{required}}
+	}
+	if !boundaryTypeRejected(inferred, required, nil) {
+		t.Errorf("boundaryTypeRejected(%s, %s) = false, want true", formatTypeExpr(inferred), formatTypeExpr(required))
+	}
+
+	unknown := &TypeExpr{Kind: TypeAny}
+	for range maxTypeArmDepth + 2 {
+		unknown = &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{unknown}}
+	}
+	if boundaryTypeRejected(unknown, required, nil) {
+		t.Errorf("boundaryTypeRejected(%s, %s) = true, want false", formatTypeExpr(unknown), formatTypeExpr(required))
+	}
+}

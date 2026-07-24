@@ -587,9 +587,9 @@ end
 func TestCheckInferBranchAssignmentsMergeIntoUnions(t *testing.T) {
 	t.Parallel()
 
-	// x is int | string after the branches, which overlaps both int and
-	// string boundaries, so neither call is a known contradiction.
-	requireNoCheckWarnings(t, compileScript(t, `
+	// x is int | string after the branches, so the string arm cannot satisfy
+	// the int boundary even though the int arm can.
+	script := compileScript(t, `
 def takes_int(value: int)
   value
 end
@@ -602,7 +602,8 @@ def run(flag)
   end
   takes_int(x)
 end
-`))
+`)
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got int | string")
 }
 
 func TestCheckInferBranchOnlyAssignmentJoinsWithNil(t *testing.T) {
@@ -1047,8 +1048,8 @@ end
 `)
 	requireCheckWarningContains(t, elsifDecided, "call to takes_int argument value expected int, got string | symbol")
 
-	// An unknown condition keeps every arm in the union: the overlap with
-	// int stays permitted.
+	// An unknown condition keeps every arm in the union, so every arm must
+	// satisfy the int boundary.
 	unknown := compileScript(t, `
 def takes_int(value: int)
   value
@@ -1063,7 +1064,7 @@ def run(flag)
   takes_int(value)
 end
 `)
-	requireNoCheckWarnings(t, unknown)
+	requireCheckWarningContains(t, unknown, "call to takes_int argument value expected int, got string | int")
 }
 
 func TestCheckInferIfExpressionClassIdentityUsesConditionTimeFact(t *testing.T) {
@@ -1379,8 +1380,8 @@ end
 	requireCheckWarningContains(t, ternary, "call to takes_int argument value expected int, got string")
 
 	// A bool condition stays undecided: both arms join the union and the
-	// overlap with int is permitted.
-	requireNoCheckWarnings(t, compileScript(t, `
+	// string arm cannot satisfy the int boundary.
+	undecided := compileScript(t, `
 def takes_int(value: int)
   value
 end
@@ -1393,7 +1394,8 @@ def run(flag: bool)
   end
   takes_int(value)
 end
-`))
+`)
+	requireCheckWarningContains(t, undecided, "call to takes_int argument value expected int, got string | int")
 }
 
 func TestCheckInferDecidedExitsGateBlockLevelPaths(t *testing.T) {
@@ -1897,7 +1899,7 @@ end
 `)
 	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
 
-	requireNoCheckWarnings(t, compileScript(t, `
+	age := compileScript(t, `
 def takes_int(value: int)
   value
 end
@@ -1905,7 +1907,8 @@ end
 def run(user: { name: string, age: int })
   takes_int(user["age"])
 end
-`))
+`)
+	requireCheckWarningContains(t, age, "call to takes_int argument value expected int, got int | nil")
 }
 
 func TestCheckInferShapeUnknownFieldReadsNil(t *testing.T) {
@@ -1960,9 +1963,9 @@ func TestCheckInferOptionalShapeFieldCompatibility(t *testing.T) {
 	t.Parallel()
 
 	// A literal without the optional field still satisfies the declared
-	// shape, and an optional field disjoint from a generic hash's value type
-	// is not a contradiction (the field may be absent).
-	requireNoCheckWarnings(t, compileScript(t, `
+	// shape. The optional int field can also be present, so the whole shape
+	// cannot satisfy a string-valued hash boundary.
+	script := compileScript(t, `
 def accept(payload: { name: string, age?: int })
   payload
 end
@@ -1977,7 +1980,8 @@ def run(raw: string)
   accept({ name: v, age: 36 })
   strings_only(JSON.parse_as(raw, { name: string, age?: int }))
 end
-`))
+`)
+	requireCheckWarningContains(t, script, "call to strings_only argument opts expected hash<string, string>, got { age?: int, name: string }")
 
 	missing := compileScript(t, `
 def accept(payload: { name: string, age?: int })
@@ -2183,10 +2187,8 @@ end
 func TestCheckInferConditionalEvaluationJoinsMutationFacts(t *testing.T) {
 	t.Parallel()
 
-	// A safe-navigation receiver may skip the arguments entirely, so an
-	// append inside them holds on only one path and is not a known
-	// contradiction afterwards.
-	requireNoCheckWarnings(t, compileScript(t, `
+	// An unknown safe-navigation receiver keeps argument evaluation gradual.
+	safeNavigation := compileScript(t, `
 def ints(values: array<int>)
   values
 end
@@ -2196,10 +2198,11 @@ def run(obj)
   obj&.record(values << "bad")
   ints(values)
 end
-`))
+`)
+	requireNoCheckWarnings(t, safeNavigation)
 
-	// A short-circuited right operand may not run at all.
-	requireNoCheckWarnings(t, compileScript(t, `
+	// A short-circuited right operand produces the same finite union.
+	shortCircuit := compileScript(t, `
 def ints(values: array<int>)
   values
 end
@@ -2209,7 +2212,8 @@ def run(flag)
   flag && (values << "bad")
   ints(values)
 end
-`))
+`)
+	requireCheckWarningContains(t, shortCircuit, "call to ints argument values expected array<int>, got array<int> | array<int | string>")
 
 	// An unconditional append runs, but the unknown call may replace or
 	// remove its witnessed elements before the later boundary.
@@ -2280,8 +2284,8 @@ func TestCheckInferSymbolicOperatorsShortCircuitInExpressions(t *testing.T) {
 	t.Parallel()
 
 	// A conditional append inside a short-circuit expression joins with the
-	// skipped path.
-	requireNoCheckWarnings(t, compileScript(t, `
+	// skipped path, and both resulting arms must satisfy the boundary.
+	conditional := compileScript(t, `
 def ints(values: array<int>)
   values
 end
@@ -2291,7 +2295,8 @@ def run(flag)
   (flag && (values << "bad"))
   ints(values)
 end
-`))
+`)
+	requireCheckWarningContains(t, conditional, "call to ints argument values expected array<int>, got array<int> | array<int | string>")
 
 	// A statically truthy left keeps the append unconditional.
 	script := compileScript(t, `
@@ -2609,7 +2614,7 @@ def run()
   collect(value)
 end
 `)
-	requireCheckWarningContains(t, unionRest, "call to collect argument items expected array<int> | nil, got incompatible rest arguments")
+	requireCheckWarningContains(t, unionRest, "call to collect argument items expected array<int> | nil, got array<string>")
 
 	unionKeywordRest := compileScript(t, `
 def accept(**opts: hash<string, int> | nil)
@@ -2621,7 +2626,7 @@ def run()
   accept(limit: value)
 end
 `)
-	requireCheckWarningContains(t, unionKeywordRest, "call to accept argument opts expected hash<string, int> | nil, got incompatible keyword rest arguments")
+	requireCheckWarningContains(t, unionKeywordRest, "call to accept argument opts expected hash<string, int> | nil, got { limit: string }")
 
 	requireNoCheckWarnings(t, compileScript(t, `
 def dynamic_string()
@@ -3016,8 +3021,9 @@ end
 		t.Fatalf("CheckWarningsForCall() = %v, want none", warnings)
 	}
 
-	// Whole-script checks keep the full annotation: no call picks an arm.
-	requireNoCheckWarnings(t, script)
+	// Whole-script checks keep the full annotation, so every arm must satisfy
+	// the boundary when no concrete call picks one.
+	requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got int | string")
 
 	// An omitted argument binds the default, whose type picks the arm the
 	// same way.
@@ -3112,9 +3118,16 @@ end
 		t.Fatalf("CheckWarningsForCall() = %v, want rest-argument contradiction", warnings)
 	}
 
-	// Compatible rest arguments stay silent.
-	if warnings := script.CheckWarningsForCall("run", []Value{NewInt(1), NewInt(2)}, CallOptions{}); len(warnings) != 0 {
-		t.Fatalf("CheckWarningsForCall() = %v, want none", warnings)
+	// Indexing remains nullable even when the element facts are compatible.
+	warnings = script.CheckWarningsForCall("run", []Value{NewInt(1), NewInt(2)}, CallOptions{})
+	found = false
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "call to takes_int argument value expected int, got int | nil") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CheckWarningsForCall() = %v, want nullable index contradiction", warnings)
 	}
 }
 
@@ -3317,9 +3330,8 @@ end
 `))
 
 	// A witnessed literal array joined with an annotation-typed array keeps
-	// both arms: the second branch's value could be empty, so the boundary
-	// is not provably violated.
-	requireNoCheckWarnings(t, compileScript(t, `
+	// both arms, and neither int-valued arm is assignable to array<string>.
+	arrays := compileScript(t, `
 def build -> array<int>
   []
 end
@@ -3336,7 +3348,8 @@ def run(flag)
   end
   strings(xs)
 end
-`))
+`)
+	requireCheckWarningContains(t, arrays, "call to strings argument values expected array<string>, got array<int> | array<int>")
 }
 
 func TestCheckInferNestedMarkersSurviveBranchJoins(t *testing.T) {

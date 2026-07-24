@@ -1864,7 +1864,7 @@ func (c *scriptChecker) forTargetElementType(stmt *ForStmt) *TypeExpr {
 	}
 	switch iterable.Kind {
 	case TypeArray:
-		if len(iterable.TypeArgs) == 1 && iterable.Name != literalPartialElementsMarker {
+		if len(iterable.TypeArgs) == 1 && !literalArrayElementsPartial(iterable) {
 			return iterable.TypeArgs[0]
 		}
 	case TypeRange:
@@ -6370,8 +6370,7 @@ func (c *scriptChecker) applyExactStaticArrayIndexWrite(
 				}
 			}
 			updated := unionTypeExprs(updatedTypes...)
-			if current.Name == literalElementsMarker ||
-				current.Name == literalPartialElementsMarker ||
+			if literalArrayElementsWitnessed(current) ||
 				current.Name == blockRestElementsMarker {
 				c.localTypes[frameIndex][localName] = updated
 				continue
@@ -9243,6 +9242,41 @@ func typeExprDefinitelyFalsey(ty *TypeExpr) bool {
 	})
 }
 
+// typeExprTruthinessFact keeps the arms that a logical expression can return
+// directly from its left operand. Unknown types keep the result gradual.
+func typeExprTruthinessFact(ty *TypeExpr, truthy bool) *TypeExpr {
+	arms, ok := typeExprArms(ty, 0)
+	if !ok {
+		return nil
+	}
+	kept := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		if _, shapeValue := shapeValuePayload(arm); shapeValue {
+			if truthy {
+				kept = append(kept, arm)
+			}
+			continue
+		}
+		switch arm.Kind {
+		case TypeNil:
+			if !truthy {
+				kept = append(kept, arm)
+			}
+		case TypeBool:
+			if arm.Name == boolTrueFactMarker && !truthy ||
+				arm.Name == boolFalseFactMarker && truthy {
+				continue
+			}
+			kept = append(kept, arm)
+		default:
+			if truthy {
+				kept = append(kept, arm)
+			}
+		}
+	}
+	return unionTypeExprs(kept...)
+}
+
 // typeExprNeverNil reports whether no arm can hold nil. Unlike definite
 // truthiness, bool arms qualify: false is a legal value but not nil, and
 // safe navigation skips only on nil.
@@ -9418,6 +9452,13 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 					return left
 				}
 				return right
+			}
+			if isAnd {
+				if falsey := typeExprTruthinessFact(left, false); falsey != nil {
+					return unionTypeExprs(falsey, right)
+				}
+			} else if truthy := typeExprTruthinessFact(left, true); truthy != nil {
+				return unionTypeExprs(truthy, right)
 			}
 		}
 		return c.binaryOperationOutcome(typed.Operator, left, right).result
@@ -9606,6 +9647,8 @@ func (c *scriptChecker) inferExpectedArrayLiteralType(lit *ArrayLiteral, expecta
 	marker := literalElementsMarker
 	if sawUnknown {
 		marker = literalPartialElementsMarker
+	} else if c.arrayLiteralElementsShareFact(lit.Elements) {
+		marker = literalAlternativeElementsMarker
 	}
 	return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
 }
@@ -10220,10 +10263,40 @@ func mixedKeysMarker(sawSymbol, sawString, sawOther bool) string {
 // does. It lives in the Name field, which TypeArray formatting ignores.
 const literalElementsMarker = "\x00literal-elements"
 
+// literalAlternativeElementsMarker tags an exact literal whose elements all
+// read one unchanged value. Its element union represents alternatives for the
+// whole array instead of independently coexisting elements.
+const literalAlternativeElementsMarker = "\x00literal-alternative-elements"
+
+// literalPartialAlternativeElementsMarker is the gradual counterpart of an
+// alternative literal: its known elements share one choice, while at least
+// one other element is unknown.
+const literalPartialAlternativeElementsMarker = "\x00literal-partial-alternative-elements"
+
 // literalPartialElementsMarker tags an inferred array whose witnessed arms
 // are real elements but do not cover the whole literal (some elements were
 // unknown): sound for disjointness, unusable as an element bound.
 const literalPartialElementsMarker = "\x00literal-partial-elements"
+
+func literalArrayElementsPartial(ty *TypeExpr) bool {
+	return ty != nil &&
+		(ty.Name == literalPartialElementsMarker ||
+			ty.Name == literalPartialAlternativeElementsMarker)
+}
+
+func literalArrayElementsWitnessed(ty *TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	switch ty.Name {
+	case literalElementsMarker,
+		literalPartialElementsMarker,
+		literalAlternativeElementsMarker,
+		literalPartialAlternativeElementsMarker:
+		return true
+	}
+	return false
+}
 
 // inferArrayLiteralType infers a witnessed element union for an array
 // literal. Empty literals and literals with unknown elements stay a bare
@@ -10258,8 +10331,34 @@ func (c *scriptChecker) inferArrayLiteralType(lit *ArrayLiteral) *TypeExpr {
 		// Known elements stay witnesses even when others are unknown, but
 		// the union no longer bounds every element.
 		marker = literalPartialElementsMarker
+	} else if c.arrayLiteralElementsShareFact(lit.Elements) {
+		marker = literalAlternativeElementsMarker
 	}
 	return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
+}
+
+func (c *scriptChecker) arrayLiteralElementsShareFact(elements []Expression) bool {
+	if len(elements) == 1 {
+		return true
+	}
+	if len(elements) == 0 {
+		return false
+	}
+	first, ok := elements[0].(*Identifier)
+	if !ok {
+		return false
+	}
+	fact := c.localTypeFor(first.Name)
+	if fact == nil {
+		return false
+	}
+	for _, element := range elements[1:] {
+		identifier, ok := element.(*Identifier)
+		if !ok || c.localTypeFor(identifier.Name) != fact {
+			return false
+		}
+	}
+	return true
 }
 
 // applyShovelMutationFacts accounts for the in-place append the shovel
@@ -10408,6 +10507,19 @@ func appendedArrayFact(current, appended *TypeExpr) *TypeExpr {
 			return nil
 		}
 		return &TypeExpr{Kind: TypeArray, Name: current.Name, TypeArgs: []*TypeExpr{union}}
+	case literalAlternativeElementsMarker, literalPartialAlternativeElementsMarker:
+		if len(current.TypeArgs) != 1 {
+			return nil
+		}
+		union := unionTypeExprs(current.TypeArgs[0], appended)
+		if union == nil {
+			return nil
+		}
+		marker := literalElementsMarker
+		if current.Name == literalPartialAlternativeElementsMarker {
+			marker = literalPartialElementsMarker
+		}
+		return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
 	case blockRestElementsMarker:
 		if len(current.TypeArgs) == 0 {
 			return &TypeExpr{
@@ -10443,8 +10555,7 @@ func declaredArrayElementType(ty *TypeExpr) *TypeExpr {
 	if ty == nil || ty.Kind != TypeArray || ty.Nullable {
 		return nil
 	}
-	if ty.Name == literalElementsMarker ||
-		ty.Name == literalPartialElementsMarker ||
+	if literalArrayElementsWitnessed(ty) ||
 		ty.Name == blockRestElementsMarker {
 		return nil
 	}
@@ -12900,7 +13011,7 @@ func (c *scriptChecker) mergeArgumentsProvablyAbort(call *CallExpr, argumentFact
 			// provably not a hash (witness arms are real elements) fails
 			// the up-front validation too.
 			if written != nil && written.Kind == TypeArray && !written.Nullable &&
-				(written.Name == literalElementsMarker || written.Name == literalPartialElementsMarker) &&
+				literalArrayElementsWitnessed(written) &&
 				len(written.TypeArgs) == 1 {
 				if arms, ok := typeExprArms(written.TypeArgs[0], 0); ok {
 					for _, arm := range arms {
@@ -13675,8 +13786,7 @@ func (c *scriptChecker) applySplattedElementWriteFacts(function string, splat *S
 		c.invalidateElementWriteAliases(name, bound)
 	}
 	c.linkContainerWriteAlias(name, splat.Value, bound)
-	if written.Name == literalElementsMarker ||
-		written.Name == literalPartialElementsMarker ||
+	if literalArrayElementsWitnessed(written) ||
 		written.Name == blockRestElementsMarker {
 		if len(written.TypeArgs) == 1 {
 			if arms, ok := typeExprArms(written.TypeArgs[0], 0); ok {
@@ -13699,7 +13809,7 @@ func splattedElementBound(ty *TypeExpr) *TypeExpr {
 	if ty == nil || ty.Kind != TypeArray || ty.Nullable || len(ty.TypeArgs) != 1 {
 		return nil
 	}
-	if ty.Name == literalPartialElementsMarker {
+	if literalArrayElementsPartial(ty) {
 		return nil
 	}
 	return ty.TypeArgs[0]
@@ -14689,8 +14799,7 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 // satisfy another array type: some witnessed element arm is disjoint from
 // the other side's declared element type.
 func literalArrayDisjoint(lit, other *TypeExpr, resolve namedTypeResolver) bool {
-	if lit.Name != literalElementsMarker &&
-		lit.Name != literalPartialElementsMarker &&
+	if !literalArrayElementsWitnessed(lit) &&
 		lit.Name != blockRestElementsMarker {
 		return false
 	}
@@ -14701,12 +14810,20 @@ func literalArrayDisjoint(lit, other *TypeExpr, resolve namedTypeResolver) bool 
 	if !ok {
 		return false
 	}
+	alternative := lit.Name == literalAlternativeElementsMarker ||
+		lit.Name == literalPartialAlternativeElementsMarker
 	for _, arm := range arms {
 		if typeExprsDisjoint(arm, other.TypeArgs[0], resolve) {
-			return true
+			if !alternative {
+				return true
+			}
+			continue
+		}
+		if alternative {
+			return false
 		}
 	}
-	return false
+	return alternative
 }
 
 // shapeVsTypedHashDisjoint reports whether an exact shape can never satisfy
@@ -14999,7 +15116,7 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 			}
 			return elements[position]
 		}
-		if len(objectType.TypeArgs) != 1 || objectType.Name == literalPartialElementsMarker {
+		if len(objectType.TypeArgs) != 1 || literalArrayElementsPartial(objectType) {
 			return nil
 		}
 		indexKind, ok := staticOperandKind(c.inferExpressionType(index))
@@ -15043,7 +15160,7 @@ func (c *scriptChecker) checkInferredExpressionAgainstTypeWithExpectation(
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return
 	}
-	if typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver()) {
+	if boundaryTypeRejected(inferred, ty, c.checkNamedTypeResolver()) {
 		c.add(function, expr.Pos(), "%s expected %s, got %s", subject, formatTypeExpr(ty), formatTypeExpr(inferred))
 	}
 }
@@ -15068,7 +15185,7 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return
 	}
-	if typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver()) {
+	if boundaryTypeRejected(inferred, ty, c.checkNamedTypeResolver()) {
 		c.add(function, expr.Pos(), "call to %s argument %s expected %s, got %s",
 			callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred))
 	}
@@ -16095,6 +16212,460 @@ func typeExprsDisjoint(a, b *TypeExpr, resolve namedTypeResolver) bool {
 	return true
 }
 
+type boundaryTypeRelation uint8
+
+const (
+	boundaryRelationGradual boundaryTypeRelation = iota
+	boundaryRelationAccepted
+	boundaryRelationRejected
+)
+
+// boundaryTypeRejected reports whether a finite inferred alternative cannot
+// satisfy a typed boundary. Opaque alternatives defer individually, so any
+// and unknown values stay gradual without hiding an incompatible known arm.
+func boundaryTypeRejected(inferred, required *TypeExpr, resolve namedTypeResolver) bool {
+	return boundaryTypeExprRelation(inferred, required, resolve, 0) == boundaryRelationRejected
+}
+
+func boundaryTypeExprRelation(
+	inferred,
+	required *TypeExpr,
+	resolve namedTypeResolver,
+	depth int,
+) boundaryTypeRelation {
+	if inferred == nil || required == nil || depth > maxNormalizeDepth {
+		return boundaryRelationGradual
+	}
+	inferredArms, ok := boundaryTypeExprArms(inferred, depth)
+	if !ok || len(inferredArms) == 0 {
+		return boundaryRelationGradual
+	}
+	requiredArms, ok := boundaryTypeExprArms(required, depth)
+	if !ok || len(requiredArms) == 0 {
+		return boundaryRelationGradual
+	}
+
+	result := boundaryRelationAccepted
+	for _, inferredArm := range inferredArms {
+		armResult := boundaryRelationRejected
+		for _, requiredArm := range requiredArms {
+			relation := boundaryTypeArmRelation(inferredArm, requiredArm, resolve, depth)
+			if relation == boundaryRelationAccepted {
+				armResult = boundaryRelationAccepted
+				break
+			}
+			if relation == boundaryRelationGradual {
+				armResult = boundaryRelationGradual
+			}
+		}
+		if armResult == boundaryRelationRejected {
+			armResult = boundaryTypeUnionCoverage(inferredArm, requiredArms, resolve, depth)
+		}
+		if armResult == boundaryRelationRejected {
+			return boundaryRelationRejected
+		}
+		if armResult == boundaryRelationGradual {
+			result = boundaryRelationGradual
+		}
+	}
+	return result
+}
+
+func boundaryTypeUnionCoverage(
+	inferred *TypeExpr,
+	required []*TypeExpr,
+	resolve namedTypeResolver,
+	depth int,
+) boundaryTypeRelation {
+	switch inferred.Kind {
+	case TypeArray:
+		return boundaryArrayUnionCoverage(inferred, required, resolve, depth)
+	case TypeShape:
+		return boundaryShapeUnionCoverage(inferred, required, resolve, depth)
+	default:
+		return boundaryRelationRejected
+	}
+}
+
+func boundaryArrayUnionCoverage(
+	inferred *TypeExpr,
+	required []*TypeExpr,
+	resolve namedTypeResolver,
+	depth int,
+) boundaryTypeRelation {
+	if (inferred.Name != literalAlternativeElementsMarker &&
+		inferred.Name != literalPartialAlternativeElementsMarker) ||
+		len(inferred.TypeArgs) != 1 {
+		return boundaryRelationRejected
+	}
+	elementTypes := make([]*TypeExpr, 0, len(required))
+	for _, arm := range required {
+		if arm.Kind != TypeArray {
+			continue
+		}
+		if len(arm.TypeArgs) == 0 {
+			return boundaryRelationAccepted
+		}
+		if len(arm.TypeArgs) == 1 {
+			elementTypes = append(elementTypes, arm.TypeArgs[0])
+		}
+	}
+	requiredElements := unionTypeExprs(elementTypes...)
+	if requiredElements == nil {
+		return boundaryRelationRejected
+	}
+	relation := boundaryTypeExprRelation(inferred.TypeArgs[0], requiredElements, resolve, depth+1)
+	if inferred.Name == literalPartialAlternativeElementsMarker &&
+		relation != boundaryRelationRejected {
+		return boundaryRelationGradual
+	}
+	return relation
+}
+
+type boundaryShapeFieldGroup struct {
+	fields    []string
+	templates []*TypeExpr
+	options   []*TypeExpr
+}
+
+const maxBoundaryShapeVariants = 1024
+
+func boundaryShapeUnionCoverage(
+	inferred *TypeExpr,
+	required []*TypeExpr,
+	resolve namedTypeResolver,
+	depth int,
+) boundaryTypeRelation {
+	fields := make([]string, 0, len(inferred.Shape))
+	for field := range inferred.Shape {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+
+	groups := make([]boundaryShapeFieldGroup, 0, len(fields))
+	groupByFact := make(map[*TypeExpr]int, len(fields))
+	hasAlternatives := false
+	for _, field := range fields {
+		template := inferred.Shape[field]
+		valueType := shapeFieldValueType(template)
+		options, ok := boundaryTypeExprArms(valueType, depth+1)
+		if !ok || len(options) == 0 {
+			return boundaryRelationGradual
+		}
+		if len(options) > 1 {
+			hasAlternatives = true
+		}
+		if !shapeFieldOptional(template) {
+			if index, ok := groupByFact[valueType]; ok {
+				groups[index].fields = append(groups[index].fields, field)
+				groups[index].templates = append(groups[index].templates, template)
+				continue
+			}
+			groupByFact[valueType] = len(groups)
+		}
+		groups = append(groups, boundaryShapeFieldGroup{
+			fields:    []string{field},
+			templates: []*TypeExpr{template},
+			options:   options,
+		})
+	}
+	if !hasAlternatives {
+		return boundaryRelationRejected
+	}
+
+	variant := &TypeExpr{
+		Kind:  TypeShape,
+		Name:  inferred.Name,
+		Shape: make(map[string]*TypeExpr, len(inferred.Shape)),
+		Open:  inferred.Open,
+	}
+	result := boundaryRelationAccepted
+	variants := 0
+	var walk func(int) boundaryTypeRelation
+	walk = func(index int) boundaryTypeRelation {
+		if variants >= maxBoundaryShapeVariants {
+			return boundaryRelationGradual
+		}
+		if index == len(groups) {
+			variants++
+			return boundaryShapeVariantRelation(variant, required, resolve, depth)
+		}
+		group := groups[index]
+		groupResult := boundaryRelationAccepted
+		for _, option := range group.options {
+			for i, field := range group.fields {
+				fieldType := *option
+				fieldType.Optional = group.templates[i].Optional
+				variant.Shape[field] = &fieldType
+			}
+			relation := walk(index + 1)
+			for _, field := range group.fields {
+				delete(variant.Shape, field)
+			}
+			if relation == boundaryRelationRejected {
+				return boundaryRelationRejected
+			}
+			if relation == boundaryRelationGradual {
+				groupResult = boundaryRelationGradual
+			}
+		}
+		return groupResult
+	}
+	if relation := walk(0); relation != boundaryRelationAccepted {
+		result = relation
+	}
+	return result
+}
+
+func boundaryShapeVariantRelation(
+	inferred *TypeExpr,
+	required []*TypeExpr,
+	resolve namedTypeResolver,
+	depth int,
+) boundaryTypeRelation {
+	result := boundaryRelationRejected
+	for _, arm := range required {
+		relation := boundaryTypeArmRelation(inferred, arm, resolve, depth)
+		if relation == boundaryRelationAccepted {
+			return boundaryRelationAccepted
+		}
+		if relation == boundaryRelationGradual {
+			result = boundaryRelationGradual
+		}
+	}
+	return result
+}
+
+func boundaryTypeExprArms(ty *TypeExpr, depth int) ([]*TypeExpr, bool) {
+	if ty == nil || depth > maxNormalizeDepth {
+		return nil, false
+	}
+	arms := make([]*TypeExpr, 0, 2)
+	switch ty.Kind {
+	case TypeUnion:
+		for _, option := range ty.Union {
+			sub, ok := boundaryTypeExprArms(option, depth+1)
+			if !ok {
+				return nil, false
+			}
+			arms = append(arms, sub...)
+		}
+	case TypeNumber:
+		arms = append(arms, checkTypeInt, checkTypeFloat)
+	default:
+		if ty.Nullable {
+			clone := *ty
+			clone.Nullable = false
+			arms = append(arms, &clone)
+		} else {
+			arms = append(arms, ty)
+		}
+	}
+	if ty.Nullable {
+		arms = append(arms, checkTypeNil)
+	}
+	return arms, true
+}
+
+func boundaryTypeArmRelation(
+	inferred,
+	required *TypeExpr,
+	resolve namedTypeResolver,
+	depth int,
+) boundaryTypeRelation {
+	if inferred == nil || required == nil {
+		return boundaryRelationGradual
+	}
+	if required.Kind == TypeAny && !required.Nullable {
+		return boundaryRelationAccepted
+	}
+	if _, shapeValue := shapeValuePayload(inferred); !shapeValue &&
+		(inferred.Kind == TypeAny || inferred.Kind == TypeUnknown) {
+		return boundaryRelationGradual
+	}
+	if required.Kind == TypeUnknown {
+		return boundaryRelationGradual
+	}
+	if typeArmAdmits(required, inferred, resolve) {
+		return boundaryRelationAccepted
+	}
+
+	switch {
+	case inferred.Kind == TypeArray && required.Kind == TypeArray:
+		return boundaryArrayRelation(inferred, required, resolve, depth+1)
+	case inferred.Kind == TypeHash && required.Kind == TypeHash:
+		return boundaryHashRelation(inferred, required, resolve, depth+1)
+	case inferred.Kind == TypeShape && required.Kind == TypeShape:
+		return boundaryShapeRelation(inferred, required, resolve, depth+1)
+	case inferred.Kind == TypeShape && required.Kind == TypeHash:
+		return boundaryShapeHashRelation(inferred, required, resolve, depth+1)
+	}
+	if typeArmPairDisjoint(inferred, required, resolve) {
+		return boundaryRelationRejected
+	}
+	return boundaryRelationGradual
+}
+
+func boundaryArrayRelation(
+	inferred,
+	required *TypeExpr,
+	resolve namedTypeResolver,
+	depth int,
+) boundaryTypeRelation {
+	if len(required.TypeArgs) == 0 {
+		return boundaryRelationAccepted
+	}
+	if len(required.TypeArgs) != 1 || len(inferred.TypeArgs) != 1 {
+		return boundaryRelationGradual
+	}
+	relation := boundaryTypeExprRelation(inferred.TypeArgs[0], required.TypeArgs[0], resolve, depth)
+	if (inferred.Name == literalPartialElementsMarker ||
+		inferred.Name == literalPartialAlternativeElementsMarker) &&
+		relation != boundaryRelationRejected {
+		return boundaryRelationGradual
+	}
+	return relation
+}
+
+func boundaryHashRelation(
+	inferred,
+	required *TypeExpr,
+	resolve namedTypeResolver,
+	depth int,
+) boundaryTypeRelation {
+	if len(required.TypeArgs) == 0 {
+		return boundaryRelationAccepted
+	}
+	if len(required.TypeArgs) != 2 || len(inferred.TypeArgs) != 2 {
+		return boundaryRelationGradual
+	}
+	keyRelation := boundaryTypeExprRelation(inferred.TypeArgs[0], required.TypeArgs[0], resolve, depth)
+	if keyRelation == boundaryRelationRejected {
+		return boundaryRelationRejected
+	}
+	valueRelation := boundaryTypeExprRelation(inferred.TypeArgs[1], required.TypeArgs[1], resolve, depth)
+	if valueRelation == boundaryRelationRejected {
+		return boundaryRelationRejected
+	}
+	if keyRelation == boundaryRelationGradual || valueRelation == boundaryRelationGradual {
+		return boundaryRelationGradual
+	}
+	return boundaryRelationAccepted
+}
+
+func boundaryShapeRelation(
+	inferred,
+	required *TypeExpr,
+	resolve namedTypeResolver,
+	depth int,
+) boundaryTypeRelation {
+	result := boundaryRelationAccepted
+	for field, requiredField := range required.Shape {
+		inferredField, ok := inferred.Shape[field]
+		if !ok {
+			if shapeFieldOptional(requiredField) {
+				continue
+			}
+			if inferred.Open {
+				result = boundaryRelationGradual
+				continue
+			}
+			return boundaryRelationRejected
+		}
+		if shapeFieldOptional(inferredField) && !shapeFieldOptional(requiredField) {
+			return boundaryRelationRejected
+		}
+		relation := boundaryTypeExprRelation(
+			shapeFieldValueType(inferredField),
+			shapeFieldValueType(requiredField),
+			resolve,
+			depth,
+		)
+		if relation == boundaryRelationRejected {
+			return boundaryRelationRejected
+		}
+		if relation == boundaryRelationGradual {
+			result = boundaryRelationGradual
+		}
+	}
+	if !required.Open {
+		for field := range inferred.Shape {
+			if _, ok := required.Shape[field]; !ok {
+				return boundaryRelationRejected
+			}
+		}
+		if inferred.Open {
+			result = boundaryRelationGradual
+		}
+	}
+	return result
+}
+
+func boundaryShapeHashRelation(
+	inferred,
+	required *TypeExpr,
+	resolve namedTypeResolver,
+	depth int,
+) boundaryTypeRelation {
+	if len(required.TypeArgs) == 0 || !inferred.Open && len(inferred.Shape) == 0 {
+		return boundaryRelationAccepted
+	}
+	if len(required.TypeArgs) != 2 {
+		return boundaryRelationGradual
+	}
+	keyType := boundaryShapeKeyType(inferred)
+	result := boundaryRelationAccepted
+	if keyType == nil {
+		result = boundaryRelationGradual
+	} else if relation := boundaryTypeExprRelation(keyType, required.TypeArgs[0], resolve, depth); relation == boundaryRelationRejected {
+		return boundaryRelationRejected
+	} else if relation == boundaryRelationGradual {
+		result = boundaryRelationGradual
+	}
+	for _, fieldType := range inferred.Shape {
+		relation := boundaryTypeExprRelation(
+			shapeFieldValueType(fieldType),
+			required.TypeArgs[1],
+			resolve,
+			depth,
+		)
+		if relation == boundaryRelationRejected {
+			return boundaryRelationRejected
+		}
+		if relation == boundaryRelationGradual {
+			result = boundaryRelationGradual
+		}
+	}
+	if inferred.Open {
+		result = boundaryRelationGradual
+	}
+	return result
+}
+
+func boundaryShapeKeyType(shape *TypeExpr) *TypeExpr {
+	switch {
+	case shape.Name == shapeKeysStringMarker:
+		return checkTypeString
+	case shape.Name == shapeKeysSymbolMarker:
+		return checkTypeSymbol
+	case strings.HasPrefix(shape.Name, shapeKeysMixedPrefix):
+		flags := strings.TrimPrefix(shape.Name, shapeKeysMixedPrefix)
+		var kinds []*TypeExpr
+		if strings.Contains(flags, "s") {
+			kinds = append(kinds, checkTypeSymbol)
+		}
+		if strings.Contains(flags, "t") {
+			kinds = append(kinds, checkTypeString)
+		}
+		if strings.Contains(flags, "o") {
+			kinds = append(kinds, &TypeExpr{Kind: TypeUnknown})
+		}
+		return unionTypeExprs(kinds...)
+	default:
+		return nil
+	}
+}
+
 // typeExprSatisfies reports whether every runtime value of the written type
 // provably satisfies the declared annotation — the dual of typeExprsDisjoint,
 // and just as deliberately conservative: unknown or any-typed writes and
@@ -16159,7 +16730,7 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 		if written.Name == blockRestElementsMarker && len(written.TypeArgs) == 0 {
 			return true
 		}
-		if written.Name == literalPartialElementsMarker || len(written.TypeArgs) != 1 {
+		if literalArrayElementsPartial(written) || len(written.TypeArgs) != 1 {
 			// Partial witnesses and bare arrays do not bound their elements.
 			return false
 		}

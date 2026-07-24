@@ -7621,7 +7621,7 @@ end`,
 			source: `def run(flag) -> int
   flag ? nil : 1
 end`,
-			want: "typed return int can implicitly return nil",
+			want: "return value expected int, got nil | int",
 		},
 		{
 			name: "typed method return",
@@ -7946,7 +7946,7 @@ end`,
     1
   end
 end`,
-			want: "typed return int can implicitly return nil",
+			want: "return value expected int, got nil",
 		},
 		{
 			name: "break value",

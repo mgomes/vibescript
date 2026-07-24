@@ -8175,6 +8175,7 @@ def run(flag: bool, choose: bool)
   x[0] = "ok"
   takes_int(y[0])
 end`,
+			want: []string{"call to takes_int argument value expected int, got int | string"},
 		},
 		{
 			name: "conditional rebind retains a possible prior alias",
@@ -8211,6 +8212,7 @@ def run(flag: bool)
   selected[0] = "ok"
   takes_int(b[0])
 end`,
+			want: []string{"call to takes_int argument value expected int, got int | string"},
 		},
 		{
 			name: "branch join retains aliases from every path",
@@ -8842,6 +8844,7 @@ def run(flag: bool)
   end
   takes_function(callbacks[0])
 end`,
+			want: []string{"call to takes_function argument value expected function, got nil | function"},
 		},
 		{
 			name: "destructure rest invalidates retained nonexact children",
