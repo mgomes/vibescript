@@ -602,38 +602,32 @@ func (c *scriptChecker) inferredAssignmentValueType(
 	return c.inferExpressionTypeWithExpectation(value, expectation)
 }
 
-// inferDestructureIvarWrites routes instance-variable targets inside a
-// destructuring assignment through the property-contract check. Element
-// values are known when the right-hand side is a literal element list with
-// no splat or an exact scalar literal. A scalar becomes a one-element list;
-// fixed targets before and after a rest map to concrete indices, the rest
-// target receives its materialized window as an array literal, a target past
-// the literal's length receives the nil the runtime pads in (checkable against
-// non-nullable contracts), and extra literal elements are dropped. Every other
-// spelling checks as an unknown write and still refines the ivar's fact.
-func (c *scriptChecker) inferDestructureIvarWrites(function string, value Expression, target *DestructureTarget) {
-	if retained, exact := c.exactEvaluatedDestructureValue(value); exact {
-		value = retained
-	}
-	values, known := destructureElementValueExprs(value, target)
-	for i, element := range target.Elements {
-		var elementValue Expression
-		if known {
-			if values[i] != nil {
-				elementValue = values[i]
-			} else if ivar, ok := element.Target.(*IvarExpr); ok {
-				// valueAt pads missing fixed targets with nil, so the padded
-				// write checks like a literal nil. Nested destructures of a
-				// padded slot stay unknown.
-				elementValue = &NilLiteral{Position: ivar.Pos()}
+// inferDestructureIvarWrites routes the already projected leaf facts through
+// the property-contract check. A checker-only expression carries a typed
+// nonliteral projection; an absent fact stays gradual.
+func (c *scriptChecker) inferDestructureIvarWrites(
+	function string,
+	facts []capturedDestructureValueFact,
+) {
+	for _, fact := range facts {
+		ivar, ok := fact.target.(*IvarExpr)
+		if !ok {
+			continue
+		}
+		value := fact.value
+		if value == nil && fact.known {
+			value = &Identifier{
+				Name:     "\x00destructure-value",
+				Position: ivar.Pos(),
 			}
 		}
-		switch elementTarget := element.Target.(type) {
-		case *IvarExpr:
-			c.checkIvarWrite(function, elementTarget.Pos(), elementTarget.Name, elementValue)
-		case *DestructureTarget:
-			c.inferDestructureIvarWrites(function, elementValue, elementTarget)
+		if value == nil {
+			c.checkIvarWrite(function, ivar.Pos(), ivar.Name, nil)
+			continue
 		}
+		c.withCapturedDestructureArgumentFact(value, fact, func() {
+			c.checkIvarWrite(function, ivar.Pos(), ivar.Name, value)
+		})
 	}
 }
 
@@ -649,65 +643,4 @@ func (c *scriptChecker) exactEvaluatedDestructureValue(value Expression) (Expres
 		return nil, false
 	}
 	return fact.staticVals[0], true
-}
-
-// destructureElementValueExprs returns per-target value expressions for a
-// destructuring assignment and whether they are statically known, mirroring
-// assignDestructureWithNormalizer's scalar-to-one-element-list conversion and
-// split: index-for-index before a rest, the literal window (as an array literal)
-// at the rest slot, the trailing values after it, and nil entries where the
-// runtime pads a missing fixed target with nil.
-func destructureElementValueExprs(value Expression, target *DestructureTarget) ([]Expression, bool) {
-	var values []Expression
-	if arr, ok := value.(*ArrayLiteral); ok {
-		for _, expr := range arr.Elements {
-			if _, ok := expr.(*SplatArg); ok {
-				return nil, false
-			}
-		}
-		values = arr.Elements
-	} else {
-		literal, ok := staticLiteralValue(value)
-		if !ok || literal.Kind() == KindArray {
-			return nil, false
-		}
-		values = []Expression{value}
-	}
-	restIndex := -1
-	for i, element := range target.Elements {
-		if element.Rest {
-			restIndex = i
-			break
-		}
-	}
-	exprAt := func(index int) Expression {
-		if index < 0 || index >= len(values) {
-			return nil
-		}
-		return values[index]
-	}
-	out := make([]Expression, len(target.Elements))
-	if restIndex == -1 {
-		for i := range target.Elements {
-			out[i] = exprAt(i)
-		}
-		return out, true
-	}
-	trailing := len(target.Elements) - restIndex - 1
-	restStart := min(restIndex, len(values))
-	restEnd := max(restStart, len(values)-trailing)
-	for i := range target.Elements {
-		switch {
-		case i < restIndex:
-			out[i] = exprAt(i)
-		case i == restIndex:
-			out[i] = &ArrayLiteral{
-				Elements: values[restStart:restEnd],
-				Position: target.Elements[i].Position,
-			}
-		default:
-			out[i] = exprAt(restEnd + (i - restIndex - 1))
-		}
-	}
-	return out, true
 }

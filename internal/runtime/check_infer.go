@@ -5554,7 +5554,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 	case *DestructureTarget:
 		valueFacts := c.captureDestructureValueFacts(target, stmt.Value)
 		c.bindCapturedDestructureValueFacts(valueFacts)
-		c.inferDestructureIvarWrites(function, stmt.Value, target)
+		c.inferDestructureIvarWrites(function, valueFacts)
 	case *IndexExpr:
 		// An index write mutates the container in place; a direct write
 		// against a declared array<T>, hash<K, V>, or shape fact is checked
@@ -6300,8 +6300,16 @@ func (c *scriptChecker) captureDestructureValueFacts(target *DestructureTarget, 
 		capturedScalar := evaluated &&
 			(captured.factKind == destructureClassFact ||
 				captured.factKind == destructureCallableFact ||
-				captured.assigned != nil && !typeExprHasContainerArm(captured.assigned))
+				typeExprDefinitelyDestructuresAsScalar(captured.assigned))
 		if _, static := staticLiteralValue(value); !static && !capturedScalar {
+			if evaluated {
+				if facts, projected := captureTypedDestructureValueFacts(
+					target,
+					captured,
+				); projected {
+					return facts
+				}
+			}
 			return captureUnknownDestructureValueFacts(target)
 		}
 	}
@@ -6361,7 +6369,7 @@ func (c *scriptChecker) capturedDestructureValueFact(value Expression) capturedD
 func (c *scriptChecker) refreshCapturedDestructureContainerFact(
 	fact capturedDestructureValueFact,
 ) capturedDestructureValueFact {
-	if !typeExprHasContainerArm(fact.assigned) {
+	if fact.value == nil || !typeExprHasContainerArm(fact.assigned) {
 		return fact
 	}
 	// Earlier LHS leaves may mutate a container captured by a later leaf.
@@ -6470,6 +6478,194 @@ func mergeCapturedContainerRoots(
 		}
 	}
 	return roots
+}
+
+func typeExprDefinitelyDestructuresAsScalar(ty *TypeExpr) bool {
+	arms, exact := typeExprArms(ty, 0)
+	if !exact || len(arms) == 0 {
+		return false
+	}
+	for _, arm := range arms {
+		if arm.Kind == TypeArray {
+			return false
+		}
+	}
+	return true
+}
+
+func captureTypedDestructureValueFacts(
+	target *DestructureTarget,
+	valueFact capturedDestructureValueFact,
+) ([]capturedDestructureValueFact, bool) {
+	retainedRoots := mergeCapturedContainerRoots(
+		nil,
+		valueFact.identityRoots,
+		valueFact.retainedRoots,
+	)
+	return captureTypedDestructureValueFactsWithRoots(
+		target,
+		valueFact.assigned,
+		retainedRoots,
+	)
+}
+
+func captureTypedDestructureValueFactsWithRoots(
+	target *DestructureTarget,
+	valueType *TypeExpr,
+	retainedRoots []capturedContainerRoot,
+) ([]capturedDestructureValueFact, bool) {
+	types, projected := typedDestructureElementTypes(target, valueType)
+	if !projected {
+		return nil, false
+	}
+	var facts []capturedDestructureValueFact
+	for i, element := range target.Elements {
+		assigned := types[i]
+		switch elementTarget := element.Target.(type) {
+		case *DestructureTarget:
+			if assigned == nil {
+				facts = append(facts, captureUnknownDestructureValueFacts(elementTarget)...)
+				continue
+			}
+			nested, nestedProjected := captureTypedDestructureValueFactsWithRoots(
+				elementTarget,
+				assigned,
+				retainedRoots,
+			)
+			if !nestedProjected {
+				nested = captureUnknownDestructureValueFacts(elementTarget)
+			}
+			facts = append(facts, nested...)
+		default:
+			if elementTarget == nil {
+				continue
+			}
+			fact := capturedDestructureValueFact{
+				target:    elementTarget,
+				assigned:  assigned,
+				declared:  element.Type,
+				known:     assigned != nil,
+				evaluated: assigned != nil,
+			}
+			if typeExprHasContainerArm(assigned) {
+				fact.retainedRoots = append(
+					[]capturedContainerRoot(nil),
+					retainedRoots...,
+				)
+			}
+			facts = append(facts, fact)
+		}
+	}
+	return facts, true
+}
+
+func typedDestructureElementTypes(
+	target *DestructureTarget,
+	valueType *TypeExpr,
+) ([]*TypeExpr, bool) {
+	if target == nil {
+		return nil, false
+	}
+	arms, exact := typeExprArms(valueType, 0)
+	if !exact || len(arms) == 0 {
+		return nil, false
+	}
+	options := make([][]*TypeExpr, len(target.Elements))
+	unknown := make([]bool, len(target.Elements))
+	for _, arm := range arms {
+		projected := destructureTypeArmElementTypes(target, arm)
+		for i, ty := range projected {
+			if ty == nil {
+				unknown[i] = true
+				continue
+			}
+			options[i] = append(options[i], ty)
+		}
+	}
+	result := make([]*TypeExpr, len(target.Elements))
+	for i, candidates := range options {
+		if unknown[i] || len(candidates) == 0 {
+			continue
+		}
+		result[i] = unionTypeExprs(candidates...)
+	}
+	return result, true
+}
+
+func destructureTypeArmElementTypes(
+	target *DestructureTarget,
+	arm *TypeExpr,
+) []*TypeExpr {
+	if arm.Kind != TypeArray {
+		return destructureSingleValueElementTypes(target, arm)
+	}
+	result := make([]*TypeExpr, len(target.Elements))
+	elementType := splattedElementBound(arm)
+	restType := checkTypeArray
+	if elementType != nil {
+		restType = &TypeExpr{
+			Kind:     TypeArray,
+			TypeArgs: []*TypeExpr{elementType},
+		}
+	}
+	for i, element := range target.Elements {
+		if element.Rest {
+			result[i] = restType
+		} else if elementType != nil {
+			result[i] = unionTypeExprs(elementType, checkTypeNil)
+		}
+	}
+	return result
+}
+
+func destructureSingleValueElementTypes(
+	target *DestructureTarget,
+	valueType *TypeExpr,
+) []*TypeExpr {
+	source := []*TypeExpr{valueType}
+	valueAt := func(index int) *TypeExpr {
+		if index < 0 || index >= len(source) {
+			return checkTypeNil
+		}
+		return source[index]
+	}
+
+	result := make([]*TypeExpr, len(target.Elements))
+	restIndex := -1
+	for i, element := range target.Elements {
+		if element.Rest {
+			restIndex = i
+			break
+		}
+	}
+	if restIndex < 0 {
+		for i := range target.Elements {
+			result[i] = valueAt(i)
+		}
+		return result
+	}
+
+	trailing := len(target.Elements) - restIndex - 1
+	restStart := min(restIndex, len(source))
+	restEnd := max(restStart, len(source)-trailing)
+	for i := range target.Elements {
+		switch {
+		case i < restIndex:
+			result[i] = valueAt(i)
+		case i == restIndex:
+			if restStart == restEnd {
+				result[i] = checkTypeArray
+			} else {
+				result[i] = &TypeExpr{
+					Kind:     TypeArray,
+					TypeArgs: []*TypeExpr{valueType},
+				}
+			}
+		default:
+			result[i] = valueAt(restEnd + i - restIndex - 1)
+		}
+	}
+	return result
 }
 
 func captureUnknownDestructureValueFacts(target *DestructureTarget) []capturedDestructureValueFact {

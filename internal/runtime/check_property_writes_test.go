@@ -861,8 +861,8 @@ end
 // A literal right-hand side makes the rest split deterministic: the rest
 // ivar receives the materialized window as an array, fixed targets before
 // and trailing targets after the rest map to concrete indices (padding with
-// nil when the literal runs short), and only non-literal sources degrade to
-// unknown.
+// nil when the literal runs short), and non-literal sources without a
+// projectable type degrade to unknown.
 func TestCheckRestDestructuredIvarWrites(t *testing.T) {
 	t.Parallel()
 
@@ -925,6 +925,221 @@ class User
   end
 end
 `))
+}
+
+func TestCheckTypedNonliteralDestructuredIvarWrites(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rest target retains the source element bound", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def values() -> array<string>
+  ["bad"]
+end
+
+class User
+  property values: string
+
+  def initialize
+    *@values = values()
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+		requireCheckWarningContains(
+			t,
+			script,
+			"write to @values expected string, got array<string>",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @values expected string, got array",
+		)
+	})
+
+	t.Run("rest element-only mismatch stays gradual", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def values() -> array<string>
+  ["bad"]
+end
+
+class User
+  property values: array<int>
+
+  def initialize
+    *@values = values()
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @values expected array<int>, got array<string>",
+		)
+	})
+
+	t.Run("fixed target includes the missing element case", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def values() -> array<string>
+  ["bad"]
+end
+
+def takes_int(value: int)
+  value
+end
+
+class User
+  property a: int
+
+  def initialize
+    @a, ignored = values()
+    takes_int("unreachable")
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+		warnings := script.CheckWarnings()
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to @a expected int, got string | nil") {
+			t.Fatalf("CheckWarnings() = %#v, want only the invalid @a write", warnings)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @a expected int, got string",
+		)
+	})
+
+	t.Run("nested target projects each array layer", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def rows() -> array<array<string>>
+  [["skip"], ["bad"]]
+end
+
+class User
+  property a: int
+
+  def initialize
+    head, (@a, ignored) = rows()
+    head
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+		requireCheckWarningContains(
+			t,
+			script,
+			"write to @a expected int, got",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @a expected int, got string",
+		)
+	})
+
+	t.Run("union element bound retains the missing element arm", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def values(flag: bool) -> array<string | int>
+  flag ? ["bad"] : [1]
+end
+
+class User
+  property enabled: bool
+
+  def initialize(flag: bool)
+    @enabled, ignored = values(flag)
+  end
+end
+
+def run
+  User.new(true)
+end
+`)
+
+		requireCheckWarningContains(
+			t,
+			script,
+			"write to @enabled expected bool, got string | int | nil",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @enabled expected bool, got string",
+		)
+	})
+
+	t.Run("compatible projections stay gradual", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def values() -> array<int>
+  [1]
+end
+
+class User
+  property a: int
+  property rest: array<int>
+
+  def initialize
+    @a, *@rest = values()
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
 }
 
 // A short literal right-hand side pads the missing fixed targets with nil at
