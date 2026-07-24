@@ -3441,6 +3441,521 @@ end
 	}
 }
 
+func TestCheckArrayFillSingleExactReceiverControlsOutcomes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("negative range always raises", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = [1]
+  items.fill(2, -3..-1)
+  takes_int("unreachable")
+end
+`)
+		requireNoCheckWarnings(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"array.fill range -3..-1 out of range",
+		)
+	})
+
+	t.Run("rescued invalid span preserves receiver", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>)
+  begin
+    items.fill("bad", -3..-1)
+  rescue
+    nil
+  end
+  items << "later"
+  items
+end
+
+def entry()
+  run([1])
+end
+`)
+		warnings := script.CheckWarningsForFunction("entry")
+		if len(warnings) != 1 ||
+			warnings[0].Pos.Line != 8 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the rescued tail write",
+				"entry",
+				warnings,
+			)
+		}
+		got := callScript(t, context.Background(), script, "entry", nil, CallOptions{})
+		want := NewArray([]Value{NewInt(1), NewString("later")})
+		if !got.Equal(want) {
+			t.Fatalf("entry() = %s, want %s", got.String(), want.String())
+		}
+	})
+
+	t.Run("bare start past end does not write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>)
+  items.fill("bad", 5)
+  items << "later"
+  items
+end
+
+def entry()
+  run([1, 2, 3])
+end
+`)
+		warnings := script.CheckWarningsForFunction("entry")
+		if len(warnings) != 1 ||
+			warnings[0].Pos.Line != 4 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the later write",
+				"entry",
+				warnings,
+			)
+		}
+		got := callScript(t, context.Background(), script, "entry", nil, CallOptions{})
+		want := NewArray([]Value{
+			NewInt(1),
+			NewInt(2),
+			NewInt(3),
+			NewString("later"),
+		})
+		if !got.Equal(want) {
+			t.Fatalf("entry() = %s, want %s", got.String(), want.String())
+		}
+	})
+
+	t.Run("zero count past end models nil padding", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>)
+  items.fill(4, 5, 0)
+  items << "later"
+  items
+end
+
+def entry()
+  run([1, 2, 3])
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "entry", nil, CallOptions{})
+		want := NewArray([]Value{
+			NewInt(1),
+			NewInt(2),
+			NewInt(3),
+			NewNil(),
+			NewNil(),
+			NewString("later"),
+		})
+		if !got.Equal(want) {
+			t.Fatalf("entry() = %s, want %s", got.String(), want.String())
+		}
+	})
+
+	t.Run("nullable bound survives nil padding", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int | nil>)
+  items.fill(4, 5, 0)
+  items << "later"
+end
+
+def entry()
+  run([1])
+end
+`)
+		warnings := script.CheckWarningsForFunction("entry")
+		if len(warnings) != 1 ||
+			warnings[0].Pos.Line != 4 ||
+			!strings.Contains(
+				warnings[0].Message,
+				"write to items expected element int | nil, got string",
+			) {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want the nullable-bound tail write",
+				"entry",
+				warnings,
+			)
+		}
+	})
+}
+
+func TestCheckArrayFillSingleExactReceiverControlsBlockScheduling(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		receiver    string
+		wantWarning bool
+	}{
+		{name: "empty receiver skips block", receiver: "[]"},
+		{name: "nonempty receiver schedules block", receiver: "[1]", wantWarning: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = `+tc.receiver+`
+  items.fill do
+    takes_int("inside block")
+    1
+  end
+end
+`)
+			warnings := script.CheckWarningsForFunction("run")
+			if !tc.wantWarning {
+				if len(warnings) != 0 {
+					t.Fatalf(
+						"CheckWarningsForFunction(%q) = %#v, want no warning from a skipped block",
+						"run",
+						warnings,
+					)
+				}
+				return
+			}
+			if len(warnings) != 1 ||
+				!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+				t.Fatalf(
+					"CheckWarningsForFunction(%q) = %#v, want the reachable block warning",
+					"run",
+					warnings,
+				)
+			}
+		})
+	}
+
+	t.Run("literal receiver length is captured", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  [].fill do
+    raise "skipped"
+  end
+  takes_int("reachable")
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want the reachable tail warning",
+				"run",
+				warnings,
+			)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"argument value expected int, got string",
+		)
+	})
+}
+
+func TestCheckArrayFillSingleExactReceiverComposesBlockCompletion(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		receiver    string
+		setup       string
+		fill        string
+		wantWarning bool
+		runtimeErr  string
+	}{
+		{
+			name:        "empty receiver skips raising block",
+			receiver:    "[]",
+			fill:        "items.fill do\n    raise \"stop\"\n  end",
+			wantWarning: true,
+			runtimeErr:  "argument value expected int, got string",
+		},
+		{
+			name:       "nonempty receiver invokes raising block",
+			receiver:   "[1]",
+			fill:       "items.fill do\n    raise \"stop\"\n  end",
+			runtimeErr: "stop",
+		},
+		{
+			name:       "nonempty receiver invokes wrong arity lambda",
+			receiver:   "[1]",
+			setup:      "  callback = lambda { \"unused\" }\n",
+			fill:       "items.fill(&callback)",
+			runtimeErr: "lambda expects 0 arguments, got 1",
+		},
+		{
+			name:        "nonempty receiver invokes completing lambda",
+			receiver:    "[1]",
+			setup:       "  callback = lambda { |index| index }\n",
+			fill:        "items.fill(&callback)",
+			wantWarning: true,
+			runtimeErr:  "argument value expected int, got string",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = `+tc.receiver+`
+`+tc.setup+`  `+tc.fill+`
+  takes_int("tail")
+end
+`)
+			warnings := script.CheckWarningsForFunction("run")
+			if tc.wantWarning {
+				if len(warnings) != 1 ||
+					!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+					t.Fatalf(
+						"CheckWarningsForFunction(%q) = %#v, want the reachable tail warning",
+						"run",
+						warnings,
+					)
+				}
+			} else if len(warnings) != 0 {
+				t.Fatalf(
+					"CheckWarningsForFunction(%q) = %#v, want no warning after a noncompleting fill",
+					"run",
+					warnings,
+				)
+			}
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				tc.runtimeErr,
+			)
+		})
+	}
+
+	t.Run("nullable raising callback leaves no completing arm", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  items = [1]
+  callback = flag ? nil : lambda { |index| raise "stop" }
+  items.fill(&callback)
+  takes_int("unreachable")
+end
+`)
+		requireNoCheckWarnings(t, script)
+		for _, flag := range []bool{false, true} {
+			_, err := script.Call(
+				context.Background(),
+				"run",
+				[]Value{NewBool(flag)},
+				CallOptions{},
+			)
+			if err == nil {
+				t.Fatalf("run(%t) succeeded, want fill failure", flag)
+			}
+		}
+	})
+
+	t.Run("skipped stored block returns receiver alias", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>)
+  callback = lambda { |index| raise "must not run" }
+  copy = items.fill(0, 0, &callback)
+  copy << "poison"
+  items << true
+  items
+end
+
+def entry()
+  run([1])
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "entry", nil, CallOptions{})
+		want := NewArray([]Value{
+			NewInt(1),
+			NewString("poison"),
+			NewBool(true),
+		})
+		if !got.Equal(want) {
+			t.Fatalf("entry() = %s, want %s", got.String(), want.String())
+		}
+	})
+}
+
+func TestCheckArrayFillReceiverLengthInvalidatedByArguments(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		alias string
+	}{
+		{name: "direct receiver mutation", alias: "items"},
+		{name: "aliased receiver mutation", alias: "other"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def selector(items)
+  items << 0
+  items << 0
+  -3..-1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = [1]
+  other = items
+  items.fill(2, selector(`+tc.alias+`))
+  begin
+    takes_int("reachable")
+  rescue
+    nil
+  end
+  items
+end
+`)
+			warnings := script.CheckWarningsForFunction("run")
+			if len(warnings) != 1 ||
+				!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+				t.Fatalf(
+					"CheckWarningsForFunction(%q) = %#v, want the reachable tail warning",
+					"run",
+					warnings,
+				)
+			}
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			want := NewArray([]Value{NewInt(2), NewInt(2), NewInt(2)})
+			if !got.Equal(want) {
+				t.Fatalf("run() = %s, want %s", got.String(), want.String())
+			}
+		})
+	}
+
+	t.Run("receiver rebind discards captured length", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = [1]
+  selector = lambda do
+    items = [1, 2, 3]
+    -3..-1
+  end
+  items.fill(2, selector.call())
+  takes_int("conservatively reachable")
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want the conservative tail warning",
+				"run",
+				warnings,
+			)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"array.fill range -3..-1 out of range",
+		)
+	})
+}
+
+func TestCheckArrayFillReceiverLengthRejectsMultipleAlternatives(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		alternates string
+	}{
+		{name: "different lengths", alternates: `flag ? [1] : [1, 2]`},
+		{name: "same length", alternates: `flag ? [1] : [2]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  items = `+tc.alternates+`
+  items.fill do
+    raise "stop"
+  end
+  takes_int("conservatively reachable")
+end
+`)
+			warnings := script.CheckWarningsForFunction("run")
+			if len(warnings) != 1 ||
+				!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+				t.Fatalf(
+					"CheckWarningsForFunction(%q) = %#v, want the conservative tail warning",
+					"run",
+					warnings,
+				)
+			}
+		})
+	}
+}
+
 func TestCheckArrayMutatorAliasSplatsShareEvaluatedChoice(t *testing.T) {
 	t.Parallel()
 

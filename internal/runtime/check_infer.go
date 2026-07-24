@@ -477,6 +477,66 @@ func (c *scriptChecker) localStaticValuesFor(name string) ([]Expression, bool) {
 		len(fact.blocks) == 0 && !fact.keywordSplatFails
 }
 
+func (c *scriptChecker) captureArrayReceiverLength(expr Expression) checkArrayReceiverCapture {
+	capture := checkArrayReceiverCapture{}
+	var alternative Expression
+	switch typed := expr.(type) {
+	case *ArrayLiteral:
+		alternative = typed
+		capture.literal = true
+	case *Identifier:
+		values, exact := c.localStaticValuesFor(typed.Name)
+		if !exact || len(values) != 1 {
+			return capture
+		}
+		alternative = values[0]
+		capture.name = typed.Name
+		capture.generation = c.localBindingGenerations[typed.Name]
+	default:
+		return capture
+	}
+
+	array, exact := alternative.(*ArrayLiteral)
+	if !exact {
+		return checkArrayReceiverCapture{}
+	}
+	for _, element := range array.Elements {
+		if _, splat := element.(*SplatArg); splat {
+			return checkArrayReceiverCapture{}
+		}
+	}
+	capture.alternative = alternative
+	capture.length = len(array.Elements)
+	capture.exact = true
+	return capture
+}
+
+func (c *scriptChecker) currentArrayReceiverLength(
+	capture checkArrayReceiverCapture,
+) checkArrayReceiverLength {
+	if !capture.exact {
+		return checkArrayReceiverLength{}
+	}
+	if capture.literal {
+		return checkArrayReceiverLength{
+			length: capture.length,
+			exact:  true,
+		}
+	}
+	if capture.name == "" ||
+		c.localBindingGenerations[capture.name] != capture.generation {
+		return checkArrayReceiverLength{}
+	}
+	current, exact := c.localStaticValuesFor(capture.name)
+	if !exact || len(current) != 1 || current[0] != capture.alternative {
+		return checkArrayReceiverLength{}
+	}
+	return checkArrayReceiverLength{
+		length: capture.length,
+		exact:  true,
+	}
+}
+
 func cloneCheckCallSplatSource(source checkCallSplatSource) checkCallSplatSource {
 	return checkCallSplatSource{
 		identity:     append([]capturedContainerRoot(nil), source.identity...),
@@ -6230,6 +6290,7 @@ func arrayMutatorElementWrites(
 	argumentStaticValues map[Expression][]Expression,
 	argumentStaticChoices map[Expression]checkStaticChoiceFact,
 	blockResult checkBlockResult,
+	receiverLength checkArrayReceiverLength,
 ) (arrayMutatorWriteModel, bool) {
 	if call == nil {
 		return arrayMutatorWriteModel{}, false
@@ -6279,6 +6340,7 @@ func arrayMutatorElementWrites(
 			argumentStaticValues,
 			argumentStaticChoices,
 			blockResult,
+			receiverLength,
 		)
 	}
 	return arrayMutatorWriteModel{}, false
@@ -6290,6 +6352,7 @@ func arrayFillElementWrites(
 	argumentStaticValues map[Expression][]Expression,
 	argumentStaticChoices map[Expression]checkStaticChoiceFact,
 	blockResult checkBlockResult,
+	receiverLength checkArrayReceiverLength,
 ) (arrayMutatorWriteModel, bool) {
 	if call == nil {
 		return arrayMutatorWriteModel{}, false
@@ -6316,6 +6379,7 @@ func arrayFillElementWrites(
 				argumentFacts,
 				argumentStaticValues,
 				argumentStaticChoices,
+				receiverLength,
 			)
 		if selectorsExact && !blockMayRun {
 			return skipped, true
@@ -6335,6 +6399,7 @@ func arrayFillElementWrites(
 			argumentFacts,
 			argumentStaticValues,
 			argumentStaticChoices,
+			receiverLength,
 		)
 	}
 	if call.Block != nil {
@@ -6349,6 +6414,7 @@ func arrayFillElementWrites(
 			argumentFacts,
 			argumentStaticValues,
 			argumentStaticChoices,
+			receiverLength,
 		)
 	}
 	blockFact := argumentFacts[call.BlockArg]
@@ -6368,6 +6434,7 @@ func arrayFillElementWrites(
 		argumentFacts,
 		argumentStaticValues,
 		argumentStaticChoices,
+		receiverLength,
 	)
 	blockModel, blockModeled := blockWrites(
 		call.BlockArg,
@@ -6384,6 +6451,7 @@ func arrayFillValueElementWrites(
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
 	argumentStaticChoices map[Expression]checkStaticChoiceFact,
+	receiverLength checkArrayReceiverLength,
 ) (arrayMutatorWriteModel, bool) {
 	if len(args) < 1 || len(args) > 3 {
 		return arrayMutatorWriteModel{
@@ -6397,6 +6465,7 @@ func arrayFillValueElementWrites(
 		argumentFacts,
 		argumentStaticValues,
 		argumentStaticChoices,
+		receiverLength,
 	)
 }
 
@@ -6406,6 +6475,7 @@ func arrayFillBlockElementWrites(
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
 	argumentStaticChoices map[Expression]checkStaticChoiceFact,
+	receiverLength checkArrayReceiverLength,
 ) (arrayMutatorWriteModel, bool) {
 	if len(selectors) > 2 {
 		return arrayMutatorWriteModel{
@@ -6419,6 +6489,7 @@ func arrayFillBlockElementWrites(
 		argumentFacts,
 		argumentStaticValues,
 		argumentStaticChoices,
+		receiverLength,
 	)
 }
 
@@ -6428,7 +6499,16 @@ func arrayFillFormElementWrites(
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
 	argumentStaticChoices map[Expression]checkStaticChoiceFact,
+	receiverLength checkArrayReceiverLength,
 ) (arrayMutatorWriteModel, bool) {
+	if spans, exact := staticArrayFillResolvedSpans(
+		receiverLength,
+		selectors,
+		argumentStaticValues,
+		argumentStaticChoices,
+	); exact {
+		return staticArrayFillResolvedWriteModel(element, spans), true
+	}
 	if len(selectors) == 0 {
 		return arrayMutatorWriteModel{
 			elements:    []Expression{element},
@@ -6832,6 +6912,7 @@ func (c *scriptChecker) arrayFillCallMayCompleteWithoutInvokingBlock(call *CallE
 				c.callArgumentFacts,
 				c.callArgumentStaticValues,
 				c.callArgumentStaticChoices,
+				c.callArrayReceiverLength,
 			)
 			if !selectorsExact || !skipped.alwaysRaises {
 				return true
@@ -6852,6 +6933,7 @@ func (c *scriptChecker) arrayFillCallMayCompleteWithoutInvokingBlock(call *CallE
 				c.callArgumentFacts,
 				c.callArgumentStaticValues,
 				c.callArgumentStaticChoices,
+				c.callArrayReceiverLength,
 			)
 			if !selectorsExact || !skipped.alwaysRaises {
 				return true
@@ -6869,6 +6951,14 @@ func (c *scriptChecker) arrayFillValueFormMayComplete(args []Expression) bool {
 func (c *scriptChecker) arrayFillFormMayComplete(selectors []Expression) bool {
 	if len(selectors) > 2 {
 		return false
+	}
+	if spans, exact := staticArrayFillResolvedSpans(
+		c.callArrayReceiverLength,
+		selectors,
+		c.callArgumentStaticValues,
+		c.callArgumentStaticChoices,
+	); exact {
+		return len(spans) > 0
 	}
 	if len(selectors) == 0 {
 		return true
@@ -7007,6 +7097,7 @@ func (c *scriptChecker) arrayFillBlockMayEvaluate(call *CallExpr) bool {
 			c.callArgumentFacts,
 			c.callArgumentStaticValues,
 			c.callArgumentStaticChoices,
+			c.callArrayReceiverLength,
 		)
 		if !selectorsExact || blockMayRun {
 			return true
@@ -7070,6 +7161,7 @@ func staticArrayFillBlockSelectorOutcomes(
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
 	argumentStaticChoices map[Expression]checkStaticChoiceFact,
+	receiverLength checkArrayReceiverLength,
 ) (arrayMutatorWriteModel, bool, bool) {
 	model := arrayMutatorWriteModel{
 		preservable:  true,
@@ -7077,6 +7169,14 @@ func staticArrayFillBlockSelectorOutcomes(
 	}
 	if len(selectors) > 2 {
 		return model, false, true
+	}
+	if spans, exact := staticArrayFillResolvedSpans(
+		receiverLength,
+		selectors,
+		argumentStaticValues,
+		argumentStaticChoices,
+	); exact {
+		return staticArrayFillResolvedBlockSelectorOutcomes(spans)
 	}
 	selectorTuples, exact := staticArrayFillSelectorTuples(
 		selectors,
@@ -7254,6 +7354,92 @@ func staticArrayFillSelectorTuples(
 		return nil, false
 	}
 	return tuples, true
+}
+
+type staticArrayFillResolvedSpan struct {
+	arrayFillSpan
+	receiverLength int
+}
+
+func staticArrayFillResolvedSpans(
+	receiverLength checkArrayReceiverLength,
+	selectors []Expression,
+	argumentStaticValues map[Expression][]Expression,
+	argumentStaticChoices map[Expression]checkStaticChoiceFact,
+) ([]staticArrayFillResolvedSpan, bool) {
+	if !receiverLength.exact {
+		return nil, false
+	}
+	if len(selectors) > 2 {
+		return nil, true
+	}
+	selectorTuples, exact := staticArrayFillSelectorTuples(
+		selectors,
+		argumentStaticValues,
+		argumentStaticChoices,
+	)
+	if !exact {
+		return nil, false
+	}
+
+	spans := make([]staticArrayFillResolvedSpan, 0, len(selectorTuples))
+	for _, selectorTuple := range selectorTuples {
+		span, err := arrayFillResolveSpan(selectorTuple, receiverLength.length)
+		if err != nil {
+			continue
+		}
+		spans = append(spans, staticArrayFillResolvedSpan{
+			arrayFillSpan:  span,
+			receiverLength: receiverLength.length,
+		})
+	}
+	return spans, true
+}
+
+func staticArrayFillResolvedBlockSelectorOutcomes(
+	spans []staticArrayFillResolvedSpan,
+) (arrayMutatorWriteModel, bool, bool) {
+	model := arrayMutatorWriteModel{
+		preservable:  true,
+		alwaysRaises: true,
+	}
+	blockMayRun := false
+	for _, span := range spans {
+		if span.end > span.begin {
+			blockMayRun = true
+			continue
+		}
+		mayPad := span.finalLength > span.receiverLength
+		model.alwaysRaises = false
+		model.mayWrite = model.mayWrite || mayPad
+		model.preservable = model.preservable && !mayPad
+	}
+	return model, blockMayRun, true
+}
+
+func staticArrayFillResolvedWriteModel(
+	element Expression,
+	spans []staticArrayFillResolvedSpan,
+) arrayMutatorWriteModel {
+	model := arrayMutatorWriteModel{
+		preservable:  true,
+		alwaysRaises: len(spans) == 0,
+	}
+	writesValue := false
+	for _, span := range spans {
+		writesValue = writesValue || span.end > span.begin
+		model.mayWrite = model.mayWrite ||
+			span.end > span.begin ||
+			span.finalLength > span.receiverLength
+		if span.finalLength > span.receiverLength &&
+			span.begin > span.receiverLength {
+			model.preservable = false
+		}
+	}
+	if writesValue {
+		model.elements = []Expression{element}
+	}
+	return model
 }
 
 func staticArrayFillBlockSelectorOutcome(
@@ -7644,7 +7830,15 @@ func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string,
 	}) {
 		return false
 	}
-	model, ok := arrayMutatorElementWrites(call, property, nil, nil, nil, checkBlockResult{})
+	model, ok := arrayMutatorElementWrites(
+		call,
+		property,
+		nil,
+		nil,
+		nil,
+		checkBlockResult{},
+		checkArrayReceiverLength{},
+	)
 	if !ok {
 		return false
 	}
@@ -7935,6 +8129,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	argumentSplatSources map[Expression]checkCallSplatSource,
 	blockResult checkBlockResult,
 	receiverFact *TypeExpr,
+	receiverLength checkArrayReceiverLength,
 ) (preserved, modeled, mayWrite bool) {
 	ident, ok := member.Object.(*Identifier)
 	if !ok {
@@ -7987,6 +8182,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 				argumentStaticValues,
 				argumentStaticChoices,
 				blockResult,
+				receiverLength,
 			)
 			if !ok {
 				return false, false, false

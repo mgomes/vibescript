@@ -375,6 +375,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		previousArgCallables := c.callArgumentCallables
 		previousArgStaticValues := c.callArgumentStaticValues
 		previousArgStaticChoices := c.callArgumentStaticChoices
+		previousReceiverLength := c.callArrayReceiverLength
 		previousReachableParamFacts := c.reachableParamFacts
 		previousDeferred := c.deferredReturnSites
 		previousExceptionExits := c.exceptionExitSites
@@ -404,6 +405,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		c.callArgumentCallables = nil
 		c.callArgumentStaticValues = nil
 		c.callArgumentStaticChoices = nil
+		c.callArrayReceiverLength = checkArrayReceiverLength{}
 		c.reachableParamFacts = cloneReachableParamFacts(paramFacts)
 		c.deferredReturnSites = nil
 		var exceptionExitSites []checkStateSnapshot
@@ -440,6 +442,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 			c.callArgumentCallables = previousArgCallables
 			c.callArgumentStaticValues = previousArgStaticValues
 			c.callArgumentStaticChoices = previousArgStaticChoices
+			c.callArrayReceiverLength = previousReceiverLength
 			c.reachableParamFacts = previousReachableParamFacts
 			c.deferredReturnSites = previousDeferred
 			c.exceptionExitSites = previousExceptionExits

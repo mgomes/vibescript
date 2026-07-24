@@ -136,6 +136,7 @@ type scriptChecker struct {
 	callArgumentStaticValues   map[Expression][]Expression
 	callArgumentStaticChoices  map[Expression]checkStaticChoiceFact
 	callArgumentSplatSources   map[Expression]checkCallSplatSource
+	callArrayReceiverLength    checkArrayReceiverLength
 	evaluatedDestructureFacts  map[Expression]capturedDestructureValueFact
 	destructureProjectionFacts map[Expression]capturedDestructureValueFact
 	localBindingGenerations    map[string]uint64
@@ -299,6 +300,20 @@ type checkCallSplatSource struct {
 type checkStaticChoiceFact struct {
 	source  checkCallSplatSource
 	indices []int
+}
+
+type checkArrayReceiverCapture struct {
+	name        string
+	generation  uint64
+	alternative Expression
+	length      int
+	literal     bool
+	exact       bool
+}
+
+type checkArrayReceiverLength struct {
+	length int
+	exact  bool
 }
 
 func (c *scriptChecker) callStaticValueAlternatives(expr Expression) ([]Expression, bool) {
@@ -4093,12 +4108,14 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		// captured now: an argument that escapes or reads the same local
 		// must not erase the bound the receiver was evaluated under.
 		var receiverFact *TypeExpr
+		var receiverLengthCapture checkArrayReceiverCapture
 		if member, ok := typed.Callee.(*MemberExpr); ok {
 			if ident, ok := member.Object.(*Identifier); ok {
 				receiverFact = c.localTypeFor(ident.Name)
 			} else {
 				receiverFact = c.inferExpressionType(member.Object)
 			}
+			receiverLengthCapture = c.captureArrayReceiverLength(member.Object)
 		}
 		if targetResolved && target.fn == nil && target.spec.resultType != nil && !callExpandsArguments(typed) {
 			// The invariant result belongs to the target selected before an
@@ -4338,12 +4355,15 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		previousStaticValues := c.callArgumentStaticValues
 		previousStaticChoices := c.callArgumentStaticChoices
 		previousSplatSources := c.callArgumentSplatSources
+		previousReceiverLength := c.callArrayReceiverLength
 		c.callArgumentFacts = argumentFacts
 		c.callArgumentClassValues = argumentClassValues
 		c.callArgumentCallables = argumentCallables
 		c.callArgumentStaticValues = argumentStaticValues
 		c.callArgumentStaticChoices = argumentStaticChoices
 		c.callArgumentSplatSources = argumentSplatSources
+		receiverLength := c.currentArrayReceiverLength(receiverLengthCapture)
+		c.callArrayReceiverLength = receiverLength
 		c.pinForwardedConstructorInstanceFact(typed, dynamicCandidates)
 		if deferForwardedTargets {
 			dynamicResolution = c.exactDynamicCallTargets(typed, target, targetResolved, dynamicCandidates)
@@ -4587,6 +4607,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		c.callArgumentStaticValues = previousStaticValues
 		c.callArgumentStaticChoices = previousStaticChoices
 		c.callArgumentSplatSources = previousSplatSources
+		c.callArrayReceiverLength = previousReceiverLength
 		if argumentsMayBeSkipped {
 			if !callMayComplete {
 				// The failed non-nil arm still reaches rescue and ensure with any
@@ -4637,6 +4658,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					argumentSplatSources,
 					blockResult,
 					receiverFact,
+					receiverLength,
 				)
 				mutatorArgsModeled = modeled || arrayMutatorRetainsArgumentsWithoutCalling(
 					typed,
@@ -6594,12 +6616,14 @@ func (c *scriptChecker) checkMemberAutoCall(
 		previousStaticValues := c.callArgumentStaticValues
 		previousStaticChoices := c.callArgumentStaticChoices
 		previousSplatSources := c.callArgumentSplatSources
+		previousReceiverLength := c.callArrayReceiverLength
 		c.callArgumentFacts = map[Expression]*TypeExpr{}
 		c.callArgumentClassValues = map[Expression][]string{}
 		c.callArgumentCallables = map[Expression][]*ScriptFunction{}
 		c.callArgumentStaticValues = map[Expression][]Expression{}
 		c.callArgumentStaticChoices = map[Expression]checkStaticChoiceFact{}
 		c.callArgumentSplatSources = map[Expression]checkCallSplatSource{}
+		c.callArrayReceiverLength = checkArrayReceiverLength{}
 		bodyMayEnter := c.refineDynamicCallTargetEntry(resolution.targets)
 		if resolution.exact && c.exactDynamicCallHasOpaqueClassConstantEffects(resolution) {
 			c.markOpaqueClassConstants()
@@ -6612,6 +6636,7 @@ func (c *scriptChecker) checkMemberAutoCall(
 		c.callArgumentStaticValues = previousStaticValues
 		c.callArgumentStaticChoices = previousStaticChoices
 		c.callArgumentSplatSources = previousSplatSources
+		c.callArrayReceiverLength = previousReceiverLength
 		if !resolution.exact {
 			c.markOpaqueClassConstants()
 			return staticCallable{}, false, true, true
