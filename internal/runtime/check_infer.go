@@ -6225,7 +6225,7 @@ func (c *scriptChecker) arrayMutatorCallMayComplete(call *CallExpr, property str
 		c.callArgumentSplatSources,
 	)
 	if !exact {
-		return true
+		return !c.arrayMutatorExpansionShapesAlwaysInvalid(call, property)
 	}
 	for _, variant := range variants {
 		if c.arrayMutatorVariantMayComplete(variant, property) {
@@ -6233,6 +6233,201 @@ func (c *scriptChecker) arrayMutatorCallMayComplete(call *CallExpr, property str
 		}
 	}
 	return false
+}
+
+type arrayMutatorExpansionShapeGroup struct {
+	source     checkCallSplatSource
+	positional int
+	keyword    int
+}
+
+func (c *scriptChecker) arrayMutatorExpansionShapesAlwaysInvalid(
+	call *CallExpr,
+	property string,
+) bool {
+	if call == nil || !callExpandsArguments(call) {
+		return false
+	}
+	sourceGroups := arrayMutatorExpansionSourceGroups(call, c.callArgumentSplatSources)
+	grouped := make(map[int]*arrayMutatorExpansionShapeGroup)
+	directArity := 0
+	var independentPositional [][]Expression
+	var independentKeyword [][]Expression
+	for _, arg := range call.Args {
+		splat, expanded := arg.(*SplatArg)
+		if !expanded {
+			directArity++
+			continue
+		}
+		if group, correlated := sourceGroups[splat.Value]; correlated {
+			shape := grouped[group]
+			if shape == nil {
+				shape = &arrayMutatorExpansionShapeGroup{
+					source: c.callArgumentSplatSources[splat.Value],
+				}
+				grouped[group] = shape
+			}
+			shape.positional++
+			continue
+		}
+		values, exact := c.callArgumentStaticValues[splat.Value]
+		if !exact || len(values) == 0 {
+			return false
+		}
+		independentPositional = append(independentPositional, values)
+	}
+	for _, kwarg := range call.KwArgs {
+		if !kwarg.Splat {
+			return true
+		}
+		if group, correlated := sourceGroups[kwarg.Value]; correlated {
+			shape := grouped[group]
+			if shape == nil {
+				shape = &arrayMutatorExpansionShapeGroup{
+					source: c.callArgumentSplatSources[kwarg.Value],
+				}
+				grouped[group] = shape
+			}
+			shape.keyword++
+			continue
+		}
+		values, exact := c.callArgumentStaticValues[kwarg.Value]
+		if !exact || len(values) == 0 {
+			return false
+		}
+		independentKeyword = append(independentKeyword, values)
+	}
+
+	clamp := arrayMutatorShapeArityClamp(property)
+	arities := []int{min(directArity, clamp)}
+	for _, shape := range grouped {
+		contributions := c.arrayMutatorShapeGroupContributions(shape, clamp)
+		if len(contributions) == 0 {
+			return true
+		}
+		arities = combineArrayMutatorShapeArities(arities, contributions, clamp)
+	}
+	for _, alternatives := range independentPositional {
+		contributions := make([]int, 0, len(alternatives))
+		for _, alternative := range alternatives {
+			if array, ok := alternative.(*ArrayLiteral); ok {
+				contributions = append(contributions, min(len(array.Elements), clamp))
+			}
+		}
+		if len(contributions) == 0 {
+			return true
+		}
+		arities = combineArrayMutatorShapeArities(arities, contributions, clamp)
+	}
+	for _, alternatives := range independentKeyword {
+		valid := false
+		for _, alternative := range alternatives {
+			hash, ok := alternative.(*HashLiteral)
+			if ok && c.arrayMutatorKeywordExpansionIsEmpty(hash) {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return true
+		}
+	}
+	for _, arity := range arities {
+		if c.arrayMutatorShapeArityMayComplete(call, property, arity) {
+			return false
+		}
+	}
+	return true
+}
+
+func arrayMutatorShapeArityClamp(property string) int {
+	switch property {
+	case "insert":
+		return 1
+	case "fill":
+		return 4
+	default:
+		return 1
+	}
+}
+
+func (c *scriptChecker) arrayMutatorShapeGroupContributions(
+	group *arrayMutatorExpansionShapeGroup,
+	clamp int,
+) []int {
+	if group == nil {
+		return nil
+	}
+	contributions := make([]int, 0, len(group.source.alternatives))
+	for _, alternative := range group.source.alternatives {
+		contribution := 0
+		if group.positional > 0 {
+			array, ok := alternative.(*ArrayLiteral)
+			if !ok {
+				continue
+			}
+			for range group.positional {
+				contribution = min(contribution+len(array.Elements), clamp)
+			}
+		}
+		if group.keyword > 0 {
+			hash, ok := alternative.(*HashLiteral)
+			if !ok || !c.arrayMutatorKeywordExpansionIsEmpty(hash) {
+				continue
+			}
+		}
+		contributions = append(contributions, contribution)
+	}
+	return contributions
+}
+
+func (c *scriptChecker) arrayMutatorKeywordExpansionIsEmpty(hash *HashLiteral) bool {
+	return hash != nil &&
+		(hash.ShapeType == nil || c.hashShapeStaticallyShadowed(hash)) &&
+		len(hash.Pairs) == 0
+}
+
+func combineArrayMutatorShapeArities(current, added []int, clamp int) []int {
+	seen := make([]bool, clamp+1)
+	for _, left := range current {
+		for _, right := range added {
+			seen[min(left+right, clamp)] = true
+		}
+	}
+	combined := make([]int, 0, len(seen))
+	for arity, possible := range seen {
+		if possible {
+			combined = append(combined, arity)
+		}
+	}
+	return combined
+}
+
+func (c *scriptChecker) arrayMutatorShapeArityMayComplete(
+	call *CallExpr,
+	property string,
+	arity int,
+) bool {
+	switch property {
+	case "push", "append", "prepend", "unshift":
+		return true
+	case "insert":
+		return arity >= 1
+	case "fill":
+		switch {
+		case call.Block != nil:
+			return arity <= 2
+		case call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, c.callArgumentFacts):
+			return arity >= 1 && arity <= 3
+		}
+		blockFact := c.callArgumentFacts[call.BlockArg]
+		if typeExprNeverNil(blockFact) {
+			return arity <= 2
+		}
+		return arity <= 3
+	default:
+		return true
+	}
 }
 
 func (c *scriptChecker) arrayMutatorVariantMayComplete(
@@ -7137,24 +7332,16 @@ func (c *scriptChecker) staticallyExpandedArrayMutatorCalls(
 		if !captured || len(values) == 0 {
 			return nil, false
 		}
-		arrays := make([]*ArrayLiteral, len(values))
-		for i, value := range values {
-			array, ok := value.(*ArrayLiteral)
-			if !ok {
-				return nil, false
-			}
-			arrays[i] = array
-		}
 		choiceGroup, correlated := sourceGroups[splat.Value]
-		next := make([]arrayMutatorCallVariant, 0, min(maxVariants, len(variants)*len(arrays)))
+		next := make([]arrayMutatorCallVariant, 0, min(maxVariants, len(variants)*len(values)))
 		for _, variant := range variants {
-			indices := make([]int, len(arrays))
-			for i := range arrays {
+			indices := make([]int, len(values))
+			for i := range values {
 				indices[i] = i
 			}
 			if correlated {
 				if selected, exists := variant.choices[choiceGroup]; exists {
-					if selected >= len(arrays) {
+					if selected >= len(values) {
 						return nil, false
 					}
 					indices = []int{selected}
@@ -7164,18 +7351,23 @@ func (c *scriptChecker) staticallyExpandedArrayMutatorCalls(
 				if len(next) >= maxVariants {
 					return nil, false
 				}
-				array := arrays[index]
 				variantCall := *variant.call
-				variantCall.Args = append(
-					append([]Expression(nil), variant.call.Args...),
-					array.Elements...,
-				)
 				origins := cloneArrayMutatorSplatOrigins(variant.splatOrigins)
-				if origins == nil {
-					origins = make(map[Expression][]*SplatArg)
-				}
-				for _, element := range array.Elements {
-					origins[element] = append(origins[element], splat)
+				expansionRaises := variant.expansionRaises
+				if array, ok := values[index].(*ArrayLiteral); ok {
+					variantCall.Args = append(
+						append([]Expression(nil), variant.call.Args...),
+						array.Elements...,
+					)
+					if origins == nil {
+						origins = make(map[Expression][]*SplatArg)
+					}
+					for _, element := range array.Elements {
+						origins[element] = append(origins[element], splat)
+					}
+				} else {
+					variantCall.Args = append([]Expression(nil), variant.call.Args...)
+					expansionRaises = true
 				}
 				choices := cloneArrayMutatorExpansionChoices(variant.choices)
 				if correlated {
@@ -7187,7 +7379,7 @@ func (c *scriptChecker) staticallyExpandedArrayMutatorCalls(
 				next = append(next, arrayMutatorCallVariant{
 					call:            &variantCall,
 					splatOrigins:    origins,
-					expansionRaises: variant.expansionRaises,
+					expansionRaises: expansionRaises,
 					choices:         choices,
 				})
 			}
@@ -7210,24 +7402,16 @@ func (c *scriptChecker) staticallyExpandedArrayMutatorCalls(
 		if !captured || len(values) == 0 {
 			return nil, false
 		}
-		hashes := make([]*HashLiteral, len(values))
-		for i, value := range values {
-			hash, ok := value.(*HashLiteral)
-			if !ok {
-				return nil, false
-			}
-			hashes[i] = hash
-		}
 		choiceGroup, correlated := sourceGroups[kwarg.Value]
-		next := make([]arrayMutatorCallVariant, 0, min(maxVariants, len(variants)*len(hashes)))
+		next := make([]arrayMutatorCallVariant, 0, min(maxVariants, len(variants)*len(values)))
 		for _, variant := range variants {
-			indices := make([]int, len(hashes))
-			for i := range hashes {
+			indices := make([]int, len(values))
+			for i := range values {
 				indices[i] = i
 			}
 			if correlated {
 				if selected, exists := variant.choices[choiceGroup]; exists {
-					if selected >= len(hashes) {
+					if selected >= len(values) {
 						return nil, false
 					}
 					indices = []int{selected}
@@ -7240,8 +7424,10 @@ func (c *scriptChecker) staticallyExpandedArrayMutatorCalls(
 				variantCall := *variant.call
 				variantCall.KwArgs = append([]KeywordArg(nil), variant.call.KwArgs...)
 				expansionRaises := variant.expansionRaises
-				hash := hashes[index]
-				if hash.ShapeType != nil && !c.hashShapeStaticallyShadowed(hash) {
+				hash, isHash := values[index].(*HashLiteral)
+				if !isHash {
+					expansionRaises = true
+				} else if hash.ShapeType != nil && !c.hashShapeStaticallyShadowed(hash) {
 					expansionRaises = true
 				} else if len(hash.Pairs) > 0 {
 					normalized := kwarg
@@ -7302,10 +7488,15 @@ func arrayMutatorExpansionSourceGroups(
 }
 
 func sameCheckCallSplatSource(left, right checkCallSplatSource) bool {
-	if left.name != right.name ||
-		left.generation != right.generation ||
+	if len(left.identity) == 0 ||
+		len(left.identity) != len(right.identity) ||
 		len(left.alternatives) != len(right.alternatives) {
 		return false
+	}
+	for i := range left.identity {
+		if left.identity[i] != right.identity[i] {
+			return false
+		}
 	}
 	for i := range left.alternatives {
 		if left.alternatives[i] != right.alternatives[i] {
@@ -8812,6 +9003,105 @@ func (c *scriptChecker) poisonEscapedCallValue(expr Expression, callMayComplete 
 		}
 	}
 	c.poisonEscapedIdentifier(expr)
+}
+
+// applyExactScriptArrayArgumentMutations advances a caller's exact array
+// value through a straight-line helper that only appends static literals and
+// returns an unrelated static value. Every other callee shape keeps the
+// ordinary escape poison.
+func (c *scriptChecker) applyExactScriptArrayArgumentMutations(
+	call *CallExpr,
+	target staticCallable,
+	resolved bool,
+) map[Expression]struct{} {
+	if !resolved || call == nil || target.fn == nil || target.fn.owner != c.script ||
+		callExpandsArguments(call) || len(call.KwArgs) > 0 ||
+		call.Block != nil || call.BlockArg != nil ||
+		len(call.Args) != len(target.fn.Params) || c.mutationRegionDepth != 0 {
+		return nil
+	}
+	arguments := make(map[string]Expression, len(target.fn.Params))
+	argumentNames := make(map[string]struct{}, len(target.fn.Params))
+	for i, param := range target.fn.Params {
+		if param.Kind != ParamNormal || param.Name == "" || param.DefaultVal != nil {
+			return nil
+		}
+		ident, direct := call.Args[i].(*Identifier)
+		if !direct {
+			continue
+		}
+		if _, duplicate := argumentNames[ident.Name]; duplicate ||
+			c.hasCurrentContainerAlias(ident.Name) {
+			return nil
+		}
+		values, exact := c.localStaticValuesFor(ident.Name)
+		if !exact || len(values) == 0 {
+			continue
+		}
+		for _, value := range values {
+			if _, array := value.(*ArrayLiteral); !array {
+				return nil
+			}
+		}
+		argumentNames[ident.Name] = struct{}{}
+		arguments[param.Name] = call.Args[i]
+	}
+
+	type exactAppend struct {
+		argument Expression
+		value    Expression
+	}
+	var appends []exactAppend
+	terminalSafe := false
+	for i, statement := range target.fn.Body {
+		last := i == len(target.fn.Body)-1
+		switch typed := statement.(type) {
+		case *ExprStmt:
+			binary, shovel := typed.Expr.(*BinaryExpr)
+			if shovel && binary.Operator == tokenShovel {
+				param, direct := binary.Left.(*Identifier)
+				argument := arguments[param.Name]
+				if !direct || argument == nil {
+					return nil
+				}
+				if _, static := staticLiteralValue(binary.Right); !static {
+					return nil
+				}
+				appends = append(appends, exactAppend{
+					argument: argument,
+					value:    binary.Right,
+				})
+				continue
+			}
+			if !last {
+				return nil
+			}
+			if _, static := staticLiteralValue(typed.Expr); !static {
+				return nil
+			}
+			terminalSafe = true
+		case *ReturnStmt:
+			if !last {
+				return nil
+			}
+			if _, static := staticLiteralValue(typed.Value); !static {
+				return nil
+			}
+			terminalSafe = true
+		default:
+			return nil
+		}
+	}
+	if len(appends) == 0 || !terminalSafe {
+		return nil
+	}
+	mutated := make(map[Expression]struct{}, len(appends))
+	for _, appendEffect := range appends {
+		ident := appendEffect.argument.(*Identifier)
+		c.applyShovelMutationToLocal(ident.Name, appendEffect.value, true)
+		mutated[appendEffect.argument] = struct{}{}
+	}
+	return mutated
 }
 
 // nonCompletingScriptCallLeavesParametersUnused recognizes the narrow case

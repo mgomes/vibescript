@@ -290,8 +290,7 @@ type checkForwardedCallVariant struct {
 }
 
 type checkCallSplatSource struct {
-	name         string
-	generation   uint64
+	identity     []capturedContainerRoot
 	alternatives []Expression
 }
 
@@ -4202,9 +4201,21 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			if !directLocal || !exact || len(values) == 0 {
 				return
 			}
+			names := c.containerIdentityNames(ident.Name)
+			ordered := make([]string, 0, len(names))
+			for name := range names {
+				ordered = append(ordered, name)
+			}
+			sort.Strings(ordered)
+			identity := make([]capturedContainerRoot, 0, len(ordered))
+			for _, name := range ordered {
+				identity = append(identity, capturedContainerRoot{
+					name:       name,
+					generation: c.localBindingGenerations[name],
+				})
+			}
 			argumentSplatSources[expr] = checkCallSplatSource{
-				name:         ident.Name,
-				generation:   c.localBindingGenerations[ident.Name],
+				identity:     identity,
 				alternatives: append([]Expression(nil), values...),
 			}
 		}
@@ -4546,6 +4557,11 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if targetMayEnter {
 			shovelEscapeMayMutate := callMayComplete ||
 				!c.nonCompletingScriptCallLeavesParametersUnused(checkedCall, target, targetResolved)
+			exactScriptMutatedArguments := c.applyExactScriptArrayArgumentMutations(
+				checkedCall,
+				target,
+				targetResolved,
+			)
 			c.applyKeywordSplatDeleteFact(typed)
 			mutatorArgsModeled := false
 			if member, ok := typed.Callee.(*MemberExpr); ok && !c.memberCallPreservesReceiverFacts(typed) {
@@ -4594,6 +4610,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				// aliases, so generic escape poison would undo the compatible
 				// fact the mutator just preserved.
 				if mutatorArgsModeled {
+					continue
+				}
+				if _, modeled := exactScriptMutatedArguments[arg]; modeled {
 					continue
 				}
 				c.poisonEscapedCallValue(arg, shovelEscapeMayMutate)

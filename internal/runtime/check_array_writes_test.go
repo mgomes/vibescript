@@ -2962,6 +2962,287 @@ end
 	}
 }
 
+func TestCheckArrayMutatorAliasSplatsShareEvaluatedChoice(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  items = [1]
+  args = flag ? [] : ["bad", 0]
+  other = args
+  items.fill(*args, *other)
+  takes_int("unreachable")
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	for _, flag := range []bool{false, true} {
+		_, err := script.Call(
+			context.Background(),
+			"run",
+			[]Value{NewBool(flag)},
+			CallOptions{},
+		)
+		if err == nil {
+			t.Fatalf("run(%t) succeeded, want invalid fill shape", flag)
+		}
+	}
+}
+
+func TestCheckArrayMutatorAliasSplatCorrelationKeepsValidChoice(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  items = [1]
+  args = flag ? ["bad"] : [0]
+  other = args
+  begin
+    items.fill(*args, *other)
+  rescue
+    nil
+  end
+  takes_int("reachable")
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want the reachable argument warning",
+			"run",
+			warnings,
+		)
+	}
+}
+
+func TestCheckArrayMutatorCrossKindSplatsShareEvaluatedChoice(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		setup string
+		call  string
+	}{
+		{
+			name: "same local",
+			call: "items.fill(*args, **args)",
+		},
+		{
+			name:  "container alias",
+			setup: "  other = args\n",
+			call:  "items.fill(*args, **other)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(flag: bool)
+  items = []
+  args = flag ? [1] : { x: 1 }
+`+tc.setup+`  `+tc.call+`
+  takes_int("unreachable")
+end
+`)
+
+			requireNoCheckWarnings(t, script)
+			for _, flag := range []bool{false, true} {
+				_, err := script.Call(
+					context.Background(),
+					"run",
+					[]Value{NewBool(flag)},
+					CallOptions{},
+				)
+				if err == nil {
+					t.Fatalf("run(%t) succeeded, want one expansion to fail", flag)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckArrayMutatorIndependentCrossKindSplatsCanComplete(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = []
+  args = [1]
+  options = {}
+  items.push(*args, **options)
+  takes_int("reachable")
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want the reachable argument warning",
+			"run",
+			warnings,
+		)
+	}
+}
+
+func TestCheckArrayMutatorSplatsSeparatedByMutationUseDistinctChoices(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>)
+  args = []
+  items.fill(*args, args << 0, *args)
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got array<int>") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want the evaluated middle array write warning",
+			"run",
+			warnings,
+		)
+	}
+}
+
+func TestCheckArrayMutatorSplatsCaptureValuesAroundScriptMutation(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def mutate(args)
+  args << 0
+  "bad"
+end
+
+def run(items: array<int>)
+  args = []
+  items.fill(*args, mutate(args), *args)
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want the evaluated mutation result warning",
+			"run",
+			warnings,
+		)
+	}
+}
+
+func TestCheckArrayFillExpansionCapRetainsArityImpossibility(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, a: bool, b: bool, c: bool, d: bool, e: bool, f: bool)
+  x1 = a ? [] : [1, 2, 3, 4]
+  x2 = b ? [] : [1, 2, 3, 4]
+  x3 = c ? [] : [1, 2, 3, 4]
+  x4 = d ? [] : [1, 2, 3, 4]
+  x5 = e ? [] : [1, 2, 3, 4]
+  x6 = f ? [] : [1, 2, 3, 4]
+  begin
+    items.fill(*x1, *x2, *x3, *x4, *x5, *x6)
+  rescue
+    nil
+  end
+  items << "later"
+  items
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want only the reachable tail write",
+			"run",
+			warnings,
+		)
+	}
+
+	cases := [][]Value{
+		{
+			NewArray([]Value{NewInt(1)}),
+			NewBool(true),
+			NewBool(true),
+			NewBool(true),
+			NewBool(true),
+			NewBool(true),
+			NewBool(true),
+		},
+		{
+			NewArray([]Value{NewInt(1)}),
+			NewBool(false),
+			NewBool(true),
+			NewBool(true),
+			NewBool(true),
+			NewBool(true),
+			NewBool(true),
+		},
+	}
+	for _, args := range cases {
+		got := callScript(t, context.Background(), script, "run", args, CallOptions{})
+		want := NewArray([]Value{NewInt(1), NewString("later")})
+		if !got.Equal(want) {
+			t.Errorf("run(%v) = %s, want %s", args, got.String(), want.String())
+		}
+	}
+}
+
+func TestCheckArrayFillExpansionCapKeepsFeasibleArityReachable(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool)
+  items = []
+  x1 = a ? [] : [1]
+  x2 = b ? [] : [1, 2, 3, 4]
+  x3 = c ? [] : [1, 2, 3, 4]
+  x4 = d ? [] : [1, 2, 3, 4]
+  x5 = e ? [] : [1, 2, 3, 4]
+  x6 = f ? [] : [1, 2, 3, 4]
+  items.fill(*x1, *x2, *x3, *x4, *x5, *x6)
+  takes_int("possibly reachable")
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want the reachable argument warning",
+			"run",
+			warnings,
+		)
+	}
+}
+
 func TestArrayMutatorSplatCorrelationUsesBindingGeneration(t *testing.T) {
 	t.Parallel()
 
@@ -3010,13 +3291,17 @@ func TestArrayMutatorSplatCorrelationUsesBindingGeneration(t *testing.T) {
 				},
 				map[Expression]checkCallSplatSource{
 					firstValue: {
-						name:         "args",
-						generation:   7,
+						identity: []capturedContainerRoot{{
+							name:       "args",
+							generation: 7,
+						}},
 						alternatives: firstAlternatives,
 					},
 					secondValue: {
-						name:         "args",
-						generation:   tc.secondGeneration,
+						identity: []capturedContainerRoot{{
+							name:       "args",
+							generation: tc.secondGeneration,
+						}},
 						alternatives: tc.secondValues,
 					},
 				},
