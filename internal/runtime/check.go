@@ -1949,9 +1949,9 @@ func (c *scriptChecker) enqueueReachableIdentifierCall(ident *Identifier) {
 		target := staticCallable{name: ident.Name, fn: fn}
 		plan := c.scriptCallBindingPlan(call, target)
 		bindingStarts = plan.bindingStarts
-		if plan.bodyMayEnter {
-			c.enqueueReachableFunction(ident.Name, fn)
-		} else if plan.bindingStarts {
+		// A bare implicit-self call has no captured argument facts, so its
+		// binding plan must carry exact omitted-default execution into the body.
+		if plan.bindingStarts {
 			c.enqueueReachableFunctionBinding(ident.Name, fn, nil, plan)
 		}
 	} else if c.checkReachableCalls {
@@ -3050,7 +3050,6 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		targetMayWrite := true
 		inferWrite := true
-		var setterReceiverCandidates []checkDynamicCallCandidates
 		switch typed.Operator {
 		case "":
 			// Plain assignment evaluates its value before the target receiver and
@@ -3112,12 +3111,6 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				c.recordNonCompletingExpression()
 				return
 			}
-			if setterReceiver.captured {
-				setterReceiverCandidates = append(
-					setterReceiverCandidates,
-					setterReceiver.candidates,
-				)
-			}
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
 			truthy, known := c.logicalAssignmentTargetTruthiness(typed.Target)
 			rhsReachable := true
@@ -3154,7 +3147,6 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				}
 				opaqueDispatch := false
 				var indexSetterType *TypeExpr
-				var memberSetter *MemberExpr
 				switch target := typed.Target.(type) {
 				case *IndexExpr:
 					indexSetterType = setterReceiver.receiverType
@@ -3163,7 +3155,6 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 						"[]=",
 					)
 				case *MemberExpr:
-					memberSetter = target
 					opaqueDispatch = c.memberSetterHasOpaqueClassConstantEffects(target)
 				}
 				expectation := c.assignmentValueExpectation(typed.Target, typed.Value)
@@ -3198,9 +3189,6 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				c.captureEvaluatedDestructureFact(typed.Value)
 				if indexSetterType != nil {
 					c.enqueueReachableInstanceDispatch(indexSetterType, "[]=")
-				}
-				if memberSetter != nil {
-					c.enqueueReachableMemberSetter(memberSetter, setterReceiverCandidates...)
 				}
 				setterCompletes := c.checkAssignmentSetterDispatch(
 					function,
@@ -3265,19 +3253,12 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				c.recordNonCompletingExpression()
 				return
 			}
-			if setterReceiver.captured {
-				setterReceiverCandidates = append(
-					setterReceiverCandidates,
-					setterReceiver.candidates,
-				)
-			}
 			c.collectRuntimeRequireCallExportsFromExpression(typed.Target)
 			operatorType := c.inferExpressionType(typed.Target)
 			c.pinExpressionFact(typed.Target, operatorType)
 			opaqueOperator := c.binaryDispatchHasOpaqueClassConstantEffects(operatorType, typed.Operator)
 			opaqueSetter := false
 			var indexSetterType *TypeExpr
-			var memberSetter *MemberExpr
 			switch target := typed.Target.(type) {
 			case *IndexExpr:
 				indexSetterType = setterReceiver.receiverType
@@ -3286,7 +3267,6 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 					"[]=",
 				)
 			case *MemberExpr:
-				memberSetter = target
 				opaqueSetter = c.memberSetterHasOpaqueClassConstantEffects(target)
 			}
 			valueCompleted := c.withAssignmentLocalCallBypass(
@@ -3343,9 +3323,6 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.pinExpressionFact(operatorValue, c.inferExpressionType(operatorValue))
 			if indexSetterType != nil {
 				c.enqueueReachableInstanceDispatch(indexSetterType, "[]=")
-			}
-			if memberSetter != nil {
-				c.enqueueReachableMemberSetter(memberSetter, setterReceiverCandidates...)
 			}
 			setterCompletes := c.checkAssignmentSetterDispatch(
 				function,
@@ -7105,56 +7082,6 @@ func (c *scriptChecker) memberSetterHasOpaqueClassConstantEffects(member *Member
 	return c.instanceDispatchHasOpaqueClassConstantEffects(c.inferExpressionType(member.Object), setter)
 }
 
-func (c *scriptChecker) enqueueReachableMemberSetter(
-	member *MemberExpr,
-	captured ...checkDynamicCallCandidates,
-) {
-	if member == nil {
-		return
-	}
-	setter := member.Property + "="
-	if len(captured) > 0 {
-		receivers, exact := c.exactAssignmentMemberReceivers(member, captured...)
-		if !exact {
-			return
-		}
-		for _, receiver := range receivers {
-			methods := receiver.class.Methods
-			separator := "#"
-			if receiver.classMethod {
-				methods = receiver.class.ClassMethods
-				separator = "."
-			}
-			if fn := methods[setter]; fn != nil &&
-				c.dynamicCallTargetVisible(receiver.class, receiver.classMethod, fn, false) {
-				c.enqueueReachableFunction(receiver.class.Name+separator+setter, fn)
-			}
-		}
-		return
-	}
-	if ident, ok := member.Object.(*Identifier); ok {
-		if ident.Name == "self" && c.selfClass != nil {
-			methods := c.selfClass.Methods
-			owner := c.selfClass.Name + "#"
-			if c.selfClassContext {
-				methods = c.selfClass.ClassMethods
-				owner = c.selfClass.Name + "."
-			}
-			if fn, exists := methods[setter]; exists {
-				c.enqueueReachableFunction(owner+setter, fn)
-			}
-			return
-		}
-		if classDef, ok := c.staticClassArgument(ident); ok {
-			if fn, exists := classDef.ClassMethods[setter]; exists {
-				c.enqueueReachableFunction(classDef.Name+"."+setter, fn)
-			}
-			return
-		}
-	}
-	c.enqueueReachableInstanceDispatch(c.inferExpressionType(member.Object), setter)
-}
-
 func (c *scriptChecker) checkPlainAssignmentTarget(
 	function string,
 	target Expression,
@@ -7171,7 +7098,6 @@ func (c *scriptChecker) checkPlainAssignmentTarget(
 		}
 		c.collectRuntimeRequireCallExportsFromExpression(typed.Object)
 		receiver, _ := c.assignmentReceiverSnapshot(typed)
-		c.enqueueReachableMemberSetter(typed, receiver.candidates)
 		opaqueEffects := c.memberSetterHasOpaqueClassConstantEffects(typed)
 		completed := c.checkAssignmentSetterDispatch(function, typed, value, receiver)
 		if opaqueEffects {
@@ -7568,12 +7494,36 @@ func (c *scriptChecker) checkAssignmentSetterDispatch(
 	completed := true
 	c.withEvaluatedAssignmentSetterArgumentFacts(target, value, func() {
 		selection := c.assignmentSetterScriptDispatch(target, value, receiver)
+		if _, member := target.(*MemberExpr); member {
+			c.enqueueReachableMemberSetterCalls(selection)
+		}
 		c.checkGeneratedAssignmentSetterArgument(function, selection)
 		c.applyAssignmentSetterIvarEffects(selection)
 		completed = c.assignmentSetterMayCompleteWithReceiver(target, value, receiver)
 		c.applyAssignmentNamespaceMutations(target, value, receiver.candidates)
 	})
 	return completed
+}
+
+// enqueueReachableMemberSetterCalls preserves the generated assignment call's
+// evaluated argument facts and exact default-binding plan.
+func (c *scriptChecker) enqueueReachableMemberSetterCalls(
+	selection instanceScriptDispatchSelection,
+) {
+	for _, selected := range selection.targets {
+		if !selected.bindingStarts || selected.call == nil || selected.target.fn == nil {
+			continue
+		}
+		plan := c.scriptCallBindingPlan(selected.call, selected.target)
+		facts := c.reachableCallParamFacts(selected.call, selected.target)
+		c.enqueueReachableFunctionBindingForCall(
+			selected.target.name,
+			selected.target.fn,
+			facts,
+			plan,
+			selected.call,
+		)
+	}
 }
 
 func (c *scriptChecker) checkGeneratedAssignmentSetterArgument(

@@ -6898,6 +6898,238 @@ end
 	}
 }
 
+func TestCheckInitializerIvarOneShotCallbackDefaultImplicitSelfCallPlans(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		parameters string
+		invocation string
+	}{
+		{
+			name:       "bare",
+			parameters: "(value = -> { @flag = true }.call())",
+			invocation: "activate",
+		},
+		{
+			name:       "bare keyword default",
+			parameters: "(trigger: (-> { @flag = true }.call()))",
+			invocation: "activate",
+		},
+		{
+			name:       "bare multiple defaults",
+			parameters: "(first = 0, second = -> { @flag = true }.call())",
+			invocation: "activate",
+		},
+		{
+			name:       "parenthesized",
+			parameters: "(value = -> { @flag = true }.call())",
+			invocation: "activate()",
+		},
+		{
+			name:       "explicit self",
+			parameters: "(value = -> { @flag = true }.call())",
+			invocation: "self.activate",
+		},
+		{
+			name:       "dynamic splat",
+			parameters: "(value = -> { @flag = true }.call())",
+			invocation: "args = JSON.parse(\"[]\")\n    activate(*args)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def initialize
+    @flag = false
+  end
+
+  def activate`+tc.parameters+`
+    unless @flag
+      takes_int("bad")
+    end
+    @flag
+  end
+
+  def execute
+    `+tc.invocation+`
+  end
+end
+
+def run
+  User.new().execute()
+end
+`)
+			if warnings := script.CheckWarningsForCall("run", nil, CallOptions{}); len(warnings) > 0 {
+				t.Errorf("CheckWarningsForCall() = %#v, want none", warnings)
+			}
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindBool || !got.Bool() {
+				t.Errorf("run() = %v, want true", got)
+			}
+		})
+	}
+}
+
+func TestCheckInitializerIvarOneShotCallbackDefaultMemberSetterPlans(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		parameters  string
+		userMethods string
+		classes     string
+		runBody     string
+		wantWarning bool
+	}{
+		{
+			name:       "local receiver",
+			parameters: "(value, trigger: (-> { @flag = true }.call()))",
+			runBody:    "user = User.new()\n  user.value = 1\n  user.flag",
+		},
+		{
+			name:       "local receiver positional default",
+			parameters: "(value, trigger = -> { @flag = true }.call())",
+			runBody:    "user = User.new()\n  user.value = 1\n  user.flag",
+		},
+		{
+			name:       "local receiver multiple defaults",
+			parameters: "(value, first = 0, second = -> { @flag = true }.call())",
+			runBody:    "user = User.new()\n  user.value = 1\n  user.flag",
+		},
+		{
+			name:       "logical assignment",
+			parameters: "(value, trigger: (-> { @flag = true }.call()))",
+			userMethods: `
+  def value
+    nil
+  end
+`,
+			runBody: "user = User.new()\n  user.value ||= 1\n  user.flag",
+		},
+		{
+			name:       "compound assignment",
+			parameters: "(value, trigger: (-> { @flag = true }.call()))",
+			userMethods: `
+  def value
+    0
+  end
+`,
+			runBody: "user = User.new()\n  user.value += 1\n  user.flag",
+		},
+		{
+			name:       "explicit self",
+			parameters: "(value, trigger: (-> { @flag = true }.call()))",
+			userMethods: `
+  def execute
+    self.value = 1
+    @flag
+  end
+`,
+			runBody: "User.new().execute()",
+		},
+		{
+			name:       "dynamic receiver",
+			parameters: "(value, trigger: (-> { @flag = true }.call()))",
+			classes: `
+class Admin
+  property flag: bool
+
+  def initialize
+    @flag = false
+  end
+
+  def value=(value, trigger: (-> { @flag = true }.call()))
+    unless @flag
+      takes_int("bad")
+    end
+    value
+  end
+end
+`,
+			runBody: "account = rand > 0.5 ? User.new() : Admin.new()\n  account.value = 1\n  account.flag",
+		},
+		{
+			name:       "class method remains reachable",
+			parameters: "(value, trigger: (-> { @flag = true }.call()))",
+			userMethods: `
+  def self.class_value=(value)
+    takes_int("bad")
+  end
+`,
+			runBody:     "User.class_value = 1",
+			wantWarning: true,
+		},
+		{
+			name:        "supplied value skips its default",
+			parameters:  "(value = -> { @flag = true }.call())",
+			runBody:     "user = User.new()\n  user.value = 1\n  user.flag",
+			wantWarning: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def initialize
+    @flag = false
+  end
+
+  def value=`+tc.parameters+`
+    unless @flag
+      takes_int("bad")
+    end
+    value
+  end
+`+tc.userMethods+`
+end
+`+tc.classes+`
+def run
+  `+tc.runBody+`
+end
+`)
+			warnings := script.CheckWarningsForCall("run", nil, CallOptions{})
+			if tc.wantWarning {
+				const want = "call to takes_int argument value expected int, got string"
+				if got := strings.Join(checkWarningMessages(warnings), "\n"); !strings.Contains(got, want) {
+					t.Errorf("CheckWarningsForCall() = %q, want substring %q", got, want)
+				}
+				requireCallErrorContains(
+					t,
+					script,
+					"run",
+					nil,
+					CallOptions{},
+					"argument value expected int, got string",
+				)
+				return
+			}
+			if len(warnings) > 0 {
+				t.Errorf("CheckWarningsForCall() = %#v, want none", warnings)
+			}
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindBool || !got.Bool() {
+				t.Errorf("run() = %v, want true", got)
+			}
+		})
+	}
+}
+
 func TestCheckInitializerIvarNestedOneShotCallbacksPreserveUnrelatedFacts(t *testing.T) {
 	t.Parallel()
 
