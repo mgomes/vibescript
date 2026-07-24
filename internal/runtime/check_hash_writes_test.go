@@ -453,6 +453,16 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
+			name: "compatible entry write preserves a symbol-key hash",
+			source: `
+def f(h: hash<symbol, int>)
+  h[:value] = 1
+  h[:bad] = "bad"
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
 			name: "member write to declared shape field",
 			source: `
 def f(user: { name: string })
@@ -2300,6 +2310,28 @@ end
 		NewBool(true),
 		NewInt(1),
 	})
+}
+
+func TestHashWriteSymbolBoundaryRejectsObjectBacking(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def write(h: hash<symbol, int>)
+  h[:value] = 1
+end
+`)
+	receiver := NewObject(map[string]Value{})
+	requireCallErrorContains(
+		t,
+		script,
+		"write",
+		[]Value{receiver},
+		CallOptions{},
+		"argument h expected hash<symbol, int>, got {}",
+	)
+	if entries := receiver.HashEntries(); len(entries) != 0 {
+		t.Fatalf("object entries after rejected boundary = %#v, want none", entries)
+	}
 }
 
 func TestHashReplaceShapeCheckMatchesRuntimeKeyIdentity(t *testing.T) {
