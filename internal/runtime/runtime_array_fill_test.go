@@ -343,6 +343,68 @@ func TestArrayFillStartArgWithBlockIsStartNotValue(t *testing.T) {
 	compareArrays(t, got, []Value{NewInt(0), NewInt(10), NewInt(20)})
 }
 
+func TestArrayFillLambdaBreakResults(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def local_break()
+  callback = lambda { |index| break "broken" }
+  items = [1, 2]
+  items.fill(&callback)
+  items << "continued"
+  items
+end
+
+def nested_loop_break()
+  callback = lambda do |index|
+    while true
+      break "not a fill value"
+    end
+    1
+  end
+  items = [1, 2]
+  items.fill(&callback)
+  items << "continued"
+  items
+end
+`)
+
+	cases := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{
+			name: "lambda local break",
+			fn:   "local_break",
+			want: NewArray([]Value{
+				NewString("broken"),
+				NewString("broken"),
+				NewString("continued"),
+			}),
+		},
+		{
+			name: "nested loop break",
+			fn:   "nested_loop_break",
+			want: NewArray([]Value{
+				NewInt(1),
+				NewInt(1),
+				NewString("continued"),
+			}),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := callScript(t, context.Background(), script, tc.fn, nil, CallOptions{})
+			if !got.Equal(tc.want) {
+				t.Errorf("%s() = %s, want %s", tc.fn, got.String(), tc.want.String())
+			}
+		})
+	}
+}
+
 // TestArrayFillNilSelectors confirms a nil start or nil length is read as
 // omitted, matching Ruby's Array#fill: a nil start means 0 and a nil length
 // means "to the end". This covers code that forwards optional selectors stored

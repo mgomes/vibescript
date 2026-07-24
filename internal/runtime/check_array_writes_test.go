@@ -1149,6 +1149,58 @@ end
 	}
 }
 
+func TestCheckArrayFillLambdaBreakResult(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>)
+  callback = lambda do |index|
+    break "bad"
+  end
+  items.fill(&callback)
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 6 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want the lambda break result warning on line 6",
+			"run",
+			warnings,
+		)
+	}
+}
+
+func TestCheckArrayFillNestedLoopBreakStaysLoopLocal(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>)
+  callback = lambda do |index|
+    while true
+      break "not a fill value"
+    end
+    1
+  end
+  items.fill(&callback)
+  items << "bad"
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 10 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want only the later write warning on line 10",
+			"run",
+			warnings,
+		)
+	}
+}
+
 func TestCheckArrayWritesStayGradual(t *testing.T) {
 	t.Parallel()
 

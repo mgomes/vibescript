@@ -153,6 +153,7 @@ type scriptChecker struct {
 	returnCollector            *returnSummaryCollector
 	blockResultCollector       *returnSummaryCollector
 	blockLocalReturnCollector  *returnSummaryCollector
+	blockLocalBreakCollector   *returnSummaryCollector
 	summaryYieldCollector      *returnSummaryCollector
 	summaryYieldBlock          *BlockLiteral
 	summaryYieldsActive        bool
@@ -2209,12 +2210,17 @@ func (c *scriptChecker) captureClassConstantEffects(check func()) checkClassCons
 func (c *scriptChecker) checkLoopStatements(function string, returnType *TypeExpr, statements []Statement) checkClassConstantEffects {
 	previous := c.loopExitEffects
 	previousBlockResultCollector := c.blockResultCollector
+	previousBlockLocalBreakCollector := c.blockLocalBreakCollector
 	var exits checkLoopExitEffects
 	c.loopExitEffects = &exits
+	// A nested loop consumes both next and break before either can become the
+	// surrounding block or lambda's result.
 	c.blockResultCollector = nil
+	c.blockLocalBreakCollector = nil
 	defer func() {
 		c.loopExitEffects = previous
 		c.blockResultCollector = previousBlockResultCollector
+		c.blockLocalBreakCollector = previousBlockLocalBreakCollector
 	}()
 	if c.checkStatements(function, returnType, statements) {
 		mergeCheckClassConstantEffects(&exits.effects, c.currentClassConstantEffects())
@@ -2770,6 +2776,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			c.recordNonCompletingExpression()
 			return
 		}
+		if c.blockLocalBreakCollector != nil {
+			result := checkTypeNil
+			if typed.Value != nil {
+				result = c.inferExpressionType(typed.Value)
+			}
+			c.blockLocalBreakCollector.record(result)
+		}
 		c.captureLoopExitClassConstantEffects()
 		c.captureEnsureExitState()
 	case *NextStmt:
@@ -3274,6 +3287,19 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			}
 			c.blockLocalReturnCollector = protectedBlockLocalReturnCollector
 		}
+		previousBlockLocalBreakCollector := c.blockLocalBreakCollector
+		var protectedBlockLocalBreakCollector *returnSummaryCollector
+		if len(typed.Ensure) > 0 && previousBlockLocalBreakCollector != nil {
+			switch previousBlockLocalBreakCollector {
+			case previousBlockResultCollector:
+				protectedBlockLocalBreakCollector = protectedBlockResultCollector
+			case previousBlockLocalReturnCollector:
+				protectedBlockLocalBreakCollector = protectedBlockLocalReturnCollector
+			default:
+				protectedBlockLocalBreakCollector = &returnSummaryCollector{}
+			}
+			c.blockLocalBreakCollector = protectedBlockLocalBreakCollector
+		}
 		deferReturnType := returnType != nil && len(typed.Ensure) > 0 && !ensureAlwaysExits
 		branchReturnType := returnType
 		if deferReturnType || ensureAlwaysExits {
@@ -3482,6 +3508,9 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		if protectedBlockLocalReturnCollector != nil {
 			c.blockLocalReturnCollector = previousBlockLocalReturnCollector
 		}
+		if protectedBlockLocalBreakCollector != nil {
+			c.blockLocalBreakCollector = previousBlockLocalBreakCollector
+		}
 		if len(typed.Ensure) > 0 {
 			c.ensureExitSites = previousEnsureExitSites
 		}
@@ -3565,6 +3594,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 			previousBlockResultCollector.mergeResultArms(protectedBlockResultCollector)
 			if protectedBlockLocalReturnCollector != protectedBlockResultCollector {
 				previousBlockLocalReturnCollector.mergeResultArms(protectedBlockLocalReturnCollector)
+			}
+			if protectedBlockLocalBreakCollector != protectedBlockResultCollector &&
+				protectedBlockLocalBreakCollector != protectedBlockLocalReturnCollector {
+				previousBlockLocalBreakCollector.mergeResultArms(protectedBlockLocalBreakCollector)
 			}
 		}
 		// An ensure the walk proves always exits replaces every deferred
@@ -6677,14 +6710,20 @@ func (c *scriptChecker) checkBlockLiteral(
 	label := fmt.Sprintf("%s block at %d:%d", function, block.Pos().Line, block.Pos().Column)
 	previousBlockResultCollector := c.blockResultCollector
 	previousBlockLocalReturnCollector := c.blockLocalReturnCollector
+	previousBlockLocalBreakCollector := c.blockLocalBreakCollector
 	blockResultCollector := &returnSummaryCollector{}
 	c.blockResultCollector = blockResultCollector
+	// A plain nested block owns its breaks, while a lambda converts a direct
+	// break into its local return value just like an explicit return.
+	c.blockLocalBreakCollector = nil
 	if localReturns {
 		c.blockLocalReturnCollector = blockResultCollector
+		c.blockLocalBreakCollector = blockResultCollector
 	}
 	defer func() {
 		c.blockResultCollector = previousBlockResultCollector
 		c.blockLocalReturnCollector = previousBlockLocalReturnCollector
+		c.blockLocalBreakCollector = previousBlockLocalBreakCollector
 	}()
 	c.mutationRegionDepth++
 	fallsThrough := c.checkStatements(label, nil, block.Body)
