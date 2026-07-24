@@ -32,7 +32,7 @@ Useful flags:
 
 - `-function <name>`: invoke a specific function. Without this flag, the CLI
   executes top-level statements when present and otherwise invokes `run`.
-- `-check`: compile only, without executing.
+- `-check`: compile and check the selected invocation without executing.
 - `-module-path <dir>`: add module search paths for `require`.
 - `-e '<snippet>'`: evaluate an inline snippet without a script file.
 - `-watch`: re-run the script whenever it or its modules change.
@@ -115,10 +115,10 @@ The cap matches the other stdlib output guards (see
 
 Compiles a script and reports every statically checkable contract issue —
 across all functions, class methods, and top-level code — without executing
-anything. It applies the same semantic contract as `vibes run -check`
-(ADR-004): locals take the types of the expressions assigned to them,
-annotations are compile-time facts, known contradictions are errors, and
-unknown values are always permitted and left to the runtime checks.
+anything. It applies the same gradual rule as `vibes run -check` (ADR-004):
+locals take the types of the expressions assigned to them, annotations are
+compile-time facts, known contradictions are errors, and unknown values are
+permitted and left to runtime checks.
 
 Whole-script checks follow the entrypoint's execution order. Top-level code is
 checked statement by statement, and a `require` binds its module's exports at
@@ -141,6 +141,14 @@ into CI and deployment gates. Scripts relying on host-injected globals or
 capabilities report them as undefined here, because the CLI checks without a
 host context; embedding hosts get the same checks with their bindings applied
 through the `CheckWarnings*` API.
+
+The two CLI check forms deliberately select different scopes. `vibes check`
+checks the whole file; `vibes run -check [-function name] script.vibe [args...]`
+checks the same function and arguments that `vibes run` would invoke. The inline
+form, `vibes run -check -e 'source'`, checks the whole snippet, including
+uncalled declarations. A successful command means no contradiction was proven
+in that scope, not that dynamic JSON, host values, or dispatch cannot fail a
+runtime contract.
 
 ## `vibes fmt [options] <path>...`
 

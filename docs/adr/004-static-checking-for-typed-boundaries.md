@@ -6,27 +6,29 @@ Accepted - 2026-07-09
 
 ## Decision
 
-Vibescript will add implicit local type inference to the check path. Locals take
-the types of the expressions assigned to them, annotations remain compile-time
-facts, and the checker reports an error wherever known types contradict. The
-current CLI exposes this path through `vibes run -check`; a future top-level
-`vibes check` command should use the same semantic contract.
+Vibescript uses implicit local type inference on the check path. Locals take
+the types of the expressions assigned to them, annotations are compile-time
+facts as well as runtime contracts, and the checker reports an error wherever
+known types contradict. The CLI exposes a whole-file gate through `vibes
+check`, an exact invocation gate through `vibes run -check`, and a whole-snippet
+gate through `vibes run -check -e`.
 
 The governing principle is: **error on known contradictions, permit unknowns,
 and make unknowns easy to validate at boundaries.**
 
-To make boundary validation ergonomic, Vibescript will also add
-`JSON.parse_as(raw, shape)`: it parses JSON and validates the result against a
-shape in one step, and the checker treats its result as that shape type.
+To make boundary validation ergonomic, Vibescript provides
+`JSON.parse_as(raw, type)`: it parses JSON and validates the result against a
+shape, container, scalar, nullable, or union contract in one step, and the
+checker treats its result as that declared type.
 
 This is still gradual typing, with a substantially better inference engine. It
-is not a switch to whole-program static model.
+is not a switch to a whole-program proof system.
 
 ## Context
 
 Vibescript supports optional type annotations and enforces them at runtime. The
-checker catches direct contract violations such as a string literal passed to an
-`int` parameter:
+pre-ADR checker caught direct contract violations such as a string literal
+passed to an `int` parameter:
 
 ```vibe
 def takes_int(value: int)
@@ -36,7 +38,7 @@ end
 takes_int("1")
 ```
 
-But it does not carry local type facts through bindings:
+It did not carry local type facts through bindings:
 
 ```vibe
 def takes_int(value: int)
@@ -47,10 +49,10 @@ value = "1"
 takes_int(value)
 ```
 
-This program passes `vibes run -check` today and fails only when executed. That
-is the wrong contract for deployment gates and for AI-generated code: if a host
-can check a script before deployment, every statically knowable typed-boundary
-error should be rejected before runtime.
+The shipped checker now rejects this program before execution. That is the
+contract required by deployment gates and AI-generated code: if a host can
+prove a typed-boundary error before deployment, it should reject it before
+runtime.
 
 Crystal proves that a Ruby-shaped language can infer nearly everything, but its
 inference works because every expression must ultimately have a compile-time
@@ -111,23 +113,30 @@ parameters already provide the same edge validation at function boundaries;
 `JSON.parse_as` covers the common inline case where a payload is parsed and
 consumed in the same scope.
 
-Concretely, the checker maintains a local type environment while walking
-reachable code:
+Concretely, the checker maintains a local type environment while walking code:
 
 - Assignments bind the inferred type of the right-hand side to the local.
 - Sequential reassignment to a conflicting type is a static error; assignments
   in sibling branches merge into unions.
 - Annotated parameters enter the function body with their declared type.
-- Known function calls check argument types and expose their annotated return
-  type to the caller.
+- Known function calls check argument types and expose annotated or inferred
+  return facts to the caller.
 - Annotated returns check the inferred type of explicit and implicit return
   expressions.
 - Operators reject operands known to be invalid.
 - Shape-typed values carry field-level facts, so indexing with a known key
   yields the field's type.
-- `nil` checks and kind predicates may narrow union types over time.
+- `nil` checks and supported `is_type?` predicates narrow union types. Every
+  finite known arm must satisfy a typed boundary; one compatible arm cannot
+  hide another known mismatch. `any` and unknown arms remain gradual and are
+  checked at runtime, but they do not hide incompatible known arms.
+- Constructors and resolved class values carry nominal facts. Unknown or
+  overrideable dynamic dispatch remains unknown.
+- Known pure member calls preserve mutable-container facts. Known mutation,
+  unregistered members, blocks, impure arguments, dynamic dispatch, and aliases
+  to nested mutable values discard facts that the checker can no longer prove.
 
-When the checker proves a violation, `vibes check` reports an error such as:
+When the checker proves a violation, a check reports an error such as:
 
 ```text
 call to takes_int argument value expected int, got string
@@ -149,9 +158,31 @@ And it preserves the useful parts of a scripting language:
 - Runtime checks cover the uncertainty.
 
 `any` remains an explicit escape hatch: it tells the checker to stop proving
-facts about a value. Deployment policies may warn or error on `any` at public
-entrypoints, but that is policy layered on top. The core rule does not change:
-known mismatches are static errors; unknowns defer to runtime contracts.
+facts about a value. The core rule does not change: known mismatches are static
+errors; unknowns defer to runtime contracts.
+
+## Checking scopes
+
+The same gradual rule is available at several scopes:
+
+- `vibes check script.vibe` and `Script.CheckWarnings` check top-level code,
+  functions, and class methods across the compiled script. This is the
+  whole-file deployment and CI gate.
+- `vibes run -check [-function name] script.vibe [args...]`,
+  `CheckWarningsForFunction`, and `CheckWarningsForCall` check the execution
+  path of one function call. `CheckWarningsForCall` includes the supplied
+  positional arguments, keywords, globals, and capability contracts.
+- `vibes run -check -e 'source'` checks the inline entrypoint and every function
+  or method declared by the snippet, including declarations the entrypoint
+  never calls.
+- `CheckedCall` applies the exact-call check and executes only when it produces
+  no diagnostics. Ordinary `Call` still executes and relies on runtime
+  contracts.
+
+A clean result means only that the selected scope contains no contradiction the
+checker can currently prove. It is not proof of full type safety: unknown JSON,
+host values, opaque `any` or unknown union arms, and dynamic dispatch can still
+fail at a runtime contract.
 
 ## Non-goals
 
@@ -161,38 +192,37 @@ known mismatches are static errors; unknowns defer to runtime contracts.
 - No removal of runtime boundary checks; the runtime remains the final guard for
   dynamic host data and unchecked paths.
 - No whole-program inference across unknown host globals, arbitrary dynamic
-  dispatch, or capability implementations in the first implementation.
+  dispatch, or capability implementations.
 
 ## Consequences
 
-Typed annotations become deployment-time contracts rather than runtime guards.
-Local contradictions that a user reasonably expects a type checker to catch are
-caught before execution, and AI-generated scripts get a tighter correction loop:
-wrong operators, wrong argument types, wrong return types, and shape mismatches
-produce concrete diagnostics before a host deploys the script.
+Typed annotations serve as checker facts while remaining runtime guards. Local
+contradictions that a user reasonably expects a type checker to catch are caught
+before execution, and AI-generated scripts get a tighter correction loop: wrong
+operators, wrong argument types, wrong return types, and shape mismatches produce
+concrete diagnostics before a host deploys the script.
 
 The JSON path gets a one-step validated entry. A script that calls
 `JSON.parse_as` at the edge gets full static checking downstream without any
 other annotations.
 
-The implementation becomes more complex. The checker needs a local type
-environment, type joins for branches, a representation for unknown values, and
-care not to guess: when host data or dynamic dispatch cannot be proven, it must
-defer to runtime checks rather than reject. `vibes check` becomes a real
-semantic pass with its own compatibility surface.
+The implementation is more complex. The checker maintains a local type
+environment, joins branch facts, represents unknown values, and takes care not
+to guess: when host data or dynamic dispatch cannot be proven, it defers to
+runtime checks rather than rejecting the script. `vibes check` is a semantic
+pass with its own compatibility surface.
 
-`JSON.parse_as` carries specific costs: shape literals must become legal in
-expression position (today shapes exist only in annotation positions), which is
-parser and runtime work; it adds stdlib API surface; and its validation
-failures must raise with the same semantics as existing typed-boundary errors.
+`JSON.parse_as` carries specific costs: type literals are legal in expression
+position when unshadowed, which adds parser and runtime surface, and validation
+failures must keep the same semantics as existing typed-boundary errors.
 
 ## Alternatives Considered
 
 ### Keep the current gradual contract checker
 
 Rejected. Runtime-only enforcement catches errors too late for deployment gates,
-and it misses simple local contradictions — `value = "1"; takes_int(value)`
-passes the check path today.
+and the pre-ADR check path missed simple local contradictions such as
+`value = "1"; takes_int(value)`.
 
 ### Adopt Crystal's static model wholesale
 
