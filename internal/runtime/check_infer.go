@@ -1628,6 +1628,7 @@ func removeScopeBindingRelationsForNames(state *checkScopeState, names map[strin
 	state.containerAlias = removeCheckNameRelationsForNames(state.containerAlias, names)
 	state.containerIdentity = removeCheckNameRelationsForNames(state.containerIdentity, names)
 	state.staticDependents = removeCheckNameRelationsForNames(state.staticDependents, names)
+	state.valueAlias = removeCheckNameRelationsForNames(state.valueAlias, names)
 	state.degradedContainers = restoreCheckStringSetNames(state.degradedContainers, nil, names)
 	for name := range names {
 		delete(state.containerSelection, name)
