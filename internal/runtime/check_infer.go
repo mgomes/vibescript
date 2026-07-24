@@ -8721,9 +8721,11 @@ func (c *scriptChecker) hashMutatorCallProvablyAborts(
 	} else if contentFact != nil && contentFact.Kind == TypeShape && !contentFact.Nullable {
 		if contentFact.Name == "" {
 			if field, present := contentFact.Shape[property]; present {
-				if typeExprMayIncludeCallable(field) {
+				if shapeFieldOptional(field) ||
+					typeExprMayIncludeCallable(shapeFieldValueType(field)) {
 					return false
 				}
+				return true
 			} else if contentFact.Open {
 				return false
 			}
