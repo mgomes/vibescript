@@ -195,17 +195,22 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   receivers stay unknown.
 - Member contracts also classify receiver effects. A container fact survives
   a call the registry proves pure (`a.at(0)`, `a.nil?`), including through
-  aliases, chained calls, and safe navigation. Known mutators, unregistered
-  members, blocks, impure arguments, dynamic dispatch, and user overrides
-  still discard the receiver's facts — as does a pure read that may hand
-  back a nested mutable element (`a.at(0)` on `array<array<int>>`), since a
-  chained mutation through that alias could not be traced back to `a`.
+  aliases, chained calls, and safe navigation. The modeled array writes
+  described below can also preserve a compatible fact. Other known mutators,
+  unregistered members, blocks whose effects cannot be modeled, impure
+  arguments, dynamic dispatch, and user overrides still discard the
+  receiver's facts — as does a pure read that may hand back a nested mutable
+  element (`a.at(0)` on `array<array<int>>`), since a chained mutation through
+  that alias could not be traced back to `a`.
 - Element writes to a local known to be `array<T>` — `items << v`,
   `items[i] = v`, and the in-place mutators `push`/`append`/`prepend`/
-  `unshift`/`insert` — are checked against `T`: a value that can never
+  `unshift`/`insert`/`fill` — are checked against `T`: a value that can never
   satisfy `T` is reported at the write, a provably compatible write keeps the
   known element type, and an unknown value conservatively widens the local
-  back to unknown. Unknown receivers, `array<any>`, and untyped arrays stay
+  back to unknown. For `fill`, the checker composes exact selector outcomes
+  with value or block results, including implicit `nil` padding, and preserves
+  the fact only when every completing path remains compatible. Unknown
+  receivers, unresolved fill outcomes, `array<any>`, and untyped arrays stay
   gradual.
 
 ### `JSON.parse_as`
