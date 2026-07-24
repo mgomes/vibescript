@@ -3543,6 +3543,215 @@ end
 	requireNoCheckWarnings(t, consumed)
 }
 
+func TestCheckArrayFillNullableBlockArgumentModes(t *testing.T) {
+	t.Parallel()
+
+	assertWarning := func(t *testing.T, script *Script, line int, message string) {
+		t.Helper()
+
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			warnings[0].Pos.Line != line ||
+			!strings.Contains(warnings[0].Message, message) {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want %q on line %d",
+				"run",
+				warnings,
+				message,
+				line,
+			)
+		}
+	}
+	assertResult := func(t *testing.T, script *Script, function string, want Value) {
+		t.Helper()
+
+		got := callScript(t, context.Background(), script, function, nil, CallOptions{})
+		if !got.Equal(want) {
+			t.Fatalf("%s() = %s, want %s", function, got.String(), want.String())
+		}
+	}
+
+	t.Run("compatible value and block forms preserve the bound", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>, callback: function | nil)
+  items.fill(0, 0, &callback)
+  items << "later"
+  items
+end
+
+def with_nil()
+  run([1], nil)
+end
+
+def with_block()
+  run([1], lambda { |index| "unused" })
+end
+`)
+		assertWarning(
+			t,
+			script,
+			4,
+			"write to items expected element int, got string",
+		)
+		assertResult(t, script, "with_nil", NewArray([]Value{
+			NewInt(0),
+			NewString("later"),
+		}))
+		assertResult(t, script, "with_block", NewArray([]Value{
+			NewInt(1),
+			NewString("later"),
+		}))
+	})
+
+	t.Run("incompatible value form weakens the bound", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<string>, callback: function | nil)
+  items.fill(0, 0, &callback)
+  items << true
+  items
+end
+
+def with_nil()
+  run(["initial"], nil)
+end
+
+def with_block()
+  run(["initial"], lambda { |index| "unused" })
+end
+`)
+		assertWarning(
+			t,
+			script,
+			3,
+			"write to items expected element string, got int",
+		)
+		assertResult(t, script, "with_nil", NewArray([]Value{
+			NewInt(0),
+			NewBool(true),
+		}))
+		assertResult(t, script, "with_block", NewArray([]Value{
+			NewString("initial"),
+			NewBool(true),
+		}))
+	})
+
+	t.Run("nonnullable incompatible block form weakens the bound", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>)
+  callback = lambda { |index| "bad" }
+  items.fill(0, &callback)
+  items << true
+  items
+end
+
+def invoke()
+  run([1])
+end
+`)
+		assertWarning(
+			t,
+			script,
+			4,
+			"write to items expected element int, got string",
+		)
+		assertResult(t, script, "invoke", NewArray([]Value{
+			NewString("bad"),
+			NewBool(true),
+		}))
+	})
+
+	t.Run("value form completes while block form raises", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>, callback: function | nil)
+  rescued = false
+  begin
+    items.fill(1, 0, 1, &callback)
+  rescue
+    rescued = true
+  end
+  items << "later"
+  [items, rescued]
+end
+
+def with_nil()
+  run([1], nil)
+end
+
+def with_block()
+  run([1], lambda { |index| 2 })
+end
+`)
+		assertWarning(
+			t,
+			script,
+			9,
+			"write to items expected element int, got string",
+		)
+		assertResult(t, script, "with_nil", NewArray([]Value{
+			NewArray([]Value{
+				NewInt(1),
+				NewString("later"),
+			}),
+			NewBool(false),
+		}))
+		assertResult(t, script, "with_block", NewArray([]Value{
+			NewArray([]Value{
+				NewInt(1),
+				NewString("later"),
+			}),
+			NewBool(true),
+		}))
+	})
+
+	t.Run("unknown block result stays gradual when value form raises", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>, callback: function | nil)
+  rescued = false
+  begin
+    items.fill(&callback)
+  rescue
+    rescued = true
+  end
+  items << "later"
+  [items, rescued]
+end
+
+def with_nil()
+  run([1], nil)
+end
+
+def with_block()
+  run([1], lambda { |index| 2 })
+end
+`)
+		requireNoCheckWarnings(t, script)
+		assertResult(t, script, "with_nil", NewArray([]Value{
+			NewArray([]Value{
+				NewInt(1),
+				NewString("later"),
+			}),
+			NewBool(true),
+		}))
+		assertResult(t, script, "with_block", NewArray([]Value{
+			NewArray([]Value{
+				NewInt(2),
+				NewString("later"),
+			}),
+			NewBool(false),
+		}))
+	})
+}
+
 func TestCheckInvalidArrayFillBlockShapeDoesNotRunBlock(t *testing.T) {
 	t.Parallel()
 

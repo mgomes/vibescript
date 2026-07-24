@@ -6072,9 +6072,6 @@ func arrayFillElementWrites(
 	if !valueModeled || !blockModeled {
 		return arrayMutatorWriteModel{}, false
 	}
-	if !valueModel.alwaysRaises && !blockModel.alwaysRaises {
-		return arrayMutatorWriteModel{}, false
-	}
 	return mergeArrayMutatorWriteModels(valueModel, blockModel), true
 }
 
