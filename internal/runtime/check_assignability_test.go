@@ -372,6 +372,38 @@ def mutate(values: array<array<int>>, value: int | string)
 end
 `)
 	requireCheckWarningContains(t, write, "write to values expected element array<int>, got array<int | string>")
+
+	alternative := &TypeExpr{
+		Kind:     TypeArray,
+		Name:     literalAlternativeElementsMarker,
+		TypeArgs: []*TypeExpr{unionTypeExprs(checkTypeInt, checkTypeString)},
+	}
+	if typeExprsDisjoint(alternative, &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{checkTypeInt}}, nil) {
+		t.Error("alternative array is disjoint from a boundary accepted by one alternative")
+	}
+	if !typeExprsDisjoint(alternative, &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{checkTypeBool}}, nil) {
+		t.Error("alternative array overlaps a boundary rejected by every alternative")
+	}
+
+	reachable := compileScriptDefault(t, `
+def mutate(values: array<int>, target: array<int>)
+  target << "bad"
+end
+
+def run(value: int | string, target: array<int>)
+  mutate([value], target)
+end
+`)
+	foundWrite := false
+	for _, warning := range reachable.CheckWarningsForFunction("run") {
+		if warning.Message == "write to target expected element int, got string" {
+			foundWrite = true
+			break
+		}
+	}
+	if !foundWrite {
+		t.Errorf("CheckWarningsForFunction(%q) = %#v, want reachable body write", "run", reachable.CheckWarningsForFunction("run"))
+	}
 }
 
 func TestCheckKnownUnionShapeCorrelation(t *testing.T) {

@@ -5962,7 +5962,7 @@ func (c *scriptChecker) applyMemberWriteFacts(
 			c.add(function, stmt.Pos(), "write to %s expected key %s, got %s",
 				name, formatTypeExpr(keyBound), formatTypeExpr(keyType))
 		}
-		if written != nil && typeExprsDisjoint(written, valueBound, resolve) {
+		if written != nil && typedWriteRejected(written, valueBound, resolve) {
 			c.add(function, stmt.Pos(), "write to %s expected value %s, got %s",
 				name, formatTypeExpr(valueBound), formatTypeExpr(written))
 		}
@@ -5980,7 +5980,7 @@ func (c *scriptChecker) applyMemberWriteFacts(
 			return false, written, true
 		}
 		if written != nil &&
-			typeExprsDisjoint(written, shapeFieldValueType(field), c.checkNamedTypeResolver()) {
+			typedWriteRejected(written, shapeFieldValueType(field), c.checkNamedTypeResolver()) {
 			c.add(function, stmt.Pos(), "write to %s field %s expected %s, got %s",
 				name, target.Property, formatTypeExpr(field), formatTypeExpr(written))
 		}
@@ -10608,7 +10608,7 @@ func (c *scriptChecker) checkShovelElementWrite(function string, expr *BinaryExp
 	if written == nil {
 		return
 	}
-	if typeExprsDisjoint(written, elem, c.checkNamedTypeResolver()) {
+	if typedWriteRejected(written, elem, c.checkNamedTypeResolver()) {
 		c.reportIncompatibleElementWrite(function, expr.Pos(), ident.Name, elem, written)
 	}
 }
@@ -10705,7 +10705,7 @@ func (c *scriptChecker) applyIndexedArrayWriteFacts(function string, stmt *Assig
 	// so a container-rooted value's local links in: a later mutation or
 	// escape through either side weakens both.
 	c.linkContainerWriteAlias(name, stmt.Value, written)
-	if typeExprsDisjoint(written, elem, resolve) {
+	if typedWriteRejected(written, elem, resolve) {
 		c.reportIncompatibleElementWrite(function, stmt.Pos(), name, elem, written)
 		return false
 	}
@@ -10727,7 +10727,7 @@ func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignSt
 	preserved := intact
 	if keyType := c.inferExpressionType(index); keyType == nil {
 		preserved = false
-	} else if typeExprsDisjoint(keyType, keyBound, resolve) {
+	} else if typedWriteRejected(keyType, keyBound, resolve) {
 		c.add(function, stmt.Pos(), "write to %s expected key %s, got %s",
 			name, formatTypeExpr(keyBound), formatTypeExpr(keyType))
 		preserved = false
@@ -10736,7 +10736,7 @@ func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignSt
 	}
 	if valueType := c.inferExpressionType(stmt.Value); valueType == nil {
 		preserved = false
-	} else if typeExprsDisjoint(valueType, valueBound, resolve) {
+	} else if typedWriteRejected(valueType, valueBound, resolve) {
 		c.add(function, stmt.Pos(), "write to %s expected value %s, got %s",
 			name, formatTypeExpr(valueBound), formatTypeExpr(valueType))
 		preserved = false
@@ -10825,7 +10825,7 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 		if written == nil {
 			return false
 		}
-		if typeExprsDisjoint(written, field, c.checkNamedTypeResolver()) {
+		if typedWriteRejected(written, field, c.checkNamedTypeResolver()) {
 			c.add(function, pos, "write to %s field %s expected %s, got %s",
 				name, key, formatTypeExpr(field), formatTypeExpr(written))
 		}
@@ -10890,7 +10890,7 @@ func (c *scriptChecker) applyIndexedElementWriteFacts(
 		return false, nil, true, false
 	}
 	resolve := c.checkNamedTypeResolver()
-	disjoint := typeExprsDisjoint(written, elem, resolve)
+	disjoint := typedWriteRejected(written, elem, resolve)
 	preserved = !disjoint && typeExprSatisfies(written, elem, resolve) &&
 		mutatorReceiverFactIntact(current, receiverFact)
 	if disjoint {
@@ -13251,7 +13251,7 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(
 			return false, true
 		}
 		resolve := c.checkNamedTypeResolver()
-		if typeExprHashLikeOnly(written) && typeExprsDisjoint(written, shape, resolve) {
+		if typeExprHashLikeOnly(written) && typedWriteRejected(written, shape, resolve) {
 			c.add(function, arg.Pos(), "write to %s expected %s, got %s",
 				name, formatTypeExpr(shape), formatTypeExpr(written))
 			return false, true
@@ -13308,7 +13308,7 @@ func (c *scriptChecker) checkShapeReplacementLiteral(
 			compatible = false
 			continue
 		}
-		if typeExprsDisjoint(valueType, field, resolve) {
+		if typedWriteRejected(valueType, field, resolve) {
 			c.add(function, pair.Value.Pos(), "write to %s field %s expected %s, got %s",
 				name, key, formatTypeExpr(field), formatTypeExpr(valueType))
 			compatible = false
@@ -13352,7 +13352,7 @@ func (c *scriptChecker) checkShapeMergeEntry(function, name string, shape *TypeE
 	if blockConflicts || written == nil {
 		return
 	}
-	if typeExprsDisjoint(written, field, c.checkNamedTypeResolver()) {
+	if typedWriteRejected(written, field, c.checkNamedTypeResolver()) {
 		c.add(function, valuePos, "write to %s field %s expected %s, got %s",
 			name, key, formatTypeExpr(field), formatTypeExpr(written))
 	}
@@ -13686,7 +13686,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			preserved = false
 			continue
 		}
-		disjoint := typeExprsDisjoint(written, elem, resolve)
+		disjoint := typedWriteRejected(written, elem, resolve)
 		compatible := !disjoint && typeExprSatisfies(written, elem, resolve)
 		fillValueIntact := mutatorReceiverFactIntact(c.inferExpressionType(arg), written)
 		if captured, ok := argumentRetainedAliases[arg]; ok {
@@ -13791,7 +13791,7 @@ func (c *scriptChecker) applySplattedElementWriteFacts(function string, splat *S
 		if len(written.TypeArgs) == 1 {
 			if arms, ok := typeExprArms(written.TypeArgs[0], 0); ok {
 				for _, arm := range arms {
-					if typeExprsDisjoint(arm, elem, resolve) {
+					if typedWriteRejected(arm, elem, resolve) {
 						c.reportIncompatibleElementWrite(function, splat.Pos(), name, elem, arm)
 						return false, false
 					}
@@ -13886,7 +13886,7 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 				preserved = false
 				return
 			}
-			if typeExprsDisjoint(written, bound, resolve) {
+			if typedWriteRejected(written, bound, resolve) {
 				c.add(function, arg.Pos(), "write to %s expected %s %s, got %s",
 					name, noun, formatTypeExpr(bound), formatTypeExpr(written))
 				preserved = false
@@ -13970,7 +13970,7 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 			}
 			// A provably non-hash argument raises before any entry lands,
 			// so only hash-like argument facts diagnose content.
-			if typeExprHashLikeOnly(written) && typeExprsDisjoint(written, hashFact, resolve) {
+			if typeExprHashLikeOnly(written) && typedWriteRejected(written, hashFact, resolve) {
 				c.add(function, arg.Pos(), "write to %s expected %s, got %s",
 					name, formatTypeExpr(hashFact), formatTypeExpr(written))
 				preserved = false
@@ -14015,7 +14015,7 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 		if written == nil {
 			return false, true
 		}
-		if typeExprHashLikeOnly(written) && typeExprsDisjoint(written, hashFact, resolve) {
+		if typeExprHashLikeOnly(written) && typedWriteRejected(written, hashFact, resolve) {
 			c.add(function, arg.Pos(), "write to %s expected %s, got %s",
 				name, formatTypeExpr(hashFact), formatTypeExpr(written))
 			return false, true
@@ -14775,7 +14775,7 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 			compatible = false
 			return false
 		}
-		if typeExprsDisjoint(written, bound, resolve) {
+		if typedWriteRejected(written, bound, resolve) {
 			if warn {
 				c.add(function, expr.Pos(), "write to %s expected %s %s, got %s",
 					name, noun, formatTypeExpr(bound), formatTypeExpr(written))
@@ -14795,6 +14795,43 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 	return compatible
 }
 
+// typedWriteRejected preserves the checker's existing overlap rule for
+// ordinary writes while keeping correlation-only array alternatives from
+// hiding an incompatible arm in a value that a typed store will retain.
+func typedWriteRejected(written, required *TypeExpr, resolve namedTypeResolver) bool {
+	if hasAlternativeArrayFact(written, 0) {
+		return boundaryTypeRejected(written, required, resolve)
+	}
+	return typeExprsDisjoint(written, required, resolve)
+}
+
+func hasAlternativeArrayFact(ty *TypeExpr, depth int) bool {
+	if ty == nil || depth > maxNormalizeDepth {
+		return false
+	}
+	if ty.Kind == TypeArray &&
+		(ty.Name == literalAlternativeElementsMarker ||
+			ty.Name == literalPartialAlternativeElementsMarker) {
+		return true
+	}
+	for _, arm := range ty.Union {
+		if hasAlternativeArrayFact(arm, depth+1) {
+			return true
+		}
+	}
+	for _, arg := range ty.TypeArgs {
+		if hasAlternativeArrayFact(arg, depth+1) {
+			return true
+		}
+	}
+	for _, field := range ty.Shape {
+		if hasAlternativeArrayFact(field, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
 // literalArrayDisjoint reports whether a witnessed-element array can never
 // satisfy another array type: some witnessed element arm is disjoint from
 // the other side's declared element type.
@@ -14810,12 +14847,20 @@ func literalArrayDisjoint(lit, other *TypeExpr, resolve namedTypeResolver) bool 
 	if !ok {
 		return false
 	}
+	alternative := lit.Name == literalAlternativeElementsMarker ||
+		lit.Name == literalPartialAlternativeElementsMarker
 	for _, arm := range arms {
 		if typeExprsDisjoint(arm, other.TypeArgs[0], resolve) {
-			return true
+			if !alternative {
+				return true
+			}
+			continue
+		}
+		if alternative {
+			return false
 		}
 	}
-	return false
+	return alternative
 }
 
 // shapeVsTypedHashDisjoint reports whether an exact shape can never satisfy
