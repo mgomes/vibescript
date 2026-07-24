@@ -5181,6 +5181,32 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			return false
 		}
 	case *MemberExpr:
+		if autoCall && typed.Property == "call" {
+			blocks, exact := c.capturedBlockLiteralValueAlternatives(typed.Object)
+			hasBlock := false
+			for _, block := range blocks {
+				if block.block != nil {
+					hasBlock = true
+					break
+				}
+			}
+			if exact && hasBlock {
+				call := &CallExpr{
+					Callee:             typed,
+					KeywordOptionsHash: true,
+					Safe:               typed.Safe,
+					Position:           typed.Pos(),
+				}
+				completed := c.checkExpressionWithAuto(function, call, true)
+				if fact, pinned := c.pinnedExpressionFacts[call]; pinned {
+					c.pinExpressionFact(typed, fact)
+				}
+				if fact, pinned := c.constructorInstanceFacts[call]; pinned {
+					c.constructorInstanceFacts[typed] = fact
+				}
+				return completed
+			}
+		}
 		var invokedLambda *BlockLiteral
 		if autoCall && typed.Property == "call" {
 			invokedLambda = c.resolveImmediateLambdaBlock(typed.Object)

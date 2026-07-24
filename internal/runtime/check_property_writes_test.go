@@ -6376,6 +6376,16 @@ func TestCheckInitializerIvarOneShotCallbacksPreserveExactFacts(t *testing.T) {
     callback.call()`,
 		},
 		{
+			name: "parenless stored proc",
+			invocation: `    callback = proc { @flag = true }
+    callback.call`,
+		},
+		{
+			name: "parenless stored lambda",
+			invocation: `    callback = -> { @flag = true }
+    callback.call`,
+		},
+		{
 			name: "untyped write before exact write",
 			invocation: `    callback = proc { @scratch = true; @flag = true }
     callback.call()`,
@@ -6391,6 +6401,10 @@ func TestCheckInitializerIvarOneShotCallbacksPreserveExactFacts(t *testing.T) {
 		{
 			name:       "immediate proc",
 			invocation: `    proc { @flag = true }.call()`,
+		},
+		{
+			name:       "parenless immediate proc",
+			invocation: `    proc { @flag = true }.call`,
 		},
 		{
 			name:       "identical exact alternatives",
@@ -8524,7 +8538,14 @@ end
 func TestCheckInitializerIvarRetainedProcReturnBypassesRescueAndRunsEnsure(t *testing.T) {
 	t.Parallel()
 
-	script := compileScriptDefault(t, `
+	for _, call := range []string{
+		"proc { return }.call()",
+		"proc { return }.call",
+	} {
+		t.Run(call, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
 class User
   property a: int
   property b: int
@@ -8532,7 +8553,7 @@ class User
   def initialize
     @a = 1
     begin
-      proc { return }.call()
+      `+call+`
     rescue
       @a = "rescued"
     ensure
@@ -8547,10 +8568,12 @@ def run
   user.a + user.b
 end
 `)
-	requireNoCheckWarnings(t, script)
-	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
-	if got.Kind() != KindInt || got.Int() != 3 {
-		t.Fatalf("run() = %v, want 3", got)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 3 {
+				t.Fatalf("run() = %v, want 3", got)
+			}
+		})
 	}
 }
 
@@ -8639,9 +8662,24 @@ func TestCheckInitializerIvarRetainedBlockLocalAndFailureCompletion(t *testing.T
     end`,
 		},
 		{
+			name: "parenless raise reaches rescue",
+			region: `    callback = proc { raise "stop" }
+    begin
+      callback.call
+    rescue
+      @b = 2
+    end`,
+		},
+		{
 			name: "lambda return stays local",
 			region: `    callback = lambda { return }
     callback.call()
+    @b = 2`,
+		},
+		{
+			name: "parenless lambda return stays local",
+			region: `    callback = lambda { return }
+    callback.call
     @b = 2`,
 		},
 	} {
