@@ -6444,6 +6444,79 @@ end
 	}
 }
 
+func TestCheckInitializerIvarOneShotCallbackDefaultsRemainPathSensitive(t *testing.T) {
+	t.Parallel()
+
+	t.Run("supplied argument skips default", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def initialize(value = -> { @flag = true }.call())
+    unless @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  User.new(1)
+end
+`)
+		requireCheckWarningContains(
+			t,
+			script,
+			"call to takes_int argument value expected int, got string",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"argument value expected int, got string",
+		)
+	})
+
+	t.Run("omitted argument runs default", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def initialize(value = -> { @flag = true }.call())
+    unless @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  User.new().flag
+end
+`)
+		warnings := script.CheckWarningsForCall("run", nil, CallOptions{})
+		if len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForCall() = %#v, want none", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindBool || !got.Bool() {
+			t.Fatalf("run() = %v, want true", got)
+		}
+	})
+}
+
 func TestCheckInitializerIvarOneShotCallbackControlsStayConservative(t *testing.T) {
 	t.Parallel()
 

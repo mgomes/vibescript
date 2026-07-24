@@ -4955,7 +4955,11 @@ func (c *scriptChecker) refineOneShotBlockIvarFacts(
 	blocks []capturedBlockLiteralValue,
 	entries []blockLiteralCallEntryOutcome,
 ) {
-	if c.mutationRegionDepth != 0 || len(blocks) == 0 || len(blocks) != len(entries) {
+	if c.mutationRegionDepth != 0 ||
+		c.speculativeInference != 0 ||
+		c.oneShotIvarRefinementDepth != 0 ||
+		len(blocks) == 0 ||
+		len(blocks) != len(entries) {
 		return
 	}
 

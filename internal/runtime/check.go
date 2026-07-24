@@ -130,6 +130,7 @@ type scriptChecker struct {
 	degradedContainerBindings  map[string]struct{}
 	mutationRegionDepth        int
 	speculativeInference       int
+	oneShotIvarRefinementDepth int
 	expressionStatementRoot    Expression
 	callArgumentFacts          map[Expression]*TypeExpr
 	callArgumentClassValues    map[Expression][]string
@@ -2779,11 +2780,23 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		for i, param := range fn.Params {
 			expectation := bindingDefaultExpectation(param)
 			defaultRuns := c.reachableParamDefaultRuns(param)
+			_, defaultExecutionExact := c.reachableParamFacts[param.Name]
 			if c.reachableBindingPlan != nil {
 				defaultRuns = slices.Contains(c.reachableBindingPlan.defaultParams, i)
+				defaultExecutionExact = c.reachableBindingPlan.exactBindings
 			}
 			if defaultRuns {
-				c.checkExpressionWithExpectation(label, param.DefaultVal, expectation)
+				if !defaultExecutionExact {
+					c.oneShotIvarRefinementDepth++
+				}
+				c.checkExpressionWithExpectation(
+					label,
+					param.DefaultVal,
+					expectation,
+				)
+				if !defaultExecutionExact {
+					c.oneShotIvarRefinementDepth--
+				}
 				c.collectRuntimeRequireCallExportsFromExpression(param.DefaultVal)
 			} else {
 				c.checkNonExecutingDefaultExpression(label, param.DefaultVal, expectation)
