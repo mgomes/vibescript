@@ -1201,6 +1201,151 @@ end
 	}
 }
 
+func TestCheckArrayFillLambdaBreakCompletionFlow(t *testing.T) {
+	t.Parallel()
+
+	t.Run("compatible break result keeps the tail reachable", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>)
+  callback = lambda { |index| break 1 }
+  items.fill(0, 1, &callback)
+  takes_int("reachable")
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want the reachable argument warning",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("bare break contributes nil", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int | nil>)
+  callback = lambda { |index| break }
+  items.fill(0, 1, &callback)
+  items << "later"
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int | nil, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the later incompatible write",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("falling through ensure retains break result", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>)
+  callback = lambda do |index|
+    begin
+      break "bad"
+    ensure
+      1
+    end
+  end
+  items.fill(0, 1, &callback)
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want the lambda break result warning",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("raising ensure suppresses break result", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>)
+  callback = lambda do |index|
+    begin
+      break "overridden"
+    ensure
+      raise "stop"
+    end
+  end
+  begin
+    items.fill(0, 1, &callback)
+  rescue
+    nil
+  end
+  items << true
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got bool") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the later incompatible write",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("nested call block break stays noncompleting", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>)
+  callback = lambda do |index|
+    [1].each do |value|
+      break "cannot cross call"
+    end
+    1
+  end
+  items.fill(0, 1, &callback)
+  takes_int("unreachable")
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the inherited reachable-tail warning",
+				"run",
+				warnings,
+			)
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewArray([]Value{NewInt(1)})},
+			CallOptions{},
+			"break cannot cross call boundary",
+		)
+	})
+}
+
 func TestCheckArrayWritesStayGradual(t *testing.T) {
 	t.Parallel()
 
@@ -3728,6 +3873,48 @@ end
 		)
 	})
 
+	t.Run("positive ranges always invoke on every completing call", func(t *testing.T) {
+		t.Parallel()
+
+		cases := []struct {
+			name  string
+			items string
+			fill  string
+		}{
+			{name: "inclusive range", items: "[]", fill: "0..0"},
+			{name: "exclusive range", items: "[]", fill: "0...1"},
+			{name: "negative range", items: "[1]", fill: "-1..-1"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = `+tc.items+`
+  items.fill(`+tc.fill+`) do
+    raise "stop"
+  end
+  takes_int("unreachable")
+end
+`)
+				requireNoCheckWarnings(t, script)
+				requireCallErrorContains(
+					t,
+					script,
+					"run",
+					nil,
+					CallOptions{},
+					"stop",
+				)
+			})
+		}
+	})
+
 	t.Run("wrong arity exact lambda never returns", func(t *testing.T) {
 		t.Parallel()
 
@@ -3786,6 +3973,85 @@ end
 			CallOptions{},
 			"argument value expected int, got string",
 		)
+	})
+}
+
+func TestCheckArrayFillNoncompletingBlockSplatOutcomes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("all exact alternatives skip and preserve", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  selectors = flag ? [0, 0] : [5, -1]
+  items.fill(*selectors) do
+    raise "must not run"
+  end
+  items << "later"
+  items
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want the later incompatible write",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("one exact alternative skips", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  selectors = flag ? [0, 1] : [0, 0]
+  items.fill(*selectors) do
+    raise "stop"
+  end
+  items << "reachable on zero count"
+  items
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want the reachable incompatible write",
+				"run",
+				warnings,
+			)
+		}
+		got := callScript(t, context.Background(), script, "run", []Value{
+			NewArray([]Value{NewInt(1)}),
+			NewBool(false),
+		}, CallOptions{})
+		want := NewArray([]Value{NewInt(1), NewString("reachable on zero count")})
+		if !got.Equal(want) {
+			t.Fatalf("run([1], false) = %s, want %s", got.String(), want.String())
+		}
+	})
+
+	t.Run("all exact alternatives invoke", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, flag: bool)
+  selectors = flag ? [0, 1] : [5, 2]
+  items.fill(*selectors) do
+    raise "stop"
+  end
+  takes_int("unreachable")
+end
+`)
+		requireNoCheckWarnings(t, script)
 	})
 }
 
