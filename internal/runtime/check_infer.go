@@ -2827,6 +2827,22 @@ func (c *scriptChecker) hashOwnedMemberWriteCurrentType(receiver *TypeExpr, prop
 	switch property {
 	case "size", "length":
 		builtin = checkTypeInt
+	case "empty?":
+		builtin = checkTypeBool
+	case "keys", "values", "values_at", "fetch_values", "to_a", "flatten":
+		builtin = checkTypeArray
+	case "merge", "update", "merge!", "clear", "slice", "except", "compact":
+		builtin = checkTypeHash
+	case "inspect":
+		builtin = checkTypeString
+	case "default":
+		builtin = &TypeExpr{Kind: TypeAny}
+	case "default_proc":
+		builtin = unionTypeExprs(checkTypeFunction, checkTypeNil)
+	case "replace", "store", "delete", "remap_keys":
+		// These members are not auto-invoked, so a bare getter returns the
+		// callable itself and logical assignment can reach the setter.
+		builtin = checkTypeFunction
 	default:
 		return nil, false
 	}
