@@ -1192,6 +1192,111 @@ end
 	}
 }
 
+func TestCheckHashBackedShapeMutatorShadows(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		source   string
+		warnings []string
+	}{
+		{
+			name: "store",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { store: int })
+  user.store(:store, "bad")
+  takes_int("reachable")
+end
+`,
+			warnings: []string{
+				"write to user field store expected int, got string",
+				"call to takes_int argument value expected int, got string",
+			},
+		},
+		{
+			name: "merge",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { "merge!": int })
+  user.merge!({ "merge!": "bad" })
+  takes_int("reachable")
+end
+`,
+			warnings: []string{
+				"write to user field merge! expected int, got string",
+				"call to takes_int argument value expected int, got string",
+			},
+		},
+		{
+			name: "update",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { update: int })
+  user.update({ update: "bad" })
+  takes_int("reachable")
+end
+`,
+			warnings: []string{
+				"write to user field update expected int, got string",
+				"call to takes_int argument value expected int, got string",
+			},
+		},
+		{
+			name: "replace",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { replace: int })
+  user.replace({ replace: "bad" })
+  takes_int("reachable")
+end
+`,
+			warnings: []string{
+				"write to user field replace expected int, got string",
+				"call to takes_int argument value expected int, got string",
+			},
+		},
+		{
+			name: "optional noncallable store",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { store?: int })
+  user.store(:extra, 1)
+  takes_int("reachable")
+end
+`,
+			warnings: []string{
+				"write to user adds field extra to exact shape { store?: int }",
+				"call to takes_int argument value expected int, got string",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, tc.source)
+			for _, warning := range tc.warnings {
+				requireCheckWarningContains(t, script, warning)
+			}
+		})
+	}
+}
+
 func TestCheckHashWritesStayGradual(t *testing.T) {
 	t.Parallel()
 
@@ -1479,14 +1584,6 @@ end
 `,
 		},
 		{
-			name: "shape replace shadowed by a data field stays gradual",
-			source: `
-def f(user: { replace: int })
-  user.replace({ extra: 1 })
-end
-`,
-		},
-		{
 			name: "any-typed hash stays silent",
 			source: `
 def f(h: hash<any, any>)
@@ -1621,53 +1718,27 @@ end
 `,
 		},
 		{
-			name: "shape store shadowed by a data field stops the continuation",
+			name: "invalid shape store shadow aborts for every backing kind",
 			source: `
 def takes_int(value: int)
   value
 end
 
 def f(user: { store: int })
-  user.store(:extra, 1)
+  user.store(:extra)
   takes_int("unreachable")
 end
 `,
 		},
 		{
-			name: "shape merge shadowed by a data field stops the continuation",
+			name: "invalid optional shape store shadow aborts for every backing kind",
 			source: `
 def takes_int(value: int)
   value
 end
 
-def f(user: { "merge!": int })
-  user.merge!({ extra: 1 })
-  takes_int("unreachable")
-end
-`,
-		},
-		{
-			name: "shape update shadowed by a data field stops the continuation",
-			source: `
-def takes_int(value: int)
-  value
-end
-
-def f(user: { update: int })
-  user.update({ extra: 1 })
-  takes_int("unreachable")
-end
-`,
-		},
-		{
-			name: "shape replace shadowed by a data field stops the continuation",
-			source: `
-def takes_int(value: int)
-  value
-end
-
-def f(user: { replace: int })
-  user.replace({ name: "ok" })
+def f(user: { store?: int })
+  user.store(:extra)
   takes_int("unreachable")
 end
 `,

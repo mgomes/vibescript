@@ -8690,10 +8690,10 @@ func (c *scriptChecker) containerMutatorCallProvablyAborts(
 }
 
 // hashMutatorCallProvablyAborts reports a builtin hash mutation that cannot
-// reach a write after its arguments evaluate. Declared hash value bounds and
-// exact shape fields can shadow the builtin with stored callables, so those
-// receivers stay conservative unless the shadow itself is provably
-// non-callable (and therefore also raises).
+// reach a write after its arguments evaluate. Exact shapes can be backed by
+// hashes, where the builtin wins, or objects, where a same-named field wins.
+// A non-callable field therefore falls through to the builtin checks:
+// both backing kinds abort only when the builtin call also must abort.
 func (c *scriptChecker) hashMutatorCallProvablyAborts(
 	call *CallExpr,
 	name string,
@@ -8724,11 +8724,9 @@ func (c *scriptChecker) hashMutatorCallProvablyAborts(
 	} else if contentFact != nil && contentFact.Kind == TypeShape && !contentFact.Nullable {
 		if contentFact.Name == "" {
 			if field, present := contentFact.Shape[property]; present {
-				if shapeFieldOptional(field) ||
-					typeExprMayIncludeCallable(shapeFieldValueType(field)) {
+				if typeExprMayIncludeCallable(shapeFieldValueType(field)) {
 					return false
 				}
-				return true
 			} else if contentFact.Open {
 				return false
 			}
@@ -9189,7 +9187,8 @@ func (c *scriptChecker) shapeMutatorCallMayWrite(
 // merge!/update fold entries into the existing store, and replace validates
 // the complete adopted hash. Shape exactness also pins the object-backed
 // shadowing risk: dispatch can only be shadowed by a field named like the
-// mutator, and a non-callable one can only raise.
+// mutator. A non-callable field aborts on an object-backed receiver when
+// present, so any continuing path must be the hash builtin and can be modeled.
 func (c *scriptChecker) applyShapeMutatorCallFacts(
 	function string,
 	call, checkedCall *CallExpr,
@@ -9210,10 +9209,11 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(
 	// mutator from dispatching; its value need not be callable. Witnessed shape
 	// markers pin a KindHash, where the builtin wins over stored data.
 	if shape.Name == "" {
-		if shape.Open {
-			return false, false
-		}
-		if _, present := shape.Shape[member.Property]; present {
+		if field, present := shape.Shape[member.Property]; present {
+			if typeExprMayIncludeCallable(shapeFieldValueType(field)) {
+				return false, false
+			}
+		} else if shape.Open {
 			return false, false
 		}
 	}
