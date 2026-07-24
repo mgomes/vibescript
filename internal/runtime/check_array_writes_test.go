@@ -4138,6 +4138,395 @@ end
 	})
 }
 
+func TestCheckArrayFillExactSelectorAlternativesControlBlockOutcomes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("all alternatives skip the block", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, flag: bool)
+  count = flag ? 0 : -1
+  items.fill(0, count) do
+    takes_int("block unreachable")
+    raise "stop"
+  end
+  items << "later"
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			warnings[0].Pos.Line != 12 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the reachable tail write",
+				"run",
+				warnings,
+			)
+		}
+
+		for _, flag := range []bool{false, true} {
+			got := callScript(t, context.Background(), script, "run", []Value{
+				NewArray([]Value{NewInt(1)}),
+				NewBool(flag),
+			}, CallOptions{})
+			want := NewArray([]Value{NewInt(1), NewString("later")})
+			if !got.Equal(want) {
+				t.Errorf("run([1], %t) = %s, want %s", flag, got.String(), want.String())
+			}
+		}
+	})
+
+	t.Run("all alternatives invoke the block", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, flag: bool)
+  count = flag ? 1 : 2
+  items.fill(0, count) do
+    takes_int("block reachable")
+    raise "stop"
+  end
+  takes_int("tail unreachable")
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			warnings[0].Pos.Line != 9 ||
+			!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the reachable block warning",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("mixed alternatives keep block and tail paths", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, flag: bool)
+  count = flag ? 0 : 1
+  items.fill(0, count) do
+    takes_int("block reachable")
+    raise "stop"
+  end
+  takes_int("tail reachable")
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 2 ||
+			warnings[0].Pos.Line != 9 ||
+			warnings[1].Pos.Line != 12 {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want block and tail warnings",
+				"run",
+				warnings,
+			)
+		}
+		for _, warning := range warnings {
+			if !strings.Contains(warning.Message, "argument value expected int, got string") {
+				t.Fatalf(
+					"CheckWarningsForFunction(%q) = %#v, want only argument warnings",
+					"run",
+					warnings,
+				)
+			}
+		}
+	})
+
+	t.Run("empty range alternatives skip the block", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, flag: bool)
+  selector = flag ? (0...0) : (1...1)
+  items.fill(selector) do
+    takes_int("block unreachable")
+    1
+  end
+end
+`)
+		requireNoCheckWarnings(t, script)
+	})
+
+	t.Run("invalid shape rejects before the block", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>)
+  begin
+    items.fill(0, 0, 0) do
+      takes_int("block unreachable")
+      items << "block mutation"
+    end
+  rescue
+    nil
+  end
+  items << "later"
+  items
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			warnings[0].Pos.Line != 15 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the reachable tail write",
+				"run",
+				warnings,
+			)
+		}
+
+		got := callScript(t, context.Background(), script, "run", []Value{
+			NewArray([]Value{NewInt(1)}),
+		}, CallOptions{})
+		want := NewArray([]Value{NewInt(1), NewString("later")})
+		if !got.Equal(want) {
+			t.Errorf("run([1]) = %s, want %s", got.String(), want.String())
+		}
+	})
+}
+
+func TestCheckArrayFillDynamicSelectorFactsControlBlockOutcomes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("negative count skips for a dynamic numeric start", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, start: int)
+  items.fill(start, -1) do
+    takes_int("block unreachable")
+    raise "stop"
+  end
+  items << "later"
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the reachable tail write",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("zero count can pad for a dynamic numeric start", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, start: int)
+  items.fill(start, 0) do
+    takes_int("block unreachable")
+    raise "stop"
+  end
+  items << "later"
+end
+`)
+		requireNoCheckWarnings(t, script)
+	})
+
+	t.Run("nil count may invoke or skip without padding", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, start: int)
+  items.fill(start, nil) do
+    takes_int("block reachable")
+    raise "stop"
+  end
+  items << "tail reachable"
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 2 {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want block and tail warnings",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("positive count always invokes on a completing start", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, start: int)
+  items.fill(start, 1) do
+    takes_int("block reachable")
+    raise "stop"
+  end
+  takes_int("tail unreachable")
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the block warning",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("invalid count rejects before the block", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, start: int)
+  begin
+    items.fill(start, "invalid") do
+      takes_int("block unreachable")
+      items << "block mutation"
+    end
+  rescue
+    nil
+  end
+  items << "later"
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the reachable tail write",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("dynamic count preserves a nonpositive start", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>, count: int)
+  items.fill(0, count) do
+    raise "stop"
+  end
+  items << "later"
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want the reachable tail write",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("dynamic count may pad a positive start", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>, count: int)
+  items.fill(5, count) do
+    raise "stop"
+  end
+  items << "later"
+end
+`)
+		requireNoCheckWarnings(t, script)
+	})
+
+	t.Run("nullable bound survives possible dynamic-count padding", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int | nil>, count: int)
+  items.fill(5, count) do
+    raise "stop"
+  end
+  items << "later"
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int | nil, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want the reachable tail write",
+				"run",
+				warnings,
+			)
+		}
+	})
+
+	t.Run("bare dynamic numeric start may invoke or skip without padding", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, start: int)
+  items.fill(start) do
+    takes_int("block reachable")
+    raise "stop"
+  end
+  items << "tail reachable"
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 2 {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want block and tail warnings",
+				"run",
+				warnings,
+			)
+		}
+	})
+}
+
 func TestCheckArrayFillNoncompletingBlockPreservesReceiverThroughRescue(t *testing.T) {
 	t.Parallel()
 

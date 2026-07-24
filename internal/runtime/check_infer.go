@@ -6015,7 +6015,11 @@ func arrayFillElementWrites(
 			}, true
 		}
 		skipped, blockMayRun, selectorsExact :=
-			staticArrayFillBlockSelectorOutcomes(selectors, argumentStaticValues)
+			staticArrayFillBlockSelectorOutcomes(
+				selectors,
+				argumentFacts,
+				argumentStaticValues,
+			)
 		if selectorsExact && !blockMayRun {
 			return skipped, true
 		}
@@ -6307,6 +6311,7 @@ func (c *scriptChecker) arrayFillCallMayCompleteWithoutInvokingBlock(call *CallE
 		case variant.call.Block != nil:
 			skipped, _, selectorsExact := staticArrayFillBlockSelectorOutcomes(
 				variant.call.Args,
+				c.callArgumentFacts,
 				c.callArgumentStaticValues,
 			)
 			if !selectorsExact || !skipped.alwaysRaises {
@@ -6325,6 +6330,7 @@ func (c *scriptChecker) arrayFillCallMayCompleteWithoutInvokingBlock(call *CallE
 			}
 			skipped, _, selectorsExact := staticArrayFillBlockSelectorOutcomes(
 				variant.call.Args,
+				c.callArgumentFacts,
 				c.callArgumentStaticValues,
 			)
 			if !selectorsExact || !skipped.alwaysRaises {
@@ -6476,6 +6482,7 @@ func (c *scriptChecker) arrayFillBlockMayEvaluate(call *CallExpr) bool {
 		}
 		_, blockMayRun, selectorsExact := staticArrayFillBlockSelectorOutcomes(
 			variant.call.Args,
+			c.callArgumentFacts,
 			c.callArgumentStaticValues,
 		)
 		if !selectorsExact || blockMayRun {
@@ -6513,8 +6520,166 @@ func staticArrayFillWriteModel(
 
 func staticArrayFillBlockSelectorOutcomes(
 	selectors []Expression,
+	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
 ) (arrayMutatorWriteModel, bool, bool) {
+	model := arrayMutatorWriteModel{
+		preservable:  true,
+		alwaysRaises: true,
+	}
+	if len(selectors) > 2 {
+		return model, false, true
+	}
+	selectorTuples, exact := staticArrayFillSelectorTuples(selectors, argumentStaticValues)
+	if !exact {
+		return staticArrayFillPartialBlockSelectorOutcomes(
+			selectors,
+			argumentFacts,
+			argumentStaticValues,
+		)
+	}
+	blockMayRun := false
+	for _, selectorTuple := range selectorTuples {
+		tupleModel, tupleMayRun := staticArrayFillBlockSelectorOutcome(selectorTuple)
+		model = mergeArrayMutatorWriteModels(model, tupleModel)
+		blockMayRun = blockMayRun || tupleMayRun
+	}
+	return model, blockMayRun, true
+}
+
+func staticArrayFillPartialBlockSelectorOutcomes(
+	selectors []Expression,
+	argumentFacts map[Expression]*TypeExpr,
+	argumentStaticValues map[Expression][]Expression,
+) (arrayMutatorWriteModel, bool, bool) {
+	model := arrayMutatorWriteModel{
+		preservable:  true,
+		alwaysRaises: true,
+	}
+	recordSkip := func(mayPad bool) {
+		model.alwaysRaises = false
+		model.mayWrite = model.mayWrite || mayPad
+		model.preservable = model.preservable && !mayPad
+	}
+	switch len(selectors) {
+	case 1:
+		start := selectors[0]
+		fact, captured := argumentFacts[start]
+		if captured && !arrayFillSelectorFactMayComplete(fact, true) {
+			return model, false, true
+		}
+		if arrayFillSelectorHasNumericFact(start, argumentFacts) || typeExprIsNilOnly(fact) {
+			// A bare numeric start can land before the end or at/past it.
+			// The latter path is a no-op and never pads.
+			recordSkip(false)
+			return model, true, true
+		}
+		return arrayMutatorWriteModel{}, false, false
+	case 2:
+	default:
+		return arrayMutatorWriteModel{}, false, false
+	}
+
+	startValues, startExact := staticMutatorArgumentValues(
+		selectors[0],
+		argumentStaticValues,
+	)
+	countValues, countExact := staticMutatorArgumentValues(
+		selectors[1],
+		argumentStaticValues,
+	)
+	if countExact {
+		startMayComplete := true
+		if fact, captured := argumentFacts[selectors[0]]; captured {
+			startMayComplete = arrayFillSelectorFactMayComplete(fact, false)
+		}
+		blockMayRun := false
+		for _, countValue := range countValues {
+			count, nilLength, valid := staticArrayFillInteger(countValue)
+			if !valid || !startMayComplete {
+				continue
+			}
+			switch {
+			case nilLength:
+				// A nil count fills to the end. Depending on the start and
+				// receiver length, the block may run or the call may no-op.
+				recordSkip(false)
+				blockMayRun = true
+			case count < 0:
+				recordSkip(false)
+			case count == 0:
+				// With no exact start, a valid positive start can grow the
+				// receiver even though the block is never invoked.
+				recordSkip(true)
+			default:
+				blockMayRun = true
+			}
+		}
+		return model, blockMayRun, true
+	}
+	if !startExact ||
+		!arrayFillSelectorHasNumericFact(selectors[1], argumentFacts) &&
+			!typeExprIsNilOnly(argumentFacts[selectors[1]]) {
+		return arrayMutatorWriteModel{}, false, false
+	}
+
+	countNilOnly := typeExprIsNilOnly(argumentFacts[selectors[1]])
+	blockMayRun := false
+	for _, startValue := range startValues {
+		start, _, valid := staticArrayFillInteger(startValue)
+		if !valid {
+			continue
+		}
+		blockMayRun = true
+		if countNilOnly {
+			recordSkip(false)
+			continue
+		}
+		// A dynamic numeric count may be negative or zero. Those paths skip
+		// the block; only a positive start paired with zero can add nil padding.
+		recordSkip(start > 0)
+	}
+	return model, blockMayRun, true
+}
+
+func staticArrayFillSelectorTuples(
+	selectors []Expression,
+	argumentStaticValues map[Expression][]Expression,
+) ([][]Value, bool) {
+	if len(selectors) > 2 {
+		return nil, false
+	}
+	if len(selectors) == 0 {
+		return [][]Value{nil}, true
+	}
+	selectorValues := make([][]Value, len(selectors))
+	for i, selector := range selectors {
+		values, exact := staticMutatorArgumentValues(selector, argumentStaticValues)
+		if !exact {
+			return nil, false
+		}
+		selectorValues[i] = values
+	}
+	if len(selectorValues) == 1 {
+		tuples := make([][]Value, 0, len(selectorValues[0]))
+		for _, value := range selectorValues[0] {
+			tuples = append(tuples, []Value{value})
+		}
+		return tuples, true
+	}
+
+	tuples := make([][]Value, 0, len(selectorValues[0])*len(selectorValues[1]))
+	for _, start := range selectorValues[0] {
+		for _, count := range selectorValues[1] {
+			tuples = append(tuples, []Value{start, count})
+		}
+	}
+	return tuples, true
+}
+
+func staticArrayFillBlockSelectorOutcome(
+	selectors []Value,
+) (arrayMutatorWriteModel, bool) {
 	model := arrayMutatorWriteModel{
 		preservable:  true,
 		alwaysRaises: true,
@@ -6529,27 +6694,20 @@ func staticArrayFillBlockSelectorOutcomes(
 		// An empty receiver completes without invoking the block; every
 		// nonempty receiver invokes it.
 		recordSkip(false)
-		return model, true, true
+		return model, true
 	case 1, 2:
 	default:
-		return model, false, true
+		return model, false
 	}
 
-	startValues, startExact := staticMutatorArgumentValues(
-		selectors[0],
-		argumentStaticValues,
-	)
-	if !startExact || len(startValues) != 1 {
-		return arrayMutatorWriteModel{}, false, false
-	}
-	startValue := startValues[0]
+	startValue := selectors[0]
 	if startValue.Kind() == KindRange {
 		if len(selectors) == 2 {
-			return model, false, true
+			return model, false
 		}
 		effect, valid := staticArrayFillRangeWrites(startValue.Range())
 		if !valid {
-			return model, false, true
+			return model, false
 		}
 		blockMayRun := effect.writesValue
 		if !staticArrayFillRangeAlwaysInvokesBlock(startValue.Range()) {
@@ -6559,48 +6717,42 @@ func staticArrayFillBlockSelectorOutcomes(
 			}
 			recordSkip(start > 0)
 		}
-		return model, blockMayRun, true
+		return model, blockMayRun
 	}
 
 	start, _, startValid := staticArrayFillInteger(startValue)
 	if !startValid {
-		return model, false, true
+		return model, false
 	}
 	if len(selectors) == 1 {
 		// A bare start may reach or pass the end of some receiver length.
 		// Those completing spans are no-ops; shorter starts invoke the block.
 		recordSkip(false)
-		return model, true, true
+		return model, true
 	}
 
-	countValues, countExact := staticMutatorArgumentValues(
-		selectors[1],
-		argumentStaticValues,
-	)
-	if !countExact || len(countValues) != 1 {
-		return arrayMutatorWriteModel{}, false, false
-	}
-	count, nilLength, countValid := staticArrayFillInteger(countValues[0])
+	countValue := selectors[1]
+	count, nilLength, countValid := staticArrayFillInteger(countValue)
 	if !countValid {
-		return model, false, true
+		return model, false
 	}
-	if !staticArrayFillStartCountMayComplete(startValue, countValues[0]) {
-		return model, false, true
+	if !staticArrayFillStartCountMayComplete(startValue, countValue) {
+		return model, false
 	}
 	switch {
 	case nilLength:
 		recordSkip(false)
-		return model, true, true
+		return model, true
 	case count < 0:
 		recordSkip(false)
-		return model, false, true
+		return model, false
 	case count == 0:
 		recordSkip(start > 0)
-		return model, false, true
+		return model, false
 	default:
 		// A positive explicit count invokes the block even when it grows an
 		// empty receiver.
-		return model, true, true
+		return model, true
 	}
 }
 
