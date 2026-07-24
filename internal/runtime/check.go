@@ -4003,12 +4003,10 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 					c.currentClassConstantEffects(),
 				)
 				previousLoopExitEffects.seen = true
-				previousLoopExitEffects.breakSeen =
-					previousLoopExitEffects.breakSeen ||
-						protectedLoopExitEffects.breakSeen
-				previousLoopExitEffects.nextSeen =
-					previousLoopExitEffects.nextSeen ||
-						protectedLoopExitEffects.nextSeen
+				previousLoopExitEffects.breakSeen = previousLoopExitEffects.breakSeen ||
+					protectedLoopExitEffects.breakSeen
+				previousLoopExitEffects.nextSeen = previousLoopExitEffects.nextSeen ||
+					protectedLoopExitEffects.nextSeen
 				mergeCheckClassConstantEffects(
 					&previousLoopExitEffects.effects,
 					protectedLoopExitEffects.effects,
@@ -4557,8 +4555,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		var evaluatedStoredBlocks []capturedBlockLiteralValue
 		evaluatedStoredBlocksExact := false
 		if member, ok := typed.Callee.(*MemberExpr); ok && member.Property == "call" {
-			evaluatedStoredBlocks, evaluatedStoredBlocksExact =
-				c.capturedBlockLiteralValueAlternatives(member.Object)
+			evaluatedStoredBlocks, evaluatedStoredBlocksExact = c.capturedBlockLiteralValueAlternatives(member.Object)
 		}
 		argumentsMayBeSkipped := safeNavigationCallMaySkipArguments(typed) && !argumentsAlwaysEvaluate
 		var argumentState checkRuntimeState
@@ -5003,11 +5000,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				storedBlockMayComplete = storedBlockMayComplete ||
 					entry.mayEnter &&
 						(flow.fallsThrough || flow.completes)
-				storedBlockMayReturnNonLocally =
-					storedBlockMayReturnNonLocally ||
-						entry.mayEnter && flow.returnsNonLocally
-				storedBlockMayFail =
-					storedBlockMayFail || entry.mayEnter && flow.fails
+				storedBlockMayReturnNonLocally = storedBlockMayReturnNonLocally ||
+					entry.mayEnter && flow.returnsNonLocally
+				storedBlockMayFail = storedBlockMayFail || entry.mayEnter && flow.fails
 			}
 			if storedBlockMayReject {
 				c.captureNonCompletingExpressionArm()
@@ -5599,8 +5594,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				hashDefaultsExact,
 				hashDefaultAliases,
 			)
-			defaultEffects, mayRun, defaultMayReject :=
-				c.indexReadIvarEffects(typed, dispatchType, hashDefaults)
+			defaultEffects, mayRun, defaultMayReject := c.indexReadIvarEffects(typed, dispatchType, hashDefaults)
 			c.applyDirectCoreHashDefaultNamespaceMutations(
 				typed,
 				dispatchType,
@@ -6860,8 +6854,7 @@ func (c *scriptChecker) withAssignmentLocalCallBypass(
 	}
 	c.localCallBypassScopes = append(c.localCallBypassScopes, scopes)
 	defer func() {
-		c.localCallBypassScopes =
-			c.localCallBypassScopes[:len(c.localCallBypassScopes)-1]
+		c.localCallBypassScopes = c.localCallBypassScopes[:len(c.localCallBypassScopes)-1]
 	}()
 	return walk()
 }
@@ -8359,12 +8352,10 @@ func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr,
 	}
 	c.typePoison = unionCheckStringSet(bodyTypePoison, c.typePoison)
 	c.staticValuePoison = unionCheckStringSet(bodyStaticValuePoison, c.staticValuePoison)
-	hasCompletingValueArm :=
-		bodyCompleted && !bodyReturnsNonLocally ||
-			fallbackCompleted && !fallbackReturnsNonLocally
-	c.expressionReturnsNonLocally =
-		!hasCompletingValueArm &&
-			(bodyReturnsNonLocally || fallbackReturnsNonLocally)
+	hasCompletingValueArm := bodyCompleted && !bodyReturnsNonLocally ||
+		fallbackCompleted && !fallbackReturnsNonLocally
+	c.expressionReturnsNonLocally = !hasCompletingValueArm &&
+		(bodyReturnsNonLocally || fallbackReturnsNonLocally)
 
 	runtimeStates := make([]checkRuntimeState, 0, 2)
 	scopeStates := make([]checkScopeState, 0, 2)
@@ -9993,8 +9984,7 @@ func (c *scriptChecker) blockLiteralStatementsCompletionFlow(
 		}
 		current := c.blockLiteralStatementCompletionFlow(stmt, localControl)
 		flow.completes = flow.completes || current.completes
-		flow.returnsNonLocally =
-			flow.returnsNonLocally || current.returnsNonLocally
+		flow.returnsNonLocally = flow.returnsNonLocally || current.returnsNonLocally
 		flow.fails = flow.fails || current.fails
 		flow.fallsThrough = current.fallsThrough
 	}
@@ -10120,8 +10110,7 @@ func (c *scriptChecker) blockLiteralTryCompletionFlow(
 		elseFlow := c.blockLiteralStatementsCompletionFlow(stmt.Else, localControl)
 		protectedFlow.fallsThrough = elseFlow.fallsThrough
 		protectedFlow.completes = protectedFlow.completes || elseFlow.completes
-		protectedFlow.returnsNonLocally =
-			protectedFlow.returnsNonLocally || elseFlow.returnsNonLocally
+		protectedFlow.returnsNonLocally = protectedFlow.returnsNonLocally || elseFlow.returnsNonLocally
 		protectedFlow.fails = protectedFlow.fails || elseFlow.fails
 	}
 	mergeRescue := func(body []Statement) {
@@ -10131,8 +10120,7 @@ func (c *scriptChecker) blockLiteralTryCompletionFlow(
 		flow := c.blockLiteralStatementsCompletionFlow(body, localControl)
 		protectedFlow.fallsThrough = protectedFlow.fallsThrough || flow.fallsThrough
 		protectedFlow.completes = protectedFlow.completes || flow.completes
-		protectedFlow.returnsNonLocally =
-			protectedFlow.returnsNonLocally || flow.returnsNonLocally
+		protectedFlow.returnsNonLocally = protectedFlow.returnsNonLocally || flow.returnsNonLocally
 		protectedFlow.fails = protectedFlow.fails || flow.fails
 	}
 	if bodyFlow.fails {
@@ -19658,8 +19646,7 @@ func (s *namespaceMutationScan) capturedIndexGetter(
 	target *IndexExpr,
 	receiver checkAssignmentReceiverCapture,
 ) bool {
-	hashDefaults, hashDefaultsExact :=
-		s.checker.captureDirectCoreHashDefaults(target.Object)
+	hashDefaults, hashDefaultsExact := s.checker.captureDirectCoreHashDefaults(target.Object)
 	call := &CallExpr{
 		Callee: &MemberExpr{
 			Object:   target.Object,

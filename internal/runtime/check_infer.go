@@ -667,8 +667,7 @@ func (c *scriptChecker) bindLocalExactValueFact(name string, valueFact checkLoca
 				if otherName == name {
 					continue
 				}
-				sameRoot, newContainsOther, otherContainsNew, sharesNested :=
-					staticValueMutableRelationships(valueFact.staticVals, otherFact.staticVals)
+				sameRoot, newContainsOther, otherContainsNew, sharesNested := staticValueMutableRelationships(valueFact.staticVals, otherFact.staticVals)
 				if !sameRoot && !newContainsOther && !otherContainsNew && !sharesNested {
 					continue
 				}
@@ -3111,8 +3110,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			if member.Property == "call" {
 				invokedLambda = c.resolveImmediateLambdaBlock(member.Object)
 				if invokedLambda == nil {
-					invokedStoredBlocks, storedBlocksExact =
-						c.capturedBlockLiteralValueAlternatives(member.Object)
+					invokedStoredBlocks, storedBlocksExact = c.capturedBlockLiteralValueAlternatives(member.Object)
 				}
 			}
 			unknownDispatch = invokedLambda == nil && !storedBlocksExact &&
@@ -3224,8 +3222,7 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			if typed.Property == "call" {
 				invokedLambda = c.resolveImmediateLambdaBlock(typed.Object)
 				if invokedLambda == nil {
-					invokedStoredBlocks, storedBlocksExact =
-						c.capturedBlockLiteralValueAlternatives(typed.Object)
+					invokedStoredBlocks, storedBlocksExact = c.capturedBlockLiteralValueAlternatives(typed.Object)
 				}
 			}
 			if invokedLambda != nil {
@@ -12548,9 +12545,11 @@ func (c *scriptChecker) hashMutatorCallProvablyAborts(
 	} else if contentFact != nil && contentFact.Kind == TypeShape && !contentFact.Nullable {
 		if contentFact.Name == "" {
 			if field, present := contentFact.Shape[property]; present {
-				if typeExprMayIncludeCallable(field) {
+				if shapeFieldOptional(field) ||
+					typeExprMayIncludeCallable(shapeFieldValueType(field)) {
 					return false
 				}
+				return true
 			} else if contentFact.Open {
 				return false
 			}

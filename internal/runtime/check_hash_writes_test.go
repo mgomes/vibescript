@@ -1159,6 +1159,20 @@ end
 `,
 			warning: "call to takes_int argument value expected int, got string",
 		},
+		{
+			name: "optional shape shadow keeps the builtin continuation reachable",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { store?: int })
+  user.store(:extra, 1)
+  takes_int("bad")
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1589,18 +1603,54 @@ end
 `,
 		},
 		{
-			name: "shape store shadowed by a data field stays gradual",
+			name: "shape store shadowed by a data field stops the continuation",
 			source: `
+def takes_int(value: int)
+  value
+end
+
 def f(user: { store: int })
   user.store(:extra, 1)
+  takes_int("unreachable")
 end
 `,
 		},
 		{
-			name: "shape merge shadowed by a data field stays gradual",
+			name: "shape merge shadowed by a data field stops the continuation",
 			source: `
+def takes_int(value: int)
+  value
+end
+
 def f(user: { "merge!": int })
   user.merge!({ extra: 1 })
+  takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "shape update shadowed by a data field stops the continuation",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { update: int })
+  user.update({ extra: 1 })
+  takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "shape replace shadowed by a data field stops the continuation",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { replace: int })
+  user.replace({ name: "ok" })
+  takes_int("unreachable")
 end
 `,
 		},
