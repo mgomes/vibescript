@@ -1907,6 +1907,542 @@ end
 	}
 }
 
+func TestCheckClassPredicateNarrowingAppliesDefaultEffectsBeforeBindingFailure(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+def mutate_holder_user(k)
+  k.User = Order
+  1
+end
+
+def install(first = mutate_holder_user(Holder), later: int:)
+end
+
+class Holder
+  def self.check(u: User | Order)
+    begin
+      install(later: "bad")
+    rescue TypeError
+      unless u.is_a?(User)
+        takes_user(u)
+      end
+    end
+  end
+end
+
+def run(u: User | Order)
+  Holder.check(u)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	got := strings.Join(checkWarningMessages(warnings), "\n")
+	if !strings.Contains(got, "call to install argument later expected int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want binding warning", "run", got)
+	}
+	if strings.Contains(got, "call to takes_user argument value expected User, got Order") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want no narrowing warning", "run", got)
+	}
+}
+
+func TestCheckClassPredicateNarrowingAppliesOpaqueCallbackDefaultEffectsBeforeBindingFailure(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+class Holder
+  def initialize()
+  end
+
+  def check(value: User | Order)
+    unless value.is_a?(User)
+      takes_order(value)
+    end
+  end
+end
+
+def install(callback: function, trigger = callback.call(), later: int:)
+end
+
+def run(callback: function)
+  begin
+    install(callback, later: "bad")
+  rescue TypeError
+    nil
+  end
+  Holder.new.check(User.new)
+end
+`)
+	got := strings.Join(checkWarningMessages(script.CheckWarningsForFunction("run")), "\n")
+	for _, want := range []string{
+		"call to install argument later expected int, got string",
+		"call to takes_order argument value expected Order, got User",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)
+		}
+	}
+}
+
+func TestCheckClassPredicateNarrowingAppliesDynamicDefaultEffectsBeforeBindingFailure(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+def mutate_holder_user(k)
+  k.User = Order
+  1
+end
+
+def first(value = mutate_holder_user(Holder), later: int:)
+end
+
+def second(value = mutate_holder_user(Holder), later: int:)
+end
+
+class Holder
+  def self.check(flag: bool, u: User | Order)
+    callback = flag ? first : second
+    begin
+      callback.call(later: "bad")
+    rescue TypeError
+      unless u.is_a?(User)
+        takes_user(u)
+      end
+    end
+  end
+end
+
+def run(flag: bool, u: User | Order)
+  Holder.check(flag, u)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	got := strings.Join(checkWarningMessages(warnings), "\n")
+	for _, want := range []string{
+		"call to first.call argument later expected int, got string",
+		"call to second.call argument later expected int, got string",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)
+		}
+	}
+	if strings.Contains(got, "call to takes_user argument value expected User, got Order") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want no narrowing warning", "run", got)
+	}
+}
+
+func TestCheckClassPredicateNarrowingAppliesSafeNavigationDefaultEffectsBeforeBindingFailure(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+def mutate_holder_user(k)
+  k.User = Order
+  1
+end
+
+class Installer
+  def install(first = mutate_holder_user(Holder), later: int:)
+  end
+end
+
+class Holder
+  def self.check(nullable: bool, raise_first: bool, u: User | Order)
+    installer = nullable ? nil : Installer.new
+    begin
+      raise TypeError if raise_first
+      installer&.install(later: "bad")
+    rescue TypeError
+      unless u.is_a?(User)
+        takes_user(u)
+      end
+    end
+  end
+end
+
+def run(nullable: bool, raise_first: bool, u: User | Order)
+  Holder.check(nullable, raise_first, u)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	got := strings.Join(checkWarningMessages(warnings), "\n")
+	if !strings.Contains(got, "call to Installer#install argument later expected int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want binding warning", "run", got)
+	}
+	if strings.Contains(got, "call to takes_user argument value expected User, got Order") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want no narrowing warning", "run", got)
+	}
+}
+
+func TestCheckClassPredicateNarrowingAppliesConditionalDefaultEffectsBeforeBindingFailure(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+def mutate_holder_user(k)
+  k.User = Order
+  1
+end
+
+def install(first = mutate_holder_user(Holder), later: int:)
+end
+
+class Holder
+  def self.check(explicit: bool, choose: bool, u: User | Order)
+    begin
+      raise TypeError if explicit
+      choose ? install(later: "bad") : 1
+    rescue TypeError
+      unless u.is_a?(User)
+        takes_user(u)
+      end
+    end
+  end
+end
+
+def run(explicit: bool, choose: bool, u: User | Order)
+  Holder.check(explicit, choose, u)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	got := strings.Join(checkWarningMessages(warnings), "\n")
+	if !strings.Contains(got, "call to install argument later expected int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want binding warning", "run", got)
+	}
+	if strings.Contains(got, "call to takes_user argument value expected User, got Order") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want no narrowing warning", "run", got)
+	}
+}
+
+func TestCheckClassPredicateNarrowingKeepsCaughtSafeNavigationEffectsLocal(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+def mutate_holder_user(k)
+  k.User = Order
+  1
+end
+
+class Installer
+  def install(first = mutate_holder_user(Holder), later: int:)
+  end
+end
+
+class Holder
+  def self.check(explicit: bool, present: bool, u: User | Order)
+    installer = present ? Installer.new : nil
+    begin
+      raise TypeError if explicit
+      installer&.install(later: "bad") rescue 1
+    rescue TypeError
+      unless u.is_a?(User)
+        takes_user(u)
+      end
+    end
+  end
+end
+
+def run(explicit: bool, present: bool, u: User | Order)
+  Holder.check(explicit, present, u)
+end
+`)
+	got := strings.Join(checkWarningMessages(script.CheckWarningsForFunction("run")), "\n")
+	for _, want := range []string{
+		"call to Installer#install argument later expected int, got string",
+		"call to takes_user argument value expected User, got Order",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)
+		}
+	}
+}
+
+func TestCheckClassPredicateNarrowingAppliesRescueFallbackDefaultEffects(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+def mutate_holder_user(k)
+  k.User = Order
+  1
+end
+
+def install(first = mutate_holder_user(Holder), later: int:)
+end
+
+def maybe(flag: bool)
+  if flag
+    raise TypeError
+  end
+  1
+end
+
+class Holder
+  def self.check(explicit: bool, inner: bool, u: User | Order)
+    begin
+      raise TypeError if explicit
+      maybe(inner) rescue install(later: "bad")
+    rescue TypeError
+      unless u.is_a?(User)
+        takes_user(u)
+      end
+    end
+  end
+end
+
+def run(explicit: bool, inner: bool, u: User | Order)
+  Holder.check(explicit, inner, u)
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	got := strings.Join(checkWarningMessages(warnings), "\n")
+	if !strings.Contains(got, "call to install argument later expected int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want binding warning", "run", got)
+	}
+	if strings.Contains(got, "call to takes_user argument value expected User, got Order") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %q, want no narrowing warning", "run", got)
+	}
+}
+
+func TestCheckClassPredicateNarrowingAppliesAutoCallDefaultEffectsBeforeBindingFailure(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		source       string
+		defaultCount int
+	}{
+		{
+			name: "resolved",
+			source: `
+class Installer
+  def initialize()
+  end
+
+  def install(first = mutate_holder_user(Holder), later: int = "bad")
+  end
+end
+
+class Holder
+  def self.check(u: User | Order)
+    begin
+      Installer.new.install
+    rescue TypeError
+      unless u.is_a?(User)
+        takes_user(u)
+      end
+    end
+  end
+end
+
+def run(u: User | Order)
+  Holder.check(u)
+end
+`,
+			defaultCount: 1,
+		},
+		{
+			name: "exact dynamic",
+			source: `
+class First
+  def initialize()
+  end
+
+  def install(first = mutate_holder_user(Holder), later: int = "bad")
+  end
+end
+
+class Second
+  def initialize()
+  end
+
+  def install(first = mutate_holder_user(Holder), later: int = "bad")
+  end
+end
+
+class Holder
+  def self.check(flag: bool, u: User | Order)
+    installer = flag ? First.new : Second.new
+    begin
+      installer.install
+    rescue TypeError
+      unless u.is_a?(User)
+        takes_user(u)
+      end
+    end
+  end
+end
+
+def run(flag: bool, u: User | Order)
+  Holder.check(flag, u)
+end
+`,
+			defaultCount: 2,
+		},
+		{
+			name: "exact dynamic body",
+			source: `
+class First
+  def initialize()
+  end
+
+  def install()
+    mutate_holder_user(Holder)
+  end
+end
+
+class Second
+  def initialize()
+  end
+
+  def install()
+    mutate_holder_user(Holder)
+  end
+end
+
+class Holder
+  def self.check(flag: bool, u: User | Order)
+    installer = flag ? First.new : Second.new
+    installer.install
+    unless u.is_a?(User)
+      takes_user(u)
+    end
+  end
+end
+
+def run(flag: bool, u: User | Order)
+  Holder.check(flag, u)
+end
+`,
+		},
+		{
+			name: "inexact dynamic body",
+			source: `
+class Mutator
+  def initialize()
+  end
+
+  def install()
+    Holder.User = Order
+  end
+end
+
+class Holder
+  def self.check(receiver, u: User | Order)
+    receiver.install
+    unless u.is_a?(User)
+      takes_user(u)
+    end
+  end
+end
+
+def run(receiver, u: User | Order)
+  Holder.check(receiver, u)
+end
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+def mutate_holder_user(k)
+  k.User = Order
+  1
+end
+`+tc.source)
+			got := strings.Join(checkWarningMessages(script.CheckWarningsForFunction("run")), "\n")
+			defaultWarning := "default value for later expected int, got string"
+			if count := strings.Count(got, defaultWarning); count != tc.defaultCount {
+				t.Fatalf("CheckWarningsForFunction(%q) default warnings = %d, want %d: %q", "run", count, tc.defaultCount, got)
+			}
+			if unwanted := "call to takes_user argument value expected User, got Order"; strings.Contains(got, unwanted) {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want no narrowing warning", "run", got)
+			}
+		})
+	}
+}
+
+func TestCheckClassPredicateNarrowingIgnoresUnreachedEffectsAfterBindingFailure(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		definition string
+		call       string
+	}{
+		{
+			name: "body",
+			definition: `def install(first = 1, later: int:)
+  mutate_holder_user(Holder)
+end`,
+			call: `install(later: "bad")`,
+		},
+		{
+			name: "later default",
+			definition: `def bad()
+  "bad"
+end
+
+def install(first: int = bad(), second = mutate_holder_user(Holder))
+end`,
+			call: `install()`,
+		},
+		{
+			name: "shape failure",
+			definition: `def install(required, later = mutate_holder_user(Holder))
+end`,
+			call: `install()`,
+		},
+		{
+			name: "raising earlier default",
+			definition: `def abort_default()
+  raise TypeError, "boom"
+end
+
+def install(first = abort_default(), later = mutate_holder_user(Holder))
+end`,
+			call: `install()`,
+		},
+		{
+			name: "recursive pure default",
+			definition: `def install(first = install(later: 1), later: int:)
+end`,
+			call: `install(later: "bad")`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, classPredicateNarrowingPrelude+`
+def mutate_holder_user(k)
+  k.User = Order
+  1
+end
+
+`+tc.definition+`
+
+class Holder
+  def self.check(u: User | Order)
+    begin
+      `+tc.call+`
+    rescue
+      unless u.is_a?(User)
+        takes_user(u)
+      end
+    end
+  end
+end
+
+def run(u: User | Order)
+  Holder.check(u)
+end
+`)
+			got := strings.Join(checkWarningMessages(script.CheckWarningsForFunction("run")), "\n")
+			want := "call to takes_user argument value expected User, got Order"
+			if !strings.Contains(got, want) {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, want)
+			}
+		})
+	}
+}
+
 func TestCheckClassPredicateNarrowingIgnoresUnusedDefaultCallEffects(t *testing.T) {
 	t.Parallel()
 

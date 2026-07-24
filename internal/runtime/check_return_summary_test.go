@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -389,6 +390,32 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "summary cache separates full and partial array witnesses",
+			source: `
+def full()
+  ["bad"]
+end
+
+def partial(values: array)
+  values << "bad"
+end
+
+def first(values)
+  values[0]
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(source: array)
+  takes_int(first(partial(source)))
+  takes_int(first(full()))
+end
+`,
+			warning: "call to takes_int argument value expected int, got string",
+		},
+		{
 			name: "always exiting ensure replaces earlier returns",
 			source: `
 def forced()
@@ -507,6 +534,25 @@ end
 def build_count()
   helper = ->() { return "lambda" }
   helper.call
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "parenthesized invoked lambda returns stay local",
+			source: `
+def build_count()
+  helper = ->() { return "lambda" }
+  helper.call()
   42
 end
 
@@ -1260,6 +1306,341 @@ end
 	}
 }
 
+func TestCheckFunctionFailureSummariesCaptureExplicitRaises(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "exact indexed write reaches the caller rescue",
+			source: `
+def mutate(values)
+  values[0] = "ok"
+  raise "stop"
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_int(values[0])
+end
+`,
+			want: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "unmatched typed rescue propagates the failure facts",
+			source: `
+def mutate(values)
+  values[0] = "ok"
+  begin
+    raise RuntimeError, "stop"
+  rescue TypeError
+    nil
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_int(values[0])
+end
+`,
+			want: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "empty matching rescue propagates the failure facts",
+			source: `
+def mutate(values)
+  values[0] = "ok"
+  begin
+    raise RuntimeError, "stop"
+  rescue RuntimeError
+  rescue
+    nil
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_int(values[0])
+end
+`,
+			want: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "raise from a rescue body propagates its failure facts",
+			source: `
+def mutate(values)
+  begin
+    raise "first"
+  rescue
+    values[0] = "ok"
+    raise "second"
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_int(values[0])
+end
+`,
+			want: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "ensure transforms the propagated failure state",
+			source: `
+def mutate(values)
+  begin
+    values[0] = "bad"
+    raise "stop"
+  ensure
+    values[0] = 1
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_int(values[0])
+end
+`,
+		},
+		{
+			name: "nested ensures preserve the propagated failure state",
+			source: `
+def mutate(values)
+  begin
+    begin
+      begin
+        values[0] = "ok"
+        raise "first"
+      ensure
+        nil
+      end
+    ensure
+      nil
+    end
+  rescue
+    raise "second"
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_int(values[0])
+end
+`,
+			want: "call to takes_int argument value expected int, got string",
+		},
+		{
+			name: "rescue consumes a noncompleting expression failure",
+			source: `
+def crash()
+  raise "stop"
+end
+
+def mutate(values)
+  begin
+    values[0] = "bad"
+    crash()
+  rescue
+    values[0] = 1
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_int(values[0])
+end
+`,
+		},
+		{
+			name: "ensure transforms a noncompleting expression failure",
+			source: `
+def crash()
+  raise "stop"
+end
+
+def mutate(values)
+  begin
+    values[0] = "bad"
+    crash()
+  ensure
+    values[0] = 1
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_string(values[0])
+end
+`,
+			want: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "returning ensure swallows a noncompleting expression failure",
+			source: `
+def crash()
+  raise "stop"
+end
+
+def mutate(values)
+  begin
+    values[0] = "bad"
+    crash()
+  ensure
+    return nil
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_int(values[0])
+end
+`,
+		},
+		{
+			name: "raising ensure replaces the pending failure state",
+			source: `
+def mutate(values)
+  begin
+    values[0] = "bad"
+    raise "first"
+  ensure
+    values[0] = 1
+    raise "second"
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_string(values[0])
+end
+`,
+			want: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "returning ensure swallows the pending failure",
+			source: `
+def mutate(values)
+  begin
+    values[0] = "bad"
+    raise "stop"
+  ensure
+    return nil
+  end
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  values = [1]
+  mutate(values) rescue takes_int(values[0])
+end
+`,
+		},
+		{
+			name: "explicit raise retains type poison from an unknown mutation",
+			source: `
+def mutate(values: array<int | string>, callback)
+  values.map! { callback.call() }
+  raise "stop"
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(callback)
+  values = [1]
+  mutate(values, callback) rescue takes_string(values[0])
+end
+`,
+		},
+		{
+			name: "explicit raise retains static poison from a possible mutation",
+			source: `
+def mutate(flag: bool, values: array<int | string>)
+  if flag
+    values.push("changed")
+  end
+  raise "stop"
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(flag: bool)
+  values = [1]
+  mutate(flag, values) rescue takes_string(values[0])
+end
+`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			warnings := compileScriptDefault(t, tc.source).CheckWarningsForFunction("run")
+			got := strings.Join(checkWarningMessages(warnings), "\n")
+			if tc.want == "" {
+				if got != "" {
+					t.Fatalf("CheckWarningsForFunction(%q) = %q, want none", "run", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("CheckWarningsForFunction(%q) = %q, want substring %q", "run", got, tc.want)
+			}
+			if len(warnings) != 1 {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want exactly one warning", "run", warnings)
+			}
+		})
+	}
+}
+
 func TestCheckFunctionReturnSummariesRecognizeReinjectedCoreLambda(t *testing.T) {
 	t.Parallel()
 
@@ -1382,6 +1763,23 @@ end
 
 def run(v)
   takes_string(dyn(v))
+end
+`,
+		},
+		{
+			name: "unknown callback calls stay unknown",
+			source: `
+def build_count(callback)
+  callback.call()
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(callback)
+  takes_string(build_count(callback))
 end
 `,
 		},
@@ -2359,6 +2757,24 @@ end
 `,
 		},
 		{
+			name: "stored lambda yield poisons the summary",
+			source: `
+def invoke()
+  handler = -> { yield }
+  handler.call
+  0
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(invoke() { return "s" })
+end
+`,
+		},
+		{
 			name: "immediate lambda builtin yield poisons the summary",
 			source: `
 def invoke()
@@ -2803,4 +3219,441 @@ end
 			requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
 		})
 	}
+}
+
+func TestCheckArrayFillBlockArgumentNamespaceMutations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("exact no-op selectors do not invoke blocks", func(t *testing.T) {
+		t.Parallel()
+
+		cases := []struct {
+			name  string
+			setup string
+			fill  string
+		}{
+			{
+				name: "inline forwarded lambda",
+				fill: `items.fill(0, 0, &lambda { |index|
+    JSON.stringify = replacement
+    index
+  })`,
+			},
+			{
+				name: "literal block",
+				fill: `items.fill(0, 0) do |index|
+    JSON.stringify = replacement
+    index
+  end`,
+			},
+			{
+				name:  "stored forwarded lambda",
+				setup: `  callback = lambda { |index| JSON.stringify = replacement; index }`,
+				fill:  `items.fill(0, 0, &callback)`,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = [1]
+`+tc.setup+`
+  `+tc.fill+`
+  takes_int(JSON.stringify({}))
+end
+`)
+				requireCheckWarningContains(
+					t,
+					script,
+					"call to takes_int argument value expected int, got string",
+				)
+				requireCallErrorContains(
+					t,
+					script,
+					"run",
+					nil,
+					CallOptions{},
+					"argument value expected int, got string",
+				)
+			})
+		}
+	})
+
+	t.Run("positive span invokes inline forwarded lambda", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = []
+  items.fill(0, 1, &lambda { |index|
+    JSON.stringify = replacement
+    index
+  })
+  takes_int(JSON.stringify({}))
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		want := NewInt(1)
+		if !got.Equal(want) {
+			t.Errorf("run() = %s, want %s", got.String(), want.String())
+		}
+	})
+
+	t.Run("positive span invokes stored forwarded lambda", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = []
+  callback = lambda { |index| JSON.stringify = replacement; index }
+  items.fill(0, 1, &callback)
+  takes_int(JSON.stringify({}))
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		want := NewInt(1)
+		if !got.Equal(want) {
+			t.Errorf("run() = %s, want %s", got.String(), want.String())
+		}
+	})
+
+	t.Run("binding failures do not enter block bodies", func(t *testing.T) {
+		t.Parallel()
+
+		cases := []struct {
+			name  string
+			setup string
+			fill  string
+		}{
+			{
+				name: "inline lambda arity",
+				fill: `items.fill(0, 1, &lambda {
+    JSON.stringify = replacement
+    1
+  })`,
+			},
+			{
+				name:  "stored lambda arity",
+				setup: `  callback = lambda { JSON.stringify = replacement; 1 }`,
+				fill:  `items.fill(0, 1, &callback)`,
+			},
+			{
+				name: "inline lambda parameter type",
+				fill: `items.fill(0, 1, &lambda { |index: string|
+    JSON.stringify = replacement
+    1
+  })`,
+			},
+			{
+				name: "literal block parameter type",
+				fill: `items.fill(0, 1) do |index: string|
+    JSON.stringify = replacement
+    1
+  end`,
+			},
+			{
+				name:  "stored lambda parameter type",
+				setup: `  callback = lambda { |index: string| JSON.stringify = replacement; 1 }`,
+				fill:  `items.fill(0, 1, &callback)`,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = []
+`+tc.setup+`
+  begin
+    `+tc.fill+`
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end
+`)
+				requireCheckWarningContains(
+					t,
+					script,
+					"call to takes_int argument value expected int, got string",
+				)
+				requireCallErrorContains(
+					t,
+					script,
+					"run",
+					nil,
+					CallOptions{},
+					"argument value expected int, got string",
+				)
+			})
+		}
+	})
+
+	t.Run("inexact span remains conservative", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(count: int)
+  items = []
+  items.fill(0, count, &lambda { |index|
+    JSON.stringify = replacement
+    index
+  })
+  takes_int(JSON.stringify({}))
+end
+`)
+		requireNoCheckWarnings(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewInt(0)},
+			CallOptions{},
+			"argument value expected int, got string",
+		)
+		got := callScript(t, context.Background(), script, "run", []Value{NewInt(1)}, CallOptions{})
+		want := NewInt(1)
+		if !got.Equal(want) {
+			t.Errorf("run(1) = %s, want %s", got.String(), want.String())
+		}
+	})
+}
+
+func TestCheckArrayMutatorLambdaValuesDoNotRun(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		mutation string
+	}{
+		{
+			name:     "fill value",
+			mutation: `items.fill(lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name: "fill selector",
+			mutation: `begin
+    items.fill(0, lambda { JSON.stringify = replacement })
+  rescue
+    nil
+  end`,
+		},
+		{
+			name:     "push value",
+			mutation: `items.push(lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name: "push keyword value",
+			mutation: `begin
+    items.push(extra: lambda { JSON.stringify = replacement })
+  rescue
+    nil
+  end`,
+		},
+		{
+			name:     "push forwarded block",
+			mutation: `items.push(1, &lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name:     "append forwarded block",
+			mutation: `items.append(1, &lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name:     "prepend forwarded block",
+			mutation: `items.prepend(1, &lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name:     "unshift forwarded block",
+			mutation: `items.unshift(1, &lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name:     "insert forwarded block",
+			mutation: `items.insert(0, 1, &lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name: "push literal block",
+			mutation: `items.push(1) do
+    JSON.stringify = replacement
+  end`,
+		},
+		{
+			name: "append literal block",
+			mutation: `items.append(1) do
+    JSON.stringify = replacement
+  end`,
+		},
+		{
+			name: "prepend literal block",
+			mutation: `items.prepend(1) do
+    JSON.stringify = replacement
+  end`,
+		},
+		{
+			name: "unshift literal block",
+			mutation: `items.unshift(1) do
+    JSON.stringify = replacement
+  end`,
+		},
+		{
+			name: "insert literal block",
+			mutation: `items.insert(0, 1) do
+    JSON.stringify = replacement
+  end`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = []
+  `+tc.mutation+`
+  takes_int(JSON.stringify({}))
+end
+`)
+			requireCheckWarningContains(
+				t,
+				script,
+				"call to takes_int argument value expected int, got string",
+			)
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"argument value expected int, got string",
+			)
+		})
+	}
+}
+
+func TestCheckNullableBlockChoiceMetadataStaysFillSpecific(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ordinary call result stays gradual", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(flag: bool)
+  callback = flag ? lambda { 1 } : nil
+  takes_string(callback.call())
+end
+`)
+		requireNoCheckWarnings(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+			"argument value expected string, got int",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(false)},
+			CallOptions{},
+			"unknown nil method call",
+		)
+	})
+
+	t.Run("ordinary call namespace effects stay conditional", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(flag: bool)
+  callback = flag ? lambda { JSON.stringify = replacement } : nil
+  begin
+    callback.call()
+  rescue
+    nil
+  end
+  takes_string(JSON.stringify({}))
+end
+`)
+		requireNoCheckWarnings(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+			"argument value expected string, got int",
+		)
+		got := callScript(t, context.Background(), script, "run", []Value{
+			NewBool(false),
+		}, CallOptions{})
+		want := NewString("{}")
+		if !got.Equal(want) {
+			t.Errorf("run(false) = %s, want %s", got.String(), want.String())
+		}
+	})
 }

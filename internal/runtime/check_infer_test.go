@@ -43,6 +43,418 @@ func TestCheckInferMixedClassCallableFactsStayGradual(t *testing.T) {
 	}
 }
 
+func TestBlockLiteralBindingOutcomeNormalizesParamBeforeTarget(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+enum Status
+  Draft
+end
+
+def accept(value: Status)
+  value
+end
+`)
+	statusType := script.functions["accept"].Params[0].Type
+	checker := &scriptChecker{
+		script:          script,
+		typeRoot:        checkTypeRoot(script, nil),
+		runtimeTypeRoot: checkTypeRoot(script, nil),
+	}
+	target := &DestructureTarget{Elements: []DestructureElement{{
+		Target: &Identifier{Name: "status"},
+		Type:   statusType,
+	}}}
+	block := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{
+			Type:   statusType,
+			Target: target,
+		}},
+	}
+	outcome := checker.blockLiteralBindingOutcome(
+		block,
+		[]Expression{&SymbolLiteral{Name: "draft"}},
+		true,
+		nil,
+	)
+	if !outcome.mayBind || !outcome.mustBind {
+		t.Fatalf("blockLiteralBindingOutcome(:draft) = %#v, want exact success", outcome)
+	}
+
+	paramNormalizedBlock := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{
+			Type: statusType,
+			Target: &DestructureTarget{Elements: []DestructureElement{{
+				Target: &Identifier{Name: "value"},
+				Type:   checkTypeSymbol,
+			}}},
+		}},
+	}
+	outcome = checker.blockLiteralBindingOutcome(
+		paramNormalizedBlock,
+		[]Expression{&SymbolLiteral{Name: "draft"}},
+		true,
+		nil,
+	)
+	if outcome.mayBind {
+		t.Fatalf(
+			"blockLiteralBindingOutcome(Status -> symbol target) = %#v, want guaranteed rejection",
+			outcome,
+		)
+	}
+
+	normalizedTarget := &DestructureTarget{Elements: []DestructureElement{{
+		Type: statusType,
+		Target: &DestructureTarget{Elements: []DestructureElement{{
+			Target: &Identifier{Name: "value"},
+			Type:   checkTypeSymbol,
+		}}},
+	}}}
+	normalizedBlock := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{Target: normalizedTarget}},
+	}
+	outcome = checker.lambdaLiteralParamTypeBindingOutcome(
+		normalizedBlock,
+		0,
+		&TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{checkTypeSymbol}},
+	)
+	if outcome.mayBind {
+		t.Fatalf(
+			"lambdaLiteralParamTypeBindingOutcome(array<symbol>) = %#v, want guaranteed nested rejection",
+			outcome,
+		)
+	}
+
+	symbolOrAny := &TypeExpr{
+		Kind:  TypeUnion,
+		Union: []*TypeExpr{checkTypeSymbol, {Kind: TypeAny}},
+	}
+	unionElementBlock := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{Target: &DestructureTarget{
+			Elements: []DestructureElement{{
+				Type: &TypeExpr{
+					Kind:     TypeArray,
+					TypeArgs: []*TypeExpr{symbolOrAny},
+				},
+				Target: &DestructureTarget{Elements: []DestructureElement{{
+					Target: &Identifier{Name: "value"},
+					Type:   checkTypeSymbol,
+				}}},
+			}},
+		}}},
+	}
+	outcome = checker.lambdaLiteralParamTypeBindingOutcome(
+		unionElementBlock,
+		0,
+		&TypeExpr{
+			Kind: TypeArray,
+			TypeArgs: []*TypeExpr{{
+				Kind: TypeArray,
+				TypeArgs: []*TypeExpr{{
+					Kind:  TypeUnion,
+					Union: []*TypeExpr{statusType, checkTypeString},
+				}},
+			}},
+		},
+	)
+	if outcome.mayBind {
+		t.Fatalf(
+			"lambdaLiteralParamTypeBindingOutcome(array<Status|string>) = %#v, want union arms to retain their normalized outputs",
+			outcome,
+		)
+	}
+}
+
+func TestBlockLiteralBindingOutcomeAppliesProcAutosplat(t *testing.T) {
+	t.Parallel()
+
+	arrayOf := func(element *TypeExpr) *TypeExpr {
+		return &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{element}}
+	}
+	nestedParam := func(inner *TypeExpr) Param {
+		return Param{Target: &DestructureTarget{Elements: []DestructureElement{{
+			Type: arrayOf(checkTypeInt),
+			Target: &DestructureTarget{Elements: []DestructureElement{{
+				Target: &Identifier{Name: "value"},
+				Type:   inner,
+			}}},
+		}}}}
+	}
+	argument := &ArrayLiteral{Elements: []Expression{
+		&ArrayLiteral{Elements: []Expression{
+			&ArrayLiteral{Elements: []Expression{&IntegerLiteral{Value: 1}}},
+		}},
+		&StringLiteral{Value: "ok"},
+	}}
+
+	for _, tc := range []struct {
+		name     string
+		params   []Param
+		strict   bool
+		mayBind  bool
+		mustBind bool
+	}{
+		{
+			name: "proc autosplats before nested binding",
+			params: []Param{
+				nestedParam(checkTypeInt),
+				{Name: "ignored", Type: checkTypeString},
+			},
+			mayBind:  true,
+			mustBind: true,
+		},
+		{
+			name: "strict lambda rejects before autosplat",
+			params: []Param{
+				nestedParam(checkTypeInt),
+				{Name: "ignored", Type: checkTypeString},
+			},
+			strict: true,
+		},
+		{
+			name:   "single proc parameter does not autosplat",
+			params: []Param{nestedParam(checkTypeInt)},
+		},
+		{
+			name: "nested failure stops proc entry",
+			params: []Param{
+				nestedParam(checkTypeString),
+				{Name: "ignored", Type: checkTypeString},
+			},
+		},
+		{
+			name: "later failure stops proc entry",
+			params: []Param{
+				nestedParam(checkTypeInt),
+				{Name: "ignored", Type: checkTypeInt},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			checker := &scriptChecker{}
+			outcome := checker.blockLiteralBindingOutcome(
+				&BlockLiteral{Params: tc.params},
+				[]Expression{argument},
+				tc.strict,
+				nil,
+			)
+			if outcome.mayBind != tc.mayBind || outcome.mustBind != tc.mustBind {
+				t.Errorf(
+					"blockLiteralBindingOutcome(%s) = %#v, want mayBind=%t, mustBind=%t",
+					tc.name,
+					outcome,
+					tc.mayBind,
+					tc.mustBind,
+				)
+			}
+		})
+	}
+}
+
+func TestBlockLiteralBindingOutcomeRecursesThroughAbstractDestructures(t *testing.T) {
+	t.Parallel()
+
+	arrayOf := func(element *TypeExpr) *TypeExpr {
+		return &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{element}}
+	}
+	target := func(outer, inner *TypeExpr) *DestructureTarget {
+		return &DestructureTarget{Elements: []DestructureElement{{
+			Type: outer,
+			Target: &DestructureTarget{Elements: []DestructureElement{{
+				Target: &Identifier{Name: "value"},
+				Type:   inner,
+			}}},
+		}}}
+	}
+	for _, tc := range []struct {
+		name     string
+		value    *TypeExpr
+		target   *DestructureTarget
+		mayBind  bool
+		mustBind bool
+	}{
+		{
+			name:     "matching nested arrays may be nonempty",
+			value:    arrayOf(arrayOf(checkTypeInt)),
+			target:   target(arrayOf(checkTypeInt), checkTypeInt),
+			mayBind:  true,
+			mustBind: false,
+		},
+		{
+			name:     "disjoint nested leaf always rejects",
+			value:    arrayOf(arrayOf(checkTypeString)),
+			target:   target(arrayOf(checkTypeString), checkTypeInt),
+			mayBind:  false,
+			mustBind: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			checker := &scriptChecker{}
+			block := &BlockLiteral{
+				Lambda: true,
+				Params: []Param{{Target: tc.target}},
+			}
+			outcome := checker.lambdaLiteralParamTypeBindingOutcome(block, 0, tc.value)
+			if outcome.mayBind != tc.mayBind || outcome.mustBind != tc.mustBind {
+				t.Errorf(
+					"lambdaLiteralParamTypeBindingOutcome() = %#v, want mayBind=%t, mustBind=%t",
+					outcome,
+					tc.mayBind,
+					tc.mustBind,
+				)
+			}
+		})
+	}
+
+	t.Run("array length alternatives stay correlated", func(t *testing.T) {
+		t.Parallel()
+
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: &DestructureTarget{
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "first"}, Type: checkTypeNil},
+					{Target: &Identifier{Name: "second"}, Type: checkTypeInt},
+				},
+			}}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(
+			block,
+			0,
+			arrayOf(checkTypeInt),
+		)
+		if outcome.mayBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(array<int>) = %#v, want no compatible length",
+				outcome,
+			)
+		}
+	})
+
+	t.Run("union normalization retains the input arm", func(t *testing.T) {
+		t.Parallel()
+
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: &DestructureTarget{
+				Elements: []DestructureElement{{
+					Type: &TypeExpr{
+						Kind:  TypeUnion,
+						Union: []*TypeExpr{checkTypeInt, checkTypeString},
+					},
+					Target: &DestructureTarget{Elements: []DestructureElement{{
+						Target: &Identifier{Name: "value"},
+						Type:   checkTypeString,
+					}}},
+				}},
+			}}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(
+			block,
+			0,
+			checkTypeInt,
+		)
+		if outcome.mayBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(int) = %#v, want normalized int to reject nested string",
+				outcome,
+			)
+		}
+	})
+
+	t.Run("rest target retains exact scalar cardinality", func(t *testing.T) {
+		t.Parallel()
+
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: &DestructureTarget{
+				Elements: []DestructureElement{{
+					Rest: true,
+					Target: &DestructureTarget{Elements: []DestructureElement{
+						{Target: &Identifier{Name: "first"}, Type: checkTypeInt},
+						{Target: &Identifier{Name: "second"}, Type: checkTypeInt},
+					}},
+				}},
+			}}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(
+			block,
+			0,
+			checkTypeInt,
+		)
+		if outcome.mayBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(int rest) = %#v, want exact-length rejection",
+				outcome,
+			)
+		}
+	})
+
+	t.Run("deep unknown nesting stays bounded", func(t *testing.T) {
+		t.Parallel()
+
+		var nested Expression = &Identifier{Name: "value"}
+		for depth := range 32 {
+			element := DestructureElement{Target: nested}
+			if depth == 0 {
+				element.Type = checkTypeInt
+			}
+			nested = &DestructureTarget{Elements: []DestructureElement{element}}
+		}
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: nested}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(block, 0, nil)
+		if !outcome.mayBind || outcome.mustBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(unknown) = %#v, want conservative may-only result",
+				outcome,
+			)
+		}
+	})
+}
+
+func TestCheckInferDisjointKeywordSplatFailuresStayRepairable(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"value": nil}},
+		localClassValues: []checkClassValueFrame{{}},
+	}
+	states := []checkScopeState{
+		{classValues: []checkClassValueFrame{{
+			"value": {
+				keywordSplatFails:       true,
+				invalidKeywordSplatKeys: map[string]struct{}{"i:1": {}},
+			},
+		}}},
+		{classValues: []checkClassValueFrame{{
+			"value": {
+				keywordSplatFails:       true,
+				invalidKeywordSplatKeys: map[string]struct{}{"i:2": {}},
+			},
+		}}},
+	}
+
+	checker.mergeLocalClassValueStates(states)
+	if checker.localKeywordSplatFails("value") {
+		t.Fatal("merged disjoint keyword splat failures must remain repairable")
+	}
+}
+
 func TestCheckInferLocalBindingFlowsToTypedArgument(t *testing.T) {
 	t.Parallel()
 
@@ -125,6 +537,29 @@ def run(input)
   d = 1
 end
 `))
+}
+
+func TestLinkRetainedContainerAliasesSkipsShapeLiteralPairs(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{}
+	literal := &HashLiteral{
+		ShapeType: &TypeExpr{
+			Kind: TypeShape,
+			Shape: map[string]*TypeExpr{
+				"value": checkTypeString,
+			},
+		},
+		Pairs: []HashPair{{
+			Key:   &SymbolLiteral{Name: "value"},
+			Value: &Identifier{Name: "string"},
+		}},
+	}
+
+	checker.linkRetainedContainerAliases("schema", literal, checkTypeHash, false, true)
+	if len(checker.typeAliases) != 0 {
+		t.Fatalf("typeAliases = %#v, want no aliases for unevaluated shape pairs", checker.typeAliases)
+	}
 }
 
 func TestCheckInferCompoundAssignment(t *testing.T) {
@@ -427,6 +862,85 @@ def run(user: { name: string }, flag)
 end
 `))
 
+	// Destructuring targets mutate their projected container too; the
+	// enclosing target list must not hide that root from pre-loop poisoning.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string }, flag)
+  while flag
+    takes_int(user["name"])
+    user["name"], ignored = [1, 2]
+    flag = false
+  end
+end
+`))
+
+	// A forwarded bound member can mutate its receiver when the callee runs
+	// the block, so that receiver is also a pre-loop mutation root.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string }, flag)
+  while flag
+    takes_int(user["name"])
+    ["name"].map(&user.delete)
+    flag = false
+  end
+end
+`))
+
+	// A later condition evaluation sees body-degraded locals too. Its call
+	// can mutate a container before the loop exits, so the entry shape must
+	// not survive the loop.
+	requireNoCheckWarnings(t, compileScript(t, `
+def mutate(items)
+  items << "s"
+  false
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run
+  items = [1]
+  flag = 1
+  while flag || mutate(items)
+    flag = nil
+    next
+  end
+  takes_string(items[1])
+end
+`))
+
+	// An unconditional break prevents a second condition evaluation, so its
+	// skipped mutation must not poison the pre-loop container fact.
+	singlePass := compileScript(t, `
+def mutate(items)
+  items << "s"
+  false
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run
+  items = [1]
+  flag = 1
+  while flag || mutate(items)
+    break
+  end
+  takes_string(items[1])
+end
+`)
+	requireCheckWarningContains(t, singlePass, "call to takes_string argument value expected string, got int | nil")
+
 	// Without a mutation in the body the pre-loop fact stays checkable.
 	script := compileScript(t, `
 def takes_int(value: int)
@@ -550,6 +1064,264 @@ def run(flag)
 end
 `)
 	requireNoCheckWarnings(t, unknown)
+}
+
+func TestCheckInferIfExpressionClassIdentityUsesConditionTimeFact(t *testing.T) {
+	t.Parallel()
+
+	const classes = `
+class Strict
+  def initialize()
+  end
+
+  def check(value: int)
+    value
+  end
+end
+
+class Loose
+  def initialize()
+  end
+
+  def check(value)
+    value
+  end
+end
+
+class OtherStrict
+  def initialize()
+  end
+
+  def check(value: bool)
+    value
+  end
+end
+`
+	requireOnlyStrict := func(script *Script) {
+		t.Helper()
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "call to Strict#check argument value expected int, got string") {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want only the selected Strict arm", "run", warnings)
+		}
+	}
+
+	selectedTrueArm := compileScript(t, classes+`
+def run()
+  klass = Strict
+  chosen = if klass
+    [[1].each { klass = nil }, Strict][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireOnlyStrict(selectedTrueArm)
+
+	for _, result := range []string{
+		"Strict.itself()",
+		"true ? Strict : Loose",
+		"nil || Strict",
+		"if true then Strict else Loose end",
+		"{ pick: Strict }[:pick]",
+	} {
+		source := strings.ReplaceAll(classes+`
+def run()
+  condition = Strict
+  chosen = if condition
+    [[1].each { condition = nil }, SELECTED_RESULT][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`, "SELECTED_RESULT", result)
+		requireOnlyStrict(compileScript(t, source))
+	}
+
+	typeKnownCondition := compileScript(t, classes+`
+def run(condition: string)
+  chosen = if condition
+    [[1].each { condition = nil }, Strict][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireOnlyStrict(typeKnownCondition)
+
+	selectedFalseArm := compileScript(t, classes+`
+def run()
+  klass = nil
+  chosen = if klass
+    Strict
+  else
+    [[1].each { klass = Strict }, Loose][1]
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedFalseArm)
+
+	inexactSelectedArm := compileScript(t, classes+`
+def run()
+  klass = nil
+  chosen = if klass
+    Strict
+  else
+    [Loose, [1].each { klass = Strict }][0]
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, inexactSelectedArm)
+
+	selectedBeforeElsif := compileScript(t, classes+`
+def run()
+  condition = Strict
+  chosen = if condition
+    [[1].each { condition = nil }, Loose][1]
+  elsif true
+    Strict
+  else
+    Strict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedBeforeElsif)
+
+	selectedElsif := compileScript(t, classes+`
+def run()
+  condition = nil
+  chosen = if condition
+    Strict
+  elsif true
+    [[1].each { condition = Strict }, Loose][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedElsif)
+
+	selectedLocalElsif := compileScript(t, classes+`
+def run()
+  condition = nil
+  elsif_condition = Strict
+  chosen = if condition
+    Strict
+  elsif elsif_condition
+    [[1].each { condition = Strict }, Loose][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	requireNoCheckWarnings(t, selectedLocalElsif)
+
+	autoInvokedElsif := compileScript(t, classes+`
+def run()
+  condition = nil
+  elsif_condition = -> {
+    elsif_condition = Strict
+    nil
+  }
+  chosen = if condition
+    Loose
+  elsif elsif_condition
+    [[1].each { elsif_condition = nil }, Strict][1]
+  else
+    OtherStrict
+  end
+  chosen.new.check("bad")
+end
+`)
+	warnings := autoInvokedElsif.CheckWarningsForFunction("run")
+	messages := make([]string, len(warnings))
+	for i, warning := range warnings {
+		messages[i] = warning.Message
+	}
+	joined := strings.Join(messages, "\n")
+	if len(warnings) != 2 ||
+		!strings.Contains(joined, "call to Strict#check argument value expected int, got string") ||
+		!strings.Contains(joined, "call to OtherStrict#check argument value expected bool, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want both conservative callable-elsif outcomes", "run", warnings)
+	}
+}
+
+func TestDirectLocalConditionTruthinessRejectsCallableType(t *testing.T) {
+	t.Parallel()
+
+	condition := &Identifier{Name: "condition"}
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"condition": checkTypeFunction}},
+		localClassValues: []checkClassValueFrame{{}},
+	}
+	if truthy, decided := checker.directLocalConditionTruthiness(condition); decided {
+		t.Fatalf("directLocalConditionTruthiness() = (%t, %t), want undecided for an auto-invoked callable", truthy, decided)
+	}
+}
+
+func TestStableEvaluatedClassNamesRejectsPostStateLocal(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{localTypes: []checkTypeFrame{{"result": nil}}}
+	expr := &IndexExpr{
+		Object: &ArrayLiteral{Elements: []Expression{
+			&Identifier{Name: "result"},
+			&Identifier{Name: "may_mutate"},
+		}},
+		Indices: []Expression{&IntegerLiteral{Value: 0}},
+	}
+	if classNames, exact := checker.stableEvaluatedClassNames(expr, false); exact {
+		t.Fatalf("stableEvaluatedClassNames() = (%v, %t), want inexact for a post-state local", classNames, exact)
+	}
+}
+
+func TestCheckInferIfExpressionClassIdentityClearsStaleReevaluation(t *testing.T) {
+	t.Parallel()
+
+	expr := &IfExpr{Condition: &Identifier{Name: "condition"}}
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"condition": nil}},
+		localClassValues: []checkClassValueFrame{{}},
+		evaluatedIfClassFacts: map[*IfExpr][]string{
+			expr: {"Stale"},
+		},
+	}
+
+	selected := checker.beginIfClassBranchCapture(expr)
+	checker.finishIfClassBranchCapture(expr, nil, selected, true)
+	if _, stale := checker.evaluatedIfClassFacts[expr]; stale {
+		t.Fatal("unknown re-evaluation retained a stale if-expression class fact")
+	}
+}
+
+func TestCheckInferIfExpressionClassIdentityClearsNestedReevaluation(t *testing.T) {
+	t.Parallel()
+
+	expr := &IfExpr{
+		Condition:  &Identifier{Name: "condition"},
+		Consequent: &Identifier{Name: "condition"},
+	}
+	checker := &scriptChecker{
+		localTypes:       []checkTypeFrame{{"condition": nil}},
+		localClassValues: []checkClassValueFrame{{}},
+	}
+	outerSelected := checker.beginIfClassBranchCapture(expr)
+	checker.localTypes[0]["condition"] = checkTypeString
+	checker.localClassValues[0]["condition"] = checkLocalValueFact{classNames: []string{"Strict"}}
+	innerSelected := checker.beginIfClassBranchCapture(expr)
+	checker.finishIfClassBranchCapture(expr, expr.Consequent, innerSelected, true)
+	checker.finishIfClassBranchCapture(expr, nil, outerSelected, true)
+	if _, stale := checker.evaluatedIfClassFacts[expr]; stale {
+		t.Fatal("outer unknown evaluation retained a nested class fact")
+	}
 }
 
 func TestCheckInferConditionArmsPruneByInferredTruthiness(t *testing.T) {
@@ -1439,8 +2211,9 @@ def run(flag)
 end
 `))
 
-	// An unconditional append still contradicts the boundary.
-	script := compileScript(t, `
+	// An unconditional append runs, but the unknown call may replace or
+	// remove its witnessed elements before the later boundary.
+	requireNoCheckWarnings(t, compileScript(t, `
 def ints(values: array<int>)
   values
 end
@@ -1450,8 +2223,7 @@ def run(obj)
   obj.record(values << "bad")
   ints(values)
 end
-`)
-	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<int | string>")
+`))
 }
 
 func TestCheckInferShovelArgumentCarriesMutatedFact(t *testing.T) {
@@ -1553,23 +2325,17 @@ end
 `)
 	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<string>")
 
-	// A compatible append stays silent, and prior unwitnessed elements
-	// never count as witnesses (an empty receiver makes [\"bad\"] a valid
-	// array<string>).
+	// A compatible append preserves the declared fact, so the boundary
+	// stays satisfied. (The incompatible append itself is reported at the
+	// write site; see check_array_writes_test.go.)
 	requireNoCheckWarnings(t, compileScript(t, `
 def ints(values: array<int>)
   values
 end
 
-def strings(values: array<string>)
-  values
-end
-
-def run(a: array<int>, b: array<int>)
+def run(a: array<int>)
   a << 1
   ints(a)
-  b << "bad"
-  strings(b)
 end
 `))
 }
@@ -2675,13 +3441,16 @@ func TestCheckInferMutationPoisonsContainerFacts(t *testing.T) {
 
 	// An index write or member call may restructure the container, so its
 	// shape facts must stop holding (no stale-field diagnostics afterwards).
+	// The declared shape's key representation is unknown, so even the
+	// compatible write weakens the fact. (An incompatible write is reported
+	// at the write site; see check_hash_writes_test.go.)
 	requireNoCheckWarnings(t, compileScript(t, `
 def takes_int(value: int)
   value
 end
 
 def run(user: { name: string })
-  user["name"] = 42
+  user["name"] = "x"
   takes_int(user["name"])
 end
 `))
@@ -2696,6 +3465,79 @@ def run(user: { name: string })
   takes_int(user["name"])
 end
 `))
+}
+
+func TestMergeLocalValueFactsKeepsOnlyCommonProvenance(t *testing.T) {
+	t.Parallel()
+
+	hashLiteral := &HashLiteral{}
+	arrayLiteral := &ArrayLiteral{}
+	callback := &BlockLiteral{Lambda: true}
+	checker := &scriptChecker{}
+
+	for _, tc := range []struct {
+		name  string
+		left  checkLocalValueFact
+		right checkLocalValueFact
+	}{
+		{
+			name: "hash provenance first",
+			left: checkLocalValueFact{
+				staticVals:   []Expression{hashLiteral},
+				hashDefaults: []directCoreHashDefaultCapture{{freshEmpty: true}},
+			},
+			right: checkLocalValueFact{staticVals: []Expression{arrayLiteral}},
+		},
+		{
+			name: "hash provenance second",
+			left: checkLocalValueFact{staticVals: []Expression{arrayLiteral}},
+			right: checkLocalValueFact{
+				staticVals:   []Expression{hashLiteral},
+				hashDefaults: []directCoreHashDefaultCapture{{freshEmpty: true}},
+			},
+		},
+		{
+			name: "block provenance first",
+			left: checkLocalValueFact{
+				staticVals:  []Expression{callback},
+				blockValues: []capturedBlockLiteralValue{{block: callback, strict: true}},
+			},
+			right: checkLocalValueFact{staticVals: []Expression{&IntegerLiteral{Value: 1}}},
+		},
+		{
+			name: "block provenance second",
+			left: checkLocalValueFact{staticVals: []Expression{&IntegerLiteral{Value: 1}}},
+			right: checkLocalValueFact{
+				staticVals:  []Expression{callback},
+				blockValues: []capturedBlockLiteralValue{{block: callback, strict: true}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			merged, exact := checker.mergeLocalValueFacts(tc.left, tc.right)
+			if !exact || len(merged.staticVals) != 2 {
+				t.Fatalf("mergeLocalValueFacts() = %#v, %t, want two static alternatives", merged, exact)
+			}
+			if len(merged.blockValues) != 0 || len(merged.hashDefaults) != 0 {
+				t.Fatalf("mergeLocalValueFacts() = %#v, want no one-sided provenance", merged)
+			}
+		})
+	}
+
+	first := &BlockLiteral{Lambda: true}
+	second := &BlockLiteral{Lambda: true}
+	merged, exact := checker.mergeLocalValueFacts(
+		checkLocalValueFact{
+			hashDefaults: []directCoreHashDefaultCapture{{block: first, strict: true}},
+		},
+		checkLocalValueFact{
+			hashDefaults: []directCoreHashDefaultCapture{{block: second, strict: true}},
+		},
+	)
+	if !exact || len(merged.hashDefaults) != 2 {
+		t.Fatalf("mergeLocalValueFacts() = %#v, %t, want both exact hash defaults", merged, exact)
+	}
 }
 
 func TestCheckInferHashLiteralShapes(t *testing.T) {

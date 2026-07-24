@@ -195,11 +195,37 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   receivers stay unknown.
 - Member contracts also classify receiver effects. A container fact survives
   a call the registry proves pure (`a.at(0)`, `a.nil?`), including through
-  aliases, chained calls, and safe navigation. Known mutators, unregistered
-  members, blocks, impure arguments, dynamic dispatch, and user overrides
-  still discard the receiver's facts — as does a pure read that may hand
-  back a nested mutable element (`a.at(0)` on `array<array<int>>`), since a
-  chained mutation through that alias could not be traced back to `a`.
+  aliases, chained calls, and safe navigation. The modeled array writes
+  described below can also preserve a compatible fact. Other known mutators,
+  unregistered members, blocks whose effects cannot be modeled, impure
+  arguments, dynamic dispatch, and user overrides still discard the
+  receiver's facts — as does a pure read that may hand back a nested mutable
+  element (`a.at(0)` on `array<array<int>>`), since a chained mutation through
+  that alias could not be traced back to `a`.
+- Element writes to a local known to be `array<T>` — `items << v`,
+  `items[i] = v`, and the in-place mutators `push`/`append`/`prepend`/
+  `unshift`/`insert`/`fill` — are checked against `T`: a value that can never
+  satisfy `T` is reported at the write, a provably compatible write keeps the
+  known element type, and an unknown value conservatively widens the local
+  back to unknown. For `fill`, the checker composes exact selector outcomes
+  with value or block results, including implicit `nil` padding, and preserves
+  the fact only when every completing path remains compatible. Unknown
+  receivers, unresolved fill outcomes, `array<any>`, and untyped arrays stay
+  gradual.
+- Entry writes to a local known to be `hash<K, V>` — `h[k] = v`, `store`,
+  and the in-place `merge!`/`update` — check the key against `K` and the
+  value against `V` the same way. Writes to a local with a declared shape
+  type check the field's declared type, and a statically known key outside
+  the shape is reported (shapes are exact). Hash and shape literals stay
+  writable: the checker updates their known fields in place instead of
+  reporting, and unknown keys or values widen the fact back to unknown.
+- Typed accessor-backed instance variables carry their property contract
+  into instance-method bodies: a direct write such as `@name = 1` against
+  `property name: string` is an error when the value's known type contradicts
+  the contract, reads observe the declared type (or `nil` before the first
+  write), and a checked write drops the nil arm. Unknown values pass and the
+  runtime guard validates the write when it executes; untyped accessors and
+  undeclared instance variables stay dynamic.
 
 ### `JSON.parse_as`
 

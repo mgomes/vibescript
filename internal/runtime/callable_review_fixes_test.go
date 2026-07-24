@@ -117,3 +117,28 @@ end`)
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	compareArrays(t, got, []Value{NewInt(5), NewInt(5), NewInt(5)})
 }
+
+func TestConditionalReceiverCallableSetterDoesNotSetExpectation(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `class C
+  property cb: function
+end
+
+def five
+  5
+end
+
+def run(flag)
+  (flag ? C.new : C.new).cb = five
+end`)
+
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		[]Value{NewBool(true)},
+		CallOptions{},
+		"expected function, got int",
+	)
+}

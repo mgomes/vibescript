@@ -475,6 +475,185 @@ end
 	}
 }
 
+func TestCheckMethodReturnSummariesUsePropertyBindingFacts(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		source  string
+		warning string
+	}{
+		{
+			name: "typed property read",
+			source: `
+class Counter
+  property count: int
+
+  def value()
+    @count
+  end
+end
+
+def takes_hash(value: hash)
+  value
+end
+
+def run()
+  takes_hash(Counter.new.value())
+end
+`,
+			warning: "call to takes_hash argument value expected hash, got int | nil",
+		},
+		{
+			name: "ivar parameter overwrites entry fact",
+			source: `
+class Counter
+  property count: int
+
+  def value(@count)
+    @count
+  end
+end
+
+def takes_hash(value: hash)
+  value
+end
+
+def run()
+  takes_hash(Counter.new.value(1))
+end
+`,
+			warning: "call to takes_hash argument value expected hash, got int",
+		},
+		{
+			name: "function property default preserves callable",
+			source: `
+def stop_now()
+  raise "stop"
+end
+
+class Box
+  property callback: function
+
+  def value(@callback = stop_now)
+    42
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Box.new.value())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "dynamic splat keeps supplied argument path",
+			source: `
+class User
+  property flag: bool
+
+  def initialize(value = -> { @flag = true }.call())
+    if @flag
+      raise "stop"
+    end
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  args = JSON.parse("[1]")
+  User.new(*args)
+  takes_string(1)
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "rejected initializer write stops tail",
+			source: `
+class User
+  property count: int
+
+  def initialize()
+    @count ||= "bad"
+    takes_string(1)
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  User.new()
+end
+`,
+			warning: "write to @count expected int, got string",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			warnings := compileScriptDefault(t, tc.source).CheckWarnings()
+			if len(warnings) != 1 || warnings[0].Message != tc.warning {
+				t.Fatalf("CheckWarnings() = %#v, want only %q", warnings, tc.warning)
+			}
+		})
+	}
+}
+
+func TestCheckMethodReturnSummariesIsolateCallerControlState(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def build()
+  return 42
+end
+`)
+	fn := script.functions["build"]
+	blockResultCollector := &returnSummaryCollector{}
+	blockLocalReturnCollector := &returnSummaryCollector{}
+	blockLocalBreakCollector := &returnSummaryCollector{}
+	checker := &scriptChecker{
+		script:                    script,
+		typeRoot:                  checkTypeRoot(script, nil),
+		runtimeTypeRoot:           checkTypeRoot(script, nil),
+		scopes:                    []map[string]struct{}{{"build": {}}},
+		localCallBypassScopes:     []map[string]int{{"build": 0}},
+		blockResultCollector:      blockResultCollector,
+		blockLocalReturnCollector: blockLocalReturnCollector,
+		blockLocalBreakCollector:  blockLocalBreakCollector,
+	}
+
+	analysis := checker.functionReturnAnalysis(fn, nil, nil, true, nil, false)
+	if analysis.result == nil || analysis.result.Kind != TypeInt {
+		t.Fatalf("functionReturnAnalysis() result = %#v, want int", analysis.result)
+	}
+	if blockLocalReturnCollector.sawReturn() {
+		t.Fatalf(
+			"caller block return collector = %#v, want no callee return",
+			blockLocalReturnCollector,
+		)
+	}
+	if len(checker.localCallBypassScopes) != 1 ||
+		checker.localCallBypassScopes[0]["build"] != 0 {
+		t.Fatalf("localCallBypassScopes = %#v, want caller frame restored", checker.localCallBypassScopes)
+	}
+	if checker.blockResultCollector != blockResultCollector ||
+		checker.blockLocalReturnCollector != blockLocalReturnCollector ||
+		checker.blockLocalBreakCollector != blockLocalBreakCollector {
+		t.Fatal("functionReturnAnalysis() did not restore caller block collectors")
+	}
+}
+
 func TestCheckMethodReturnSummariesTreatSelfAsNonNil(t *testing.T) {
 	t.Parallel()
 

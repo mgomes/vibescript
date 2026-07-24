@@ -757,3 +757,57 @@ end
 		})
 	}
 }
+
+func TestCheckNullableShapeNilDispatchMatchesRuntime(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		expression string
+	}{
+		{name: "bare", expression: "value.to_s"},
+		{name: "call", expression: "value.to_s()"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, fmt.Sprintf(`
+def takes_int(value: int)
+  value
+end
+
+def checked(value: { name: string }?)
+  takes_int(%s)
+end
+
+def render(value: { name: string }?)
+  %s
+end
+`, tc.expression, tc.expression))
+			requireCheckWarningContains(
+				t,
+				script,
+				"call to takes_int argument value expected int, got string",
+			)
+
+			got := callFunc(t, script, "render", []Value{NewNil()})
+			if got.Kind() != KindString || got.String() != "" {
+				t.Errorf("render(nil) = %#v, want empty string", got)
+			}
+
+			shape := NewTypedHash(1)
+			if err := shape.HashSet(NewSymbol("name"), NewString("Ada")); err != nil {
+				t.Fatalf(`HashSet(:name, "Ada") error = %v`, err)
+			}
+			requireCallErrorContains(
+				t,
+				script,
+				"render",
+				[]Value{shape},
+				CallOptions{},
+				"unknown hash method to_s",
+			)
+		})
+	}
+}
