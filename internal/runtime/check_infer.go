@@ -6597,7 +6597,10 @@ func staticArrayFillRangeAlwaysInvokesBlock(rng Range) bool {
 		rng.Start = 0
 	}
 	if rng.Endless {
-		return false
+		// A negative start either fails validation on a receiver that is too
+		// short or resolves strictly before its end, so every completing call
+		// invokes the block.
+		return rng.Start < 0
 	}
 	end := rng.End
 	if !rng.Exclusive {

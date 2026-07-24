@@ -3884,6 +3884,7 @@ end
 			{name: "inclusive range", items: "[]", fill: "0..0"},
 			{name: "exclusive range", items: "[]", fill: "0...1"},
 			{name: "negative range", items: "[1]", fill: "-1..-1"},
+			{name: "negative endless range", items: "[1]", fill: "-1.."},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
