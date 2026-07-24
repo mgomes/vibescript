@@ -691,6 +691,18 @@ end
 		CallOptions{},
 		"instance variable @a expected int, got string",
 	)
+
+	script = compileScriptDefault(t, `
+class Pair
+  property a: int?
+
+  def initialize(flag: bool)
+    values = flag ? ["bad"] : ["worse"]
+    @a, ignored = values
+  end
+end
+`)
+	requireCheckWarningContains(t, script, "write to @a expected int?, got string")
 }
 
 func TestCheckDestructuredIvarWritesPreserveEvaluatedScalarSnapshot(t *testing.T) {

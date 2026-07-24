@@ -6928,7 +6928,7 @@ func (c *scriptChecker) captureStaticChoiceDestructureValueFacts(
 			return nil, false
 		}
 		switch element.Target.(type) {
-		case nil, *Identifier:
+		case nil, *Identifier, *IvarExpr:
 		default:
 			return nil, false
 		}
@@ -6991,12 +6991,23 @@ func (c *scriptChecker) captureStaticChoiceDestructureValueFacts(
 			}
 		}
 		normalized := c.normalizeCheckStaticValues(projected)
-		if len(normalized) != len(projected) {
+		if len(normalized) == 0 {
 			return nil, false
 		}
-		for i := range normalized {
-			if normalized[i] != projected[i] {
-				return nil, false
+		staticChoice := checkStaticChoiceFact{}
+		if len(normalized) == len(projected) {
+			aligned := true
+			for i := range normalized {
+				if normalized[i] != projected[i] {
+					aligned = false
+					break
+				}
+			}
+			if aligned {
+				staticChoice = checkStaticChoiceFact{
+					source:  cloneCheckCallSplatSource(source),
+					indices: indices,
+				}
 			}
 		}
 		facts = append(facts, capturedDestructureValueFact{
@@ -7008,13 +7019,10 @@ func (c *scriptChecker) captureStaticChoiceDestructureValueFacts(
 			evaluated: true,
 			staticVals: append(
 				[]Expression(nil),
-				projected...,
+				normalized...,
 			),
-			staticChoice: checkStaticChoiceFact{
-				source:  cloneCheckCallSplatSource(source),
-				indices: indices,
-			},
-			factKind: destructureStaticFact,
+			staticChoice: staticChoice,
+			factKind:     destructureStaticFact,
 		})
 	}
 	return facts, len(facts) > 0
