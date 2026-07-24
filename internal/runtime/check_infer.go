@@ -424,10 +424,6 @@ func (c *scriptChecker) localBlockLiteralValuesFor(name string) ([]checkBlockLit
 		len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
 
-func (c *scriptChecker) bindLocalBlockLiteralValues(name string, blocks []checkBlockLiteralValue) {
-	c.bindLocalBlockLiteralChoices(name, blocks, false)
-}
-
 func (c *scriptChecker) localArrayFillBlockLiteralValuesFor(
 	name string,
 ) ([]checkBlockLiteralValue, bool) {
@@ -8336,7 +8332,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		written, captured := argumentFacts[arg]
 		if member.Property == "fill" && blockResult.fact != nil &&
 			(arg == writesCall.Block || arg == writesCall.BlockArg) {
-			written, captured = blockResult.fact, true
+			written = blockResult.fact
 		} else if !captured {
 			written = c.inferExpressionType(arg)
 		}
