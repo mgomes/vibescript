@@ -504,6 +504,28 @@ end
 	requireCheckWarningContains(t, independent, "call to accept argument value expected { left: int, right: int } | { left: string, right: string }, got { left: int | string, right: int | string }")
 
 	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: float, right: float })
+  value
+end
+
+def run(exponent: int)
+  value = 2 ** exponent
+  accept({ left: value, right: value })
+end
+`))
+
+	sharedSingleton := compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: float, right: float })
+  value
+end
+
+def run(left_exponent: int, right_exponent: int)
+  accept({ left: 2 ** left_exponent, right: 2 ** right_exponent })
+end
+`)
+	requireCheckWarningContains(t, sharedSingleton, "call to accept argument value expected { left: int, right: int } | { left: float, right: float }, got { left: number, right: number }")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
 def accept(value: { other?: bool } | { label: string })
   value
 end

@@ -9721,6 +9721,7 @@ func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectati
 		return c.inferHashLiteralType(lit)
 	}
 	shape := make(map[string]*TypeExpr, len(lit.Pairs))
+	sources := make(map[string]checkShapeFieldSource, len(lit.Pairs))
 	allSymbolKeys, allStringKeys := true, true
 	for _, pair := range lit.Pairs {
 		switch pair.Key.(type) {
@@ -9747,6 +9748,9 @@ func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectati
 			return checkTypeHash
 		}
 		shape[key] = fieldType
+		if source, ok := c.shapeFieldSourceForExpression(pair.Value); ok {
+			sources[key] = source
+		}
 	}
 	fact := &TypeExpr{Kind: TypeShape, Shape: shape}
 	switch {
@@ -9755,6 +9759,7 @@ func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectati
 	case allStringKeys:
 		fact.Name = shapeKeysStringMarker
 	}
+	c.recordShapeFieldSources(fact, sources)
 	return fact
 }
 
@@ -9916,6 +9921,7 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 		// literal infers its hash facts below like any other braced group.
 	}
 	shape := make(map[string]*TypeExpr, len(lit.Pairs))
+	sources := make(map[string]checkShapeFieldSource, len(lit.Pairs))
 	sawSymbolKeys, sawStringKeys, sawOtherKeys := false, false, false
 	for _, pair := range lit.Pairs {
 		switch pair.Key.(type) {
@@ -9938,6 +9944,9 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 			return checkTypeHash
 		}
 		shape[key] = fieldType
+		if source, ok := c.shapeFieldSourceForExpression(pair.Value); ok {
+			sources[key] = source
+		}
 	}
 	fact := &TypeExpr{Kind: TypeShape, Shape: shape}
 	// Runtime hashes distinguish symbol keys from string keys, so an exact
@@ -9954,7 +9963,58 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 	default:
 		fact.Name = mixedKeysMarker(sawSymbolKeys, sawStringKeys, sawOtherKeys)
 	}
+	c.recordShapeFieldSources(fact, sources)
 	return fact
+}
+
+type checkShapeFieldSource struct {
+	name       string
+	generation uint64
+}
+
+func (c *scriptChecker) shapeFieldSourceForExpression(expr Expression) (checkShapeFieldSource, bool) {
+	identifier, ok := expr.(*Identifier)
+	if !ok || c.localTypeFor(identifier.Name) == nil {
+		return checkShapeFieldSource{}, false
+	}
+	return checkShapeFieldSource{
+		name:       identifier.Name,
+		generation: c.localBindingGenerations[identifier.Name],
+	}, true
+}
+
+func (c *scriptChecker) recordShapeFieldSources(
+	shape *TypeExpr,
+	sources map[string]checkShapeFieldSource,
+) {
+	if shape == nil || len(sources) == 0 {
+		return
+	}
+	counts := make(map[checkShapeFieldSource]int, len(sources))
+	for _, source := range sources {
+		counts[source]++
+	}
+	correlated := make(map[string]checkShapeFieldSource)
+	for field, source := range sources {
+		if counts[source] > 1 {
+			correlated[field] = source
+		}
+	}
+	if len(correlated) == 0 {
+		return
+	}
+	if c.shapeFieldSources == nil {
+		c.shapeFieldSources = make(map[*TypeExpr]map[string]checkShapeFieldSource)
+	}
+	c.shapeFieldSources[shape] = correlated
+}
+
+func (c *scriptChecker) boundaryShapeFieldSource(
+	shape *TypeExpr,
+	field string,
+) (checkShapeFieldSource, bool) {
+	source, ok := c.shapeFieldSources[shape][field]
+	return source, ok
 }
 
 func (c *scriptChecker) inferUnaryExprType(expr *UnaryExpr) *TypeExpr {
@@ -15251,7 +15311,7 @@ func (c *scriptChecker) checkInferredExpressionAgainstTypeWithExpectation(
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return
 	}
-	if boundaryTypeRejected(inferred, ty, c.checkNamedTypeResolver()) {
+	if c.boundaryTypeRejected(inferred, ty) {
 		c.add(function, expr.Pos(), "%s expected %s, got %s", subject, formatTypeExpr(ty), formatTypeExpr(inferred))
 	}
 }
@@ -15276,7 +15336,7 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return
 	}
-	if boundaryTypeRejected(inferred, ty, c.checkNamedTypeResolver()) {
+	if c.boundaryTypeRejected(inferred, ty) {
 		c.add(function, expr.Pos(), "call to %s argument %s expected %s, got %s",
 			callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred))
 	}
@@ -16311,17 +16371,39 @@ const (
 	boundaryRelationRejected
 )
 
+type boundaryTypeContext struct {
+	resolve          namedTypeResolver
+	shapeFieldSource func(*TypeExpr, string) (checkShapeFieldSource, bool)
+}
+
 // boundaryTypeRejected reports whether a finite inferred alternative cannot
 // satisfy a typed boundary. Opaque alternatives defer individually, so any
 // and unknown values stay gradual without hiding an incompatible known arm.
 func boundaryTypeRejected(inferred, required *TypeExpr, resolve namedTypeResolver) bool {
-	return boundaryTypeExprRelation(inferred, required, resolve, 0) == boundaryRelationRejected
+	return boundaryTypeExprRelation(
+		inferred,
+		required,
+		boundaryTypeContext{resolve: resolve},
+		0,
+	) == boundaryRelationRejected
+}
+
+func (c *scriptChecker) boundaryTypeRejected(inferred, required *TypeExpr) bool {
+	return boundaryTypeExprRelation(
+		inferred,
+		required,
+		boundaryTypeContext{
+			resolve:          c.checkNamedTypeResolver(),
+			shapeFieldSource: c.boundaryShapeFieldSource,
+		},
+		0,
+	) == boundaryRelationRejected
 }
 
 func boundaryTypeExprRelation(
 	inferred,
 	required *TypeExpr,
-	resolve namedTypeResolver,
+	ctx boundaryTypeContext,
 	depth int,
 ) boundaryTypeRelation {
 	if inferred == nil || required == nil || depth > maxNormalizeDepth {
@@ -16340,7 +16422,7 @@ func boundaryTypeExprRelation(
 	for _, inferredArm := range inferredArms {
 		armResult := boundaryRelationRejected
 		for _, requiredArm := range requiredArms {
-			relation := boundaryTypeArmRelation(inferredArm, requiredArm, resolve, depth)
+			relation := boundaryTypeArmRelation(inferredArm, requiredArm, ctx, depth)
 			if relation == boundaryRelationAccepted {
 				armResult = boundaryRelationAccepted
 				break
@@ -16350,7 +16432,7 @@ func boundaryTypeExprRelation(
 			}
 		}
 		if armResult == boundaryRelationRejected {
-			armResult = boundaryTypeUnionCoverage(inferredArm, requiredArms, resolve, depth)
+			armResult = boundaryTypeUnionCoverage(inferredArm, requiredArms, ctx, depth)
 		}
 		if armResult == boundaryRelationRejected {
 			return boundaryRelationRejected
@@ -16365,14 +16447,14 @@ func boundaryTypeExprRelation(
 func boundaryTypeUnionCoverage(
 	inferred *TypeExpr,
 	required []*TypeExpr,
-	resolve namedTypeResolver,
+	ctx boundaryTypeContext,
 	depth int,
 ) boundaryTypeRelation {
 	switch inferred.Kind {
 	case TypeArray:
-		return boundaryArrayUnionCoverage(inferred, required, resolve, depth)
+		return boundaryArrayUnionCoverage(inferred, required, ctx, depth)
 	case TypeShape:
-		return boundaryShapeUnionCoverage(inferred, required, resolve, depth)
+		return boundaryShapeUnionCoverage(inferred, required, ctx, depth)
 	default:
 		return boundaryRelationRejected
 	}
@@ -16381,7 +16463,7 @@ func boundaryTypeUnionCoverage(
 func boundaryArrayUnionCoverage(
 	inferred *TypeExpr,
 	required []*TypeExpr,
-	resolve namedTypeResolver,
+	ctx boundaryTypeContext,
 	depth int,
 ) boundaryTypeRelation {
 	if (inferred.Name != literalAlternativeElementsMarker &&
@@ -16405,7 +16487,7 @@ func boundaryArrayUnionCoverage(
 	if requiredElements == nil {
 		return boundaryRelationRejected
 	}
-	relation := boundaryTypeExprRelation(inferred.TypeArgs[0], requiredElements, resolve, depth+1)
+	relation := boundaryTypeExprRelation(inferred.TypeArgs[0], requiredElements, ctx, depth+1)
 	if inferred.Name == literalPartialAlternativeElementsMarker &&
 		relation != boundaryRelationRejected {
 		return boundaryRelationGradual
@@ -16424,7 +16506,7 @@ const maxBoundaryShapeVariants = 1024
 func boundaryShapeUnionCoverage(
 	inferred *TypeExpr,
 	required []*TypeExpr,
-	resolve namedTypeResolver,
+	ctx boundaryTypeContext,
 	depth int,
 ) boundaryTypeRelation {
 	fields := make([]string, 0, len(inferred.Shape))
@@ -16434,7 +16516,7 @@ func boundaryShapeUnionCoverage(
 	sort.Strings(fields)
 
 	groups := make([]boundaryShapeFieldGroup, 0, len(fields))
-	groupByFact := make(map[*TypeExpr]int, len(fields))
+	groupBySource := make(map[checkShapeFieldSource]int, len(fields))
 	hasAlternatives := false
 	for _, field := range fields {
 		template := inferred.Shape[field]
@@ -16449,12 +16531,14 @@ func boundaryShapeUnionCoverage(
 		optional := shapeFieldOptional(template)
 		if optional {
 			hasAlternatives = true
-		} else {
-			if index, ok := groupByFact[valueType]; ok {
-				groups[index].fields = append(groups[index].fields, field)
-				continue
+		} else if ctx.shapeFieldSource != nil {
+			if source, sourced := ctx.shapeFieldSource(inferred, field); sourced {
+				if index, ok := groupBySource[source]; ok {
+					groups[index].fields = append(groups[index].fields, field)
+					continue
+				}
+				groupBySource[source] = len(groups)
 			}
-			groupByFact[valueType] = len(groups)
 		}
 		groups = append(groups, boundaryShapeFieldGroup{
 			fields:   []string{field},
@@ -16481,7 +16565,7 @@ func boundaryShapeUnionCoverage(
 		}
 		if index == len(groups) {
 			variants++
-			return boundaryShapeVariantRelation(variant, required, resolve, depth)
+			return boundaryShapeVariantRelation(variant, required, ctx, depth)
 		}
 		group := groups[index]
 		groupResult := boundaryRelationAccepted
@@ -16522,12 +16606,12 @@ func boundaryShapeUnionCoverage(
 func boundaryShapeVariantRelation(
 	inferred *TypeExpr,
 	required []*TypeExpr,
-	resolve namedTypeResolver,
+	ctx boundaryTypeContext,
 	depth int,
 ) boundaryTypeRelation {
 	result := boundaryRelationRejected
 	for _, arm := range required {
-		relation := boundaryTypeArmRelation(inferred, arm, resolve, depth)
+		relation := boundaryTypeArmRelation(inferred, arm, ctx, depth)
 		if relation == boundaryRelationAccepted {
 			return boundaryRelationAccepted
 		}
@@ -16572,7 +16656,7 @@ func boundaryTypeExprArms(ty *TypeExpr, depth int) ([]*TypeExpr, bool) {
 func boundaryTypeArmRelation(
 	inferred,
 	required *TypeExpr,
-	resolve namedTypeResolver,
+	ctx boundaryTypeContext,
 	depth int,
 ) boundaryTypeRelation {
 	if inferred == nil || required == nil {
@@ -16588,21 +16672,21 @@ func boundaryTypeArmRelation(
 	if required.Kind == TypeUnknown {
 		return boundaryRelationGradual
 	}
-	if typeArmAdmits(required, inferred, resolve) {
+	if typeArmAdmits(required, inferred, ctx.resolve) {
 		return boundaryRelationAccepted
 	}
 
 	switch {
 	case inferred.Kind == TypeArray && required.Kind == TypeArray:
-		return boundaryArrayRelation(inferred, required, resolve, depth+1)
+		return boundaryArrayRelation(inferred, required, ctx, depth+1)
 	case inferred.Kind == TypeHash && required.Kind == TypeHash:
-		return boundaryHashRelation(inferred, required, resolve, depth+1)
+		return boundaryHashRelation(inferred, required, ctx, depth+1)
 	case inferred.Kind == TypeShape && required.Kind == TypeShape:
-		return boundaryShapeRelation(inferred, required, resolve, depth+1)
+		return boundaryShapeRelation(inferred, required, ctx, depth+1)
 	case inferred.Kind == TypeShape && required.Kind == TypeHash:
-		return boundaryShapeHashRelation(inferred, required, resolve, depth+1)
+		return boundaryShapeHashRelation(inferred, required, ctx, depth+1)
 	}
-	if typeArmPairDisjoint(inferred, required, resolve) {
+	if typeArmPairDisjoint(inferred, required, ctx.resolve) {
 		return boundaryRelationRejected
 	}
 	return boundaryRelationGradual
@@ -16611,7 +16695,7 @@ func boundaryTypeArmRelation(
 func boundaryArrayRelation(
 	inferred,
 	required *TypeExpr,
-	resolve namedTypeResolver,
+	ctx boundaryTypeContext,
 	depth int,
 ) boundaryTypeRelation {
 	if len(required.TypeArgs) == 0 {
@@ -16620,7 +16704,7 @@ func boundaryArrayRelation(
 	if len(required.TypeArgs) != 1 || len(inferred.TypeArgs) != 1 {
 		return boundaryRelationGradual
 	}
-	relation := boundaryTypeExprRelation(inferred.TypeArgs[0], required.TypeArgs[0], resolve, depth)
+	relation := boundaryTypeExprRelation(inferred.TypeArgs[0], required.TypeArgs[0], ctx, depth)
 	if (inferred.Name == literalPartialElementsMarker ||
 		inferred.Name == literalPartialAlternativeElementsMarker) &&
 		relation != boundaryRelationRejected {
@@ -16632,7 +16716,7 @@ func boundaryArrayRelation(
 func boundaryHashRelation(
 	inferred,
 	required *TypeExpr,
-	resolve namedTypeResolver,
+	ctx boundaryTypeContext,
 	depth int,
 ) boundaryTypeRelation {
 	if len(required.TypeArgs) == 0 {
@@ -16641,11 +16725,11 @@ func boundaryHashRelation(
 	if len(required.TypeArgs) != 2 || len(inferred.TypeArgs) != 2 {
 		return boundaryRelationGradual
 	}
-	keyRelation := boundaryTypeExprRelation(inferred.TypeArgs[0], required.TypeArgs[0], resolve, depth)
+	keyRelation := boundaryTypeExprRelation(inferred.TypeArgs[0], required.TypeArgs[0], ctx, depth)
 	if keyRelation == boundaryRelationRejected {
 		return boundaryRelationRejected
 	}
-	valueRelation := boundaryTypeExprRelation(inferred.TypeArgs[1], required.TypeArgs[1], resolve, depth)
+	valueRelation := boundaryTypeExprRelation(inferred.TypeArgs[1], required.TypeArgs[1], ctx, depth)
 	if valueRelation == boundaryRelationRejected {
 		return boundaryRelationRejected
 	}
@@ -16658,7 +16742,7 @@ func boundaryHashRelation(
 func boundaryShapeRelation(
 	inferred,
 	required *TypeExpr,
-	resolve namedTypeResolver,
+	ctx boundaryTypeContext,
 	depth int,
 ) boundaryTypeRelation {
 	result := boundaryRelationAccepted
@@ -16680,7 +16764,7 @@ func boundaryShapeRelation(
 		relation := boundaryTypeExprRelation(
 			shapeFieldValueType(inferredField),
 			shapeFieldValueType(requiredField),
-			resolve,
+			ctx,
 			depth,
 		)
 		if relation == boundaryRelationRejected {
@@ -16706,7 +16790,7 @@ func boundaryShapeRelation(
 func boundaryShapeHashRelation(
 	inferred,
 	required *TypeExpr,
-	resolve namedTypeResolver,
+	ctx boundaryTypeContext,
 	depth int,
 ) boundaryTypeRelation {
 	if len(required.TypeArgs) == 0 || !inferred.Open && len(inferred.Shape) == 0 {
@@ -16728,7 +16812,7 @@ func boundaryShapeHashRelation(
 	result := boundaryRelationAccepted
 	if keyType == nil {
 		result = boundaryRelationGradual
-	} else if relation := boundaryTypeExprRelation(keyType, required.TypeArgs[0], resolve, depth); relation == boundaryRelationRejected {
+	} else if relation := boundaryTypeExprRelation(keyType, required.TypeArgs[0], ctx, depth); relation == boundaryRelationRejected {
 		return boundaryRelationRejected
 	} else if relation == boundaryRelationGradual {
 		result = boundaryRelationGradual
@@ -16737,7 +16821,7 @@ func boundaryShapeHashRelation(
 		relation := boundaryTypeExprRelation(
 			shapeFieldValueType(fieldType),
 			required.TypeArgs[1],
-			resolve,
+			ctx,
 			depth,
 		)
 		if relation == boundaryRelationRejected {

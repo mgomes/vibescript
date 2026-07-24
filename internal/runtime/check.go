@@ -140,6 +140,7 @@ type scriptChecker struct {
 	callArgumentStaticChoices  map[Expression]checkStaticChoiceFact
 	callArgumentSplatSources   map[Expression]checkCallSplatSource
 	callArrayReceiverLength    checkArrayReceiverLength
+	shapeFieldSources          map[*TypeExpr]map[string]checkShapeFieldSource
 	evaluatedBlockValues       map[Expression][]capturedBlockLiteralValue
 	evaluatedHashDefaults      map[Expression][]directCoreHashDefaultCapture
 	evaluatedDestructureFacts  map[Expression]capturedDestructureValueFact
@@ -13130,7 +13131,7 @@ func (c *scriptChecker) checkParseAsShapeArgument(function string, call *CallExp
 	if !rawCaptured {
 		rawType = c.inferExpressionType(raw)
 	}
-	if rawType != nil && boundaryTypeRejected(rawType, checkTypeString, c.checkNamedTypeResolver()) {
+	if rawType != nil && c.boundaryTypeRejected(rawType, checkTypeString) {
 		c.add(function, raw.Pos(), "call to JSON.parse_as expects a JSON string as its first argument, got %s", formatTypeExpr(rawType))
 	}
 	arg := call.Args[1]
@@ -16100,7 +16101,7 @@ func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Positi
 			// argument against a plain array's element contract.
 			if ty.Kind == TypeUnion {
 				inferred := c.inferredRestArgumentType(args, restElementBoundaryType(ty))
-				if inferred != nil && boundaryTypeRejected(inferred, ty, c.checkNamedTypeResolver()) {
+				if inferred != nil && c.boundaryTypeRejected(inferred, ty) {
 					warningPos := pos
 					if len(args) > 0 {
 						warningPos = args[0].Pos()
@@ -16242,7 +16243,7 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 					}
 				}
 				inferred := c.inferredKeywordRestArgumentType(last)
-				if boundaryTypeRejected(inferred, ty, c.checkNamedTypeResolver()) {
+				if c.boundaryTypeRejected(inferred, ty) {
 					c.add(function, kwarg.Value.Pos(), "call to %s argument %s expected %s, got %s",
 						callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred))
 				}
@@ -16319,6 +16320,7 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 
 func (c *scriptChecker) inferredKeywordRestArgumentType(values map[string]Expression) *TypeExpr {
 	fields := make(map[string]*TypeExpr, len(values))
+	sources := make(map[string]checkShapeFieldSource, len(values))
 	for name, expr := range values {
 		inferred, captured := c.callArgumentFacts[expr]
 		if !captured {
@@ -16328,12 +16330,17 @@ func (c *scriptChecker) inferredKeywordRestArgumentType(values map[string]Expres
 			inferred = &TypeExpr{Kind: TypeUnknown}
 		}
 		fields[name] = inferred
+		if source, ok := c.shapeFieldSourceForExpression(expr); ok {
+			sources[name] = source
+		}
 	}
-	return &TypeExpr{
+	shape := &TypeExpr{
 		Kind:  TypeShape,
 		Name:  shapeKeysStringMarker,
 		Shape: fields,
 	}
+	c.recordShapeFieldSources(shape, sources)
+	return shape
 }
 
 // checkArgumentValue validates val against ty and returns the value the
