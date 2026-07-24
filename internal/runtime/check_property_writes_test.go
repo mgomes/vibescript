@@ -693,6 +693,72 @@ end
 	)
 }
 
+func TestCheckDestructuredIvarWritesPreserveEvaluatedScalarSnapshot(t *testing.T) {
+	t.Parallel()
+
+	t.Run("later live value cannot create a false positive", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize
+    source = [1]
+    source[0], @a = ["bad", source[0]]
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
+
+	t.Run("later live value cannot hide an invalid write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+enum Status
+  Draft
+end
+
+class User
+  property status: Status
+
+  def initialize
+    source = [:bogus]
+    source[0], @status = [:draft, source[0]]
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+		requireCheckWarningContains(
+			t,
+			script,
+			"write to @status expected Status, got symbol",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @status expected Status, got symbol",
+		)
+	})
+}
+
 func TestCheckDestructuredIvarWritesUseEvaluatedCallableFacts(t *testing.T) {
 	t.Parallel()
 

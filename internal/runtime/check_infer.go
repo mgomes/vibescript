@@ -6358,6 +6358,21 @@ func (c *scriptChecker) capturedDestructureValueFact(value Expression) capturedD
 	return fact
 }
 
+func (c *scriptChecker) refreshCapturedDestructureContainerFact(
+	fact capturedDestructureValueFact,
+) capturedDestructureValueFact {
+	if !typeExprHasContainerArm(fact.assigned) {
+		return fact
+	}
+	// Earlier LHS leaves may mutate a container captured by a later leaf.
+	// Refresh its contents while preserving scalar leaves as the values read
+	// when the RHS was evaluated.
+	refreshed := c.capturedDestructureValueFact(fact.value)
+	refreshed.target = fact.target
+	refreshed.declared = fact.declared
+	return refreshed
+}
+
 func (c *scriptChecker) capturedDestructureArrayFact(array *ArrayLiteral) (capturedDestructureValueFact, bool) {
 	if array == nil {
 		return capturedDestructureValueFact{}, false

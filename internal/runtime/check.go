@@ -7181,13 +7181,7 @@ func (c *scriptChecker) replayDestructureAssignment(
 		if fact.target == nil {
 			continue
 		}
-		// Earlier LHS leaves may mutate an object captured by a later leaf.
-		// Re-read the evaluation snapshot now so the later binding observes the
-		// same live object after those writes without reevaluating the RHS.
-		refreshed := c.capturedDestructureValueFact(fact.value)
-		refreshed.target = fact.target
-		refreshed.declared = fact.declared
-		fact = refreshed
+		fact = c.refreshCapturedDestructureContainerFact(fact)
 		if _, ident := fact.target.(*Identifier); ident {
 			c.bindCapturedDestructureValueFact(fact)
 			c.recordRuntimeBindingTarget(fact.target)
@@ -18586,10 +18580,7 @@ func (s *namespaceMutationScan) replayDestructureAssignment(
 		if fact.target == nil {
 			continue
 		}
-		refreshed := s.checker.capturedDestructureValueFact(fact.value)
-		refreshed.target = fact.target
-		refreshed.declared = fact.declared
-		fact = refreshed
+		fact = s.checker.refreshCapturedDestructureContainerFact(fact)
 		if _, ident := fact.target.(*Identifier); ident {
 			s.checker.bindCapturedDestructureValueFact(fact)
 			continue

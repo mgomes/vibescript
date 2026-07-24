@@ -442,7 +442,7 @@ func (c *scriptChecker) checkIvarWrite(function string, pos Position, name strin
 			if inferredMismatch {
 				c.add(function, pos, "write to @%s expected %s, got %s",
 					name, formatTypeExpr(ty), formatTypeExpr(next))
-			} else if values, exact := c.staticLiteralValueAlternatives(value); exact {
+			} else if values, exact := c.callStaticLiteralValueAlternatives(value); exact {
 				// Retained exact values supplement kind-level inference with
 				// value-sensitive normalization, such as enum member lookup.
 				if err := c.staticValuesTypeMismatch(values, ty); err != nil {
@@ -469,7 +469,7 @@ func (c *scriptChecker) bindWrittenIvarFact(name string, ty *TypeExpr, value Exp
 func (c *scriptChecker) writtenIvarFact(ty *TypeExpr, value Expression) *TypeExpr {
 	fact := c.ivarContractFact(ty)
 	if value != nil {
-		if values, exact := c.staticLiteralValueAlternatives(value); exact {
+		if values, exact := c.callStaticLiteralValueAlternatives(value); exact {
 			exactFacts := make([]*TypeExpr, 0, len(values))
 			for _, literal := range values {
 				normalized, err := normalizeValueForType(literal, ty, c.runtimeTypeContext())
@@ -581,7 +581,7 @@ func (c *scriptChecker) ivarWriteProvablyCompletes(name string, value Expression
 	if value == nil || validateTypeExprResolved(ty, c.runtimeTypeContext()) != nil {
 		return false
 	}
-	if values, exact := c.staticLiteralValueAlternatives(value); exact {
+	if values, exact := c.callStaticLiteralValueAlternatives(value); exact {
 		return c.staticValuesMustNormalizeType(values, ty)
 	}
 	expectation := expressionExpectation{}
