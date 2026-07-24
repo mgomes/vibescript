@@ -155,6 +155,29 @@ end
 `))
 }
 
+func TestLinkRetainedContainerAliasesSkipsShapeLiteralPairs(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{}
+	literal := &HashLiteral{
+		ShapeType: &TypeExpr{
+			Kind: TypeShape,
+			Shape: map[string]*TypeExpr{
+				"value": checkTypeString,
+			},
+		},
+		Pairs: []HashPair{{
+			Key:   &SymbolLiteral{Name: "value"},
+			Value: &Identifier{Name: "string"},
+		}},
+	}
+
+	checker.linkRetainedContainerAliases("schema", literal, checkTypeHash, false, true)
+	if len(checker.typeAliases) != 0 {
+		t.Fatalf("typeAliases = %#v, want no aliases for unevaluated shape pairs", checker.typeAliases)
+	}
+}
+
 func TestCheckInferCompoundAssignment(t *testing.T) {
 	t.Parallel()
 
@@ -1725,8 +1748,9 @@ def run(flag)
 end
 `))
 
-	// An unconditional append still contradicts the boundary.
-	script := compileScript(t, `
+	// An unconditional append runs, but the unknown call may replace or
+	// remove its witnessed elements before the later boundary.
+	requireNoCheckWarnings(t, compileScript(t, `
 def ints(values: array<int>)
   values
 end
@@ -1736,8 +1760,7 @@ def run(obj)
   obj.record(values << "bad")
   ints(values)
 end
-`)
-	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<int | string>")
+`))
 }
 
 func TestCheckInferShovelArgumentCarriesMutatedFact(t *testing.T) {
@@ -1839,23 +1862,17 @@ end
 `)
 	requireCheckWarningContains(t, script, "call to ints argument values expected array<int>, got array<string>")
 
-	// A compatible append stays silent, and prior unwitnessed elements
-	// never count as witnesses (an empty receiver makes [\"bad\"] a valid
-	// array<string>).
+	// A compatible append preserves the declared fact, so the boundary
+	// stays satisfied. (The incompatible append itself is reported at the
+	// write site; see check_array_writes_test.go.)
 	requireNoCheckWarnings(t, compileScript(t, `
 def ints(values: array<int>)
   values
 end
 
-def strings(values: array<string>)
-  values
-end
-
-def run(a: array<int>, b: array<int>)
+def run(a: array<int>)
   a << 1
   ints(a)
-  b << "bad"
-  strings(b)
 end
 `))
 }

@@ -47,6 +47,19 @@ func (r *returnSummaryCollector) record(fact *TypeExpr) {
 	r.arms = append(r.arms, fact)
 }
 
+func (r *returnSummaryCollector) mergeResultArms(other *returnSummaryCollector) {
+	if other == nil {
+		return
+	}
+	if other.unknown {
+		r.record(nil)
+		return
+	}
+	for _, arm := range other.arms {
+		r.record(arm)
+	}
+}
+
 // sawReturn reports whether the collector reached any return path at all.
 func (r *returnSummaryCollector) sawReturn() bool {
 	return r != nil && (r.unknown || len(r.arms) > 0)
@@ -361,6 +374,8 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		previousArgClassValues := c.callArgumentClassValues
 		previousArgCallables := c.callArgumentCallables
 		previousArgStaticValues := c.callArgumentStaticValues
+		previousArgStaticChoices := c.callArgumentStaticChoices
+		previousReceiverLength := c.callArrayReceiverLength
 		previousReachableParamFacts := c.reachableParamFacts
 		previousDeferred := c.deferredReturnSites
 		previousExceptionExits := c.exceptionExitSites
@@ -389,9 +404,12 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		c.callArgumentClassValues = nil
 		c.callArgumentCallables = nil
 		c.callArgumentStaticValues = nil
+		c.callArgumentStaticChoices = nil
+		c.callArrayReceiverLength = checkArrayReceiverLength{}
 		c.reachableParamFacts = cloneReachableParamFacts(paramFacts)
 		c.deferredReturnSites = nil
-		c.exceptionExitSites = nil
+		var exceptionExitSites []checkStateSnapshot
+		c.exceptionExitSites = &exceptionExitSites
 		var expressionExitSites []checkStateSnapshot
 		c.expressionExitSites = &expressionExitSites
 		c.ensureExitSites = nil
@@ -423,6 +441,8 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 			c.callArgumentClassValues = previousArgClassValues
 			c.callArgumentCallables = previousArgCallables
 			c.callArgumentStaticValues = previousArgStaticValues
+			c.callArgumentStaticChoices = previousArgStaticChoices
+			c.callArrayReceiverLength = previousReceiverLength
 			c.reachableParamFacts = previousReachableParamFacts
 			c.deferredReturnSites = previousDeferred
 			c.exceptionExitSites = previousExceptionExits
@@ -454,6 +474,9 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		hashSupplied := make(map[int]struct{}, len(hashSuppliedParams))
 		for _, index := range hashSuppliedParams {
 			hashSupplied[index] = struct{}{}
+		}
+		if definiteDefaults {
+			c.linkReachableParamAliases(fn.Params)
 		}
 		for i, param := range fn.Params {
 			expectation := typeExpressionExpectation(param.Type)
@@ -495,12 +518,19 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		}
 		rebound := make(map[string]struct{})
 		collectLocalBindings(fn.Body, rebound)
-		collector.failureParamFacts = mergedFailureParamFacts(fn.Params, expressionExitSites, rebound)
+		failureExitSites := make(
+			[]checkStateSnapshot,
+			0,
+			len(expressionExitSites)+len(exceptionExitSites),
+		)
+		failureExitSites = append(failureExitSites, expressionExitSites...)
+		failureExitSites = append(failureExitSites, exceptionExitSites...)
+		collector.failureParamFacts = c.mergedFailureParamFacts(fn.Params, failureExitSites, rebound)
 	})
 	return collector
 }
 
-func mergedFailureParamFacts(
+func (c *scriptChecker) mergedFailureParamFacts(
 	params []Param,
 	sites []checkStateSnapshot,
 	rebound map[string]struct{},
@@ -528,12 +558,15 @@ func mergedFailureParamFacts(
 				complete = false
 				break
 			}
+			if _, poisoned := site.staticValuePoison[param.Name]; poisoned {
+				fact.staticVals = nil
+			}
 			facts = append(facts, fact)
 		}
 		if !complete {
 			continue
 		}
-		fact, ok := mergeFailureParamFactAlternatives(facts)
+		fact, ok := c.mergeFailureParamFactAlternatives(facts)
 		if ok {
 			result[param.Name] = fact
 		}
@@ -562,7 +595,7 @@ func scopeStateParamFact(state checkScopeState, name string) (checkReachablePara
 	return checkReachableParamFact{}, false
 }
 
-func mergeFailureParamFactAlternatives(
+func (c *scriptChecker) mergeFailureParamFactAlternatives(
 	facts []checkReachableParamFact,
 ) (checkReachableParamFact, bool) {
 	if len(facts) == 0 {
@@ -591,7 +624,7 @@ func mergeFailureParamFactAlternatives(
 				staticExact = false
 				merged.staticVals = nil
 			} else {
-				merged.staticVals = normalizeCheckStaticValues(append(merged.staticVals, fact.staticVals...))
+				merged.staticVals = c.normalizeCheckStaticValues(append(merged.staticVals, fact.staticVals...))
 			}
 		}
 		if classExact {

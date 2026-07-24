@@ -78,7 +78,10 @@ func TestUnclassifiedMemberCallsStillPoisonReceiverFacts(t *testing.T) {
 		{"alias of mutated receiver", "def probe()\n  a = [1, 2, 3]\n  b = a\n  a.push(9)\n  takes(b)\nend"},
 		{"block runs user code", "def probe()\n  a = [1, 2, 3]\n  a.fetch(9) { 0 }\n  takes(a)\nend"},
 		{"impure argument", "def probe()\n  a = [1, 2, 3]\n  a.at(idx())\n  takes(a)\nend\n\ndef idx()\n  0\nend"},
-		{"safe navigation mutator", "def probe(a: array<int>?)\n  a&.push(9)\n  takes(a)\nend"},
+		// A declared element bound would let the mutator modeling preserve
+		// the fact (a compatible push keeps array<int>? true), so the
+		// unclassified-poison probe uses a bare nullable array.
+		{"safe navigation mutator", "def probe(a: array?)\n  a&.push(9)\n  takes(a)\nend"},
 		{"dynamic receiver argument escape", "def probe(a)\n  b = [1, 2, 3]\n  a.at(b)\n  takes(b)\nend"},
 		// A pure read whose result may reference a nested mutable element
 		// hands the caller an alias into the receiver: a chained mutation
