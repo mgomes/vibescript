@@ -433,7 +433,7 @@ end
 func TestCheckKnownUnionRestAggregatePreservesExactLiterals(t *testing.T) {
 	t.Parallel()
 
-	script := compileScriptDefault(t, `
+	positional := compileScriptDefault(t, `
 enum Color
   Red
 end
@@ -446,7 +446,22 @@ def run(value: int)
   collect(:blue, value)
 end
 `)
-	requireCheckWarningContains(t, script, "call to collect argument values expected array<Color> | array<int>, got array<symbol | int>")
+	requireCheckWarningContains(t, positional, "call to collect argument values expected array<Color> | array<int>, got array<symbol | int>")
+
+	keywords := compileScriptDefault(t, `
+enum Color
+  Red
+end
+
+def collect(**values: hash<string, Color> | nil)
+  values
+end
+
+def run(opaque)
+  collect(color: :blue, other: opaque)
+end
+`)
+	requireCheckWarningContains(t, keywords, "call to collect argument values expected hash<string, Color> | nil, got { color: symbol, other: unknown }")
 }
 
 func TestCheckKnownUnionArrayLiteralCorrelation(t *testing.T) {

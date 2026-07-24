@@ -16254,6 +16254,54 @@ func (c *scriptChecker) restLiteralRejectedByUnion(args []Expression, ty *TypeEx
 	return false
 }
 
+func (c *scriptChecker) keywordRestLiteralRejectedByUnion(kwargs []KeywordArg, usedKw map[string]bool, ty *TypeExpr) bool {
+	arms, exact := boundaryTypeExprArms(ty, 0)
+	if !exact {
+		return false
+	}
+	for _, kwarg := range kwargs {
+		if usedKw != nil && usedKw[kwarg.Name] {
+			continue
+		}
+		value, literal := staticLiteralValue(kwarg.Value)
+		if !literal {
+			continue
+		}
+		sawContainer := false
+		accepted := false
+		for _, arm := range arms {
+			if arm.Kind == TypeAny || arm.Kind == TypeUnknown {
+				accepted = true
+				break
+			}
+			switch arm.Kind {
+			case TypeHash:
+				sawContainer = true
+				if len(arm.TypeArgs) == 0 ||
+					(len(arm.TypeArgs) == 2 &&
+						c.checkRuntimeStaticValueType(NewString(kwarg.Name), arm.TypeArgs[0]) == nil &&
+						c.checkRuntimeStaticValueType(value, arm.TypeArgs[1]) == nil) {
+					accepted = true
+				}
+			case TypeShape:
+				sawContainer = true
+				field, known := arm.Shape[kwarg.Name]
+				if (!known && arm.Open) ||
+					(known && c.checkRuntimeStaticValueType(value, field) == nil) {
+					accepted = true
+				}
+			}
+			if accepted {
+				break
+			}
+		}
+		if sawContainer && !accepted {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos Position, kwargs []KeywordArg, usedKw map[string]bool, ty *TypeExpr, callName, paramName string) {
 	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
 		return
@@ -16292,7 +16340,8 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 					}
 				}
 				inferred := c.inferredKeywordRestArgumentType(last)
-				if c.boundaryTypeRejected(inferred, ty) {
+				if c.keywordRestLiteralRejectedByUnion(kwargs, usedKw, ty) ||
+					c.boundaryTypeRejected(inferred, ty) {
 					c.add(function, kwarg.Value.Pos(), "call to %s argument %s expected %s, got %s",
 						callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred))
 				}
