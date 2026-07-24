@@ -4498,8 +4498,10 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				c.applyLambdaLiteralNamespaceMutations(kwarg.Value)
 				c.checkLambdaLiteralSummaryYields(function, kwarg.Value)
 			}
-			c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
-			c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
+			if arrayFillBlockMayRun {
+				c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
+				c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
+			}
 		} else if callBlockMayRun {
 			c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
 			c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)

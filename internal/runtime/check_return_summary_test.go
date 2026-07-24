@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -3164,4 +3165,139 @@ end
 			requireCheckWarningContains(t, script, "call to takes_int argument value expected int, got string")
 		})
 	}
+}
+
+func TestCheckArrayFillBlockArgumentNamespaceMutations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("exact no-op selectors do not invoke blocks", func(t *testing.T) {
+		t.Parallel()
+
+		cases := []struct {
+			name  string
+			setup string
+			fill  string
+		}{
+			{
+				name: "inline forwarded lambda",
+				fill: `items.fill(0, 0, &lambda { |index|
+    JSON.stringify = replacement
+    index
+  })`,
+			},
+			{
+				name: "literal block",
+				fill: `items.fill(0, 0) do |index|
+    JSON.stringify = replacement
+    index
+  end`,
+			},
+			{
+				name:  "stored forwarded lambda",
+				setup: `  callback = lambda { |index| JSON.stringify = replacement; index }`,
+				fill:  `items.fill(0, 0, &callback)`,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = [1]
+`+tc.setup+`
+  `+tc.fill+`
+  takes_int(JSON.stringify({}))
+end
+`)
+				requireCheckWarningContains(
+					t,
+					script,
+					"call to takes_int argument value expected int, got string",
+				)
+				requireCallErrorContains(
+					t,
+					script,
+					"run",
+					nil,
+					CallOptions{},
+					"argument value expected int, got string",
+				)
+			})
+		}
+	})
+
+	t.Run("positive span invokes inline forwarded lambda", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = []
+  items.fill(0, 1, &lambda { |index|
+    JSON.stringify = replacement
+    index
+  })
+  takes_int(JSON.stringify({}))
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		want := NewInt(1)
+		if !got.Equal(want) {
+			t.Errorf("run() = %s, want %s", got.String(), want.String())
+		}
+	})
+
+	t.Run("inexact span remains conservative", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(count: int)
+  items = []
+  items.fill(0, count, &lambda { |index|
+    JSON.stringify = replacement
+    index
+  })
+  takes_int(JSON.stringify({}))
+end
+`)
+		requireNoCheckWarnings(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewInt(0)},
+			CallOptions{},
+			"argument value expected int, got string",
+		)
+		got := callScript(t, context.Background(), script, "run", []Value{NewInt(1)}, CallOptions{})
+		want := NewInt(1)
+		if !got.Equal(want) {
+			t.Errorf("run(1) = %s, want %s", got.String(), want.String())
+		}
+	})
 }
