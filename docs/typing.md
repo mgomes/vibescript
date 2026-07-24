@@ -337,6 +337,78 @@ scripts read the host value exactly as before. Validation failures raise the
 standard typed-boundary error, e.g.
 `JSON.parse_as value expected { name: string }, got { name: int }`.
 
+### Complete checker examples
+
+The examples in this section are complete programs. Documentation CI compiles,
+analyzes, and checks fences marked `vibe check`; `vibe check-error` records the
+diagnostic a deliberately invalid example teaches. These markers are Markdown
+metadata, not Vibescript syntax.
+
+Nullable and union annotations remain gradual while carrying facts the checker
+can narrow or validate:
+
+```vibe check
+def label(value: string?) -> string
+  return "missing" if value == nil
+  value
+end
+
+def stringify(value: int | string) -> string
+  value.string
+end
+
+label(nil)
+stringify(7)
+```
+
+Shapes expose field facts, and constructed class instances carry nominal class
+facts into known calls:
+
+```vibe check
+class Account
+  def name -> string
+    "Ada"
+  end
+end
+
+def account_name(account: Account) -> string
+  account.name
+end
+
+def payload_name(payload: { name: string, ... }) -> string
+  payload[:name]
+end
+
+account_name(Account.new)
+payload_name({ name: "Ada", active: true })
+```
+
+Plain JSON stays intentionally dynamic. The checker permits the unknown field,
+and `takes_int` enforces the actual value when `count_from` runs:
+
+```vibe check
+def takes_int(value: int) -> int
+  value
+end
+
+def count_from(raw: string) -> int
+  body = JSON.parse(raw)
+  takes_int(body["count"])
+end
+```
+
+A provable contradiction is documented with its stable diagnostic text, not a
+source column:
+
+```vibe check-error="call to takes_int argument value expected int, got string"
+def takes_int(value: int)
+  value
+end
+
+value = "1"
+takes_int(value)
+```
+
 ## Migration examples
 
 Use a boundary-first strategy: annotate entrypoints that receive external data, then tighten helpers and block callbacks.
