@@ -12898,9 +12898,15 @@ func (c *scriptChecker) callableBlockLiteralValues(
 		if branch, known := staticConditionalExpressionBranch(typed); known {
 			return c.callableBlockLiteralValues(branch)
 		}
-		left, leftExact := c.callableBlockLiteralValues(typed.Consequent)
-		right, rightExact := c.callableBlockLiteralValues(typed.Alternate)
-		if !leftExact || !rightExact || len(left) == 0 || len(right) == 0 {
+		branchValues := func(branch Expression) ([]checkBlockLiteralValue, bool) {
+			if value, exact := staticLiteralValue(branch); exact && value.Kind() == KindNil {
+				return nil, true
+			}
+			return c.callableBlockLiteralValues(branch)
+		}
+		left, leftExact := branchValues(typed.Consequent)
+		right, rightExact := branchValues(typed.Alternate)
+		if !leftExact || !rightExact || len(left)+len(right) == 0 {
 			return nil, false
 		}
 		return normalizeCheckBlockLiterals(append(left, right...)), true

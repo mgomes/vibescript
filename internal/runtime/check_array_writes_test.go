@@ -3750,6 +3750,122 @@ end
 			NewBool(false),
 		}))
 	})
+
+	t.Run("exact nullable callable choices preserve compatible writes", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>, use_block: bool)
+  callback = use_block ? lambda { |index| 2 } : nil
+  items.fill(0, &callback)
+  items << "later"
+  items
+end
+
+def with_nil()
+  run([1], false)
+end
+
+def with_block()
+  run([1], true)
+end
+`)
+		assertWarning(
+			t,
+			script,
+			5,
+			"write to items expected element int, got string",
+		)
+		assertResult(t, script, "with_nil", NewArray([]Value{
+			NewInt(0),
+			NewString("later"),
+		}))
+		assertResult(t, script, "with_block", NewArray([]Value{
+			NewInt(2),
+			NewString("later"),
+		}))
+	})
+
+	t.Run("exact nullable callable choices diagnose incompatible block writes", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>, use_block: bool)
+  callback = use_block ? lambda { |index| "bad" } : nil
+  items.fill(0, &callback)
+  items << true
+  items
+end
+
+def with_nil()
+  run([1], false)
+end
+
+def with_block()
+  run([1], true)
+end
+`)
+		assertWarning(
+			t,
+			script,
+			4,
+			"write to items expected element int, got string",
+		)
+		assertResult(t, script, "with_nil", NewArray([]Value{
+			NewInt(0),
+			NewBool(true),
+		}))
+		assertResult(t, script, "with_block", NewArray([]Value{
+			NewString("bad"),
+			NewBool(true),
+		}))
+	})
+
+	t.Run("raising nullable callable choice preserves rescue state", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def run(items: array<int>, use_block: bool)
+  callback = use_block ? lambda { |index| raise "stop" } : nil
+  rescued = false
+  begin
+    items.fill(0, &callback)
+  rescue
+    rescued = true
+  end
+  items << "later"
+  [items, rescued]
+end
+
+def with_nil()
+  run([1], false)
+end
+
+def with_block()
+  run([1], true)
+end
+`)
+		assertWarning(
+			t,
+			script,
+			10,
+			"write to items expected element int, got string",
+		)
+		assertResult(t, script, "with_nil", NewArray([]Value{
+			NewArray([]Value{
+				NewInt(0),
+				NewString("later"),
+			}),
+			NewBool(false),
+		}))
+		assertResult(t, script, "with_block", NewArray([]Value{
+			NewArray([]Value{
+				NewInt(1),
+				NewString("later"),
+			}),
+			NewBool(true),
+		}))
+	})
 }
 
 func TestCheckInvalidArrayFillBlockShapeDoesNotRunBlock(t *testing.T) {
