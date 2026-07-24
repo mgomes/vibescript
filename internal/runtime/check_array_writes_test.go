@@ -3137,6 +3137,8 @@ end
 def run(items: array<int>)
   args = []
   items.fill(*args, mutate(args), *args)
+  items << "later"
+  items
 end
 `)
 
@@ -3148,6 +3150,67 @@ end
 			"run",
 			warnings,
 		)
+	}
+
+	got := callScript(t, context.Background(), script, "run", []Value{
+		NewArray([]Value{NewInt(1)}),
+	}, CallOptions{})
+	want := NewArray([]Value{NewString("bad"), NewString("later")})
+	if !got.Equal(want) {
+		t.Errorf("run([1]) = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestCheckArrayMutatorDoesNotReplayTypedParameterNormalization(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+enum Status
+  Draft
+end
+
+def mutate(args: array<Status>)
+  args << :draft
+  nil
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<symbol>)
+  args = [:draft]
+  mutate(args)
+  items.fill(*args)
+  begin
+    takes_int("reachable")
+  rescue
+    nil
+  end
+  [items, args]
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 20 ||
+		!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want the reachable argument warning",
+			"run",
+			warnings,
+		)
+	}
+
+	got := callScript(t, context.Background(), script, "run", []Value{
+		NewArray([]Value{NewSymbol("old")}),
+	}, CallOptions{})
+	want := NewArray([]Value{
+		NewArray([]Value{NewSymbol("draft")}),
+		NewArray([]Value{NewSymbol("draft")}),
+	})
+	if !got.Equal(want) {
+		t.Errorf("run([:old]) = %s, want %s", got.String(), want.String())
 	}
 }
 

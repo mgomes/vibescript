@@ -9023,7 +9023,11 @@ func (c *scriptChecker) applyExactScriptArrayArgumentMutations(
 	arguments := make(map[string]Expression, len(target.fn.Params))
 	argumentNames := make(map[string]struct{}, len(target.fn.Params))
 	for i, param := range target.fn.Params {
-		if param.Kind != ParamNormal || param.Name == "" || param.DefaultVal != nil {
+		if param.Kind != ParamNormal || param.Name == "" ||
+			param.DefaultVal != nil || param.Type != nil {
+			// Typed parameters may normalize their argument into a distinct
+			// value before the body runs. Replaying mutations against the
+			// caller would then mutate the wrong object.
 			return nil
 		}
 		ident, direct := call.Args[i].(*Identifier)
