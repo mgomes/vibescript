@@ -6367,11 +6367,8 @@ func (c *scriptChecker) arrayFillFormMayComplete(selectors []Expression) bool {
 				}
 				continue
 			}
-			if !staticArrayFillStartMayComplete(start, true) {
-				continue
-			}
 			for _, count := range countValues {
-				if staticArrayFillCountMayComplete(count) {
+				if staticArrayFillStartCountMayComplete(start, count) {
 					return true
 				}
 			}
@@ -6424,6 +6421,18 @@ func staticArrayFillStartMayComplete(value Value, hasCount bool) bool {
 func staticArrayFillCountMayComplete(value Value) bool {
 	_, _, valid := staticArrayFillInteger(value)
 	return valid
+}
+
+func staticArrayFillStartCountMayComplete(startValue, countValue Value) bool {
+	start, _, startValid := staticArrayFillInteger(startValue)
+	count, nilLength, countValid := staticArrayFillInteger(countValue)
+	if !startValid || !countValid {
+		return false
+	}
+	if nilLength || count <= 0 || start < 0 {
+		return true
+	}
+	return start <= math.MaxInt-count
 }
 
 func arrayFillSelectorFactMayComplete(fact *TypeExpr, allowRange bool) bool {
@@ -6573,6 +6582,9 @@ func staticArrayFillBlockSelectorOutcomes(
 	}
 	count, nilLength, countValid := staticArrayFillInteger(countValues[0])
 	if !countValid {
+		return model, false, true
+	}
+	if !staticArrayFillStartCountMayComplete(startValue, countValues[0]) {
 		return model, false, true
 	}
 	switch {

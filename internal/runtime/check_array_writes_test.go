@@ -4056,6 +4056,88 @@ end
 	})
 }
 
+func TestCheckArrayFillOverflowStopsBeforeBlock(t *testing.T) {
+	t.Parallel()
+
+	t.Run("literal block and tail are unreachable", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>)
+  items.fill(9223372036854775807, 1) do
+    takes_int("block must not run")
+    1
+  end
+  takes_int("tail unreachable")
+end
+`)
+		requireNoCheckWarnings(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewArray([]Value{NewInt(1)})},
+			CallOptions{},
+			"array.fill window is too large",
+		)
+	})
+
+	t.Run("value form and tail are unreachable", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>)
+  items.fill("unused", 9223372036854775807, 1)
+  takes_int("tail unreachable")
+end
+`)
+		requireNoCheckWarnings(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewArray([]Value{NewInt(1)})},
+			CallOptions{},
+			"array.fill window is too large",
+		)
+	})
+
+	t.Run("largest nonoverflowing span still invokes", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>)
+  items.fill(9223372036854775806, 1) do
+    takes_int("reachable block")
+    raise "stop"
+  end
+  takes_int("unreachable tail")
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the reachable block warning",
+				"run",
+				warnings,
+			)
+		}
+	})
+}
+
 func TestCheckArrayFillNoncompletingBlockPreservesReceiverThroughRescue(t *testing.T) {
 	t.Parallel()
 
