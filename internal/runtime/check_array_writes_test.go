@@ -7815,6 +7815,27 @@ def run()
 end`,
 		},
 		{
+			name: "distinct caller aliases retain shared parameter identity",
+			source: `def build() -> array<int>
+  [1]
+end
+
+def takes_string(value: string)
+  value
+end
+
+def mutate(a: array<int>, b: array<int>)
+  a.map! { "ok" }
+  takes_string(b[0])
+end
+
+def run()
+  names = build()
+  alias_names = names
+  mutate(names, alias_names)
+end`,
+		},
+		{
 			name: "return summaries retain shared parameter identity",
 			source: `def build() -> array<int>
   [1]

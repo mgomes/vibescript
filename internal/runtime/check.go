@@ -9519,12 +9519,18 @@ func (c *scriptChecker) reachableCallParamFacts(
 			}
 			return ""
 		}
-		if identity := containerIdentities[ident.Name]; identity != "" {
-			return identity
+		identityNames := c.containerIdentityNames(ident.Name)
+		for name := range identityNames {
+			if identity := containerIdentities[name]; identity != "" {
+				containerIdentities[ident.Name] = identity
+				return identity
+			}
 		}
 		containerIdentitySequence++
 		identity := strconv.Itoa(containerIdentitySequence)
-		containerIdentities[ident.Name] = identity
+		for name := range identityNames {
+			containerIdentities[name] = identity
+		}
 		return identity
 	}
 	for i, arg := range view.args {
