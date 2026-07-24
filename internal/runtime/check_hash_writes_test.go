@@ -121,10 +121,69 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
+			name: "store value from an exact literal splat",
+			source: `
+def f(h: hash<string, int>)
+  h.store(*["a", "bad"])
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "store value from an exact local splat",
+			source: `
+def f(h: hash<string, int>)
+  args = ["a", "bad"]
+  h.store(*args)
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "dynamic store splat keeps a following write reachable",
+			source: `
+def f(h: hash<string, int>, other: hash<string, int>, args: array<any>)
+  h.store(*args)
+  other[:bad] = 1
+end
+`,
+			warning: "write to other expected key string, got symbol",
+		},
+		{
+			name: "empty store keyword splat keeps a following write reachable",
+			source: `
+def f(h: hash<string, int>, other: hash<string, int>, opts: {})
+  h.store("a", 1, **opts)
+  other[:bad] = 1
+end
+`,
+			warning: "write to other expected key string, got symbol",
+		},
+		{
 			name: "splatted literal merge entries are checked",
 			source: `
 def f(h: hash<string, int>)
   h.merge!(*[{ "a": "bad" }])
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "splatted local merge entries are checked",
+			source: `
+def f(h: hash<string, int>)
+  args = [{ "a": "bad" }]
+  h.merge!(*args)
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "splatted local update entries are checked",
+			source: `
+def f(h: hash<string, int>)
+  args = [{ "a": "bad" }]
+  h.update(*args)
 end
 `,
 			warning: "write to h expected value int, got string",
@@ -281,6 +340,26 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
+			name: "possibly empty merge keyword splat keeps a following write reachable",
+			source: `
+def f(h: hash<string, int>, other: hash<string, int>, opts: hash<string, int>)
+  h.merge!(**opts)
+  other[:bad] = 1
+end
+`,
+			warning: "write to other expected key string, got symbol",
+		},
+		{
+			name: "optional update keyword splat keeps a following write reachable",
+			source: `
+def f(h: hash<string, int>, other: hash<string, int>, opts: { extra?: int })
+  h.update(**opts)
+  other[:bad] = 1
+end
+`,
+			warning: "write to other expected key string, got symbol",
+		},
+		{
 			name: "merge with a local shape fact keeps the whole-shape check",
 			source: `
 def f(h: hash<symbol, int>)
@@ -318,6 +397,195 @@ end
 			warning: "write to user adds field extra to exact shape { name: string }",
 		},
 		{
+			name: "member write to typed hash value",
+			source: `
+def f(h: hash<string, int>)
+  h.value = "bad"
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "compound member write to typed hash value",
+			source: `
+def f(h: hash<string, int>)
+  h.value += 0.5
+end
+`,
+			warning: "write to h expected value int, got float",
+		},
+		{
+			name: "logical member write to typed hash value",
+			source: `
+def f(h: hash<string, int>)
+  h.value &&= "bad"
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "member write has a string or symbol hash key",
+			source: `
+def f(h: hash<int, int>)
+  h.value = 1
+end
+`,
+			warning: "write to h expected key int, got string | symbol",
+		},
+		{
+			name: "compatible member write preserves a dual-key hash",
+			source: `
+def f(h: hash<string | symbol, int>)
+  h.value = 1
+  h["bad"] = "bad"
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "member write to declared shape field",
+			source: `
+def f(user: { name: string })
+  user.name = 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "member write adds a declared shape field",
+			source: `
+def f(user: { name: string })
+  user.extra = 1
+end
+`,
+			warning: "write to user adds field extra to exact shape { name: string }",
+		},
+		{
+			name: "compound member write to declared shape field",
+			source: `
+def f(user: { count: int })
+  user.count += 0.5
+end
+`,
+			warning: "write to user field count expected int, got float",
+		},
+		{
+			name: "and assignment writes a declared shape field",
+			source: `
+def f(user: { name: string })
+  user.name &&= 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "or assignment may write a nullable declared shape field",
+			source: `
+def f(user: { name: string? })
+  user.name ||= 1
+end
+`,
+			warning: "write to user field name expected string?, got int",
+		},
+		{
+			name: "logical universal member write adds an exact shape field",
+			source: `
+def f(user: { name: string })
+  user.nil? ||= 1
+end
+`,
+			warning: "write to user adds field nil? to exact shape { name: string }",
+		},
+		{
+			name: "logical universal member write checks a typed hash key",
+			source: `
+def f(h: hash<int, int>)
+  h.nil? ||= 1
+end
+`,
+			warning: "write to h expected key int, got string | symbol",
+		},
+		{
+			name: "hash-owned getter reaches an exact shape write",
+			source: `
+def f(user: { name: string })
+  user.size &&= 1
+end
+`,
+			warning: "write to user adds field size to exact shape { name: string }",
+		},
+		{
+			name: "universal identity getter reaches an exact shape write",
+			source: `
+def f(user: { name: string })
+  user.itself &&= 1
+end
+`,
+			warning: "write to user adds field itself to exact shape { name: string }",
+		},
+		{
+			name: "hash-owned getter precedes an impossible data key",
+			source: `
+def f(h: hash<int, bool>)
+  h.size &&= true
+end
+`,
+			warning: "write to h expected key int, got string | symbol",
+		},
+		{
+			name: "true universal getter reaches and assignment",
+			source: `
+def f(user: { name: string })
+  user.frozen? &&= 1
+end
+`,
+			warning: "write to user adds field frozen? to exact shape { name: string }",
+		},
+		{
+			name: "skipped member assignment preserves a declared shape",
+			source: `
+def f(user: { name: string })
+  user.name ||= 1
+  user[:name] = 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "skipped member assignment preserves a typed hash",
+			source: `
+def f(h: hash<string, int>)
+  h.value ||= 1
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "rescued missing member assignment preserves a declared shape",
+			source: `
+def f(user: { name: string })
+  begin
+    user.extra ||= 1
+  rescue
+    nil
+  end
+  user[:name] = 1
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "member assignment does not weaken its newly retained child",
+			source: `
+def f(user: { child: hash<string, int> }, child: hash<string, int>)
+  user.child = child
+  child[:bad] = 1
+end
+`,
+			warning: "write to child expected key string, got symbol",
+		},
+		{
 			name: "compatible entry write preserves the fact",
 			source: `
 def f(h: hash<string, int>)
@@ -338,6 +606,53 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
+			name: "compatible exact store splat preserves the fact",
+			source: `
+def f(h: hash<string, int>)
+  args = ["a", 1]
+  h.store(*args)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "compatible exact merge splat preserves the fact",
+			source: `
+def f(h: hash<string, int>)
+  args = [{ "a": 1 }]
+  h.merge!(*args)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "empty exact merge splat preserves the fact",
+			source: `
+def f(h: hash<string, int>)
+  args = []
+  h.merge!(*args)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "rescued empty exact store splat preserves the fact",
+			source: `
+def f(h: hash<string, int>)
+  begin
+    h.store(*[])
+  rescue
+    nil
+  end
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
 			name: "compatible merge preserves the fact",
 			source: `
 def f(h: hash<symbol, int>)
@@ -346,6 +661,176 @@ def f(h: hash<symbol, int>)
 end
 `,
 			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "replace checks a literal value",
+			source: `
+def f(h: hash<string, int>)
+  h.replace({ "a": "bad" })
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "replace checks a literal key",
+			source: `
+def f(h: hash<string, int>)
+  h.replace({ bad: 1 })
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "replace checks an exact local source",
+			source: `
+def f(h: hash<string, int>)
+  replacement = { "a": "bad" }
+  h.replace(replacement)
+end
+`,
+			warning: "write to h expected hash<string, int>, got { a: string }",
+		},
+		{
+			name: "replace exact splat checks its expanded hash",
+			source: `
+def f(h: hash<string, int>)
+  args = [{ "a": "bad" }]
+  h.replace(*args)
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "compatible replace exact splat preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  args = [{ "a": 1 }]
+  h.replace(*args)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "compatible replace preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  h.replace({ "a": 1 })
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "compatible exact local replace preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  replacement = { "a": 1 }
+  h.replace(replacement)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "empty replace preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  h.replace({})
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "replace does not retain a scalar source hash root",
+			source: `
+def consume(value)
+  value
+end
+
+def f(h: hash<string, int>, replacement: hash<string, int>)
+  h.replace(replacement)
+  consume(replacement)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "compatible typed replace source preserves the hash fact",
+			source: `
+def f(h: hash<string, int>, replacement: hash<string, int>)
+  h.replace(replacement)
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "rescued non-hash replace preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  begin
+    h.replace(1)
+  rescue
+    nil
+  end
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "rescued empty replace splat preserves the hash fact",
+			source: `
+def f(h: hash<string, int>)
+  begin
+    h.replace(*[])
+  rescue
+    nil
+  end
+  h[:bad] = 1
+end
+`,
+			warning: "write to h expected key string, got symbol",
+		},
+		{
+			name: "replace checks a declared shape field",
+			source: `
+def f(user: { name: string })
+  user.replace({ name: 1 })
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
+			name: "replace rejects an extra declared shape field",
+			source: `
+def f(user: { name: string })
+  user.replace({ name: "ok", extra: 1 })
+end
+`,
+			warning: "write to user adds field extra to exact shape { name: string }",
+		},
+		{
+			name: "replace requires every declared shape field",
+			source: `
+def f(user: { name: string })
+  user.replace({})
+end
+`,
+			warning: "write to user removes required field name from exact shape { name: string }",
+		},
+		{
+			name: "compatible replace preserves the declared shape",
+			source: `
+def f(user: { name: string })
+  user.replace({ name: "ok" })
+  user[:name] = 1
+end
+`,
+			warning: "write to user field name expected string, got int",
 		},
 		{
 			name: "store on a declared shape rejects an extra field",
@@ -786,6 +1271,122 @@ end
 `,
 		},
 		{
+			name: "skipped member or assignment does not write",
+			source: `
+def f(user: { name: string })
+  user.name ||= 1
+end
+`,
+		},
+		{
+			name: "false universal member skips and assignment",
+			source: `
+def f(user: { name: string })
+  user.nil? &&= 1
+end
+`,
+		},
+		{
+			name: "true universal member skips or assignment",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { name: string })
+  user.frozen? ||= takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "truthy hash-owned getter skips or assignment",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { name: string })
+  user.size ||= takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "truthy identity getter skips or assignment",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(user: { name: string })
+  user.itself ||= takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "data-safe universal getter wins over literal hash data",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f
+  h = { "frozen?": lambda { false } }
+  h.frozen? ||= takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "impossible typed hash key skips logical member assignment",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<int, bool>)
+  h.value ||= takes_int("unreachable right side")
+  takes_int("unreachable continuation")
+end
+`,
+		},
+		{
+			name: "impossible typed hash key skips compound member assignment",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<int, int>)
+  h.value += takes_int("unreachable right side")
+  takes_int("unreachable continuation")
+end
+`,
+		},
+		{
+			name: "missing compound member aborts before an extra field write",
+			source: `
+def f(user: { name: string })
+  user.extra += 1
+end
+`,
+		},
+		{
+			name: "missing logical member aborts before an extra field write",
+			source: `
+def f(user: { name: string })
+  user.extra ||= 1
+end
+`,
+		},
+		{
+			name: "single-key typed hash member write weakens gradually",
+			source: `
+def f(h: hash<string, int>)
+  h.value = 1
+  h[:bad] = 1
+end
+`,
+		},
+		{
 			name: "unknown keys and values stay silent",
 			source: `
 def f(h: hash<string, int>, k, v)
@@ -802,6 +1403,54 @@ def f(h)
   h[:a] = "s"
   h.store(:a, 1)
   h.merge!({ a: 1 })
+end
+`,
+		},
+		{
+			name: "possibly empty incompatible replace source stays gradual",
+			source: `
+def f(h: hash<string, int>, replacement: hash<string, string>)
+  h.replace(replacement)
+  h[:bad] = 1
+end
+`,
+		},
+		{
+			name: "unknown replace source weakens the fact",
+			source: `
+def f(h: hash<string, int>, replacement)
+  h.replace(replacement)
+  h[:bad] = 1
+end
+`,
+		},
+		{
+			name: "consumed replace result weakens the fact",
+			source: `
+def consume(value)
+  value
+end
+
+def f(h: hash<string, int>)
+  consume(h.replace({ "a": 1 }))
+  h[:bad] = 1
+end
+`,
+		},
+		{
+			name: "open shape replacement weakens an exact shape",
+			source: `
+def f(user: { name: string }, replacement: { ... })
+  user.replace(replacement)
+  user[:extra] = 1
+end
+`,
+		},
+		{
+			name: "shape replace shadowed by a data field stays gradual",
+			source: `
+def f(user: { replace: int })
+  user.replace({ extra: 1 })
 end
 `,
 		},
@@ -1037,6 +1686,47 @@ end
 `,
 		},
 		{
+			name: "too many fixed store arguments abort despite a dynamic splat",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<string, int>, args: array<any>)
+  h.store("a", 1, 2, *args)
+  takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "nonempty merge keyword splat stops the continuation",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<string, int>, opts: { extra: int })
+  h.merge!(**opts)
+  takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "invalid update keyword splat stops the continuation",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<string, int>)
+  opts = {}
+  opts[1] = 2
+  h.update(**opts)
+  takes_int("unreachable")
+end
+`,
+		},
+		{
 			name: "callable value bounds are not modeled as builtin mutators",
 			source: `
 def f(h: hash<string, function>, v)
@@ -1206,5 +1896,324 @@ end
 			t.Parallel()
 			requireNoCheckWarnings(t, compileScriptDefault(t, tc.source))
 		})
+	}
+}
+
+func TestHashWriteExactSplatsMatchRuntimeArguments(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def store_splat
+  h = { "a": 1 }
+  args = ["a", 2]
+  result = h.store(*args)
+  [result, h["a"]]
+end
+
+def merge_splat
+  h = { "a": 1 }
+  args = [{ "b": 2 }, { "a": 3 }]
+  result = h.merge!(*args)
+  [result.equal?(h), h["a"], h["b"]]
+end
+
+def update_splat
+  h = { "a": 1 }
+  args = [{ "b": 2 }]
+  result = h.update(*args)
+  [result.equal?(h), h["a"], h["b"]]
+end
+
+def empty_merge_splat
+  h = { "a": 1 }
+  result = h.merge!(*[])
+  [result.equal?(h), h["a"]]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "store_splat", nil), []Value{
+		NewInt(2),
+		NewInt(2),
+	})
+	compareArrays(t, callFunc(t, script, "merge_splat", nil), []Value{
+		NewBool(true),
+		NewInt(3),
+		NewInt(2),
+	})
+	compareArrays(t, callFunc(t, script, "update_splat", nil), []Value{
+		NewBool(true),
+		NewInt(1),
+		NewInt(2),
+	})
+	compareArrays(t, callFunc(t, script, "empty_merge_splat", nil), []Value{
+		NewBool(true),
+		NewInt(1),
+	})
+}
+
+func TestHashWriteDynamicExpansionsMatchReachableRuntimeCalls(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def store_expansion(h: hash<string, int>, other: hash<string, int>, args: array<any>, opts)
+  h.store(*args, **opts)
+  other[:bad] = 1
+  [h["stored"], other[:bad]]
+end
+
+def merge_expansion(h: hash<string, int>, other: hash<string, int>, args: array<any>, opts)
+  h.merge!(*args, **opts)
+  other[:bad] = 1
+  [h["merged"], other[:bad]]
+end
+
+def update_expansion(h: hash<string, int>, other: hash<string, int>, args: array<any>, opts)
+  h.update(*args, **opts)
+  other[:bad] = 1
+  [h["updated"], other[:bad]]
+end
+`)
+
+	cases := []struct {
+		name string
+		args []Value
+	}{
+		{
+			name: "store_expansion",
+			args: []Value{
+				NewHash(nil),
+				NewHash(nil),
+				NewArray([]Value{NewString("stored"), NewInt(1)}),
+				NewHash(nil),
+			},
+		},
+		{
+			name: "merge_expansion",
+			args: []Value{
+				NewHash(nil),
+				NewHash(nil),
+				NewArray([]Value{NewHash(map[string]Value{"merged": NewInt(1)})}),
+				NewHash(nil),
+			},
+		},
+		{
+			name: "update_expansion",
+			args: []Value{
+				NewHash(nil),
+				NewHash(nil),
+				NewArray([]Value{NewHash(map[string]Value{"updated": NewInt(1)})}),
+				NewHash(nil),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			compareArrays(t, callFunc(t, script, tc.name, tc.args), []Value{
+				NewInt(1),
+				NewInt(1),
+			})
+		})
+	}
+}
+
+func TestHashMemberAssignmentMatchesRuntimeKeySelection(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def existing_symbol
+  h = { name: "before" }
+  h.name = 1
+  [h[:name], h["name"]]
+end
+
+def existing_string
+  h = { "name": "before" }
+  h.name = 1
+  [h[:name], h["name"]]
+end
+
+def symbol_wins
+  h = { name: "symbol", "name": "string" }
+  h.name = 1
+  [h[:name], h["name"]]
+end
+
+def missing_key
+  h = {}
+  h.name = 1
+  [h[:name], h["name"]]
+end
+
+def compound_and_logical
+  h = { count: 1, name: "before", fallback: nil }
+  h.count += 2
+  h.name &&= "after"
+  h.fallback ||= "set"
+  [h[:count], h[:name], h[:fallback]]
+end
+
+def builtin_and_universal_getters
+  sized = { name: "before" }
+  sized.size &&= 1
+
+  identified = { name: "before" }
+  identified.itself &&= 2
+
+  frozen = { name: "before" }
+  frozen.frozen? ||= 3
+
+  frozen_and = { name: "before" }
+  frozen_and.frozen? &&= 4
+
+  shadowed = { "frozen?": lambda { false } }
+  shadowed.frozen? ||= fail_right_side()
+
+  [sized[:size], identified[:itself], frozen.size, frozen_and[:"frozen?"], shadowed["frozen?"].call()]
+end
+
+def impossible_key_getter
+  h = {}
+  h[1] = false
+  h.value ||= fail_right_side()
+end
+
+def impossible_compound_key_getter
+  h = {}
+  h[1] = 1
+  h.value += fail_right_side()
+end
+
+def fail_right_side
+  1 / 0
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "existing_symbol", nil), []Value{
+		NewInt(1),
+		NewNil(),
+	})
+	compareArrays(t, callFunc(t, script, "existing_string", nil), []Value{
+		NewNil(),
+		NewInt(1),
+	})
+	compareArrays(t, callFunc(t, script, "symbol_wins", nil), []Value{
+		NewInt(1),
+		NewString("string"),
+	})
+	compareArrays(t, callFunc(t, script, "missing_key", nil), []Value{
+		NewInt(1),
+		NewNil(),
+	})
+	compareArrays(t, callFunc(t, script, "compound_and_logical", nil), []Value{
+		NewInt(3),
+		NewString("after"),
+		NewString("set"),
+	})
+	compareArrays(t, callFunc(t, script, "builtin_and_universal_getters", nil), []Value{
+		NewInt(1),
+		NewInt(2),
+		NewInt(1),
+		NewInt(4),
+		NewBool(false),
+	})
+	requireCallErrorContains(t, script, "impossible_key_getter", nil, CallOptions{}, "unknown hash method value")
+	requireCallErrorContains(t, script, "impossible_compound_key_getter", nil, CallOptions{}, "unknown hash method value")
+}
+
+func TestHashReplaceMatchesRuntimeWholeStore(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def replace_entries
+  h = { "old": 1 }
+  replacement = { "a": 2 }
+  result = h.replace(replacement)
+  replacement["a"] = 3
+  [result.equal?(h), h["old"], h["a"], replacement["a"]]
+end
+
+def replace_exact_splat
+  h = { "old": 1 }
+  args = [{ "a": 2 }]
+  result = h.replace(*args)
+  [result.equal?(h), h["old"], h["a"]]
+end
+
+def replace_self
+  h = { name: 1 }
+  result = h.replace(h)
+  [result.equal?(h), h[:name]]
+end
+`)
+
+	compareArrays(t, callFunc(t, script, "replace_entries", nil), []Value{
+		NewBool(true),
+		NewNil(),
+		NewInt(2),
+		NewInt(3),
+	})
+	compareArrays(t, callFunc(t, script, "replace_exact_splat", nil), []Value{
+		NewBool(true),
+		NewNil(),
+		NewInt(2),
+	})
+	compareArrays(t, callFunc(t, script, "replace_self", nil), []Value{
+		NewBool(true),
+		NewInt(1),
+	})
+}
+
+func TestHashReplaceShapeCheckMatchesRuntimeKeyIdentity(t *testing.T) {
+	t.Parallel()
+
+	colliding := compileScriptDefault(t, `
+def replace_fields(user: { name: int })
+  user.replace({ name: 1, "name": 2 })
+end
+`)
+	requireCheckWarningContains(
+		t,
+		colliding,
+		"write to user adds field name to exact shape { name: int }",
+	)
+
+	receiver := NewTypedHash(1)
+	if err := receiver.HashSet(NewSymbol("name"), NewInt(0)); err != nil {
+		t.Fatalf("HashSet(:name, 0) error = %v", err)
+	}
+	got := callFunc(t, colliding, "replace_fields", []Value{receiver})
+	if got.HashLen() != 2 {
+		t.Fatalf("replace_fields({name: 0}).HashLen() = %d, want 2", got.HashLen())
+	}
+	if value, ok, err := got.HashGet(NewSymbol("name")); err != nil {
+		t.Fatalf("replace_fields({name: 0})[:name] error = %v", err)
+	} else if !ok || !value.Equal(NewInt(1)) {
+		t.Errorf("replace_fields({name: 0})[:name] = %v, %t, want 1, true", value, ok)
+	}
+	if value, ok, err := got.HashGet(NewString("name")); err != nil {
+		t.Fatalf(`replace_fields({name: 0})["name"] error = %v`, err)
+	} else if !ok || !value.Equal(NewInt(2)) {
+		t.Errorf(`replace_fields({name: 0})["name"] = %v, %t, want 2, true`, value, ok)
+	}
+
+	overwritten := compileScriptDefault(t, `
+def replace_fields(user: { name: int })
+  user.replace({ name: "discarded", name: 2 })
+end
+`)
+	requireNoCheckWarnings(t, overwritten)
+
+	receiver = NewTypedHash(1)
+	if err := receiver.HashSet(NewSymbol("name"), NewInt(0)); err != nil {
+		t.Fatalf("HashSet(:name, 0) error = %v", err)
+	}
+	got = callFunc(t, overwritten, "replace_fields", []Value{receiver})
+	if got.HashLen() != 1 {
+		t.Fatalf("replace_fields({name: 0}).HashLen() = %d, want 1", got.HashLen())
+	}
+	if value, ok, err := got.HashGet(NewSymbol("name")); err != nil {
+		t.Fatalf("replace_fields({name: 0})[:name] error = %v", err)
+	} else if !ok || !value.Equal(NewInt(2)) {
+		t.Errorf("replace_fields({name: 0})[:name] = %v, %t, want 2, true", value, ok)
 	}
 }

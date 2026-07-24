@@ -8407,15 +8407,19 @@ func TestExactPositionalArgumentVariantsCorrelatesOnlyStableSources(t *testing.T
 					firstValue:  firstAlternatives,
 					secondValue: tc.secondValues,
 				},
-				callArgumentSplatSources: map[*SplatArg]checkCallSplatSource{
-					firstSplat: {
-						name:         "values",
-						generation:   7,
+				callArgumentSplatSources: map[Expression]checkCallSplatSource{
+					firstValue: {
+						identity: []capturedContainerRoot{{
+							name:       "values",
+							generation: 7,
+						}},
 						alternatives: firstAlternatives,
 					},
-					secondSplat: {
-						name:         tc.secondName,
-						generation:   tc.secondGeneration,
+					secondValue: {
+						identity: []capturedContainerRoot{{
+							name:       tc.secondName,
+							generation: tc.secondGeneration,
+						}},
 						alternatives: tc.secondValues,
 					},
 				},
