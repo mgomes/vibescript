@@ -5591,6 +5591,337 @@ end`,
 	}
 }
 
+func TestCheckDirectLambdaLocalControlCompletion(t *testing.T) {
+	t.Parallel()
+
+	literals := []struct {
+		name   string
+		prefix string
+	}{
+		{name: "stabby", prefix: "->"},
+		{name: "named", prefix: "lambda"},
+	}
+	calls := []struct {
+		name   string
+		suffix string
+	}{
+		{name: "parenthesized", suffix: "call()"},
+		{name: "parenless", suffix: "call"},
+	}
+	controls := []string{"return", "next", "break"}
+	contexts := []string{"statement", "default"}
+
+	for _, literal := range literals {
+		for _, call := range calls {
+			for _, control := range controls {
+				invocation := literal.prefix + " { " + control + " }." + call.suffix
+				for _, contextName := range contexts {
+					t.Run(
+						literal.name+"/"+call.name+"/"+control+"/"+contextName,
+						func(t *testing.T) {
+							t.Parallel()
+
+							source := `def run()
+  ` + invocation + `
+  missing_name
+end`
+							if contextName == "default" {
+								source = `def target(value = ` + invocation + `)
+  value
+end
+
+def run()
+  target()
+  missing_name
+end`
+							}
+							script := compileScript(t, source)
+							requireCheckWarningContains(
+								t,
+								script,
+								"undefined variable missing_name",
+							)
+						},
+					)
+				}
+			}
+		}
+	}
+}
+
+func TestCheckDirectLambdaLocalControlPreservesCompletionPrecision(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		source      string
+		wantMissing bool
+	}{
+		{
+			name: "known raising body does not complete",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  -> { abort() }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "captured condition selects raising branch",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  flag = true
+  lambda {
+    if flag
+      abort()
+    else
+      return
+    end
+  }.call
+  missing_name
+end`,
+		},
+		{
+			name: "raising return value does not complete",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  -> { return abort() }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "return in loop completes lambda before raising tail",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  lambda {
+    while true
+      return
+    end
+    abort()
+  }.call
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "break exits infinite loop and completes lambda tail",
+			source: `def run()
+  -> {
+    while true
+      break
+    end
+  }.call()
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "next keeps infinite loop from completing",
+			source: `def run()
+  lambda {
+    while true
+      next
+    end
+  }.call
+  missing_name
+end`,
+		},
+		{
+			name: "break exits infinite until loop",
+			source: `def run()
+  lambda {
+    until false
+      break
+    end
+  }.call()
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "next keeps infinite until loop from completing",
+			source: `def run()
+  -> {
+    until false
+      next
+    end
+  }.call
+  missing_name
+end`,
+		},
+		{
+			name: "break in loop reaches raising lambda tail",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  -> {
+    while true
+      break
+    end
+    abort()
+  }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "next in loop reaches raising lambda tail",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  lambda {
+    for value in [1]
+      next
+    end
+    abort()
+  }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "raising nonempty for body blocks lambda tail",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  -> {
+    for value in [1]
+      abort()
+    end
+    return
+  }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "return survives falling through ensure",
+			source: `def run()
+  -> {
+    begin
+      return
+    ensure
+      1
+    end
+  }.call()
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "raising ensure overrides return",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  -> {
+    begin
+      return
+    ensure
+      abort()
+    end
+  }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "rescue return completes lambda",
+			source: `def run()
+  lambda {
+    begin
+      raise "stop"
+    rescue
+      return
+    end
+  }.call
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "returning ensure overrides raise",
+			source: `def run()
+  -> {
+    begin
+      raise "stop"
+    ensure
+      return
+    end
+  }.call()
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "ensure break overrides loop next",
+			source: `def run()
+  -> {
+    while true
+      begin
+        next
+      ensure
+        break
+      end
+    end
+  }.call()
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "ensure next overrides loop break",
+			source: `def run()
+  -> {
+    while true
+      begin
+        break
+      ensure
+        next
+      end
+    end
+  }.call()
+  missing_name
+end`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScript(t, tc.source)
+			gotMissing := false
+			for _, warning := range script.CheckWarningsForFunction("run") {
+				gotMissing = gotMissing ||
+					strings.Contains(warning.Message, "undefined variable missing_name")
+			}
+			if gotMissing != tc.wantMissing {
+				t.Fatalf(
+					"CheckWarningsForFunction(%q) missing_name warning = %t, want %t",
+					"run",
+					gotMissing,
+					tc.wantMissing,
+				)
+			}
+		})
+	}
+}
+
 func TestCheckNamespaceMutationEffectsRespectEvaluationOrder(t *testing.T) {
 	t.Parallel()
 

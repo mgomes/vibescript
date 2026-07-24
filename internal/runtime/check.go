@@ -4863,7 +4863,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			targetMayEnter = immediateLambdaEntry.mayEnter
 			if !targetMayEnter {
 				callMayComplete = false
-			} else if !c.statementsMayCompleteForBinding(invokedLambda.Body) {
+			} else if !c.immediateLambdaBodyMayCompleteForBinding(invokedLambda) {
 				callMayComplete = false
 			}
 		}
@@ -9286,6 +9286,299 @@ func (c *scriptChecker) statementsMayCompleteForBinding(statements []Statement) 
 	return true
 }
 
+type lambdaBindingCompletionFlow struct {
+	fallsThrough bool
+	completes    bool
+	fails        bool
+	breaks       bool
+	continues    bool
+}
+
+// immediateLambdaBodyMayCompleteForBinding keeps strict-lambda control local
+// without discarding the exact noncompletion proofs used during call binding.
+func (c *scriptChecker) immediateLambdaBodyMayCompleteForBinding(
+	block *BlockLiteral,
+) bool {
+	if block == nil {
+		return false
+	}
+	flow := c.immediateLambdaStatementsCompletionFlow(block.Body, 0)
+	return flow.fallsThrough || flow.completes
+}
+
+func (c *scriptChecker) immediateLambdaStatementsCompletionFlow(
+	statements []Statement,
+	loopDepth int,
+) lambdaBindingCompletionFlow {
+	flow := lambdaBindingCompletionFlow{fallsThrough: true}
+	for _, stmt := range statements {
+		if !flow.fallsThrough {
+			break
+		}
+		current := c.immediateLambdaStatementCompletionFlow(stmt, loopDepth)
+		flow.completes = flow.completes || current.completes
+		flow.fails = flow.fails || current.fails
+		flow.breaks = flow.breaks || current.breaks
+		flow.continues = flow.continues || current.continues
+		flow.fallsThrough = current.fallsThrough
+	}
+	return flow
+}
+
+func (c *scriptChecker) immediateLambdaStatementCompletionFlow(
+	stmt Statement,
+	loopDepth int,
+) lambdaBindingCompletionFlow {
+	switch typed := stmt.(type) {
+	case nil:
+		return lambdaBindingCompletionFlow{fallsThrough: true}
+	case *ReturnStmt:
+		return c.immediateLambdaControlCompletionFlow(typed.Value, true, false, false)
+	case *BreakStmt:
+		return c.immediateLambdaControlCompletionFlow(
+			typed.Value,
+			loopDepth == 0,
+			loopDepth > 0,
+			false,
+		)
+	case *NextStmt:
+		return c.immediateLambdaControlCompletionFlow(
+			typed.Value,
+			loopDepth == 0,
+			false,
+			loopDepth > 0,
+		)
+	case *RaiseStmt, *RetryStmt:
+		return lambdaBindingCompletionFlow{fails: true}
+	case *IfStmt:
+		return c.immediateLambdaIfCompletionFlow(typed, loopDepth)
+	case *ForStmt:
+		return c.immediateLambdaForCompletionFlow(typed, loopDepth)
+	case *WhileStmt:
+		return c.immediateLambdaWhileCompletionFlow(typed, loopDepth)
+	case *UntilStmt:
+		return c.immediateLambdaUntilCompletionFlow(typed, loopDepth)
+	case *TryStmt:
+		return c.immediateLambdaTryCompletionFlow(typed, loopDepth)
+	case *ExprStmt:
+		return lambdaBindingCompletionFlow{
+			fallsThrough: c.expressionMayCompleteForBinding(typed.Expr),
+			fails:        !expressionProvenNonRaising(typed.Expr),
+		}
+	default:
+		return lambdaBindingCompletionFlow{
+			fallsThrough: c.statementMayCompleteForBinding(stmt),
+			fails:        true,
+		}
+	}
+}
+
+func (c *scriptChecker) immediateLambdaControlCompletionFlow(
+	expr Expression,
+	completes bool,
+	breaks bool,
+	continues bool,
+) lambdaBindingCompletionFlow {
+	flow := lambdaBindingCompletionFlow{
+		fails: !expressionProvenNonRaising(expr),
+	}
+	if c.expressionMayCompleteForBinding(expr) {
+		flow.completes = completes
+		flow.breaks = breaks
+		flow.continues = continues
+	}
+	return flow
+}
+
+func (c *scriptChecker) immediateLambdaIfCompletionFlow(
+	stmt *IfStmt,
+	loopDepth int,
+) lambdaBindingCompletionFlow {
+	if stmt == nil {
+		return lambdaBindingCompletionFlow{fallsThrough: true}
+	}
+	var flow lambdaBindingCompletionFlow
+	merge := func(branch lambdaBindingCompletionFlow) {
+		flow.fallsThrough = flow.fallsThrough || branch.fallsThrough
+		flow.completes = flow.completes || branch.completes
+		flow.fails = flow.fails || branch.fails
+		flow.breaks = flow.breaks || branch.breaks
+		flow.continues = flow.continues || branch.continues
+	}
+
+	flow.fails = !expressionProvenNonRaising(stmt.Condition)
+	if !c.expressionMayCompleteForBinding(stmt.Condition) {
+		return flow
+	}
+	truthy, known := c.inferredConditionTruthiness(stmt.Condition)
+	if !known || truthy {
+		merge(c.immediateLambdaStatementsCompletionFlow(
+			stmt.Consequent,
+			loopDepth,
+		))
+	}
+	if known && truthy {
+		return flow
+	}
+	for _, branch := range stmt.ElseIf {
+		flow.fails = flow.fails || !expressionProvenNonRaising(branch.Condition)
+		if !c.expressionMayCompleteForBinding(branch.Condition) {
+			return flow
+		}
+		truthy, known = c.inferredConditionTruthiness(branch.Condition)
+		if !known || truthy {
+			merge(c.immediateLambdaStatementsCompletionFlow(
+				branch.Consequent,
+				loopDepth,
+			))
+		}
+		if known && truthy {
+			return flow
+		}
+	}
+	merge(c.immediateLambdaStatementsCompletionFlow(stmt.Alternate, loopDepth))
+	return flow
+}
+
+func (c *scriptChecker) immediateLambdaForCompletionFlow(
+	stmt *ForStmt,
+	loopDepth int,
+) lambdaBindingCompletionFlow {
+	if stmt == nil {
+		return lambdaBindingCompletionFlow{fallsThrough: true}
+	}
+	flow := lambdaBindingCompletionFlow{
+		fails: !expressionProvenNonRaising(stmt.Iterable),
+	}
+	if !c.expressionMayCompleteForBinding(stmt.Iterable) {
+		return flow
+	}
+	flow.fallsThrough = true
+	if !staticIterableProvenEmpty(stmt.Iterable) {
+		body := c.immediateLambdaStatementsCompletionFlow(stmt.Body, loopDepth+1)
+		flow.completes = body.completes
+		flow.fails = flow.fails || body.fails
+		if value, exact := staticLiteralValue(stmt.Iterable); exact &&
+			value.Kind() == KindArray && len(value.Array()) > 0 {
+			flow.fallsThrough = body.fallsThrough || body.breaks || body.continues
+		}
+	}
+	return flow
+}
+
+func (c *scriptChecker) immediateLambdaWhileCompletionFlow(
+	stmt *WhileStmt,
+	loopDepth int,
+) lambdaBindingCompletionFlow {
+	if stmt == nil {
+		return lambdaBindingCompletionFlow{fallsThrough: true}
+	}
+	flow := lambdaBindingCompletionFlow{
+		fails: !expressionProvenNonRaising(stmt.Condition),
+	}
+	if !c.expressionMayCompleteForBinding(stmt.Condition) {
+		return flow
+	}
+	truthy, known := c.inferredConditionTruthiness(stmt.Condition)
+	if !known || truthy {
+		body := c.immediateLambdaStatementsCompletionFlow(stmt.Body, loopDepth+1)
+		flow.completes = body.completes
+		flow.fails = flow.fails || body.fails
+		staticTruthy, staticKnown := staticExpressionTruthiness(stmt.Condition)
+		flow.fallsThrough = !staticKnown || !staticTruthy || body.breaks
+	} else {
+		flow.fallsThrough = true
+	}
+	return flow
+}
+
+func (c *scriptChecker) immediateLambdaUntilCompletionFlow(
+	stmt *UntilStmt,
+	loopDepth int,
+) lambdaBindingCompletionFlow {
+	if stmt == nil {
+		return lambdaBindingCompletionFlow{fallsThrough: true}
+	}
+	flow := lambdaBindingCompletionFlow{
+		fails: !expressionProvenNonRaising(stmt.Condition),
+	}
+	if !c.expressionMayCompleteForBinding(stmt.Condition) {
+		return flow
+	}
+	truthy, known := c.inferredConditionTruthiness(stmt.Condition)
+	if !known || !truthy {
+		body := c.immediateLambdaStatementsCompletionFlow(stmt.Body, loopDepth+1)
+		flow.completes = body.completes
+		flow.fails = flow.fails || body.fails
+		staticTruthy, staticKnown := staticExpressionTruthiness(stmt.Condition)
+		flow.fallsThrough = !staticKnown || staticTruthy || body.breaks
+	} else {
+		flow.fallsThrough = true
+	}
+	return flow
+}
+
+func (c *scriptChecker) immediateLambdaTryCompletionFlow(
+	stmt *TryStmt,
+	loopDepth int,
+) lambdaBindingCompletionFlow {
+	if stmt == nil {
+		return lambdaBindingCompletionFlow{fallsThrough: true}
+	}
+	bodyFlow := c.immediateLambdaStatementsCompletionFlow(stmt.Body, loopDepth)
+	protectedFlow := lambdaBindingCompletionFlow{
+		completes: bodyFlow.completes,
+		breaks:    bodyFlow.breaks,
+		continues: bodyFlow.continues,
+	}
+	if bodyFlow.fallsThrough {
+		elseFlow := c.immediateLambdaStatementsCompletionFlow(stmt.Else, loopDepth)
+		protectedFlow.fallsThrough = elseFlow.fallsThrough
+		protectedFlow.completes = protectedFlow.completes || elseFlow.completes
+		protectedFlow.fails = protectedFlow.fails || elseFlow.fails
+		protectedFlow.breaks = protectedFlow.breaks || elseFlow.breaks
+		protectedFlow.continues = protectedFlow.continues || elseFlow.continues
+	}
+	mergeRescue := func(body []Statement) {
+		if len(body) == 0 {
+			return
+		}
+		flow := c.immediateLambdaStatementsCompletionFlow(body, loopDepth)
+		protectedFlow.fallsThrough = protectedFlow.fallsThrough || flow.fallsThrough
+		protectedFlow.completes = protectedFlow.completes || flow.completes
+		protectedFlow.fails = protectedFlow.fails || flow.fails
+		protectedFlow.breaks = protectedFlow.breaks || flow.breaks
+		protectedFlow.continues = protectedFlow.continues || flow.continues
+	}
+	if bodyFlow.fails {
+		selected, exact := c.staticallySelectedRescue(stmt.Body, stmt.Rescues)
+		if exact {
+			if selected >= 0 && len(stmt.Rescues[selected].Body) > 0 {
+				mergeRescue(stmt.Rescues[selected].Body)
+			} else {
+				protectedFlow.fails = true
+			}
+		} else {
+			protectedFlow.fails = true
+			for i := range stmt.Rescues {
+				mergeRescue(stmt.Rescues[i].Body)
+			}
+		}
+	}
+	ensureFlow := c.immediateLambdaStatementsCompletionFlow(stmt.Ensure, loopDepth)
+	return lambdaBindingCompletionFlow{
+		fallsThrough: protectedFlow.fallsThrough && ensureFlow.fallsThrough,
+		completes: ensureFlow.completes ||
+			protectedFlow.completes && ensureFlow.fallsThrough,
+		fails: ensureFlow.fails ||
+			protectedFlow.fails && ensureFlow.fallsThrough,
+		breaks: ensureFlow.breaks ||
+			protectedFlow.breaks && ensureFlow.fallsThrough,
+		continues: ensureFlow.continues ||
+			protectedFlow.continues && ensureFlow.fallsThrough,
+	}
+}
+
 type blockLiteralCompletionFlow struct {
 	fallsThrough      bool
 	completes         bool
@@ -13506,7 +13799,7 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 		if member, ok := typed.Callee.(*MemberExpr); ok && member.Property == "call" {
 			if block := c.resolveImmediateLambdaBlock(member.Object); block != nil {
 				if !c.immediateLambdaCallEntry(block, typed).mayEnter ||
-					!c.statementsMayCompleteForBinding(block.Body) {
+					!c.immediateLambdaBodyMayCompleteForBinding(block) {
 					return false
 				}
 			}
