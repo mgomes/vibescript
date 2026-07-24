@@ -220,10 +220,12 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   writable: the checker updates their known fields in place instead of
   reporting, and unknown keys or values widen the fact back to unknown.
 - Typed accessor-backed instance variables carry their property contract
-  into instance-method bodies: a direct write such as `@name = 1` against
+  into instance-method bodies for direct-write checking: `@name = 1` against
   `property name: string` is an error when the value's known type contradicts
-  the contract, reads observe the declared type (or `nil` before the first
-  write), and a checked write drops the nil arm. Unknown values pass and the
+  the contract. Reads of scalar properties observe the declared type (or
+  `nil` before the first write), and a checked write drops the nil arm.
+  Container-typed property reads stay gradual because mutations through
+  nested aliases cannot be tracked safely. Unknown values pass and the
   runtime guard validates the write when it executes; untyped accessors and
   undeclared instance variables stay dynamic.
 
