@@ -3264,6 +3264,114 @@ end
 		}
 	})
 
+	t.Run("positive span invokes stored forwarded lambda", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = []
+  callback = lambda { |index| JSON.stringify = replacement; index }
+  items.fill(0, 1, &callback)
+  takes_int(JSON.stringify({}))
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		want := NewInt(1)
+		if !got.Equal(want) {
+			t.Errorf("run() = %s, want %s", got.String(), want.String())
+		}
+	})
+
+	t.Run("binding failures do not enter block bodies", func(t *testing.T) {
+		t.Parallel()
+
+		cases := []struct {
+			name  string
+			setup string
+			fill  string
+		}{
+			{
+				name: "inline lambda arity",
+				fill: `items.fill(0, 1, &lambda {
+    JSON.stringify = replacement
+    1
+  })`,
+			},
+			{
+				name:  "stored lambda arity",
+				setup: `  callback = lambda { JSON.stringify = replacement; 1 }`,
+				fill:  `items.fill(0, 1, &callback)`,
+			},
+			{
+				name: "inline lambda parameter type",
+				fill: `items.fill(0, 1, &lambda { |index: string|
+    JSON.stringify = replacement
+    1
+  })`,
+			},
+			{
+				name: "literal block parameter type",
+				fill: `items.fill(0, 1) do |index: string|
+    JSON.stringify = replacement
+    1
+  end`,
+			},
+			{
+				name:  "stored lambda parameter type",
+				setup: `  callback = lambda { |index: string| JSON.stringify = replacement; 1 }`,
+				fill:  `items.fill(0, 1, &callback)`,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = []
+`+tc.setup+`
+  begin
+    `+tc.fill+`
+  rescue
+    nil
+  end
+  takes_int(JSON.stringify({}))
+end
+`)
+				requireCheckWarningContains(
+					t,
+					script,
+					"call to takes_int argument value expected int, got string",
+				)
+				requireCallErrorContains(
+					t,
+					script,
+					"run",
+					nil,
+					CallOptions{},
+					"argument value expected int, got string",
+				)
+			})
+		}
+	})
+
 	t.Run("inexact span remains conservative", func(t *testing.T) {
 		t.Parallel()
 
@@ -3300,4 +3408,72 @@ end
 			t.Errorf("run(1) = %s, want %s", got.String(), want.String())
 		}
 	})
+}
+
+func TestCheckArrayMutatorLambdaValuesDoNotRun(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		mutation string
+	}{
+		{
+			name:     "fill value",
+			mutation: `items.fill(lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name: "fill selector",
+			mutation: `begin
+    items.fill(0, lambda { JSON.stringify = replacement })
+  rescue
+    nil
+  end`,
+		},
+		{
+			name:     "push value",
+			mutation: `items.push(lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name: "push keyword value",
+			mutation: `begin
+    items.push(extra: lambda { JSON.stringify = replacement })
+  rescue
+    nil
+  end`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_int(value: int)
+  value
+end
+
+def run()
+  items = []
+  `+tc.mutation+`
+  takes_int(JSON.stringify({}))
+end
+`)
+			requireCheckWarningContains(
+				t,
+				script,
+				"call to takes_int argument value expected int, got string",
+			)
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"argument value expected int, got string",
+			)
+		})
+	}
 }

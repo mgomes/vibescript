@@ -4463,6 +4463,31 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		arrayFillBlockCall := arrayMutatorProperty == "fill" ||
 			targetResolved && target.name == "array.fill"
 		arrayFillBlockMayRun := !arrayFillBlockCall || c.arrayFillBlockMayEvaluate(typed)
+		arrayFillBlockBodyMayRun := arrayFillBlockMayRun
+		var arrayFillBlockValues []checkBlockLiteralValue
+		arrayFillBlockValuesExact := false
+		if arrayFillBlockCall && arrayFillBlockMayRun {
+			invocation := &checkBlockInvocation{
+				arguments: []*TypeExpr{checkTypeInt},
+			}
+			switch {
+			case typed.Block != nil:
+				invocation.strictArity = typed.Block.Lambda
+				arrayFillBlockBodyMayRun =
+					c.blockLiteralInvocationMayEnter(typed.Block, invocation)
+			case typed.BlockArg != nil:
+				if blocks, exact := c.callableBlockLiteralValues(typed.BlockArg); exact {
+					arrayFillBlockValuesExact = true
+					for _, block := range blocks {
+						invocation.strictArity = block.lambda
+						if c.blockLiteralInvocationMayEnter(block.block, invocation) {
+							arrayFillBlockValues = append(arrayFillBlockValues, block)
+						}
+					}
+					arrayFillBlockBodyMayRun = len(arrayFillBlockValues) > 0
+				}
+			}
+		}
 		callBlockMayRun := targetMayEnter && invokedLambda == nil &&
 			arrayFillBlockMayRun && c.callMayEvaluateBlock(typed)
 		if callMayEnter && targetResolved && target.fn != nil &&
@@ -4490,15 +4515,17 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		escapingLambdaMayRun := targetMayEnter &&
 			(targetResolved && target.fn == nil || !targetResolved && !dynamicResolution.exact)
 		if escapingLambdaMayRun && (invokedLambda == nil || immediateLambdaEnters) {
-			for _, arg := range typed.Args {
-				c.applyLambdaLiteralNamespaceMutations(arg)
-				c.checkLambdaLiteralSummaryYields(function, arg)
+			if arrayMutatorProperty == "" {
+				for _, arg := range typed.Args {
+					c.applyLambdaLiteralNamespaceMutations(arg)
+					c.checkLambdaLiteralSummaryYields(function, arg)
+				}
+				for _, kwarg := range typed.KwArgs {
+					c.applyLambdaLiteralNamespaceMutations(kwarg.Value)
+					c.checkLambdaLiteralSummaryYields(function, kwarg.Value)
+				}
 			}
-			for _, kwarg := range typed.KwArgs {
-				c.applyLambdaLiteralNamespaceMutations(kwarg.Value)
-				c.checkLambdaLiteralSummaryYields(function, kwarg.Value)
-			}
-			if arrayFillBlockMayRun {
+			if !arrayFillBlockCall {
 				c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
 				c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
 			}
@@ -4506,7 +4533,17 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
 			c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
 		}
-		if callBlockMayRun {
+		if arrayFillBlockCall && arrayFillBlockBodyMayRun && typed.BlockArg != nil {
+			if arrayFillBlockValuesExact {
+				for _, block := range arrayFillBlockValues {
+					c.applyLambdaBlockNamespaceMutations(block.block)
+				}
+			} else {
+				c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
+			}
+			c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
+			c.applyCallableNamespaceMutations(argumentCallables[typed.BlockArg])
+		} else if callBlockMayRun {
 			c.applyCallableNamespaceMutations(argumentCallables[typed.BlockArg])
 		}
 		if callBlockMayRun && typed.Block != nil {
@@ -4515,9 +4552,23 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			// semantics, so those returns cannot unwind the enclosing
 			// function.
 			localReturns := typed.Block.Lambda || c.callTargetsCoreLambda(typed, target, targetResolved)
-			blockResult = c.checkBlockLiteral(function, typed.Block, localReturns)
+			if arrayFillBlockCall && !arrayFillBlockBodyMayRun {
+				for _, param := range typed.Block.Params {
+					c.checkRuntimeTypeAnnotation(function, param.Type)
+					c.checkDestructureTargetTypeAnnotations(function, param.Target)
+				}
+				blockResult = checkBlockResult{exact: true}
+			} else {
+				blockResult = c.checkBlockLiteral(function, typed.Block, localReturns)
+			}
 		} else if targetMayEnter && typed.BlockArg != nil && arrayFillBlockMayRun {
-			if blocks, exact := c.callableBlockLiteralValues(typed.BlockArg); exact {
+			blocks, exact := c.callableBlockLiteralValues(typed.BlockArg)
+			if exact && arrayFillBlockValuesExact {
+				blocks = arrayFillBlockValues
+			}
+			if exact && len(blocks) == 0 {
+				blockResult = checkBlockResult{exact: true}
+			} else if exact {
 				blockResult = c.blockLiteralValuesResult(function, blocks)
 			}
 		}
