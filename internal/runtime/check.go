@@ -134,6 +134,7 @@ type scriptChecker struct {
 	callArgumentClassValues    map[Expression][]string
 	callArgumentCallables      map[Expression][]*ScriptFunction
 	callArgumentStaticValues   map[Expression][]Expression
+	callArgumentStaticChoices  map[Expression]checkStaticChoiceFact
 	callArgumentSplatSources   map[Expression]checkCallSplatSource
 	evaluatedDestructureFacts  map[Expression]capturedDestructureValueFact
 	destructureProjectionFacts map[Expression]capturedDestructureValueFact
@@ -292,6 +293,12 @@ type checkForwardedCallVariant struct {
 type checkCallSplatSource struct {
 	identity     []capturedContainerRoot
 	alternatives []Expression
+	evaluation   Expression
+}
+
+type checkStaticChoiceFact struct {
+	source  checkCallSplatSource
+	indices []int
 }
 
 func (c *scriptChecker) callStaticValueAlternatives(expr Expression) ([]Expression, bool) {
@@ -4139,6 +4146,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		argumentClassValues := make(map[Expression][]string, len(typed.Args)+len(typed.KwArgs))
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
 		argumentStaticValues := make(map[Expression][]Expression, len(typed.Args)+len(typed.KwArgs))
+		argumentStaticChoices := make(map[Expression]checkStaticChoiceFact)
 		argumentSplatSources := make(map[Expression]checkCallSplatSource)
 		argumentRetainedAliases := make(map[Expression]checkRetainedContainerCapture, len(typed.Args))
 		argumentSplatOrigins := make(map[Expression][]*SplatArg)
@@ -4180,6 +4188,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			}
 			if values, ok := c.staticValueExpressionAlternatives(staticExpr); ok {
 				argumentStaticValues[staticExpr] = append([]Expression(nil), values...)
+				if choice, correlated := c.staticValueChoiceForExpression(staticExpr); correlated {
+					argumentStaticChoices[staticExpr] = cloneCheckStaticChoiceFact(choice)
+				}
 				if splat, isSplat := expr.(*SplatArg); isSplat && len(values) == 1 {
 					if array, isArray := values[0].(*ArrayLiteral); isArray {
 						for _, element := range array.Elements {
@@ -4188,6 +4199,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 							}
 							if elementValues, exact := c.staticValueExpressionAlternatives(element); exact {
 								argumentStaticValues[element] = append([]Expression(nil), elementValues...)
+								if choice, correlated := c.staticValueChoiceForExpression(element); correlated {
+									argumentStaticChoices[element] = cloneCheckStaticChoiceFact(choice)
+								}
 							}
 							argumentSplatOrigins[element] = append(argumentSplatOrigins[element], splat)
 						}
@@ -4201,23 +4215,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			if !directLocal || !exact || len(values) == 0 {
 				return
 			}
-			names := c.containerIdentityNames(ident.Name)
-			ordered := make([]string, 0, len(names))
-			for name := range names {
-				ordered = append(ordered, name)
-			}
-			sort.Strings(ordered)
-			identity := make([]capturedContainerRoot, 0, len(ordered))
-			for _, name := range ordered {
-				identity = append(identity, capturedContainerRoot{
-					name:       name,
-					generation: c.localBindingGenerations[name],
-				})
-			}
-			argumentSplatSources[expr] = checkCallSplatSource{
-				identity:     identity,
-				alternatives: append([]Expression(nil), values...),
-			}
+			argumentSplatSources[expr] = c.checkCallSplatSourceForLocal(ident.Name, values)
 		}
 		positionalSplatSeen := false
 		argumentEvaluationFailed := false
@@ -4338,11 +4336,13 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
 		previousStaticValues := c.callArgumentStaticValues
+		previousStaticChoices := c.callArgumentStaticChoices
 		previousSplatSources := c.callArgumentSplatSources
 		c.callArgumentFacts = argumentFacts
 		c.callArgumentClassValues = argumentClassValues
 		c.callArgumentCallables = argumentCallables
 		c.callArgumentStaticValues = argumentStaticValues
+		c.callArgumentStaticChoices = argumentStaticChoices
 		c.callArgumentSplatSources = argumentSplatSources
 		c.pinForwardedConstructorInstanceFact(typed, dynamicCandidates)
 		if deferForwardedTargets {
@@ -4585,6 +4585,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
+		c.callArgumentStaticChoices = previousStaticChoices
 		c.callArgumentSplatSources = previousSplatSources
 		if argumentsMayBeSkipped {
 			if !callMayComplete {
@@ -4630,6 +4631,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					member,
 					argumentFacts,
 					argumentStaticValues,
+					argumentStaticChoices,
 					argumentRetainedAliases,
 					argumentSplatOrigins,
 					argumentSplatSources,
@@ -5789,10 +5791,12 @@ func (c *scriptChecker) replayDestructureAssignment(
 		// Earlier LHS leaves may mutate an object captured by a later leaf.
 		// Re-read the evaluation snapshot now so the later binding observes the
 		// same live object after those writes without reevaluating the RHS.
-		refreshed := c.capturedDestructureValueFact(fact.value)
-		refreshed.target = fact.target
-		refreshed.declared = fact.declared
-		fact = refreshed
+		if !capturedDestructureStaticChoiceExact(fact) {
+			refreshed := c.capturedDestructureValueFact(fact.value)
+			refreshed.target = fact.target
+			refreshed.declared = fact.declared
+			fact = refreshed
+		}
 		if _, ident := fact.target.(*Identifier); ident {
 			c.bindCapturedDestructureValueFact(fact)
 			c.recordRuntimeBindingTarget(fact.target)
@@ -6588,11 +6592,13 @@ func (c *scriptChecker) checkMemberAutoCall(
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
 		previousStaticValues := c.callArgumentStaticValues
+		previousStaticChoices := c.callArgumentStaticChoices
 		previousSplatSources := c.callArgumentSplatSources
 		c.callArgumentFacts = map[Expression]*TypeExpr{}
 		c.callArgumentClassValues = map[Expression][]string{}
 		c.callArgumentCallables = map[Expression][]*ScriptFunction{}
 		c.callArgumentStaticValues = map[Expression][]Expression{}
+		c.callArgumentStaticChoices = map[Expression]checkStaticChoiceFact{}
 		c.callArgumentSplatSources = map[Expression]checkCallSplatSource{}
 		bodyMayEnter := c.refineDynamicCallTargetEntry(resolution.targets)
 		if resolution.exact && c.exactDynamicCallHasOpaqueClassConstantEffects(resolution) {
@@ -6604,6 +6610,7 @@ func (c *scriptChecker) checkMemberAutoCall(
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
+		c.callArgumentStaticChoices = previousStaticChoices
 		c.callArgumentSplatSources = previousSplatSources
 		if !resolution.exact {
 			c.markOpaqueClassConstants()
@@ -13055,10 +13062,15 @@ func (c *scriptChecker) withCapturedDestructureArgumentFacts(
 	previousClassValues := c.callArgumentClassValues
 	previousCallables := c.callArgumentCallables
 	previousStaticValues := c.callArgumentStaticValues
+	previousStaticChoices := c.callArgumentStaticChoices
 	c.callArgumentFacts = make(map[Expression]*TypeExpr, len(previousFacts)+len(facts))
 	c.callArgumentClassValues = make(map[Expression][]string, len(previousClassValues)+len(facts))
 	c.callArgumentCallables = make(map[Expression][]*ScriptFunction, len(previousCallables)+len(facts))
 	c.callArgumentStaticValues = make(map[Expression][]Expression, len(previousStaticValues)+len(facts))
+	c.callArgumentStaticChoices = make(
+		map[Expression]checkStaticChoiceFact,
+		len(previousStaticChoices),
+	)
 	for expr, fact := range previousFacts {
 		c.callArgumentFacts[expr] = fact
 	}
@@ -13071,17 +13083,24 @@ func (c *scriptChecker) withCapturedDestructureArgumentFacts(
 	for expr, values := range previousStaticValues {
 		c.callArgumentStaticValues[expr] = values
 	}
+	for expr, choice := range previousStaticChoices {
+		c.callArgumentStaticChoices[expr] = cloneCheckStaticChoiceFact(choice)
+	}
 	for expr, fact := range facts {
 		c.callArgumentFacts[expr] = fact.assigned
 		c.callArgumentClassValues[expr] = append([]string(nil), fact.classNames...)
 		c.callArgumentCallables[expr] = append([]*ScriptFunction(nil), fact.callables...)
 		c.callArgumentStaticValues[expr] = append([]Expression(nil), fact.staticVals...)
+		if capturedDestructureStaticChoiceExact(fact) {
+			c.callArgumentStaticChoices[expr] = cloneCheckStaticChoiceFact(fact.staticChoice)
+		}
 	}
 	defer func() {
 		c.callArgumentFacts = previousFacts
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
+		c.callArgumentStaticChoices = previousStaticChoices
 	}()
 	walk()
 }
@@ -14100,10 +14119,12 @@ func (s *namespaceMutationScan) replayDestructureAssignment(
 		if fact.target == nil {
 			continue
 		}
-		refreshed := s.checker.capturedDestructureValueFact(fact.value)
-		refreshed.target = fact.target
-		refreshed.declared = fact.declared
-		fact = refreshed
+		if !capturedDestructureStaticChoiceExact(fact) {
+			refreshed := s.checker.capturedDestructureValueFact(fact.value)
+			refreshed.target = fact.target
+			refreshed.declared = fact.declared
+			fact = refreshed
+		}
 		if _, ident := fact.target.(*Identifier); ident {
 			s.checker.bindCapturedDestructureValueFact(fact)
 			continue

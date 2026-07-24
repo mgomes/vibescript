@@ -64,6 +64,7 @@ type checkLocalValueFact struct {
 	blocks                  []checkBlockLiteralValue
 	blockChoiceMayNil       bool
 	staticVals              []Expression
+	staticChoice            checkStaticChoiceFact
 	keywordSplatFails       bool
 	invalidKeywordSplatKeys map[string]struct{}
 }
@@ -318,6 +319,7 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 			blocks:                  append([]checkBlockLiteralValue(nil), fact.blocks...),
 			blockChoiceMayNil:       fact.blockChoiceMayNil,
 			staticVals:              append([]Expression(nil), fact.staticVals...),
+			staticChoice:            cloneCheckStaticChoiceFact(fact.staticChoice),
 			keywordSplatFails:       fact.keywordSplatFails,
 			invalidKeywordSplatKeys: cloneCheckStringSet(fact.invalidKeywordSplatKeys),
 		}
@@ -475,7 +477,71 @@ func (c *scriptChecker) localStaticValuesFor(name string) ([]Expression, bool) {
 		len(fact.blocks) == 0 && !fact.keywordSplatFails
 }
 
+func cloneCheckCallSplatSource(source checkCallSplatSource) checkCallSplatSource {
+	return checkCallSplatSource{
+		identity:     append([]capturedContainerRoot(nil), source.identity...),
+		alternatives: append([]Expression(nil), source.alternatives...),
+		evaluation:   source.evaluation,
+	}
+}
+
+func cloneCheckStaticChoiceFact(fact checkStaticChoiceFact) checkStaticChoiceFact {
+	return checkStaticChoiceFact{
+		source:  cloneCheckCallSplatSource(fact.source),
+		indices: append([]int(nil), fact.indices...),
+	}
+}
+
+func (c *scriptChecker) localStaticChoiceFor(name string) (checkStaticChoiceFact, bool) {
+	if _, poisoned := c.typePoison[name]; poisoned {
+		return checkStaticChoiceFact{}, false
+	}
+	if _, poisoned := c.staticValuePoison[name]; poisoned {
+		return checkStaticChoiceFact{}, false
+	}
+	fact, ok := c.localValueFactFor(name)
+	return cloneCheckStaticChoiceFact(fact.staticChoice),
+		ok && len(fact.staticVals) > 0 &&
+			len(fact.staticChoice.indices) == len(fact.staticVals) &&
+			checkCallSplatSourceIdentified(fact.staticChoice.source)
+}
+
+func checkCallSplatSourceIdentified(source checkCallSplatSource) bool {
+	return len(source.identity) > 0 || source.evaluation != nil
+}
+
+func (c *scriptChecker) checkCallSplatSourceForLocal(
+	name string,
+	alternatives []Expression,
+) checkCallSplatSource {
+	names := c.containerIdentityNames(name)
+	ordered := make([]string, 0, len(names))
+	for identityName := range names {
+		ordered = append(ordered, identityName)
+	}
+	sort.Strings(ordered)
+	identity := make([]capturedContainerRoot, 0, len(ordered))
+	for _, identityName := range ordered {
+		identity = append(identity, capturedContainerRoot{
+			name:       identityName,
+			generation: c.localBindingGenerations[identityName],
+		})
+	}
+	return checkCallSplatSource{
+		identity:     identity,
+		alternatives: append([]Expression(nil), alternatives...),
+	}
+}
+
 func (c *scriptChecker) bindLocalStaticValues(name string, values []Expression) {
+	c.bindLocalStaticValuesWithChoice(name, values, checkStaticChoiceFact{})
+}
+
+func (c *scriptChecker) bindLocalStaticValuesWithChoice(
+	name string,
+	values []Expression,
+	choice checkStaticChoiceFact,
+) {
 	if name == "" || len(c.localTypes) == 0 {
 		return
 	}
@@ -487,7 +553,22 @@ func (c *scriptChecker) bindLocalStaticValues(name string, values []Expression) 
 			delete(c.localClassValues[i], name)
 			return
 		}
+		original := values
 		values = c.normalizeCheckStaticValues(values)
+		choiceAligned := len(choice.indices) == len(original) &&
+			len(values) == len(original) &&
+			checkCallSplatSourceIdentified(choice.source)
+		if choiceAligned {
+			for i := range values {
+				if values[i] != original[i] {
+					choiceAligned = false
+					break
+				}
+			}
+		}
+		if !choiceAligned {
+			choice = checkStaticChoiceFact{}
+		}
 		for _, frame := range c.localClassValues {
 			for otherName, fact := range frame {
 				if otherName == name {
@@ -520,7 +601,8 @@ func (c *scriptChecker) bindLocalStaticValues(name string, values []Expression) 
 			c.localClassValues[i] = make(checkClassValueFrame)
 		}
 		c.localClassValues[i][name] = checkLocalValueFact{
-			staticVals: values,
+			staticVals:   values,
+			staticChoice: cloneCheckStaticChoiceFact(choice),
 		}
 		return
 	}
@@ -643,6 +725,7 @@ func (c *scriptChecker) bindLocalKeywordSplatFailure(name string, keys ...string
 		fact.blocks = nil
 		fact.blockChoiceMayNil = false
 		fact.staticVals = nil
+		fact.staticChoice = checkStaticChoiceFact{}
 		fact.keywordSplatFails = true
 		c.localClassValues[i][name] = fact
 		return
@@ -901,6 +984,7 @@ func (c *scriptChecker) poisonEvaluatedDestructureFacts(values []Expression) {
 			continue
 		}
 		fact.staticVals = nil
+		fact.staticChoice = checkStaticChoiceFact{}
 		fact.assigned = nil
 		if fact.factKind == destructureStaticFact {
 			fact.factKind = 0
@@ -2046,6 +2130,7 @@ func (c *scriptChecker) mergeLocalClassValueStates(states []checkScopeState) {
 						fact.blockChoiceMayNil || other.blockChoiceMayNil
 				case len(fact.staticVals) > 0 && len(other.staticVals) > 0:
 					fact.staticVals = c.normalizeCheckStaticValues(append(fact.staticVals, other.staticVals...))
+					fact.staticChoice = checkStaticChoiceFact{}
 				case fact.keywordSplatFails && other.keywordSplatFails:
 					if len(fact.invalidKeywordSplatKeys) == 0 || len(other.invalidKeywordSplatKeys) == 0 {
 						fact.invalidKeywordSplatKeys = nil
@@ -2632,6 +2717,7 @@ func (c *scriptChecker) applyExactStaticArrayIndexWrite(
 				continue
 			}
 			fact.staticVals = c.normalizeCheckStaticValues(values)
+			fact.staticChoice = checkStaticChoiceFact{}
 			frame[localName] = fact
 			if frameIndex >= len(c.localTypes) || c.localTypes[frameIndex] == nil {
 				continue
@@ -2681,6 +2767,7 @@ func (c *scriptChecker) replaceEvaluatedDestructureStaticAliases(replacements ma
 			continue
 		}
 		fact.staticVals = c.normalizeCheckStaticValues(values)
+		fact.staticChoice = checkStaticChoiceFact{}
 		types := make([]*TypeExpr, 0, len(fact.staticVals))
 		for _, value := range fact.staticVals {
 			if inferred := c.inferExpressionType(value); inferred != nil {
@@ -2823,7 +2910,11 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 	} else if blocks, mayNil, ok := c.blockLiteralValueChoices(identityExpr); ok {
 		c.bindLocalBlockLiteralChoices(name, blocks, mayNil)
 	} else if values, ok := c.staticValueExpressionAlternatives(expr); ok {
-		c.bindLocalStaticValues(name, values)
+		if choice, correlated := c.staticValueChoiceForExpression(expr); correlated {
+			c.bindLocalStaticValuesWithChoice(name, values, choice)
+		} else {
+			c.bindLocalStaticValues(name, values)
+		}
 	} else if c.keywordSplatExpressionAlwaysFails(expr) &&
 		c.expressionMayHaveExpansionType(expr, KindHash, checkTypeHash) {
 		c.bindLocalKeywordSplatFailure(name)
@@ -2960,6 +3051,7 @@ type capturedDestructureValueFact struct {
 	classNames    []string
 	callables     []*ScriptFunction
 	staticVals    []Expression
+	staticChoice  checkStaticChoiceFact
 	factKind      byte
 }
 
@@ -2973,6 +3065,12 @@ const (
 	destructureCallableFact
 	destructureStaticFact
 )
+
+func capturedDestructureStaticChoiceExact(fact capturedDestructureValueFact) bool {
+	return len(fact.staticVals) > 0 &&
+		len(fact.staticChoice.indices) == len(fact.staticVals) &&
+		checkCallSplatSourceIdentified(fact.staticChoice.source)
+}
 
 // newDestructureProjection creates a checker-only expression whose evaluated
 // identity stays available after the statement-scoped capture table is gone.
@@ -2996,6 +3094,7 @@ func (c *scriptChecker) newDestructureProjection(
 		classNames:    append([]string(nil), fact.classNames...),
 		callables:     append([]*ScriptFunction(nil), fact.callables...),
 		staticVals:    append([]Expression(nil), fact.staticVals...),
+		staticChoice:  cloneCheckStaticChoiceFact(fact.staticChoice),
 		factKind:      fact.factKind,
 	}
 	return projection
@@ -3039,6 +3138,9 @@ func (c *scriptChecker) captureEvaluatedDestructureFact(expr Expression) {
 	} else if staticVals, exact := c.staticValueExpressionAlternatives(expr); exact {
 		fact.factKind = destructureStaticFact
 		fact.staticVals = append([]Expression(nil), staticVals...)
+		if choice, correlated := c.staticValueChoiceForExpression(expr); correlated {
+			fact.staticChoice = cloneCheckStaticChoiceFact(choice)
+		}
 	} else if array, ok := expr.(*ArrayLiteral); ok {
 		if captured, exact := c.capturedDestructureArrayFact(array); exact {
 			fact.assigned = captured.assigned
@@ -3056,6 +3158,11 @@ func (c *scriptChecker) captureDestructureValueFacts(target *DestructureTarget, 
 	}
 	if value == nil {
 		return captureUnknownDestructureValueFacts(target)
+	}
+	if _, literal := value.(*ArrayLiteral); !literal {
+		if facts, exact := c.captureStaticChoiceDestructureValueFacts(target, value); exact {
+			return facts
+		}
 	}
 	if _, array := value.(*ArrayLiteral); !array {
 		captured, evaluated := c.evaluatedDestructureFacts[value]
@@ -3090,6 +3197,110 @@ func (c *scriptChecker) captureDestructureValueFacts(target *DestructureTarget, 
 	return facts
 }
 
+func (c *scriptChecker) captureStaticChoiceDestructureValueFacts(
+	target *DestructureTarget,
+	value Expression,
+) ([]capturedDestructureValueFact, bool) {
+	if target == nil || value == nil || len(target.Elements) == 0 {
+		return nil, false
+	}
+	for _, element := range target.Elements {
+		if element.Rest {
+			return nil, false
+		}
+		switch element.Target.(type) {
+		case nil, *Identifier:
+		default:
+			return nil, false
+		}
+	}
+
+	alternatives, exact := c.staticValueExpressionAlternatives(value)
+	if !exact || len(alternatives) == 0 {
+		return nil, false
+	}
+	arrays := make([]*ArrayLiteral, len(alternatives))
+	for i, alternative := range alternatives {
+		array, ok := alternative.(*ArrayLiteral)
+		if !ok {
+			return nil, false
+		}
+		for _, element := range array.Elements {
+			if _, splat := element.(*SplatArg); splat {
+				return nil, false
+			}
+		}
+		arrays[i] = array
+	}
+
+	source := checkCallSplatSource{
+		alternatives: append([]Expression(nil), alternatives...),
+		evaluation:   value,
+	}
+	if ident, direct := value.(*Identifier); direct {
+		source = c.checkCallSplatSourceForLocal(ident.Name, alternatives)
+	}
+	if !checkCallSplatSourceIdentified(source) {
+		return nil, false
+	}
+
+	facts := make([]capturedDestructureValueFact, 0, len(target.Elements))
+	for slot, element := range target.Elements {
+		if element.Target == nil {
+			continue
+		}
+		projected := make([]Expression, 0, len(arrays))
+		indices := make([]int, 0, len(arrays))
+		types := make([]*TypeExpr, 0, len(arrays))
+		for choice, array := range arrays {
+			var candidate Expression = &NilLiteral{Position: value.Pos()}
+			if slot < len(array.Elements) {
+				candidate = array.Elements[slot]
+			}
+			values, valueExact := c.staticValueExpressionAlternatives(candidate)
+			if !valueExact || len(values) != 1 {
+				return nil, false
+			}
+			if _, static := staticLiteralValue(values[0]); !static ||
+				staticLiteralHasMutableIdentity(values[0]) {
+				return nil, false
+			}
+			projected = append(projected, values[0])
+			indices = append(indices, choice)
+			if inferred := c.inferExpressionType(values[0]); inferred != nil {
+				types = append(types, inferred)
+			}
+		}
+		normalized := c.normalizeCheckStaticValues(projected)
+		if len(normalized) != len(projected) {
+			return nil, false
+		}
+		for i := range normalized {
+			if normalized[i] != projected[i] {
+				return nil, false
+			}
+		}
+		facts = append(facts, capturedDestructureValueFact{
+			target:    element.Target,
+			value:     value,
+			assigned:  unionTypeExprs(types...),
+			declared:  element.Type,
+			known:     true,
+			evaluated: true,
+			staticVals: append(
+				[]Expression(nil),
+				projected...,
+			),
+			staticChoice: checkStaticChoiceFact{
+				source:  cloneCheckCallSplatSource(source),
+				indices: indices,
+			},
+			factKind: destructureStaticFact,
+		})
+	}
+	return facts, len(facts) > 0
+}
+
 func (c *scriptChecker) capturedDestructureValueFact(value Expression) capturedDestructureValueFact {
 	fact, captured := c.evaluatedDestructureFacts[value]
 	if !captured {
@@ -3116,6 +3327,9 @@ func (c *scriptChecker) capturedDestructureValueFact(value Expression) capturedD
 	} else if staticVals, exact := c.staticValueExpressionAlternatives(value); exact {
 		fact.factKind = destructureStaticFact
 		fact.staticVals = append([]Expression(nil), staticVals...)
+		if choice, correlated := c.staticValueChoiceForExpression(value); correlated {
+			fact.staticChoice = cloneCheckStaticChoiceFact(choice)
+		}
 	}
 	return fact
 }
@@ -3302,7 +3516,7 @@ func (c *scriptChecker) bindCapturedDestructureValueFact(fact capturedDestructur
 	case destructureCallableFact:
 		c.bindLocalCallableValues(target.Name, fact.callables)
 	case destructureStaticFact:
-		c.bindLocalStaticValues(target.Name, fact.staticVals)
+		c.bindLocalStaticValuesWithChoice(target.Name, fact.staticVals, fact.staticChoice)
 	}
 }
 
@@ -3619,6 +3833,55 @@ func mergeCheckStringCandidates(left []string, leftOK bool, right []string, righ
 		merged = append(merged, candidate)
 	}
 	return normalizeCheckClassNames(merged), true
+}
+
+func (c *scriptChecker) staticValueChoiceForExpression(
+	expr Expression,
+) (checkStaticChoiceFact, bool) {
+	switch typed := expr.(type) {
+	case *Identifier:
+		return c.localStaticChoiceFor(typed.Name)
+	case *IndexExpr:
+		if len(typed.Indices) != 1 {
+			return checkStaticChoiceFact{}, false
+		}
+		object, direct := typed.Object.(*Identifier)
+		if !direct {
+			return checkStaticChoiceFact{}, false
+		}
+		alternatives, exact := c.localStaticValuesFor(object.Name)
+		if !exact || len(alternatives) == 0 {
+			return checkStaticChoiceFact{}, false
+		}
+		projected := make([]Expression, 0, len(alternatives))
+		indices := make([]int, 0, len(alternatives))
+		for choice, alternative := range alternatives {
+			value, ok := c.staticLiteralProjectionFrom(alternative, typed.Indices[0])
+			if !ok {
+				return checkStaticChoiceFact{}, false
+			}
+			values, valueExact := c.staticValueExpressionAlternatives(value)
+			if !valueExact || len(values) != 1 {
+				return checkStaticChoiceFact{}, false
+			}
+			projected = append(projected, values[0])
+			indices = append(indices, choice)
+		}
+		normalized := c.normalizeCheckStaticValues(projected)
+		if len(normalized) != len(projected) {
+			return checkStaticChoiceFact{}, false
+		}
+		for i := range normalized {
+			if normalized[i] != projected[i] {
+				return checkStaticChoiceFact{}, false
+			}
+		}
+		return checkStaticChoiceFact{
+			source:  c.checkCallSplatSourceForLocal(object.Name, alternatives),
+			indices: indices,
+		}, true
+	}
+	return checkStaticChoiceFact{}, false
 }
 
 func (c *scriptChecker) staticLiteralProjections(expr *IndexExpr) ([]Expression, bool) {
@@ -5965,6 +6228,7 @@ func arrayMutatorElementWrites(
 	property string,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
+	argumentStaticChoices map[Expression]checkStaticChoiceFact,
 	blockResult checkBlockResult,
 ) (arrayMutatorWriteModel, bool) {
 	if call == nil {
@@ -6009,7 +6273,13 @@ func arrayMutatorElementWrites(
 			mayWrite:    len(call.Args) > 1,
 		}, true
 	case "fill":
-		return arrayFillElementWrites(call, argumentFacts, argumentStaticValues, blockResult)
+		return arrayFillElementWrites(
+			call,
+			argumentFacts,
+			argumentStaticValues,
+			argumentStaticChoices,
+			blockResult,
+		)
 	}
 	return arrayMutatorWriteModel{}, false
 }
@@ -6018,6 +6288,7 @@ func arrayFillElementWrites(
 	call *CallExpr,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
+	argumentStaticChoices map[Expression]checkStaticChoiceFact,
 	blockResult checkBlockResult,
 ) (arrayMutatorWriteModel, bool) {
 	if call == nil {
@@ -6044,6 +6315,7 @@ func arrayFillElementWrites(
 				selectors,
 				argumentFacts,
 				argumentStaticValues,
+				argumentStaticChoices,
 			)
 		if selectorsExact && !blockMayRun {
 			return skipped, true
@@ -6062,6 +6334,7 @@ func arrayFillElementWrites(
 			selectors,
 			argumentFacts,
 			argumentStaticValues,
+			argumentStaticChoices,
 		)
 	}
 	if call.Block != nil {
@@ -6071,7 +6344,12 @@ func arrayFillElementWrites(
 		)
 	}
 	if call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, argumentFacts) {
-		return arrayFillValueElementWrites(call.Args, argumentFacts, argumentStaticValues)
+		return arrayFillValueElementWrites(
+			call.Args,
+			argumentFacts,
+			argumentStaticValues,
+			argumentStaticChoices,
+		)
 	}
 	blockFact := argumentFacts[call.BlockArg]
 	if typeExprNeverNil(blockFact) {
@@ -6089,6 +6367,7 @@ func arrayFillElementWrites(
 		call.Args,
 		argumentFacts,
 		argumentStaticValues,
+		argumentStaticChoices,
 	)
 	blockModel, blockModeled := blockWrites(
 		call.BlockArg,
@@ -6104,6 +6383,7 @@ func arrayFillValueElementWrites(
 	args []Expression,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
+	argumentStaticChoices map[Expression]checkStaticChoiceFact,
 ) (arrayMutatorWriteModel, bool) {
 	if len(args) < 1 || len(args) > 3 {
 		return arrayMutatorWriteModel{
@@ -6111,7 +6391,13 @@ func arrayFillValueElementWrites(
 			alwaysRaises: true,
 		}, true
 	}
-	return arrayFillFormElementWrites(args[0], args[1:], argumentFacts, argumentStaticValues)
+	return arrayFillFormElementWrites(
+		args[0],
+		args[1:],
+		argumentFacts,
+		argumentStaticValues,
+		argumentStaticChoices,
+	)
 }
 
 func arrayFillBlockElementWrites(
@@ -6119,6 +6405,7 @@ func arrayFillBlockElementWrites(
 	selectors []Expression,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
+	argumentStaticChoices map[Expression]checkStaticChoiceFact,
 ) (arrayMutatorWriteModel, bool) {
 	if len(selectors) > 2 {
 		return arrayMutatorWriteModel{
@@ -6126,7 +6413,13 @@ func arrayFillBlockElementWrites(
 			alwaysRaises: true,
 		}, true
 	}
-	return arrayFillFormElementWrites(element, selectors, argumentFacts, argumentStaticValues)
+	return arrayFillFormElementWrites(
+		element,
+		selectors,
+		argumentFacts,
+		argumentStaticValues,
+		argumentStaticChoices,
+	)
 }
 
 func arrayFillFormElementWrites(
@@ -6134,6 +6427,7 @@ func arrayFillFormElementWrites(
 	selectors []Expression,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
+	argumentStaticChoices map[Expression]checkStaticChoiceFact,
 ) (arrayMutatorWriteModel, bool) {
 	if len(selectors) == 0 {
 		return arrayMutatorWriteModel{
@@ -6166,6 +6460,13 @@ func arrayFillFormElementWrites(
 	startValues, startStatic := staticMutatorArgumentValues(startExpr, argumentStaticValues)
 	if startStatic {
 		if len(selectors) == 1 || countStatic {
+			if tuples, exact := staticArrayFillSelectorTuples(
+				selectors,
+				argumentStaticValues,
+				argumentStaticChoices,
+			); exact {
+				return staticArrayFillSelectorWriteModel(element, tuples), true
+			}
 			return staticArrayFillWriteModel(element, startValues, countValues, len(selectors) == 2), true
 		}
 		countExpr := selectors[1]
@@ -6530,6 +6831,7 @@ func (c *scriptChecker) arrayFillCallMayCompleteWithoutInvokingBlock(call *CallE
 				variant.call.Args,
 				c.callArgumentFacts,
 				c.callArgumentStaticValues,
+				c.callArgumentStaticChoices,
 			)
 			if !selectorsExact || !skipped.alwaysRaises {
 				return true
@@ -6549,6 +6851,7 @@ func (c *scriptChecker) arrayFillCallMayCompleteWithoutInvokingBlock(call *CallE
 				variant.call.Args,
 				c.callArgumentFacts,
 				c.callArgumentStaticValues,
+				c.callArgumentStaticChoices,
 			)
 			if !selectorsExact || !skipped.alwaysRaises {
 				return true
@@ -6570,6 +6873,24 @@ func (c *scriptChecker) arrayFillFormMayComplete(selectors []Expression) bool {
 	if len(selectors) == 0 {
 		return true
 	}
+	if tuples, exact := staticArrayFillSelectorTuples(
+		selectors,
+		c.callArgumentStaticValues,
+		c.callArgumentStaticChoices,
+	); exact {
+		for _, selectorTuple := range tuples {
+			if len(selectorTuple) == 1 {
+				if staticArrayFillStartMayComplete(selectorTuple[0], false) {
+					return true
+				}
+				continue
+			}
+			if staticArrayFillStartCountMayComplete(selectorTuple[0], selectorTuple[1]) {
+				return true
+			}
+		}
+		return false
+	}
 	startValues, startExact := staticMutatorArgumentValues(
 		selectors[0],
 		c.callArgumentStaticValues,
@@ -6581,22 +6902,6 @@ func (c *scriptChecker) arrayFillFormMayComplete(selectors []Expression) bool {
 			selectors[1],
 			c.callArgumentStaticValues,
 		)
-	}
-	if startExact && (len(selectors) == 1 || countExact) {
-		for _, start := range startValues {
-			if len(selectors) == 1 {
-				if staticArrayFillStartMayComplete(start, false) {
-					return true
-				}
-				continue
-			}
-			for _, count := range countValues {
-				if staticArrayFillStartCountMayComplete(start, count) {
-					return true
-				}
-			}
-		}
-		return false
 	}
 	if startExact {
 		startMayComplete := false
@@ -6701,6 +7006,7 @@ func (c *scriptChecker) arrayFillBlockMayEvaluate(call *CallExpr) bool {
 			variant.call.Args,
 			c.callArgumentFacts,
 			c.callArgumentStaticValues,
+			c.callArgumentStaticChoices,
 		)
 		if !selectorsExact || blockMayRun {
 			return true
@@ -6735,10 +7041,35 @@ func staticArrayFillWriteModel(
 	return model
 }
 
+func staticArrayFillSelectorWriteModel(
+	element Expression,
+	selectorTuples [][]Value,
+) arrayMutatorWriteModel {
+	model := arrayMutatorWriteModel{preservable: true}
+	for _, selectors := range selectorTuples {
+		switch len(selectors) {
+		case 1:
+			mergeArrayFillWriteEffect(
+				&model,
+				element,
+				staticArrayFillWriteEffect(selectors[0], NewNil(), false),
+			)
+		case 2:
+			mergeArrayFillWriteEffect(
+				&model,
+				element,
+				staticArrayFillWriteEffect(selectors[0], selectors[1], true),
+			)
+		}
+	}
+	return model
+}
+
 func staticArrayFillBlockSelectorOutcomes(
 	selectors []Expression,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
+	argumentStaticChoices map[Expression]checkStaticChoiceFact,
 ) (arrayMutatorWriteModel, bool, bool) {
 	model := arrayMutatorWriteModel{
 		preservable:  true,
@@ -6747,7 +7078,11 @@ func staticArrayFillBlockSelectorOutcomes(
 	if len(selectors) > 2 {
 		return model, false, true
 	}
-	selectorTuples, exact := staticArrayFillSelectorTuples(selectors, argumentStaticValues)
+	selectorTuples, exact := staticArrayFillSelectorTuples(
+		selectors,
+		argumentStaticValues,
+		argumentStaticChoices,
+	)
 	if !exact {
 		return staticArrayFillPartialBlockSelectorOutcomes(
 			selectors,
@@ -6875,6 +7210,7 @@ func arrayFillStartFactMayBePositive(fact *TypeExpr) bool {
 func staticArrayFillSelectorTuples(
 	selectors []Expression,
 	argumentStaticValues map[Expression][]Expression,
+	argumentStaticChoices map[Expression]checkStaticChoiceFact,
 ) ([][]Value, bool) {
 	if len(selectors) > 2 {
 		return nil, false
@@ -6898,11 +7234,24 @@ func staticArrayFillSelectorTuples(
 		return tuples, true
 	}
 
+	leftChoice, leftCorrelated := argumentStaticChoices[selectors[0]]
+	rightChoice, rightCorrelated := argumentStaticChoices[selectors[1]]
+	correlated := leftCorrelated &&
+		rightCorrelated &&
+		len(leftChoice.indices) == len(selectorValues[0]) &&
+		len(rightChoice.indices) == len(selectorValues[1]) &&
+		sameCheckCallSplatSource(leftChoice.source, rightChoice.source)
 	tuples := make([][]Value, 0, len(selectorValues[0])*len(selectorValues[1]))
-	for _, start := range selectorValues[0] {
-		for _, count := range selectorValues[1] {
+	for leftIndex, start := range selectorValues[0] {
+		for rightIndex, count := range selectorValues[1] {
+			if correlated && leftChoice.indices[leftIndex] != rightChoice.indices[rightIndex] {
+				continue
+			}
 			tuples = append(tuples, []Value{start, count})
 		}
+	}
+	if correlated && len(tuples) == 0 {
+		return nil, false
 	}
 	return tuples, true
 }
@@ -7295,7 +7644,7 @@ func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string,
 	}) {
 		return false
 	}
-	model, ok := arrayMutatorElementWrites(call, property, nil, nil, checkBlockResult{})
+	model, ok := arrayMutatorElementWrites(call, property, nil, nil, nil, checkBlockResult{})
 	if !ok {
 		return false
 	}
@@ -7510,15 +7859,22 @@ func arrayMutatorExpansionSourceGroups(
 }
 
 func sameCheckCallSplatSource(left, right checkCallSplatSource) bool {
-	if len(left.identity) == 0 ||
-		len(left.identity) != len(right.identity) ||
-		len(left.alternatives) != len(right.alternatives) {
-		return false
-	}
-	for i := range left.identity {
-		if left.identity[i] != right.identity[i] {
+	if left.evaluation != nil || right.evaluation != nil {
+		if left.evaluation == nil || left.evaluation != right.evaluation {
 			return false
 		}
+	} else {
+		if len(left.identity) == 0 || len(left.identity) != len(right.identity) {
+			return false
+		}
+		for i := range left.identity {
+			if left.identity[i] != right.identity[i] {
+				return false
+			}
+		}
+	}
+	if len(left.alternatives) != len(right.alternatives) {
+		return false
 	}
 	for i := range left.alternatives {
 		if left.alternatives[i] != right.alternatives[i] {
@@ -7573,6 +7929,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	member *MemberExpr,
 	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
+	argumentStaticChoices map[Expression]checkStaticChoiceFact,
 	argumentRetainedAliases map[Expression]checkRetainedContainerCapture,
 	argumentSplatOrigins map[Expression][]*SplatArg,
 	argumentSplatSources map[Expression]checkCallSplatSource,
@@ -7628,6 +7985,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 				member.Property,
 				argumentFacts,
 				argumentStaticValues,
+				argumentStaticChoices,
 				blockResult,
 			)
 			if !ok {

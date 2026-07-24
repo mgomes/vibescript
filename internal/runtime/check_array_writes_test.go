@@ -2962,6 +2962,485 @@ end
 	}
 }
 
+func TestCheckArrayFillProjectedSelectorsStayCorrelated(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		selectors string
+		wantLine  int
+	}{
+		{
+			name:      "direct projections",
+			selectors: `pair[0], pair[1]`,
+			wantLine:  9,
+		},
+		{
+			name:      "projected locals through an alias",
+			selectors: `start, count`,
+			wantLine:  12,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			setup := ""
+			if tc.name == "projected locals through an alias" {
+				setup = `
+  other = pair
+  start = pair[0]
+  count = other[1]`
+			}
+			script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  pair = flag ? ["invalid", 1] : [0, -1]`+setup+`
+  begin
+    items.fill("bad", `+tc.selectors+`)
+  rescue
+    nil
+  end
+  items << "later"
+  items
+end
+`)
+
+			warnings := script.CheckWarningsForFunction("run")
+			if len(warnings) != 1 ||
+				warnings[0].Pos.Line != tc.wantLine ||
+				!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+				t.Fatalf(
+					"CheckWarningsForFunction(%q) = %#v, want only the later write warning",
+					"run",
+					warnings,
+				)
+			}
+
+			for _, flag := range []bool{false, true} {
+				got := callScript(t, context.Background(), script, "run", []Value{
+					NewArray([]Value{NewInt(1)}),
+					NewBool(flag),
+				}, CallOptions{})
+				want := NewArray([]Value{NewInt(1), NewString("later")})
+				if !got.Equal(want) {
+					t.Errorf("run([1], %t) = %s, want %s", flag, got.String(), want.String())
+				}
+			}
+		})
+	}
+}
+
+func TestCheckArrayFillDestructuredSelectorsStayCorrelated(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  start, count = flag ? ["invalid", 1] : [0, -1]
+  begin
+    items.fill("bad", start, count)
+  rescue
+    nil
+  end
+  items << "later"
+  items
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 9 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want only the later write warning",
+			"run",
+			warnings,
+		)
+	}
+
+	for _, flag := range []bool{false, true} {
+		got := callScript(t, context.Background(), script, "run", []Value{
+			NewArray([]Value{NewInt(1)}),
+			NewBool(flag),
+		}, CallOptions{})
+		want := NewArray([]Value{NewInt(1), NewString("later")})
+		if !got.Equal(want) {
+			t.Errorf("run([1], %t) = %s, want %s", flag, got.String(), want.String())
+		}
+	}
+}
+
+func TestCheckArrayFillProjectedLiteralDestructuringStaysCorrelated(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  pair = flag ? ["invalid", 1] : [0, -1]
+  start, count = [pair[0], pair[1]]
+  begin
+    items.fill("bad", start, count)
+  rescue
+    nil
+  end
+  items << "later"
+  items
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 10 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want only the later write warning",
+			"run",
+			warnings,
+		)
+	}
+
+	for _, flag := range []bool{false, true} {
+		got := callScript(t, context.Background(), script, "run", []Value{
+			NewArray([]Value{NewInt(1)}),
+			NewBool(flag),
+		}, CallOptions{})
+		want := NewArray([]Value{NewInt(1), NewString("later")})
+		if !got.Equal(want) {
+			t.Errorf("run([1], %t) = %s, want %s", flag, got.String(), want.String())
+		}
+	}
+}
+
+func TestCheckArrayFillProjectedSelectorsKeepRealWrite(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  pair = flag ? [0, 1] : ["invalid", -1]
+  begin
+    items.fill("bad", pair[0], pair[1])
+  rescue
+    nil
+  end
+  items << "later"
+  items
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 5 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want only the fill write warning on line 5",
+			"run",
+			warnings,
+		)
+	}
+
+	gotWrite := callScript(t, context.Background(), script, "run", []Value{
+		NewArray([]Value{NewInt(1)}),
+		NewBool(true),
+	}, CallOptions{})
+	wantWrite := NewArray([]Value{NewString("bad"), NewString("later")})
+	if !gotWrite.Equal(wantWrite) {
+		t.Errorf("run([1], true) = %s, want %s", gotWrite.String(), wantWrite.String())
+	}
+	gotRaise := callScript(t, context.Background(), script, "run", []Value{
+		NewArray([]Value{NewInt(1)}),
+		NewBool(false),
+	}, CallOptions{})
+	wantRaise := NewArray([]Value{NewInt(1), NewString("later")})
+	if !gotRaise.Equal(wantRaise) {
+		t.Errorf("run([1], false) = %s, want %s", gotRaise.String(), wantRaise.String())
+	}
+}
+
+func TestCheckArrayFillProjectedSelectorsControlCompletion(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		secondPair  string
+		wantWarning bool
+	}{
+		{
+			name:       "all correlated pairs raise",
+			secondPair: `[0, "invalid"]`,
+		},
+		{
+			name:        "one correlated pair completes",
+			secondPair:  `[0, 1]`,
+			wantWarning: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, flag: bool)
+  pair = flag ? ["invalid", 1] : `+tc.secondPair+`
+  items.fill(1, pair[0], pair[1])
+  takes_int("after fill")
+end
+`)
+
+			warnings := script.CheckWarningsForFunction("run")
+			if !tc.wantWarning {
+				if len(warnings) != 0 {
+					t.Fatalf(
+						"CheckWarningsForFunction(%q) = %#v, want no warning after an always-raising fill",
+						"run",
+						warnings,
+					)
+				}
+				for _, flag := range []bool{false, true} {
+					_, err := script.Call(
+						context.Background(),
+						"run",
+						[]Value{NewArray([]Value{NewInt(1)}), NewBool(flag)},
+						CallOptions{},
+					)
+					if err == nil {
+						t.Fatalf("run([1], %t) succeeded, want invalid selector error", flag)
+					}
+				}
+				return
+			}
+			if len(warnings) != 1 ||
+				!strings.Contains(warnings[0].Message, "argument value expected int, got string") {
+				t.Fatalf(
+					"CheckWarningsForFunction(%q) = %#v, want the reachable argument warning",
+					"run",
+					warnings,
+				)
+			}
+		})
+	}
+}
+
+func TestCheckArrayFillProjectedSelectorsControlBlockScheduling(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		secondPair  string
+		wantWarning bool
+	}{
+		{
+			name:       "all correlated pairs reject before the block",
+			secondPair: `[0, "invalid"]`,
+		},
+		{
+			name:        "one correlated pair reaches the block",
+			secondPair:  `[0, 1]`,
+			wantWarning: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, flag: bool)
+  pair = flag ? ["invalid", 1] : `+tc.secondPair+`
+  items.fill(pair[0], pair[1]) do
+    takes_int("inside block")
+    1
+  end
+end
+`)
+
+			warnings := script.CheckWarningsForFunction("run")
+			if !tc.wantWarning {
+				if len(warnings) != 0 {
+					t.Fatalf(
+						"CheckWarningsForFunction(%q) = %#v, want no warning from an unreachable block",
+						"run",
+						warnings,
+					)
+				}
+				return
+			}
+			found := false
+			for _, warning := range warnings {
+				found = found ||
+					strings.Contains(warning.Message, "argument value expected int, got string")
+			}
+			if !found {
+				t.Fatalf(
+					"CheckWarningsForFunction(%q) = %#v, want the block argument warning",
+					"run",
+					warnings,
+				)
+			}
+		})
+	}
+}
+
+func TestCheckArrayFillProjectedSelectorCorrelationClearsAfterMutation(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  pair = flag ? ["invalid", -1] : [0, -1]
+  start = pair[0]
+  pair[1] = 1
+  count = pair[1]
+  begin
+    items.fill("bad", start, count)
+  rescue
+    nil
+  end
+  items
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 8 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want the possible fill write warning on line 8",
+			"run",
+			warnings,
+		)
+	}
+
+	gotWrite := callScript(t, context.Background(), script, "run", []Value{
+		NewArray([]Value{NewInt(1)}),
+		NewBool(false),
+	}, CallOptions{})
+	wantWrite := NewArray([]Value{NewString("bad")})
+	if !gotWrite.Equal(wantWrite) {
+		t.Errorf("run([1], false) = %s, want %s", gotWrite.String(), wantWrite.String())
+	}
+}
+
+func TestCheckArrayFillProjectedSelectorCorrelationSplitsAfterRebind(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, left: bool, right: bool)
+  pair = left ? ["invalid", 0] : [0, 0]
+  start = pair[0]
+  pair = right ? [0, 1] : [0, -1]
+  count = pair[1]
+  begin
+    items.fill("bad", start, count)
+  rescue
+    nil
+  end
+  items
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 8 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want the possible fill write warning on line 8",
+			"run",
+			warnings,
+		)
+	}
+
+	got := callScript(t, context.Background(), script, "run", []Value{
+		NewArray([]Value{NewInt(1)}),
+		NewBool(false),
+		NewBool(true),
+	}, CallOptions{})
+	want := NewArray([]Value{NewString("bad")})
+	if !got.Equal(want) {
+		t.Errorf("run([1], false, true) = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestCheckArrayFillProjectedSelectorCorrelationClearsAtBranchMerge(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool, branch: bool)
+  pair = flag ? ["invalid", 1] : [0, -1]
+  start = pair[0]
+  if branch
+    count = pair[1]
+  else
+    count = pair[1]
+  end
+  begin
+    items.fill("bad", start, count)
+  rescue
+    nil
+  end
+  items
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 11 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want the conservative fill write warning on line 11",
+			"run",
+			warnings,
+		)
+	}
+
+	for _, flag := range []bool{false, true} {
+		for _, branch := range []bool{false, true} {
+			got := callScript(t, context.Background(), script, "run", []Value{
+				NewArray([]Value{NewInt(1)}),
+				NewBool(flag),
+				NewBool(branch),
+			}, CallOptions{})
+			want := NewArray([]Value{NewInt(1)})
+			if !got.Equal(want) {
+				t.Errorf(
+					"run([1], %t, %t) = %s, want %s",
+					flag,
+					branch,
+					got.String(),
+					want.String(),
+				)
+			}
+		}
+	}
+}
+
+func TestCheckArrayFillIndependentSelectorsRemainCartesian(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, left: bool, right: bool)
+  starts = left ? ["invalid"] : [0]
+  counts = right ? [1] : [-1]
+  items.fill("bad", starts[0], counts[0])
+  items
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 5 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf(
+			"CheckWarningsForFunction(%q) = %#v, want the possible fill write warning on line 5",
+			"run",
+			warnings,
+		)
+	}
+}
+
 func TestCheckArrayMutatorAliasSplatsShareEvaluatedChoice(t *testing.T) {
 	t.Parallel()
 
