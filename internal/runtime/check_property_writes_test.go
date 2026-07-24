@@ -762,6 +762,154 @@ end
 func TestCheckNestedDestructuredIvarWritesRespectEvaluationOrder(t *testing.T) {
 	t.Parallel()
 
+	t.Run("nested scalar reads a retained container mutated through a call", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def rows() -> array<array<int>>
+  [[1], [2]]
+end
+
+def mutate(items)
+  items.map! { "ok" }
+  0
+end
+
+class User
+  property p: string
+
+  def initialize
+    source = rows()
+    sink = [nil]
+    sink[mutate(source[1])], (@p, ignored) = source
+  end
+end
+
+def run
+  User.new().p
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "ok" {
+			t.Fatalf("run() = %v, want ok", got)
+		}
+	})
+
+	t.Run("nested rest reads a retained container mutated through a call", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def rows() -> array<array<int>>
+  [[1], [2]]
+end
+
+def mutate(items)
+  items.map! { "ok" }
+  0
+end
+
+class User
+  property p: array<string>
+
+  def initialize
+    source = rows()
+    sink = [nil]
+    sink[mutate(source[1])], (*@p) = source
+  end
+end
+
+def run
+  User.new().p
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindArray ||
+			len(got.Array()) != 1 ||
+			got.Array()[0].Kind() != KindString ||
+			got.Array()[0].String() != "ok" {
+			t.Fatalf("run() = %v, want [ok]", got)
+		}
+	})
+
+	t.Run("nested scalar keeps its evaluated snapshot across a call", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def mutate(items)
+  items.map! { "changed" }
+  0
+end
+
+class User
+  property p: int
+
+  def initialize
+    source = [[1]]
+    sink = [nil]
+    ignored, (sink[mutate(source[0])], @p) = [0, [0, source[0][0]]]
+  end
+end
+
+def run
+  User.new().p
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
+
+	t.Run("unrelated call mutation preserves an invalid projection", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def rows() -> array<array<int>>
+  [[1], [2]]
+end
+
+def mutate(items)
+  items.map! { "ok" }
+  0
+end
+
+class User
+  property p: string
+
+  def initialize
+    source = rows()
+    unrelated = [[3]]
+    sink = [nil]
+    sink[mutate(unrelated[0])], (@p, ignored) = source
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+		requireCheckWarningContains(
+			t,
+			script,
+			"write to @p expected string, got int | nil",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @p expected string, got int",
+		)
+	})
+
 	t.Run("nested scalar reads the live retained container", func(t *testing.T) {
 		t.Parallel()
 

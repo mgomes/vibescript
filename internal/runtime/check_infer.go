@@ -6434,6 +6434,23 @@ func (c *scriptChecker) capturedDestructureValueFact(value Expression) capturedD
 func (c *scriptChecker) refreshCapturedDestructureContainerFact(
 	fact capturedDestructureValueFact,
 ) capturedDestructureValueFact {
+	// A typed projection has no concrete expression to recapture. If an
+	// earlier LHS call poisoned its retained container, discard the projected
+	// contents. A rebind advances the root generation but does not change the
+	// already-evaluated container reference, so that snapshot stays valid.
+	for _, root := range fact.retainedRoots {
+		if c.localBindingGenerations[root.name] != root.generation {
+			continue
+		}
+		if _, poisoned := c.typePoison[root.name]; poisoned {
+			fact.assigned = nil
+			fact.classNames = nil
+			fact.callables = nil
+			fact.staticVals = nil
+			fact.factKind = 0
+			return fact
+		}
+	}
 	if fact.value == nil || !typeExprHasContainerArm(fact.assigned) {
 		return fact
 	}
