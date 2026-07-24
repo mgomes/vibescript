@@ -6531,6 +6531,61 @@ end
 	})
 }
 
+func TestCheckInitializerIvarNestedOneShotCallbacksPreserveUnrelatedFacts(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		callbackCall string
+		wrapperCall  string
+	}{
+		{
+			name:         "parenthesized",
+			callbackCall: "callback.call()",
+			wrapperCall:  "wrapper.call()",
+		},
+		{
+			name:         "parenless",
+			callbackCall: "callback.call",
+			wrapperCall:  "wrapper.call",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+  property b: int
+
+  def initialize
+    @flag = false
+    callback = proc { @b = 1 }
+    wrapper = proc { `+tc.callbackCall+` }
+    `+tc.wrapperCall+`
+    if @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  User.new().b
+end
+`)
+			requireNoCheckWarnings(t, script)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindInt || got.Int() != 1 {
+				t.Fatalf("run() = %v, want 1", got)
+			}
+		})
+	}
+}
+
 func TestCheckInitializerIvarOneShotCallbackControlsStayConservative(t *testing.T) {
 	t.Parallel()
 

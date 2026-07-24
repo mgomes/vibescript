@@ -2873,10 +2873,15 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 		unknownDispatch := false
 		implicitSelfCall := false
 		if member, ok := typed.Callee.(*MemberExpr); ok {
+			objectAutoCall := !blockCapturingBuiltin
+			if member.Property == "call" &&
+				typeExprMayIncludeCallable(c.inferExpressionType(member.Object)) {
+				objectAutoCall = false
+			}
 			c.collectRepeatedRegionIvarEffectsFromExpression(
 				member.Object,
 				effects,
-				!blockCapturingBuiltin,
+				objectAutoCall,
 			)
 			if !c.expressionMayCompleteForBinding(member.Object) {
 				return
@@ -2976,7 +2981,16 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 			c.collectRepeatedRegionIvarEffectsFromBlock(typed.Block, effects)
 		}
 	case *MemberExpr:
-		c.collectRepeatedRegionIvarEffectsFromExpression(typed.Object, effects, true)
+		objectAutoCall := true
+		if typed.Property == "call" &&
+			typeExprMayIncludeCallable(c.inferExpressionType(typed.Object)) {
+			objectAutoCall = false
+		}
+		c.collectRepeatedRegionIvarEffectsFromExpression(
+			typed.Object,
+			effects,
+			objectAutoCall,
+		)
 		if !c.expressionMayCompleteForBinding(typed.Object) {
 			return
 		}
@@ -2986,12 +3000,30 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 				return
 			}
 			var invokedLambda *BlockLiteral
+			var invokedStoredBlocks []capturedBlockLiteralValue
+			storedBlocksExact := false
 			if typed.Property == "call" {
 				invokedLambda = c.resolveImmediateLambdaBlock(typed.Object)
+				if invokedLambda == nil {
+					invokedStoredBlocks, storedBlocksExact =
+						c.capturedBlockLiteralValueAlternatives(typed.Object)
+				}
 			}
 			if invokedLambda != nil {
 				if lambdaLiteralArity(invokedLambda) == 0 {
 					c.collectRepeatedRegionIvarEffectsFromBlock(invokedLambda, effects)
+				}
+			} else if storedBlocksExact {
+				call := &CallExpr{
+					Callee:             typed,
+					KeywordOptionsHash: true,
+					Safe:               typed.Safe,
+					Position:           typed.Pos(),
+				}
+				for _, block := range invokedStoredBlocks {
+					if c.capturedBlockLiteralCallEntry(block, call).mayEnter {
+						c.collectRepeatedRegionIvarEffectsFromBlock(block.block, effects)
+					}
 				}
 			} else if c.memberDispatchEffect(typed) == effectUnknown {
 				effects.unknown = true
