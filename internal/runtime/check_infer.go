@@ -6836,12 +6836,12 @@ func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignSt
 }
 
 // applyShapeFieldWriteFacts checks user[:field] = value against a shape
-// fact. A declared (marker-less) shape is a boundary contract with an
-// unknown key representation: a field-type contradiction or a statically
-// known extra field is reported — either representation violates exactness —
-// and no write preserves the fact, since a same-name write through the other
-// representation would add a second key. Witnessed literal and JSON.parse_as
-// shapes carry their store's key representation and are evidence rather than
+// fact. A declared (marker-less) shape is a boundary contract with an unknown
+// key representation: field-type contradictions are reported, as are static
+// extra fields on closed shapes. No write preserves the fact, since a same-name
+// write through the other representation could add a second key; open-shape
+// extras therefore weaken silently. Witnessed literal and JSON.parse_as shapes
+// carry their store's key representation and are evidence rather than
 // contracts: a matching-representation write with a known key and value
 // refines the exact fact in place, and everything else weakens it silently.
 func (c *scriptChecker) applyShapeFieldWriteFacts(function string, stmt *AssignStmt, name string, shape *TypeExpr, index Expression, intact bool) bool {
@@ -6898,8 +6898,10 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 		}
 		field, present := shape.Shape[key]
 		if !present {
-			c.add(function, pos, "write to %s adds field %s to exact shape %s",
-				name, key, formatTypeExpr(shape))
+			if !shape.Open {
+				c.add(function, pos, "write to %s adds field %s to exact shape %s",
+					name, key, formatTypeExpr(shape))
+			}
 			return false
 		}
 		written := c.inferExpressionType(value)

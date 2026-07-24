@@ -388,6 +388,15 @@ end
 			warning: "write to user field name expected string, got int",
 		},
 		{
+			name: "open shape still checks a declared field",
+			source: `
+def f(user: { name: string, ... })
+  user[:name] = 42
+end
+`,
+			warning: "write to user field name expected string, got int",
+		},
+		{
 			name: "declared shape extra field",
 			source: `
 def f(user: { name: string })
@@ -2018,6 +2027,22 @@ end
 def f(user: { name: string, ... })
   user.store(:extra, 1)
   user.merge!({ extra: 2 })
+end
+`,
+		},
+		{
+			name: "open shape accepts an extra symbol-key write",
+			source: `
+def f(user: { name: string, ... })
+  user[:extra] = 1
+end
+`,
+		},
+		{
+			name: "open shape accepts an extra string-key write",
+			source: `
+def f(user: { name: string, ... })
+  user["extra"] = 1
 end
 `,
 		},
