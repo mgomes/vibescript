@@ -4358,6 +4358,127 @@ end
 		requireNoCheckWarnings(t, script)
 	})
 
+	t.Run("zero count cannot pad for a range-or-nil start", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, start: range | nil)
+  items.fill(start, 0) do
+    takes_int("block unreachable")
+    raise "stop"
+  end
+  items << "later"
+  items
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 1 ||
+			!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want only the reachable tail write",
+				"run",
+				warnings,
+			)
+		}
+
+		got := callScript(t, context.Background(), script, "run", []Value{
+			NewArray([]Value{NewInt(1)}),
+			NewNil(),
+		}, CallOptions{})
+		want := NewArray([]Value{NewInt(1), NewString("later")})
+		if !got.Equal(want) {
+			t.Errorf("run([1], nil) = %s, want %s", got.String(), want.String())
+		}
+	})
+
+	t.Run("nullable numeric start preserves skipped and rescued paths", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, start: int | nil)
+  begin
+    items.fill(start) do
+      takes_int("block reachable")
+      raise "stop"
+    end
+  rescue
+    nil
+  end
+  items << "later"
+  items
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 2 ||
+			warnings[0].Pos.Line != 9 ||
+			warnings[1].Pos.Line != 15 {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want the block and tail writes",
+				"run",
+				warnings,
+			)
+		}
+
+		got := callScript(t, context.Background(), script, "run", []Value{
+			NewArray([]Value{NewInt(1)}),
+			NewNil(),
+		}, CallOptions{})
+		want := NewArray([]Value{NewInt(1), NewString("later")})
+		if !got.Equal(want) {
+			t.Errorf("run([1], nil) = %s, want %s", got.String(), want.String())
+		}
+	})
+
+	t.Run("nullable numeric count preserves skipped and rescued paths", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(items: array<int>, count: int | nil)
+  begin
+    items.fill(0, count) do
+      takes_int("block reachable")
+      raise "stop"
+    end
+  rescue
+    nil
+  end
+  items << "later"
+  items
+end
+`)
+		warnings := script.CheckWarningsForFunction("run")
+		if len(warnings) != 2 ||
+			warnings[0].Pos.Line != 9 ||
+			warnings[1].Pos.Line != 15 {
+			t.Fatalf(
+				"CheckWarningsForFunction(%q) = %#v, want the block and tail writes",
+				"run",
+				warnings,
+			)
+		}
+
+		got := callScript(t, context.Background(), script, "run", []Value{
+			NewArray([]Value{NewInt(1)}),
+			NewInt(0),
+		}, CallOptions{})
+		want := NewArray([]Value{NewInt(1), NewString("later")})
+		if !got.Equal(want) {
+			t.Errorf("run([1], 0) = %s, want %s", got.String(), want.String())
+		}
+	})
+
 	t.Run("nil count may invoke or skip without padding", func(t *testing.T) {
 		t.Parallel()
 

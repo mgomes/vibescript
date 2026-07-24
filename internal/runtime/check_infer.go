@@ -6147,7 +6147,7 @@ func arrayFillFormElementWrites(
 			return staticArrayFillWriteModel(element, startValues, countValues, len(selectors) == 2), true
 		}
 		countExpr := selectors[1]
-		if !arrayFillSelectorHasNumericFact(countExpr, argumentFacts) {
+		if !arrayFillSelectorHasNumericOrNilFact(countExpr, argumentFacts) {
 			return arrayMutatorWriteModel{}, false
 		}
 		return staticArrayFillUnknownCountWriteModel(element, startValues), true
@@ -6157,12 +6157,12 @@ func arrayFillFormElementWrites(
 		if !model.mayWrite {
 			return model, true
 		}
-		if !arrayFillSelectorHasNumericFact(startExpr, argumentFacts) {
+		if !arrayFillSelectorHasNumericOrNilFact(startExpr, argumentFacts) {
 			return arrayMutatorWriteModel{}, false
 		}
 		return model, true
 	}
-	if !arrayFillSelectorHasNumericFact(startExpr, argumentFacts) {
+	if !arrayFillSelectorHasNumericOrNilFact(startExpr, argumentFacts) {
 		return arrayMutatorWriteModel{}, false
 	}
 	if len(selectors) == 1 {
@@ -6176,7 +6176,7 @@ func arrayFillFormElementWrites(
 	}
 
 	countExpr := selectors[1]
-	if !arrayFillSelectorHasNumericFact(countExpr, argumentFacts) {
+	if !arrayFillSelectorHasNumericOrNilFact(countExpr, argumentFacts) {
 		return arrayMutatorWriteModel{}, false
 	}
 	return arrayMutatorWriteModel{
@@ -6568,7 +6568,7 @@ func staticArrayFillPartialBlockSelectorOutcomes(
 		if captured && !arrayFillSelectorFactMayComplete(fact, true) {
 			return model, false, true
 		}
-		if arrayFillSelectorHasNumericFact(start, argumentFacts) || typeExprIsNilOnly(fact) {
+		if arrayFillSelectorHasNumericOrNilFact(start, argumentFacts) {
 			// A bare numeric start can land before the end or at/past it.
 			// The latter path is a no-op and never pads.
 			recordSkip(false)
@@ -6610,7 +6610,7 @@ func staticArrayFillPartialBlockSelectorOutcomes(
 			case count == 0:
 				// With no exact start, a valid positive start can grow the
 				// receiver even though the block is never invoked.
-				recordSkip(true)
+				recordSkip(arrayFillStartFactMayBePositive(argumentFacts[selectors[0]]))
 			default:
 				blockMayRun = true
 			}
@@ -6618,8 +6618,7 @@ func staticArrayFillPartialBlockSelectorOutcomes(
 		return model, blockMayRun, true
 	}
 	if !startExact ||
-		!arrayFillSelectorHasNumericFact(selectors[1], argumentFacts) &&
-			!typeExprIsNilOnly(argumentFacts[selectors[1]]) {
+		!arrayFillSelectorHasNumericOrNilFact(selectors[1], argumentFacts) {
 		return arrayMutatorWriteModel{}, false, false
 	}
 
@@ -6640,6 +6639,20 @@ func staticArrayFillPartialBlockSelectorOutcomes(
 		recordSkip(start > 0)
 	}
 	return model, blockMayRun, true
+}
+
+func arrayFillStartFactMayBePositive(fact *TypeExpr) bool {
+	arms, known := typeExprArms(fact, 0)
+	if !known || len(arms) == 0 {
+		return true
+	}
+	for _, arm := range arms {
+		switch arm.Kind {
+		case TypeInt, TypeFloat, TypeNumber:
+			return true
+		}
+	}
+	return false
 }
 
 func staticArrayFillSelectorTuples(
@@ -6965,7 +6978,7 @@ func integerLiteralValue(expr Expression) (Value, bool) {
 	return NewNil(), false
 }
 
-func arrayFillSelectorHasNumericFact(
+func arrayFillSelectorHasNumericOrNilFact(
 	expr Expression,
 	argumentFacts map[Expression]*TypeExpr,
 ) bool {
@@ -6973,8 +6986,14 @@ func arrayFillSelectorHasNumericFact(
 	if !captured {
 		return false
 	}
-	kind, known := staticOperandKind(fact)
-	return known && (kind == TypeInt || kind == TypeFloat || kind == TypeNumber)
+	return typeExprArmsAll(fact, func(arm *TypeExpr) bool {
+		switch arm.Kind {
+		case TypeInt, TypeFloat, TypeNumber, TypeNil:
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 type arrayFillRangeWriteEffect struct {
