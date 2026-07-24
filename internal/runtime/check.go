@@ -124,6 +124,7 @@ type scriptChecker struct {
 	typePoison                 map[string]struct{}
 	staticValuePoison          map[string]struct{}
 	staticValueDependents      map[string]map[string]checkBindingEdge
+	valueAliases               map[string]map[string]checkBindingEdge
 	typeAliases                map[string]map[string]checkBindingEdge
 	containerIdentityAliases   map[string]map[string]checkBindingEdge
 	containerSelections        map[string]checkContainerSelection
@@ -140,7 +141,7 @@ type scriptChecker struct {
 	callArgumentStaticChoices  map[Expression]checkStaticChoiceFact
 	callArgumentSplatSources   map[Expression]checkCallSplatSource
 	callArrayReceiverLength    checkArrayReceiverLength
-	shapeFieldSources          map[*TypeExpr]map[string]checkShapeFieldSource
+	shapeFieldSources          map[*TypeExpr]map[string]checkValueSource
 	evaluatedBlockValues       map[Expression][]capturedBlockLiteralValue
 	evaluatedHashDefaults      map[Expression][]directCoreHashDefaultCapture
 	evaluatedDestructureFacts  map[Expression]capturedDestructureValueFact
@@ -2337,6 +2338,7 @@ type checkScopeState struct {
 	containerAlias     checkNameRelations
 	containerIdentity  checkNameRelations
 	staticDependents   checkNameRelations
+	valueAlias         checkNameRelations
 	containerSelection map[string]checkContainerSelection
 	degradedContainers map[string]struct{}
 }
@@ -2697,6 +2699,7 @@ func (c *scriptChecker) snapshotScopeState() checkScopeState {
 		containerAlias:     c.snapshotBindingRelations(c.typeAliases),
 		containerIdentity:  c.snapshotContainerIdentityRelations(),
 		staticDependents:   c.snapshotBindingRelations(c.staticValueDependents),
+		valueAlias:         c.snapshotBindingRelations(c.valueAliases),
 		containerSelection: c.snapshotContainerSelections(),
 		degradedContainers: cloneCheckStringSet(c.degradedContainerBindings),
 	}
@@ -2722,6 +2725,7 @@ func (c *scriptChecker) restoreScopeState(state checkScopeState) {
 	}
 	c.restoreContainerAliasRelations(state.containerAlias)
 	c.restoreStaticValueDependencyRelations(state.staticDependents)
+	c.restoreValueAliasRelations(state.valueAlias)
 	c.restoreContainerIdentityRelations(state.containerIdentity)
 	c.restoreContainerSelections(state.containerSelection)
 	c.degradedContainerBindings = cloneCheckStringSet(state.degradedContainers)
@@ -16161,7 +16165,7 @@ func restElementBoundaryType(ty *TypeExpr) *TypeExpr {
 
 func (c *scriptChecker) inferredRestArgumentType(args []Expression, expected *TypeExpr) *TypeExpr {
 	elements := make([]*TypeExpr, 0, len(args))
-	seenFacts := make(map[*TypeExpr]struct{})
+	seenSources := make(map[checkValueSource]struct{})
 	sawUnknown := false
 	for _, arg := range args {
 		var inferred *TypeExpr
@@ -16178,11 +16182,11 @@ func (c *scriptChecker) inferredRestArgumentType(args []Expression, expected *Ty
 			sawUnknown = true
 			continue
 		}
-		if _, identifier := arg.(*Identifier); identifier {
-			if _, duplicate := seenFacts[inferred]; duplicate {
+		if source, sourced := c.valueSourceForExpression(arg); sourced {
+			if _, duplicate := seenSources[source]; duplicate {
 				continue
 			}
-			seenFacts[inferred] = struct{}{}
+			seenSources[source] = struct{}{}
 		}
 		elements = append(elements, inferred)
 	}
@@ -16320,7 +16324,7 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 
 func (c *scriptChecker) inferredKeywordRestArgumentType(values map[string]Expression) *TypeExpr {
 	fields := make(map[string]*TypeExpr, len(values))
-	sources := make(map[string]checkShapeFieldSource, len(values))
+	sources := make(map[string]checkValueSource, len(values))
 	for name, expr := range values {
 		inferred, captured := c.callArgumentFacts[expr]
 		if !captured {
@@ -16330,7 +16334,7 @@ func (c *scriptChecker) inferredKeywordRestArgumentType(values map[string]Expres
 			inferred = &TypeExpr{Kind: TypeUnknown}
 		}
 		fields[name] = inferred
-		if source, ok := c.shapeFieldSourceForExpression(expr); ok {
+		if source, ok := c.valueSourceForExpression(expr); ok {
 			sources[name] = source
 		}
 	}

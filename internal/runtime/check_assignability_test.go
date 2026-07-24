@@ -411,6 +411,23 @@ def run(left: int | string, right: int | string)
 end
 `)
 	requireCheckWarningContains(t, independent, "call to collect argument values expected array<int> | array<string>, got array<int | string>")
+
+	sharedReturnType := compileScriptDefault(t, `
+def choose(flag: bool) -> int | string
+  flag ? 1 : "value"
+end
+
+def collect(*values: array<int> | array<string>)
+  values
+end
+
+def run(left_flag: bool, right_flag: bool)
+  left = choose(left_flag)
+  right = choose(right_flag)
+  collect(left, right)
+end
+`)
+	requireCheckWarningContains(t, sharedReturnType, "call to collect argument values expected array<int> | array<string>, got array<int | string>")
 }
 
 func TestCheckKnownUnionArrayLiteralCorrelation(t *testing.T) {
@@ -438,6 +455,23 @@ def run()
 end
 `)
 	requireCheckWarningContains(t, mixed, "call to accept argument values expected array<int> | array<string>, got array<int | string>")
+
+	sharedReturnType := compileScriptDefault(t, `
+def choose(flag: bool) -> int | string
+  flag ? 1 : "value"
+end
+
+def accept(values: array<int> | array<string>)
+  values
+end
+
+def run(left_flag: bool, right_flag: bool)
+  left = choose(left_flag)
+  right = choose(right_flag)
+  accept([left, right])
+end
+`)
+	requireCheckWarningContains(t, sharedReturnType, "call to accept argument values expected array<int> | array<string>, got array<int | string>")
 
 	write := compileScriptDefault(t, `
 def mutate(values: array<array<int>>, value: int | string)

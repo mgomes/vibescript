@@ -1112,6 +1112,63 @@ func (c *scriptChecker) linkStaticValueAlias(a, b string) {
 	c.linkStaticValueDependency(b, a)
 }
 
+// linkValueAlias records that two current local bindings read the same
+// runtime value. Binding generations expire the relation when either local is
+// rebound, while assignment transfers preserve the remaining aliases.
+func (c *scriptChecker) linkValueAlias(a, b string) {
+	if a == "" || b == "" || a == b {
+		return
+	}
+	if c.valueAliases == nil {
+		c.valueAliases = make(map[string]map[string]checkBindingEdge)
+	}
+	if c.valueAliases[a] == nil {
+		c.valueAliases[a] = make(map[string]checkBindingEdge)
+	}
+	if c.valueAliases[b] == nil {
+		c.valueAliases[b] = make(map[string]checkBindingEdge)
+	}
+	c.valueAliases[a][b] = c.newBindingEdge(a, b)
+	c.valueAliases[b][a] = c.newBindingEdge(b, a)
+}
+
+func (c *scriptChecker) valueAliasNames(name string) map[string]struct{} {
+	aliases := map[string]struct{}{name: {}}
+	stack := []string{name}
+	for len(stack) > 0 {
+		last := len(stack) - 1
+		current := stack[last]
+		stack = stack[:last]
+		for alias, edge := range c.valueAliases[current] {
+			if !c.bindingEdgeCurrent(current, alias, edge) {
+				continue
+			}
+			if _, visited := aliases[alias]; visited {
+				continue
+			}
+			aliases[alias] = struct{}{}
+			stack = append(stack, alias)
+		}
+	}
+	return aliases
+}
+
+func (c *scriptChecker) captureValueAliasTransfer(value Expression) map[string]struct{} {
+	identifier, ok := value.(*Identifier)
+	if !ok || c.localTypeFor(identifier.Name) == nil {
+		return nil
+	}
+	return c.valueAliasNames(identifier.Name)
+}
+
+func (c *scriptChecker) applyValueAliasTransfer(target string, aliases map[string]struct{}) {
+	for alias := range aliases {
+		if alias != target {
+			c.linkValueAlias(target, alias)
+		}
+	}
+}
+
 // linkContainerAlias records that two locals may share one mutable
 // container, so poisoning either cascades to the other. Links retain their
 // function-scoped history, while binding generations make an edge inactive
@@ -1394,14 +1451,30 @@ func (c *scriptChecker) restoreContainerIdentityRelations(relations checkNameRel
 }
 
 func intersectContainerIdentityRelations(states []checkScopeState) checkNameRelations {
+	return intersectScopeRelations(states, func(state checkScopeState) checkNameRelations {
+		return state.containerIdentity
+	})
+}
+
+func intersectValueAliasRelations(states []checkScopeState) checkNameRelations {
+	return intersectScopeRelations(states, func(state checkScopeState) checkNameRelations {
+		return state.valueAlias
+	})
+}
+
+func intersectScopeRelations(
+	states []checkScopeState,
+	selectRelations func(checkScopeState) checkNameRelations,
+) checkNameRelations {
 	if len(states) == 0 {
 		return nil
 	}
-	intersection := cloneCheckNameRelations(states[0].containerIdentity)
+	intersection := cloneCheckNameRelations(selectRelations(states[0]))
 	for _, state := range states[1:] {
+		relations := selectRelations(state)
 		for from, aliases := range intersection {
 			for to := range aliases {
-				if _, exists := state.containerIdentity[from][to]; !exists {
+				if _, exists := relations[from][to]; !exists {
 					delete(aliases, to)
 				}
 			}
@@ -1462,6 +1535,17 @@ func (c *scriptChecker) restoreStaticValueDependencyRelations(relations checkNam
 	}
 }
 
+func (c *scriptChecker) restoreValueAliasRelations(relations checkNameRelations) {
+	clear(c.valueAliases)
+	for from, aliases := range relations {
+		for to := range aliases {
+			if from < to {
+				c.linkValueAlias(from, to)
+			}
+		}
+	}
+}
+
 func unionContainerAliasRelations(states []checkScopeState) checkNameRelations {
 	return unionScopeRelations(states, func(state checkScopeState) checkNameRelations {
 		return state.containerAlias
@@ -1485,6 +1569,7 @@ func unionDegradedContainerBindings(states []checkScopeState) map[string]struct{
 func (c *scriptChecker) mergeScopeBindingRelations(states []checkScopeState) {
 	c.restoreContainerAliasRelations(unionContainerAliasRelations(states))
 	c.restoreStaticValueDependencyRelations(unionStaticValueDependencyRelations(states))
+	c.restoreValueAliasRelations(intersectValueAliasRelations(states))
 	c.restoreContainerIdentityRelations(intersectContainerIdentityRelations(states))
 	c.restoreContainerSelections(intersectContainerSelections(states))
 	c.degradedContainerBindings = unionDegradedContainerBindings(states)
@@ -1513,6 +1598,11 @@ func restoreScopeBindingRelationsForNames(
 	state.staticDependents = restoreCheckNameRelationsForNames(
 		state.staticDependents,
 		entry.staticDependents,
+		names,
+	)
+	state.valueAlias = restoreCheckNameRelationsForNames(
+		state.valueAlias,
+		entry.valueAlias,
 		names,
 	)
 	state.degradedContainers = restoreCheckStringSetNames(
@@ -1743,6 +1833,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousPoison := c.typePoison
 	previousStaticValuePoison := c.staticValuePoison
 	previousStaticValueDependents := c.staticValueDependents
+	previousValueAliases := c.valueAliases
 	previousAliases := c.typeAliases
 	previousIdentityAliases := c.containerIdentityAliases
 	previousSelections := c.containerSelections
@@ -1753,9 +1844,11 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousIfClassFacts := c.evaluatedIfClassFacts
 	previousBlockValues := c.evaluatedBlockValues
 	previousHashDefaults := c.evaluatedHashDefaults
+	previousShapeFieldSources := c.shapeFieldSources
 	c.typePoison = nil
 	c.staticValuePoison = nil
 	c.staticValueDependents = nil
+	c.valueAliases = nil
 	c.typeAliases = nil
 	c.containerIdentityAliases = nil
 	c.containerSelections = nil
@@ -1766,10 +1859,12 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	c.evaluatedIfClassFacts = nil
 	c.evaluatedBlockValues = nil
 	c.evaluatedHashDefaults = nil
+	c.shapeFieldSources = nil
 	return func() {
 		c.typePoison = previousPoison
 		c.staticValuePoison = previousStaticValuePoison
 		c.staticValueDependents = previousStaticValueDependents
+		c.valueAliases = previousValueAliases
 		c.typeAliases = previousAliases
 		c.containerIdentityAliases = previousIdentityAliases
 		c.containerSelections = previousSelections
@@ -1780,6 +1875,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 		c.evaluatedIfClassFacts = previousIfClassFacts
 		c.evaluatedBlockValues = previousBlockValues
 		c.evaluatedHashDefaults = previousHashDefaults
+		c.shapeFieldSources = previousShapeFieldSources
 	}
 }
 
@@ -5650,8 +5746,10 @@ func (c *scriptChecker) inferAssignStatementTypes(
 	switch target := stmt.Target.(type) {
 	case *Identifier:
 		var aliasTransfer checkContainerAliasTransfer
+		var valueAliasTransfer map[string]struct{}
 		if stmt.Operator == "" {
 			aliasTransfer = c.captureContainerAliasTransfer(stmt.Value)
+			valueAliasTransfer = c.captureValueAliasTransfer(stmt.Value)
 		}
 		var priorLogicalAliasTransfer checkContainerAliasTransfer
 		mayRebind := true
@@ -5740,6 +5838,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 		}
 		c.bindLocalType(target.Name, next)
 		c.bindExpressionLocalValueFact(target.Name, stmt.Value)
+		c.applyValueAliasTransfer(target.Name, valueAliasTransfer)
 		c.applyContainerAliasTransfer(target.Name, aliasTransfer)
 		c.linkContainerAssignmentAlias(target.Name, stmt.Value, next)
 		c.bindContainerSelectionIdentity(target.Name, stmt.Value)
@@ -9709,7 +9808,7 @@ func (c *scriptChecker) inferExpectedArrayLiteralType(lit *ArrayLiteral, expecta
 	marker := literalElementsMarker
 	if sawUnknown {
 		marker = literalPartialElementsMarker
-	} else if c.arrayLiteralElementsShareFact(lit.Elements) {
+	} else if c.arrayLiteralElementsShareValueSource(lit.Elements) {
 		marker = literalAlternativeElementsMarker
 	}
 	return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
@@ -9721,7 +9820,7 @@ func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectati
 		return c.inferHashLiteralType(lit)
 	}
 	shape := make(map[string]*TypeExpr, len(lit.Pairs))
-	sources := make(map[string]checkShapeFieldSource, len(lit.Pairs))
+	sources := make(map[string]checkValueSource, len(lit.Pairs))
 	allSymbolKeys, allStringKeys := true, true
 	for _, pair := range lit.Pairs {
 		switch pair.Key.(type) {
@@ -9748,7 +9847,7 @@ func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectati
 			return checkTypeHash
 		}
 		shape[key] = fieldType
-		if source, ok := c.shapeFieldSourceForExpression(pair.Value); ok {
+		if source, ok := c.valueSourceForExpression(pair.Value); ok {
 			sources[key] = source
 		}
 	}
@@ -9921,7 +10020,7 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 		// literal infers its hash facts below like any other braced group.
 	}
 	shape := make(map[string]*TypeExpr, len(lit.Pairs))
-	sources := make(map[string]checkShapeFieldSource, len(lit.Pairs))
+	sources := make(map[string]checkValueSource, len(lit.Pairs))
 	sawSymbolKeys, sawStringKeys, sawOtherKeys := false, false, false
 	for _, pair := range lit.Pairs {
 		switch pair.Key.(type) {
@@ -9944,7 +10043,7 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 			return checkTypeHash
 		}
 		shape[key] = fieldType
-		if source, ok := c.shapeFieldSourceForExpression(pair.Value); ok {
+		if source, ok := c.valueSourceForExpression(pair.Value); ok {
 			sources[key] = source
 		}
 	}
@@ -9967,34 +10066,45 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 	return fact
 }
 
-type checkShapeFieldSource struct {
+type checkValueSource struct {
 	name       string
 	generation uint64
 }
 
-func (c *scriptChecker) shapeFieldSourceForExpression(expr Expression) (checkShapeFieldSource, bool) {
+func (c *scriptChecker) valueSourceForExpression(expr Expression) (checkValueSource, bool) {
 	identifier, ok := expr.(*Identifier)
 	if !ok || c.localTypeFor(identifier.Name) == nil {
-		return checkShapeFieldSource{}, false
+		return checkValueSource{}, false
 	}
-	return checkShapeFieldSource{
+	source := checkValueSource{
 		name:       identifier.Name,
 		generation: c.localBindingGenerations[identifier.Name],
-	}, true
+	}
+	for alias := range c.valueAliasNames(identifier.Name) {
+		candidate := checkValueSource{
+			name:       alias,
+			generation: c.localBindingGenerations[alias],
+		}
+		if candidate.name < source.name ||
+			candidate.name == source.name && candidate.generation < source.generation {
+			source = candidate
+		}
+	}
+	return source, true
 }
 
 func (c *scriptChecker) recordShapeFieldSources(
 	shape *TypeExpr,
-	sources map[string]checkShapeFieldSource,
+	sources map[string]checkValueSource,
 ) {
 	if shape == nil || len(sources) == 0 {
 		return
 	}
-	counts := make(map[checkShapeFieldSource]int, len(sources))
+	counts := make(map[checkValueSource]int, len(sources))
 	for _, source := range sources {
 		counts[source]++
 	}
-	correlated := make(map[string]checkShapeFieldSource)
+	correlated := make(map[string]checkValueSource)
 	for field, source := range sources {
 		if counts[source] > 1 {
 			correlated[field] = source
@@ -10004,7 +10114,7 @@ func (c *scriptChecker) recordShapeFieldSources(
 		return
 	}
 	if c.shapeFieldSources == nil {
-		c.shapeFieldSources = make(map[*TypeExpr]map[string]checkShapeFieldSource)
+		c.shapeFieldSources = make(map[*TypeExpr]map[string]checkValueSource)
 	}
 	c.shapeFieldSources[shape] = correlated
 }
@@ -10012,7 +10122,7 @@ func (c *scriptChecker) recordShapeFieldSources(
 func (c *scriptChecker) boundaryShapeFieldSource(
 	shape *TypeExpr,
 	field string,
-) (checkShapeFieldSource, bool) {
+) (checkValueSource, bool) {
 	source, ok := c.shapeFieldSources[shape][field]
 	return source, ok
 }
@@ -10453,30 +10563,26 @@ func (c *scriptChecker) inferArrayLiteralType(lit *ArrayLiteral) *TypeExpr {
 		// Known elements stay witnesses even when others are unknown, but
 		// the union no longer bounds every element.
 		marker = literalPartialElementsMarker
-	} else if c.arrayLiteralElementsShareFact(lit.Elements) {
+	} else if c.arrayLiteralElementsShareValueSource(lit.Elements) {
 		marker = literalAlternativeElementsMarker
 	}
 	return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
 }
 
-func (c *scriptChecker) arrayLiteralElementsShareFact(elements []Expression) bool {
+func (c *scriptChecker) arrayLiteralElementsShareValueSource(elements []Expression) bool {
 	if len(elements) == 1 {
 		return true
 	}
 	if len(elements) == 0 {
 		return false
 	}
-	first, ok := elements[0].(*Identifier)
+	source, ok := c.valueSourceForExpression(elements[0])
 	if !ok {
 		return false
 	}
-	fact := c.localTypeFor(first.Name)
-	if fact == nil {
-		return false
-	}
 	for _, element := range elements[1:] {
-		identifier, ok := element.(*Identifier)
-		if !ok || c.localTypeFor(identifier.Name) != fact {
+		other, ok := c.valueSourceForExpression(element)
+		if !ok || other != source {
 			return false
 		}
 	}
@@ -16373,7 +16479,7 @@ const (
 
 type boundaryTypeContext struct {
 	resolve          namedTypeResolver
-	shapeFieldSource func(*TypeExpr, string) (checkShapeFieldSource, bool)
+	shapeFieldSource func(*TypeExpr, string) (checkValueSource, bool)
 }
 
 // boundaryTypeRejected reports whether a finite inferred alternative cannot
@@ -16516,7 +16622,7 @@ func boundaryShapeUnionCoverage(
 	sort.Strings(fields)
 
 	groups := make([]boundaryShapeFieldGroup, 0, len(fields))
-	groupBySource := make(map[checkShapeFieldSource]int, len(fields))
+	groupBySource := make(map[checkValueSource]int, len(fields))
 	hasAlternatives := false
 	for _, field := range fields {
 		template := inferred.Shape[field]
