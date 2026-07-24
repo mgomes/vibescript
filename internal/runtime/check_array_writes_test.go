@@ -3866,6 +3866,118 @@ end
 			NewBool(true),
 		}))
 	})
+
+	t.Run("truthiness branches select and rejoin exact modes", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(use_block: bool)
+  callback = use_block ? lambda { |index| raise "stop" } : nil
+  items = []
+  if callback
+    items.fill(0, 1, &callback)
+    takes_int("unreachable")
+  else
+    items.fill(0, 1, &callback)
+  end
+  takes_int("reachable from the nil arm")
+end
+`)
+		assertWarning(
+			t,
+			script,
+			15,
+			"argument value expected int, got string",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+			"stop",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(false)},
+			CallOptions{},
+			"argument value expected int, got string",
+		)
+	})
+
+	t.Run("and keeps block effects conditional", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(use_block: bool)
+  callback = use_block ? lambda { |index| JSON.stringify = replacement } : nil
+  items = []
+  callback && items.fill(0, 1, &callback)
+  takes_string(JSON.stringify({}))
+end
+`)
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", []Value{
+			NewBool(false),
+		}, CallOptions{})
+		want := NewString("{}")
+		if !got.Equal(want) {
+			t.Fatalf("run(false) = %s, want %s", got.String(), want.String())
+		}
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+			"argument value expected string, got int",
+		)
+	})
+
+	t.Run("or narrows the right operand to the value mode", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(use_block: bool)
+  callback = use_block ? lambda { |index| JSON.stringify = replacement } : nil
+  items = []
+  callback || items.fill(0, 1, &callback)
+  takes_string(JSON.stringify({}))
+end
+`)
+		requireNoCheckWarnings(t, script)
+		for _, useBlock := range []bool{false, true} {
+			got := callScript(t, context.Background(), script, "run", []Value{
+				NewBool(useBlock),
+			}, CallOptions{})
+			want := NewString("{}")
+			if !got.Equal(want) {
+				t.Fatalf("run(%t) = %s, want %s", useBlock, got.String(), want.String())
+			}
+		}
+	})
 }
 
 func TestCheckInvalidArrayFillBlockShapeDoesNotRunBlock(t *testing.T) {
