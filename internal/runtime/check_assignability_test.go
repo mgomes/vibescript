@@ -92,6 +92,79 @@ end
 	}
 }
 
+func TestCheckExactEnumSymbolAlternativesAtBoundaries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		warning string
+	}{
+		{
+			name: "call argument",
+			source: `
+enum Color
+  Red
+end
+
+def takes_color(value: Color)
+  value
+end
+
+def run(flag: bool)
+  takes_color(flag ? :red : :blue)
+end
+`,
+			warning: "call to takes_color argument value expected Color, got symbol",
+		},
+		{
+			name: "parameter default",
+			source: `
+enum Color
+  Red
+end
+
+def run(flag: bool, value: Color = flag ? :red : :blue)
+  value
+end
+`,
+			warning: "default value for value expected Color, got symbol",
+		},
+		{
+			name: "explicit return",
+			source: `
+enum Color
+  Red
+end
+
+def run(flag: bool) -> Color
+  return flag ? :red : :blue
+end
+`,
+			warning: "return value expected Color, got symbol",
+		},
+		{
+			name: "implicit return",
+			source: `
+enum Color
+  Red
+end
+
+def run(flag: bool) -> Color
+  flag ? :red : :blue
+end
+`,
+			warning: "return value expected Color, got symbol",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireCheckWarningContains(t, compileScriptDefault(t, tt.source), tt.warning)
+		})
+	}
+}
+
 func TestCheckKnownUnionBoundaryAssignabilityRecurses(t *testing.T) {
 	t.Parallel()
 

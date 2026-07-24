@@ -373,6 +373,10 @@ func (c *scriptChecker) staticLiteralValueAlternatives(expr Expression) ([]Value
 	return literalAlternativeValues(c.staticValueExpressionAlternatives(expr))
 }
 
+func (c *scriptChecker) evaluatedStaticLiteralValueAlternatives(expr Expression) ([]Value, bool) {
+	return literalAlternativeValues(c.evaluatedStaticValueExpressionAlternatives(expr))
+}
+
 func (c *scriptChecker) callStaticLiteralValueAlternatives(expr Expression) ([]Value, bool) {
 	return literalAlternativeValues(c.callStaticValueAlternatives(expr))
 }
@@ -10800,12 +10804,13 @@ func (c *scriptChecker) checkTypeAnnotationWithContext(function string, ty *Type
 }
 
 func (c *scriptChecker) checkRuntimeExpressionAgainstType(function string, expr Expression, ty *TypeExpr, subject string) {
-	val, ok := staticLiteralValue(expr)
-	if !ok {
-		c.checkInferredExpressionAgainstType(function, expr, ty, subject)
-		return
-	}
-	c.checkRuntimeValueAgainstType(function, expr.Pos(), val, ty, subject)
+	c.checkRuntimeExpressionAgainstTypeWithExpectation(
+		function,
+		expr,
+		ty,
+		subject,
+		expressionExpectation{},
+	)
 }
 
 func (c *scriptChecker) checkRuntimeExpressionAgainstTypeWithExpectation(
@@ -10824,14 +10829,14 @@ func (c *scriptChecker) checkRuntimeExpressionAgainstTypeWithExpectation(
 	if len(c.warnings) > warningsBeforeInference {
 		return
 	}
-	values, exact := c.staticLiteralValueAlternatives(expr)
+	values, exact := c.evaluatedStaticLiteralValueAlternatives(expr)
 	if !exact {
 		return
 	}
 	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
 		return
 	}
-	if err := c.staticValuesTypeMismatch(values, ty); err != nil {
+	if err := c.staticValuesBoundaryMismatch(values, ty); err != nil {
 		c.addValueTypeWarning(function, expr.Pos(), subject, err)
 	}
 }
@@ -10878,6 +10883,18 @@ func (c *scriptChecker) staticValuesTypeMismatch(values []Value, ty *TypeExpr) e
 		}
 	}
 	return firstErr
+}
+
+// staticValuesBoundaryMismatch returns the first exact alternative that a
+// typed boundary would reject. Every known alternative must normalize even
+// when their shared inferred kind remains gradual, as symbols do for enums.
+func (c *scriptChecker) staticValuesBoundaryMismatch(values []Value, ty *TypeExpr) error {
+	for _, value := range values {
+		if err := c.checkRuntimeStaticValueType(value, ty); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *scriptChecker) staticValuesMustNormalizeType(values []Value, ty *TypeExpr) bool {
@@ -13820,7 +13837,7 @@ func (c *scriptChecker) checkScriptCallContextualDefaults(
 			if !pristineExact[i] && len(fact.values) > 0 {
 				if param.Type != nil &&
 					validateTypeExprResolved(param.Type, c.runtimeTypeContext()) == nil {
-					if err := c.staticValuesTypeMismatch(fact.values, param.Type); err != nil {
+					if err := c.staticValuesBoundaryMismatch(fact.values, param.Type); err != nil {
 						c.addValueTypeWarning(
 							function,
 							param.DefaultVal.Pos(),
@@ -16376,7 +16393,7 @@ func (c *scriptChecker) checkArgumentExpression(function string, expr Expression
 	if ty == nil || !c.checkRuntimeTypeAnnotation(function, ty) {
 		return
 	}
-	if err := c.staticValuesTypeMismatch(values, ty); err != nil {
+	if err := c.staticValuesBoundaryMismatch(values, ty); err != nil {
 		c.addArgumentValueWarning(function, expr.Pos(), callName, paramName, err)
 	}
 }

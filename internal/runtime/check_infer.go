@@ -7583,14 +7583,76 @@ func (c *scriptChecker) bindCapturedDestructureValueFact(fact capturedDestructur
 func (c *scriptChecker) evaluatedStaticValueExpressionAlternatives(
 	expr Expression,
 ) ([]Expression, bool) {
-	if conditional, ok := expr.(*ConditionalExpr); ok {
-		if truthy, known := c.inferredConditionTruthiness(conditional.Condition); known {
-			branch := conditional.Alternate
-			if truthy {
-				branch = conditional.Consequent
-			}
-			return c.staticValueExpressionAlternatives(branch)
+	const maxAlternatives = 32
+	merge := func(alternatives []Expression, expr Expression) ([]Expression, bool) {
+		values, exact := c.evaluatedStaticValueExpressionAlternatives(expr)
+		if !exact || len(alternatives)+len(values) > maxAlternatives {
+			return nil, false
 		}
+		return c.normalizeCheckStaticValues(append(alternatives, values...)), true
+	}
+
+	switch typed := expr.(type) {
+	case *ConditionalExpr:
+		baseScopeState := c.snapshotScopeState()
+		defer c.restoreScopeState(baseScopeState)
+
+		var alternatives []Expression
+		c.restoreScopeState(baseScopeState)
+		if c.applyConditionOutcomeEffects(typed.Condition, true, nil) {
+			var exact bool
+			alternatives, exact = merge(alternatives, typed.Consequent)
+			if !exact {
+				return nil, false
+			}
+		}
+		c.restoreScopeState(baseScopeState)
+		if c.applyConditionOutcomeEffects(typed.Condition, false, nil) {
+			var exact bool
+			alternatives, exact = merge(alternatives, typed.Alternate)
+			if !exact {
+				return nil, false
+			}
+		}
+		return alternatives, len(alternatives) > 0
+	case *IfExpr:
+		baseScopeState := c.snapshotScopeState()
+		defer c.restoreScopeState(baseScopeState)
+
+		var alternatives []Expression
+		collectCondition := func(condition, result Expression) (bool, bool) {
+			conditionScopeState := c.snapshotScopeState()
+			if c.applyConditionOutcomeEffects(condition, true, nil) {
+				var exact bool
+				alternatives, exact = merge(alternatives, result)
+				if !exact {
+					return false, false
+				}
+			}
+			c.restoreScopeState(conditionScopeState)
+			return c.applyConditionOutcomeEffects(condition, false, nil), true
+		}
+
+		falseReachable, exact := collectCondition(typed.Condition, typed.Consequent)
+		if !exact {
+			return nil, false
+		}
+		for _, branch := range typed.ElseIf {
+			if !falseReachable {
+				break
+			}
+			falseReachable, exact = collectCondition(branch.Condition, branch.Result)
+			if !exact {
+				return nil, false
+			}
+		}
+		if falseReachable {
+			alternatives, exact = merge(alternatives, typed.Alternate)
+			if !exact {
+				return nil, false
+			}
+		}
+		return alternatives, len(alternatives) > 0
 	}
 	return c.staticValueExpressionAlternatives(expr)
 }
@@ -15171,14 +15233,6 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 }
 
 // --- contradiction checks at typed boundaries ---
-
-// checkInferredExpressionAgainstType reports a boundary contradiction when
-// the inferred type of a non-literal expression is provably disjoint from the
-// declared type. The declared annotation is validated silently here; the
-// regular annotation checks report unresolved names.
-func (c *scriptChecker) checkInferredExpressionAgainstType(function string, expr Expression, ty *TypeExpr, subject string) {
-	c.checkInferredExpressionAgainstTypeWithExpectation(function, expr, ty, subject, expressionExpectation{})
-}
 
 func (c *scriptChecker) checkInferredExpressionAgainstTypeWithExpectation(
 	function string,
