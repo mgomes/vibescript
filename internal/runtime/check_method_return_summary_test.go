@@ -255,6 +255,70 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "forwarded instance method",
+			source: `
+class Counter
+  def value()
+    42
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.new.send(:value))
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "forwarded class method",
+			source: `
+class Counter
+  def self.value()
+    42
+  end
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(Counter.public_send(:value))
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
+			name: "finite receiver alternatives join method summaries",
+			source: `
+class IntPicker
+  def value()
+    1
+  end
+end
+
+class StringPicker
+  def value()
+    "x"
+  end
+end
+
+def takes_hash(value: hash)
+  value
+end
+
+def run(flag: bool)
+  picker = flag ? IntPicker.new : StringPicker.new
+  takes_hash(picker.value())
+end
+`,
+			warning: "call to takes_hash argument value expected hash, got int | string",
+		},
+		{
 			name: "branch results join into a union",
 			source: `
 class Picker
