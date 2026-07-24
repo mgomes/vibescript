@@ -16105,7 +16105,8 @@ func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Positi
 			// argument against a plain array's element contract.
 			if ty.Kind == TypeUnion {
 				inferred := c.inferredRestArgumentType(args, restElementBoundaryType(ty))
-				if inferred != nil && c.boundaryTypeRejected(inferred, ty) {
+				if c.restLiteralRejectedByUnion(args, ty) ||
+					(inferred != nil && c.boundaryTypeRejected(inferred, ty)) {
 					warningPos := pos
 					if len(args) > 0 {
 						warningPos = args[0].Pos()
@@ -16168,16 +16169,7 @@ func (c *scriptChecker) inferredRestArgumentType(args []Expression, expected *Ty
 	seenSources := make(map[checkValueSource]struct{})
 	sawUnknown := false
 	for _, arg := range args {
-		var inferred *TypeExpr
-		if value, literal := staticLiteralValue(arg); literal {
-			inferred = typeFactForValue(value)
-		} else if captured, ok := c.callArgumentFacts[arg]; ok {
-			inferred = captured
-		} else if expected != nil {
-			inferred = c.inferExpressionTypeWithExpectation(arg, typeExpressionExpectation(expected))
-		} else {
-			inferred = c.inferExpressionType(arg)
-		}
+		inferred := c.inferredRestExpressionType(arg, expected)
 		if inferred == nil {
 			sawUnknown = true
 			continue
@@ -16207,6 +16199,59 @@ func (c *scriptChecker) inferredRestArgumentType(args []Expression, expected *Ty
 		Name:     marker,
 		TypeArgs: []*TypeExpr{unionTypeExprs(elements...)},
 	}
+}
+
+func (c *scriptChecker) inferredRestExpressionType(arg Expression, expected *TypeExpr) *TypeExpr {
+	if value, literal := staticLiteralValue(arg); literal {
+		return typeFactForValue(value)
+	}
+	if captured, ok := c.callArgumentFacts[arg]; ok {
+		return captured
+	}
+	if expected != nil {
+		return c.inferExpressionTypeWithExpectation(arg, typeExpressionExpectation(expected))
+	}
+	return c.inferExpressionType(arg)
+}
+
+// restLiteralRejectedByUnion preserves concrete literal normalization before
+// the mixed rest list degrades to inferred aggregate types.
+func (c *scriptChecker) restLiteralRejectedByUnion(args []Expression, ty *TypeExpr) bool {
+	arms, exact := boundaryTypeExprArms(ty, 0)
+	if !exact {
+		return false
+	}
+	for _, arg := range args {
+		value, literal := staticLiteralValue(arg)
+		if !literal {
+			continue
+		}
+		sawArray := false
+		accepted := false
+		for _, arm := range arms {
+			if arm.Kind == TypeAny || arm.Kind == TypeUnknown {
+				accepted = true
+				break
+			}
+			if arm.Kind != TypeArray {
+				continue
+			}
+			sawArray = true
+			if len(arm.TypeArgs) == 0 {
+				accepted = true
+				break
+			}
+			if len(arm.TypeArgs) == 1 &&
+				c.checkRuntimeStaticValueType(value, arm.TypeArgs[0]) == nil {
+				accepted = true
+				break
+			}
+		}
+		if sawArray && !accepted {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos Position, kwargs []KeywordArg, usedKw map[string]bool, ty *TypeExpr, callName, paramName string) {

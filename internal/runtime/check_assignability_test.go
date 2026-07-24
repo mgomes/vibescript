@@ -430,6 +430,25 @@ end
 	requireCheckWarningContains(t, sharedReturnType, "call to collect argument values expected array<int> | array<string>, got array<int | string>")
 }
 
+func TestCheckKnownUnionRestAggregatePreservesExactLiterals(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+enum Color
+  Red
+end
+
+def collect(*values: array<Color> | array<int>)
+  values
+end
+
+def run(value: int)
+  collect(:blue, value)
+end
+`)
+	requireCheckWarningContains(t, script, "call to collect argument values expected array<Color> | array<int>, got array<symbol | int>")
+}
+
 func TestCheckKnownUnionArrayLiteralCorrelation(t *testing.T) {
 	t.Parallel()
 
