@@ -134,6 +134,7 @@ type scriptChecker struct {
 	callArgumentClassValues    map[Expression][]string
 	callArgumentCallables      map[Expression][]*ScriptFunction
 	callArgumentStaticValues   map[Expression][]Expression
+	callArgumentSplatSources   map[Expression]checkCallSplatSource
 	evaluatedDestructureFacts  map[Expression]capturedDestructureValueFact
 	destructureProjectionFacts map[Expression]capturedDestructureValueFact
 	localBindingGenerations    map[string]uint64
@@ -285,6 +286,12 @@ type checkForwardedCallVariant struct {
 	method string
 	known  bool
 	valid  bool
+}
+
+type checkCallSplatSource struct {
+	name         string
+	generation   uint64
+	alternatives []Expression
 }
 
 func (c *scriptChecker) callStaticValueAlternatives(expr Expression) ([]Expression, bool) {
@@ -4098,6 +4105,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		argumentClassValues := make(map[Expression][]string, len(typed.Args)+len(typed.KwArgs))
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
 		argumentStaticValues := make(map[Expression][]Expression, len(typed.Args)+len(typed.KwArgs))
+		argumentSplatSources := make(map[Expression]checkCallSplatSource)
 		argumentRetainedAliases := make(map[Expression]checkRetainedContainerCapture, len(typed.Args))
 		argumentSplatOrigins := make(map[Expression][]*SplatArg)
 		captureArgumentFacts := func(expr Expression, expectation expressionExpectation, autoCall bool) {
@@ -4153,6 +4161,18 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 			}
 		}
+		captureSplatSource := func(expr Expression) {
+			ident, directLocal := expr.(*Identifier)
+			values, exact := argumentStaticValues[expr]
+			if !directLocal || !exact || len(values) == 0 {
+				return
+			}
+			argumentSplatSources[expr] = checkCallSplatSource{
+				name:         ident.Name,
+				generation:   c.localBindingGenerations[ident.Name],
+				alternatives: append([]Expression(nil), values...),
+			}
+		}
 		positionalSplatSeen := false
 		argumentEvaluationFailed := false
 		for i, arg := range typed.Args {
@@ -4193,6 +4213,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				break
 			}
 			captureArgumentFacts(arg, expectation, !expectation.includesCallable())
+			if splat, expanded := arg.(*SplatArg); expanded {
+				captureSplatSource(splat.Value)
+			}
 			positionalSplatSeen = positionalSplatSeen || isSplat
 			if !c.positionalArgumentExpansionMaySucceed(arg) {
 				argumentEvaluationFailed = true
@@ -4237,6 +4260,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				break
 			}
 			captureArgumentFacts(kwarg.Value, expectation, !expectation.includesCallable())
+			if kwarg.Splat {
+				captureSplatSource(kwarg.Value)
+			}
 			if !c.keywordArgumentExpansionMaySucceed(kwarg) {
 				argumentEvaluationFailed = true
 				break
@@ -4266,10 +4292,12 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
 		previousStaticValues := c.callArgumentStaticValues
+		previousSplatSources := c.callArgumentSplatSources
 		c.callArgumentFacts = argumentFacts
 		c.callArgumentClassValues = argumentClassValues
 		c.callArgumentCallables = argumentCallables
 		c.callArgumentStaticValues = argumentStaticValues
+		c.callArgumentSplatSources = argumentSplatSources
 		c.pinForwardedConstructorInstanceFact(typed, dynamicCandidates)
 		if deferForwardedTargets {
 			dynamicResolution = c.exactDynamicCallTargets(typed, target, targetResolved, dynamicCandidates)
@@ -4278,6 +4306,17 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		checkedCall := typed
 		if expanded, exact := c.staticallyExpandedCall(typed); exact {
 			checkedCall = expanded
+		}
+		arrayMutatorMayComplete := true
+		if member, ok := typed.Callee.(*MemberExpr); ok {
+			receiver := nonNilMutatorReceiverFact(receiverFact)
+			if receiver != nil && typeExprArmsAll(receiver, func(arm *TypeExpr) bool {
+				return arm.Kind == TypeArray
+			}) {
+				if _, modeled := arrayMutatorBuiltinProperty("array." + member.Property); modeled {
+					arrayMutatorMayComplete = c.arrayMutatorCallMayComplete(typed, member.Property)
+				}
+			}
 		}
 		targetMayEnter := callMayEnter
 		callMayComplete := callMayEnter
@@ -4301,6 +4340,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				callMayComplete = targetMayEnter
 			}
 		}
+		targetMayEnter = targetMayEnter && arrayMutatorMayComplete
+		callMayComplete = callMayComplete && arrayMutatorMayComplete
 		opaqueCallEffectsMayRun := targetMayEnter && opaqueCallEffects
 		// Binding can stop before the body after earlier parameter defaults
 		// have run, so carry only that evaluated prefix into the exception path.
@@ -4430,6 +4471,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
+		c.callArgumentSplatSources = previousSplatSources
 		if argumentsMayBeSkipped {
 			if !callMayComplete {
 				// The failed non-nil arm still reaches rescue and ensure with any
@@ -4471,6 +4513,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					argumentStaticValues,
 					argumentRetainedAliases,
 					argumentSplatOrigins,
+					argumentSplatSources,
 					blockResult,
 					receiverFact,
 				)
@@ -6423,10 +6466,12 @@ func (c *scriptChecker) checkMemberAutoCall(
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
 		previousStaticValues := c.callArgumentStaticValues
+		previousSplatSources := c.callArgumentSplatSources
 		c.callArgumentFacts = map[Expression]*TypeExpr{}
 		c.callArgumentClassValues = map[Expression][]string{}
 		c.callArgumentCallables = map[Expression][]*ScriptFunction{}
 		c.callArgumentStaticValues = map[Expression][]Expression{}
+		c.callArgumentSplatSources = map[Expression]checkCallSplatSource{}
 		bodyMayEnter := c.refineDynamicCallTargetEntry(resolution.targets)
 		if resolution.exact && c.exactDynamicCallHasOpaqueClassConstantEffects(resolution) {
 			c.markOpaqueClassConstants()
@@ -6437,6 +6482,7 @@ func (c *scriptChecker) checkMemberAutoCall(
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentStaticValues = previousStaticValues
+		c.callArgumentSplatSources = previousSplatSources
 		if !resolution.exact {
 			c.markOpaqueClassConstants()
 			return staticCallable{}, false, true, true
@@ -7067,6 +7113,9 @@ func (c *scriptChecker) resolvedCallMayEvaluateBlock(call *CallExpr, target stat
 	if target.name == "array.fetch" {
 		return staticArrayFetchBlockMayEvaluate(call)
 	}
+	if target.name == "array.fill" {
+		return c.arrayFillLiteralBlockMayEvaluate(call)
+	}
 	return target.spec.usesBlock
 }
 
@@ -7086,6 +7135,9 @@ func (c *scriptChecker) callMayEvaluateBlockWithSeen(call *CallExpr, seen map[*S
 	}
 	if target.name == "array.fetch" {
 		return staticArrayFetchBlockMayEvaluate(call)
+	}
+	if target.name == "array.fill" {
+		return c.arrayFillLiteralBlockMayEvaluate(call)
 	}
 	return target.spec.usesBlock
 }
@@ -11262,6 +11314,9 @@ func (c *scriptChecker) builtinCallMayComplete(spec staticCallSpec) bool {
 // outside staticCallSpec. All call arguments have already evaluated when this
 // runs; false therefore stops only the enclosing expression's continuation.
 func (c *scriptChecker) specialBuiltinCallMayComplete(call *CallExpr, name string) bool {
+	if property, mutator := arrayMutatorBuiltinProperty(name); mutator {
+		return c.arrayMutatorCallMayComplete(call, property)
+	}
 	switch name {
 	case "JSON.parse_as":
 		return c.parseAsCallMayComplete(call)

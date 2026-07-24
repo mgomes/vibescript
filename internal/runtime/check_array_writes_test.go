@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -2142,6 +2143,66 @@ end
 	}
 }
 
+func TestCheckArrayMutatorAlternativeDiagnosticsAreOrderIndependent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		args string
+	}{
+		{name: "short alternative first", args: `flag ? ["bad"] : ["bad", "bad"]`},
+		{name: "long alternative first", args: `flag ? ["bad", "bad"] : ["bad"]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  args = `+tc.args+`
+  items.push(*args)
+end
+`)
+
+			warnings := script.CheckWarningsForFunction("run")
+			if len(warnings) != 2 {
+				t.Fatalf("CheckWarningsForFunction(run) = %#v, want two incompatible write warnings", warnings)
+			}
+			for _, warning := range warnings {
+				if warning.Pos.Line != 4 ||
+					!strings.Contains(warning.Message, "write to items expected element int, got string") {
+					t.Errorf(
+						"CheckWarningsForFunction(run) = %#v, want incompatible write warnings on line 4",
+						warnings,
+					)
+					break
+				}
+			}
+		})
+	}
+}
+
+func TestCheckArrayMutatorAlternativeDiagnosticsUnionTypes(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  args = flag ? ["bad"] : [true]
+  items.push(*args)
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 4 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string | bool") {
+		t.Fatalf(
+			"CheckWarningsForFunction(run) = %#v, want one unioned incompatible write warning on line 4",
+			warnings,
+		)
+	}
+}
+
 func TestCheckArrayMutatorExactSplatsKeepRetainedElementProvenance(t *testing.T) {
 	t.Parallel()
 
@@ -2347,6 +2408,200 @@ end
 	}
 }
 
+func TestCheckArrayInsertDifferentWidthSplatAlternativesMatchRuntime(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  args = flag ? [0, 1] : [0]
+  items.insert(*args)
+  items << "bad"
+  items
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 5 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want the incompatible append on line 5", "run", warnings)
+	}
+
+	cases := []struct {
+		name string
+		flag bool
+		want Value
+	}{
+		{
+			name: "inserts",
+			flag: true,
+			want: NewArray([]Value{NewInt(1), NewInt(0), NewString("bad")}),
+		},
+		{
+			name: "index only",
+			flag: false,
+			want: NewArray([]Value{NewInt(0), NewString("bad")}),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := callScript(t, context.Background(), script, "run", []Value{
+				NewArray([]Value{NewInt(0)}),
+				NewBool(tc.flag),
+			}, CallOptions{})
+			if !got.Equal(tc.want) {
+				t.Errorf("run([0], %t) = %s, want %s", tc.flag, got.String(), tc.want.String())
+			}
+		})
+	}
+}
+
+func TestCheckArrayInsertMutatingAndRaisingAlternativesMatchRuntime(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		args        string
+		wantWarning bool
+		wantTrue    Value
+	}{
+		{
+			name:        "compatible write or invalid shape",
+			args:        "flag ? [0, 1] : []",
+			wantWarning: true,
+			wantTrue:    NewArray([]Value{NewInt(1), NewInt(0), NewString("bad")}),
+		},
+		{
+			name:     "padding write or invalid shape",
+			args:     "flag ? [3, 1] : []",
+			wantTrue: NewArray([]Value{NewInt(0), NewNil(), NewNil(), NewInt(1), NewString("bad")}),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  args = `+tc.args+`
+  begin
+    items.insert(*args)
+  rescue
+    nil
+  end
+  items << "bad"
+  items
+end
+`)
+
+			warnings := script.CheckWarningsForFunction("run")
+			if tc.wantWarning {
+				if len(warnings) != 1 ||
+					warnings[0].Pos.Line != 9 ||
+					!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+					t.Fatalf("CheckWarningsForFunction(%q) = %#v, want the incompatible append on line 9", "run", warnings)
+				}
+			} else if len(warnings) != 0 {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want no warnings after a possible padding write", "run", warnings)
+			}
+
+			runtimeCases := []struct {
+				name string
+				flag bool
+				want Value
+			}{
+				{name: "mutates", flag: true, want: tc.wantTrue},
+				{
+					name: "raises",
+					flag: false,
+					want: NewArray([]Value{NewInt(0), NewString("bad")}),
+				},
+			}
+			for _, runtimeCase := range runtimeCases {
+				t.Run(runtimeCase.name, func(t *testing.T) {
+					t.Parallel()
+
+					got := callScript(t, context.Background(), script, "run", []Value{
+						NewArray([]Value{NewInt(0)}),
+						NewBool(runtimeCase.flag),
+					}, CallOptions{})
+					if !got.Equal(runtimeCase.want) {
+						t.Errorf(
+							"run([0], %t) = %s, want %s",
+							runtimeCase.flag,
+							got.String(),
+							runtimeCase.want.String(),
+						)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestCheckArrayMutatorKeywordSplatAlternativesMatchRuntime(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  options = flag ? {} : { extra: 2 }
+  rescued = false
+  begin
+    items.push(1, **options)
+  rescue
+    rescued = true
+  end
+  items << "bad"
+  [items, rescued]
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 10 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want the incompatible append on line 10", "run", warnings)
+	}
+
+	cases := []struct {
+		name string
+		flag bool
+		want Value
+	}{
+		{
+			name: "empty keywords mutate",
+			flag: true,
+			want: NewArray([]Value{
+				NewArray([]Value{NewInt(1), NewInt(1), NewString("bad")}),
+				NewBool(false),
+			}),
+		},
+		{
+			name: "keywords raise",
+			flag: false,
+			want: NewArray([]Value{
+				NewArray([]Value{NewInt(1), NewString("bad")}),
+				NewBool(true),
+			}),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := callScript(t, context.Background(), script, "run", []Value{
+				NewArray([]Value{NewInt(1)}),
+				NewBool(tc.flag),
+			}, CallOptions{})
+			if !got.Equal(tc.want) {
+				t.Errorf("run([1], %t) = %s, want %s", tc.flag, got.String(), tc.want.String())
+			}
+		})
+	}
+}
+
 func TestArrayFillMutationMatchesCheckerModel(t *testing.T) {
 	t.Parallel()
 
@@ -2425,6 +2680,164 @@ end
 	}
 }
 
+func TestCheckArrayFillCorrelatedSplatAlternativesMatchRuntime(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  args = flag ? ["unused", 5, -1] : ["unused", 0, 0]
+  items.fill(*args)
+  items << "bad"
+  items
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 5 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want the incompatible append on line 5", "run", warnings)
+	}
+
+	for _, flag := range []bool{false, true} {
+		got := callScript(t, context.Background(), script, "run", []Value{
+			NewArray([]Value{NewInt(1)}),
+			NewBool(flag),
+		}, CallOptions{})
+		want := NewArray([]Value{NewInt(1), NewString("bad")})
+		if !got.Equal(want) {
+			t.Errorf("run([1], %t) = %s, want %s", flag, got.String(), want.String())
+		}
+	}
+}
+
+func TestCheckArrayFillRepeatedSplatAlternativesStayCorrelated(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, flag: bool)
+  args = flag ? ["unused"] : [0]
+  begin
+    items.fill(*args, *args)
+  rescue
+    nil
+  end
+  items << "bad"
+  items
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 9 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want the incompatible append on line 9", "run", warnings)
+	}
+
+	cases := []struct {
+		name string
+		flag bool
+		want Value
+	}{
+		{
+			name: "invalid selector pair raises",
+			flag: true,
+			want: NewArray([]Value{NewInt(1), NewString("bad")}),
+		},
+		{
+			name: "compatible fill",
+			flag: false,
+			want: NewArray([]Value{NewInt(0), NewString("bad")}),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := callScript(t, context.Background(), script, "run", []Value{
+				NewArray([]Value{NewInt(1)}),
+				NewBool(tc.flag),
+			}, CallOptions{})
+			if !got.Equal(tc.want) {
+				t.Errorf("run([1], %t) = %s, want %s", tc.flag, got.String(), tc.want.String())
+			}
+		})
+	}
+}
+
+func TestArrayMutatorSplatCorrelationUsesBindingGeneration(t *testing.T) {
+	t.Parallel()
+
+	one := &ArrayLiteral{Elements: []Expression{&IntegerLiteral{Value: 1}}}
+	empty := &ArrayLiteral{}
+	firstValue := &Identifier{Name: "args"}
+	secondValue := &Identifier{Name: "args"}
+	firstSplat := &SplatArg{Value: firstValue}
+	secondSplat := &SplatArg{Value: secondValue}
+	firstAlternatives := []Expression{one, empty}
+	cases := []struct {
+		name             string
+		secondGeneration uint64
+		secondValues     []Expression
+		wantLengths      map[int]int
+	}{
+		{
+			name:             "same evaluated source stays correlated",
+			secondGeneration: 7,
+			secondValues:     []Expression{one, empty},
+			wantLengths:      map[int]int{0: 1, 2: 1},
+		},
+		{
+			name:             "rebound source stays independent",
+			secondGeneration: 8,
+			secondValues:     []Expression{one, empty},
+			wantLengths:      map[int]int{0: 1, 1: 2, 2: 1},
+		},
+		{
+			name:             "reordered alternatives stay independent",
+			secondGeneration: 7,
+			secondValues:     []Expression{empty, one},
+			wantLengths:      map[int]int{0: 1, 1: 2, 2: 1},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			checker := scriptChecker{}
+			variants, exact := checker.staticallyExpandedArrayMutatorCalls(
+				&CallExpr{Args: []Expression{firstSplat, secondSplat}},
+				map[Expression][]Expression{
+					firstValue:  firstAlternatives,
+					secondValue: tc.secondValues,
+				},
+				map[Expression]checkCallSplatSource{
+					firstValue: {
+						name:         "args",
+						generation:   7,
+						alternatives: firstAlternatives,
+					},
+					secondValue: {
+						name:         "args",
+						generation:   tc.secondGeneration,
+						alternatives: tc.secondValues,
+					},
+				},
+			)
+			if !exact {
+				t.Fatal("staticallyExpandedArrayMutatorCalls() exact = false, want true")
+			}
+			gotLengths := make(map[int]int)
+			for _, variant := range variants {
+				gotLengths[len(variant.call.Args)]++
+			}
+			if !reflect.DeepEqual(gotLengths, tc.wantLengths) {
+				t.Errorf("variant length counts = %v, want %v", gotLengths, tc.wantLengths)
+			}
+		})
+	}
+}
+
 func TestCheckArrayFillInvalidSelectorsPreserveReceiverThroughRescue(t *testing.T) {
 	t.Parallel()
 
@@ -2432,9 +2845,9 @@ func TestCheckArrayFillInvalidSelectorsPreserveReceiverThroughRescue(t *testing.
 		name string
 		call string
 	}{
-		{name: "non numeric start", call: `items.fill("unused", "bad")`},
-		{name: "bignum start", call: `items.fill("unused", 9223372036854775808)`},
-		{name: "bignum length", call: `items.fill("unused", 0, 9223372036854775808)`},
+		{name: "non numeric start", call: `ignored = items.fill("unused", "bad")`},
+		{name: "bignum start", call: `ignored = items.fill("unused", 9223372036854775808)`},
+		{name: "bignum length", call: `ignored = items.fill("unused", 0, 9223372036854775808)`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2468,6 +2881,180 @@ end
 			}
 		})
 	}
+}
+
+func TestCheckInvalidArrayMutatorCallShapesPreserveReceiverThroughRescue(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		call string
+	}{
+		{name: "consumed fill missing value", call: "ignored = items.fill()"},
+		{name: "receiver assignment fill missing value", call: "items = items.fill()"},
+		{name: "fill too many arguments", call: `items.fill("never written", 0, 1, 2)`},
+		{name: "insert nonnumeric index", call: `ignored = items.insert("bad index", "never written")`},
+		{name: "push keyword", call: `items.push("never written", extra: 2)`},
+		{name: "insert keyword", call: `items.insert(0, "never written", extra: 2)`},
+		{name: "fill keyword", call: `items.fill("never written", extra: 2)`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def run(items: array<int>)
+  rescued = false
+  begin
+    `+tc.call+`
+  rescue
+    rescued = true
+  end
+  items << "bad"
+  [items, rescued]
+end
+`)
+
+			warnings := script.CheckWarningsForFunction("run")
+			if len(warnings) != 1 ||
+				warnings[0].Pos.Line != 9 ||
+				!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want the incompatible append on line 9", "run", warnings)
+			}
+
+			got := callScript(t, context.Background(), script, "run", []Value{
+				NewArray([]Value{NewInt(1)}),
+			}, CallOptions{})
+			want := NewArray([]Value{
+				NewArray([]Value{NewInt(1), NewString("bad")}),
+				NewBool(true),
+			})
+			if !got.Equal(want) {
+				t.Errorf("run([1]) = %s, want %s", got.String(), want.String())
+			}
+		})
+	}
+}
+
+func TestCheckArrayFillUnknownBlockArgumentShapeMatchesRuntime(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>, callback)
+  rescued = false
+  begin
+    items.fill(1, 0, 1, &callback)
+  rescue
+    rescued = true
+  end
+  items << "bad"
+  [items, rescued]
+end
+
+def with_nil()
+  run([1], nil)
+end
+
+def with_block()
+  run([1], lambda { 2 })
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 9 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want the incompatible append on line 9", "run", warnings)
+	}
+
+	gotNil := callScript(t, context.Background(), script, "with_nil", nil, CallOptions{})
+	wantNil := NewArray([]Value{
+		NewArray([]Value{NewInt(1), NewString("bad")}),
+		NewBool(false),
+	})
+	if !gotNil.Equal(wantNil) {
+		t.Errorf("with_nil() = %s, want %s", gotNil.String(), wantNil.String())
+	}
+
+	gotBlock := callScript(t, context.Background(), script, "with_block", nil, CallOptions{})
+	wantBlock := NewArray([]Value{
+		NewArray([]Value{NewInt(1), NewString("bad")}),
+		NewBool(true),
+	})
+	if !gotBlock.Equal(wantBlock) {
+		t.Errorf("with_block() = %s, want %s", gotBlock.String(), wantBlock.String())
+	}
+
+	consumed := compileScriptDefault(t, `
+def run(items: array<int>, callback)
+  begin
+    ignored = items.fill(1, 0, 1, &callback)
+  rescue
+    nil
+  end
+  items << "bad"
+end
+`)
+	requireNoCheckWarnings(t, consumed)
+}
+
+func TestCheckInvalidArrayFillBlockShapeDoesNotRunBlock(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>)
+  rescued = false
+  begin
+    items.fill(0, 1, 2) do
+      items << "block poison"
+      0
+    end
+  rescue
+    rescued = true
+  end
+  items << "bad"
+  [items, rescued]
+end
+`)
+
+	warnings := script.CheckWarningsForFunction("run")
+	if len(warnings) != 1 ||
+		warnings[0].Pos.Line != 12 ||
+		!strings.Contains(warnings[0].Message, "write to items expected element int, got string") {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want only the incompatible append on line 12", "run", warnings)
+	}
+
+	got := callScript(t, context.Background(), script, "run", []Value{
+		NewArray([]Value{NewInt(1)}),
+	}, CallOptions{})
+	want := NewArray([]Value{
+		NewArray([]Value{NewInt(1), NewString("bad")}),
+		NewBool(true),
+	})
+	if !got.Equal(want) {
+		t.Errorf("run([1]) = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestCheckUnrescuedInvalidArrayFillStopsReachability(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+def run(items: array<int>)
+  items.fill()
+  items << "unreachable"
+end
+`)
+
+	requireNoCheckWarnings(t, script)
+	requireCallErrorContains(
+		t,
+		script,
+		"run",
+		[]Value{NewArray([]Value{NewInt(1)})},
+		CallOptions{},
+		"array.fill requires a value or a block",
+	)
 }
 
 func TestArrayFillSelectorSafetyBoundaryMatchesRuntime(t *testing.T) {

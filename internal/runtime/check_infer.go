@@ -5924,15 +5924,17 @@ func (c *scriptChecker) applyIndexedElementWriteFacts(
 }
 
 type arrayMutatorWriteModel struct {
-	elements    []Expression
-	preservable bool
-	mayWrite    bool
+	elements     []Expression
+	preservable  bool
+	mayWrite     bool
+	alwaysRaises bool
 }
 
 // arrayMutatorElementWrites returns the writes an in-place builtin array
 // mutator may perform. insert and fill can mutate through implicit nil padding
 // without writing an explicit element expression, so mayWrite is independent
-// from elements. A keyword argument makes every mutator raise before writing.
+// from elements. A definite keyword argument makes every mutator raise before
+// writing.
 func arrayMutatorElementWrites(
 	call *CallExpr,
 	property string,
@@ -5940,7 +5942,23 @@ func arrayMutatorElementWrites(
 	argumentStaticValues map[Expression][]Expression,
 	blockResult checkBlockResult,
 ) (arrayMutatorWriteModel, bool) {
+	if call == nil {
+		return arrayMutatorWriteModel{}, false
+	}
+	switch property {
+	case "push", "append", "prepend", "unshift", "insert", "fill":
+	default:
+		return arrayMutatorWriteModel{}, false
+	}
 	if len(call.KwArgs) != 0 {
+		for _, kwarg := range call.KwArgs {
+			if !kwarg.Splat {
+				return arrayMutatorWriteModel{
+					preservable:  true,
+					alwaysRaises: true,
+				}, true
+			}
+		}
 		return arrayMutatorWriteModel{}, false
 	}
 	switch property {
@@ -5952,7 +5970,10 @@ func arrayMutatorElementWrites(
 		}, true
 	case "insert":
 		if len(call.Args) == 0 {
-			return arrayMutatorWriteModel{}, false
+			return arrayMutatorWriteModel{
+				preservable:  true,
+				alwaysRaises: true,
+			}, true
 		}
 		// An index-only insert writes nothing: the runtime returns the
 		// receiver unchanged after validating the index, so the fact
@@ -5977,39 +5998,112 @@ func arrayFillElementWrites(
 	if call == nil {
 		return arrayMutatorWriteModel{}, false
 	}
-	var element Expression
-	selectors := call.Args
-	switch {
-	case call.Block != nil:
-		if !blockResult.exact || len(selectors) > 2 {
-			return arrayMutatorWriteModel{}, false
-		}
-		if !blockResult.mayComplete {
-			return arrayMutatorWriteModel{preservable: true}, true
-		}
-		element = call.Block
-	case call.BlockArg != nil && !arrayFillBlockArgumentIsNil(call.BlockArg, argumentFacts):
-		if !blockResult.exact || len(selectors) > 2 {
-			return arrayMutatorWriteModel{}, false
-		}
-		if !blockResult.mayComplete {
-			return arrayMutatorWriteModel{preservable: true}, true
-		}
-		element = call.BlockArg
-	case call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, argumentFacts):
-		if len(selectors) < 1 || len(selectors) > 3 {
-			return arrayMutatorWriteModel{}, false
-		}
-		element = selectors[0]
-		selectors = selectors[1:]
-	default:
-		return arrayMutatorWriteModel{}, false
-	}
 	for _, arg := range call.Args {
 		if _, splat := arg.(*SplatArg); splat {
 			return arrayMutatorWriteModel{}, false
 		}
 	}
+	blockWrites := func(
+		element Expression,
+		selectors []Expression,
+	) (arrayMutatorWriteModel, bool) {
+		// Fill validates arity before invoking its block.
+		if len(selectors) > 2 {
+			return arrayMutatorWriteModel{
+				preservable:  true,
+				alwaysRaises: true,
+			}, true
+		}
+		if !blockResult.exact {
+			return arrayMutatorWriteModel{}, false
+		}
+		if !blockResult.mayComplete {
+			return arrayMutatorWriteModel{
+				preservable:  true,
+				alwaysRaises: true,
+			}, true
+		}
+		return arrayFillBlockElementWrites(
+			element,
+			selectors,
+			argumentFacts,
+			argumentStaticValues,
+		)
+	}
+	if call.Block != nil {
+		return blockWrites(
+			call.Block,
+			call.Args,
+		)
+	}
+	if call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, argumentFacts) {
+		return arrayFillValueElementWrites(call.Args, argumentFacts, argumentStaticValues)
+	}
+	blockFact := argumentFacts[call.BlockArg]
+	if typeExprNeverNil(blockFact) {
+		return blockWrites(
+			call.BlockArg,
+			call.Args,
+		)
+	}
+
+	// An unknown or nullable forwarded block selects the value form when nil
+	// and the block form otherwise. Keep both call outcomes: either form can
+	// reject its own arity before mutation, and only successful outcomes can
+	// return the receiver to a consuming expression.
+	valueModel, valueModeled := arrayFillValueElementWrites(
+		call.Args,
+		argumentFacts,
+		argumentStaticValues,
+	)
+	blockModel, blockModeled := blockWrites(
+		call.BlockArg,
+		call.Args,
+	)
+	if !valueModeled || !blockModeled {
+		return arrayMutatorWriteModel{}, false
+	}
+	if !valueModel.alwaysRaises && !blockModel.alwaysRaises {
+		return arrayMutatorWriteModel{}, false
+	}
+	return mergeArrayMutatorWriteModels(valueModel, blockModel), true
+}
+
+func arrayFillValueElementWrites(
+	args []Expression,
+	argumentFacts map[Expression]*TypeExpr,
+	argumentStaticValues map[Expression][]Expression,
+) (arrayMutatorWriteModel, bool) {
+	if len(args) < 1 || len(args) > 3 {
+		return arrayMutatorWriteModel{
+			preservable:  true,
+			alwaysRaises: true,
+		}, true
+	}
+	return arrayFillFormElementWrites(args[0], args[1:], argumentFacts, argumentStaticValues)
+}
+
+func arrayFillBlockElementWrites(
+	element Expression,
+	selectors []Expression,
+	argumentFacts map[Expression]*TypeExpr,
+	argumentStaticValues map[Expression][]Expression,
+) (arrayMutatorWriteModel, bool) {
+	if len(selectors) > 2 {
+		return arrayMutatorWriteModel{
+			preservable:  true,
+			alwaysRaises: true,
+		}, true
+	}
+	return arrayFillFormElementWrites(element, selectors, argumentFacts, argumentStaticValues)
+}
+
+func arrayFillFormElementWrites(
+	element Expression,
+	selectors []Expression,
+	argumentFacts map[Expression]*TypeExpr,
+	argumentStaticValues map[Expression][]Expression,
+) (arrayMutatorWriteModel, bool) {
 	if len(selectors) == 0 {
 		return arrayMutatorWriteModel{
 			elements:    []Expression{element},
@@ -6023,14 +6117,20 @@ func arrayFillElementWrites(
 	if len(selectors) == 2 {
 		countExpr := selectors[1]
 		if literalBignum(countExpr) {
-			return arrayMutatorWriteModel{preservable: true}, true
+			return arrayMutatorWriteModel{
+				preservable:  true,
+				alwaysRaises: true,
+			}, true
 		}
 		countValues, countStatic = staticMutatorArgumentValues(countExpr, argumentStaticValues)
 	}
 
 	startExpr := selectors[0]
 	if literalBignum(startExpr) {
-		return arrayMutatorWriteModel{preservable: true}, true
+		return arrayMutatorWriteModel{
+			preservable:  true,
+			alwaysRaises: true,
+		}, true
 	}
 	startValues, startStatic := staticMutatorArgumentValues(startExpr, argumentStaticValues)
 	if startStatic {
@@ -6074,6 +6174,244 @@ func arrayFillElementWrites(
 		elements: []Expression{element},
 		mayWrite: true,
 	}, true
+}
+
+func mergeArrayMutatorWriteModels(models ...arrayMutatorWriteModel) arrayMutatorWriteModel {
+	merged := arrayMutatorWriteModel{
+		preservable:  true,
+		alwaysRaises: true,
+	}
+	for _, model := range models {
+		merged.elements = append(merged.elements, model.elements...)
+		merged.preservable = merged.preservable && model.preservable
+		merged.mayWrite = merged.mayWrite || model.mayWrite
+		merged.alwaysRaises = merged.alwaysRaises && model.alwaysRaises
+	}
+	return merged
+}
+
+func arrayMutatorBuiltinProperty(name string) (string, bool) {
+	switch name {
+	case "array.push":
+		return "push", true
+	case "array.append":
+		return "append", true
+	case "array.prepend":
+		return "prepend", true
+	case "array.unshift":
+		return "unshift", true
+	case "array.insert":
+		return "insert", true
+	case "array.fill":
+		return "fill", true
+	default:
+		return "", false
+	}
+}
+
+func (c *scriptChecker) arrayMutatorCallMayComplete(call *CallExpr, property string) bool {
+	variants, exact := c.staticallyExpandedArrayMutatorCalls(
+		call,
+		c.callArgumentStaticValues,
+		c.callArgumentSplatSources,
+	)
+	if !exact {
+		return true
+	}
+	for _, variant := range variants {
+		if c.arrayMutatorVariantMayComplete(variant, property) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) arrayMutatorVariantMayComplete(
+	variant arrayMutatorCallVariant,
+	property string,
+) bool {
+	if variant.expansionRaises || variant.call == nil || len(variant.call.KwArgs) > 0 {
+		return false
+	}
+	switch property {
+	case "push", "append", "prepend", "unshift":
+		return true
+	case "insert":
+		if len(variant.call.Args) == 0 {
+			return false
+		}
+		return c.arrayInsertIndexMayComplete(variant.call.Args[0])
+	case "fill":
+		return c.arrayFillCallMayComplete(variant.call)
+	default:
+		return true
+	}
+}
+
+func (c *scriptChecker) arrayInsertIndexMayComplete(index Expression) bool {
+	values, exact := staticMutatorArgumentValues(index, c.callArgumentStaticValues)
+	if exact {
+		for _, value := range values {
+			if value.Kind() == KindInt || value.Kind() == KindFloat {
+				if _, err := valueToInt(value); err == nil {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	fact, captured := c.callArgumentFacts[index]
+	if !captured {
+		fact = c.inferExpressionType(index)
+	}
+	kind, known := staticOperandKind(fact)
+	return !known || kind == TypeInt || kind == TypeFloat || kind == TypeNumber
+}
+
+func (c *scriptChecker) arrayFillCallMayComplete(call *CallExpr) bool {
+	switch {
+	case call == nil:
+		return true
+	case call.Block != nil:
+		return c.arrayFillFormMayComplete(call.Args)
+	case call.BlockArg == nil || arrayFillBlockArgumentIsNil(call.BlockArg, c.callArgumentFacts):
+		return c.arrayFillValueFormMayComplete(call.Args)
+	}
+	blockFact := c.callArgumentFacts[call.BlockArg]
+	if typeExprNeverNil(blockFact) {
+		return c.arrayFillFormMayComplete(call.Args)
+	}
+	return c.arrayFillValueFormMayComplete(call.Args) ||
+		c.arrayFillFormMayComplete(call.Args)
+}
+
+func (c *scriptChecker) arrayFillValueFormMayComplete(args []Expression) bool {
+	return len(args) >= 1 && len(args) <= 3 &&
+		c.arrayFillFormMayComplete(args[1:])
+}
+
+func (c *scriptChecker) arrayFillFormMayComplete(selectors []Expression) bool {
+	if len(selectors) > 2 {
+		return false
+	}
+	if len(selectors) == 0 {
+		return true
+	}
+	startValues, startExact := staticMutatorArgumentValues(
+		selectors[0],
+		c.callArgumentStaticValues,
+	)
+	var countValues []Value
+	countExact := false
+	if len(selectors) == 2 {
+		countValues, countExact = staticMutatorArgumentValues(
+			selectors[1],
+			c.callArgumentStaticValues,
+		)
+	}
+	if startExact && (len(selectors) == 1 || countExact) {
+		for _, start := range startValues {
+			if len(selectors) == 1 {
+				if staticArrayFillStartMayComplete(start, false) {
+					return true
+				}
+				continue
+			}
+			if !staticArrayFillStartMayComplete(start, true) {
+				continue
+			}
+			for _, count := range countValues {
+				if staticArrayFillCountMayComplete(count) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if startExact {
+		startMayComplete := false
+		for _, start := range startValues {
+			if staticArrayFillStartMayComplete(start, len(selectors) == 2) {
+				startMayComplete = true
+				break
+			}
+		}
+		if !startMayComplete {
+			return false
+		}
+	} else if !arrayFillSelectorFactMayComplete(
+		c.callArgumentFacts[selectors[0]],
+		len(selectors) == 1,
+	) {
+		return false
+	}
+	if len(selectors) == 1 {
+		return true
+	}
+	if countExact {
+		for _, count := range countValues {
+			if staticArrayFillCountMayComplete(count) {
+				return true
+			}
+		}
+		return false
+	}
+	return arrayFillSelectorFactMayComplete(c.callArgumentFacts[selectors[1]], false)
+}
+
+func staticArrayFillStartMayComplete(value Value, hasCount bool) bool {
+	if value.Kind() == KindRange {
+		if hasCount {
+			return false
+		}
+		_, known := staticArrayFillRangeWrites(value.Range())
+		return known
+	}
+	_, _, valid := staticArrayFillInteger(value)
+	return valid
+}
+
+func staticArrayFillCountMayComplete(value Value) bool {
+	_, _, valid := staticArrayFillInteger(value)
+	return valid
+}
+
+func arrayFillSelectorFactMayComplete(fact *TypeExpr, allowRange bool) bool {
+	arms, known := typeExprArms(fact, 0)
+	if !known || len(arms) == 0 {
+		return true
+	}
+	for _, arm := range arms {
+		switch arm.Kind {
+		case TypeInt, TypeFloat, TypeNumber, TypeNil:
+			return true
+		case TypeRange:
+			if allowRange {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (c *scriptChecker) arrayFillLiteralBlockMayEvaluate(call *CallExpr) bool {
+	if call == nil || call.Block == nil {
+		return false
+	}
+	variants, exact := c.staticallyExpandedArrayMutatorCalls(
+		call,
+		c.callArgumentStaticValues,
+		c.callArgumentSplatSources,
+	)
+	if !exact {
+		return true
+	}
+	for _, variant := range variants {
+		if c.arrayMutatorVariantMayComplete(variant, "fill") {
+			return true
+		}
+	}
+	return false
 }
 
 func staticArrayFillWriteModel(
@@ -6390,75 +6728,253 @@ func arrayMutatorRetainsArgumentsWithoutCalling(call *CallExpr, property string,
 	return true
 }
 
-// staticallyExpandedArrayMutatorCall normalizes exact splat alternatives that
-// all have the same width. Each representative argument keeps the union of
-// the values captured at that position, so selector checks use every possible
-// evaluated value without losing the single call shape the runtime receives.
-func (c *scriptChecker) staticallyExpandedArrayMutatorCall(
+type arrayMutatorCallVariant struct {
+	call            *CallExpr
+	splatOrigins    map[Expression][]*SplatArg
+	expansionRaises bool
+	choices         map[int]int
+}
+
+// staticallyExpandedArrayMutatorCalls preserves each exact positional or
+// keyword splat alternative as a complete normalized call. Repeated reads of
+// the same local reuse one alternative choice, retaining the runtime value's
+// correlation, while independent splat sources form a bounded Cartesian
+// product.
+func (c *scriptChecker) staticallyExpandedArrayMutatorCalls(
 	call *CallExpr,
-	argumentFacts map[Expression]*TypeExpr,
 	argumentStaticValues map[Expression][]Expression,
-	argumentSplatOrigins map[Expression][]*SplatArg,
-) (*CallExpr, bool) {
+	argumentSplatSources map[Expression]checkCallSplatSource,
+) ([]arrayMutatorCallVariant, bool) {
+	const maxVariants = 32
+
 	if call == nil {
 		return nil, false
 	}
 	if !callExpandsArguments(call) {
-		return call, true
+		return []arrayMutatorCallVariant{{call: call}}, true
 	}
-	expanded := *call
-	expanded.Args = make([]Expression, 0, len(call.Args))
+	base := *call
+	base.Args = nil
+	base.KwArgs = nil
+	sourceGroups := arrayMutatorExpansionSourceGroups(call, argumentSplatSources)
+	variants := []arrayMutatorCallVariant{{call: &base}}
 	for _, arg := range call.Args {
 		splat, ok := arg.(*SplatArg)
 		if !ok {
-			expanded.Args = append(expanded.Args, arg)
+			for i := range variants {
+				variantCall := *variants[i].call
+				variantCall.Args = append(
+					append([]Expression(nil), variantCall.Args...),
+					arg,
+				)
+				variants[i].call = &variantCall
+			}
 			continue
 		}
 		values, captured := argumentStaticValues[splat.Value]
 		if !captured || len(values) == 0 {
-			return call, false
+			return nil, false
 		}
 		arrays := make([]*ArrayLiteral, len(values))
-		width := -1
 		for i, value := range values {
 			array, ok := value.(*ArrayLiteral)
 			if !ok {
-				return call, false
-			}
-			if width < 0 {
-				width = len(array.Elements)
-			} else if len(array.Elements) != width {
-				return call, false
+				return nil, false
 			}
 			arrays[i] = array
 		}
-		for i := range width {
-			representative := arrays[0].Elements[i]
-			staticValues := make([]Expression, 0, len(arrays))
-			var types []*TypeExpr
-			for _, array := range arrays {
-				element := array.Elements[i]
-				staticValues = append(staticValues, element)
-				written, captured := argumentFacts[element]
-				if !captured {
-					written = c.inferExpressionType(element)
-				}
-				if written != nil {
-					types = append(types, written)
+		choiceGroup, correlated := sourceGroups[splat.Value]
+		next := make([]arrayMutatorCallVariant, 0, min(maxVariants, len(variants)*len(arrays)))
+		for _, variant := range variants {
+			indices := make([]int, len(arrays))
+			for i := range arrays {
+				indices[i] = i
+			}
+			if correlated {
+				if selected, exists := variant.choices[choiceGroup]; exists {
+					if selected >= len(arrays) {
+						return nil, false
+					}
+					indices = []int{selected}
 				}
 			}
-			argumentStaticValues[representative] = staticValues
-			if len(types) > 0 {
-				argumentFacts[representative] = unionTypeExprs(types...)
+			for _, index := range indices {
+				if len(next) >= maxVariants {
+					return nil, false
+				}
+				array := arrays[index]
+				variantCall := *variant.call
+				variantCall.Args = append(
+					append([]Expression(nil), variant.call.Args...),
+					array.Elements...,
+				)
+				origins := cloneArrayMutatorSplatOrigins(variant.splatOrigins)
+				if origins == nil {
+					origins = make(map[Expression][]*SplatArg)
+				}
+				for _, element := range array.Elements {
+					origins[element] = append(origins[element], splat)
+				}
+				choices := cloneArrayMutatorExpansionChoices(variant.choices)
+				if correlated {
+					if choices == nil {
+						choices = make(map[int]int)
+					}
+					choices[choiceGroup] = index
+				}
+				next = append(next, arrayMutatorCallVariant{
+					call:            &variantCall,
+					splatOrigins:    origins,
+					expansionRaises: variant.expansionRaises,
+					choices:         choices,
+				})
 			}
-			argumentSplatOrigins[representative] = append(
-				argumentSplatOrigins[representative],
-				splat,
-			)
-			expanded.Args = append(expanded.Args, representative)
+		}
+		variants = next
+	}
+	for _, kwarg := range call.KwArgs {
+		if !kwarg.Splat {
+			for i := range variants {
+				variantCall := *variants[i].call
+				variantCall.KwArgs = append(
+					append([]KeywordArg(nil), variantCall.KwArgs...),
+					kwarg,
+				)
+				variants[i].call = &variantCall
+			}
+			continue
+		}
+		values, captured := argumentStaticValues[kwarg.Value]
+		if !captured || len(values) == 0 {
+			return nil, false
+		}
+		hashes := make([]*HashLiteral, len(values))
+		for i, value := range values {
+			hash, ok := value.(*HashLiteral)
+			if !ok {
+				return nil, false
+			}
+			hashes[i] = hash
+		}
+		choiceGroup, correlated := sourceGroups[kwarg.Value]
+		next := make([]arrayMutatorCallVariant, 0, min(maxVariants, len(variants)*len(hashes)))
+		for _, variant := range variants {
+			indices := make([]int, len(hashes))
+			for i := range hashes {
+				indices[i] = i
+			}
+			if correlated {
+				if selected, exists := variant.choices[choiceGroup]; exists {
+					if selected >= len(hashes) {
+						return nil, false
+					}
+					indices = []int{selected}
+				}
+			}
+			for _, index := range indices {
+				if len(next) >= maxVariants {
+					return nil, false
+				}
+				variantCall := *variant.call
+				variantCall.KwArgs = append([]KeywordArg(nil), variant.call.KwArgs...)
+				expansionRaises := variant.expansionRaises
+				hash := hashes[index]
+				if hash.ShapeType != nil && !c.hashShapeStaticallyShadowed(hash) {
+					expansionRaises = true
+				} else if len(hash.Pairs) > 0 {
+					normalized := kwarg
+					normalized.Splat = false
+					variantCall.KwArgs = append(variantCall.KwArgs, normalized)
+				}
+				choices := cloneArrayMutatorExpansionChoices(variant.choices)
+				if correlated {
+					if choices == nil {
+						choices = make(map[int]int)
+					}
+					choices[choiceGroup] = index
+				}
+				next = append(next, arrayMutatorCallVariant{
+					call:            &variantCall,
+					splatOrigins:    cloneArrayMutatorSplatOrigins(variant.splatOrigins),
+					expansionRaises: expansionRaises,
+					choices:         choices,
+				})
+			}
+		}
+		variants = next
+	}
+	return variants, true
+}
+
+func arrayMutatorExpansionSourceGroups(
+	call *CallExpr,
+	argumentSplatSources map[Expression]checkCallSplatSource,
+) map[Expression]int {
+	groups := make(map[Expression]int)
+	var sources []checkCallSplatSource
+	record := func(expr Expression) {
+		source, captured := argumentSplatSources[expr]
+		if !captured {
+			return
+		}
+		for group, existing := range sources {
+			if sameCheckCallSplatSource(source, existing) {
+				groups[expr] = group
+				return
+			}
+		}
+		groups[expr] = len(sources)
+		sources = append(sources, source)
+	}
+	for _, arg := range call.Args {
+		if splat, expanded := arg.(*SplatArg); expanded {
+			record(splat.Value)
 		}
 	}
-	return &expanded, true
+	for _, kwarg := range call.KwArgs {
+		if kwarg.Splat {
+			record(kwarg.Value)
+		}
+	}
+	return groups
+}
+
+func sameCheckCallSplatSource(left, right checkCallSplatSource) bool {
+	if left.name != right.name ||
+		left.generation != right.generation ||
+		len(left.alternatives) != len(right.alternatives) {
+		return false
+	}
+	for i := range left.alternatives {
+		if left.alternatives[i] != right.alternatives[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneArrayMutatorExpansionChoices(choices map[int]int) map[int]int {
+	if len(choices) == 0 {
+		return nil
+	}
+	clone := make(map[int]int, len(choices))
+	for source, choice := range choices {
+		clone[source] = choice
+	}
+	return clone
+}
+
+func cloneArrayMutatorSplatOrigins(
+	origins map[Expression][]*SplatArg,
+) map[Expression][]*SplatArg {
+	if len(origins) == 0 {
+		return nil
+	}
+	clone := make(map[Expression][]*SplatArg, len(origins))
+	for expression, expressionOrigins := range origins {
+		clone[expression] = append([]*SplatArg(nil), expressionOrigins...)
+	}
+	return clone
 }
 
 // applyArrayMutatorCallFacts checks the elements an in-place builtin array
@@ -6484,6 +7000,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	argumentStaticValues map[Expression][]Expression,
 	argumentRetainedAliases map[Expression]checkRetainedContainerCapture,
 	argumentSplatOrigins map[Expression][]*SplatArg,
+	argumentSplatSources map[Expression]checkCallSplatSource,
 	blockResult checkBlockResult,
 	receiverFact *TypeExpr,
 ) (preserved, modeled, mayWrite bool) {
@@ -6501,66 +7018,110 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 	if checkedCall != nil {
 		writesCall = checkedCall
 	}
+	variants := []arrayMutatorCallVariant{{
+		call:         writesCall,
+		splatOrigins: argumentSplatOrigins,
+	}}
 	if callExpandsArguments(writesCall) {
-		if expanded, exact := c.staticallyExpandedArrayMutatorCall(
+		if expanded, exact := c.staticallyExpandedArrayMutatorCalls(
 			writesCall,
-			argumentFacts,
 			argumentStaticValues,
-			argumentSplatOrigins,
+			argumentSplatSources,
 		); exact {
-			writesCall = expanded
+			variants = expanded
 		}
 	}
-	model, ok := arrayMutatorElementWrites(
-		writesCall,
-		member.Property,
-		argumentFacts,
-		argumentStaticValues,
-		blockResult,
-	)
-	if !ok {
-		return false, false, false
-	}
-	mayWrite = model.mayWrite
 	elem := declaredArrayElementType(receiver)
 	resolve := c.checkNamedTypeResolver()
-	// insert validates its index before any element lands, so a provably
-	// non-numeric index means the call raises without writing and neither
-	// diagnosis nor preservation applies. A splatted index makes the
-	// argument positions (and an empty expansion, which raises) unknowable.
-	if member.Property == "insert" {
-		if _, isSplat := writesCall.Args[0].(*SplatArg); isSplat {
-			return false, true, false
-		}
-		index, captured := argumentFacts[writesCall.Args[0]]
-		if !captured {
-			index = c.inferExpressionType(writesCall.Args[0])
-		}
-		if kind, known := staticOperandKind(index); known &&
-			kind != TypeInt && kind != TypeFloat && kind != TypeNumber {
-			return false, true, false
-		}
-		if len(model.elements) > 0 &&
-			(arrayInsertIndexCannotPad(writesCall.Args[0], argumentStaticValues) ||
-				elem != nil && typeExprSatisfies(checkTypeNil, elem, resolve)) {
-			// Zero inserts at the front and every negative index either
-			// resolves inside the array or raises before writing. Neither
-			// successful case can introduce nil padding. An element bound
-			// that already admits nil also survives any padding.
-			model.preservable = true
-		}
+	model := arrayMutatorWriteModel{
+		preservable:  true,
+		alwaysRaises: true,
 	}
-	if member.Property == "fill" && !model.preservable && elem != nil &&
-		typeExprSatisfies(checkTypeNil, elem, resolve) {
-		model.preservable = true
+	modelSplatOrigins := make(map[Expression][]*SplatArg)
+	var elementVariantIDs []int
+	for variantID, variant := range variants {
+		var variantModel arrayMutatorWriteModel
+		if variant.expansionRaises {
+			variantModel = arrayMutatorWriteModel{
+				preservable:  true,
+				alwaysRaises: true,
+			}
+		} else {
+			var ok bool
+			variantModel, ok = arrayMutatorElementWrites(
+				variant.call,
+				member.Property,
+				argumentFacts,
+				argumentStaticValues,
+				blockResult,
+			)
+			if !ok {
+				return false, false, false
+			}
+		}
+		// insert validates its index before any element lands. A
+		// provably non-numeric index therefore contributes only a
+		// raising, non-mutating outcome, while an unresolved splatted
+		// index keeps the call gradual.
+		if !variant.expansionRaises && member.Property == "insert" && len(variant.call.Args) > 0 {
+			if _, isSplat := variant.call.Args[0].(*SplatArg); isSplat {
+				return false, true, false
+			}
+			index, captured := argumentFacts[variant.call.Args[0]]
+			if !captured {
+				index = c.inferExpressionType(variant.call.Args[0])
+			}
+			if kind, known := staticOperandKind(index); known &&
+				kind != TypeInt && kind != TypeFloat && kind != TypeNumber {
+				variantModel = arrayMutatorWriteModel{
+					preservable:  true,
+					alwaysRaises: true,
+				}
+			} else if len(variantModel.elements) > 0 &&
+				(arrayInsertIndexCannotPad(variant.call.Args[0], argumentStaticValues) ||
+					elem != nil && typeExprSatisfies(checkTypeNil, elem, resolve)) {
+				// Zero inserts at the front and every negative index
+				// either resolves inside the array or raises before
+				// writing. Neither successful case can introduce nil
+				// padding. An element bound that already admits nil
+				// also survives any padding.
+				variantModel.preservable = true
+			}
+		}
+		if member.Property == "fill" && !variantModel.preservable && elem != nil &&
+			typeExprSatisfies(checkTypeNil, elem, resolve) {
+			variantModel.preservable = true
+		}
+		originOffsets := make(map[Expression]int)
+		for _, element := range variantModel.elements {
+			origins := variant.splatOrigins[element]
+			offset := originOffsets[element]
+			if offset < len(origins) {
+				modelSplatOrigins[element] = append(
+					modelSplatOrigins[element],
+					origins[offset],
+				)
+				originOffsets[element]++
+			}
+			elementVariantIDs = append(elementVariantIDs, variantID)
+		}
+		model.elements = append(model.elements, variantModel.elements...)
+		model.preservable = model.preservable && variantModel.preservable
+		model.mayWrite = model.mayWrite || variantModel.mayWrite
+		model.alwaysRaises = model.alwaysRaises && variantModel.alwaysRaises
 	}
+	argumentSplatOrigins = modelSplatOrigins
+	mayWrite = model.mayWrite
 	// The mutators return their receiver, so a consumed result (a chained
 	// call, an argument, an assignment value) hands the array to code the
 	// checker cannot follow: only a statement-level call, whose value is
-	// discarded, can keep the declared bound — and only when the argument
-	// walk left the local's fact unchanged (an argument may poison or
-	// rebind the same local).
-	preserved = model.preservable && Expression(call) == c.expressionStatementRoot &&
+	// discarded, can keep the declared bound. A call that always raises has
+	// no value to escape, so a rescue can retain the receiver even when the
+	// call appears in a consumed expression. In either case the argument
+	// walk must have left the local's fact unchanged (an argument may poison
+	// or rebind the same local).
+	preserved = model.preservable &&
+		(model.alwaysRaises || Expression(call) == c.expressionStatementRoot) &&
 		mutatorReceiverFactIntact(c.localTypeFor(ident.Name), receiverFact)
 	if !mayWrite {
 		return preserved, true, false
@@ -6601,7 +7162,12 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 		}
 		return false, true, true
 	}
-	for _, arg := range model.elements {
+	type writeDiagnosticGroup struct {
+		byVariant [][]*TypeExpr
+	}
+	diagnosticGroups := make(map[Position]*writeDiagnosticGroup)
+	var diagnosticOrder []Position
+	for elementIndex, arg := range model.elements {
 		if splat, isSplat := arg.(*SplatArg); isSplat {
 			compatible, aborts := c.applySplattedElementWriteFacts(function, splat, ident.Name, elem, resolve)
 			if aborts {
@@ -6652,12 +7218,43 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			if splatOrigin != nil {
 				pos = splatOrigin.Pos()
 			}
-			c.reportIncompatibleElementWrite(function, pos, ident.Name, elem, written)
+			group := diagnosticGroups[pos]
+			if group == nil {
+				group = &writeDiagnosticGroup{
+					byVariant: make([][]*TypeExpr, len(variants)),
+				}
+				diagnosticGroups[pos] = group
+				diagnosticOrder = append(diagnosticOrder, pos)
+			}
+			variantID := elementVariantIDs[elementIndex]
+			group.byVariant[variantID] = append(group.byVariant[variantID], written)
 			preserved = false
 			continue
 		}
 		if !compatible {
 			preserved = false
+		}
+	}
+	for _, pos := range diagnosticOrder {
+		group := diagnosticGroups[pos]
+		maxOccurrences := 0
+		for _, actuals := range group.byVariant {
+			maxOccurrences = max(maxOccurrences, len(actuals))
+		}
+		for occurrence := range maxOccurrences {
+			var actuals []*TypeExpr
+			for _, variantActuals := range group.byVariant {
+				if occurrence < len(variantActuals) {
+					actuals = append(actuals, variantActuals[occurrence])
+				}
+			}
+			c.reportIncompatibleElementWrite(
+				function,
+				pos,
+				ident.Name,
+				elem,
+				unionTypeExprs(actuals...),
+			)
 		}
 	}
 	return preserved, true, mayWrite
