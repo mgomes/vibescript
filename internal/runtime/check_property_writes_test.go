@@ -8481,6 +8481,74 @@ end
 	}
 }
 
+func TestCheckInitializerIvarRescueExpressionPreservesReachableFailureArms(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		region string
+	}{
+		{
+			name: "rescued failure completes before later failure",
+			region: `    callback = flag ? proc { return } : proc { raise "first" }
+    begin
+      callback.call() rescue nil
+      1 / 0
+    rescue
+      @a = "caught"
+    end`,
+		},
+		{
+			name: "body completion reaches later failure",
+			region: `    callback = flag ? proc { return } : proc { 2 }
+    begin
+      callback.call() rescue nil
+      1 / 0
+    rescue
+      @a = "caught"
+    end`,
+		},
+		{
+			name: "fallback failure reaches outer rescue",
+			region: `    callback = flag ? proc { return } : proc { raise "first" }
+    fallback = proc { raise "second" }
+    begin
+      callback.call() rescue fallback.call()
+    rescue
+      @a = "caught"
+    end`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize(flag: bool)
+    @a = 1
+`+tc.region+`
+  end
+end
+
+def run
+  User.new(false).a
+end
+`)
+			requireCheckWarningContains(t, script, "write to @a expected int, got string")
+			requireCallErrorContains(
+				t,
+				script,
+				"run",
+				nil,
+				CallOptions{},
+				"instance variable @a expected int, got string",
+			)
+		})
+	}
+}
+
 func TestCheckInitializerIvarRetainedBlockLocalAndFailureCompletion(t *testing.T) {
 	t.Parallel()
 

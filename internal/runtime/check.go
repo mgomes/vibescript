@@ -8059,6 +8059,13 @@ func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr,
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Fallback)
 	fallbackRuntimeState := c.snapshotRuntimeState()
 	fallbackScopeState := c.snapshotScopeState()
+	if fallbackCompleted && len(expressionExitSites) > 0 {
+		// A retained proc can return nonlocally on one arm and fail on another.
+		// Once the fallback completes a captured failure arm, the rescue
+		// expression has a value-producing path; do not let the body's marker
+		// classify a later failure as that nonlocal return.
+		c.expressionReturnsNonLocally = false
+	}
 	if !fallbackCompleted {
 		c.captureNonCompletingExpressionArm()
 	}
