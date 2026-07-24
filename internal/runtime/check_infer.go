@@ -16323,9 +16323,9 @@ func boundaryArrayUnionCoverage(
 }
 
 type boundaryShapeFieldGroup struct {
-	fields    []string
-	templates []*TypeExpr
-	options   []*TypeExpr
+	fields   []string
+	options  []*TypeExpr
+	optional bool
 }
 
 const maxBoundaryShapeVariants = 1024
@@ -16355,18 +16355,20 @@ func boundaryShapeUnionCoverage(
 		if len(options) > 1 {
 			hasAlternatives = true
 		}
-		if !shapeFieldOptional(template) {
+		optional := shapeFieldOptional(template)
+		if optional {
+			hasAlternatives = true
+		} else {
 			if index, ok := groupByFact[valueType]; ok {
 				groups[index].fields = append(groups[index].fields, field)
-				groups[index].templates = append(groups[index].templates, template)
 				continue
 			}
 			groupByFact[valueType] = len(groups)
 		}
 		groups = append(groups, boundaryShapeFieldGroup{
-			fields:    []string{field},
-			templates: []*TypeExpr{template},
-			options:   options,
+			fields:   []string{field},
+			options:  options,
+			optional: optional,
 		})
 	}
 	if !hasAlternatives {
@@ -16392,10 +16394,19 @@ func boundaryShapeUnionCoverage(
 		}
 		group := groups[index]
 		groupResult := boundaryRelationAccepted
+		if group.optional {
+			relation := walk(index + 1)
+			if relation == boundaryRelationRejected {
+				return boundaryRelationRejected
+			}
+			if relation == boundaryRelationGradual {
+				groupResult = boundaryRelationGradual
+			}
+		}
 		for _, option := range group.options {
-			for i, field := range group.fields {
+			for _, field := range group.fields {
 				fieldType := *option
-				fieldType.Optional = group.templates[i].Optional
+				fieldType.Optional = false
 				variant.Shape[field] = &fieldType
 			}
 			relation := walk(index + 1)

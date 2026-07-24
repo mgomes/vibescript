@@ -352,6 +352,27 @@ def run(left: int | string, right: int | string)
 end
 `)
 	requireCheckWarningContains(t, independent, "call to accept argument value expected { left: int, right: int } | { left: string, right: string }, got { left: int | string, right: int | string }")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def accept(value: { other?: bool } | { label: string })
+  value
+end
+
+def run(value: { label?: string })
+  accept(value)
+end
+`))
+
+	optionalMismatch := compileScriptDefault(t, `
+def accept(value: { other?: bool } | { label: string })
+  value
+end
+
+def run(value: { label?: int })
+  accept(value)
+end
+`)
+	requireCheckWarningContains(t, optionalMismatch, "call to accept argument value expected { other?: bool } | { label: string }, got { label?: int }")
 }
 
 func TestCheckKnownUnionSpecialBoundaries(t *testing.T) {
