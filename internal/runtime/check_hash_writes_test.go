@@ -562,6 +562,42 @@ end
 			warning: "write to h expected key int, got symbol",
 		},
 		{
+			name: "hash predicate getter reaches a typed hash write",
+			source: `
+def f(h: hash<int, int>)
+  h.empty? &&= 1
+end
+`,
+			warning: "write to h expected key int, got symbol",
+		},
+		{
+			name: "hash array getter reaches a typed hash write",
+			source: `
+def f(h: hash<int, int>)
+  h.keys &&= 1
+end
+`,
+			warning: "write to h expected key int, got symbol",
+		},
+		{
+			name: "hash default getter may reach a typed hash write",
+			source: `
+def f(h: hash<int, int>)
+  h.default ||= 1
+end
+`,
+			warning: "write to h expected key int, got symbol",
+		},
+		{
+			name: "hash callable getter reaches a typed hash write",
+			source: `
+def f(h: hash<int, int>)
+  h.store &&= 1
+end
+`,
+			warning: "write to h expected key int, got symbol",
+		},
+		{
 			name: "true universal getter reaches and assignment",
 			source: `
 def f(user: { name: string })
@@ -1463,6 +1499,50 @@ end
 
 def f(user: { name: string })
   user.size ||= takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "truthy hash array getter skips or assignment",
+			source: `
+def takes_int(value: int)
+  value
+end
+
+def f(h: hash<int, int>)
+  h.keys ||= takes_int("unreachable")
+end
+`,
+		},
+		{
+			name: "typed hash nil default skips and assignment",
+			source: `
+def f(h: hash<int, nil>)
+  h.default &&= nil
+end
+`,
+		},
+		{
+			name: "typed hash default proc skips and assignment",
+			source: `
+def f(h: hash<int, int>)
+  h.default_proc &&= 1
+end
+`,
+		},
+		{
+			name: "required argument hash getter aborts before assignment",
+			source: `
+def f(h: hash<int, int>)
+  h.key? &&= 1
+end
+`,
+		},
+		{
+			name: "required block hash getter aborts before assignment",
+			source: `
+def f(h: hash<int, int>)
+  h.each &&= 1
 end
 `,
 		},
