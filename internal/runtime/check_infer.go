@@ -43,6 +43,7 @@ var (
 	checkTypeNil      = &TypeExpr{Kind: TypeNil}
 	checkTypeSymbol   = &TypeExpr{Kind: TypeSymbol}
 	checkTypeArray    = &TypeExpr{Kind: TypeArray}
+	checkTypeAnyArray = &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{{Kind: TypeAny}}}
 	checkTypeIntArray = &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{checkTypeInt}}
 	checkTypeHash     = &TypeExpr{Kind: TypeHash}
 	checkTypeRange    = &TypeExpr{Kind: TypeRange}
@@ -6557,6 +6558,11 @@ func captureTypedDestructureValueFactsWithRoots(
 	var facts []capturedDestructureValueFact
 	for i, element := range target.Elements {
 		assigned := types[i]
+		retainsRoots := projectedDestructureElementRetainsRoots(element, assigned)
+		elementRoots := retainedRoots
+		if !retainsRoots {
+			elementRoots = nil
+		}
 		switch elementTarget := element.Target.(type) {
 		case *DestructureTarget:
 			if assigned == nil {
@@ -6566,7 +6572,7 @@ func captureTypedDestructureValueFactsWithRoots(
 			nested, nestedProjected := captureTypedDestructureValueFactsWithRoots(
 				elementTarget,
 				assigned,
-				retainedRoots,
+				elementRoots,
 			)
 			if !nestedProjected {
 				nested = captureUnknownDestructureValueFacts(elementTarget)
@@ -6576,6 +6582,13 @@ func captureTypedDestructureValueFactsWithRoots(
 			if elementTarget == nil {
 				continue
 			}
+			// A projected container without a durable source root may still
+			// be mutated through an untracked alias. Keep immediate target
+			// checks, but do not persist that type on a local.
+			if _, local := elementTarget.(*Identifier); local &&
+				retainsRoots && len(elementRoots) == 0 {
+				assigned = nil
+			}
 			fact := capturedDestructureValueFact{
 				target:    elementTarget,
 				assigned:  assigned,
@@ -6583,10 +6596,10 @@ func captureTypedDestructureValueFactsWithRoots(
 				known:     assigned != nil,
 				evaluated: assigned != nil,
 			}
-			if typeExprHasContainerArm(assigned) {
+			if typeExprHasContainerArm(assigned) && len(elementRoots) > 0 {
 				fact.retainedRoots = append(
 					[]capturedContainerRoot(nil),
-					retainedRoots...,
+					elementRoots...,
 				)
 			}
 			facts = append(facts, fact)
@@ -6704,6 +6717,42 @@ func destructureSingleValueElementTypes(
 	return result
 }
 
+// projectedDestructureElementRetainsRoots reports whether the projected
+// value may share a mutable container with its source. A rest target always
+// receives a fresh outer array, so scalar elements retain no source roots.
+func projectedDestructureElementRetainsRoots(
+	element DestructureElement,
+	assigned *TypeExpr,
+) bool {
+	if !typeExprHasContainerArm(assigned) {
+		return false
+	}
+	if !element.Rest {
+		return true
+	}
+	arms, exact := typeExprArms(assigned, 0)
+	if !exact {
+		return true
+	}
+	for _, arm := range arms {
+		if arm.Kind != TypeArray {
+			return true
+		}
+		elementType := splattedElementBound(arm)
+		elementArms, elementExact := typeExprArms(elementType, 0)
+		if !elementExact {
+			return true
+		}
+		for _, elementArm := range elementArms {
+			switch elementArm.Kind {
+			case TypeArray, TypeHash, TypeShape:
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func captureUnknownDestructureValueFacts(target *DestructureTarget) []capturedDestructureValueFact {
 	if target == nil {
 		return nil
@@ -6717,10 +6766,18 @@ func captureUnknownDestructureValueFacts(target *DestructureTarget) []capturedDe
 			if elementTarget == nil {
 				continue
 			}
-			facts = append(facts, capturedDestructureValueFact{
+			fact := capturedDestructureValueFact{
 				target:   elementTarget,
 				declared: element.Type,
-			})
+			}
+			if element.Rest {
+				// A named rest always materializes an array even when its
+				// element types are unknown.
+				fact.assigned = checkTypeAnyArray
+				fact.known = true
+				fact.evaluated = true
+			}
+			facts = append(facts, fact)
 		}
 	}
 	return facts

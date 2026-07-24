@@ -1140,6 +1140,272 @@ end
 			t.Fatalf("run() = %v, want 1", got)
 		}
 	})
+
+	t.Run("untracked projected container does not outlive nested mutation", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property x: string
+
+  def initialize(matrix: array<array<array<int>>>)
+    copy, ignored = matrix[0]
+    matrix[0][0].map! { "ok" }
+    matrix[0][0] << "ok"
+    @x, ignored = copy
+  end
+end
+
+def run
+  User.new([[[1], [2]]]).x
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "ok" {
+			t.Fatalf("run() = %v, want ok", got)
+		}
+	})
+
+	t.Run("rootless container projection still checks an immediate target", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def rows() -> array<array<int>>
+  [[1]]
+end
+
+class User
+  property x: string
+
+  def initialize
+    @x, ignored = rows()
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+		requireCheckWarningContains(
+			t,
+			script,
+			"write to @x expected string, got array<int> | nil",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @x expected string, got array<int>",
+		)
+	})
+
+	t.Run("rooted container projection remains reusable", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def rows() -> array<array<int>>
+  [[1]]
+end
+
+class User
+  property x: string
+
+  def initialize
+    source = rows()
+    copy, ignored = source
+    @x, ignored = copy
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+		requireCheckWarningContains(
+			t,
+			script,
+			"write to @x expected string, got int | nil",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @x expected string, got int",
+		)
+	})
+
+	t.Run("fresh scalar rest does not poison its source", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def values() -> array<int>
+  [1]
+end
+
+class User
+  property p: string
+
+  def initialize(mutate: function)
+    source = values()
+    *rest = source
+    mutate.call(rest)
+    @p, ignored = source
+  end
+end
+
+def run
+  User.new(->(items) { items[0] = "changed" })
+end
+`)
+
+		requireCheckWarningContains(
+			t,
+			script,
+			"write to @p expected string, got int | nil",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @p expected string, got int",
+		)
+	})
+
+	t.Run("nested container rest still poisons its source", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def rows() -> array<array<int>>
+  [[1], [2]]
+end
+
+class User
+  property p: string
+
+  def initialize(mutate: function)
+    source = rows()
+    *rest = source
+    mutate.call(rest)
+    head, (@p, ignored) = source
+    head
+  end
+end
+
+def run
+  User.new(->(items) { items[1][0] = "ok" }).p
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "ok" {
+			t.Fatalf("run() = %v, want ok", got)
+		}
+	})
+
+	t.Run("unknown named rest keeps its array shape", func(t *testing.T) {
+		t.Parallel()
+
+		for _, tc := range []struct {
+			name       string
+			sourceType string
+			write      string
+			runValue   string
+		}{
+			{
+				name:       "only rest",
+				sourceType: "any",
+				write:      "*@value = values",
+				runValue:   `JSON.parse("[1]")`,
+			},
+			{
+				name:       "leading fixed target",
+				sourceType: "any",
+				write:      "head, *@value = values",
+				runValue:   `JSON.parse("[1, 2]")`,
+			},
+			{
+				name:       "trailing fixed target",
+				sourceType: "any",
+				write:      "*@value, tail = values",
+				runValue:   `JSON.parse("[1, 2]")`,
+			},
+			{
+				name:       "unknown union arm",
+				sourceType: "any | string",
+				write:      "*@value = values",
+				runValue:   `"bad"`,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				script := compileScriptDefault(t, `
+class User
+  property value: int
+
+  def store(values: `+tc.sourceType+`)
+    `+tc.write+`
+  end
+end
+
+def run
+  User.new().store(`+tc.runValue+`)
+end
+`)
+
+				requireCheckWarningContains(
+					t,
+					script,
+					"write to @value expected int, got array<any>",
+				)
+				requireCallErrorContains(
+					t,
+					script,
+					"run",
+					nil,
+					CallOptions{},
+					"instance variable @value expected int, got array",
+				)
+			})
+		}
+	})
+
+	t.Run("unknown fixed target stays gradual", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property value: int
+
+  def store(values: any)
+    @value, ignored = values
+  end
+end
+
+def run
+  user = User.new()
+  user.store(JSON.parse("[1]"))
+  user.value
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
 }
 
 // A short literal right-hand side pads the missing fixed targets with nil at
