@@ -8061,6 +8061,7 @@ func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr,
 	bodyScopeState := c.snapshotScopeState()
 	bodyTypePoison := cloneCheckStringSet(c.typePoison)
 	bodyStaticValuePoison := cloneCheckStringSet(c.staticValuePoison)
+	bodyReturnsNonLocally := c.expressionReturnsNonLocally
 	if expressionProvenNonRaising(expr.Body) {
 		return bodyCompleted
 	}
@@ -8108,22 +8109,28 @@ func (c *scriptChecker) checkRescueExpression(function string, expr *RescueExpr,
 			}
 		}
 	}
+	if len(expressionExitSites) > 0 {
+		// The fallback runs on a captured failure arm. Check it without the
+		// body's nonlocal-return marker so nested rescue expressions can report
+		// a marker of their own.
+		c.expressionReturnsNonLocally = false
+	}
 	fallbackCompleted := c.checkExpressionWithAuto(function, expr.Fallback, autoCall)
+	fallbackReturnsNonLocally := c.expressionReturnsNonLocally
 	c.collectRuntimeRequireCallExportsFromExpression(expr.Fallback)
 	fallbackRuntimeState := c.snapshotRuntimeState()
 	fallbackScopeState := c.snapshotScopeState()
-	if fallbackCompleted && len(expressionExitSites) > 0 {
-		// A retained proc can return nonlocally on one arm and fail on another.
-		// Once the fallback completes a captured failure arm, the rescue
-		// expression has a value-producing path; do not let the body's marker
-		// classify a later failure as that nonlocal return.
-		c.expressionReturnsNonLocally = false
-	}
 	if !fallbackCompleted {
 		c.captureNonCompletingExpressionArm()
 	}
 	c.typePoison = unionCheckStringSet(bodyTypePoison, c.typePoison)
 	c.staticValuePoison = unionCheckStringSet(bodyStaticValuePoison, c.staticValuePoison)
+	hasCompletingValueArm :=
+		bodyCompleted && !bodyReturnsNonLocally ||
+			fallbackCompleted && !fallbackReturnsNonLocally
+	c.expressionReturnsNonLocally =
+		!hasCompletingValueArm &&
+			(bodyReturnsNonLocally || fallbackReturnsNonLocally)
 
 	runtimeStates := make([]checkRuntimeState, 0, 2)
 	scopeStates := make([]checkScopeState, 0, 2)

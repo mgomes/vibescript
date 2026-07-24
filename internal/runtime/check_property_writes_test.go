@@ -9036,6 +9036,23 @@ func TestCheckInitializerIvarRescueExpressionPreservesReachableFailureArms(t *te
       @a = "caught"
     end`,
 		},
+		{
+			name: "nested fallback completion reaches later failure",
+			region: `    begin
+      1 / 0 rescue (1 / 0 rescue nil)
+      1 / 0
+    rescue
+      @a = "caught"
+    end`,
+		},
+		{
+			name: "nested fallback failure reaches outer rescue",
+			region: `    begin
+      1 / 0 rescue (1 / 0 rescue (1 / 0))
+    rescue
+      @a = "caught"
+    end`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -9064,6 +9081,36 @@ end
 				"instance variable @a expected int, got string",
 			)
 		})
+	}
+}
+
+func TestCheckInitializerIvarNestedRescueExpressionPreservesFallbackNonlocalReturn(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  property a: int
+
+  def initialize
+    @a = 1
+    callback = proc { return }
+    begin
+      1 / 0 rescue (callback.call() rescue nil)
+      1 / 0
+    rescue
+      @a = "caught"
+    end
+  end
+end
+
+def run
+  User.new().a
+end
+`)
+	requireNoCheckWarnings(t, script)
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("run() = %v, want 1", got)
 	}
 }
 
