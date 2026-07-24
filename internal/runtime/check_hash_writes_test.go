@@ -1515,6 +1515,38 @@ end
 `,
 		},
 		{
+			name: "typed hash nil default skips and assignment",
+			source: `
+def f(h: hash<int, nil>)
+  h.default &&= nil
+end
+`,
+		},
+		{
+			name: "typed hash default proc skips and assignment",
+			source: `
+def f(h: hash<int, int>)
+  h.default_proc &&= 1
+end
+`,
+		},
+		{
+			name: "required argument hash getter aborts before assignment",
+			source: `
+def f(h: hash<int, int>)
+  h.key? &&= 1
+end
+`,
+		},
+		{
+			name: "required block hash getter aborts before assignment",
+			source: `
+def f(h: hash<int, int>)
+  h.each &&= 1
+end
+`,
+		},
+		{
 			name: "truthy identity getter skips or assignment",
 			source: `
 def takes_int(value: int)

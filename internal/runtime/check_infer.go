@@ -2871,6 +2871,14 @@ func (c *scriptChecker) hashOwnedMemberWriteArmType(
 	builtin *TypeExpr,
 ) *TypeExpr {
 	if keyBound, valueBound := declaredHashEntryTypes(receiver); valueBound != nil {
+		switch property {
+		case "default":
+			// Typed-hash normalization rejects default procs and validates
+			// every non-nil default against the declared value bound.
+			builtin = unionTypeExprs(valueBound, checkTypeNil)
+		case "default_proc":
+			builtin = checkTypeNil
+		}
 		if typeExprsDisjoint(checkTypeString, keyBound, c.checkNamedTypeResolver()) {
 			return builtin
 		}
