@@ -4868,6 +4868,16 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			targetMayEnter = storedBlockMayEnter
 			callMayComplete = storedBlockMayComplete
 		}
+		exactLocalReturnBlockCall := invokedLambda != nil
+		if storedBlockCallExact {
+			exactLocalReturnBlockCall = true
+			for i, block := range evaluatedStoredBlocks {
+				if storedBlockEntries[i].mayEnter && !block.strict {
+					exactLocalReturnBlockCall = false
+					break
+				}
+			}
+		}
 		immediateLambdaEntry := c.immediateLambdaCallEntry(invokedLambda, typed)
 		if targetMayEnter && invokedLambda != nil {
 			if immediateLambdaEntry.mayReject {
@@ -4928,7 +4938,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				dynamicResolution.diagnoseTargets,
 			)
 		}
-		if targetMayEnter && c.returnCollector != nil && !targetResolved && c.callMayDispatchDynamicValue(typed) {
+		if targetMayEnter && c.returnCollector != nil && !targetResolved &&
+			!exactLocalReturnBlockCall && c.callMayDispatchDynamicValue(typed) {
 			c.returnCollector.record(nil)
 		}
 		if callMayEnter && targetResolved && target.fn != nil {
@@ -4980,6 +4991,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if targetMayEnter && storedBlockCallExact {
 			for i, block := range evaluatedStoredBlocks {
 				if storedBlockEntries[i].mayEnter {
+					if block.strict {
+						c.checkInvokedLambdaSummaryYields(function, block.block)
+					}
 					if c.applyLambdaBlockNamespaceMutations(block.block) {
 						c.markOpaqueClassConstants()
 					}
