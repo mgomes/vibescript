@@ -4493,8 +4493,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			switch {
 			case typed.Block != nil:
 				invocation.strictArity = typed.Block.Lambda
-				arrayFillBlockBodyMayRun =
-					c.blockLiteralInvocationMayEnter(typed.Block, invocation)
+				arrayFillBlockBodyMayRun = c.blockLiteralInvocationMayEnter(typed.Block, invocation)
 			case typed.BlockArg != nil:
 				if blocks, _, exact := c.blockLiteralValueChoices(typed.BlockArg); exact {
 					arrayFillBlockValuesExact = true
@@ -4523,8 +4522,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 			}
 		}
-		arrayMutatorIgnoresBlock :=
-			arrayMutatorProperty != "" && arrayMutatorProperty != "fill"
+		arrayMutatorIgnoresBlock := arrayMutatorProperty != "" && arrayMutatorProperty != "fill"
 		if arrayMutatorIgnoresBlock {
 			callBlockMayRun = false
 		}

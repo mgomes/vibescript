@@ -2186,8 +2186,7 @@ func (c *scriptChecker) mergeLocalClassValueStates(states []checkScopeState) {
 					fact.callables = normalizeCheckCallables(append(fact.callables, other.callables...))
 				case len(fact.blocks) > 0 && len(other.blocks) > 0:
 					fact.blocks = normalizeCheckBlockLiterals(append(fact.blocks, other.blocks...))
-					fact.blockChoiceMayNil =
-						fact.blockChoiceMayNil || other.blockChoiceMayNil
+					fact.blockChoiceMayNil = fact.blockChoiceMayNil || other.blockChoiceMayNil
 				case len(fact.staticVals) > 0 && len(other.staticVals) > 0:
 					fact.staticVals = c.normalizeCheckStaticValues(append(fact.staticVals, other.staticVals...))
 					fact.staticChoice = checkStaticChoiceFact{}
@@ -6397,14 +6396,13 @@ func arrayFillElementWrites(
 				alwaysRaises: true,
 			}, true
 		}
-		skipped, blockMayRun, selectorsExact :=
-			staticArrayFillBlockSelectorOutcomes(
-				selectors,
-				argumentFacts,
-				argumentStaticValues,
-				argumentStaticChoices,
-				receiverLength,
-			)
+		skipped, blockMayRun, selectorsExact := staticArrayFillBlockSelectorOutcomes(
+			selectors,
+			argumentFacts,
+			argumentStaticValues,
+			argumentStaticChoices,
+			receiverLength,
+		)
 		if selectorsExact && !blockMayRun {
 			return skipped, true
 		}
