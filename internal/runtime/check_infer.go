@@ -14810,20 +14810,12 @@ func literalArrayDisjoint(lit, other *TypeExpr, resolve namedTypeResolver) bool 
 	if !ok {
 		return false
 	}
-	alternative := lit.Name == literalAlternativeElementsMarker ||
-		lit.Name == literalPartialAlternativeElementsMarker
 	for _, arm := range arms {
 		if typeExprsDisjoint(arm, other.TypeArgs[0], resolve) {
-			if !alternative {
-				return true
-			}
-			continue
-		}
-		if alternative {
-			return false
+			return true
 		}
 	}
-	return alternative
+	return false
 }
 
 // shapeVsTypedHashDisjoint reports whether an exact shape can never satisfy

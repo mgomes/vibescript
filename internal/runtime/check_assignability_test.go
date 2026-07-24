@@ -365,6 +365,13 @@ def run()
 end
 `)
 	requireCheckWarningContains(t, mixed, "call to accept argument values expected array<int> | array<string>, got array<int | string>")
+
+	write := compileScriptDefault(t, `
+def mutate(values: array<array<int>>, value: int | string)
+  values[0] = [value]
+end
+`)
+	requireCheckWarningContains(t, write, "write to values expected element array<int>, got array<int | string>")
 }
 
 func TestCheckKnownUnionShapeCorrelation(t *testing.T) {
