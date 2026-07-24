@@ -43,6 +43,390 @@ func TestCheckInferMixedClassCallableFactsStayGradual(t *testing.T) {
 	}
 }
 
+func TestBlockLiteralBindingOutcomeNormalizesParamBeforeTarget(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+enum Status
+  Draft
+end
+
+def accept(value: Status)
+  value
+end
+`)
+	statusType := script.functions["accept"].Params[0].Type
+	checker := &scriptChecker{
+		script:          script,
+		typeRoot:        checkTypeRoot(script, nil),
+		runtimeTypeRoot: checkTypeRoot(script, nil),
+	}
+	target := &DestructureTarget{Elements: []DestructureElement{{
+		Target: &Identifier{Name: "status"},
+		Type:   statusType,
+	}}}
+	block := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{
+			Type:   statusType,
+			Target: target,
+		}},
+	}
+	outcome := checker.blockLiteralBindingOutcome(
+		block,
+		[]Expression{&SymbolLiteral{Name: "draft"}},
+		true,
+		nil,
+	)
+	if !outcome.mayBind || !outcome.mustBind {
+		t.Fatalf("blockLiteralBindingOutcome(:draft) = %#v, want exact success", outcome)
+	}
+
+	paramNormalizedBlock := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{
+			Type: statusType,
+			Target: &DestructureTarget{Elements: []DestructureElement{{
+				Target: &Identifier{Name: "value"},
+				Type:   checkTypeSymbol,
+			}}},
+		}},
+	}
+	outcome = checker.blockLiteralBindingOutcome(
+		paramNormalizedBlock,
+		[]Expression{&SymbolLiteral{Name: "draft"}},
+		true,
+		nil,
+	)
+	if outcome.mayBind {
+		t.Fatalf(
+			"blockLiteralBindingOutcome(Status -> symbol target) = %#v, want guaranteed rejection",
+			outcome,
+		)
+	}
+
+	normalizedTarget := &DestructureTarget{Elements: []DestructureElement{{
+		Type: statusType,
+		Target: &DestructureTarget{Elements: []DestructureElement{{
+			Target: &Identifier{Name: "value"},
+			Type:   checkTypeSymbol,
+		}}},
+	}}}
+	normalizedBlock := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{Target: normalizedTarget}},
+	}
+	outcome = checker.lambdaLiteralParamTypeBindingOutcome(
+		normalizedBlock,
+		0,
+		&TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{checkTypeSymbol}},
+	)
+	if outcome.mayBind {
+		t.Fatalf(
+			"lambdaLiteralParamTypeBindingOutcome(array<symbol>) = %#v, want guaranteed nested rejection",
+			outcome,
+		)
+	}
+
+	symbolOrAny := &TypeExpr{
+		Kind:  TypeUnion,
+		Union: []*TypeExpr{checkTypeSymbol, {Kind: TypeAny}},
+	}
+	unionElementBlock := &BlockLiteral{
+		Lambda: true,
+		Params: []Param{{Target: &DestructureTarget{
+			Elements: []DestructureElement{{
+				Type: &TypeExpr{
+					Kind:     TypeArray,
+					TypeArgs: []*TypeExpr{symbolOrAny},
+				},
+				Target: &DestructureTarget{Elements: []DestructureElement{{
+					Target: &Identifier{Name: "value"},
+					Type:   checkTypeSymbol,
+				}}},
+			}},
+		}}},
+	}
+	outcome = checker.lambdaLiteralParamTypeBindingOutcome(
+		unionElementBlock,
+		0,
+		&TypeExpr{
+			Kind: TypeArray,
+			TypeArgs: []*TypeExpr{{
+				Kind: TypeArray,
+				TypeArgs: []*TypeExpr{{
+					Kind:  TypeUnion,
+					Union: []*TypeExpr{statusType, checkTypeString},
+				}},
+			}},
+		},
+	)
+	if outcome.mayBind {
+		t.Fatalf(
+			"lambdaLiteralParamTypeBindingOutcome(array<Status|string>) = %#v, want union arms to retain their normalized outputs",
+			outcome,
+		)
+	}
+}
+
+func TestBlockLiteralBindingOutcomeAppliesProcAutosplat(t *testing.T) {
+	t.Parallel()
+
+	arrayOf := func(element *TypeExpr) *TypeExpr {
+		return &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{element}}
+	}
+	nestedParam := func(inner *TypeExpr) Param {
+		return Param{Target: &DestructureTarget{Elements: []DestructureElement{{
+			Type: arrayOf(checkTypeInt),
+			Target: &DestructureTarget{Elements: []DestructureElement{{
+				Target: &Identifier{Name: "value"},
+				Type:   inner,
+			}}},
+		}}}}
+	}
+	argument := &ArrayLiteral{Elements: []Expression{
+		&ArrayLiteral{Elements: []Expression{
+			&ArrayLiteral{Elements: []Expression{&IntegerLiteral{Value: 1}}},
+		}},
+		&StringLiteral{Value: "ok"},
+	}}
+
+	for _, tc := range []struct {
+		name     string
+		params   []Param
+		strict   bool
+		mayBind  bool
+		mustBind bool
+	}{
+		{
+			name: "proc autosplats before nested binding",
+			params: []Param{
+				nestedParam(checkTypeInt),
+				{Name: "ignored", Type: checkTypeString},
+			},
+			mayBind:  true,
+			mustBind: true,
+		},
+		{
+			name: "strict lambda rejects before autosplat",
+			params: []Param{
+				nestedParam(checkTypeInt),
+				{Name: "ignored", Type: checkTypeString},
+			},
+			strict: true,
+		},
+		{
+			name:   "single proc parameter does not autosplat",
+			params: []Param{nestedParam(checkTypeInt)},
+		},
+		{
+			name: "nested failure stops proc entry",
+			params: []Param{
+				nestedParam(checkTypeString),
+				{Name: "ignored", Type: checkTypeString},
+			},
+		},
+		{
+			name: "later failure stops proc entry",
+			params: []Param{
+				nestedParam(checkTypeInt),
+				{Name: "ignored", Type: checkTypeInt},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			checker := &scriptChecker{}
+			outcome := checker.blockLiteralBindingOutcome(
+				&BlockLiteral{Params: tc.params},
+				[]Expression{argument},
+				tc.strict,
+				nil,
+			)
+			if outcome.mayBind != tc.mayBind || outcome.mustBind != tc.mustBind {
+				t.Errorf(
+					"blockLiteralBindingOutcome(%s) = %#v, want mayBind=%t, mustBind=%t",
+					tc.name,
+					outcome,
+					tc.mayBind,
+					tc.mustBind,
+				)
+			}
+		})
+	}
+}
+
+func TestBlockLiteralBindingOutcomeRecursesThroughAbstractDestructures(t *testing.T) {
+	t.Parallel()
+
+	arrayOf := func(element *TypeExpr) *TypeExpr {
+		return &TypeExpr{Kind: TypeArray, TypeArgs: []*TypeExpr{element}}
+	}
+	target := func(outer, inner *TypeExpr) *DestructureTarget {
+		return &DestructureTarget{Elements: []DestructureElement{{
+			Type: outer,
+			Target: &DestructureTarget{Elements: []DestructureElement{{
+				Target: &Identifier{Name: "value"},
+				Type:   inner,
+			}}},
+		}}}
+	}
+	for _, tc := range []struct {
+		name     string
+		value    *TypeExpr
+		target   *DestructureTarget
+		mayBind  bool
+		mustBind bool
+	}{
+		{
+			name:     "matching nested arrays may be nonempty",
+			value:    arrayOf(arrayOf(checkTypeInt)),
+			target:   target(arrayOf(checkTypeInt), checkTypeInt),
+			mayBind:  true,
+			mustBind: false,
+		},
+		{
+			name:     "disjoint nested leaf always rejects",
+			value:    arrayOf(arrayOf(checkTypeString)),
+			target:   target(arrayOf(checkTypeString), checkTypeInt),
+			mayBind:  false,
+			mustBind: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			checker := &scriptChecker{}
+			block := &BlockLiteral{
+				Lambda: true,
+				Params: []Param{{Target: tc.target}},
+			}
+			outcome := checker.lambdaLiteralParamTypeBindingOutcome(block, 0, tc.value)
+			if outcome.mayBind != tc.mayBind || outcome.mustBind != tc.mustBind {
+				t.Errorf(
+					"lambdaLiteralParamTypeBindingOutcome() = %#v, want mayBind=%t, mustBind=%t",
+					outcome,
+					tc.mayBind,
+					tc.mustBind,
+				)
+			}
+		})
+	}
+
+	t.Run("array length alternatives stay correlated", func(t *testing.T) {
+		t.Parallel()
+
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: &DestructureTarget{
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "first"}, Type: checkTypeNil},
+					{Target: &Identifier{Name: "second"}, Type: checkTypeInt},
+				},
+			}}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(
+			block,
+			0,
+			arrayOf(checkTypeInt),
+		)
+		if outcome.mayBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(array<int>) = %#v, want no compatible length",
+				outcome,
+			)
+		}
+	})
+
+	t.Run("union normalization retains the input arm", func(t *testing.T) {
+		t.Parallel()
+
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: &DestructureTarget{
+				Elements: []DestructureElement{{
+					Type: &TypeExpr{
+						Kind:  TypeUnion,
+						Union: []*TypeExpr{checkTypeInt, checkTypeString},
+					},
+					Target: &DestructureTarget{Elements: []DestructureElement{{
+						Target: &Identifier{Name: "value"},
+						Type:   checkTypeString,
+					}}},
+				}},
+			}}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(
+			block,
+			0,
+			checkTypeInt,
+		)
+		if outcome.mayBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(int) = %#v, want normalized int to reject nested string",
+				outcome,
+			)
+		}
+	})
+
+	t.Run("rest target retains exact scalar cardinality", func(t *testing.T) {
+		t.Parallel()
+
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: &DestructureTarget{
+				Elements: []DestructureElement{{
+					Rest: true,
+					Target: &DestructureTarget{Elements: []DestructureElement{
+						{Target: &Identifier{Name: "first"}, Type: checkTypeInt},
+						{Target: &Identifier{Name: "second"}, Type: checkTypeInt},
+					}},
+				}},
+			}}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(
+			block,
+			0,
+			checkTypeInt,
+		)
+		if outcome.mayBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(int rest) = %#v, want exact-length rejection",
+				outcome,
+			)
+		}
+	})
+
+	t.Run("deep unknown nesting stays bounded", func(t *testing.T) {
+		t.Parallel()
+
+		var nested Expression = &Identifier{Name: "value"}
+		for depth := range 32 {
+			element := DestructureElement{Target: nested}
+			if depth == 0 {
+				element.Type = checkTypeInt
+			}
+			nested = &DestructureTarget{Elements: []DestructureElement{element}}
+		}
+		checker := &scriptChecker{}
+		block := &BlockLiteral{
+			Lambda: true,
+			Params: []Param{{Target: nested}},
+		}
+		outcome := checker.lambdaLiteralParamTypeBindingOutcome(block, 0, nil)
+		if !outcome.mayBind || outcome.mustBind {
+			t.Errorf(
+				"lambdaLiteralParamTypeBindingOutcome(unknown) = %#v, want conservative may-only result",
+				outcome,
+			)
+		}
+	})
+}
+
 func TestCheckInferDisjointKeywordSplatFailuresStayRepairable(t *testing.T) {
 	t.Parallel()
 
@@ -477,6 +861,85 @@ def run(user: { name: string }, flag)
   end
 end
 `))
+
+	// Destructuring targets mutate their projected container too; the
+	// enclosing target list must not hide that root from pre-loop poisoning.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string }, flag)
+  while flag
+    takes_int(user["name"])
+    user["name"], ignored = [1, 2]
+    flag = false
+  end
+end
+`))
+
+	// A forwarded bound member can mutate its receiver when the callee runs
+	// the block, so that receiver is also a pre-loop mutation root.
+	requireNoCheckWarnings(t, compileScript(t, `
+def takes_int(value: int)
+  value
+end
+
+def run(user: { name: string }, flag)
+  while flag
+    takes_int(user["name"])
+    ["name"].map(&user.delete)
+    flag = false
+  end
+end
+`))
+
+	// A later condition evaluation sees body-degraded locals too. Its call
+	// can mutate a container before the loop exits, so the entry shape must
+	// not survive the loop.
+	requireNoCheckWarnings(t, compileScript(t, `
+def mutate(items)
+  items << "s"
+  false
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run
+  items = [1]
+  flag = 1
+  while flag || mutate(items)
+    flag = nil
+    next
+  end
+  takes_string(items[1])
+end
+`))
+
+	// An unconditional break prevents a second condition evaluation, so its
+	// skipped mutation must not poison the pre-loop container fact.
+	singlePass := compileScript(t, `
+def mutate(items)
+  items << "s"
+  false
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run
+  items = [1]
+  flag = 1
+  while flag || mutate(items)
+    break
+  end
+  takes_string(items[1])
+end
+`)
+	requireCheckWarningContains(t, singlePass, "call to takes_string argument value expected string, got int | nil")
 
 	// Without a mutation in the body the pre-loop fact stays checkable.
 	script := compileScript(t, `
@@ -3002,6 +3465,79 @@ def run(user: { name: string })
   takes_int(user["name"])
 end
 `))
+}
+
+func TestMergeLocalValueFactsKeepsOnlyCommonProvenance(t *testing.T) {
+	t.Parallel()
+
+	hashLiteral := &HashLiteral{}
+	arrayLiteral := &ArrayLiteral{}
+	callback := &BlockLiteral{Lambda: true}
+	checker := &scriptChecker{}
+
+	for _, tc := range []struct {
+		name  string
+		left  checkLocalValueFact
+		right checkLocalValueFact
+	}{
+		{
+			name: "hash provenance first",
+			left: checkLocalValueFact{
+				staticVals:   []Expression{hashLiteral},
+				hashDefaults: []directCoreHashDefaultCapture{{freshEmpty: true}},
+			},
+			right: checkLocalValueFact{staticVals: []Expression{arrayLiteral}},
+		},
+		{
+			name: "hash provenance second",
+			left: checkLocalValueFact{staticVals: []Expression{arrayLiteral}},
+			right: checkLocalValueFact{
+				staticVals:   []Expression{hashLiteral},
+				hashDefaults: []directCoreHashDefaultCapture{{freshEmpty: true}},
+			},
+		},
+		{
+			name: "block provenance first",
+			left: checkLocalValueFact{
+				staticVals:  []Expression{callback},
+				blockValues: []capturedBlockLiteralValue{{block: callback, strict: true}},
+			},
+			right: checkLocalValueFact{staticVals: []Expression{&IntegerLiteral{Value: 1}}},
+		},
+		{
+			name: "block provenance second",
+			left: checkLocalValueFact{staticVals: []Expression{&IntegerLiteral{Value: 1}}},
+			right: checkLocalValueFact{
+				staticVals:  []Expression{callback},
+				blockValues: []capturedBlockLiteralValue{{block: callback, strict: true}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			merged, exact := checker.mergeLocalValueFacts(tc.left, tc.right)
+			if !exact || len(merged.staticVals) != 2 {
+				t.Fatalf("mergeLocalValueFacts() = %#v, %t, want two static alternatives", merged, exact)
+			}
+			if len(merged.blockValues) != 0 || len(merged.hashDefaults) != 0 {
+				t.Fatalf("mergeLocalValueFacts() = %#v, want no one-sided provenance", merged)
+			}
+		})
+	}
+
+	first := &BlockLiteral{Lambda: true}
+	second := &BlockLiteral{Lambda: true}
+	merged, exact := checker.mergeLocalValueFacts(
+		checkLocalValueFact{
+			hashDefaults: []directCoreHashDefaultCapture{{block: first, strict: true}},
+		},
+		checkLocalValueFact{
+			hashDefaults: []directCoreHashDefaultCapture{{block: second, strict: true}},
+		},
+	)
+	if !exact || len(merged.hashDefaults) != 2 {
+		t.Fatalf("mergeLocalValueFacts() = %#v, %t, want both exact hash defaults", merged, exact)
+	}
 }
 
 func TestCheckInferHashLiteralShapes(t *testing.T) {

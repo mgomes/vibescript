@@ -548,6 +548,25 @@ end
 			warning: "call to takes_string argument value expected string, got int",
 		},
 		{
+			name: "parenthesized invoked lambda returns stay local",
+			source: `
+def build_count()
+  helper = ->() { return "lambda" }
+  helper.call()
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(build_count())
+end
+`,
+			warning: "call to takes_string argument value expected string, got int",
+		},
+		{
 			name: "value blocks without returns keep the summary",
 			source: `
 def build_count()
@@ -1748,6 +1767,23 @@ end
 `,
 		},
 		{
+			name: "unknown callback calls stay unknown",
+			source: `
+def build_count(callback)
+  callback.call()
+  42
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(callback)
+  takes_string(build_count(callback))
+end
+`,
+		},
+		{
 			name: "one unknown branch poisons known return arms",
 			source: `
 def maybe_dynamic(flag, value)
@@ -2708,6 +2744,24 @@ end
 			source: `
 def invoke()
   -> { yield }.call
+  0
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run()
+  takes_string(invoke() { return "s" })
+end
+`,
+		},
+		{
+			name: "stored lambda yield poisons the summary",
+			source: `
+def invoke()
+  handler = -> { yield }
+  handler.call
   0
 end
 

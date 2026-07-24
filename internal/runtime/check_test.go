@@ -1097,6 +1097,416 @@ end
 	}
 }
 
+func TestScriptFunctionNamespaceMutationsPreserveAssignmentEvaluationState(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+		want   []string
+		reject []string
+	}{
+		{
+			name: "plain index setter retains its evaluated receiver and completion",
+			source: `def replacement(value)
+  1
+end
+
+class Stopping
+  def []=(index, value)
+    JSON.stringify = replacement
+    raise "stop"
+  end
+end
+
+class Completing
+  def []=(index, value)
+    nil
+  end
+end
+
+def install()
+  box = Stopping.new
+  box[begin
+    box = Completing.new
+    0
+  end] = 1
+  JSON.parse = replacement
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "plain index setter retains its evaluated value callback",
+			source: `def replacement(value)
+  1
+end
+
+def writer(value)
+  JSON.stringify = replacement
+end
+
+def noop(value)
+  JSON.parse = replacement
+end
+
+class Box
+  def []=(index, callback: function)
+    callback.call(1)
+  end
+end
+
+def install()
+  callback = writer
+  box = Box.new
+  box[begin
+    callback, ignored = [noop, nil]
+    0
+  end] = callback
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "compound index setter retains its evaluated selector callback",
+			source: `def replacement(value)
+  1
+end
+
+def writer(value)
+  JSON.stringify = replacement
+end
+
+def noop(value)
+  JSON.parse = replacement
+end
+
+class Box
+  def [](callback)
+    0
+  end
+
+  def []=(callback, value)
+    callback.call(value)
+  end
+end
+
+def install()
+  callback = writer
+  box = Box.new
+  box[callback] += begin
+    callback = noop
+    1
+  end
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "logical index setter retains its evaluated selector callback",
+			source: `def replacement(value)
+  1
+end
+
+def writer(value)
+  JSON.stringify = replacement
+end
+
+def noop(value)
+  JSON.parse = replacement
+end
+
+class Box
+  def [](callback)
+    nil
+  end
+
+  def []=(callback, value)
+    callback.call(value)
+  end
+end
+
+def install()
+  callback = writer
+  box = Box.new
+  box[callback] ||= begin
+    callback = noop
+    1
+  end
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "compound index setter retains exact receiver bounds",
+			source: `def replacement(value)
+  1
+end
+
+def install()
+  values = [1]
+  values[0] += begin
+    values, ignored = [[], nil]
+    1
+  end
+  JSON.stringify = replacement
+end`,
+			want: []string{"JSON.stringify"},
+		},
+		{
+			name: "logical index setter retains exact receiver bounds",
+			source: `def replacement(value)
+  1
+end
+
+def install()
+  values = [nil]
+  values[0] ||= begin
+    values, ignored = [[], nil]
+    1
+  end
+  JSON.stringify = replacement
+end`,
+			want: []string{"JSON.stringify"},
+		},
+		{
+			name: "destructure index setter retains its evaluated receiver and completion",
+			source: `def replacement(value)
+  1
+end
+
+class Stopping
+  def []=(index, value)
+    JSON.stringify = replacement
+    raise "stop"
+  end
+end
+
+class Completing
+  def []=(index, value)
+    nil
+  end
+end
+
+def install()
+  box = Stopping.new
+  box[begin
+    box = Completing.new
+    0
+  end], ignored = [1, 0]
+  JSON.parse = replacement
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "logical identifier target does not auto invoke",
+			source: `def replacement(value)
+  1
+end
+
+def setting()
+  JSON.stringify = replacement
+  1
+end
+
+def assign_parse()
+  JSON.parse = replacement
+  1
+end
+
+def install()
+  setting ||= assign_parse()
+end`,
+			want:   []string{"JSON.parse"},
+			reject: []string{"JSON.stringify"},
+		},
+		{
+			name: "unknown logical or keeps the skipped receiver state",
+			source: `def replacement(value)
+  1
+end
+
+class Writer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Passive
+  def install()
+    nil
+  end
+end
+
+def install(flag: bool)
+  box = Writer.new
+  flag ||= begin
+    box, ignored = [Passive.new, nil]
+    true
+  end
+  box.install()
+end`,
+			want: []string{"JSON.stringify"},
+		},
+		{
+			name: "unknown logical and keeps the skipped receiver state",
+			source: `def replacement(value)
+  1
+end
+
+class Writer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Passive
+  def install()
+    nil
+  end
+end
+
+def install(flag: bool)
+  box = Writer.new
+  flag &&= begin
+    box, ignored = [Passive.new, nil]
+    false
+  end
+  box.install()
+end`,
+			want: []string{"JSON.stringify"},
+		},
+		{
+			name: "logical index getter retains its evaluated receiver",
+			source: `def replacement(value)
+  1
+end
+
+class Writer
+  def [](index)
+    JSON.stringify = replacement
+    nil
+  end
+
+  def []=(index, value)
+    nil
+  end
+end
+
+class Passive
+  def [](index)
+    JSON.parse = replacement
+    nil
+  end
+
+  def []=(index, value)
+    nil
+  end
+end
+
+def install()
+  box = Writer.new
+  box[begin
+    box = Passive.new
+    0
+  end] ||= 1
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+		{
+			name: "logical index truthiness uses its evaluated receiver",
+			source: `def replacement(value)
+  1
+end
+
+def mutate()
+  JSON.parse = replacement
+  1
+end
+
+class Unrelated
+  def [](index)
+    JSON.stringify = replacement
+    nil
+  end
+end
+
+def install()
+  values = [1]
+  values[-> {
+    values = [nil]
+    true
+  }.call() ? 0 : 0] ||= mutate()
+end`,
+			reject: []string{"JSON.parse", "JSON.stringify"},
+		},
+		{
+			name: "logical setter keeps rebound receiver facts",
+			source: `def replacement(value)
+  1
+end
+
+class Box
+  def value() -> int
+    1
+  end
+
+  def value=(value)
+    nil
+  end
+end
+
+class Writer
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Passive
+  def install()
+    JSON.parse = replacement
+  end
+end
+
+def install()
+  box = Box.new
+  box.value &&= -> {
+    box = Writer.new
+    1
+  }.call()
+  box.install()
+end`,
+			want:   []string{"JSON.stringify"},
+			reject: []string{"JSON.parse"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			fn := script.functions["install"]
+			checker := &scriptChecker{script: script}
+			got := checker.scriptFunctionNamespaceMutations(nil, staticCallable{
+				name: "install",
+				fn:   fn,
+			})
+			for _, member := range tc.want {
+				if _, ok := got[member]; !ok {
+					t.Errorf("scriptFunctionNamespaceMutations(%q) = %v, want member %q", tc.name, got, member)
+				}
+			}
+			for _, member := range tc.reject {
+				if _, ok := got[member]; ok {
+					t.Errorf("scriptFunctionNamespaceMutations(%q) = %v, do not want member %q", tc.name, got, member)
+				}
+			}
+		})
+	}
+}
+
 func TestCheckWarningsForFunctionClearsPinnedFactsBetweenReachableChecks(t *testing.T) {
 	t.Parallel()
 
@@ -1666,6 +2076,399 @@ end`,
 			invoke: `begin; target(); rescue; nil; end`,
 		},
 		{
+			name: "later ordinary parameter stays unbound during earlier default",
+			definitions: `def maybe_mutate(value)
+  if value
+    JSON.stringify = replacement
+  end
+  true
+end
+
+class Installer
+  def initialize(first = maybe_mutate(flag), flag = true)
+  end
+end`,
+			invoke:    `begin; Installer.new(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "earlier ordinary parameter is bound before later default",
+			definitions: `def maybe_mutate(value)
+  if value
+    JSON.stringify = replacement
+  end
+  true
+end
+
+class Installer
+  def initialize(flag = true, second = maybe_mutate(flag))
+  end
+end`,
+			invoke: `Installer.new()`,
+		},
+		{
+			name: "later ivar parameter stays unset during earlier default",
+			definitions: `def maybe_mutate(value)
+  if value
+    JSON.stringify = replacement
+  end
+  true
+end
+
+class Installer
+  property flag: bool
+
+  def initialize(first = maybe_mutate(@flag), @flag = true)
+  end
+end`,
+			invoke:    `begin; Installer.new(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "earlier ivar parameter is bound before later default",
+			definitions: `def maybe_mutate(value)
+  if value
+    JSON.stringify = replacement
+  end
+  true
+end
+
+class Installer
+  property flag: bool
+
+  def initialize(@flag = true, second = maybe_mutate(@flag))
+  end
+end`,
+			invoke: `Installer.new()`,
+		},
+		{
+			name: "ivar property rejection skips initializer body",
+			definitions: `class Installer
+  property flag: bool
+
+  def initialize(@flag: bool | int)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    `begin; Installer.new(1); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "evaluated ivar default rejection skips initializer body",
+			definitions: `def make()
+  "bad"
+end
+
+class Installer
+  property callback: function | int
+
+  def initialize(@callback: string | int = make)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    `begin; Installer.new(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "compatible ivar parameter reaches initializer body",
+			definitions: `class Installer
+  property flag: bool
+
+  def initialize(@flag: bool | int)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `Installer.new(true)`,
+		},
+		{
+			name: "earlier default effect survives later ivar property rejection",
+			definitions: `def mutate()
+  JSON.stringify = replacement
+  1
+end
+
+class Installer
+  property flag: bool
+
+  def initialize(first = mutate(), @flag: bool | int = 1)
+  end
+end`,
+			invoke: `begin; Installer.new(); rescue; nil; end`,
+		},
+		{
+			name: "later callable parameter stays unbound during earlier default",
+			definitions: `def callback()
+  JSON.stringify = replacement
+end
+
+class Installer
+  def initialize(first = later.call(), later: function = callback)
+  end
+end`,
+			invoke:    `begin; Installer.new(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "earlier callable parameter is bound before later default",
+			definitions: `def callback()
+  JSON.stringify = replacement
+end
+
+class Installer
+  def initialize(later: function = callback, second = later.call())
+  end
+end`,
+			invoke: `Installer.new()`,
+		},
+		{
+			name: "later nominal receiver stays unbound during earlier default",
+			definitions: `class Mutator
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Installer
+  def initialize(first = later.install(), later: Mutator = Mutator.new())
+  end
+end`,
+			invoke:    `begin; Installer.new(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "earlier nominal receiver is bound before later default",
+			definitions: `class Mutator
+  def install()
+    JSON.stringify = replacement
+  end
+end
+
+class Installer
+  def initialize(later: Mutator = Mutator.new(), second = later.install())
+  end
+end`,
+			invoke: `Installer.new()`,
+		},
+		{
+			name: "unbound later parameter falls back to top level callable",
+			definitions: `def later()
+  JSON.stringify = replacement
+  1
+end
+
+class Installer
+  def initialize(first = later.call(), later = 1)
+  end
+end`,
+			invoke: `Installer.new()`,
+		},
+		{
+			name: "bound later parameter shadows top level callable",
+			definitions: `def later()
+  JSON.stringify = replacement
+  1
+end
+
+class Installer
+  def initialize(later = 1, second = later.call())
+  end
+end`,
+			invoke:    `begin; Installer.new(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "unbound later parameter falls back to implicit self method",
+			definitions: `class Installer
+  def later()
+    JSON.stringify = replacement
+    1
+  end
+
+  def initialize(first = later.call(), later = 1)
+  end
+end`,
+			invoke: `Installer.new()`,
+		},
+		{
+			name: "callable ivar default is stored without invocation",
+			definitions: `def callback()
+  JSON.stringify = replacement
+end
+
+class Installer
+  property callback: function
+
+  def initialize(@callback = callback)
+  end
+end`,
+			invoke:    `Installer.new()`,
+			wantCount: 2,
+		},
+		{
+			name: "later default annotation uses earlier parameter fact",
+			definitions: `def target(seed: string = "x", value: int = seed)
+  JSON.stringify = replacement
+end`,
+			invoke:    `begin; target(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "later ivar default uses earlier parameter fact",
+			definitions: `class Installer
+  property name: string
+
+  def initialize(seed: int = 1, @name = seed)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke:    `begin; Installer.new(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "earlier default invalidates aliased later parameter fact",
+			definitions: `def target(first, middle = first.clear(), later:)
+  if later.empty?()
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `values = [1]; target(values, later: values)`,
+		},
+		{
+			name: "callee default ignores caller local with same name",
+			definitions: `def seed()
+  1
+end
+
+def target(value: int = seed)
+  JSON.stringify = replacement
+end`,
+			invoke: `seed = "bad"; target()`,
+		},
+		{
+			name: "dynamic splat may suppress invalid optional default",
+			definitions: `def bad()
+  "bad"
+end
+
+def target(value: int = bad())
+  JSON.stringify = replacement
+end
+
+def values(flag: bool) -> array<int>
+  flag ? [1] : [2]
+end`,
+			invoke: `target(*values(flag))`,
+		},
+		{
+			name: "generic callable may suppress raising optional default",
+			definitions: `def bad()
+  raise "stop"
+end
+
+def target(value: int = bad())
+  JSON.stringify = replacement
+end`,
+			invoke: `[1].map(&target)`,
+		},
+		{
+			name: "generic callable does not apply optional default fact to body",
+			definitions: `def target(flag = true)
+  unless flag
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `[false].map(&target)`,
+		},
+		{
+			name: "raising callable default is stored without invocation",
+			definitions: `def abort()
+  raise "stop"
+end
+
+def target(callback: function = abort)
+  JSON.stringify = replacement
+end`,
+			invoke: `target()`,
+		},
+		{
+			name: "raising callable ivar default is stored without invocation",
+			definitions: `def abort()
+  raise "stop"
+end
+
+class Installer
+  property callback: function
+
+  def initialize(@callback = abort)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `Installer.new()`,
+		},
+		{
+			name: "conditional callable default branches stay inert",
+			definitions: `def first()
+  JSON.stringify = replacement
+  raise "stop"
+end
+
+def second()
+  JSON.stringify = replacement
+  raise "stop"
+end
+
+def target(flag: bool, callback: function = flag ? first : second)
+  nil
+end`,
+			invoke:    `target(flag)`,
+			wantCount: 2,
+		},
+		{
+			name: "conditional callable default reaches body",
+			definitions: `def first()
+  raise "stop"
+end
+
+def second()
+  raise "stop"
+end
+
+def target(flag: bool, callback: function = flag ? first : second)
+  JSON.stringify = replacement
+end`,
+			invoke: `target(flag)`,
+		},
+		{
+			name: "conditional default follows earlier parameter fact",
+			definitions: `def abort()
+  raise "stop"
+end
+
+def target(flag = true, value = flag ? abort() : 1)
+  JSON.stringify = replacement
+end`,
+			invoke:    `begin; target(); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "nested callable default branches stay inert",
+			definitions: `def first()
+  JSON.stringify = replacement
+  raise "stop"
+end
+
+def second()
+  JSON.stringify = replacement
+  raise "stop"
+end
+
+def target(flag: bool, callbacks: array<function> = [flag ? first : second])
+  nil
+end`,
+			invoke:    `target(flag)`,
+			wantCount: 2,
+		},
+		{
 			name: "constructor ignores initializer return annotation",
 			definitions: `class Installer
   def initialize() -> int
@@ -1873,6 +2676,274 @@ end`,
 			wantCount: 2,
 		},
 		{
+			name: "successful logical ivar skip keeps namespace mutation reachable",
+			definitions: `class Installer
+  property flag: bool
+
+  def install(value: bool)
+    @flag = value
+    @flag ||= false
+    if @flag
+      JSON.stringify = replacement
+    end
+  end
+end`,
+			invoke: `Installer.new.install(flag)`,
+		},
+		{
+			name: "initializer and assignment skips impossible rhs mutation",
+			definitions: `def mutate()
+  JSON.stringify = replacement
+  true
+end
+
+class Installer
+  property flag: bool
+
+  def initialize()
+    @flag &&= mutate()
+  end
+end`,
+			invoke:    `Installer.new()`,
+			wantCount: 2,
+		},
+		{
+			name: "raising compound operator preserves prior namespace mutation",
+			definitions: `class NumberBox
+  def +(other)
+    JSON.stringify = replacement
+    raise "stop"
+  end
+end
+
+class Installer
+  property value: NumberBox
+
+  def install()
+    @value = NumberBox.new
+    begin
+      @value += 1
+    rescue
+      nil
+    end
+  end
+end`,
+			invoke: `Installer.new.install()`,
+		},
+		{
+			name: "rejected compound setter preserves operator namespace mutation",
+			definitions: `class NumberBox
+  def +(other)
+    JSON.stringify = replacement
+    1
+  end
+end
+
+class Installer
+  property value: NumberBox
+
+  def install()
+    @value = NumberBox.new
+    begin
+      @value += 1
+    rescue
+      nil
+    end
+  end
+end`,
+			invoke: `Installer.new.install()`,
+		},
+		{
+			name: "rejected or assignment has no ordinary namespace mutation",
+			definitions: `class Installer
+  property flag: bool
+
+  def install(value: bool)
+    @flag = value
+    @flag ||= 1
+    unless @flag
+      JSON.stringify = replacement
+    end
+  end
+end`,
+			invoke:    `begin; Installer.new.install(flag); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "rejected and assignment has no ordinary namespace mutation",
+			definitions: `class Installer
+  property flag: bool
+
+  def install(value: bool)
+    @flag = value
+    @flag &&= 1
+    if @flag
+      JSON.stringify = replacement
+    end
+  end
+end`,
+			invoke:    `begin; Installer.new.install(flag); rescue; nil; end`,
+			wantCount: 2,
+		},
+		{
+			name: "rejected or assignment rescue sees the writing arm",
+			definitions: `class Installer
+  property flag: bool
+
+  def install(value: bool)
+    @flag = value
+    begin
+      @flag ||= 1
+    rescue
+      if @flag
+        JSON.stringify = replacement
+      end
+    end
+  end
+end`,
+			invoke:    `Installer.new.install(flag)`,
+			wantCount: 2,
+		},
+		{
+			name: "rejected and assignment rescue sees the writing arm",
+			definitions: `class Installer
+  property flag: bool
+
+  def install(value: bool)
+    @flag = value
+    begin
+      @flag &&= 1
+    rescue
+      unless @flag
+        JSON.stringify = replacement
+      end
+    end
+  end
+end`,
+			invoke:    `Installer.new.install(flag)`,
+			wantCount: 2,
+		},
+		{
+			name: "rejected logical assignment rescue keeps rhs local effects",
+			definitions: `class Installer
+  property flag: bool
+
+  def install(value: bool)
+    marker = false
+    @flag = value
+    begin
+      @flag ||= JSON.stringify(begin marker = true; {} end)
+    rescue
+      if marker
+        JSON.stringify = replacement
+      end
+    end
+  end
+end`,
+			invoke: `Installer.new.install(flag)`,
+		},
+		{
+			name: "failed destructure rescue sees completed local prefix",
+			definitions: `class Installer
+  property label: string
+
+  def install()
+    marker = false
+    begin
+      marker, @label = [true, 1]
+    rescue
+      unless marker
+        JSON.stringify = replacement
+      end
+    end
+  end
+end`,
+			invoke:    `Installer.new.install()`,
+			wantCount: 2,
+		},
+		{
+			name: "untyped ivar assignment cannot reach rescue mutation",
+			definitions: `class Installer
+  def install()
+    begin
+      @value = 1
+    rescue
+      JSON.stringify = replacement
+    end
+  end
+end`,
+			invoke:    `Installer.new.install()`,
+			wantCount: 2,
+		},
+		{
+			name: "proven compound ivar assignment cannot reach rescue mutation",
+			definitions: `class Installer
+  property count: int
+
+  def install()
+    @count = 1
+    begin
+      @count += 1
+    rescue
+      JSON.stringify = replacement
+    end
+  end
+end`,
+			invoke:    `Installer.new.install()`,
+			wantCount: 2,
+		},
+		{
+			name: "integer division by zero reaches rescue mutation",
+			definitions: `class Installer
+  property count: int
+
+  def install()
+    @count = 1
+    begin
+      @count /= 0
+    rescue
+      JSON.stringify = replacement
+    end
+  end
+end`,
+			invoke: `Installer.new.install()`,
+		},
+		{
+			name: "integer modulo by zero reaches rescue mutation",
+			definitions: `class Installer
+  property count: int
+
+  def install()
+    @count = 1
+    begin
+      @count %= 0
+    rescue
+      JSON.stringify = replacement
+    end
+  end
+end`,
+			invoke: `Installer.new.install()`,
+		},
+		{
+			name: "compatible destructure prefix narrows failed setter rescue",
+			definitions: `class Installer
+  property flag: bool
+  property label: string
+
+  def install()
+    begin
+      @flag, @label = [true, 1]
+    rescue
+      unless @flag
+        JSON.stringify = replacement
+      end
+    end
+  end
+end`,
+			invoke:    `Installer.new.install()`,
+			wantCount: 2,
+		},
+		{
 			name: "successful body invokes exact callback parameter",
 			definitions: `def callback()
   JSON.stringify = replacement
@@ -1896,6 +2967,624 @@ begin
 rescue
   nil
 end`,
+		},
+		{
+			name: "invalid nested call does not invoke forwarded block",
+			definitions: `def never(value)
+  yield
+end
+
+def outer(&block)
+  never(&block)
+end`,
+			invoke: `begin
+  outer() { JSON.stringify = replacement }
+rescue
+  nil
+end`,
+			wantCount: 2,
+		},
+		{
+			name: "raising nested argument skips forwarded block",
+			definitions: `def abort()
+  raise "stop"
+end
+
+def invoke_block(value)
+  yield
+end
+
+def outer(&block)
+  invoke_block(abort(), &block)
+end`,
+			invoke: `begin
+  outer() { JSON.stringify = replacement }
+rescue
+  nil
+end`,
+			wantCount: 2,
+		},
+		{
+			name: "bound default short circuits call block",
+			definitions: `def outer(flag = true)
+  flag || yield
+end`,
+			invoke:    `outer() { JSON.stringify = replacement }`,
+			wantCount: 2,
+		},
+		{
+			name: "bound default selects nonyielding statement branch",
+			definitions: `def outer(flag = true)
+  if flag
+    nil
+  else
+    yield
+  end
+end`,
+			invoke:    `outer() { JSON.stringify = replacement }`,
+			wantCount: 2,
+		},
+		{
+			name: "exact dynamic callees that ignore blocks stay inert",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  nil
+end
+
+def outer(flag: bool, &block)
+  callback = flag ? first : second
+  callback.call(&block)
+end`,
+			invoke:    `outer(flag) { JSON.stringify = replacement }`,
+			wantCount: 2,
+		},
+		{
+			name: "forwarded literal blocks stay inert for exact nonyielding callees",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  nil
+end
+
+def outer(callback: function, &block)
+  callback.call() { yield }
+end`,
+			invoke: `callback = flag ? first : second
+outer(callback) { JSON.stringify = replacement }`,
+			wantCount: 2,
+		},
+		{
+			name: "logical callable reassignment updates forwarded block dispatch",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+def outer(&block)
+  target = first
+  target &&= second
+  target.call(&block)
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "destructured callable reassignment updates forwarded block dispatch",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+def outer(&block)
+  target = first
+  target, ignored = [second, nil]
+  target.call(&block)
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "branch callable reassignment preserves a yielding alternative",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+def outer(flag: bool, &block)
+  target = first
+  if flag
+    target = second
+  else
+    target = first
+  end
+  target.call(&block)
+end`,
+			invoke: `outer(flag) { JSON.stringify = replacement }`,
+		},
+		{
+			name: "unknown branch assignment does not leak into alternate block dispatch",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+def outer(flag: bool, &block)
+  target = second
+  if flag
+    target = first
+  else
+    target.call(&block)
+  end
+end`,
+			invoke: `outer(flag) { JSON.stringify = replacement }`,
+		},
+		{
+			name: "assigned callable shadows same named global function",
+			definitions: `def target(&block)
+  nil
+end
+
+def yielding(&block)
+  yield
+end
+
+def outer(&block)
+  target = yielding
+  target(&block)
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "branch assigned callable shadows same named global function",
+			definitions: `def target(&block)
+  nil
+end
+
+def yielding(&block)
+  yield
+end
+
+def outer(flag: bool, &block)
+  if flag
+    target = yielding
+  end
+  target(&block)
+end`,
+			invoke: `outer(flag) { JSON.stringify = replacement }`,
+		},
+		{
+			name: "later for iteration sees callable reassignment",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+def outer(&block)
+  target = first
+  for value in [1, 2]
+    target.call(&block)
+    target = second
+  end
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "later for iteration sees local shadowing global function",
+			definitions: `def target(&block)
+  nil
+end
+
+def yielding(&block)
+  yield
+end
+
+def outer(&block)
+  for value in [1, 2]
+    target(&block)
+    target = yielding
+  end
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "single for iteration keeps later local assignment unreachable",
+			definitions: `def target(&block)
+  nil
+end
+
+def yielding(&block)
+  yield
+end
+
+def outer(&block)
+  for value in [1]
+    target(&block)
+    target = yielding
+  end
+end`,
+			invoke:    `outer() { JSON.stringify = replacement }`,
+			wantCount: 2,
+		},
+		{
+			name: "breaking for loop keeps later local assignment unreachable",
+			definitions: `def target(&block)
+  nil
+end
+
+def yielding(&block)
+  yield
+end
+
+def outer(&block)
+  for value in [1, 2]
+    target(&block)
+    target = yielding
+    break
+  end
+end`,
+			invoke:    `outer() { JSON.stringify = replacement }`,
+			wantCount: 2,
+		},
+		{
+			name: "later while condition sees local shadowing global function",
+			definitions: `def target(&block)
+  true
+end
+
+def yielding(&block)
+  yield
+  false
+end
+
+def outer(&block)
+  while target(&block)
+    target = yielding
+  end
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "breaking while loop skips later local condition dispatch",
+			definitions: `def target(&block)
+  true
+end
+
+def yielding(&block)
+  yield
+  false
+end
+
+def outer(&block)
+  while target(&block)
+    target = yielding
+    break
+  end
+end`,
+			invoke:    `outer() { JSON.stringify = replacement }`,
+			wantCount: 2,
+		},
+		{
+			name: "fresh block local does not persist across invocations",
+			definitions: `def target(&block)
+  nil
+end
+
+def yielding(&block)
+  yield
+end
+
+def outer(&block)
+  [1, 2].each() {
+    target(&block)
+    target = yielding
+  }
+end`,
+			invoke:    `outer() { JSON.stringify = replacement }`,
+			wantCount: 2,
+		},
+		{
+			name: "later block iteration sees nested block reassignment",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+def outer(&block)
+  target = first
+  [1, 2].each() {
+    target.call(&block)
+    [nil].each() { target = second }
+  }
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "maybe zero run block assignment degrades a captured callable",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+def outer(&block)
+  target = second
+  [].each() { target = first }
+  target.call(&block)
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "running block assignment keeps a yielding callable possible",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+def outer(&block)
+  target = first
+  [nil].each() { target = second }
+  target.call(&block)
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "block parameter assignment does not replace captured callable",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+def outer(&block)
+  target = second
+  [nil].each() { |target| target = first }
+  target.call(&block)
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "class body assignment does not replace enclosing callable",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+class Temporary
+end
+
+def outer(&block)
+  target = second
+  class Temporary
+    target = first
+  end
+  target.call(&block)
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "rescue binding assignment does not replace enclosing callable",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+def outer(&block)
+  target = second
+  begin
+    raise "stop"
+  rescue => target
+    target = first
+  end
+  target.call(&block)
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "rescue sees local callable bound before raise",
+			definitions: `def target(&block)
+  nil
+end
+
+def yielding(&block)
+  yield
+end
+
+def outer(&block)
+  begin
+    target = yielding
+    raise "stop"
+  rescue
+    target(&block)
+  end
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
+		},
+		{
+			name: "rescue ignores local callable assignment after raise",
+			definitions: `def target(&block)
+  nil
+end
+
+def yielding(&block)
+  yield
+end
+
+def outer(&block)
+  begin
+    raise "stop"
+    target = yielding
+  rescue
+    target(&block)
+  end
+end`,
+			invoke:    `outer() { JSON.stringify = replacement }`,
+			wantCount: 2,
+		},
+		{
+			name: "try body keeps sequential callable fact before later assignment",
+			definitions: `def first(&block)
+  nil
+end
+
+def second(&block)
+  yield
+end
+
+def outer(&block)
+  target = first
+  begin
+    target.call(&block)
+    target = second
+  rescue
+    nil
+  end
+end`,
+			invoke:    `outer() { JSON.stringify = replacement }`,
+			wantCount: 2,
+		},
+		{
+			name: "array elements stop before a later yield",
+			definitions: `def abort()
+  raise "stop"
+end
+
+def outer(&block)
+  [abort(), yield]
+end`,
+			invoke: `begin
+  outer() { JSON.stringify = replacement }
+rescue
+  nil
+end`,
+			wantCount: 2,
+		},
+		{
+			name: "interpolation stops before a later yield",
+			definitions: `def abort()
+  raise "stop"
+end
+
+def outer(&block)
+  "#{abort()}#{yield}"
+end`,
+			invoke: `begin
+  outer() { JSON.stringify = replacement }
+rescue
+  nil
+end`,
+			wantCount: 2,
+		},
+		{
+			name: "rescue conditional callable default keeps inner auto calls",
+			definitions: `def abort()
+  raise "stop"
+end
+
+def target(flag: bool, callback: function = ((flag ? abort : abort) rescue (flag ? abort : abort)))
+  JSON.stringify = replacement
+end`,
+			invoke: `begin
+  target(flag)
+rescue
+  nil
+end`,
+			wantCount: 2,
+		},
+		{
+			name: "rescue array callable default keeps element auto calls",
+			definitions: `def abort()
+  raise "stop"
+end
+
+def target(callbacks: array<function> = ([abort] rescue [abort]))
+  JSON.stringify = replacement
+end`,
+			invoke: `begin
+  target()
+rescue
+  nil
+end`,
+			wantCount: 2,
+		},
+		{
+			name: "implicit self callable default is stored without invocation",
+			definitions: `class Installer
+  def abort()
+    raise "stop"
+  end
+
+  def initialize(callback: function = abort)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `Installer.new()`,
+		},
+		{
+			name: "pending parameter name falls back to implicit self callable",
+			definitions: `class Installer
+  def callback()
+    raise "stop"
+  end
+
+  def initialize(first: function = callback, callback = 1)
+    JSON.stringify = replacement
+  end
+end`,
+			invoke: `Installer.new()`,
+		},
+		{
+			name: "bound local callable default is stored without invocation",
+			definitions: `def abort()
+  raise "stop"
+end
+
+def target(source: function = abort, copy: function = source)
+  JSON.stringify = replacement
+end`,
+			invoke: `target()`,
+		},
+		{
+			name: "next value evaluates a forwarded block",
+			definitions: `def outer(&block)
+  for value in [1]
+    next yield
+  end
+end`,
+			invoke: `outer() { JSON.stringify = replacement }`,
 		},
 		{
 			name: "failed early default skips later default and body effects",
@@ -3645,6 +5334,49 @@ end`,
 			wantWarning: "return value expected int, got string",
 		},
 		{
+			name: "dependent default rejection stops later statements",
+			source: `def target(seed: string = "x", value: int = seed)
+  1
+end
+
+def run()
+  target()
+  missing_name
+end`,
+			wantWarning: "default value for value expected int, got string",
+		},
+		{
+			name: "undefined later parameter in default stops later statements",
+			source: `def target(first = consume(later), later = 1)
+  1
+end
+
+def consume(value)
+  value
+end
+
+def run()
+  target()
+  missing_name
+end`,
+		},
+		{
+			name: "raising callable default remains a value",
+			source: `def abort()
+  raise "stop"
+end
+
+def target(callback: function = abort)
+  1
+end
+
+def run()
+  target()
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
 			name: "invalid case splat stops every result arm",
 			source: `def run()
   case 1
@@ -3854,6 +5586,337 @@ end`,
 			}
 			if !gotWarning {
 				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want warning containing %q", "run", warnings, tc.wantWarning)
+			}
+		})
+	}
+}
+
+func TestCheckDirectLambdaLocalControlCompletion(t *testing.T) {
+	t.Parallel()
+
+	literals := []struct {
+		name   string
+		prefix string
+	}{
+		{name: "stabby", prefix: "->"},
+		{name: "named", prefix: "lambda"},
+	}
+	calls := []struct {
+		name   string
+		suffix string
+	}{
+		{name: "parenthesized", suffix: "call()"},
+		{name: "parenless", suffix: "call"},
+	}
+	controls := []string{"return", "next", "break"}
+	contexts := []string{"statement", "default"}
+
+	for _, literal := range literals {
+		for _, call := range calls {
+			for _, control := range controls {
+				invocation := literal.prefix + " { " + control + " }." + call.suffix
+				for _, contextName := range contexts {
+					t.Run(
+						literal.name+"/"+call.name+"/"+control+"/"+contextName,
+						func(t *testing.T) {
+							t.Parallel()
+
+							source := `def run()
+  ` + invocation + `
+  missing_name
+end`
+							if contextName == "default" {
+								source = `def target(value = ` + invocation + `)
+  value
+end
+
+def run()
+  target()
+  missing_name
+end`
+							}
+							script := compileScript(t, source)
+							requireCheckWarningContains(
+								t,
+								script,
+								"undefined variable missing_name",
+							)
+						},
+					)
+				}
+			}
+		}
+	}
+}
+
+func TestCheckDirectLambdaLocalControlPreservesCompletionPrecision(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		source      string
+		wantMissing bool
+	}{
+		{
+			name: "known raising body does not complete",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  -> { abort() }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "captured condition selects raising branch",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  flag = true
+  lambda {
+    if flag
+      abort()
+    else
+      return
+    end
+  }.call
+  missing_name
+end`,
+		},
+		{
+			name: "raising return value does not complete",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  -> { return abort() }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "return in loop completes lambda before raising tail",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  lambda {
+    while true
+      return
+    end
+    abort()
+  }.call
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "break exits infinite loop and completes lambda tail",
+			source: `def run()
+  -> {
+    while true
+      break
+    end
+  }.call()
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "next keeps infinite loop from completing",
+			source: `def run()
+  lambda {
+    while true
+      next
+    end
+  }.call
+  missing_name
+end`,
+		},
+		{
+			name: "break exits infinite until loop",
+			source: `def run()
+  lambda {
+    until false
+      break
+    end
+  }.call()
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "next keeps infinite until loop from completing",
+			source: `def run()
+  -> {
+    until false
+      next
+    end
+  }.call
+  missing_name
+end`,
+		},
+		{
+			name: "break in loop reaches raising lambda tail",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  -> {
+    while true
+      break
+    end
+    abort()
+  }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "next in loop reaches raising lambda tail",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  lambda {
+    for value in [1]
+      next
+    end
+    abort()
+  }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "raising nonempty for body blocks lambda tail",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  -> {
+    for value in [1]
+      abort()
+    end
+    return
+  }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "return survives falling through ensure",
+			source: `def run()
+  -> {
+    begin
+      return
+    ensure
+      1
+    end
+  }.call()
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "raising ensure overrides return",
+			source: `def abort()
+  raise "stop"
+end
+
+def run()
+  -> {
+    begin
+      return
+    ensure
+      abort()
+    end
+  }.call()
+  missing_name
+end`,
+		},
+		{
+			name: "rescue return completes lambda",
+			source: `def run()
+  lambda {
+    begin
+      raise "stop"
+    rescue
+      return
+    end
+  }.call
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "returning ensure overrides raise",
+			source: `def run()
+  -> {
+    begin
+      raise "stop"
+    ensure
+      return
+    end
+  }.call()
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "ensure break overrides loop next",
+			source: `def run()
+  -> {
+    while true
+      begin
+        next
+      ensure
+        break
+      end
+    end
+  }.call()
+  missing_name
+end`,
+			wantMissing: true,
+		},
+		{
+			name: "ensure next overrides loop break",
+			source: `def run()
+  -> {
+    while true
+      begin
+        break
+      ensure
+        next
+      end
+    end
+  }.call()
+  missing_name
+end`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScript(t, tc.source)
+			gotMissing := false
+			for _, warning := range script.CheckWarningsForFunction("run") {
+				gotMissing = gotMissing ||
+					strings.Contains(warning.Message, "undefined variable missing_name")
+			}
+			if gotMissing != tc.wantMissing {
+				t.Fatalf(
+					"CheckWarningsForFunction(%q) missing_name warning = %t, want %t",
+					"run",
+					gotMissing,
+					tc.wantMissing,
+				)
 			}
 		})
 	}

@@ -252,6 +252,9 @@ func (c *scriptChecker) functionHasSelfScope(fn *ScriptFunction) bool {
 	return ok
 }
 
+// prepareSelfScopeFunctions lazily builds the method-ownership maps. Every
+// reader must call it first: a call can be checked (a constructor call in a
+// class body, for example) before any function scope has been entered.
 func (c *scriptChecker) prepareSelfScopeFunctions() {
 	if c.selfScopeFns == nil {
 		c.selfScopeFns = make(map[*ScriptFunction]struct{})
