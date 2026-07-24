@@ -16624,6 +16624,15 @@ func boundaryShapeHashRelation(
 	if len(required.TypeArgs) != 2 {
 		return boundaryRelationGradual
 	}
+	if strings.HasPrefix(inferred.Name, shapeKeysMixedPrefix) {
+		flags := strings.TrimPrefix(inferred.Name, shapeKeysMixedPrefix)
+		if strings.Contains(flags, "o") &&
+			typeExprArmsAll(required.TypeArgs[0], func(arm *TypeExpr) bool {
+				return arm.Kind == TypeString || arm.Kind == TypeSymbol
+			}) {
+			return boundaryRelationRejected
+		}
+	}
 	keyType := boundaryShapeKeyType(inferred)
 	result := boundaryRelationAccepted
 	if keyType == nil {

@@ -161,6 +161,44 @@ end
 	}
 }
 
+func TestCheckKnownUnionShapeHashKeyAssignability(t *testing.T) {
+	t.Parallel()
+
+	inferred := &TypeExpr{
+		Kind: TypeShape,
+		Name: mixedKeysMarker(false, false, true),
+		Shape: map[string]*TypeExpr{
+			"1": checkTypeInt,
+		},
+	}
+	for _, keyType := range []*TypeExpr{
+		checkTypeString,
+		checkTypeSymbol,
+		unionTypeExprs(checkTypeString, checkTypeSymbol),
+	} {
+		required := &TypeExpr{
+			Kind:     TypeHash,
+			TypeArgs: []*TypeExpr{keyType, checkTypeInt},
+		}
+		if !boundaryTypeRejected(inferred, required, nil) {
+			t.Errorf("boundaryTypeRejected(%s, %s) = false, want true", formatTypeExpr(inferred), formatTypeExpr(required))
+		}
+	}
+
+	for _, keyType := range []*TypeExpr{
+		checkTypeInt,
+		unionTypeExprs(checkTypeString, checkTypeInt),
+	} {
+		required := &TypeExpr{
+			Kind:     TypeHash,
+			TypeArgs: []*TypeExpr{keyType, checkTypeInt},
+		}
+		if boundaryTypeRejected(inferred, required, nil) {
+			t.Errorf("boundaryTypeRejected(%s, %s) = true, want false", formatTypeExpr(inferred), formatTypeExpr(required))
+		}
+	}
+}
+
 func TestCheckKnownUnionBoundaryAssignabilityStaysGradual(t *testing.T) {
 	t.Parallel()
 
