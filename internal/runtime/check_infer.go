@@ -1844,7 +1844,6 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousIfClassFacts := c.evaluatedIfClassFacts
 	previousBlockValues := c.evaluatedBlockValues
 	previousHashDefaults := c.evaluatedHashDefaults
-	previousShapeFieldSources := c.shapeFieldSources
 	c.typePoison = nil
 	c.staticValuePoison = nil
 	c.staticValueDependents = nil
@@ -1859,7 +1858,6 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	c.evaluatedIfClassFacts = nil
 	c.evaluatedBlockValues = nil
 	c.evaluatedHashDefaults = nil
-	c.shapeFieldSources = nil
 	return func() {
 		c.typePoison = previousPoison
 		c.staticValuePoison = previousStaticValuePoison
@@ -1875,7 +1873,6 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 		c.evaluatedIfClassFacts = previousIfClassFacts
 		c.evaluatedBlockValues = previousBlockValues
 		c.evaluatedHashDefaults = previousHashDefaults
-		c.shapeFieldSources = previousShapeFieldSources
 	}
 }
 

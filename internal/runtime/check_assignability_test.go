@@ -545,6 +545,23 @@ def run(value: int | string)
 end
 `))
 
+	forwarded := compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: string, right: string })
+  value
+end
+
+def forward(value)
+  accept(value)
+end
+
+def run(value: int | string)
+  forward({ left: value, right: value })
+end
+`)
+	if warnings := forwarded.CheckWarningsForFunction("run"); len(warnings) > 0 {
+		t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+	}
+
 	independent := compileScriptDefault(t, `
 def accept(value: { left: int, right: int } | { left: string, right: string })
   value
