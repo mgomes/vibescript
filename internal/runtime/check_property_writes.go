@@ -55,6 +55,17 @@ func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 		if ty == nil {
 			continue
 		}
+		if fn.Accessor == functionAccessorGetter && fn.AccessorName == method.AccessorName {
+			if !c.generatedGetterIvarMayBeInitialized(fn) {
+				c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), checkTypeNil)
+				continue
+			}
+			fact := c.ivarContractFact(ty)
+			if fact != nil {
+				c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), fact)
+			}
+			continue
+		}
 		if fn.Name == "initialize" {
 			c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), checkTypeNil)
 			continue
@@ -65,6 +76,41 @@ func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 		}
 		c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), unionTypeExprs(fact, checkTypeNil))
 	}
+}
+
+func (c *scriptChecker) generatedGetterIvarMayBeInitialized(fn *ScriptFunction) bool {
+	if fn == nil || fn.Accessor != functionAccessorGetter ||
+		c.selfClass == nil || fn.AccessorName == "" {
+		return false
+	}
+	initializer := c.selfClass.Methods["initialize"]
+	if initializer == nil {
+		return false
+	}
+	scan := c.newNamespaceMutationScan()
+	scan.visit(initializer)
+	if scan.invokedUnknownCallable || scan.invokedYield {
+		return true
+	}
+	for candidate, writes := range scan.directIvarWrites {
+		if _, written := writes[fn.AccessorName]; written {
+			return true
+		}
+		if _, unknown := scan.unknownDirectIvarEffects[candidate]; unknown {
+			return true
+		}
+	}
+	for block := range scan.invokedLambdas {
+		var effects regionIvarEffects
+		c.collectRepeatedRegionIvarEffectsFromBlock(block, &effects)
+		if effects.unknown {
+			return true
+		}
+		if _, written := effects.writes[fn.AccessorName]; written {
+			return true
+		}
+	}
+	return false
 }
 
 // widenUnsetInstanceIvarFacts drops facts narrower than the property contract

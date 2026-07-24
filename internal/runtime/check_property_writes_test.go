@@ -151,6 +151,27 @@ end
 	}
 }
 
+func TestCheckTypedGetterReturnContradiction(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `
+class User
+  getter name: string
+end
+
+def run
+  User.new.name
+end
+`)
+	warnings := script.CheckWarningsForFunction("run")
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "return value expected string") {
+			return
+		}
+	}
+	t.Fatalf("CheckWarningsForFunction(%q) = %#v, want getter return warning", "run", warnings)
+}
+
 func TestCheckTypedPropertyWriteStaysGradual(t *testing.T) {
 	t.Parallel()
 

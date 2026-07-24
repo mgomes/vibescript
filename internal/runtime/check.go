@@ -1774,7 +1774,7 @@ func (c *scriptChecker) checkFunctionCall(label string, fn *ScriptFunction, args
 		return
 	}
 	returnType := fn.ReturnTy
-	if fn.Accessor == functionAccessorGetter {
+	if fn.Accessor == functionAccessorGetter && !c.checkReachableCalls {
 		returnType = nil
 	}
 	c.checkStatements(label, returnType, fn.Body)
@@ -2882,7 +2882,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 			return
 		}
 		returnType := fn.ReturnTy
-		if fn.Accessor == functionAccessorGetter {
+		if fn.Accessor == functionAccessorGetter && !c.checkReachableCalls {
 			returnType = nil
 		}
 		c.checkStatements(label, returnType, fn.Body)
@@ -18146,6 +18146,7 @@ type namespaceMutationScan struct {
 	invokedLambdas           map[*BlockLiteral]struct{}
 	invokedSelfFunctions     map[*ScriptFunction]struct{}
 	invokedUnknownCallable   bool
+	invokedYield             bool
 	directIvarWrites         map[*ScriptFunction]map[string]struct{}
 	unknownDirectIvarEffects map[*ScriptFunction]struct{}
 	currentFunction          *ScriptFunction
@@ -20382,6 +20383,7 @@ func (s *namespaceMutationScan) expressionWithAuto(expr Expression, autoCall boo
 				return false
 			}
 		}
+		s.invokedYield = true
 		return true
 	case *InterpolatedString:
 		return s.stringParts(typed.Parts)
