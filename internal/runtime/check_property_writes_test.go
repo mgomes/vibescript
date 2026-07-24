@@ -6531,6 +6531,107 @@ end
 	})
 }
 
+func TestCheckInitializerIvarOneShotCallbackDefaultAutoCallShapes(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		parameters  string
+		runBody     string
+		wantWarning bool
+	}{
+		{
+			name:       "bare constructor",
+			parameters: "(value = -> { @flag = true }.call())",
+			runBody:    "User.new.flag",
+		},
+		{
+			name:       "parenthesized constructor",
+			parameters: "(value = -> { @flag = true }.call())",
+			runBody:    "User.new().flag",
+		},
+		{
+			name: "bare constructor with multiple defaults",
+			parameters: `(
+    first = 0,
+    second = -> { @flag = true }.call()
+  )`,
+			runBody: "User.new.flag",
+		},
+		{
+			name:       "bare constructor with keyword default",
+			parameters: "(trigger: (-> { @flag = true }.call()))",
+			runBody:    "User.new.flag",
+		},
+		{
+			name:        "dynamic positional splat may supply default",
+			parameters:  "(value = -> { @flag = true }.call())",
+			runBody:     "args = JSON.parse(\"[1]\")\n  User.new(*args).flag",
+			wantWarning: true,
+		},
+		{
+			name:        "dynamic keyword splat may supply default",
+			parameters:  "(trigger: (-> { @flag = true }.call()))",
+			runBody:     "options = JSON.parse('{\"trigger\":1}')\n  User.new(**options).flag",
+			wantWarning: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScriptDefault(t, `
+def takes_int(value: int)
+  value
+end
+
+class User
+  property flag: bool
+
+  def initialize`+tc.parameters+`
+    unless @flag
+      takes_int("bad")
+    end
+  end
+end
+
+def run
+  `+tc.runBody+`
+end
+`)
+			warnings := script.CheckWarningsForCall("run", nil, CallOptions{})
+			if tc.wantWarning {
+				want := "call to takes_int argument value expected int, got string"
+				found := false
+				for _, warning := range warnings {
+					if strings.Contains(warning.Message, want) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("CheckWarningsForCall() = %#v, want substring %q", warnings, want)
+				}
+				requireCallErrorContains(
+					t,
+					script,
+					"run",
+					nil,
+					CallOptions{},
+					"argument value expected int, got string",
+				)
+				return
+			}
+			if len(warnings) != 0 {
+				t.Errorf("CheckWarningsForCall() = %#v, want none", warnings)
+			}
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if got.Kind() != KindBool || !got.Bool() {
+				t.Errorf("run() = %v, want true", got)
+			}
+		})
+	}
+}
+
 func TestCheckInitializerIvarNestedOneShotCallbacksPreserveUnrelatedFacts(t *testing.T) {
 	t.Parallel()
 

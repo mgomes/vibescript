@@ -8307,9 +8307,10 @@ func (c *scriptChecker) checkMemberAutoCall(
 			c.checkCallShape(function, view, target.name, target.fn)
 			call := &CallExpr{Callee: member, Position: member.Pos()}
 			plan := c.scriptCallBindingPlan(call, target)
-			if plan.bodyMayEnter {
-				c.enqueueReachableFunction(target.name, target.fn)
-			} else if plan.bindingStarts {
+			// A bare member auto-call has no captured argument facts, so its
+			// binding plan must carry exact omitted-default execution into
+			// the reachable body check.
+			if plan.bindingStarts {
 				c.enqueueReachableFunctionBinding(target.name, target.fn, nil, plan)
 			}
 			if plan.bodyMayEnter {
