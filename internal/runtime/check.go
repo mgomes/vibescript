@@ -6449,18 +6449,6 @@ type instanceScriptDispatchSelection struct {
 	unknown            bool
 }
 
-func (s instanceScriptDispatchSelection) mayEnter() bool {
-	if s.unknown {
-		return true
-	}
-	for _, target := range s.targets {
-		if target.mayEnter {
-			return true
-		}
-	}
-	return false
-}
-
 func (s instanceScriptDispatchSelection) mayRunScript() bool {
 	if s.unknown {
 		return true
@@ -7198,53 +7186,6 @@ func typeExprProvablyStorableHashKey(ty *TypeExpr) bool {
 	})
 }
 
-func (c *scriptChecker) indexDispatchMayEnter(expr *IndexExpr) bool {
-	if expr == nil {
-		return false
-	}
-	return c.callDispatchMayEnter(&CallExpr{
-		Callee: &MemberExpr{
-			Object:   expr.Object,
-			Property: "[]",
-			Position: expr.Pos(),
-		},
-		Args:     append([]Expression(nil), expr.Indices...),
-		Position: expr.Pos(),
-	})
-}
-
-func (c *scriptChecker) binaryDispatchMayEnter(expr *BinaryExpr) bool {
-	for _, method := range binaryDispatchMethodNames(expr.Operator) {
-		if c.callDispatchMayEnter(binaryDispatchCall(expr, method)) {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *scriptChecker) callDispatchMayEnter(call *CallExpr) bool {
-	if call == nil {
-		return false
-	}
-	target, resolved := c.resolveCallable(call)
-	if resolved {
-		if target.fn != nil {
-			return c.scriptCallBindingPlan(call, target).bodyMayEnter
-		}
-		return c.builtinCallMayEnter(staticCallViewFor(call, target), target.spec)
-	}
-	candidates := c.captureDynamicCallCandidates(call)
-	resolution := c.exactDynamicCallTargets(call, target, false, candidates)
-	if resolution.lookupFails {
-		return false
-	}
-	if !resolution.exact {
-		return true
-	}
-	return c.refineDynamicCallTargetEntry(resolution.targets) ||
-		resolution.nonScriptMayComplete
-}
-
 func (c *scriptChecker) instanceDispatchHasOpaqueClassConstantEffects(ty *TypeExpr, methods ...string) bool {
 	arms, ok := typeExprArms(ty, 0)
 	if !ok || len(arms) == 0 {
@@ -7826,16 +7767,6 @@ func (c *scriptChecker) checkGeneratedAssignmentSetterArgument(
 	)
 }
 
-func (c *scriptChecker) indexedHashOperationProvablyAborts(target *IndexExpr) bool {
-	if target == nil {
-		return false
-	}
-	return c.indexedHashOperationProvablyAbortsWithReceiver(
-		target,
-		c.inferExpressionType(target.Object),
-	)
-}
-
 func (c *scriptChecker) indexedHashOperationProvablyAbortsWithReceiver(
 	target *IndexExpr,
 	receiver *TypeExpr,
@@ -7857,11 +7788,6 @@ func (c *scriptChecker) indexedHashOperationProvablyAbortsWithReceiver(
 		keyType = c.inferExpressionType(key)
 	}
 	return keyType != nil && typeExprProvablyUnstorableKey(keyType)
-}
-
-func (c *scriptChecker) exactArrayIndexWriteOutOfBounds(target *IndexExpr) bool {
-	receiver, _ := c.assignmentReceiverSnapshot(target)
-	return c.exactArrayIndexWriteOutOfBoundsWithReceiver(target, receiver)
 }
 
 func (c *scriptChecker) exactArrayIndexWriteOutOfBoundsWithReceiver(
@@ -13586,11 +13512,7 @@ func (c *scriptChecker) scriptCallBodyMustEnter(
 			}
 		case ParamKeyword:
 			index := keywordIndex(view, param.Name)
-			var value Expression
-			if index >= 0 {
-				value = view.kwargs[index].Value
-				usedKeywords[param.Name] = struct{}{}
-			} else {
+			if index < 0 {
 				if param.DefaultVal == nil ||
 					!expressionProvenNonRaising(param.DefaultVal) {
 					return false
@@ -13605,6 +13527,8 @@ func (c *scriptChecker) scriptCallBodyMustEnter(
 				}
 				continue
 			}
+			value := view.kwargs[index].Value
+			usedKeywords[param.Name] = struct{}{}
 			if !c.callArgumentMustBindType(value, param.Type) {
 				return false
 			}
@@ -18760,13 +18684,6 @@ func (s *namespaceMutationScan) statements(statements []Statement) bool {
 		}
 	}
 	return true
-}
-
-func (s *namespaceMutationScan) statementMayComplete(stmt Statement) bool {
-	if s == nil || s.checker == nil {
-		return true
-	}
-	return s.checker.statementMayCompleteForBinding(stmt)
 }
 
 func (s *namespaceMutationScan) captureFailureScope() {

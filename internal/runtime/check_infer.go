@@ -456,33 +456,6 @@ func (c *scriptChecker) localArrayFillBlockLiteralValuesFor(
 		len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
 
-func (c *scriptChecker) bindLocalBlockLiteralChoices(
-	name string,
-	blocks []checkBlockLiteralValue,
-	mayNil bool,
-) {
-	if name == "" || len(c.localTypes) == 0 {
-		return
-	}
-	for i := len(c.localTypes) - 1; i >= 0; i-- {
-		if _, tracked := c.localTypes[i][name]; !tracked {
-			continue
-		}
-		if len(blocks) == 0 {
-			delete(c.localClassValues[i], name)
-			return
-		}
-		if c.localClassValues[i] == nil {
-			c.localClassValues[i] = make(checkClassValueFrame)
-		}
-		c.localClassValues[i][name] = checkLocalValueFact{
-			blocks:            normalizeCheckBlockLiterals(blocks),
-			blockChoiceMayNil: mayNil,
-		}
-		return
-	}
-}
-
 func (c *scriptChecker) localStaticValuesFor(name string) ([]Expression, bool) {
 	if _, poisoned := c.typePoison[name]; poisoned {
 		return nil, false
@@ -3417,19 +3390,6 @@ func (c *scriptChecker) collectRepeatedRegionIvarEffectsFromExpression(
 	}
 }
 
-// instanceOperatorMayRun reports whether an operator can enter script code,
-// which may invoke a stored closure that captures the current self.
-func (c *scriptChecker) instanceOperatorMayRun(
-	receiver Expression,
-	operator TokenType,
-) bool {
-	methods := binaryDispatchMethodNames(operator)
-	if len(methods) == 0 {
-		return false
-	}
-	return c.instanceMethodMayRun(receiver, methods...)
-}
-
 // indexReadIvarEffects recognizes hash default callbacks while retaining pure
 // builtin and fresh-literal reads. Direct Hash.new provenance is captured when
 // the object evaluates so a later index expression cannot change it.
@@ -4249,13 +4209,12 @@ func (c *scriptChecker) blockLiteralExpressionBindingCandidateOutcome(
 	case *DestructureTarget:
 		if ty != nil {
 			return c.blockLiteralTypeBindingOutcome(valueType, ty, typed)
-		} else {
-			targetOutcome = c.blockLiteralDestructureExpressionOutcome(
-				typed,
-				expr,
-				c.inferExpressionType(expr),
-			)
 		}
+		targetOutcome = c.blockLiteralDestructureExpressionOutcome(
+			typed,
+			expr,
+			c.inferExpressionType(expr),
+		)
 	default:
 		return blockLiteralBindingOutcome{}
 	}
@@ -5068,45 +5027,6 @@ func (c *scriptChecker) blockLiteralDestructureArrayElementsOutcome(
 		}
 	}
 	return outcome
-}
-
-func (c *scriptChecker) instanceMethodMayRun(receiver Expression, methods ...string) bool {
-	return c.instanceTypeMethodMayRun(c.inferExpressionType(receiver), methods...)
-}
-
-func (c *scriptChecker) instanceTypeMethodMayRun(
-	receiverType *TypeExpr,
-	methods ...string,
-) bool {
-	if len(methods) == 0 {
-		return false
-	}
-	arms, ok := typeExprArms(receiverType, 0)
-	if !ok || len(arms) == 0 {
-		return true
-	}
-	resolve := c.checkNamedTypeResolver()
-	for _, arm := range arms {
-		if arm.Kind != TypeEnum {
-			continue
-		}
-		match, ok := resolve(arm)
-		if !ok {
-			return true
-		}
-		if match.enum != nil {
-			continue
-		}
-		if match.class == nil || match.class.IsModule {
-			return true
-		}
-		for _, method := range methods {
-			if _, ok := match.class.Methods[method]; ok {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func collectRegionIvarWriteTargets(target Expression, effects *regionIvarEffects) {
