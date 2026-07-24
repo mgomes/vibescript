@@ -430,7 +430,8 @@ end
 `)
 	requireCheckWarningContains(t, baseNameStatic, "call to takes_int argument value expected int, got string?")
 
-	// The static mirror sees implicit-self predicate methods the same way.
+	// The static mirror resolves an implicit-self predicate method as the value
+	// reading and uses its return summary to reject the non-type argument.
 	selfShadowed := compileScript(t, `
 class Probe
   def string?
@@ -442,7 +443,11 @@ class Probe
   end
 end
 `)
-	requireNoCheckWarnings(t, selfShadowed)
+	requireCheckWarningContains(
+		t,
+		selfShadowed,
+		"call to JSON.parse_as expects a type literal as its second argument, got string",
+	)
 
 	// A zero-arity callable bound to a type-spelled name keeps the caller's
 	// auto-call state: a function-typed parameter receives it bare, while an

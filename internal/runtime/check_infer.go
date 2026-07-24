@@ -9213,6 +9213,9 @@ func (c *scriptChecker) pureCallArgument(expr Expression) bool {
 			// value without running any code.
 			return true
 		}
+		if dispatch, exact := c.implicitSelfIdentifierDispatch(typed); exact {
+			return !dispatch.mayRunScript()
+		}
 		return !typeExprMayIncludeCallable(c.inferExpressionType(typed))
 	case *UnaryExpr:
 		return c.pureCallArgument(typed.Right)
@@ -9330,7 +9333,7 @@ func (c *scriptChecker) safeNavigationArgumentsAlwaysEvaluateInferred(call *Call
 	if !ok {
 		return false
 	}
-	return typeExprNeverNil(c.inferExpressionType(obj))
+	return c.safeNavigationReceiverKnownNonNil(obj)
 }
 
 // --- expression type inference ---
@@ -9383,7 +9386,7 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 		if ty := c.localTypeFor(typed.Name); ty != nil {
 			return ty
 		}
-		return c.autoInvokedBuiltinResultFact(typed.Name)
+		return c.autoInvokedIdentifierResultFact(typed.Name)
 	case *IvarExpr:
 		return c.localTypeFor(ivarFactKey(typed.Name))
 	case *MemberExpr:
@@ -9893,6 +9896,25 @@ func (c *scriptChecker) inferCallExprType(call *CallExpr) *TypeExpr {
 	return c.inferResolvedCallExprType(call, target)
 }
 
+func (c *scriptChecker) implicitSelfCallSummaryTarget(callee Expression) (staticCallable, bool) {
+	switch typed := callee.(type) {
+	case *Identifier:
+		if c.identifierShadowed(typed.Name) || c.hostGlobalShadows(typed.Name) ||
+			c.typeRootHasBinding(typed.Name) || c.hostBuiltinOverrides(typed.Name) {
+			return staticCallable{}, false
+		}
+		return c.implicitSelfSummaryCallable(typed.Name)
+	case *MemberExpr:
+		ident, ok := typed.Object.(*Identifier)
+		if !ok || ident.Name != "self" {
+			return staticCallable{}, false
+		}
+		return c.implicitSelfSummaryCallable(typed.Property)
+	default:
+		return staticCallable{}, false
+	}
+}
+
 func (c *scriptChecker) inferResolvedCallExprType(call *CallExpr, target staticCallable) *TypeExpr {
 	member, memberCall := call.Callee.(*MemberExpr)
 	if memberCall && member.Safe && typeExprIsNilOnly(c.safeNavigationReceiverFact(member.Object)) {
@@ -9909,7 +9931,7 @@ func (c *scriptChecker) inferResolvedCallExprType(call *CallExpr, target staticC
 		}
 		result = target.fn.ReturnTy
 		if result == nil {
-			result = c.scriptFunctionReturnSummary(call, target.fn)
+			result = c.scriptCallableReturnSummary(call, target)
 		}
 	} else if target.name == "JSON.parse_as" && len(call.Args) == 2 {
 		if shape, ok := shapeValuePayload(c.inferExpressionType(call.Args[1])); ok {
@@ -9936,8 +9958,7 @@ func (c *scriptChecker) inferDynamicCallExprType(
 	for _, candidate := range resolution.targets {
 		if !candidate.mayEnter || !c.scriptFunctionCallMayComplete(
 			candidate.call,
-			candidate.target.fn,
-			candidate.target.constructor,
+			candidate.target,
 		) {
 			continue
 		}
@@ -9972,6 +9993,9 @@ func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
 	}
 	target, ok := c.resolveMemberCallable(member)
 	if !ok {
+		target, ok = c.implicitSelfCallSummaryTarget(member)
+	}
+	if !ok {
 		return nil
 	}
 	var result *TypeExpr
@@ -9979,6 +10003,9 @@ func (c *scriptChecker) memberResultFact(member *MemberExpr) *TypeExpr {
 		result = &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
 	} else if target.fn != nil && !target.constructor {
 		result = target.fn.ReturnTy
+		if result == nil {
+			result = c.scriptCallableReturnSummary(nil, target)
+		}
 	} else if target.spec.autoInvoke {
 		result = target.spec.resultType
 	}
@@ -10084,6 +10111,9 @@ func (c *scriptChecker) safeNavigationReceiverKnownNonNil(expr Expression) bool 
 	ident, ok := expr.(*Identifier)
 	if !ok {
 		return typeExprNeverNil(c.inferExpressionType(expr))
+	}
+	if ident.Name == "self" && c.selfClass != nil {
+		return true
 	}
 	if typeExprNeverNil(c.localTypeFor(ident.Name)) {
 		return true

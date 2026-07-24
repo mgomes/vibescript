@@ -1947,9 +1947,12 @@ func (c *scriptChecker) enqueueReachableIdentifierCall(ident *Identifier) {
 		return
 	}
 	implicitSelf := false
+	var implicitCall *CallExpr
 	fn := c.script.functions[ident.Name]
+	target := staticCallable{name: ident.Name, fn: fn}
 	if fn == nil {
 		fn, _ = c.typeRootFunction(ident.Name)
+		target.fn = fn
 	}
 	if fn == nil {
 		if c.typeRootHasBinding(ident.Name) || c.hostBuiltinOverrides(ident.Name) {
@@ -1958,8 +1961,13 @@ func (c *scriptChecker) enqueueReachableIdentifierCall(ident *Identifier) {
 			}
 			return
 		}
-		fn = c.implicitSelfFunction(ident.Name)
-		implicitSelf = fn != nil
+		var ok bool
+		implicitCall, target, ok = c.implicitSelfAutoCall(ident)
+		if !ok {
+			return
+		}
+		fn = target.fn
+		implicitSelf = true
 	}
 	if fn == nil {
 		return
@@ -1969,14 +1977,12 @@ func (c *scriptChecker) enqueueReachableIdentifierCall(ident *Identifier) {
 	}
 	bindingStarts := true
 	if implicitSelf {
-		call := &CallExpr{Callee: ident, Position: ident.Pos()}
-		target := staticCallable{name: ident.Name, fn: fn}
-		plan := c.scriptCallBindingPlan(call, target)
+		plan := c.scriptCallBindingPlan(implicitCall, target)
 		bindingStarts = plan.bindingStarts
 		// A bare implicit-self call has no captured argument facts, so its
 		// binding plan must carry exact omitted-default execution into the body.
 		if plan.bindingStarts {
-			c.enqueueReachableFunctionBinding(ident.Name, fn, nil, plan)
+			c.enqueueReachableFunctionBinding(target.name, fn, nil, plan)
 		}
 	} else if c.checkReachableCalls {
 		c.enqueueReachableFunction(ident.Name, fn)
@@ -1992,7 +1998,7 @@ func (c *scriptChecker) autoInvokedIdentifierMayComplete(ident *Identifier) bool
 	}
 	if fns, exact := c.localCallableValuesFor(ident.Name); exact {
 		for _, fn := range fns {
-			if len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false) {
+			if len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn}) {
 				return true
 			}
 		}
@@ -2005,23 +2011,30 @@ func (c *scriptChecker) autoInvokedIdentifierMayComplete(ident *Identifier) bool
 		return true
 	}
 	if fn := c.script.functions[ident.Name]; fn != nil {
-		return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+		return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn})
 	}
 	if fn, ok := c.typeRootFunction(ident.Name); ok {
-		return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+		return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn})
 	}
 	if c.typeRootHasBinding(ident.Name) || c.hostBuiltinOverrides(ident.Name) {
 		return true
 	}
-	if fn := c.implicitSelfFunction(ident.Name); fn != nil {
-		call := &CallExpr{Callee: ident, Position: ident.Pos()}
-		target := staticCallable{name: ident.Name, fn: fn}
-		plan := c.scriptCallBindingPlan(call, target)
-		return plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, fn, false)
-	}
-	if spec, ok := c.defaultBuiltinCallSpec(ident.Name); ok && spec.autoInvoke {
+	if spec, ok := c.defaultBuiltinCallSpec(ident.Name); ok {
+		if !spec.autoInvoke {
+			return true
+		}
 		view := staticCallView{pos: ident.Pos()}
 		return c.builtinCallMayEnter(view, spec) && c.builtinCallMayComplete(spec)
+	}
+	if call, target, ok := c.implicitSelfAutoCall(ident); ok {
+		if target.fn == nil {
+			return true
+		}
+		plan := c.scriptCallBindingPlan(call, target)
+		return plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, target)
+	}
+	if c.implicitSelfConstructorLookupFails(&CallExpr{Callee: ident, Position: ident.Pos()}) {
+		return false
 	}
 	return true
 }
@@ -3131,8 +3144,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				c.recordNonCompletingExpression()
 				return
 			}
-			c.pinExpressionFact(typed.Value, c.inferExpressionType(typed.Value))
-			c.captureEvaluatedDestructureFact(typed.Value)
+			c.captureEvaluatedDestructureFactWithExpectation(typed.Value, expectation)
 			// Plain assignment evaluates its value first. An inline block in
 			// that value can rebind the receiver local before the target
 			// resolves; ordinary escapes cannot rebind a caller local, so the
@@ -3249,8 +3261,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 					}
 					break
 				}
-				c.pinExpressionFact(typed.Value, c.inferExpressionType(typed.Value))
-				c.captureEvaluatedDestructureFact(typed.Value)
+				c.captureEvaluatedDestructureFactWithExpectation(typed.Value, expectation)
 				if indexSetterType != nil {
 					c.enqueueReachableInstanceDispatch(indexSetterType, "[]=")
 				}
@@ -4953,7 +4964,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if targetResolved && target.fn != nil {
 			targetMayEnter = targetMayEnter && c.scriptCallBindingPlan(checkedCall, target).bodyMayEnter
 			callMayComplete = targetMayEnter &&
-				c.scriptFunctionCallMayComplete(checkedCall, target.fn, target.constructor)
+				c.scriptFunctionCallMayComplete(checkedCall, target)
 		} else if targetResolved {
 			view := staticCallViewFor(checkedCall, target)
 			targetMayEnter = targetMayEnter && c.builtinCallMayEnter(view, target.spec)
@@ -6107,6 +6118,42 @@ func (c *scriptChecker) implicitSelfFunction(name string) *ScriptFunction {
 	return c.selfClass.Methods[name]
 }
 
+func (c *scriptChecker) implicitSelfSummaryCallable(name string) (staticCallable, bool) {
+	if c.selfClass == nil ||
+		(!c.selfClassContext && name == "class") {
+		return staticCallable{}, false
+	}
+	if c.selfClassContext && name == "new" && !c.selfClass.IsModule {
+		return dynamicConstructorTarget(c.selfClass, calleeMemberValue), true
+	}
+	fn := c.implicitSelfFunction(name)
+	if fn == nil {
+		return staticCallable{}, false
+	}
+	separator := "#"
+	if c.selfClassContext {
+		separator = "."
+	}
+	return staticCallable{
+		name:       c.selfClass.Name + separator + name,
+		fn:         fn,
+		resolution: calleeMemberMethod,
+	}, true
+}
+
+// implicitSelfAutoCall resolves the synthetic zero-argument call performed by
+// runtime value evaluation of a bare method identifier.
+func (c *scriptChecker) implicitSelfAutoCall(ident *Identifier) (*CallExpr, staticCallable, bool) {
+	if ident == nil {
+		return nil, staticCallable{}, false
+	}
+	target, ok := c.implicitSelfSummaryCallable(ident.Name)
+	if !ok {
+		return nil, staticCallable{}, false
+	}
+	return &CallExpr{Callee: ident, Position: ident.Pos()}, target, true
+}
+
 // scriptFunctionClassConstantEffectsProvenAbsent recognizes the bounded set
 // of script functions whose reachable expressions cannot write class state.
 // Unknown dispatch, callable bindings, control flow, and mutation all remain
@@ -6972,8 +7019,7 @@ func (c *scriptChecker) binaryExpressionMayCompleteWithReceiver(
 	for _, selected := range selection.targets {
 		if selected.mayEnter && c.scriptFunctionCallMayComplete(
 			selected.call,
-			selected.target.fn,
-			false,
+			selected.target,
 		) {
 			return true
 		}
@@ -7076,8 +7122,7 @@ func (c *scriptChecker) indexExpressionMayCompleteWithReceiverAndDefaults(
 	for _, selected := range selection.targets {
 		if selected.mayEnter && c.scriptFunctionCallMayComplete(
 			selected.call,
-			selected.target.fn,
-			false,
+			selected.target,
 		) {
 			return true
 		}
@@ -7559,7 +7604,7 @@ func (c *scriptChecker) assignmentValueExpectation(
 		return typeExpressionExpectation(ty)
 	}
 	member, ok := target.(*MemberExpr)
-	if !ok || !memberAssignmentReceiverCanUseExpectation(member.Object) {
+	if !ok || !c.memberAssignmentReceiverCanUseExpectation(member.Object) {
 		return expressionExpectation{}
 	}
 	receivers, exact := c.exactAssignmentMemberReceivers(member)
@@ -7595,7 +7640,40 @@ func (c *scriptChecker) assignmentValueExpectation(
 	return typeExpressionExpectation(merged)
 }
 
-func memberAssignmentReceiverCanUseExpectation(expr Expression) bool {
+func (c *scriptChecker) memberAssignmentReceiverCanUseExpectation(expr Expression) bool {
+	if !memberAssignmentReceiverSyntaxCanUseExpectation(expr) {
+		return false
+	}
+	switch typed := expr.(type) {
+	case *CallExpr:
+		target, resolved := c.resolveCallable(typed)
+		return resolved && (target.constructorClass != "" ||
+			target.fn != nil && target.fn.ReturnTy != nil)
+	case *MemberExpr:
+		if !c.memberAssignmentReceiverCanUseExpectation(typed.Object) {
+			return false
+		}
+		target, resolved := c.resolveMemberCallable(typed)
+		return resolved && (target.constructorClass != "" ||
+			target.fn != nil && target.fn.ReturnTy != nil)
+	case *Identifier:
+		if c.identifierShadowed(typed.Name) {
+			return true
+		}
+		if fn := c.script.functions[typed.Name]; fn != nil && len(fn.Params) == 0 {
+			return fn.ReturnTy != nil
+		}
+		if fn, ok := c.typeRootFunction(typed.Name); ok && len(fn.Params) == 0 {
+			return fn.ReturnTy != nil
+		}
+		if fn := c.implicitSelfFunction(typed.Name); fn != nil {
+			return fn.ReturnTy != nil
+		}
+	}
+	return true
+}
+
+func memberAssignmentReceiverSyntaxCanUseExpectation(expr Expression) bool {
 	return staticMemberAssignmentReceiverCanUseExpectation(expr) ||
 		boundMemberAssignmentReceiverCanUseExpectation(expr)
 }
@@ -7674,8 +7752,7 @@ func (c *scriptChecker) assignmentSetterMayCompleteWithReceiver(
 	for _, selected := range selection.targets {
 		if selected.mayEnter && c.scriptFunctionCallMayComplete(
 			selected.call,
-			selected.target.fn,
-			false,
+			selected.target,
 		) {
 			return true
 		}
@@ -8489,7 +8566,7 @@ func (c *scriptChecker) checkMemberAutoCall(
 			}
 			c.applyAutoInvokedMemberNamespaceMutations(member, call, target)
 			completed := plan.bodyMayEnter &&
-				c.scriptFunctionCallMayComplete(call, target.fn, target.constructor)
+				c.scriptFunctionCallMayComplete(call, target)
 			return target, true, true, completed
 		}
 		return target, true, false, true
@@ -11702,6 +11779,9 @@ func (c *scriptChecker) callCalleeLookupFails(
 		member, ok := call.Callee.(*MemberExpr)
 		return ok && c.forwarderCalleeLookupFails(member.Property, candidates)
 	}
+	if c.implicitSelfConstructorLookupFails(call) {
+		return true
+	}
 	return resolution.lookupFails
 }
 
@@ -12188,11 +12268,7 @@ func (c *scriptChecker) refineDynamicCallTargetEntry(targets []checkDynamicCallT
 
 func (c *scriptChecker) dynamicScriptCallTargetsMayComplete(targets []checkDynamicCallTarget) bool {
 	for _, candidate := range targets {
-		if candidate.mayEnter && c.scriptFunctionCallMayComplete(
-			candidate.call,
-			candidate.target.fn,
-			candidate.target.constructor,
-		) {
+		if candidate.mayEnter && c.scriptFunctionCallMayComplete(candidate.call, candidate.target) {
 			return true
 		}
 	}
@@ -14118,7 +14194,7 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 		if target.fn != nil {
 			plan := c.scriptCallBindingPlan(checkedCall, target)
 			return plan.bodyMayEnter &&
-				c.scriptFunctionCallMayComplete(checkedCall, target.fn, target.constructor)
+				c.scriptFunctionCallMayComplete(checkedCall, target)
 		}
 		view := staticCallViewFor(checkedCall, target)
 		return c.builtinCallMayEnter(view, target.spec) &&
@@ -14131,7 +14207,7 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 		}
 		if fns, exact := c.localCallableValuesFor(typed.Name); exact {
 			for _, fn := range fns {
-				if len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false) {
+				if len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn}) {
 					return true
 				}
 			}
@@ -14141,20 +14217,30 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 			return true
 		}
 		if fn := c.script.functions[typed.Name]; fn != nil {
-			return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+			return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn})
 		}
 		if fn, ok := c.typeRootFunction(typed.Name); ok {
-			return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, fn, false)
+			return len(fn.Params) > 0 || c.scriptFunctionCallMayComplete(nil, staticCallable{fn: fn})
 		}
-		if fn := c.implicitSelfFunction(typed.Name); fn != nil {
-			call := &CallExpr{Callee: typed, Position: typed.Pos()}
-			target := staticCallable{name: typed.Name, fn: fn}
-			plan := c.scriptCallBindingPlan(call, target)
-			return plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, fn, false)
+		if c.typeRootHasBinding(typed.Name) || c.hostBuiltinOverrides(typed.Name) {
+			return true
 		}
-		if spec, ok := c.defaultBuiltinCallSpec(typed.Name); ok && spec.autoInvoke {
+		if spec, ok := c.defaultBuiltinCallSpec(typed.Name); ok {
+			if !spec.autoInvoke {
+				return true
+			}
 			view := staticCallView{pos: typed.Pos()}
 			return c.builtinCallMayEnter(view, spec) && c.builtinCallMayComplete(spec)
+		}
+		if call, target, ok := c.implicitSelfAutoCall(typed); ok {
+			if target.fn == nil {
+				return true
+			}
+			plan := c.scriptCallBindingPlan(call, target)
+			return plan.bodyMayEnter && c.scriptFunctionCallMayComplete(call, target)
+		}
+		if c.implicitSelfConstructorLookupFails(&CallExpr{Callee: typed, Position: typed.Pos()}) {
+			return false
 		}
 		return true
 	case *MemberExpr:
@@ -14185,7 +14271,7 @@ func (c *scriptChecker) expressionMayCompleteForBinding(expr Expression) bool {
 			call := &CallExpr{Callee: typed, Position: typed.Pos()}
 			plan := c.scriptCallBindingPlan(call, target)
 			return plan.bodyMayEnter &&
-				c.scriptFunctionCallMayComplete(call, target.fn, target.constructor)
+				c.scriptFunctionCallMayComplete(call, target)
 		}
 		if !target.spec.autoInvoke {
 			return true
@@ -14666,6 +14752,9 @@ func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
 			return target, true
 		}
 	}
+	if c.returnCollector != nil {
+		return c.implicitSelfCallSummaryTarget(call.Callee)
+	}
 	return staticCallable{}, false
 }
 
@@ -14682,6 +14771,25 @@ func implicitSelfConstructorReceiver(expr Expression) bool {
 		return isIdentifier && ident.Name == "self" && typed.Property == "new"
 	}
 	return false
+}
+
+// implicitSelfConstructorLookupFails recognizes a class-self new lookup that
+// cannot resolve to either a constructor or a module-provided member. Dynamic
+// module state keeps the lookup gradual.
+func (c *scriptChecker) implicitSelfConstructorLookupFails(call *CallExpr) bool {
+	if call == nil || c.selfClass == nil || !c.selfClassContext ||
+		!implicitSelfConstructorReceiver(call.Callee) || c.callMayDispatchDynamicValue(call) {
+		return false
+	}
+	if _, ok := c.implicitSelfSummaryCallable("new"); ok {
+		return false
+	}
+	classes, exact := c.constructorInstanceClassNamesForClasses(
+		[]string{c.selfClass.Name},
+		true,
+		"",
+	)
+	return exact && len(classes) == 0
 }
 
 // callMayDispatchDynamicValue distinguishes unresolved first-class dispatch
@@ -15146,12 +15254,12 @@ func (c *scriptChecker) defaultBuiltinCallSpec(name string) (staticCallSpec, boo
 	return c.script.engine.builtinCallSpec(name)
 }
 
-// autoInvokedBuiltinResultFact reports the result type of a bare identifier
-// that auto-invokes at runtime: a script function's annotated return or
-// summary (`x = build_count`), or a builtin's invariant result (`t = uuid`).
-// The guard chain mirrors resolveCallable: any shadowing binding or host
-// override dispatches elsewhere, so no fact applies.
-func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
+// autoInvokedIdentifierResultFact reports the result type of a bare identifier
+// that auto-invokes at runtime: a script callable's annotated return or summary
+// (`x = build_count`), or a builtin's invariant result (`t = uuid`). The guard
+// chain mirrors resolveCallable: any shadowing binding or host override
+// dispatches elsewhere, so no fact applies.
+func (c *scriptChecker) autoInvokedIdentifierResultFact(name string) *TypeExpr {
 	if c.identifierShadowed(name) || c.hostGlobalShadows(name) {
 		return nil
 	}
@@ -15162,7 +15270,11 @@ func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
 		if fn.ReturnTy != nil {
 			return fn.ReturnTy
 		}
-		return c.scriptFunctionReturnSummary(nil, fn)
+		return c.scriptCallableReturnSummary(nil, staticCallable{
+			name:       name,
+			fn:         fn,
+			resolution: calleeDirect,
+		})
 	}
 	if fn, ok := c.typeRootFunction(name); ok {
 		if len(fn.Params) > 0 {
@@ -15176,17 +15288,23 @@ func (c *scriptChecker) autoInvokedBuiltinResultFact(name string) *TypeExpr {
 	if c.hostBuiltinOverrides(name) {
 		return nil
 	}
-	if fn := c.implicitSelfFunction(name); fn != nil {
-		if len(fn.Params) > 0 {
-			return checkTypeFunction
+	if spec, ok := c.defaultBuiltinCallSpec(name); ok {
+		if !spec.autoInvoke {
+			return nil
 		}
-		return fn.ReturnTy
+		return spec.resultType
 	}
-	spec, ok := c.defaultBuiltinCallSpec(name)
-	if !ok || !spec.autoInvoke {
+	target, ok := c.implicitSelfSummaryCallable(name)
+	if !ok {
 		return nil
 	}
-	return spec.resultType
+	if target.constructorClass != "" {
+		return &TypeExpr{Kind: TypeEnum, Name: target.constructorClass}
+	}
+	if target.fn.ReturnTy != nil {
+		return target.fn.ReturnTy
+	}
+	return c.scriptCallableReturnSummary(nil, target)
 }
 
 func (c *scriptChecker) typeRootObjectFunction(name, property string) (*ScriptFunction, bool) {
@@ -16800,12 +16918,17 @@ func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Iden
 		target.fn = fn
 	}
 	if fn == nil {
-		fn = c.implicitSelfFunction(ident.Name)
-		if fn == nil {
+		if c.typeRootHasBinding(ident.Name) || c.hostBuiltinOverrides(ident.Name) {
 			return
 		}
-		call = &CallExpr{Callee: ident, Position: ident.Pos()}
-		target.fn = fn
+		if _, ok := c.defaultBuiltinCallSpec(ident.Name); ok {
+			return
+		}
+		var ok bool
+		call, target, ok = c.implicitSelfAutoCall(ident)
+		if !ok || target.fn == nil {
+			return
+		}
 	} else if len(fn.Params) != 0 {
 		return
 	}
@@ -16813,7 +16936,7 @@ func (c *scriptChecker) applyAutoInvokedIdentifierNamespaceMutations(ident *Iden
 	if len(members) == 0 {
 		return
 	}
-	c.pinExpressionFact(ident, c.autoInvokedBuiltinResultFact(ident.Name))
+	c.pinExpressionFact(ident, c.autoInvokedIdentifierResultFact(ident.Name))
 	for member := range members {
 		c.recordRuntimeNamespaceMember(member)
 	}

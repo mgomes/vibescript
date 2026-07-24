@@ -470,7 +470,11 @@ class User
   end
 end
 `)
-	requireNoCheckWarnings(t, script)
+	warnings := script.CheckWarnings()
+	const want = "call to Box#callback= argument value expected function, got int"
+	if len(warnings) != 1 || warnings[0].Message != want {
+		t.Fatalf("CheckWarnings() = %#v, want only %q", warnings, want)
+	}
 }
 
 func TestCheckUnannotatedCallReceiverDoesNotShapeRHS(t *testing.T) {
@@ -499,7 +503,11 @@ class User
   end
 end
 `)
-	requireNoCheckWarnings(t, script)
+	warnings := script.CheckWarnings()
+	const want = "call to Box#callback= argument value expected function, got int"
+	if len(warnings) != 1 || warnings[0].Message != want {
+		t.Fatalf("CheckWarnings() = %#v, want only %q", warnings, want)
+	}
 }
 
 // Ivar parameter facts bind at each parameter's own position, so an earlier
