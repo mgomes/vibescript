@@ -4057,6 +4057,8 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if member, ok := typed.Callee.(*MemberExpr); ok {
 			if ident, ok := member.Object.(*Identifier); ok {
 				receiverFact = c.localTypeFor(ident.Name)
+			} else {
+				receiverFact = c.inferExpressionType(member.Object)
 			}
 		}
 		if targetResolved && target.fn == nil && target.spec.resultType != nil && !callExpandsArguments(typed) {
@@ -4308,12 +4310,14 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			checkedCall = expanded
 		}
 		arrayMutatorMayComplete := true
+		arrayMutatorProperty := ""
 		if member, ok := typed.Callee.(*MemberExpr); ok {
 			receiver := nonNilMutatorReceiverFact(receiverFact)
 			if receiver != nil && typeExprArmsAll(receiver, func(arm *TypeExpr) bool {
 				return arm.Kind == TypeArray
 			}) {
 				if _, modeled := arrayMutatorBuiltinProperty("array." + member.Property); modeled {
+					arrayMutatorProperty = member.Property
 					arrayMutatorMayComplete = c.arrayMutatorCallMayComplete(typed, member.Property)
 				}
 			}
@@ -4412,7 +4416,11 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		if opaqueCallEffectsMayRun {
 			c.markOpaqueClassConstants()
 		}
-		callBlockMayRun := targetMayEnter && invokedLambda == nil && c.callMayEvaluateBlock(typed)
+		arrayFillBlockCall := arrayMutatorProperty == "fill" ||
+			targetResolved && target.name == "array.fill"
+		arrayFillBlockMayRun := !arrayFillBlockCall || c.arrayFillBlockMayEvaluate(typed)
+		callBlockMayRun := targetMayEnter && invokedLambda == nil &&
+			arrayFillBlockMayRun && c.callMayEvaluateBlock(typed)
 		if callMayEnter && targetResolved && target.fn != nil &&
 			(typed.Block != nil || typed.BlockArg != nil) {
 			callBlockMayRun = c.scriptFunctionCallBlockMayRun(typed, target)
@@ -4462,10 +4470,14 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			// function.
 			localReturns := typed.Block.Lambda || c.callTargetsCoreLambda(typed, target, targetResolved)
 			blockResult = c.checkBlockLiteral(function, typed.Block, localReturns)
-		} else if targetMayEnter && typed.BlockArg != nil {
+		} else if targetMayEnter && typed.BlockArg != nil && arrayFillBlockMayRun {
 			if blocks, exact := c.callableBlockLiteralValues(typed.BlockArg); exact {
 				blockResult = c.blockLiteralValuesResult(function, blocks)
 			}
+		}
+		if callMayComplete && arrayFillBlockCall &&
+			blockResult.exact && !blockResult.mayComplete {
+			callMayComplete = c.arrayFillCallMayCompleteWithoutInvokingBlock(typed)
 		}
 		c.callArgumentFacts = previousFacts
 		c.callArgumentClassValues = previousClassValues
@@ -7114,7 +7126,7 @@ func (c *scriptChecker) resolvedCallMayEvaluateBlock(call *CallExpr, target stat
 		return staticArrayFetchBlockMayEvaluate(call)
 	}
 	if target.name == "array.fill" {
-		return c.arrayFillLiteralBlockMayEvaluate(call)
+		return c.arrayFillBlockMayEvaluate(call)
 	}
 	return target.spec.usesBlock
 }
@@ -7137,7 +7149,7 @@ func (c *scriptChecker) callMayEvaluateBlockWithSeen(call *CallExpr, seen map[*S
 		return staticArrayFetchBlockMayEvaluate(call)
 	}
 	if target.name == "array.fill" {
-		return c.arrayFillLiteralBlockMayEvaluate(call)
+		return c.arrayFillBlockMayEvaluate(call)
 	}
 	return target.spec.usesBlock
 }

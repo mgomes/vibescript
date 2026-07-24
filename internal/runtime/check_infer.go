@@ -6014,14 +6014,19 @@ func arrayFillElementWrites(
 				alwaysRaises: true,
 			}, true
 		}
+		skipped, blockMayRun, selectorsExact :=
+			staticArrayFillBlockSelectorOutcomes(selectors, argumentStaticValues)
+		if selectorsExact && !blockMayRun {
+			return skipped, true
+		}
 		if !blockResult.exact {
 			return arrayMutatorWriteModel{}, false
 		}
 		if !blockResult.mayComplete {
-			return arrayMutatorWriteModel{
-				preservable:  true,
-				alwaysRaises: true,
-			}, true
+			if selectorsExact {
+				return skipped, true
+			}
+			return arrayMutatorWriteModel{}, false
 		}
 		return arrayFillBlockElementWrites(
 			element,
@@ -6285,6 +6290,51 @@ func (c *scriptChecker) arrayFillCallMayComplete(call *CallExpr) bool {
 		c.arrayFillFormMayComplete(call.Args)
 }
 
+func (c *scriptChecker) arrayFillCallMayCompleteWithoutInvokingBlock(call *CallExpr) bool {
+	variants, exact := c.staticallyExpandedArrayMutatorCalls(
+		call,
+		c.callArgumentStaticValues,
+		c.callArgumentSplatSources,
+	)
+	if !exact {
+		return true
+	}
+	for _, variant := range variants {
+		if variant.expansionRaises || variant.call == nil || len(variant.call.KwArgs) > 0 {
+			continue
+		}
+		switch {
+		case variant.call.Block != nil:
+			skipped, _, selectorsExact := staticArrayFillBlockSelectorOutcomes(
+				variant.call.Args,
+				c.callArgumentStaticValues,
+			)
+			if !selectorsExact || !skipped.alwaysRaises {
+				return true
+			}
+		case variant.call.BlockArg == nil ||
+			arrayFillBlockArgumentIsNil(variant.call.BlockArg, c.callArgumentFacts):
+			if c.arrayFillValueFormMayComplete(variant.call.Args) {
+				return true
+			}
+		default:
+			blockFact := c.callArgumentFacts[variant.call.BlockArg]
+			if !typeExprNeverNil(blockFact) &&
+				c.arrayFillValueFormMayComplete(variant.call.Args) {
+				return true
+			}
+			skipped, _, selectorsExact := staticArrayFillBlockSelectorOutcomes(
+				variant.call.Args,
+				c.callArgumentStaticValues,
+			)
+			if !selectorsExact || !skipped.alwaysRaises {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c *scriptChecker) arrayFillValueFormMayComplete(args []Expression) bool {
 	return len(args) >= 1 && len(args) <= 3 &&
 		c.arrayFillFormMayComplete(args[1:])
@@ -6394,8 +6444,8 @@ func arrayFillSelectorFactMayComplete(fact *TypeExpr, allowRange bool) bool {
 	return false
 }
 
-func (c *scriptChecker) arrayFillLiteralBlockMayEvaluate(call *CallExpr) bool {
-	if call == nil || call.Block == nil {
+func (c *scriptChecker) arrayFillBlockMayEvaluate(call *CallExpr) bool {
+	if call == nil || call.Block == nil && call.BlockArg == nil {
 		return false
 	}
 	variants, exact := c.staticallyExpandedArrayMutatorCalls(
@@ -6407,7 +6457,19 @@ func (c *scriptChecker) arrayFillLiteralBlockMayEvaluate(call *CallExpr) bool {
 		return true
 	}
 	for _, variant := range variants {
-		if c.arrayMutatorVariantMayComplete(variant, "fill") {
+		if variant.expansionRaises || variant.call == nil || len(variant.call.KwArgs) > 0 {
+			continue
+		}
+		if variant.call.Block == nil &&
+			(variant.call.BlockArg == nil ||
+				arrayFillBlockArgumentIsNil(variant.call.BlockArg, c.callArgumentFacts)) {
+			continue
+		}
+		_, blockMayRun, selectorsExact := staticArrayFillBlockSelectorOutcomes(
+			variant.call.Args,
+			c.callArgumentStaticValues,
+		)
+		if !selectorsExact || blockMayRun {
 			return true
 		}
 	}
@@ -6438,6 +6500,120 @@ func staticArrayFillWriteModel(
 		}
 	}
 	return model
+}
+
+func staticArrayFillBlockSelectorOutcomes(
+	selectors []Expression,
+	argumentStaticValues map[Expression][]Expression,
+) (arrayMutatorWriteModel, bool, bool) {
+	model := arrayMutatorWriteModel{
+		preservable:  true,
+		alwaysRaises: true,
+	}
+	recordSkip := func(mayPad bool) {
+		model.alwaysRaises = false
+		model.mayWrite = model.mayWrite || mayPad
+		model.preservable = model.preservable && !mayPad
+	}
+	switch len(selectors) {
+	case 0:
+		// An empty receiver completes without invoking the block; every
+		// nonempty receiver invokes it.
+		recordSkip(false)
+		return model, true, true
+	case 1, 2:
+	default:
+		return model, false, true
+	}
+
+	startValues, startExact := staticMutatorArgumentValues(
+		selectors[0],
+		argumentStaticValues,
+	)
+	if !startExact || len(startValues) != 1 {
+		return arrayMutatorWriteModel{}, false, false
+	}
+	startValue := startValues[0]
+	if startValue.Kind() == KindRange {
+		if len(selectors) == 2 {
+			return model, false, true
+		}
+		effect, valid := staticArrayFillRangeWrites(startValue.Range())
+		if !valid {
+			return model, false, true
+		}
+		blockMayRun := effect.writesValue
+		if !staticArrayFillRangeAlwaysInvokesBlock(startValue.Range()) {
+			start := startValue.Range().Start
+			if startValue.Range().Beginless {
+				start = 0
+			}
+			recordSkip(start > 0)
+		}
+		return model, blockMayRun, true
+	}
+
+	start, _, startValid := staticArrayFillInteger(startValue)
+	if !startValid {
+		return model, false, true
+	}
+	if len(selectors) == 1 {
+		// A bare start may reach or pass the end of some receiver length.
+		// Those completing spans are no-ops; shorter starts invoke the block.
+		recordSkip(false)
+		return model, true, true
+	}
+
+	countValues, countExact := staticMutatorArgumentValues(
+		selectors[1],
+		argumentStaticValues,
+	)
+	if !countExact || len(countValues) != 1 {
+		return arrayMutatorWriteModel{}, false, false
+	}
+	count, nilLength, countValid := staticArrayFillInteger(countValues[0])
+	if !countValid {
+		return model, false, true
+	}
+	switch {
+	case nilLength:
+		recordSkip(false)
+		return model, true, true
+	case count < 0:
+		recordSkip(false)
+		return model, false, true
+	case count == 0:
+		recordSkip(start > 0)
+		return model, false, true
+	default:
+		// A positive explicit count invokes the block even when it grows an
+		// empty receiver.
+		return model, true, true
+	}
+}
+
+func staticArrayFillRangeAlwaysInvokesBlock(rng Range) bool {
+	if rng.Beginless {
+		rng.Start = 0
+	}
+	if rng.Endless {
+		return false
+	}
+	end := rng.End
+	if !rng.Exclusive {
+		if end == math.MaxInt64 {
+			return false
+		}
+		end++
+	}
+	switch {
+	case rng.Start >= 0 && rng.End >= 0:
+		return end > rng.Start
+	case rng.Start < 0 && rng.End < 0:
+		return end > rng.Start
+	default:
+		return false
+	}
 }
 
 func staticArrayFillUnknownCountWriteModel(
