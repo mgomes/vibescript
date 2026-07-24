@@ -3527,3 +3527,79 @@ end
 		})
 	}
 }
+
+func TestCheckNullableBlockChoiceMetadataStaysFillSpecific(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ordinary call result stays gradual", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def takes_string(value: string)
+  value
+end
+
+def run(flag: bool)
+  callback = flag ? lambda { 1 } : nil
+  takes_string(callback.call())
+end
+`)
+		requireNoCheckWarnings(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+			"argument value expected string, got int",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(false)},
+			CallOptions{},
+			"unknown nil method call",
+		)
+	})
+
+	t.Run("ordinary call namespace effects stay conditional", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+def replacement(value)
+  1
+end
+
+def takes_string(value: string)
+  value
+end
+
+def run(flag: bool)
+  callback = flag ? lambda { JSON.stringify = replacement } : nil
+  begin
+    callback.call()
+  rescue
+    nil
+  end
+  takes_string(JSON.stringify({}))
+end
+`)
+		requireNoCheckWarnings(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+			"argument value expected string, got int",
+		)
+		got := callScript(t, context.Background(), script, "run", []Value{
+			NewBool(false),
+		}, CallOptions{})
+		want := NewString("{}")
+		if !got.Equal(want) {
+			t.Errorf("run(false) = %s, want %s", got.String(), want.String())
+		}
+	})
+}

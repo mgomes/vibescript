@@ -62,6 +62,7 @@ type checkLocalValueFact struct {
 	classNames              []string
 	callables               []*ScriptFunction
 	blocks                  []checkBlockLiteralValue
+	blockChoiceMayNil       bool
 	staticVals              []Expression
 	keywordSplatFails       bool
 	invalidKeywordSplatKeys map[string]struct{}
@@ -315,6 +316,7 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 			classNames:              append([]string(nil), fact.classNames...),
 			callables:               append([]*ScriptFunction(nil), fact.callables...),
 			blocks:                  append([]checkBlockLiteralValue(nil), fact.blocks...),
+			blockChoiceMayNil:       fact.blockChoiceMayNil,
 			staticVals:              append([]Expression(nil), fact.staticVals...),
 			keywordSplatFails:       fact.keywordSplatFails,
 			invalidKeywordSplatKeys: cloneCheckStringSet(fact.invalidKeywordSplatKeys),
@@ -415,11 +417,29 @@ func (c *scriptChecker) bindLocalCallableValues(name string, fns []*ScriptFuncti
 func (c *scriptChecker) localBlockLiteralValuesFor(name string) ([]checkBlockLiteralValue, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return append([]checkBlockLiteralValue(nil), fact.blocks...), ok && len(fact.blocks) > 0 &&
+		!fact.blockChoiceMayNil &&
 		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
 		len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
 
 func (c *scriptChecker) bindLocalBlockLiteralValues(name string, blocks []checkBlockLiteralValue) {
+	c.bindLocalBlockLiteralChoices(name, blocks, false)
+}
+
+func (c *scriptChecker) localArrayFillBlockLiteralValuesFor(
+	name string,
+) ([]checkBlockLiteralValue, bool) {
+	fact, ok := c.localValueFactFor(name)
+	return append([]checkBlockLiteralValue(nil), fact.blocks...), ok && len(fact.blocks) > 0 &&
+		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
+		len(fact.staticVals) == 0 && !fact.keywordSplatFails
+}
+
+func (c *scriptChecker) bindLocalBlockLiteralChoices(
+	name string,
+	blocks []checkBlockLiteralValue,
+	mayNil bool,
+) {
 	if name == "" || len(c.localTypes) == 0 {
 		return
 	}
@@ -435,7 +455,8 @@ func (c *scriptChecker) bindLocalBlockLiteralValues(name string, blocks []checkB
 			c.localClassValues[i] = make(checkClassValueFrame)
 		}
 		c.localClassValues[i][name] = checkLocalValueFact{
-			blocks: normalizeCheckBlockLiterals(blocks),
+			blocks:            normalizeCheckBlockLiterals(blocks),
+			blockChoiceMayNil: mayNil,
 		}
 		return
 	}
@@ -620,6 +641,7 @@ func (c *scriptChecker) bindLocalKeywordSplatFailure(name string, keys ...string
 		fact.classNames = nil
 		fact.callables = nil
 		fact.blocks = nil
+		fact.blockChoiceMayNil = false
 		fact.staticVals = nil
 		fact.keywordSplatFails = true
 		c.localClassValues[i][name] = fact
@@ -2020,6 +2042,8 @@ func (c *scriptChecker) mergeLocalClassValueStates(states []checkScopeState) {
 					fact.callables = normalizeCheckCallables(append(fact.callables, other.callables...))
 				case len(fact.blocks) > 0 && len(other.blocks) > 0:
 					fact.blocks = normalizeCheckBlockLiterals(append(fact.blocks, other.blocks...))
+					fact.blockChoiceMayNil =
+						fact.blockChoiceMayNil || other.blockChoiceMayNil
 				case len(fact.staticVals) > 0 && len(other.staticVals) > 0:
 					fact.staticVals = c.normalizeCheckStaticValues(append(fact.staticVals, other.staticVals...))
 				case fact.keywordSplatFails && other.keywordSplatFails:
@@ -2796,8 +2820,8 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 		c.bindLocalClassValues(name, classNames)
 	} else if fns, ok := c.callableExpressionFunctions(identityExpr); ok {
 		c.bindLocalCallableValues(name, fns)
-	} else if blocks, ok := c.callableBlockLiteralValues(identityExpr); ok {
-		c.bindLocalBlockLiteralValues(name, blocks)
+	} else if blocks, mayNil, ok := c.blockLiteralValueChoices(identityExpr); ok {
+		c.bindLocalBlockLiteralChoices(name, blocks, mayNil)
 	} else if values, ok := c.staticValueExpressionAlternatives(expr); ok {
 		c.bindLocalStaticValues(name, values)
 	} else if c.keywordSplatExpressionAlwaysFails(expr) &&
@@ -2904,7 +2928,8 @@ func localValueFactTruthiness(fact checkLocalValueFact, tracked bool) (bool, boo
 	if !tracked || fact.keywordSplatFails {
 		return false, false
 	}
-	if len(fact.classNames) > 0 || len(fact.callables) > 0 || len(fact.blocks) > 0 {
+	if len(fact.classNames) > 0 || len(fact.callables) > 0 ||
+		len(fact.blocks) > 0 && !fact.blockChoiceMayNil {
 		return true, true
 	}
 	if len(fact.staticVals) == 0 {

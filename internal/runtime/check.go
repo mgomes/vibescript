@@ -4476,7 +4476,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				arrayFillBlockBodyMayRun =
 					c.blockLiteralInvocationMayEnter(typed.Block, invocation)
 			case typed.BlockArg != nil:
-				if blocks, exact := c.callableBlockLiteralValues(typed.BlockArg); exact {
+				if blocks, _, exact := c.blockLiteralValueChoices(typed.BlockArg); exact {
 					arrayFillBlockValuesExact = true
 					for _, block := range blocks {
 						invocation.strictArity = block.lambda
@@ -4567,7 +4567,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				blockResult = c.checkBlockLiteral(function, typed.Block, localReturns)
 			}
 		} else if targetMayEnter && typed.BlockArg != nil && arrayFillBlockMayRun {
-			blocks, exact := c.callableBlockLiteralValues(typed.BlockArg)
+			blocks, _, exact := c.blockLiteralValueChoices(typed.BlockArg)
 			if exact && arrayFillBlockValuesExact {
 				blocks = arrayFillBlockValues
 			}
@@ -12903,15 +12903,9 @@ func (c *scriptChecker) callableBlockLiteralValues(
 		if branch, known := staticConditionalExpressionBranch(typed); known {
 			return c.callableBlockLiteralValues(branch)
 		}
-		branchValues := func(branch Expression) ([]checkBlockLiteralValue, bool) {
-			if value, exact := staticLiteralValue(branch); exact && value.Kind() == KindNil {
-				return nil, true
-			}
-			return c.callableBlockLiteralValues(branch)
-		}
-		left, leftExact := branchValues(typed.Consequent)
-		right, rightExact := branchValues(typed.Alternate)
-		if !leftExact || !rightExact || len(left)+len(right) == 0 {
+		left, leftExact := c.callableBlockLiteralValues(typed.Consequent)
+		right, rightExact := c.callableBlockLiteralValues(typed.Alternate)
+		if !leftExact || !rightExact || len(left) == 0 || len(right) == 0 {
 			return nil, false
 		}
 		return normalizeCheckBlockLiterals(append(left, right...)), true
@@ -12934,6 +12928,46 @@ func (c *scriptChecker) callableBlockLiteralValues(
 		}
 	}
 	return nil, false
+}
+
+// blockLiteralValueChoices keeps exact non-nil literal blocks from a
+// conditional that may also produce nil. Ordinary callable resolution stays
+// gradual for that local; Array#fill uses the non-nil subset only after its
+// separate nil/value and block-form outcomes have both been modeled.
+func (c *scriptChecker) blockLiteralValueChoices(
+	expr Expression,
+) ([]checkBlockLiteralValue, bool, bool) {
+	if blocks, exact := c.callableBlockLiteralValues(expr); exact {
+		return blocks, false, true
+	}
+	switch typed := expr.(type) {
+	case *Identifier:
+		blocks, exact := c.localArrayFillBlockLiteralValuesFor(typed.Name)
+		if !exact {
+			return nil, false, false
+		}
+		fact, _ := c.localValueFactFor(typed.Name)
+		return blocks, fact.blockChoiceMayNil, true
+	case *ConditionalExpr:
+		if branch, known := staticConditionalExpressionBranch(typed); known {
+			return c.blockLiteralValueChoices(branch)
+		}
+		branchValues := func(branch Expression) ([]checkBlockLiteralValue, bool, bool) {
+			if value, exact := staticLiteralValue(branch); exact && value.Kind() == KindNil {
+				return nil, true, true
+			}
+			return c.blockLiteralValueChoices(branch)
+		}
+		left, leftMayNil, leftExact := branchValues(typed.Consequent)
+		right, rightMayNil, rightExact := branchValues(typed.Alternate)
+		if !leftExact || !rightExact || len(left)+len(right) == 0 {
+			return nil, false, false
+		}
+		return normalizeCheckBlockLiterals(append(left, right...)),
+			leftMayNil || rightMayNil,
+			true
+	}
+	return nil, false, false
 }
 
 func (c *scriptChecker) checkLambdaLiteralSummaryYields(function string, arg Expression) {
