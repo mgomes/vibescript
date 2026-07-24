@@ -7156,8 +7156,24 @@ func (c *scriptChecker) replayDestructureAssignment(
 	value Expression,
 ) bool {
 	facts := c.captureDestructureValueFacts(target, value)
+	return c.replayCapturedDestructureAssignment(function, facts)
+}
+
+func (c *scriptChecker) replayCapturedDestructureAssignment(
+	function string,
+	facts []capturedDestructureValueFact,
+) bool {
 	for _, fact := range facts {
 		if fact.target == nil {
+			continue
+		}
+		if _, nested := fact.target.(*DestructureTarget); nested {
+			if !c.replayCapturedDestructureAssignment(
+				function,
+				c.expandCapturedNestedDestructureFact(fact),
+			) {
+				return false
+			}
 			continue
 		}
 		fact = c.refreshCapturedDestructureContainerFact(fact)
@@ -18594,8 +18610,22 @@ func (s *namespaceMutationScan) replayDestructureAssignment(
 	value Expression,
 ) bool {
 	facts := s.checker.captureDestructureValueFacts(target, value)
+	return s.replayCapturedDestructureAssignment(facts)
+}
+
+func (s *namespaceMutationScan) replayCapturedDestructureAssignment(
+	facts []capturedDestructureValueFact,
+) bool {
 	for _, fact := range facts {
 		if fact.target == nil {
+			continue
+		}
+		if _, nested := fact.target.(*DestructureTarget); nested {
+			if !s.replayCapturedDestructureAssignment(
+				s.checker.expandCapturedNestedDestructureFact(fact),
+			) {
+				return false
+			}
 			continue
 		}
 		fact = s.checker.refreshCapturedDestructureContainerFact(fact)

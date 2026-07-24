@@ -853,7 +853,17 @@ func (c *scriptChecker) poisonLocalTypeOnly(name string) bool {
 func (c *scriptChecker) poisonEvaluatedDestructureSourceType(name string) {
 	generation := c.localBindingGenerations[name]
 	for expr, fact := range c.evaluatedDestructureFacts {
-		if fact.sourceName != name || fact.sourceGen != generation || len(fact.staticVals) > 0 {
+		if len(fact.staticVals) > 0 {
+			continue
+		}
+		invalidated := fact.sourceName == name && fact.sourceGen == generation
+		for _, root := range fact.retainedRoots {
+			if root.name == name && root.generation == generation {
+				invalidated = true
+				break
+			}
+		}
+		if !invalidated {
 			continue
 		}
 		fact.assigned = nil
@@ -5590,6 +5600,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 		c.inferIvarAssignStatementTypes(function, stmt, target, logicalTargetFact)
 	case *DestructureTarget:
 		valueFacts := c.captureDestructureValueFacts(target, stmt.Value)
+		valueFacts = c.flattenCapturedDestructureValueFacts(valueFacts)
 		c.bindCapturedDestructureValueFacts(valueFacts)
 		c.inferDestructureIvarWrites(function, valueFacts)
 	case *IndexExpr:
@@ -6291,6 +6302,17 @@ func (c *scriptChecker) captureEvaluatedDestructureFactWithAuto(
 			}
 		}
 	}
+	if _, direct := expr.(*Identifier); !direct && typeExprHasContainerArm(assigned) {
+		for _, name := range c.containerAliasRoots(expr) {
+			fact.retainedRoots = append(
+				fact.retainedRoots,
+				capturedContainerRoot{
+					name:       name,
+					generation: c.localBindingGenerations[name],
+				},
+			)
+		}
+	}
 	c.pinExpressionFact(expr, fact.assigned)
 	if callables, exact := c.callableExpressionFunctionsAfterEvaluation(expr, autoCall); !autoCall && exact {
 		fact.factKind = destructureCallableFact
@@ -6322,6 +6344,9 @@ func (c *scriptChecker) captureEvaluatedDestructureFactOnce(expr Expression) {
 	c.captureEvaluatedDestructureFact(expr)
 }
 
+// captureDestructureValueFacts captures one destructure level. Nested targets
+// remain boundary facts so their values can be projected after earlier sibling
+// targets have run.
 func (c *scriptChecker) captureDestructureValueFacts(target *DestructureTarget, value Expression) []capturedDestructureValueFact {
 	if target == nil {
 		return nil
@@ -6359,7 +6384,10 @@ func (c *scriptChecker) captureDestructureValueFacts(target *DestructureTarget, 
 		}
 		switch elementTarget := element.Target.(type) {
 		case *DestructureTarget:
-			facts = append(facts, c.captureDestructureValueFacts(elementTarget, elementValue)...)
+			fact := c.capturedDestructureValueFact(elementValue)
+			fact.target = elementTarget
+			fact.declared = element.Type
+			facts = append(facts, fact)
 		default:
 			if elementTarget == nil {
 				continue
@@ -6565,19 +6593,20 @@ func captureTypedDestructureValueFactsWithRoots(
 		}
 		switch elementTarget := element.Target.(type) {
 		case *DestructureTarget:
-			if assigned == nil {
-				facts = append(facts, captureUnknownDestructureValueFacts(elementTarget)...)
-				continue
+			fact := capturedDestructureValueFact{
+				target:    elementTarget,
+				assigned:  assigned,
+				declared:  element.Type,
+				known:     assigned != nil,
+				evaluated: assigned != nil,
 			}
-			nested, nestedProjected := captureTypedDestructureValueFactsWithRoots(
-				elementTarget,
-				assigned,
-				elementRoots,
-			)
-			if !nestedProjected {
-				nested = captureUnknownDestructureValueFacts(elementTarget)
+			if typeExprHasContainerArm(assigned) && len(elementRoots) > 0 {
+				fact.retainedRoots = append(
+					[]capturedContainerRoot(nil),
+					elementRoots...,
+				)
 			}
-			facts = append(facts, nested...)
+			facts = append(facts, fact)
 		default:
 			if elementTarget == nil {
 				continue
@@ -6761,7 +6790,10 @@ func captureUnknownDestructureValueFacts(target *DestructureTarget) []capturedDe
 	for _, element := range target.Elements {
 		switch elementTarget := element.Target.(type) {
 		case *DestructureTarget:
-			facts = append(facts, captureUnknownDestructureValueFacts(elementTarget)...)
+			facts = append(facts, capturedDestructureValueFact{
+				target:   elementTarget,
+				declared: element.Type,
+			})
 		default:
 			if elementTarget == nil {
 				continue
@@ -6781,6 +6813,48 @@ func captureUnknownDestructureValueFacts(target *DestructureTarget) []capturedDe
 		}
 	}
 	return facts
+}
+
+// expandCapturedNestedDestructureFact projects a nested level only when replay
+// reaches it, after refreshing container facts changed by earlier siblings.
+func (c *scriptChecker) expandCapturedNestedDestructureFact(
+	fact capturedDestructureValueFact,
+) []capturedDestructureValueFact {
+	target, ok := fact.target.(*DestructureTarget)
+	if !ok || target == nil {
+		return nil
+	}
+	fact = c.refreshCapturedDestructureContainerFact(fact)
+	if fact.value != nil {
+		return c.captureDestructureValueFacts(target, fact.value)
+	}
+	if fact.known {
+		if facts, projected := captureTypedDestructureValueFacts(target, fact); projected {
+			return facts
+		}
+	}
+	return captureUnknownDestructureValueFacts(target)
+}
+
+// flattenCapturedDestructureValueFacts preserves the leaf-only contract used
+// by inference passes that do not replay target effects.
+func (c *scriptChecker) flattenCapturedDestructureValueFacts(
+	facts []capturedDestructureValueFact,
+) []capturedDestructureValueFact {
+	var flattened []capturedDestructureValueFact
+	for _, fact := range facts {
+		if _, nested := fact.target.(*DestructureTarget); nested {
+			flattened = append(
+				flattened,
+				c.flattenCapturedDestructureValueFacts(
+					c.expandCapturedNestedDestructureFact(fact),
+				)...,
+			)
+			continue
+		}
+		flattened = append(flattened, fact)
+	}
+	return flattened
 }
 
 func (c *scriptChecker) bindCapturedDestructureValueFacts(facts []capturedDestructureValueFact) {

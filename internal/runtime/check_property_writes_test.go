@@ -759,6 +759,197 @@ end
 	})
 }
 
+func TestCheckNestedDestructuredIvarWritesRespectEvaluationOrder(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nested scalar reads the live retained container", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property p: string
+
+  def initialize
+    source = [[0], [1, 2]]
+    source[1][0], (@p, ignored) = ["ok", source[1]]
+  end
+end
+
+def run
+  User.new().p
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "ok" {
+			t.Fatalf("run() = %v, want ok", got)
+		}
+	})
+
+	t.Run("nested scalar invalidates a typed retained projection", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property p: string
+
+  def initialize(source: array<array<int>>)
+    source[1][0], (@p, ignored) = ["ok", source[1]]
+  end
+end
+
+def run
+  User.new([[0], [1, 2]]).p
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "ok" {
+			t.Fatalf("run() = %v, want ok", got)
+		}
+	})
+
+	t.Run("nested rest reads the live retained container", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property p: array<string>
+
+  def initialize
+    source = [[0], [1]]
+    source[1][0], (*@p) = ["ok", source[1]]
+  end
+end
+
+def run
+  User.new().p
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindArray ||
+			len(got.Array()) != 1 ||
+			got.Array()[0].Kind() != KindString ||
+			got.Array()[0].String() != "ok" {
+			t.Fatalf("run() = %v, want [ok]", got)
+		}
+	})
+
+	t.Run("nested level preserves its scalar snapshot", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property p: int
+
+  def initialize
+    source = [[1]]
+    ignored, (source[0][0], @p) = [0, ["ok", source[0][0]]]
+  end
+end
+
+def run
+  User.new().p
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
+
+	t.Run("nested level preserves its outer container reference", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property p: int
+
+  def initialize
+    source = [[1]]
+    source, (@p, ignored) = [[[2]], source[0]]
+  end
+end
+
+def run
+  User.new().p
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
+
+	t.Run("outer rest preserves its scalar snapshot", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property p: int
+
+  def initialize
+    source = ["ok", 1]
+    source[1], *(@p, ignored) = source
+  end
+end
+
+def run
+  User.new().p
+end
+`)
+
+		requireNoCheckWarnings(t, script)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("run() = %v, want 1", got)
+		}
+	})
+
+	t.Run("nested rest outer array stays fresh", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property p: string
+
+  def initialize
+    source = [[0], [1]]
+    source[1][0], (*rest) = [2, source[1]]
+    rest.map! { "changed" }
+    @p, ignored = source[1]
+  end
+end
+
+def run
+  User.new()
+end
+`)
+
+		requireCheckWarningContains(
+			t,
+			script,
+			"write to @p expected string, got int",
+		)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"instance variable @p expected string, got int",
+		)
+	})
+}
+
 func TestCheckDestructuredIvarWritesUseEvaluatedCallableFacts(t *testing.T) {
 	t.Parallel()
 
