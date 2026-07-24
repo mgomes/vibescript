@@ -9782,6 +9782,7 @@ func (c *scriptChecker) inferExpectedArrayLiteralType(lit *ArrayLiteral, expecta
 		return c.inferArrayLiteralType(lit)
 	}
 	elements := make([]*TypeExpr, 0, len(lit.Elements))
+	knownElements := make([]Expression, 0, len(lit.Elements))
 	sawUnknown := false
 	for i, element := range lit.Elements {
 		if _, splat := element.(*SplatArg); splat {
@@ -9794,6 +9795,7 @@ func (c *scriptChecker) inferExpectedArrayLiteralType(lit *ArrayLiteral, expecta
 			continue
 		}
 		elements = append(elements, elementType)
+		knownElements = append(knownElements, element)
 	}
 	if len(elements) == 0 {
 		return checkTypeArray
@@ -9802,12 +9804,7 @@ func (c *scriptChecker) inferExpectedArrayLiteralType(lit *ArrayLiteral, expecta
 	if union == nil {
 		return checkTypeArray
 	}
-	marker := literalElementsMarker
-	if sawUnknown {
-		marker = literalPartialElementsMarker
-	} else if c.arrayLiteralElementsShareValueSource(lit.Elements) {
-		marker = literalAlternativeElementsMarker
-	}
+	marker := c.arrayLiteralElementsMarker(knownElements, sawUnknown)
 	return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
 }
 
@@ -10535,6 +10532,7 @@ func (c *scriptChecker) inferArrayLiteralType(lit *ArrayLiteral) *TypeExpr {
 		return checkTypeArray
 	}
 	elements := make([]*TypeExpr, 0, len(lit.Elements))
+	knownElements := make([]Expression, 0, len(lit.Elements))
 	sawUnknown := false
 	for _, element := range lit.Elements {
 		if _, splat := element.(*SplatArg); splat {
@@ -10547,6 +10545,7 @@ func (c *scriptChecker) inferArrayLiteralType(lit *ArrayLiteral) *TypeExpr {
 			continue
 		}
 		elements = append(elements, elementType)
+		knownElements = append(knownElements, element)
 	}
 	if len(elements) == 0 {
 		return checkTypeArray
@@ -10555,15 +10554,22 @@ func (c *scriptChecker) inferArrayLiteralType(lit *ArrayLiteral) *TypeExpr {
 	if union == nil {
 		return checkTypeArray
 	}
-	marker := literalElementsMarker
-	if sawUnknown {
-		// Known elements stay witnesses even when others are unknown, but
-		// the union no longer bounds every element.
-		marker = literalPartialElementsMarker
-	} else if c.arrayLiteralElementsShareValueSource(lit.Elements) {
-		marker = literalAlternativeElementsMarker
-	}
+	marker := c.arrayLiteralElementsMarker(knownElements, sawUnknown)
 	return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
+}
+
+func (c *scriptChecker) arrayLiteralElementsMarker(elements []Expression, partial bool) string {
+	alternative := c.arrayLiteralElementsShareValueSource(elements)
+	switch {
+	case partial && alternative:
+		return literalPartialAlternativeElementsMarker
+	case partial:
+		return literalPartialElementsMarker
+	case alternative:
+		return literalAlternativeElementsMarker
+	default:
+		return literalElementsMarker
+	}
 }
 
 func (c *scriptChecker) arrayLiteralElementsShareValueSource(elements []Expression) bool {

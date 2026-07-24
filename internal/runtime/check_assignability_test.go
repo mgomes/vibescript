@@ -457,10 +457,13 @@ def accept(values: array<int> | array<string>)
   values
 end
 
-def run(value: int | string)
+def run(value: int | string, opaque)
   accept([value])
   alias = value
   accept([value, alias])
+  accept([value, opaque])
+  values = [value, opaque]
+  accept(values)
 end
 `))
 
