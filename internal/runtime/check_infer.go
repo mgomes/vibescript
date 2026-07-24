@@ -2794,7 +2794,9 @@ func (c *scriptChecker) applyExactStaticArrayIndexWrite(
 				}
 			}
 			updated := unionTypeExprs(updatedTypes...)
-			if current.Name == literalElementsMarker || current.Name == literalPartialElementsMarker {
+			if current.Name == literalElementsMarker ||
+				current.Name == literalPartialElementsMarker ||
+				current.Name == blockRestElementsMarker {
 				c.localTypes[frameIndex][localName] = updated
 				continue
 			}
@@ -6158,6 +6160,26 @@ func appendedArrayFact(current, appended *TypeExpr) *TypeExpr {
 			return nil
 		}
 		return &TypeExpr{Kind: TypeArray, Name: current.Name, TypeArgs: []*TypeExpr{union}}
+	case blockRestElementsMarker:
+		if len(current.TypeArgs) == 0 {
+			return &TypeExpr{
+				Kind:     TypeArray,
+				Name:     literalElementsMarker,
+				TypeArgs: []*TypeExpr{appended},
+			}
+		}
+		if len(current.TypeArgs) != 1 {
+			return nil
+		}
+		union := unionTypeExprs(current.TypeArgs[0], appended)
+		if union == nil {
+			return nil
+		}
+		return &TypeExpr{
+			Kind:     TypeArray,
+			Name:     literalElementsMarker,
+			TypeArgs: []*TypeExpr{union},
+		}
 	default:
 		return &TypeExpr{Kind: TypeArray, Name: literalPartialElementsMarker, TypeArgs: []*TypeExpr{appended}}
 	}
@@ -6173,7 +6195,9 @@ func declaredArrayElementType(ty *TypeExpr) *TypeExpr {
 	if ty == nil || ty.Kind != TypeArray || ty.Nullable {
 		return nil
 	}
-	if ty.Name == literalElementsMarker || ty.Name == literalPartialElementsMarker {
+	if ty.Name == literalElementsMarker ||
+		ty.Name == literalPartialElementsMarker ||
+		ty.Name == blockRestElementsMarker {
 		return nil
 	}
 	if len(ty.TypeArgs) != 1 {
@@ -8423,7 +8447,9 @@ func (c *scriptChecker) applySplattedElementWriteFacts(function string, splat *S
 		c.invalidateElementWriteAliases(name, bound)
 	}
 	c.linkContainerWriteAlias(name, splat.Value, bound)
-	if written.Name == literalElementsMarker || written.Name == literalPartialElementsMarker {
+	if written.Name == literalElementsMarker ||
+		written.Name == literalPartialElementsMarker ||
+		written.Name == blockRestElementsMarker {
 		if len(written.TypeArgs) == 1 {
 			if arms, ok := typeExprArms(written.TypeArgs[0], 0); ok {
 				for _, arm := range arms {
@@ -9128,7 +9154,9 @@ func (c *scriptChecker) linkPossibleDirectContainerAlias(
 // satisfy another array type: some witnessed element arm is disjoint from
 // the other side's declared element type.
 func literalArrayDisjoint(lit, other *TypeExpr, resolve namedTypeResolver) bool {
-	if lit.Name != literalElementsMarker && lit.Name != literalPartialElementsMarker {
+	if lit.Name != literalElementsMarker &&
+		lit.Name != literalPartialElementsMarker &&
+		lit.Name != blockRestElementsMarker {
 		return false
 	}
 	if len(lit.TypeArgs) != 1 || len(other.TypeArgs) != 1 {
@@ -9406,6 +9434,20 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 		}
 		return checkTypeNil
 	case TypeArray:
+		if elements, exact := exactBlockRestElementTypes(objectType); exact {
+			indexValue, static := staticLiteralValue(index)
+			if !static || indexValue.Kind() != KindInt || indexValue.IsBigInt() {
+				return nil
+			}
+			position := int(indexValue.Int())
+			if position < 0 {
+				position += len(elements)
+			}
+			if position < 0 || position >= len(elements) {
+				return checkTypeNil
+			}
+			return elements[position]
+		}
 		if len(objectType.TypeArgs) != 1 || objectType.Name == literalPartialElementsMarker {
 			return nil
 		}
@@ -10520,6 +10562,9 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 		if len(declared.TypeArgs) != 1 {
 			// A bare array annotation admits every array.
 			return len(declared.TypeArgs) == 0
+		}
+		if written.Name == blockRestElementsMarker && len(written.TypeArgs) == 0 {
+			return true
 		}
 		if written.Name == literalPartialElementsMarker || len(written.TypeArgs) != 1 {
 			// Partial witnesses and bare arrays do not bound their elements.

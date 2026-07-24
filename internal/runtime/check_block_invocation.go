@@ -1,5 +1,13 @@
 package runtime
 
+import "strconv"
+
+// blockRestElementsMarker tags the exact positional array synthesized for a
+// destructuring rest target. TypeArgs retains the ordinary element union for
+// array compatibility, while Shape records each position (including an exact
+// empty array) for recursive destructuring and indexing.
+const blockRestElementsMarker = "\x00block-rest-elements"
+
 type checkBlockInvocation struct {
 	arguments   []*TypeExpr
 	strictArity bool
@@ -77,12 +85,18 @@ func blockDestructureElementType(
 	if !exact || len(arms) == 0 {
 		return nil
 	}
-	for _, arm := range arms {
-		if arm.Kind == TypeArray {
-			return nil
+	values := []*TypeExpr{value}
+	if elements, exact := exactBlockRestElementTypes(value); exact {
+		values = elements
+	} else {
+		for _, arm := range arms {
+			if arm.Kind == TypeArray {
+				return nil
+			}
 		}
 	}
-	// A known scalar destructures as a one-element sequence. Mirror
+	// A known scalar destructures as a one-element sequence; an exact rest
+	// array retains every generated position. Mirror
 	// assignDestructureWithNormalizer's rest window so leading, rest, and
 	// trailing targets see the same value (or nil/empty-array padding) the
 	// runtime binds.
@@ -94,32 +108,57 @@ func blockDestructureElementType(
 		}
 	}
 	if restIndex < 0 {
-		if index == 0 {
-			return value
+		if index < len(values) {
+			return values[index]
 		}
 		return checkTypeNil
 	}
-	restStart := min(restIndex, 1)
-	restEnd := max(restStart, 1-(len(target.Elements)-restIndex-1))
+	restStart := min(restIndex, len(values))
+	restEnd := max(restStart, len(values)-(len(target.Elements)-restIndex-1))
 	switch {
 	case index < restIndex:
-		if index == 0 {
-			return value
+		if index < len(values) {
+			return values[index]
 		}
 		return checkTypeNil
 	case index == restIndex:
-		if restEnd > restStart {
-			return &TypeExpr{
-				Kind:     TypeArray,
-				Name:     literalElementsMarker,
-				TypeArgs: []*TypeExpr{value},
-			}
-		}
-		return checkTypeArray
+		return exactBlockRestType(values[restStart:restEnd])
 	default:
-		if restEnd+(index-restIndex-1) == 0 {
-			return value
+		valueIndex := restEnd + (index - restIndex - 1)
+		if valueIndex < len(values) {
+			return values[valueIndex]
 		}
 		return checkTypeNil
 	}
+}
+
+func exactBlockRestType(elements []*TypeExpr) *TypeExpr {
+	shape := make(map[string]*TypeExpr, len(elements))
+	for i, element := range elements {
+		shape[strconv.Itoa(i)] = element
+	}
+	result := &TypeExpr{
+		Kind:  TypeArray,
+		Name:  blockRestElementsMarker,
+		Shape: shape,
+	}
+	if len(elements) > 0 {
+		result.TypeArgs = []*TypeExpr{unionTypeExprs(elements...)}
+	}
+	return result
+}
+
+func exactBlockRestElementTypes(value *TypeExpr) ([]*TypeExpr, bool) {
+	if value == nil || value.Kind != TypeArray || value.Name != blockRestElementsMarker {
+		return nil, false
+	}
+	elements := make([]*TypeExpr, len(value.Shape))
+	for i := range elements {
+		element, ok := value.Shape[strconv.Itoa(i)]
+		if !ok {
+			return nil, false
+		}
+		elements[i] = element
+	}
+	return elements, true
 }
