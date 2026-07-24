@@ -2668,10 +2668,10 @@ func (c *scriptChecker) inferAssignStatementTypes(
 // applyMemberWriteFacts checks hash/object field assignment syntax against a
 // local-rooted receiver's declared hash or shape fact. At runtime a hash
 // setter updates an existing symbol key first, then an existing string key,
-// and otherwise inserts a symbol; an object setter uses a string key. A
-// generic typed hash therefore has a string-or-symbol key, while a declared
-// shape checks the property's logical field name independent of its backing
-// representation.
+// and otherwise inserts a symbol; an object setter uses a string key. A typed
+// hash can select a string only when its key bound permits an existing string,
+// while a declared shape checks the property's logical field name independent
+// of its backing representation.
 func (c *scriptChecker) applyMemberWriteFacts(
 	function string,
 	stmt *AssignStmt,
@@ -2727,7 +2727,10 @@ func (c *scriptChecker) applyMemberWriteFacts(
 
 	if keyBound, valueBound := declaredHashEntryTypes(contentFact); keyBound != nil {
 		resolve := c.checkNamedTypeResolver()
-		keyType := unionTypeExprs(checkTypeString, checkTypeSymbol)
+		keyType := checkTypeSymbol
+		if !typeExprsDisjoint(checkTypeString, keyBound, resolve) {
+			keyType = unionTypeExprs(checkTypeString, checkTypeSymbol)
+		}
 		keyCompatible := typeExprSatisfies(keyType, keyBound, resolve)
 		valueCompatible := written != nil && typeExprSatisfies(written, valueBound, resolve)
 		if typeExprsDisjoint(keyType, keyBound, resolve) {

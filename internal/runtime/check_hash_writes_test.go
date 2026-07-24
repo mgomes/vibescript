@@ -424,13 +424,13 @@ end
 			warning: "write to h expected value int, got string",
 		},
 		{
-			name: "member write has a string or symbol hash key",
+			name: "member write inserts a symbol key when strings are excluded",
 			source: `
 def f(h: hash<int, int>)
   h.value = 1
 end
 `,
-			warning: "write to h expected key int, got string | symbol",
+			warning: "write to h expected key int, got symbol",
 		},
 		{
 			name: "compatible member write preserves a dual-key hash",
@@ -438,6 +438,16 @@ end
 def f(h: hash<string | symbol, int>)
   h.value = 1
   h["bad"] = "bad"
+end
+`,
+			warning: "write to h expected value int, got string",
+		},
+		{
+			name: "compatible member write preserves a symbol-key hash",
+			source: `
+def f(h: hash<symbol, int>)
+  h.value = 1
+  h[:bad] = "bad"
 end
 `,
 			warning: "write to h expected value int, got string",
@@ -503,7 +513,7 @@ def f(h: hash<int, int>)
   h.nil? ||= 1
 end
 `,
-			warning: "write to h expected key int, got string | symbol",
+			warning: "write to h expected key int, got symbol",
 		},
 		{
 			name: "hash-owned getter reaches an exact shape write",
@@ -530,7 +540,7 @@ def f(h: hash<int, bool>)
   h.size &&= true
 end
 `,
-			warning: "write to h expected key int, got string | symbol",
+			warning: "write to h expected key int, got symbol",
 		},
 		{
 			name: "true universal getter reaches and assignment",
@@ -1196,6 +1206,14 @@ def f(h: hash<string, int>)
   h["a"] = 1
   h.store("b", 2)
   h.merge!({ "c": 3 })
+end
+`,
+		},
+		{
+			name: "compatible symbol-key member write stays silent",
+			source: `
+def f(h: hash<symbol, int>)
+  h.value = 1
 end
 `,
 		},
