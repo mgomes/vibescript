@@ -3441,6 +3441,56 @@ func TestCheckArrayMutatorLambdaValuesDoNotRun(t *testing.T) {
     nil
   end`,
 		},
+		{
+			name:     "push forwarded block",
+			mutation: `items.push(1, &lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name:     "append forwarded block",
+			mutation: `items.append(1, &lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name:     "prepend forwarded block",
+			mutation: `items.prepend(1, &lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name:     "unshift forwarded block",
+			mutation: `items.unshift(1, &lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name:     "insert forwarded block",
+			mutation: `items.insert(0, 1, &lambda { JSON.stringify = replacement })`,
+		},
+		{
+			name: "push literal block",
+			mutation: `items.push(1) do
+    JSON.stringify = replacement
+  end`,
+		},
+		{
+			name: "append literal block",
+			mutation: `items.append(1) do
+    JSON.stringify = replacement
+  end`,
+		},
+		{
+			name: "prepend literal block",
+			mutation: `items.prepend(1) do
+    JSON.stringify = replacement
+  end`,
+		},
+		{
+			name: "unshift literal block",
+			mutation: `items.unshift(1) do
+    JSON.stringify = replacement
+  end`,
+		},
+		{
+			name: "insert literal block",
+			mutation: `items.insert(0, 1) do
+    JSON.stringify = replacement
+  end`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

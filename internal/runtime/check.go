@@ -4503,6 +4503,11 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				}
 			}
 		}
+		arrayMutatorIgnoresBlock :=
+			arrayMutatorProperty != "" && arrayMutatorProperty != "fill"
+		if arrayMutatorIgnoresBlock {
+			callBlockMayRun = false
+		}
 		var blockResult checkBlockResult
 		immediateLambdaEnters := targetMayEnter && c.immediateLambdaCallMayEnter(invokedLambda, typed)
 		if immediateLambdaEnters {
@@ -4525,7 +4530,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 					c.checkLambdaLiteralSummaryYields(function, kwarg.Value)
 				}
 			}
-			if !arrayFillBlockCall {
+			if !arrayFillBlockCall && !arrayMutatorIgnoresBlock {
 				c.applyLambdaLiteralNamespaceMutations(typed.BlockArg)
 				c.checkLambdaLiteralSummaryYields(function, typed.BlockArg)
 			}
