@@ -70,9 +70,6 @@ func blockDestructureElementType(
 	if target == nil || index < 0 || index >= len(target.Elements) {
 		return nil
 	}
-	if target.Elements[index].Rest {
-		return checkTypeArray
-	}
 	if value == nil {
 		return nil
 	}
@@ -85,8 +82,44 @@ func blockDestructureElementType(
 			return nil
 		}
 	}
-	if index == 0 {
-		return value
+	// A known scalar destructures as a one-element sequence. Mirror
+	// assignDestructureWithNormalizer's rest window so leading, rest, and
+	// trailing targets see the same value (or nil/empty-array padding) the
+	// runtime binds.
+	restIndex := -1
+	for i, element := range target.Elements {
+		if element.Rest {
+			restIndex = i
+			break
+		}
 	}
-	return checkTypeNil
+	if restIndex < 0 {
+		if index == 0 {
+			return value
+		}
+		return checkTypeNil
+	}
+	restStart := min(restIndex, 1)
+	restEnd := max(restStart, 1-(len(target.Elements)-restIndex-1))
+	switch {
+	case index < restIndex:
+		if index == 0 {
+			return value
+		}
+		return checkTypeNil
+	case index == restIndex:
+		if restEnd > restStart {
+			return &TypeExpr{
+				Kind:     TypeArray,
+				Name:     literalElementsMarker,
+				TypeArgs: []*TypeExpr{value},
+			}
+		}
+		return checkTypeArray
+	default:
+		if restEnd+(index-restIndex-1) == 0 {
+			return value
+		}
+		return checkTypeNil
+	}
 }
