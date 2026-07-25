@@ -503,6 +503,38 @@ end
 		}
 	})
 
+	t.Run("instance method returning self preserves origin", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+    self
+  end
+end
+
+def run
+  User.new.set_name.name
+end
+
+def run_explicit
+  User.new.set_name().name
+end
+`)
+		for _, function := range []string{"run", "run_explicit"} {
+			if warnings := script.CheckWarningsForFunction(function); len(warnings) != 0 {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", function, warnings)
+			}
+			got := callScript(t, context.Background(), script, function, nil, CallOptions{})
+			if got.Kind() != KindString || got.String() != "Ada" {
+				t.Fatalf("%s() = %v, want Ada", function, got)
+			}
+		}
+	})
+
 	t.Run("queued initializer accepts later instance method write", func(t *testing.T) {
 		t.Parallel()
 

@@ -6746,6 +6746,12 @@ func (c *scriptChecker) instanceValueOrigins(expr Expression) ([]Expression, boo
 
 	switch typed := expr.(type) {
 	case *Identifier:
+		if typed.Name == "self" {
+			originFact, captured := c.reachableParamFacts[reachableInstanceOriginFact]
+			if captured && len(originFact.staticVals) > 0 {
+				return append([]Expression(nil), originFact.staticVals...), true
+			}
+		}
 		fact, exact := c.localValueFactFor(typed.Name)
 		if exact && len(fact.instanceOrigins) > 0 {
 			return append([]Expression(nil), fact.instanceOrigins...), true

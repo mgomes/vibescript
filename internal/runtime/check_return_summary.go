@@ -165,6 +165,7 @@ func (c *scriptChecker) scriptCallableInstanceOrigins(
 	target.fn = owned
 	runnable, hashSupplied, definite := callRunnableDefaults(call, target)
 	paramFacts := c.summaryCallParamFacts(call, target, definite)
+	paramFacts = c.reachableCallInstanceFacts(call, target, paramFacts)
 	analysis := c.functionReturnAnalysis(
 		owned,
 		runnable,
