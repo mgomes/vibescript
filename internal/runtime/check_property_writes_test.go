@@ -315,6 +315,65 @@ end
 		}
 	})
 
+	t.Run("initializer early return preserves unset state", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize(skip: bool)
+    if skip
+      return
+    end
+    @name = "Ada"
+  end
+end
+
+def run(skip: bool)
+  User.new(skip).name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
+
+	t.Run("initializer ensure updates early return state", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize
+    begin
+      return
+    ensure
+      @name = "Ada"
+    end
+  end
+end
+
+def run
+  User.new.name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
 	t.Run("conditional initializer write", func(t *testing.T) {
 		t.Parallel()
 

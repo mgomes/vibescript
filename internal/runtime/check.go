@@ -153,6 +153,7 @@ type scriptChecker struct {
 	reachableBlockKnownAbsent  bool
 	pendingBindingParams       map[string]struct{}
 	deferredReturnSites        *[]deferredReturnSite
+	constructorReturnExitSites *[]checkStateSnapshot
 	exceptionExitSites         *[]checkStateSnapshot
 	expressionExitSites        *[]checkStateSnapshot
 	nonLocalReturnExitSites    *[]checkStateSnapshot
@@ -2930,6 +2931,17 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		defer popNameScope()
 		c.seedInstanceIvarFacts(fn)
 
+		previousConstructorReturnExitSites := c.constructorReturnExitSites
+		var constructorReturnExitSites []checkStateSnapshot
+		if fn.Name == "initialize" {
+			if _, captured := c.reachableParamFacts[reachableConstructorOriginFact]; captured {
+				c.constructorReturnExitSites = &constructorReturnExitSites
+			}
+		}
+		defer func() {
+			c.constructorReturnExitSites = previousConstructorReturnExitSites
+		}()
+
 		c.linkReachableParamAliases(fn.Params)
 		for i, param := range fn.Params {
 			expectation := bindingDefaultExpectation(param)
@@ -2981,11 +2993,11 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		if fn.Accessor == functionAccessorGetter && !c.checkReachableCalls {
 			returnType = nil
 		}
-		c.checkStatements(label, returnType, fn.Body)
+		bodyFallsThrough := c.checkStatements(label, returnType, fn.Body)
 		if returnType != nil {
 			c.checkImplicitReturn(label, returnType, fn.Body, fn.Pos)
 		}
-		c.captureReachableConstructorIvarFacts(fn)
+		c.captureReachableConstructorIvarFacts(fn, bodyFallsThrough, constructorReturnExitSites)
 	})
 }
 
@@ -3148,6 +3160,11 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 				result = c.inferExpressionType(typed.Value)
 			}
 			c.blockLocalReturnCollector.record(result)
+		}
+		if c.constructorReturnExitSites != nil &&
+			c.deferredReturnSites == nil &&
+			c.blockLocalReturnCollector == nil {
+			c.captureFailureExitState(c.constructorReturnExitSites)
 		}
 		c.captureEnsureExitState()
 		if returnType != nil {
@@ -4155,6 +4172,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		// An ensure the walk proves always exits replaces every deferred
 		// body return, even when the proof is inferred rather than
 		// syntactic, so those arms must not widen the summary.
+		if c.constructorReturnExitSites != nil &&
+			armCapture &&
+			previousSites == nil &&
+			ensureFallsThrough &&
+			len(deferredSites) > 0 {
+			c.captureFailureExitState(c.constructorReturnExitSites)
+		}
 		if c.returnCollector != nil && armCapture && previousSites == nil && ensureFallsThrough {
 			c.recordDeferredReturnSummaryFacts(deferredSites)
 		}

@@ -84,7 +84,11 @@ func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 
 // captureReachableConstructorIvarFacts records the ivar state on every
 // completing path of this exact constructor call for queued getter checks.
-func (c *scriptChecker) captureReachableConstructorIvarFacts(fn *ScriptFunction) {
+func (c *scriptChecker) captureReachableConstructorIvarFacts(
+	fn *ScriptFunction,
+	bodyFallsThrough bool,
+	returnExitSites []checkStateSnapshot,
+) {
 	if fn == nil || fn.Name != "initialize" || c.selfClass == nil {
 		return
 	}
@@ -92,6 +96,26 @@ func (c *scriptChecker) captureReachableConstructorIvarFacts(fn *ScriptFunction)
 	if !captured || len(originFact.staticVals) == 0 {
 		return
 	}
+	typePaths := make([][]checkTypeFrame, 0, len(returnExitSites)+1)
+	if bodyFallsThrough {
+		typePaths = append(typePaths, c.localTypes)
+	}
+	for _, site := range returnExitSites {
+		typePaths = append(typePaths, site.scopeState.types)
+	}
+	if len(typePaths) == 0 {
+		return
+	}
+	for _, origin := range originFact.staticVals {
+		for _, types := range typePaths {
+			c.mergeConstructorIvarFacts(origin, c.constructorIvarFactsForTypes(types))
+		}
+	}
+}
+
+func (c *scriptChecker) constructorIvarFactsForTypes(
+	types []checkTypeFrame,
+) map[string]*TypeExpr {
 	facts := make(map[string]*TypeExpr)
 	for _, method := range c.selfClass.Methods {
 		if method.Accessor == functionAccessorNone || method.AccessorName == "" {
@@ -103,8 +127,8 @@ func (c *scriptChecker) captureReachableConstructorIvarFacts(fn *ScriptFunction)
 		key := ivarFactKey(method.AccessorName)
 		var fact *TypeExpr
 		tracked := false
-		for i := len(c.localTypes) - 1; i >= 0; i-- {
-			fact, tracked = c.localTypes[i][key]
+		for i := len(types) - 1; i >= 0; i-- {
+			fact, tracked = types[i][key]
 			if tracked {
 				break
 			}
@@ -117,9 +141,7 @@ func (c *scriptChecker) captureReachableConstructorIvarFacts(fn *ScriptFunction)
 			facts[method.AccessorName] = fact
 		}
 	}
-	for _, origin := range originFact.staticVals {
-		c.mergeConstructorIvarFacts(origin, facts)
-	}
+	return facts
 }
 
 func (c *scriptChecker) mergeConstructorIvarFacts(

@@ -485,6 +485,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		previousReceiverLength := c.callArrayReceiverLength
 		previousReachableParamFacts := c.reachableParamFacts
 		previousDeferred := c.deferredReturnSites
+		previousConstructorReturnExits := c.constructorReturnExitSites
 		previousExceptionExits := c.exceptionExitSites
 		previousExpressionExits := c.expressionExitSites
 		previousNonLocalReturnExits := c.nonLocalReturnExitSites
@@ -521,6 +522,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 		c.callArrayReceiverLength = checkArrayReceiverLength{}
 		c.reachableParamFacts = cloneReachableParamFacts(paramFacts)
 		c.deferredReturnSites = nil
+		c.constructorReturnExitSites = nil
 		var exceptionExitSites []checkStateSnapshot
 		c.exceptionExitSites = &exceptionExitSites
 		var expressionExitSites []checkStateSnapshot
@@ -564,6 +566,7 @@ func (c *scriptChecker) collectFunctionReturnFacts(
 			c.callArrayReceiverLength = previousReceiverLength
 			c.reachableParamFacts = previousReachableParamFacts
 			c.deferredReturnSites = previousDeferred
+			c.constructorReturnExitSites = previousConstructorReturnExits
 			c.exceptionExitSites = previousExceptionExits
 			c.expressionExitSites = previousExpressionExits
 			c.nonLocalReturnExitSites = previousNonLocalReturnExits
