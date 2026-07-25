@@ -144,6 +144,26 @@ func orderedTypedHashEntriesInto(receiver Value, buf []HashEntry) []HashEntry {
 	return receiver.HashEntriesInto(buf)
 }
 
+// hashEntryKeysAreStable reports whether every key in entries canonicalizes to
+// the same lookup identity no matter when it is canonicalized.
+//
+// It gates the key-preserving drivers' deferred build. Populating the result
+// after the block loop re-canonicalizes each key at build time, so a key whose
+// value can change mid-iteration would be stored under its final identity rather
+// than the one it had when its entry was processed -- two entries could collapse
+// onto one. Of the kinds NewHashLookupKey accepts (nil, bool, int, float, string,
+// symbol, range, array) only an array is mutable in place, so entries without an
+// array key are immune and may defer. A receiver with an array key falls back to
+// inserting during the loop, preserving today's identities exactly.
+func hashEntryKeysAreStable(entries []HashEntry) bool {
+	for i := range entries {
+		if entries[i].Key.Kind() == KindArray {
+			return false
+		}
+	}
+	return true
+}
+
 // deterministicHashEntriesInto returns receiver's entries in the order a copy
 // should preserve: a typed hash keeps its recorded insertion order; a bare
 // host-provided map carries no insertion record, so its entries contribute in
@@ -2436,6 +2456,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				// read index, so the compaction is safe in place and adds no
 				// allocation.
 				ordered := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+				deferBuild := hashEntryKeysAreStable(ordered)
 				kept := 0
 				for i := range ordered {
 					if err := exec.step(); err != nil {
@@ -2451,13 +2472,21 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					if include.Truthy() {
+						if !deferBuild {
+							if err := hashSet(out, ordered[i].Key, ordered[i].Value); err != nil {
+								return NewNil(), err
+							}
+							continue
+						}
 						ordered[kept] = ordered[i]
 						kept++
 					}
 				}
-				for _, entry := range ordered[:kept] {
-					if err := hashSet(out, entry.Key, entry.Value); err != nil {
-						return NewNil(), err
+				if deferBuild {
+					for _, entry := range ordered[:kept] {
+						if err := hashSet(out, entry.Key, entry.Value); err != nil {
+							return NewNil(), err
+						}
 					}
 				}
 				return out, nil
@@ -2541,6 +2570,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				// read index, so the compaction is safe in place and adds no
 				// allocation.
 				ordered := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+				deferBuild := hashEntryKeysAreStable(ordered)
 				kept := 0
 				for i := range ordered {
 					if err := exec.step(); err != nil {
@@ -2556,13 +2586,21 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					if !exclude.Truthy() {
+						if !deferBuild {
+							if err := hashSet(out, ordered[i].Key, ordered[i].Value); err != nil {
+								return NewNil(), err
+							}
+							continue
+						}
 						ordered[kept] = ordered[i]
 						kept++
 					}
 				}
-				for _, entry := range ordered[:kept] {
-					if err := hashSet(out, entry.Key, entry.Value); err != nil {
-						return NewNil(), err
+				if deferBuild {
+					for _, entry := range ordered[:kept] {
+						if err := hashSet(out, entry.Key, entry.Value); err != nil {
+							return NewNil(), err
+						}
 					}
 				}
 				return out, nil
@@ -2975,6 +3013,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				// by the reserveLoopScratch above. So this adds no allocation and needs
 				// no accounting change.
 				ordered := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+				deferBuild := hashEntryKeysAreStable(ordered)
 				for i := range ordered {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
@@ -2988,13 +3027,20 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					ordered[i].Value = nextValue
+					if !deferBuild {
+						if err := hashSet(out, ordered[i].Key, nextValue); err != nil {
+							return NewNil(), err
+						}
+					}
 					if err := acc.add(nextValue); err != nil {
 						return NewNil(), err
 					}
 				}
-				for _, entry := range ordered {
-					if err := hashSet(out, entry.Key, entry.Value); err != nil {
-						return NewNil(), err
+				if deferBuild {
+					for _, entry := range ordered {
+						if err := hashSet(out, entry.Key, entry.Value); err != nil {
+							return NewNil(), err
+						}
 					}
 				}
 				return out, nil

@@ -183,3 +183,44 @@ end`
 		})
 	}
 }
+
+// An array is the only hash key kind that can be mutated in place, so it is the
+// only one whose lookup identity can differ between the moment its entry is
+// processed and the moment a deferred build would insert it. A block that
+// mutates an earlier key during a later iteration must not cause two entries to
+// collapse onto one identity: the key-preserving drivers fall back to inserting
+// during the loop whenever the receiver has an array key.
+func TestTypedHashArrayKeyMutationKeepsSnapshotIdentity(t *testing.T) {
+	tests := []struct {
+		name   string
+		driver string
+		want   string
+	}{
+		{name: "transform_values", driver: "transform_values do |v|\n    n = n + 1\n    if n == 2\n      k1[0] = 2\n    end\n    v\n  end", want: "2|a,b"},
+		{name: "select", driver: "select do |k, v|\n    n = n + 1\n    if n == 2\n      k1[0] = 2\n    end\n    true\n  end", want: "2|a,b"},
+		{name: "reject", driver: "reject do |k, v|\n    n = n + 1\n    if n == 2\n      k1[0] = 2\n    end\n    false\n  end", want: "2|a,b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := `def run()
+  k1 = [1]
+  k2 = [2]
+  h = {}
+  h[k1] = "a"
+  h[k2] = "b"
+  n = 0
+  out = h.` + tt.driver + `
+  out.size.to_s + "|" + out.values.join(",")
+end`
+			script := compileScriptWithConfig(t, Config{StepQuota: 1 << 20, MemoryQuotaBytes: 8 << 20}, source)
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("call failed: %v", err)
+			}
+			if got.String() != tt.want {
+				t.Fatalf("got %q, want %q (entries collapsed onto a re-canonicalized key)", got.String(), tt.want)
+			}
+		})
+	}
+}
