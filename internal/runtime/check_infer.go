@@ -10774,12 +10774,12 @@ func (c *scriptChecker) arrayLiteralElementsShareValueSource(elements []Expressi
 	if len(elements) == 0 {
 		return false
 	}
-	source, ok := c.valueSourceForExpression(elements[0])
+	source, ok := c.evaluatedValueSourceForExpression(elements[0])
 	if !ok {
 		return false
 	}
 	for _, element := range elements[1:] {
-		other, ok := c.valueSourceForExpression(element)
+		other, ok := c.evaluatedValueSourceForExpression(element)
 		if !ok || other != source {
 			return false
 		}

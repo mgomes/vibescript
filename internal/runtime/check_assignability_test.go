@@ -546,6 +546,21 @@ end
 `)
 	requireCheckWarningContains(t, antiCorrelated, "call to accept argument values expected array<int> | array<string>, got array<int | string>")
 
+	mutatedSource := compileScriptDefault(t, `
+def accept(values: array<int> | array<string>)
+  values
+end
+
+def run(flag: bool)
+  accept([
+    flag ? 1 : "left",
+    -> { flag = !flag }.call(),
+    flag ? 2 : "right",
+  ])
+end
+`)
+	requireCheckWarningContains(t, mutatedSource, "call to accept argument values expected array<int> | array<string>, got array<int | string>")
+
 	write := compileScriptDefault(t, `
 def mutate(values: array<array<int>>, value: int | string)
   values[0] = [value]

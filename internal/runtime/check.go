@@ -4596,6 +4596,7 @@ func (c *scriptChecker) checkExpressionWithExpectation(
 				return false
 			}
 			c.captureEvaluatedDestructureFact(element)
+			c.pinExpressionValueSource(element)
 		}
 		return true
 	case *HashLiteral:
@@ -4673,6 +4674,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				return false
 			}
 			c.captureEvaluatedDestructureFact(elem)
+			c.pinExpressionValueSource(elem)
 		}
 	case *HashLiteral:
 		// A dual-reading braced group evaluates as a shape unless one of its
