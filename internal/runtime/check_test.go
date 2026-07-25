@@ -7661,6 +7661,16 @@ end`)
 	requireNoCheckWarnings(t, script)
 }
 
+func TestCheckWarningsSkipUnreachableRescueFallbackAtTypedBoundary(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run() -> int
+  1 rescue "bad"
+end`)
+
+	requireNoCheckWarnings(t, script)
+}
+
 func TestCheckWarningsFollowRetryIntoCompletingBody(t *testing.T) {
 	t.Parallel()
 

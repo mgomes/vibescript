@@ -7750,6 +7750,10 @@ func (c *scriptChecker) evaluatedStaticValueExpressionAlternatives(
 			}
 		}
 		return alternatives, len(alternatives) > 0
+	case *RescueExpr:
+		if expressionProvenNonRaising(typed.Body) {
+			return c.evaluatedStaticValueExpressionAlternatives(typed.Body)
+		}
 	}
 	return c.staticValueExpressionAlternatives(expr)
 }
