@@ -467,6 +467,102 @@ end
 			t.Fatalf("run() = %v, want Ada", got)
 		}
 	})
+
+	t.Run("definite instance method write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def run
+  user = User.new
+  user.set_name
+  user.name
+end
+
+def run_explicit
+  user = User.new
+  user.set_name()
+  user.name
+end
+`)
+		for _, function := range []string{"run", "run_explicit"} {
+			if warnings := script.CheckWarningsForFunction(function); len(warnings) != 0 {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", function, warnings)
+			}
+			got := callScript(t, context.Background(), script, function, nil, CallOptions{})
+			if got.Kind() != KindString || got.String() != "Ada" {
+				t.Fatalf("%s() = %v, want Ada", function, got)
+			}
+		}
+	})
+
+	t.Run("queued initializer accepts later instance method write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize
+    nil
+  end
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def run
+  user = User.new
+  user.set_name
+  user.name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
+	t.Run("instance method preserves unrelated unset property", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+  getter age: int
+
+  def set_age
+    @age = 42
+  end
+end
+
+def run
+  user = User.new
+  user.set_age
+  user.name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
 }
 
 func TestCheckTypedPropertyWriteStaysGradual(t *testing.T) {

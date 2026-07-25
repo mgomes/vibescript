@@ -176,6 +176,7 @@ type scriptChecker struct {
 	pinnedExpressionFacts      map[Expression]*TypeExpr
 	constructorInstanceFacts   map[Expression]checkInstanceClassFact
 	constructorIvarFacts       map[Expression]map[string]*TypeExpr
+	ivarFactInvalidations      map[Expression]checkIvarInvalidation
 	widenedIvarFacts           map[string]struct{}
 	assignmentReceiverCapture  *checkAssignmentReceiverCapture
 	requiredModules            map[string]struct{}
@@ -2222,6 +2223,7 @@ func (c *scriptChecker) recordUninitializedConstructorIvarFacts(
 		c.constructorIvarFacts = make(map[Expression]map[string]*TypeExpr)
 	}
 	c.constructorIvarFacts[origin] = facts
+	c.applyConstructorIvarInvalidation(origin)
 }
 
 func reachableParamFactsKey(facts map[string]checkReachableParamFact) string {
@@ -8725,6 +8727,7 @@ func (c *scriptChecker) checkMemberAutoCall(
 				c.markOpaqueClassConstants()
 			}
 			c.applyAutoInvokedMemberNamespaceMutations(member, call, target)
+			c.invalidateReachableInstanceIvarFacts(call, target)
 			completed := plan.bodyMayEnter &&
 				c.scriptFunctionCallMayComplete(call, target)
 			return target, true, true, completed
@@ -11720,6 +11723,7 @@ func (c *scriptChecker) checkCallResolved(
 				call,
 			)
 		}
+		c.invalidateReachableInstanceIvarFacts(call, target)
 		return
 	}
 	view := staticCallViewFor(call, target)
