@@ -350,8 +350,11 @@ can narrow or validate:
 
 ```vibe check
 def label(value: string?) -> string
-  return "missing" if value == nil
-  value
+  if value == nil
+    return "missing"
+  else
+    return value
+  end
 end
 
 def stringify(value: int | string) -> string
@@ -376,12 +379,13 @@ def account_name(account: Account) -> string
   account.name
 end
 
-def payload_name(payload: { name: string, ... }) -> string
-  payload[:name]
+def payload_name(raw: string) -> string
+  payload = JSON.parse_as(raw, { name: string, ... })
+  payload["name"]
 end
 
 account_name(Account.new)
-payload_name({ name: "Ada", active: true })
+payload_name('{"name":"Ada","active":true}')
 ```
 
 Plain JSON stays intentionally dynamic. The checker permits the unknown field,
