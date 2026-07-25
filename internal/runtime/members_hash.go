@@ -144,6 +144,26 @@ func orderedTypedHashEntriesInto(receiver Value, buf []HashEntry) []HashEntry {
 	return receiver.HashEntriesInto(buf)
 }
 
+// hashEntryKeysAreStable reports whether every key in entries canonicalizes to
+// the same lookup identity no matter when it is canonicalized.
+//
+// It gates the key-preserving drivers' deferred build. Populating the result
+// after the block loop re-canonicalizes each key at build time, so a key whose
+// value can change mid-iteration would be stored under its final identity rather
+// than the one it had when its entry was processed -- two entries could collapse
+// onto one. Of the kinds NewHashLookupKey accepts (nil, bool, int, float, string,
+// symbol, range, array) only an array is mutable in place, so entries without an
+// array key are immune and may defer. A receiver with an array key falls back to
+// inserting during the loop, preserving today's identities exactly.
+func hashEntryKeysAreStable(entries []HashEntry) bool {
+	for i := range entries {
+		if entries[i].Key.Kind() == KindArray {
+			return false
+		}
+	}
+	return true
+}
+
 // deterministicHashEntriesInto returns receiver's entries in the order a copy
 // should preserve: a typed hash keeps its recorded insertion order; a bare
 // host-provided map carries no insertion record, so its entries contribute in
@@ -2430,12 +2450,20 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := newTypedResultHash(count)
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				// Compact the kept entries to the front of the buffer and populate the
+				// result hash after the loop; see hash.transform_values for why the
+				// in-loop hashSet had to go. The write index never runs ahead of the
+				// read index, so the compaction is safe in place and adds no
+				// allocation.
+				ordered := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+				deferBuild := hashEntryKeysAreStable(ordered)
+				kept := 0
+				for i := range ordered {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					blockArgs[0] = entry.Key
-					blockArgs[1] = entry.Value
+					blockArgs[0] = ordered[i].Key
+					blockArgs[1] = ordered[i].Value
 					include, err := runner.call(blockArgs[:])
 					if err != nil {
 						return NewNil(), err
@@ -2444,6 +2472,18 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					if include.Truthy() {
+						if !deferBuild {
+							if err := hashSet(out, ordered[i].Key, ordered[i].Value); err != nil {
+								return NewNil(), err
+							}
+							continue
+						}
+						ordered[kept] = ordered[i]
+						kept++
+					}
+				}
+				if deferBuild {
+					for _, entry := range ordered[:kept] {
 						if err := hashSet(out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
@@ -2524,12 +2564,20 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := newTypedResultHash(count)
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				// Compact the kept entries to the front of the buffer and populate the
+				// result hash after the loop; see hash.transform_values for why the
+				// in-loop hashSet had to go. The write index never runs ahead of the
+				// read index, so the compaction is safe in place and adds no
+				// allocation.
+				ordered := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+				deferBuild := hashEntryKeysAreStable(ordered)
+				kept := 0
+				for i := range ordered {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					blockArgs[0] = entry.Key
-					blockArgs[1] = entry.Value
+					blockArgs[0] = ordered[i].Key
+					blockArgs[1] = ordered[i].Value
 					exclude, err := runner.call(blockArgs[:])
 					if err != nil {
 						return NewNil(), err
@@ -2538,6 +2586,18 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					if !exclude.Truthy() {
+						if !deferBuild {
+							if err := hashSet(out, ordered[i].Key, ordered[i].Value); err != nil {
+								return NewNil(), err
+							}
+							continue
+						}
+						ordered[kept] = ordered[i]
+						kept++
+					}
+				}
+				if deferBuild {
+					for _, entry := range ordered[:kept] {
 						if err := hashSet(out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
@@ -2938,11 +2998,27 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := newTypedResultHash(count)
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				// Collect the transformed values first and populate the result hash
+				// after the loop. hashSet goes through the value package, which bumps
+				// the mutation epoch on every insertion; doing that between block calls
+				// invalidated the block region's memoized prefix each iteration and
+				// re-walked the whole receiver, which is quadratic in the entry count.
+				// The bumps still happen, just after the last block call, where no
+				// further block-body check depends on the memo -- the same shape
+				// array.group_by already uses.
+				//
+				// The transformed value is written back into the entry buffer rather
+				// than a second slice: HashEntriesInto copies entries by value, so this
+				// cannot disturb the receiver, and the buffer's bytes are already held
+				// by the reserveLoopScratch above. So this adds no allocation and needs
+				// no accounting change.
+				ordered := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+				deferBuild := hashEntryKeysAreStable(ordered)
+				for i := range ordered {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					blockArg[0] = entry.Value
+					blockArg[0] = ordered[i].Value
 					nextValue, err := runner.call(blockArg[:])
 					if err != nil {
 						return NewNil(), err
@@ -2950,11 +3026,21 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.checkContext(); err != nil {
 						return NewNil(), err
 					}
-					if err := hashSet(out, entry.Key, nextValue); err != nil {
-						return NewNil(), err
+					ordered[i].Value = nextValue
+					if !deferBuild {
+						if err := hashSet(out, ordered[i].Key, nextValue); err != nil {
+							return NewNil(), err
+						}
 					}
 					if err := acc.add(nextValue); err != nil {
 						return NewNil(), err
+					}
+				}
+				if deferBuild {
+					for _, entry := range ordered {
+						if err := hashSet(out, entry.Key, entry.Value); err != nil {
+							return NewNil(), err
+						}
 					}
 				}
 				return out, nil
