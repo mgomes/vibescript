@@ -563,6 +563,50 @@ end
 			"expected string, got nil",
 		)
 	})
+
+	t.Run("conditional instance method write preserves unset state", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def maybe_set(set_name: bool)
+    if set_name
+      @name = "Ada"
+    end
+  end
+end
+
+def run(set_name: bool)
+  user = User.new
+  user.maybe_set(set_name)
+  user.name
+end
+
+def run_true
+  user = User.new
+  user.maybe_set(true)
+  user.name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(false)},
+			CallOptions{},
+			"expected string, got nil",
+		)
+		if warnings := script.CheckWarningsForFunction("run_true"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run_true", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run_true", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run_true() = %v, want Ada", got)
+		}
+	})
 }
 
 func TestCheckTypedPropertyWriteStaysGradual(t *testing.T) {

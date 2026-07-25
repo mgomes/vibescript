@@ -176,7 +176,6 @@ type scriptChecker struct {
 	pinnedExpressionFacts      map[Expression]*TypeExpr
 	constructorInstanceFacts   map[Expression]checkInstanceClassFact
 	constructorIvarFacts       map[Expression]map[string]*TypeExpr
-	ivarFactInvalidations      map[Expression]checkIvarInvalidation
 	widenedIvarFacts           map[string]struct{}
 	assignmentReceiverCapture  *checkAssignmentReceiverCapture
 	requiredModules            map[string]struct{}
@@ -273,10 +272,11 @@ type checkReachableParamFact struct {
 	usesDefault           bool
 }
 
-// Synthetic reachable facts correlate queued constructor and getter checks
-// without exposing checker-only state as script parameters.
+// Synthetic reachable facts correlate queued constructor, instance-method,
+// and getter checks without exposing checker-only state as script parameters.
 const (
 	reachableConstructorOriginFact = "\x00constructor-origin"
+	reachableInstanceOriginFact    = "\x00instance-origin"
 	reachableGetterOriginFact      = "\x00getter-origin"
 )
 
@@ -2185,14 +2185,16 @@ func (c *scriptChecker) reachableCallInstanceFactsWithConstructorOrigin(
 	if target.constructor {
 		add(reachableConstructorOriginFact, []Expression{constructorOrigin})
 	}
-	if target.fn.Accessor == functionAccessorGetter {
-		member, ok := call.Callee.(*MemberExpr)
-		if !ok {
-			return facts
-		}
-		origins, exact := c.instanceValueOrigins(member.Object)
-		if exact {
+	member, ok := call.Callee.(*MemberExpr)
+	if !ok {
+		return facts
+	}
+	origins, exact := c.instanceValueOrigins(member.Object)
+	if exact {
+		if target.fn.Accessor == functionAccessorGetter {
 			add(reachableGetterOriginFact, origins)
+		} else if !target.constructor {
+			add(reachableInstanceOriginFact, origins)
 		}
 	}
 	return facts
@@ -2223,7 +2225,6 @@ func (c *scriptChecker) recordUninitializedConstructorIvarFacts(
 		c.constructorIvarFacts = make(map[Expression]map[string]*TypeExpr)
 	}
 	c.constructorIvarFacts[origin] = facts
-	c.applyConstructorIvarInvalidation(origin)
 }
 
 func reachableParamFactsKey(facts map[string]checkReachableParamFact) string {
@@ -2939,6 +2940,8 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 			if _, captured := c.reachableParamFacts[reachableConstructorOriginFact]; captured {
 				c.constructorReturnExitSites = &constructorReturnExitSites
 			}
+		} else if _, captured := c.reachableParamFacts[reachableInstanceOriginFact]; captured {
+			c.constructorReturnExitSites = &constructorReturnExitSites
 		}
 		defer func() {
 			c.constructorReturnExitSites = previousConstructorReturnExitSites
@@ -3000,6 +3003,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 			c.checkImplicitReturn(label, returnType, fn.Body, fn.Pos)
 		}
 		c.captureReachableConstructorIvarFacts(fn, bodyFallsThrough, constructorReturnExitSites)
+		c.captureReachableInstanceMethodIvarFacts(fn, bodyFallsThrough, constructorReturnExitSites)
 	})
 }
 
@@ -8727,7 +8731,6 @@ func (c *scriptChecker) checkMemberAutoCall(
 				c.markOpaqueClassConstants()
 			}
 			c.applyAutoInvokedMemberNamespaceMutations(member, call, target)
-			c.invalidateReachableInstanceIvarFacts(call, target)
 			completed := plan.bodyMayEnter &&
 				c.scriptFunctionCallMayComplete(call, target)
 			return target, true, true, completed
@@ -11723,7 +11726,6 @@ func (c *scriptChecker) checkCallResolved(
 				call,
 			)
 		}
-		c.invalidateReachableInstanceIvarFacts(call, target)
 		return
 	}
 	view := staticCallViewFor(call, target)

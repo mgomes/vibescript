@@ -9,11 +9,6 @@ package runtime
 
 import "errors"
 
-type checkIvarInvalidation struct {
-	all   bool
-	names map[string]struct{}
-}
-
 // ivarFactKey names the local-inference fact slot for an instance variable.
 // The @ prefix keeps ivar facts from colliding with same-named locals.
 func ivarFactKey(name string) string { return "@" + name }
@@ -79,6 +74,15 @@ func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 			c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), checkTypeNil)
 			continue
 		}
+		if fact, exact := c.reachableInstanceIvarFact(method.AccessorName); exact {
+			if fact == nil {
+				fact = c.ivarContractFact(ty)
+			}
+			if fact != nil {
+				c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), fact)
+			}
+			continue
+		}
 		fact := c.ivarContractFact(ty)
 		if fact == nil {
 			continue
@@ -115,6 +119,58 @@ func (c *scriptChecker) captureReachableConstructorIvarFacts(
 		for _, types := range typePaths {
 			c.mergeConstructorIvarFacts(origin, c.constructorIvarFactsForTypes(types))
 		}
+	}
+}
+
+// captureReachableInstanceMethodIvarFacts replaces an exact receiver's
+// constructor state with the ivar facts left on every normally completing
+// method path. This preserves an unset arm across conditional writes while a
+// definite guarded write refines the later generated getter to its contract.
+func (c *scriptChecker) captureReachableInstanceMethodIvarFacts(
+	fn *ScriptFunction,
+	bodyFallsThrough bool,
+	returnExitSites []checkStateSnapshot,
+) {
+	if fn == nil || fn.Name == "initialize" || c.selfClass == nil {
+		return
+	}
+	originFact, captured := c.reachableParamFacts[reachableInstanceOriginFact]
+	if !captured || len(originFact.staticVals) == 0 {
+		return
+	}
+	typePaths := make([][]checkTypeFrame, 0, len(returnExitSites)+1)
+	if bodyFallsThrough {
+		typePaths = append(typePaths, c.localTypes)
+	}
+	for _, site := range returnExitSites {
+		typePaths = append(typePaths, site.scopeState.types)
+	}
+	if len(typePaths) == 0 {
+		return
+	}
+	var postFacts map[string]*TypeExpr
+	for _, types := range typePaths {
+		facts := c.constructorIvarFactsForTypes(types)
+		if postFacts == nil {
+			postFacts = cloneIvarFacts(facts)
+			continue
+		}
+		mergeIvarFacts(postFacts, facts)
+	}
+	if c.constructorIvarFacts == nil {
+		c.constructorIvarFacts = make(map[Expression]map[string]*TypeExpr)
+	}
+	if len(originFact.staticVals) == 1 {
+		c.constructorIvarFacts[originFact.staticVals[0]] = postFacts
+		return
+	}
+	for _, origin := range originFact.staticVals {
+		current, exists := c.constructorIvarFacts[origin]
+		if !exists {
+			c.constructorIvarFacts[origin] = cloneIvarFacts(postFacts)
+			continue
+		}
+		mergeIvarFacts(current, postFacts)
 	}
 }
 
@@ -161,14 +217,21 @@ func (c *scriptChecker) mergeConstructorIvarFacts(
 	}
 	current, exists := c.constructorIvarFacts[origin]
 	if !exists {
-		clone := make(map[string]*TypeExpr, len(facts))
-		for name, fact := range facts {
-			clone[name] = fact
-		}
-		c.constructorIvarFacts[origin] = clone
-		c.applyConstructorIvarInvalidation(origin)
+		c.constructorIvarFacts[origin] = cloneIvarFacts(facts)
 		return
 	}
+	mergeIvarFacts(current, facts)
+}
+
+func cloneIvarFacts(facts map[string]*TypeExpr) map[string]*TypeExpr {
+	clone := make(map[string]*TypeExpr, len(facts))
+	for name, fact := range facts {
+		clone[name] = fact
+	}
+	return clone
+}
+
+func mergeIvarFacts(current, facts map[string]*TypeExpr) {
 	for name, fact := range facts {
 		previous, tracked := current[name]
 		if !tracked || previous == nil || fact == nil {
@@ -182,11 +245,18 @@ func (c *scriptChecker) mergeConstructorIvarFacts(
 			current[name] = nil
 		}
 	}
-	c.applyConstructorIvarInvalidation(origin)
+}
+
+func (c *scriptChecker) reachableInstanceIvarFact(name string) (*TypeExpr, bool) {
+	return c.reachableOriginIvarFact(reachableInstanceOriginFact, name)
 }
 
 func (c *scriptChecker) reachableGetterIvarFact(name string) (*TypeExpr, bool) {
-	originFact, captured := c.reachableParamFacts[reachableGetterOriginFact]
+	return c.reachableOriginIvarFact(reachableGetterOriginFact, name)
+}
+
+func (c *scriptChecker) reachableOriginIvarFact(originName, name string) (*TypeExpr, bool) {
+	originFact, captured := c.reachableParamFacts[originName]
 	if !captured || len(originFact.staticVals) == 0 {
 		return nil, false
 	}
@@ -207,80 +277,6 @@ func (c *scriptChecker) reachableGetterIvarFact(name string) (*TypeExpr, bool) {
 		merged = unionTypeExprs(merged, fact)
 	}
 	return merged, true
-}
-
-// invalidateReachableInstanceIvarFacts carries possible writes from an exact
-// instance-method receiver into later generated getter checks. The effect scan
-// identifies direct property writes and marks transitive or opaque self effects
-// unknown; invalidations are retained until a queued constructor records its
-// initial facts.
-func (c *scriptChecker) invalidateReachableInstanceIvarFacts(
-	call *CallExpr,
-	target staticCallable,
-) {
-	if call == nil || target.fn == nil || target.constructor {
-		return
-	}
-	member, ok := call.Callee.(*MemberExpr)
-	if !ok {
-		return
-	}
-	origins, exact := c.instanceValueOrigins(member.Object)
-	if !exact || len(origins) == 0 {
-		return
-	}
-	scan := c.scriptFunctionEffectScan(call, target)
-	if scan == nil {
-		return
-	}
-	_, unknown := scan.unknownDirectIvarEffects[target.fn]
-	writes := scan.directIvarWrites[target.fn]
-	if !unknown && len(writes) == 0 {
-		return
-	}
-	if c.ivarFactInvalidations == nil {
-		c.ivarFactInvalidations = make(
-			map[Expression]checkIvarInvalidation,
-		)
-	}
-	for _, origin := range origins {
-		invalidation := c.ivarFactInvalidations[origin]
-		if unknown {
-			invalidation.all = true
-			invalidation.names = nil
-		} else if !invalidation.all {
-			if invalidation.names == nil {
-				invalidation.names = make(map[string]struct{}, len(writes))
-			}
-			for name := range writes {
-				invalidation.names[name] = struct{}{}
-			}
-		}
-		c.ivarFactInvalidations[origin] = invalidation
-		c.applyConstructorIvarInvalidation(origin)
-	}
-}
-
-func (c *scriptChecker) applyConstructorIvarInvalidation(origin Expression) {
-	facts, captured := c.constructorIvarFacts[origin]
-	if !captured {
-		return
-	}
-	invalidation, invalidated := c.ivarFactInvalidations[origin]
-	if !invalidated {
-		return
-	}
-	if invalidation.all {
-		for name := range facts {
-			facts[name] = nil
-		}
-		return
-	}
-	for name := range invalidation.names {
-		if _, tracked := facts[name]; tracked {
-			facts[name] = nil
-		}
-	}
 }
 
 // widenUnsetInstanceIvarFacts drops facts narrower than the property contract
