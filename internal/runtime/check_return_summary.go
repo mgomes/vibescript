@@ -10,18 +10,21 @@ import (
 // omitted the annotation. A summary is computed once per checked script by a
 // suppressed walk of the callable body that records the inferred fact of
 // every value-yielding path — explicit returns, the implicit final expression,
-// and nil fallthrough — and joins them with the existing union rules. Any path
-// the checker cannot prove (dynamic calls, recursion, unmodeled constructs)
-// makes the whole summary unknown, and explicit return annotations stay
-// authoritative.
+// and nil fallthrough — and joins them with the existing union rules. Exact
+// constructor origins travel with those paths so a getter called on a helper's
+// result can reuse the constructor's final ivar state. Any path the checker
+// cannot prove (dynamic calls, recursion, unmodeled constructs) makes the whole
+// summary unknown, and explicit return annotations stay authoritative.
 
 // returnSummaryCollector accumulates the facts of every way a callable body
 // can yield a value during a summary walk. A single unknown path poisons the
 // collector: the summary must describe every possible result or none.
 type returnSummaryCollector struct {
-	arms              []*TypeExpr
-	unknown           bool
-	failureParamFacts map[string]checkReachableParamFact
+	arms                   []*TypeExpr
+	unknown                bool
+	instanceOrigins        []Expression
+	instanceOriginsUnknown bool
+	failureParamFacts      map[string]checkReachableParamFact
 }
 
 type returnSummaryCacheKey struct {
@@ -30,10 +33,12 @@ type returnSummaryCacheKey struct {
 }
 
 type functionReturnAnalysis struct {
-	result            *TypeExpr
-	mayComplete       bool
-	bodyMayComplete   bool
-	failureParamFacts map[string]checkReachableParamFact
+	result               *TypeExpr
+	mayComplete          bool
+	bodyMayComplete      bool
+	instanceOrigins      []Expression
+	instanceOriginsExact bool
+	failureParamFacts    map[string]checkReachableParamFact
 }
 
 func (r *returnSummaryCollector) record(fact *TypeExpr) {
@@ -48,22 +53,69 @@ func (r *returnSummaryCollector) record(fact *TypeExpr) {
 	r.arms = append(r.arms, fact)
 }
 
+func (r *returnSummaryCollector) recordResult(
+	fact *TypeExpr,
+	instanceOrigins []Expression,
+	instanceOriginsExact bool,
+) {
+	if r == nil {
+		return
+	}
+	r.record(fact)
+	if r.instanceOriginsUnknown {
+		return
+	}
+	if !instanceOriginsExact || len(instanceOrigins) == 0 {
+		r.instanceOrigins = nil
+		r.instanceOriginsUnknown = true
+		return
+	}
+	r.instanceOrigins = normalizeCheckExpressionIdentities(
+		append(r.instanceOrigins, instanceOrigins...),
+	)
+}
+
 func (r *returnSummaryCollector) mergeResultArms(other *returnSummaryCollector) {
 	if other == nil {
 		return
 	}
 	if other.unknown {
-		r.record(nil)
+		r.recordResult(nil, nil, false)
 		return
 	}
 	for _, arm := range other.arms {
 		r.record(arm)
+	}
+	if !other.sawReturn() {
+		return
+	}
+	if other.instanceOriginsUnknown || len(other.instanceOrigins) == 0 {
+		r.instanceOrigins = nil
+		r.instanceOriginsUnknown = true
+		return
+	}
+	if !r.instanceOriginsUnknown {
+		r.instanceOrigins = normalizeCheckExpressionIdentities(
+			append(r.instanceOrigins, other.instanceOrigins...),
+		)
 	}
 }
 
 // sawReturn reports whether the collector reached any return path at all.
 func (r *returnSummaryCollector) sawReturn() bool {
 	return r != nil && (r.unknown || len(r.arms) > 0)
+}
+
+func (c *scriptChecker) recordReturnSummaryResult(
+	collector *returnSummaryCollector,
+	expr Expression,
+	fact *TypeExpr,
+) {
+	if collector == nil {
+		return
+	}
+	origins, exact := c.instanceValueOrigins(expr)
+	collector.recordResult(fact, origins, exact)
 }
 
 // scriptCallableReturnSummary reports the summary for calls resolved to an
@@ -96,6 +148,32 @@ func (c *scriptChecker) scriptCallableReturnSummary(call *CallExpr, target stati
 		paramFacts,
 		callMaySupplyBlock(call),
 	).result
+}
+
+func (c *scriptChecker) scriptCallableInstanceOrigins(
+	call *CallExpr,
+	target staticCallable,
+) ([]Expression, bool) {
+	owned, ok := c.resolveOwnedScriptCallable(target)
+	if !ok {
+		return nil, false
+	}
+	if (target.resolution == calleeMemberMethod || target.resolution == calleeForwardedMethod) &&
+		isUniversalMember(owned.Name) {
+		return nil, false
+	}
+	target.fn = owned
+	runnable, hashSupplied, definite := callRunnableDefaults(call, target)
+	paramFacts := c.summaryCallParamFacts(call, target, definite)
+	analysis := c.functionReturnAnalysis(
+		owned,
+		runnable,
+		hashSupplied,
+		definite,
+		paramFacts,
+		callMaySupplyBlock(call),
+	)
+	return append([]Expression(nil), analysis.instanceOrigins...), analysis.instanceOriginsExact
 }
 
 // scriptFunctionCallMayComplete reports whether an owned script function has
@@ -318,6 +396,10 @@ func (c *scriptChecker) functionReturnAnalysis(
 		mayComplete:       collector.unknown || len(collector.arms) > 0,
 		bodyMayComplete:   collector.unknown || len(collector.arms) > 0,
 		failureParamFacts: cloneReachableParamFacts(collector.failureParamFacts),
+	}
+	if !collector.instanceOriginsUnknown && len(collector.instanceOrigins) > 0 {
+		analysis.instanceOrigins = append([]Expression(nil), collector.instanceOrigins...)
+		analysis.instanceOriginsExact = true
 	}
 	if !collector.unknown && len(collector.arms) > 0 {
 		if fn.ReturnTy == nil {
@@ -718,10 +800,14 @@ func (c *scriptChecker) recordDeferredReturnSummaryFacts(sites []deferredReturnS
 		c.restoreRuntimeState(site.runtimeState)
 		c.restoreScopeState(site.scopeState)
 		if site.stmt.Value == nil {
-			c.returnCollector.record(checkTypeNil)
+			c.recordReturnSummaryResult(c.returnCollector, nil, checkTypeNil)
 			continue
 		}
-		c.returnCollector.record(c.inferExpressionType(site.stmt.Value))
+		c.recordReturnSummaryResult(
+			c.returnCollector,
+			site.stmt.Value,
+			c.inferExpressionType(site.stmt.Value),
+		)
 	}
 }
 
@@ -729,7 +815,7 @@ func (c *scriptChecker) recordDeferredReturnSummaryFacts(sites []deferredReturnS
 // implicit result facts of a fallen-through block instead of warning.
 func (c *scriptChecker) collectImplicitResultFacts(statements []Statement) {
 	if len(statements) == 0 {
-		c.returnCollector.record(checkTypeNil)
+		c.recordReturnSummaryResult(c.returnCollector, nil, checkTypeNil)
 		return
 	}
 	c.collectImplicitResultStatementFacts(effectiveFinalStatement(statements))
@@ -757,7 +843,7 @@ func (c *scriptChecker) collectImplicitResultStatementFacts(stmt Statement) {
 	case *ForStmt, *WhileStmt, *UntilStmt:
 		// A loop's value depends on break semantics the summary does not
 		// model, so a loop-final body stays unknown.
-		c.returnCollector.record(nil)
+		c.recordReturnSummaryResult(c.returnCollector, nil, nil)
 	case *TryStmt:
 		if blockAlwaysExits(typed.Ensure) {
 			return
@@ -787,7 +873,7 @@ func (c *scriptChecker) collectImplicitResultStatementFacts(stmt Statement) {
 	default:
 		// A construct the implicit-return model does not cover keeps the
 		// summary unknown rather than guessing.
-		c.returnCollector.record(nil)
+		c.recordReturnSummaryResult(c.returnCollector, nil, nil)
 	}
 }
 
@@ -796,7 +882,7 @@ func (c *scriptChecker) collectImplicitResultStatementFacts(stmt Statement) {
 // nil fallthrough arm.
 func (c *scriptChecker) collectImplicitResultIfFacts(stmt *IfStmt) {
 	if stmt == nil {
-		c.returnCollector.record(checkTypeNil)
+		c.recordReturnSummaryResult(c.returnCollector, nil, checkTypeNil)
 		return
 	}
 	truthy, known := c.implicitConditionDecision(stmt, 0, stmt.Condition)
@@ -817,7 +903,7 @@ func (c *scriptChecker) collectImplicitResultIfFacts(stmt *IfStmt) {
 		}
 	}
 	if len(stmt.Alternate) == 0 {
-		c.returnCollector.record(checkTypeNil)
+		c.recordReturnSummaryResult(c.returnCollector, nil, checkTypeNil)
 		return
 	}
 	c.collectImplicitResultFacts(stmt.Alternate)
@@ -834,17 +920,17 @@ func (c *scriptChecker) recordImplicitLeafFact(stmt Statement, expr Expression) 
 		return
 	}
 	if expressionCanImplicitlyYieldNil(expr) {
-		c.returnCollector.record(checkTypeNil)
+		c.recordReturnSummaryResult(c.returnCollector, nil, checkTypeNil)
 	}
 	if !ok {
-		c.returnCollector.record(c.inferExpressionType(expr))
+		c.recordReturnSummaryResult(c.returnCollector, expr, c.inferExpressionType(expr))
 		return
 	}
 	currentRuntime := c.snapshotRuntimeState()
 	currentScope := c.snapshotScopeState()
 	c.restoreRuntimeState(state.runtimeState)
 	c.restoreScopeState(state.scopeState)
-	c.returnCollector.record(c.inferExpressionType(expr))
+	c.recordReturnSummaryResult(c.returnCollector, expr, c.inferExpressionType(expr))
 	c.restoreRuntimeState(currentRuntime)
 	c.restoreScopeState(currentScope)
 }

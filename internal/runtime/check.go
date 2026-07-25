@@ -2272,8 +2272,21 @@ func (c *scriptChecker) checkReachableFunctions() {
 // needs to know which ones were covered.
 func (c *scriptChecker) drainReachableFunctions(reached map[*ScriptFunction]struct{}) {
 	for len(c.reachableFuncQueue) > 0 {
-		next := c.reachableFuncQueue[0]
-		c.reachableFuncQueue = c.reachableFuncQueue[1:]
+		nextIndex := 0
+		// A helper can reveal a constructor origin after its caller has
+		// already queued the corresponding getter. Capture the constructor's
+		// final ivar state before validating that getter.
+		for i, queued := range c.reachableFuncQueue {
+			if _, constructor := queued.paramFacts[reachableConstructorOriginFact]; constructor {
+				nextIndex = i
+				break
+			}
+		}
+		next := c.reachableFuncQueue[nextIndex]
+		c.reachableFuncQueue = append(
+			c.reachableFuncQueue[:nextIndex],
+			c.reachableFuncQueue[nextIndex+1:]...,
+		)
 		if reached != nil {
 			reached[next.fn] = struct{}{}
 		}
@@ -3119,9 +3132,13 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		}
 		if c.returnCollector != nil && c.deferredReturnSites == nil {
 			if typed.Value == nil {
-				c.returnCollector.record(checkTypeNil)
+				c.recordReturnSummaryResult(c.returnCollector, nil, checkTypeNil)
 			} else {
-				c.returnCollector.record(c.inferExpressionType(typed.Value))
+				c.recordReturnSummaryResult(
+					c.returnCollector,
+					typed.Value,
+					c.inferExpressionType(typed.Value),
+				)
 			}
 		}
 		if c.blockLocalReturnCollector != nil {
@@ -5193,7 +5210,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		}
 		if targetMayEnter && c.returnCollector != nil && !targetResolved &&
 			!exactLocalReturnBlockCall && c.callMayDispatchDynamicValue(typed) {
-			c.returnCollector.record(nil)
+			c.recordReturnSummaryResult(c.returnCollector, nil, nil)
 		}
 		if callMayEnter && targetResolved && target.fn != nil {
 			c.applyScriptFunctionNamespaceMutations(typed, target)
@@ -5893,7 +5910,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		// The caller-supplied block may return non-locally instead of
 		// letting the summarized function produce its later result.
 		if c.summaryYieldsActive {
-			c.summaryYieldCollector.record(nil)
+			c.recordReturnSummaryResult(c.summaryYieldCollector, nil, nil)
 		}
 		c.widenUnsetInstanceIvarFacts()
 	case *InterpolatedString:
@@ -8799,7 +8816,7 @@ func (c *scriptChecker) checkBlockLiteralWithIvarWidening(
 	defer func() {
 		c.returnCollector = previousCollector
 		if blockCollector.sawReturn() {
-			previousCollector.record(nil)
+			c.recordReturnSummaryResult(previousCollector, nil, nil)
 		}
 	}()
 

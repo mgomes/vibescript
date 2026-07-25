@@ -6742,10 +6742,26 @@ func (c *scriptChecker) instanceValueOrigins(expr Expression) ([]Expression, boo
 	switch typed := expr.(type) {
 	case *Identifier:
 		fact, exact := c.localValueFactFor(typed.Name)
-		if !exact || len(fact.instanceOrigins) == 0 {
+		if exact && len(fact.instanceOrigins) > 0 {
+			return append([]Expression(nil), fact.instanceOrigins...), true
+		}
+		if c.identifierShadowed(typed.Name) || c.hostGlobalShadows(typed.Name) {
 			return nil, false
 		}
-		return append([]Expression(nil), fact.instanceOrigins...), true
+		fn := c.script.functions[typed.Name]
+		if fn == nil || len(fn.Params) > 0 {
+			return nil, false
+		}
+		return c.scriptCallableInstanceOrigins(
+			nil,
+			staticCallable{name: typed.Name, fn: fn},
+		)
+	case *CallExpr:
+		target, resolved := c.resolveCallable(typed)
+		if !resolved || target.fn == nil {
+			return nil, false
+		}
+		return c.scriptCallableInstanceOrigins(typed, target)
 	case *ConditionalExpr:
 		if branch, known := staticConditionalExpressionBranch(typed); known {
 			return c.instanceValueOrigins(branch)

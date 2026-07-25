@@ -213,6 +213,41 @@ end
 		)
 	})
 
+	t.Run("initialized property returned from helper", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize
+    @name = "Ada"
+  end
+end
+
+def make() -> User
+  User.new
+end
+
+def run
+  make.name
+end
+
+def run_explicit
+  make().name
+end
+`)
+		for _, function := range []string{"run", "run_explicit"} {
+			if warnings := script.CheckWarningsForFunction(function); len(warnings) != 0 {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", function, warnings)
+			}
+			got := callScript(t, context.Background(), script, function, nil, CallOptions{})
+			if got.Kind() != KindString || got.String() != "Ada" {
+				t.Fatalf("%s() = %v, want Ada", function, got)
+			}
+		}
+	})
+
 	t.Run("conditional initializer write", func(t *testing.T) {
 		t.Parallel()
 
