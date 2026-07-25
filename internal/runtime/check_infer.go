@@ -5812,6 +5812,11 @@ func (c *scriptChecker) inferAssignStatementTypes(
 				priorLogicalAliasTransfer = logicalTargetFact.priorAliasTransfer
 			}
 		}
+		if logicalTargetFact != nil &&
+			logicalTargetFact.known &&
+			logicalTargetFact.rhsReachable {
+			valueAliasTransfer = c.captureValueAliasTransfer(stmt.Value)
+		}
 		if mayRebind {
 			c.advanceLocalBindingGeneration(target.Name)
 		}
@@ -5847,6 +5852,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 			if known {
 				if rhsReachable {
 					c.bindExpressionLocalValueFact(target.Name, stmt.Value)
+					c.applyValueAliasTransfer(target.Name, valueAliasTransfer)
 				}
 			} else {
 				c.bindLocalClassValue(target.Name, "")

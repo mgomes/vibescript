@@ -584,6 +584,33 @@ def run(value: int | string)
 end
 `))
 
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: string, right: string })
+  value
+end
+
+def run(value: int | string)
+  or_alias = nil
+  or_alias ||= value
+  and_alias = true
+  and_alias &&= value
+  accept({ left: value, right: or_alias })
+  accept({ left: value, right: and_alias })
+end
+`))
+
+	unknownLogicalAlias := compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: string, right: string })
+  value
+end
+
+def run(value: int | string, other: int | string | nil)
+  other ||= value
+  accept({ left: value, right: other })
+end
+`)
+	requireCheckWarningContains(t, unknownLogicalAlias, "call to accept argument value expected { left: int, right: int } | { left: string, right: string }, got { left: int | string, right: int | string | nil }")
+
 	forwarded := compileScriptDefault(t, `
 def accept(value: { left: int, right: int } | { left: string, right: string })
   value
