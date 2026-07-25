@@ -69,6 +69,7 @@ type checkBlockLiteralValue struct {
 
 type checkLocalValueFact struct {
 	classNames              []string
+	instanceOrigins         []Expression
 	callables               []*ScriptFunction
 	blocks                  []checkBlockLiteralValue
 	blockChoiceMayNil       bool
@@ -330,6 +331,7 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 	for name, fact := range frame {
 		clone[name] = checkLocalValueFact{
 			classNames:              append([]string(nil), fact.classNames...),
+			instanceOrigins:         append([]Expression(nil), fact.instanceOrigins...),
 			callables:               append([]*ScriptFunction(nil), fact.callables...),
 			blocks:                  append([]checkBlockLiteralValue(nil), fact.blocks...),
 			blockChoiceMayNil:       fact.blockChoiceMayNil,
@@ -347,6 +349,7 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 	fact, ok := c.localValueFactFor(name)
 	if !ok || len(fact.classNames) != 1 || len(fact.callables) > 0 || len(fact.staticVals) > 0 ||
+		len(fact.instanceOrigins) > 0 ||
 		len(fact.blocks) > 0 || len(fact.blockValues) > 0 ||
 		len(fact.hashDefaults) > 0 || fact.keywordSplatFails {
 		return "", false
@@ -357,6 +360,7 @@ func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 func (c *scriptChecker) localClassValuesFor(name string) ([]string, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return fact.classNames, ok && len(fact.classNames) > 0 && len(fact.callables) == 0 &&
+		len(fact.instanceOrigins) == 0 &&
 		len(fact.blocks) == 0 && len(fact.staticVals) == 0 &&
 		len(fact.blockValues) == 0 && len(fact.hashDefaults) == 0 &&
 		!fact.keywordSplatFails
@@ -404,6 +408,7 @@ func (c *scriptChecker) bindLocalClassValues(name string, classNames []string) {
 func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
 	if !ok || len(fact.callables) != 1 || len(fact.classNames) > 0 || len(fact.staticVals) > 0 ||
+		len(fact.instanceOrigins) > 0 ||
 		len(fact.blocks) > 0 || len(fact.blockValues) > 0 ||
 		len(fact.hashDefaults) > 0 || fact.keywordSplatFails {
 		return nil, false
@@ -414,6 +419,7 @@ func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, boo
 func (c *scriptChecker) localCallableValuesFor(name string) ([]*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return fact.callables, ok && len(fact.callables) > 0 && len(fact.classNames) == 0 &&
+		len(fact.instanceOrigins) == 0 &&
 		len(fact.blocks) == 0 && len(fact.staticVals) == 0 &&
 		len(fact.blockValues) == 0 && len(fact.hashDefaults) == 0 &&
 		!fact.keywordSplatFails
@@ -443,6 +449,7 @@ func (c *scriptChecker) localBlockLiteralValuesFor(name string) ([]checkBlockLit
 	fact, ok := c.localValueFactFor(name)
 	return append([]checkBlockLiteralValue(nil), fact.blocks...), ok && len(fact.blocks) > 0 &&
 		!fact.blockChoiceMayNil &&
+		len(fact.instanceOrigins) == 0 &&
 		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
 		len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
@@ -452,6 +459,7 @@ func (c *scriptChecker) localArrayFillBlockLiteralValuesFor(
 ) ([]checkBlockLiteralValue, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return append([]checkBlockLiteralValue(nil), fact.blocks...), ok && len(fact.blocks) > 0 &&
+		len(fact.instanceOrigins) == 0 &&
 		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
 		len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
@@ -465,6 +473,7 @@ func (c *scriptChecker) localStaticValuesFor(name string) ([]Expression, bool) {
 	}
 	fact, ok := c.localValueFactFor(name)
 	return append([]Expression(nil), fact.staticVals...), ok && len(fact.staticVals) > 0 &&
+		len(fact.instanceOrigins) == 0 &&
 		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
 		len(fact.blocks) == 0 && !fact.keywordSplatFails
 }
@@ -609,11 +618,13 @@ func (c *scriptChecker) bindLocalExactValueFact(name string, valueFact checkLoca
 			continue
 		}
 		originalStaticValues := valueFact.staticVals
+		valueFact.instanceOrigins = normalizeCheckExpressionIdentities(valueFact.instanceOrigins)
 		valueFact.blocks = normalizeCheckBlockLiterals(valueFact.blocks)
 		valueFact.staticVals = c.normalizeCheckStaticValues(valueFact.staticVals)
 		valueFact.blockValues = normalizeCapturedBlockLiteralValues(valueFact.blockValues)
 		valueFact.hashDefaults = normalizeDirectCoreHashDefaultCaptures(valueFact.hashDefaults)
-		if len(valueFact.blocks) == 0 && len(valueFact.staticVals) == 0 &&
+		if len(valueFact.instanceOrigins) == 0 &&
+			len(valueFact.blocks) == 0 && len(valueFact.staticVals) == 0 &&
 			len(valueFact.blockValues) == 0 &&
 			len(valueFact.hashDefaults) == 0 {
 			delete(c.localClassValues[i], name)
@@ -807,6 +818,7 @@ func (c *scriptChecker) bindLocalKeywordSplatFailure(name string, keys ...string
 			}
 		}
 		fact.classNames = nil
+		fact.instanceOrigins = nil
 		fact.callables = nil
 		fact.blocks = nil
 		fact.blockChoiceMayNil = false
@@ -5480,6 +5492,11 @@ func (c *scriptChecker) mergeLocalValueFacts(
 	if len(left.classNames) > 0 && len(right.classNames) > 0 {
 		merged.classNames = normalizeCheckClassNames(append(left.classNames, right.classNames...))
 	}
+	if len(left.instanceOrigins) > 0 && len(right.instanceOrigins) > 0 {
+		merged.instanceOrigins = normalizeCheckExpressionIdentities(
+			append(left.instanceOrigins, right.instanceOrigins...),
+		)
+	}
 	if len(left.callables) > 0 && len(right.callables) > 0 {
 		merged.callables = normalizeCheckCallables(append(left.callables, right.callables...))
 	}
@@ -5520,6 +5537,7 @@ func (c *scriptChecker) mergeLocalValueFacts(
 		}
 	}
 	exact := len(merged.classNames) > 0 ||
+		len(merged.instanceOrigins) > 0 ||
 		len(merged.callables) > 0 ||
 		len(merged.blocks) > 0 ||
 		len(merged.staticVals) > 0 ||
@@ -5542,6 +5560,29 @@ func normalizeCheckClassNames(names []string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeCheckExpressionIdentities(expressions []Expression) []Expression {
+	if len(expressions) == 0 {
+		return nil
+	}
+	normalized := make([]Expression, 0, len(expressions))
+	for _, candidate := range expressions {
+		if candidate == nil {
+			continue
+		}
+		duplicate := false
+		for _, existing := range normalized {
+			if existing == candidate {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			normalized = append(normalized, candidate)
+		}
+	}
+	return normalized
 }
 
 func (c *scriptChecker) normalizeCheckStaticValues(values []Expression) []Expression {
@@ -6632,6 +6673,7 @@ func indexWriteInvalidKeywordSplatKey(target *IndexExpr) (bool, string) {
 }
 
 func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expression) {
+	instanceOrigins, instanceExact := c.instanceValueOrigins(expr)
 	identityExpr, autoInvoked := c.evaluatedIdentityExpression(expr, true)
 	classNames, classExact := c.classValueExpressionNames(identityExpr)
 	if autoInvoked {
@@ -6650,7 +6692,11 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 			staticChoice = choice
 		}
 	}
-	if classExact {
+	if instanceExact {
+		c.bindLocalExactValueFact(name, checkLocalValueFact{
+			instanceOrigins: instanceOrigins,
+		})
+	} else if classExact {
 		c.bindLocalClassValues(name, classNames)
 	} else if fns, ok := c.callableExpressionFunctions(identityExpr); ok {
 		c.bindLocalCallableValues(name, fns)
@@ -6669,6 +6715,60 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 	} else {
 		c.bindLocalClassValue(name, "")
 	}
+}
+
+// instanceValueOrigins follows exact local aliases and value-preserving
+// branches back to the constructor expressions that produced an instance.
+func (c *scriptChecker) instanceValueOrigins(expr Expression) ([]Expression, bool) {
+	if fact, captured := c.constructorInstanceFacts[expr]; captured {
+		if !fact.exact || len(fact.classNames) == 0 {
+			return nil, false
+		}
+		return []Expression{expr}, true
+	}
+	merge := func(expressions ...Expression) ([]Expression, bool) {
+		var origins []Expression
+		for _, expression := range expressions {
+			candidates, exact := c.instanceValueOrigins(expression)
+			if !exact {
+				return nil, false
+			}
+			origins = append(origins, candidates...)
+		}
+		origins = normalizeCheckExpressionIdentities(origins)
+		return origins, len(origins) > 0
+	}
+
+	switch typed := expr.(type) {
+	case *Identifier:
+		fact, exact := c.localValueFactFor(typed.Name)
+		if !exact || len(fact.instanceOrigins) == 0 {
+			return nil, false
+		}
+		return append([]Expression(nil), fact.instanceOrigins...), true
+	case *ConditionalExpr:
+		if branch, known := staticConditionalExpressionBranch(typed); known {
+			return c.instanceValueOrigins(branch)
+		}
+		return merge(typed.Consequent, typed.Alternate)
+	case *IfExpr:
+		if branch, known := c.inferredIfExpressionBranch(typed); known {
+			return c.instanceValueOrigins(branch)
+		}
+		branches := make([]Expression, 0, len(typed.ElseIf)+2)
+		branches = append(branches, typed.Consequent)
+		for _, branch := range typed.ElseIf {
+			branches = append(branches, branch.Result)
+		}
+		branches = append(branches, typed.Alternate)
+		return merge(branches...)
+	case *RescueExpr:
+		if expressionProvenNonRaising(typed.Body) {
+			return c.instanceValueOrigins(typed.Body)
+		}
+		return merge(typed.Body, typed.Fallback)
+	}
+	return nil, false
 }
 
 // logicalAssignmentFact models x ||= v and x &&= v: the runtime keeps the
@@ -6768,6 +6868,7 @@ func localValueFactTruthiness(fact checkLocalValueFact, tracked bool) (bool, boo
 		return false, false
 	}
 	if len(fact.classNames) > 0 || len(fact.callables) > 0 ||
+		len(fact.instanceOrigins) > 0 ||
 		len(fact.hashDefaults) > 0 ||
 		len(fact.blocks) > 0 && !fact.blockChoiceMayNil {
 		return true, true

@@ -154,7 +154,19 @@ end
 func TestCheckTypedGetterReturnContradiction(t *testing.T) {
 	t.Parallel()
 
-	script := compileScriptDefault(t, `
+	requireRunWarning := func(t *testing.T, script *Script) {
+		t.Helper()
+		warnings := script.CheckWarningsForFunction("run")
+		got := strings.Join(checkWarningMessages(warnings), "\n")
+		if !strings.Contains(got, "return value expected string") {
+			t.Fatalf("CheckWarningsForFunction(%q) = %q, want getter return warning", "run", got)
+		}
+	}
+
+	t.Run("unset property", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
 class User
   getter name: string
 end
@@ -163,13 +175,110 @@ def run
   User.new.name
 end
 `)
-	warnings := script.CheckWarningsForFunction("run")
-	for _, warning := range warnings {
-		if strings.Contains(warning.Message, "return value expected string") {
-			return
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
+
+	t.Run("conditional initializer write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize(set_name: bool)
+    if set_name
+      @name = "Ada"
+    end
+  end
+end
+
+def run
+  User.new(false).name
+end
+`)
+		requireRunWarning(t, script)
+	})
+
+	t.Run("conditional initializer write through alias", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize(set_name: bool)
+    if set_name
+      @name = "Ada"
+    end
+  end
+end
+
+def run
+  user = User.new(false)
+  alias_user = user
+  alias_user.name
+end
+`)
+		requireRunWarning(t, script)
+	})
+
+	t.Run("definite initializer write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize(set_name: bool)
+    if set_name
+      @name = "Ada"
+    end
+  end
+end
+
+def run
+  User.new(true).name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
 		}
-	}
-	t.Fatalf("CheckWarningsForFunction(%q) = %#v, want getter return warning", "run", warnings)
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
+	t.Run("definite setter write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property name: string
+end
+
+def run
+  user = User.new
+  user.name = "Ada"
+  user.name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
 }
 
 func TestCheckTypedPropertyWriteStaysGradual(t *testing.T) {

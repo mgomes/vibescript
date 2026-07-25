@@ -56,11 +56,10 @@ func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 			continue
 		}
 		if fn.Accessor == functionAccessorGetter && fn.AccessorName == method.AccessorName {
-			if !c.generatedGetterIvarMayBeInitialized(fn) {
-				c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), checkTypeNil)
-				continue
+			fact, exact := c.reachableGetterIvarFact(method.AccessorName)
+			if !exact || fact == nil {
+				fact = c.ivarContractFact(ty)
 			}
-			fact := c.ivarContractFact(ty)
 			if fact != nil {
 				c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), fact)
 			}
@@ -78,39 +77,98 @@ func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 	}
 }
 
-func (c *scriptChecker) generatedGetterIvarMayBeInitialized(fn *ScriptFunction) bool {
-	if fn == nil || fn.Accessor != functionAccessorGetter ||
-		c.selfClass == nil || fn.AccessorName == "" {
-		return false
+// captureReachableConstructorIvarFacts records the ivar state on every
+// completing path of this exact constructor call for queued getter checks.
+func (c *scriptChecker) captureReachableConstructorIvarFacts(fn *ScriptFunction) {
+	if fn == nil || fn.Name != "initialize" || c.selfClass == nil {
+		return
 	}
-	initializer := c.selfClass.Methods["initialize"]
-	if initializer == nil {
-		return false
+	originFact, captured := c.reachableParamFacts[reachableConstructorOriginFact]
+	if !captured || len(originFact.staticVals) == 0 {
+		return
 	}
-	scan := c.newNamespaceMutationScan()
-	scan.visit(initializer)
-	if scan.invokedUnknownCallable || scan.invokedYield {
-		return true
-	}
-	for candidate, writes := range scan.directIvarWrites {
-		if _, written := writes[fn.AccessorName]; written {
-			return true
+	facts := make(map[string]*TypeExpr)
+	for _, method := range c.selfClass.Methods {
+		if method.Accessor == functionAccessorNone || method.AccessorName == "" {
+			continue
 		}
-		if _, unknown := scan.unknownDirectIvarEffects[candidate]; unknown {
-			return true
+		if c.instanceIvarContract(method.AccessorName) == nil {
+			continue
+		}
+		key := ivarFactKey(method.AccessorName)
+		var fact *TypeExpr
+		tracked := false
+		for i := len(c.localTypes) - 1; i >= 0; i-- {
+			fact, tracked = c.localTypes[i][key]
+			if tracked {
+				break
+			}
+		}
+		if tracked {
+			facts[method.AccessorName] = fact
 		}
 	}
-	for block := range scan.invokedLambdas {
-		var effects regionIvarEffects
-		c.collectRepeatedRegionIvarEffectsFromBlock(block, &effects)
-		if effects.unknown {
-			return true
+	for _, origin := range originFact.staticVals {
+		c.mergeConstructorIvarFacts(origin, facts)
+	}
+}
+
+func (c *scriptChecker) mergeConstructorIvarFacts(
+	origin Expression,
+	facts map[string]*TypeExpr,
+) {
+	if origin == nil {
+		return
+	}
+	if c.constructorIvarFacts == nil {
+		c.constructorIvarFacts = make(map[Expression]map[string]*TypeExpr)
+	}
+	current, exists := c.constructorIvarFacts[origin]
+	if !exists {
+		clone := make(map[string]*TypeExpr, len(facts))
+		for name, fact := range facts {
+			clone[name] = fact
 		}
-		if _, written := effects.writes[fn.AccessorName]; written {
-			return true
+		c.constructorIvarFacts[origin] = clone
+		return
+	}
+	for name, fact := range facts {
+		previous, tracked := current[name]
+		if !tracked || previous == nil || fact == nil {
+			current[name] = nil
+			continue
+		}
+		current[name] = unionTypeExprs(previous, fact)
+	}
+	for name := range current {
+		if _, tracked := facts[name]; !tracked {
+			current[name] = nil
 		}
 	}
-	return false
+}
+
+func (c *scriptChecker) reachableGetterIvarFact(name string) (*TypeExpr, bool) {
+	originFact, captured := c.reachableParamFacts[reachableGetterOriginFact]
+	if !captured || len(originFact.staticVals) == 0 {
+		return nil, false
+	}
+	var merged *TypeExpr
+	for i, origin := range originFact.staticVals {
+		facts, captured := c.constructorIvarFacts[origin]
+		if !captured {
+			return nil, false
+		}
+		fact, tracked := facts[name]
+		if !tracked || fact == nil {
+			return nil, true
+		}
+		if i == 0 {
+			merged = fact
+			continue
+		}
+		merged = unionTypeExprs(merged, fact)
+	}
+	return merged, true
 }
 
 // widenUnsetInstanceIvarFacts drops facts narrower than the property contract

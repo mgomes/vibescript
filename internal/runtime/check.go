@@ -174,6 +174,7 @@ type scriptChecker struct {
 	summaryBlockAvailable      bool
 	pinnedExpressionFacts      map[Expression]*TypeExpr
 	constructorInstanceFacts   map[Expression]checkInstanceClassFact
+	constructorIvarFacts       map[Expression]map[string]*TypeExpr
 	assignmentReceiverCapture  *checkAssignmentReceiverCapture
 	requiredModules            map[string]struct{}
 	runtimeModules             map[string]struct{}
@@ -268,6 +269,13 @@ type checkReachableParamFact struct {
 	containerIdentity     string
 	usesDefault           bool
 }
+
+// Synthetic reachable facts correlate queued constructor and getter checks
+// without exposing checker-only state as script parameters.
+const (
+	reachableConstructorOriginFact = "\x00constructor-origin"
+	reachableGetterOriginFact      = "\x00getter-origin"
+)
 
 type checkInstanceClassFact struct {
 	classNames []string
@@ -2140,6 +2148,71 @@ func cloneReachableParamFacts(facts map[string]checkReachableParamFact) map[stri
 	return clone
 }
 
+func (c *scriptChecker) reachableCallInstanceFacts(
+	call *CallExpr,
+	target staticCallable,
+	facts map[string]checkReachableParamFact,
+) map[string]checkReachableParamFact {
+	if call == nil || target.fn == nil {
+		return facts
+	}
+	add := func(name string, origins []Expression) {
+		origins = normalizeCheckExpressionIdentities(origins)
+		if len(origins) == 0 {
+			return
+		}
+		if facts == nil {
+			facts = make(map[string]checkReachableParamFact)
+		} else {
+			facts = cloneReachableParamFacts(facts)
+		}
+		facts[name] = checkReachableParamFact{
+			staticVals: origins,
+		}
+	}
+	if target.constructor {
+		add(reachableConstructorOriginFact, []Expression{call})
+	}
+	if target.fn.Accessor == functionAccessorGetter {
+		member, ok := call.Callee.(*MemberExpr)
+		if !ok {
+			return facts
+		}
+		origins, exact := c.instanceValueOrigins(member.Object)
+		if exact {
+			add(reachableGetterOriginFact, origins)
+		}
+	}
+	return facts
+}
+
+func (c *scriptChecker) recordUninitializedConstructorIvarFacts(
+	origin Expression,
+	className string,
+) {
+	if origin == nil || className == "" {
+		return
+	}
+	classDef := c.script.classes[className]
+	if classDef == nil {
+		return
+	}
+	facts := make(map[string]*TypeExpr)
+	for _, method := range classDef.Methods {
+		if method.Accessor == functionAccessorNone || method.AccessorName == "" {
+			continue
+		}
+		if _, ty := propertyContract(classDef, method.AccessorName); ty == nil {
+			continue
+		}
+		facts[method.AccessorName] = checkTypeNil
+	}
+	if c.constructorIvarFacts == nil {
+		c.constructorIvarFacts = make(map[Expression]map[string]*TypeExpr)
+	}
+	c.constructorIvarFacts[origin] = facts
+}
+
 func reachableParamFactsKey(facts map[string]checkReachableParamFact) string {
 	names := make([]string, 0, len(facts))
 	for name := range facts {
@@ -2889,6 +2962,7 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		if returnType != nil {
 			c.checkImplicitReturn(label, returnType, fn.Body, fn.Pos)
 		}
+		c.captureReachableConstructorIvarFacts(fn)
 	})
 }
 
@@ -5501,6 +5575,12 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			if typed.Property == "new" {
 				classes, exact := c.constructorInstanceClassNames(typed.Object, "")
 				c.pinConstructorInstanceFact(typed, classes, exact)
+				if exact && len(classes) == 1 {
+					classDef := c.script.classes[classes[0]]
+					if classDef != nil && classDef.Methods["initialize"] == nil {
+						c.recordUninitializedConstructorIvarFacts(typed, classes[0])
+					}
+				}
 				if exact && len(classes) == 0 {
 					// Parenless `.new` also resolves before any outer dispatch.
 					// Plain modules fail here and cannot contribute opaque effects.
@@ -8572,7 +8652,14 @@ func (c *scriptChecker) checkMemberAutoCall(
 			// binding plan must carry exact omitted-default execution into
 			// the reachable body check.
 			if plan.bindingStarts {
-				c.enqueueReachableFunctionBinding(target.name, target.fn, nil, plan)
+				facts := c.reachableCallInstanceFacts(call, target, nil)
+				c.enqueueReachableFunctionBindingForCall(
+					target.name,
+					target.fn,
+					facts,
+					plan,
+					call,
+				)
 			}
 			if plan.bodyMayEnter {
 				if !c.scriptCallClassConstantEffectsProvenAbsent(call, target) {
@@ -11532,6 +11619,9 @@ func (c *scriptChecker) checkCallResolved(
 		c.checkDynamicCallTargets(function, dynamicTargets, diagnoseDynamicTargets)
 		return
 	}
+	if target.constructor && target.fn == nil {
+		c.recordUninitializedConstructorIvarFacts(call, target.constructorClass)
+	}
 	if target.fn == nil && (target.name == "send" || target.name == "public_send") {
 		c.checkDynamicCallTargets(function, dynamicTargets, diagnoseDynamicTargets)
 	}
@@ -11540,7 +11630,8 @@ func (c *scriptChecker) checkCallResolved(
 		// validates the expanded call with the same binding errors a literal
 		// spelling would raise, so static shape checks step aside.
 		if target.fn != nil {
-			c.enqueueReachableFunctionForCall(target.name, target.fn, nil, call)
+			facts := c.reachableCallInstanceFacts(call, target, nil)
+			c.enqueueReachableFunctionForCall(target.name, target.fn, facts, call)
 		}
 		return
 	}
@@ -11550,6 +11641,7 @@ func (c *scriptChecker) checkCallResolved(
 		c.checkCallArgumentTypes(function, view, target.name, target.fn)
 		plan := c.scriptCallBindingPlan(call, target)
 		facts := c.reachableCallParamFacts(call, target)
+		facts = c.reachableCallInstanceFacts(call, target, facts)
 		c.checkScriptCallContextualDefaults(
 			target.name,
 			target.fn,
@@ -11603,6 +11695,7 @@ func (c *scriptChecker) checkDynamicCallTargets(
 			c.checkCallArgumentTypes(function, view, candidate.target.name, candidate.target.fn)
 		}
 		facts := c.reachableCallParamFacts(candidate.call, candidate.target)
+		facts = c.reachableCallInstanceFacts(candidate.call, candidate.target, facts)
 		if candidate.mayEnter {
 			c.enqueueReachableFunctionForCall(
 				candidate.target.name,
@@ -18146,7 +18239,6 @@ type namespaceMutationScan struct {
 	invokedLambdas           map[*BlockLiteral]struct{}
 	invokedSelfFunctions     map[*ScriptFunction]struct{}
 	invokedUnknownCallable   bool
-	invokedYield             bool
 	directIvarWrites         map[*ScriptFunction]map[string]struct{}
 	unknownDirectIvarEffects map[*ScriptFunction]struct{}
 	currentFunction          *ScriptFunction
@@ -20383,7 +20475,6 @@ func (s *namespaceMutationScan) expressionWithAuto(expr Expression, autoCall boo
 				return false
 			}
 		}
-		s.invokedYield = true
 		return true
 	case *InterpolatedString:
 		return s.stringParts(typed.Parts)
