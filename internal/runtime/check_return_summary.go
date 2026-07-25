@@ -726,6 +726,7 @@ func scopeStateParamFact(state checkScopeState, name string) (checkReachablePara
 			fact.classNames = append([]string(nil), value.classNames...)
 			fact.callables = append([]*ScriptFunction(nil), value.callables...)
 			fact.staticVals = append([]Expression(nil), value.staticVals...)
+			fact.instanceOrigins = append([]Expression(nil), value.instanceOrigins...)
 		}
 		return fact, true
 	}
@@ -743,9 +744,11 @@ func (c *scriptChecker) mergeFailureParamFactAlternatives(
 	staticExact := len(facts[0].staticVals) > 0
 	classExact := len(facts[0].classNames) > 0
 	callableExact := len(facts[0].callables) > 0
+	instanceExact := len(facts[0].instanceOrigins) > 0
 	merged.staticVals = append([]Expression(nil), facts[0].staticVals...)
 	merged.classNames = append([]string(nil), facts[0].classNames...)
 	merged.callables = append([]*ScriptFunction(nil), facts[0].callables...)
+	merged.instanceOrigins = append([]Expression(nil), facts[0].instanceOrigins...)
 	for _, fact := range facts[1:] {
 		if knownType {
 			if fact.typeExpr == nil {
@@ -780,8 +783,18 @@ func (c *scriptChecker) mergeFailureParamFactAlternatives(
 				merged.callables = normalizeCheckCallables(append(merged.callables, fact.callables...))
 			}
 		}
+		if instanceExact {
+			if len(fact.instanceOrigins) == 0 {
+				instanceExact = false
+				merged.instanceOrigins = nil
+			} else {
+				merged.instanceOrigins = normalizeCheckExpressionIdentities(
+					append(merged.instanceOrigins, fact.instanceOrigins...),
+				)
+			}
+		}
 	}
-	return merged, knownType || staticExact || classExact || callableExact
+	return merged, knownType || staticExact || classExact || callableExact || instanceExact
 }
 
 // recordDeferredReturnSummaryFacts records returns after a non-exiting

@@ -175,6 +175,7 @@ type scriptChecker struct {
 	summaryBlockAvailable      bool
 	pinnedExpressionFacts      map[Expression]*TypeExpr
 	pinnedExpressionSources    map[Expression]checkValueSourceCapture
+	pinnedInstanceOrigins      map[Expression]checkInstanceOriginsCapture
 	constructorInstanceFacts   map[Expression]checkInstanceClassFact
 	constructorIvarFacts       map[Expression]map[string]*TypeExpr
 	widenedIvarFacts           map[string]struct{}
@@ -269,6 +270,7 @@ type checkReachableParamFact struct {
 	selfCallablesCaptured bool
 	selfCallableAmbiguous bool
 	staticVals            []Expression
+	instanceOrigins       []Expression
 	containerIdentity     string
 	usesDefault           bool
 }
@@ -2148,6 +2150,7 @@ func cloneReachableParamFacts(facts map[string]checkReachableParamFact) map[stri
 		fact.callables = append([]*ScriptFunction(nil), fact.callables...)
 		fact.selfCallables = append([]*ScriptFunction(nil), fact.selfCallables...)
 		fact.staticVals = append([]Expression(nil), fact.staticVals...)
+		fact.instanceOrigins = append([]Expression(nil), fact.instanceOrigins...)
 		clone[name] = fact
 	}
 	return clone
@@ -2263,6 +2266,10 @@ func reachableParamFactsKey(facts map[string]checkReachableParamFact) string {
 		key.WriteByte(':')
 		for _, value := range fact.staticVals {
 			fmt.Fprintf(&key, "%T:%p,", value, value)
+		}
+		key.WriteByte(':')
+		for _, origin := range fact.instanceOrigins {
+			fmt.Fprintf(&key, "%T:%p,", origin, origin)
 		}
 		key.WriteByte(':')
 		key.WriteString(fact.containerIdentity)
@@ -3074,7 +3081,9 @@ func (c *scriptChecker) applyReachableParamFact(param Param) {
 			param.DefaultVal,
 			positionalArgumentExpectation(param),
 		)
-		if classNames, exact := c.classValueExpressionNames(param.DefaultVal); exact {
+		if origins, exact := c.instanceValueOrigins(param.DefaultVal); exact {
+			fact.instanceOrigins = origins
+		} else if classNames, exact := c.classValueExpressionNames(param.DefaultVal); exact {
 			fact.classNames = classNames
 		} else if fns, exact := c.callableExpressionFunctions(param.DefaultVal); exact {
 			fact.callables = fns
@@ -3089,7 +3098,11 @@ func (c *scriptChecker) applyReachableParamFact(param Param) {
 			c.refineAnnotatedParamFact(param, fact.typeExpr)
 		}
 	}
-	if len(fact.classNames) > 0 {
+	if len(fact.instanceOrigins) > 0 {
+		c.bindLocalExactValueFact(param.Name, checkLocalValueFact{
+			instanceOrigins: fact.instanceOrigins,
+		})
+	} else if len(fact.classNames) > 0 {
 		c.bindLocalClassValues(param.Name, fact.classNames)
 	} else if len(fact.callables) > 0 {
 		c.bindLocalCallableValues(param.Name, fact.callables)
@@ -4862,6 +4875,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
 			}
 			c.pinExpressionValueSource(retainedValue)
+			c.pinExpressionInstanceOrigins(retainedValue)
 			identityAutoCall := autoCall && !retainsCallable
 			retainedFact := argumentFacts[expr]
 			argumentRetainedAliases[expr] = c.captureRetainedContainerAliases(
@@ -12879,9 +12893,10 @@ func (c *scriptChecker) reachableCallParamFacts(
 			}
 		}
 		staticVals, staticExact := c.callStaticValueAlternatives(arg)
+		instanceOrigins, instanceExact := c.evaluatedInstanceValueOrigins(arg)
 		callableIdentityExact := callablesCaptured || selfCaptured || staticValuesCaptured
 		if fact != nil || len(classNames) > 0 || len(callables) > 0 || callableIdentityExact ||
-			staticExact || containerIdentity != "" {
+			staticExact || instanceExact || containerIdentity != "" {
 			facts[param.Name] = checkReachableParamFact{
 				typeExpr:              fact,
 				classNames:            append([]string(nil), classNames...),
@@ -12891,6 +12906,7 @@ func (c *scriptChecker) reachableCallParamFacts(
 				selfCallablesCaptured: selfCaptured,
 				selfCallableAmbiguous: selfBinding.ambiguous,
 				staticVals:            append([]Expression(nil), staticVals...),
+				instanceOrigins:       append([]Expression(nil), instanceOrigins...),
 				containerIdentity:     containerIdentity,
 			}
 		}
@@ -12933,9 +12949,10 @@ func (c *scriptChecker) reachableCallParamFacts(
 				}
 			}
 			staticVals, staticExact := c.callStaticValueAlternatives(kwarg.Value)
+			instanceOrigins, instanceExact := c.evaluatedInstanceValueOrigins(kwarg.Value)
 			callableIdentityExact := callablesCaptured || selfCaptured || staticValuesCaptured
 			if fact != nil || len(classNames) > 0 || len(callables) > 0 || callableIdentityExact ||
-				staticExact || containerIdentity != "" {
+				staticExact || instanceExact || containerIdentity != "" {
 				facts[param.Name] = checkReachableParamFact{
 					typeExpr:              fact,
 					classNames:            append([]string(nil), classNames...),
@@ -12945,6 +12962,7 @@ func (c *scriptChecker) reachableCallParamFacts(
 					selfCallablesCaptured: selfCaptured,
 					selfCallableAmbiguous: selfBinding.ambiguous,
 					staticVals:            append([]Expression(nil), staticVals...),
+					instanceOrigins:       append([]Expression(nil), instanceOrigins...),
 					containerIdentity:     containerIdentity,
 				}
 			}

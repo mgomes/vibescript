@@ -1854,6 +1854,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousBindingGenerations := c.localBindingGenerations
 	previousPinned := c.pinnedExpressionFacts
 	previousPinnedSources := c.pinnedExpressionSources
+	previousPinnedOrigins := c.pinnedInstanceOrigins
 	previousConstructors := c.constructorInstanceFacts
 	previousWidenedIvars := c.widenedIvarFacts
 	previousIfClassFacts := c.evaluatedIfClassFacts
@@ -1870,6 +1871,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	c.localBindingGenerations = nil
 	c.pinnedExpressionFacts = nil
 	c.pinnedExpressionSources = nil
+	c.pinnedInstanceOrigins = nil
 	c.constructorInstanceFacts = nil
 	c.widenedIvarFacts = nil
 	c.evaluatedIfClassFacts = nil
@@ -1887,6 +1889,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 		c.localBindingGenerations = previousBindingGenerations
 		c.pinnedExpressionFacts = previousPinned
 		c.pinnedExpressionSources = previousPinnedSources
+		c.pinnedInstanceOrigins = previousPinnedOrigins
 		c.constructorInstanceFacts = previousConstructors
 		c.widenedIvarFacts = previousWidenedIvars
 		c.evaluatedIfClassFacts = previousIfClassFacts
@@ -1904,6 +1907,7 @@ func (c *scriptChecker) withClonedLocalInferenceScope() func() {
 	bindingGenerations := maps.Clone(c.localBindingGenerations)
 	pinnedFacts := maps.Clone(c.pinnedExpressionFacts)
 	pinnedSources := maps.Clone(c.pinnedExpressionSources)
+	pinnedOrigins := maps.Clone(c.pinnedInstanceOrigins)
 	constructorFacts := maps.Clone(c.constructorInstanceFacts)
 	widenedIvars := cloneCheckStringSet(c.widenedIvarFacts)
 	ifClassFacts := maps.Clone(c.evaluatedIfClassFacts)
@@ -1920,6 +1924,7 @@ func (c *scriptChecker) withClonedLocalInferenceScope() func() {
 		c.staticValuePoison = cloneCheckStringSet(staticValuePoison)
 		c.pinnedExpressionFacts = maps.Clone(pinnedFacts)
 		c.pinnedExpressionSources = maps.Clone(pinnedSources)
+		c.pinnedInstanceOrigins = maps.Clone(pinnedOrigins)
 		c.constructorInstanceFacts = maps.Clone(constructorFacts)
 		c.widenedIvarFacts = cloneCheckStringSet(widenedIvars)
 		c.evaluatedIfClassFacts = maps.Clone(ifClassFacts)
@@ -6733,9 +6738,43 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 	}
 }
 
+type checkInstanceOriginsCapture struct {
+	origins []Expression
+	exact   bool
+}
+
+func (c *scriptChecker) pinExpressionInstanceOrigins(expr Expression) {
+	if expr == nil {
+		return
+	}
+	origins, exact := c.instanceValueOrigins(expr)
+	if c.pinnedInstanceOrigins == nil {
+		c.pinnedInstanceOrigins = make(map[Expression]checkInstanceOriginsCapture)
+	}
+	c.pinnedInstanceOrigins[expr] = checkInstanceOriginsCapture{
+		origins: append([]Expression(nil), origins...),
+		exact:   exact,
+	}
+}
+
+func (c *scriptChecker) evaluatedInstanceValueOrigins(expr Expression) ([]Expression, bool) {
+	if captured, ok := c.pinnedInstanceOrigins[expr]; ok {
+		return append([]Expression(nil), captured.origins...), captured.exact
+	}
+	return c.instanceValueOrigins(expr)
+}
+
 // instanceValueOrigins follows exact local aliases and value-preserving
 // branches back to the constructor expressions that produced an instance.
 func (c *scriptChecker) instanceValueOrigins(expr Expression) ([]Expression, bool) {
+	if fact, captured := c.destructureProjectionFacts[expr]; captured &&
+		fact.instanceExact && len(fact.instanceOrigins) > 0 {
+		return append([]Expression(nil), fact.instanceOrigins...), true
+	}
+	if fact, captured := c.evaluatedDestructureFacts[expr]; captured &&
+		fact.instanceExact && len(fact.instanceOrigins) > 0 {
+		return append([]Expression(nil), fact.instanceOrigins...), true
+	}
 	if fact, captured := c.constructorInstanceFacts[expr]; captured {
 		if !fact.exact || len(fact.classNames) == 0 {
 			return nil, false
@@ -6805,6 +6844,12 @@ func (c *scriptChecker) instanceValueOrigins(expr Expression) ([]Expression, boo
 			return c.instanceValueOrigins(typed.Body)
 		}
 		return merge(typed.Body, typed.Fallback)
+	case *IndexExpr:
+		projected, exact := c.staticLiteralProjections(typed)
+		if !exact {
+			return nil, false
+		}
+		return merge(projected...)
 	}
 	return nil, false
 }
@@ -6935,21 +6980,23 @@ func localValueFactTruthiness(fact checkLocalValueFact, tracked bool) (bool, boo
 }
 
 type capturedDestructureValueFact struct {
-	target        Expression
-	value         Expression
-	assigned      *TypeExpr
-	declared      *TypeExpr
-	known         bool
-	evaluated     bool
-	sourceName    string
-	sourceGen     uint64
-	identityRoots []capturedContainerRoot
-	retainedRoots []capturedContainerRoot
-	classNames    []string
-	callables     []*ScriptFunction
-	staticVals    []Expression
-	staticChoice  checkStaticChoiceFact
-	factKind      byte
+	target          Expression
+	value           Expression
+	assigned        *TypeExpr
+	declared        *TypeExpr
+	known           bool
+	evaluated       bool
+	sourceName      string
+	sourceGen       uint64
+	identityRoots   []capturedContainerRoot
+	retainedRoots   []capturedContainerRoot
+	classNames      []string
+	instanceOrigins []Expression
+	instanceExact   bool
+	callables       []*ScriptFunction
+	staticVals      []Expression
+	staticChoice    checkStaticChoiceFact
+	factKind        byte
 }
 
 type capturedContainerRoot struct {
@@ -6983,16 +7030,18 @@ func (c *scriptChecker) newDestructureProjection(
 		c.destructureProjectionFacts = make(map[Expression]capturedDestructureValueFact)
 	}
 	c.destructureProjectionFacts[projection] = capturedDestructureValueFact{
-		assigned:      fact.assigned,
-		known:         true,
-		evaluated:     true,
-		identityRoots: append([]capturedContainerRoot(nil), fact.identityRoots...),
-		retainedRoots: append([]capturedContainerRoot(nil), fact.retainedRoots...),
-		classNames:    append([]string(nil), fact.classNames...),
-		callables:     append([]*ScriptFunction(nil), fact.callables...),
-		staticVals:    append([]Expression(nil), fact.staticVals...),
-		staticChoice:  cloneCheckStaticChoiceFact(fact.staticChoice),
-		factKind:      fact.factKind,
+		assigned:        fact.assigned,
+		known:           true,
+		evaluated:       true,
+		identityRoots:   append([]capturedContainerRoot(nil), fact.identityRoots...),
+		retainedRoots:   append([]capturedContainerRoot(nil), fact.retainedRoots...),
+		classNames:      append([]string(nil), fact.classNames...),
+		instanceOrigins: append([]Expression(nil), fact.instanceOrigins...),
+		instanceExact:   fact.instanceExact,
+		callables:       append([]*ScriptFunction(nil), fact.callables...),
+		staticVals:      append([]Expression(nil), fact.staticVals...),
+		staticChoice:    cloneCheckStaticChoiceFact(fact.staticChoice),
+		factKind:        fact.factKind,
 	}
 	return projection
 }
@@ -7025,6 +7074,10 @@ func (c *scriptChecker) captureEvaluatedDestructureFactWithAuto(
 		assigned:  assigned,
 		known:     true,
 		evaluated: true,
+	}
+	if origins, exact := c.instanceValueOrigins(expr); exact {
+		fact.instanceOrigins = append([]Expression(nil), origins...)
+		fact.instanceExact = true
 	}
 	if ident, ok := expr.(*Identifier); ok {
 		fact.sourceName = ident.Name
@@ -7285,6 +7338,10 @@ func (c *scriptChecker) capturedDestructureValueFact(value Expression) capturedD
 		return fact
 	}
 	fact.assigned = c.inferExpressionType(value)
+	if origins, exact := c.instanceValueOrigins(value); exact {
+		fact.instanceOrigins = append([]Expression(nil), origins...)
+		fact.instanceExact = true
+	}
 	if classNames, exact := c.classValueExpressionNames(value); exact {
 		fact.factKind = destructureClassFact
 		fact.classNames = append([]string(nil), classNames...)
@@ -7315,6 +7372,8 @@ func (c *scriptChecker) refreshCapturedDestructureContainerFact(
 		if _, poisoned := c.typePoison[root.name]; poisoned {
 			fact.assigned = nil
 			fact.classNames = nil
+			fact.instanceOrigins = nil
+			fact.instanceExact = false
 			fact.callables = nil
 			fact.staticVals = nil
 			fact.staticChoice = checkStaticChoiceFact{}

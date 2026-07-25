@@ -503,6 +503,109 @@ end
 		}
 	})
 
+	t.Run("plain helper preserves instance origin", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def prepare(user)
+  user.set_name
+end
+
+def prepare_keyword(user:)
+  user.set_name
+end
+
+def run -> string
+  user = User.new
+  prepare(user)
+  user.name
+end
+
+def run_keyword -> string
+  user = User.new
+  prepare_keyword(user:)
+  user.name
+end
+`)
+		for _, function := range []string{"run", "run_keyword"} {
+			if warnings := script.CheckWarningsForFunction(function); len(warnings) != 0 {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", function, warnings)
+			}
+			got := callScript(t, context.Background(), script, function, nil, CallOptions{})
+			if got.Kind() != KindString || got.String() != "Ada" {
+				t.Fatalf("%s() = %v, want Ada", function, got)
+			}
+		}
+	})
+
+	t.Run("helper argument origin follows evaluation order", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def prepare(user, ignored)
+  user.set_name
+end
+
+def run -> string
+  user = User.new
+  prepare(user, -> { user = User.new; nil }.call())
+  user.name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
+
+	t.Run("exact index preserves instance origin", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def run -> string
+  users = [User.new]
+  users[0].set_name
+  users[0].name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
 	t.Run("instance method returning self preserves origin", func(t *testing.T) {
 		t.Parallel()
 
