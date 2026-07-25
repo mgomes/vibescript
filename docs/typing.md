@@ -1,6 +1,9 @@
 # Gradual Typing
 
-Vibescript supports optional type annotations on parameters and return values. Unannotated code is not type-checked at runtime; annotations opt you into runtime checks, and the static check path (`vibes check` or `vibes run -check`) additionally infers local types to catch known contradictions before execution (see [Static checking](#static-checking) below).
+Vibescript supports optional type annotations on parameters and return values.
+Annotations add runtime contracts, and the checker additionally infers local
+types to catch known contradictions before execution. Unannotated values remain
+gradual rather than becoming errors merely because their types are unknown.
 
 ## Supported types
 
@@ -116,10 +119,9 @@ If a return type is annotated, the returned value is checked. If omitted, no ret
 
 ## Static checking
 
-`vibes check` (and `vibes run -check`) validates typed boundaries before
-execution. Locals implicitly take the types of the expressions assigned to
-them, and the checker reports an error wherever known types contradict
-(ADR-004):
+The check path validates typed boundaries before execution. Locals implicitly
+take the types of the expressions assigned to them, and the checker reports an
+error wherever known types contradict (ADR-004):
 
 ```vibe
 def takes_int(value: int)
@@ -130,7 +132,8 @@ value = "1"
 takes_int(value)   # check error: argument value expected int, got string
 ```
 
-The governing rule is: **error on known contradictions, permit unknowns**.
+The governing rule is: **error on known contradictions, permit unknowns, and
+enforce unknown values at runtime contracts**.
 
 - Assignments bind the inferred type of the right-hand side to the local;
   reassigning a local to a conflicting type is an error, while `nil`
@@ -228,6 +231,46 @@ The governing rule is: **error on known contradictions, permit unknowns**.
   nested aliases cannot be tracked safely. Unknown values pass and the
   runtime guard validates the write when it executes; untyped accessors and
   undeclared instance variables stay dynamic.
+
+### What a clean check means
+
+A clean check means that the selected scope contains no contradiction the
+checker can prove. It is not proof that every value is type-safe. In particular:
+
+- Branches form union facts. Every finite known arm must satisfy a typed
+  boundary; one compatible arm cannot hide another known mismatch. `any` and
+  unknown arms remain gradual and are checked at runtime, but they do not hide
+  incompatible known arms.
+- Calls through a known function, class, builtin, or published host signature
+  contribute argument and result facts. Unknown receivers, user-overridable
+  members, and host callables without signatures remain dynamic.
+- `JSON.parse` returns an unknown fact. `JSON.parse_as` validates a declared
+  contract at runtime and gives the checker that declared result fact.
+- Mutable-container facts survive operations the member-contract registry
+  proves pure and the compatible modeled writes described above. Other known
+  mutators, unregistered calls, blocks, impure arguments, dynamic dispatch,
+  and aliases to nested mutable values discard facts the checker can no longer
+  trust. Runtime boundary checks remain authoritative.
+
+### Checking scopes
+
+Choose a scope that matches the operation the host will perform:
+
+- `vibes check script.vibe` checks top-level code, every function, and every
+  class method in the file without executing it. The equivalent embedding API
+  is `Script.CheckWarnings` (or `CheckWarningsWithOptions` when host globals and
+  capabilities matter).
+- `vibes run -check [-function name] script.vibe [args...]` checks the exact CLI
+  invocation path. Embedders use `CheckWarningsForFunction` for a named path or
+  `CheckWarningsForCall` to include concrete arguments, keywords, globals, and
+  capabilities. `CheckedCall` checks those same inputs and executes only if the
+  diagnostic list is empty.
+- `vibes run -check -e 'source'` checks an inline snippet as a whole: its
+  entrypoint plus every declared function and method, even when uncalled.
+
+`vibes run -check` and `vibes check` use the same gradual rule, but they do not
+select the same scope. Use the whole-file command for repository and deployment
+gates, and the per-call form when checking one concrete host invocation.
 
 ### `JSON.parse_as`
 
