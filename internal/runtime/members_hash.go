@@ -991,6 +991,13 @@ func hashMemberQuery(property string) (Value, error) {
 			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
+			// The loop below writes only builtin-local state (nothing; each yields without building a result), which is
+			// unreachable from any root until this builtin returns, so the region's
+			// vouch holds: everything reachable it touches goes through the block, whose
+			// own writes bump or are re-walked fresh. Without it a host-built (untyped)
+			// receiver falls to the builtin bypass and re-walks the whole hash on every
+			// check, which is quadratic in the entry count.
+			defer exec.beginBlockIterationRegion().end()
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
@@ -1161,6 +1168,13 @@ func hashMemberQuery(property string) (Value, error) {
 			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
+			// The loop below writes only builtin-local state (nothing; each_key yields without building a result), which is
+			// unreachable from any root until this builtin returns, so the region's
+			// vouch holds: everything reachable it touches goes through the block, whose
+			// own writes bump or are re-walked fresh. Without it a host-built (untyped)
+			// receiver falls to the builtin bypass and re-walks the whole hash on every
+			// check, which is quadratic in the entry count.
+			defer exec.beginBlockIterationRegion().end()
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
@@ -1235,6 +1249,13 @@ func hashMemberQuery(property string) (Value, error) {
 			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
+			// The loop below writes only builtin-local state (nothing; each_value yields without building a result), which is
+			// unreachable from any root until this builtin returns, so the region's
+			// vouch holds: everything reachable it touches goes through the block, whose
+			// own writes bump or are re-walked fresh. Without it a host-built (untyped)
+			// receiver falls to the builtin bypass and re-walks the whole hash on every
+			// check, which is quadratic in the entry count.
+			defer exec.beginBlockIterationRegion().end()
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
@@ -2450,6 +2471,13 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
+			// The loop below writes only builtin-local state (the out map), which is
+			// unreachable from any root until this builtin returns, so the region's
+			// vouch holds: everything reachable it touches goes through the block, whose
+			// own writes bump or are re-walked fresh. Without it a host-built (untyped)
+			// receiver falls to the builtin bypass and re-walks the whole hash on every
+			// check, which is quadratic in the entry count.
+			defer exec.beginBlockIterationRegion().end()
 			out := make(map[string]Value, len(entries))
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -2537,6 +2565,13 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
+			// The loop below writes only builtin-local state (the out map), which is
+			// unreachable from any root until this builtin returns, so the region's
+			// vouch holds: everything reachable it touches goes through the block, whose
+			// own writes bump or are re-walked fresh. Without it a host-built (untyped)
+			// receiver falls to the builtin bypass and re-walks the whole hash on every
+			// check, which is quadratic in the entry count.
+			defer exec.beginBlockIterationRegion().end()
 			out := make(map[string]Value, len(entries))
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -2945,6 +2980,13 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			// The loop below writes only builtin-local state (the out map), which is
+			// unreachable from any root until this builtin returns, so the region's
+			// vouch holds: everything reachable it touches goes through the block, whose
+			// own writes bump or are re-walked fresh. Without it a host-built (untyped)
+			// receiver falls to the builtin bypass and re-walks the whole hash on every
+			// check, which is quadratic in the entry count.
+			defer exec.beginBlockIterationRegion().end()
 			// The block can return a fresh heap value per entry, and those results live
 			// only in the Go-local out map until the builtin returns, so the structural
 			// reservation above cannot bound them. Charge each result incrementally
