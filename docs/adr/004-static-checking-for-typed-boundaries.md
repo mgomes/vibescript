@@ -213,9 +213,11 @@ to guess: when host data or dynamic dispatch cannot be proven, it defers to
 runtime checks rather than rejecting the script. `vibes check` is a semantic
 pass with its own compatibility surface.
 
-`JSON.parse_as` carries specific costs: type literals are legal in expression
-position when unshadowed, which adds parser and runtime surface, and validation
-failures must keep the same semantics as existing typed-boundary errors.
+`JSON.parse_as` carries specific costs: braced shape literals are legal as
+first-class expressions when unshadowed, while non-shape type literals are
+recognized only in parenthesized call arguments. Those paths add parser and
+runtime surface, and validation failures must keep the same semantics as
+existing typed-boundary errors.
 
 ## Alternatives Considered
 
