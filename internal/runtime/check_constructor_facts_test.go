@@ -302,8 +302,9 @@ func TestCheckConstructorNominalFactsStayGradual(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name   string
-		source string
+		name    string
+		source  string
+		warning string
 	}{
 		{
 			name: "same class boundary stays silent",
@@ -545,7 +546,7 @@ end
 `,
 		},
 		{
-			name: "nullable safe method remains callable when dispatch runs",
+			name: "nullable safe method requires nullable boundary",
 			source: `
 class Worker
   def build(required) -> string
@@ -561,6 +562,7 @@ def run(worker: Worker?)
   accept(worker&.build)
 end
 `,
+			warning: "call to accept argument fn expected function, got function | nil",
 		},
 		{
 			name: "bare builtin identifier remains callable",
@@ -578,7 +580,12 @@ end
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			requireNoCheckWarnings(t, compileScriptDefault(t, constructorFactsPrelude+tc.source))
+			script := compileScriptDefault(t, constructorFactsPrelude+tc.source)
+			if tc.warning != "" {
+				requireCheckWarningContains(t, script, tc.warning)
+				return
+			}
+			requireNoCheckWarnings(t, script)
 		})
 	}
 }

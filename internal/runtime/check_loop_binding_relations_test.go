@@ -304,6 +304,27 @@ end
 			"call to takes_string argument value expected string, got int",
 		)
 	})
+
+	t.Run("shadow parameter drops outer value correlation", func(t *testing.T) {
+		t.Parallel()
+		script := compileScriptDefault(t, `
+def accept(values: array<int> | array<string>)
+  values
+end
+
+def run(value: int | string)
+  outer = value
+  [1].each do |value: int | string|
+    accept([value, outer])
+  end
+end
+`)
+		requireCheckWarningContains(
+			t,
+			script,
+			"call to accept argument values expected array<int> | array<string>, got array<int | string>",
+		)
+	})
 }
 
 func TestCheckLoopDegradationTracksIsolatedTypedContainers(t *testing.T) {

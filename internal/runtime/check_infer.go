@@ -69,6 +69,7 @@ type checkBlockLiteralValue struct {
 
 type checkLocalValueFact struct {
 	classNames              []string
+	instanceOrigins         []Expression
 	callables               []*ScriptFunction
 	blocks                  []checkBlockLiteralValue
 	blockChoiceMayNil       bool
@@ -330,6 +331,7 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 	for name, fact := range frame {
 		clone[name] = checkLocalValueFact{
 			classNames:              append([]string(nil), fact.classNames...),
+			instanceOrigins:         append([]Expression(nil), fact.instanceOrigins...),
 			callables:               append([]*ScriptFunction(nil), fact.callables...),
 			blocks:                  append([]checkBlockLiteralValue(nil), fact.blocks...),
 			blockChoiceMayNil:       fact.blockChoiceMayNil,
@@ -347,6 +349,7 @@ func cloneCheckClassValueFrame(frame checkClassValueFrame) checkClassValueFrame 
 func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 	fact, ok := c.localValueFactFor(name)
 	if !ok || len(fact.classNames) != 1 || len(fact.callables) > 0 || len(fact.staticVals) > 0 ||
+		len(fact.instanceOrigins) > 0 ||
 		len(fact.blocks) > 0 || len(fact.blockValues) > 0 ||
 		len(fact.hashDefaults) > 0 || fact.keywordSplatFails {
 		return "", false
@@ -357,6 +360,7 @@ func (c *scriptChecker) localClassValueFor(name string) (string, bool) {
 func (c *scriptChecker) localClassValuesFor(name string) ([]string, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return fact.classNames, ok && len(fact.classNames) > 0 && len(fact.callables) == 0 &&
+		len(fact.instanceOrigins) == 0 &&
 		len(fact.blocks) == 0 && len(fact.staticVals) == 0 &&
 		len(fact.blockValues) == 0 && len(fact.hashDefaults) == 0 &&
 		!fact.keywordSplatFails
@@ -404,6 +408,7 @@ func (c *scriptChecker) bindLocalClassValues(name string, classNames []string) {
 func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
 	if !ok || len(fact.callables) != 1 || len(fact.classNames) > 0 || len(fact.staticVals) > 0 ||
+		len(fact.instanceOrigins) > 0 ||
 		len(fact.blocks) > 0 || len(fact.blockValues) > 0 ||
 		len(fact.hashDefaults) > 0 || fact.keywordSplatFails {
 		return nil, false
@@ -414,6 +419,7 @@ func (c *scriptChecker) localCallableValueFor(name string) (*ScriptFunction, boo
 func (c *scriptChecker) localCallableValuesFor(name string) ([]*ScriptFunction, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return fact.callables, ok && len(fact.callables) > 0 && len(fact.classNames) == 0 &&
+		len(fact.instanceOrigins) == 0 &&
 		len(fact.blocks) == 0 && len(fact.staticVals) == 0 &&
 		len(fact.blockValues) == 0 && len(fact.hashDefaults) == 0 &&
 		!fact.keywordSplatFails
@@ -443,6 +449,7 @@ func (c *scriptChecker) localBlockLiteralValuesFor(name string) ([]checkBlockLit
 	fact, ok := c.localValueFactFor(name)
 	return append([]checkBlockLiteralValue(nil), fact.blocks...), ok && len(fact.blocks) > 0 &&
 		!fact.blockChoiceMayNil &&
+		len(fact.instanceOrigins) == 0 &&
 		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
 		len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
@@ -452,6 +459,7 @@ func (c *scriptChecker) localArrayFillBlockLiteralValuesFor(
 ) ([]checkBlockLiteralValue, bool) {
 	fact, ok := c.localValueFactFor(name)
 	return append([]checkBlockLiteralValue(nil), fact.blocks...), ok && len(fact.blocks) > 0 &&
+		len(fact.instanceOrigins) == 0 &&
 		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
 		len(fact.staticVals) == 0 && !fact.keywordSplatFails
 }
@@ -465,6 +473,7 @@ func (c *scriptChecker) localStaticValuesFor(name string) ([]Expression, bool) {
 	}
 	fact, ok := c.localValueFactFor(name)
 	return append([]Expression(nil), fact.staticVals...), ok && len(fact.staticVals) > 0 &&
+		len(fact.instanceOrigins) == 0 &&
 		len(fact.classNames) == 0 && len(fact.callables) == 0 &&
 		len(fact.blocks) == 0 && !fact.keywordSplatFails
 }
@@ -609,11 +618,13 @@ func (c *scriptChecker) bindLocalExactValueFact(name string, valueFact checkLoca
 			continue
 		}
 		originalStaticValues := valueFact.staticVals
+		valueFact.instanceOrigins = normalizeCheckExpressionIdentities(valueFact.instanceOrigins)
 		valueFact.blocks = normalizeCheckBlockLiterals(valueFact.blocks)
 		valueFact.staticVals = c.normalizeCheckStaticValues(valueFact.staticVals)
 		valueFact.blockValues = normalizeCapturedBlockLiteralValues(valueFact.blockValues)
 		valueFact.hashDefaults = normalizeDirectCoreHashDefaultCaptures(valueFact.hashDefaults)
-		if len(valueFact.blocks) == 0 && len(valueFact.staticVals) == 0 &&
+		if len(valueFact.instanceOrigins) == 0 &&
+			len(valueFact.blocks) == 0 && len(valueFact.staticVals) == 0 &&
 			len(valueFact.blockValues) == 0 &&
 			len(valueFact.hashDefaults) == 0 {
 			delete(c.localClassValues[i], name)
@@ -807,6 +818,7 @@ func (c *scriptChecker) bindLocalKeywordSplatFailure(name string, keys ...string
 			}
 		}
 		fact.classNames = nil
+		fact.instanceOrigins = nil
 		fact.callables = nil
 		fact.blocks = nil
 		fact.blockChoiceMayNil = false
@@ -1112,6 +1124,63 @@ func (c *scriptChecker) linkStaticValueAlias(a, b string) {
 	c.linkStaticValueDependency(b, a)
 }
 
+// linkValueAlias records that two current local bindings read the same
+// runtime value. Binding generations expire the relation when either local is
+// rebound, while assignment transfers preserve the remaining aliases.
+func (c *scriptChecker) linkValueAlias(a, b string) {
+	if a == "" || b == "" || a == b {
+		return
+	}
+	if c.valueAliases == nil {
+		c.valueAliases = make(map[string]map[string]checkBindingEdge)
+	}
+	if c.valueAliases[a] == nil {
+		c.valueAliases[a] = make(map[string]checkBindingEdge)
+	}
+	if c.valueAliases[b] == nil {
+		c.valueAliases[b] = make(map[string]checkBindingEdge)
+	}
+	c.valueAliases[a][b] = c.newBindingEdge(a, b)
+	c.valueAliases[b][a] = c.newBindingEdge(b, a)
+}
+
+func (c *scriptChecker) valueAliasNames(name string) map[string]struct{} {
+	aliases := map[string]struct{}{name: {}}
+	stack := []string{name}
+	for len(stack) > 0 {
+		last := len(stack) - 1
+		current := stack[last]
+		stack = stack[:last]
+		for alias, edge := range c.valueAliases[current] {
+			if !c.bindingEdgeCurrent(current, alias, edge) {
+				continue
+			}
+			if _, visited := aliases[alias]; visited {
+				continue
+			}
+			aliases[alias] = struct{}{}
+			stack = append(stack, alias)
+		}
+	}
+	return aliases
+}
+
+func (c *scriptChecker) captureValueAliasTransfer(value Expression) map[string]struct{} {
+	identifier, ok := value.(*Identifier)
+	if !ok || c.localTypeFor(identifier.Name) == nil {
+		return nil
+	}
+	return c.valueAliasNames(identifier.Name)
+}
+
+func (c *scriptChecker) applyValueAliasTransfer(target string, aliases map[string]struct{}) {
+	for alias := range aliases {
+		if alias != target {
+			c.linkValueAlias(target, alias)
+		}
+	}
+}
+
 // linkContainerAlias records that two locals may share one mutable
 // container, so poisoning either cascades to the other. Links retain their
 // function-scoped history, while binding generations make an edge inactive
@@ -1394,14 +1463,30 @@ func (c *scriptChecker) restoreContainerIdentityRelations(relations checkNameRel
 }
 
 func intersectContainerIdentityRelations(states []checkScopeState) checkNameRelations {
+	return intersectScopeRelations(states, func(state checkScopeState) checkNameRelations {
+		return state.containerIdentity
+	})
+}
+
+func intersectValueAliasRelations(states []checkScopeState) checkNameRelations {
+	return intersectScopeRelations(states, func(state checkScopeState) checkNameRelations {
+		return state.valueAlias
+	})
+}
+
+func intersectScopeRelations(
+	states []checkScopeState,
+	selectRelations func(checkScopeState) checkNameRelations,
+) checkNameRelations {
 	if len(states) == 0 {
 		return nil
 	}
-	intersection := cloneCheckNameRelations(states[0].containerIdentity)
+	intersection := cloneCheckNameRelations(selectRelations(states[0]))
 	for _, state := range states[1:] {
+		relations := selectRelations(state)
 		for from, aliases := range intersection {
 			for to := range aliases {
-				if _, exists := state.containerIdentity[from][to]; !exists {
+				if _, exists := relations[from][to]; !exists {
 					delete(aliases, to)
 				}
 			}
@@ -1462,6 +1547,17 @@ func (c *scriptChecker) restoreStaticValueDependencyRelations(relations checkNam
 	}
 }
 
+func (c *scriptChecker) restoreValueAliasRelations(relations checkNameRelations) {
+	clear(c.valueAliases)
+	for from, aliases := range relations {
+		for to := range aliases {
+			if from < to {
+				c.linkValueAlias(from, to)
+			}
+		}
+	}
+}
+
 func unionContainerAliasRelations(states []checkScopeState) checkNameRelations {
 	return unionScopeRelations(states, func(state checkScopeState) checkNameRelations {
 		return state.containerAlias
@@ -1485,6 +1581,7 @@ func unionDegradedContainerBindings(states []checkScopeState) map[string]struct{
 func (c *scriptChecker) mergeScopeBindingRelations(states []checkScopeState) {
 	c.restoreContainerAliasRelations(unionContainerAliasRelations(states))
 	c.restoreStaticValueDependencyRelations(unionStaticValueDependencyRelations(states))
+	c.restoreValueAliasRelations(intersectValueAliasRelations(states))
 	c.restoreContainerIdentityRelations(intersectContainerIdentityRelations(states))
 	c.restoreContainerSelections(intersectContainerSelections(states))
 	c.degradedContainerBindings = unionDegradedContainerBindings(states)
@@ -1515,6 +1612,11 @@ func restoreScopeBindingRelationsForNames(
 		entry.staticDependents,
 		names,
 	)
+	state.valueAlias = restoreCheckNameRelationsForNames(
+		state.valueAlias,
+		entry.valueAlias,
+		names,
+	)
 	state.degradedContainers = restoreCheckStringSetNames(
 		state.degradedContainers,
 		entry.degradedContainers,
@@ -1538,6 +1640,7 @@ func removeScopeBindingRelationsForNames(state *checkScopeState, names map[strin
 	state.containerAlias = removeCheckNameRelationsForNames(state.containerAlias, names)
 	state.containerIdentity = removeCheckNameRelationsForNames(state.containerIdentity, names)
 	state.staticDependents = removeCheckNameRelationsForNames(state.staticDependents, names)
+	state.valueAlias = removeCheckNameRelationsForNames(state.valueAlias, names)
 	state.degradedContainers = restoreCheckStringSetNames(state.degradedContainers, nil, names)
 	for name := range names {
 		delete(state.containerSelection, name)
@@ -1743,26 +1846,34 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousPoison := c.typePoison
 	previousStaticValuePoison := c.staticValuePoison
 	previousStaticValueDependents := c.staticValueDependents
+	previousValueAliases := c.valueAliases
 	previousAliases := c.typeAliases
 	previousIdentityAliases := c.containerIdentityAliases
 	previousSelections := c.containerSelections
 	previousDegradedContainers := c.degradedContainerBindings
 	previousBindingGenerations := c.localBindingGenerations
 	previousPinned := c.pinnedExpressionFacts
+	previousPinnedSources := c.pinnedExpressionSources
+	previousPinnedOrigins := c.pinnedInstanceOrigins
 	previousConstructors := c.constructorInstanceFacts
+	previousWidenedIvars := c.widenedIvarFacts
 	previousIfClassFacts := c.evaluatedIfClassFacts
 	previousBlockValues := c.evaluatedBlockValues
 	previousHashDefaults := c.evaluatedHashDefaults
 	c.typePoison = nil
 	c.staticValuePoison = nil
 	c.staticValueDependents = nil
+	c.valueAliases = nil
 	c.typeAliases = nil
 	c.containerIdentityAliases = nil
 	c.containerSelections = nil
 	c.degradedContainerBindings = nil
 	c.localBindingGenerations = nil
 	c.pinnedExpressionFacts = nil
+	c.pinnedExpressionSources = nil
+	c.pinnedInstanceOrigins = nil
 	c.constructorInstanceFacts = nil
+	c.widenedIvarFacts = nil
 	c.evaluatedIfClassFacts = nil
 	c.evaluatedBlockValues = nil
 	c.evaluatedHashDefaults = nil
@@ -1770,13 +1881,17 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 		c.typePoison = previousPoison
 		c.staticValuePoison = previousStaticValuePoison
 		c.staticValueDependents = previousStaticValueDependents
+		c.valueAliases = previousValueAliases
 		c.typeAliases = previousAliases
 		c.containerIdentityAliases = previousIdentityAliases
 		c.containerSelections = previousSelections
 		c.degradedContainerBindings = previousDegradedContainers
 		c.localBindingGenerations = previousBindingGenerations
 		c.pinnedExpressionFacts = previousPinned
+		c.pinnedExpressionSources = previousPinnedSources
+		c.pinnedInstanceOrigins = previousPinnedOrigins
 		c.constructorInstanceFacts = previousConstructors
+		c.widenedIvarFacts = previousWidenedIvars
 		c.evaluatedIfClassFacts = previousIfClassFacts
 		c.evaluatedBlockValues = previousBlockValues
 		c.evaluatedHashDefaults = previousHashDefaults
@@ -1791,7 +1906,10 @@ func (c *scriptChecker) withClonedLocalInferenceScope() func() {
 	staticValuePoison := cloneCheckStringSet(c.staticValuePoison)
 	bindingGenerations := maps.Clone(c.localBindingGenerations)
 	pinnedFacts := maps.Clone(c.pinnedExpressionFacts)
+	pinnedSources := maps.Clone(c.pinnedExpressionSources)
+	pinnedOrigins := maps.Clone(c.pinnedInstanceOrigins)
 	constructorFacts := maps.Clone(c.constructorInstanceFacts)
+	widenedIvars := cloneCheckStringSet(c.widenedIvarFacts)
 	ifClassFacts := maps.Clone(c.evaluatedIfClassFacts)
 	blockValues := maps.Clone(c.evaluatedBlockValues)
 	hashDefaults := maps.Clone(c.evaluatedHashDefaults)
@@ -1805,7 +1923,10 @@ func (c *scriptChecker) withClonedLocalInferenceScope() func() {
 		c.typePoison = cloneCheckStringSet(typePoison)
 		c.staticValuePoison = cloneCheckStringSet(staticValuePoison)
 		c.pinnedExpressionFacts = maps.Clone(pinnedFacts)
+		c.pinnedExpressionSources = maps.Clone(pinnedSources)
+		c.pinnedInstanceOrigins = maps.Clone(pinnedOrigins)
 		c.constructorInstanceFacts = maps.Clone(constructorFacts)
+		c.widenedIvarFacts = cloneCheckStringSet(widenedIvars)
 		c.evaluatedIfClassFacts = maps.Clone(ifClassFacts)
 		c.evaluatedBlockValues = maps.Clone(blockValues)
 		c.evaluatedHashDefaults = maps.Clone(hashDefaults)
@@ -1864,7 +1985,7 @@ func (c *scriptChecker) forTargetElementType(stmt *ForStmt) *TypeExpr {
 	}
 	switch iterable.Kind {
 	case TypeArray:
-		if len(iterable.TypeArgs) == 1 && iterable.Name != literalPartialElementsMarker {
+		if len(iterable.TypeArgs) == 1 && !literalArrayElementsPartial(iterable) {
 			return iterable.TypeArgs[0]
 		}
 	case TypeRange:
@@ -5386,6 +5507,11 @@ func (c *scriptChecker) mergeLocalValueFacts(
 	if len(left.classNames) > 0 && len(right.classNames) > 0 {
 		merged.classNames = normalizeCheckClassNames(append(left.classNames, right.classNames...))
 	}
+	if len(left.instanceOrigins) > 0 && len(right.instanceOrigins) > 0 {
+		merged.instanceOrigins = normalizeCheckExpressionIdentities(
+			append(left.instanceOrigins, right.instanceOrigins...),
+		)
+	}
 	if len(left.callables) > 0 && len(right.callables) > 0 {
 		merged.callables = normalizeCheckCallables(append(left.callables, right.callables...))
 	}
@@ -5426,6 +5552,7 @@ func (c *scriptChecker) mergeLocalValueFacts(
 		}
 	}
 	exact := len(merged.classNames) > 0 ||
+		len(merged.instanceOrigins) > 0 ||
 		len(merged.callables) > 0 ||
 		len(merged.blocks) > 0 ||
 		len(merged.staticVals) > 0 ||
@@ -5448,6 +5575,29 @@ func normalizeCheckClassNames(names []string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeCheckExpressionIdentities(expressions []Expression) []Expression {
+	if len(expressions) == 0 {
+		return nil
+	}
+	normalized := make([]Expression, 0, len(expressions))
+	for _, candidate := range expressions {
+		if candidate == nil {
+			continue
+		}
+		duplicate := false
+		for _, existing := range normalized {
+			if existing == candidate {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			normalized = append(normalized, candidate)
+		}
+	}
+	return normalized
 }
 
 func (c *scriptChecker) normalizeCheckStaticValues(values []Expression) []Expression {
@@ -5650,8 +5800,10 @@ func (c *scriptChecker) inferAssignStatementTypes(
 	switch target := stmt.Target.(type) {
 	case *Identifier:
 		var aliasTransfer checkContainerAliasTransfer
+		var valueAliasTransfer map[string]struct{}
 		if stmt.Operator == "" {
 			aliasTransfer = c.captureContainerAliasTransfer(stmt.Value)
+			valueAliasTransfer = c.captureValueAliasTransfer(stmt.Value)
 		}
 		var priorLogicalAliasTransfer checkContainerAliasTransfer
 		mayRebind := true
@@ -5669,6 +5821,11 @@ func (c *scriptChecker) inferAssignStatementTypes(
 				mayRebind = !logicalTargetFact.known || logicalTargetFact.rhsReachable
 				priorLogicalAliasTransfer = logicalTargetFact.priorAliasTransfer
 			}
+		}
+		if logicalTargetFact != nil &&
+			logicalTargetFact.known &&
+			logicalTargetFact.rhsReachable {
+			valueAliasTransfer = c.captureValueAliasTransfer(stmt.Value)
 		}
 		if mayRebind {
 			c.advanceLocalBindingGeneration(target.Name)
@@ -5705,6 +5862,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 			if known {
 				if rhsReachable {
 					c.bindExpressionLocalValueFact(target.Name, stmt.Value)
+					c.applyValueAliasTransfer(target.Name, valueAliasTransfer)
 				}
 			} else {
 				c.bindLocalClassValue(target.Name, "")
@@ -5740,6 +5898,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 		}
 		c.bindLocalType(target.Name, next)
 		c.bindExpressionLocalValueFact(target.Name, stmt.Value)
+		c.applyValueAliasTransfer(target.Name, valueAliasTransfer)
 		c.applyContainerAliasTransfer(target.Name, aliasTransfer)
 		c.linkContainerAssignmentAlias(target.Name, stmt.Value, next)
 		c.bindContainerSelectionIdentity(target.Name, stmt.Value)
@@ -5962,7 +6121,7 @@ func (c *scriptChecker) applyMemberWriteFacts(
 			c.add(function, stmt.Pos(), "write to %s expected key %s, got %s",
 				name, formatTypeExpr(keyBound), formatTypeExpr(keyType))
 		}
-		if written != nil && typeExprsDisjoint(written, valueBound, resolve) {
+		if written != nil && typedWriteRejected(written, valueBound, resolve) {
 			c.add(function, stmt.Pos(), "write to %s expected value %s, got %s",
 				name, formatTypeExpr(valueBound), formatTypeExpr(written))
 		}
@@ -5980,7 +6139,7 @@ func (c *scriptChecker) applyMemberWriteFacts(
 			return false, written, true
 		}
 		if written != nil &&
-			typeExprsDisjoint(written, shapeFieldValueType(field), c.checkNamedTypeResolver()) {
+			typedWriteRejected(written, shapeFieldValueType(field), c.checkNamedTypeResolver()) {
 			c.add(function, stmt.Pos(), "write to %s field %s expected %s, got %s",
 				name, target.Property, formatTypeExpr(field), formatTypeExpr(written))
 		}
@@ -6370,8 +6529,7 @@ func (c *scriptChecker) applyExactStaticArrayIndexWrite(
 				}
 			}
 			updated := unionTypeExprs(updatedTypes...)
-			if current.Name == literalElementsMarker ||
-				current.Name == literalPartialElementsMarker ||
+			if literalArrayElementsWitnessed(current) ||
 				current.Name == blockRestElementsMarker {
 				c.localTypes[frameIndex][localName] = updated
 				continue
@@ -6536,6 +6694,7 @@ func indexWriteInvalidKeywordSplatKey(target *IndexExpr) (bool, string) {
 }
 
 func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expression) {
+	instanceOrigins, instanceExact := c.instanceValueOrigins(expr)
 	identityExpr, autoInvoked := c.evaluatedIdentityExpression(expr, true)
 	classNames, classExact := c.classValueExpressionNames(identityExpr)
 	if autoInvoked {
@@ -6554,7 +6713,11 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 			staticChoice = choice
 		}
 	}
-	if classExact {
+	if instanceExact {
+		c.bindLocalExactValueFact(name, checkLocalValueFact{
+			instanceOrigins: instanceOrigins,
+		})
+	} else if classExact {
 		c.bindLocalClassValues(name, classNames)
 	} else if fns, ok := c.callableExpressionFunctions(identityExpr); ok {
 		c.bindLocalCallableValues(name, fns)
@@ -6573,6 +6736,122 @@ func (c *scriptChecker) bindExpressionLocalValueFact(name string, expr Expressio
 	} else {
 		c.bindLocalClassValue(name, "")
 	}
+}
+
+type checkInstanceOriginsCapture struct {
+	origins []Expression
+	exact   bool
+}
+
+func (c *scriptChecker) pinExpressionInstanceOrigins(expr Expression) {
+	if expr == nil {
+		return
+	}
+	origins, exact := c.instanceValueOrigins(expr)
+	if c.pinnedInstanceOrigins == nil {
+		c.pinnedInstanceOrigins = make(map[Expression]checkInstanceOriginsCapture)
+	}
+	c.pinnedInstanceOrigins[expr] = checkInstanceOriginsCapture{
+		origins: append([]Expression(nil), origins...),
+		exact:   exact,
+	}
+}
+
+func (c *scriptChecker) evaluatedInstanceValueOrigins(expr Expression) ([]Expression, bool) {
+	if captured, ok := c.pinnedInstanceOrigins[expr]; ok {
+		return append([]Expression(nil), captured.origins...), captured.exact
+	}
+	return c.instanceValueOrigins(expr)
+}
+
+// instanceValueOrigins follows exact local aliases and value-preserving
+// branches back to the constructor expressions that produced an instance.
+func (c *scriptChecker) instanceValueOrigins(expr Expression) ([]Expression, bool) {
+	if fact, captured := c.destructureProjectionFacts[expr]; captured &&
+		fact.instanceExact && len(fact.instanceOrigins) > 0 {
+		return append([]Expression(nil), fact.instanceOrigins...), true
+	}
+	if fact, captured := c.evaluatedDestructureFacts[expr]; captured &&
+		fact.instanceExact && len(fact.instanceOrigins) > 0 {
+		return append([]Expression(nil), fact.instanceOrigins...), true
+	}
+	if fact, captured := c.constructorInstanceFacts[expr]; captured {
+		if !fact.exact || len(fact.classNames) == 0 {
+			return nil, false
+		}
+		return []Expression{expr}, true
+	}
+	merge := func(expressions ...Expression) ([]Expression, bool) {
+		var origins []Expression
+		for _, expression := range expressions {
+			candidates, exact := c.instanceValueOrigins(expression)
+			if !exact {
+				return nil, false
+			}
+			origins = append(origins, candidates...)
+		}
+		origins = normalizeCheckExpressionIdentities(origins)
+		return origins, len(origins) > 0
+	}
+
+	switch typed := expr.(type) {
+	case *Identifier:
+		if typed.Name == "self" {
+			originFact, captured := c.reachableParamFacts[reachableInstanceOriginFact]
+			if captured && len(originFact.staticVals) > 0 {
+				return append([]Expression(nil), originFact.staticVals...), true
+			}
+		}
+		fact, exact := c.localValueFactFor(typed.Name)
+		if exact && len(fact.instanceOrigins) > 0 {
+			return append([]Expression(nil), fact.instanceOrigins...), true
+		}
+		if c.identifierShadowed(typed.Name) || c.hostGlobalShadows(typed.Name) {
+			return nil, false
+		}
+		fn := c.script.functions[typed.Name]
+		if fn == nil || len(fn.Params) > 0 {
+			return nil, false
+		}
+		return c.scriptCallableInstanceOrigins(
+			nil,
+			staticCallable{name: typed.Name, fn: fn},
+		)
+	case *CallExpr:
+		target, resolved := c.resolveCallable(typed)
+		if !resolved || target.fn == nil {
+			return nil, false
+		}
+		return c.scriptCallableInstanceOrigins(typed, target)
+	case *ConditionalExpr:
+		if branch, known := staticConditionalExpressionBranch(typed); known {
+			return c.instanceValueOrigins(branch)
+		}
+		return merge(typed.Consequent, typed.Alternate)
+	case *IfExpr:
+		if branch, known := c.inferredIfExpressionBranch(typed); known {
+			return c.instanceValueOrigins(branch)
+		}
+		branches := make([]Expression, 0, len(typed.ElseIf)+2)
+		branches = append(branches, typed.Consequent)
+		for _, branch := range typed.ElseIf {
+			branches = append(branches, branch.Result)
+		}
+		branches = append(branches, typed.Alternate)
+		return merge(branches...)
+	case *RescueExpr:
+		if expressionProvenNonRaising(typed.Body) {
+			return c.instanceValueOrigins(typed.Body)
+		}
+		return merge(typed.Body, typed.Fallback)
+	case *IndexExpr:
+		projected, exact := c.staticLiteralProjections(typed)
+		if !exact {
+			return nil, false
+		}
+		return merge(projected...)
+	}
+	return nil, false
 }
 
 // logicalAssignmentFact models x ||= v and x &&= v: the runtime keeps the
@@ -6672,6 +6951,7 @@ func localValueFactTruthiness(fact checkLocalValueFact, tracked bool) (bool, boo
 		return false, false
 	}
 	if len(fact.classNames) > 0 || len(fact.callables) > 0 ||
+		len(fact.instanceOrigins) > 0 ||
 		len(fact.hashDefaults) > 0 ||
 		len(fact.blocks) > 0 && !fact.blockChoiceMayNil {
 		return true, true
@@ -6700,21 +6980,23 @@ func localValueFactTruthiness(fact checkLocalValueFact, tracked bool) (bool, boo
 }
 
 type capturedDestructureValueFact struct {
-	target        Expression
-	value         Expression
-	assigned      *TypeExpr
-	declared      *TypeExpr
-	known         bool
-	evaluated     bool
-	sourceName    string
-	sourceGen     uint64
-	identityRoots []capturedContainerRoot
-	retainedRoots []capturedContainerRoot
-	classNames    []string
-	callables     []*ScriptFunction
-	staticVals    []Expression
-	staticChoice  checkStaticChoiceFact
-	factKind      byte
+	target          Expression
+	value           Expression
+	assigned        *TypeExpr
+	declared        *TypeExpr
+	known           bool
+	evaluated       bool
+	sourceName      string
+	sourceGen       uint64
+	identityRoots   []capturedContainerRoot
+	retainedRoots   []capturedContainerRoot
+	classNames      []string
+	instanceOrigins []Expression
+	instanceExact   bool
+	callables       []*ScriptFunction
+	staticVals      []Expression
+	staticChoice    checkStaticChoiceFact
+	factKind        byte
 }
 
 type capturedContainerRoot struct {
@@ -6748,16 +7030,18 @@ func (c *scriptChecker) newDestructureProjection(
 		c.destructureProjectionFacts = make(map[Expression]capturedDestructureValueFact)
 	}
 	c.destructureProjectionFacts[projection] = capturedDestructureValueFact{
-		assigned:      fact.assigned,
-		known:         true,
-		evaluated:     true,
-		identityRoots: append([]capturedContainerRoot(nil), fact.identityRoots...),
-		retainedRoots: append([]capturedContainerRoot(nil), fact.retainedRoots...),
-		classNames:    append([]string(nil), fact.classNames...),
-		callables:     append([]*ScriptFunction(nil), fact.callables...),
-		staticVals:    append([]Expression(nil), fact.staticVals...),
-		staticChoice:  cloneCheckStaticChoiceFact(fact.staticChoice),
-		factKind:      fact.factKind,
+		assigned:        fact.assigned,
+		known:           true,
+		evaluated:       true,
+		identityRoots:   append([]capturedContainerRoot(nil), fact.identityRoots...),
+		retainedRoots:   append([]capturedContainerRoot(nil), fact.retainedRoots...),
+		classNames:      append([]string(nil), fact.classNames...),
+		instanceOrigins: append([]Expression(nil), fact.instanceOrigins...),
+		instanceExact:   fact.instanceExact,
+		callables:       append([]*ScriptFunction(nil), fact.callables...),
+		staticVals:      append([]Expression(nil), fact.staticVals...),
+		staticChoice:    cloneCheckStaticChoiceFact(fact.staticChoice),
+		factKind:        fact.factKind,
 	}
 	return projection
 }
@@ -6790,6 +7074,10 @@ func (c *scriptChecker) captureEvaluatedDestructureFactWithAuto(
 		assigned:  assigned,
 		known:     true,
 		evaluated: true,
+	}
+	if origins, exact := c.instanceValueOrigins(expr); exact {
+		fact.instanceOrigins = append([]Expression(nil), origins...)
+		fact.instanceExact = true
 	}
 	if ident, ok := expr.(*Identifier); ok {
 		fact.sourceName = ident.Name
@@ -7050,6 +7338,10 @@ func (c *scriptChecker) capturedDestructureValueFact(value Expression) capturedD
 		return fact
 	}
 	fact.assigned = c.inferExpressionType(value)
+	if origins, exact := c.instanceValueOrigins(value); exact {
+		fact.instanceOrigins = append([]Expression(nil), origins...)
+		fact.instanceExact = true
+	}
 	if classNames, exact := c.classValueExpressionNames(value); exact {
 		fact.factKind = destructureClassFact
 		fact.classNames = append([]string(nil), classNames...)
@@ -7080,6 +7372,8 @@ func (c *scriptChecker) refreshCapturedDestructureContainerFact(
 		if _, poisoned := c.typePoison[root.name]; poisoned {
 			fact.assigned = nil
 			fact.classNames = nil
+			fact.instanceOrigins = nil
+			fact.instanceExact = false
 			fact.callables = nil
 			fact.staticVals = nil
 			fact.staticChoice = checkStaticChoiceFact{}
@@ -7584,13 +7878,79 @@ func (c *scriptChecker) bindCapturedDestructureValueFact(fact capturedDestructur
 func (c *scriptChecker) evaluatedStaticValueExpressionAlternatives(
 	expr Expression,
 ) ([]Expression, bool) {
-	if conditional, ok := expr.(*ConditionalExpr); ok {
-		if truthy, known := c.inferredConditionTruthiness(conditional.Condition); known {
-			branch := conditional.Alternate
-			if truthy {
-				branch = conditional.Consequent
+	const maxAlternatives = 32
+	merge := func(alternatives []Expression, expr Expression) ([]Expression, bool) {
+		values, exact := c.evaluatedStaticValueExpressionAlternatives(expr)
+		if !exact || len(alternatives)+len(values) > maxAlternatives {
+			return nil, false
+		}
+		return c.normalizeCheckStaticValues(append(alternatives, values...)), true
+	}
+
+	switch typed := expr.(type) {
+	case *ConditionalExpr:
+		baseScopeState := c.snapshotScopeState()
+		defer c.restoreScopeState(baseScopeState)
+
+		var alternatives []Expression
+		c.restoreScopeState(baseScopeState)
+		if c.applyConditionOutcomeEffects(typed.Condition, true, nil) {
+			var exact bool
+			alternatives, exact = merge(alternatives, typed.Consequent)
+			if !exact {
+				return nil, false
 			}
-			return c.staticValueExpressionAlternatives(branch)
+		}
+		c.restoreScopeState(baseScopeState)
+		if c.applyConditionOutcomeEffects(typed.Condition, false, nil) {
+			var exact bool
+			alternatives, exact = merge(alternatives, typed.Alternate)
+			if !exact {
+				return nil, false
+			}
+		}
+		return alternatives, len(alternatives) > 0
+	case *IfExpr:
+		baseScopeState := c.snapshotScopeState()
+		defer c.restoreScopeState(baseScopeState)
+
+		var alternatives []Expression
+		collectCondition := func(condition, result Expression) (bool, bool) {
+			conditionScopeState := c.snapshotScopeState()
+			if c.applyConditionOutcomeEffects(condition, true, nil) {
+				var exact bool
+				alternatives, exact = merge(alternatives, result)
+				if !exact {
+					return false, false
+				}
+			}
+			c.restoreScopeState(conditionScopeState)
+			return c.applyConditionOutcomeEffects(condition, false, nil), true
+		}
+
+		falseReachable, exact := collectCondition(typed.Condition, typed.Consequent)
+		if !exact {
+			return nil, false
+		}
+		for _, branch := range typed.ElseIf {
+			if !falseReachable {
+				break
+			}
+			falseReachable, exact = collectCondition(branch.Condition, branch.Result)
+			if !exact {
+				return nil, false
+			}
+		}
+		if falseReachable {
+			alternatives, exact = merge(alternatives, typed.Alternate)
+			if !exact {
+				return nil, false
+			}
+		}
+		return alternatives, len(alternatives) > 0
+	case *RescueExpr:
+		if expressionProvenNonRaising(typed.Body) {
+			return c.evaluatedStaticValueExpressionAlternatives(typed.Body)
 		}
 	}
 	return c.staticValueExpressionAlternatives(expr)
@@ -9243,6 +9603,41 @@ func typeExprDefinitelyFalsey(ty *TypeExpr) bool {
 	})
 }
 
+// typeExprTruthinessFact keeps the arms that a logical expression can return
+// directly from its left operand. Unknown types keep the result gradual.
+func typeExprTruthinessFact(ty *TypeExpr, truthy bool) *TypeExpr {
+	arms, ok := typeExprArms(ty, 0)
+	if !ok {
+		return nil
+	}
+	kept := make([]*TypeExpr, 0, len(arms))
+	for _, arm := range arms {
+		if _, shapeValue := shapeValuePayload(arm); shapeValue {
+			if truthy {
+				kept = append(kept, arm)
+			}
+			continue
+		}
+		switch arm.Kind {
+		case TypeNil:
+			if !truthy {
+				kept = append(kept, arm)
+			}
+		case TypeBool:
+			if arm.Name == boolTrueFactMarker && !truthy ||
+				arm.Name == boolFalseFactMarker && truthy {
+				continue
+			}
+			kept = append(kept, arm)
+		default:
+			if truthy {
+				kept = append(kept, arm)
+			}
+		}
+	}
+	return unionTypeExprs(kept...)
+}
+
 // typeExprNeverNil reports whether no arm can hold nil. Unlike definite
 // truthiness, bool arms qualify: false is a legal value but not nil, and
 // safe navigation skips only on nil.
@@ -9419,6 +9814,13 @@ func (c *scriptChecker) inferExpressionType(expr Expression) *TypeExpr {
 				}
 				return right
 			}
+			if isAnd {
+				if falsey := typeExprTruthinessFact(left, false); falsey != nil {
+					return unionTypeExprs(falsey, right)
+				}
+			} else if truthy := typeExprTruthinessFact(left, true); truthy != nil {
+				return unionTypeExprs(truthy, right)
+			}
 		}
 		return c.binaryOperationOutcome(typed.Operator, left, right).result
 	case *ConditionalExpr:
@@ -9583,6 +9985,7 @@ func (c *scriptChecker) inferExpectedArrayLiteralType(lit *ArrayLiteral, expecta
 		return c.inferArrayLiteralType(lit)
 	}
 	elements := make([]*TypeExpr, 0, len(lit.Elements))
+	knownElements := make([]Expression, 0, len(lit.Elements))
 	sawUnknown := false
 	for i, element := range lit.Elements {
 		if _, splat := element.(*SplatArg); splat {
@@ -9595,6 +9998,7 @@ func (c *scriptChecker) inferExpectedArrayLiteralType(lit *ArrayLiteral, expecta
 			continue
 		}
 		elements = append(elements, elementType)
+		knownElements = append(knownElements, element)
 	}
 	if len(elements) == 0 {
 		return checkTypeArray
@@ -9603,10 +10007,7 @@ func (c *scriptChecker) inferExpectedArrayLiteralType(lit *ArrayLiteral, expecta
 	if union == nil {
 		return checkTypeArray
 	}
-	marker := literalElementsMarker
-	if sawUnknown {
-		marker = literalPartialElementsMarker
-	}
+	marker := c.arrayLiteralElementsMarker(knownElements, sawUnknown)
 	return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
 }
 
@@ -9616,6 +10017,7 @@ func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectati
 		return c.inferHashLiteralType(lit)
 	}
 	shape := make(map[string]*TypeExpr, len(lit.Pairs))
+	sources := make(map[string]checkValueSource, len(lit.Pairs))
 	allSymbolKeys, allStringKeys := true, true
 	for _, pair := range lit.Pairs {
 		switch pair.Key.(type) {
@@ -9642,6 +10044,9 @@ func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectati
 			return checkTypeHash
 		}
 		shape[key] = fieldType
+		if source, ok := c.evaluatedValueSourceForExpression(pair.Value); ok {
+			sources[key] = source
+		}
 	}
 	fact := &TypeExpr{Kind: TypeShape, Shape: shape}
 	switch {
@@ -9650,6 +10055,7 @@ func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectati
 	case allStringKeys:
 		fact.Name = shapeKeysStringMarker
 	}
+	c.recordShapeFieldSources(fact, sources)
 	return fact
 }
 
@@ -9811,6 +10217,7 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 		// literal infers its hash facts below like any other braced group.
 	}
 	shape := make(map[string]*TypeExpr, len(lit.Pairs))
+	sources := make(map[string]checkValueSource, len(lit.Pairs))
 	sawSymbolKeys, sawStringKeys, sawOtherKeys := false, false, false
 	for _, pair := range lit.Pairs {
 		switch pair.Key.(type) {
@@ -9833,6 +10240,9 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 			return checkTypeHash
 		}
 		shape[key] = fieldType
+		if source, ok := c.evaluatedValueSourceForExpression(pair.Value); ok {
+			sources[key] = source
+		}
 	}
 	fact := &TypeExpr{Kind: TypeShape, Shape: shape}
 	// Runtime hashes distinguish symbol keys from string keys, so an exact
@@ -9849,7 +10259,120 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 	default:
 		fact.Name = mixedKeysMarker(sawSymbolKeys, sawStringKeys, sawOtherKeys)
 	}
+	c.recordShapeFieldSources(fact, sources)
 	return fact
+}
+
+// checkValueSource identifies repeated reads and aligned conditional choices.
+// Conditional keys keep opposite branch orderings from appearing correlated.
+type checkValueSource struct {
+	name              string
+	generation        uint64
+	consequentTypeKey string
+	alternateTypeKey  string
+}
+
+type checkValueSourceCapture struct {
+	source checkValueSource
+	exact  bool
+}
+
+func (c *scriptChecker) pinExpressionValueSource(expr Expression) {
+	if expr == nil {
+		return
+	}
+	source, exact := c.valueSourceForExpression(expr)
+	if c.pinnedExpressionSources == nil {
+		c.pinnedExpressionSources = make(map[Expression]checkValueSourceCapture)
+	}
+	c.pinnedExpressionSources[expr] = checkValueSourceCapture{
+		source: source,
+		exact:  exact,
+	}
+}
+
+func (c *scriptChecker) evaluatedValueSourceForExpression(expr Expression) (checkValueSource, bool) {
+	if captured, ok := c.pinnedExpressionSources[expr]; ok {
+		return captured.source, captured.exact
+	}
+	return c.valueSourceForExpression(expr)
+}
+
+func (c *scriptChecker) valueSourceForExpression(expr Expression) (checkValueSource, bool) {
+	switch typed := expr.(type) {
+	case *Identifier:
+		if c.localTypeFor(typed.Name) == nil {
+			return checkValueSource{}, false
+		}
+		source := checkValueSource{
+			name:       typed.Name,
+			generation: c.localBindingGenerations[typed.Name],
+		}
+		for alias := range c.valueAliasNames(typed.Name) {
+			candidate := checkValueSource{
+				name:       alias,
+				generation: c.localBindingGenerations[alias],
+			}
+			if candidate.name < source.name ||
+				candidate.name == source.name && candidate.generation < source.generation {
+				source = candidate
+			}
+		}
+		return source, true
+	case *ConditionalExpr:
+		if !c.pureCallArgument(typed.Condition) ||
+			!c.pureCallArgument(typed.Consequent) ||
+			!c.pureCallArgument(typed.Alternate) {
+			return checkValueSource{}, false
+		}
+		source, ok := c.valueSourceForExpression(typed.Condition)
+		if !ok || source.consequentTypeKey != "" || source.alternateTypeKey != "" {
+			return checkValueSource{}, false
+		}
+		consequent := c.inferExpressionType(typed.Consequent)
+		alternate := c.inferExpressionType(typed.Alternate)
+		if consequent == nil || alternate == nil {
+			return checkValueSource{}, false
+		}
+		source.consequentTypeKey = formatTypeExpr(consequent)
+		source.alternateTypeKey = formatTypeExpr(alternate)
+		return source, true
+	}
+	return checkValueSource{}, false
+}
+
+func (c *scriptChecker) recordShapeFieldSources(
+	shape *TypeExpr,
+	sources map[string]checkValueSource,
+) {
+	if shape == nil || len(sources) == 0 {
+		return
+	}
+	counts := make(map[checkValueSource]int, len(sources))
+	for _, source := range sources {
+		counts[source]++
+	}
+	correlated := make(map[string]checkValueSource)
+	for field, source := range sources {
+		if counts[source] > 1 {
+			correlated[field] = source
+		}
+	}
+	if len(correlated) == 0 {
+		return
+	}
+	if c.shapeFieldSources == nil {
+		c.shapeFieldSources = make(map[*TypeExpr]map[string]checkValueSource)
+	}
+	c.shapeFieldSources[shape] = correlated
+}
+
+func (c *scriptChecker) boundaryShapeFieldSource(
+	shape *TypeExpr,
+	field string,
+) (checkValueSource, bool) {
+	source, ok := c.shapeFieldSources[shape][field]
+	return source, ok
 }
 
 func (c *scriptChecker) inferUnaryExprType(expr *UnaryExpr) *TypeExpr {
@@ -10220,10 +10743,40 @@ func mixedKeysMarker(sawSymbol, sawString, sawOther bool) string {
 // does. It lives in the Name field, which TypeArray formatting ignores.
 const literalElementsMarker = "\x00literal-elements"
 
+// literalAlternativeElementsMarker tags an exact literal whose elements all
+// read one unchanged value. Its element union represents alternatives for the
+// whole array instead of independently coexisting elements.
+const literalAlternativeElementsMarker = "\x00literal-alternative-elements"
+
+// literalPartialAlternativeElementsMarker is the gradual counterpart of an
+// alternative literal: its known elements share one choice, while at least
+// one other element is unknown.
+const literalPartialAlternativeElementsMarker = "\x00literal-partial-alternative-elements"
+
 // literalPartialElementsMarker tags an inferred array whose witnessed arms
 // are real elements but do not cover the whole literal (some elements were
 // unknown): sound for disjointness, unusable as an element bound.
 const literalPartialElementsMarker = "\x00literal-partial-elements"
+
+func literalArrayElementsPartial(ty *TypeExpr) bool {
+	return ty != nil &&
+		(ty.Name == literalPartialElementsMarker ||
+			ty.Name == literalPartialAlternativeElementsMarker)
+}
+
+func literalArrayElementsWitnessed(ty *TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	switch ty.Name {
+	case literalElementsMarker,
+		literalPartialElementsMarker,
+		literalAlternativeElementsMarker,
+		literalPartialAlternativeElementsMarker:
+		return true
+	}
+	return false
+}
 
 // inferArrayLiteralType infers a witnessed element union for an array
 // literal. Empty literals and literals with unknown elements stay a bare
@@ -10233,6 +10786,7 @@ func (c *scriptChecker) inferArrayLiteralType(lit *ArrayLiteral) *TypeExpr {
 		return checkTypeArray
 	}
 	elements := make([]*TypeExpr, 0, len(lit.Elements))
+	knownElements := make([]Expression, 0, len(lit.Elements))
 	sawUnknown := false
 	for _, element := range lit.Elements {
 		if _, splat := element.(*SplatArg); splat {
@@ -10245,6 +10799,7 @@ func (c *scriptChecker) inferArrayLiteralType(lit *ArrayLiteral) *TypeExpr {
 			continue
 		}
 		elements = append(elements, elementType)
+		knownElements = append(knownElements, element)
 	}
 	if len(elements) == 0 {
 		return checkTypeArray
@@ -10253,13 +10808,42 @@ func (c *scriptChecker) inferArrayLiteralType(lit *ArrayLiteral) *TypeExpr {
 	if union == nil {
 		return checkTypeArray
 	}
-	marker := literalElementsMarker
-	if sawUnknown {
-		// Known elements stay witnesses even when others are unknown, but
-		// the union no longer bounds every element.
-		marker = literalPartialElementsMarker
-	}
+	marker := c.arrayLiteralElementsMarker(knownElements, sawUnknown)
 	return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
+}
+
+func (c *scriptChecker) arrayLiteralElementsMarker(elements []Expression, partial bool) string {
+	alternative := c.arrayLiteralElementsShareValueSource(elements)
+	switch {
+	case partial && alternative:
+		return literalPartialAlternativeElementsMarker
+	case partial:
+		return literalPartialElementsMarker
+	case alternative:
+		return literalAlternativeElementsMarker
+	default:
+		return literalElementsMarker
+	}
+}
+
+func (c *scriptChecker) arrayLiteralElementsShareValueSource(elements []Expression) bool {
+	if len(elements) == 1 {
+		return true
+	}
+	if len(elements) == 0 {
+		return false
+	}
+	source, ok := c.evaluatedValueSourceForExpression(elements[0])
+	if !ok {
+		return false
+	}
+	for _, element := range elements[1:] {
+		other, ok := c.evaluatedValueSourceForExpression(element)
+		if !ok || other != source {
+			return false
+		}
+	}
+	return true
 }
 
 // applyShovelMutationFacts accounts for the in-place append the shovel
@@ -10408,6 +10992,19 @@ func appendedArrayFact(current, appended *TypeExpr) *TypeExpr {
 			return nil
 		}
 		return &TypeExpr{Kind: TypeArray, Name: current.Name, TypeArgs: []*TypeExpr{union}}
+	case literalAlternativeElementsMarker, literalPartialAlternativeElementsMarker:
+		if len(current.TypeArgs) != 1 {
+			return nil
+		}
+		union := unionTypeExprs(current.TypeArgs[0], appended)
+		if union == nil {
+			return nil
+		}
+		marker := literalElementsMarker
+		if current.Name == literalPartialAlternativeElementsMarker {
+			marker = literalPartialElementsMarker
+		}
+		return &TypeExpr{Kind: TypeArray, Name: marker, TypeArgs: []*TypeExpr{union}}
 	case blockRestElementsMarker:
 		if len(current.TypeArgs) == 0 {
 			return &TypeExpr{
@@ -10443,8 +11040,7 @@ func declaredArrayElementType(ty *TypeExpr) *TypeExpr {
 	if ty == nil || ty.Kind != TypeArray || ty.Nullable {
 		return nil
 	}
-	if ty.Name == literalElementsMarker ||
-		ty.Name == literalPartialElementsMarker ||
+	if literalArrayElementsWitnessed(ty) ||
 		ty.Name == blockRestElementsMarker {
 		return nil
 	}
@@ -10497,7 +11093,7 @@ func (c *scriptChecker) checkShovelElementWrite(function string, expr *BinaryExp
 	if written == nil {
 		return
 	}
-	if typeExprsDisjoint(written, elem, c.checkNamedTypeResolver()) {
+	if typedWriteRejected(written, elem, c.checkNamedTypeResolver()) {
 		c.reportIncompatibleElementWrite(function, expr.Pos(), ident.Name, elem, written)
 	}
 }
@@ -10594,7 +11190,7 @@ func (c *scriptChecker) applyIndexedArrayWriteFacts(function string, stmt *Assig
 	// so a container-rooted value's local links in: a later mutation or
 	// escape through either side weakens both.
 	c.linkContainerWriteAlias(name, stmt.Value, written)
-	if typeExprsDisjoint(written, elem, resolve) {
+	if typedWriteRejected(written, elem, resolve) {
 		c.reportIncompatibleElementWrite(function, stmt.Pos(), name, elem, written)
 		return false
 	}
@@ -10616,7 +11212,7 @@ func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignSt
 	preserved := intact
 	if keyType := c.inferExpressionType(index); keyType == nil {
 		preserved = false
-	} else if typeExprsDisjoint(keyType, keyBound, resolve) {
+	} else if typedWriteRejected(keyType, keyBound, resolve) {
 		c.add(function, stmt.Pos(), "write to %s expected key %s, got %s",
 			name, formatTypeExpr(keyBound), formatTypeExpr(keyType))
 		preserved = false
@@ -10625,7 +11221,7 @@ func (c *scriptChecker) applyHashEntryWriteFacts(function string, stmt *AssignSt
 	}
 	if valueType := c.inferExpressionType(stmt.Value); valueType == nil {
 		preserved = false
-	} else if typeExprsDisjoint(valueType, valueBound, resolve) {
+	} else if typedWriteRejected(valueType, valueBound, resolve) {
 		c.add(function, stmt.Pos(), "write to %s expected value %s, got %s",
 			name, formatTypeExpr(valueBound), formatTypeExpr(valueType))
 		preserved = false
@@ -10714,7 +11310,7 @@ func (c *scriptChecker) applyShapeFieldWrite(function, name string, shape *TypeE
 		if written == nil {
 			return false
 		}
-		if typeExprsDisjoint(written, field, c.checkNamedTypeResolver()) {
+		if typedWriteRejected(written, field, c.checkNamedTypeResolver()) {
 			c.add(function, pos, "write to %s field %s expected %s, got %s",
 				name, key, formatTypeExpr(field), formatTypeExpr(written))
 		}
@@ -10779,7 +11375,7 @@ func (c *scriptChecker) applyIndexedElementWriteFacts(
 		return false, nil, true, false
 	}
 	resolve := c.checkNamedTypeResolver()
-	disjoint := typeExprsDisjoint(written, elem, resolve)
+	disjoint := typedWriteRejected(written, elem, resolve)
 	preserved = !disjoint && typeExprSatisfies(written, elem, resolve) &&
 		mutatorReceiverFactIntact(current, receiverFact)
 	if disjoint {
@@ -12900,7 +13496,7 @@ func (c *scriptChecker) mergeArgumentsProvablyAbort(call *CallExpr, argumentFact
 			// provably not a hash (witness arms are real elements) fails
 			// the up-front validation too.
 			if written != nil && written.Kind == TypeArray && !written.Nullable &&
-				(written.Name == literalElementsMarker || written.Name == literalPartialElementsMarker) &&
+				literalArrayElementsWitnessed(written) &&
 				len(written.TypeArgs) == 1 {
 				if arms, ok := typeExprArms(written.TypeArgs[0], 0); ok {
 					for _, arm := range arms {
@@ -13140,7 +13736,7 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(
 			return false, true
 		}
 		resolve := c.checkNamedTypeResolver()
-		if typeExprHashLikeOnly(written) && typeExprsDisjoint(written, shape, resolve) {
+		if typeExprHashLikeOnly(written) && typedWriteRejected(written, shape, resolve) {
 			c.add(function, arg.Pos(), "write to %s expected %s, got %s",
 				name, formatTypeExpr(shape), formatTypeExpr(written))
 			return false, true
@@ -13197,7 +13793,7 @@ func (c *scriptChecker) checkShapeReplacementLiteral(
 			compatible = false
 			continue
 		}
-		if typeExprsDisjoint(valueType, field, resolve) {
+		if typedWriteRejected(valueType, field, resolve) {
 			c.add(function, pair.Value.Pos(), "write to %s field %s expected %s, got %s",
 				name, key, formatTypeExpr(field), formatTypeExpr(valueType))
 			compatible = false
@@ -13241,7 +13837,7 @@ func (c *scriptChecker) checkShapeMergeEntry(function, name string, shape *TypeE
 	if blockConflicts || written == nil {
 		return
 	}
-	if typeExprsDisjoint(written, field, c.checkNamedTypeResolver()) {
+	if typedWriteRejected(written, field, c.checkNamedTypeResolver()) {
 		c.add(function, valuePos, "write to %s field %s expected %s, got %s",
 			name, key, formatTypeExpr(field), formatTypeExpr(written))
 	}
@@ -13575,7 +14171,7 @@ func (c *scriptChecker) applyArrayMutatorCallFacts(
 			preserved = false
 			continue
 		}
-		disjoint := typeExprsDisjoint(written, elem, resolve)
+		disjoint := typedWriteRejected(written, elem, resolve)
 		compatible := !disjoint && typeExprSatisfies(written, elem, resolve)
 		fillValueIntact := mutatorReceiverFactIntact(c.inferExpressionType(arg), written)
 		if captured, ok := argumentRetainedAliases[arg]; ok {
@@ -13675,13 +14271,12 @@ func (c *scriptChecker) applySplattedElementWriteFacts(function string, splat *S
 		c.invalidateElementWriteAliases(name, bound)
 	}
 	c.linkContainerWriteAlias(name, splat.Value, bound)
-	if written.Name == literalElementsMarker ||
-		written.Name == literalPartialElementsMarker ||
+	if literalArrayElementsWitnessed(written) ||
 		written.Name == blockRestElementsMarker {
 		if len(written.TypeArgs) == 1 {
 			if arms, ok := typeExprArms(written.TypeArgs[0], 0); ok {
 				for _, arm := range arms {
-					if typeExprsDisjoint(arm, elem, resolve) {
+					if typedWriteRejected(arm, elem, resolve) {
 						c.reportIncompatibleElementWrite(function, splat.Pos(), name, elem, arm)
 						return false, false
 					}
@@ -13699,7 +14294,7 @@ func splattedElementBound(ty *TypeExpr) *TypeExpr {
 	if ty == nil || ty.Kind != TypeArray || ty.Nullable || len(ty.TypeArgs) != 1 {
 		return nil
 	}
-	if ty.Name == literalPartialElementsMarker {
+	if literalArrayElementsPartial(ty) {
 		return nil
 	}
 	return ty.TypeArgs[0]
@@ -13776,7 +14371,7 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 				preserved = false
 				return
 			}
-			if typeExprsDisjoint(written, bound, resolve) {
+			if typedWriteRejected(written, bound, resolve) {
 				c.add(function, arg.Pos(), "write to %s expected %s %s, got %s",
 					name, noun, formatTypeExpr(bound), formatTypeExpr(written))
 				preserved = false
@@ -13860,7 +14455,7 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 			}
 			// A provably non-hash argument raises before any entry lands,
 			// so only hash-like argument facts diagnose content.
-			if typeExprHashLikeOnly(written) && typeExprsDisjoint(written, hashFact, resolve) {
+			if typeExprHashLikeOnly(written) && typedWriteRejected(written, hashFact, resolve) {
 				c.add(function, arg.Pos(), "write to %s expected %s, got %s",
 					name, formatTypeExpr(hashFact), formatTypeExpr(written))
 				preserved = false
@@ -13905,7 +14500,7 @@ func (c *scriptChecker) applyHashMutatorCallFacts(
 		if written == nil {
 			return false, true
 		}
-		if typeExprHashLikeOnly(written) && typeExprsDisjoint(written, hashFact, resolve) {
+		if typeExprHashLikeOnly(written) && typedWriteRejected(written, hashFact, resolve) {
 			c.add(function, arg.Pos(), "write to %s expected %s, got %s",
 				name, formatTypeExpr(hashFact), formatTypeExpr(written))
 			return false, true
@@ -14665,7 +15260,7 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 			compatible = false
 			return false
 		}
-		if typeExprsDisjoint(written, bound, resolve) {
+		if typedWriteRejected(written, bound, resolve) {
 			if warn {
 				c.add(function, expr.Pos(), "write to %s expected %s %s, got %s",
 					name, noun, formatTypeExpr(bound), formatTypeExpr(written))
@@ -14685,12 +15280,48 @@ func (c *scriptChecker) checkHashLiteralMergeEntries(function, name string, lit 
 	return compatible
 }
 
+// typedWriteRejected preserves the checker's existing overlap rule for
+// ordinary writes while keeping correlation-only array alternatives from
+// hiding an incompatible arm in a value that a typed store will retain.
+func typedWriteRejected(written, required *TypeExpr, resolve namedTypeResolver) bool {
+	if hasAlternativeArrayFact(written, 0) {
+		return boundaryTypeRejected(written, required, resolve)
+	}
+	return typeExprsDisjoint(written, required, resolve)
+}
+
+func hasAlternativeArrayFact(ty *TypeExpr, depth int) bool {
+	if ty == nil || depth > maxNormalizeDepth {
+		return false
+	}
+	if ty.Kind == TypeArray &&
+		(ty.Name == literalAlternativeElementsMarker ||
+			ty.Name == literalPartialAlternativeElementsMarker) {
+		return true
+	}
+	for _, arm := range ty.Union {
+		if hasAlternativeArrayFact(arm, depth+1) {
+			return true
+		}
+	}
+	for _, arg := range ty.TypeArgs {
+		if hasAlternativeArrayFact(arg, depth+1) {
+			return true
+		}
+	}
+	for _, field := range ty.Shape {
+		if hasAlternativeArrayFact(field, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
 // literalArrayDisjoint reports whether a witnessed-element array can never
 // satisfy another array type: some witnessed element arm is disjoint from
 // the other side's declared element type.
 func literalArrayDisjoint(lit, other *TypeExpr, resolve namedTypeResolver) bool {
-	if lit.Name != literalElementsMarker &&
-		lit.Name != literalPartialElementsMarker &&
+	if !literalArrayElementsWitnessed(lit) &&
 		lit.Name != blockRestElementsMarker {
 		return false
 	}
@@ -14701,12 +15332,20 @@ func literalArrayDisjoint(lit, other *TypeExpr, resolve namedTypeResolver) bool 
 	if !ok {
 		return false
 	}
+	alternative := lit.Name == literalAlternativeElementsMarker ||
+		lit.Name == literalPartialAlternativeElementsMarker
 	for _, arm := range arms {
 		if typeExprsDisjoint(arm, other.TypeArgs[0], resolve) {
-			return true
+			if !alternative {
+				return true
+			}
+			continue
+		}
+		if alternative {
+			return false
 		}
 	}
-	return false
+	return alternative
 }
 
 // shapeVsTypedHashDisjoint reports whether an exact shape can never satisfy
@@ -14999,7 +15638,7 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 			}
 			return elements[position]
 		}
-		if len(objectType.TypeArgs) != 1 || objectType.Name == literalPartialElementsMarker {
+		if len(objectType.TypeArgs) != 1 || literalArrayElementsPartial(objectType) {
 			return nil
 		}
 		indexKind, ok := staticOperandKind(c.inferExpressionType(index))
@@ -15018,14 +15657,6 @@ func (c *scriptChecker) inferIndexExprType(expr *IndexExpr) *TypeExpr {
 
 // --- contradiction checks at typed boundaries ---
 
-// checkInferredExpressionAgainstType reports a boundary contradiction when
-// the inferred type of a non-literal expression is provably disjoint from the
-// declared type. The declared annotation is validated silently here; the
-// regular annotation checks report unresolved names.
-func (c *scriptChecker) checkInferredExpressionAgainstType(function string, expr Expression, ty *TypeExpr, subject string) {
-	c.checkInferredExpressionAgainstTypeWithExpectation(function, expr, ty, subject, expressionExpectation{})
-}
-
 func (c *scriptChecker) checkInferredExpressionAgainstTypeWithExpectation(
 	function string,
 	expr Expression,
@@ -15043,7 +15674,7 @@ func (c *scriptChecker) checkInferredExpressionAgainstTypeWithExpectation(
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return
 	}
-	if typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver()) {
+	if c.boundaryTypeRejected(inferred, ty) {
 		c.add(function, expr.Pos(), "%s expected %s, got %s", subject, formatTypeExpr(ty), formatTypeExpr(inferred))
 	}
 }
@@ -15068,7 +15699,7 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	if err := validateTypeExprResolved(ty, c.runtimeTypeContext()); err != nil {
 		return
 	}
-	if typeExprsDisjoint(inferred, ty, c.checkNamedTypeResolver()) {
+	if c.boundaryTypeRejected(inferred, ty) {
 		c.add(function, expr.Pos(), "call to %s argument %s expected %s, got %s",
 			callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred))
 	}
@@ -16095,6 +16726,504 @@ func typeExprsDisjoint(a, b *TypeExpr, resolve namedTypeResolver) bool {
 	return true
 }
 
+type boundaryTypeRelation uint8
+
+const (
+	boundaryRelationGradual boundaryTypeRelation = iota
+	boundaryRelationAccepted
+	boundaryRelationRejected
+)
+
+type boundaryTypeContext struct {
+	resolve          namedTypeResolver
+	shapeFieldSource func(*TypeExpr, string) (checkValueSource, bool)
+}
+
+// boundaryTypeRejected reports whether a finite inferred alternative cannot
+// satisfy a typed boundary. Opaque alternatives defer individually, so any
+// and unknown values stay gradual without hiding an incompatible known arm.
+func boundaryTypeRejected(inferred, required *TypeExpr, resolve namedTypeResolver) bool {
+	return boundaryTypeExprRelation(
+		inferred,
+		required,
+		boundaryTypeContext{resolve: resolve},
+		0,
+	) == boundaryRelationRejected
+}
+
+func (c *scriptChecker) boundaryTypeRejected(inferred, required *TypeExpr) bool {
+	return boundaryTypeExprRelation(
+		inferred,
+		required,
+		boundaryTypeContext{
+			resolve:          c.checkNamedTypeResolver(),
+			shapeFieldSource: c.boundaryShapeFieldSource,
+		},
+		0,
+	) == boundaryRelationRejected
+}
+
+func boundaryTypeExprRelation(
+	inferred,
+	required *TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	if inferred == nil || required == nil || depth > maxNormalizeDepth {
+		return boundaryRelationGradual
+	}
+	inferredArms, ok := boundaryTypeExprArms(inferred, depth)
+	if !ok || len(inferredArms) == 0 {
+		return boundaryRelationGradual
+	}
+	requiredArms, ok := boundaryTypeExprArms(required, depth)
+	if !ok || len(requiredArms) == 0 {
+		return boundaryRelationGradual
+	}
+
+	result := boundaryRelationAccepted
+	for _, inferredArm := range inferredArms {
+		armResult := boundaryRelationRejected
+		for _, requiredArm := range requiredArms {
+			relation := boundaryTypeArmRelation(inferredArm, requiredArm, ctx, depth)
+			if relation == boundaryRelationAccepted {
+				armResult = boundaryRelationAccepted
+				break
+			}
+			if relation == boundaryRelationGradual {
+				armResult = boundaryRelationGradual
+			}
+		}
+		if armResult == boundaryRelationRejected {
+			armResult = boundaryTypeUnionCoverage(inferredArm, requiredArms, ctx, depth)
+		}
+		if armResult == boundaryRelationRejected {
+			return boundaryRelationRejected
+		}
+		if armResult == boundaryRelationGradual {
+			result = boundaryRelationGradual
+		}
+	}
+	return result
+}
+
+func boundaryTypeUnionCoverage(
+	inferred *TypeExpr,
+	required []*TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	switch inferred.Kind {
+	case TypeArray:
+		return boundaryArrayUnionCoverage(inferred, required, ctx, depth)
+	case TypeShape:
+		return boundaryShapeUnionCoverage(inferred, required, ctx, depth)
+	default:
+		return boundaryRelationRejected
+	}
+}
+
+func boundaryArrayUnionCoverage(
+	inferred *TypeExpr,
+	required []*TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	if (inferred.Name != literalAlternativeElementsMarker &&
+		inferred.Name != literalPartialAlternativeElementsMarker) ||
+		len(inferred.TypeArgs) != 1 {
+		return boundaryRelationRejected
+	}
+	elementTypes := make([]*TypeExpr, 0, len(required))
+	for _, arm := range required {
+		if arm.Kind != TypeArray {
+			continue
+		}
+		if len(arm.TypeArgs) == 0 {
+			return boundaryRelationAccepted
+		}
+		if len(arm.TypeArgs) == 1 {
+			elementTypes = append(elementTypes, arm.TypeArgs[0])
+		}
+	}
+	requiredElements := unionTypeExprs(elementTypes...)
+	if requiredElements == nil {
+		return boundaryRelationRejected
+	}
+	relation := boundaryTypeExprRelation(inferred.TypeArgs[0], requiredElements, ctx, depth+1)
+	if inferred.Name == literalPartialAlternativeElementsMarker &&
+		relation != boundaryRelationRejected {
+		return boundaryRelationGradual
+	}
+	return relation
+}
+
+type boundaryShapeFieldGroup struct {
+	fields   []string
+	options  []*TypeExpr
+	optional bool
+}
+
+const maxBoundaryShapeVariants = 1024
+
+func boundaryShapeUnionCoverage(
+	inferred *TypeExpr,
+	required []*TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	fields := make([]string, 0, len(inferred.Shape))
+	for field := range inferred.Shape {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+
+	groups := make([]boundaryShapeFieldGroup, 0, len(fields))
+	groupBySource := make(map[checkValueSource]int, len(fields))
+	hasAlternatives := false
+	for _, field := range fields {
+		template := inferred.Shape[field]
+		valueType := shapeFieldValueType(template)
+		options, ok := boundaryTypeExprArms(valueType, depth+1)
+		if !ok || len(options) == 0 {
+			return boundaryRelationGradual
+		}
+		if len(options) > 1 {
+			hasAlternatives = true
+		}
+		optional := shapeFieldOptional(template)
+		if optional {
+			hasAlternatives = true
+		} else if ctx.shapeFieldSource != nil {
+			if source, sourced := ctx.shapeFieldSource(inferred, field); sourced {
+				if index, ok := groupBySource[source]; ok {
+					groups[index].fields = append(groups[index].fields, field)
+					continue
+				}
+				groupBySource[source] = len(groups)
+			}
+		}
+		groups = append(groups, boundaryShapeFieldGroup{
+			fields:   []string{field},
+			options:  options,
+			optional: optional,
+		})
+	}
+	if !hasAlternatives {
+		return boundaryRelationRejected
+	}
+
+	variant := &TypeExpr{
+		Kind:  TypeShape,
+		Name:  inferred.Name,
+		Shape: make(map[string]*TypeExpr, len(inferred.Shape)),
+		Open:  inferred.Open,
+	}
+	result := boundaryRelationAccepted
+	variants := 0
+	var walk func(int) boundaryTypeRelation
+	walk = func(index int) boundaryTypeRelation {
+		if variants >= maxBoundaryShapeVariants {
+			return boundaryRelationGradual
+		}
+		if index == len(groups) {
+			variants++
+			return boundaryShapeVariantRelation(variant, required, ctx, depth)
+		}
+		group := groups[index]
+		groupResult := boundaryRelationAccepted
+		if group.optional {
+			relation := walk(index + 1)
+			if relation == boundaryRelationRejected {
+				return boundaryRelationRejected
+			}
+			if relation == boundaryRelationGradual {
+				groupResult = boundaryRelationGradual
+			}
+		}
+		for _, option := range group.options {
+			for _, field := range group.fields {
+				fieldType := *option
+				fieldType.Optional = false
+				variant.Shape[field] = &fieldType
+			}
+			relation := walk(index + 1)
+			for _, field := range group.fields {
+				delete(variant.Shape, field)
+			}
+			if relation == boundaryRelationRejected {
+				return boundaryRelationRejected
+			}
+			if relation == boundaryRelationGradual {
+				groupResult = boundaryRelationGradual
+			}
+		}
+		return groupResult
+	}
+	if relation := walk(0); relation != boundaryRelationAccepted {
+		result = relation
+	}
+	return result
+}
+
+func boundaryShapeVariantRelation(
+	inferred *TypeExpr,
+	required []*TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	result := boundaryRelationRejected
+	for _, arm := range required {
+		relation := boundaryTypeArmRelation(inferred, arm, ctx, depth)
+		if relation == boundaryRelationAccepted {
+			return boundaryRelationAccepted
+		}
+		if relation == boundaryRelationGradual {
+			result = boundaryRelationGradual
+		}
+	}
+	return result
+}
+
+func boundaryTypeExprArms(ty *TypeExpr, depth int) ([]*TypeExpr, bool) {
+	if ty == nil || depth > maxNormalizeDepth {
+		return nil, false
+	}
+	arms := make([]*TypeExpr, 0, 2)
+	switch ty.Kind {
+	case TypeUnion:
+		for _, option := range ty.Union {
+			sub, ok := boundaryTypeExprArms(option, depth+1)
+			if !ok {
+				return nil, false
+			}
+			arms = append(arms, sub...)
+		}
+	case TypeNumber:
+		arms = append(arms, checkTypeInt, checkTypeFloat)
+	default:
+		if ty.Nullable {
+			clone := *ty
+			clone.Nullable = false
+			arms = append(arms, &clone)
+		} else {
+			arms = append(arms, ty)
+		}
+	}
+	if ty.Nullable {
+		arms = append(arms, checkTypeNil)
+	}
+	return arms, true
+}
+
+func boundaryTypeArmRelation(
+	inferred,
+	required *TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	if inferred == nil || required == nil {
+		return boundaryRelationGradual
+	}
+	if required.Kind == TypeAny && !required.Nullable {
+		return boundaryRelationAccepted
+	}
+	if _, shapeValue := shapeValuePayload(inferred); !shapeValue &&
+		(inferred.Kind == TypeAny || inferred.Kind == TypeUnknown) {
+		return boundaryRelationGradual
+	}
+	if required.Kind == TypeUnknown {
+		return boundaryRelationGradual
+	}
+	if typeArmAdmits(required, inferred, ctx.resolve) {
+		return boundaryRelationAccepted
+	}
+
+	switch {
+	case inferred.Kind == TypeArray && required.Kind == TypeArray:
+		return boundaryArrayRelation(inferred, required, ctx, depth+1)
+	case inferred.Kind == TypeHash && required.Kind == TypeHash:
+		return boundaryHashRelation(inferred, required, ctx, depth+1)
+	case inferred.Kind == TypeShape && required.Kind == TypeShape:
+		return boundaryShapeRelation(inferred, required, ctx, depth+1)
+	case inferred.Kind == TypeShape && required.Kind == TypeHash:
+		return boundaryShapeHashRelation(inferred, required, ctx, depth+1)
+	}
+	if typeArmPairDisjoint(inferred, required, ctx.resolve) {
+		return boundaryRelationRejected
+	}
+	return boundaryRelationGradual
+}
+
+func boundaryArrayRelation(
+	inferred,
+	required *TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	if len(required.TypeArgs) == 0 {
+		return boundaryRelationAccepted
+	}
+	if len(required.TypeArgs) != 1 || len(inferred.TypeArgs) != 1 {
+		return boundaryRelationGradual
+	}
+	relation := boundaryTypeExprRelation(inferred.TypeArgs[0], required.TypeArgs[0], ctx, depth)
+	if (inferred.Name == literalPartialElementsMarker ||
+		inferred.Name == literalPartialAlternativeElementsMarker) &&
+		relation != boundaryRelationRejected {
+		return boundaryRelationGradual
+	}
+	return relation
+}
+
+func boundaryHashRelation(
+	inferred,
+	required *TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	if len(required.TypeArgs) == 0 {
+		return boundaryRelationAccepted
+	}
+	if len(required.TypeArgs) != 2 || len(inferred.TypeArgs) != 2 {
+		return boundaryRelationGradual
+	}
+	keyRelation := boundaryTypeExprRelation(inferred.TypeArgs[0], required.TypeArgs[0], ctx, depth)
+	if keyRelation == boundaryRelationRejected {
+		return boundaryRelationRejected
+	}
+	valueRelation := boundaryTypeExprRelation(inferred.TypeArgs[1], required.TypeArgs[1], ctx, depth)
+	if valueRelation == boundaryRelationRejected {
+		return boundaryRelationRejected
+	}
+	if keyRelation == boundaryRelationGradual || valueRelation == boundaryRelationGradual {
+		return boundaryRelationGradual
+	}
+	return boundaryRelationAccepted
+}
+
+func boundaryShapeRelation(
+	inferred,
+	required *TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	result := boundaryRelationAccepted
+	for field, requiredField := range required.Shape {
+		inferredField, ok := inferred.Shape[field]
+		if !ok {
+			if shapeFieldOptional(requiredField) {
+				continue
+			}
+			if inferred.Open {
+				result = boundaryRelationGradual
+				continue
+			}
+			return boundaryRelationRejected
+		}
+		if shapeFieldOptional(inferredField) && !shapeFieldOptional(requiredField) {
+			return boundaryRelationRejected
+		}
+		relation := boundaryTypeExprRelation(
+			shapeFieldValueType(inferredField),
+			shapeFieldValueType(requiredField),
+			ctx,
+			depth,
+		)
+		if relation == boundaryRelationRejected {
+			return boundaryRelationRejected
+		}
+		if relation == boundaryRelationGradual {
+			result = boundaryRelationGradual
+		}
+	}
+	if !required.Open {
+		for field := range inferred.Shape {
+			if _, ok := required.Shape[field]; !ok {
+				return boundaryRelationRejected
+			}
+		}
+		if inferred.Open {
+			result = boundaryRelationGradual
+		}
+	}
+	return result
+}
+
+func boundaryShapeHashRelation(
+	inferred,
+	required *TypeExpr,
+	ctx boundaryTypeContext,
+	depth int,
+) boundaryTypeRelation {
+	if len(required.TypeArgs) == 0 || !inferred.Open && len(inferred.Shape) == 0 {
+		return boundaryRelationAccepted
+	}
+	if len(required.TypeArgs) != 2 {
+		return boundaryRelationGradual
+	}
+	if strings.HasPrefix(inferred.Name, shapeKeysMixedPrefix) {
+		flags := strings.TrimPrefix(inferred.Name, shapeKeysMixedPrefix)
+		if strings.Contains(flags, "o") &&
+			typeExprArmsAll(required.TypeArgs[0], func(arm *TypeExpr) bool {
+				return arm.Kind == TypeString || arm.Kind == TypeSymbol
+			}) {
+			return boundaryRelationRejected
+		}
+	}
+	keyType := boundaryShapeKeyType(inferred)
+	result := boundaryRelationAccepted
+	if keyType == nil {
+		result = boundaryRelationGradual
+	} else if relation := boundaryTypeExprRelation(keyType, required.TypeArgs[0], ctx, depth); relation == boundaryRelationRejected {
+		return boundaryRelationRejected
+	} else if relation == boundaryRelationGradual {
+		result = boundaryRelationGradual
+	}
+	for _, fieldType := range inferred.Shape {
+		relation := boundaryTypeExprRelation(
+			shapeFieldValueType(fieldType),
+			required.TypeArgs[1],
+			ctx,
+			depth,
+		)
+		if relation == boundaryRelationRejected {
+			return boundaryRelationRejected
+		}
+		if relation == boundaryRelationGradual {
+			result = boundaryRelationGradual
+		}
+	}
+	if inferred.Open {
+		result = boundaryRelationGradual
+	}
+	return result
+}
+
+func boundaryShapeKeyType(shape *TypeExpr) *TypeExpr {
+	switch {
+	case shape.Name == shapeKeysStringMarker:
+		return checkTypeString
+	case shape.Name == shapeKeysSymbolMarker:
+		return checkTypeSymbol
+	case strings.HasPrefix(shape.Name, shapeKeysMixedPrefix):
+		flags := strings.TrimPrefix(shape.Name, shapeKeysMixedPrefix)
+		var kinds []*TypeExpr
+		if strings.Contains(flags, "s") {
+			kinds = append(kinds, checkTypeSymbol)
+		}
+		if strings.Contains(flags, "t") {
+			kinds = append(kinds, checkTypeString)
+		}
+		if strings.Contains(flags, "o") {
+			kinds = append(kinds, &TypeExpr{Kind: TypeUnknown})
+		}
+		return unionTypeExprs(kinds...)
+	default:
+		return nil
+	}
+}
+
 // typeExprSatisfies reports whether every runtime value of the written type
 // provably satisfies the declared annotation — the dual of typeExprsDisjoint,
 // and just as deliberately conservative: unknown or any-typed writes and
@@ -16159,7 +17288,7 @@ func typeArmAdmits(declared, written *TypeExpr, resolve namedTypeResolver) bool 
 		if written.Name == blockRestElementsMarker && len(written.TypeArgs) == 0 {
 			return true
 		}
-		if written.Name == literalPartialElementsMarker || len(written.TypeArgs) != 1 {
+		if literalArrayElementsPartial(written) || len(written.TypeArgs) != 1 {
 			// Partial witnesses and bare arrays do not bound their elements.
 			return false
 		}
