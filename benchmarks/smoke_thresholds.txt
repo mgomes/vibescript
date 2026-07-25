@@ -24,6 +24,12 @@ BenchmarkExecutionStepLoop 16000000 25 6000
 # runner (about 3x a dev laptop): the old 40ms cap straddled the runner's floor
 # and flaked. Its alloc and byte caps stay tight — those are the stable signals.
 BenchmarkExecutionArrayPipeline 64000000 100 150000
+# Iterating rows while summing into an outer local. The ns cap is what matters
+# here: the accumulator's rebind used to invalidate the block-region memo every
+# iteration, making the walk quadratic in the row count (~41ms at 600 rows
+# versus ~0.85ms now), so a regression overshoots this cap by more than an order
+# of magnitude even on a slow runner.
+BenchmarkExecutionEachRowsScalarAccumulator 20000000 2800 800000
 BenchmarkExecutionArrayPushAccumulation 3600000 900 120000
 BenchmarkExecutionArrayConcatAccumulation 4200000 2400 150000
 BenchmarkExecutionMethodDispatchLoop 8000000 1000 130000
