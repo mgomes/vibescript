@@ -428,6 +428,21 @@ def run(left_flag: bool, right_flag: bool)
 end
 `)
 	requireCheckWarningContains(t, sharedReturnType, "call to collect argument values expected array<int> | array<string>, got array<int | string>")
+
+	mutatedKeywordSource := compileScriptDefault(t, `
+def collect(**values: { left: int, ignored: int, right: int } | { left: string, ignored: int, right: string })
+  values
+end
+
+def run(flag: bool)
+  collect(
+    left: flag ? 1 : "left",
+    ignored: [-> { flag = !flag; 0 }.call(), 0][1],
+    right: flag ? 2 : "right",
+  )
+end
+`)
+	requireCheckWarningContains(t, mutatedKeywordSource, "call to collect argument values expected { ignored: int, left: int, right: int } | { ignored: int, left: string, right: string }, got { ignored: int, left: int | string, right: int | string }")
 }
 
 func TestCheckKnownUnionRestAggregatePreservesExactLiterals(t *testing.T) {
@@ -665,6 +680,21 @@ def run(flag: bool)
 end
 `)
 	requireCheckWarningContains(t, antiCorrelated, "call to accept argument value expected { left: int, right: int } | { left: string, right: string }, got { left: int | string, right: string | int }")
+
+	mutatedSource := compileScriptDefault(t, `
+def accept(value: { left: int, ignored: int, right: int } | { left: string, ignored: int, right: string })
+  value
+end
+
+def run(flag: bool)
+  accept({
+    left: flag ? 1 : "left",
+    ignored: [-> { flag = !flag; 0 }.call(), 0][1],
+    right: flag ? 2 : "right"
+  })
+end
+`)
+	requireCheckWarningContains(t, mutatedSource, "call to accept argument value expected { ignored: int, left: int, right: int } | { ignored: int, left: string, right: string }, got { ignored: int, left: int | string, right: int | string }")
 
 	requireNoCheckWarnings(t, compileScriptDefault(t, `
 def accept(value: { left: int, right: int } | { left: float, right: float })

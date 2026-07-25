@@ -174,6 +174,7 @@ type scriptChecker struct {
 	summaryYieldsActive        bool
 	summaryBlockAvailable      bool
 	pinnedExpressionFacts      map[Expression]*TypeExpr
+	pinnedExpressionSources    map[Expression]checkValueSourceCapture
 	constructorInstanceFacts   map[Expression]checkInstanceClassFact
 	constructorIvarFacts       map[Expression]map[string]*TypeExpr
 	widenedIvarFacts           map[string]struct{}
@@ -4620,6 +4621,7 @@ func (c *scriptChecker) checkExpressionWithExpectation(
 				pair.Value,
 				c.inferExpressionTypeWithExpectation(pair.Value, valueExpectation),
 			)
+			c.pinExpressionValueSource(pair.Value)
 		}
 		return true
 	case *MemberExpr:
@@ -4688,6 +4690,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				return false
 			}
 			c.pinExpressionFact(pair.Value, c.inferExpressionType(pair.Value))
+			c.pinExpressionValueSource(pair.Value)
 		}
 	case *TypeLiteral:
 		// An unshadowed type literal's identifiers are type spellings rather
@@ -4856,6 +4859,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			} else {
 				argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
 			}
+			c.pinExpressionValueSource(retainedValue)
 			identityAutoCall := autoCall && !retainsCallable
 			retainedFact := argumentFacts[expr]
 			argumentRetainedAliases[expr] = c.captureRetainedContainerAliases(
@@ -16601,7 +16605,7 @@ func (c *scriptChecker) inferredKeywordRestArgumentType(values map[string]Expres
 			inferred = &TypeExpr{Kind: TypeUnknown}
 		}
 		fields[name] = inferred
-		if source, ok := c.valueSourceForExpression(expr); ok {
+		if source, ok := c.evaluatedValueSourceForExpression(expr); ok {
 			sources[name] = source
 		}
 	}

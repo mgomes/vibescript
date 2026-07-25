@@ -1853,6 +1853,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousDegradedContainers := c.degradedContainerBindings
 	previousBindingGenerations := c.localBindingGenerations
 	previousPinned := c.pinnedExpressionFacts
+	previousPinnedSources := c.pinnedExpressionSources
 	previousConstructors := c.constructorInstanceFacts
 	previousWidenedIvars := c.widenedIvarFacts
 	previousIfClassFacts := c.evaluatedIfClassFacts
@@ -1868,6 +1869,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	c.degradedContainerBindings = nil
 	c.localBindingGenerations = nil
 	c.pinnedExpressionFacts = nil
+	c.pinnedExpressionSources = nil
 	c.constructorInstanceFacts = nil
 	c.widenedIvarFacts = nil
 	c.evaluatedIfClassFacts = nil
@@ -1884,6 +1886,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 		c.degradedContainerBindings = previousDegradedContainers
 		c.localBindingGenerations = previousBindingGenerations
 		c.pinnedExpressionFacts = previousPinned
+		c.pinnedExpressionSources = previousPinnedSources
 		c.constructorInstanceFacts = previousConstructors
 		c.widenedIvarFacts = previousWidenedIvars
 		c.evaluatedIfClassFacts = previousIfClassFacts
@@ -1900,6 +1903,7 @@ func (c *scriptChecker) withClonedLocalInferenceScope() func() {
 	staticValuePoison := cloneCheckStringSet(c.staticValuePoison)
 	bindingGenerations := maps.Clone(c.localBindingGenerations)
 	pinnedFacts := maps.Clone(c.pinnedExpressionFacts)
+	pinnedSources := maps.Clone(c.pinnedExpressionSources)
 	constructorFacts := maps.Clone(c.constructorInstanceFacts)
 	widenedIvars := cloneCheckStringSet(c.widenedIvarFacts)
 	ifClassFacts := maps.Clone(c.evaluatedIfClassFacts)
@@ -1915,6 +1919,7 @@ func (c *scriptChecker) withClonedLocalInferenceScope() func() {
 		c.typePoison = cloneCheckStringSet(typePoison)
 		c.staticValuePoison = cloneCheckStringSet(staticValuePoison)
 		c.pinnedExpressionFacts = maps.Clone(pinnedFacts)
+		c.pinnedExpressionSources = maps.Clone(pinnedSources)
 		c.constructorInstanceFacts = maps.Clone(constructorFacts)
 		c.widenedIvarFacts = cloneCheckStringSet(widenedIvars)
 		c.evaluatedIfClassFacts = maps.Clone(ifClassFacts)
@@ -9980,7 +9985,7 @@ func (c *scriptChecker) inferExpectedHashLiteralType(lit *HashLiteral, expectati
 			return checkTypeHash
 		}
 		shape[key] = fieldType
-		if source, ok := c.valueSourceForExpression(pair.Value); ok {
+		if source, ok := c.evaluatedValueSourceForExpression(pair.Value); ok {
 			sources[key] = source
 		}
 	}
@@ -10176,7 +10181,7 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 			return checkTypeHash
 		}
 		shape[key] = fieldType
-		if source, ok := c.valueSourceForExpression(pair.Value); ok {
+		if source, ok := c.evaluatedValueSourceForExpression(pair.Value); ok {
 			sources[key] = source
 		}
 	}
@@ -10206,6 +10211,32 @@ type checkValueSource struct {
 	generation        uint64
 	consequentTypeKey string
 	alternateTypeKey  string
+}
+
+type checkValueSourceCapture struct {
+	source checkValueSource
+	exact  bool
+}
+
+func (c *scriptChecker) pinExpressionValueSource(expr Expression) {
+	if expr == nil {
+		return
+	}
+	source, exact := c.valueSourceForExpression(expr)
+	if c.pinnedExpressionSources == nil {
+		c.pinnedExpressionSources = make(map[Expression]checkValueSourceCapture)
+	}
+	c.pinnedExpressionSources[expr] = checkValueSourceCapture{
+		source: source,
+		exact:  exact,
+	}
+}
+
+func (c *scriptChecker) evaluatedValueSourceForExpression(expr Expression) (checkValueSource, bool) {
+	if captured, ok := c.pinnedExpressionSources[expr]; ok {
+		return captured.source, captured.exact
+	}
+	return c.valueSourceForExpression(expr)
 }
 
 func (c *scriptChecker) valueSourceForExpression(expr Expression) (checkValueSource, bool) {
