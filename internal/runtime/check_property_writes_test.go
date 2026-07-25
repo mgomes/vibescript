@@ -248,6 +248,44 @@ end
 		}
 	})
 
+	t.Run("later helper context widens shared constructor", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize(set_name: bool)
+    if set_name
+      @name = "Ada"
+    end
+  end
+end
+
+def make(set_name: bool) -> User
+  User.new(set_name)
+end
+
+def later
+  make(false).name
+end
+
+def run
+  make(true).name
+  later
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
+
 	t.Run("conditional initializer write", func(t *testing.T) {
 		t.Parallel()
 

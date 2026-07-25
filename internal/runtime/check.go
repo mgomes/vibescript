@@ -2273,11 +2273,11 @@ func (c *scriptChecker) checkReachableFunctions() {
 func (c *scriptChecker) drainReachableFunctions(reached map[*ScriptFunction]struct{}) {
 	for len(c.reachableFuncQueue) > 0 {
 		nextIndex := 0
-		// A helper can reveal a constructor origin after its caller has
-		// already queued the corresponding getter. Capture the constructor's
-		// final ivar state before validating that getter.
+		// Helpers can reveal additional contexts for a constructor origin
+		// after a dependent getter is already queued. Drain the non-getter
+		// graph first so every reachable constructor state has been joined.
 		for i, queued := range c.reachableFuncQueue {
-			if _, constructor := queued.paramFacts[reachableConstructorOriginFact]; constructor {
+			if queued.fn.Accessor != functionAccessorGetter {
 				nextIndex = i
 				break
 			}
