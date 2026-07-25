@@ -16353,7 +16353,7 @@ func (c *scriptChecker) inferredRestArgumentType(args []Expression, expected *Ty
 			sawUnknown = true
 			continue
 		}
-		if source, sourced := c.valueSourceForExpression(arg); sourced {
+		if source, sourced := c.evaluatedValueSourceForExpression(arg); sourced {
 			if _, duplicate := seenSources[source]; duplicate {
 				continue
 			}

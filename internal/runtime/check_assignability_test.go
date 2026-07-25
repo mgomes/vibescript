@@ -429,6 +429,21 @@ end
 `)
 	requireCheckWarningContains(t, sharedReturnType, "call to collect argument values expected array<int> | array<string>, got array<int | string>")
 
+	mutatedSource := compileScriptDefault(t, `
+def collect(*values: array<int> | array<string>)
+  values
+end
+
+def run(flag: bool)
+  collect(
+    flag ? 1 : "left",
+    -> { flag = !flag }.call(),
+    flag ? 2 : "right",
+  )
+end
+`)
+	requireCheckWarningContains(t, mutatedSource, "call to collect argument values expected array<int> | array<string>, got array<int | string>")
+
 	mutatedKeywordSource := compileScriptDefault(t, `
 def collect(**values: { left: int, ignored: int, right: int } | { left: string, ignored: int, right: string })
   values
