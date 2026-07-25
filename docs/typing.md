@@ -246,10 +246,11 @@ checker can prove. It is not proof that every value is type-safe. In particular:
   members, and host callables without signatures remain dynamic.
 - `JSON.parse` returns an unknown fact. `JSON.parse_as` validates a declared
   contract at runtime and gives the checker that declared result fact.
-- Mutable-container facts survive only operations the member-contract registry
-  proves pure. Known mutators, unregistered calls, blocks, impure arguments,
-  dynamic dispatch, and aliases to nested mutable values discard facts the
-  checker can no longer trust. Runtime boundary checks remain authoritative.
+- Mutable-container facts survive operations the member-contract registry
+  proves pure and the compatible modeled writes described above. Other known
+  mutators, unregistered calls, blocks, impure arguments, dynamic dispatch,
+  and aliases to nested mutable values discard facts the checker can no longer
+  trust. Runtime boundary checks remain authoritative.
 
 ### Checking scopes
 
