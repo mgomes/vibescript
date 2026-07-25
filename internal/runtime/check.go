@@ -16401,33 +16401,35 @@ func (c *scriptChecker) restLiteralRejectedByUnion(args []Expression, ty *TypeEx
 		return false
 	}
 	for _, arg := range args {
-		value, literal := staticLiteralValue(arg)
-		if !literal {
+		values, valuesExact := c.callStaticLiteralValueAlternatives(arg)
+		if !valuesExact {
 			continue
 		}
-		sawArray := false
-		accepted := false
-		for _, arm := range arms {
-			if arm.Kind == TypeAny || arm.Kind == TypeUnknown {
-				accepted = true
-				break
+		for _, value := range values {
+			sawArray := false
+			accepted := false
+			for _, arm := range arms {
+				if arm.Kind == TypeAny || arm.Kind == TypeUnknown {
+					accepted = true
+					break
+				}
+				if arm.Kind != TypeArray {
+					continue
+				}
+				sawArray = true
+				if len(arm.TypeArgs) == 0 {
+					accepted = true
+					break
+				}
+				if len(arm.TypeArgs) == 1 &&
+					c.checkRuntimeStaticValueType(value, arm.TypeArgs[0]) == nil {
+					accepted = true
+					break
+				}
 			}
-			if arm.Kind != TypeArray {
-				continue
+			if sawArray && !accepted {
+				return true
 			}
-			sawArray = true
-			if len(arm.TypeArgs) == 0 {
-				accepted = true
-				break
-			}
-			if len(arm.TypeArgs) == 1 &&
-				c.checkRuntimeStaticValueType(value, arm.TypeArgs[0]) == nil {
-				accepted = true
-				break
-			}
-		}
-		if sawArray && !accepted {
-			return true
 		}
 	}
 	return false
@@ -16442,40 +16444,42 @@ func (c *scriptChecker) keywordRestLiteralRejectedByUnion(kwargs []KeywordArg, u
 		if usedKw != nil && usedKw[kwarg.Name] {
 			continue
 		}
-		value, literal := staticLiteralValue(kwarg.Value)
-		if !literal {
+		values, valuesExact := c.callStaticLiteralValueAlternatives(kwarg.Value)
+		if !valuesExact {
 			continue
 		}
-		sawContainer := false
-		accepted := false
-		for _, arm := range arms {
-			if arm.Kind == TypeAny || arm.Kind == TypeUnknown {
-				accepted = true
-				break
-			}
-			switch arm.Kind {
-			case TypeHash:
-				sawContainer = true
-				if len(arm.TypeArgs) == 0 ||
-					(len(arm.TypeArgs) == 2 &&
-						c.checkRuntimeStaticValueType(NewString(kwarg.Name), arm.TypeArgs[0]) == nil &&
-						c.checkRuntimeStaticValueType(value, arm.TypeArgs[1]) == nil) {
+		for _, value := range values {
+			sawContainer := false
+			accepted := false
+			for _, arm := range arms {
+				if arm.Kind == TypeAny || arm.Kind == TypeUnknown {
 					accepted = true
+					break
 				}
-			case TypeShape:
-				sawContainer = true
-				field, known := arm.Shape[kwarg.Name]
-				if (!known && arm.Open) ||
-					(known && c.checkRuntimeStaticValueType(value, field) == nil) {
-					accepted = true
+				switch arm.Kind {
+				case TypeHash:
+					sawContainer = true
+					if len(arm.TypeArgs) == 0 ||
+						(len(arm.TypeArgs) == 2 &&
+							c.checkRuntimeStaticValueType(NewString(kwarg.Name), arm.TypeArgs[0]) == nil &&
+							c.checkRuntimeStaticValueType(value, arm.TypeArgs[1]) == nil) {
+						accepted = true
+					}
+				case TypeShape:
+					sawContainer = true
+					field, known := arm.Shape[kwarg.Name]
+					if (!known && arm.Open) ||
+						(known && c.checkRuntimeStaticValueType(value, field) == nil) {
+						accepted = true
+					}
+				}
+				if accepted {
+					break
 				}
 			}
-			if accepted {
-				break
+			if sawContainer && !accepted {
+				return true
 			}
-		}
-		if sawContainer && !accepted {
-			return true
 		}
 	}
 	return false

@@ -478,6 +478,21 @@ end
 `)
 	requireCheckWarningContains(t, positional, "call to collect argument values expected array<Color> | array<int>, got array<symbol | int>")
 
+	positionalAlternatives := compileScriptDefault(t, `
+enum Color
+  Red
+end
+
+def collect(*values: array<Color> | array<int>)
+  values
+end
+
+def run(flag: bool)
+  collect(flag ? :blue : :green)
+end
+`)
+	requireCheckWarningContains(t, positionalAlternatives, "call to collect argument values expected array<Color> | array<int>, got array<symbol>")
+
 	keywords := compileScriptDefault(t, `
 enum Color
   Red
@@ -492,6 +507,21 @@ def run(opaque)
 end
 `)
 	requireCheckWarningContains(t, keywords, "call to collect argument values expected hash<string, Color> | nil, got { color: symbol, other: unknown }")
+
+	keywordAlternatives := compileScriptDefault(t, `
+enum Color
+  Red
+end
+
+def collect(**values: hash<string, Color> | nil)
+  values
+end
+
+def run(flag: bool)
+  collect(color: flag ? :blue : :green)
+end
+`)
+	requireCheckWarningContains(t, keywordAlternatives, "call to collect argument values expected hash<string, Color> | nil, got { color: symbol }")
 }
 
 func TestCheckKnownUnionArrayLiteralCorrelation(t *testing.T) {
