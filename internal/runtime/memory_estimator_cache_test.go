@@ -517,6 +517,65 @@ def run()
     %q
   end
 end`, payloadA, regionPeak),
+		// Scalar accumulator in a block: the shape bumpEpochUnlessScalarRebind
+		// makes bump-free. The rebind resolves past the region boundary to a prefix
+		// scope, but old and new are both compact scalars, so the prefix's byte
+		// total is unchanged and the memo may legally survive. The threshold must
+		// still match the unmemoized run exactly -- suppressing a bump that did
+		// change the estimate would drift it.
+		"region_each_scalar_accumulator": fmt.Sprintf(`def run()
+  total = 0
+  [1, 2, 3, 4].each do |v|
+    total = total + v
+    %q
+  end
+  total
+end`, regionPeak),
+		// Scalar-to-payload transition inside a block. The binding starts compact
+		// and is rebound to a large string, so the suppression must NOT apply: a
+		// skipped bump here leaves the prefix missing the payload's bytes, which is
+		// an undercount and shifts the memoized threshold below the unmemoized one.
+		"region_each_scalar_then_payload": fmt.Sprintf(`def run()
+  slot = 0
+  [1, 2, 3, 4].each do |v|
+    slot = %q
+    %q
+  end
+  slot.size
+end`, payloadA, regionPeak),
+		// Payload-to-scalar transition: the reverse direction. Dropping the payload
+		// shrinks the reachable graph, so a skipped bump would leave the memo
+		// counting removed bytes and drift the threshold the other way.
+		"region_each_payload_then_scalar": fmt.Sprintf(`def run()
+  slot = %q
+  [1, 2, 3, 4].each do |v|
+    slot = 0
+    %q
+  end
+  slot
+end`, payloadA, regionPeak),
+		// Scalar accumulator that promotes to a bignum. A bignum-backed Int carries
+		// a heap payload, so committableScalar excludes it and the rebind must bump
+		// once the value grows past the compact representation.
+		"region_each_scalar_to_bignum": fmt.Sprintf(`def run()
+  total = 1
+  [1, 2, 3, 4].each do |v|
+    total = total * 100000000000000000000
+    %q
+  end
+  total
+end`, regionPeak),
+		// The same scalar rebind outside any block, exercising the ordinary
+		// (non-region) base-walk memo rather than the region prefix memo.
+		"scalar_rebind_no_region": fmt.Sprintf(`def run()
+  total = 0
+  i = 0
+  while i < 4
+    total = total + i
+    i = i + 1
+  end
+  %q
+end`, regionPeak),
 		// A closure created in the block body captures the block scope and escapes
 		// into an outer (prefix) binding, then a block-local it closes over grows.
 		// Once the scope is reachable from the memoized prefix its later writes must
