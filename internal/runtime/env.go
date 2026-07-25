@@ -745,16 +745,45 @@ func (e *Env) getOwn(name string) (Value, bool) {
 
 func (e *Env) setExistingDynamic(name string, val Value) bool {
 	if idx, ok := e.inlineIndex(name); ok {
-		e.bumpEpochUnlessNeutral()
+		e.bumpEpochUnlessScalarRebind(e.inline[idx].value, val)
 		e.inline[idx].value = val
 		return true
 	}
-	if _, ok := e.values[name]; ok {
-		e.bumpEpochUnlessNeutral()
+	if old, ok := e.values[name]; ok {
+		e.bumpEpochUnlessScalarRebind(old, val)
 		e.values[name] = val
 		return true
 	}
 	return false
+}
+
+// bumpEpochUnlessScalarRebind advances the mutation epoch for a rebind of an
+// existing binding, unless the binding goes from one compact scalar to another.
+//
+// The epoch exists solely to invalidate the estimator's base-walk memos (see
+// beginBaseWalk and beginRegionBaseWalk, the only two readers), so a bump may be
+// skipped exactly when the scope's contribution to an estimate cannot have
+// changed. committableScalar names that class: its members cost exactly
+// estimatedValueBytes with no marginal payload, and they are never deduplicated
+// against another identity. Replacing one with another therefore leaves every
+// memoized total bit-identical -- no identity enters or leaves the reachable
+// union, and the byte count is equal by construction -- so the estimate stays
+// exact rather than merely conservative.
+//
+// This matters because an accumulator in a block body (total = total + x)
+// resolves past the block-iteration region boundary to a prefix scope, which is
+// not epoch-neutral. Bumping there invalidated the memoized prefix on every
+// iteration and re-walked the receiver collection, restoring the O(n^2) the
+// region memo removes. Any rebind that is not scalar-to-scalar still bumps, so
+// a growing or aliasing value invalidates the memo exactly as before.
+func (e *Env) bumpEpochUnlessScalarRebind(old, val Value) {
+	if e.epochNeutral {
+		return
+	}
+	if committableScalar(old) && committableScalar(val) {
+		return
+	}
+	value.BumpMutationEpoch()
 }
 
 func (e *Env) setDynamic(name string, val Value) {
