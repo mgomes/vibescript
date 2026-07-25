@@ -87,6 +87,32 @@ end`)
 	}
 }
 
+// BenchmarkExecutionEachRowsScalarAccumulator iterates hash rows while summing
+// into an outer local. The accumulator resolves past the block-iteration region
+// boundary to a prefix scope, so before scalar rebinds stopped bumping the
+// mutation epoch every iteration invalidated the memoized prefix and re-walked
+// the whole receiver, making the loop quadratic in the row count. It is the gate
+// against that regression: the suite's other block benchmarks all use pure block
+// bodies, which never exercised the invalidation path.
+func BenchmarkExecutionEachRowsScalarAccumulator(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values)
+  total = 0
+  values.each do |value|
+    total = total + 1
+  end
+  total
+end`)
+
+	args := []Value{benchmarkHashRows(600)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
 func BenchmarkExecutionGroupByHashRowsLowCardinality(b *testing.B) {
 	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values)
   values.group_by do |value|
