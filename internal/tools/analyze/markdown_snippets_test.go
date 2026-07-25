@@ -7,19 +7,29 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/internal/parser"
 	"github.com/mgomes/vibescript/internal/runtime"
 )
 
 type markdownSnippet struct {
-	Path   string
-	Line   int
-	Source string
-	Hash   string
+	Path               string
+	Line               int
+	Source             string
+	Hash               string
+	Check              bool
+	ExpectedDiagnostic string
+}
+
+type markdownVibeFence struct {
+	IsVibe             bool
+	Check              bool
+	ExpectedDiagnostic string
 }
 
 type markdownSnippetPolicyMode int
@@ -58,6 +68,8 @@ func TestMarkdownVibeSnippetsAreCovered(t *testing.T) {
 	sawREADME := false
 	sawReferenceDocs := false
 	sawDocsExamples := false
+	sawCheckedSnippet := false
+	sawExpectedDiagnostic := false
 
 	for _, snippet := range snippets {
 		switch {
@@ -67,6 +79,12 @@ func TestMarkdownVibeSnippetsAreCovered(t *testing.T) {
 			sawDocsExamples = true
 		case strings.HasPrefix(snippet.Path, "docs/"):
 			sawReferenceDocs = true
+		}
+		if snippet.Check {
+			sawCheckedSnippet = true
+		}
+		if snippet.ExpectedDiagnostic != "" {
+			sawExpectedDiagnostic = true
 		}
 
 		key := markdownSnippetPolicyKey(snippet.Path, snippet.Hash)
@@ -104,6 +122,12 @@ func TestMarkdownVibeSnippetsAreCovered(t *testing.T) {
 	}
 	if !sawDocsExamples {
 		t.Fatal("expected at least one fenced vibe snippet in docs/examples")
+	}
+	if !sawCheckedSnippet {
+		t.Fatal("expected at least one fenced vibe snippet marked for type checking")
+	}
+	if !sawExpectedDiagnostic {
+		t.Fatal("expected at least one fenced vibe snippet with an expected type-check diagnostic")
 	}
 }
 
@@ -207,6 +231,109 @@ func TestExtractMarkdownVibeSnippetsRejectsUnterminatedFence(t *testing.T) {
 	}
 }
 
+func TestExtractMarkdownVibeSnippetsParsesCheckMarkers(t *testing.T) {
+	t.Parallel()
+
+	plain := "value = 1\n"
+	checked := "value = 2\n"
+	rejected := "value = \"bad\"\n"
+	markdown := "```vibe\n" + strings.TrimSpace(plain) + "\n```\n" +
+		"```vibe check\n" + strings.TrimSpace(checked) + "\n```\n" +
+		"```vibe check-error=\"expected int, got string\"\n" + strings.TrimSpace(rejected) + "\n```\n"
+
+	got, err := extractMarkdownVibeSnippets("docs/typing.md", markdown)
+	if err != nil {
+		t.Fatalf("extractMarkdownVibeSnippets() error = %v, want nil", err)
+	}
+	want := []markdownSnippet{
+		{Path: "docs/typing.md", Line: 1, Source: plain, Hash: markdownSnippetHash(plain)},
+		{Path: "docs/typing.md", Line: 4, Source: checked, Hash: markdownSnippetHash(checked), Check: true},
+		{
+			Path:               "docs/typing.md",
+			Line:               7,
+			Source:             rejected,
+			Hash:               markdownSnippetHash(rejected),
+			Check:              true,
+			ExpectedDiagnostic: "expected int, got string",
+		},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("extractMarkdownVibeSnippets() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestExtractMarkdownVibeSnippetsRejectsMalformedCheckMarker(t *testing.T) {
+	t.Parallel()
+
+	_, err := extractMarkdownVibeSnippets("docs/typing.md", "```vibe check-error=unquoted\nvalue = 1\n```\n")
+	if err == nil {
+		t.Fatal("extractMarkdownVibeSnippets() error = nil, want malformed check marker error")
+	}
+	if got := err.Error(); !strings.Contains(got, "docs/typing.md:1 invalid check-error marker") {
+		t.Errorf("extractMarkdownVibeSnippets() error = %q, want malformed marker location", got)
+	}
+}
+
+func TestMarkdownSnippetCheckExpectations(t *testing.T) {
+	t.Parallel()
+
+	engine := runtime.MustNewEngine(runtime.Config{})
+	tests := []struct {
+		name        string
+		snippet     markdownSnippet
+		wantErr     bool
+		wantErrText string
+	}{
+		{
+			name: "clean",
+			snippet: markdownSnippet{
+				Source: "def takes_int(value: int)\n  value\nend\n\ntakes_int(1)\n",
+				Check:  true,
+			},
+		},
+		{
+			name: "expected diagnostic",
+			snippet: markdownSnippet{
+				Source:             "def takes_int(value: int)\n  value\nend\n\ntakes_int(\"bad\")\n",
+				Check:              true,
+				ExpectedDiagnostic: "argument value expected int, got string",
+			},
+		},
+		{
+			name: "unexpected diagnostic",
+			snippet: markdownSnippet{
+				Source: "def takes_int(value: int)\n  value\nend\n\ntakes_int(\"bad\")\n",
+				Check:  true,
+			},
+			wantErr:     true,
+			wantErrText: "unexpected diagnostic",
+		},
+		{
+			name: "diagnostic mismatch",
+			snippet: markdownSnippet{
+				Source:             "def takes_int(value: int)\n  value\nend\n\ntakes_int(\"bad\")\n",
+				Check:              true,
+				ExpectedDiagnostic: "expected bool",
+			},
+			wantErr:     true,
+			wantErrText: "want one containing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkMarkdownSnippetTypeExpectation(engine, tt.snippet)
+			if gotErr := err != nil; gotErr != tt.wantErr {
+				t.Errorf("checkMarkdownSnippetTypeExpectation(%q) error = %v, want error = %t", tt.snippet.Source, err, tt.wantErr)
+				return
+			}
+			if err != nil && !strings.Contains(err.Error(), tt.wantErrText) {
+				t.Errorf("checkMarkdownSnippetTypeExpectation(%q) error = %q, want substring %q", tt.snippet.Source, err, tt.wantErrText)
+			}
+		})
+	}
+}
+
 func checkMarkdownSnippet(engine *runtime.Engine, snippet markdownSnippet, policy markdownSnippetPolicy, hasPolicy bool) error {
 	source := snippet.Source
 	if hasPolicy && policy.Mode == markdownSnippetWrapped {
@@ -223,7 +350,39 @@ func checkMarkdownSnippet(engine *runtime.Engine, snippet markdownSnippet, polic
 		}
 		_, err = compileAndAnalyzeMarkdownSnippet(engine, wrapMarkdownReferenceSnippet(source))
 	}
-	return err
+	if err != nil || !snippet.Check {
+		return err
+	}
+	return checkMarkdownSnippetTypeExpectation(engine, snippet)
+}
+
+func checkMarkdownSnippetTypeExpectation(engine *runtime.Engine, snippet markdownSnippet) error {
+	script, err := engine.CompileSnippet(snippet.Source, "__markdown_snippet__")
+	if err != nil {
+		return fmt.Errorf("type-check compile: %w", err)
+	}
+	warnings := script.CheckWarnings()
+	if snippet.ExpectedDiagnostic == "" {
+		if len(warnings) > 0 {
+			return fmt.Errorf("type-check: unexpected diagnostic %q", warnings[0].Message)
+		}
+		return nil
+	}
+	if len(warnings) == 0 {
+		return fmt.Errorf("type-check diagnostics = none, want one containing %q", snippet.ExpectedDiagnostic)
+	}
+	messages := make([]string, len(warnings))
+	matched := false
+	for i, warning := range warnings {
+		messages[i] = warning.Message
+		if strings.Contains(warning.Message, snippet.ExpectedDiagnostic) {
+			matched = true
+		}
+	}
+	if len(warnings) != 1 || !matched {
+		return fmt.Errorf("type-check diagnostics = %q, want one containing %q", messages, snippet.ExpectedDiagnostic)
+	}
+	return nil
 }
 
 func markdownSnippetPolicyMap(t *testing.T) map[string]markdownSnippetPolicy {
@@ -289,14 +448,22 @@ func extractMarkdownVibeSnippets(path, markdown string) ([]markdownSnippet, erro
 	var current []string
 	startLine := 0
 	inVibeFence := false
+	checkSnippet := false
+	expectedDiagnostic := ""
 
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if !inVibeFence {
-			if isVibeFenceStart(trimmed) {
+			fence, err := parseMarkdownVibeFence(trimmed)
+			if err != nil {
+				return nil, fmt.Errorf("%s:%d %w", path, i+1, err)
+			}
+			if fence.IsVibe {
 				inVibeFence = true
 				current = current[:0]
 				startLine = i + 1
+				checkSnippet = fence.Check
+				expectedDiagnostic = fence.ExpectedDiagnostic
 			}
 			continue
 		}
@@ -305,10 +472,12 @@ func extractMarkdownVibeSnippets(path, markdown string) ([]markdownSnippet, erro
 			if source != "" {
 				source += "\n"
 				snippets = append(snippets, markdownSnippet{
-					Path:   path,
-					Line:   startLine,
-					Source: source,
-					Hash:   markdownSnippetHash(source),
+					Path:               path,
+					Line:               startLine,
+					Source:             source,
+					Hash:               markdownSnippetHash(source),
+					Check:              checkSnippet,
+					ExpectedDiagnostic: expectedDiagnostic,
 				})
 			}
 			inVibeFence = false
@@ -323,12 +492,36 @@ func extractMarkdownVibeSnippets(path, markdown string) ([]markdownSnippet, erro
 	return snippets, nil
 }
 
-func isVibeFenceStart(line string) bool {
+func parseMarkdownVibeFence(line string) (markdownVibeFence, error) {
 	if !strings.HasPrefix(line, "```") {
-		return false
+		return markdownVibeFence{}, nil
 	}
 	language := strings.TrimSpace(strings.TrimPrefix(line, "```"))
-	return language == "vibe" || strings.HasPrefix(language, "vibe ")
+	if language != "vibe" && !strings.HasPrefix(language, "vibe ") {
+		return markdownVibeFence{}, nil
+	}
+	fence := markdownVibeFence{IsVibe: true}
+	marker := strings.TrimSpace(strings.TrimPrefix(language, "vibe"))
+	if marker == "" {
+		return fence, nil
+	}
+	if marker == "check" {
+		fence.Check = true
+		return fence, nil
+	}
+	if !strings.HasPrefix(marker, "check-error") {
+		return fence, nil
+	}
+	if !strings.HasPrefix(marker, "check-error=") {
+		return markdownVibeFence{}, fmt.Errorf("invalid check-error marker %q", marker)
+	}
+	expected, err := strconv.Unquote(strings.TrimPrefix(marker, "check-error="))
+	if err != nil || strings.TrimSpace(expected) == "" {
+		return markdownVibeFence{}, fmt.Errorf("invalid check-error marker %q", marker)
+	}
+	fence.Check = true
+	fence.ExpectedDiagnostic = expected
+	return fence, nil
 }
 
 func markdownSnippetHash(source string) string {
