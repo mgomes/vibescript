@@ -2430,12 +2430,19 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := newTypedResultHash(count)
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				// Compact the kept entries to the front of the buffer and populate the
+				// result hash after the loop; see hash.transform_values for why the
+				// in-loop hashSet had to go. The write index never runs ahead of the
+				// read index, so the compaction is safe in place and adds no
+				// allocation.
+				ordered := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+				kept := 0
+				for i := range ordered {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					blockArgs[0] = entry.Key
-					blockArgs[1] = entry.Value
+					blockArgs[0] = ordered[i].Key
+					blockArgs[1] = ordered[i].Value
 					include, err := runner.call(blockArgs[:])
 					if err != nil {
 						return NewNil(), err
@@ -2444,9 +2451,13 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					if include.Truthy() {
-						if err := hashSet(out, entry.Key, entry.Value); err != nil {
-							return NewNil(), err
-						}
+						ordered[kept] = ordered[i]
+						kept++
+					}
+				}
+				for _, entry := range ordered[:kept] {
+					if err := hashSet(out, entry.Key, entry.Value); err != nil {
+						return NewNil(), err
 					}
 				}
 				return out, nil
@@ -2524,12 +2535,19 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := newTypedResultHash(count)
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				// Compact the kept entries to the front of the buffer and populate the
+				// result hash after the loop; see hash.transform_values for why the
+				// in-loop hashSet had to go. The write index never runs ahead of the
+				// read index, so the compaction is safe in place and adds no
+				// allocation.
+				ordered := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+				kept := 0
+				for i := range ordered {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					blockArgs[0] = entry.Key
-					blockArgs[1] = entry.Value
+					blockArgs[0] = ordered[i].Key
+					blockArgs[1] = ordered[i].Value
 					exclude, err := runner.call(blockArgs[:])
 					if err != nil {
 						return NewNil(), err
@@ -2538,9 +2556,13 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					if !exclude.Truthy() {
-						if err := hashSet(out, entry.Key, entry.Value); err != nil {
-							return NewNil(), err
-						}
+						ordered[kept] = ordered[i]
+						kept++
+					}
+				}
+				for _, entry := range ordered[:kept] {
+					if err := hashSet(out, entry.Key, entry.Value); err != nil {
+						return NewNil(), err
 					}
 				}
 				return out, nil
@@ -2938,11 +2960,26 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := newTypedResultHash(count)
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				// Collect the transformed values first and populate the result hash
+				// after the loop. hashSet goes through the value package, which bumps
+				// the mutation epoch on every insertion; doing that between block calls
+				// invalidated the block region's memoized prefix each iteration and
+				// re-walked the whole receiver, which is quadratic in the entry count.
+				// The bumps still happen, just after the last block call, where no
+				// further block-body check depends on the memo -- the same shape
+				// array.group_by already uses.
+				//
+				// The transformed value is written back into the entry buffer rather
+				// than a second slice: HashEntriesInto copies entries by value, so this
+				// cannot disturb the receiver, and the buffer's bytes are already held
+				// by the reserveLoopScratch above. So this adds no allocation and needs
+				// no accounting change.
+				ordered := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+				for i := range ordered {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					blockArg[0] = entry.Value
+					blockArg[0] = ordered[i].Value
 					nextValue, err := runner.call(blockArg[:])
 					if err != nil {
 						return NewNil(), err
@@ -2950,10 +2987,13 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.checkContext(); err != nil {
 						return NewNil(), err
 					}
-					if err := hashSet(out, entry.Key, nextValue); err != nil {
+					ordered[i].Value = nextValue
+					if err := acc.add(nextValue); err != nil {
 						return NewNil(), err
 					}
-					if err := acc.add(nextValue); err != nil {
+				}
+				for _, entry := range ordered {
+					if err := hashSet(out, entry.Key, entry.Value); err != nil {
 						return NewNil(), err
 					}
 				}
