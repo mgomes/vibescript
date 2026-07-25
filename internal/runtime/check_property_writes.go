@@ -57,7 +57,12 @@ func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 		}
 		if fn.Accessor == functionAccessorGetter && fn.AccessorName == method.AccessorName {
 			fact, exact := c.reachableGetterIvarFact(method.AccessorName)
-			if !exact || fact == nil {
+			if !exact {
+				fact = c.ivarContractFact(ty)
+				if fact != nil {
+					fact = unionTypeExprs(fact, checkTypeNil)
+				}
+			} else if fact == nil {
 				fact = c.ivarContractFact(ty)
 			}
 			if fact != nil {

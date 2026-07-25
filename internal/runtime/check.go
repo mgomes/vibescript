@@ -2153,6 +2153,15 @@ func (c *scriptChecker) reachableCallInstanceFacts(
 	target staticCallable,
 	facts map[string]checkReachableParamFact,
 ) map[string]checkReachableParamFact {
+	return c.reachableCallInstanceFactsWithConstructorOrigin(call, target, facts, call)
+}
+
+func (c *scriptChecker) reachableCallInstanceFactsWithConstructorOrigin(
+	call *CallExpr,
+	target staticCallable,
+	facts map[string]checkReachableParamFact,
+	constructorOrigin Expression,
+) map[string]checkReachableParamFact {
 	if call == nil || target.fn == nil {
 		return facts
 	}
@@ -2171,7 +2180,7 @@ func (c *scriptChecker) reachableCallInstanceFacts(
 		}
 	}
 	if target.constructor {
-		add(reachableConstructorOriginFact, []Expression{call})
+		add(reachableConstructorOriginFact, []Expression{constructorOrigin})
 	}
 	if target.fn.Accessor == functionAccessorGetter {
 		member, ok := call.Callee.(*MemberExpr)
@@ -8652,7 +8661,12 @@ func (c *scriptChecker) checkMemberAutoCall(
 			// binding plan must carry exact omitted-default execution into
 			// the reachable body check.
 			if plan.bindingStarts {
-				facts := c.reachableCallInstanceFacts(call, target, nil)
+				facts := c.reachableCallInstanceFactsWithConstructorOrigin(
+					call,
+					target,
+					nil,
+					member,
+				)
 				c.enqueueReachableFunctionBindingForCall(
 					target.name,
 					target.fn,

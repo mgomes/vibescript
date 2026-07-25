@@ -186,6 +186,33 @@ end
 		)
 	})
 
+	t.Run("unset property returned from helper", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+end
+
+def make() -> User
+  User.new
+end
+
+def run
+  make.name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
+
 	t.Run("conditional initializer write", func(t *testing.T) {
 		t.Parallel()
 
