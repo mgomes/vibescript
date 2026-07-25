@@ -510,6 +510,27 @@ end
 `)
 	requireCheckWarningContains(t, sharedReturnType, "call to accept argument values expected array<int> | array<string>, got array<int | string>")
 
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def accept(values: array<int> | array<string>)
+  values
+end
+
+def run(flag: bool)
+  accept([flag ? 1 : "left", flag ? 2 : "right"])
+end
+`))
+
+	antiCorrelated := compileScriptDefault(t, `
+def accept(values: array<int> | array<string>)
+  values
+end
+
+def run(flag: bool)
+  accept([flag ? 1 : "left", flag ? "right" : 2])
+end
+`)
+	requireCheckWarningContains(t, antiCorrelated, "call to accept argument values expected array<int> | array<string>, got array<int | string>")
+
 	write := compileScriptDefault(t, `
 def mutate(values: array<array<int>>, value: int | string)
   values[0] = [value]
@@ -590,6 +611,33 @@ def run(left: int | string, right: int | string)
 end
 `)
 	requireCheckWarningContains(t, independent, "call to accept argument value expected { left: int, right: int } | { left: string, right: string }, got { left: int | string, right: int | string }")
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: string, right: string })
+  value
+end
+
+def run(flag: bool)
+  accept({
+    left: flag ? 1 : "left",
+    right: flag ? 2 : "right"
+  })
+end
+`))
+
+	antiCorrelated := compileScriptDefault(t, `
+def accept(value: { left: int, right: int } | { left: string, right: string })
+  value
+end
+
+def run(flag: bool)
+  accept({
+    left: flag ? 1 : "left",
+    right: flag ? "right" : 2
+  })
+end
+`)
+	requireCheckWarningContains(t, antiCorrelated, "call to accept argument value expected { left: int, right: int } | { left: string, right: string }, got { left: int | string, right: string | int }")
 
 	requireNoCheckWarnings(t, compileScriptDefault(t, `
 def accept(value: { left: int, right: int } | { left: float, right: float })

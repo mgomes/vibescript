@@ -10187,31 +10187,56 @@ func (c *scriptChecker) inferHashLiteralType(lit *HashLiteral) *TypeExpr {
 	return fact
 }
 
+// checkValueSource identifies repeated reads and aligned conditional choices.
+// Conditional keys keep opposite branch orderings from appearing correlated.
 type checkValueSource struct {
-	name       string
-	generation uint64
+	name              string
+	generation        uint64
+	consequentTypeKey string
+	alternateTypeKey  string
 }
 
 func (c *scriptChecker) valueSourceForExpression(expr Expression) (checkValueSource, bool) {
-	identifier, ok := expr.(*Identifier)
-	if !ok || c.localTypeFor(identifier.Name) == nil {
-		return checkValueSource{}, false
-	}
-	source := checkValueSource{
-		name:       identifier.Name,
-		generation: c.localBindingGenerations[identifier.Name],
-	}
-	for alias := range c.valueAliasNames(identifier.Name) {
-		candidate := checkValueSource{
-			name:       alias,
-			generation: c.localBindingGenerations[alias],
+	switch typed := expr.(type) {
+	case *Identifier:
+		if c.localTypeFor(typed.Name) == nil {
+			return checkValueSource{}, false
 		}
-		if candidate.name < source.name ||
-			candidate.name == source.name && candidate.generation < source.generation {
-			source = candidate
+		source := checkValueSource{
+			name:       typed.Name,
+			generation: c.localBindingGenerations[typed.Name],
 		}
+		for alias := range c.valueAliasNames(typed.Name) {
+			candidate := checkValueSource{
+				name:       alias,
+				generation: c.localBindingGenerations[alias],
+			}
+			if candidate.name < source.name ||
+				candidate.name == source.name && candidate.generation < source.generation {
+				source = candidate
+			}
+		}
+		return source, true
+	case *ConditionalExpr:
+		if !c.pureCallArgument(typed.Condition) ||
+			!c.pureCallArgument(typed.Consequent) ||
+			!c.pureCallArgument(typed.Alternate) {
+			return checkValueSource{}, false
+		}
+		source, ok := c.valueSourceForExpression(typed.Condition)
+		if !ok || source.consequentTypeKey != "" || source.alternateTypeKey != "" {
+			return checkValueSource{}, false
+		}
+		consequent := c.inferExpressionType(typed.Consequent)
+		alternate := c.inferExpressionType(typed.Alternate)
+		if consequent == nil || alternate == nil {
+			return checkValueSource{}, false
+		}
+		source.consequentTypeKey = formatTypeExpr(consequent)
+		source.alternateTypeKey = formatTypeExpr(alternate)
+		return source, true
 	}
-	return source, true
+	return checkValueSource{}, false
 }
 
 func (c *scriptChecker) recordShapeFieldSources(
