@@ -110,6 +110,10 @@ func (c *scriptChecker) captureReachableConstructorIvarFacts(fn *ScriptFunction)
 			}
 		}
 		if tracked {
+			if _, widened := c.widenedIvarFacts[method.AccessorName]; widened {
+				facts[method.AccessorName] = nil
+				continue
+			}
 			facts[method.AccessorName] = fact
 		}
 	}
@@ -208,6 +212,10 @@ func (c *scriptChecker) widenUnsetInstanceIvarFact(name string) {
 	if ty == nil {
 		return
 	}
+	if c.widenedIvarFacts == nil {
+		c.widenedIvarFacts = make(map[string]struct{})
+	}
+	c.widenedIvarFacts[name] = struct{}{}
 	fact := c.ivarContractFact(ty)
 	if fact == nil {
 		c.bindLocalType(key, nil)

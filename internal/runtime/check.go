@@ -175,6 +175,7 @@ type scriptChecker struct {
 	pinnedExpressionFacts      map[Expression]*TypeExpr
 	constructorInstanceFacts   map[Expression]checkInstanceClassFact
 	constructorIvarFacts       map[Expression]map[string]*TypeExpr
+	widenedIvarFacts           map[string]struct{}
 	assignmentReceiverCapture  *checkAssignmentReceiverCapture
 	requiredModules            map[string]struct{}
 	runtimeModules             map[string]struct{}

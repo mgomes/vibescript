@@ -1854,6 +1854,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousBindingGenerations := c.localBindingGenerations
 	previousPinned := c.pinnedExpressionFacts
 	previousConstructors := c.constructorInstanceFacts
+	previousWidenedIvars := c.widenedIvarFacts
 	previousIfClassFacts := c.evaluatedIfClassFacts
 	previousBlockValues := c.evaluatedBlockValues
 	previousHashDefaults := c.evaluatedHashDefaults
@@ -1868,6 +1869,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	c.localBindingGenerations = nil
 	c.pinnedExpressionFacts = nil
 	c.constructorInstanceFacts = nil
+	c.widenedIvarFacts = nil
 	c.evaluatedIfClassFacts = nil
 	c.evaluatedBlockValues = nil
 	c.evaluatedHashDefaults = nil
@@ -1883,6 +1885,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 		c.localBindingGenerations = previousBindingGenerations
 		c.pinnedExpressionFacts = previousPinned
 		c.constructorInstanceFacts = previousConstructors
+		c.widenedIvarFacts = previousWidenedIvars
 		c.evaluatedIfClassFacts = previousIfClassFacts
 		c.evaluatedBlockValues = previousBlockValues
 		c.evaluatedHashDefaults = previousHashDefaults
@@ -1898,6 +1901,7 @@ func (c *scriptChecker) withClonedLocalInferenceScope() func() {
 	bindingGenerations := maps.Clone(c.localBindingGenerations)
 	pinnedFacts := maps.Clone(c.pinnedExpressionFacts)
 	constructorFacts := maps.Clone(c.constructorInstanceFacts)
+	widenedIvars := cloneCheckStringSet(c.widenedIvarFacts)
 	ifClassFacts := maps.Clone(c.evaluatedIfClassFacts)
 	blockValues := maps.Clone(c.evaluatedBlockValues)
 	hashDefaults := maps.Clone(c.evaluatedHashDefaults)
@@ -1912,6 +1916,7 @@ func (c *scriptChecker) withClonedLocalInferenceScope() func() {
 		c.staticValuePoison = cloneCheckStringSet(staticValuePoison)
 		c.pinnedExpressionFacts = maps.Clone(pinnedFacts)
 		c.constructorInstanceFacts = maps.Clone(constructorFacts)
+		c.widenedIvarFacts = cloneCheckStringSet(widenedIvars)
 		c.evaluatedIfClassFacts = maps.Clone(ifClassFacts)
 		c.evaluatedBlockValues = maps.Clone(blockValues)
 		c.evaluatedHashDefaults = maps.Clone(hashDefaults)

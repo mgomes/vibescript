@@ -286,6 +286,35 @@ end
 		)
 	})
 
+	t.Run("initializer helper write stays gradual", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize
+    set_name
+  end
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def run
+  User.new.name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
 	t.Run("conditional initializer write", func(t *testing.T) {
 		t.Parallel()
 
