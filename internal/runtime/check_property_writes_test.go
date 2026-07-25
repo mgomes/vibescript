@@ -151,6 +151,670 @@ end
 	}
 }
 
+func TestCheckTypedGetterReturnContradiction(t *testing.T) {
+	t.Parallel()
+
+	requireRunWarning := func(t *testing.T, script *Script) {
+		t.Helper()
+		warnings := script.CheckWarningsForFunction("run")
+		got := strings.Join(checkWarningMessages(warnings), "\n")
+		if !strings.Contains(got, "return value expected string") {
+			t.Fatalf("CheckWarningsForFunction(%q) = %q, want getter return warning", "run", got)
+		}
+	}
+
+	t.Run("unset property", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+end
+
+def run
+  User.new.name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
+
+	t.Run("unset property returned from helper", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+end
+
+def make() -> User
+  User.new
+end
+
+def run
+  make.name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
+
+	t.Run("initialized property returned from helper", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize
+    @name = "Ada"
+  end
+end
+
+def make() -> User
+  User.new
+end
+
+def run
+  make.name
+end
+
+def run_explicit
+  make().name
+end
+`)
+		for _, function := range []string{"run", "run_explicit"} {
+			if warnings := script.CheckWarningsForFunction(function); len(warnings) != 0 {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", function, warnings)
+			}
+			got := callScript(t, context.Background(), script, function, nil, CallOptions{})
+			if got.Kind() != KindString || got.String() != "Ada" {
+				t.Fatalf("%s() = %v, want Ada", function, got)
+			}
+		}
+	})
+
+	t.Run("later helper context widens shared constructor", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize(set_name: bool)
+    if set_name
+      @name = "Ada"
+    end
+  end
+end
+
+def make(set_name: bool) -> User
+  User.new(set_name)
+end
+
+def later
+  make(false).name
+end
+
+def run
+  make(true).name
+  later
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
+
+	t.Run("initializer helper write stays gradual", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize
+    set_name
+  end
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def run
+  User.new.name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
+	t.Run("initializer early return preserves unset state", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize(skip: bool)
+    if skip
+      return
+    end
+    @name = "Ada"
+  end
+end
+
+def run(skip: bool)
+  User.new(skip).name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
+
+	t.Run("initializer ensure updates early return state", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize
+    begin
+      return
+    ensure
+      @name = "Ada"
+    end
+  end
+end
+
+def run
+  User.new.name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
+	t.Run("conditional initializer write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize(set_name: bool)
+    if set_name
+      @name = "Ada"
+    end
+  end
+end
+
+def run
+  User.new(false).name
+end
+`)
+		requireRunWarning(t, script)
+	})
+
+	t.Run("conditional initializer write through alias", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize(set_name: bool)
+    if set_name
+      @name = "Ada"
+    end
+  end
+end
+
+def run
+  user = User.new(false)
+  alias_user = user
+  alias_user.name
+end
+`)
+		requireRunWarning(t, script)
+	})
+
+	t.Run("definite initializer write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize(set_name: bool)
+    if set_name
+      @name = "Ada"
+    end
+  end
+end
+
+def run
+  User.new(true).name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
+	t.Run("definite setter write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  property name: string
+end
+
+def run
+  user = User.new
+  user.name = "Ada"
+  user.name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
+	t.Run("definite instance method write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def run
+  user = User.new
+  user.set_name
+  user.name
+end
+
+def run_explicit
+  user = User.new
+  user.set_name()
+  user.name
+end
+`)
+		for _, function := range []string{"run", "run_explicit"} {
+			if warnings := script.CheckWarningsForFunction(function); len(warnings) != 0 {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", function, warnings)
+			}
+			got := callScript(t, context.Background(), script, function, nil, CallOptions{})
+			if got.Kind() != KindString || got.String() != "Ada" {
+				t.Fatalf("%s() = %v, want Ada", function, got)
+			}
+		}
+	})
+
+	t.Run("plain helper preserves instance origin", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def prepare(user)
+  user.set_name
+end
+
+def prepare_keyword(user:)
+  user.set_name
+end
+
+def run -> string
+  user = User.new
+  prepare(user)
+  user.name
+end
+
+def run_keyword -> string
+  user = User.new
+  prepare_keyword(user:)
+  user.name
+end
+`)
+		for _, function := range []string{"run", "run_keyword"} {
+			if warnings := script.CheckWarningsForFunction(function); len(warnings) != 0 {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", function, warnings)
+			}
+			got := callScript(t, context.Background(), script, function, nil, CallOptions{})
+			if got.Kind() != KindString || got.String() != "Ada" {
+				t.Fatalf("%s() = %v, want Ada", function, got)
+			}
+		}
+	})
+
+	t.Run("helper argument origin follows evaluation order", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def prepare(user, ignored)
+  user.set_name
+end
+
+def run -> string
+  user = User.new
+  prepare(user, -> { user = User.new; nil }.call())
+  user.name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
+
+	t.Run("exact index preserves instance origin", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def run -> string
+  users = [User.new]
+  users[0].set_name
+  users[0].name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
+	t.Run("instance method returning self preserves origin", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+    self
+  end
+end
+
+def run
+  User.new.set_name.name
+end
+
+def run_explicit
+  User.new.set_name().name
+end
+`)
+		for _, function := range []string{"run", "run_explicit"} {
+			if warnings := script.CheckWarningsForFunction(function); len(warnings) != 0 {
+				t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", function, warnings)
+			}
+			got := callScript(t, context.Background(), script, function, nil, CallOptions{})
+			if got.Kind() != KindString || got.String() != "Ada" {
+				t.Fatalf("%s() = %v, want Ada", function, got)
+			}
+		}
+	})
+
+	t.Run("rescued instance method failure preserves write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+    raise "done"
+  end
+end
+
+def run
+  user = User.new
+  user.set_name rescue nil
+  user.name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
+	t.Run("rescued failure joins normal instance state", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def maybe_set_and_fail(fail: bool)
+    if fail
+      @name = "Ada"
+      raise "done"
+    end
+  end
+end
+
+def run(fail: bool)
+  user = User.new
+  user.maybe_set_and_fail(fail) rescue nil
+  user.name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(false)},
+			CallOptions{},
+			"expected string, got nil",
+		)
+		got := callScript(
+			t,
+			context.Background(),
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+		)
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run(true) = %v, want Ada", got)
+		}
+	})
+
+	t.Run("queued initializer accepts later instance method write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def initialize
+    nil
+  end
+
+  def set_name
+    @name = "Ada"
+  end
+end
+
+def run
+  user = User.new
+  user.set_name
+  user.name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
+	t.Run("instance method preserves unrelated unset property", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+  getter age: int
+
+  def set_age
+    @age = 42
+  end
+end
+
+def run
+  user = User.new
+  user.set_age
+  user.name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			nil,
+			CallOptions{},
+			"expected string, got nil",
+		)
+	})
+
+	t.Run("conditional instance method write preserves unset state", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def maybe_set(set_name: bool)
+    if set_name
+      @name = "Ada"
+    end
+  end
+end
+
+def run(set_name: bool)
+  user = User.new
+  user.maybe_set(set_name)
+  user.name
+end
+
+def run_true
+  user = User.new
+  user.maybe_set(true)
+  user.name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(false)},
+			CallOptions{},
+			"expected string, got nil",
+		)
+		if warnings := script.CheckWarningsForFunction("run_true"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run_true", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run_true", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run_true() = %v, want Ada", got)
+		}
+	})
+}
+
 func TestCheckTypedPropertyWriteStaysGradual(t *testing.T) {
 	t.Parallel()
 
@@ -3078,7 +3742,7 @@ class User
 end
 `), "call to takes_int argument value expected int, got string")
 
-	requireNoCheckWarnings(t, compileScriptDefault(t, `
+	requireCheckWarningContains(t, compileScriptDefault(t, `
 def takes_string(value: string)
   value
 end
@@ -3090,7 +3754,7 @@ class User
     takes_string(@name)
   end
 end
-`))
+`), "call to takes_string argument value expected string, got string | nil")
 
 	// Reads of undeclared or untyped ivars stay unknown.
 	requireNoCheckWarnings(t, compileScriptDefault(t, `

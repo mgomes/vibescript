@@ -1618,6 +1618,7 @@ def run(flag: bool)
   mutate(flag, values) rescue takes_string(values[0])
 end
 `,
+			want: "call to takes_string argument value expected string, got int | string | nil",
 		},
 	}
 	for _, tc := range tests {
@@ -1688,8 +1689,9 @@ func TestCheckFunctionReturnSummariesStayGradual(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name   string
-		source string
+		name    string
+		source  string
+		warning string
 	}{
 		{
 			name: "empty body return default poisons nil summary",
@@ -2953,7 +2955,7 @@ end
 `,
 		},
 		{
-			name: "nullable summary overlaps its boundary",
+			name: "nullable summary requires nullable boundary",
 			source: `
 def maybe(flag)
   if flag
@@ -2969,6 +2971,7 @@ def run(flag)
   takes_string(maybe(flag))
 end
 `,
+			warning: "call to takes_string argument value expected string, got string | nil",
 		},
 		{
 			name: "explicit annotations stay authoritative",
@@ -2990,7 +2993,12 @@ end
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			requireNoCheckWarnings(t, compileScriptDefault(t, tc.source))
+			script := compileScriptDefault(t, tc.source)
+			if tc.warning != "" {
+				requireCheckWarningContains(t, script, tc.warning)
+				return
+			}
+			requireNoCheckWarnings(t, script)
 		})
 	}
 }

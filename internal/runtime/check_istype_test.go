@@ -176,8 +176,9 @@ func TestCheckIsTypeNarrowingStaysGradual(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name   string
-		source string
+		name    string
+		source  string
+		warning string
 	}{
 		{
 			name: "unknown receiver stays unknown",
@@ -208,7 +209,7 @@ end
 `,
 		},
 		{
-			name: "class receiver override disables narrowing",
+			name: "class receiver override keeps union boundary check",
 			source: `
 class Wrapper
   def initialize()
@@ -229,9 +230,10 @@ def run(w: Wrapper | string)
   end
 end
 `,
+			warning: "call to takes_string argument value expected string, got Wrapper | string",
 		},
 		{
-			name: "non literal atom disables narrowing",
+			name: "non literal atom keeps union boundary check",
 			source: `
 def takes_string(value: string)
   value
@@ -243,9 +245,10 @@ def run(v: int | string, atom: symbol)
   end
 end
 `,
+			warning: "call to takes_string argument value expected string, got int | string",
 		},
 		{
-			name: "named atoms stay gradual",
+			name: "named atoms keep union boundary check",
 			source: `
 class User
   def initialize()
@@ -262,12 +265,18 @@ def run(v: int | string)
   end
 end
 `,
+			warning: "call to takes_string argument value expected string, got int | string",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			requireNoCheckWarnings(t, compileScriptDefault(t, tc.source))
+			script := compileScriptDefault(t, tc.source)
+			if tc.warning != "" {
+				requireCheckWarningContains(t, script, tc.warning)
+				return
+			}
+			requireNoCheckWarnings(t, script)
 		})
 	}
 }

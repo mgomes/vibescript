@@ -55,8 +55,32 @@ func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 		if ty == nil {
 			continue
 		}
+		if fn.Accessor == functionAccessorGetter && fn.AccessorName == method.AccessorName {
+			fact, exact := c.reachableGetterIvarFact(method.AccessorName)
+			if !exact {
+				fact = c.ivarContractFact(ty)
+				if fact != nil {
+					fact = unionTypeExprs(fact, checkTypeNil)
+				}
+			} else if fact == nil {
+				fact = c.ivarContractFact(ty)
+			}
+			if fact != nil {
+				c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), fact)
+			}
+			continue
+		}
 		if fn.Name == "initialize" {
 			c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), checkTypeNil)
+			continue
+		}
+		if fact, exact := c.reachableInstanceIvarFact(method.AccessorName); exact {
+			if fact == nil {
+				fact = c.ivarContractFact(ty)
+			}
+			if fact != nil {
+				c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), fact)
+			}
 			continue
 		}
 		fact := c.ivarContractFact(ty)
@@ -65,6 +89,237 @@ func (c *scriptChecker) seedInstanceIvarFacts(fn *ScriptFunction) {
 		}
 		c.bindLocalTypeInCurrentFrame(ivarFactKey(method.AccessorName), unionTypeExprs(fact, checkTypeNil))
 	}
+}
+
+// captureReachableConstructorIvarFacts records the ivar state on every
+// completing path of this exact constructor call for queued getter checks.
+func (c *scriptChecker) captureReachableConstructorIvarFacts(
+	fn *ScriptFunction,
+	bodyFallsThrough bool,
+	returnExitSites []checkStateSnapshot,
+) {
+	if fn == nil || fn.Name != "initialize" || c.selfClass == nil {
+		return
+	}
+	originFact, captured := c.reachableParamFacts[reachableConstructorOriginFact]
+	if !captured || len(originFact.staticVals) == 0 {
+		return
+	}
+	typePaths := make([][]checkTypeFrame, 0, len(returnExitSites)+1)
+	if bodyFallsThrough {
+		typePaths = append(typePaths, c.localTypes)
+	}
+	for _, site := range returnExitSites {
+		typePaths = append(typePaths, site.scopeState.types)
+	}
+	if len(typePaths) == 0 {
+		return
+	}
+	for _, origin := range originFact.staticVals {
+		for _, types := range typePaths {
+			c.mergeConstructorIvarFacts(origin, c.constructorIvarFactsForTypes(types))
+		}
+	}
+}
+
+// captureReachableInstanceMethodIvarFacts replaces an exact receiver's
+// constructor state with the ivar facts left on every normally completing
+// method path. This preserves an unset arm across conditional writes while a
+// definite guarded write refines the later generated getter to its contract.
+func (c *scriptChecker) captureReachableInstanceMethodIvarFacts(
+	fn *ScriptFunction,
+	bodyFallsThrough bool,
+	returnExitSites []checkStateSnapshot,
+) {
+	if fn == nil || fn.Name == "initialize" || c.selfClass == nil {
+		return
+	}
+	originFact, captured := c.reachableParamFacts[reachableInstanceOriginFact]
+	if !captured || len(originFact.staticVals) == 0 {
+		return
+	}
+	typePaths := make([][]checkTypeFrame, 0, len(returnExitSites)+1)
+	if bodyFallsThrough {
+		typePaths = append(typePaths, c.localTypes)
+	}
+	for _, site := range returnExitSites {
+		typePaths = append(typePaths, site.scopeState.types)
+	}
+	if len(typePaths) == 0 {
+		return
+	}
+	var postFacts map[string]*TypeExpr
+	for _, types := range typePaths {
+		facts := c.constructorIvarFactsForTypes(types)
+		if postFacts == nil {
+			postFacts = cloneIvarFacts(facts)
+			continue
+		}
+		mergeIvarFacts(postFacts, facts)
+	}
+	if c.constructorIvarFacts == nil {
+		c.constructorIvarFacts = make(map[Expression]map[string]*TypeExpr)
+	}
+	if len(originFact.staticVals) == 1 {
+		c.constructorIvarFacts[originFact.staticVals[0]] = postFacts
+		return
+	}
+	for _, origin := range originFact.staticVals {
+		current, exists := c.constructorIvarFacts[origin]
+		if !exists {
+			c.constructorIvarFacts[origin] = cloneIvarFacts(postFacts)
+			continue
+		}
+		mergeIvarFacts(current, postFacts)
+	}
+}
+
+// captureRescuedInstanceMethodIvarFacts carries ivar writes from escaping
+// method failures into a caller path that can resume through rescue. A
+// definitely failing call replaces the receiver state; a call with normal and
+// rescued arms joins both post-states.
+func (c *scriptChecker) captureRescuedInstanceMethodIvarFacts(
+	fn *ScriptFunction,
+	exceptionExitSites []checkStateSnapshot,
+	normalCompletes bool,
+) {
+	if fn == nil || fn.Name == "initialize" || c.selfClass == nil ||
+		len(exceptionExitSites) == 0 {
+		return
+	}
+	originFact, captured := c.reachableParamFacts[reachableRescuedInstanceFact]
+	if !captured || len(originFact.staticVals) == 0 {
+		return
+	}
+	var failureFacts map[string]*TypeExpr
+	for _, site := range exceptionExitSites {
+		facts := c.constructorIvarFactsForTypes(site.scopeState.types)
+		if failureFacts == nil {
+			failureFacts = cloneIvarFacts(facts)
+			continue
+		}
+		mergeIvarFacts(failureFacts, facts)
+	}
+	if c.constructorIvarFacts == nil {
+		c.constructorIvarFacts = make(map[Expression]map[string]*TypeExpr)
+	}
+	if len(originFact.staticVals) == 1 && !normalCompletes {
+		c.constructorIvarFacts[originFact.staticVals[0]] = failureFacts
+		return
+	}
+	for _, origin := range originFact.staticVals {
+		current, exists := c.constructorIvarFacts[origin]
+		if !exists {
+			c.constructorIvarFacts[origin] = cloneIvarFacts(failureFacts)
+			continue
+		}
+		mergeIvarFacts(current, failureFacts)
+	}
+}
+
+func (c *scriptChecker) constructorIvarFactsForTypes(
+	types []checkTypeFrame,
+) map[string]*TypeExpr {
+	facts := make(map[string]*TypeExpr)
+	for _, method := range c.selfClass.Methods {
+		if method.Accessor == functionAccessorNone || method.AccessorName == "" {
+			continue
+		}
+		if c.instanceIvarContract(method.AccessorName) == nil {
+			continue
+		}
+		key := ivarFactKey(method.AccessorName)
+		var fact *TypeExpr
+		tracked := false
+		for i := len(types) - 1; i >= 0; i-- {
+			fact, tracked = types[i][key]
+			if tracked {
+				break
+			}
+		}
+		if tracked {
+			if _, widened := c.widenedIvarFacts[method.AccessorName]; widened {
+				facts[method.AccessorName] = nil
+				continue
+			}
+			facts[method.AccessorName] = fact
+		}
+	}
+	return facts
+}
+
+func (c *scriptChecker) mergeConstructorIvarFacts(
+	origin Expression,
+	facts map[string]*TypeExpr,
+) {
+	if origin == nil {
+		return
+	}
+	if c.constructorIvarFacts == nil {
+		c.constructorIvarFacts = make(map[Expression]map[string]*TypeExpr)
+	}
+	current, exists := c.constructorIvarFacts[origin]
+	if !exists {
+		c.constructorIvarFacts[origin] = cloneIvarFacts(facts)
+		return
+	}
+	mergeIvarFacts(current, facts)
+}
+
+func cloneIvarFacts(facts map[string]*TypeExpr) map[string]*TypeExpr {
+	clone := make(map[string]*TypeExpr, len(facts))
+	for name, fact := range facts {
+		clone[name] = fact
+	}
+	return clone
+}
+
+func mergeIvarFacts(current, facts map[string]*TypeExpr) {
+	for name, fact := range facts {
+		previous, tracked := current[name]
+		if !tracked || previous == nil || fact == nil {
+			current[name] = nil
+			continue
+		}
+		current[name] = unionTypeExprs(previous, fact)
+	}
+	for name := range current {
+		if _, tracked := facts[name]; !tracked {
+			current[name] = nil
+		}
+	}
+}
+
+func (c *scriptChecker) reachableInstanceIvarFact(name string) (*TypeExpr, bool) {
+	return c.reachableOriginIvarFact(reachableInstanceOriginFact, name)
+}
+
+func (c *scriptChecker) reachableGetterIvarFact(name string) (*TypeExpr, bool) {
+	return c.reachableOriginIvarFact(reachableGetterOriginFact, name)
+}
+
+func (c *scriptChecker) reachableOriginIvarFact(originName, name string) (*TypeExpr, bool) {
+	originFact, captured := c.reachableParamFacts[originName]
+	if !captured || len(originFact.staticVals) == 0 {
+		return nil, false
+	}
+	var merged *TypeExpr
+	for i, origin := range originFact.staticVals {
+		facts, captured := c.constructorIvarFacts[origin]
+		if !captured {
+			return nil, false
+		}
+		fact, tracked := facts[name]
+		if !tracked || fact == nil {
+			return nil, true
+		}
+		if i == 0 {
+			merged = fact
+			continue
+		}
+		merged = unionTypeExprs(merged, fact)
+	}
+	return merged, true
 }
 
 // widenUnsetInstanceIvarFacts drops facts narrower than the property contract
@@ -99,6 +354,10 @@ func (c *scriptChecker) widenUnsetInstanceIvarFact(name string) {
 	if ty == nil {
 		return
 	}
+	if c.widenedIvarFacts == nil {
+		c.widenedIvarFacts = make(map[string]struct{})
+	}
+	c.widenedIvarFacts[name] = struct{}{}
 	fact := c.ivarContractFact(ty)
 	if fact == nil {
 		c.bindLocalType(key, nil)
