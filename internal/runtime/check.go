@@ -277,6 +277,7 @@ type checkReachableParamFact struct {
 const (
 	reachableConstructorOriginFact = "\x00constructor-origin"
 	reachableInstanceOriginFact    = "\x00instance-origin"
+	reachableRescuedInstanceFact   = "\x00rescued-instance"
 	reachableGetterOriginFact      = "\x00getter-origin"
 )
 
@@ -2195,6 +2196,9 @@ func (c *scriptChecker) reachableCallInstanceFactsWithConstructorOrigin(
 			add(reachableGetterOriginFact, origins)
 		} else if !target.constructor {
 			add(reachableInstanceOriginFact, origins)
+			if c.expressionExitSites != nil || c.exceptionExitSites != nil {
+				add(reachableRescuedInstanceFact, origins)
+			}
 		}
 	}
 	return facts
@@ -2947,6 +2951,15 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 			c.constructorReturnExitSites = previousConstructorReturnExitSites
 		}()
 
+		previousInstanceExceptionExitSites := c.exceptionExitSites
+		var instanceExceptionExitSites []checkStateSnapshot
+		if _, captured := c.reachableParamFacts[reachableRescuedInstanceFact]; captured {
+			c.exceptionExitSites = &instanceExceptionExitSites
+		}
+		defer func() {
+			c.exceptionExitSites = previousInstanceExceptionExitSites
+		}()
+
 		c.linkReachableParamAliases(fn.Params)
 		for i, param := range fn.Params {
 			expectation := bindingDefaultExpectation(param)
@@ -3004,6 +3017,11 @@ func (c *scriptChecker) checkFunction(label string, fn *ScriptFunction) {
 		}
 		c.captureReachableConstructorIvarFacts(fn, bodyFallsThrough, constructorReturnExitSites)
 		c.captureReachableInstanceMethodIvarFacts(fn, bodyFallsThrough, constructorReturnExitSites)
+		c.captureRescuedInstanceMethodIvarFacts(
+			fn,
+			instanceExceptionExitSites,
+			bodyFallsThrough || len(constructorReturnExitSites) > 0,
+		)
 	})
 }
 

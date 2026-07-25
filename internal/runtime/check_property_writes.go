@@ -174,6 +174,49 @@ func (c *scriptChecker) captureReachableInstanceMethodIvarFacts(
 	}
 }
 
+// captureRescuedInstanceMethodIvarFacts carries ivar writes from escaping
+// method failures into a caller path that can resume through rescue. A
+// definitely failing call replaces the receiver state; a call with normal and
+// rescued arms joins both post-states.
+func (c *scriptChecker) captureRescuedInstanceMethodIvarFacts(
+	fn *ScriptFunction,
+	exceptionExitSites []checkStateSnapshot,
+	normalCompletes bool,
+) {
+	if fn == nil || fn.Name == "initialize" || c.selfClass == nil ||
+		len(exceptionExitSites) == 0 {
+		return
+	}
+	originFact, captured := c.reachableParamFacts[reachableRescuedInstanceFact]
+	if !captured || len(originFact.staticVals) == 0 {
+		return
+	}
+	var failureFacts map[string]*TypeExpr
+	for _, site := range exceptionExitSites {
+		facts := c.constructorIvarFactsForTypes(site.scopeState.types)
+		if failureFacts == nil {
+			failureFacts = cloneIvarFacts(facts)
+			continue
+		}
+		mergeIvarFacts(failureFacts, facts)
+	}
+	if c.constructorIvarFacts == nil {
+		c.constructorIvarFacts = make(map[Expression]map[string]*TypeExpr)
+	}
+	if len(originFact.staticVals) == 1 && !normalCompletes {
+		c.constructorIvarFacts[originFact.staticVals[0]] = failureFacts
+		return
+	}
+	for _, origin := range originFact.staticVals {
+		current, exists := c.constructorIvarFacts[origin]
+		if !exists {
+			c.constructorIvarFacts[origin] = cloneIvarFacts(failureFacts)
+			continue
+		}
+		mergeIvarFacts(current, failureFacts)
+	}
+}
+
 func (c *scriptChecker) constructorIvarFactsForTypes(
 	types []checkTypeFrame,
 ) map[string]*TypeExpr {

@@ -535,6 +535,77 @@ end
 		}
 	})
 
+	t.Run("rescued instance method failure preserves write", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def set_name
+    @name = "Ada"
+    raise "done"
+  end
+end
+
+def run
+  user = User.new
+  user.set_name rescue nil
+  user.name
+end
+`)
+		if warnings := script.CheckWarningsForFunction("run"); len(warnings) != 0 {
+			t.Fatalf("CheckWarningsForFunction(%q) = %#v, want none", "run", warnings)
+		}
+		got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run() = %v, want Ada", got)
+		}
+	})
+
+	t.Run("rescued failure joins normal instance state", func(t *testing.T) {
+		t.Parallel()
+
+		script := compileScriptDefault(t, `
+class User
+  getter name: string
+
+  def maybe_set_and_fail(fail: bool)
+    if fail
+      @name = "Ada"
+      raise "done"
+    end
+  end
+end
+
+def run(fail: bool)
+  user = User.new
+  user.maybe_set_and_fail(fail) rescue nil
+  user.name
+end
+`)
+		requireRunWarning(t, script)
+		requireCallErrorContains(
+			t,
+			script,
+			"run",
+			[]Value{NewBool(false)},
+			CallOptions{},
+			"expected string, got nil",
+		)
+		got := callScript(
+			t,
+			context.Background(),
+			script,
+			"run",
+			[]Value{NewBool(true)},
+			CallOptions{},
+		)
+		if got.Kind() != KindString || got.String() != "Ada" {
+			t.Fatalf("run(true) = %v, want Ada", got)
+		}
+	})
+
 	t.Run("queued initializer accepts later instance method write", func(t *testing.T) {
 		t.Parallel()
 
