@@ -7621,7 +7621,7 @@ end`,
 			source: `def run(flag) -> int
   flag ? nil : 1
 end`,
-			want: "typed return int can implicitly return nil",
+			want: "return value expected int, got nil | int",
 		},
 		{
 			name: "typed method return",
@@ -7656,6 +7656,16 @@ def recover() -> string
   rescue
     "ok"
   end
+end`)
+
+	requireNoCheckWarnings(t, script)
+}
+
+func TestCheckWarningsSkipUnreachableRescueFallbackAtTypedBoundary(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run() -> int
+  1 rescue "bad"
 end`)
 
 	requireNoCheckWarnings(t, script)
@@ -7946,7 +7956,7 @@ end`,
     1
   end
 end`,
-			want: "typed return int can implicitly return nil",
+			want: "return value expected int, got nil",
 		},
 		{
 			name: "break value",

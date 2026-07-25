@@ -403,13 +403,14 @@ end
 	}
 }
 
-func TestCheckClassPredicateNarrowingStaysGradual(t *testing.T) {
+func TestCheckClassPredicateDisabledNarrowingKeepsUnionBoundaryChecks(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name     string
 		source   string
 		function string
+		gradual  bool
 	}{
 		{
 			name: "override disables narrowing",
@@ -664,6 +665,7 @@ def run(u)
   end
 end
 `,
+			gradual: true,
 		},
 		{
 			name: "partial-path opaque call disables narrowing",
@@ -1048,7 +1050,11 @@ end
 			t.Parallel()
 			script := compileScriptDefault(t, classPredicateNarrowingPrelude+tc.source)
 			if tc.function == "" {
-				requireNoCheckWarnings(t, script)
+				if tc.gradual {
+					requireNoCheckWarnings(t, script)
+					return
+				}
+				requireCheckWarningContains(t, script, "argument value expected")
 				return
 			}
 			if warnings := script.CheckWarningsForFunction(tc.function); len(warnings) > 0 {
@@ -1110,7 +1116,7 @@ end
 	if err != nil {
 		t.Fatalf("CompileSnippet() error = %v", err)
 	}
-	requireNoCheckWarnings(t, script)
+	requireCheckWarningContains(t, script, "call to takes_user argument value expected User, got User | Order")
 }
 
 func TestCheckClassPredicateNarrowingBailsAfterOpaqueDispatch(t *testing.T) {

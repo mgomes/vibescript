@@ -132,9 +132,10 @@ Concretely, the checker maintains a local type environment while walking code:
   checked at runtime, but they do not hide incompatible known arms.
 - Constructors and resolved class values carry nominal facts. Unknown or
   overrideable dynamic dispatch remains unknown.
-- Known pure member calls preserve mutable-container facts. Known mutation,
-  unregistered members, blocks, impure arguments, dynamic dispatch, and aliases
-  to nested mutable values discard facts that the checker can no longer prove.
+- Known pure member calls and compatible modeled writes preserve
+  mutable-container facts. Other known mutation, unregistered members, blocks,
+  impure arguments, dynamic dispatch, and aliases to nested mutable values
+  discard facts that the checker can no longer prove.
 
 When the checker proves a violation, a check reports an error such as:
 
@@ -212,9 +213,11 @@ to guess: when host data or dynamic dispatch cannot be proven, it defers to
 runtime checks rather than rejecting the script. `vibes check` is a semantic
 pass with its own compatibility surface.
 
-`JSON.parse_as` carries specific costs: type literals are legal in expression
-position when unshadowed, which adds parser and runtime surface, and validation
-failures must keep the same semantics as existing typed-boundary errors.
+`JSON.parse_as` carries specific costs: braced shape literals are legal as
+first-class expressions when unshadowed, while non-shape type literals are
+recognized only in parenthesized call arguments. Those paths add parser and
+runtime surface, and validation failures must keep the same semantics as
+existing typed-boundary errors.
 
 ## Alternatives Considered
 

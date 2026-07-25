@@ -242,7 +242,7 @@ def run(flag)
   takes_int(token)
 end
 `)
-	requireNoCheckWarnings(t, shadowedLocal)
+	requireCheckWarningContains(t, shadowedLocal, "call to takes_int argument value expected int, got int | nil")
 }
 
 func TestCheckBuiltinTypedMetadataHostOverride(t *testing.T) {
