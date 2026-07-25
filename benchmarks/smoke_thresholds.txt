@@ -44,6 +44,11 @@ BenchmarkExecutionJSONParseLoop 3000000 2500 210000
 BenchmarkExecutionJSONStringifyLoop 3000000 800 60000
 BenchmarkExecutionRegexReplaceAllLoop 4000000 1200 30000
 BenchmarkExecutionTallyLoop 12000000 1200 550000
+# transform_values over a 600-entry host-built (untyped) hash. The ns cap is the
+# signal: without a block-iteration region on the untyped branch this re-walked
+# the whole hash on every check (~19.7ms versus ~0.40ms now), so a regression
+# clears this cap by more than an order of magnitude even on a slow runner.
+BenchmarkExecutionHashTransformValuesLoop 8000000 120 260000
 BenchmarkCallShortScript 5000 12 3500
 BenchmarkModuleRequireCacheHit 120000 60 10000
 # Deep-recursion call path (naive fib(20), ~13.5k nested calls). The loop-shaped
