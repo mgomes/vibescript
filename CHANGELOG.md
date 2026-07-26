@@ -9,6 +9,195 @@ All notable changes to this project will be documented in this file.
 <!-- Unreleased entries are tracked as individual files in changelog.d/ so
      pull requests never conflict on this file. They are compiled into a
      versioned section by scripts/build_changelog.sh at release time. -->
+## v1.0.0-rc8 - 2026-07-26
+
+Eighth release candidate: the gradual checker becomes a real typed surface.
+Builtin and scalar member contracts move into one runtime-owned registry,
+constructors and predicates carry nominal facts through control flow,
+unannotated functions and methods expose inferred return summaries, and typed
+arrays, hashes, and properties reject incompatible writes. Shapes gain optional
+(`age?`) and open (`...`) fields, `is_type?` joins the predicate set, and
+embedders gain `Script.CheckedCall`, published host-callable signatures, and
+the public `vibes.CheckWarning` type. Hash and scalar workloads no longer
+degrade under a memory quota.
+
+- **Performance: accumulating into a local while iterating no longer degrades
+  under a memory quota.** Summing or counting into a variable from inside a
+  block (`total = total + x`) re-measured the whole receiver collection on every
+  iteration, so the loop cost grew quadratically with the collection size.
+  Iterating 600 rows this way is now roughly 48x faster.
+- **Performance: iterating a host-supplied hash no longer degrades under a
+  memory quota.** `each`, `each_key`, `each_value`, `select`, `reject`, and
+  `transform_values` re-measured the whole receiver on every check when the hash
+  came from the host rather than from a script, so the walk cost grew
+  quadratically with the entry count. Iterating a 600-entry hash this way is now
+  roughly 50x faster.
+- **Performance: transforming and filtering a script-built hash no longer
+  degrades under a memory quota.** `transform_values`, `select`, and `reject`
+  inserted into their result between block calls, which re-measured the whole
+  receiver on every check and made the walk grow quadratically with the entry
+  count. They now build the result after the loop. Transforming a 600-entry hash
+  this way is roughly 24x faster, and it holds slightly less memory while
+  iterating.
+- **Fixed: word boolean spellings remain ordinary identifiers.** `and`, `or`,
+  and `not` can again be used as variable and function names; boolean logic
+  continues to use `&&`, `||`, and `!`.
+- **Improved: the checker narrows nullable locals across control flow.**
+  Truthiness tests, explicit nil comparisons, and `nil?` predicates with
+  proven universal dispatch now refine a local's known type on both branches —
+  including `unless`, `elsif`, negation,
+  short-circuits, and guard clauses that exit early — so nil misuse inside a
+  guarded branch is reported and provably dead branches stop warning.
+- **Improved: known unions must fully satisfy typed boundaries.** Calls,
+  defaults, and returns now reject finite inferred unions when any arm can
+  violate the required type, including nested nullable, array, hash, and shape
+  facts. `any`, unknown JSON and host values, and dynamic dispatch continue to
+  defer to runtime validation.
+- **Improved: static checks compare resolved named types.** Different resolved
+  enums and classes are now incompatible with each other and with unrelated
+  primitives and containers at typed boundaries, while symbols keep coercing
+  into enums, classes keep satisfying included modules, and unresolved or
+  host-supplied names stay conservative.
+- **Improved: constructor results carry nominal class facts.** A statically
+  resolved `User.new` now infers as a `User` instance, so the fact flows
+  through locals, branches, arguments, and returns, instance methods resolve
+  their shapes and result types from the fact, and shadowed class names or
+  dynamic constructor dispatch stay unknown.
+- **Added: typed signatures in builtin metadata.** Builtin definitions can now
+  declare positional, keyword, and result types; the checker validates known
+  arguments and infers known results from the resolved builtin, while
+  argument-dependent contracts and host overrides stay unknown.
+- **Improved: the checker knows core builtin signatures.** Conversions, ID,
+  money, Math, Duration, Time, and JSON/Regex helpers now declare fixed
+  argument and result types, so provably wrong arguments and misused results
+  (`takes_string(to_int("1"))`) are reported by `vibes check` instead of
+  failing at runtime. Argument-dependent results stay unknown and host
+  overrides still disable the default contracts.
+- **Improved: builtin member contracts live in one runtime registry.** The
+  checker's static member specs and editor member completion now resolve
+  from a single runtime-owned contract table (receiver kind, name, aliases,
+  call shape, parameter and result types, effect metadata), and a
+  registry-completeness test requires every public member to be registered
+  or explicitly exempted. Dispatch for unknown receivers and user-defined
+  overrides is unchanged.
+- **Improved: the checker knows scalar member contracts.** Conversions such as
+  `to_i`, `to_f`, `to_s`, and `to_sym` and universal predicates such as `nil?`,
+  `eql?`, and `respond_to?` now declare fixed results resolved from the
+  receiver's inferred type, safe navigation adds `nil` to known results, and
+  class instances or dynamic receivers stay unknown.
+- **Improved: unannotated functions expose inferred return summaries.** Calls
+  to a plain script function whose body provably yields known types now carry
+  that union — explicit returns, implicit finals, and nil fallthrough
+  included — so `takes_string(build_count())` is checked without an
+  annotation. Recursive, dynamic, or partially unknown bodies stay unknown,
+  and explicit annotations remain authoritative.
+- **Improved: unannotated methods expose inferred return summaries.** Calls
+  to statically resolved instance and class methods now carry the same
+  branch, fallthrough, and cycle-aware summaries as plain functions. Opaque
+  or unresolved receivers and universal-member overrides remain unknown,
+  while explicit return annotations stay authoritative.
+- **Improved: class predicates narrow nominal unions.** `is_a?`, `kind_of?`,
+  and `instance_of?` guards against statically resolved classes and modules
+  now refine known union locals in both branches (guard clauses included), so
+  guarded nominal code satisfies stricter known-union boundaries. Overridden
+  predicates, module-typed arms, and dynamic receivers stay unchanged.
+- **Added: the `is_type?` predicate.** `value.is_type?(:int)` tests any value
+  against a type atom — a primitive (`:int`, `:string`, `:number`, …), a bare
+  container (`:array`, `:hash`, `:range`, `:function`), a class or enum name,
+  or a nullable form (`'int?'`) — without coercion. The checker gives it a
+  typed contract and narrows known union locals through both branches of a
+  literal-atom test.
+- **Improved: the checker reports incompatible element writes to typed
+  arrays.** A local known to be `array<T>` now checks shovel appends, indexed
+  assignment, and the in-place mutators (`push`, `append`, `prepend`,
+  `unshift`, `insert`, `fill`) against `T`, so a provably incompatible element
+  is reported at the write instead of silently corrupting a checked boundary.
+  Exact `fill` value, selector, padding, and block outcomes participate in the
+  same check. Compatible writes preserve the known element type — including
+  through aliases, loops, and blocks — while unknown values, unknown
+  receivers, unresolved outcomes, and `array<any>` stay gradual.
+- **Improved: the checker reports incompatible writes to typed hashes and
+  shapes.** A local known to be `hash<K, V>` now checks `h[k] = v`, `store`,
+  and the in-place `merge!`/`update` against the key and value bounds, and a
+  local with a declared shape type checks field writes against their declared
+  types — including a statically known extra field on an exact shape. Hash
+  and shape literals stay freely writable (their known fields update in
+  place), and unknown keys, values, and receivers stay gradual.
+- **Fixed: direct instance-variable writes honor typed property contracts.**
+  `@name = value` inside any method now normalizes and validates against the
+  type declared by a generated `property`/`getter`/`setter` accessor when the
+  write executes, instead of failing only when a later typed getter or
+  boundary observed the value. Compound, logical, destructuring, and `@ivar`
+  constructor-parameter writes validate the same way; untyped accessors and
+  undeclared instance variables stay fully dynamic.
+- **Improved: the checker validates direct writes to typed properties.**
+  Instance-method analysis now seeds facts for typed accessor-backed instance
+  variables, so a direct write such as `@name = 1` against
+  `property name: string` is reported when the value's known type provably
+  contradicts the contract, and reads observe the declared type. Unknown
+  values still pass and rely on the runtime guard; untyped accessors and
+  undeclared instance variables stay dynamic.
+- **Changed: capability return validation can no longer be bypassed by host
+  adapters (#976).** The public `CapabilityMethodContract` no longer has the
+  `ReturnValidatedByBuiltin` field, which let any adapter assert an internal
+  runtime proof and skip its declared `ValidateReturn`. The runtime now always
+  validates capability method returns; first-party adapters that already
+  validate and isolate their results record an internal, unforgeable per-call
+  proof instead, so they still avoid validating the same value twice.
+  Embedders that set the field should delete it — return contracts are now
+  enforced unconditionally.
+- **Added: optional shape fields.** A `?` on a shape field name marks the
+  field optional: `{ name: string, age?: int }` accepts payloads with or
+  without `age`, and a present `age` still validates as `int`. Optionality is
+  distinct from nullability (`age?: int?` may be absent or `nil`), fields stay
+  required by default, and optional fields work in nested shapes and
+  `JSON.parse_as`. The checker infers `T | nil` for optional field reads and
+  no longer flags payloads that merely omit optional fields. A bare shape
+  field label ending in `?` now spells optionality; a field whose name
+  literally ends in `?` takes a string key (`{ "valid?": bool }`).
+- **Added: open shape contracts.** A trailing `...` marks a shape open:
+  `{ name: string, ... }` requires and validates the declared fields (optional
+  fields compose) while letting undeclared extra fields pass unchecked, and
+  `{ ... }` alone accepts any hash. Shapes stay exact by default, open and
+  exact shapes nest freely, `JSON.parse_as` carries extras through untouched,
+  and the checker treats reads of undeclared fields on an open shape as
+  unknown instead of `nil`.
+- **Added: `JSON.parse_as` validates non-object JSON roots.** Array,
+  primitive, nullable, and union contracts now work at the root —
+  `JSON.parse_as(raw, array<int>)`, `JSON.parse_as(raw, int?)`,
+  `JSON.parse_as(raw, int | string)` — using the same normalization and
+  diagnostics as shape roots, with the declared contract carried as the
+  checker's result fact. The type spelling is recognized in parenthesized
+  call arguments; spellings that also read as values (a local named `int`)
+  keep their value reading under the shape-literal shadowing rules.
+- **Fixed: inline snippets check like files.** `vibes run -check -e` now runs
+  the same whole-script pass as `vibes check`, so a typed contradiction inside
+  a function or method the snippet never calls is reported identically for
+  equivalent inline and file sources. Top-level execution order and require
+  semantics are unchanged.
+- **Added: `vibes.CheckWarning` is the public checker diagnostic type.** The
+  `CheckWarnings*` family already returned these values, but embedders could
+  not name the type outside inference. The stable alias carries the function,
+  source position, message, and originating module path.
+- **Added: `Script.CheckedCall` static gate.** One opt-in API checks the exact
+  call — function, argument values, and options — and executes only when the
+  checker reports no diagnostics, returning static warnings separately from
+  runtime failures. The ordinary Call API stays gradual.
+- **Added: host callables can publish static signatures.**
+  `Engine.RegisterBuiltinWithSignature` and `vibes.NewTypedBuiltin` accept an
+  opt-in `Signature` (positional parameter types, optional parameters, result
+  type, block policy) written in the annotation grammar. The checker validates
+  known arguments and infers the declared result for engine builtins,
+  call-option globals, and capability methods, and the same contract is
+  enforced at runtime. Callables without a signature stay fully dynamic.
+- **Improved: the checker keeps container facts across pure member calls.**
+  Member contracts now classify receiver effects (pure, mutates-receiver,
+  or unknown), and calls the registry proves pure — reads like `a.at(0)`
+  and universal predicates — no longer discard the receiver's or its
+  aliases' inferred facts. Mutators, unregistered members, blocks, impure
+  arguments, reads that may return a nested mutable element, dynamic
+  dispatch, and user overrides stay conservative.
+
 ## v1.0.0-rc7 - 2026-07-16
 
 Seventh release candidate: builtin discovery now follows the runtime registry

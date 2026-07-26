@@ -895,4 +895,37 @@ server.
 - [x] Full tests pass.
 - [x] Release checklist passes for `v1.0.0-rc7`.
 
+## v1.0.0-rc8 - Typed Member Contracts and Static Checking (completed 2026-07-26)
+
+Goal: eighth release candidate — turn the gradual checker into a typed member
+surface that carries nominal facts through control flow and validates writes.
+
+- [x] Resolve builtin and scalar member contracts from a single runtime-owned
+  registry shared by the checker and editor completion.
+- [x] Declare typed builtin signatures so provably wrong arguments and misused
+  results are reported statically.
+- [x] Carry nominal class facts from constructors through locals, branches,
+  arguments, and returns.
+- [x] Narrow locals across control flow with nullable tests, class predicates,
+  and resolved named type comparisons.
+- [x] Infer return summaries for unannotated functions and statically resolved
+  methods, keeping dynamic receivers and overrides opaque.
+- [x] Report incompatible writes to typed arrays, hashes, shapes, and
+  accessor-backed instance properties.
+- [x] Preserve container facts across member calls the registry proves pure.
+- [x] Add optional (`age?`) and open (`...`) shape fields, and the `is_type?`
+  predicate for primitives, containers, classes, and enums.
+- [x] Validate non-object JSON roots in `JSON.parse_as`.
+- [x] Expose the checker to embedders through `Script.CheckedCall`,
+  `vibes.CheckWarning`, and published host-callable signatures.
+- [x] Seal capability return validation against host adapter bypass.
+- [x] Remove quadratic re-measurement from scalar accumulation and hash
+  iteration under a memory quota.
+
+### v1.0.0-rc8 Definition of Done
+
+- [x] Release notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v1.0.0-rc8`.
+
 ## Unreleased
