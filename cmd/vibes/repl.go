@@ -590,7 +590,7 @@ func (m replModel) View() tea.View {
 	var b strings.Builder
 
 	header := headerStyle.Render("Vibescript REPL")
-	version := mutedStyle.Render("v1.0.0-rc7")
+	version := mutedStyle.Render("v1.0.0-rc8")
 	b.WriteString(header + " " + version + "\n")
 	b.WriteString(mutedStyle.Render(strings.Repeat("─", max(min(m.width-2, 60), 0))) + "\n\n")
 
