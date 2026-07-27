@@ -4405,8 +4405,10 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		// boundary the break terminates (finishLambdaCall converts it into the
 		// lambda's return value). A break that instead crosses a call boundary
 		// still reports "break cannot cross call boundary" there.
-		if exec.loopDepth == 0 && exec.lambdaDepth == 0 {
-			return NewNil(), false, exec.errorAt(s.Pos(), "%s", breakOutsideLoopMessage(exec.blockDepth))
+		// A block body admits break: it terminates the call the block was
+		// passed to, which absorbBlockBreak turns into that call's value.
+		if exec.loopDepth == 0 && exec.lambdaDepth == 0 && exec.blockDepth == 0 {
+			return NewNil(), false, exec.errorAt(s.Pos(), "%s", breakOutsideLoopMessage())
 		}
 		if s.Value != nil {
 			val, err := exec.evalExpression(s.Value, env)
