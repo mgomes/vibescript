@@ -147,7 +147,7 @@ func regexMemberBuiltin(property string) (Value, error) {
 			if indices == nil {
 				return NewNil(), nil
 			}
-			return newMatchData(text, indices), nil
+			return newMatchData(text, indices, regexSubexpNames(pattern)), nil
 		}), nil
 	case "match?":
 		return NewAutoBuiltin("regex.match?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
