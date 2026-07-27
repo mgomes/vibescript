@@ -41,6 +41,7 @@ func parityReceivers(t *testing.T) map[string]parityReceiver {
 		"nil":      {literal: "nil"},
 		"symbol":   {literal: ":ok"},
 		"array":    {literal: "[1, 2, 3]"},
+		"hash":     {literal: "({a: 1})"},
 		"money":    {paramType: "money", fixture: mustMoneyValue(t, "1.00 USD")},
 		"duration": {paramType: "duration", fixture: NewDuration(durationFromSeconds(90))},
 		"time":     {paramType: "time", fixture: NewTime(time.Unix(0, 0).UTC())},
