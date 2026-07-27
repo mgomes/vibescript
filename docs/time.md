@@ -69,6 +69,12 @@ end
 
 `Time#strftime` takes a Ruby-style percent format string, so Ruby formatting code runs unchanged:
 
+The two methods take different, incompatible format languages, and crossing
+them is an error rather than a silent passthrough: `t.strftime("2006-01-02")`
+and `t.format("%Y-%m-%d")` both report which language they expected and which
+method takes the one you supplied.
+
+
 ```vibe
 def strftime_timestamp
   t = Time.utc(2024, 1, 2, 3, 4, 5)
