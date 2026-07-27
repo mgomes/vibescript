@@ -55,6 +55,9 @@ func callableWithoutArguments(fn *ScriptFunction) bool {
 // private to_s from interpolation, and a class that made to_s private still
 // meant it as the string form.
 func (exec *Execution) instanceStringValue(val Value, pos Position) (Value, bool, error) {
+	if rendered, ok := objectStringEntry(val); ok {
+		return rendered, true, nil
+	}
 	fn, ok := instanceStringMethod(val)
 	if !ok {
 		return val, false, nil
@@ -67,4 +70,27 @@ func (exec *Execution) instanceStringValue(val Value, pos Position) (Value, bool
 		return val, false, nil
 	}
 	return rendered, true, nil
+}
+
+// objectStringEntry returns the string form an attribute-bag value carries
+// under to_s, if it has one.
+//
+// A rescued error is such a bag, and it already stores its message there: the
+// content was reachable as e.to_s and e.message but the two shortest ways to
+// print it, "#{e}" and puts e, both rendered the placeholder <object>. That is
+// the single most common error-reporting idiom there is, so the line written
+// precisely to explain a failure explained nothing -- silently, since no error
+// is raised.
+//
+// Only a string entry substitutes. Attribute bags without one, such as match
+// data, keep the rendering they have.
+func objectStringEntry(val Value) (Value, bool) {
+	if val.Kind() != KindObject {
+		return NewNil(), false
+	}
+	rendered, ok := val.Hash()["to_s"]
+	if !ok || rendered.Kind() != KindString {
+		return NewNil(), false
+	}
+	return rendered, true
 }
