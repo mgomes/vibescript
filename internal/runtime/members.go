@@ -400,6 +400,9 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 	candidates = appendAccessibleMethodNames(candidates, cl.ClassMethods, callerIsReceiver)
 	candidates = slices.AppendSeq(candidates, maps.Keys(cl.ClassVars))
 	candidates = append(candidates, universalMemberNames...)
+	if hint := classMemberAlternativeHint(property); hint != "" {
+		return NewNil(), exec.errorAt(pos, "unknown class member %s%s", property, hint)
+	}
 	return NewNil(), exec.errorAt(pos, "unknown class member %s%s", property, didYouMean(property, candidates))
 }
 
