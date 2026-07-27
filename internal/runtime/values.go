@@ -794,10 +794,12 @@ func timeDifferenceSeconds(left, right time.Time) (float64, error) {
 // concatenableWithString reports whether val may be rendered into a string
 // concatenation. Scalars carry a meaningful string form; nil and the mutable
 // containers do not, and silently rendering them is how a missing value
-// disappeared into a message instead of being reported.
+// disappeared into a message instead of being reported. Objects render as the
+// placeholder "<object>", so a host-supplied value concatenated into a message
+// produced text that looks like output rather than a mistake.
 func concatenableWithString(val Value) bool {
 	switch val.Kind() {
-	case KindNil, KindArray, KindHash:
+	case KindNil, KindArray, KindHash, KindObject:
 		return false
 	default:
 		return true

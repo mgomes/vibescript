@@ -29,6 +29,10 @@ func TestStringConcatRejectsNilAndContainers(t *testing.T) {
 		{name: "string_plus_array", left: NewString("a"), right: NewArray([]Value{NewInt(1)})},
 		{name: "hash_plus_string", left: NewHash(map[string]Value{"a": NewInt(1)}), right: NewString("x")},
 		{name: "string_plus_hash", left: NewString("x"), right: NewHash(map[string]Value{"a": NewInt(1)})},
+		// An object reaches a script from a host capability or context
+		// provider and rendered as the placeholder "<object>".
+		{name: "object_plus_string", left: NewObject(map[string]Value{"name": NewString("ada")}), right: NewString("x")},
+		{name: "string_plus_object", left: NewString("user: "), right: NewObject(map[string]Value{"name": NewString("ada")})},
 	}
 
 	for _, tc := range cases {
