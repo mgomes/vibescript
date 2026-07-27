@@ -745,7 +745,12 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		}
 		p.nextToken()
 	}
+	// Expose the signature's parameters while the body parses, so a member
+	// receiver captured inside it can be resolved against its declared type.
+	savedParams := p.currentParams
+	p.currentParams = params
 	body := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
+	p.currentParams = savedParams
 	switch p.curToken.Type {
 	case ast.TokenRescue, ast.TokenElse, ast.TokenEnsure:
 		tryStmt := p.parseRescueElseEnsureTail(pos, body, "function")

@@ -908,8 +908,13 @@ func TestCompletionAfterDotOffersMemberMethods(t *testing.T) {
 	if _, hasKeyword := labels["def"]; hasKeyword {
 		t.Fatal("member completion must not offer keywords")
 	}
-	if _, hasArray := labels["flatten"]; !hasArray {
-		t.Fatal("member completion should be the type-unaware union (missing array method flatten)")
+	// A string receiver must not be offered array members: completion is
+	// narrowed to the receiver's kind when that kind is known from syntax.
+	if _, hasArray := labels["flatten"]; hasArray {
+		t.Fatal("member completion offered the array method flatten on a string receiver")
+	}
+	if _, hasMoney := labels["cents"]; hasMoney {
+		t.Fatal("member completion offered the money method cents on a string receiver")
 	}
 }
 

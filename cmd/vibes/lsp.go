@@ -973,6 +973,9 @@ func splitLSPLines(text string) []string {
 // version of the document.
 func (s *lspServer) completionItemsAt(uri string, lines []string, line, character int) []map[string]any {
 	if isMemberContext(lines, line, character) {
+		if narrowed := narrowedMemberCompletionItems(s.docs[uri], lines, line, character); narrowed != nil {
+			return narrowed
+		}
 		return memberCompletionItems()
 	}
 	if index := s.completionIndex(uri); index != nil {
