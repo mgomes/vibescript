@@ -16541,6 +16541,11 @@ func binaryScalarOutcome(op TokenType, lk, rk TypeKind) (*TypeExpr, bool) {
 		switch {
 		case isNum(lk) && isNum(rk):
 			return numResult(), true
+		// String repetition: the count may be a float, which the runtime
+		// truncates toward zero as Ruby does. Only a string on the left
+		// repeats; multiplication is not commutative here.
+		case lk == TypeString && isNum(rk):
+			return checkTypeString, true
 		case lk == TypeDuration && isNum(rk):
 			return checkTypeDuration, true
 		case rk == TypeDuration && isNum(lk):
