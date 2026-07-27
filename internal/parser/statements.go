@@ -2296,6 +2296,15 @@ func (p *parser) parseExpressionWithBlock() ast.Expression {
 
 func (p *parser) parseAssertStatement() ast.Statement {
 	pos := p.curToken.Pos
+	// `assert(cond, message)` is an ordinary parenthesised call and parses as
+	// one. Only the paren-less form needs the argument loop below, which reads
+	// the comma-separated arguments the expression parser stops short of. The
+	// check is adjacency, not merely "next token is `(`": a space makes the
+	// parentheses a grouped first argument, so `assert (a > b), "msg"` stays a
+	// paren-less call with two arguments, as in Ruby.
+	if p.peekToken.Type == ast.TokenLParen && p.peekToken.Pos == p.curToken.End {
+		return p.parseExpressionOrAssignStatement()
+	}
 	callee := &ast.Identifier{Name: p.curToken.Literal, Position: pos}
 	args := []ast.Expression{}
 	if p.peekEndsStatement(pos) {
