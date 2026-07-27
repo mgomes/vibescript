@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"maps"
 	"slices"
 )
@@ -99,6 +100,36 @@ func universalMemberAlwaysWins(kind ValueKind) bool {
 
 // resolveTypedMember dispatches member resolution to the handler for obj's kind,
 // before the universal Object-level fallback in resolveMember is considered.
+// positionMemberResult gives a member-lookup failure the source position of the
+// access and turns it into a script error.
+//
+// The member tables for these kinds are pure functions with no execution or
+// position in scope, so they report with fmt.Errorf. Such an error is not a
+// *RuntimeError, which had two consequences: it carried no position, so the
+// reported location fell back to the start of the script rather than the
+// offending call, and `rescue` could not catch it, because a bare rescue
+// requires errors.As(err, &RuntimeError). A misspelled method -- the most
+// common authoring mistake -- was therefore both mislocated and uncatchable.
+//
+// The error's classification is preserved, so a quota or other limit surfaced
+// through a member call stays a limit error and stays deliberately outside
+// rescue's reach. Errors that are already positioned, and the evaluator's
+// control signals, pass through untouched.
+func (exec *Execution) positionMemberResult(pos Position, val Value, err error) (Value, error) {
+	if err == nil {
+		return val, nil
+	}
+	var runtimeErr *RuntimeError
+	if errors.As(err, &runtimeErr) {
+		return val, err
+	}
+	if isLoopControlSignal(err) || isRescueRetrySignal(err) || isHostControlSignal(err) ||
+		isNonLocalReturnSignal(err) || isFunctionReturnSignal(err) {
+		return val, err
+	}
+	return NewNil(), exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
+}
+
 func (exec *Execution) resolveTypedMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	switch obj.Kind() {
 	case KindHash:
@@ -128,7 +159,7 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		if val, ok := hashMemberData(obj, property); ok {
 			return val, nil
 		}
-		return NewNil(), err
+		return exec.positionMemberResult(pos, NewNil(), err)
 	case KindObject:
 		// An object's map backs both module/capability namespaces (callable
 		// exports) and ordinary data objects (data fields). A stored universal-member
@@ -166,17 +197,23 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		}
 		return member, nil
 	case KindMoney:
-		return moneyMember(obj.Money(), property)
+		member, err := moneyMember(obj.Money(), property)
+		return exec.positionMemberResult(pos, member, err)
 	case KindRegex:
-		return regexMember(property)
+		member, err := regexMember(property)
+		return exec.positionMemberResult(pos, member, err)
 	case KindDuration:
-		return durationMember(obj.Duration(), property, pos)
+		member, err := durationMember(obj.Duration(), property, pos)
+		return exec.positionMemberResult(pos, member, err)
 	case KindTime:
-		return timeMember(obj.Time(), property)
+		member, err := timeMember(obj.Time(), property)
+		return exec.positionMemberResult(pos, member, err)
 	case KindArray:
-		return arrayMember(obj, property)
+		member, err := arrayMember(obj, property)
+		return exec.positionMemberResult(pos, member, err)
 	case KindString:
-		return stringMember(obj, property)
+		member, err := stringMember(obj, property)
+		return exec.positionMemberResult(pos, member, err)
 	case KindEnumValue:
 		return exec.enumValueMember(obj, property, pos)
 	case KindClass:
