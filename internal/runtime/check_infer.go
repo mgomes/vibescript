@@ -16406,10 +16406,16 @@ func everyConcatOperandPairInvalid(left, right *TypeExpr) bool {
 			return false
 		}
 	}
-	for _, lk := range leftKinds {
-		for _, rk := range rightKinds {
-			if _, valid := binaryScalarOutcome(tokenPlus, lk, rk); valid {
-				return false
+	// binaryScalarOutcome takes no TypeNumber inputs, so expand each
+	// alternative the way the fully-known path does before consulting it.
+	for _, leftKind := range leftKinds {
+		for _, lk := range expandNumericKinds(leftKind) {
+			for _, rightKind := range rightKinds {
+				for _, rk := range expandNumericKinds(rightKind) {
+					if _, valid := binaryScalarOutcome(tokenPlus, lk, rk); valid {
+						return false
+					}
+				}
 			}
 		}
 	}
