@@ -1077,14 +1077,18 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		return NewBool(!left.Equal(right)), nil
 	case tokenMatch, tokenNotMatch:
 		return exec.evalRegexMatchOperator(operator, left, right, pos)
+	// The relational operators assign rather than return so an incomparable
+	// pair falls through to the wrap below, like every other operator.
+	// Returning directly left the error unpositioned and outside rescue's
+	// reach, because a bare rescue requires errors.As(err, &RuntimeError).
 	case tokenLT:
-		return compareValues(left, right, func(c int) bool { return c < 0 })
+		result, err = compareValues(left, right, func(c int) bool { return c < 0 })
 	case tokenLTE:
-		return compareValues(left, right, func(c int) bool { return c <= 0 })
+		result, err = compareValues(left, right, func(c int) bool { return c <= 0 })
 	case tokenGT:
-		return compareValues(left, right, func(c int) bool { return c > 0 })
+		result, err = compareValues(left, right, func(c int) bool { return c > 0 })
 	case tokenGTE:
-		return compareValues(left, right, func(c int) bool { return c >= 0 })
+		result, err = compareValues(left, right, func(c int) bool { return c >= 0 })
 	case tokenSpaceship:
 		// compareSpaceshipOrder rather than compareValueOrder: arrays compare
 		// lexicographically under <=> but stay rejected by the relational
