@@ -1073,7 +1073,11 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 	case tokenGTE:
 		return compareValues(left, right, func(c int) bool { return c >= 0 })
 	case tokenSpaceship:
-		order, ordered, err := compareValueOrder(left, right)
+		// compareSpaceshipOrder rather than compareValueOrder: arrays compare
+		// lexicographically under <=> but stay rejected by the relational
+		// operators above, as in Ruby, where Array defines <=> but does not
+		// include Comparable.
+		order, ordered, err := compareSpaceshipOrder(left, right)
 		if err != nil {
 			// Incomparable operand pairs (different kinds, or money in different
 			// currencies) make the spaceship operator return nil rather than
