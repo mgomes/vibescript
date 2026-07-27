@@ -99,13 +99,17 @@ vim.lsp.start({
 Syntax highlighting for editors that consume tree-sitter grammars is available
 from [tree-sitter-vibescript](https://github.com/mgomes/tree-sitter-vibescript).
 
+Completion after `.` narrows to the receiver's kind whenever that kind is
+known from the source alone: a literal (`"x".`, `[1].`, `{a: 1}.`) or a
+parameter carrying a declared type (`def f(s: string)`). Anything else — an
+unannotated parameter, a local, a call result, a nullable or union type, or a
+class-typed receiver — still offers the full union, so gradual typing is
+unaffected.
+
 ## Limitations
 
 Intentionally absent for now (tracked for future work):
 
-- **Type-aware member completion** — completion after `.` offers the
-  union of all builtin member methods rather than narrowing by the
-  receiver's type.
 - **Cross-file navigation** — definition and symbols are single-file;
   `require`d modules are not indexed yet.
 - **Single-line signature help** — parameter hints resolve the call by
