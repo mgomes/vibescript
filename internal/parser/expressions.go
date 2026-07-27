@@ -1529,7 +1529,7 @@ func (p *parser) parsePrefixExpression() ast.Expression {
 	pos := p.curToken.Pos
 	operator := p.curToken.Type
 	p.nextToken()
-	if lit, folded := p.parseNegatedNumericLiteral(operator); folded {
+	if lit, folded := p.parseNegatedNumericLiteral(operator, pos); folded {
 		// The numeric token was consumed either way. Returning lit (which is
 		// nil on an invalid literal, with its parse error already recorded)
 		// avoids re-parsing the same token through the ordinary prefix path,
@@ -1558,8 +1558,14 @@ func (p *parser) parsePrefixExpression() ast.Expression {
 // The second return reports whether folding applied, which is distinct from
 // whether it produced an expression: an invalid numeric literal consumes its
 // token and records a parse error, so the caller must not retry it.
-func (p *parser) parseNegatedNumericLiteral(operator ast.TokenType) (ast.Expression, bool) {
+func (p *parser) parseNegatedNumericLiteral(operator ast.TokenType, signPos ast.Position) (ast.Expression, bool) {
 	if operator != ast.TokenMinus || p.peekToken.Type == ast.TokenPower {
+		return nil, false
+	}
+	// Ruby folds only an adjacent sign: -5.abs is (-5).abs, but - 5.abs is
+	// -(5.abs). Whitespace or a newline between the two keeps the ordinary
+	// unary form.
+	if p.curToken.Pos.Line != signPos.Line || p.curToken.Pos.Column != signPos.Column+1 {
 		return nil, false
 	}
 	switch p.curToken.Type {

@@ -59,6 +59,19 @@ func TestParserFoldsMinusIntoNumericLiteral(t *testing.T) {
 			},
 		},
 		{
+			// Ruby folds only an adjacent sign: -5.abs is (-5).abs but
+			// - 5.abs is -(5.abs), so whitespace keeps the unary form.
+			name: "spaced minus does not fold",
+			expr: "- 5.abs",
+			want: &ast.UnaryExpr{
+				Operator: ast.TokenMinus,
+				Right: &ast.MemberExpr{
+					Object:   &ast.IntegerLiteral{Value: 5},
+					Property: "abs",
+				},
+			},
+		},
+		{
 			// Only literals fold. A variable keeps the unary form, so -x.abs
 			// stays -(x.abs), matching Ruby.
 			name: "identifier does not fold",

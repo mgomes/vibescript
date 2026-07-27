@@ -27,6 +27,9 @@ func TestUnaryMinusBindsToNumericLiteral(t *testing.T) {
 		{name: "exponent_outranks_sign", expr: "-2 ** 2", want: "-4"},
 		{name: "negative_exponent", expr: "2 ** -2", want: "0.25"},
 
+		// Ruby folds only an adjacent sign, so a space keeps -(5.abs).
+		{name: "spaced_minus_keeps_outer_sign", expr: "- 5.abs", want: "-5"},
+
 		// Only literals fold; a variable keeps -(x.abs).
 		{name: "identifier_keeps_outer_sign", expr: "-x.abs", want: "-5"},
 
