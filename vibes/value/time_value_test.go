@@ -923,15 +923,18 @@ func TestParseTimeString(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit_layout_nil_location_parses_local", func(t *testing.T) {
+	// A nil location means UTC, not the host's zone: the same script and the
+	// same data must not produce a different instant depending on where it
+	// runs. Callers that want a zone pass one.
+	t.Run("explicit_layout_nil_location_parses_utc", func(t *testing.T) {
 		t.Parallel()
 		got, err := value.ParseTimeString("2024-06-01 12:30:45", "2006-01-02 15:04:05", true, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := time.Date(2024, 6, 1, 12, 30, 45, 0, time.Local)
-		if !got.Equal(want) || got.Location() != time.Local {
-			t.Fatalf("ParseTimeString = %v (%v), want %v in Local", got, got.Location(), want)
+		want := time.Date(2024, 6, 1, 12, 30, 45, 0, time.UTC)
+		if !got.Equal(want) || got.Location() != time.UTC {
+			t.Fatalf("ParseTimeString = %v (%v), want %v in UTC", got, got.Location(), want)
 		}
 	})
 
