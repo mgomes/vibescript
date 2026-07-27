@@ -1346,7 +1346,7 @@ func (p *parser) parseParamsWithOptions(options paramParseOptions) []ast.Param {
 		switch param.Kind {
 		case ast.ParamNormal:
 			if seenRest || seenKeyword || seenKeywordRest || seenBlock {
-				p.addParseError(paramPos, "ordinary parameters must precede rest, keyword, keyword rest, and block capture parameters")
+				p.addParseError(paramPos, ordinaryParamOrderMessage(param, params))
 				return params
 			}
 		case ast.ParamRest:
