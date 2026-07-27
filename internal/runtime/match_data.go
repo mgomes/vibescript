@@ -7,7 +7,18 @@ import (
 	"unicode/utf8"
 )
 
-const matchDataValuesKey = "\x00matchData.values"
+// matchDataWholeKey holds the text the whole pattern matched. It is a public
+// entry named after Ruby's MatchData#to_s, which is exactly that text.
+//
+// It replaces a NUL-prefixed sentinel that carried the positional values.
+// That key was visible in keys, values, to_a, size, each, inspect, and JSON
+// output -- a key the author never created, whose name is not a valid
+// identifier, and which read back as nil through its own name. Hiding it was
+// not an option: the result dispatches as a hash and every surface enumerates
+// the map directly, so there is no single place to filter. Removing it needed
+// the positional values to have a public home, and to_s is the one Ruby
+// already gives them.
+const matchDataWholeKey = "to_s"
 
 // matchDataNamedCapturesKey is the public entry holding the named captures,
 // keyed by name as in Ruby's MatchData#named_captures.
@@ -46,12 +57,15 @@ func newMatchData(text string, indices []int, names []string) Value {
 		postMatch = NewString(text[indices[1]:])
 	}
 
-	valuesVal := NewArray(values)
+	whole := NewNil()
+	if len(values) > 0 {
+		whole = values[0]
+	}
 	startsVal := NewArray(starts)
 	endsVal := NewArray(ends)
 
 	return NewObject(map[string]Value{
-		matchDataValuesKey:        valuesVal,
+		matchDataWholeKey:         whole,
 		matchDataNamedCapturesKey: newNamedCaptures(names, values),
 		"captures":                NewArray(captures),
 		"pre_match":               preMatch,
@@ -118,9 +132,25 @@ func matchDataOffset(name string, offsets, args []Value, kwargs map[string]Value
 	return offsets[index], nil
 }
 
+// matchDataPositionalValues rebuilds the group-indexed view from the public
+// entries: group 0 is the whole match and the rest are the captures. Keeping
+// no separate copy is the point -- a second array is what leaked.
+func matchDataPositionalValues(obj Value) ([]Value, bool) {
+	entries := obj.Hash()
+	whole, hasWhole := entries[matchDataWholeKey]
+	captures, hasCaptures := entries["captures"]
+	if !hasWhole || !hasCaptures || captures.Kind() != KindArray {
+		return nil, false
+	}
+	captured := captures.Array()
+	values := make([]Value, 0, len(captured)+1)
+	values = append(values, whole)
+	values = append(values, captured...)
+	return values, true
+}
+
 func matchDataIndex(obj, index Value) (Value, bool, error) {
-	values, ok := obj.Hash()[matchDataValuesKey]
-	if !ok || values.Kind() != KindArray {
+	if _, ok := obj.Hash()[matchDataWholeKey]; !ok {
 		return NewNil(), false, nil
 	}
 	// A string or symbol index reads a named capture, which is how any
@@ -144,14 +174,17 @@ func matchDataIndex(obj, index Value) (Value, bool, error) {
 	if err != nil {
 		return NewNil(), true, fmt.Errorf("match data index must be integer")
 	}
-	captures := values.Array()
-	if i < 0 {
-		i += len(captures)
+	values, ok := matchDataPositionalValues(obj)
+	if !ok {
+		return NewNil(), false, nil
 	}
-	if i < 0 || i >= len(captures) {
+	if i < 0 {
+		i += len(values)
+	}
+	if i < 0 || i >= len(values) {
 		return NewNil(), true, nil
 	}
-	return captures[i], true, nil
+	return values[i], true, nil
 }
 
 func regexpUnionPattern(args []Value) (string, error) {
