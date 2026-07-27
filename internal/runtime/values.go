@@ -791,6 +791,29 @@ func timeDifferenceSeconds(left, right time.Time) (float64, error) {
 	return float64(secDiff) + float64(nsecDiff)/float64(nanosecondsPerSecond), nil
 }
 
+// concatenableWithString reports whether val has a string form meaningful
+// enough to render into a concatenation.
+//
+// The accepted set mirrors the kinds Value.String renders meaningfully, minus
+// nil (which renders as empty) and the composites (which render their contents).
+// Everything else falls through String's default and renders as a placeholder
+// such as "<object>", "<block>", or "<User instance>", so concatenating it
+// produced text that reads like output instead of reporting a mistake --
+// "Hello, " + name silently became "Hello, " when name was nil.
+//
+// It is an allowlist because the rejected set is the larger and more
+// open-ended one: a new kind should have to opt into concatenation deliberately
+// rather than inherit it and render as a placeholder.
+func concatenableWithString(val Value) bool {
+	switch val.Kind() {
+	case KindString, KindInt, KindFloat, KindBool, KindSymbol,
+		KindMoney, KindDuration, KindTime, KindRange, KindRegex, KindEnumValue:
+		return true
+	default:
+		return false
+	}
+}
+
 func addValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
@@ -863,6 +886,15 @@ func addValues(left, right Value) (Value, error) {
 		copy(out[len(lArr):], rArr)
 		return NewArray(out), nil
 	case left.Kind() == KindString || right.Kind() == KindString:
+		// Concatenation renders the other operand, which is the idiom the docs
+		// and examples use ("total: " + count). It is restricted to operands
+		// that have a meaningful string form: nil renders as empty, so
+		// "Hello, " + name silently dropped a missing name, and a container
+		// renders as its inspect form, so [1] + "a" produced "[1]a" from two
+		// values that cannot sensibly concatenate.
+		if !concatenableWithString(left) || !concatenableWithString(right) {
+			return NewNil(), fmt.Errorf("unsupported addition operands")
+		}
 		return NewString(left.String() + right.String()), nil
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
 		sum, err := left.Money().Add(right.Money())
