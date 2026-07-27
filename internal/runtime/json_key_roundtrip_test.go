@@ -7,11 +7,11 @@ import (
 
 // JSON object keys parse as strings while hash literals write symbol keys, so
 // JSON.parse(JSON.stringify(h)) is never equal to h and a symbol lookup reads
-// nil rather than reporting anything. The behaviour is defensible -- JSON keys
+// nil rather than reporting anything. The behavior is defensible -- JSON keys
 // really are strings -- but it is silent, so the first symptom is usually a
 // downstream nil error far from the parse.
 //
-// These pin both the behaviour and the documented conversion, so the recipe in
+// These pin both the behavior and the documented conversion, so the recipe in
 // docs/builtins.md cannot quietly stop working.
 func TestJSONParseKeysAreStrings(t *testing.T) {
 	t.Parallel()
