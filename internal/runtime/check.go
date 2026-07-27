@@ -5623,6 +5623,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			return false
 		}
 	case *MemberExpr:
+		c.checkKnownReceiverMember(function, typed)
 		if autoCall && typed.Property == "call" {
 			blocks, exact := c.capturedBlockLiteralValueAlternatives(typed.Object)
 			hasBlock := false
