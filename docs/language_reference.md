@@ -208,7 +208,10 @@ connect(host: "example.com", port: 443) # overrides port
 
 Because `name: Type` declares a typed positional parameter, a bare identifier
 after the colon resolves as a type name, not a keyword default: write `a: int`
-for a typed positional and `a: 0` for an optional keyword. The `name: nil`
+for a typed positional and `a: 0` for an optional keyword. This is why a default
+that references an earlier parameter must be parenthesized when it is *only*
+that parameter: `timeout: port * 2` is a default, but `timeout: port` reads as a
+type, so write `timeout: (port)`. The `name: nil`
 spelling is the optional keyword default `nil`, matching Ruby and the stdlib's
 documented optional keywords; a bare `nil` positional type would be useless.
 A nil-leading union annotation (`a: nil | int`) is the exception: the `|`
