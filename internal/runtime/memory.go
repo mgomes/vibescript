@@ -1712,6 +1712,28 @@ func (acc *hashBuildAccumulator) reserveBacking(capacity int) error {
 	return acc.checkQuota()
 }
 
+// reserveScratch folds a loop-scratch reservation taken AFTER construction into
+// the accumulator's baseline.
+//
+// base is a snapshot of the call roots plus whatever reserveLoopScratch held at
+// construction time, which is why drivers normally reserve before building the
+// accumulator. A driver that only allocates a buffer on demand cannot do that,
+// so it must report the reservation here: otherwise its per-entry checks weigh
+// accumulated payloads against a baseline that omits the buffer, and receiver,
+// output, buffer, and synthesized payloads could together exceed the quota with
+// every individual check still passing.
+//
+// The live whole-graph checks already see the reservation through
+// exec.reservedScratchBytes; only this snapshot needs telling, so the bytes are
+// not counted twice.
+func (acc *hashBuildAccumulator) reserveScratch(bytes int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, bytes)
+	return acc.checkQuota()
+}
+
 // add charges a write whose VALUE is a block result to the output map and rejects
 // the build if the projected map memory exceeds the quota. Use it where the block
 // produces the VALUE (transform_values, the merge conflict block) and the key is a
