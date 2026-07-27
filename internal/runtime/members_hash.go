@@ -2925,8 +2925,15 @@ func hashMemberTransforms(property string) (Value, error) {
 				if cap(produced) >= len(sorted) {
 					return nil
 				}
-				producedDelta += exec.reserveLoopScratch(sortedHashEntryBufferBytes(len(sorted)))
+				delta := exec.reserveLoopScratch(sortedHashEntryBufferBytes(len(sorted)))
+				producedDelta += delta
 				if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+					return err
+				}
+				// The accumulator snapshotted its baseline before this reservation
+				// existed, so fold the buffer in or its per-entry checks would weigh
+				// synthesized key payloads against a baseline that omits it.
+				if err := acc.reserveScratch(delta); err != nil {
 					return err
 				}
 				grown := make([]HashEntry, len(produced), len(sorted))
