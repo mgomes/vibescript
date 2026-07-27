@@ -264,11 +264,13 @@ func compareMatchDataCaptures(t *testing.T, value Value, want []Value) {
 	if value.Kind() != KindObject {
 		t.Fatalf("String#match result kind = %v, want object", value.Kind())
 	}
-	captures, ok := value.Hash()[matchDataValuesKey]
+	// The positional view is rebuilt from the public entries rather than
+	// stored separately, which is what removed the internal key.
+	values, ok := matchDataPositionalValues(value)
 	if !ok {
-		t.Fatalf("String#match result missing capture storage")
+		t.Fatalf("String#match result missing its positional entries")
 	}
-	compareArrays(t, captures, want)
+	compareArrays(t, NewArray(values), want)
 }
 
 func TestStringMatchOffsetErrors(t *testing.T) {
