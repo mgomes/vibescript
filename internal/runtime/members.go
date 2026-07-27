@@ -223,6 +223,8 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		return exec.positionMemberResult(pos, member, err)
 	case KindEnumValue:
 		return exec.enumValueMember(obj, property, pos)
+	case KindEnum:
+		return exec.enumMember(obj, property, pos)
 	case KindClass:
 		return exec.classMember(obj, property, pos, callerIsReceiver)
 	case KindInstance:
@@ -475,6 +477,33 @@ func (exec *Execution) getScopedMember(obj Value, property string, pos Position)
 		return NewNil(), exec.errorAt(pos, "unknown enum member %s::%s%s", enumDef.Name, property, didYouMean(property, candidates))
 	}
 	return NewEnumValue(member), nil
+}
+
+// enumMember dispatches the members of an enum type itself -- what a bare
+// Status is, and what Status::Active.enum returns.
+//
+// The type object previously supported no member access at all: it
+// interpolated as <Enum Status> but Status::Active.enum.to_s reported
+// "unsupported member access on enum", leaving it the one value kind you could
+// not ask anything about. Anything reflecting over an enum, such as an error
+// message naming the type, had to go through interpolation.
+func (exec *Execution) enumMember(obj Value, property string, pos Position) (Value, error) {
+	enum := valueEnum(obj)
+	if enum == nil {
+		return NewNil(), exec.errorAt(pos, "unknown enum")
+	}
+	switch property {
+	case "name":
+		return NewString(enum.Name), nil
+	case "to_s", "string":
+		// Delegates to the value's own rendering, which is what interpolation
+		// already produces, so the two cannot drift apart.
+		return newToStringBuiltin("enum", property), nil
+	case "inspect":
+		return newInspectBuiltin("enum"), nil
+	default:
+		return NewNil(), exec.errorAt(pos, "unknown enum property %s%s", property, didYouMean(property, []string{"name", "to_s", "inspect"}))
+	}
 }
 
 func (exec *Execution) enumValueMember(obj Value, property string, pos Position) (Value, error) {
