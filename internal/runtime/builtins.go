@@ -494,7 +494,46 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects a string format", name)
 	}
-	return exec.formatStringValues(args[0].String(), args[1:], receiver, args, kwargs, block)
+	values, err := exec.formatStringConversionValues(args[1:])
+	if err != nil {
+		return NewNil(), err
+	}
+	return exec.formatStringValues(args[0].String(), values, receiver, args, kwargs, block)
+}
+
+// formatStringConversionValues substitutes each argument's to_s form before
+// the pattern is projected or rendered.
+//
+// %s is defined as the to_s form, but format was the last direct string
+// conversion that did not consult a class's to_s: interpolation and puts were
+// connected in #1055 and this was left out, so format("%s", p) alone still
+// rendered <P instance>.
+//
+// Substituting up front rather than per-verb keeps the projection pass and the
+// render pass looking at the same values, which the memory quota depends on --
+// they must agree or the reservation the quota approved is not the one built.
+// It is safe for the numeric verbs because an instance is not a valid operand
+// for any of them either way.
+func (exec *Execution) formatStringConversionValues(values []Value) ([]Value, error) {
+	var converted []Value
+	for i, val := range values {
+		rendered, substituted, err := exec.instanceStringValue(val, Position{})
+		if err != nil {
+			return nil, err
+		}
+		if !substituted {
+			continue
+		}
+		if converted == nil {
+			converted = make([]Value, len(values))
+			copy(converted, values)
+		}
+		converted[i] = rendered
+	}
+	if converted == nil {
+		return values, nil
+	}
+	return converted, nil
 }
 
 func formatStringValues(pattern string, values []Value) (Value, error) {
