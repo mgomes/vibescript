@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -91,5 +92,26 @@ func TestParserFoldsMinusIntoNumericLiteral(t *testing.T) {
 				t.Fatalf("%s mismatch (-want +got):\n%s", tc.name, diff)
 			}
 		})
+	}
+}
+
+// An invalid negated literal consumes its token and records one diagnostic.
+// Folding must not fall through to the ordinary prefix path afterwards, which
+// would re-parse the same token and report the identical error twice, eating
+// into the parser's error budget and pushing out later diagnostics.
+func TestParserReportsInvalidNegatedLiteralOnce(t *testing.T) {
+	t.Parallel()
+
+	oversized := "-" + strings.Repeat("9", 100_001)
+	_, errs := parseSource(t, "def run()\n  x = "+oversized+"\nend")
+
+	matching := 0
+	for _, err := range errs {
+		if strings.Contains(err.Error(), "integer literal exceeds") {
+			matching++
+		}
+	}
+	if matching != 1 {
+		t.Fatalf("expected exactly one oversized-literal diagnostic, got %d: %v", matching, errs)
 	}
 }
