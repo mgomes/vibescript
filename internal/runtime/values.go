@@ -791,6 +791,19 @@ func timeDifferenceSeconds(left, right time.Time) (float64, error) {
 	return float64(secDiff) + float64(nsecDiff)/float64(nanosecondsPerSecond), nil
 }
 
+// concatenableWithString reports whether val may be rendered into a string
+// concatenation. Scalars carry a meaningful string form; nil and the mutable
+// containers do not, and silently rendering them is how a missing value
+// disappeared into a message instead of being reported.
+func concatenableWithString(val Value) bool {
+	switch val.Kind() {
+	case KindNil, KindArray, KindHash:
+		return false
+	default:
+		return true
+	}
+}
+
 func addValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
@@ -863,6 +876,15 @@ func addValues(left, right Value) (Value, error) {
 		copy(out[len(lArr):], rArr)
 		return NewArray(out), nil
 	case left.Kind() == KindString || right.Kind() == KindString:
+		// Concatenation renders the other operand, which is the idiom the docs
+		// and examples use ("total: " + count). It is restricted to operands
+		// that have a meaningful string form: nil renders as empty, so
+		// "Hello, " + name silently dropped a missing name, and a container
+		// renders as its inspect form, so [1] + "a" produced "[1]a" from two
+		// values that cannot sensibly concatenate.
+		if !concatenableWithString(left) || !concatenableWithString(right) {
+			return NewNil(), fmt.Errorf("unsupported addition operands")
+		}
 		return NewString(left.String() + right.String()), nil
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
 		sum, err := left.Money().Add(right.Money())
