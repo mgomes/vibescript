@@ -324,6 +324,24 @@ payload = JSON.parse("{\"id\":\"p-1\",\"score\":10}")
 payload["score"] # 10
 ```
 
+**Object keys parse as strings, not symbols.** A hash literal writes symbol keys
+(`{name: "Ada"}`), so a parsed object is not equal to the literal it came from
+and a symbol lookup reads `nil` rather than reporting anything:
+
+```vibe
+obj  = { name: "Ada" }
+back = JSON.parse(JSON.stringify(obj))
+back["name"]  # "Ada"
+back[:name]   # nil
+back == obj   # false
+```
+
+Convert the keys when you need the symbol-keyed form back:
+
+```vibe
+back.transform_keys { |k| k.to_sym } == obj   # true
+```
+
 `JSON.parse` enforces a 1 MiB input limit and rejects more than 10,000 nested
 arrays/objects.
 
