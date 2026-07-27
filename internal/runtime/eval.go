@@ -258,6 +258,13 @@ func (exec *Execution) buildInterpolatedString(parts []StringPart, env *Env) (st
 			if err != nil {
 				return "", err
 			}
+			// A class's to_s is the string form of its instances, so it
+			// governs interpolation too; substituting here keeps the quota
+			// accounting below measuring the text actually written.
+			val, _, err = exec.instanceStringValue(val, p.Expr.Pos())
+			if err != nil {
+				return "", err
+			}
 			if err := exec.appendInterpolatedValue(&sb, val); err != nil {
 				return "", err
 			}
