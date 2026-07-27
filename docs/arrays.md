@@ -45,6 +45,12 @@ Common enumerable helpers include:
 - `filter_map` to transform elements and keep only the truthy results in one
   pass, dropping falsy block returns (the fused equivalent of `map` then a
   truthiness filter).
+- `flat_map` (alias `collect_concat`) to transform elements and concatenate the
+  results, flattening exactly one level: an array result contributes its
+  elements and anything else contributes itself
+  (`[[1, 2], [3]].flat_map { |row| row }` is `[1, 2, 3]`). It takes no arguments
+  and requires a block. A nested array inside a result is left alone, so it is
+  `map` then `flatten(1)` rather than a full flatten.
 - `select` to keep items the block accepts.
 - `reject` to keep items the block rejects (the inverse of `select`).
 - `find` to locate the first matching item.
