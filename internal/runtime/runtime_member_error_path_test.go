@@ -111,3 +111,34 @@ func TestSandboxLimitsRemainUnrescuable(t *testing.T) {
 		t.Fatalf("expected a step quota error, got %v", err)
 	}
 }
+
+// send/public_send and the symbol form of array.reduce resolve a member with no
+// position in hand. Converting the error there would bake in an empty code
+// frame and stop the builtin boundary from attaching the real call site, so
+// those lookups must keep returning the raw error.
+func TestPositionlessMemberLookupsKeepTheOuterCallSite(t *testing.T) {
+	t.Parallel()
+
+	exprs := []string{
+		`"x".send(:nope)`,
+		`"x".public_send(:nope)`,
+	}
+
+	for _, expr := range exprs {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  a = 1\n  b = 2\n  "+expr+"\nend")
+			_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err == nil {
+				t.Fatalf("%s: expected an error", expr)
+			}
+			var runtimeErr *RuntimeError
+			if !errors.As(err, &runtimeErr) {
+				t.Fatalf("%s: expected a *RuntimeError, got %v", expr, err)
+			}
+			if !strings.Contains(runtimeErr.CodeFrame, "line 4") {
+				t.Fatalf("%s: expected the outer call site on line 4, got:\n%s", expr, runtimeErr.CodeFrame)
+			}
+		})
+	}
+}

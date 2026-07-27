@@ -127,6 +127,13 @@ func (exec *Execution) positionMemberResult(pos Position, val Value, err error) 
 		isNonLocalReturnSignal(err) || isFunctionReturnSignal(err) {
 		return val, err
 	}
+	// Some lookups run without a position -- send/public_send and the symbol
+	// form of array.reduce resolve a member internally. Converting there would
+	// bake in an empty code frame and stop the builtin boundary from attaching
+	// the real call site, so the raw error is left for it to position.
+	if pos == (Position{}) {
+		return val, err
+	}
 	return NewNil(), exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
 }
 
