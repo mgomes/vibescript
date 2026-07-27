@@ -16429,7 +16429,7 @@ func concatDecidableKind(kind TypeKind) bool {
 	switch kind {
 	case TypeString, TypeInt, TypeFloat, TypeNumber, TypeBool, TypeSymbol,
 		TypeMoney, TypeDuration, TypeTime, TypeRange,
-		TypeNil, TypeArray, TypeHash, TypeShape:
+		TypeNil, TypeArray, TypeHash, TypeShape, TypeFunction:
 		return true
 	default:
 		return false
