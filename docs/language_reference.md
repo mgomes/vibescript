@@ -80,8 +80,13 @@ punctuation, spaces, or be empty: `:"foo-bar"`, `:'foo bar'`, `:""`. Quoted
 symbols use the same escapes as the matching string quote (double-quoted symbols
 decode `\n`, `\t`, `\"`, `\\`; single-quoted symbols decode `\'` and `\\`).
 Interpolation is not supported in symbol literals, so `:"a#{b}"` is a parse
-error. `:"name"` is accepted anywhere a symbol literal is, and a quoted-string
-hash key such as `"foo-bar":` is the same symbol as `:"foo-bar"`.
+error. `:"name"` is accepted anywhere a symbol literal is.
+
+A quoted hash key is not a symbol. In a hash literal, a bare label makes a
+symbol key and a quoted label makes a string key, so `{ name: 1 }` is read back
+with `h[:name]` and `{ "name": 1 }` with `h["name"]`. The quoted form is the only
+literal syntax for a string-keyed hash, which is what `JSON.parse` returns. See
+`docs/hashes.md`.
 
 See `docs/arrays.md`, `docs/hashes.md`, `docs/strings.md`, `docs/durations.md`,
 and `docs/time.md` for full method coverage.
