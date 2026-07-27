@@ -1806,6 +1806,18 @@ func regexMatchFromRuneOffsetWithCache(cache *regexCache, method, text, pattern 
 // wrapper groups the user pattern in a capturing group so its boundaries and the
 // capture indices can be recovered without embedding the subject prefix, keeping
 // the compiled pattern small regardless of the offset.
+// regexSubexpNames returns the pattern's capture-group names, index-aligned
+// with the groups, or nil when the pattern does not compile. Compilation goes
+// through the shared cache, so this is a lookup for any pattern already
+// matched against.
+func regexSubexpNames(pattern string) []string {
+	re, err := compiledRegexps.compile(pattern)
+	if err != nil {
+		return nil
+	}
+	return re.SubexpNames()
+}
+
 func regexSubmatchFromRuneOffset(method, text, pattern string, offset int) ([]int, error) {
 	return regexSubmatchFromRuneOffsetWithCache(compiledRegexps, method, text, pattern, offset)
 }
@@ -3448,7 +3460,7 @@ func stringMemberQuery(property string) (Value, error) {
 				// there is no match, so the block form short-circuits here too.
 				return NewNil(), nil
 			}
-			matchData := newMatchData(text, indices)
+			matchData := newMatchData(text, indices, regexSubexpNames(pattern))
 			if valueBlock(block) != nil {
 				// Ruby's String#match(pattern) { |m| ... } yields the match data and
 				// returns the block's result. MatchData supports the same index access

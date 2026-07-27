@@ -9,7 +9,14 @@ import (
 
 const matchDataValuesKey = "\x00matchData.values"
 
-func newMatchData(text string, indices []int) Value {
+// matchDataNamedCapturesKey is the public entry holding the named captures,
+// keyed by name as in Ruby's MatchData#named_captures.
+const matchDataNamedCapturesKey = "named_captures"
+
+// newMatchData builds the match result. names is the compiled pattern's
+// subexpression names, index-aligned with the capture groups, so a pattern
+// with no named groups passes a slice of empty strings (or nil).
+func newMatchData(text string, indices []int, names []string) Value {
 	values := make([]Value, len(indices)/2)
 	starts := make([]Value, len(values))
 	ends := make([]Value, len(values))
@@ -44,10 +51,11 @@ func newMatchData(text string, indices []int) Value {
 	endsVal := NewArray(ends)
 
 	return NewObject(map[string]Value{
-		matchDataValuesKey: valuesVal,
-		"captures":         NewArray(captures),
-		"pre_match":        preMatch,
-		"post_match":       postMatch,
+		matchDataValuesKey:        valuesVal,
+		matchDataNamedCapturesKey: newNamedCaptures(names, values),
+		"captures":                NewArray(captures),
+		"pre_match":               preMatch,
+		"post_match":              postMatch,
 		"begin": NewCapturingBuiltin("match_data.begin", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return matchDataOffset("match_data.begin", starts, args, kwargs, block)
 		}, startsVal),
@@ -55,6 +63,36 @@ func newMatchData(text string, indices []int) Value {
 			return matchDataOffset("match_data.end", ends, args, kwargs, block)
 		}, endsVal),
 	})
+}
+
+// newNamedCaptures pairs each named group with the text it matched. Ruby's
+// named_captures is keyed by name as a string and is an empty hash when the
+// pattern names no groups, so an unnamed pattern still answers rather than
+// reporting an unknown member.
+func newNamedCaptures(names []string, values []Value) Value {
+	named := map[string]Value{}
+	// Index 0 is the whole match, which is never named.
+	for i := 1; i < len(names) && i < len(values); i++ {
+		if names[i] == "" {
+			continue
+		}
+		named[names[i]] = values[i]
+	}
+	return NewHash(named)
+}
+
+// matchDataNamedCapture reads a named capture by name, reporting false when
+// the match data has no group of that name.
+func matchDataNamedCapture(obj Value, name string) (Value, bool) {
+	named, ok := obj.Hash()[matchDataNamedCapturesKey]
+	if !ok || named.Kind() != KindHash {
+		return NewNil(), false
+	}
+	val, ok, err := named.HashGet(NewString(name))
+	if err != nil {
+		return NewNil(), false
+	}
+	return val, ok
 }
 
 func matchDataOffset(name string, offsets, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -83,6 +121,20 @@ func matchDataOffset(name string, offsets, args []Value, kwargs map[string]Value
 func matchDataIndex(obj, index Value) (Value, bool, error) {
 	values, ok := obj.Hash()[matchDataValuesKey]
 	if !ok || values.Kind() != KindArray {
+		return NewNil(), false, nil
+	}
+	// A string or symbol index reads a named capture, which is how any
+	// non-trivial extraction is meant to be written. An index naming an entry
+	// the match result already has (captures, pre_match, ...) keeps reading
+	// that entry, so adding named access cannot shadow the existing shape.
+	if index.Kind() == KindString || index.Kind() == KindSymbol {
+		name := index.String()
+		if _, isEntry := obj.Hash()[name]; isEntry {
+			return NewNil(), false, nil
+		}
+		if val, found := matchDataNamedCapture(obj, name); found {
+			return val, true, nil
+		}
 		return NewNil(), false, nil
 	}
 	if index.Kind() != KindInt && index.Kind() != KindFloat {
