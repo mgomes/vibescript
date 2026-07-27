@@ -31,6 +31,19 @@ func TestCheckerRejectsNonConcatenableOperandPairs(t *testing.T) {
 			source:  "def f(a: string) -> string\n  a + nil\nend",
 			wantErr: "unsupported addition operands",
 		},
+		{
+			// Both alternatives an array<int>? can hold -- an array and nil --
+			// are rejected, so no runtime value can succeed. Partial knowledge
+			// about which one it is does not make the outcome partial.
+			name:    "string plus nullable array",
+			source:  "def f(a: string, b: array<int>?) -> string\n  a + b\nend",
+			wantErr: "unsupported addition operands",
+		},
+		{
+			name:    "string plus union of rejected kinds",
+			source:  "def f(a: string, b: array<int> | hash) -> string\n  a + b\nend",
+			wantErr: "unsupported addition operands",
+		},
 	}
 
 	for _, tc := range tests {
@@ -51,6 +64,11 @@ func TestCheckerAllowsConcatenableAndDynamicOperands(t *testing.T) {
 		"string plus string":  "def f(a: string, b: string) -> string\n  a + b\nend",
 		"string plus untyped": "def f(a: string, b) -> string\n  a + b\nend",
 		"array plus array":    "def f(a: array<int>, b: array<int>) -> array<int>\n  a + b\nend",
+		// A nullable string can still hold a string, so the outcome is genuinely
+		// unknown and the runtime decides. Only a type whose every alternative
+		// fails is reported here.
+		"string plus nullable string": "def f(a: string, b: string?) -> string\n  a + b\nend",
+		"string plus mixed union":     "def f(a: string, b: int | string) -> string\n  a + b\nend",
 	}
 
 	for name, source := range sources {

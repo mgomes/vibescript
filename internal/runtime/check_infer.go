@@ -16333,7 +16333,13 @@ func (c *scriptChecker) binaryOperationOutcome(op TokenType, left, right *TypeEx
 	}
 	if !leftOK || !rightOK {
 		// Partial knowledge decides a couple of left-driven results but never
-		// an invalidity.
+		// an invalidity -- with one exception. When a concatenation's other
+		// operand is a union or nullable whose every alternative the runtime
+		// rejects, the outcome is not partially known: it fails whichever
+		// alternative the value turns out to be.
+		if op == tokenPlus && concatenationAlwaysInvalid(left, right) {
+			return binaryOutcome{invalid: true}
+		}
 		if leftOK && op == tokenPercent && leftKind == TypeString {
 			return binaryOutcome{result: checkTypeString}
 		}
@@ -16375,6 +16381,43 @@ func expandNumericKinds(kind TypeKind) []TypeKind {
 // subtractValues, multiplyValues, powerValues, divideValues, moduloValues,
 // shovelValues, intersectValues, and compareValueOrder, including case order
 // (string concatenation is the late fallback for +).
+// concatenationAlwaysInvalid reports whether a `+` pairing a known string with
+// an operand whose every alternative the runtime concatenation guard rejects,
+// in either operand order. `a + b` with `b: array<int>?` qualifies: both an
+// array and nil are rejected, so no runtime value can succeed.
+func concatenationAlwaysInvalid(left, right *TypeExpr) bool {
+	return (isDefinitelyString(left) && neverConcatenable(right)) ||
+		(isDefinitelyString(right) && neverConcatenable(left))
+}
+
+func isDefinitelyString(ty *TypeExpr) bool {
+	return ty != nil && !ty.Nullable && ty.Kind == TypeString
+}
+
+// neverConcatenable reports whether no value the type can hold is renderable
+// into a concatenation. A nullable adds nil, which is itself rejected, so the
+// base kind decides; a union qualifies only when every member does.
+func neverConcatenable(ty *TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	switch ty.Kind {
+	case TypeAny, TypeUnknown:
+		return false
+	case TypeUnion:
+		if len(ty.Union) == 0 {
+			return false
+		}
+		for _, option := range ty.Union {
+			if !neverConcatenable(option) {
+				return false
+			}
+		}
+		return true
+	}
+	return !concatenableTypeKind(ty.Kind)
+}
+
 // concatenableTypeKind mirrors the runtime's concatenableWithString for a
 // statically known type kind, so a script whose operands are both known does
 // not pass the checker and then fail at the runtime guard. TypeAny and
