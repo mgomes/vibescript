@@ -13,7 +13,7 @@ import (
 // listed name resolves.
 var hashMemberNames = []string{
 	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a", "default", "default_proc",
-	"merge", "update", "merge!", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
+	"merge", "update", "merge!", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 	"inspect",
 }
 
@@ -60,7 +60,7 @@ func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a", "default", "default_proc":
 		return hashMemberQuery(property)
-	case "merge", "update", "merge!", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
+	case "merge", "update", "merge!", "replace", "store", "delete", "clear", "delete_if", "keep_if", "slice", "except", "flatten", "select", "reject", "map", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	case "inspect":
 		return newInspectBuiltin("hash"), nil
@@ -2657,6 +2657,117 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 			}
 			return NewHash(out), nil
+		}), nil
+	case "map":
+		return NewAutoBuiltin("hash.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("hash.map does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.map does not take keyword arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "hash.map", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer exec.beginBlockIterationRegion().end()
+			if hashHasTypedEntries(receiver) {
+				count := receiver.HashLen()
+				acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+				if err := acc.reserveScratch(sortedHashEntryBufferBytes(count)); err != nil {
+					return NewNil(), err
+				}
+				if err := acc.reserveSlots(count); err != nil {
+					return NewNil(), err
+				}
+				out := make([]Value, 0, count)
+				var blockArg [1]Value
+				var entryBuf [smallHashKeyBufferSize]HashEntry
+				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					pair := NewArray([]Value{entry.Key, entry.Value})
+					if err := acc.checkTransient(pair, cap(out)); err != nil {
+						return NewNil(), err
+					}
+					blockArg[0] = pair
+					val, err := runner.call(blockArg[:])
+					if err != nil {
+						return NewNil(), err
+					}
+					if err := exec.checkContext(); err != nil {
+						return NewNil(), err
+					}
+					out = append(out, val)
+					if err := acc.addConservative(val, cap(out)); err != nil {
+						return NewNil(), err
+					}
+				}
+				return NewArray(out), nil
+			}
+			entries := receiver.Hash()
+			// map keeps an arbitrary block result per entry, so charge the
+			// growing result incrementally rather than only after the call: a block
+			// returning an individually quota-sized value per entry could otherwise pile
+			// up past the quota before the post-call check ran. The accumulator's
+			// baseline includes the live receiver and block (held on the Go stack during
+			// the call), and reserveScratch folds in the sorted key list that stays live
+			// for the whole build so it is charged alongside the accumulating result.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveScratch(sortedKeyBufferBytes(len(entries))); err != nil {
+				return NewNil(), err
+			}
+			// Reject the build before reserving the backing slice when its len(entries)
+			// slots would already overflow the quota on top of the baseline and the
+			// sorted key scratch just reserved. map keeps one result per entry, so the
+			// backing reaches len(entries) Value slots regardless of the block; make
+			// would otherwise reserve all of them as a Go-local slice (invisible to the
+			// quota) before the first acc.add projected cap(out), letting a large hash
+			// transiently allocate a full result backing that should have been rejected
+			// up front, mirroring array.map.
+			if err := acc.reserveSlots(len(entries)); err != nil {
+				return NewNil(), err
+			}
+			out := make([]Value, 0, len(entries))
+			var blockArg [1]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call charges no step for a
+				// blockless body.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				// Ruby yields the [key, value] pair, which a two-parameter block
+				// auto-splats into key and value and a one-parameter block receives
+				// whole. Entries follow the deterministic sorted key order every
+				// block-based hash iterator uses.
+				pair := NewArray([]Value{NewSymbol(key), entries[key]})
+				// Charge the fresh pair against the quota before yielding: it is live
+				// alongside the accumulating result for the block's duration, so without
+				// this a block whose result fits but whose live pair does not could run
+				// past the sandbox memory limit. Mirrors hash.each_with_index, which
+				// charges its yielded pair the same way. cap(out) is the result backing
+				// before this iteration's append, so the peak charges the pair on top of
+				// the result built so far.
+				if err := acc.checkTransient(pair, cap(out)); err != nil {
+					return NewNil(), err
+				}
+				blockArg[0] = pair
+				val, err := runner.call(blockArg[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				if err := exec.checkContext(); err != nil {
+					return NewNil(), err
+				}
+				out = append(out, val)
+				if err := acc.addConservative(val, cap(out)); err != nil {
+					return NewNil(), err
+				}
+			}
+			return NewArray(out), nil
 		}), nil
 	case "map_with_index":
 		return NewAutoBuiltin("hash.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
