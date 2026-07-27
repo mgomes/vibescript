@@ -1717,6 +1717,11 @@ func (p *parser) parseMemberExpression(object ast.Expression) ast.Expression {
 		p.errorExpected(p.curToken, "member name")
 		return nil
 	}
+	// The parent relationship is only visible here, so the ambiguous shape is
+	// recorded on the call rather than rediscovered later by walking upward.
+	if call, ok := object.(*ast.CallExpr); ok && call.SpacedParen {
+		call.SpacedParenTakesMember = true
+	}
 	return &ast.MemberExpr{Object: object, Property: p.curToken.Literal, Safe: safe, Position: object.Pos()}
 }
 
@@ -2331,12 +2336,13 @@ func (p *parser) blockParamUnionContinues() bool {
 }
 
 func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
+	spacedParen := p.curTokenIsSpacedFromPrevious()
 	p.groupDepth++
 	defer func() { p.groupDepth-- }()
 	if function == nil {
 		return nil
 	}
-	expr := &ast.CallExpr{Callee: function, Position: function.Pos(), Safe: isSafeMemberCallee(function), Parenthesized: true}
+	expr := &ast.CallExpr{Callee: function, Position: function.Pos(), Safe: isSafeMemberCallee(function), Parenthesized: true, SpacedParen: spacedParen}
 	args := []ast.Expression{}
 	kwargs := []ast.KeywordArg{}
 

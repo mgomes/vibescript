@@ -134,6 +134,21 @@ type CallExpr struct {
 	// only collapses their keyword arguments into an options hash for the
 	// parenless form.
 	Parenthesized bool
+	// SpacedParen reports that whitespace separated the callee from its
+	// opening parenthesis (`f (x)` rather than `f(x)`). The two produce the
+	// same call here, but Ruby reads the spaced form as a command whose
+	// argument is the whole parenthesised expression, so `f (x).length` means
+	// different things in the two languages. Nothing in the AST would
+	// otherwise record which was written.
+	SpacedParen bool
+	// SpacedParenTakesMember reports that this spaced-paren call is the
+	// receiver of a member access (`f (x).length`). That is the one shape
+	// where the space changes the program's meaning rather than only its
+	// spelling: Ruby binds the member access inside the argument and answers
+	// f((x).length), while this language binds it to the call's result. Both
+	// readings are plausible, both produce a value, and nothing else marks
+	// which one was written.
+	SpacedParenTakesMember bool
 	// Safe reports whether the call used the safe-navigation operator
 	// (`receiver&.method(...)`). When set and the receiver evaluates to nil,
 	// the runtime short-circuits the call to nil instead of dispatching. It is

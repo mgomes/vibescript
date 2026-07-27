@@ -16,6 +16,9 @@ type parser struct {
 	curToken  ast.Token
 	peekToken ast.Token
 	peekPeek  ast.Token
+	// prevEnd is the exclusive end position of the token before curToken, so
+	// the parser can tell whether whitespace separates them.
+	prevEnd source.Position
 
 	errors        []error
 	omittedErrors int
@@ -210,9 +213,22 @@ func (p *parser) isDeclaredLocal(name string) bool {
 }
 
 func (p *parser) nextToken() {
+	p.prevEnd = p.curToken.End
 	p.curToken = p.peekToken
 	p.peekToken = p.peekPeek
 	p.peekPeek = p.l.NextToken()
+}
+
+// curTokenIsSpacedFromPrevious reports whether whitespace separates the
+// current token from the one before it. A space is not decorative before an
+// opening parenthesis: `f (x).length` and `f(x).length` are the same AST here
+// but different programs in Ruby, so the parser has to record which was
+// written for anything downstream to say so.
+func (p *parser) curTokenIsSpacedFromPrevious() bool {
+	if p.prevEnd == (source.Position{}) {
+		return false
+	}
+	return p.curToken.Pos != p.prevEnd
 }
 
 // reprimeAt repositions the lexer to resume scanning at the given byte
