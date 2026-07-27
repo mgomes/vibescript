@@ -1722,6 +1722,10 @@ func (p *parser) parseMemberExpression(object ast.Expression) ast.Expression {
 	if call, ok := object.(*ast.CallExpr); ok && call.SpacedParen {
 		call.SpacedParenTakesMember = true
 	}
+	if p.memberReceiverProbe != "" && p.curToken.Literal == p.memberReceiverProbe && p.memberReceiver == nil {
+		p.memberReceiver = object
+		p.memberReceiverParams = p.currentParams
+	}
 	return &ast.MemberExpr{Object: object, Property: p.curToken.Literal, Safe: safe, Position: object.Pos()}
 }
 

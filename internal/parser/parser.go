@@ -20,6 +20,16 @@ type parser struct {
 	// the parser can tell whether whitespace separates them.
 	prevEnd source.Position
 
+	// memberReceiverProbe names a member access whose receiver the caller
+	// wants captured; memberReceiver and memberReceiverFunction hold it once
+	// seen. See MemberReceiverFor.
+	memberReceiverProbe  string
+	memberReceiver       ast.Expression
+	memberReceiverParams []ast.Param
+	// currentParams are the parameters of the function whose body is being
+	// parsed, empty at the top level.
+	currentParams []ast.Param
+
 	errors        []error
 	omittedErrors int
 	codeFrames    *source.CodeFrameFormatter
