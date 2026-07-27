@@ -155,3 +155,51 @@ end`
 		t.Fatalf("got %q, want %q", got.String(), "0,1,2,3,4,5|6")
 	}
 }
+
+// A block can mutate or delete an entry of the receiver while iterating. Values
+// are captured when the block runs, not when the deferred build flushes, so an
+// already-processed entry keeps the value it contributed at the time -- matching
+// what inserting inline gave, and what the typed branch gets from its
+// snapshotted entries.
+func TestLegacyTransformKeysCapturesValuesAtBlockTime(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate string
+		want   string
+	}{
+		{
+			name:   "rebinding an earlier entry",
+			mutate: `h["kaaa"] = 99`,
+			want:   "0,1,2",
+		},
+		{
+			name:   "deleting an earlier entry",
+			mutate: `h.delete("kaaa")`,
+			want:   "0,1,2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := `def run(h)
+  n = 0
+  out = h.transform_keys do |k|
+    n = n + 1
+    if n == 2
+      ` + tt.mutate + `
+    end
+    "x" + k
+  end
+  out.values.join(",")
+end`
+			script := compileScriptWithConfig(t, Config{StepQuota: 1 << 20, MemoryQuotaBytes: 8 << 20}, source)
+			got, err := script.Call(context.Background(), "run", []Value{hostBuiltStringHash(3)}, CallOptions{})
+			if err != nil {
+				t.Fatalf("call failed: %v", err)
+			}
+			if got.String() != tt.want {
+				t.Fatalf("got %q, want %q (deferred flush read the receiver's later value)", got.String(), tt.want)
+			}
+		})
+	}
+}

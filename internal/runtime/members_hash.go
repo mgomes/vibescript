@@ -214,20 +214,6 @@ func sortedHashEntryBufferBytes(entryCount int) int {
 	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(entryCount, 2*estimatedValueBytes))
 }
 
-// producedKeyBufferBytes sizes the buffer of block-produced keys a legacy-branch
-// driver holds while deferring its result build. It charges one Value per entry
-// rather than the two a HashEntry buffer would: the values are read back out of
-// the receiver map through the sorted key list the driver already holds, so only
-// the keys need buffering. Reserving the entry-pair size instead would raise
-// every call's floor for storage the driver never allocates, which is the
-// false-rejection direction -- it would fail scripts that used to fit.
-func producedKeyBufferBytes(entryCount int) int {
-	if entryCount <= smallHashKeyBufferSize {
-		return 0
-	}
-	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(entryCount, estimatedValueBytes))
-}
-
 // hashFlattenBounded materializes Hash#flatten under sandbox accounting. Ruby's
 // Hash#flatten first materializes the receiver's [key, value] pairs and then
 // flattens that array to the requested depth; both phases previously ran as
@@ -2917,7 +2903,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			out.ReserveHashOrder(len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
-			var producedBuf [smallHashKeyBufferSize]Value
+			var producedBuf [smallHashKeyBufferSize]HashEntry
 			sorted := sortedHashKeysInto(entries, keyBuf[:])
 			// Defer the insertions past the last block call so the region's memoized
 			// prefix survives the loop, and fall back the moment the block yields an
@@ -2925,8 +2911,8 @@ func hashMemberTransforms(property string) (Value, error) {
 			// would canonicalize in its final state rather than the state it had when
 			// its entry was processed. This mirrors the typed branch; the difference is
 			// that there is no entry buffer to reuse here, so the produced keys get
-			// their own buffer (reserved above). Their values are read back out of the
-			// receiver through sorted, so only the keys are buffered.
+			// their own buffer, holding each key with the value its entry contributed
+			// at the moment the block ran.
 			// The buffer is reserved and allocated on first use rather than up front,
 			// because a block that yields an array key falls back on its very first
 			// entry and never buffers anything. Charging for storage that run never
@@ -2939,18 +2925,18 @@ func hashMemberTransforms(property string) (Value, error) {
 				if cap(produced) >= len(sorted) {
 					return nil
 				}
-				producedDelta += exec.reserveLoopScratch(producedKeyBufferBytes(len(sorted)))
+				producedDelta += exec.reserveLoopScratch(sortedHashEntryBufferBytes(len(sorted)))
 				if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 					return err
 				}
-				grown := make([]Value, len(produced), len(sorted))
+				grown := make([]HashEntry, len(produced), len(sorted))
 				copy(grown, produced)
 				produced = grown
 				return nil
 			}
 			flush := func() error {
-				for j, key := range produced {
-					if err := hashSet(out, key, entries[sorted[j]]); err != nil {
+				for _, entry := range produced {
+					if err := hashSet(out, entry.Key, entry.Value); err != nil {
 						return fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 					}
 				}
@@ -2995,7 +2981,12 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := reserveProduced(); err != nil {
 						return NewNil(), err
 					}
-					produced = append(produced, nextKey)
+					// The value is captured here, not at flush time: a block that
+					// mutates or deletes an already-processed entry of the receiver
+					// must not change the value this entry contributes, which is what
+					// inserting inline gave and what the typed branch gets from its
+					// snapshotted entries.
+					produced = append(produced, HashEntry{Key: nextKey, Value: entries[key]})
 				} else if err := hashSet(out, nextKey, entries[key]); err != nil {
 					return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 				}
