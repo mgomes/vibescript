@@ -52,6 +52,12 @@ end
 
 Without an explicit `layout`, `Time.parse` accepts common formats such as RFC3339/RFC1123, `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYY-MM-DD HH:MM:SS`, and `MM/DD/YYYY` (with optional time).
 
+A timestamp that carries no zone is read as UTC, and `Time.now` returns UTC, so
+a script produces the same result on every host regardless of its `TZ`. Pass
+`in:` to work in a particular zone (`Time.now(in: "America/New_York")`,
+`Time.parse("2026-07-27", in: "Asia/Tokyo")`); an explicit `Z` or offset in the
+input is always honored as written.
+
 ## Formatting
 
 `Time#format` uses Go layouts, built from the reference time `Mon Jan 2 15:04:05 MST 2006`:
