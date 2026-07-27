@@ -44,6 +44,18 @@ func TestCheckerRejectsNonConcatenableOperandPairs(t *testing.T) {
 			source:  "def f(a: string, b: array<int> | hash) -> string\n  a + b\nend",
 			wantErr: "unsupported addition operands",
 		},
+		{
+			// The string-valued side may itself be nullable or a union. Both
+			// string + array and nil + array are rejected, so no pairing works.
+			name:    "nullable string plus array",
+			source:  "def f(a: string?, b: array<int>) -> string\n  a + b\nend",
+			wantErr: "unsupported addition operands",
+		},
+		{
+			name:    "union string plus array",
+			source:  "def f(a: string | int, b: array<int>) -> string\n  a + b\nend",
+			wantErr: "unsupported addition operands",
+		},
 	}
 
 	for _, tc := range tests {
@@ -69,6 +81,10 @@ func TestCheckerAllowsConcatenableAndDynamicOperands(t *testing.T) {
 		// fails is reported here.
 		"string plus nullable string": "def f(a: string, b: string?) -> string\n  a + b\nend",
 		"string plus mixed union":     "def f(a: string, b: int | string) -> string\n  a + b\nend",
+		// A pairing that can succeed keeps the expression silent even when one
+		// side is nullable.
+		"nullable string plus string": "def f(a: string?, b: string) -> string\n  a + b\nend",
+		"nullable int plus int":       "def f(a: int?, b: int) -> int\n  a + b\nend",
 	}
 
 	for name, source := range sources {

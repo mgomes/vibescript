@@ -16333,11 +16333,10 @@ func (c *scriptChecker) binaryOperationOutcome(op TokenType, left, right *TypeEx
 	}
 	if !leftOK || !rightOK {
 		// Partial knowledge decides a couple of left-driven results but never
-		// an invalidity -- with one exception. When a concatenation's other
-		// operand is a union or nullable whose every alternative the runtime
-		// rejects, the outcome is not partially known: it fails whichever
-		// alternative the value turns out to be.
-		if op == tokenPlus && concatenationAlwaysInvalid(left, right) {
+		// an invalidity -- with one exception. When every combination of the
+		// operands' alternatives is rejected, the outcome is not partially
+		// known: the expression fails whichever alternatives the values take.
+		if op == tokenPlus && everyConcatOperandPairInvalid(left, right) {
 			return binaryOutcome{invalid: true}
 		}
 		if leftOK && op == tokenPercent && leftKind == TypeString {
@@ -16381,41 +16380,87 @@ func expandNumericKinds(kind TypeKind) []TypeKind {
 // subtractValues, multiplyValues, powerValues, divideValues, moduloValues,
 // shovelValues, intersectValues, and compareValueOrder, including case order
 // (string concatenation is the late fallback for +).
-// concatenationAlwaysInvalid reports whether a `+` pairing a known string with
-// an operand whose every alternative the runtime concatenation guard rejects,
-// in either operand order. `a + b` with `b: array<int>?` qualifies: both an
-// array and nil are rejected, so no runtime value can succeed.
-func concatenationAlwaysInvalid(left, right *TypeExpr) bool {
-	return (isDefinitelyString(left) && neverConcatenable(right)) ||
-		(isDefinitelyString(right) && neverConcatenable(left))
-}
-
-func isDefinitelyString(ty *TypeExpr) bool {
-	return ty != nil && !ty.Nullable && ty.Kind == TypeString
-}
-
-// neverConcatenable reports whether no value the type can hold is renderable
-// into a concatenation. A nullable adds nil, which is itself rejected, so the
-// base kind decides; a union qualifies only when every member does.
-func neverConcatenable(ty *TypeExpr) bool {
-	if ty == nil {
+// everyConcatOperandPairInvalid reports whether `+` rejects every combination
+// of the operands' possible kinds.
+//
+// The checker otherwise declines to decide an invalidity from partial
+// knowledge, which is right when some alternative could succeed. It is not
+// right when none can: `a + b` with `a: string?` and `b: array<int>` fails as
+// string + array and as nil + array alike, so the expression cannot run
+// whichever alternatives the values take.
+//
+// The decision reuses binaryScalarOutcome rather than restating any operator's
+// rules, so this stays correct as those rules change.
+func everyConcatOperandPairInvalid(left, right *TypeExpr) bool {
+	leftKinds, leftKnown := operandKindAlternatives(left)
+	rightKinds, rightKnown := operandKindAlternatives(right)
+	if !leftKnown || !rightKnown || len(leftKinds) == 0 || len(rightKinds) == 0 {
 		return false
 	}
-	switch ty.Kind {
-	case TypeAny, TypeUnknown:
-		return false
-	case TypeUnion:
-		if len(ty.Union) == 0 {
+	// Only decide over kinds binaryScalarOutcome actually models. A class,
+	// instance, function, or enum type reaches its default and would be read as
+	// "rejected" when the rules simply say nothing about it, so those keep the
+	// ordinary "partial knowledge decides nothing" treatment.
+	for _, kind := range append(append([]TypeKind{}, leftKinds...), rightKinds...) {
+		if !concatDecidableKind(kind) {
 			return false
 		}
-		for _, option := range ty.Union {
-			if !neverConcatenable(option) {
+	}
+	for _, lk := range leftKinds {
+		for _, rk := range rightKinds {
+			if _, valid := binaryScalarOutcome(tokenPlus, lk, rk); valid {
 				return false
 			}
 		}
-		return true
 	}
-	return !concatenableTypeKind(ty.Kind)
+	return true
+}
+
+// concatDecidableKind reports whether binaryScalarOutcome models `+` for the
+// kind, so a rejection genuinely means "cannot succeed" rather than "not
+// described here".
+func concatDecidableKind(kind TypeKind) bool {
+	switch kind {
+	case TypeString, TypeInt, TypeFloat, TypeNumber, TypeBool, TypeSymbol,
+		TypeMoney, TypeDuration, TypeTime, TypeRange,
+		TypeNil, TypeArray, TypeHash, TypeShape:
+		return true
+	default:
+		return false
+	}
+}
+
+// operandKindAlternatives expands a type into the concrete kinds a value of it
+// can take: a union contributes each member, and a nullable additionally
+// contributes nil. It reports false when any part is unconstrained, since an
+// unknown alternative could succeed.
+func operandKindAlternatives(ty *TypeExpr) ([]TypeKind, bool) {
+	if ty == nil {
+		return nil, false
+	}
+	var kinds []TypeKind
+	if ty.Nullable {
+		kinds = append(kinds, TypeNil)
+	}
+	switch ty.Kind {
+	case TypeAny, TypeUnknown:
+		return nil, false
+	case TypeUnion:
+		if len(ty.Union) == 0 {
+			return nil, false
+		}
+		for _, option := range ty.Union {
+			optionKinds, ok := operandKindAlternatives(option)
+			if !ok {
+				return nil, false
+			}
+			kinds = append(kinds, optionKinds...)
+		}
+		return kinds, true
+	case TypeShape:
+		return append(kinds, TypeHash), true
+	}
+	return append(kinds, ty.Kind), true
 }
 
 // concatenableTypeKind mirrors the runtime's concatenableWithString for a
