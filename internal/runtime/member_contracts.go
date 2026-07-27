@@ -457,9 +457,9 @@ var memberContractExemptions = map[string][]string{
 	"array": {
 		"all?", "any?", "append", "chunk", "chunk_while", "clear", "combination",
 		"compact", "compact!", "count", "cycle", "delete", "delete_if",
-		"difference", "dig", "drop", "drop_while", "each", "each_cons",
+		"collect_concat", "difference", "dig", "drop", "drop_while", "each", "each_cons",
 		"each_slice", "each_with_index", "empty?", "fill", "filter_map", "find",
-		"find_index", "first", "flatten", "grep", "grep_v", "group_by",
+		"find_index", "first", "flat_map", "flatten", "grep", "grep_v", "group_by",
 		"group_by_stable", "include?", "index", "insert", "inspect", "join",
 		"keep_if", "last", "length", "map", "map!", "map_with_index", "max",
 		"max_by", "min", "min_by", "minmax", "none?", "one?", "partition",
