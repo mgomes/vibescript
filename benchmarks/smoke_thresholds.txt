@@ -49,6 +49,31 @@ BenchmarkExecutionTallyLoop 12000000 1200 550000
 # the whole hash on every check (~19.7ms versus ~0.40ms now), so a regression
 # clears this cap by more than an order of magnitude even on a slow runner.
 BenchmarkExecutionHashTransformValuesLoop 8000000 120 260000
+
+# Block-driver matrix. These cover body shape (pure versus outer-local
+# accumulator), hash receiver origin (host-built/untyped versus
+# script-built/typed), and walking versus result-building drivers -- the axes
+# that select different estimator paths. Each of these shapes was quadratic in
+# the collection size at some point, landing between 18ms and 41ms at 600
+# entries versus roughly 0.4-2.5ms now. The hash cells use 1000 entries rather
+# than 600 so the quadratic separates decisively: a reverted fix measures 46-53ms
+# against a healthy 0.7-2.5ms, clearing the cap even on a fast dev machine
+# instead of relying on the CI runner being slower.
+#
+# The ns caps are deliberately uniform and wide. A shared runner is roughly
+# 3-10x a dev laptop, so a healthy run lands well under this cap while a
+# returned quadratic clears it several times over; a tighter per-benchmark cap
+# would only buy flake. The alloc and byte caps are the tight signals, at
+# roughly 1.5x the measured floor.
+BenchmarkExecutionEachRowsPureBody 25000000 3800 880000
+BenchmarkExecutionMapRowsPureBody 25000000 3800 950000
+BenchmarkExecutionMapRowsScalarAccumulator 25000000 3800 950000
+BenchmarkExecutionHashEachHostBuilt 25000000 1600 230000
+BenchmarkExecutionHashEachHostBuiltAccumulator 25000000 7700 1600000
+BenchmarkExecutionHashSelectHostBuilt 25000000 1600 400000
+BenchmarkExecutionHashTransformValuesTyped 25000000 240 2500000
+BenchmarkExecutionHashSelectTyped 25000000 190 2350000
+BenchmarkExecutionHashTransformKeysTyped 25000000 4800 2950000
 BenchmarkCallShortScript 5000 12 3500
 BenchmarkModuleRequireCacheHit 120000 60 10000
 # Deep-recursion call path (naive fib(20), ~13.5k nested calls). The loop-shaped
