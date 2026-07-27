@@ -16,10 +16,10 @@ func TestCaseEqualityOperator(t *testing.T) {
 		{"scalar int equal", `1 === 1`, true},
 		{"scalar int unequal", `1 === 2`, false},
 		{"scalar float equal", `1.5 === 1.5`, true},
-		// `===` mirrors Vibescript's `==`, which treats int and float as distinct
-		// kinds, so `1 === 1.0` is false even though Ruby reports true. The
-		// scalar fallback intentionally tracks `==` rather than diverging.
-		{"scalar int vs float not equal", `1 === 1.0`, false},
+		// `===` mirrors `==`, which compares an int and a float numerically, so
+		// this matches Ruby. The scalar fallback intentionally tracks `==`
+		// rather than diverging from it.
+		{"scalar int vs float compare numerically", `1 === 1.0`, true},
 		{"scalar string equal", `"a" === "a"`, true},
 		{"scalar string unequal", `"a" === "b"`, false},
 		{"scalar bool equal", `true === true`, true},

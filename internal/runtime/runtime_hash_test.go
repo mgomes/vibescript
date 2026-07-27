@@ -1905,7 +1905,9 @@ func TestHashValuePredicates(t *testing.T) {
 		{name: "value? nested hash present", method: "value?", hash: "{ a: { b: 1 } }", value: "{ b: 1 }", want: true},
 		{name: "has_value? int present", method: "has_value?", hash: "{ a: 1 }", value: "1", want: true},
 		{name: "has_value? int absent", method: "has_value?", hash: "{ a: 1 }", value: "2", want: false},
-		{name: "has_value? distinguishes int and float", method: "has_value?", hash: "{ a: 1 }", value: "1.0", want: false},
+		// has_value? searches with ==, which compares an int and a float
+		// numerically, matching Ruby's Hash#has_value?.
+		{name: "has_value? compares int and float numerically", method: "has_value?", hash: "{ a: 1 }", value: "1.0", want: true},
 	}
 
 	for _, tt := range tests {

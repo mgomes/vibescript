@@ -1231,9 +1231,47 @@ type valueEqualityPair struct {
 	rightLen int
 }
 
+// numericCrossKindEqual compares an int against a float exactly.
+//
+// The comparison runs through big.Float rather than converting the integer to
+// float64, because a float64 cannot represent every int64 above 2^53 and the
+// conversion would make distinct integers compare equal to the same float.
+// NaN equals nothing, and neither infinity equals any integer.
+func numericCrossKindEqual(v, other Value) bool {
+	var intVal, floatVal Value
+	switch {
+	case v.kind == KindInt && other.kind == KindFloat:
+		intVal, floatVal = v, other
+	case v.kind == KindFloat && other.kind == KindInt:
+		intVal, floatVal = other, v
+	default:
+		return false
+	}
+
+	f := floatVal.Float()
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return false
+	}
+	if f != math.Trunc(f) {
+		// A float with a fractional part cannot equal an integer.
+		return false
+	}
+
+	exactFloat := new(big.Float).SetFloat64(f)
+	if bi, ok := intVal.data.(*big.Int); ok {
+		return new(big.Float).SetInt(bi).Cmp(exactFloat) == 0
+	}
+	return new(big.Float).SetInt64(intVal.Int()).Cmp(exactFloat) == 0
+}
+
 func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 	if v.kind != other.kind {
-		return false
+		// An int and a float compare numerically, so 1 == 1.0 holds. This is
+		// the distinction the documentation draws between == and eql?: Eql
+		// applies its own kind gate before delegating here and therefore stays
+		// strict, which is what hash keys use. It also matches <=>, which
+		// already reports 1 <=> 1.0 as 0.
+		return numericCrossKindEqual(v, other)
 	}
 	switch v.kind {
 	case KindNil:

@@ -166,8 +166,13 @@ func TestBigIntEqualityAndEql(t *testing.T) {
 	if a.Equal(value.NewInt(0)) || value.NewInt(0).Equal(a) {
 		t.Fatalf("big payload compared equal to compact 0")
 	}
-	if a.Equal(value.NewFloat(18446744073709551616.0)) {
-		t.Fatalf("int must not equal float (no cross-kind ==)")
+	// == compares an int and a float numerically, so a big value equals the
+	// float of the same magnitude; eql? keeps the kind gate and does not.
+	if !a.Equal(value.NewFloat(18446744073709551616.0)) {
+		t.Fatalf("int must equal the float of the same value under ==")
+	}
+	if a.Eql(value.NewFloat(18446744073709551616.0)) {
+		t.Fatalf("eql? must stay kind-strict across int and float")
 	}
 }
 

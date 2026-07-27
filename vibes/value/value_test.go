@@ -1751,7 +1751,10 @@ func TestValueEqual(t *testing.T) {
 		{"bools", value.NewBool(true), value.NewBool(true), true},
 		{"bool_mismatch", value.NewBool(true), value.NewBool(false), false},
 		{"ints", value.NewInt(7), value.NewInt(7), true},
-		{"int_vs_float_kind_mismatch", value.NewInt(1), value.NewFloat(1), false},
+		// == compares an int and a float numerically; eql? keeps the kind gate
+		// and is covered separately.
+		{"int_vs_float_compare_numerically", value.NewInt(1), value.NewFloat(1), true},
+		{"int_vs_fractional_float", value.NewInt(1), value.NewFloat(1.5), false},
 		{"floats", value.NewFloat(2.5), value.NewFloat(2.5), true},
 		{"nan_not_equal", value.NewFloat(math.NaN()), value.NewFloat(math.NaN()), false},
 		{"strings", value.NewString("a"), value.NewString("a"), true},
