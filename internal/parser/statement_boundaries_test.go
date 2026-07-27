@@ -978,12 +978,11 @@ end`
 		&ast.IfStmt{
 			Condition: &ast.Identifier{Name: "flag"},
 			Consequent: []ast.Statement{
-				&ast.ExprStmt{
-					Expr: &ast.UnaryExpr{
-						Operator: ast.TokenMinus,
-						Right:    &ast.IntegerLiteral{Value: 1},
-					},
-				},
+				// The sign folds into the literal so a trailing member call
+				// binds to the negative value (-5.abs is 5). What this test
+				// pins is unchanged: the line-initial minus still starts its
+				// own statement rather than continuing `flag` as `flag - 1`.
+				&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: -1}},
 			},
 			Alternate: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 1}},

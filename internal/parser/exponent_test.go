@@ -48,10 +48,11 @@ end`
 			Expr: &ast.BinaryExpr{
 				Left:     &ast.IntegerLiteral{Value: 2},
 				Operator: ast.TokenPower,
-				Right: &ast.UnaryExpr{
-					Operator: ast.TokenMinus,
-					Right:    &ast.IntegerLiteral{Value: 3},
-				},
+				// A negative exponent folds into the literal; the value is
+				// unchanged (2 ** -3 is 0.125), and the -2 ** 2 case above
+				// keeps its unary form, so exponentiation still binds tighter
+				// than a literal's sign.
+				Right: &ast.IntegerLiteral{Value: -3},
 			},
 		},
 	}

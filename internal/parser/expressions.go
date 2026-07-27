@@ -1529,11 +1529,58 @@ func (p *parser) parsePrefixExpression() ast.Expression {
 	pos := p.curToken.Pos
 	operator := p.curToken.Type
 	p.nextToken()
+	if lit := p.parseNegatedNumericLiteral(operator); lit != nil {
+		return lit
+	}
 	right := p.parseExpression(precPrefix)
 	if right == nil {
 		return nil
 	}
 	return &ast.UnaryExpr{Operator: operator, Right: right, Position: pos}
+}
+
+// parseNegatedNumericLiteral folds a leading minus into a numeric literal so a
+// following member call binds to the negative value, matching Ruby: -5.abs is
+// 5, not -(5.abs). Without this the operand parse runs at precPrefix, which is
+// below precCall, so the member access is swallowed into the operand and the
+// sign ends up applied to the method's result -- silently returning a negative
+// number from .abs, and failing outright on -5.to_s.
+//
+// `**` is deliberately excluded. Ruby binds exponentiation tighter than the
+// literal's sign, so -2 ** 2 stays -(2 ** 2) = -4; falling through to the
+// ordinary unary path preserves that.
+//
+// Returns nil when the folding does not apply, leaving the caller's normal
+// prefix handling in place.
+func (p *parser) parseNegatedNumericLiteral(operator ast.TokenType) ast.Expression {
+	if operator != ast.TokenMinus || p.peekToken.Type == ast.TokenPower {
+		return nil
+	}
+	switch p.curToken.Type {
+	case ast.TokenInt:
+		lit, ok := p.parseIntegerLiteral().(*ast.IntegerLiteral)
+		if !ok {
+			return nil
+		}
+		if lit.Big != nil {
+			negated := new(big.Int).Neg(lit.Big)
+			// A magnitude that only overflows int64 while positive fits once
+			// negated, so keep the compact form a direct literal would have.
+			if negated.IsInt64() {
+				return &ast.IntegerLiteral{Value: negated.Int64(), Position: lit.Position}
+			}
+			return &ast.IntegerLiteral{Big: negated, Position: lit.Position}
+		}
+		return &ast.IntegerLiteral{Value: -lit.Value, Position: lit.Position}
+	case ast.TokenFloat:
+		lit, ok := p.parseFloatLiteral().(*ast.FloatLiteral)
+		if !ok {
+			return nil
+		}
+		return &ast.FloatLiteral{Value: -lit.Value, Position: lit.Position}
+	default:
+		return nil
+	}
 }
 
 func (p *parser) parseInfixExpression(left ast.Expression) ast.Expression {
