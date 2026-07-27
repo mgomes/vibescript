@@ -488,7 +488,7 @@ var memberContractExemptions = map[string][]string{
 		"delete", "delete_if", "dig", "each", "each_key", "each_value",
 		"each_with_index", "empty?", "except", "fetch", "fetch_values",
 		"flatten", "has_key?", "has_value?", "include?", "inspect", "keep_if",
-		"key?", "keys", "length", "map_with_index", "member?", "merge",
+		"key?", "keys", "length", "map", "map_with_index", "member?", "merge",
 		"merge!", "reject", "remap_keys", "replace", "select", "size", "slice",
 		"store", "to_a", "transform_keys", "transform_values", "update",
 		"value?", "values", "values_at",
