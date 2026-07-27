@@ -120,22 +120,36 @@ func TestRelationalOperatorsStillRejectArrays(t *testing.T) {
 	}
 }
 
-// The widened element coverage applies to array elements only. Bare symbols,
-// nil, and booleans do not order under <=> today, and this change is not the
-// place to alter that.
-func TestScalarSpaceshipCoverageUnchanged(t *testing.T) {
+// Scalar operand coverage follows Ruby per kind: symbols order, nil orders
+// against itself, and booleans do not order even though sort accepts them.
+func TestScalarSpaceshipCoverage(t *testing.T) {
 	t.Parallel()
 
-	for _, expr := range []string{`(:a <=> :b).inspect`, `(nil <=> nil).inspect`, `(true <=> false).inspect`} {
-		t.Run(expr, func(t *testing.T) {
+	tests := []struct {
+		expr string
+		want string
+	}{
+		{`(:a <=> :b).inspect`, "-1"},
+		{`(:b <=> :a).inspect`, "1"},
+		{`(:a <=> :a).inspect`, "0"},
+		{`(nil <=> nil).inspect`, "0"},
+		// TrueClass defines no <=> in Ruby.
+		{`(true <=> false).inspect`, "nil"},
+		// Mismatched kinds stay unordered.
+		{`(:a <=> 1).inspect`, "nil"},
+		{`(nil <=> 1).inspect`, "nil"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
 			t.Parallel()
-			script := compileScript(t, "def run()\n  "+expr+"\nend")
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend")
 			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
 			if err != nil {
-				t.Fatalf("%s: %v", expr, err)
+				t.Fatalf("%s: %v", tc.expr, err)
 			}
-			if got.String() != "nil" {
-				t.Fatalf("%s = %s, want nil (unchanged by array comparison)", expr, got.String())
+			if got.String() != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.expr, got.String(), tc.want)
 			}
 		})
 	}
