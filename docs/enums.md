@@ -49,10 +49,15 @@ continues to receive plain symbols.
 Enum values expose a few reflective properties:
 
 ```vibe
-Status::Draft.name   # "Draft"
-Status::Draft.symbol # :draft
-Status::Draft.enum   # <Enum Status>
+Status::Draft.name    # "Draft"
+Status::Draft.symbol  # :draft
+Status::Draft.enum    # <Enum Status>
+Status::Draft.to_s    # "Status::Draft"
+Status::Draft.inspect # "Status::Draft"
 ```
+
+`to_s` (alias `string`) and `inspect` return the same text interpolation
+produces, so `"#{Status::Draft}"` and `Status::Draft.to_s` always agree.
 
 ## Serialization
 
