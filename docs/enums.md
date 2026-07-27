@@ -59,6 +59,14 @@ Status::Draft.inspect # "Status::Draft"
 `to_s` (alias `string`) and `inspect` return the same text interpolation
 produces, so `"#{Status::Draft}"` and `Status::Draft.to_s` always agree.
 
+The enum type itself answers the same conversions, plus `name`:
+
+```vibe
+Status.name     # "Status"
+Status.to_s     # "<Enum Status>"
+Status.inspect  # "<Enum Status>"
+```
+
 ## Serialization
 
 `JSON.stringify` and `string.template` serialize enum values using the enum
