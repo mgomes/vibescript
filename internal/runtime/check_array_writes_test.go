@@ -2361,9 +2361,14 @@ def run(items: array<int>, flag: bool)
 end
 `)
 
+			// One warning, not one per bad element: both writes land at the
+			// same position with the same text, so a second copy tells the
+			// reader nothing. What this test protects is that the count does
+			// not depend on which alternative the checker sees first, and
+			// that holds either way.
 			warnings := script.CheckWarningsForFunction("run")
-			if len(warnings) != 2 {
-				t.Fatalf("CheckWarningsForFunction(run) = %#v, want two incompatible write warnings", warnings)
+			if len(warnings) != 1 {
+				t.Fatalf("CheckWarningsForFunction(run) = %#v, want one incompatible write warning", warnings)
 			}
 			for _, warning := range warnings {
 				if warning.Pos.Line != 4 ||
@@ -6618,8 +6623,11 @@ end`)
 
 	gotWarnings := script.CheckWarningsForFunction("run")
 	warnings := strings.Join(checkWarningMessages(gotWarnings), "\n")
-	if got := strings.Count(warnings, "call to takes_int argument value expected int, got string"); got != 3 {
-		t.Fatalf("forwarded diagnostics = %d in %#v, want 3 exact targets", got, gotWarnings)
+	// Two distinct targets: the third diagnostic repeated one of them
+	// exactly -- same function, position, and text -- and identical copies
+	// are collapsed before reporting.
+	if got := strings.Count(warnings, "call to takes_int argument value expected int, got string"); got != 2 {
+		t.Fatalf("forwarded diagnostics = %d in %#v, want 2 exact targets", got, gotWarnings)
 	}
 	if got := strings.Count(warnings, "write to names expected element symbol, got int"); got != 3 {
 		t.Fatalf("receiver write diagnostics = %d in %q, want 3 retained bounds", got, warnings)
