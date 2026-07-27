@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -539,7 +540,32 @@ func (handle *taskHandle) builtinValue(exec *Execution, receiver Value, args []V
 	if handle.group.isClosed() {
 		return NewNil(), fmt.Errorf("task handle cannot be used after task scope exits")
 	}
-	return handle.wait(exec.Context())
+	result, err := handle.wait(exec.Context())
+	return result, handle.substituteRootCause(err)
+}
+
+// substituteRootCause replaces a handle's own cancellation with the failure
+// that caused it.
+//
+// When one task fails its siblings are canceled, correctly and promptly, and
+// each of those reports "context canceled" -- the mechanism rather than the
+// reason. Which of the two an author sees depended only on the order the
+// handles happened to be read, which is arbitrary from where they sit: reading
+// the canceled sibling first reported the cancellation and lost the real
+// cause entirely.
+//
+// Only a pure cancellation is substituted, and only when the group recorded a
+// non-cancellation failure. A group canceled from outside (a caller's context
+// ending) still reports the cancellation, because there is no other cause.
+func (handle *taskHandle) substituteRootCause(err error) error {
+	if err == nil || !errors.Is(err, context.Canceled) {
+		return err
+	}
+	rootCause := handle.group.err()
+	if rootCause == nil || errors.Is(rootCause, context.Canceled) {
+		return err
+	}
+	return rootCause
 }
 
 func (handle *taskHandle) wait(ctx context.Context) (Value, error) {
