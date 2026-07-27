@@ -928,4 +928,27 @@ surface that carries nominal facts through control flow and validates writes.
 - [x] Full tests pass.
 - [x] Release checklist passes for `v1.0.0-rc8`.
 
+## v1.0.0-rc9 - Linear Hash Iteration Under a Quota (completed 2026-07-27)
+
+Goal: ninth release candidate — finish the memory-quota work rc8 started, so
+every block driver iterates linearly whether its receiver came from a script or
+from the host.
+
+- [x] Build `Hash#transform_keys` results after the block loop on both the typed
+  and legacy branches, removing the last driver that re-measured its receiver on
+  every insertion.
+- [x] Preserve insertion order, last-writer-wins collisions, unsupported-key
+  failure, and array-key identity across the deferred build.
+- [x] Charge the deferred key buffer against the quota only when it is
+  allocated, and fold it into the build accumulator's baseline.
+- [x] Benchmark the block-driver shapes whose absence hid these regressions:
+  pure versus accumulating block bodies, host-built versus script-built hash
+  receivers, and walking versus result-building drivers.
+
+### v1.0.0-rc9 Definition of Done
+
+- [x] Release notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v1.0.0-rc9`.
+
 ## Unreleased

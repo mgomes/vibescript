@@ -9,6 +9,32 @@ All notable changes to this project will be documented in this file.
 <!-- Unreleased entries are tracked as individual files in changelog.d/ so
      pull requests never conflict on this file. They are compiled into a
      versioned section by scripts/build_changelog.sh at release time. -->
+## v1.0.0-rc9 - 2026-07-27
+
+Ninth release candidate: finishes the memory-quota work rc8 started. `Hash#transform_keys`
+was the last block driver still building its result inside the iteration loop, which
+re-measured the whole receiver on every check and made remapping grow quadratically with
+the entry count. Both its branches now build after the loop, so every hash driver is
+linear whether the receiver came from a script or from the host. The benchmark suite gained
+the block-driver shapes that made these regressions invisible in the first place.
+
+- **Performance: remapping the keys of a script-built hash no longer degrades
+  under a memory quota.** `transform_keys` inserted into its result between block
+  calls, which re-measured the whole receiver on every check and made the walk
+  grow quadratically with the entry count. It now builds the result after the
+  loop. Remapping a 600-entry hash this way is roughly 24x faster.
+- **Testing: block-driver benchmarks now cover the shapes that went quadratic.**
+  The suite gained coverage for pure versus accumulating block bodies,
+  host-built versus script-built hash receivers, and walking versus
+  result-building drivers, each wired into the CI smoke gate. Every one of these
+  shapes regressed at some point without a benchmark noticing.
+- **Performance: remapping the keys of a host-supplied hash no longer degrades
+  under a memory quota.** `transform_keys` inserted into its result between block
+  calls when the receiver came from the host rather than from a script, which
+  re-measured the whole receiver on every check and made the walk grow
+  quadratically with the entry count. Remapping a 1000-entry hash this way is now
+  roughly 40x faster.
+
 ## v1.0.0-rc8 - 2026-07-26
 
 Eighth release candidate: the gradual checker becomes a real typed surface.
