@@ -188,6 +188,9 @@ jobs:
       - name: Gate known-issues bug bar
         run: ./scripts/check_known_issues.sh
 
+      - name: Gate embedding templates compile
+        run: ./scripts/check_embedding_templates.sh
+
       - name: Gate parser fuzz target
         run: go test ./internal/runtime -run '^$' -fuzz=FuzzCompileScriptDoesNotPanic -fuzztime=10000x
 

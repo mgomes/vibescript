@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 type service struct {
@@ -40,13 +41,13 @@ end
 func (s *service) handle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	result, err := s.script.Call(ctx, "run", []vibes.Value{
-		vibes.NewHash(map[string]vibes.Value{
-			"id": vibes.NewString(r.URL.Query().Get("id")),
+	result, err := s.script.Call(ctx, "run", []value.Value{
+		value.NewHash(map[string]value.Value{
+			"id": value.NewString(r.URL.Query().Get("id")),
 		}),
 	}, vibes.CallOptions{
-		Globals: map[string]vibes.Value{
-			"request_id": vibes.NewString(r.Header.Get("X-Request-Id")),
+		Globals: map[string]value.Value{
+			"request_id": value.NewString(r.Header.Get("X-Request-Id")),
 		},
 	})
 	if err != nil {

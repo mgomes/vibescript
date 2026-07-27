@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 func main() {
@@ -34,8 +35,8 @@ end
 	defer ticker.Stop()
 
 	for range ticker.C {
-		_, err := script.Call(context.Background(), "run", []vibes.Value{
-			vibes.NewString("nightly-batch"),
+		_, err := script.Call(context.Background(), "run", []value.Value{
+			value.NewString("nightly-batch"),
 		}, vibes.CallOptions{})
 		if err != nil {
 			panic(err)

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 func main() {
@@ -37,8 +38,8 @@ end
 		panic(err)
 	}
 
-	_, err = script.Call(context.Background(), "run", []vibes.Value{
-		vibes.NewInt(1000),
+	_, err = script.Call(context.Background(), "run", []value.Value{
+		value.NewInt(1000),
 	}, vibes.CallOptions{
 		AllowRequire: true,
 	})
