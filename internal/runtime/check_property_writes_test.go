@@ -9700,10 +9700,20 @@ class User
   end
 end
 `)
+			// The region deliberately fails at runtime, and one spelling of
+			// that failure (nil.missing) is now also reported statically. What
+			// this test guards is that the failed region leaves @b unset
+			// exactly once, so count the ivar-write warning rather than
+			// requiring it to be the only diagnostic.
 			warnings := script.CheckWarnings()
-			if len(warnings) != 1 ||
-				warnings[0].Message != "write to @a expected int, got nil" {
-				t.Fatalf("CheckWarnings() = %#v, want the unset @b warning", warnings)
+			ivarWrites := 0
+			for _, warning := range warnings {
+				if warning.Message == "write to @a expected int, got nil" {
+					ivarWrites++
+				}
+			}
+			if ivarWrites != 1 {
+				t.Fatalf("CheckWarnings() = %#v, want exactly one unset @b warning", warnings)
 			}
 		})
 	}

@@ -316,6 +316,10 @@ end
 `,
 		},
 		{
+			// Rebinding a class name to an int makes User.new a member access
+			// on an int, which fails at runtime with "unknown int method new".
+			// The constructor facts still stay dynamic -- takes_order(u) is not
+			// reported -- but the member itself is now caught.
 			name: "shadowed class name stays dynamic",
 			source: `
 def pick()
@@ -328,6 +332,7 @@ def run()
   takes_order(u)
 end
 `,
+			warning: "unknown int member new",
 		},
 		{
 			name: "dynamic constructor dispatch stays unknown",
