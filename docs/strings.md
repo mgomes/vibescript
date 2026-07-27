@@ -785,6 +785,22 @@ width is truncated toward zero. The pad string defaults to a single space and
 must not be empty; it is repeated and then truncated at a character boundary to
 fill the requested span.
 
+### `str * count`
+
+Repeats the string `count` times, as in Ruby. This is the usual way to build a
+separator, indent, or table rule at a computed width:
+
+```vibe
+"-" * 20            # "--------------------"
+"ab" * 3            # "ababab"
+"ab" * 0            # ""
+"  " * depth        # indentation for a nesting level
+```
+
+A `Float` count is truncated toward zero (`"ab" * 2.0` is `"abab"`), and a
+negative count is reported rather than treated as zero. Repetition is not
+commutative: `3 * "ab"` is an error, as in Ruby.
+
 ### `center(width, pad = " ")`
 
 Centers the string, padding both sides. When the padding cannot be split evenly,
