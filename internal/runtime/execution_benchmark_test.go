@@ -455,3 +455,153 @@ func BenchmarkExecutionRecursiveFibQuota(b *testing.B) {
 		}
 	}
 }
+
+// The block-driver matrix below covers the axes that select different estimator
+// paths, which the suite previously conflated. Three matter independently:
+//
+//   - Body shape. A pure block body leaves the block-iteration region's memoized
+//     prefix intact; a body that writes an outer local resolves past the region
+//     boundary into the prefix. Only the second shape exercised the invalidation
+//     that once made these loops quadratic, and until recently no benchmark used
+//     it, which is why the regression went unnoticed.
+//   - Hash receiver origin. A hash built through the host API keeps legacy
+//     untyped entries and is never promoted by reads, so it takes a different
+//     driver branch than one a script built, and the two failed for different
+//     reasons.
+//   - Driver. Drivers that only walk (each) and drivers that build a result
+//     (select, transform_values, transform_keys) reach the estimator differently,
+//     the latter through their result insertions.
+//
+// Each is a flat top-level benchmark rather than a sub-benchmark of a table: the
+// CI smoke gate builds its -bench pattern by alternating threshold names, and Go
+// splits -bench patterns on "/", so a sub-benchmark name cannot be gated.
+
+// benchmarkTypedHash builds a hash with typed entries, the representation a
+// script-built hash gets on its first write. benchmarkNumericHash's host-built
+// map keeps legacy untyped entries instead, so the two exercise different
+// branches of every hash driver.
+func benchmarkTypedHash(b *testing.B, n int) Value {
+	b.Helper()
+	h := NewTypedHash(n)
+	for i := range n {
+		if err := hashSet(h, NewString(fmt.Sprintf("k%03d", i)), NewInt(int64(i))); err != nil {
+			b.Fatalf("build typed hash: %v", err)
+		}
+	}
+	return h
+}
+
+// benchmarkHashOfRows builds a host-built hash whose values are row hashes: the
+// "keyed records" shape an embedder passes in, and the one where re-walking the
+// receiver per iteration is genuinely expensive. A hash of bare integers is too
+// cheap to walk for a regression to separate from a healthy run by enough to
+// gate on.
+func benchmarkHashOfRows(n int) Value {
+	entries := make(map[string]Value, n)
+	statuses := []Value{NewString("open"), NewString("closed")}
+	for i := range n {
+		entries[fmt.Sprintf("k%03d", i)] = NewHash(map[string]Value{
+			"id":     NewInt(int64(i)),
+			"status": statuses[i%len(statuses)],
+			"score":  NewInt(int64(i * 3)),
+		})
+	}
+	return NewHash(entries)
+}
+
+func benchmarkBlockDriver(b *testing.B, source string, arg Value) {
+	b.Helper()
+	script := compileScriptWithEngine(b, benchmarkEngine(), source)
+	args := []Value{arg}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+// Array drivers, pure body versus outer-local accumulator. The pure variants are
+// the controls: they were always fast, so a divergence between the pair isolates
+// the region invalidation rather than general iteration cost.
+func BenchmarkExecutionEachRowsPureBody(b *testing.B) {
+	benchmarkBlockDriver(b, `def run(values)
+  values.each do |value|
+    value[:id]
+  end
+end`, benchmarkHashRows(600))
+}
+
+func BenchmarkExecutionMapRowsPureBody(b *testing.B) {
+	benchmarkBlockDriver(b, `def run(values)
+  values.map do |value|
+    value[:id]
+  end
+end`, benchmarkHashRows(600))
+}
+
+func BenchmarkExecutionMapRowsScalarAccumulator(b *testing.B) {
+	benchmarkBlockDriver(b, `def run(values)
+  total = 0
+  values.map do |value|
+    total = total + 1
+    value[:id]
+  end
+  total
+end`, benchmarkHashRows(600))
+}
+
+// Hash drivers over a host-built (untyped) receiver: the path every hash an
+// embedder passes in takes.
+func BenchmarkExecutionHashEachHostBuilt(b *testing.B) {
+	benchmarkBlockDriver(b, `def run(values)
+  values.each do |key, value|
+    value + 1
+  end
+end`, benchmarkNumericHash(1000))
+}
+
+func BenchmarkExecutionHashEachHostBuiltAccumulator(b *testing.B) {
+	benchmarkBlockDriver(b, `def run(values)
+  total = 0
+  values.each do |key, value|
+    total = total + value[:id]
+  end
+  total
+end`, benchmarkHashOfRows(1000))
+}
+
+func BenchmarkExecutionHashSelectHostBuilt(b *testing.B) {
+	benchmarkBlockDriver(b, `def run(values)
+  values.select do |key, value|
+    value > 0
+  end
+end`, benchmarkNumericHash(1000))
+}
+
+// The same drivers over a script-built (typed) receiver, which reaches the other
+// branch and, for the result-building drivers, the deferred build.
+func BenchmarkExecutionHashTransformValuesTyped(b *testing.B) {
+	benchmarkBlockDriver(b, `def run(values)
+  values.transform_values do |value|
+    value + 1
+  end
+end`, benchmarkTypedHash(b, 1000))
+}
+
+func BenchmarkExecutionHashSelectTyped(b *testing.B) {
+	benchmarkBlockDriver(b, `def run(values)
+  values.select do |key, value|
+    value > 0
+  end
+end`, benchmarkTypedHash(b, 1000))
+}
+
+func BenchmarkExecutionHashTransformKeysTyped(b *testing.B) {
+	benchmarkBlockDriver(b, `def run(values)
+  values.transform_keys do |key|
+    "x" + key
+  end
+end`, benchmarkTypedHash(b, 1000))
+}
