@@ -16,7 +16,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
+	"size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "flat_map", "collect_concat", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 	"take_while", "drop_while", "grep", "grep_v", "slice_when", "chunk_while",
 	"push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "clear", "delete_if", "keep_if", "uniq", "uniq!", "first", "last", "sum", "compact", "compact!", "flatten", "fill", "chunk", "window", "join", "reverse", "reverse!", "to_h",
 	"take", "drop", "zip", "transpose", "union", "difference",
@@ -38,7 +38,7 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
+	case "size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "flat_map", "collect_concat", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 		"take_while", "drop_while", "grep", "grep_v", "slice_when", "chunk_while":
 		return arrayMemberQuery(property)
 	case "push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "clear", "delete_if", "keep_if", "uniq", "uniq!", "first", "last", "sum", "compact", "compact!", "flatten", "fill", "chunk", "window", "join", "reverse", "reverse!", "to_h", "take", "drop", "zip", "transpose", "union", "difference",
@@ -1259,6 +1259,70 @@ func arrayMemberQuery(property string) (Value, error) {
 				out = append(out, val)
 				if err := acc.addConservative(val, cap(out)); err != nil {
 					return NewNil(), err
+				}
+			}
+			return NewArray(out), nil
+		}), nil
+	case "flat_map", "collect_concat":
+		return NewAutoBuiltin("array.flat_map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.flat_map does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.flat_map does not take keyword arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.flat_map", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer exec.beginBlockIterationRegion().end()
+			arr := receiver.Array()
+			// A block may return any number of elements per input, so the
+			// result length is not known from the receiver. Reserve modestly
+			// and let append grow, as filter_map does, so the peak allocation
+			// stays proportional to what is actually produced rather than to a
+			// guess.
+			out := make([]Value, 0, boundedFilterCap(len(arr)))
+			// Charge every appended element against the quota. out is a local
+			// slice, invisible to the step() slow path and to the post-call
+			// check, so without this a block returning a quota-sized array per
+			// element could pile up far beyond MemoryQuotaBytes before the
+			// post-call check ran. flat_map needs this more than map does: one
+			// block call can contribute many elements.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			var blockArg [1]Value
+			for _, item := range arr {
+				// A step per yield, so an empty block body cannot starve the
+				// step quota while traversing a large receiver.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				blockArg[0] = item
+				val, err := runner.call(blockArg[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				// Ruby flattens exactly one level: an array result contributes
+				// its elements, anything else contributes itself, and a nested
+				// array inside the result is left alone.
+				if val.Kind() != KindArray {
+					out = append(out, val)
+					if err := acc.addConservative(val, cap(out)); err != nil {
+						return NewNil(), err
+					}
+					continue
+				}
+				for _, element := range val.Array() {
+					// Charge a step per contributed element too: one block call
+					// can append arbitrarily many, and the per-yield step above
+					// only bounds the number of calls.
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					out = append(out, element)
+					if err := acc.addConservative(element, cap(out)); err != nil {
+						return NewNil(), err
+					}
 				}
 			}
 			return NewArray(out), nil
