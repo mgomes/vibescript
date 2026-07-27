@@ -214,6 +214,20 @@ func sortedHashEntryBufferBytes(entryCount int) int {
 	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(entryCount, 2*estimatedValueBytes))
 }
 
+// producedKeyBufferBytes sizes the buffer of block-produced keys a legacy-branch
+// driver holds while deferring its result build. It charges one Value per entry
+// rather than the two a HashEntry buffer would: the values are read back out of
+// the receiver map through the sorted key list the driver already holds, so only
+// the keys need buffering. Reserving the entry-pair size instead would raise
+// every call's floor for storage the driver never allocates, which is the
+// false-rejection direction -- it would fail scripts that used to fit.
+func producedKeyBufferBytes(entryCount int) int {
+	if entryCount <= smallHashKeyBufferSize {
+		return 0
+	}
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(entryCount, estimatedValueBytes))
+}
+
 // hashFlattenBounded materializes Hash#flatten under sandbox accounting. Ruby's
 // Hash#flatten first materializes the receiver's [key, value] pairs and then
 // flattens that array to the requested depth; both phases previously ran as
@@ -2880,6 +2894,12 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			// With the insertions deferred below, the loop writes only builtin-local
+			// state, so the region's vouch holds and a host-built receiver stops
+			// falling to the builtin bypass. This branch was left region-less when the
+			// other legacy hash drivers gained one, because a region cannot help while
+			// the loop bumps the mutation epoch on every insertion.
+			defer exec.beginBlockIterationRegion().end()
 			// The block can return a fresh typed key per entry, and those synthesized
 			// keys live only in the Go-local out map until the builtin returns, so the
 			// structural reservation above cannot bound their payloads. Charge each
@@ -2897,7 +2917,48 @@ func hashMemberTransforms(property string) (Value, error) {
 			out.ReserveHashOrder(len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
-			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+			var producedBuf [smallHashKeyBufferSize]Value
+			sorted := sortedHashKeysInto(entries, keyBuf[:])
+			// Defer the insertions past the last block call so the region's memoized
+			// prefix survives the loop, and fall back the moment the block yields an
+			// array key -- the only mutable key kind, whose identity a deferred insert
+			// would canonicalize in its final state rather than the state it had when
+			// its entry was processed. This mirrors the typed branch; the difference is
+			// that there is no entry buffer to reuse here, so the produced keys get
+			// their own buffer (reserved above). Their values are read back out of the
+			// receiver through sorted, so only the keys are buffered.
+			// The buffer is reserved and allocated on first use rather than up front,
+			// because a block that yields an array key falls back on its very first
+			// entry and never buffers anything. Charging for storage that run never
+			// allocates is the false-rejection direction: it fails scripts that
+			// previously fit their quota.
+			produced := producedBuf[:0]
+			producedDelta := 0
+			defer func() { exec.releaseLoopScratch(producedDelta) }()
+			reserveProduced := func() error {
+				if cap(produced) >= len(sorted) {
+					return nil
+				}
+				producedDelta += exec.reserveLoopScratch(producedKeyBufferBytes(len(sorted)))
+				if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+					return err
+				}
+				grown := make([]Value, len(produced), len(sorted))
+				copy(grown, produced)
+				produced = grown
+				return nil
+			}
+			flush := func() error {
+				for j, key := range produced {
+					if err := hashSet(out, key, entries[sorted[j]]); err != nil {
+						return fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
+					}
+				}
+				produced = produced[:0]
+				return nil
+			}
+			deferBuild := true
+			for _, key := range sorted {
 				// Charge a step per entry so an empty block still consumes the step
 				// quota and observes cancellation; runner.call charges no step for a
 				// blockless body.
@@ -2915,15 +2976,35 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.chargeBigIntKeySteps(nextKey); err != nil {
 					return NewNil(), err
 				}
+				// Validation stays inline so an unsupported key still fails at the
+				// same point in the iteration it always did.
 				lookupKey, err := hashLookupKey(nextKey)
 				if err != nil {
 					return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 				}
 				resolved := hashDisplayKey(nextKey)
-				if err := hashSet(out, nextKey, entries[key]); err != nil {
+				if deferBuild && nextKey.Kind() == KindArray {
+					// produced holds exactly sorted[:i] at this point, so flushing in
+					// order reproduces the insertion sequence an inline build made.
+					if err := flush(); err != nil {
+						return NewNil(), err
+					}
+					deferBuild = false
+				}
+				if deferBuild {
+					if err := reserveProduced(); err != nil {
+						return NewNil(), err
+					}
+					produced = append(produced, nextKey)
+				} else if err := hashSet(out, nextKey, entries[key]); err != nil {
 					return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 				}
 				if err := acc.addTypedSynthesizedKey(nextKey, resolved, lookupKey); err != nil {
+					return NewNil(), err
+				}
+			}
+			if deferBuild {
+				if err := flush(); err != nil {
 					return NewNil(), err
 				}
 			}

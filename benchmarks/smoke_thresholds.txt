@@ -74,6 +74,7 @@ BenchmarkExecutionHashSelectHostBuilt 25000000 1600 400000
 BenchmarkExecutionHashTransformValuesTyped 25000000 240 2500000
 BenchmarkExecutionHashSelectTyped 25000000 190 2350000
 BenchmarkExecutionHashTransformKeysTyped 25000000 4800 2950000
+BenchmarkExecutionHashTransformKeysHostBuilt 25000000 6200 1800000
 BenchmarkCallShortScript 5000 12 3500
 BenchmarkModuleRequireCacheHit 120000 60 10000
 # Deep-recursion call path (naive fib(20), ~13.5k nested calls). The loop-shaped

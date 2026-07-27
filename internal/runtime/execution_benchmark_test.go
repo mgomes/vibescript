@@ -598,6 +598,20 @@ func BenchmarkExecutionHashSelectTyped(b *testing.B) {
 end`, benchmarkTypedHash(b, 1000))
 }
 
+// The block body deliberately avoids dispatching a builtin method. A builtin
+// called from a block body re-raises the estimator's conservative bypass on
+// every call, which is a separate, still-open limitation; including one here
+// would leave only a ~4x gap between a healthy run and a regressed one, too
+// narrow to gate on. Without it the gap is ~40x, which isolates this driver's
+// own behavior.
+func BenchmarkExecutionHashTransformKeysHostBuilt(b *testing.B) {
+	benchmarkBlockDriver(b, `def run(values)
+  values.transform_keys do |key|
+    "x" + key
+  end
+end`, benchmarkNumericHash(1000))
+}
+
 func BenchmarkExecutionHashTransformKeysTyped(b *testing.B) {
 	benchmarkBlockDriver(b, `def run(values)
   values.transform_keys do |key|
