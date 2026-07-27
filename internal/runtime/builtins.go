@@ -150,6 +150,13 @@ func renderOutputValue(exec *Execution, method string, val Value, inspect bool) 
 		payload int
 		err     error
 	)
+	if !inspect {
+		// puts and print render the string form, so a class's to_s governs
+		// them as it does interpolation. inspect keeps its own rendering.
+		if val, _, err = exec.instanceStringValue(val, Position{}); err != nil {
+			return "", err
+		}
+	}
 	if inspect {
 		payload, err = val.InspectByteLenBounded(exec.step)
 	} else {
