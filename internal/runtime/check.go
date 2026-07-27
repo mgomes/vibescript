@@ -105,7 +105,7 @@ func (s *Script) checkWarningsWithGlobals(optionGlobals map[string]Value, opts C
 		}
 		return checker.warnings[i].Function < checker.warnings[j].Function
 	})
-	return checker.warnings
+	return dedupeCheckWarnings(checker.warnings)
 }
 
 type scriptChecker struct {
