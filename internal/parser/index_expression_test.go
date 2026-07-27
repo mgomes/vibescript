@@ -33,7 +33,9 @@ func TestParserIndexExpressionForms(t *testing.T) {
 			want: &ast.IndexExpr{
 				Object: &ast.Identifier{Name: "a"},
 				Indices: []ast.Expression{
-					&ast.UnaryExpr{Operator: ast.TokenMinus, Right: &ast.IntegerLiteral{Value: 1}},
+					// The sign folds into the literal (see -5.abs); the index
+					// value is unchanged.
+					&ast.IntegerLiteral{Value: -1},
 				},
 			},
 		},
