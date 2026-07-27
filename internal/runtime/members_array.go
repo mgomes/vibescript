@@ -24,7 +24,7 @@ var arrayMemberNames = []string{
 	"sort", "sort!", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"map!", "select!", "reject!",
 	"min", "max", "minmax", "min_by", "max_by",
-	"inspect",
+	"inspect", "to_s", "string",
 }
 
 var arrayBuiltinMembers = newMemberTable(arrayMemberNames)
@@ -50,6 +50,8 @@ func arrayMemberBuiltin(property string) (Value, error) {
 		return arrayMemberExtrema(property)
 	case "inspect":
 		return newInspectBuiltin("array"), nil
+	case "to_s", "string":
+		return newAggregateToStringBuiltin("array", property), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
