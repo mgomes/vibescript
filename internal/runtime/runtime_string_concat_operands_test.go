@@ -73,6 +73,9 @@ func TestStringConcatKeepsScalarOperands(t *testing.T) {
 		{name: "string_plus_bool", left: NewString("a"), right: NewBool(true), want: "atrue"},
 		{name: "string_plus_money", left: NewString("a"), right: mustMoney("1.00 USD"), want: "a1.00 USD"},
 		{name: "string_plus_duration", left: NewString("a"), right: NewDuration(durationFromSeconds(300)), want: "a300s"},
+		// A regex renders as its round-trippable literal form rather than a
+		// placeholder, so it stays concatenable.
+		{name: "string_plus_regex", left: NewString("pattern: "), right: mustRegexValue(t, "a+"), want: "pattern: /a+/"},
 	}
 
 	for _, tc := range cases {
@@ -163,4 +166,14 @@ func TestStringConcatRejectsCallables(t *testing.T) {
 	if !strings.Contains(err.Error(), "unsupported addition operands") {
 		t.Fatalf("unexpected error %v", err)
 	}
+}
+
+func mustRegexValue(t *testing.T, pattern string) Value {
+	t.Helper()
+	script := compileScript(t, "def run()\n  /"+pattern+"/\nend")
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("build regex %q: %v", pattern, err)
+	}
+	return got
 }

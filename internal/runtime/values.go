@@ -794,17 +794,20 @@ func timeDifferenceSeconds(left, right time.Time) (float64, error) {
 // concatenableWithString reports whether val has a string form meaningful
 // enough to render into a concatenation.
 //
-// This is an allowlist rather than a list of rejected kinds, because the
-// rejected set is the larger and more open-ended one: nil renders as empty, and
-// containers, callables, classes, and enums all render as placeholders such as
-// "<object>", "<block>", or "<User instance>". Rendering any of those produced
-// text that reads like output instead of reporting a mistake -- "Hello, " + name
-// silently became "Hello, " when name was nil. A new kind should have to opt in
-// deliberately rather than inherit concatenation by default.
+// The accepted set mirrors the kinds Value.String renders meaningfully, minus
+// nil (which renders as empty) and the composites (which render their contents).
+// Everything else falls through String's default and renders as a placeholder
+// such as "<object>", "<block>", or "<User instance>", so concatenating it
+// produced text that reads like output instead of reporting a mistake --
+// "Hello, " + name silently became "Hello, " when name was nil.
+//
+// It is an allowlist because the rejected set is the larger and more
+// open-ended one: a new kind should have to opt into concatenation deliberately
+// rather than inherit it and render as a placeholder.
 func concatenableWithString(val Value) bool {
 	switch val.Kind() {
 	case KindString, KindInt, KindFloat, KindBool, KindSymbol,
-		KindMoney, KindDuration, KindTime, KindRange, KindEnumValue:
+		KindMoney, KindDuration, KindTime, KindRange, KindRegex, KindEnumValue:
 		return true
 	default:
 		return false
