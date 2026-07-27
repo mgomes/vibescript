@@ -76,13 +76,19 @@ func compareArrayOrder(left, right []Value, seen map[arrayComparePair]struct{}) 
 // compare lexicographically, and every other operand pair keeps exactly the
 // ordering it has today.
 //
-// The widened element coverage below deliberately does not apply to the
-// operands themselves. `<=>` does not order bare symbols or nil even though
-// sort does -- a pre-existing gap between the two, and widening it here would
-// be a second behavior change riding along with this one.
+// Operand coverage follows Ruby per kind rather than the element coverage
+// below: symbols order under both <=> and the relational operators (Symbol
+// includes Comparable), nil orders under <=> only, and booleans order under
+// neither even though sort accepts them.
 func compareSpaceshipOrder(left, right Value) (order int, ordered bool, err error) {
 	if left.Kind() == KindArray && right.Kind() == KindArray {
 		return compareArrayOrder(left.Array(), right.Array(), nil)
+	}
+	// nil answers <=> against itself but has no relational operators, so this
+	// case belongs to the spaceship alone: Ruby's `nil <=> nil` is 0 while
+	// `nil < nil` raises. Booleans get neither, there as here.
+	if left.Kind() == KindNil && right.Kind() == KindNil {
+		return 0, true, nil
 	}
 	return compareValueOrder(left, right)
 }
