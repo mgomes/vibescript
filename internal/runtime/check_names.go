@@ -75,7 +75,7 @@ func (c *scriptChecker) checkIdentifierResolved(function string, ident *Identifi
 	if _, ok := facts.requireExports[name]; ok {
 		return
 	}
-	c.addOrderIndependent(function, ident.Pos(), "undefined variable %s", name)
+	c.addOrderIndependent(function, ident.Pos(), "undefined variable %s%s", name, c.topLevelBindingHint(name))
 }
 
 // envHasVisibleBinding reports whether name is bound anywhere in the check

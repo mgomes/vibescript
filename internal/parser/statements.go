@@ -802,6 +802,14 @@ func (p *parser) parseClassStatement() ast.Statement {
 	if !p.expectPeek(ast.TokenIdent) {
 		return nil
 	}
+	// `class B < A` is a syntax error that says nothing about why. Inheritance
+	// is deliberately absent and mixins are the documented alternative, so the
+	// error names the decision rather than leaving the author to assume a
+	// syntax slip and retry variants.
+	if p.peekToken.Type == ast.TokenLT {
+		p.addParseError(p.peekToken.Pos, "class inheritance is not supported; use \"include SomeModule\" to share behavior")
+		return nil
+	}
 	return p.parseClassLikeBody(pos, false)
 }
 
@@ -1992,6 +2000,13 @@ func (p *parser) parsePropertyDecl(kind ast.TokenType) ast.PropertyDecl {
 
 func (p *parser) parsePropertyName() (ast.PropertyName, bool) {
 	if p.curToken.Type != ast.TokenIdent {
+		// An author arriving from attr_accessor :x reaches property :x next,
+		// and "expected property name, got symbol" does not say that the
+		// argument shape differs too.
+		if p.curToken.Type == ast.TokenSymbol {
+			p.addParseError(p.curToken.Pos, fmt.Sprintf("property takes a bare name: property %s, not property :%s", p.curToken.Literal, p.curToken.Literal))
+			return ast.PropertyName{}, false
+		}
 		p.errorExpected(p.curToken, "property name")
 		return ast.PropertyName{}, false
 	}
