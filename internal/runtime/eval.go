@@ -4402,7 +4402,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		// lambda's return value). A break that instead crosses a call boundary
 		// still reports "break cannot cross call boundary" there.
 		if exec.loopDepth == 0 && exec.lambdaDepth == 0 {
-			return NewNil(), false, exec.errorAt(s.Pos(), "break used outside of loop")
+			return NewNil(), false, exec.errorAt(s.Pos(), "%s", breakOutsideLoopMessage(exec.blockDepth))
 		}
 		if s.Value != nil {
 			val, err := exec.evalExpression(s.Value, env)

@@ -282,7 +282,7 @@ end`)
 	// reports the block-break error when invoked (Ruby raises LocalJumpError
 	// for a proc break outside iteration; the failure mode matches in spirit).
 	err = callScriptErr(t, ctx, script, "proc_break", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "break used outside of loop") {
+	if err == nil || !strings.Contains(err.Error(), "break cannot cross a block boundary") {
 		t.Fatalf("proc_break error = %v, want break used outside of loop", err)
 	}
 }
