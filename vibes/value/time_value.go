@@ -472,7 +472,13 @@ func subsecondOverflowError() error {
 // ParseTimeString parses a time string, optionally using a caller-supplied
 // layout. When hasLayout is false the default layouts are tried in order.
 func ParseTimeString(input, layout string, hasLayout bool, loc *time.Location) (time.Time, error) {
-	parseLoc := time.Local
+	// A zoneless timestamp binds to UTC, not the host's zone. Scripts run in a
+	// sandbox whose quotas, capabilities, and memory bound all exist to make
+	// execution predictable, and the host's TZ is an ambient input that no
+	// capability gates: the same script and the same data produced a different
+	// day depending on where it ran. An explicit loc still wins, so a script
+	// that wants a zone asks for one.
+	parseLoc := time.UTC
 	if loc != nil {
 		parseLoc = loc
 	}

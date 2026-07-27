@@ -849,7 +849,11 @@ func registerTimeBuiltins(engine *Engine) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("Time.now does not take positional arguments")
 			}
-			loc := time.Local
+			// UTC by default, so Time.now and the now builtin answer the same
+			// question the same way. now is documented as a UTC timestamp and
+			// always was one; Time.now returning host-local meant one concept
+			// had two answers, and they could differ by a calendar day.
+			loc := time.UTC
 			if in, ok := kwargs["in"]; ok {
 				parsed, err := parseLocation(in)
 				if err != nil {
