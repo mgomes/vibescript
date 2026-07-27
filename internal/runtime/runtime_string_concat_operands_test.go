@@ -71,6 +71,8 @@ func TestStringConcatKeepsScalarOperands(t *testing.T) {
 		{name: "string_plus_float", left: NewString("a"), right: NewFloat(1.5), want: "a1.5"},
 		{name: "string_plus_symbol", left: NewString("a"), right: NewSymbol("sym"), want: "asym"},
 		{name: "string_plus_bool", left: NewString("a"), right: NewBool(true), want: "atrue"},
+		{name: "string_plus_money", left: NewString("a"), right: mustMoney("1.00 USD"), want: "a1.00 USD"},
+		{name: "string_plus_duration", left: NewString("a"), right: NewDuration(durationFromSeconds(300)), want: "a300s"},
 	}
 
 	for _, tc := range cases {
@@ -140,5 +142,25 @@ func TestStringConcatRejectsClassInstances(t *testing.T) {
 				t.Fatalf("%s: unexpected error %v", expr, err)
 			}
 		})
+	}
+}
+
+// A callable renders as the placeholder "<block>", so it belongs with the other
+// non-renderable kinds. The allowlist means a kind has to opt in deliberately
+// rather than inherit concatenation, which is what let objects, instances, and
+// callables each slip through in turn.
+func TestStringConcatRejectsCallables(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def run()
+      "fn: " + ->(x) { x }
+    end
+    `)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected a callable operand to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsupported addition operands") {
+		t.Fatalf("unexpected error %v", err)
 	}
 }

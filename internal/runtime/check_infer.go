@@ -16375,6 +16375,24 @@ func expandNumericKinds(kind TypeKind) []TypeKind {
 // subtractValues, multiplyValues, powerValues, divideValues, moduloValues,
 // shovelValues, intersectValues, and compareValueOrder, including case order
 // (string concatenation is the late fallback for +).
+// concatenableTypeKind mirrors the runtime's concatenableWithString for a
+// statically known type kind, so a script whose operands are both known does
+// not pass the checker and then fail at the runtime guard. TypeAny and
+// TypeUnknown fall to the default and are treated as not statically
+// concatenable, which only means the outcome is unresolved here -- the caller
+// leaves such a pair to the runtime rather than reporting it.
+func concatenableTypeKind(kind TypeKind) bool {
+	switch kind {
+	case TypeString, TypeInt, TypeFloat, TypeNumber, TypeBool, TypeSymbol,
+		TypeMoney, TypeDuration, TypeTime, TypeRange, TypeEnum:
+		return true
+	default:
+		// Mirrors the runtime allowlist: nil, containers, callables, and
+		// anything unknown are not renderable into a concatenation.
+		return false
+	}
+}
+
 func binaryScalarOutcome(op TokenType, lk, rk TypeKind) (*TypeExpr, bool) {
 	isNum := func(kind TypeKind) bool { return kind == TypeInt || kind == TypeFloat }
 	numResult := func() *TypeExpr {
@@ -16399,6 +16417,13 @@ func binaryScalarOutcome(op TokenType, lk, rk TypeKind) (*TypeExpr, bool) {
 		case lk == TypeArray && rk == TypeArray:
 			return checkTypeArray, true
 		case lk == TypeString || rk == TypeString:
+			// Concatenation renders the other operand, but only kinds with a
+			// meaningful string form are accepted at runtime: nil renders as
+			// empty and the containers render as a placeholder, so those pairs
+			// raise rather than producing text (see concatenableWithString).
+			if !concatenableTypeKind(lk) || !concatenableTypeKind(rk) {
+				return nil, false
+			}
 			return checkTypeString, true
 		case lk == TypeMoney && rk == TypeMoney:
 			return checkTypeMoney, true

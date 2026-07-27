@@ -791,21 +791,23 @@ func timeDifferenceSeconds(left, right time.Time) (float64, error) {
 	return float64(secDiff) + float64(nsecDiff)/float64(nanosecondsPerSecond), nil
 }
 
-// concatenableWithString reports whether val may be rendered into a string
-// concatenation. Scalars carry a meaningful string form; nil and the mutable
-// containers do not, and silently rendering them is how a missing value
-// disappeared into a message instead of being reported. Objects render as the
-// placeholder "<object>", and a script instance as "<Name instance>", so a
-// value concatenated into a message produced text that looks like output rather
-// than a mistake. A class defining to_s does not change this today, since
-// neither concatenation nor interpolation consults it (#1055); if that is fixed,
-// instances can render through it instead of being rejected here.
+// concatenableWithString reports whether val has a string form meaningful
+// enough to render into a concatenation.
+//
+// This is an allowlist rather than a list of rejected kinds, because the
+// rejected set is the larger and more open-ended one: nil renders as empty, and
+// containers, callables, classes, and enums all render as placeholders such as
+// "<object>", "<block>", or "<User instance>". Rendering any of those produced
+// text that reads like output instead of reporting a mistake -- "Hello, " + name
+// silently became "Hello, " when name was nil. A new kind should have to opt in
+// deliberately rather than inherit concatenation by default.
 func concatenableWithString(val Value) bool {
 	switch val.Kind() {
-	case KindNil, KindArray, KindHash, KindObject, KindInstance:
-		return false
-	default:
+	case KindString, KindInt, KindFloat, KindBool, KindSymbol,
+		KindMoney, KindDuration, KindTime, KindRange, KindEnumValue:
 		return true
+	default:
+		return false
 	}
 }
 
