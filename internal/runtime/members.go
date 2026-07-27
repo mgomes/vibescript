@@ -486,8 +486,15 @@ func (exec *Execution) enumValueMember(obj Value, property string, pos Position)
 		return NewSymbol(member.Symbol), nil
 	case "enum":
 		return NewEnum(member.Enum), nil
+	case "to_s", "string":
+		// Delegates to the value's own rendering, which is what interpolation
+		// already produces, so the explicit conversion and the implicit one
+		// cannot drift apart.
+		return newToStringBuiltin("enum value", property), nil
+	case "inspect":
+		return newInspectBuiltin("enum value"), nil
 	default:
-		return NewNil(), exec.errorAt(pos, "unknown enum member property %s%s", property, didYouMean(property, []string{"name", "symbol", "enum"}))
+		return NewNil(), exec.errorAt(pos, "unknown enum member property %s%s", property, didYouMean(property, []string{"name", "symbol", "enum", "to_s", "inspect"}))
 	}
 }
 
