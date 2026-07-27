@@ -961,6 +961,107 @@ func subtractValues(left, right Value) (Value, error) {
 	}
 }
 
+// isFiniteFloat reports whether f can take part in duration scaling. NaN and
+// the infinities are rejected upstream by the ordinary integer coercion so
+// their long-standing error text is preserved.
+func isFiniteFloat(f float64) bool {
+	return !math.IsNaN(f) && !math.IsInf(f, 0)
+}
+
+// durationScaleFloatPrec is the working precision for duration float scaling.
+// It comfortably exceeds int64's 63 significant bits plus a float64 operand's
+// 53, so the seconds operand keeps every bit rather than being rounded on its
+// way into the arithmetic.
+const durationScaleFloatPrec = 128
+
+// roundedDurationSeconds converts a scaled duration back to the whole seconds a
+// Duration stores, rounding to nearest with halves away from zero.
+//
+// A Duration's resolution is one second, so a fractional result has to land
+// somewhere. Rounding is the only option that keeps scaling faithful: truncating
+// collapses every factor below one to a zero duration, and a zero duration means
+// "immediately" -- a retry with no backoff, a window with no span -- which makes
+// truncation the most dangerous direction to round in.
+func roundedDurationSeconds(scaled *big.Float, method string) (int64, error) {
+	half := new(big.Float).SetPrec(durationScaleFloatPrec).SetFloat64(0.5)
+	adjusted := new(big.Float).SetPrec(durationScaleFloatPrec)
+	if scaled.Sign() < 0 {
+		adjusted.Sub(scaled, half)
+	} else {
+		adjusted.Add(scaled, half)
+	}
+	// Int truncates toward zero, so the half added above turns truncation into
+	// round-half-away-from-zero.
+	whole, _ := adjusted.Int(nil)
+	if !whole.IsInt64() {
+		return 0, int64RangeError(method)
+	}
+	return whole.Int64(), nil
+}
+
+// durationSecondsAsBigFloat lifts a duration's seconds into the working
+// precision without loss. Converting through float64 would silently drop low
+// bits above 2^53, which made even `d * 1.0` change the duration.
+func durationSecondsAsBigFloat(secs int64) *big.Float {
+	return new(big.Float).SetPrec(durationScaleFloatPrec).SetInt64(secs)
+}
+
+func floatOperandAsBigFloat(f float64) *big.Float {
+	return new(big.Float).SetPrec(durationScaleFloatPrec).SetFloat64(f)
+}
+
+// scaleDurationSeconds multiplies a duration's seconds by a numeric factor.
+// An integer factor keeps the exact overflow-checked integer path; a float
+// factor scales in float space and rounds, so 1.hour * 0.5 is 1800s rather than
+// the 0s that truncating the factor to an integer produced.
+func scaleDurationSeconds(secs int64, factor Value, method string) (int64, error) {
+	if factor.Kind() == KindFloat && isFiniteFloat(factor.Float()) {
+		scaled := durationSecondsAsBigFloat(secs)
+		scaled.Mul(scaled, floatOperandAsBigFloat(factor.Float()))
+		return roundedDurationSeconds(scaled, method)
+	}
+	// A non-finite factor keeps the existing coercion error ("cannot convert
+	// NaN to integer"), so only finite fractional factors change behavior.
+	n, err := int64OperandForDomain(factor, method)
+	if err != nil {
+		return 0, err
+	}
+	product, ok := mulInt64Checked(secs, n)
+	if !ok {
+		return 0, int64RangeError(method)
+	}
+	return product, nil
+}
+
+// divideDurationSeconds divides a duration's seconds by a numeric divisor,
+// mirroring scaleDurationSeconds. A float divisor divides in float space, so
+// 1.hour / 1.5 is 2400s and only a genuine zero divisor reports division by
+// zero -- previously 0.5 truncated to 0 and reported one.
+func divideDurationSeconds(secs int64, divisor Value, method string) (int64, error) {
+	if divisor.Kind() == KindFloat && isFiniteFloat(divisor.Float()) {
+		d := divisor.Float()
+		if d == 0 {
+			return 0, newTypedRuntimeError(runtimeErrorTypeZeroDiv, errors.New("division by zero"))
+		}
+		scaled := durationSecondsAsBigFloat(secs)
+		scaled.Quo(scaled, floatOperandAsBigFloat(d))
+		return roundedDurationSeconds(scaled, method)
+	}
+	// A non-finite divisor keeps the existing coercion error.
+	n, err := int64OperandForDomain(divisor, method)
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		return 0, newTypedRuntimeError(runtimeErrorTypeZeroDiv, errors.New("division by zero"))
+	}
+	quotient, ok := divInt64Checked(secs, n)
+	if !ok {
+		return 0, int64RangeError(method)
+	}
+	return quotient, nil
+}
+
 func multiplyValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
@@ -975,23 +1076,15 @@ func multiplyValues(left, right Value) (Value, error) {
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() * right.Float()), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
-		secs, err := int64OperandForDomain(right, "duration multiplication")
+		product, err := scaleDurationSeconds(left.Duration().Seconds(), right, "duration multiplication")
 		if err != nil {
 			return NewNil(), err
-		}
-		product, ok := mulInt64Checked(left.Duration().Seconds(), secs)
-		if !ok {
-			return NewNil(), int64RangeError("duration multiplication")
 		}
 		return NewDuration(durationFromSeconds(product)), nil
 	case right.Kind() == KindDuration && (left.Kind() == KindInt || left.Kind() == KindFloat):
-		secs, err := int64OperandForDomain(left, "duration multiplication")
+		product, err := scaleDurationSeconds(right.Duration().Seconds(), left, "duration multiplication")
 		if err != nil {
 			return NewNil(), err
-		}
-		product, ok := mulInt64Checked(right.Duration().Seconds(), secs)
-		if !ok {
-			return NewNil(), int64RangeError("duration multiplication")
 		}
 		return NewDuration(durationFromSeconds(product)), nil
 	case left.Kind() == KindMoney && right.Kind() == KindInt:
@@ -1105,16 +1198,9 @@ func divideValues(left, right Value) (Value, error) {
 		}
 		return NewFloat(float64(left.Duration().Seconds()) / float64(right.Duration().Seconds())), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
-		secs, err := int64OperandForDomain(right, "duration division")
+		quotient, err := divideDurationSeconds(left.Duration().Seconds(), right, "duration division")
 		if err != nil {
 			return NewNil(), err
-		}
-		if secs == 0 {
-			return NewNil(), newTypedRuntimeError(runtimeErrorTypeZeroDiv, errors.New("division by zero"))
-		}
-		quotient, ok := divInt64Checked(left.Duration().Seconds(), secs)
-		if !ok {
-			return NewNil(), int64RangeError("duration division")
 		}
 		return NewDuration(durationFromSeconds(quotient)), nil
 	case left.Kind() == KindMoney && right.Kind() == KindInt:
