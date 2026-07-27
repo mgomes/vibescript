@@ -1295,6 +1295,11 @@ func compareValueOrder(left, right Value) (order int, ordered bool, err error) {
 		default:
 			return 0, true, nil
 		}
+	// Symbol includes Comparable in Ruby, so both <=> and the relational
+	// operators order symbols. sort already did; the operators reported the
+	// pair as incomparable, so <=> misdescribed what the language can do.
+	case left.Kind() == KindSymbol && right.Kind() == KindSymbol:
+		return compareOrderedStrings(left.String(), right.String()), true, nil
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
 		if left.Money().Currency() != right.Money().Currency() {
 			return 0, false, errMoneyCompareMismatch
