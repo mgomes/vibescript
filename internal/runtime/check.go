@@ -1613,6 +1613,7 @@ func (c *scriptChecker) checkScript() {
 			c.checkFunction(fn.Name, fn)
 		})
 	}
+	c.checkSpacedParenMemberCalls()
 	c.withFreshRuntimeTypeRoot(func() {
 		c.checkRuntimeClassBodies(c.script.deferredClassBodies, false)
 	})
