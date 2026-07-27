@@ -107,3 +107,38 @@ func TestArrayConcatUnaffected(t *testing.T) {
 		t.Fatalf("array concat produced %v", got.String())
 	}
 }
+
+// A class instance renders as the placeholder "<Name instance>", so
+// concatenating one produced text that reads like output. Defining to_s does
+// not currently change that, since neither concatenation nor interpolation
+// consults it (#1055), which is why rejecting is the right answer for now.
+func TestStringConcatRejectsClassInstances(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{`"user: " + U.new`, `U.new + " :user"`} {
+		t.Run(expr, func(t *testing.T) {
+			script := compileScript(t, `
+    class U
+      def initialize
+        @n = 1
+      end
+
+      def to_s
+        "U!"
+      end
+    end
+
+    def run()
+      `+expr+`
+    end
+    `)
+			_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err == nil {
+				t.Fatalf("%s: expected an error, got none", expr)
+			}
+			if !strings.Contains(err.Error(), "unsupported addition operands") {
+				t.Fatalf("%s: unexpected error %v", expr, err)
+			}
+		})
+	}
+}
