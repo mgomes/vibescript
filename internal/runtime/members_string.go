@@ -94,11 +94,7 @@ func stringMemberConversions(property string) (Value, error) {
 			if s == "" {
 				return NewNil(), fmt.Errorf("%s expects a numeric string", name)
 			}
-			n, err := strconv.ParseInt(s, 10, 64)
-			if err != nil {
-				return NewNil(), fmt.Errorf("%s expects a base-10 integer string", name)
-			}
-			return NewInt(n), nil
+			return parseIntegerString(exec, s, name)
 		}), nil
 	case "to_f":
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
