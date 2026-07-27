@@ -2795,11 +2795,24 @@ func hashMemberTransforms(property string) (Value, error) {
 				out := newTypedResultHash(count)
 				var blockArg [1]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
-				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
+				// Defer the insertions past the last block call so the block region's
+				// memoized prefix survives the loop; see hash.transform_values. Unlike
+				// the key-preserving drivers this cannot decide up front whether
+				// deferring is safe, because the block produces the keys as it goes: an
+				// array key can be mutated in place after its entry is processed, and a
+				// deferred insert would then canonicalize it in its final state. So the
+				// buffered entries are flushed and the loop falls back to inserting
+				// inline the moment the block yields one. Flushing in order keeps both
+				// the result's insertion order and its last-writer-wins collisions
+				// identical to inserting throughout.
+				ordered := orderedTypedHashEntriesInto(receiver, entryBuf[:])
+				deferBuild := true
+				buffered := 0
+				for i := range ordered {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					blockArg[0] = entry.Key
+					blockArg[0] = ordered[i].Key
 					nextKey, err := runner.call(blockArg[:])
 					if err != nil {
 						return NewNil(), err
@@ -2810,16 +2823,38 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.chargeBigIntKeySteps(nextKey); err != nil {
 						return NewNil(), err
 					}
+					// Validation stays inline so an unsupported key still fails at the
+					// same point in the iteration it always did.
 					lookupKey, err := hashLookupKey(nextKey)
 					if err != nil {
 						return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 					}
 					resolved := hashDisplayKey(nextKey)
-					if err := hashSet(out, nextKey, entry.Value); err != nil {
+					if deferBuild && nextKey.Kind() == KindArray {
+						for _, entry := range ordered[:buffered] {
+							if err := hashSet(out, entry.Key, entry.Value); err != nil {
+								return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
+							}
+						}
+						deferBuild = false
+					}
+					if deferBuild {
+						// buffered never runs ahead of i, so this reuses the already
+						// reserved entry buffer without disturbing an unread entry.
+						ordered[buffered] = HashEntry{Key: nextKey, Value: ordered[i].Value}
+						buffered++
+					} else if err := hashSet(out, nextKey, ordered[i].Value); err != nil {
 						return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 					}
 					if err := acc.addTypedSynthesizedKey(nextKey, resolved, lookupKey); err != nil {
 						return NewNil(), err
+					}
+				}
+				if deferBuild {
+					for _, entry := range ordered[:buffered] {
+						if err := hashSet(out, entry.Key, entry.Value); err != nil {
+							return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
+						}
 					}
 				}
 				return out, nil
