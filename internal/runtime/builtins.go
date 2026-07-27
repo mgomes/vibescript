@@ -1764,11 +1764,7 @@ func builtinToInt(exec *Execution, receiver Value, args []Value, kwargs map[stri
 		if s == "" {
 			return NewNil(), fmt.Errorf("to_int expects a numeric string")
 		}
-		n, err := strconv.ParseInt(s, 10, 64)
-		if err != nil {
-			return NewNil(), fmt.Errorf("to_int expects a base-10 integer string")
-		}
-		return NewInt(n), nil
+		return parseIntegerString(exec, s, "to_int")
 	default:
 		return NewNil(), fmt.Errorf("to_int expects int, float, or string")
 	}
