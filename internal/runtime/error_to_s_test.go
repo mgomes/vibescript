@@ -87,9 +87,11 @@ func TestRescuedErrorInspectKeepsDetail(t *testing.T) {
 	}
 }
 
-// An attribute bag with no string to_s entry keeps its existing rendering, so
-// match data is unaffected.
-func TestAttributeBagWithoutStringEntryIsUnchanged(t *testing.T) {
+// Only a string to_s entry substitutes. Match data gained one when the
+// internal key was removed, so it now renders its matched text -- which is
+// also what Ruby's MatchData does -- while a bag carrying no such entry keeps
+// the placeholder.
+func TestAttributeBagRenderingFollowsItsStringEntry(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def run()
@@ -101,7 +103,16 @@ func TestAttributeBagWithoutStringEntryIsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
-	if got.String() != "<object>" {
-		t.Fatalf("match data rendered as %q, want the unchanged <object>", got.String())
+	if got.String() != "2026-07" {
+		t.Fatalf("match data rendered as %q, want its matched text", got.String())
+	}
+
+	// A bag without the entry is untouched.
+	if _, substituted := objectStringEntry(NewObject(map[string]Value{"a": NewInt(1)})); substituted {
+		t.Fatalf("a bag with no to_s entry was substituted")
+	}
+	// A non-string entry does not substitute either.
+	if _, substituted := objectStringEntry(NewObject(map[string]Value{"to_s": NewInt(1)})); substituted {
+		t.Fatalf("a bag with a non-string to_s entry was substituted")
 	}
 }
