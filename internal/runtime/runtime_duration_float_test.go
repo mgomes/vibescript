@@ -58,6 +58,27 @@ func TestDurationFloatScalingRoundsInsteadOfTruncating(t *testing.T) {
 		// Integer operands keep the exact integer path.
 		{name: "int_factor_exact", fn: "multiply", args: []Value{hour, NewInt(2)}, want: 7200},
 		{name: "int_divisor_exact", fn: "divide", args: []Value{hour, NewInt(2)}, want: 1800},
+
+		// Scaling must not round the seconds operand on its way into the
+		// arithmetic. Above 2^53 a float64 cannot hold every int64, so scaling
+		// through float64 dropped low bits and made even an identity factor
+		// change the duration.
+		{
+			name: "identity_factor_preserves_large_duration", fn: "multiply",
+			args: []Value{NewDuration(durationFromSeconds(9007199254740993)), NewFloat(1.0)}, want: 9007199254740993,
+		},
+		{
+			name: "halving_large_duration_rounds_exactly", fn: "multiply",
+			args: []Value{NewDuration(durationFromSeconds(9007199254740993)), NewFloat(0.5)}, want: 4503599627370497,
+		},
+		{
+			name: "identity_factor_near_int64_max", fn: "multiply",
+			args: []Value{NewDuration(durationFromSeconds(9223372036854775)), NewFloat(1.0)}, want: 9223372036854775,
+		},
+		{
+			name: "identity_divisor_preserves_large_duration", fn: "divide",
+			args: []Value{NewDuration(durationFromSeconds(9007199254740993)), NewFloat(1.0)}, want: 9007199254740993,
+		},
 	}
 
 	for _, tc := range cases {

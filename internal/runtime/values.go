@@ -968,22 +968,46 @@ func isFiniteFloat(f float64) bool {
 	return !math.IsNaN(f) && !math.IsInf(f, 0)
 }
 
-// durationSecondsFromFloat converts a scaled duration expressed in fractional
-// seconds back to the whole seconds a Duration stores, rounding to nearest.
+// durationScaleFloatPrec is the working precision for duration float scaling.
+// It comfortably exceeds int64's 63 significant bits plus a float64 operand's
+// 53, so the seconds operand keeps every bit rather than being rounded on its
+// way into the arithmetic.
+const durationScaleFloatPrec = 128
+
+// roundedDurationSeconds converts a scaled duration back to the whole seconds a
+// Duration stores, rounding to nearest with halves away from zero.
 //
 // A Duration's resolution is one second, so a fractional result has to land
 // somewhere. Rounding is the only option that keeps scaling faithful: truncating
 // collapses every factor below one to a zero duration, and a zero duration means
 // "immediately" -- a retry with no backoff, a window with no span -- which makes
 // truncation the most dangerous direction to round in.
-func durationSecondsFromFloat(scaled float64, method string) (int64, error) {
-	rounded := math.Round(scaled)
-	// float64(math.MaxInt64) rounds up to 2^63, so use 2^63 as the exclusive
-	// upper bound, matching value.ValueToInt64.
-	if rounded < float64(math.MinInt64) || rounded >= math.Exp2(63) {
+func roundedDurationSeconds(scaled *big.Float, method string) (int64, error) {
+	half := new(big.Float).SetPrec(durationScaleFloatPrec).SetFloat64(0.5)
+	adjusted := new(big.Float).SetPrec(durationScaleFloatPrec)
+	if scaled.Sign() < 0 {
+		adjusted.Sub(scaled, half)
+	} else {
+		adjusted.Add(scaled, half)
+	}
+	// Int truncates toward zero, so the half added above turns truncation into
+	// round-half-away-from-zero.
+	whole, _ := adjusted.Int(nil)
+	if !whole.IsInt64() {
 		return 0, int64RangeError(method)
 	}
-	return int64(rounded), nil
+	return whole.Int64(), nil
+}
+
+// durationSecondsAsBigFloat lifts a duration's seconds into the working
+// precision without loss. Converting through float64 would silently drop low
+// bits above 2^53, which made even `d * 1.0` change the duration.
+func durationSecondsAsBigFloat(secs int64) *big.Float {
+	return new(big.Float).SetPrec(durationScaleFloatPrec).SetInt64(secs)
+}
+
+func floatOperandAsBigFloat(f float64) *big.Float {
+	return new(big.Float).SetPrec(durationScaleFloatPrec).SetFloat64(f)
 }
 
 // scaleDurationSeconds multiplies a duration's seconds by a numeric factor.
@@ -992,7 +1016,9 @@ func durationSecondsFromFloat(scaled float64, method string) (int64, error) {
 // the 0s that truncating the factor to an integer produced.
 func scaleDurationSeconds(secs int64, factor Value, method string) (int64, error) {
 	if factor.Kind() == KindFloat && isFiniteFloat(factor.Float()) {
-		return durationSecondsFromFloat(float64(secs)*factor.Float(), method)
+		scaled := durationSecondsAsBigFloat(secs)
+		scaled.Mul(scaled, floatOperandAsBigFloat(factor.Float()))
+		return roundedDurationSeconds(scaled, method)
 	}
 	// A non-finite factor keeps the existing coercion error ("cannot convert
 	// NaN to integer"), so only finite fractional factors change behavior.
@@ -1017,7 +1043,9 @@ func divideDurationSeconds(secs int64, divisor Value, method string) (int64, err
 		if d == 0 {
 			return 0, newTypedRuntimeError(runtimeErrorTypeZeroDiv, errors.New("division by zero"))
 		}
-		return durationSecondsFromFloat(float64(secs)/d, method)
+		scaled := durationSecondsAsBigFloat(secs)
+		scaled.Quo(scaled, floatOperandAsBigFloat(d))
+		return roundedDurationSeconds(scaled, method)
 	}
 	// A non-finite divisor keeps the existing coercion error.
 	n, err := int64OperandForDomain(divisor, method)
