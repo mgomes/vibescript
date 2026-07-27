@@ -170,6 +170,9 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 	case KindFunction:
 		result, err := exec.callFunction(valueFunction(callee), receiver, args, kwargs, block, pos)
 		if err != nil {
+			if breakVal, absorbed := absorbBlockBreak(err, block); absorbed {
+				return breakVal, nil
+			}
 			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
 				return NewNil(), controlErr
 			}
@@ -293,6 +296,9 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			popValidatedArgs()
 		}
 		if err != nil {
+			if breakVal, absorbed := absorbBlockBreak(err, block); absorbed {
+				return breakVal, nil
+			}
 			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
 				return NewNil(), controlErr
 			}

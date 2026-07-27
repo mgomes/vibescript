@@ -1335,13 +1335,17 @@ end
 				warnings,
 			)
 		}
+		// The break terminates the inner each and the lambda continues, so
+		// execution reaches the tail the checker flagged and fails there --
+		// the runtime now agrees with the prediction instead of stopping
+		// earlier for an unrelated reason.
 		requireCallErrorContains(
 			t,
 			script,
 			"run",
 			[]Value{NewArray([]Value{NewInt(1)})},
 			CallOptions{},
-			"break cannot cross call boundary",
+			"expected int, got string",
 		)
 	})
 }

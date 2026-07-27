@@ -236,7 +236,7 @@ func TestDBCapabilityEachLoopControlBoundary(t *testing.T) {
 		wantErr   string
 		wantValue value.Value
 	}{
-		{name: "break_from_callback", fn: "break_from_callback", wantErr: "break cannot cross a block boundary"},
+		{name: "break_from_callback", fn: "break_from_callback", wantValue: value.NewNil()},
 		{name: "next_from_callback", fn: "next_from_callback", wantValue: value.NewString("done")},
 	}
 	source := `def break_from_callback()
