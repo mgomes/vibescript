@@ -1734,7 +1734,9 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 		fn   string
 		want string
 	}{
-		{name: "break_from_block_boundary", fn: "break_from_block_boundary", want: "break cannot cross call boundary"},
+		// break_from_block_boundary is no longer a boundary case: a break
+		// inside a block terminates the call the block was passed to, so the
+		// enclosing for loop keeps running. It is asserted below instead.
 		{name: "break_from_setter_boundary", fn: "break_from_setter_boundary", want: "break cannot cross call boundary"},
 		{name: "next_from_setter_boundary", fn: "next_from_setter_boundary", want: "next cannot cross call boundary"},
 	}
@@ -1745,6 +1747,16 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 			requireCallErrorContains(t, script, tc.fn, nil, CallOptions{}, tc.want)
 		})
 	}
+
+	// A break inside a block ends the call the block was passed to and
+	// nothing further, so the enclosing for loop keeps iterating.
+	t.Run("break_from_block_boundary", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "break_from_block_boundary", nil)
+		if got.Inspect() != "[1, 2, 3]" {
+			t.Fatalf("break_from_block_boundary = %s, want [1, 2, 3]", got.Inspect())
+		}
+	})
 }
 
 func TestBreakValueCapturedBlockKeepsIterationEnv(t *testing.T) {
