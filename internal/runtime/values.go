@@ -186,6 +186,11 @@ var errWidthOutOfRange = errors.New("width is out of range")
 // nil, matching Ruby's `1 <=> "a"`, while relational operators surface it.
 var errIncomparableOperands = errors.New("unsupported comparison operands")
 
+// errCompareNaN signals that two numeric operands are unordered because one
+// is a NaN. Ordering members surface it; the spaceship operator reports the
+// same pair as unordered and yields nil.
+var errCompareNaN = errors.New("cannot compare NaN")
+
 // errMoneyCompareMismatch signals that two money values cannot be ordered
 // because their currencies differ. Its message follows the documented
 // comparison convention; the spaceship operator still treats it as
@@ -301,116 +306,19 @@ func sortComparisonResult(val Value) (int, error) {
 	}
 }
 
+// arraySortCompareValues orders two values for the sort and min/max members.
+// It is compareOrderForSort with the unordered case reported as an error,
+// because a sort cannot place a value it cannot order, whereas the spaceship
+// operator answers nil.
 func arraySortCompareValues(left, right Value) (int, error) {
-	switch {
-	case left.Kind() == KindInt && right.Kind() == KindInt:
-		l, lok := left.CompactInt()
-		r, rok := right.CompactInt()
-		if !lok || !rok {
-			return compareIntValuesBig(left, right), nil
-		}
-		switch {
-		case l < r:
-			return -1, nil
-		case l > r:
-			return 1, nil
-		default:
-			return 0, nil
-		}
-	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
-		// Exactly one operand is an int here. A big integer orders against the
-		// float exactly (see compareIntFloatValues); NaN stays incomparable.
-		if left.Kind() == KindInt && left.IsBigInt() {
-			order, ordered := compareIntFloatValues(left, right.Float(), true)
-			if !ordered {
-				return 0, fmt.Errorf("cannot compare NaN")
-			}
-			return order, nil
-		}
-		if right.Kind() == KindInt && right.IsBigInt() {
-			order, ordered := compareIntFloatValues(right, left.Float(), false)
-			if !ordered {
-				return 0, fmt.Errorf("cannot compare NaN")
-			}
-			return order, nil
-		}
-		lf, rf := left.Float(), right.Float()
-		// NaN is unordered: returning 0 (equal) here would let sort/min/max
-		// treat NaN as equal to every element. Report it as incomparable so
-		// callers fail consistently with the <=> operator (which yields nil).
-		if math.IsNaN(lf) || math.IsNaN(rf) {
-			return 0, fmt.Errorf("cannot compare NaN")
-		}
-		switch {
-		case lf < rf:
-			return -1, nil
-		case lf > rf:
-			return 1, nil
-		default:
-			return 0, nil
-		}
-	case left.Kind() == KindString && right.Kind() == KindString:
-		switch {
-		case left.String() < right.String():
-			return -1, nil
-		case left.String() > right.String():
-			return 1, nil
-		default:
-			return 0, nil
-		}
-	case left.Kind() == KindSymbol && right.Kind() == KindSymbol:
-		switch {
-		case left.String() < right.String():
-			return -1, nil
-		case left.String() > right.String():
-			return 1, nil
-		default:
-			return 0, nil
-		}
-	case left.Kind() == KindBool && right.Kind() == KindBool:
-		switch {
-		case !left.Bool() && right.Bool():
-			return -1, nil
-		case left.Bool() && !right.Bool():
-			return 1, nil
-		default:
-			return 0, nil
-		}
-	case left.Kind() == KindDuration && right.Kind() == KindDuration:
-		switch {
-		case left.Duration().Seconds() < right.Duration().Seconds():
-			return -1, nil
-		case left.Duration().Seconds() > right.Duration().Seconds():
-			return 1, nil
-		default:
-			return 0, nil
-		}
-	case left.Kind() == KindTime && right.Kind() == KindTime:
-		switch {
-		case left.Time().Before(right.Time()):
-			return -1, nil
-		case left.Time().After(right.Time()):
-			return 1, nil
-		default:
-			return 0, nil
-		}
-	case left.Kind() == KindMoney && right.Kind() == KindMoney:
-		if left.Money().Currency() != right.Money().Currency() {
-			return 0, fmt.Errorf("money currency mismatch for comparison")
-		}
-		switch {
-		case left.Money().Cents() < right.Money().Cents():
-			return -1, nil
-		case left.Money().Cents() > right.Money().Cents():
-			return 1, nil
-		default:
-			return 0, nil
-		}
-	case left.Kind() == KindNil && right.Kind() == KindNil:
-		return 0, nil
-	default:
-		return 0, fmt.Errorf("values are not comparable")
+	order, ordered, err := compareOrderForSort(left, right, nil)
+	if err != nil {
+		return 0, err
 	}
+	if !ordered {
+		return 0, errCompareNaN
+	}
+	return order, nil
 }
 
 // flattenState carries the guards and quota hooks for flattenValuesInto, which
