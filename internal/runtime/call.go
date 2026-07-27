@@ -3141,7 +3141,7 @@ func (exec *Execution) evalDirectTimeFormatCall(call *CallExpr, receiver Value, 
 	if err := exec.checkMemoryWith(receiver, layout); err != nil {
 		return NewNil(), true, err
 	}
-	result, err := timeFormatResult(receiver.Time(), layout)
+	result, err := timeFormatResult(exec, receiver.Time(), layout)
 	if err != nil {
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}

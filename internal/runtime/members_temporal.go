@@ -272,7 +272,7 @@ func timeMember(t time.Time, property string) (Value, error) {
 		}), nil
 	case "format":
 		return NewBuiltin("time.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callTimeFormat(t, args, kwargs)
+			return callTimeFormat(exec, t, args, kwargs)
 		}), nil
 	case "strftime":
 		return NewBuiltin("time.strftime", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -319,7 +319,7 @@ func callTimeMemberDirect(exec *Execution, t time.Time, property string, args []
 	case "eql?":
 		return callTimeEql(t, args, kwargs)
 	case "format":
-		return callTimeFormat(t, args, kwargs)
+		return callTimeFormat(exec, t, args, kwargs)
 	case "strftime":
 		return callTimeStrftime(exec, t, args, kwargs)
 	case "iso8601", "xmlschema", "rfc3339":
@@ -398,19 +398,25 @@ func timeToArray(t time.Time) Value {
 	})
 }
 
-func callTimeFormat(t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
+func callTimeFormat(exec *Execution, t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
 	if err := rejectTemporalKwargs("time.format", kwargs); err != nil {
 		return NewNil(), err
 	}
 	if len(args) != 1 {
 		return NewNil(), fmt.Errorf("format expects a Go layout string")
 	}
-	return timeFormatResult(t, args[0])
+	return timeFormatResult(exec, t, args[0])
 }
 
-func timeFormatResult(t time.Time, layout Value) (Value, error) {
+// timeFormatResult renders a time with a Go reference layout. Every dispatch
+// path for Time#format funnels through here, including the direct-call fast
+// path, so the crossed-format check belongs here rather than at either caller.
+func timeFormatResult(exec *Execution, t time.Time, layout Value) (Value, error) {
 	if layout.Kind() != KindString {
 		return NewNil(), fmt.Errorf("format expects a Go layout string")
+	}
+	if err := checkFormatGivenStrftime(exec, t, layout.String()); err != nil {
+		return NewNil(), err
 	}
 	return NewString(t.Format(layout.String())), nil
 }
@@ -427,6 +433,9 @@ func callTimeStrftime(exec *Execution, t time.Time, args []Value, kwargs map[str
 	}
 	if len(args) != 1 || args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("time.strftime expects a format string")
+	}
+	if err := checkStrftimeGivenGoLayout(t, args[0].String()); err != nil {
+		return NewNil(), err
 	}
 	out, err := strftime(exec, t, args[0].String())
 	if err != nil {
