@@ -27,6 +27,7 @@ const rangeBuildInitialCap = 64
 var rangeMemberNames = []string{
 	"cover?", "include?", "member?", "first", "last", "size", "exclude_end?", "to_a",
 	"each", "step", "map", "select", "reject", "find", "reduce", "count", "sum", "min", "max",
+	"to_s", "string", "inspect",
 }
 
 func (exec *Execution) rangeMember(obj Value, property string, pos Position) (Value, error) {
@@ -61,6 +62,10 @@ func (exec *Execution) rangeMember(obj Value, property string, pos Position) (Va
 		return rangeMemberSum(), nil
 	case "min", "max":
 		return rangeMemberMinMax(property), nil
+	case "to_s", "string":
+		return newAggregateToStringBuiltin("range", property), nil
+	case "inspect":
+		return newInspectBuiltin("range"), nil
 	default:
 		return NewNil(), exec.errorAt(pos, "unknown range method %s%s", property, didYouMean(property, rangeMemberNames))
 	}

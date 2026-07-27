@@ -31,7 +31,7 @@ var (
 		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
-	moneyMemberNames = []string{"currency", "cents", "amount", "format", "between?", "to_s", "string"}
+	moneyMemberNames = []string{"currency", "cents", "amount", "format", "between?", "to_s", "string", "inspect"}
 )
 
 var (
@@ -960,6 +960,8 @@ func moneyMember(m Money, property string) (Value, error) {
 		return NewString(m.String()), nil
 	case "to_s", "string":
 		return newToStringBuiltin("money", property), nil
+	case "inspect":
+		return newInspectBuiltin("money"), nil
 	default:
 		if member, ok := moneyBuiltinMembers.lookup(property, moneyMemberBuiltin); ok {
 			return member, nil

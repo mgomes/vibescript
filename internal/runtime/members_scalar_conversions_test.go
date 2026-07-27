@@ -298,29 +298,48 @@ func TestScalarConversionBlockRejection(t *testing.T) {
 	}
 }
 
-func TestAggregateKindsRejectToStringConversion(t *testing.T) {
+// Arrays and ranges previously withheld to_s/string because their
+// rendering can be unbounded, leaving inspect as the only conversion that
+// charged the memory quota. They now render through the same accounting
+// inspect uses -- a step-charged projection, then a quota check against the
+// reservation the builder actually makes -- so the reason for withholding them
+// no longer applies and the result matches interpolation.
+// Hash still withholds to_s. Adding it makes the checker lose track of the
+// result for a shape-typed receiver: a shape does not resolve the hash kind's
+// contract, so `value.to_s` on `{ name: string }?` stops being known to be a
+// string and a real diagnostic disappears. That needs the checker to map shape
+// receivers onto the hash contract first.
+func TestHashStillWithholdsToStringConversion(t *testing.T) {
 	t.Parallel()
 
-	// Arrays, hashes, and ranges deliberately do not expose to_s/string because
-	// their rendering can be unbounded; only inspect (which charges the memory
-	// quota) and nil? are available. This guards the docs/changelog claim that the
-	// scalar string conversions are not universal.
+	for _, expr := range []string{`({a: 1}).to_s`, `({a: 1}).string`} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+expr+"\nend")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown hash")
+		})
+	}
+}
+
+func TestAggregateKindsRenderToString(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		expr string
 		want string
 	}{
-		{`[1, 2].to_s`, "unknown array method to_s"},
-		{`[1, 2].string`, "unknown array method string"},
-		{`({a: 1}).to_s`, "unknown hash"},
-		{`({a: 1}).string`, "unknown hash"},
-		{`(1..3).to_s`, "unknown range method to_s"},
-		{`(1..3).string`, "unknown range method string"},
+		{`[1, 2].to_s`, "[1, 2]"},
+		{`[1, 2].string`, "[1, 2]"},
+		{`(1..3).to_s`, "1..3"},
+		{`(1..3).string`, "1..3"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.expr, func(t *testing.T) {
 			t.Parallel()
-			script := compileScript(t, "def run()\n  "+tc.expr+"\nend")
-			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+			got := evalScalarExpr(t, tc.expr)
+			if got.String() != tc.want {
+				t.Fatalf("%s = %q, want %q", tc.expr, got.String(), tc.want)
+			}
 		})
 	}
 }
