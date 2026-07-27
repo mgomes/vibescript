@@ -990,6 +990,12 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		}
 		result, err = subtractValues(left, right)
 	case tokenAsterisk:
+		if left.Kind() == KindString {
+			// String repetition allocates a script-sized result, so it needs
+			// the execution's memory quota and cannot live in multiplyValues.
+			result, err = exec.repeatStringValue(left, right)
+			break
+		}
 		if left.Kind() == KindInt && right.Kind() == KindInt && eitherIntPayload(left, right) {
 			if err := exec.checkBigIntOperationGuards(operator, left, right); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
