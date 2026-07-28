@@ -459,23 +459,25 @@ func TestMemoChargeCoversTheMapFootprint(t *testing.T) {
 	// HeapAlloc is process-wide, so concurrent tests inflate any single
 	// reading. Noise only ever adds, so the smallest of several trials is the
 	// closest estimate of the map alone.
+	// The map grows rather than being preallocated, so the old and new tables
+	// briefly coexist; the peak during the fill is what the charge must cover.
 	measure := func() uint64 {
 		runtime.GC()
-		var before, after runtime.MemStats
+		var before runtime.MemStats
 		runtime.ReadMemStats(&before)
 
-		memo := make(map[arrayComparePair]arrayCompareResult, arrayCompareMemoMaxEntries)
+		peak := uint64(0)
+		memo := map[arrayComparePair]arrayCompareResult{}
 		for i := range arrayCompareMemoMaxEntries {
 			memo[arrayComparePair{leftPtr: uintptr(i), rightPtr: uintptr(i * 3), leftLen: i, rightLen: i}] = arrayCompareResult{order: i}
+			var cur runtime.MemStats
+			runtime.ReadMemStats(&cur)
+			if cur.HeapAlloc > before.HeapAlloc && cur.HeapAlloc-before.HeapAlloc > peak {
+				peak = cur.HeapAlloc - before.HeapAlloc
+			}
 		}
-
-		runtime.GC()
-		runtime.ReadMemStats(&after)
 		runtime.KeepAlive(memo)
-		if after.HeapAlloc < before.HeapAlloc {
-			return 0
-		}
-		return after.HeapAlloc - before.HeapAlloc
+		return peak
 	}
 
 	actual := measure()
@@ -669,5 +671,38 @@ func TestResetMemoClearsResultsButKeepsTheReservation(t *testing.T) {
 	}
 	if state.memoBudget != arrayCompareMemoMaxEntries {
 		t.Fatalf("resetMemo left the budget at %d, want %d", state.memoBudget, arrayCompareMemoMaxEntries)
+	}
+}
+
+// The memo grows rather than being preallocated at the bound. Presizing meant
+// even [1] <=> [2] allocated the whole map: 41,521 bytes per comparison
+// against 1,089 once it grows on demand.
+func TestSmallComparisonsDoNotAllocateAFullMemo(t *testing.T) {
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20}, `
+    def run()
+      a = [1]
+      b = [2]
+      i = 0
+      n = 0
+      while i < 2000
+        n = n + (a <=> b)
+        i = i + 1
+      end
+      n
+    end
+    `)
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	runtime.ReadMemStats(&after)
+
+	perOp := (after.TotalAlloc - before.TotalAlloc) / 2000
+	full := uint64(arrayCompareMemoMaxEntries * arrayCompareMemoEntryBytes)
+	if perOp > full/8 {
+		t.Fatalf("comparing two one-element arrays allocated %d bytes per operation, near the %d-byte memo bound", perOp, full)
 	}
 }

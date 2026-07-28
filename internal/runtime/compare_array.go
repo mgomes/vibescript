@@ -69,17 +69,18 @@ type arrayCompareState struct {
 // arrayCompareMemoEntryBytes is the charge for one memoized pair.
 //
 // The key and result structs are 32 bytes each on 64-bit Go, but the map also
-// carries control data, table and directory headers, and load-factor slack.
-// Measured: a 1024-entry map of these types occupies 151,168 bytes of heap
-// when preallocated, or 148 bytes per entry. The charge rounds that up so the
-// reservation stays above the real footprint rather than under it.
-const arrayCompareMemoEntryBytes = 192
+// carries control data, table and directory headers, and load-factor slack --
+// and, because it grows rather than being preallocated, the old and new tables
+// briefly coexist. Measured peak while filling to the bound: 77,400 bytes, or
+// 302 per entry. The charge rounds that up so the reservation stays above the
+// real footprint rather than under it.
+const arrayCompareMemoEntryBytes = 320
 
 // arrayCompareMemoMaxEntries bounds the memo. It is generous enough for the
 // sharing the memo exists to collapse -- a shared DAG has one distinct pair
 // per level, so this covers nesting far deeper than any real structure --
-// while capping the host memory a comparison can hold at 128KB.
-const arrayCompareMemoMaxEntries = 1024
+// while capping the host memory a comparison can hold at about 80KB.
+const arrayCompareMemoMaxEntries = 256
 
 // newArrayCompareState reserves the memo's whole footprint once, up front.
 //
@@ -106,9 +107,10 @@ func newArrayCompareState(exec *Execution) *arrayCompareState {
 // builtin dispatch disables the base-walk cache -- turning linear extrema over
 // a scalar array into quadratic work.
 //
-// The map is allocated at its full size so it never grows: a growing map holds
-// the old and new tables at once, and that transient peak is not what the
-// reservation covers.
+// The map grows rather than being preallocated at the bound. Presizing meant
+// even `[1] <=> [2]` allocated the whole thing, so a script comparing small
+// arrays produced hundreds of kilobytes of garbage per operation; the charge
+// covers the growth peak instead.
 func (state *arrayCompareState) ensureMemo() {
 	if state.memoTried {
 		return
@@ -116,7 +118,7 @@ func (state *arrayCompareState) ensureMemo() {
 	state.memoTried = true
 	if state.exec == nil {
 		state.memoBudget = arrayCompareMemoMaxEntries
-		state.done = make(map[arrayComparePair]arrayCompareResult, arrayCompareMemoMaxEntries)
+		state.done = map[arrayComparePair]arrayCompareResult{}
 		return
 	}
 	reserved := state.exec.reserveLoopScratch(arrayCompareMemoMaxEntries * arrayCompareMemoEntryBytes)
@@ -126,7 +128,7 @@ func (state *arrayCompareState) ensureMemo() {
 	}
 	state.memoReserved = reserved
 	state.memoBudget = arrayCompareMemoMaxEntries
-	state.done = make(map[arrayComparePair]arrayCompareResult, arrayCompareMemoMaxEntries)
+	state.done = map[arrayComparePair]arrayCompareResult{}
 }
 
 // resetMemo drops every cached result while keeping the map and its
