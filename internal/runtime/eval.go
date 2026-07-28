@@ -1473,6 +1473,20 @@ func blockPositionalArity(blk *Block) int {
 	if len(blk.Params) == 0 {
 		return implicitBlockParamArity(blk.ImplicitParams)
 	}
+	// A lone rest parameter collects the whole yielded argument list, so it
+	// receives the collapsed pair and reports arity 1: Ruby's
+	// `{a: 1}.map { |*args| args }` is `[[[:a, 1]]]`, not `[[:a, 1]]`. A rest
+	// alongside other parameters, such as |k, *rest| or |*a, k|, does
+	// auto-splat and stays on the opt-out path below.
+	//
+	// The grammar has no top-level rest parameter for blocks or lambdas today
+	// -- `{ |*args| }` and `->(*args) {}` are parse errors, and rest is only
+	// available inside a destructuring group -- so this is unreachable as
+	// written. It is here so the rule is already right if that changes;
+	// TestBlockRestParametersAreNotParseable pins the current grammar.
+	if len(blk.Params) == 1 && blk.Params[0].Kind == ParamRest {
+		return 1
+	}
 	positional := 0
 	for i := range blk.Params {
 		switch blk.Params[i].Kind {
@@ -1565,7 +1579,13 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	// reserving them here is O(1) per call, not a re-walk (issue #835).
 	if scratch := charge.ephemeralRootScratch(); scratch > 0 {
 		delta := exec.reserveLoopScratch(scratch)
-		defer exec.releaseLoopScratch(delta)
+		// The baseline already carries these bytes, so tell the charge not to
+		// count them again when it reads the live reservation.
+		charge.noteSelfReservation(delta)
+		defer func() {
+			charge.noteSelfReservation(0)
+			exec.releaseLoopScratch(delta)
+		}()
 	}
 	// A lambda binds its arguments strictly, like a method: it never
 	// auto-splats a single array argument across multiple parameters.
