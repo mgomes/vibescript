@@ -341,3 +341,43 @@ func TestDeepUnwindMemoIsStillBounded(t *testing.T) {
 		t.Fatalf("comparison = %s, want 0", got.String())
 	}
 }
+
+// The ordering members must get the memo too. Building the state with a
+// literal left its budget at zero, so every completed-pair insertion was
+// refused and sort's comparisons stayed exponential on shared DAGs while
+// <=> did not.
+func TestOrderingMembersGetTheMemoToo(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		"rows.sort.length",
+		"rows.sort_by { |r| r }.length",
+		"rows.sort!.length",
+		"rows.min.length",
+		"rows.max.length",
+		"rows.minmax.length",
+	} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: 5_000_000, MemoryQuotaBytes: 64 << 20}, sharedDAGSource+`
+    def run()
+      rows = [build(22), build(22)]
+      `+body+`
+    end
+    `)
+			done := make(chan error, 1)
+			go func() {
+				_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("%s: %v", body, err)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatalf("%s did not finish: the ordering members' walk is exponential", body)
+			}
+		})
+	}
+}

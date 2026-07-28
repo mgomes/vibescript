@@ -314,7 +314,7 @@ func sortComparisonResult(val Value) (int, error) {
 // members, charging the execution for each element a recursive array
 // comparison visits.
 func arraySortCompareValuesMetered(exec *Execution, left, right Value) (int, error) {
-	state := &arrayCompareState{exec: exec}
+	state := newArrayCompareState(exec)
 	defer state.release()
 	order, ordered, err := compareOrderForSort(left, right, state)
 	if err != nil {
