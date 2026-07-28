@@ -23,6 +23,11 @@ var hashBuiltinMembers = newMemberTable(hashMemberNames)
 const smallHashKeyBufferSize = 8
 
 func hashMember(obj Value, property string) (Value, error) {
+	if _, mutates := hashInPlaceMutators[property]; mutates {
+		if err := objectTagMutationError(obj, property); err != nil {
+			return NewNil(), err
+		}
+	}
 	if member, ok := hashBuiltinMembers.lookup(property, hashMemberBuiltin); ok {
 		return member, nil
 	}

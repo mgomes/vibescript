@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -477,5 +478,94 @@ func TestSharedEntryMapsAllLoseTagsOnScriptDuplication(t *testing.T) {
 		if elem.ObjectTag() != ObjectTagNone {
 			t.Fatalf("element %d kept tag %v through script duplication", i, elem.ObjectTag())
 		}
+	}
+}
+
+// The tag rides in Value.scalar, which every copy carries, so an in-place
+// write to the backing map cannot clear it: after e.replace({to_s: "payload"})
+// the bag still claimed to be a rescued error and rendered the payload as its
+// message. The tag has to keep meaning "the runtime built these entries", so
+// the entries cannot be changed.
+func TestTaggedBagsRejectInPlaceMutation(t *testing.T) {
+	t.Parallel()
+
+	const rescued = `begin
+    raise "boom"
+  rescue => e
+    %s
+  end`
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "replace", body: fmt.Sprintf(rescued, `e.replace({to_s: "payload"})`), want: "cannot modify a rescued error"},
+		{name: "index assignment", body: fmt.Sprintf(rescued, `e[:to_s] = "payload"`), want: "cannot modify a rescued error"},
+		{name: "store", body: fmt.Sprintf(rescued, `e.store(:to_s, "payload")`), want: "cannot modify a rescued error"},
+		{name: "merge!", body: fmt.Sprintf(rescued, `e.merge!({to_s: "payload"})`), want: "cannot modify a rescued error"},
+		{name: "delete", body: fmt.Sprintf(rescued, `e.delete(:to_s)`), want: "cannot modify a rescued error"},
+		{name: "clear", body: fmt.Sprintf(rescued, `e.clear()`), want: "cannot modify a rescued error"},
+		{name: "match data replace", body: `"hello world".match(/w\w+/).replace({to_s: "payload"})`, want: "cannot modify match data"},
+		{name: "match data index assignment", body: `m = "hello world".match(/w\w+/)
+  m[:to_s] = "payload"`, want: "cannot modify match data"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.body+"\nend")
+			_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err == nil {
+				t.Fatalf("%s: a tagged bag was mutated in place", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("%s: error = %v, want it to mention %q", tc.name, err, tc.want)
+			}
+		})
+	}
+}
+
+// Reading a tagged bag is unaffected, and the non-mutating transforms still
+// work by returning a new hash -- which, being rebuilt, is untagged.
+func TestTaggedBagsStillSupportReadsAndCopies(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		body string
+		want string
+	}{
+		{body: `begin
+    raise "boom"
+  rescue => e
+    e[:message]
+  end`, want: "boom"},
+		{body: `begin
+    raise "boom"
+  rescue => e
+    e.keys.length.to_s
+  end`, want: "6"},
+		// merge returns a new hash rather than mutating, so it is allowed --
+		// and the copy is no longer the tagged bag.
+		{body: `begin
+    raise "boom"
+  rescue => e
+    ("#{e.merge({extra: 1})}" == "boom").inspect
+  end`, want: "false"},
+		{body: `"hello world".match(/w\w+/)[:captures].length.to_s`, want: "0"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.body, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.body+"\nend")
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("%v", err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("got %q, want %q", got.String(), tc.want)
+			}
+		})
 	}
 }

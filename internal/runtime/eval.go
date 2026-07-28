@@ -2288,6 +2288,9 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		if err := exec.chargeBigIntKeySteps(indices[0]); err != nil {
 			return err
 		}
+		if err := objectTagMutationError(obj, "index assignment"); err != nil {
+			return exec.errorAt(target.Position, "%s", err.Error())
+		}
 		if err := hashSet(obj, indices[0], value); err != nil {
 			return exec.errorAt(target.IndexPos(0), "%s", err.Error())
 		}
