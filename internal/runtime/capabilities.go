@@ -135,7 +135,7 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 			}
 		}
 		cloned := make(map[string]Value, len(obj))
-		clonedValue := NewObject(cloned)
+		clonedValue := retagClonedObject(val, cloned)
 		state.rememberObject(id, clonedValue)
 		for k, v := range obj {
 			cloned[k] = deepCloneValueWithState(v, state)

@@ -336,3 +336,32 @@ end`)
 		t.Fatalf("a script-rebuilt bag kept its tag")
 	}
 }
+
+// Task payloads go through deepCloneValue, a separate containment path from
+// the global cloner, so a rescued error passed into a task rendered as
+// <object> instead of its message.
+func TestObjectTagsSurviveTaskPayloadCloning(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def work(e)
+  "#{e}"
+end
+def run()
+  err = begin
+    raise "boom"
+  rescue => e
+    e
+  end
+  Tasks.run(max: 2) do |tasks|
+    a = tasks.spawn(:work, err)
+    a.value
+  end
+end`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "boom" {
+		t.Fatalf("a rescued error rendered %q inside a task, want boom", got.String())
+	}
+}
