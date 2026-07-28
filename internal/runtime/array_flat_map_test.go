@@ -95,3 +95,31 @@ func TestArrayFlatMapChargesStepsPerElement(t *testing.T) {
 		t.Fatalf("expected the step quota to stop flattening 15000 elements")
 	}
 }
+
+// The block-result charge is the widest single result rather than their sum,
+// because only one is live at a time. Repeatedly returning a modest array must
+// therefore not accumulate a per-iteration charge and reject a build that never
+// held them together.
+func TestFlatMapDoesNotAccumulateTransientCharges(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 8 << 20}, `
+    def run(rows, chunk)
+      rows.flat_map { |row| chunk }
+    end
+    `)
+	rows := make([]Value, 400)
+	for i := range rows {
+		rows[i] = NewInt(int64(i))
+	}
+	chunk := make([]Value, 4)
+	for i := range chunk {
+		chunk[i] = NewInt(int64(i))
+	}
+	got, err := script.Call(context.Background(), "run", []Value{NewArray(rows), NewArray(chunk)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("400 iterations of a 4-element block result were rejected: %v", err)
+	}
+	if len(got.Array()) != 1600 {
+		t.Fatalf("result has %d elements, want 1600", len(got.Array()))
+	}
+}
