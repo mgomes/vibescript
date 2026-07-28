@@ -119,3 +119,33 @@ end`)
 		t.Fatalf("the explanation was lost when a later argument mutated the shape:\n%s", joined)
 	}
 }
+
+// An argument with no hint at evaluation time must not pick one up later. The
+// captured map stores an entry even when the hint is empty, because an absent
+// entry falls back to re-inference and a later argument's state could then
+// supply an explanation for this one -- a wrong reason, which is worse than
+// none.
+func TestAbsentHintIsCapturedRatherThanReinferred(t *testing.T) {
+	t.Parallel()
+
+	read := &IndexExpr{
+		Object:  &Identifier{Name: "row"},
+		Indices: []Expression{&SymbolLiteral{Name: "name"}},
+	}
+
+	c := &scriptChecker{}
+	// An explicitly captured empty entry must win over any later derivation.
+	// Without the entry the lookup falls through to re-inference, which is the
+	// path that can borrow a later argument's state.
+	c.callArgumentHints = map[Expression]string{read: ""}
+	if got := c.capturedShapeKeyKindHint(read); got != "" {
+		t.Fatalf("captured-empty hint = %q, want it to stay empty", got)
+	}
+
+	// A captured hint is used as captured.
+	const captured = "; name is required, but this shape's key kind is unknown, so the read may still miss"
+	c.callArgumentHints = map[Expression]string{read: captured}
+	if got := c.capturedShapeKeyKindHint(read); got != captured {
+		t.Fatalf("captured hint = %q, want %q", got, captured)
+	}
+}

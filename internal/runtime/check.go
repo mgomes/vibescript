@@ -4881,9 +4881,10 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			} else {
 				argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
 			}
-			if hint := c.unknownShapeKeyKindHint(expr); hint != "" {
-				argumentHints[expr] = hint
-			}
+			// Stored even when empty: an absent entry would fall back to
+			// re-inference, and a later argument's state could then supply an
+			// explanation for this one. A wrong reason is worse than none.
+			argumentHints[expr] = c.unknownShapeKeyKindHint(expr)
 			c.pinExpressionValueSource(retainedValue)
 			c.pinExpressionInstanceOrigins(retainedValue)
 			identityAutoCall := autoCall && !retainsCallable
