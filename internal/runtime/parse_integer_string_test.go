@@ -185,3 +185,35 @@ func TestPaddedValueAtTheLimitStillConverts(t *testing.T) {
 		t.Fatalf("got %s, want 7", got.String())
 	}
 }
+
+// ParseInt reads the whole string whatever the result, so a capped input that
+// still fits an int64 did 100,000 bytes of parsing for no steps at all, and a
+// script could repeat that call indefinitely within its step budget. The cap
+// bounds each individual scan; only the charge bounds their number.
+func TestCappedInt64ScansAreChargedSteps(t *testing.T) {
+	t.Parallel()
+
+	// Enough calls that the uncharged scan would dwarf the loop's own steps.
+	script := compileScriptWithConfig(t, Config{StepQuota: 5000, MemoryQuotaBytes: 256 << 20},
+		"def run(s)\n  i = 0\n  while i < 200\n    s.to_i\n    i = i + 1\n  end\n  i\nend")
+	atLimit := strings.Repeat("0", maxParsedIntegerDigits)
+	_, err := script.Call(context.Background(), "run", []Value{NewString(atLimit)}, CallOptions{})
+	if err == nil {
+		t.Fatalf("200 scans of %d bytes each ran within a 5000-step budget, so the parse is uncharged", maxParsedIntegerDigits)
+	}
+	if !strings.Contains(err.Error(), "step quota") {
+		t.Fatalf("error = %v, want the step quota", err)
+	}
+}
+
+// A short conversion stays cheap: the charge is proportional to the input, so
+// ordinary to_i calls are not made expensive by the guard above.
+func TestShortConversionsStayCheap(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 5000, MemoryQuotaBytes: 256 << 20},
+		"def run(s)\n  i = 0\n  while i < 200\n    s.to_i\n    i = i + 1\n  end\n  i\nend")
+	if _, err := script.Call(context.Background(), "run", []Value{NewString("12345")}, CallOptions{}); err != nil {
+		t.Fatalf("200 short conversions exhausted a 5000-step budget: %v", err)
+	}
+}

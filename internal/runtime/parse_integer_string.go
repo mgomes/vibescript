@@ -43,6 +43,17 @@ func parseIntegerString(exec *Execution, s, name string, source Value) (Value, e
 	if digitCount(s) > maxParsedIntegerDigits {
 		return NewNil(), guardLimitErrorf("%s exceeds the %d digit conversion limit", name, maxParsedIntegerDigits)
 	}
+	// The scan is charged before it happens, not just on the big-integer path.
+	// ParseInt reads the whole string whatever the result, so a capped input
+	// that still fits an int64 -- 100_000 zeros -- returned through the fast
+	// path having done 100_000 bytes of parsing for no steps at all, and a
+	// script could repeat that call indefinitely within its step budget. The
+	// cap bounds each individual scan; only the charge bounds their number.
+	if exec != nil {
+		if err := exec.stepN(1 + len(s)/bigIntParseStepDigits); err != nil {
+			return NewNil(), err
+		}
+	}
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err == nil {
 		return NewInt(n), nil
@@ -52,11 +63,6 @@ func parseIntegerString(exec *Execution, s, name string, source Value) (Value, e
 	// accepted syntax is wider.
 	if !errors.Is(err, strconv.ErrRange) {
 		return NewNil(), fmt.Errorf("%s expects a base-10 integer string", name)
-	}
-	if exec != nil {
-		if err := exec.stepN(1 + len(s)/bigIntParseStepDigits); err != nil {
-			return NewNil(), err
-		}
 	}
 	bi, ok := new(big.Int).SetString(s, 10)
 	if !ok {
