@@ -660,3 +660,29 @@ func TestCyclicTaggedAndUntaggedWrappersTerminate(t *testing.T) {
 		}
 	})
 }
+
+// A capability argument copy is boundary isolation, not the script-visible
+// dup, so a tagged bag nested in the payload keeps its provenance. Cloning it
+// in dup mode handed the adapter an untagged error, which rendered <object>
+// instead of its message when passed on.
+func TestCapabilityArgumentCopiesPreserveTags(t *testing.T) {
+	t.Parallel()
+
+	entries := map[string]Value{
+		"to_s": NewString("boom"), "message": NewString("boom"),
+		"class": NewString("RuntimeError"), "type": NewString("RuntimeError"),
+		"backtrace": NewArray([]Value{}),
+	}
+	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+
+	payload := cloneHash(map[string]Value{"error": tagged, "plain": NewObject(entries)})
+	if got := payload["error"].ObjectTag(); got != ObjectTagRescuedError {
+		t.Fatalf("a tagged bag in a capability argument cloned with tag %v, want the rescued-error tag", got)
+	}
+	if got := payload["plain"].ObjectTag(); got != ObjectTagNone {
+		t.Fatalf("an untagged sibling gained tag %v", got)
+	}
+	if _, substituted := objectStringEntry(payload["error"]); !substituted {
+		t.Fatalf("the cloned error no longer renders its message")
+	}
+}

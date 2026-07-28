@@ -41,13 +41,18 @@ type CapabilityBinding struct {
 	Engine  *Engine
 }
 
+// cloneHash copies a capability's argument or option hash. This is boundary
+// isolation -- the runtime handing the adapter its own copy -- not the
+// script-visible dup, so a tagged bag nested in the payload keeps its
+// provenance. Without that, a rescued error passed through a capability came
+// back as an ordinary object and rendered <object> instead of its message.
 func cloneHash(src map[string]Value) map[string]Value {
 	if len(src) == 0 {
 		return map[string]Value{}
 	}
 	out := make(map[string]Value, len(src))
 	for k, v := range src {
-		out[k] = deepCloneValue(v)
+		out[k] = deepCloneValueForContainment(v)
 	}
 	return out
 }
