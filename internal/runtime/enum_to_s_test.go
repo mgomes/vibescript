@@ -203,6 +203,38 @@ func TestEnumInterpolationDoesNotMaterializeTheText(t *testing.T) {
 		t.Fatalf("projecting the byte length made %v allocations, want none", lenAllocs)
 	}
 
+	// StringByteLen and StringRuneLen are documented as non-materializing, so
+	// the unbounded projections must consult the hook too.
+	for name, project := range map[string]func() int{
+		"StringByteLen": value.StringByteLen,
+		"StringRuneLen": value.StringRuneLen,
+	} {
+		if allocs := testing.AllocsPerRun(100, func() { _ = project() }); allocs > 0 {
+			t.Fatalf("%s made %v allocations, want none", name, allocs)
+		}
+	}
+
+	// Through an aggregate the walk allocates its own small cycle-tracking
+	// state, so bytes rather than counts is the property: what must not appear
+	// is the member's text.
+	inArray := NewArray([]Value{value, value})
+	for name, project := range map[string]func() int{
+		"StringByteLen in array": inArray.StringByteLen,
+		"StringRuneLen in array": inArray.StringRuneLen,
+	} {
+		runtime.GC()
+		var start, end runtime.MemStats
+		runtime.ReadMemStats(&start)
+		for range 100 {
+			_ = project()
+		}
+		runtime.ReadMemStats(&end)
+		perCall := (end.TotalAlloc - start.TotalAlloc) / 100
+		if perCall > uint64(len(value.String()))/2 {
+			t.Fatalf("%s allocated %d bytes per call, want far below the %d-byte member", name, perCall, len(value.String()))
+		}
+	}
+
 	// Width-qualified formatting projects rune lengths, so that path must not
 	// materialize the rendering either.
 	runeAllocs := testing.AllocsPerRun(100, func() {
@@ -244,6 +276,12 @@ func TestStreamedEnumTextMatchesString(t *testing.T) {
 	}
 	if got != len(value.String()) {
 		t.Fatalf("projected byte length %d, want %d", got, len(value.String()))
+	}
+	if got := value.StringByteLen(); got != len(value.String()) {
+		t.Fatalf("StringByteLen = %d, want %d", got, len(value.String()))
+	}
+	if got := value.StringRuneLen(); got != utf8.RuneCountInString(value.String()) {
+		t.Fatalf("StringRuneLen = %d, want %d", got, utf8.RuneCountInString(value.String()))
 	}
 	runes, err := value.StringRuneLenBounded(func() error { return nil })
 	if err != nil {

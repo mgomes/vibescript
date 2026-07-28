@@ -498,6 +498,11 @@ func (v Value) StringByteLen() int {
 	case KindArray, KindHash:
 		return v.stringByteLenWithState(newValueStringState())
 	default:
+		if RuntimeStringLen != nil {
+			if n, ok := RuntimeStringLen(v); ok {
+				return n
+			}
+		}
 		return len(v.String())
 	}
 }
@@ -570,6 +575,11 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 		}
 		return total
 	default:
+		if RuntimeStringLen != nil {
+			if n, ok := RuntimeStringLen(v); ok {
+				return n
+			}
+		}
 		return len(v.String())
 	}
 }
