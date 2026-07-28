@@ -117,3 +117,57 @@ func TestMismatchedKindsStayUnordered(t *testing.T) {
 		})
 	}
 }
+
+// The runtime gained symbol ordering but the checker's comparison matrix did
+// not, so `vibes check` rejected a script that runs -- and CheckedCall would
+// refuse to execute it. The original tests missed this because they executed
+// without inspecting CheckWarnings.
+func TestCheckerAcceptsSymbolComparisons(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{`:a < :b`, `:a <= :b`, `:b > :a`, `:b >= :a`} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+expr+"\nend")
+			requireNoCheckWarnings(t, script)
+		})
+	}
+}
+
+// The kinds the runtime still rejects must stay rejected statically, so the
+// matrix does not drift the other way.
+func TestCheckerStillRejectsUnorderedComparisons(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		expr string
+		want string
+	}{
+		{`:a < 1`, "symbol and int"},
+		{`nil < nil`, "nil and nil"},
+		{`true < false`, "bool and bool"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend")
+			requireCheckWarningContains(t, script, "unsupported comparison operands "+tc.want)
+		})
+	}
+}
+
+// The checker's view agrees with the runtime: what it accepts runs, and what
+// it rejects fails.
+func TestSymbolComparisonCheckerAgreesWithRuntime(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, "def run()\n  (:a < :b).to_s\nend")
+	requireNoCheckWarnings(t, script)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "true" {
+		t.Fatalf(":a < :b = %s, want true", got.String())
+	}
+}
