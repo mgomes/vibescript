@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 const enumToStringSource = `
@@ -198,7 +199,16 @@ func TestEnumInterpolationDoesNotMaterializeTheText(t *testing.T) {
 		_, _ = value.StringByteLenBounded(func() error { return nil })
 	})
 	if lenAllocs > 0 {
-		t.Fatalf("projecting the length made %v allocations, want none", lenAllocs)
+		t.Fatalf("projecting the byte length made %v allocations, want none", lenAllocs)
+	}
+
+	// Width-qualified formatting projects rune lengths, so that path must not
+	// materialize the rendering either.
+	runeAllocs := testing.AllocsPerRun(100, func() {
+		_, _ = value.StringRuneLenBounded(func() error { return nil })
+	})
+	if runeAllocs > 0 {
+		t.Fatalf("projecting the rune length made %v allocations, want none", runeAllocs)
 	}
 
 	// Grown once, up front, and never reset: any allocation observed during
@@ -229,9 +239,16 @@ func TestStreamedEnumTextMatchesString(t *testing.T) {
 	}
 	got, err := value.StringByteLenBounded(func() error { return nil })
 	if err != nil {
-		t.Fatalf("projection: %v", err)
+		t.Fatalf("byte projection: %v", err)
 	}
 	if got != len(value.String()) {
-		t.Fatalf("projected length %d, want %d", got, len(value.String()))
+		t.Fatalf("projected byte length %d, want %d", got, len(value.String()))
+	}
+	runes, err := value.StringRuneLenBounded(func() error { return nil })
+	if err != nil {
+		t.Fatalf("rune projection: %v", err)
+	}
+	if runes != utf8.RuneCountInString(value.String()) {
+		t.Fatalf("projected rune length %d, want %d", runes, utf8.RuneCountInString(value.String()))
 	}
 }

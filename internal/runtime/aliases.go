@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/vibes/source"
@@ -1319,6 +1320,7 @@ func init() {
 	value.RuntimeStringer = runtimeValueString
 	value.RuntimeStringLen = runtimeValueStringLen
 	value.RuntimeStringAppender = runtimeValueStringAppend
+	value.RuntimeStringRuneLen = runtimeValueStringRuneLen
 	value.RuntimeEqualer = runtimeValueEqual
 	value.RuntimeIdenticaler = runtimeValueIdentical
 }
@@ -1370,4 +1372,22 @@ func runtimeValueStringAppend(v Value, buf *strings.Builder) bool {
 	buf.WriteString("::")
 	buf.WriteString(member.Name)
 	return true
+}
+
+// runtimeValueStringRuneLen counts an enum member's rendered runes from the two
+// identifiers. Width-qualified formatting projects rune lengths before it
+// checks the quota, so counting through Value.String would allocate the very
+// rendering the check is meant to gate.
+func runtimeValueStringRuneLen(v Value) (int, bool) {
+	if v.Kind() != KindEnumValue {
+		return 0, false
+	}
+	member := valueEnumValue(v)
+	if member == nil || member.Enum == nil {
+		return 0, false
+	}
+	runes := utf8.RuneCountInString(member.Enum.Name)
+	runes += len("::")
+	runes += utf8.RuneCountInString(member.Name)
+	return runes, true
 }

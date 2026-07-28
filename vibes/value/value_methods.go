@@ -91,6 +91,15 @@ var RuntimeStringLen func(v Value) (int, bool)
 // docs/embedding-api-stability.md).
 var RuntimeStringAppender func(v Value, buf *strings.Builder) bool
 
+// RuntimeStringRuneLen reports the rune count Value.String would return for a
+// runtime-only kind, counted from the payload rather than from a materialized
+// rendering. Width-qualified formatting projects rune lengths, so this is the
+// same guard RuntimeStringLen provides for the byte-length paths.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+var RuntimeStringRuneLen func(v Value) (int, bool)
+
 // RuntimeEqualer is the hook used by Value.Equal to compare runtime-only
 // kinds whose payload types live in the vibes package. The vibes package
 // installs this hook during initialization. If unset, equality for those
@@ -484,6 +493,11 @@ func (v Value) StringRuneLen() int {
 	case KindArray, KindHash:
 		return v.stringRuneLenWithState(newValueStringState())
 	default:
+		if RuntimeStringRuneLen != nil {
+			if n, ok := RuntimeStringRuneLen(v); ok {
+				return n
+			}
+		}
 		return utf8.RuneCountInString(v.String())
 	}
 }
@@ -616,6 +630,11 @@ func (v Value) stringRuneLenWithState(state *valueStringState) int {
 		}
 		return total
 	default:
+		if RuntimeStringRuneLen != nil {
+			if n, ok := RuntimeStringRuneLen(v); ok {
+				return n
+			}
+		}
 		return utf8.RuneCountInString(v.String())
 	}
 }
@@ -711,6 +730,11 @@ func (v Value) StringRuneLenBounded(step func() error) (int, error) {
 		}
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
+		}
+		if RuntimeStringRuneLen != nil {
+			if n, ok := RuntimeStringRuneLen(v); ok {
+				return n, nil
+			}
 		}
 		return utf8.RuneCountInString(v.String()), nil
 	}
@@ -903,6 +927,11 @@ func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func(
 	default:
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
+		}
+		if RuntimeStringRuneLen != nil {
+			if n, ok := RuntimeStringRuneLen(v); ok {
+				return n, nil
+			}
 		}
 		return utf8.RuneCountInString(v.String()), nil
 	}
