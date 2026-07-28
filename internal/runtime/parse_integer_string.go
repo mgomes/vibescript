@@ -46,7 +46,10 @@ func parseIntegerString(exec *Execution, s, name string, source Value) (Value, e
 	if !errors.Is(err, strconv.ErrRange) {
 		return NewNil(), fmt.Errorf("%s expects a base-10 integer string", name)
 	}
-	if len(s) > maxParsedIntegerDigits {
+	// Count digits, not bytes: a leading sign is not a digit, and the parser's
+	// equivalent limit does not count one either, so including it would reject
+	// a signed value with exactly the advertised number of digits.
+	if digitCount(s) > maxParsedIntegerDigits {
 		return NewNil(), guardLimitErrorf("%s exceeds the %d digit conversion limit", name, maxParsedIntegerDigits)
 	}
 	if exec != nil {
@@ -75,4 +78,12 @@ func parseIntegerString(exec *Execution, s, name string, source Value) (Value, e
 		}
 	}
 	return val, nil
+}
+
+// digitCount returns the length of s without a leading sign.
+func digitCount(s string) int {
+	if len(s) > 0 && (s[0] == '-' || s[0] == '+') {
+		return len(s) - 1
+	}
+	return len(s)
 }

@@ -126,9 +126,11 @@ func TestStringToIntegerCapsConversionDigits(t *testing.T) {
 		t.Fatalf("error = %v, want the digit cap", err)
 	}
 	// A conversion at the limit still succeeds, so the cap is not narrower
-	// than advertised.
+	// than advertised -- including with a sign, which is not a digit.
 	atLimit := strings.Repeat("9", maxParsedIntegerDigits)
-	if _, err := script.Call(context.Background(), "run", []Value{NewString(atLimit)}, CallOptions{}); err != nil {
-		t.Fatalf("a %d-digit conversion was rejected: %v", len(atLimit), err)
+	for _, input := range []string{atLimit, "-" + atLimit, "+" + atLimit} {
+		if _, err := script.Call(context.Background(), "run", []Value{NewString(input)}, CallOptions{}); err != nil {
+			t.Fatalf("a %d-digit conversion was rejected: %v", maxParsedIntegerDigits, err)
+		}
 	}
 }
