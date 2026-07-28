@@ -1359,19 +1359,35 @@ func runtimeValueStringLen(v Value) (int, bool) {
 
 // runtimeValueStringAppend writes an enum member's text straight into buf, so
 // interpolating one holds no temporary alongside the destination the quota
-// charged.
-func runtimeValueStringAppend(v Value, buf *strings.Builder) bool {
+// charged, and a precision-qualified format writes only the bytes it keeps
+// rather than rendering the whole member to discard most of it.
+//
+// limit is the total byte budget for buf, as in appendBounded.
+func runtimeValueStringAppend(v Value, buf *strings.Builder, limit int) (truncated, handled bool) {
 	if v.Kind() != KindEnumValue {
-		return false
+		return false, false
 	}
 	member := valueEnumValue(v)
 	if member == nil || member.Enum == nil {
-		return false
+		return false, false
 	}
-	buf.WriteString(member.Enum.Name)
-	buf.WriteString("::")
-	buf.WriteString(member.Name)
-	return true
+	remaining := -1
+	if limit > 0 {
+		remaining = max(0, limit-buf.Len())
+	}
+	for _, part := range []string{member.Enum.Name, "::", member.Name} {
+		if remaining < 0 {
+			buf.WriteString(part)
+			continue
+		}
+		if len(part) > remaining {
+			buf.WriteString(part[:remaining])
+			return true, true
+		}
+		buf.WriteString(part)
+		remaining -= len(part)
+	}
+	return false, true
 }
 
 // runtimeValueStringRuneLen counts an enum member's rendered runes from the two

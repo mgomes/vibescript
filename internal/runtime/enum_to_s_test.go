@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -250,5 +251,90 @@ func TestStreamedEnumTextMatchesString(t *testing.T) {
 	}
 	if runes != utf8.RuneCountInString(value.String()) {
 		t.Fatalf("projected rune length %d, want %d", runes, utf8.RuneCountInString(value.String()))
+	}
+}
+
+// A precision-qualified format keeps only a few bytes, but the projection and
+// the render both went through Value.String, materializing the whole member
+// twice before the quota check saw an output of a few bytes. The hook is
+// bounded now, so only the kept bytes are ever written.
+func TestPrecisionFormattedEnumDoesNotMaterializeTheText(t *testing.T) {
+	enum := &EnumDef{Name: strings.Repeat("E", 4096)}
+	member := &EnumValueDef{Name: strings.Repeat("M", 4096), Enum: enum}
+	value := NewEnumValue(member)
+
+	projAllocs := testing.AllocsPerRun(100, func() {
+		_, _, _ = value.StringByteLenBoundedUpTo(4, func() error { return nil })
+	})
+	if projAllocs > 0 {
+		t.Fatalf("the capped projection made %v allocations, want none", projAllocs)
+	}
+
+	// A couple of small allocations are expected (a builder and the result);
+	// what matters is that neither is the size of the member. Bytes, not
+	// counts, is the property under test.
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range 100 {
+		if _, err := value.StringBounded(4); err == nil {
+			t.Fatalf("a 4-byte render of a %d-byte member reported no truncation", len(value.String()))
+		}
+	}
+	runtime.ReadMemStats(&after)
+
+	perRender := (after.TotalAlloc - before.TotalAlloc) / 100
+	if perRender > 1024 {
+		t.Fatalf("a 4-byte bounded render allocated %d bytes, want it bounded by the limit rather than the %d-byte member", perRender, len(value.String()))
+	}
+}
+
+// Bounded rendering must produce exactly the prefix String would, and report
+// truncation the same way.
+func TestBoundedEnumRenderingMatchesTheFullText(t *testing.T) {
+	t.Parallel()
+
+	enum := &EnumDef{Name: "Status"}
+	member := &EnumValueDef{Name: "Active", Enum: enum}
+	value := NewEnumValue(member)
+	full := value.String()
+
+	for limit := 1; limit <= len(full)+2; limit++ {
+		got, err := value.StringBounded(limit)
+		wantTruncated := limit < len(full)
+		want := full
+		if wantTruncated {
+			want = full[:limit]
+		}
+		if got != want {
+			t.Fatalf("StringBounded(%d) = %q, want %q", limit, got, want)
+		}
+		if (err != nil) != wantTruncated {
+			t.Fatalf("StringBounded(%d) err = %v, want truncated = %v", limit, err, wantTruncated)
+		}
+		n, truncated, err := value.StringByteLenBoundedUpTo(limit, func() error { return nil })
+		if err != nil {
+			t.Fatalf("StringByteLenBoundedUpTo(%d): %v", limit, err)
+		}
+		if truncated != wantTruncated {
+			t.Fatalf("StringByteLenBoundedUpTo(%d) truncated = %v, want %v", limit, truncated, wantTruncated)
+		}
+		if !truncated && n != len(full) {
+			t.Fatalf("StringByteLenBoundedUpTo(%d) = %d, want %d", limit, n, len(full))
+		}
+	}
+}
+
+// The rendered text a script sees is unchanged by the bounded path.
+func TestPrecisionFormattingMatchesTheStringForm(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, enumToStringSource+"\ndef run()\n  [format(\"%.1s\", Status::Active), format(\"%.100s\", Status::Active), format(\"%s\", Status::Active)].join(\"|\")\nend")
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "S|Status::Active|Status::Active" {
+		t.Fatalf("got %q", got.String())
 	}
 }
