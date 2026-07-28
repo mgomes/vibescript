@@ -1548,7 +1548,13 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	// reserving them here is O(1) per call, not a re-walk (issue #835).
 	if scratch := charge.ephemeralRootScratch(); scratch > 0 {
 		delta := exec.reserveLoopScratch(scratch)
-		defer exec.releaseLoopScratch(delta)
+		// The baseline already carries these bytes, so tell the charge not to
+		// count them again when it reads the live reservation.
+		charge.noteSelfReservation(delta)
+		defer func() {
+			charge.noteSelfReservation(0)
+			exec.releaseLoopScratch(delta)
+		}()
 	}
 	// A lambda binds its arguments strictly, like a method: it never
 	// auto-splats a single array argument across multiple parameters.

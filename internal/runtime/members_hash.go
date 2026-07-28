@@ -2666,11 +2666,25 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.map does not take keyword arguments")
 			}
-			// Reserve the result backing before the runner is constructed. The
-			// runner snapshots its bind baseline once, at construction, so a
-			// reservation made afterwards is missing from every bind charge --
-			// a rest-destructuring block such as |k, (head, *tail)| would bind
-			// its first call against a baseline omitting the backing entirely.
+			// The accumulator is built first, so its baseline snapshots
+			// exec.reservedScratchBytes before the reservation below. That
+			// counter is part of the baseline, so reserving first would put
+			// the result backing in the baseline and then add it again through
+			// reserveSlots and every cap(out) projection, rejecting a build
+			// whose receiver, scratch, and one backing actually fit.
+			//
+			// map keeps an arbitrary block result per entry, so the growing
+			// result is charged incrementally rather than only after the call:
+			// a block returning an individually quota-sized value per entry
+			// could otherwise pile up past the quota before the post-call
+			// check ran. The baseline includes the live receiver and block,
+			// held on the Go stack during the call.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+
+			// The reservation is what makes the backing visible to checks that
+			// run inside the block body, which cannot see a Go-local slice. It
+			// is raised before the runner is constructed because the runner
+			// snapshots its bind baseline once, at construction.
 			retained := newRetainedOutputScratch(exec)
 			defer retained.release()
 			retained.reserve(arraySlotBackingBytes(hashEntryCount(receiver)))
@@ -2688,7 +2702,6 @@ func hashMemberTransforms(property string) (Value, error) {
 			collapsePair := blockWantsCollapsedPair(valueBlock(block))
 			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
-				acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 				if err := acc.reserveScratch(sortedHashEntryBufferBytes(count)); err != nil {
 					return NewNil(), err
 				}
@@ -2746,7 +2759,6 @@ func hashMemberTransforms(property string) (Value, error) {
 			// baseline includes the live receiver and block (held on the Go stack during
 			// the call), and reserveScratch folds in the sorted key list that stays live
 			// for the whole build so it is charged alongside the accumulating result.
-			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			if err := acc.reserveScratch(sortedKeyBufferBytes(len(entries))); err != nil {
 				return NewNil(), err
 			}
