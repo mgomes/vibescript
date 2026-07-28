@@ -1292,6 +1292,18 @@ func arrayMemberQuery(property string) (Value, error) {
 			// post-call check ran. flat_map needs this more than map does: one
 			// block call can contribute many elements.
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			// A block that returns a fresh array keeps that array live while
+			// its elements are copied into out, and the accumulator's baseline
+			// covers the receiver, arguments, and block but not a block's
+			// return value. Charging only the copy would let the quota approve
+			// both allocations separately when their combined peak exceeds it.
+			//
+			// Only one such array is live at a time -- each is released when
+			// its iteration ends -- so the peak contribution is the widest one
+			// seen, not their sum. Reserving the running high-water mark
+			// charges that peak without accumulating a charge per iteration,
+			// which would falsely reject builds that never held them together.
+			widestBlockResult := 0
 			var blockArg [1]Value
 			for _, item := range arr {
 				// A step per yield, so an empty block body cannot starve the
@@ -1303,6 +1315,14 @@ func arrayMemberQuery(property string) (Value, error) {
 				val, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
+				}
+				if val.Kind() == KindArray {
+					if slots := arraySlotBackingBytes(len(val.Array())); slots > widestBlockResult {
+						if err := acc.reserveScratch(slots - widestBlockResult); err != nil {
+							return NewNil(), err
+						}
+						widestBlockResult = slots
+					}
 				}
 				// Ruby flattens exactly one level: an array result contributes
 				// its elements, anything else contributes itself, and a nested
