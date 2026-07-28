@@ -134,6 +134,11 @@ type scriptChecker struct {
 	oneShotIvarRefinementDepth int
 	expressionStatementRoot    Expression
 	callArgumentFacts          map[Expression]*TypeExpr
+	// callArgumentHints holds the shape-key-kind explanation captured at each
+	// argument's evaluation point. A later argument can mutate the shape an
+	// earlier one read, which poisons the receiver fact, so the hint has to be
+	// taken with the fact rather than re-derived when the diagnostic is added.
+	callArgumentHints          map[Expression]string
 	callArgumentClassValues    map[Expression][]string
 	callArgumentCallables      map[Expression][]*ScriptFunction
 	callArgumentSelfBindings   map[Expression]checkCallableSelfBinding
@@ -4850,6 +4855,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		// an earlier argument was evaluated under. checkCall and the effect
 		// scanner consume the captured facts afterwards.
 		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
+		argumentHints := make(map[Expression]string)
 		argumentClassValues := make(map[Expression][]string, len(typed.Args)+len(typed.KwArgs))
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
 		argumentSelfBindings := make(
@@ -4875,6 +4881,10 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			} else {
 				argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
 			}
+			// Stored even when empty: an absent entry would fall back to
+			// re-inference, and a later argument's state could then supply an
+			// explanation for this one. A wrong reason is worse than none.
+			argumentHints[expr] = c.unknownShapeKeyKindHint(expr)
 			c.pinExpressionValueSource(retainedValue)
 			c.pinExpressionInstanceOrigins(retainedValue)
 			identityAutoCall := autoCall && !retainsCallable
@@ -4930,6 +4940,15 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 						for _, element := range array.Elements {
 							if _, captured := argumentFacts[element]; !captured {
 								argumentFacts[element] = c.inferExpressionType(element)
+							}
+							// Every expanded element reaches
+							// checkInferredArgument, so each needs a presence
+							// entry for the same reason the wrapper does: an
+							// absent one falls back to re-inference, which
+							// could attribute a later argument's state to this
+							// already-evaluated read.
+							if _, captured := argumentHints[element]; !captured {
+								argumentHints[element] = c.unknownShapeKeyKindHint(element)
 							}
 							if elementValues, exact := c.staticValueExpressionAlternatives(element); exact {
 								argumentStaticValues[element] = append([]Expression(nil), elementValues...)
@@ -5101,6 +5120,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			c.collectRuntimeRequireCallExportsFromExpression(typed.BlockArg)
 		}
 		previousFacts := c.callArgumentFacts
+		previousHints := c.callArgumentHints
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
 		previousSelfBindings := c.callArgumentSelfBindings
@@ -5109,6 +5129,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		previousSplatSources := c.callArgumentSplatSources
 		previousReceiverLength := c.callArrayReceiverLength
 		c.callArgumentFacts = argumentFacts
+		c.callArgumentHints = argumentHints
 		c.callArgumentClassValues = argumentClassValues
 		c.callArgumentCallables = argumentCallables
 		c.callArgumentSelfBindings = argumentSelfBindings
@@ -5476,6 +5497,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			callMayComplete = c.arrayFillCallMayCompleteWithoutInvokingBlock(typed)
 		}
 		c.callArgumentFacts = previousFacts
+		c.callArgumentHints = previousHints
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentSelfBindings = previousSelfBindings
