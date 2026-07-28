@@ -70,10 +70,27 @@ type deepCloneState struct {
 	arrayCount   int
 	hashCount    int
 	objectCount  int
+
+	// preserveTags carries an attribute bag's provenance into the clone. It is
+	// set only for the runtime's own containment clones, never for the
+	// script-visible dup and clone, which share this helper: a bag script code
+	// duplicates becomes an ordinary object, so the tag cannot be laundered
+	// onto content the script then edits.
+	preserveTags bool
 }
 
+// deepCloneValue is the script-visible duplication. A cloned attribute bag
+// loses its provenance tag and renders as an ordinary object.
 func deepCloneValue(val Value) Value {
 	var state deepCloneState
+	return deepCloneValueWithState(val, &state)
+}
+
+// deepCloneValueForContainment is the runtime copying a value to isolate it --
+// into a task, across a boundary. The copy stands for the same value, so a
+// recognized provenance tag survives.
+func deepCloneValueForContainment(val Value) Value {
+	state := deepCloneState{preserveTags: true}
 	return deepCloneValueWithState(val, &state)
 }
 
@@ -135,7 +152,10 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 			}
 		}
 		cloned := make(map[string]Value, len(obj))
-		clonedValue := retagClonedObject(val, cloned)
+		clonedValue := NewObject(cloned)
+		if state.preserveTags {
+			clonedValue = retagClonedObject(val, cloned)
+		}
 		state.rememberObject(id, clonedValue)
 		for k, v := range obj {
 			cloned[k] = deepCloneValueWithState(v, state)

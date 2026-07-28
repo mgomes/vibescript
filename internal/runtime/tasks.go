@@ -1001,5 +1001,5 @@ func cloneTaskValue(label string, val Value) (Value, error) {
 	if err := validateCapabilityDataOnlyValue(label, val); err != nil {
 		return NewNil(), err
 	}
-	return deepCloneValue(val), nil
+	return deepCloneValueForContainment(val), nil
 }

@@ -365,3 +365,64 @@ end`)
 		t.Fatalf("a rescued error rendered %q inside a task, want boom", got.String())
 	}
 }
+
+// deepCloneValue backs both the runtime's task containment and the
+// script-visible dup/clone. Only the containment copy stands for the same
+// value; a bag script code duplicates becomes an ordinary object, so the tag
+// cannot be laundered onto content the script then edits.
+func TestScriptDuplicationDropsTheTag(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "rescued error dup", body: `begin
+    raise "boom"
+  rescue => e
+    "#{e.dup}"
+  end`},
+		{name: "rescued error clone", body: `begin
+    raise "boom"
+  rescue => e
+    "#{e.clone}"
+  end`},
+		{name: "match data dup", body: `"#{"hello world".match(/w\w+/).dup}"`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.body+"\nend")
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got.String() != "<object>" {
+				t.Fatalf("%s rendered %q, want <object>: a duplicate must not keep the tag", tc.name, got.String())
+			}
+		})
+	}
+}
+
+// The original still renders, so dropping the tag on duplication does not
+// weaken the tagged value itself.
+func TestDuplicationDoesNotAffectTheOriginal(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  begin
+    raise "boom"
+  rescue => e
+    copy = e.dup
+    "#{e}"
+  end
+end`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "boom" {
+		t.Fatalf("the original rendered %q after being duplicated, want boom", got.String())
+	}
+}
