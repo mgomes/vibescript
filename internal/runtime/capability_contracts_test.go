@@ -1236,3 +1236,30 @@ func TestYieldedBuiltinBrokenOutStillEnforcesItsContract(t *testing.T) {
 		})
 	}
 }
+
+// The ambient walk's budget must actually stop it. Treating zero as
+// "unbounded" meant an exhausted walk became unbounded again on the next
+// node, restoring the very cost the budget exists to cap.
+func TestAmbientCollectBudgetStopsTheWalk(t *testing.T) {
+	t.Parallel()
+
+	// A graph far larger than the budget, reachable from one binding.
+	deep := NewInt(0)
+	for range ambientCollectNodeBudget * 4 {
+		deep = NewArray([]Value{deep, NewBuiltin("probe", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return NewNil(), nil
+		})})
+	}
+
+	scanner := newCapabilityContractScanner()
+	scanner.collectBounded, scanner.collectBudget = true, ambientCollectNodeBudget
+	out := map[*Builtin]struct{}{}
+	scanner.collectBuiltins(deep, out)
+
+	if scanner.collectBudget > 0 {
+		t.Fatalf("the walk ended with %d budget left, so it did not reach the cap", scanner.collectBudget)
+	}
+	if len(out) > ambientCollectNodeBudget {
+		t.Fatalf("the walk collected %d builtins past a %d-node budget", len(out), ambientCollectNodeBudget)
+	}
+}
