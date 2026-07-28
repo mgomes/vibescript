@@ -134,6 +134,11 @@ type scriptChecker struct {
 	oneShotIvarRefinementDepth int
 	expressionStatementRoot    Expression
 	callArgumentFacts          map[Expression]*TypeExpr
+	// callArgumentHints holds the shape-key-kind explanation captured at each
+	// argument's evaluation point. A later argument can mutate the shape an
+	// earlier one read, which poisons the receiver fact, so the hint has to be
+	// taken with the fact rather than re-derived when the diagnostic is added.
+	callArgumentHints          map[Expression]string
 	callArgumentClassValues    map[Expression][]string
 	callArgumentCallables      map[Expression][]*ScriptFunction
 	callArgumentSelfBindings   map[Expression]checkCallableSelfBinding
@@ -4850,6 +4855,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		// an earlier argument was evaluated under. checkCall and the effect
 		// scanner consume the captured facts afterwards.
 		argumentFacts := make(map[Expression]*TypeExpr, len(typed.Args)+len(typed.KwArgs))
+		argumentHints := make(map[Expression]string)
 		argumentClassValues := make(map[Expression][]string, len(typed.Args)+len(typed.KwArgs))
 		argumentCallables := make(map[Expression][]*ScriptFunction, len(typed.Args)+len(typed.KwArgs))
 		argumentSelfBindings := make(
@@ -4874,6 +4880,9 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 				retainedValue = splat.Value
 			} else {
 				argumentFacts[expr] = c.inferExpressionTypeWithExpectation(expr, expectation)
+			}
+			if hint := c.unknownShapeKeyKindHint(expr); hint != "" {
+				argumentHints[expr] = hint
 			}
 			c.pinExpressionValueSource(retainedValue)
 			c.pinExpressionInstanceOrigins(retainedValue)
@@ -5101,6 +5110,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			c.collectRuntimeRequireCallExportsFromExpression(typed.BlockArg)
 		}
 		previousFacts := c.callArgumentFacts
+		previousHints := c.callArgumentHints
 		previousClassValues := c.callArgumentClassValues
 		previousCallables := c.callArgumentCallables
 		previousSelfBindings := c.callArgumentSelfBindings
@@ -5109,6 +5119,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 		previousSplatSources := c.callArgumentSplatSources
 		previousReceiverLength := c.callArrayReceiverLength
 		c.callArgumentFacts = argumentFacts
+		c.callArgumentHints = argumentHints
 		c.callArgumentClassValues = argumentClassValues
 		c.callArgumentCallables = argumentCallables
 		c.callArgumentSelfBindings = argumentSelfBindings
@@ -5476,6 +5487,7 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 			callMayComplete = c.arrayFillCallMayCompleteWithoutInvokingBlock(typed)
 		}
 		c.callArgumentFacts = previousFacts
+		c.callArgumentHints = previousHints
 		c.callArgumentClassValues = previousClassValues
 		c.callArgumentCallables = previousCallables
 		c.callArgumentSelfBindings = previousSelfBindings

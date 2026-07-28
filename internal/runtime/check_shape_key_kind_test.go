@@ -92,3 +92,30 @@ def f(row: { name?: string }) -> string
   take(row[:name])
 end`), "expected string, got string | nil")
 }
+
+// A later argument that mutates the shape an earlier one read must not lose the
+// explanation. This passes with or without the captured-hint change -- none of
+// delete, clear, merge!, or a mutating call poisons the fact enough to drop it
+// -- so it pins the property rather than covering a fixed defect.
+func TestShapeKeyKindHintSurvivesLaterArgumentMutation(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def accept(a: string, b)
+  a
+end
+def f(row: { name: string })
+  accept(row[:name], row.delete(:name))
+end`)
+
+	messages := make([]string, 0, 4)
+	for _, warning := range script.CheckWarnings() {
+		messages = append(messages, warning.Message)
+	}
+	joined := strings.Join(messages, "\n")
+	if joined == "" {
+		t.Fatalf("no diagnostic for the mutated-shape call")
+	}
+	if !strings.Contains(joined, "key kind is unknown") {
+		t.Fatalf("the explanation was lost when a later argument mutated the shape:\n%s", joined)
+	}
+}

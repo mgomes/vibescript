@@ -15703,7 +15703,7 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 	if c.boundaryTypeRejected(inferred, ty) {
 		c.add(function, expr.Pos(), "call to %s argument %s expected %s, got %s%s",
 			callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred),
-			c.unknownShapeKeyKindHint(expr))
+			c.capturedShapeKeyKindHint(expr))
 	}
 }
 
@@ -15716,6 +15716,17 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 // a required field joins nil. Without saying so the diagnostic reads as though
 // the field were optional, which is how #1046 concluded that `?` had no
 // effect: it does, but only where the key kind is known, as in a hash literal.
+// capturedShapeKeyKindHint prefers the hint captured when the argument was
+// evaluated. A later argument can mutate the shape an earlier one read --
+// accept(row[:name], row.delete(:name)) -- which poisons the receiver fact, so
+// re-deriving it here would silently drop the explanation.
+func (c *scriptChecker) capturedShapeKeyKindHint(expr Expression) string {
+	if hint, captured := c.callArgumentHints[expr]; captured {
+		return hint
+	}
+	return c.unknownShapeKeyKindHint(expr)
+}
+
 func (c *scriptChecker) unknownShapeKeyKindHint(expr Expression) string {
 	index, ok := expr.(*IndexExpr)
 	if !ok || len(index.Indices) != 1 {
