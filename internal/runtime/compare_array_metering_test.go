@@ -254,3 +254,29 @@ func TestDroppedMemoEntriesLeaveNoReservation(t *testing.T) {
 		t.Fatalf("comparisons = %s, want 00", got.String())
 	}
 }
+
+// A deeply nested single-child comparison memoizes only during its final
+// unwind, after every step-driven check has already run, so the memo's growth
+// would escape the quota entirely without a check on the reservation path.
+func TestDeepUnwindMemoIsStillBounded(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 300 * 1024}, `
+    def build(d)
+      cur = [1]
+      i = 0
+      while i < d
+        cur = [cur]
+        i = i + 1
+      end
+      cur
+    end
+    def run()
+      a = build(20000)
+      b = build(20000)
+      (a <=> b).inspect
+    end
+    `)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("a 20000-deep comparison memoized past the quota during its unwind")
+	}
+}

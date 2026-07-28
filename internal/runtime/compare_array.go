@@ -59,6 +59,9 @@ type arrayCompareState struct {
 	// host memory: two equal structures with many distinct nested pairs retain
 	// one entry each until the whole comparison finishes.
 	memoReserved int
+	// memoSinceCheck counts reservations taken since the quota was last
+	// consulted.
+	memoSinceCheck int
 }
 
 // arrayCompareMemoEntryBytes is the charge for one memoized pair.
@@ -79,12 +82,27 @@ const arrayCompareMemoEntryBytes = 128
 // run inside builtin dispatch, where the base-walk cache is deliberately
 // disabled, so every insertion would walk the whole reachable heap and turn a
 // linear memo into a quadratic one.
-func (state *arrayCompareState) reserveMemoEntry() {
+// arrayCompareMemoCheckInterval is how many memo reservations may accumulate
+// before the quota is consulted. Checking every entry walks the whole
+// reachable heap, because these comparisons run inside builtin dispatch where
+// the base-walk cache is disabled; never checking lets a descent that
+// memoizes only during its final unwind escape entirely, since the
+// step-driven checks all ran before any entry existed. Checking periodically
+// bounds both the walk cost and the overshoot.
+const arrayCompareMemoCheckInterval = 64
+
+func (state *arrayCompareState) reserveMemoEntry() error {
 	if state == nil || state.exec == nil {
-		return
+		return nil
 	}
 	state.exec.reserveLoopScratch(arrayCompareMemoEntryBytes)
 	state.memoReserved += arrayCompareMemoEntryBytes
+	state.memoSinceCheck++
+	if state.memoSinceCheck < arrayCompareMemoCheckInterval {
+		return nil
+	}
+	state.memoSinceCheck = 0
+	return state.exec.checkMemory()
 }
 
 // release returns the memo's reservation once the comparison that built it is
@@ -163,7 +181,15 @@ func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int
 				state.done = map[arrayComparePair]arrayCompareResult{}
 			}
 			if _, already := state.done[pair]; !already {
-				state.reserveMemoEntry()
+				if reserveErr := state.reserveMemoEntry(); reserveErr != nil {
+					// The memo cannot grow within the quota. Report it rather
+					// than memoizing past the limit; the comparison is
+					// abandoned like any other quota failure.
+					if err == nil {
+						order, ordered, err = 0, false, reserveErr
+					}
+					return
+				}
 			}
 			state.done[pair] = arrayCompareResult{order: order, ordered: ordered, err: err}
 		}()
