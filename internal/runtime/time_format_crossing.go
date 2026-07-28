@@ -75,15 +75,44 @@ func containsGoLayoutSignature(s string) bool {
 //
 // Go layouts treat an unrecognized percent as literal text, so a layout with
 // no percent at all cannot be a strftime format and skips the check.
-func checkFormatGivenStrftime(exec *Execution, t time.Time, layout string) error {
+//
+// Detection is syntactic rather than by rendering. Rendering honors a
+// directive's requested width, so classifying `t.format("%1000000000N")` would
+// allocate about a gigabyte purely to decide -- with no memory limit set, that
+// exhausts the process, where Time#format previously treated the input as a
+// tiny literal.
+func checkFormatGivenStrftime(layout string) error {
 	if !strings.ContainsRune(layout, '%') {
 		return nil
 	}
-	// A format the strftime renderer rejects outright is not a strftime
-	// format either, so a render error means there is nothing to report.
-	rendered, err := strftime(exec, t, layout)
-	if err != nil || rendered == layout {
+	if !containsRecognizedStrftimeDirective(layout) {
 		return nil
 	}
 	return fmt.Errorf("time.format expects a Go layout such as \"2006-01-02\"; %q is a strftime format, use strftime for that", layout)
+}
+
+// strftimeDirectiveLetters are the directive bytes the renderer recognizes.
+// Anything else after a percent is emitted verbatim, as in Ruby, so it does
+// not make a string a strftime format.
+const strftimeDirectiveLetters = "%AbBCdDFhHIjklLmMnNpPrRStTuwxXyYzZ"
+
+// containsRecognizedStrftimeDirective reports whether s carries a percent
+// directive the renderer would act on, without rendering anything.
+func containsRecognizedStrftimeDirective(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '%' {
+			continue
+		}
+		token, ok := scanStrftimeDirective(s, i)
+		if !ok {
+			return false
+		}
+		// A literal %% renders a percent sign rather than a field, so it does
+		// not make the string a strftime format on its own.
+		if token.directive != '%' && strings.IndexByte(strftimeDirectiveLetters, token.directive) >= 0 {
+			return true
+		}
+		i += len(token.source) - 1
+	}
+	return false
 }
