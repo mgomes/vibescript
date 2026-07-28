@@ -331,7 +331,18 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			// Capability methods can lazily publish additional builtins at runtime
 			// (e.g. through factory return values or receiver mutation). Re-scan
 			// these values so future calls still enforce declared contracts.
-			postCallScanner.bindContracts(result, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+			//
+			// A rejected result is not treated as published. The pre-call block
+			// scan stops at ambient environments, so a builtin that arrived as
+			// a break value is absent from preCallKnownBuiltins and would be
+			// bound as if this call had published it -- attaching the
+			// capability's contract to an unrelated global the caller owns.
+			// The mutation scans below stay unconditional: those really are
+			// this call's doing, and are what the rejected return must not
+			// leave unguarded.
+			if deferredErr == nil {
+				postCallScanner.bindContracts(result, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+			}
 			if receiver.Kind() != KindNil {
 				postCallScanner.bindContracts(receiver, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}

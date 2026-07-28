@@ -1065,3 +1065,39 @@ end`)
 		t.Fatalf("contract-violating call executed %d times, want it blocked", invocations)
 	}
 }
+
+// A break value the caller already owned is not something the call published.
+// The pre-call block scan stops at ambient environments, so binding contracts
+// from a rejected result attached the capability's contract to an unrelated
+// global and made the caller's own later calls to it fail validation.
+func TestRejectedResultDoesNotBindContractsToACallerOwnedBuiltin(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  begin
+    mut.install { break helper }
+  rescue => e
+    nil
+  end
+  helper("anything", 2)
+end`)
+
+	invocations := 0
+	helperCalls := 0
+	helper := NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		helperCalls++
+		return NewString("helper ok"), nil
+	})
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Globals: map[string]Value{"helper": helper},
+		Capabilities: []CapabilityAdapter{
+			breakPublishingContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err != nil {
+		t.Fatalf("a caller-owned builtin was validated against the capability's contract: %v", err)
+	}
+	if helperCalls != 1 {
+		t.Fatalf("caller-owned builtin ran %d times, want 1", helperCalls)
+	}
+}
