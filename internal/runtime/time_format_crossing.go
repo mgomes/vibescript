@@ -91,14 +91,23 @@ func checkFormatGivenStrftime(layout string) error {
 	return fmt.Errorf("time.format expects a Go layout such as \"2006-01-02\"; %q is a strftime format, use strftime for that", layout)
 }
 
-// strftimeDirectiveLetters are the directive bytes the renderer recognizes.
-// Anything else after a percent is emitted verbatim, as in Ruby, so it does
-// not make a string a strftime format.
-const strftimeDirectiveLetters = "%AbBCdDFhHIjklLmMnNpPrRStTuwxXyYzZ"
+// strftimeDirectiveLetters are the directive bytes strftimeRenderer.field
+// acts on. Anything else after a percent is emitted verbatim, as in Ruby, so
+// it does not make a string a strftime format.
+//
+// TestDirectiveLettersMatchTheRenderer holds this in step with the renderer by
+// probing every printable byte, so a directive added there without being added
+// here fails that test rather than silently going unrecognized.
+const strftimeDirectiveLetters = "%AaBbCcDdeFHhIjkLlMmNnPpRrSsTtuwXxYyZz"
 
 // containsRecognizedStrftimeDirective reports whether s carries a percent
 // directive the renderer would act on, without rendering anything.
+//
+// A malformed token anywhere disqualifies the whole string: the renderer
+// rejects such a format, so text like "%Y%" is not a strftime format the
+// caller should be redirected to, and it remains a valid literal Go layout.
 func containsRecognizedStrftimeDirective(s string) bool {
+	found := false
 	for i := 0; i < len(s); i++ {
 		if s[i] != '%' {
 			continue
@@ -108,11 +117,11 @@ func containsRecognizedStrftimeDirective(s string) bool {
 			return false
 		}
 		if renderedAsStrftimeField(token) {
-			return true
+			found = true
 		}
 		i += len(token.source) - 1
 	}
-	return false
+	return found
 }
 
 // renderedAsStrftimeField reports whether the renderer would act on token as a

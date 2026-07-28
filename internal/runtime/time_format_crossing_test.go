@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 const crossingTimeSetup = `t = Time.parse("2026-07-27T14:30:45Z")` + "\n  "
@@ -276,6 +277,70 @@ func TestVerbatimSequencesStillRenderThemselves(t *testing.T) {
 			if got.String() != format {
 				t.Fatalf("strftime(%q) = %q, want it emitted verbatim", format, got.String())
 			}
+		})
+	}
+}
+
+// strftimeDirectiveLetters duplicates knowledge the renderer owns, so it must
+// be checked against it rather than trusted. Recognizing a directive by letter
+// is only sound if the letters are exactly the ones the renderer acts on: the
+// set originally omitted %a, %c, %e, and %s, so a format built from only those
+// was emitted as percent text instead of being reported as a crossed format.
+func TestDirectiveLettersMatchTheRenderer(t *testing.T) {
+	t.Parallel()
+
+	renderer := strftimeRenderer{t: time.Date(2026, 7, 27, 14, 30, 45, 0, time.UTC)}
+	for b := byte(' '); b < 0x7f; b++ {
+		token := strftimeToken{source: "%" + string(b), directive: b}
+		_, _, _, _, rendersField, err := renderer.field(token, 0)
+		if err != nil {
+			t.Fatalf("field(%%%c): %v", b, err)
+		}
+		listed := strings.IndexByte(strftimeDirectiveLetters, b) >= 0
+		if listed != rendersField {
+			t.Fatalf("%%%c: listed in strftimeDirectiveLetters = %v, renderer acts on it = %v", b, listed, rendersField)
+		}
+	}
+}
+
+// Every directive the renderer acts on must make a format crossed, and the
+// crossing check must agree with what strftime itself produces.
+func TestEveryRendererDirectiveIsDetectedAsCrossed(t *testing.T) {
+	t.Parallel()
+
+	for i := range len(strftimeDirectiveLetters) {
+		letter := strftimeDirectiveLetters[i]
+		if letter == '%' {
+			continue // a plain literal percent is not a field
+		}
+		format := "%" + string(letter)
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+			_, err := runCrossingExpr(t, `t.format("`+format+`")`)
+			if err == nil || !strings.Contains(err.Error(), "is a strftime format") {
+				t.Fatalf("format(%q) was not reported as a strftime format; err = %v", format, err)
+			}
+		})
+	}
+}
+
+// A malformed token disqualifies the whole string. The renderer rejects such a
+// format, so it is not a strftime format to redirect the caller to, and the
+// text remains a valid literal Go layout.
+func TestMalformedTrailingSequenceIsNotACrossedFormat(t *testing.T) {
+	t.Parallel()
+
+	for _, format := range []string{"%Y%", "%d%", "2006-01-02 100%"} {
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+			got, err := runCrossingExpr(t, `t.format("`+format+`")`)
+			if err != nil && strings.Contains(err.Error(), "is a strftime format") {
+				t.Fatalf("format(%q) was reported as a strftime format, want it treated as a Go layout", format)
+			}
+			if err != nil {
+				t.Fatalf("format(%q): %v", format, err)
+			}
+			_ = got
 		})
 	}
 }
