@@ -82,6 +82,12 @@ type arrayCompareState struct {
 // real footprint rather than under it.
 const arrayCompareMemoEntryBytes = 320
 
+// arrayCompareMemoRingEntryBytes is the charge for one eviction-ring slot: an
+// arrayComparePair is 32 bytes on 64-bit Go. The ring is allocated at its full
+// size alongside the memo so it never grows, and both are covered by the one
+// reservation.
+const arrayCompareMemoRingEntryBytes = 32
+
 // arrayCompareMemoMaxEntries bounds the memo. It is generous enough for the
 // sharing the memo exists to collapse -- a shared DAG has one distinct pair
 // per level, so this covers nesting far deeper than any real structure --
@@ -124,15 +130,19 @@ func (state *arrayCompareState) ensureMemo() {
 	state.memoTried = true
 	if state.exec == nil {
 		state.done = map[arrayComparePair]arrayCompareResult{}
+		state.evictionOrder = make([]arrayComparePair, 0, arrayCompareMemoMaxEntries)
 		return
 	}
-	reserved := state.exec.reserveLoopScratch(arrayCompareMemoMaxEntries * arrayCompareMemoEntryBytes)
+	reserved := state.exec.reserveLoopScratch(arrayCompareMemoMaxEntries * (arrayCompareMemoEntryBytes + arrayCompareMemoRingEntryBytes))
 	if err := state.exec.checkMemory(); err != nil {
 		state.exec.releaseLoopScratch(reserved)
 		return
 	}
 	state.memoReserved = reserved
 	state.done = map[arrayComparePair]arrayCompareResult{}
+	// Allocated at full size so appending never doubles: a growing slice holds
+	// the old and new backings at once, and the reservation covers one ring.
+	state.evictionOrder = make([]arrayComparePair, 0, arrayCompareMemoMaxEntries)
 }
 
 // memoize records a completed pair, evicting the oldest entry once the memo is

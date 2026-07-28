@@ -468,8 +468,12 @@ func TestMemoChargeCoversTheMapFootprint(t *testing.T) {
 
 		peak := uint64(0)
 		memo := map[arrayComparePair]arrayCompareResult{}
+		// The eviction ring is live alongside the map and must be charged too.
+		ring := make([]arrayComparePair, 0, arrayCompareMemoMaxEntries)
 		for i := range arrayCompareMemoMaxEntries {
-			memo[arrayComparePair{leftPtr: uintptr(i), rightPtr: uintptr(i * 3), leftLen: i, rightLen: i}] = arrayCompareResult{order: i}
+			pair := arrayComparePair{leftPtr: uintptr(i), rightPtr: uintptr(i * 3), leftLen: i, rightLen: i}
+			memo[pair] = arrayCompareResult{order: i}
+			ring = append(ring, pair)
 			var cur runtime.MemStats
 			runtime.ReadMemStats(&cur)
 			if cur.HeapAlloc > before.HeapAlloc && cur.HeapAlloc-before.HeapAlloc > peak {
@@ -477,6 +481,7 @@ func TestMemoChargeCoversTheMapFootprint(t *testing.T) {
 			}
 		}
 		runtime.KeepAlive(memo)
+		runtime.KeepAlive(ring)
 		return peak
 	}
 
@@ -487,9 +492,9 @@ func TestMemoChargeCoversTheMapFootprint(t *testing.T) {
 		}
 	}
 
-	charged := uint64(arrayCompareMemoMaxEntries * arrayCompareMemoEntryBytes)
+	charged := uint64(arrayCompareMemoMaxEntries * (arrayCompareMemoEntryBytes + arrayCompareMemoRingEntryBytes))
 	if actual > 0 && charged < actual {
-		t.Fatalf("a full memo occupies %d bytes but only %d are charged", actual, charged)
+		t.Fatalf("a full memo and its ring occupy %d bytes but only %d are charged", actual, charged)
 	}
 }
 
