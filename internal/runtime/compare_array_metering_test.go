@@ -174,3 +174,53 @@ func TestSortStillReportsIncomparableValues(t *testing.T) {
 		t.Fatalf("error = %v, want the incomparability message", err)
 	}
 }
+
+// The memo is a Go-local map, invisible to the periodic memory check, so
+// bounding the walk's CPU with it would otherwise trade unbounded time for
+// unbounded host memory: two equal structures with many distinct nested pairs
+// retain one entry each until the comparison finishes.
+func TestComparisonMemoIsChargedAgainstTheMemoryQuota(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 220 * 1024}, `
+    def run(a, b)
+      (a <=> b).inspect
+    end
+    `)
+	// Many distinct nested pairs, so the memo grows one entry per pair.
+	build := func() Value {
+		rows := make([]Value, 4000)
+		for i := range rows {
+			rows[i] = NewArray([]Value{NewInt(int64(i)), NewInt(int64(i))})
+		}
+		return NewArray(rows)
+	}
+	if _, err := script.Call(context.Background(), "run", []Value{build(), build()}, CallOptions{}); err == nil {
+		t.Fatalf("expected the memo's growth to be visible to the memory quota")
+	}
+}
+
+// Dropping a memo entry that will not fit must not change the answer: the memo
+// is an optimization and the walk terminates on the on-stack set regardless.
+func TestComparisonStaysCorrectWhenTheMemoCannotGrow(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 2 << 20}, `
+    def run(a, b)
+      (a <=> b).inspect
+    end
+    `)
+	build := func(last int64) Value {
+		rows := make([]Value, 200)
+		for i := range rows {
+			rows[i] = NewArray([]Value{NewInt(int64(i))})
+		}
+		rows[len(rows)-1] = NewArray([]Value{NewInt(last)})
+		return NewArray(rows)
+	}
+	got, err := script.Call(context.Background(), "run", []Value{build(1), build(2)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "-1" {
+		t.Fatalf("comparison = %s, want -1", got.String())
+	}
+}

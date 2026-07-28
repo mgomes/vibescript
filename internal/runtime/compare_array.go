@@ -53,6 +53,37 @@ type arrayCompareState struct {
 	// a shortcut fired depends on the enclosing cycle and is not reusable
 	// elsewhere, so only results whose subtree took none are memoized.
 	cycleShortcuts int
+	// memoReserved is the scratch currently reserved for the memo. The memo is
+	// a Go-local map, invisible to the periodic memory check, so bounding the
+	// walk's CPU with it would otherwise trade unbounded time for unbounded
+	// host memory: two equal structures with many distinct nested pairs retain
+	// one entry each until the whole comparison finishes.
+	memoReserved int
+}
+
+// arrayCompareMemoEntryBytes is the charge for one memoized pair: the key's
+// four words plus the result's three, which is what the map retains per entry
+// before its own bucket overhead.
+const arrayCompareMemoEntryBytes = 7 * 8
+
+// reserveMemoEntry charges one more memo entry against the memory quota.
+func (state *arrayCompareState) reserveMemoEntry() error {
+	if state == nil || state.exec == nil {
+		return nil
+	}
+	state.exec.reserveLoopScratch(arrayCompareMemoEntryBytes)
+	state.memoReserved += arrayCompareMemoEntryBytes
+	return state.exec.checkMemory()
+}
+
+// release returns the memo's reservation once the comparison that built it is
+// finished with it.
+func (state *arrayCompareState) release() {
+	if state == nil || state.exec == nil {
+		return
+	}
+	state.exec.releaseLoopScratch(state.memoReserved)
+	state.memoReserved = 0
 }
 
 // arrayCompareResult is a completed comparison, memoized.
@@ -120,6 +151,15 @@ func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int
 			if state.done == nil {
 				state.done = map[arrayComparePair]arrayCompareResult{}
 			}
+			if _, already := state.done[pair]; !already {
+				if reserveErr := state.reserveMemoEntry(); reserveErr != nil {
+					// The memo cannot grow within the quota, so drop this entry
+					// rather than exceed it. Correctness is unaffected: the memo
+					// is an optimization, and the walk still terminates on the
+					// on-stack set.
+					return
+				}
+			}
 			state.done[pair] = arrayCompareResult{order: order, ordered: ordered, err: err}
 		}()
 	}
@@ -158,7 +198,9 @@ func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int
 // neither even though sort accepts them.
 func compareSpaceshipOrder(exec *Execution, left, right Value) (order int, ordered bool, err error) {
 	if left.Kind() == KindArray && right.Kind() == KindArray {
-		return compareArrayOrder(left.Array(), right.Array(), &arrayCompareState{exec: exec})
+		state := &arrayCompareState{exec: exec}
+		defer state.release()
+		return compareArrayOrder(left.Array(), right.Array(), state)
 	}
 	// nil answers <=> against itself but has no relational operators, so this
 	// case belongs to the spaceship alone: Ruby's `nil <=> nil` is 0 while
