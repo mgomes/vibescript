@@ -835,12 +835,27 @@ func (s *capabilityContractScanner) scanClosureEnv(env *Env, visit func(Value)) 
 		if _, seen := s.seenEnvs[env]; seen {
 			return
 		}
+		// A bounded walk stops here too. A captured frame can hold many
+		// bindings, and a no-op visitor per binding still costs O(frame) --
+		// and O(ancestors) as the loop climbs -- which is exactly the
+		// unmetered work the budget exists to bound.
+		if s.collectExhausted() {
+			return
+		}
 		s.seenEnvs[env] = struct{}{}
-		env.rangeDynamicBindings(func(_ string, item Value) {
+		env.rangeDynamicBindingsWhile(func(_ string, item Value) bool {
 			visit(item)
+			return !s.collectExhausted()
 		})
-		for _, item := range env.statics {
+		if s.collectExhausted() {
+			return
+		}
+		env.rangeStaticBindingsWhile(func(_ string, item Value) bool {
 			visit(item)
+			return !s.collectExhausted()
+		})
+		if s.collectExhausted() {
+			return
 		}
 		if env.hasCallBlock {
 			visit(env.callBlock)

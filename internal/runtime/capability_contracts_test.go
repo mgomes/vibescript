@@ -1300,3 +1300,41 @@ func TestAmbientCollectCostIsIndependentOfContainerSize(t *testing.T) {
 			large, largeCost, smallCost, small)
 	}
 }
+
+// A bounded walk must stop inside captured environments too. An ambient global
+// can be an escaped block whose captured frame holds many bindings, and
+// scanClosureEnv visited every one (and every ancestor frame) with a no-op
+// visitor once the budget was spent, leaving the cost linear in the frame.
+func TestAmbientCollectStopsInsideCapturedEnvironments(t *testing.T) {
+	capturedBlock := func(bindings int) Value {
+		captured := newEnv(nil)
+		for i := range bindings {
+			captured.Define(fmt.Sprintf("c%06d", i), NewInt(int64(i)))
+		}
+		return NewBlock(nil, nil, captured)
+	}
+
+	walk := func(val Value) time.Duration {
+		best := time.Hour
+		for range 5 {
+			scanner := newCapabilityContractScanner()
+			scanner.collectBounded, scanner.collectBudget = true, ambientCollectNodeBudget
+			out := map[*Builtin]struct{}{}
+			start := time.Now()
+			scanner.collectBuiltins(val, out)
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+
+	small := walk(capturedBlock(ambientCollectNodeBudget * 2))
+	large := walk(capturedBlock(ambientCollectNodeBudget * 16))
+
+	// 8x the captured bindings must not cost 4x. Measured about 7x before.
+	if large > small*4 {
+		t.Fatalf("walking a %d-binding captured frame took %v against %v for %d: closure traversal is not stopping at the budget",
+			ambientCollectNodeBudget*16, large, small, ambientCollectNodeBudget*2)
+	}
+}
