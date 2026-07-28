@@ -134,3 +134,54 @@ func TestStringToIntegerCapsConversionDigits(t *testing.T) {
 		}
 	}
 }
+
+// The cap must be enforced before parsing, not just on the big-integer path.
+// An oversized input can still denote an int64 -- leading zeros, or a value
+// padded to any length -- so checking after a successful ParseInt let those
+// through the advertised limit and paid for an arbitrarily long uncharged
+// scan to do it.
+func TestOversizedInputThatFitsInt64IsStillCapped(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20},
+		"def run(s)\n  s.to_i\nend")
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "all zeros", input: strings.Repeat("0", maxParsedIntegerDigits+1)},
+		{name: "signed zeros", input: "-" + strings.Repeat("0", maxParsedIntegerDigits+1)},
+		{name: "padded small value", input: strings.Repeat("0", maxParsedIntegerDigits) + "7"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := script.Call(context.Background(), "run", []Value{NewString(tc.input)}, CallOptions{})
+			if err == nil {
+				t.Fatalf("%s: a %d-digit conversion was accepted, want it capped", tc.name, digitCount(tc.input))
+			}
+			if !strings.Contains(err.Error(), "digit conversion limit") {
+				t.Fatalf("%s: error = %v, want the digit cap", tc.name, err)
+			}
+		})
+	}
+}
+
+// A padded value at exactly the limit still converts, so moving the check
+// earlier did not narrow the cap.
+func TestPaddedValueAtTheLimitStillConverts(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20},
+		"def run(s)\n  s.to_i.to_s\nend")
+	input := strings.Repeat("0", maxParsedIntegerDigits-1) + "7"
+	got, err := script.Call(context.Background(), "run", []Value{NewString(input)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("a padded value at the limit was rejected: %v", err)
+	}
+	if got.String() != "7" {
+		t.Fatalf("got %s, want 7", got.String())
+	}
+}

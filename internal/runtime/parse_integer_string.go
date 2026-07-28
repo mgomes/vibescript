@@ -36,6 +36,13 @@ const bigIntParseStepDigits = 8
 //
 // A malformed string is still rejected. Only the range limit is lifted.
 func parseIntegerString(exec *Execution, s, name string, source Value) (Value, error) {
+	// The cap is enforced before parsing, not just on the big-integer path.
+	// An oversized input can still denote an int64 -- 100_001 zeros is one --
+	// so checking afterwards let those through the advertised limit and paid
+	// for an arbitrarily long uncharged scan inside ParseInt to do it.
+	if digitCount(s) > maxParsedIntegerDigits {
+		return NewNil(), guardLimitErrorf("%s exceeds the %d digit conversion limit", name, maxParsedIntegerDigits)
+	}
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err == nil {
 		return NewInt(n), nil
@@ -45,12 +52,6 @@ func parseIntegerString(exec *Execution, s, name string, source Value) (Value, e
 	// accepted syntax is wider.
 	if !errors.Is(err, strconv.ErrRange) {
 		return NewNil(), fmt.Errorf("%s expects a base-10 integer string", name)
-	}
-	// Count digits, not bytes: a leading sign is not a digit, and the parser's
-	// equivalent limit does not count one either, so including it would reject
-	// a signed value with exactly the advertised number of digits.
-	if digitCount(s) > maxParsedIntegerDigits {
-		return NewNil(), guardLimitErrorf("%s exceeds the %d digit conversion limit", name, maxParsedIntegerDigits)
 	}
 	if exec != nil {
 		if err := exec.stepN(1 + len(s)/bigIntParseStepDigits); err != nil {
@@ -81,6 +82,9 @@ func parseIntegerString(exec *Execution, s, name string, source Value) (Value, e
 }
 
 // digitCount returns the length of s without a leading sign.
+// digitCount counts digits, not bytes: a leading sign is not a digit, and the
+// parser's equivalent limit does not count one either, so including it would
+// reject a signed value with exactly the advertised number of digits.
 func digitCount(s string) int {
 	if len(s) > 0 && (s[0] == '-' || s[0] == '+') {
 		return len(s) - 1
