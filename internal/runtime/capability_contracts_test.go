@@ -1139,39 +1139,6 @@ func (c unvalidatedBreakCapability) CapabilityContracts() map[string]CapabilityM
 	}
 }
 
-// A break value came from the caller's own block, so it is not something the
-// call published -- whether or not it passes the return contract. The break
-// here IS the caller-owned builtin, and install declares no return contract,
-// so it is accepted; binding contracts from it attached the capability's
-// contract to that unrelated global and its later calls then failed.
-func TestAcceptedBreakDoesNotBindContractsToACallerOwnedBuiltin(t *testing.T) {
-	t.Parallel()
-
-	script := compileScriptDefault(t, `def run()
-  mut.install { break helper }
-  helper("anything", 2)
-end`)
-
-	invocations := 0
-	helperCalls := 0
-	helper := NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		helperCalls++
-		return NewString("helper ok"), nil
-	})
-	_, err := script.Call(context.Background(), "run", nil, CallOptions{
-		Globals: map[string]Value{"helper": helper},
-		Capabilities: []CapabilityAdapter{
-			unvalidatedBreakCapability{invokeCount: &invocations},
-		},
-	})
-	if err != nil {
-		t.Fatalf("a caller-owned builtin was validated against the capability's contract: %v", err)
-	}
-	if helperCalls != 1 {
-		t.Fatalf("caller-owned builtin ran %d times, want 1", helperCalls)
-	}
-}
-
 // The publication scan itself must still run on the absorbed-break path: a
 // builtin the call really did publish stays contract-bound.
 func TestPublicationScanStillRunsForAnAcceptedBreak(t *testing.T) {
@@ -1194,5 +1161,78 @@ end`)
 	requireErrorContains(t, err, "mut.call expects int")
 	if invocations != 0 {
 		t.Fatalf("contract-violating call executed %d times, want it blocked", invocations)
+	}
+}
+
+// yieldingPublisherCapability creates a contract-covered builtin and yields it,
+// so a block can make it the call's result by breaking with it.
+type yieldingPublisherCapability struct {
+	invokeCount *int
+}
+
+func (c yieldingPublisherCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"mut": NewObject(map[string]Value{
+			"install": NewBuiltin("mut.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				fresh := NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+					*c.invokeCount = *c.invokeCount + 1
+					return NewString("ok"), nil
+				})
+				if block.IsNil() {
+					return NewString("installed"), nil
+				}
+				return exec.callBlockValue(block, []Value{fresh}, Position{})
+			}),
+		}),
+	}, nil
+}
+
+func (c yieldingPublisherCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"mut.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("mut.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
+// A builtin the capability itself created and yielded becomes the call's
+// result when the block breaks with it, while staying absent from
+// preCallKnownBuiltins and unreachable through the receiver, roots, or
+// arguments. Suppressing the result scan for absorbed breaks let it escape
+// without its contract.
+func TestYieldedBuiltinBrokenOutStillEnforcesItsContract(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "assigned", body: "published = mut.install { |b| break b }\n  published(\"bad\", 2)"},
+		{name: "called immediately", body: "mut.install { |b| break b }(\"bad\", 2)"},
+		{name: "wrapped in an array", body: "out = mut.install { |b| break [b] }\n  out[0](\"bad\", 2)"},
+		{name: "wrapped in a hash", body: "out = mut.install { |b| break {fn: b} }\n  out[:fn](\"bad\", 2)"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tc.body+"\nend")
+			invocations := 0
+			_, err := script.Call(context.Background(), "run", nil, CallOptions{
+				Capabilities: []CapabilityAdapter{yieldingPublisherCapability{invokeCount: &invocations}},
+			})
+			if err == nil {
+				t.Fatalf("%s: a yielded builtin escaped its contract", tc.name)
+			}
+			requireErrorContains(t, err, "mut.call expects int")
+			if invocations != 0 {
+				t.Fatalf("%s: contract-violating call executed %d times, want it blocked", tc.name, invocations)
+			}
+		})
 	}
 }

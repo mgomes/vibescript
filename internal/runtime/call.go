@@ -350,17 +350,28 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			// (e.g. through factory return values or receiver mutation). Re-scan
 			// these values so future calls still enforce declared contracts.
 			//
-			// A break value came from the caller's own block, and a rejected
-			// result was never accepted, so neither is something this call
-			// published. The pre-call block scan stops at ambient
-			// environments, so a builtin arriving either way is absent from
-			// preCallKnownBuiltins and would be bound as if this call had
-			// published it -- attaching the capability's contract to an
-			// unrelated global the caller owns. Passing validation does not
-			// change that provenance. The mutation scans below stay
-			// unconditional: those really are this call's doing, and are what
-			// a rejected return must not leave unguarded.
-			if deferredErr == nil && !absorbedBreak {
+			// A rejected result was never accepted, so it is not something
+			// this call published.
+			//
+			// An absorbed break IS scanned. A capability can create a
+			// contract-covered builtin and yield it for the block to break
+			// with, which makes it the call's result while leaving it absent
+			// from preCallKnownBuiltins and unreachable through the receiver,
+			// roots, or arguments -- so suppressing the scan let it escape
+			// without its contract.
+			//
+			// The cost is that a break value the caller already owned, such as
+			// a global whose name collides with a capability contract method,
+			// is also treated as published and picks up that contract. There
+			// is no cheap way to tell the two apart here: the pre-call scan
+			// deliberately stops at ambient environments, so a global is never
+			// in the excluded set. Letting a contract-covered builtin escape
+			// is the worse of the two, so the scan runs.
+			//
+			// The mutation scans below stay unconditional: those really are
+			// this call's doing, and are what a rejected return must not leave
+			// unguarded.
+			if deferredErr == nil {
 				postCallScanner.bindContracts(result, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 			if receiver.Kind() != KindNil {
