@@ -3003,3 +3003,48 @@ func (est *memoryEstimator) hash(values map[string]Value) int {
 	}
 	return size
 }
+
+// accumulatedBytes reports the payload the build has charged so far.
+//
+// A build accumulator records the growing result privately, so memory checks
+// performed inside a block call cannot see it: a block allocating a large
+// temporary is measured against a baseline that omits everything the loop has
+// already retained, and the two can pass separately even though they coexist.
+// Exposing the running total lets the loop reserve it as releasable scratch,
+// which is what makes the retained output visible to those checks.
+func (acc *arrayBuildAccumulator) accumulatedBytes() int {
+	if acc == nil {
+		return 0
+	}
+	return acc.payload
+}
+
+// retainedOutputScratch keeps a loop's accumulated output reserved as scratch,
+// raising the reservation as the output grows and releasing all of it when the
+// loop ends.
+type retainedOutputScratch struct {
+	exec     *Execution
+	reserved int
+}
+
+func newRetainedOutputScratch(exec *Execution) *retainedOutputScratch {
+	return &retainedOutputScratch{exec: exec}
+}
+
+// reserve raises the reservation to total, charging only the increase.
+func (r *retainedOutputScratch) reserve(total int) {
+	if r == nil || r.exec == nil || total <= r.reserved {
+		return
+	}
+	r.exec.reserveLoopScratch(total - r.reserved)
+	r.reserved = total
+}
+
+// release returns the whole reservation once the loop is done with it.
+func (r *retainedOutputScratch) release() {
+	if r == nil || r.exec == nil {
+		return
+	}
+	r.exec.releaseLoopScratch(r.reserved)
+	r.reserved = 0
+}

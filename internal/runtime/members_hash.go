@@ -2671,6 +2671,20 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			defer exec.beginBlockIterationRegion().end()
+			// Ruby picks the yield shape from the block's positional arity: one
+			// parameter receives the [key, value] pair, two or more auto-splat
+			// into key and value. Numbered implicit parameters count toward
+			// that arity, so `{ _2 }` is an arity-2 block -- yielding the pair
+			// unconditionally bound `_1` to the whole pair and left `_2` nil.
+			collapsePair := blockWantsCollapsedPair(valueBlock(block))
+			// The build accumulator records the growing result privately, so
+			// memory checks run inside a block call cannot see it: a block
+			// allocating a large temporary is measured against a baseline that
+			// omits everything the loop already retained, and the two can pass
+			// separately even though they coexist. Reserving the retained total
+			// as releasable loop scratch puts it in that baseline.
+			retained := newRetainedOutputScratch(exec)
+			defer retained.release()
 			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
 				acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
@@ -2682,17 +2696,28 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				out := make([]Value, 0, count)
 				var blockArg [1]Value
+				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
 				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					pair := NewArray([]Value{entry.Key, entry.Value})
-					if err := acc.checkTransient(pair, cap(out)); err != nil {
-						return NewNil(), err
+					var (
+						val Value
+						err error
+					)
+					if collapsePair {
+						pair := NewArray([]Value{entry.Key, entry.Value})
+						if err = acc.checkTransient(pair, cap(out)); err != nil {
+							return NewNil(), err
+						}
+						blockArg[0] = pair
+						val, err = runner.call(blockArg[:])
+					} else {
+						blockArgs[0] = entry.Key
+						blockArgs[1] = entry.Value
+						val, err = runner.call(blockArgs[:])
 					}
-					blockArg[0] = pair
-					val, err := runner.call(blockArg[:])
 					if err != nil {
 						return NewNil(), err
 					}
@@ -2703,6 +2728,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := acc.addConservative(val, cap(out)); err != nil {
 						return NewNil(), err
 					}
+					retained.reserve(acc.accumulatedBytes())
 				}
 				return NewArray(out), nil
 			}
@@ -2731,6 +2757,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			out := make([]Value, 0, len(entries))
 			var blockArg [1]Value
+			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				// Charge a step per entry so an empty block still consumes the step
@@ -2739,23 +2766,33 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
-				// Ruby yields the [key, value] pair, which a two-parameter block
-				// auto-splats into key and value and a one-parameter block receives
-				// whole. Entries follow the deterministic sorted key order every
+				// Entries follow the deterministic sorted key order every
 				// block-based hash iterator uses.
-				pair := NewArray([]Value{NewSymbol(key), entries[key]})
-				// Charge the fresh pair against the quota before yielding: it is live
-				// alongside the accumulating result for the block's duration, so without
-				// this a block whose result fits but whose live pair does not could run
-				// past the sandbox memory limit. Mirrors hash.each_with_index, which
-				// charges its yielded pair the same way. cap(out) is the result backing
-				// before this iteration's append, so the peak charges the pair on top of
-				// the result built so far.
-				if err := acc.checkTransient(pair, cap(out)); err != nil {
-					return NewNil(), err
+				var (
+					val Value
+					err error
+				)
+				if collapsePair {
+					pair := NewArray([]Value{NewSymbol(key), entries[key]})
+					// Charge the fresh pair against the quota before yielding: it is
+					// live alongside the accumulating result for the block's duration,
+					// so without this a block whose result fits but whose live pair does
+					// not could run past the sandbox memory limit. Mirrors
+					// hash.each_with_index, which charges its yielded pair the same way.
+					// cap(out) is the result backing before this iteration's append, so
+					// the peak charges the pair on top of the result built so far.
+					if err = acc.checkTransient(pair, cap(out)); err != nil {
+						return NewNil(), err
+					}
+					blockArg[0] = pair
+					val, err = runner.call(blockArg[:])
+				} else {
+					// A block taking key and value separately needs no pair, so none
+					// is built and none is charged.
+					blockArgs[0] = NewSymbol(key)
+					blockArgs[1] = entries[key]
+					val, err = runner.call(blockArgs[:])
 				}
-				blockArg[0] = pair
-				val, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -2766,6 +2803,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := acc.addConservative(val, cap(out)); err != nil {
 					return NewNil(), err
 				}
+				retained.reserve(acc.accumulatedBytes())
 			}
 			return NewArray(out), nil
 		}), nil
