@@ -122,3 +122,60 @@ func TestExplicitZoneStillOverridesTheDefault(t *testing.T) {
 		})
 	}
 }
+
+// An input naming a zone is not zoneless, and resolving an abbreviation needs
+// a zone database -- the host's is the only one there is. Forcing UTC made Go
+// fabricate the abbreviation at offset zero, so an RFC1123 timestamp carrying
+// EDT silently shifted by four hours.
+func TestZoneAbbreviationsResolveAgainstTheHostZone(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("zone unavailable: %v", err)
+	}
+	restore := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = restore })
+
+	script := compileScript(t, `
+    def run()
+      Time.parse("Mon, 27 Jul 2026 14:30:45 EDT").utc_offset.to_s
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "-14400" {
+		t.Fatalf("EDT resolved to offset %s, want -14400", got.String())
+	}
+}
+
+// The zoneless default is unaffected: a timestamp naming no zone stays UTC
+// whatever the host is, which is what #1063 was about.
+func TestZonelessInputStaysUTCAlongsideZoneAbbreviations(t *testing.T) {
+	for _, zone := range []string{"America/New_York", "Asia/Tokyo"} {
+		t.Run(zone, func(t *testing.T) {
+			loc, err := time.LoadLocation(zone)
+			if err != nil {
+				t.Skipf("zone unavailable: %v", err)
+			}
+			restore := time.Local
+			time.Local = loc
+			t.Cleanup(func() { time.Local = restore })
+
+			script := compileScript(t, `
+            def run()
+              "#{Time.parse("2026-07-27 14:30:45").iso8601}|#{Time.parse("2026-07-27").iso8601}|#{Time.parse("Mon, 27 Jul 2026 14:30:45 -0400").utc_offset}"
+            end
+            `)
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			want := "2026-07-27T14:30:45Z|2026-07-27T00:00:00Z|-14400"
+			if got.String() != want {
+				t.Fatalf("in %s = %s, want %s", zone, got.String(), want)
+			}
+		})
+	}
+}
