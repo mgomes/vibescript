@@ -1009,6 +1009,19 @@ type Builtin struct {
 	// wrappers around script functions (method, constructor, and function-call
 	// alias callers).
 	OptionsHashTarget *ScriptFunction
+
+	// ReturnTypeTarget is the script function whose declared return type
+	// governs this builtin's result. Only the wrappers that return their
+	// function's value set it, so an absorbed break can be validated against
+	// the right annotation.
+	//
+	// It is deliberately separate from OptionsHashTarget, which records the
+	// function an options hash collapses into and is also set on a
+	// constructor. A constructor runs initialize through
+	// callFunctionIgnoringReturn and returns the instance, so initialize's
+	// annotation is not the constructor's contract: reusing that field made
+	// `C.new { break 7 }` fail against `def initialize() -> nil`.
+	ReturnTypeTarget *ScriptFunction
 	// DirectCallAlias marks a builtin that invokes a function value directly,
 	// such as the `call` member exposed on function values. Direct-call aliases
 	// follow plain function-call semantics, so they collapse a parenthesized

@@ -330,7 +330,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// and never took this path, which is why it looked covered.
 		var deferredErr error
 		if absorbedBreak {
-			validated, breakErr := exec.validateAbsorbedBreak(builtin.OptionsHashTarget, result, pos)
+			validated, breakErr := exec.validateAbsorbedBreak(builtin.ReturnTypeTarget, result, pos)
 			if breakErr != nil {
 				deferredErr = breakErr
 			} else {

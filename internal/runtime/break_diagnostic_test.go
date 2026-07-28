@@ -364,3 +364,54 @@ end
 		})
 	}
 }
+
+// A constructor runs initialize through callFunctionIgnoringReturn and returns
+// the instance, so initialize's annotation is not the constructor's contract.
+// Validating an absorbed break against it made `C.new { break 7 }` fail
+// against `def initialize() -> nil`.
+func TestConstructorBreakIsNotValidatedAgainstInitialize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "annotated initialize",
+			body: "C.new { break 7 }.inspect",
+			want: "7",
+		},
+		{
+			name: "annotated initialize with a string break",
+			body: `C.new { break "anything" }.inspect`,
+			want: `"anything"`,
+		},
+		{
+			name: "no break still constructs",
+			body: "C.new { 1 }.is_a?(C).inspect",
+			want: "true",
+		},
+	}
+
+	const source = `class C
+  def initialize() -> nil
+    yield
+  end
+end
+`
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, source+"def run()\n  "+tc.body+"\nend")
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got.String(), tc.want)
+			}
+		})
+	}
+}

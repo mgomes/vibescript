@@ -376,6 +376,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
 		})
 		valueBuiltin(method).OptionsHashTarget = fn
+		valueBuiltin(method).ReturnTypeTarget = fn
 		return method, nil
 	}
 	// A stored class var keyed by a data-safe helper (itself/nil?/eql?/equal? or an
@@ -421,6 +422,7 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
 		})
 		valueBuiltin(method).OptionsHashTarget = fn
+		valueBuiltin(method).ReturnTypeTarget = fn
 		return method, nil
 	}
 	// A stored ivar keyed by a data-safe helper (itself/nil?/eql?/equal? or an
