@@ -1959,22 +1959,24 @@ func TestMemoryQuotaCountsHashDataWrapper(t *testing.T) {
 		objects := make([]Value, count)
 		for i := range hashes {
 			hashes[i] = NewHash(map[string]Value{})
-			// An object carries the same empty entry map but no hashData wrapper,
-			// so an array of empty objects is exactly the wrapper-free baseline for
-			// the equivalent array of empty hashes. The estimator was charging this
-			// (entry map plus slots only) for hashes too before the fix.
+			// An object carries the same empty entry map behind a smaller
+			// wrapper of its own, so an array of empty objects is the baseline
+			// for the equivalent array of empty hashes up to the difference
+			// between the two wrappers. The estimator was charging neither
+			// wrapper before the fix, leaving the two arrays identical.
 			objects[i] = NewObject(map[string]Value{})
 		}
 		hashArray := NewArray(hashes)
 
 		withWrappers := newMemoryEstimator().value(hashArray)
 		withoutWrappers := newMemoryEstimator().value(NewArray(objects))
-		// The two arrays are structurally identical except that each hash holds a
-		// hashData wrapper an object lacks, so the gap must be exactly one wrapper
-		// per hash. Before the fix the gap was zero and the array of empty hashes
-		// looked as cheap as the wrapper-free baseline.
-		if gap := withWrappers - withoutWrappers; gap != count*estimatedHashDataBytes {
-			t.Fatalf("hash wrappers mischarged: gap=%d, want %d", gap, count*estimatedHashDataBytes)
+		// The two arrays are structurally identical except for the wrapper each
+		// element holds, so the gap must be exactly the wrapper difference per
+		// element. Before the fix the gap was zero and the array of empty
+		// hashes looked as cheap as the baseline.
+		wantGap := count * (estimatedHashDataBytes - estimatedObjectDataBytes)
+		if gap := withWrappers - withoutWrappers; gap != wantGap {
+			t.Fatalf("hash wrappers mischarged: gap=%d, want %d", gap, wantGap)
 		}
 
 		// A quota set to the wrapper-free baseline fit the array before the fix;

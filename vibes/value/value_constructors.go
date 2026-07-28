@@ -326,3 +326,12 @@ func (v Value) ObjectStringForm() (string, bool) {
 
 // NewRange returns a range Value.
 func NewRange(r Range) Value { return Value{kind: KindRange, data: r} }
+
+// ObjectDataBytes is the heap footprint of the objectData wrapper every
+// KindObject value allocates around its entry map, for the sandbox's memory
+// accounting.
+//
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+const ObjectDataBytes = int(unsafe.Sizeof(objectData{}))

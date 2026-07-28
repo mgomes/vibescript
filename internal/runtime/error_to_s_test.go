@@ -775,3 +775,48 @@ func TestObjectIdentityAccountsForTheTag(t *testing.T) {
 		t.Fatalf("equal? inside the script = %s, want false as it is outside", got.String())
 	}
 }
+
+// A capability result can contain two wrappers over one entry map with
+// different provenance -- a host receives a tagged bag, wraps its live Hash()
+// with NewObject, and returns both. Caching the clone by entry map alone gave
+// the plain wrapper the tag or stripped the tagged one's rendering, depending
+// on which was cloned first.
+func TestCapabilityResultKeepsPerWrapperTags(t *testing.T) {
+	t.Parallel()
+
+	entries := map[string]Value{"to_s": NewString("boom"), "message": NewString("boom")}
+
+	tests := []struct {
+		name  string
+		order func(tagged, plain Value) []Value
+		want  []ObjectTag
+	}{
+		{
+			name:  "tagged first",
+			order: func(tagged, plain Value) []Value { return []Value{tagged, plain} },
+			want:  []ObjectTag{ObjectTagRescuedError, ObjectTagNone},
+		},
+		{
+			name:  "plain first",
+			order: func(tagged, plain Value) []Value { return []Value{plain, tagged} },
+			want:  []ObjectTag{ObjectTagNone, ObjectTagRescuedError},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tagged := NewTaggedObject(entries, ObjectTagRescuedError, "boom")
+			plain := NewObject(entries)
+			cloned, err := cloneCapabilityDataOnlyValue("probe.result", NewArray(tc.order(tagged, plain)))
+			if err != nil {
+				t.Fatalf("clone: %v", err)
+			}
+			for i, item := range cloned.Array() {
+				if item.ObjectTag() != tc.want[i] {
+					t.Fatalf("%s: element %d cloned with tag %v, want %v", tc.name, i, item.ObjectTag(), tc.want[i])
+				}
+			}
+		})
+	}
+}

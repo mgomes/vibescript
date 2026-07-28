@@ -35,6 +35,10 @@ const (
 // array of Hash.new or empty literals).
 const estimatedHashDataBytes = value.HashDataBytes
 
+// estimatedObjectDataBytes is the heap footprint of the objectData wrapper
+// every KindObject value allocates around its entry map.
+const estimatedObjectDataBytes = value.ObjectDataBytes
+
 const (
 	estimatedHashLookupKeyBytes = int(unsafe.Sizeof(value.HashLookupKey{}))
 	estimatedHashEntryBytes     = int(unsafe.Sizeof(HashEntry{}))
@@ -69,6 +73,7 @@ type memoryEstimator struct {
 	seenEnvs         map[*Env]struct{}
 	seenMaps         map[uintptr]struct{}
 	seenHashData     map[uintptr]struct{}
+	seenObjectData   map[uintptr]struct{}
 	seenSlices       map[uintptr]struct{}
 	seenStrings      map[stringIdentity]struct{}
 	seenClasses      map[*ClassDef]struct{}
@@ -156,7 +161,7 @@ func sessionJournalBudget(baseIdentities int) int {
 // relative to the base walk it protects.
 func (est *memoryEstimator) identityCount() int {
 	return est.seenEnvInlineLen + len(est.seenEnvs) + len(est.seenMaps) +
-		len(est.seenHashData) + len(est.seenSlices) + len(est.seenStrings) +
+		len(est.seenHashData) + len(est.seenObjectData) + len(est.seenSlices) + len(est.seenStrings) +
 		len(est.seenClasses) + len(est.seenInstances) + len(est.seenBlocks) +
 		len(est.seenBuiltins)
 }
@@ -190,6 +195,7 @@ func (est *memoryEstimator) reset() {
 	clear(est.seenEnvs)
 	clear(est.seenMaps)
 	clear(est.seenHashData)
+	clear(est.seenObjectData)
 	clear(est.seenSlices)
 	clear(est.seenStrings)
 	clear(est.seenClasses)
@@ -2686,6 +2692,7 @@ func (est *memoryEstimator) value(val Value) int {
 		size += est.valuePayload(hashDefaultValue(val))
 		size += est.valuePayload(hashDefaultProc(val))
 	case KindObject:
+		size += est.objectWrapperBytes(val)
 		size += est.hash(val.Hash())
 	case KindClass:
 		cl := valueClass(val)
@@ -2933,7 +2940,8 @@ func sliceBackingIdentity(values []Value) uintptr {
 // hashWrapperBytes charges the hashData wrapper a KindHash value allocates
 // around its entry map, plus any typed-key entry map retained by that wrapper.
 // It is deduplicated on the wrapper's identity so aliases count the extra hash
-// state once. It returns 0 for KindObject, which uses a bare map.
+// state once. KindObject allocates its own smaller wrapper, charged by
+// objectWrapperBytes.
 func (est *memoryEstimator) hashWrapperBytes(val Value) int {
 	if val.Kind() != KindHash {
 		return 0
@@ -3082,4 +3090,27 @@ func (r *retainedOutputScratch) release() {
 	}
 	r.exec.releaseLoopScratch(r.reserved)
 	r.reserved = 0
+}
+
+// objectWrapperBytes charges the objectData wrapper a KindObject value
+// allocates around its entry map. Like hashWrapperBytes it deduplicates on the
+// entry map's identity, so wrappers sharing one map count the extra state
+// once. Without it a workload holding many small objects -- a JSON array of
+// empty ones, say -- was undercounted by a wrapper apiece.
+func (est *memoryEstimator) objectWrapperBytes(val Value) int {
+	if val.Kind() != KindObject {
+		return 0
+	}
+	id := reflect.ValueOf(val.Hash()).Pointer()
+	if id == 0 {
+		return estimatedObjectDataBytes
+	}
+	if _, seen := est.seenObjectData[id]; seen {
+		return 0
+	}
+	if est.seenObjectData == nil {
+		est.seenObjectData = make(map[uintptr]struct{})
+	}
+	est.seenObjectData[id] = struct{}{}
+	return estimatedObjectDataBytes
 }

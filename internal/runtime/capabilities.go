@@ -385,6 +385,7 @@ type capabilityDataCloneScanner struct {
 	label          string
 	clonedArrays   map[uintptr]Value
 	clonedMaps     map[uintptr]Value
+	clonedObjects  map[objectCloneKey]Value
 	visitingArrays map[uintptr]struct{}
 	visitingMaps   map[uintptr]struct{}
 }
@@ -397,6 +398,7 @@ func cloneCapabilityDataOnlyValue(label string, val Value) (Value, error) {
 		label:          label,
 		clonedArrays:   make(map[uintptr]Value),
 		clonedMaps:     make(map[uintptr]Value),
+		clonedObjects:  make(map[objectCloneKey]Value),
 		visitingArrays: make(map[uintptr]struct{}),
 		visitingMaps:   make(map[uintptr]struct{}),
 	}
@@ -507,7 +509,12 @@ func (s *capabilityDataCloneScanner) cloneObject(val Value) (Value, error) {
 		if _, visiting := s.visitingMaps[ptr]; visiting {
 			return NewNil(), fmt.Errorf("%s must not contain cyclic references", s.label)
 		}
-		if cloned, ok := s.clonedMaps[ptr]; ok {
+		// Keyed by provenance as well as entry map: a host can return both a
+		// tagged bag and NewObject over its live Hash(), and sharing one clone
+		// would give the plain wrapper the tag or strip the tagged one's
+		// published rendering, depending on which was cloned first.
+		key := objectCloneKey{ptr: ptr, tag: val.ObjectTag()}
+		if cloned, ok := s.clonedObjects[key]; ok {
 			return cloned, nil
 		}
 		s.visitingMaps[ptr] = struct{}{}
@@ -515,7 +522,7 @@ func (s *capabilityDataCloneScanner) cloneObject(val Value) (Value, error) {
 	clonedEntries := make(map[string]Value, len(entries))
 	cloned := retagClonedObject(val, clonedEntries)
 	if ptr != 0 {
-		s.clonedMaps[ptr] = cloned
+		s.clonedObjects[objectCloneKey{ptr: ptr, tag: val.ObjectTag()}] = cloned
 	}
 	for key, item := range entries {
 		clonedItem, err := s.clone(item)
