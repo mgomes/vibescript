@@ -15710,6 +15710,15 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 // unknownShapeKeyKindHint explains a nil arm that comes from not knowing how a
 // shape's keys are stored, rather than from the field being optional.
 //
+// Scope: this reaches diagnostics raised through checkInferredArgument, which
+// is the direct argument path. A mismatch raised on the rest/splat aggregate
+// path carries no explanation, because the read that produced the nil arm is
+// usually not an argument of that call at all -- `args = [row[:name]]` then
+// `accept(*args)` performs the read in a previous statement, so there is no
+// captured hint to carry and re-deriving it from the local's static value did
+// not recover one either. Extending it there means tracing the local back to
+// its assignment, which is dataflow work rather than a diagnostic tweak.
+//
 // A shape parameter accepts either key kind -- {name: "a"} and {"name": "b"}
 // both satisfy { name: string }, and JSON.parse produces the string-keyed form
 // -- so the checker cannot know which one a read will hit, and a read of even
