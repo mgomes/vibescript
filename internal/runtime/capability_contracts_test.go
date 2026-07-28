@@ -988,3 +988,80 @@ end`)
 		t.Fatalf("contract should reject chunk path before invoke, got %d calls", chunkInvocations)
 	}
 }
+
+// breakPublishingContractCapability publishes a second builtin as a side
+// effect, yields to its block, and declares a return contract the absorbed
+// break value fails. It exercises the order between return validation and the
+// post-call publication scan.
+type breakPublishingContractCapability struct {
+	invokeCount *int
+}
+
+func (c breakPublishingContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"mut": NewObject(map[string]Value{
+			"install": NewBuiltin("mut.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				receiver.Hash()["call"] = NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+					*c.invokeCount = *c.invokeCount + 1
+					return NewString("ok"), nil
+				})
+				if block.IsNil() {
+					return NewString("installed"), nil
+				}
+				return exec.callBlockValue(block, []Value{NewInt(1)}, Position{})
+			}),
+		}),
+	}, nil
+}
+
+func (c breakPublishingContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"mut.install": {
+			ValidateReturn: func(result Value) error {
+				if result.Kind() != KindString {
+					return fmt.Errorf("mut.install must return string")
+				}
+				return nil
+			},
+		},
+		"mut.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("mut.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
+// A rejected return value does not un-publish what the call already made
+// reachable. Returning the validation error before the post-call scan left the
+// newly published builtin bound to no contract, so script code could rescue
+// the error and then call it with arguments the contract forbids.
+func TestPublicationScanRunsWhenAnAbsorbedBreakFailsValidation(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  begin
+    mut.install { break 42 }
+  rescue => e
+    nil
+  end
+  mut.call("bad")
+end`)
+
+	invocations := 0
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			breakPublishingContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected the published builtin to still enforce its contract")
+	}
+	requireErrorContains(t, err, "mut.call expects int")
+	if invocations != 0 {
+		t.Fatalf("contract-violating call executed %d times, want it blocked", invocations)
+	}
+}

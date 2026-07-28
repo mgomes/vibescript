@@ -318,9 +318,10 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if err := exec.checkContext(); err != nil {
 			return NewNil(), err
 		}
+		var deferredErr error
 		if hasContract && contract.ValidateReturn != nil && !returnProof.covers(builtin.Name, result) {
 			if err := contract.ValidateReturn(result); err != nil {
-				return NewNil(), exec.wrapError(err, pos)
+				deferredErr = exec.wrapError(err, pos)
 			}
 		}
 		if scope != nil && len(scope.contracts) > 0 {
@@ -353,6 +354,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 				}
 				postCallScanner.bindContracts(kwarg, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
+		}
+		// A rejected return value does not un-publish what the call already
+		// made reachable. Returning before the scan left a builtin published
+		// by the call bound to no contract, so script code could rescue the
+		// validation error and then invoke it without its contract.
+		if deferredErr != nil {
+			return NewNil(), deferredErr
 		}
 		return result, nil
 	default:

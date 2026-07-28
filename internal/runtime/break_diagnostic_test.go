@@ -209,3 +209,79 @@ func TestAbsorbedBreakFromAnUntypedFunctionIsUnchecked(t *testing.T) {
 		t.Fatalf("break value = %q, want the string", got.String())
 	}
 }
+
+// Method dispatch reaches a script function through an auto-builtin wrapper,
+// so an absorbed break arrives on the builtin path and skipped the wrapper's
+// declared return type entirely.
+func TestAbsorbedBreakIsValidatedThroughMethodDispatch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		body    string
+		want    string
+		wantErr string
+	}{
+		{
+			name:    "instance method rejects a mistyped break",
+			body:    "Walker.new().visit { break \"wrong\" }.inspect",
+			wantErr: "expected int",
+		},
+		{
+			name: "instance method accepts a well-typed break",
+			body: "Walker.new().visit { break 7 }.inspect",
+			want: "7",
+		},
+		{
+			name:    "class method rejects a mistyped break",
+			body:    "Walker.sweep { break \"wrong\" }.inspect",
+			wantErr: "expected int",
+		},
+		{
+			name: "class method accepts a well-typed break",
+			body: "Walker.sweep { break 9 }.inspect",
+			want: "9",
+		},
+		{
+			name: "an unannotated method still absorbs any break",
+			body: "Walker.new().loose { break \"anything\" }.inspect",
+			want: `"anything"`,
+		},
+	}
+
+	const source = `class Walker
+  def visit() -> int
+    yield
+  end
+  def loose()
+    yield
+  end
+  def self.sweep() -> int
+    yield
+  end
+end
+`
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, source+"def run()\n  "+tc.body+"\nend")
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("%s returned %s, want the return type enforced", tc.name, got.String())
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want it to mention %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("%s = %s, want %s", tc.name, got.String(), tc.want)
+			}
+		})
+	}
+}
