@@ -148,3 +148,80 @@ func TestFormatCrossingCaughtOnEveryDispatchPath(t *testing.T) {
 		})
 	}
 }
+
+// Detection scans for a recognized directive instead of rendering the
+// candidate. Rendering honors a directive's requested width, so classifying a
+// format was itself an unbounded allocation -- `%1000000000N` allocated about a
+// gigabyte purely to decide, which with no memory limit set exhausts the
+// process where Time#format previously saw a tiny literal.
+//
+// The scanner is what makes that avoidable, so it is tested directly: the
+// allocation itself is not observable as a pass or fail without a memory
+// limit, and a timing assertion would be a race.
+func TestStrftimeDirectiveScannerRecognizesWithoutRendering(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		format string
+		want   bool
+	}{
+		{"%Y-%m-%d", true},
+		{"%H:%M:%S", true},
+		// A width does not need rendering to recognize.
+		{"%1000000000N", true},
+		{"%6N", true},
+		{"%:z", true},
+		// A literal percent is not a directive.
+		{"100%% done", false},
+		{"2006-01-02", false},
+		{"plain text", false},
+		{"", false},
+		// An unknown letter after a percent is emitted verbatim, as in Ruby.
+		{"%Q", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.format, func(t *testing.T) {
+			t.Parallel()
+			if got := containsRecognizedStrftimeDirective(tc.format); got != tc.want {
+				t.Fatalf("containsRecognizedStrftimeDirective(%q) = %v, want %v", tc.format, got, tc.want)
+			}
+		})
+	}
+}
+
+// A wide directive is still classified as a crossed format, without rendering.
+func TestWideDirectiveIsStillReportedAsCrossed(t *testing.T) {
+	t.Parallel()
+	if _, err := runCrossingExpr(t, `t.format("%1000000000N")`); err == nil {
+		t.Fatalf("expected a wide strftime directive to be reported as a crossed format")
+	}
+}
+
+// A literal percent that is not a directive must not make a Go layout look
+// like a strftime format.
+func TestGoLayoutWithLiteralPercentIsNotCrossed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		expr string
+		want string
+	}{
+		{`t.format("100% done")`, "700% done"},
+		{`t.strftime("100%% done")`, "100% done"},
+		{`t.format("2006-01-02")`, "2026-07-27"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			t.Parallel()
+			got, err := runCrossingExpr(t, tc.expr)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.expr, err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("%s = %q, want %q", tc.expr, got.String(), tc.want)
+			}
+		})
+	}
+}
