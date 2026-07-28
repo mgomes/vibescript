@@ -769,6 +769,28 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 // regression). The remaining ancestors are all ambient too, so the walk stops
 // entirely. seenEnvs gives cycle-safe termination for self- or mutually
 // referencing closure environments.
+// collectAmbientBuiltins gathers the builtins bound directly in the ambient
+// environments -- the script's own globals and the engine scopes above them.
+//
+// Only each environment's own bindings are enumerated; the values then go
+// through the ordinary scanner, which still stops when a nested function or
+// block reaches an ambient environment. That keeps this from turning into a
+// recursive walk of every closure chain.
+//
+// The ordinary pre-call scan never reaches globals, so a block that breaks
+// with one would make it the call's result and the post-call scan would bind
+// the capability's contract to something the caller has owned all along.
+func (s *capabilityContractScanner) collectAmbientBuiltins(root *Env, out map[*Builtin]struct{}) {
+	for env := root; env != nil; env = env.parent {
+		env.rangeDynamicBindings(func(_ string, item Value) {
+			s.collectBuiltins(item, out)
+		})
+		env.rangeStaticBindings(func(_ string, item Value) {
+			s.collectBuiltins(item, out)
+		})
+	}
+}
+
 func (s *capabilityContractScanner) scanClosureEnv(env *Env, visit func(Value)) {
 	for ; env != nil; env = env.parent {
 		if _, ambient := s.ambientEnvs[env]; ambient {

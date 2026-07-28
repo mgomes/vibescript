@@ -219,6 +219,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			// published and bind its contract to them.
 			if valueCanContainBuiltins(block) {
 				preCallScanner.collectBuiltins(block, preCallKnownBuiltins)
+				// A break makes the block's value this call's result, and the
+				// block can name a global. Globals are bound in the ambient
+				// environments the scan above stops at, so snapshot the
+				// builtins bound there before the call runs -- afterwards this
+				// walk would also see what the call itself published and
+				// wrongly exclude it.
+				preCallScanner.collectAmbientBuiltins(exec.root, preCallKnownBuiltins)
 			}
 			for _, arg := range args {
 				if !valueCanContainBuiltins(arg) {
@@ -360,13 +367,17 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			// roots, or arguments -- so suppressing the scan let it escape
 			// without its contract.
 			//
-			// The cost is that a break value the caller already owned, such as
-			// a global whose name collides with a capability contract method,
-			// is also treated as published and picks up that contract. There
-			// is no cheap way to tell the two apart here: the pre-call scan
-			// deliberately stops at ambient environments, so a global is never
-			// in the excluded set. Letting a contract-covered builtin escape
-			// is the worse of the two, so the scan runs.
+			// A break value the caller already owned is excluded instead by
+			// the ambient snapshot taken before dispatch -- but only as far as
+			// that snapshot reaches. A host global holding a builtin binds
+			// lazily (hostGlobalBindsEagerly is false for anything but
+			// immutable data and enums), so at snapshot time it is an
+			// unmaterialized binding rather than a builtin, and a break with
+			// one still picks up the capability's contract. Materializing
+			// every lazy global before each contracted call to close that gap
+			// would defeat the point of binding them lazily. Letting a
+			// contract-covered builtin escape is the worse failure, so the
+			// scan runs.
 			//
 			// The mutation scans below stay unconditional: those really are
 			// this call's doing, and are what a rejected return must not leave
