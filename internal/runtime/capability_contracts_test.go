@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 type contractProbeCapability struct {
@@ -1261,5 +1262,41 @@ func TestAmbientCollectBudgetStopsTheWalk(t *testing.T) {
 	}
 	if len(out) > ambientCollectNodeBudget {
 		t.Fatalf("the walk collected %d builtins past a %d-node budget", len(out), ambientCollectNodeBudget)
+	}
+}
+
+// Exhausting the budget must stop traversal, not merely make each remaining
+// element a no-op recursive call. The observable difference is cost: with the
+// loop guards the walk is independent of container size, without them it stays
+// linear in it (measured 345us at 100k elements and 1.01ms at 400k, against
+// tens of microseconds either way once traversal actually stops).
+func TestAmbientCollectCostIsIndependentOfContainerSize(t *testing.T) {
+	walk := func(n int) time.Duration {
+		flat := make([]Value, n)
+		for i := range flat {
+			flat[i] = NewInt(int64(i))
+		}
+		val := NewArray(flat)
+		best := time.Hour
+		for range 5 {
+			scanner := newCapabilityContractScanner()
+			scanner.collectBounded, scanner.collectBudget = true, ambientCollectNodeBudget
+			out := map[*Builtin]struct{}{}
+			start := time.Now()
+			scanner.collectBuiltins(val, out)
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+
+	const small, large = 100_000, 800_000
+	smallCost, largeCost := walk(small), walk(large)
+
+	// An 8x larger container must not cost 4x more. Linear traversal would.
+	if largeCost > smallCost*4 {
+		t.Fatalf("walking %d elements took %v against %v for %d: traversal is not stopping at the budget",
+			large, largeCost, smallCost, small)
 	}
 }

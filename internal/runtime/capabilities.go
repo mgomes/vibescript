@@ -781,6 +781,14 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 // cost independent of how large a script's globals grow.
 const ambientCollectNodeBudget = 4096
 
+// collectExhausted reports that a bounded walk has spent its allowance.
+// Container loops consult it so traversal stops rather than making a no-op
+// recursive call for every remaining element -- which left the walk O(graph)
+// per call despite the cap.
+func (s *capabilityContractScanner) collectExhausted() bool {
+	return s.collectBounded && s.collectBudget <= 0
+}
+
 // collectAmbientBuiltins gathers the builtins bound directly in the ambient
 // environments -- the script's own globals and the engine scopes above them.
 //
@@ -802,7 +810,7 @@ func (s *capabilityContractScanner) collectAmbientBuiltins(root *Env, out map[*B
 	s.collectBounded, s.collectBudget = true, ambientCollectNodeBudget
 	defer func() { s.collectBounded, s.collectBudget = false, 0 }()
 	for env := root; env != nil; env = env.parent {
-		if s.collectBudget <= 0 {
+		if s.collectExhausted() {
 			return
 		}
 		env.rangeDynamicBindings(func(_ string, item Value) {
@@ -907,6 +915,9 @@ func (s *capabilityContractScanner) bindContracts(
 		}
 		s.seenClasses[classDef] = struct{}{}
 		for _, item := range classDef.ClassVars {
+			if s.collectExhausted() {
+				return
+			}
 			s.bindContracts(item, scope, target, scopes)
 		}
 	case KindInstance:
@@ -919,6 +930,9 @@ func (s *capabilityContractScanner) bindContracts(
 		}
 		s.seenInstances[instance] = struct{}{}
 		for _, item := range instance.Ivars {
+			if s.collectExhausted() {
+				return
+			}
 			s.bindContracts(item, scope, target, scopes)
 		}
 		if instance.Class != nil {
@@ -945,10 +959,10 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 	// ambient snapshot, whose size is the caller's globals rather than
 	// anything the call supplies; every other caller leaves it zero and is
 	// unaffected.
+	if s.collectExhausted() {
+		return
+	}
 	if s.collectBounded {
-		if s.collectBudget <= 0 {
-			return
-		}
 		s.collectBudget--
 	}
 	switch val.Kind() {
@@ -966,6 +980,9 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		}
 		s.seenArrays[id] = struct{}{}
 		for _, item := range values {
+			if s.collectExhausted() {
+				return
+			}
 			s.collectBuiltins(item, out)
 		}
 	case KindHash, KindObject:
@@ -982,6 +999,9 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		}
 		s.seenMaps[ptr] = struct{}{}
 		for _, item := range entries {
+			if s.collectExhausted() {
+				return
+			}
 			s.collectBuiltins(item, out)
 		}
 		// A KindHash's default value/proc are reachable hash state, so any
@@ -999,6 +1019,9 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		}
 		s.seenClasses[classDef] = struct{}{}
 		for _, item := range classDef.ClassVars {
+			if s.collectExhausted() {
+				return
+			}
 			s.collectBuiltins(item, out)
 		}
 	case KindInstance:
@@ -1011,6 +1034,9 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		}
 		s.seenInstances[instance] = struct{}{}
 		for _, item := range instance.Ivars {
+			if s.collectExhausted() {
+				return
+			}
 			s.collectBuiltins(item, out)
 		}
 		if instance.Class != nil {
