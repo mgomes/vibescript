@@ -224,3 +224,33 @@ func TestComparisonStaysCorrectWhenTheMemoCannotGrow(t *testing.T) {
 		t.Fatalf("comparison = %s, want -1", got.String())
 	}
 }
+
+// A memo entry that does not fit is dropped, and its reservation must be
+// rolled back: repeated failed insertions would otherwise accumulate phantom
+// scratch and shrink the budget for everything after them.
+func TestDroppedMemoEntriesLeaveNoReservation(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 4 << 20}, `
+    def run(a, b, filler)
+      first = (a <=> b).inspect
+      # A second comparison must still have its full budget: the first one's
+      # dropped memo entries must not have consumed any.
+      second = (a <=> b).inspect
+      "#{first}#{second}"
+    end
+    `)
+	build := func() Value {
+		rows := make([]Value, 3000)
+		for i := range rows {
+			rows[i] = NewArray([]Value{NewInt(int64(i)), NewInt(int64(i))})
+		}
+		return NewArray(rows)
+	}
+	got, err := script.Call(context.Background(), "run", []Value{build(), build(), NewNil()}, CallOptions{})
+	if err != nil {
+		t.Fatalf("repeated comparisons exhausted the quota through leaked reservations: %v", err)
+	}
+	if got.String() != "00" {
+		t.Fatalf("comparisons = %s, want 00", got.String())
+	}
+}

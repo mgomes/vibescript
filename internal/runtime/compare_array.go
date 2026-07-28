@@ -61,19 +61,31 @@ type arrayCompareState struct {
 	memoReserved int
 }
 
-// arrayCompareMemoEntryBytes is the charge for one memoized pair: the key's
-// four words plus the result's three, which is what the map retains per entry
-// before its own bucket overhead.
-const arrayCompareMemoEntryBytes = 7 * 8
+// arrayCompareMemoEntryBytes is the charge for one memoized pair.
+//
+// On 64-bit Go the key is 32 bytes (two pointers and two ints) and the result
+// another 32 (an int, a bool with its padding, and a 16-byte error interface),
+// and a map keeps buckets sized above the entries they hold. Charging the two
+// structs alone let a filled memo exceed the quota, so the charge doubles them
+// to cover the map's own footprint.
+const arrayCompareMemoEntryBytes = 128
 
-// reserveMemoEntry charges one more memo entry against the memory quota.
+// reserveMemoEntry charges one more memo entry against the memory quota,
+// rolling the reservation back when it does not fit so a rejected entry leaves
+// nothing behind. Without the rollback, repeated failures accumulate phantom
+// scratch that shrinks the budget for everything after them.
 func (state *arrayCompareState) reserveMemoEntry() error {
 	if state == nil || state.exec == nil {
 		return nil
 	}
 	state.exec.reserveLoopScratch(arrayCompareMemoEntryBytes)
 	state.memoReserved += arrayCompareMemoEntryBytes
-	return state.exec.checkMemory()
+	if err := state.exec.checkMemory(); err != nil {
+		state.exec.releaseLoopScratch(arrayCompareMemoEntryBytes)
+		state.memoReserved -= arrayCompareMemoEntryBytes
+		return err
+	}
+	return nil
 }
 
 // release returns the memo's reservation once the comparison that built it is
