@@ -108,3 +108,31 @@ func TestEnumValueToStringRejectsArguments(t *testing.T) {
 		})
 	}
 }
+
+// The shared scalar helpers render before checking, so an identifier far
+// larger than the memory quota -- reachable when MaxSourceBytes is configured
+// higher -- allocated the whole Enum::Member text before any guard ran. The
+// length follows from the two identifiers, so it can be projected first.
+func TestEnumRenderingIsProjectedBeforeAllocating(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("N", 300000)
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 128 * 1024, MaxSourceBytes: 4 << 20},
+		"enum "+long+"\n  Active\nend\ndef run()\n  "+long+"::Active.to_s\nend")
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("a rendering far larger than the quota was produced without a guard")
+	}
+}
+
+// A typo near the alias suggests it, which is the did-you-mean behaviour the
+// original change existed for.
+func TestEnumValueSuggestsTheStringAlias(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, enumToStringSource+"\ndef run()\n  Status::Active.strng\nend")
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected an unknown enum member to be reported")
+	}
+	if !strings.Contains(err.Error(), `"string"`) {
+		t.Fatalf("error = %v, want it to suggest string", err)
+	}
+}
