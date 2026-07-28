@@ -136,3 +136,50 @@ func TestEnumValueSuggestsTheStringAlias(t *testing.T) {
 		t.Fatalf("error = %v, want it to suggest string", err)
 	}
 }
+
+// fmt.Sprintf holds a formatting buffer alongside the string it returns, so
+// the real peak was roughly twice the text while the guard charged the text
+// length alone. Growing a builder once to the exact size makes the returned
+// string the only allocation, which is what the charge covers.
+func TestEnumMemberTextAllocatesOnlyTheString(t *testing.T) {
+	enum := &EnumDef{Name: strings.Repeat("E", 4096)}
+	member := &EnumValueDef{Name: strings.Repeat("M", 4096), Enum: enum}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		_ = enumMemberText(member)
+	})
+	if allocs > 1 {
+		t.Fatalf("enumMemberText made %v allocations, want at most the returned string", allocs)
+	}
+}
+
+// The guard charges the buffer the rendering grows, which an allocator rounds
+// up to a size class. Charging the exact text length let a rendering that fit
+// the quota only narrowly exceed it once rounded.
+func TestEnumRenderingChargesTheRoundedBuffer(t *testing.T) {
+	t.Parallel()
+
+	for _, payload := range []int{1, 17, 100, 4095, 4096, 300000} {
+		var grown strings.Builder
+		grown.Grow(payload)
+		charged := projectedBuilderCap(&strings.Builder{}, payload)
+		if charged < grown.Cap() {
+			t.Fatalf("payload %d: charged %d bytes, but growing the builder reserves %d", payload, charged, grown.Cap())
+		}
+	}
+}
+
+// Explicit conversion and interpolation render through the same helper, so
+// they cannot drift apart.
+func TestEnumRenderingIsTheSameThroughEveryPath(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, enumToStringSource+"\ndef run()\n  [Status::Active.to_s, Status::Active.string, Status::Active.inspect, \"#{Status::Active}\"].uniq.length\nend")
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "1" {
+		t.Fatalf("enum renderings disagree across paths (%s distinct forms)", got.String())
+	}
+}

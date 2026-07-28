@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"strings"
 )
 
 func (exec *Execution) getMember(obj Value, property string, pos Position) (Value, error) {
@@ -661,7 +662,12 @@ func newEnumRenderingBuiltin(typeName, property string, projected func() int) Va
 		if err := requireNullaryCall(name, args, kwargs, block); err != nil {
 			return NewNil(), err
 		}
-		if err := exec.checkProjectedValueRendering(receiver, projected()); err != nil {
+		// Charge the buffer the rendering actually grows, not the text
+		// length: an allocation is rounded up to a size class, and charging
+		// the exact length let a rendering that fits the quota only narrowly
+		// exceed it once rounded.
+		var sb strings.Builder
+		if err := exec.checkProjectedValueRendering(receiver, projectedBuilderCap(&sb, projected())); err != nil {
 			return NewNil(), err
 		}
 		return NewString(receiver.String()), nil

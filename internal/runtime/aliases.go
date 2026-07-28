@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/mgomes/vibescript/internal/ast"
@@ -1257,7 +1258,7 @@ func runtimeValueString(v Value) (string, bool) {
 		}
 	case KindEnumValue:
 		if member := valueEnumValue(v); member != nil && member.Enum != nil {
-			return fmt.Sprintf("%s::%s", member.Enum.Name, member.Name), true
+			return enumMemberText(member), true
 		}
 	case KindClass:
 		if cl := valueClass(v); cl != nil {
@@ -1318,4 +1319,22 @@ func init() {
 	value.RuntimeStringer = runtimeValueString
 	value.RuntimeEqualer = runtimeValueEqual
 	value.RuntimeIdenticaler = runtimeValueIdentical
+}
+
+// enumMemberText renders an enum member's Enum::Member form into a buffer
+// grown once to the exact size, so the peak allocation is the returned string
+// and nothing else.
+//
+// fmt.Sprintf holds a formatting buffer alongside the string it returns, so
+// the true peak was roughly twice the text. A guard that charges the text
+// length alone therefore passed for a member whose rendering fit the quota
+// only narrowly, and the call exceeded it anyway. Both the explicit
+// conversions and interpolation render through here, so they cannot drift.
+func enumMemberText(member *EnumValueDef) string {
+	var sb strings.Builder
+	sb.Grow(enumValueRenderingBytes(member))
+	sb.WriteString(member.Enum.Name)
+	sb.WriteString("::")
+	sb.WriteString(member.Name)
+	return sb.String()
 }
