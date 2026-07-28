@@ -199,9 +199,9 @@ func TestComparisonMemoIsChargedAgainstTheMemoryQuota(t *testing.T) {
 	}
 }
 
-// Dropping a memo entry that will not fit must not change the answer: the memo
-// is an optimization and the walk terminates on the on-stack set regardless.
-func TestComparisonStaysCorrectWhenTheMemoCannotGrow(t *testing.T) {
+// The memo's reservation must not change the answer for an ordinary
+// comparison that fits comfortably.
+func TestComparisonStaysCorrectWithTheMemoReservation(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 2 << 20}, `
     def run(a, b)

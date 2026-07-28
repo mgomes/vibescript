@@ -70,22 +70,21 @@ type arrayCompareState struct {
 // to cover the map's own footprint.
 const arrayCompareMemoEntryBytes = 128
 
-// reserveMemoEntry charges one more memo entry against the memory quota,
-// rolling the reservation back when it does not fit so a rejected entry leaves
-// nothing behind. Without the rollback, repeated failures accumulate phantom
-// scratch that shrinks the budget for everything after them.
-func (state *arrayCompareState) reserveMemoEntry() error {
+// reserveMemoEntry charges one more memo entry against the memory quota.
+//
+// It reserves without checking. The reservation raises reservedScratchBytes,
+// which the periodic check driven by the per-element step charge already
+// consults, so the memo's growth is accounted for without a check here.
+// Checking per entry would be far worse than the problem: these comparisons
+// run inside builtin dispatch, where the base-walk cache is deliberately
+// disabled, so every insertion would walk the whole reachable heap and turn a
+// linear memo into a quadratic one.
+func (state *arrayCompareState) reserveMemoEntry() {
 	if state == nil || state.exec == nil {
-		return nil
+		return
 	}
 	state.exec.reserveLoopScratch(arrayCompareMemoEntryBytes)
 	state.memoReserved += arrayCompareMemoEntryBytes
-	if err := state.exec.checkMemory(); err != nil {
-		state.exec.releaseLoopScratch(arrayCompareMemoEntryBytes)
-		state.memoReserved -= arrayCompareMemoEntryBytes
-		return err
-	}
-	return nil
 }
 
 // release returns the memo's reservation once the comparison that built it is
@@ -164,13 +163,7 @@ func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int
 				state.done = map[arrayComparePair]arrayCompareResult{}
 			}
 			if _, already := state.done[pair]; !already {
-				if reserveErr := state.reserveMemoEntry(); reserveErr != nil {
-					// The memo cannot grow within the quota, so drop this entry
-					// rather than exceed it. Correctness is unaffected: the memo
-					// is an optimization, and the walk still terminates on the
-					// on-stack set.
-					return
-				}
+				state.reserveMemoEntry()
 			}
 			state.done[pair] = arrayCompareResult{order: order, ordered: ordered, err: err}
 		}()
