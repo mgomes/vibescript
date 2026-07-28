@@ -3012,11 +3012,16 @@ func (est *memoryEstimator) hash(values map[string]Value) int {
 // already retained, and the two can pass separately even though they coexist.
 // Exposing the running total lets the loop reserve it as releasable scratch,
 // which is what makes the retained output visible to those checks.
-func (acc *arrayBuildAccumulator) accumulatedBytes() int {
+func (acc *arrayBuildAccumulator) accumulatedBytes(backingCap int) int {
 	if acc == nil {
 		return 0
 	}
-	return acc.payload
+	// The element payload alone is not what stays live: the preallocated
+	// result backing and the scratch reserved for the walk do too, and for a
+	// block returning scalars the payload stays zero -- so reserving only that
+	// never grew the reservation at all while the backing could still fill the
+	// quota alongside an in-block temporary.
+	return saturatingAdd(acc.payload, arraySlotBackingBytes(backingCap))
 }
 
 // retainedOutputScratch keeps a loop's accumulated output reserved as scratch,

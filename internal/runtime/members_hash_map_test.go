@@ -190,3 +190,28 @@ func TestHashMapHonorsBlockArity(t *testing.T) {
 		})
 	}
 }
+
+// A block returning scalars leaves the accumulator's element payload at zero,
+// so reserving only that never grew the reservation -- while the preallocated
+// result backing still stayed live alongside an in-block temporary.
+func TestHashMapReservesTheResultBacking(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 512 * 1024}, `
+    def run(h)
+      h.map { |k, v|
+        if v > 40000
+          ("y" * 400000).length
+        else
+          v
+        end
+      }
+    end
+    `)
+	entries := map[string]Value{}
+	for i := range 45000 {
+		entries[fmt.Sprintf("k%06d", i)] = NewInt(int64(i))
+	}
+	if _, err := script.Call(context.Background(), "run", []Value{NewHash(entries)}, CallOptions{}); err == nil {
+		t.Fatalf("the result backing plus an in-block temporary exceeded the quota but was accepted")
+	}
+}

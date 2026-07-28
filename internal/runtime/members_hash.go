@@ -2728,7 +2728,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := acc.addConservative(val, cap(out)); err != nil {
 						return NewNil(), err
 					}
-					retained.reserve(acc.accumulatedBytes())
+					retained.reserve(acc.accumulatedBytes(cap(out)))
 				}
 				return NewArray(out), nil
 			}
@@ -2803,7 +2803,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := acc.addConservative(val, cap(out)); err != nil {
 					return NewNil(), err
 				}
-				retained.reserve(acc.accumulatedBytes())
+				retained.reserve(acc.accumulatedBytes(cap(out)))
 			}
 			return NewArray(out), nil
 		}), nil
