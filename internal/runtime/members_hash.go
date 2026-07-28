@@ -2695,6 +2695,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out := make([]Value, 0, count)
+				// Reserve the preallocated backing before the first block call,
+				// not after it returns: the backing is live from the make above,
+				// so a block allocating its large temporary on the very first
+				// entry would otherwise be measured without it.
+				retained.reserve(acc.accumulatedBytes(cap(out)))
 				var blockArg [1]Value
 				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
@@ -2756,6 +2761,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			out := make([]Value, 0, len(entries))
+			// Reserve the preallocated backing before the first block call; see
+			// the typed branch above.
+			retained.reserve(acc.accumulatedBytes(cap(out)))
 			var blockArg [1]Value
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string

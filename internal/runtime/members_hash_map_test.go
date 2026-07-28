@@ -193,13 +193,16 @@ func TestHashMapHonorsBlockArity(t *testing.T) {
 
 // A block returning scalars leaves the accumulator's element payload at zero,
 // so reserving only that never grew the reservation -- while the preallocated
-// result backing still stayed live alongside an in-block temporary.
+// result backing still stayed live alongside an in-block temporary. The
+// temporary is allocated on the *first* sorted entry, so this also pins that
+// the backing is reserved before the first block call rather than after it
+// returns.
 func TestHashMapReservesTheResultBacking(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 512 * 1024}, `
     def run(h)
       h.map { |k, v|
-        if v > 40000
+        if v == 0
           ("y" * 400000).length
         else
           v
