@@ -3,8 +3,8 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"testing"
-	"time"
 )
 
 // deepNestingSource builds a chain of single-element arrays: cur = [cur],
@@ -59,45 +59,44 @@ func BenchmarkDeepNestingUnquotaed(b *testing.B) {
 	}
 }
 
-// The quota's cost grows faster than the depth does, while the unmetered build
-// stays flat. This states the #1124 baseline as an executable fact rather than
-// a table in an issue, so a fix has a pass/fail target: make the quotaed build
-// scale like the unmetered one and this test's expectation inverts.
+// The quota's work grows faster than the depth does, while the unmetered build
+// stays linear. This states the #1124 baseline as an executable fact rather
+// than a table in an issue, so a fix has a pass/fail target: make the quotaed
+// build scale like the unmetered one and this test's expectation inverts.
 //
-// It asserts a wide margin rather than a precise ratio, so ordinary machine
-// noise cannot fail it -- doubling the depth quadruples the metered work, and
-// the assertion only requires more than 2.5x.
+// It measures allocated bytes rather than elapsed time. The walk allocates
+// seen-set entries in proportion to the nodes it visits, so total allocation
+// tracks the work done, and TotalAlloc is cumulative and deterministic for a
+// deterministic program -- unlike wall-clock, which on this repository's CI
+// would fold in scheduler contention, GC, and the race and coverage
+// instrumentation across three operating systems.
 func TestDeepNestingScalingIsQuadraticUnderQuota(t *testing.T) {
-	measure := func(quota int, depth int64) time.Duration {
+	measure := func(quota int, depth int64) uint64 {
 		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, deepNestingSource)
-		best := time.Hour
-		for range 3 {
-			start := time.Now()
-			if _, err := script.Call(context.Background(), "run", []Value{NewInt(depth)}, CallOptions{}); err != nil {
-				t.Fatalf("depth %d: %v", depth, err)
-			}
-			if d := time.Since(start); d < best {
-				best = d
-			}
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		if _, err := script.Call(context.Background(), "run", []Value{NewInt(depth)}, CallOptions{}); err != nil {
+			t.Fatalf("depth %d: %v", depth, err)
 		}
-		return best
+		runtime.ReadMemStats(&after)
+		return after.TotalAlloc - before.TotalAlloc
 	}
 
 	const quota = 8 << 20
-	small := measure(quota, 1000)
-	large := measure(quota, 2000)
+	small, large := measure(quota, 1000), measure(quota, 2000)
 
-	if large < small*5/2 {
-		t.Fatalf("doubling the depth took %v against %v -- under 2.5x, so the quotaed build is no longer quadratic;"+
-			" if that is the fix for #1124, invert this expectation", large, small)
+	// Measured about 3.9x; the assertion needs only more than 2.5x.
+	if large*2 < small*5 {
+		t.Fatalf("doubling the depth allocated %d bytes against %d -- under 2.5x, so the quotaed build is no longer"+
+			" quadratic; if that is the fix for #1124, invert this expectation", large, small)
 	}
 
-	// The same build without metering does not blow up, which localizes the
-	// cost to the quota's per-assignment walk rather than to construction.
-	unmeteredSmall := measure(Unlimited, 1000)
-	unmeteredLarge := measure(Unlimited, 2000)
-	if unmeteredLarge > unmeteredSmall*5/2 {
-		t.Fatalf("the unmetered build also grew superlinearly (%v then %v), so the cost is not the quota's walk",
+	// The same build without metering stays linear, which localizes the cost
+	// to the quota's per-assignment walk rather than to construction.
+	unmeteredSmall, unmeteredLarge := measure(Unlimited, 1000), measure(Unlimited, 2000)
+	if unmeteredLarge*2 > unmeteredSmall*5 {
+		t.Fatalf("the unmetered build also grew superlinearly (%d then %d bytes), so the cost is not the quota's walk",
 			unmeteredSmall, unmeteredLarge)
 	}
 }
