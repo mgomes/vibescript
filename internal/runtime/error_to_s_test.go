@@ -572,3 +572,49 @@ func TestTaggedBagsStillSupportReadsAndCopies(t *testing.T) {
 		})
 	}
 }
+
+// A tagged bag is immutable, so it must not share entries with an untagged
+// wrapper over the same map. Rebinding both into one call produced a shared
+// clone, and a write through the untagged alias changed what the tagged one
+// rendered -- bypassing the mutation guard entirely.
+func TestTaggedWrappersDoNotShareEntriesWithUntaggedAliases(t *testing.T) {
+	t.Parallel()
+
+	newPair := func() (Value, Value) {
+		entries := map[string]Value{
+			"to_s": NewString("real"), "message": NewString("real"),
+			"class": NewString("E"), "type": NewString("E"),
+			"backtrace": NewArray([]Value{}),
+		}
+		return NewTaggedObject(entries, ObjectTagRescuedError), NewObject(entries)
+	}
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "tagged first", body: `def run(tagged, plain)
+  plain[:to_s] = "payload"
+  "#{tagged}"
+end`},
+		{name: "member assignment", body: `def run(tagged, plain)
+  plain.to_s = "payload"
+  "#{tagged}"
+end`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tagged, plain := newPair()
+			script := compileScript(t, tc.body)
+			got, err := script.Call(context.Background(), "run", []Value{tagged, plain}, CallOptions{})
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got.String() != "real" {
+				t.Fatalf("%s: the tagged bag rendered %q after a write through an untagged alias", tc.name, got.String())
+			}
+		})
+	}
+}

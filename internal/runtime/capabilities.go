@@ -147,7 +147,11 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 		obj := val.Hash()
 		id := reflect.ValueOf(obj).Pointer()
 		if id != 0 {
-			if cloned, ok := state.clonedObject(id); ok {
+			// A wrapper whose tag differs from the cached clone's gets its own
+			// copy: a tagged bag is immutable, and sharing entries with an
+			// untagged alias would let a write through the alias change what
+			// the tagged one renders.
+			if cloned, ok := state.clonedObject(id); ok && cloned.ObjectTag() == state.clonedTagFor(val) {
 				// The cache is keyed by the entry map, but the tag belongs to
 				// the wrapper. Two wrappers can share one map and carry
 				// different tags -- a host rebuilding a tagged bag with
@@ -231,6 +235,15 @@ func (state *deepCloneState) rememberHash(id uintptr, cloned Value) {
 		state.hashes[entry.id] = entry.value
 	}
 	state.hashes[id] = cloned
+}
+
+// clonedTagFor is the tag wrapCloned would give this wrapper's clone, used to
+// decide whether the cached clone may be shared with it.
+func (state *deepCloneState) clonedTagFor(src Value) ObjectTag {
+	if !state.preserveTags {
+		return ObjectTagNone
+	}
+	return src.ObjectTag()
 }
 
 // wrapCloned gives the shared clone the provenance of the wrapper being

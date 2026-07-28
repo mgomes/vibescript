@@ -564,8 +564,15 @@ type callFunctionRebinder struct {
 	// rebound wrappers point at one cloned entry map and keep the aliasing.
 	seenHashEntries map[uintptr]map[string]Value
 	seenMaps        map[uintptr]map[string]Value
-	seenBlocks      map[*Block]Value
-	seenEnvs        map[*Env]*Env
+	// seenMapTags records the provenance the cached clone was built for.
+	// Wrappers sharing one entry map normally rebind to one shared clone, so
+	// an in-place write through either stays visible through the other. That
+	// is wrong when their tags differ: a tagged bag is immutable, and sharing
+	// entries with an untagged alias would let a write through the alias
+	// change what the tagged one renders. Those get independent clones.
+	seenMapTags map[uintptr]ObjectTag
+	seenBlocks  map[*Block]Value
+	seenEnvs    map[*Env]*Env
 	// seenBoundBuiltins caches the rebound clone of a receiver-bound predicate
 	// (a bound eql?/equal?) keyed on the source builtin pointer. Rebinding such a
 	// builtin reconstructs a fresh *Builtin around the rebound receiver, so the
@@ -849,14 +856,20 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	case KindObject:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
-		if cloneMap, seen := r.seenMaps[ptr]; seen {
+		if cloneMap, seen := r.seenMaps[ptr]; seen && r.seenMapTags[ptr] == val.ObjectTag() {
 			return retagClonedObject(val, cloneMap)
 		}
 		clonedEntries := make(map[string]Value, len(entries))
 		if r.seenMaps == nil {
 			r.seenMaps = make(map[uintptr]map[string]Value)
+			r.seenMapTags = make(map[uintptr]ObjectTag)
 		}
-		r.seenMaps[ptr] = clonedEntries
+		// Only the first wrapper for this map claims the shared clone; a
+		// wrapper with a different tag gets its own, unaliased copy.
+		if _, seen := r.seenMaps[ptr]; !seen {
+			r.seenMaps[ptr] = clonedEntries
+			r.seenMapTags[ptr] = val.ObjectTag()
+		}
 		for key, item := range entries {
 			clonedEntries[key] = r.rebindValue(item)
 		}
