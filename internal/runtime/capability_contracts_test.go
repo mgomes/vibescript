@@ -1102,15 +1102,53 @@ end`)
 	}
 }
 
+// unvalidatedBreakCapability publishes a second builtin and yields, but
+// declares no return contract on install, so an absorbed break is accepted as
+// the call's result.
+type unvalidatedBreakCapability struct {
+	invokeCount *int
+}
+
+func (c unvalidatedBreakCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"mut": NewObject(map[string]Value{
+			"install": NewBuiltin("mut.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				receiver.Hash()["call"] = NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+					*c.invokeCount = *c.invokeCount + 1
+					return NewString("ok"), nil
+				})
+				if block.IsNil() {
+					return NewString("installed"), nil
+				}
+				return exec.callBlockValue(block, []Value{NewInt(1)}, Position{})
+			}),
+		}),
+	}, nil
+}
+
+func (c unvalidatedBreakCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"mut.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("mut.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
 // A break value came from the caller's own block, so it is not something the
-// call published -- whether or not it passes the return contract. Binding
-// contracts from an accepted break attached the capability's contract to an
-// unrelated caller-owned global, and its later calls then failed validation.
+// call published -- whether or not it passes the return contract. The break
+// here IS the caller-owned builtin, and install declares no return contract,
+// so it is accepted; binding contracts from it attached the capability's
+// contract to that unrelated global and its later calls then failed.
 func TestAcceptedBreakDoesNotBindContractsToACallerOwnedBuiltin(t *testing.T) {
 	t.Parallel()
 
 	script := compileScriptDefault(t, `def run()
-  mut.install { break "accepted" }
+  mut.install { break helper }
   helper("anything", 2)
 end`)
 
@@ -1123,7 +1161,7 @@ end`)
 	_, err := script.Call(context.Background(), "run", nil, CallOptions{
 		Globals: map[string]Value{"helper": helper},
 		Capabilities: []CapabilityAdapter{
-			breakPublishingContractCapability{invokeCount: &invocations},
+			unvalidatedBreakCapability{invokeCount: &invocations},
 		},
 	})
 	if err != nil {
@@ -1147,7 +1185,7 @@ end`)
 	invocations := 0
 	_, err := script.Call(context.Background(), "run", nil, CallOptions{
 		Capabilities: []CapabilityAdapter{
-			breakPublishingContractCapability{invokeCount: &invocations},
+			unvalidatedBreakCapability{invokeCount: &invocations},
 		},
 	})
 	if err == nil {
