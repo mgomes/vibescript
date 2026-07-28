@@ -218,3 +218,30 @@ func TestHashMapReservesTheResultBacking(t *testing.T) {
 		t.Fatalf("the result backing plus an in-block temporary exceeded the quota but was accepted")
 	}
 }
+
+// The runner snapshots its bind baseline once, at construction, so a
+// reservation made afterwards is missing from every bind charge -- a
+// rest-destructuring block binds its first call against a baseline omitting
+// the result backing entirely.
+func TestHashMapReservesBackingBeforeTheRunnerBinds(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 512 * 1024}, `
+    def run(h)
+      h.map { |pair|
+        k, *rest = pair
+        if k == "k000000"
+          ("y" * 400000).length
+        else
+          1
+        end
+      }
+    end
+    `)
+	entries := map[string]Value{}
+	for i := range 45000 {
+		entries[fmt.Sprintf("k%06d", i)] = NewInt(int64(i))
+	}
+	if _, err := script.Call(context.Background(), "run", []Value{NewHash(entries)}, CallOptions{}); err == nil {
+		t.Fatalf("a destructuring block bound against a baseline omitting the backing")
+	}
+}

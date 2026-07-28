@@ -2666,6 +2666,15 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.map does not take keyword arguments")
 			}
+			// Reserve the result backing before the runner is constructed. The
+			// runner snapshots its bind baseline once, at construction, so a
+			// reservation made afterwards is missing from every bind charge --
+			// a rest-destructuring block such as |k, (head, *tail)| would bind
+			// its first call against a baseline omitting the backing entirely.
+			retained := newRetainedOutputScratch(exec)
+			defer retained.release()
+			retained.reserve(arraySlotBackingBytes(hashEntryCount(receiver)))
+
 			runner, err := newBlockCallRunner(exec, block, "hash.map", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
@@ -2677,14 +2686,6 @@ func hashMemberTransforms(property string) (Value, error) {
 			// that arity, so `{ _2 }` is an arity-2 block -- yielding the pair
 			// unconditionally bound `_1` to the whole pair and left `_2` nil.
 			collapsePair := blockWantsCollapsedPair(valueBlock(block))
-			// The build accumulator records the growing result privately, so
-			// memory checks run inside a block call cannot see it: a block
-			// allocating a large temporary is measured against a baseline that
-			// omits everything the loop already retained, and the two can pass
-			// separately even though they coexist. Reserving the retained total
-			// as releasable loop scratch puts it in that baseline.
-			retained := newRetainedOutputScratch(exec)
-			defer retained.release()
 			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
 				acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
@@ -3428,4 +3429,13 @@ func hashMemberTransforms(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)
 	}
+}
+
+// hashEntryCount reports how many entries a hash receiver holds, for either
+// storage shape.
+func hashEntryCount(receiver Value) int {
+	if hashHasTypedEntries(receiver) {
+		return receiver.HashLen()
+	}
+	return len(receiver.Hash())
 }
