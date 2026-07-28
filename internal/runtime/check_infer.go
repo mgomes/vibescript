@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"maps"
 	"math"
 	"reflect"
@@ -15700,9 +15701,44 @@ func (c *scriptChecker) checkInferredArgument(function string, expr Expression, 
 		return
 	}
 	if c.boundaryTypeRejected(inferred, ty) {
-		c.add(function, expr.Pos(), "call to %s argument %s expected %s, got %s",
-			callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred))
+		c.add(function, expr.Pos(), "call to %s argument %s expected %s, got %s%s",
+			callName, paramName, formatTypeExpr(ty), formatTypeExpr(inferred),
+			c.unknownShapeKeyKindHint(expr))
 	}
+}
+
+// unknownShapeKeyKindHint explains a nil arm that comes from not knowing how a
+// shape's keys are stored, rather than from the field being optional.
+//
+// A shape parameter accepts either key kind -- {name: "a"} and {"name": "b"}
+// both satisfy { name: string }, and JSON.parse produces the string-keyed form
+// -- so the checker cannot know which one a read will hit, and a read of even
+// a required field joins nil. Without saying so the diagnostic reads as though
+// the field were optional, which is how #1046 concluded that `?` had no
+// effect: it does, but only where the key kind is known, as in a hash literal.
+func (c *scriptChecker) unknownShapeKeyKindHint(expr Expression) string {
+	index, ok := expr.(*IndexExpr)
+	if !ok || len(index.Indices) != 1 {
+		return ""
+	}
+	key, ok := staticLiteralHashKey(index.Indices[0])
+	if !ok {
+		return ""
+	}
+	objectType := c.inferExpressionType(index.Object)
+	if objectType == nil || objectType.Kind != TypeShape || objectType.Nullable {
+		return ""
+	}
+	// A known store representation already reads a required field exactly.
+	if objectType.Name == shapeKeysStringMarker || objectType.Name == shapeKeysSymbolMarker {
+		return ""
+	}
+	field, present := objectType.Shape[key]
+	if !present || shapeFieldOptional(field) {
+		return ""
+	}
+	return fmt.Sprintf("; %s is required, but this shape's key kind is unknown,"+
+		" so the read may still miss", key)
 }
 
 // bareMemberArgumentCallableFact mirrors the runtime's callable-parameter
