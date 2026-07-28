@@ -719,3 +719,40 @@ func TestObjectIdentityAccountsForTheTag(t *testing.T) {
 		t.Fatalf("equal? inside the script = %s, want false as it is outside", got.String())
 	}
 }
+
+// A capability result crossing back into the script is boundary isolation, so
+// a bag the runtime built keeps its provenance. Rebuilding it with NewObject
+// meant a rescued error echoed by a capability came back as an ordinary bag
+// and rendered <object>.
+func TestCapabilityResultClonesPreserveTags(t *testing.T) {
+	t.Parallel()
+
+	entries := map[string]Value{
+		"to_s": NewString("boom"), "message": NewString("boom"),
+		"class": NewString("RuntimeError"), "type": NewString("RuntimeError"),
+		"backtrace": NewArray([]Value{}),
+	}
+	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+
+	cloned, err := cloneCapabilityDataOnlyValue("probe.result", tagged)
+	if err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	if cloned.ObjectTag() != ObjectTagRescuedError {
+		t.Fatalf("a capability result cloned with tag %v, want the rescued-error tag", cloned.ObjectTag())
+	}
+	if _, substituted := objectStringEntry(cloned); !substituted {
+		t.Fatalf("the cloned result no longer renders its message")
+	}
+
+	// A tagged and an untagged wrapper over one map must not share a clone.
+	plain := NewObject(entries)
+	both, err := cloneCapabilityDataOnlyValue("probe.result", NewArray([]Value{tagged, plain}))
+	if err != nil {
+		t.Fatalf("clone pair: %v", err)
+	}
+	items := both.Array()
+	if items[0].ObjectTag() != ObjectTagRescuedError || items[1].ObjectTag() != ObjectTagNone {
+		t.Fatalf("wrappers cloned with tags %v and %v, want rescued-error and none", items[0].ObjectTag(), items[1].ObjectTag())
+	}
+}

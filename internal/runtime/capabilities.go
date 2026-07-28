@@ -384,9 +384,13 @@ func cloneCapabilityMethodResult(method string, result Value) (Value, error) {
 }
 
 type capabilityDataCloneScanner struct {
-	label          string
-	clonedArrays   map[uintptr]Value
-	clonedMaps     map[uintptr]Value
+	label        string
+	clonedArrays map[uintptr]Value
+	clonedMaps   map[uintptr]Value
+	// clonedObjects keys object clones by entry map and provenance: a tagged
+	// bag and an untagged wrapper over one map are different objects, and
+	// sharing a clone would give one the other's tag.
+	clonedObjects  map[objectCloneKey]Value
 	visitingArrays map[uintptr]struct{}
 	visitingMaps   map[uintptr]struct{}
 }
@@ -399,6 +403,7 @@ func cloneCapabilityDataOnlyValue(label string, val Value) (Value, error) {
 		label:          label,
 		clonedArrays:   make(map[uintptr]Value),
 		clonedMaps:     make(map[uintptr]Value),
+		clonedObjects:  make(map[objectCloneKey]Value),
 		visitingArrays: make(map[uintptr]struct{}),
 		visitingMaps:   make(map[uintptr]struct{}),
 	}
@@ -509,15 +514,22 @@ func (s *capabilityDataCloneScanner) cloneObject(val Value) (Value, error) {
 		if _, visiting := s.visitingMaps[ptr]; visiting {
 			return NewNil(), fmt.Errorf("%s must not contain cyclic references", s.label)
 		}
-		if cloned, ok := s.clonedMaps[ptr]; ok {
+		// The cache is keyed by the wrapper's provenance as well as its entry
+		// map: a tagged bag and an untagged wrapper over one map are different
+		// objects, and sharing a clone would give one the other's tag.
+		if cloned, ok := s.clonedObjects[objectCloneKey{ptr: ptr, tag: val.ObjectTag()}]; ok {
 			return cloned, nil
 		}
 		s.visitingMaps[ptr] = struct{}{}
 	}
 	clonedEntries := make(map[string]Value, len(entries))
-	cloned := NewObject(clonedEntries)
+	// A capability result crossing back into the script is boundary
+	// isolation, so a bag the runtime built keeps its provenance; without
+	// this a rescued error echoed by a capability came back as an ordinary
+	// bag and rendered <object>.
+	cloned := retagClonedObject(val, clonedEntries)
 	if ptr != 0 {
-		s.clonedMaps[ptr] = cloned
+		s.clonedObjects[objectCloneKey{ptr: ptr, tag: val.ObjectTag()}] = cloned
 	}
 	for key, item := range entries {
 		clonedItem, err := s.clone(item)
