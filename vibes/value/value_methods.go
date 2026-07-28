@@ -1099,7 +1099,11 @@ func (v Value) Eql(other Value) bool {
 	if v.kind != other.kind {
 		return false
 	}
-	return v.Equal(other)
+	var ctx EqualityContext
+	if ctx.seen != nil {
+		clear(ctx.seen)
+	}
+	return valuesEqualWithKinds(v, other, &ctx.seen, true)
 }
 
 // Identical reports whether v and other refer to the same object, backing the
@@ -1265,12 +1269,30 @@ func numericCrossKindEqual(v, other Value) bool {
 }
 
 func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
+	return valuesEqualWithKinds(v, other, seen, false)
+}
+
+// valuesEqualWithKinds compares two values, optionally requiring their kinds
+// to match at every level.
+//
+// strictKinds is what separates eql? from ==. == compares an int against a
+// float numerically, and that has to hold wherever the pair appears, so a
+// nested [1] == [1.0] is true. eql? is the kind-strict predicate, and its
+// strictness has to hold just as recursively: checking only the outermost
+// kind made [1].eql?([1.0]) true, because the elements went through the
+// widened comparison.
+func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
 	if v.kind != other.kind {
-		// An int and a float compare numerically, so 1 == 1.0 holds. This is
-		// the distinction the documentation draws between == and eql?: Eql
-		// applies its own kind gate before delegating here and therefore stays
-		// strict, which is what hash keys use. It also matches <=>, which
-		// already reports 1 <=> 1.0 as 0.
+		// eql? is kind-strict at every level, not only at the outermost one:
+		// checking the kinds once and then delegating here made
+		// [1].eql?([1.0]) true, because the elements took the numeric path.
+		if strictKinds {
+			return false
+		}
+		// An int and a float compare numerically, so 1 == 1.0 holds, and that
+		// has to hold wherever the pair appears -- including nested, so
+		// [1] == [1.0] is true. It also matches <=>, which already reports
+		// 1 <=> 1.0 as 0.
 		return numericCrossKindEqual(v, other)
 	}
 	switch v.kind {
@@ -1341,7 +1363,7 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 			}
 		}
 		for i := range left {
-			if !valuesEqual(left[i], right[i], seen) {
+			if !valuesEqualWithKinds(left[i], right[i], seen, strictKinds) {
 				return false
 			}
 		}
@@ -1372,15 +1394,15 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 		leftTyped := v.HashHasTypedEntries()
 		rightTyped := other.HashHasTypedEntries()
 		if !leftTyped && !rightTyped {
-			return hashMapsEqual(v.Hash(), other.Hash(), seen)
+			return hashMapsEqual(v.Hash(), other.Hash(), seen, strictKinds)
 		}
 		left := v.HashEntries()
 		right := other.HashEntries()
 		if !leftTyped || !rightTyped {
-			return hashEntriesEqualByDisplayKey(left, right, seen)
+			return hashEntriesEqualByDisplayKey(left, right, seen, strictKinds)
 		}
 		if len(right) <= smallHashEqualityEntryLimit {
-			return hashEntriesEqualByLookupKeyLinear(left, right, seen)
+			return hashEntriesEqualByLookupKeyLinear(left, right, seen, strictKinds)
 		}
 		rightByKey, ok := hashEntriesByLookupKey(right)
 		if !ok {
@@ -1395,7 +1417,7 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 			if !ok {
 				return false
 			}
-			if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
 				return false
 			}
 		}
@@ -1428,7 +1450,7 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 			if !ok {
 				return false
 			}
-			if !valuesEqual(leftValue, rightValue, seen) {
+			if !valuesEqualWithKinds(leftValue, rightValue, seen, strictKinds) {
 				return false
 			}
 		}
@@ -1443,7 +1465,7 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 	}
 }
 
-func hashMapsEqual(left, right map[string]Value, seen *map[valueEqualityPair]struct{}) bool {
+func hashMapsEqual(left, right map[string]Value, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
 	if len(left) != len(right) {
 		return false
 	}
@@ -1452,7 +1474,7 @@ func hashMapsEqual(left, right map[string]Value, seen *map[valueEqualityPair]str
 		if !ok {
 			return false
 		}
-		if !valuesEqual(leftValue, rightValue, seen) {
+		if !valuesEqualWithKinds(leftValue, rightValue, seen, strictKinds) {
 			return false
 		}
 	}
@@ -1472,9 +1494,9 @@ func equalityPairSeen(seen *map[valueEqualityPair]struct{}, pair valueEqualityPa
 	return false
 }
 
-func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen *map[valueEqualityPair]struct{}) bool {
+func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
 	if len(right) <= smallHashEqualityEntryLimit {
-		return hashEntriesEqualByDisplayKeyLinear(left, right, seen)
+		return hashEntriesEqualByDisplayKeyLinear(left, right, seen, strictKinds)
 	}
 	leftByKey, ok := hashEntriesByDisplayKey(left)
 	if !ok {
@@ -1492,14 +1514,14 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen *map[valueEquali
 		if !ok {
 			return false
 		}
-		if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+		if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
 			return false
 		}
 	}
 	return true
 }
 
-func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}) bool {
+func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
 	if hashEntriesHaveDuplicateDisplayKey(left) || hashEntriesHaveDuplicateDisplayKey(right) {
 		return false
 	}
@@ -1510,7 +1532,7 @@ func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, seen *map[value
 			if HashDisplayKey(rightEntry.Key) != key {
 				continue
 			}
-			if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
 				return false
 			}
 			found = true
@@ -1535,7 +1557,7 @@ func hashEntriesHaveDuplicateDisplayKey(entries []HashEntry) bool {
 	return false
 }
 
-func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}) bool {
+func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
 	for _, leftEntry := range left {
 		leftKey, err := NewHashLookupKey(leftEntry.Key)
 		if err != nil {
@@ -1550,7 +1572,7 @@ func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueE
 			if rightKey != leftKey {
 				continue
 			}
-			if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
 				return false
 			}
 			found = true
