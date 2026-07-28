@@ -265,10 +265,11 @@ func TestRebuiltBagLosesItsTag(t *testing.T) {
 	}
 }
 
-// The clones the runtime makes to isolate a value rebuild every KindObject,
-// which dropped the tag. A match result returned by one Script.Call and passed
-// into another therefore rendered as <object> instead of the matched text.
-func TestObjectTagsSurviveInternalClones(t *testing.T) {
+// Provenance stops at the host boundary. Once the host holds a value it can
+// rewrite the entries through Value.HashSet or the live map from Value.Hash(),
+// and neither can clear a tag living in the Value's scalar word, so a tag
+// handed out would let host-authored entries come back authenticated.
+func TestObjectTagsDoNotCrossTheHostBoundary(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def make_match()
@@ -283,36 +284,24 @@ def make_error()
 end
 def render(v)
   "#{v}"
-end
-def render_in_task(v)
-  "#{v}"
 end`)
 
-	tests := []struct {
-		name    string
-		builder string
-		want    string
-	}{
-		{name: "match data", builder: "make_match", want: "world"},
-		{name: "rescued error", builder: "make_error", want: "boom"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, builder := range []string{"make_match", "make_error"} {
+		t.Run(builder, func(t *testing.T) {
 			t.Parallel()
-			built, err := script.Call(context.Background(), tc.builder, nil, CallOptions{})
+			built, err := script.Call(context.Background(), builder, nil, CallOptions{})
 			if err != nil {
-				t.Fatalf("%s: %v", tc.builder, err)
+				t.Fatalf("%s: %v", builder, err)
 			}
-			if built.ObjectTag() == ObjectTagNone {
-				t.Fatalf("%s lost its tag crossing the call boundary", tc.name)
+			if built.ObjectTag() != ObjectTagNone {
+				t.Fatalf("%s handed the host a tagged bag, which the host could then rewrite", builder)
 			}
 			got, err := script.Call(context.Background(), "render", []Value{built}, CallOptions{})
 			if err != nil {
 				t.Fatalf("render: %v", err)
 			}
-			if got.String() != tc.want {
-				t.Fatalf("%s rendered %q after a round trip, want %q", tc.name, got.String(), tc.want)
+			if got.String() != "<object>" {
+				t.Fatalf("a host-held bag rendered %q, want the ordinary object form", got.String())
 			}
 		})
 	}
@@ -754,5 +743,30 @@ func TestCapabilityResultClonesPreserveTags(t *testing.T) {
 	items := both.Array()
 	if items[0].ObjectTag() != ObjectTagRescuedError || items[1].ObjectTag() != ObjectTagNone {
 		t.Fatalf("wrappers cloned with tags %v and %v, want rescued-error and none", items[0].ObjectTag(), items[1].ObjectTag())
+	}
+}
+
+// A tagged bag is pure data, so nothing else would force the host clone -- but
+// the clone is what drops the tag, so a tagged bag must require one even when
+// it holds only strings and arrays. A rescued error is exactly that shape.
+func TestTaggedBagsRequireTheHostClone(t *testing.T) {
+	t.Parallel()
+
+	entries := map[string]Value{
+		"to_s": NewString("boom"), "message": NewString("boom"),
+		"class": NewString("RuntimeError"), "type": NewString("RuntimeError"),
+		"backtrace": NewArray([]Value{}),
+	}
+	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+
+	if !valueNeedsHostClone(tagged) {
+		t.Fatalf("a tagged bag of pure data skipped the host clone, so its tag would reach the host")
+	}
+	if valueNeedsHostClone(NewObject(entries)) {
+		t.Fatalf("an untagged bag of pure data now requires a host clone it does not need")
+	}
+	// Nested inside a container it must still force the clone.
+	if !valueNeedsHostClone(NewArray([]Value{NewInt(1), tagged})) {
+		t.Fatalf("a tagged bag nested in an array skipped the host clone")
 	}
 }

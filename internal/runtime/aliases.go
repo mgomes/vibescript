@@ -503,7 +503,12 @@ func valueNeedsHostClone(val Value) bool {
 	switch val.Kind() {
 	case KindFunction, KindClass, KindInstance, KindEnum, KindEnumValue, KindBlock, KindBuiltin:
 		return true
-	case KindArray, KindHash, KindObject:
+	case KindObject:
+		if val.ObjectTag() != ObjectTagNone {
+			return true
+		}
+		return compositeValueNeedsHostClone(val)
+	case KindArray, KindHash:
 		return compositeValueNeedsHostClone(val)
 	default:
 		return false
@@ -583,6 +588,11 @@ func itemDirectlyNeedsHostClone(val Value) bool {
 	switch val.Kind() {
 	case KindFunction, KindClass, KindInstance, KindEnum, KindEnumValue, KindBlock, KindBuiltin:
 		return true
+	case KindObject:
+		// A tagged bag is pure data, so nothing else would force a clone --
+		// but the clone is what drops its provenance on the way out, and
+		// provenance must not reach the host. See cloneValueForHostWithState.
+		return val.ObjectTag() != ObjectTagNone
 	default:
 		return false
 	}
@@ -699,9 +709,15 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 	case KindHash:
 		return cloneHostHashValue(val, state)
 	case KindObject:
-		return cloneHostMapValue(val, state, func(entries map[string]Value) Value {
-			return retagClonedObject(val, entries)
-		})
+		// Provenance stops at the host boundary. The tag means "the runtime
+		// built these entries", and once the host holds the value it can
+		// rewrite them through Value.HashSet or the live map from Value.Hash()
+		// -- neither of which can clear a tag living in the Value's scalar
+		// word, since the host holds its own copy. Handing the tag out would
+		// let host-authored entries come back authenticated, which is the
+		// spoof the tag exists to prevent. Internal containment clones keep
+		// it; only this one drops it.
+		return cloneHostMapValue(val, state, NewObject)
 	case KindFunction:
 		return NewFunction(cloneFunctionForHostWithState(valueFunction(val), state))
 	case KindClass:
