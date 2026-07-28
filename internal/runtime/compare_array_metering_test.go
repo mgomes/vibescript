@@ -551,3 +551,88 @@ func TestSharedStateReusesItsMemoAcrossComparisons(t *testing.T) {
 		t.Fatalf("the second comparison added %d memo entries, want it served from the memo", len(state.done)-after)
 	}
 }
+
+// min_by and max_by run their block between comparisons, so a key the block
+// already returned can be mutated before the next one. A memo entry is keyed
+// by backing address and length, so it then describes a value that no longer
+// holds, and the extrema picked the wrong element. Ruby answers "c" here.
+func TestByExtremaDoNotReuseStaleComparisons(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "min_by after the key is mutated smaller",
+			body: `shared = [1]
+  ["a", "b", "c"].min_by { |name|
+    if name == "a"
+      [0]
+    elsif name == "b"
+      shared
+    else
+      shared[0] = -1
+      shared
+    end
+  }`,
+			want: "c",
+		},
+		{
+			name: "max_by after the key is mutated larger",
+			body: `shared = [1]
+  ["a", "b", "c"].max_by { |name|
+    if name == "a"
+      [2]
+    elsif name == "b"
+      shared
+    else
+      shared[0] = 9
+      shared
+    end
+  }`,
+			want: "c",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.body+"\nend")
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("%s = %q, want %q", tc.name, got.String(), tc.want)
+			}
+		})
+	}
+}
+
+// sort_by computes every key before it sorts, so no block runs between
+// comparisons and sharing one state stays correct there.
+func TestSortByComputesKeysBeforeComparing(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  shared = [1]
+  ["a", "b", "c"].sort_by { |name|
+    if name == "a"
+      [0]
+    elsif name == "b"
+      shared
+    else
+      [2]
+    end
+  }.join(",")
+end`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "a,b,c" {
+		t.Fatalf("sort_by = %q, want a,b,c", got.String())
+	}
+}
