@@ -1101,3 +1101,60 @@ end`)
 		t.Fatalf("caller-owned builtin ran %d times, want 1", helperCalls)
 	}
 }
+
+// A break value came from the caller's own block, so it is not something the
+// call published -- whether or not it passes the return contract. Binding
+// contracts from an accepted break attached the capability's contract to an
+// unrelated caller-owned global, and its later calls then failed validation.
+func TestAcceptedBreakDoesNotBindContractsToACallerOwnedBuiltin(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  mut.install { break "accepted" }
+  helper("anything", 2)
+end`)
+
+	invocations := 0
+	helperCalls := 0
+	helper := NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		helperCalls++
+		return NewString("helper ok"), nil
+	})
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Globals: map[string]Value{"helper": helper},
+		Capabilities: []CapabilityAdapter{
+			breakPublishingContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err != nil {
+		t.Fatalf("a caller-owned builtin was validated against the capability's contract: %v", err)
+	}
+	if helperCalls != 1 {
+		t.Fatalf("caller-owned builtin ran %d times, want 1", helperCalls)
+	}
+}
+
+// The publication scan itself must still run on the absorbed-break path: a
+// builtin the call really did publish stays contract-bound.
+func TestPublicationScanStillRunsForAnAcceptedBreak(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  mut.install { break "accepted" }
+  mut.call("bad")
+end`)
+
+	invocations := 0
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			breakPublishingContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected the published builtin to still enforce its contract")
+	}
+	requireErrorContains(t, err, "mut.call expects int")
+	if invocations != 0 {
+		t.Fatalf("contract-violating call executed %d times, want it blocked", invocations)
+	}
+}

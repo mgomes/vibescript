@@ -350,15 +350,17 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			// (e.g. through factory return values or receiver mutation). Re-scan
 			// these values so future calls still enforce declared contracts.
 			//
-			// A rejected result is not treated as published. The pre-call block
-			// scan stops at ambient environments, so a builtin that arrived as
-			// a break value is absent from preCallKnownBuiltins and would be
-			// bound as if this call had published it -- attaching the
-			// capability's contract to an unrelated global the caller owns.
-			// The mutation scans below stay unconditional: those really are
-			// this call's doing, and are what the rejected return must not
-			// leave unguarded.
-			if deferredErr == nil {
+			// A break value came from the caller's own block, and a rejected
+			// result was never accepted, so neither is something this call
+			// published. The pre-call block scan stops at ambient
+			// environments, so a builtin arriving either way is absent from
+			// preCallKnownBuiltins and would be bound as if this call had
+			// published it -- attaching the capability's contract to an
+			// unrelated global the caller owns. Passing validation does not
+			// change that provenance. The mutation scans below stay
+			// unconditional: those really are this call's doing, and are what
+			// a rejected return must not leave unguarded.
+			if deferredErr == nil && !absorbedBreak {
 				postCallScanner.bindContracts(result, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 			if receiver.Kind() != KindNil {
