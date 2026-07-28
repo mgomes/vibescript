@@ -15740,6 +15740,11 @@ func staticBuiltinReceiverKind(expr Expression) (string, bool) {
 		return "int", true
 	case *FloatLiteral:
 		return "float", true
+	case *RegexLiteral:
+		// A regex has no TypeKind, so inference never reaches it; without the
+		// literal case here the regex entry in the authoritative member set is
+		// unreachable and /x/.missing goes unreported.
+		return "regex", true
 	}
 	return "", false
 }

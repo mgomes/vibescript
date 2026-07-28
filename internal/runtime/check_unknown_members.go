@@ -30,11 +30,16 @@ import "slices"
 
 // tableDrivenMemberKinds are the dispatch kinds whose member table is built
 // from the name list, making that list the authoritative set.
+//
+// hash is deliberately absent. Its table is built from a name list like the
+// others, but a hash also serves stored entries for any name the table does
+// not own -- `({answer: 42}).answer` returns 42 -- so the list bounds only the
+// builtin members, not what the receiver resolves. Treating it as
+// authoritative reported valid code.
 var tableDrivenMemberKinds = map[string]struct{}{
 	"array":  {},
 	"bool":   {},
 	"float":  {},
-	"hash":   {},
 	"int":    {},
 	"money":  {},
 	"nil":    {},
