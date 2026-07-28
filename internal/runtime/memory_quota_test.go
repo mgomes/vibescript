@@ -2022,3 +2022,46 @@ func TestMemoryQuotaCountsHashDataWrapper(t *testing.T) {
 		}
 	})
 }
+
+// Several object wrappers can share one entry map -- a host passing an array
+// of NewObject over the same entries makes exactly that -- and each is its own
+// allocation. Deduplicating on the entry map charged one wrapper for all of
+// them, so alias-heavy input slipped past the quota.
+func TestEachObjectWrapperIsChargedSeparately(t *testing.T) {
+	t.Parallel()
+
+	const count = 1000
+	shared := map[string]Value{"a": NewInt(1)}
+	aliases := make([]Value, count)
+	for i := range aliases {
+		aliases[i] = NewObject(shared)
+	}
+
+	one := newMemoryEstimator().value(NewArray([]Value{NewObject(shared)}))
+	many := newMemoryEstimator().value(NewArray(aliases))
+
+	// Deduplicating on the entry map charges one wrapper for the whole array,
+	// which measures 64 bytes per alias; charging each wrapper measures 96.
+	// The floor below is the map-keyed figure, so it separates the two.
+	mapKeyed := (count - 1) * (estimatedValueBytes + estimatedObjectDataBytes)
+	if delta := many - one; delta <= mapKeyed {
+		t.Fatalf("%d aliasing wrappers added %d bytes, no more than the %d a map-keyed seen-set would give",
+			count-1, delta, mapKeyed)
+	}
+}
+
+// A tagged bag's published rendering is retained by the wrapper and can
+// outlive the entry it came from, so it must be charged.
+func TestTaggedObjectStringFormIsCharged(t *testing.T) {
+	t.Parallel()
+
+	const size = 64 * 1024
+	big := strings.Repeat("x", size)
+
+	plain := newMemoryEstimator().value(NewObject(map[string]Value{}))
+	tagged := newMemoryEstimator().value(NewTaggedObject(map[string]Value{}, ObjectTagRescuedError, big))
+
+	if tagged-plain < size {
+		t.Fatalf("a %d-byte published rendering added only %d bytes to the estimate", size, tagged-plain)
+	}
+}

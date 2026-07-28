@@ -210,6 +210,24 @@ func HashIdentity(v Value) uintptr {
 	return 0
 }
 
+// ObjectIdentity returns the identity of the objectData wrapper a KindObject
+// value allocates, or 0 for anything else. Each wrapper is a distinct
+// allocation even when several share one entry map, so the sandbox's memory
+// accounting deduplicates on this rather than on the map.
+//
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func ObjectIdentity(v Value) uintptr {
+	if v.kind != KindObject {
+		return 0
+	}
+	if od, ok := v.data.(*objectData); ok {
+		return uintptr(unsafe.Pointer(od))
+	}
+	return 0
+}
+
 // NewMoney returns a money Value.
 func NewMoney(m Money) Value { return Value{kind: KindMoney, data: m} }
 

@@ -108,15 +108,16 @@ type memoryEstimator struct {
 // single-slot frozen cache is not journaled per-write; probe captures its
 // pre-probe value and rollback restores it directly.
 type estimatorJournal struct {
-	envs      []*Env
-	maps      []uintptr
-	hashData  []uintptr
-	slices    []uintptr
-	strings   []stringIdentity
-	classes   []*ClassDef
-	instances []*Instance
-	blocks    []*Block
-	builtins  []*Builtin
+	envs       []*Env
+	maps       []uintptr
+	hashData   []uintptr
+	objectData []uintptr
+	slices     []uintptr
+	strings    []stringIdentity
+	classes    []*ClassDef
+	instances  []*Instance
+	blocks     []*Block
+	builtins   []*Builtin
 
 	// limit, when positive, bounds how many insertions this journal records;
 	// entries counts them and overflowed reports that the limit was hit. A
@@ -239,6 +240,9 @@ func (j *estimatorJournal) rollback(est *memoryEstimator, prevFrozen *Env) {
 	for _, id := range j.maps {
 		delete(est.seenMaps, id)
 	}
+	for _, id := range j.objectData {
+		delete(est.seenObjectData, id)
+	}
 	for _, id := range j.hashData {
 		delete(est.seenHashData, id)
 	}
@@ -276,6 +280,7 @@ func (j *estimatorJournal) clear() {
 	j.envs = j.envs[:0]
 	j.maps = j.maps[:0]
 	j.hashData = j.hashData[:0]
+	j.objectData = j.objectData[:0]
 	j.slices = j.slices[:0]
 	j.strings = j.strings[:0]
 	clear(j.classes)
@@ -2693,6 +2698,15 @@ func (est *memoryEstimator) value(val Value) int {
 		size += est.valuePayload(hashDefaultProc(val))
 	case KindObject:
 		size += est.objectWrapperBytes(val)
+		// A tagged bag's published rendering is retained by the wrapper and can
+		// outlive the entry it was taken from: a host may remove or replace
+		// to_s through the live map while the rendering stays. It goes through
+		// the estimator's string accounting so it still deduplicates while it
+		// does alias an entry.
+		if form, ok := val.ObjectStringForm(); ok {
+			size += estimatedStringHeaderBytes
+			size += est.stringPayloadSize(form)
+		}
 		size += est.hash(val.Hash())
 	case KindClass:
 		cl := valueClass(val)
@@ -3101,7 +3115,10 @@ func (est *memoryEstimator) objectWrapperBytes(val Value) int {
 	if val.Kind() != KindObject {
 		return 0
 	}
-	id := reflect.ValueOf(val.Hash()).Pointer()
+	// Keyed on the wrapper, not the entry map: several wrappers can share one
+	// map -- a host passing an array of NewObject over the same entries makes
+	// exactly that -- and each is its own allocation.
+	id := value.ObjectIdentity(val)
 	if id == 0 {
 		return estimatedObjectDataBytes
 	}
@@ -3112,5 +3129,8 @@ func (est *memoryEstimator) objectWrapperBytes(val Value) int {
 		est.seenObjectData = make(map[uintptr]struct{})
 	}
 	est.seenObjectData[id] = struct{}{}
+	if est.journal != nil && est.journal.record() {
+		est.journal.objectData = append(est.journal.objectData, id)
+	}
 	return estimatedObjectDataBytes
 }
