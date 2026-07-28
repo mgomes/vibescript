@@ -820,7 +820,7 @@ func (s *capabilityContractScanner) collectAmbientBuiltins(root *Env, out map[*B
 		if s.collectExhausted() {
 			return
 		}
-		env.rangeStaticBindingsWhile(func(_ string, item Value) bool {
+		env.rangeRawStaticBindingsWhile(func(_ string, item Value) bool {
 			s.collectBuiltins(item, out)
 			return !s.collectExhausted()
 		})
@@ -850,7 +850,7 @@ func (s *capabilityContractScanner) scanClosureEnv(env *Env, visit func(Value)) 
 		if s.collectExhausted() {
 			return
 		}
-		env.rangeStaticBindingsWhile(func(_ string, item Value) bool {
+		env.rangeRawStaticBindingsWhile(func(_ string, item Value) bool {
 			visit(item)
 			return !s.collectExhausted()
 		})

@@ -264,9 +264,11 @@ func TestRangeBindingsWhileStopsOnFalse(t *testing.T) {
 	}
 }
 
-// The static form must stop too, and stopping there also avoids materializing
-// the remaining lazy statics.
-func TestRangeStaticBindingsWhileStopsOnFalse(t *testing.T) {
+// The static form must stop too, and it must not materialize on the way: a
+// call carrying several script functions stores them as lazy statics, and
+// materializing one clones it, so a scan that only inspects values would pay
+// for clones it never uses.
+func TestRangeRawStaticBindingsWhileStopsWithoutMaterializing(t *testing.T) {
 	t.Parallel()
 
 	env := newEnv(nil)
@@ -276,11 +278,20 @@ func TestRangeStaticBindingsWhileStopsOnFalse(t *testing.T) {
 	}
 
 	visited := 0
-	env.rangeStaticBindingsWhile(func(string, Value) bool {
+	env.rangeRawStaticBindingsWhile(func(string, Value) bool {
 		visited++
 		return false
 	})
 	if visited != 1 {
-		t.Fatalf("rangeStaticBindingsWhile visited %d statics after the first said stop", visited)
+		t.Fatalf("rangeRawStaticBindingsWhile visited %d statics after the first said stop", visited)
+	}
+
+	all := 0
+	env.rangeRawStaticBindingsWhile(func(string, Value) bool {
+		all++
+		return true
+	})
+	if all != 100 {
+		t.Fatalf("rangeRawStaticBindingsWhile visited %d of 100 statics", all)
 	}
 }
