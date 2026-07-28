@@ -237,7 +237,11 @@ func NewObject(attrs map[string]Value) Value {
 }
 
 // ObjectTag records what an attribute bag is, for the few bags the runtime
-// builds to stand for something specific. Behavior that would otherwise have
+// builds to stand for something specific.
+//
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md). Behavior that would otherwise have
 // to be inferred from a bag's field names reads the tag instead: field names
 // are public, host-settable data, so any bag could carry the same ones and
 // claim the same treatment.
@@ -259,6 +263,10 @@ const (
 // in the scalar word, which an object otherwise leaves unused, so it costs
 // nothing and cannot appear as an entry: it is invisible to keys, values,
 // inspect, and JSON, and script code has no way to set it.
+//
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
 func NewTaggedObject(attrs map[string]Value, tag ObjectTag) Value {
 	if attrs == nil {
 		attrs = map[string]Value{}
@@ -267,7 +275,11 @@ func NewTaggedObject(attrs map[string]Value, tag ObjectTag) Value {
 }
 
 // ObjectTag reports the provenance of an attribute bag, or ObjectTagNone for
-// anything else. A bag that has been rebuilt (merged, duplicated, or produced
+// anything else.
+//
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md). A bag that has been rebuilt (merged, duplicated, or produced
 // by host code) reports ObjectTagNone, so the tag only ever vouches for a bag
 // the runtime built itself.
 func (v Value) ObjectTag() ObjectTag {

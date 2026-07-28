@@ -686,3 +686,36 @@ func TestCapabilityArgumentCopiesPreserveTags(t *testing.T) {
 		t.Fatalf("the cloned error no longer renders its message")
 	}
 }
+
+// The tag is part of a bag's identity, not just of its rendering. Two wrappers
+// over one entry map with different provenance are different objects: one is
+// immutable and renders its string form, the other is ordinary. Without this,
+// equal? answered true before a call and false inside it, because containment
+// cloning gives them separate copies.
+func TestObjectIdentityAccountsForTheTag(t *testing.T) {
+	t.Parallel()
+
+	entries := map[string]Value{"to_s": NewString("real")}
+	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+	plain := NewObject(entries)
+
+	if tagged.Identical(plain) {
+		t.Fatalf("a tagged bag is identical to an untagged wrapper over the same entries")
+	}
+	if !tagged.Identical(NewTaggedObject(entries, ObjectTagRescuedError)) {
+		t.Fatalf("two wrappers with the same entries and tag are not identical")
+	}
+	if !plain.Identical(NewObject(entries)) {
+		t.Fatalf("two untagged wrappers over the same entries are not identical")
+	}
+
+	// The answer must not change across the call boundary.
+	script := compileScript(t, "def run(a, b)\n  a.equal?(b).inspect\nend")
+	got, err := script.Call(context.Background(), "run", []Value{tagged, plain}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "false" {
+		t.Fatalf("equal? inside the script = %s, want false as it is outside", got.String())
+	}
+}
