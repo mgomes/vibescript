@@ -88,9 +88,53 @@ func objectStringEntry(val Value) (Value, bool) {
 	if val.Kind() != KindObject {
 		return NewNil(), false
 	}
-	rendered, ok := val.Hash()["to_s"]
+	entries := val.Hash()
+	rendered, ok := entries["to_s"]
 	if !ok || rendered.Kind() != KindString {
 		return NewNil(), false
 	}
+	// KindObject also carries ordinary host data, so a to_s entry alone does
+	// not mean the bag is declaring its string form: a host object holding a
+	// string field of that name would have its payload rendered in place of
+	// the established <object> form, exposing it. Only the bags that
+	// deliberately publish a string form are rendered.
+	if !declaresStringForm(entries) {
+		return NewNil(), false
+	}
 	return rendered, true
+}
+
+// declaresStringForm reports whether an attribute bag is one of the two that
+// deliberately publish their string form under to_s: a rescued error, whose
+// to_s is its message, and match data, whose to_s is the matched text as in
+// Ruby's MatchData. A bag that merely happens to carry a field of that name is
+// not making that claim.
+func declaresStringForm(entries map[string]Value) bool {
+	return hasRescuedErrorShape(entries) || hasMatchDataShape(entries)
+}
+
+// hasRescuedErrorShape reports the representation a rescued error takes: the
+// message under two names, its class, and a backtrace.
+func hasRescuedErrorShape(entries map[string]Value) bool {
+	for _, field := range []string{"message", "class", "type"} {
+		if val, ok := entries[field]; !ok || val.Kind() != KindString {
+			return false
+		}
+	}
+	backtrace, ok := entries["backtrace"]
+	return ok && backtrace.Kind() == KindArray
+}
+
+// hasMatchDataShape reports the representation String#match returns.
+func hasMatchDataShape(entries map[string]Value) bool {
+	captures, ok := entries["captures"]
+	if !ok || captures.Kind() != KindArray {
+		return false
+	}
+	for _, field := range []string{"pre_match", "post_match"} {
+		if val, ok := entries[field]; !ok || val.Kind() != KindString {
+			return false
+		}
+	}
+	return true
 }
