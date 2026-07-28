@@ -1094,7 +1094,7 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		// lexicographically under <=> but stay rejected by the relational
 		// operators above, as in Ruby, where Array defines <=> but does not
 		// include Comparable.
-		order, ordered, err := compareSpaceshipOrder(left, right)
+		order, ordered, err := compareSpaceshipOrder(exec, left, right)
 		if err != nil {
 			// Incomparable operand pairs (different kinds, or money in different
 			// currencies) make the spaceship operator return nil rather than

@@ -1,6 +1,8 @@
 package runtime
 
-import "reflect"
+import (
+	"reflect"
+)
 
 // Arrays compare lexicographically, as in Ruby: the first element pair that
 // differs decides the result, and when every compared pair is equal the
@@ -14,13 +16,53 @@ import "reflect"
 // where Array defines `<=>` but does not include Comparable, so `[1] < [2]`
 // raises rather than answering.
 
-// arrayComparePair identifies a pair of arrays already on the comparison
-// stack. A self-referential array would otherwise recurse forever.
+// arrayComparePair identifies a pair of arrays being compared.
 type arrayComparePair struct {
 	leftPtr  uintptr
 	rightPtr uintptr
 	leftLen  int
 	rightLen int
+}
+
+// arrayCompareState carries the sandbox hooks and the memo through a
+// recursive comparison.
+//
+// Both exist for the same reason. Deleting a pair from the on-stack set as
+// soon as it returned meant two sibling branches re-walked the same subtree,
+// so comparing shared DAGs -- each level holding the previous child twice on
+// both sides -- did 2^d work. Measured before the fix: 152ms, 551ms, and
+// 2.1s at depths 20, 22, and 24, with the step quota never firing, because
+// nothing in the walk charged a step. A script could monopolize the runtime
+// from inside <=> regardless of its limits.
+//
+// Memoizing each completed pair collapses the shared subtrees to one
+// comparison apiece, and charging a step per compared element makes the walk
+// observable to the step quota and to cancellation.
+type arrayCompareState struct {
+	exec *Execution
+	// onStack holds the pairs currently being compared, so a cyclic structure
+	// terminates.
+	onStack map[arrayComparePair]struct{}
+	// done caches the outcome of pairs already compared, so a subtree shared
+	// between siblings is walked once rather than once per path.
+	done map[arrayComparePair]arrayCompareResult
+}
+
+// arrayCompareResult is a completed comparison, memoized.
+type arrayCompareResult struct {
+	order   int
+	ordered bool
+	err     error
+}
+
+// step charges the execution for one compared element and honors
+// cancellation. A nil execution (host-side comparison outside a script) is
+// unmetered, as it is elsewhere.
+func (state *arrayCompareState) step() error {
+	if state == nil || state.exec == nil {
+		return nil
+	}
+	return state.exec.step()
 }
 
 // compareArrayOrder compares two arrays lexicographically.
@@ -34,26 +76,50 @@ type arrayComparePair struct {
 // A pair of arrays already being compared counts as equal, which terminates
 // on cyclic structures and matches Ruby, where comparing two distinct
 // self-referential arrays answers 0 rather than exhausting the stack.
-func compareArrayOrder(left, right []Value, seen map[arrayComparePair]struct{}) (order int, ordered bool, err error) {
+func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int, ordered bool, err error) {
+	if state == nil {
+		state = &arrayCompareState{}
+	}
 	leftPtr, rightPtr := sliceAddress(left), sliceAddress(right)
 	if leftPtr != 0 && leftPtr == rightPtr && len(left) == len(right) {
 		return 0, true, nil
 	}
 	pair := arrayComparePair{leftPtr: leftPtr, rightPtr: rightPtr, leftLen: len(left), rightLen: len(right)}
-	if pair.leftPtr != 0 || pair.rightPtr != 0 {
-		if seen == nil {
-			seen = map[arrayComparePair]struct{}{}
+	tracked := pair.leftPtr != 0 || pair.rightPtr != 0
+	if tracked {
+		if cached, ok := state.done[pair]; ok {
+			return cached.order, cached.ordered, cached.err
 		}
-		if _, onStack := seen[pair]; onStack {
+		if state.onStack == nil {
+			state.onStack = map[arrayComparePair]struct{}{}
+		}
+		if _, onStack := state.onStack[pair]; onStack {
+			// A pair already being compared counts as equal, which terminates
+			// on cyclic structures and matches Ruby, where two distinct
+			// self-referential arrays answer 0.
 			return 0, true, nil
 		}
-		// Scoped to this comparison's own stack, not marked permanently: two
-		// sibling subtrees may legitimately compare the same pair of arrays.
-		seen[pair] = struct{}{}
-		defer delete(seen, pair)
+		state.onStack[pair] = struct{}{}
+		defer func() {
+			delete(state.onStack, pair)
+			// Memoize only completed comparisons. A result computed while an
+			// enclosing cycle was open may have used the equal-on-cycle
+			// shortcut, so it is not reusable outside that context.
+			if len(state.onStack) == 0 {
+				if state.done == nil {
+					state.done = map[arrayComparePair]arrayCompareResult{}
+				}
+				state.done[pair] = arrayCompareResult{order: order, ordered: ordered, err: err}
+			}
+		}()
 	}
 	for i := range min(len(left), len(right)) {
-		order, ordered, err = compareOrderForSort(left[i], right[i], seen)
+		// One step per compared element, so the walk is bounded by the step
+		// quota and observes cancellation.
+		if stepErr := state.step(); stepErr != nil {
+			return 0, false, stepErr
+		}
+		order, ordered, err = compareOrderForSort(left[i], right[i], state)
 		if err != nil || !ordered {
 			return 0, false, err
 		}
@@ -80,9 +146,9 @@ func compareArrayOrder(left, right []Value, seen map[arrayComparePair]struct{}) 
 // below: symbols order under both <=> and the relational operators (Symbol
 // includes Comparable), nil orders under <=> only, and booleans order under
 // neither even though sort accepts them.
-func compareSpaceshipOrder(left, right Value) (order int, ordered bool, err error) {
+func compareSpaceshipOrder(exec *Execution, left, right Value) (order int, ordered bool, err error) {
 	if left.Kind() == KindArray && right.Kind() == KindArray {
-		return compareArrayOrder(left.Array(), right.Array(), nil)
+		return compareArrayOrder(left.Array(), right.Array(), &arrayCompareState{exec: exec})
 	}
 	// nil answers <=> against itself but has no relational operators, so this
 	// case belongs to the spaceship alone: Ruby's `nil <=> nil` is 0 while
@@ -103,10 +169,17 @@ func compareSpaceshipOrder(left, right Value) (order int, ordered bool, err erro
 // Symbols and nil matter here beyond arrays themselves: a hash entry is a
 // [symbol, value] pair, so hash.to_a.sort orders symbol-headed pairs, which
 // is the case that made array comparison worth having.
-func compareOrderForSort(left, right Value, seen map[arrayComparePair]struct{}) (order int, ordered bool, err error) {
+func compareOrderForSort(left, right Value, state *arrayCompareState) (order int, ordered bool, err error) {
+	// Equal elements form an equal prefix even when their kind has no
+	// ordering, so [{a: 1}] <=> [{a: 1}] is 0 rather than nil. Requiring an
+	// ordering first reported two equal hashes, or two references to one
+	// instance, as incomparable.
+	if left.Equal(right) {
+		return 0, true, nil
+	}
 	switch {
 	case left.Kind() == KindArray && right.Kind() == KindArray:
-		return compareArrayOrder(left.Array(), right.Array(), seen)
+		return compareArrayOrder(left.Array(), right.Array(), state)
 	case left.Kind() == KindNil && right.Kind() == KindNil:
 		return 0, true, nil
 	case left.Kind() == KindBool && right.Kind() == KindBool:

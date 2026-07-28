@@ -111,7 +111,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 					}
 					return cmp < 0
 				}
-				cmp, err := arraySortCompareValues(out[i], out[j])
+				cmp, err := arraySortCompareValuesMetered(exec, out[i], out[j])
 				if err != nil {
 					sortErr = fmt.Errorf("array.sort values are not comparable")
 					return false
@@ -180,7 +180,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 					sortErr = err
 					return false
 				}
-				cmp, err := arraySortCompareValues(withKeys[i].key, withKeys[j].key)
+				cmp, err := arraySortCompareValuesMetered(exec, withKeys[i].key, withKeys[j].key)
 				if err != nil {
 					sortErr = fmt.Errorf("array.sort_by block values are not comparable")
 					return false
@@ -560,14 +560,14 @@ func arrayMemberExtrema(property string) (Value, error) {
 			minVal := arr[0]
 			maxVal := arr[0]
 			for _, item := range arr[1:] {
-				cmpMin, err := arraySortCompareValues(item, minVal)
+				cmpMin, err := arraySortCompareValuesMetered(exec, item, minVal)
 				if err != nil {
 					return NewNil(), fmt.Errorf("array.minmax values are not comparable")
 				}
 				if cmpMin < 0 {
 					minVal = item
 				}
-				cmpMax, err := arraySortCompareValues(item, maxVal)
+				cmpMax, err := arraySortCompareValuesMetered(exec, item, maxVal)
 				if err != nil {
 					return NewNil(), fmt.Errorf("array.minmax values are not comparable")
 				}
@@ -604,7 +604,7 @@ func arrayMemberMinMax(name string, wantMax bool) Value {
 		}
 		best := arr[0]
 		for _, item := range arr[1:] {
-			cmp, err := arraySortCompareValues(item, best)
+			cmp, err := arraySortCompareValuesMetered(exec, item, best)
 			if err != nil {
 				return NewNil(), fmt.Errorf("%s values are not comparable", name)
 			}
@@ -646,7 +646,7 @@ func arrayMemberMinMaxBy(name string, wantMax bool) Value {
 			if err != nil {
 				return NewNil(), err
 			}
-			cmp, err := arraySortCompareValues(key, bestKey)
+			cmp, err := arraySortCompareValuesMetered(exec, key, bestKey)
 			if err != nil {
 				return NewNil(), fmt.Errorf("%s block values are not comparable", name)
 			}
@@ -5007,7 +5007,7 @@ func arraySortBang(exec *Execution, receiver Value, args []Value, kwargs map[str
 			}
 			return cmp < 0
 		}
-		cmp, err := arraySortCompareValues(out[i], out[j])
+		cmp, err := arraySortCompareValuesMetered(exec, out[i], out[j])
 		if err != nil {
 			sortErr = fmt.Errorf("array.sort! values are not comparable")
 			return false

@@ -310,8 +310,11 @@ func sortComparisonResult(val Value) (int, error) {
 // It is compareOrderForSort with the unordered case reported as an error,
 // because a sort cannot place a value it cannot order, whereas the spaceship
 // operator answers nil.
-func arraySortCompareValues(left, right Value) (int, error) {
-	order, ordered, err := compareOrderForSort(left, right, nil)
+// arraySortCompareValuesMetered orders two values for the sort and min/max
+// members, charging the execution for each element a recursive array
+// comparison visits.
+func arraySortCompareValuesMetered(exec *Execution, left, right Value) (int, error) {
+	order, ordered, err := compareOrderForSort(left, right, &arrayCompareState{exec: exec})
 	if err != nil {
 		return 0, err
 	}
