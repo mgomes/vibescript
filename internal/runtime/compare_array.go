@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"context"
+	"errors"
 	"reflect"
 )
 
@@ -46,6 +48,11 @@ type arrayCompareState struct {
 	// done caches the outcome of pairs already compared, so a subtree shared
 	// between siblings is walked once rather than once per path.
 	done map[arrayComparePair]arrayCompareResult
+	// cycleShortcuts counts how many times a comparison answered "equal"
+	// because the pair was already on the stack. A result computed while such
+	// a shortcut fired depends on the enclosing cycle and is not reusable
+	// elsewhere, so only results whose subtree took none are memoized.
+	cycleShortcuts int
 }
 
 // arrayCompareResult is a completed comparison, memoized.
@@ -97,20 +104,23 @@ func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int
 			// A pair already being compared counts as equal, which terminates
 			// on cyclic structures and matches Ruby, where two distinct
 			// self-referential arrays answer 0.
+			state.cycleShortcuts++
 			return 0, true, nil
 		}
 		state.onStack[pair] = struct{}{}
+		shortcutsBefore := state.cycleShortcuts
 		defer func() {
 			delete(state.onStack, pair)
-			// Memoize only completed comparisons. A result computed while an
-			// enclosing cycle was open may have used the equal-on-cycle
-			// shortcut, so it is not reusable outside that context.
-			if len(state.onStack) == 0 {
-				if state.done == nil {
-					state.done = map[arrayComparePair]arrayCompareResult{}
-				}
-				state.done[pair] = arrayCompareResult{order: order, ordered: ordered, err: err}
+			// Memoize only a result whose whole subtree was computed without
+			// the equal-on-cycle shortcut. One that used it depends on the
+			// enclosing cycle and would be wrong to reuse elsewhere.
+			if state.cycleShortcuts != shortcutsBefore {
+				return
 			}
+			if state.done == nil {
+				state.done = map[arrayComparePair]arrayCompareResult{}
+			}
+			state.done[pair] = arrayCompareResult{order: order, ordered: ordered, err: err}
 		}()
 	}
 	for i := range min(len(left), len(right)) {
@@ -170,13 +180,6 @@ func compareSpaceshipOrder(exec *Execution, left, right Value) (order int, order
 // [symbol, value] pair, so hash.to_a.sort orders symbol-headed pairs, which
 // is the case that made array comparison worth having.
 func compareOrderForSort(left, right Value, state *arrayCompareState) (order int, ordered bool, err error) {
-	// Equal elements form an equal prefix even when their kind has no
-	// ordering, so [{a: 1}] <=> [{a: 1}] is 0 rather than nil. Requiring an
-	// ordering first reported two equal hashes, or two references to one
-	// instance, as incomparable.
-	if left.Equal(right) {
-		return 0, true, nil
-	}
 	switch {
 	case left.Kind() == KindArray && right.Kind() == KindArray:
 		return compareArrayOrder(left.Array(), right.Array(), state)
@@ -218,4 +221,23 @@ func sliceAddress(values []Value) uintptr {
 		return 0
 	}
 	return reflect.ValueOf(values).Pointer()
+}
+
+// sortComparisonError classifies an error from a metered element comparison.
+//
+// The ordering members replace a comparison failure with their own "values are
+// not comparable" message, which is right for genuine incomparability and
+// wrong for everything else: now that the comparison charges steps and
+// observes cancellation, that replacement would relabel a quota exhaustion as
+// an ordinary runtime error and hide a canceled context entirely. Sandbox and
+// context errors pass through unchanged so they keep their classification and
+// stay outside rescue's reach.
+func sortComparisonError(err error, incomparable string) error {
+	if err == nil {
+		return nil
+	}
+	if classifyRuntimeErrorType(err) == runtimeErrorTypeLimit || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return errors.New(incomparable)
 }

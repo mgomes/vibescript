@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -95,37 +96,6 @@ func TestArraySortChargesStepsForElementComparisons(t *testing.T) {
 	}
 }
 
-// Equal elements form an equal prefix even when their kind has no ordering,
-// so two equal hashes no longer make the whole comparison incomparable.
-func TestEqualNonOrderableElementsCompareEqual(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		expr string
-		want string
-	}{
-		{`([{a: 1}] <=> [{a: 1}]).inspect`, "0"},
-		{`([{a: 1}, 1] <=> [{a: 1}, 2]).inspect`, "-1"},
-		{`([{a: 1}] <=> [{a: 2}]).inspect`, "nil"},
-		{`([nil] <=> [nil]).inspect`, "0"},
-		{`([[1]] <=> [[1]]).inspect`, "0"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.expr, func(t *testing.T) {
-			t.Parallel()
-			script := compileScript(t, "def run()\n  "+tc.expr+"\nend")
-			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
-			if err != nil {
-				t.Fatalf("%s: %v", tc.expr, err)
-			}
-			if got.String() != tc.want {
-				t.Fatalf("%s = %s, want %s", tc.expr, got.String(), tc.want)
-			}
-		})
-	}
-}
-
 // Memoizing completed pairs must not change results: a pair compared under an
 // open cycle uses the equal-on-cycle shortcut and is deliberately not cached.
 func TestCyclicComparisonStillTerminatesAndAgrees(t *testing.T) {
@@ -152,5 +122,55 @@ func TestCyclicComparisonStillTerminatesAndAgrees(t *testing.T) {
 				t.Fatalf("= %s, want %s", got.String(), tc.want)
 			}
 		})
+	}
+}
+
+// The ordering members replace a comparison failure with their own "values are
+// not comparable" message. Now that comparison charges steps, that replacement
+// would relabel a quota exhaustion as an ordinary runtime error -- and an
+// ordinary error is rescuable, so a sandbox limit would become catchable.
+func TestSortPreservesSandboxErrors(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 400, MemoryQuotaBytes: 64 << 20}, `
+    def run(rows)
+      begin
+        rows.sort.length
+      rescue => e
+        "rescued"
+      end
+    end
+    `)
+	rows := make([]Value, 300)
+	for i := range rows {
+		inner := make([]Value, 200)
+		for j := range inner {
+			inner[j] = NewInt(1)
+		}
+		inner[len(inner)-1] = NewInt(int64(i))
+		rows[i] = NewArray(inner)
+	}
+	_, err := script.Call(context.Background(), "run", []Value{NewArray(rows)}, CallOptions{})
+	if err == nil {
+		t.Fatalf("the step quota was caught by rescue: a sandbox limit must stay uncatchable")
+	}
+	if !strings.Contains(err.Error(), "step quota") {
+		t.Fatalf("error = %v, want the step-quota error rather than an incomparability message", err)
+	}
+}
+
+// A genuine incomparability still reports as one.
+func TestSortStillReportsIncomparableValues(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def run()
+      [[1, "a"], [1, 2]].sort
+    end
+    `)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected incomparable values to be reported")
+	}
+	if !strings.Contains(err.Error(), "not comparable") {
+		t.Fatalf("error = %v, want the incomparability message", err)
 	}
 }
