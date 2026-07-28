@@ -123,7 +123,7 @@ func TestEnumRenderingIsProjectedBeforeAllocating(t *testing.T) {
 	}
 }
 
-// A typo near the alias suggests it, which is the did-you-mean behaviour the
+// A typo near the alias suggests it, which is the did-you-mean behavior the
 // original change existed for.
 func TestEnumValueSuggestsTheStringAlias(t *testing.T) {
 	t.Parallel()
