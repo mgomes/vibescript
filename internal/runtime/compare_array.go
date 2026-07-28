@@ -70,6 +70,9 @@ type arrayCompareState struct {
 	// memoTried records that the reservation has been attempted, so a walk
 	// that could not afford the memo does not retry on every pair.
 	memoTried bool
+	// callRoots are the caller's Go-frame values, weighed alongside the
+	// reservation when the memo is admitted.
+	callRoots []Value
 }
 
 // arrayCompareMemoEntryBytes is the charge for one memoized pair.
@@ -106,8 +109,13 @@ const arrayCompareMemoMaxEntries = 256
 // Charging once removes all three. If the reservation does not fit, the walk
 // runs without a memo: correct, slower on shared structures, and still
 // bounded by the step quota.
-func newArrayCompareState(exec *Execution) *arrayCompareState {
-	return &arrayCompareState{exec: exec}
+// newArrayCompareState builds the state for one comparison pass. callRoots are
+// the values the caller holds live on its Go frame -- the receiver it is
+// sorting, the operands being compared -- which the execution's own base walk
+// cannot see. The memo is admitted against them so its reservation is weighed
+// against the real live set rather than the roots alone.
+func newArrayCompareState(exec *Execution, callRoots ...Value) *arrayCompareState {
+	return &arrayCompareState{exec: exec, callRoots: callRoots}
 }
 
 // ensureMemo takes the reservation and allocates the map, once, the first time
@@ -134,7 +142,7 @@ func (state *arrayCompareState) ensureMemo() {
 		return
 	}
 	reserved := state.exec.reserveLoopScratch(arrayCompareMemoMaxEntries * (arrayCompareMemoEntryBytes + arrayCompareMemoRingEntryBytes))
-	if err := state.exec.checkMemory(); err != nil {
+	if err := state.exec.checkMemoryWith(state.callRoots...); err != nil {
 		state.exec.releaseLoopScratch(reserved)
 		return
 	}
@@ -294,7 +302,7 @@ func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int
 // neither even though sort accepts them.
 func compareSpaceshipOrder(exec *Execution, left, right Value) (order int, ordered bool, err error) {
 	if left.Kind() == KindArray && right.Kind() == KindArray {
-		state := newArrayCompareState(exec)
+		state := newArrayCompareState(exec, left, right)
 		defer state.release()
 		return compareArrayOrder(left.Array(), right.Array(), state)
 	}

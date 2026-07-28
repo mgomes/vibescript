@@ -89,7 +89,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			var comparatorArgs [2]Value
 			// One state for the whole pass, so the memo and its reservation
 			// are taken once rather than per comparison.
-			cmpState := newArrayCompareState(exec)
+			cmpState := newArrayCompareState(exec, receiver)
 			defer cmpState.release()
 			var sortErr error
 			sort.SliceStable(out, func(i, j int) bool {
@@ -177,7 +177,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			}
 			// One state for the whole pass, so the memo and its reservation
 			// are taken once rather than per comparison.
-			cmpState := newArrayCompareState(exec)
+			cmpState := newArrayCompareState(exec, receiver)
 			defer cmpState.release()
 			var sortErr error
 			sort.SliceStable(withKeys, func(i, j int) bool {
@@ -567,7 +567,7 @@ func arrayMemberExtrema(property string) (Value, error) {
 			}
 			minVal := arr[0]
 			maxVal := arr[0]
-			cmpState := newArrayCompareState(exec)
+			cmpState := newArrayCompareState(exec, receiver)
 			defer cmpState.release()
 			for _, item := range arr[1:] {
 				cmpMin, err := arraySortCompareValuesWith(cmpState, item, minVal)
@@ -613,7 +613,7 @@ func arrayMemberMinMax(name string, wantMax bool) Value {
 			return NewNil(), nil
 		}
 		best := arr[0]
-		cmpState := newArrayCompareState(exec)
+		cmpState := newArrayCompareState(exec, receiver)
 		defer cmpState.release()
 		for _, item := range arr[1:] {
 			cmp, err := arraySortCompareValuesWith(cmpState, item, best)
@@ -656,7 +656,7 @@ func arrayMemberMinMaxBy(name string, wantMax bool) Value {
 		// before each comparison: the block runs in between and can mutate an
 		// array it already returned as a key. Keeping the state means the
 		// memo and its reservation are still paid for once.
-		cmpState := newArrayCompareState(exec)
+		cmpState := newArrayCompareState(exec, receiver)
 		defer cmpState.release()
 		for _, item := range arr[1:] {
 			blockArg[0] = item
@@ -5004,7 +5004,7 @@ func arraySortBang(exec *Execution, receiver Value, args []Value, kwargs map[str
 	var comparatorArgs [2]Value
 	// One state for the whole pass, so the memo and its reservation
 	// are taken once rather than per comparison.
-	cmpState := newArrayCompareState(exec)
+	cmpState := newArrayCompareState(exec, receiver)
 	defer cmpState.release()
 	var sortErr error
 	sort.SliceStable(out, func(i, j int) bool {

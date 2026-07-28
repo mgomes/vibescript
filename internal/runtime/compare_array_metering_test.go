@@ -770,3 +770,41 @@ func TestMemoEvictsRatherThanGrowingPastItsBound(t *testing.T) {
 		t.Fatalf("the most recent entry was evicted")
 	}
 }
+
+// The memo is admitted against the caller's Go-frame roots, not the execution
+// base alone. An ordering member holds its receiver only on that frame, so a
+// bare checkMemory saw the reservation but not the receiver, while the
+// builtin's own pre-call check saw the receiver but not the reservation --
+// leaving a window where both pass and the real peak exceeds the quota.
+func TestMemoAdmissionWeighsTheCallRoots(t *testing.T) {
+	t.Parallel()
+
+	bulk := make([]Value, 4000)
+	for i := range bulk {
+		bulk[i] = NewString(strings.Repeat("x", 64))
+	}
+	heavyRoot := NewArray(bulk)
+
+	// Comfortably above the memo's own reservation, comfortably below the
+	// reservation plus the root.
+	quota := arrayCompareMemoMaxEntries * (arrayCompareMemoEntryBytes + arrayCompareMemoRingEntryBytes) * 3
+
+	withoutRoot := &Execution{memoryQuota: quota}
+	state := newArrayCompareState(withoutRoot)
+	state.ensureMemo()
+	if state.memoReserved == 0 {
+		t.Fatalf("the memo was refused with no call roots and a %d-byte quota", quota)
+	}
+	state.release()
+
+	withRoot := &Execution{memoryQuota: quota}
+	rooted := newArrayCompareState(withRoot, heavyRoot)
+	rooted.ensureMemo()
+	if rooted.memoReserved != 0 {
+		t.Fatalf("the memo was admitted despite a call root that does not fit alongside it")
+	}
+	if rooted.done != nil {
+		t.Fatalf("a refused memo still allocated its map")
+	}
+	rooted.release()
+}
