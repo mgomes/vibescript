@@ -171,7 +171,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		result, err := exec.callFunction(valueFunction(callee), receiver, args, kwargs, block, pos)
 		if err != nil {
 			if breakVal, absorbed := absorbBlockBreak(err, block); absorbed {
-				return breakVal, nil
+				return exec.validateAbsorbedBreak(valueFunction(callee), breakVal, pos)
 			}
 			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
 				return NewNil(), controlErr
@@ -219,6 +219,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			// published and bind its contract to them.
 			if valueCanContainBuiltins(block) {
 				preCallScanner.collectBuiltins(block, preCallKnownBuiltins)
+				// A break makes the block's value this call's result, and the
+				// block can name a global. Globals are bound in the ambient
+				// environments the scan above stops at, so snapshot the
+				// builtins bound there before the call runs -- afterwards this
+				// walk would also see what the call itself published and
+				// wrongly exclude it.
+				preCallScanner.collectAmbientBuiltins(exec.root, preCallKnownBuiltins)
 			}
 			for _, arg := range args {
 				if !valueCanContainBuiltins(arg) {
@@ -295,24 +302,51 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if popValidatedArgs != nil {
 			popValidatedArgs()
 		}
+		absorbedBreak := false
 		if err != nil {
-			if breakVal, absorbed := absorbBlockBreak(err, block); absorbed {
-				return breakVal, nil
+			breakVal, absorbed := absorbBlockBreak(err, block)
+			if !absorbed {
+				if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
+					return NewNil(), controlErr
+				}
+				if ctxErr := exec.checkContext(); ctxErr != nil {
+					return NewNil(), ctxErr
+				}
+				return NewNil(), exec.wrapError(err, pos)
 			}
-			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
-				return NewNil(), controlErr
-			}
-			if ctxErr := exec.checkContext(); ctxErr != nil {
-				return NewNil(), ctxErr
-			}
-			return NewNil(), exec.wrapError(err, pos)
+			// The break becomes this call's result, so it continues down the
+			// normal return path rather than returning here. Returning
+			// immediately skipped the post-call capability scan below: a
+			// builtin that published another builtin and then invoked a block
+			// that broke left the published one reachable without its
+			// contract, so later calls bypassed the validation the scan exists
+			// to attach.
+			result = breakVal
+			absorbedBreak = true
 		}
 		if err := exec.checkContext(); err != nil {
 			return NewNil(), err
 		}
-		if hasContract && contract.ValidateReturn != nil && !returnProof.covers(builtin.Name, result) {
+		// A bound method preserved as a callable reaches its script function
+		// through the auto-builtin instanceMember and classMember build, so a
+		// break out of a block it yielded to is absorbed here rather than in
+		// the KindFunction branch. Without this the wrapper's declared return
+		// type was bypassed: `def invoke(fn: Function); fn { break "wrong" };
+		// end` called with `Walker.new().visit`, where visit is `-> int`,
+		// returned the string. Direct member dispatch resolves to KindFunction
+		// and never took this path, which is why it looked covered.
+		var deferredErr error
+		if absorbedBreak {
+			validated, breakErr := exec.validateAbsorbedBreak(builtin.ReturnTypeTarget, result, pos)
+			if breakErr != nil {
+				deferredErr = breakErr
+			} else {
+				result = validated
+			}
+		}
+		if deferredErr == nil && hasContract && contract.ValidateReturn != nil && !returnProof.covers(builtin.Name, result) {
 			if err := contract.ValidateReturn(result); err != nil {
-				return NewNil(), exec.wrapError(err, pos)
+				deferredErr = exec.wrapError(err, pos)
 			}
 		}
 		if scope != nil && len(scope.contracts) > 0 {
@@ -322,7 +356,35 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			// Capability methods can lazily publish additional builtins at runtime
 			// (e.g. through factory return values or receiver mutation). Re-scan
 			// these values so future calls still enforce declared contracts.
-			postCallScanner.bindContracts(result, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+			//
+			// A rejected result was never accepted, so it is not something
+			// this call published.
+			//
+			// An absorbed break IS scanned. A capability can create a
+			// contract-covered builtin and yield it for the block to break
+			// with, which makes it the call's result while leaving it absent
+			// from preCallKnownBuiltins and unreachable through the receiver,
+			// roots, or arguments -- so suppressing the scan let it escape
+			// without its contract.
+			//
+			// A break value the caller already owned is excluded instead by
+			// the ambient snapshot taken before dispatch -- but only as far as
+			// that snapshot reaches. A host global holding a builtin binds
+			// lazily (hostGlobalBindsEagerly is false for anything but
+			// immutable data and enums), so at snapshot time it is an
+			// unmaterialized binding rather than a builtin, and a break with
+			// one still picks up the capability's contract. Materializing
+			// every lazy global before each contracted call to close that gap
+			// would defeat the point of binding them lazily. Letting a
+			// contract-covered builtin escape is the worse failure, so the
+			// scan runs.
+			//
+			// The mutation scans below stay unconditional: those really are
+			// this call's doing, and are what a rejected return must not leave
+			// unguarded.
+			if deferredErr == nil {
+				postCallScanner.bindContracts(result, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+			}
 			if receiver.Kind() != KindNil {
 				postCallScanner.bindContracts(receiver, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
@@ -345,6 +407,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 				}
 				postCallScanner.bindContracts(kwarg, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
+		}
+		// A rejected return value does not un-publish what the call already
+		// made reachable. Returning before the scan left a builtin published
+		// by the call bound to no contract, so script code could rescue the
+		// validation error and then invoke it without its contract.
+		if deferredErr != nil {
+			return NewNil(), deferredErr
 		}
 		return result, nil
 	default:

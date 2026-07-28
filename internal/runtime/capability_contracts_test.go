@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 type contractProbeCapability struct {
@@ -986,5 +987,354 @@ end`)
 	requireErrorContains(t, err, "probe.call expects a single int argument")
 	if chunkInvocations != 0 {
 		t.Fatalf("contract should reject chunk path before invoke, got %d calls", chunkInvocations)
+	}
+}
+
+// breakPublishingContractCapability publishes a second builtin as a side
+// effect, yields to its block, and declares a return contract the absorbed
+// break value fails. It exercises the order between return validation and the
+// post-call publication scan.
+type breakPublishingContractCapability struct {
+	invokeCount *int
+}
+
+func (c breakPublishingContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"mut": NewObject(map[string]Value{
+			"install": NewBuiltin("mut.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				receiver.Hash()["call"] = NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+					*c.invokeCount = *c.invokeCount + 1
+					return NewString("ok"), nil
+				})
+				if block.IsNil() {
+					return NewString("installed"), nil
+				}
+				return exec.callBlockValue(block, []Value{NewInt(1)}, Position{})
+			}),
+		}),
+	}, nil
+}
+
+func (c breakPublishingContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"mut.install": {
+			ValidateReturn: func(result Value) error {
+				if result.Kind() != KindString {
+					return fmt.Errorf("mut.install must return string")
+				}
+				return nil
+			},
+		},
+		"mut.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("mut.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
+// A rejected return value does not un-publish what the call already made
+// reachable. Returning the validation error before the post-call scan left the
+// newly published builtin bound to no contract, so script code could rescue
+// the error and then call it with arguments the contract forbids.
+func TestPublicationScanRunsWhenAnAbsorbedBreakFailsValidation(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  begin
+    mut.install { break 42 }
+  rescue => e
+    nil
+  end
+  mut.call("bad")
+end`)
+
+	invocations := 0
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			breakPublishingContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected the published builtin to still enforce its contract")
+	}
+	requireErrorContains(t, err, "mut.call expects int")
+	if invocations != 0 {
+		t.Fatalf("contract-violating call executed %d times, want it blocked", invocations)
+	}
+}
+
+// A break value the caller already owned is not something the call published.
+// The pre-call block scan stops at ambient environments, so binding contracts
+// from a rejected result attached the capability's contract to an unrelated
+// global and made the caller's own later calls to it fail validation.
+func TestRejectedResultDoesNotBindContractsToACallerOwnedBuiltin(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  begin
+    mut.install { break helper }
+  rescue => e
+    nil
+  end
+  helper("anything", 2)
+end`)
+
+	invocations := 0
+	helperCalls := 0
+	helper := NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		helperCalls++
+		return NewString("helper ok"), nil
+	})
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Globals: map[string]Value{"helper": helper},
+		Capabilities: []CapabilityAdapter{
+			breakPublishingContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err != nil {
+		t.Fatalf("a caller-owned builtin was validated against the capability's contract: %v", err)
+	}
+	if helperCalls != 1 {
+		t.Fatalf("caller-owned builtin ran %d times, want 1", helperCalls)
+	}
+}
+
+// unvalidatedBreakCapability publishes a second builtin and yields, but
+// declares no return contract on install, so an absorbed break is accepted as
+// the call's result.
+type unvalidatedBreakCapability struct {
+	invokeCount *int
+}
+
+func (c unvalidatedBreakCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"mut": NewObject(map[string]Value{
+			"install": NewBuiltin("mut.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				receiver.Hash()["call"] = NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+					*c.invokeCount = *c.invokeCount + 1
+					return NewString("ok"), nil
+				})
+				if block.IsNil() {
+					return NewString("installed"), nil
+				}
+				return exec.callBlockValue(block, []Value{NewInt(1)}, Position{})
+			}),
+		}),
+	}, nil
+}
+
+func (c unvalidatedBreakCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"mut.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("mut.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
+// The publication scan itself must still run on the absorbed-break path: a
+// builtin the call really did publish stays contract-bound.
+func TestPublicationScanStillRunsForAnAcceptedBreak(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  mut.install { break "accepted" }
+  mut.call("bad")
+end`)
+
+	invocations := 0
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			unvalidatedBreakCapability{invokeCount: &invocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected the published builtin to still enforce its contract")
+	}
+	requireErrorContains(t, err, "mut.call expects int")
+	if invocations != 0 {
+		t.Fatalf("contract-violating call executed %d times, want it blocked", invocations)
+	}
+}
+
+// yieldingPublisherCapability creates a contract-covered builtin and yields it,
+// so a block can make it the call's result by breaking with it.
+type yieldingPublisherCapability struct {
+	invokeCount *int
+}
+
+func (c yieldingPublisherCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"mut": NewObject(map[string]Value{
+			"install": NewBuiltin("mut.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				fresh := NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+					*c.invokeCount = *c.invokeCount + 1
+					return NewString("ok"), nil
+				})
+				if block.IsNil() {
+					return NewString("installed"), nil
+				}
+				return exec.callBlockValue(block, []Value{fresh}, Position{})
+			}),
+		}),
+	}, nil
+}
+
+func (c yieldingPublisherCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"mut.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("mut.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
+// A builtin the capability itself created and yielded becomes the call's
+// result when the block breaks with it, while staying absent from
+// preCallKnownBuiltins and unreachable through the receiver, roots, or
+// arguments. Suppressing the result scan for absorbed breaks let it escape
+// without its contract.
+func TestYieldedBuiltinBrokenOutStillEnforcesItsContract(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "assigned", body: "published = mut.install { |b| break b }\n  published(\"bad\", 2)"},
+		{name: "called immediately", body: "mut.install { |b| break b }(\"bad\", 2)"},
+		{name: "wrapped in an array", body: "out = mut.install { |b| break [b] }\n  out[0](\"bad\", 2)"},
+		{name: "wrapped in a hash", body: "out = mut.install { |b| break {fn: b} }\n  out[:fn](\"bad\", 2)"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tc.body+"\nend")
+			invocations := 0
+			_, err := script.Call(context.Background(), "run", nil, CallOptions{
+				Capabilities: []CapabilityAdapter{yieldingPublisherCapability{invokeCount: &invocations}},
+			})
+			if err == nil {
+				t.Fatalf("%s: a yielded builtin escaped its contract", tc.name)
+			}
+			requireErrorContains(t, err, "mut.call expects int")
+			if invocations != 0 {
+				t.Fatalf("%s: contract-violating call executed %d times, want it blocked", tc.name, invocations)
+			}
+		})
+	}
+}
+
+// The ambient walk's budget must actually stop it. Treating zero as
+// "unbounded" meant an exhausted walk became unbounded again on the next
+// node, restoring the very cost the budget exists to cap.
+func TestAmbientCollectBudgetStopsTheWalk(t *testing.T) {
+	t.Parallel()
+
+	// A graph far larger than the budget, reachable from one binding.
+	deep := NewInt(0)
+	for range ambientCollectNodeBudget * 4 {
+		deep = NewArray([]Value{deep, NewBuiltin("probe", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return NewNil(), nil
+		})})
+	}
+
+	scanner := newCapabilityContractScanner()
+	scanner.collectBounded, scanner.collectBudget = true, ambientCollectNodeBudget
+	out := map[*Builtin]struct{}{}
+	scanner.collectBuiltins(deep, out)
+
+	if scanner.collectBudget > 0 {
+		t.Fatalf("the walk ended with %d budget left, so it did not reach the cap", scanner.collectBudget)
+	}
+	if len(out) > ambientCollectNodeBudget {
+		t.Fatalf("the walk collected %d builtins past a %d-node budget", len(out), ambientCollectNodeBudget)
+	}
+}
+
+// Exhausting the budget must stop traversal, not merely make each remaining
+// element a no-op recursive call. The observable difference is cost: with the
+// loop guards the walk is independent of container size, without them it stays
+// linear in it (measured 345us at 100k elements and 1.01ms at 400k, against
+// tens of microseconds either way once traversal actually stops).
+func TestAmbientCollectCostIsIndependentOfContainerSize(t *testing.T) {
+	walk := func(n int) time.Duration {
+		flat := make([]Value, n)
+		for i := range flat {
+			flat[i] = NewInt(int64(i))
+		}
+		val := NewArray(flat)
+		best := time.Hour
+		for range 5 {
+			scanner := newCapabilityContractScanner()
+			scanner.collectBounded, scanner.collectBudget = true, ambientCollectNodeBudget
+			out := map[*Builtin]struct{}{}
+			start := time.Now()
+			scanner.collectBuiltins(val, out)
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+
+	const small, large = 100_000, 800_000
+	smallCost, largeCost := walk(small), walk(large)
+
+	// An 8x larger container must not cost 4x more. Linear traversal would.
+	if largeCost > smallCost*4 {
+		t.Fatalf("walking %d elements took %v against %v for %d: traversal is not stopping at the budget",
+			large, largeCost, smallCost, small)
+	}
+}
+
+// A bounded walk must stop inside captured environments too. An ambient global
+// can be an escaped block whose captured frame holds many bindings, and
+// scanClosureEnv visited every one (and every ancestor frame) with a no-op
+// visitor once the budget was spent, leaving the cost linear in the frame.
+func TestAmbientCollectStopsInsideCapturedEnvironments(t *testing.T) {
+	capturedBlock := func(bindings int) Value {
+		captured := newEnv(nil)
+		for i := range bindings {
+			captured.Define(fmt.Sprintf("c%06d", i), NewInt(int64(i)))
+		}
+		return NewBlock(nil, nil, captured)
+	}
+
+	walk := func(val Value) time.Duration {
+		best := time.Hour
+		for range 5 {
+			scanner := newCapabilityContractScanner()
+			scanner.collectBounded, scanner.collectBudget = true, ambientCollectNodeBudget
+			out := map[*Builtin]struct{}{}
+			start := time.Now()
+			scanner.collectBuiltins(val, out)
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+
+	small := walk(capturedBlock(ambientCollectNodeBudget * 2))
+	large := walk(capturedBlock(ambientCollectNodeBudget * 16))
+
+	// 8x the captured bindings must not cost 4x. Measured about 7x before.
+	if large > small*4 {
+		t.Fatalf("walking a %d-binding captured frame took %v against %v for %d: closure traversal is not stopping at the budget",
+			ambientCollectNodeBudget*16, large, small, ambientCollectNodeBudget*2)
 	}
 }

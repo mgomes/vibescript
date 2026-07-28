@@ -516,6 +516,7 @@ func cloneBuiltinValue(val Value) Value {
 		clonedBuiltin.checkSpec = builtin.checkSpec
 		clonedBuiltin.SignatureParams = builtin.SignatureParams
 		clonedBuiltin.OptionsHashTarget = builtin.OptionsHashTarget
+		clonedBuiltin.ReturnTypeTarget = builtin.ReturnTypeTarget
 		clonedBuiltin.DirectCallAlias = builtin.DirectCallAlias
 		clonedBuiltin.DirectCallAliasPos = builtin.DirectCallAliasPos
 		clonedBuiltin.CapturedValues = builtin.CapturedValues

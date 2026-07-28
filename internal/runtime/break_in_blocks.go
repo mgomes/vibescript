@@ -36,3 +36,32 @@ func absorbBlockBreak(err error, block Value) (Value, bool) {
 	}
 	return NewNil(), true
 }
+
+// validateAbsorbedBreak puts a break value through the function's declared
+// return type.
+//
+// The break escapes as an error, so callFunctionWithBoundEnv returns before
+// its ReturnTy normalization runs -- and returning the value directly let a
+// string leave an `-> int` function unchecked. Becoming the call's result
+// means becoming its *return* value, annotation included.
+func (exec *Execution) validateAbsorbedBreak(fn *ScriptFunction, val Value, pos Position) (Value, error) {
+	if fn == nil || fn.ReturnTy == nil {
+		return val, nil
+	}
+	normalized, err := normalizeValueForType(val, fn.ReturnTy, typeContext{
+		owner:    fn.owner,
+		env:      fn.Env,
+		fallback: exec.root,
+		exec:     exec,
+	})
+	if err != nil {
+		if isHostControlSignal(err) {
+			return NewNil(), err
+		}
+		if isNormalizationLimitError(err) {
+			return NewNil(), exec.wrapError(err, pos)
+		}
+		return NewNil(), exec.errorAt(pos, "%s", formatReturnTypeMismatch(fn.Name, err))
+	}
+	return normalized, nil
+}
