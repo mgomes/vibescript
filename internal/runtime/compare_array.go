@@ -182,6 +182,17 @@ func (state *arrayCompareState) memoize(pair arrayComparePair, result arrayCompa
 // mutate an array it already returned as a key, which would leave an entry --
 // keyed by backing address and length -- describing a value that no longer
 // holds.
+// withRoots replaces the live roots the memo is admitted against. A driver
+// whose operands change between comparisons -- min_by and max_by, whose block
+// produces a fresh key each time -- updates them so admission weighs what is
+// actually live rather than only the receiver.
+func (state *arrayCompareState) withRoots(roots ...Value) {
+	if state == nil {
+		return
+	}
+	state.callRoots = roots
+}
+
 func (state *arrayCompareState) resetMemo() {
 	if state == nil || state.done == nil {
 		return

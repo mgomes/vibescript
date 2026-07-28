@@ -665,6 +665,9 @@ func arrayMemberMinMaxBy(name string, wantMax bool) Value {
 				return NewNil(), err
 			}
 			cmpState.resetMemo()
+			// The block just produced key, and bestKey is held here too; both
+			// live only on this frame, so admission must see them.
+			cmpState.withRoots(receiver, key, bestKey)
 			cmp, err := arraySortCompareValuesWith(cmpState, key, bestKey)
 			if err != nil {
 				return NewNil(), sortComparisonError(err, fmt.Sprintf("%s block values are not comparable", name))

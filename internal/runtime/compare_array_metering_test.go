@@ -808,3 +808,35 @@ func TestMemoAdmissionWeighsTheCallRoots(t *testing.T) {
 	}
 	rooted.release()
 }
+
+// min_by and max_by compare keys the block just produced, which live only on
+// the builtin's frame. Admitting the memo against the receiver alone let
+// roughly 90KB of scratch through without ever measuring it alongside them.
+func TestByExtremaAdmissionWeighsTheBlockKeys(t *testing.T) {
+	t.Parallel()
+
+	state := newArrayCompareState(nil)
+	state.withRoots(NewInt(1), NewInt(2))
+	if len(state.callRoots) != 2 {
+		t.Fatalf("withRoots recorded %d roots, want 2", len(state.callRoots))
+	}
+
+	// The extrema path replaces the roots before each comparison, so a stale
+	// receiver-only set cannot persist across the block's key changes.
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20}, `
+    def run(rows)
+      rows.min_by { |r| [r, r] }.inspect
+    end
+    `)
+	rows := make([]Value, 50)
+	for i := range rows {
+		rows[i] = NewInt(int64(50 - i))
+	}
+	got, err := script.Call(context.Background(), "run", []Value{NewArray(rows)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("min_by: %v", err)
+	}
+	if got.String() != "1" {
+		t.Fatalf("min_by = %s, want 1", got.String())
+	}
+}
