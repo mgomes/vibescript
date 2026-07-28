@@ -325,6 +325,17 @@ func bumpMutationEpoch() { value.BumpMutationEpoch() }
 // tests: disabling costs a full graph re-walk per check but changes no result.
 var baseWalkCacheDisabled atomic.Bool
 
+// estimatorVisitCounting and estimatorVisits let a test count the nodes the
+// estimator walks, which is the work a complexity assertion actually cares
+// about. Allocation totals only approximate it -- a change in how the seen
+// maps grow would decouple the two -- and wall-clock folds in scheduling and
+// instrumentation. Never set outside tests; when off this costs one relaxed
+// load per node on a path that already does map work.
+var (
+	estimatorVisitCounting atomic.Bool
+	estimatorVisits        atomic.Uint64
+)
+
 // baseWalkCache memoizes the reachable-graph portion of the estimator's base
 // walk between checks. The memo is the pair (exec.memoryEst's committed
 // seen-state, graphBytes): a later check whose graph provably cannot have
@@ -2652,6 +2663,9 @@ func (est *memoryEstimator) valuePayload(val Value) int {
 }
 
 func (est *memoryEstimator) value(val Value) int {
+	if estimatorVisitCounting.Load() {
+		estimatorVisits.Add(1)
+	}
 	size := estimatedValueBytes
 
 	switch val.Kind() {

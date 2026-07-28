@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"testing"
 )
 
@@ -64,39 +63,42 @@ func BenchmarkDeepNestingUnquotaed(b *testing.B) {
 // than a table in an issue, so a fix has a pass/fail target: make the quotaed
 // build scale like the unmetered one and this test's expectation inverts.
 //
-// It measures allocated bytes rather than elapsed time. The walk allocates
-// seen-set entries in proportion to the nodes it visits, so total allocation
-// tracks the work done, and TotalAlloc is cumulative and deterministic for a
-// deterministic program -- unlike wall-clock, which on this repository's CI
-// would fold in scheduler contention, GC, and the race and coverage
-// instrumentation across three operating systems.
+// It counts the nodes the estimator visits, which is the work the complexity
+// claim is about. Elapsed time would fold in scheduling, GC, and the race and
+// coverage instrumentation this repository runs across three operating
+// systems; allocated bytes would only approximate visits, and a change in how
+// the seen maps grow would decouple the two and let this announce a fix that
+// had not happened.
 func TestDeepNestingScalingIsQuadraticUnderQuota(t *testing.T) {
 	measure := func(quota int, depth int64) uint64 {
 		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, deepNestingSource)
-		runtime.GC()
-		var before, after runtime.MemStats
-		runtime.ReadMemStats(&before)
+		estimatorVisits.Store(0)
+		estimatorVisitCounting.Store(true)
+		defer estimatorVisitCounting.Store(false)
 		if _, err := script.Call(context.Background(), "run", []Value{NewInt(depth)}, CallOptions{}); err != nil {
 			t.Fatalf("depth %d: %v", depth, err)
 		}
-		runtime.ReadMemStats(&after)
-		return after.TotalAlloc - before.TotalAlloc
+		return estimatorVisits.Load()
 	}
 
 	const quota = 8 << 20
 	small, large := measure(quota, 1000), measure(quota, 2000)
 
-	// Measured about 3.9x; the assertion needs only more than 2.5x.
+	// Measured 2,032,034 then 8,064,034 -- 3.97x for a doubled depth. The
+	// assertion needs only 2.5x, so it states the complexity rather than
+	// pinning an exact count that ordinary estimator changes would shift.
 	if large*2 < small*5 {
-		t.Fatalf("doubling the depth allocated %d bytes against %d -- under 2.5x, so the quotaed build is no longer"+
-			" quadratic; if that is the fix for #1124, invert this expectation", large, small)
+		t.Fatalf("doubling the depth cost %d estimator visits against %d -- under 2.5x, so the quotaed build is no"+
+			" longer quadratic; if that is the fix for #1124, invert this expectation", large, small)
 	}
 
-	// The same build without metering stays linear, which localizes the cost
-	// to the quota's per-assignment walk rather than to construction.
-	unmeteredSmall, unmeteredLarge := measure(Unlimited, 1000), measure(Unlimited, 2000)
-	if unmeteredLarge*2 > unmeteredSmall*5 {
-		t.Fatalf("the unmetered build also grew superlinearly (%d then %d bytes), so the cost is not the quota's walk",
-			unmeteredSmall, unmeteredLarge)
+	// The same build without metering walks nothing at all, which localizes the
+	// cost squarely to the quota's per-assignment walk rather than to
+	// construction: the estimator is the only thing that scales here.
+	for _, depth := range []int64{1000, 2000} {
+		if visits := measure(Unlimited, depth); visits != 0 {
+			t.Fatalf("the unmetered build walked %d nodes at depth %d, so the estimator is not the whole cost",
+				visits, depth)
+		}
 	}
 }
