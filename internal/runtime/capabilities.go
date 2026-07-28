@@ -41,18 +41,18 @@ type CapabilityBinding struct {
 	Engine  *Engine
 }
 
-// cloneHash copies a capability's argument or option hash. This is boundary
-// isolation -- the runtime handing the adapter its own copy -- not the
-// script-visible dup, so a tagged bag nested in the payload keeps its
-// provenance. Without that, a rescued error passed through a capability came
-// back as an ordinary object and rendered <object> instead of its message.
+// cloneHash copies a capability's argument or option hash on its way to the
+// adapter. A capability adapter is host code, so provenance stops here for the
+// same reason it stops at Script.Call: the host can rewrite the entries and
+// hand the value back, and a tag it received would make those entries look
+// runtime-authored.
 func cloneHash(src map[string]Value) map[string]Value {
 	if len(src) == 0 {
 		return map[string]Value{}
 	}
 	out := make(map[string]Value, len(src))
 	for k, v := range src {
-		out[k] = deepCloneValueForContainment(v)
+		out[k] = deepCloneValue(v)
 	}
 	return out
 }
@@ -384,13 +384,9 @@ func cloneCapabilityMethodResult(method string, result Value) (Value, error) {
 }
 
 type capabilityDataCloneScanner struct {
-	label        string
-	clonedArrays map[uintptr]Value
-	clonedMaps   map[uintptr]Value
-	// clonedObjects keys object clones by entry map and provenance: a tagged
-	// bag and an untagged wrapper over one map are different objects, and
-	// sharing a clone would give one the other's tag.
-	clonedObjects  map[objectCloneKey]Value
+	label          string
+	clonedArrays   map[uintptr]Value
+	clonedMaps     map[uintptr]Value
 	visitingArrays map[uintptr]struct{}
 	visitingMaps   map[uintptr]struct{}
 }
@@ -403,7 +399,6 @@ func cloneCapabilityDataOnlyValue(label string, val Value) (Value, error) {
 		label:          label,
 		clonedArrays:   make(map[uintptr]Value),
 		clonedMaps:     make(map[uintptr]Value),
-		clonedObjects:  make(map[objectCloneKey]Value),
 		visitingArrays: make(map[uintptr]struct{}),
 		visitingMaps:   make(map[uintptr]struct{}),
 	}
@@ -514,22 +509,17 @@ func (s *capabilityDataCloneScanner) cloneObject(val Value) (Value, error) {
 		if _, visiting := s.visitingMaps[ptr]; visiting {
 			return NewNil(), fmt.Errorf("%s must not contain cyclic references", s.label)
 		}
-		// The cache is keyed by the wrapper's provenance as well as its entry
-		// map: a tagged bag and an untagged wrapper over one map are different
-		// objects, and sharing a clone would give one the other's tag.
-		if cloned, ok := s.clonedObjects[objectCloneKey{ptr: ptr, tag: val.ObjectTag()}]; ok {
+		if cloned, ok := s.clonedMaps[ptr]; ok {
 			return cloned, nil
 		}
 		s.visitingMaps[ptr] = struct{}{}
 	}
 	clonedEntries := make(map[string]Value, len(entries))
-	// A capability result crossing back into the script is boundary
-	// isolation, so a bag the runtime built keeps its provenance; without
-	// this a rescued error echoed by a capability came back as an ordinary
-	// bag and rendered <object>.
-	cloned := retagClonedObject(val, clonedEntries)
+	// A capability result comes from host code, so it carries no provenance:
+	// the adapter could have rewritten these entries.
+	cloned := NewObject(clonedEntries)
 	if ptr != 0 {
-		s.clonedObjects[objectCloneKey{ptr: ptr, tag: val.ObjectTag()}] = cloned
+		s.clonedMaps[ptr] = cloned
 	}
 	for key, item := range entries {
 		clonedItem, err := s.clone(item)

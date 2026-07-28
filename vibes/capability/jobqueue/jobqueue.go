@@ -220,7 +220,7 @@ func deepCloneValue(v value.Value) value.Value {
 		for k, val := range obj {
 			cloned[k] = deepCloneValue(val)
 		}
-		return value.CloneObjectPreservingTag(v, cloned)
+		return value.NewObject(cloned)
 	default:
 		return v
 	}

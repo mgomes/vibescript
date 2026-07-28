@@ -291,19 +291,3 @@ func (v Value) ObjectTag() ObjectTag {
 
 // NewRange returns a range Value.
 func NewRange(r Range) Value { return Value{kind: KindRange, data: r} }
-
-// CloneObjectPreservingTag rebuilds an attribute bag around new entries while
-// carrying over the source wrapper's provenance. Capability boundaries copy
-// values to isolate them, and the copy stands for the same value, so a bag the
-// runtime built keeps its tag; script-visible duplication uses NewObject and
-// deliberately loses it.
-//
-// It is intended for the interpreter's internal use; hosts should not call
-// it, and it carries no compatibility promise (see
-// docs/embedding-api-stability.md).
-func CloneObjectPreservingTag(src Value, entries map[string]Value) Value {
-	if tag := src.ObjectTag(); tag != ObjectTagNone {
-		return NewTaggedObject(entries, tag)
-	}
-	return NewObject(entries)
-}

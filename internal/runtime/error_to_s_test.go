@@ -650,11 +650,11 @@ func TestCyclicTaggedAndUntaggedWrappersTerminate(t *testing.T) {
 	})
 }
 
-// A capability argument copy is boundary isolation, not the script-visible
-// dup, so a tagged bag nested in the payload keeps its provenance. Cloning it
-// in dup mode handed the adapter an untagged error, which rendered <object>
-// instead of its message when passed on.
-func TestCapabilityArgumentCopiesPreserveTags(t *testing.T) {
+// A capability adapter is host code, so provenance stops before it: the
+// adapter can rewrite the entries and hand the value back, and a tag it
+// received would make those entries look runtime-authored. This is the same
+// rule as the Script.Call boundary.
+func TestCapabilityBoundaryDropsTags(t *testing.T) {
 	t.Parallel()
 
 	entries := map[string]Value{
@@ -664,16 +664,24 @@ func TestCapabilityArgumentCopiesPreserveTags(t *testing.T) {
 	}
 	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
 
-	payload := cloneHash(map[string]Value{"error": tagged, "plain": NewObject(entries)})
-	if got := payload["error"].ObjectTag(); got != ObjectTagRescuedError {
-		t.Fatalf("a tagged bag in a capability argument cloned with tag %v, want the rescued-error tag", got)
-	}
-	if got := payload["plain"].ObjectTag(); got != ObjectTagNone {
-		t.Fatalf("an untagged sibling gained tag %v", got)
-	}
-	if _, substituted := objectStringEntry(payload["error"]); !substituted {
-		t.Fatalf("the cloned error no longer renders its message")
-	}
+	t.Run("arguments into the adapter", func(t *testing.T) {
+		t.Parallel()
+		payload := cloneHash(map[string]Value{"error": tagged})
+		if got := payload["error"].ObjectTag(); got != ObjectTagNone {
+			t.Fatalf("a capability argument reached the adapter with tag %v", got)
+		}
+	})
+
+	t.Run("results back from the adapter", func(t *testing.T) {
+		t.Parallel()
+		cloned, err := cloneCapabilityDataOnlyValue("probe.result", tagged)
+		if err != nil {
+			t.Fatalf("clone: %v", err)
+		}
+		if got := cloned.ObjectTag(); got != ObjectTagNone {
+			t.Fatalf("a capability result came back with tag %v", got)
+		}
+	})
 }
 
 // The tag is part of a bag's identity, not just of its rendering. Two wrappers
@@ -706,43 +714,6 @@ func TestObjectIdentityAccountsForTheTag(t *testing.T) {
 	}
 	if got.String() != "false" {
 		t.Fatalf("equal? inside the script = %s, want false as it is outside", got.String())
-	}
-}
-
-// A capability result crossing back into the script is boundary isolation, so
-// a bag the runtime built keeps its provenance. Rebuilding it with NewObject
-// meant a rescued error echoed by a capability came back as an ordinary bag
-// and rendered <object>.
-func TestCapabilityResultClonesPreserveTags(t *testing.T) {
-	t.Parallel()
-
-	entries := map[string]Value{
-		"to_s": NewString("boom"), "message": NewString("boom"),
-		"class": NewString("RuntimeError"), "type": NewString("RuntimeError"),
-		"backtrace": NewArray([]Value{}),
-	}
-	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
-
-	cloned, err := cloneCapabilityDataOnlyValue("probe.result", tagged)
-	if err != nil {
-		t.Fatalf("clone: %v", err)
-	}
-	if cloned.ObjectTag() != ObjectTagRescuedError {
-		t.Fatalf("a capability result cloned with tag %v, want the rescued-error tag", cloned.ObjectTag())
-	}
-	if _, substituted := objectStringEntry(cloned); !substituted {
-		t.Fatalf("the cloned result no longer renders its message")
-	}
-
-	// A tagged and an untagged wrapper over one map must not share a clone.
-	plain := NewObject(entries)
-	both, err := cloneCapabilityDataOnlyValue("probe.result", NewArray([]Value{tagged, plain}))
-	if err != nil {
-		t.Fatalf("clone pair: %v", err)
-	}
-	items := both.Array()
-	if items[0].ObjectTag() != ObjectTagRescuedError || items[1].ObjectTag() != ObjectTagNone {
-		t.Fatalf("wrappers cloned with tags %v and %v, want rescued-error and none", items[0].ObjectTag(), items[1].ObjectTag())
 	}
 }
 
