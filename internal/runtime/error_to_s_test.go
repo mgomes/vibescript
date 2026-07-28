@@ -116,3 +116,64 @@ func TestAttributeBagRenderingFollowsItsStringEntry(t *testing.T) {
 		t.Fatalf("a bag with a non-string to_s entry was substituted")
 	}
 }
+
+// KindObject also carries ordinary host data, so a to_s entry alone does not
+// mean the bag is declaring its string form. A host object holding a string
+// field of that name would otherwise have its payload rendered in place of
+// <object>, exposing it.
+func TestOrdinaryHostObjectsKeepTheirRendering(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		entries map[string]Value
+	}{
+		{name: "bare to_s field", entries: map[string]Value{"to_s": NewString("payload")}},
+		{name: "to_s with unrelated fields", entries: map[string]Value{"to_s": NewString("payload"), "id": NewInt(1)}},
+		// Part of the error shape is not the error shape.
+		{name: "partial error shape", entries: map[string]Value{"to_s": NewString("payload"), "message": NewString("m")}},
+		// A non-string backtrace is not a backtrace.
+		{name: "error shape with a wrong backtrace", entries: map[string]Value{
+			"to_s": NewString("p"), "message": NewString("m"), "class": NewString("c"),
+			"type": NewString("t"), "backtrace": NewString("not an array"),
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, substituted := objectStringEntry(NewObject(tc.entries)); substituted {
+				t.Fatalf("%s: an ordinary host object had its payload rendered", tc.name)
+			}
+		})
+	}
+}
+
+// The two bags that deliberately publish a string form still render it.
+func TestDeliberateStringFormsStillRender(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "rescued error", body: "begin\n    raise \"boom\"\n  rescue => e\n    \"#{e}\"\n  end", want: "boom"},
+		{name: "match data", body: "\"2026-07\".match(/(\\d+)-(\\d+)/).to_s", want: "2026-07"},
+		{name: "interpolated match data", body: "m = \"2026-07\".match(/(\\d+)-(\\d+)/)\n  \"#{m}\"", want: "2026-07"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.body+"\nend")
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("%s = %q, want %q", tc.name, got.String(), tc.want)
+			}
+		})
+	}
+}
