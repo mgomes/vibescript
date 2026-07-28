@@ -474,6 +474,11 @@ type capabilityContractScanner struct {
 	seenClasses   map[*ClassDef]struct{}
 	seenInstances map[*Instance]struct{}
 	seenEnvs      map[*Env]struct{}
+
+	// collectBudget is the remaining node allowance for a bounded collect.
+	// Zero means unbounded; it reaches -1 when a bounded walk is exhausted,
+	// after which collectBuiltins returns immediately.
+	collectBudget int
 	// ambientEnvs are environments whose bindings are pre-existing ambient
 	// globals (the execution root and its ancestors), NOT values a capability
 	// freshly exposed. When walking a closure's captured environment we skip
@@ -769,6 +774,11 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 // regression). The remaining ancestors are all ambient too, so the walk stops
 // entirely. seenEnvs gives cycle-safe termination for self- or mutually
 // referencing closure environments.
+// ambientCollectNodeBudget bounds the ambient snapshot's traversal. It is
+// generous next to any realistic set of globals while keeping the per-call
+// cost independent of how large a script's globals grow.
+const ambientCollectNodeBudget = 4096
+
 // collectAmbientBuiltins gathers the builtins bound directly in the ambient
 // environments -- the script's own globals and the engine scopes above them.
 //
@@ -781,7 +791,18 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 // with one would make it the call's result and the post-call scan would bind
 // the capability's contract to something the caller has owned all along.
 func (s *capabilityContractScanner) collectAmbientBuiltins(root *Env, out map[*Builtin]struct{}) {
+	// The walk charges no steps, so it is bounded rather than metered: a
+	// script could otherwise hold a large global structure and call a
+	// contracted capability with an empty block in a loop, buying O(global
+	// graph) host work per metered step. Truncating only means fewer
+	// exclusions, which costs precision on caller-owned break values and
+	// never lets a genuinely published builtin through.
+	s.collectBudget = ambientCollectNodeBudget
+	defer func() { s.collectBudget = 0 }()
 	for env := root; env != nil; env = env.parent {
+		if s.collectBudget < 0 {
+			return
+		}
 		env.rangeDynamicBindings(func(_ string, item Value) {
 			s.collectBuiltins(item, out)
 		})
@@ -918,6 +939,16 @@ func (s *capabilityContractScanner) bindContracts(
 }
 
 func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]struct{}) {
+	// collectBudget bounds an otherwise unmetered walk. It is only set for the
+	// ambient snapshot, whose size is the caller's globals rather than
+	// anything the call supplies; every other caller leaves it zero and is
+	// unaffected.
+	if s.collectBudget < 0 {
+		return
+	}
+	if s.collectBudget > 0 {
+		s.collectBudget--
+	}
 	switch val.Kind() {
 	case KindBuiltin:
 		out[valueBuiltin(val)] = struct{}{}
