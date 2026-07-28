@@ -669,8 +669,8 @@ func TestResetMemoClearsResultsButKeepsTheReservation(t *testing.T) {
 	if fmt.Sprintf("%p", state.done) != fmt.Sprintf("%p", memo) {
 		t.Fatalf("resetMemo replaced the map, so the allocation is not reused")
 	}
-	if state.memoBudget != arrayCompareMemoMaxEntries {
-		t.Fatalf("resetMemo left the budget at %d, want %d", state.memoBudget, arrayCompareMemoMaxEntries)
+	if len(state.evictionOrder) != 0 || state.evictionNext != 0 {
+		t.Fatalf("resetMemo left %d eviction slots at position %d, want an empty ring", len(state.evictionOrder), state.evictionNext)
 	}
 }
 
@@ -704,5 +704,64 @@ func TestSmallComparisonsDoNotAllocateAFullMemo(t *testing.T) {
 	full := uint64(arrayCompareMemoMaxEntries * arrayCompareMemoEntryBytes)
 	if perOp > full/8 {
 		t.Fatalf("comparing two one-element arrays allocated %d bytes per operation, near the %d-byte memo bound", perOp, full)
+	}
+}
+
+// The memo evicts its oldest entry once full rather than refusing new ones.
+// Entries are added as the recursion unwinds, deepest first, and it is the
+// shallower results a sibling branch asks for next -- so keeping the newest is
+// what keeps a shared DAG linear. Refusing new entries kept the deepest
+// instead, and every level past the bound was recomputed on both branches: a
+// 300-deep DAG went exponential and tripped the step quota at 1.19s, where 260
+// finished in 27ms.
+func TestSharedDAGStaysLinearBeyondTheMemoBound(t *testing.T) {
+	t.Parallel()
+
+	for _, depth := range []int{arrayCompareMemoMaxEntries - 1, arrayCompareMemoMaxEntries + 1, arrayCompareMemoMaxEntries * 2, 1000} {
+		t.Run(fmt.Sprintf("depth %d", depth), func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: 20_000_000, MemoryQuotaBytes: 64 << 20},
+				fmt.Sprintf(sharedDAGSource+"\ndef run()\n  a = build(%d)\n  b = build(%d)\n  (a <=> b).inspect\nend\n", depth, depth))
+			done := make(chan error, 1)
+			var got Value
+			go func() {
+				v, err := script.Call(context.Background(), "run", nil, CallOptions{})
+				got = v
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("depth %d: %v", depth, err)
+				}
+				if got.String() != "0" {
+					t.Fatalf("depth %d compared to %s, want 0", depth, got.String())
+				}
+			case <-time.After(60 * time.Second):
+				t.Fatalf("depth %d did not finish: the walk is exponential past the memo bound", depth)
+			}
+		})
+	}
+}
+
+// Eviction keeps the memo at its bound, which is what the reservation covers.
+func TestMemoEvictsRatherThanGrowingPastItsBound(t *testing.T) {
+	t.Parallel()
+
+	state := newArrayCompareState(nil)
+	state.ensureMemo()
+	for i := range arrayCompareMemoMaxEntries * 3 {
+		state.memoize(arrayComparePair{leftPtr: uintptr(i + 1), rightPtr: uintptr(i + 2), leftLen: i, rightLen: i}, arrayCompareResult{order: i})
+	}
+	if len(state.done) != arrayCompareMemoMaxEntries {
+		t.Fatalf("memo holds %d entries, want the %d-entry bound", len(state.done), arrayCompareMemoMaxEntries)
+	}
+	if len(state.evictionOrder) != arrayCompareMemoMaxEntries {
+		t.Fatalf("eviction ring holds %d keys, want %d", len(state.evictionOrder), arrayCompareMemoMaxEntries)
+	}
+	// The most recent insertions are the ones that survived.
+	newest := arrayComparePair{leftPtr: uintptr(arrayCompareMemoMaxEntries * 3), rightPtr: uintptr(arrayCompareMemoMaxEntries*3 + 1), leftLen: arrayCompareMemoMaxEntries*3 - 1, rightLen: arrayCompareMemoMaxEntries*3 - 1}
+	if _, ok := state.done[newest]; !ok {
+		t.Fatalf("the most recent entry was evicted")
 	}
 }

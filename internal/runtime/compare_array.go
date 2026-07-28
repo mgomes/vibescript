@@ -53,12 +53,18 @@ type arrayCompareState struct {
 	// a shortcut fired depends on the enclosing cycle and is not reusable
 	// elsewhere, so only results whose subtree took none are memoized.
 	cycleShortcuts int
-	// memoBudget is how many more pairs may be memoized. The memo is a
-	// Go-local map the periodic memory check cannot see, so its size is fixed
-	// up front and reserved in one charge rather than grown per entry. Once
-	// the budget is spent the walk stops memoizing and recomputes instead,
-	// which is slower but still bounded by the step quota.
-	memoBudget int
+	// evictionOrder is a ring of the memoized keys in insertion order, and
+	// evictionNext is where the next key goes. Once the memo is full the entry
+	// they name is dropped to make room.
+	//
+	// Insertion order is what matters. Entries are added as the recursion
+	// unwinds, deepest first, and it is the shallower results a sibling branch
+	// asks for next -- so keeping the newest is what keeps a shared DAG
+	// linear. Simply refusing new entries once full kept the deepest ones
+	// instead, and every level above the bound was recomputed on both
+	// branches: a 300-deep DAG went exponential and tripped the step quota.
+	evictionOrder []arrayComparePair
+	evictionNext  int
 	// memoReserved is the scratch held for the memo for the walk's duration.
 	memoReserved int
 	// memoTried records that the reservation has been attempted, so a walk
@@ -117,7 +123,6 @@ func (state *arrayCompareState) ensureMemo() {
 	}
 	state.memoTried = true
 	if state.exec == nil {
-		state.memoBudget = arrayCompareMemoMaxEntries
 		state.done = map[arrayComparePair]arrayCompareResult{}
 		return
 	}
@@ -127,8 +132,28 @@ func (state *arrayCompareState) ensureMemo() {
 		return
 	}
 	state.memoReserved = reserved
-	state.memoBudget = arrayCompareMemoMaxEntries
 	state.done = map[arrayComparePair]arrayCompareResult{}
+}
+
+// memoize records a completed pair, evicting the oldest entry once the memo is
+// at its bound so the newest results -- the ones a sibling branch is about to
+// ask for -- always survive.
+func (state *arrayCompareState) memoize(pair arrayComparePair, result arrayCompareResult) {
+	if state.done == nil {
+		return
+	}
+	if _, already := state.done[pair]; already {
+		state.done[pair] = result
+		return
+	}
+	if len(state.evictionOrder) < arrayCompareMemoMaxEntries {
+		state.evictionOrder = append(state.evictionOrder, pair)
+	} else {
+		delete(state.done, state.evictionOrder[state.evictionNext])
+		state.evictionOrder[state.evictionNext] = pair
+		state.evictionNext = (state.evictionNext + 1) % arrayCompareMemoMaxEntries
+	}
+	state.done[pair] = result
 }
 
 // resetMemo drops every cached result while keeping the map and its
@@ -144,7 +169,8 @@ func (state *arrayCompareState) resetMemo() {
 		return
 	}
 	clear(state.done)
-	state.memoBudget = arrayCompareMemoMaxEntries
+	state.evictionOrder = state.evictionOrder[:0]
+	state.evictionNext = 0
 }
 
 // release returns the memo's reservation once the comparison that built it is
@@ -220,16 +246,7 @@ func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int
 			if state.cycleShortcuts != shortcutsBefore {
 				return
 			}
-			if _, already := state.done[pair]; !already {
-				// The memo is full. Recomputing is correct and still metered,
-				// so the walk simply stops caching rather than growing past
-				// what was reserved for it.
-				if state.memoBudget <= 0 || state.done == nil {
-					return
-				}
-				state.memoBudget--
-			}
-			state.done[pair] = arrayCompareResult{order: order, ordered: ordered, err: err}
+			state.memoize(pair, arrayCompareResult{order: order, ordered: ordered, err: err})
 		}()
 	}
 	for i := range min(len(left), len(right)) {
