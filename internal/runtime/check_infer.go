@@ -15757,6 +15757,12 @@ func (c *scriptChecker) unknownShapeKeyKindHint(expr Expression) string {
 	if !present || shapeFieldOptional(field) {
 		return ""
 	}
+	// A field whose declared type already admits nil produces the same
+	// `T | nil` read under a known key kind, so the nil arm is not the key
+	// kind's doing and saying it is would misattribute the diagnostic.
+	if !typeExprNeverNil(shapeFieldValueType(field)) {
+		return ""
+	}
 	return fmt.Sprintf("; %s is required, but this shape's key kind is unknown,"+
 		" so the read may still miss", key)
 }

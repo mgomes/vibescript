@@ -41,6 +41,16 @@ end`,
 			wantHint: false,
 		},
 		{
+			name: "field whose declared type already admits nil",
+			source: `def take(name: string) -> string
+  name
+end
+def f(row: { name: string | nil }) -> string
+  take(row[:name])
+end`,
+			wantHint: false,
+		},
+		{
 			name: "string-key read of a required field",
 			source: `def take(name: string) -> string
   name
