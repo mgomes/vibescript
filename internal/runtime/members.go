@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"strings"
 )
 
 func (exec *Execution) getMember(obj Value, property string, pos Position) (Value, error) {
@@ -518,15 +519,16 @@ func (exec *Execution) enumValueMember(obj Value, property string, pos Position)
 		return NewSymbol(member.Symbol), nil
 	case "enum":
 		return NewEnum(member.Enum), nil
-	case "to_s", "string":
+	case "to_s", "string", "inspect":
 		// Delegates to the value's own rendering, which is what interpolation
 		// already produces, so the explicit conversion and the implicit one
-		// cannot drift apart.
-		return newToStringBuiltin("enum value", property), nil
-	case "inspect":
-		return newInspectBuiltin("enum value"), nil
+		// cannot drift apart -- but projects the length first so the
+		// pre-allocation guard still applies.
+		return newEnumRenderingBuiltin("enum value", property, func() int {
+			return enumValueRenderingBytes(member)
+		}), nil
 	default:
-		return NewNil(), exec.errorAt(pos, "unknown enum member property %s%s", property, didYouMean(property, []string{"name", "symbol", "enum", "to_s", "inspect"}))
+		return NewNil(), exec.errorAt(pos, "unknown enum member property %s%s", property, didYouMean(property, []string{"name", "symbol", "enum", "to_s", "string", "inspect"}))
 	}
 }
 
@@ -642,4 +644,44 @@ func MemberCompletionNames() map[string][]string {
 		out[receiver] = withUniversalMembers(names)
 	}
 	return out
+}
+
+// newEnumRenderingBuiltin returns an enum or enum-value conversion that checks
+// the projected rendering against the memory quota before formatting it.
+//
+// The shared scalar helpers render first: newToStringBuiltin calls
+// receiver.String() directly, and newInspectBuiltin reaches len(v.String())
+// through its projection. For an enum that text is Enum::Member, whose length
+// follows from the two identifiers, so an identifier far larger than the
+// memory quota -- reachable when MaxSourceBytes is configured higher --
+// allocated the whole rendering before any guard ran. Projecting from the
+// names keeps the pre-allocation guard meaningful.
+func newEnumRenderingBuiltin(typeName, property string, projected func() int) Value {
+	name := typeName + "." + property
+	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
+		// Charge the buffer the rendering actually grows, not the text
+		// length: an allocation is rounded up to a size class, and charging
+		// the exact length let a rendering that fits the quota only narrowly
+		// exceed it once rounded.
+		var sb strings.Builder
+		if err := exec.checkProjectedValueRendering(receiver, projectedBuilderCap(&sb, projected())); err != nil {
+			return NewNil(), err
+		}
+		return NewString(receiver.String()), nil
+	})
+}
+
+// enumValueRenderingBytes is the length of an enum member's Enum::Member text.
+func enumValueRenderingBytes(member *EnumValueDef) int {
+	if member == nil {
+		return 0
+	}
+	enumName := 0
+	if member.Enum != nil {
+		enumName = len(member.Enum.Name)
+	}
+	return saturatingAdd(enumName, saturatingAdd(len("::"), len(member.Name)))
 }
