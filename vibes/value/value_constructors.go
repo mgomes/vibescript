@@ -236,5 +236,46 @@ func NewObject(attrs map[string]Value) Value {
 	return Value{kind: KindObject, data: attrs}
 }
 
+// ObjectTag records what an attribute bag is, for the few bags the runtime
+// builds to stand for something specific. Behavior that would otherwise have
+// to be inferred from a bag's field names reads the tag instead: field names
+// are public, host-settable data, so any bag could carry the same ones and
+// claim the same treatment.
+type ObjectTag uint8
+
+const (
+	// ObjectTagNone marks an ordinary attribute bag, which is every bag
+	// NewObject builds. It is the zero value, so untagged is the default.
+	ObjectTagNone ObjectTag = iota
+	// ObjectTagRescuedError marks the bag a rescue binds, whose to_s is the
+	// error message.
+	ObjectTagRescuedError
+	// ObjectTagMatchData marks the bag a regexp match returns, whose to_s is
+	// the matched text as in Ruby's MatchData.
+	ObjectTagMatchData
+)
+
+// NewTaggedObject returns an attribute bag carrying provenance. The tag rides
+// in the scalar word, which an object otherwise leaves unused, so it costs
+// nothing and cannot appear as an entry: it is invisible to keys, values,
+// inspect, and JSON, and script code has no way to set it.
+func NewTaggedObject(attrs map[string]Value, tag ObjectTag) Value {
+	if attrs == nil {
+		attrs = map[string]Value{}
+	}
+	return Value{kind: KindObject, data: attrs, scalar: uint64(tag)}
+}
+
+// ObjectTag reports the provenance of an attribute bag, or ObjectTagNone for
+// anything else. A bag that has been rebuilt (merged, duplicated, or produced
+// by host code) reports ObjectTagNone, so the tag only ever vouches for a bag
+// the runtime built itself.
+func (v Value) ObjectTag() ObjectTag {
+	if v.kind != KindObject {
+		return ObjectTagNone
+	}
+	return ObjectTag(v.scalar)
+}
+
 // NewRange returns a range Value.
 func NewRange(r Range) Value { return Value{kind: KindRange, data: r} }

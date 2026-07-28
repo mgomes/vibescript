@@ -177,3 +177,89 @@ func TestDeliberateStringFormsStillRender(t *testing.T) {
 		})
 	}
 }
+
+// A host object cannot claim to be a rescued error or match data by carrying
+// the same fields. The fields these bags use are public, host-settable data,
+// so recognizing them by shape let any bag with a matching set have its to_s
+// payload rendered in place of the <object> form.
+func TestHostObjectsCannotSpoofADeliberateStringForm(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		entries map[string]Value
+	}{
+		{name: "full rescued error shape", entries: map[string]Value{
+			"to_s": NewString("payload"), "message": NewString("m"),
+			"class": NewString("c"), "type": NewString("t"),
+			"backtrace": NewArray([]Value{NewString("frame")}),
+		}},
+		{name: "full match data shape", entries: map[string]Value{
+			"to_s": NewString("payload"), "captures": NewArray([]Value{NewString("a")}),
+			"pre_match": NewString(""), "post_match": NewString(""),
+		}},
+		{name: "both shapes at once", entries: map[string]Value{
+			"to_s": NewString("payload"), "message": NewString("m"),
+			"class": NewString("c"), "type": NewString("t"),
+			"backtrace": NewArray([]Value{}), "captures": NewArray([]Value{}),
+			"pre_match": NewString(""), "post_match": NewString(""),
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, substituted := objectStringEntry(NewObject(tc.entries)); substituted {
+				t.Fatalf("%s: a host object spoofed a deliberate string form and had its payload rendered", tc.name)
+			}
+		})
+	}
+}
+
+// The tag rides in a word an object otherwise leaves unused, so it must not
+// leak into anything script code can see.
+func TestObjectTagIsInvisibleToScript(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "keys", body: `begin
+    raise "boom"
+  rescue => e
+    e.keys.sort.join(",")
+  end`, want: "backtrace,class,code_frame,message,to_s,type"},
+		{name: "match data keys", body: `"ab".match(/a/).keys.sort.join(",")`, want: "begin,captures,end,named_captures,post_match,pre_match,to_s"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.body+"\nend")
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("%s = %q, want %q", tc.name, got.String(), tc.want)
+			}
+		})
+	}
+}
+
+// A tagged bag that script code rebuilds is an ordinary bag again: the tag
+// vouches only for what the runtime built itself.
+func TestRebuiltBagLosesItsTag(t *testing.T) {
+	t.Parallel()
+
+	tagged := NewTaggedObject(map[string]Value{"to_s": NewString("real")}, ObjectTagRescuedError)
+	if _, substituted := objectStringEntry(tagged); !substituted {
+		t.Fatalf("a tagged bag did not render its string form")
+	}
+	rebuilt := NewObject(tagged.Hash())
+	if _, substituted := objectStringEntry(rebuilt); substituted {
+		t.Fatalf("a rebuilt bag kept its tag")
+	}
+}

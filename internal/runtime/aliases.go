@@ -347,6 +347,22 @@ func NewSymbol(name string) Value { return value.NewSymbol(name) }
 // NewObject returns an object Value with the given attributes.
 func NewObject(attrs map[string]Value) Value { return value.NewObject(attrs) }
 
+// ObjectTag records what an attribute bag is, for the few bags the runtime
+// builds to stand for something specific.
+type ObjectTag = value.ObjectTag
+
+const (
+	ObjectTagNone         = value.ObjectTagNone
+	ObjectTagRescuedError = value.ObjectTagRescuedError
+	ObjectTagMatchData    = value.ObjectTagMatchData
+)
+
+// NewTaggedObject returns an attribute bag carrying provenance that its
+// entries cannot forge.
+func NewTaggedObject(attrs map[string]Value, tag ObjectTag) Value {
+	return value.NewTaggedObject(attrs, tag)
+}
+
 // NewMoney returns a money Value.
 func NewMoney(m Money) Value { return value.NewMoney(m) }
 

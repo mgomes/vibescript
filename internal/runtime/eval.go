@@ -4711,7 +4711,7 @@ func rescuedErrorValue(err error) Value {
 		"code_frame": NewString(codeFrame),
 		"backtrace":  NewArray(backtrace),
 	}
-	return NewObject(fields)
+	return NewTaggedObject(fields, ObjectTagRescuedError)
 }
 
 func runtimeErrorBacktrace(err *RuntimeError) []Value {
