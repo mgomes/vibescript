@@ -1317,6 +1317,8 @@ func runtimeValueIdentical(left, right Value) (bool, bool) {
 
 func init() {
 	value.RuntimeStringer = runtimeValueString
+	value.RuntimeStringLen = runtimeValueStringLen
+	value.RuntimeStringAppender = runtimeValueStringAppend
 	value.RuntimeEqualer = runtimeValueEqual
 	value.RuntimeIdenticaler = runtimeValueIdentical
 }
@@ -1337,4 +1339,35 @@ func enumMemberText(member *EnumValueDef) string {
 	sb.WriteString("::")
 	sb.WriteString(member.Name)
 	return sb.String()
+}
+
+// runtimeValueStringLen reports an enum member's rendered byte length from the
+// two identifiers, so a projection can decide whether the rendering fits
+// without building it.
+func runtimeValueStringLen(v Value) (int, bool) {
+	if v.Kind() != KindEnumValue {
+		return 0, false
+	}
+	member := valueEnumValue(v)
+	if member == nil || member.Enum == nil {
+		return 0, false
+	}
+	return enumValueRenderingBytes(member), true
+}
+
+// runtimeValueStringAppend writes an enum member's text straight into buf, so
+// interpolating one holds no temporary alongside the destination the quota
+// charged.
+func runtimeValueStringAppend(v Value, buf *strings.Builder) bool {
+	if v.Kind() != KindEnumValue {
+		return false
+	}
+	member := valueEnumValue(v)
+	if member == nil || member.Enum == nil {
+		return false
+	}
+	buf.WriteString(member.Enum.Name)
+	buf.WriteString("::")
+	buf.WriteString(member.Name)
+	return true
 }

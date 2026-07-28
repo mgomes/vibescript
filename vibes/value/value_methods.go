@@ -74,6 +74,23 @@ func (k ValueKind) String() string {
 // docs/embedding-api-stability.md).
 var RuntimeStringer func(v Value) (string, bool)
 
+// RuntimeStringLen reports the byte length Value.String would return for a
+// runtime-only kind, computed from the payload rather than by building the
+// string. A projection that answers through RuntimeStringer allocates the very
+// rendering it is meant to decide about, which defeats the guard.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+var RuntimeStringLen func(v Value) (int, bool)
+
+// RuntimeStringAppender writes the bytes Value.String would return for a
+// runtime-only kind straight into buf, so a rendering streamed into a caller's
+// charged buffer never also exists as a temporary alongside it.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+var RuntimeStringAppender func(v Value, buf *strings.Builder) bool
+
 // RuntimeEqualer is the hook used by Value.Equal to compare runtime-only
 // kinds whose payload types live in the vibes package. The vibes package
 // installs this hook during initialization. If unset, equality for those
@@ -344,6 +361,12 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		// the buffer before checking the limit. A big integer that provably
 		// cannot fit the remaining budget is refused before the (superlinear)
 		// base conversion ever runs.
+		// An unbounded write streams straight into buf. Under a limit the
+		// bounded helper still decides how much to write, so the rendering is
+		// materialized there as before.
+		if limit <= 0 && RuntimeStringAppender != nil && RuntimeStringAppender(v, buf) {
+			return nil
+		}
 		if limit > 0 && bigIntRenderExceedsLimit(v, limit-buf.Len()) {
 			return ErrStringRenderTruncated
 		}
@@ -663,6 +686,11 @@ func (v Value) StringByteLenBounded(step func() error) (int, error) {
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
 		}
+		if RuntimeStringLen != nil {
+			if n, ok := RuntimeStringLen(v); ok {
+				return n, nil
+			}
+		}
 		return len(v.String()), nil
 	}
 }
@@ -765,6 +793,11 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 	default:
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
+		}
+		if RuntimeStringLen != nil {
+			if n, ok := RuntimeStringLen(v); ok {
+				return n, nil
+			}
 		}
 		return len(v.String()), nil
 	}

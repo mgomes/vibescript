@@ -183,3 +183,55 @@ func TestEnumRenderingIsTheSameThroughEveryPath(t *testing.T) {
 		t.Fatalf("enum renderings disagree across paths (%s distinct forms)", got.String())
 	}
 }
+
+// Interpolation projects a value's rendered length before writing it, and
+// answering that projection through Value.String allocates the very rendering
+// the guard exists to decide about -- then allocates it a second time while
+// the charged destination buffer is live. Both paths now answer from the two
+// identifiers instead.
+func TestEnumInterpolationDoesNotMaterializeTheText(t *testing.T) {
+	enum := &EnumDef{Name: strings.Repeat("E", 4096)}
+	member := &EnumValueDef{Name: strings.Repeat("M", 4096), Enum: enum}
+	value := NewEnumValue(member)
+
+	lenAllocs := testing.AllocsPerRun(100, func() {
+		_, _ = value.StringByteLenBounded(func() error { return nil })
+	})
+	if lenAllocs > 0 {
+		t.Fatalf("projecting the length made %v allocations, want none", lenAllocs)
+	}
+
+	// Grown once, up front, and never reset: any allocation observed during
+	// the run is a temporary rather than the destination's own growth.
+	const runs = 100
+	var sb strings.Builder
+	sb.Grow(enumValueRenderingBytes(member) * (runs + 2))
+	writeAllocs := testing.AllocsPerRun(runs, func() {
+		value.WriteStringTo(&sb)
+	})
+	if writeAllocs > 0 {
+		t.Fatalf("writing the text made %v allocations, want it streamed into the destination", writeAllocs)
+	}
+}
+
+// The streamed write must produce exactly the bytes String would.
+func TestStreamedEnumTextMatchesString(t *testing.T) {
+	t.Parallel()
+
+	enum := &EnumDef{Name: "Status"}
+	member := &EnumValueDef{Name: "Active", Enum: enum}
+	value := NewEnumValue(member)
+
+	var sb strings.Builder
+	value.WriteStringTo(&sb)
+	if sb.String() != value.String() {
+		t.Fatalf("streamed %q, String gives %q", sb.String(), value.String())
+	}
+	got, err := value.StringByteLenBounded(func() error { return nil })
+	if err != nil {
+		t.Fatalf("projection: %v", err)
+	}
+	if got != len(value.String()) {
+		t.Fatalf("projected length %d, want %d", got, len(value.String()))
+	}
+}
