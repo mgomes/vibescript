@@ -234,7 +234,7 @@ func (v Value) HashLen() int {
 		}
 		return len(hd.entries)
 	case KindObject:
-		return len(v.data.(map[string]Value))
+		return len(v.data.(*objectData).entries)
 	default:
 		return 0
 	}
@@ -295,7 +295,7 @@ func (v Value) HashEntriesInto(buf []HashEntry) []HashEntry {
 		}
 		return entries
 	case KindObject:
-		obj := v.data.(map[string]Value)
+		obj := v.data.(*objectData).entries
 		entries := buf[:0]
 		if cap(entries) < len(obj) {
 			entries = make([]HashEntry, 0, len(obj))
@@ -380,7 +380,7 @@ func (v Value) HashGet(key Value) (Value, bool, error) {
 		if key.kind != KindString && key.kind != KindSymbol {
 			return NewNil(), false, nil
 		}
-		val, ok := v.data.(map[string]Value)[key.String()]
+		val, ok := v.data.(*objectData).entries[key.String()]
 		return val, ok, nil
 	default:
 		return NewNil(), false, nil
@@ -449,7 +449,7 @@ func (v Value) HashSet(key, val Value) error {
 			return fmt.Errorf("unsupported hash key type %s", key.kind)
 		}
 		BumpMutationEpoch()
-		v.data.(map[string]Value)[key.String()] = val
+		v.data.(*objectData).entries[key.String()] = val
 		return nil
 	default:
 		return fmt.Errorf("%s is not a hash", v.kind)
@@ -511,7 +511,7 @@ func (v Value) HashDeleteKey(key Value) (Value, bool, error) {
 		if key.kind != KindString && key.kind != KindSymbol {
 			return NewNil(), false, nil
 		}
-		entries := v.data.(map[string]Value)
+		entries := v.data.(*objectData).entries
 		val, ok := entries[key.String()]
 		if !ok {
 			return NewNil(), false, nil
@@ -543,7 +543,7 @@ func (v Value) HashClearEntries() {
 		}
 	case KindObject:
 		BumpMutationEpoch()
-		clear(v.data.(map[string]Value))
+		clear(v.data.(*objectData).entries)
 	}
 }
 

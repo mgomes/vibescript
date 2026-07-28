@@ -1959,22 +1959,24 @@ func TestMemoryQuotaCountsHashDataWrapper(t *testing.T) {
 		objects := make([]Value, count)
 		for i := range hashes {
 			hashes[i] = NewHash(map[string]Value{})
-			// An object carries the same empty entry map but no hashData wrapper,
-			// so an array of empty objects is exactly the wrapper-free baseline for
-			// the equivalent array of empty hashes. The estimator was charging this
-			// (entry map plus slots only) for hashes too before the fix.
+			// An object carries the same empty entry map behind a smaller
+			// wrapper of its own, so an array of empty objects is the baseline
+			// for the equivalent array of empty hashes up to the difference
+			// between the two wrappers. The estimator was charging neither
+			// wrapper before the fix, leaving the two arrays identical.
 			objects[i] = NewObject(map[string]Value{})
 		}
 		hashArray := NewArray(hashes)
 
 		withWrappers := newMemoryEstimator().value(hashArray)
 		withoutWrappers := newMemoryEstimator().value(NewArray(objects))
-		// The two arrays are structurally identical except that each hash holds a
-		// hashData wrapper an object lacks, so the gap must be exactly one wrapper
-		// per hash. Before the fix the gap was zero and the array of empty hashes
-		// looked as cheap as the wrapper-free baseline.
-		if gap := withWrappers - withoutWrappers; gap != count*estimatedHashDataBytes {
-			t.Fatalf("hash wrappers mischarged: gap=%d, want %d", gap, count*estimatedHashDataBytes)
+		// The two arrays are structurally identical except for the wrapper each
+		// element holds, so the gap must be exactly the wrapper difference per
+		// element. Before the fix the gap was zero and the array of empty
+		// hashes looked as cheap as the baseline.
+		wantGap := count * (estimatedHashDataBytes - estimatedObjectDataBytes)
+		if gap := withWrappers - withoutWrappers; gap != wantGap {
+			t.Fatalf("hash wrappers mischarged: gap=%d, want %d", gap, wantGap)
 		}
 
 		// A quota set to the wrapper-free baseline fit the array before the fix;
@@ -2019,4 +2021,47 @@ func TestMemoryQuotaCountsHashDataWrapper(t *testing.T) {
 			t.Fatalf("shared wrapper double-counted or distinct wrappers undercounted: gap=%d, want >= %d", gap, (count-1)*estimatedHashDataBytes)
 		}
 	})
+}
+
+// Several object wrappers can share one entry map -- a host passing an array
+// of NewObject over the same entries makes exactly that -- and each is its own
+// allocation. Deduplicating on the entry map charged one wrapper for all of
+// them, so alias-heavy input slipped past the quota.
+func TestEachObjectWrapperIsChargedSeparately(t *testing.T) {
+	t.Parallel()
+
+	const count = 1000
+	shared := map[string]Value{"a": NewInt(1)}
+	aliases := make([]Value, count)
+	for i := range aliases {
+		aliases[i] = NewObject(shared)
+	}
+
+	one := newMemoryEstimator().value(NewArray([]Value{NewObject(shared)}))
+	many := newMemoryEstimator().value(NewArray(aliases))
+
+	// Deduplicating on the entry map charges one wrapper for the whole array,
+	// which measures 64 bytes per alias; charging each wrapper measures 96.
+	// The floor below is the map-keyed figure, so it separates the two.
+	mapKeyed := (count - 1) * (estimatedValueBytes + estimatedObjectDataBytes)
+	if delta := many - one; delta <= mapKeyed {
+		t.Fatalf("%d aliasing wrappers added %d bytes, no more than the %d a map-keyed seen-set would give",
+			count-1, delta, mapKeyed)
+	}
+}
+
+// A tagged bag's published rendering is retained by the wrapper and can
+// outlive the entry it came from, so it must be charged.
+func TestTaggedObjectStringFormIsCharged(t *testing.T) {
+	t.Parallel()
+
+	const size = 64 * 1024
+	big := strings.Repeat("x", size)
+
+	plain := newMemoryEstimator().value(NewObject(map[string]Value{}))
+	tagged := newMemoryEstimator().value(NewTaggedObject(map[string]Value{}, ObjectTagRescuedError, big))
+
+	if tagged-plain < size {
+		t.Fatalf("a %d-byte published rendering added only %d bytes to the estimate", size, tagged-plain)
+	}
 }

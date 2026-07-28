@@ -1,5 +1,7 @@
 package runtime
 
+import "fmt"
+
 // This file connects a class's to_s to the implicit string conversions:
 // interpolation and puts/print. Explicit p.to_s always worked, so the two
 // disagreed, and every log line built from a domain object rendered as
@@ -96,9 +98,40 @@ func objectStringEntry(val Value) (Value, bool) {
 	if val.Kind() != KindObject {
 		return NewNil(), false
 	}
-	rendered, ok := val.Hash()["to_s"]
-	if !ok || rendered.Kind() != KindString {
+	// The rendering comes from the form the bag published at construction,
+	// never from its entries. The entries are mutable and reachable through
+	// the public API -- Value.Hash() hands out the live map and a host builtin
+	// receives the value itself -- so a rendering read back out of them could
+	// be rewritten by anything holding the bag.
+	form, ok := val.ObjectStringForm()
+	if !ok {
 		return NewNil(), false
 	}
+	rendered := NewString(form)
 	return rendered, true
+}
+
+// objectTagMutationError reports an attempt to mutate a bag the runtime built
+// to stand for something specific.
+//
+// The tag rides in Value.scalar, which every copy of the value carries, so an
+// in-place write to the backing map cannot clear it: after
+// `e.replace({to_s: "payload"})` the bag still claimed to be a rescued error
+// and rendered the payload as its message. The tag has to keep meaning "the
+// runtime built these entries", so the entries do not change.
+func objectTagMutationError(val Value, operation string) error {
+	switch val.ObjectTag() {
+	case ObjectTagRescuedError:
+		return fmt.Errorf("%s cannot modify a rescued error", operation)
+	case ObjectTagMatchData:
+		return fmt.Errorf("%s cannot modify match data", operation)
+	}
+	return nil
+}
+
+// hashInPlaceMutators are the members that write through to the receiver's own
+// entries, as opposed to returning a new hash.
+var hashInPlaceMutators = map[string]struct{}{
+	"merge!": {}, "update": {}, "replace": {}, "store": {},
+	"delete": {}, "clear": {}, "delete_if": {}, "keep_if": {},
 }

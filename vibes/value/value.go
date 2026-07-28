@@ -128,6 +128,13 @@ func NewValue(kind ValueKind, data any) Value {
 		if h, ok := data.(map[string]Value); ok {
 			return NewHash(h)
 		}
+	case KindObject:
+		// Same for KindObject, whose payload is an *objectData wrapper. A bag
+		// round-tripped this way is an ordinary object: the provenance is not
+		// part of the public payload and is not reconstructible from it.
+		if m, ok := data.(map[string]Value); ok {
+			return NewObject(m)
+		}
 	case KindArray:
 		// A KindArray payload is internally a *arrayData wrapper, but the public
 		// payload exposed by Data is the bare element slice. Re-wrap it so that
@@ -157,6 +164,10 @@ func (v Value) Data() any {
 		// wrapper, so embedders can inspect entries and round-trip a hash
 		// through Data/NewValue. Default metadata is reached via the dedicated
 		// HashDefaultValue/HashDefaultProc accessors.
+		return v.Hash()
+	case KindObject:
+		// KindObject's payload is internally an *objectData wrapper, but Data
+		// is a supported host API that has always returned the bare entry map.
 		return v.Hash()
 	case KindArray:
 		// Expose the public element slice rather than the internal *arrayData

@@ -349,6 +349,23 @@ func NewSymbol(name string) Value { return value.NewSymbol(name) }
 // NewObject returns an object Value with the given attributes.
 func NewObject(attrs map[string]Value) Value { return value.NewObject(attrs) }
 
+// ObjectTag records what an attribute bag is, for the few bags the runtime
+// builds to stand for something specific.
+type ObjectTag = value.ObjectTag
+
+const (
+	ObjectTagNone         = value.ObjectTagNone
+	ObjectTagRescuedError = value.ObjectTagRescuedError
+	ObjectTagMatchData    = value.ObjectTagMatchData
+)
+
+// NewTaggedObject returns an attribute bag carrying provenance and the string
+// form it publishes, fixed at construction so mutating the entries cannot
+// change what it renders.
+func NewTaggedObject(attrs map[string]Value, tag ObjectTag, stringForm string) Value {
+	return value.NewTaggedObject(attrs, tag, stringForm)
+}
+
 // NewMoney returns a money Value.
 func NewMoney(m Money) Value { return value.NewMoney(m) }
 
@@ -683,7 +700,9 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 	case KindHash:
 		return cloneHostHashValue(val, state)
 	case KindObject:
-		return cloneHostMapValue(val, state, NewObject)
+		return cloneHostMapValue(val, state, func(entries map[string]Value) Value {
+			return retagClonedObject(val, entries)
+		})
 	case KindFunction:
 		return NewFunction(cloneFunctionForHostWithState(valueFunction(val), state))
 	case KindClass:
@@ -1419,4 +1438,22 @@ func runtimeValueStringRuneLen(v Value) (int, bool) {
 	runes += len("::")
 	runes += utf8.RuneCountInString(member.Name)
 	return runes, true
+}
+
+// retagClonedObject preserves an attribute bag's provenance across an internal
+// containment clone.
+//
+// The clones the runtime makes to isolate a value -- across the host boundary,
+// into a task, when rebinding call arguments -- rebuild every KindObject with
+// NewObject, which drops the tag. A match result returned by one Script.Call
+// and passed into another therefore rendered as <object> instead of the
+// matched text. These clones are the runtime copying its own value, so the
+// provenance still holds; a bag that script code rebuilds goes through
+// NewObject and still loses it, which is the point of the tag.
+func retagClonedObject(src Value, entries map[string]Value) Value {
+	if tag := src.ObjectTag(); tag != ObjectTagNone {
+		form, _ := src.ObjectStringForm()
+		return NewTaggedObject(entries, tag, form)
+	}
+	return NewObject(entries)
 }

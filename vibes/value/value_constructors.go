@@ -210,6 +210,24 @@ func HashIdentity(v Value) uintptr {
 	return 0
 }
 
+// ObjectIdentity returns the identity of the objectData wrapper a KindObject
+// value allocates, or 0 for anything else. Each wrapper is a distinct
+// allocation even when several share one entry map, so the sandbox's memory
+// accounting deduplicates on this rather than on the map.
+//
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func ObjectIdentity(v Value) uintptr {
+	if v.kind != KindObject {
+		return 0
+	}
+	if od, ok := v.data.(*objectData); ok {
+		return uintptr(unsafe.Pointer(od))
+	}
+	return 0
+}
+
 // NewMoney returns a money Value.
 func NewMoney(m Money) Value { return Value{kind: KindMoney, data: m} }
 
@@ -233,8 +251,105 @@ func NewObject(attrs map[string]Value) Value {
 	if attrs == nil {
 		attrs = map[string]Value{}
 	}
-	return Value{kind: KindObject, data: attrs}
+	return Value{kind: KindObject, data: &objectData{entries: attrs}}
+}
+
+// objectData is a KindObject payload: the entry map plus, for the few bags the
+// runtime builds to stand for something specific, the provenance and the
+// string form fixed at construction.
+//
+// The string form is stored rather than read back out of the entries because
+// the entries are mutable and reachable through the public API -- Value.Hash()
+// hands out the live map, and a host builtin receives the value itself. A
+// rendering derived from the entries could therefore be rewritten by anything
+// holding the bag, which is exactly the spoof the provenance exists to
+// prevent. Fixing it at construction makes the rendering immutable no matter
+// who mutates the map afterwards.
+type objectData struct {
+	entries    map[string]Value
+	tag        ObjectTag
+	stringForm string
+}
+
+// ObjectTag records what an attribute bag is, for the few bags the runtime
+// builds to stand for something specific.
+//
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md). Behavior that would otherwise have
+// to be inferred from a bag's field names reads the tag instead: field names
+// are public, host-settable data, so any bag could carry the same ones and
+// claim the same treatment.
+type ObjectTag uint8
+
+const (
+	// ObjectTagNone marks an ordinary attribute bag, which is every bag
+	// NewObject builds. It is the zero value, so untagged is the default.
+	ObjectTagNone ObjectTag = iota
+	// ObjectTagRescuedError marks the bag a rescue binds, whose to_s is the
+	// error message.
+	ObjectTagRescuedError
+	// ObjectTagMatchData marks the bag a regexp match returns, whose to_s is
+	// the matched text as in Ruby's MatchData.
+	ObjectTagMatchData
+)
+
+// NewTaggedObject returns an attribute bag carrying provenance. The tag rides
+// in the scalar word, which an object otherwise leaves unused, so it costs
+// nothing and cannot appear as an entry: it is invisible to keys, values,
+// inspect, and JSON, and script code has no way to set it.
+//
+// It is intended for the interpreter's internal use; hosts should not call
+// it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func NewTaggedObject(attrs map[string]Value, tag ObjectTag, stringForm string) Value {
+	if attrs == nil {
+		attrs = map[string]Value{}
+	}
+	return Value{kind: KindObject, data: &objectData{entries: attrs, tag: tag, stringForm: stringForm}}
+}
+
+// ObjectTag reports the provenance of an attribute bag, or ObjectTagNone for
+// anything else.
+//
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md). A bag that has been rebuilt (merged, duplicated, or produced
+// by host code) reports ObjectTagNone, so the tag only ever vouches for a bag
+// the runtime built itself.
+func (v Value) ObjectTag() ObjectTag {
+	if v.kind != KindObject {
+		return ObjectTagNone
+	}
+	return v.data.(*objectData).tag
+}
+
+// ObjectStringForm returns the rendering a tagged bag published at
+// construction, and reports false for an ordinary bag. It is fixed then and
+// never read back out of the entries, so mutating them cannot change it.
+//
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) ObjectStringForm() (string, bool) {
+	if v.kind != KindObject {
+		return "", false
+	}
+	obj := v.data.(*objectData)
+	if obj.tag == ObjectTagNone {
+		return "", false
+	}
+	return obj.stringForm, true
 }
 
 // NewRange returns a range Value.
 func NewRange(r Range) Value { return Value{kind: KindRange, data: r} }
+
+// ObjectDataBytes is the heap footprint of the objectData wrapper every
+// KindObject value allocates around its entry map, for the sandbox's memory
+// accounting.
+//
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+const ObjectDataBytes = int(unsafe.Sizeof(objectData{}))

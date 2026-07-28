@@ -1277,8 +1277,16 @@ func (v Value) Identical(other Value) bool {
 		// empty ones) are never identical.
 		return HashIdentity(v) == HashIdentity(other)
 	case KindObject:
-		left := v.data.(map[string]Value)
-		right := other.data.(map[string]Value)
+		// The tag is part of a bag's identity, not just of its rendering. Two
+		// wrappers over one entry map that carry different provenance are
+		// different objects: one is immutable and renders its string form,
+		// the other is an ordinary bag. Leaving them identical here would also
+		// contradict containment cloning, which gives them separate copies.
+		if v.ObjectTag() != other.ObjectTag() {
+			return false
+		}
+		left := v.data.(*objectData).entries
+		right := other.data.(*objectData).entries
 		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer()
 	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance:
 		// These runtime kinds already compare by backing-pointer identity in

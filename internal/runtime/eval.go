@@ -2278,6 +2278,9 @@ func classConstantAssignmentSelf(name string, env *Env) (Value, bool) {
 func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Value) error {
 	switch obj.Kind() {
 	case KindHash, KindObject:
+		if err := objectTagMutationError(obj, "member assignment"); err != nil {
+			return exec.errorAt(target.Pos(), "%s", err.Error())
+		}
 		key := NewString(target.Property)
 		if obj.Kind() == KindHash {
 			key = hashMemberAssignmentKey(obj, target.Property)
@@ -2324,6 +2327,9 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		// before the write so key-heavy loops stay inside the step quota.
 		if err := exec.chargeBigIntKeySteps(indices[0]); err != nil {
 			return err
+		}
+		if err := objectTagMutationError(obj, "index assignment"); err != nil {
+			return exec.errorAt(target.Position, "%s", err.Error())
 		}
 		if err := hashSet(obj, indices[0], value); err != nil {
 			return exec.errorAt(target.IndexPos(0), "%s", err.Error())
@@ -4748,7 +4754,7 @@ func rescuedErrorValue(err error) Value {
 		"code_frame": NewString(codeFrame),
 		"backtrace":  NewArray(backtrace),
 	}
-	return NewObject(fields)
+	return NewTaggedObject(fields, ObjectTagRescuedError, message)
 }
 
 func runtimeErrorBacktrace(err *RuntimeError) []Value {

@@ -35,6 +35,10 @@ const (
 // array of Hash.new or empty literals).
 const estimatedHashDataBytes = value.HashDataBytes
 
+// estimatedObjectDataBytes is the heap footprint of the objectData wrapper
+// every KindObject value allocates around its entry map.
+const estimatedObjectDataBytes = value.ObjectDataBytes
+
 const (
 	estimatedHashLookupKeyBytes = int(unsafe.Sizeof(value.HashLookupKey{}))
 	estimatedHashEntryBytes     = int(unsafe.Sizeof(HashEntry{}))
@@ -69,6 +73,7 @@ type memoryEstimator struct {
 	seenEnvs         map[*Env]struct{}
 	seenMaps         map[uintptr]struct{}
 	seenHashData     map[uintptr]struct{}
+	seenObjectData   map[uintptr]struct{}
 	seenSlices       map[uintptr]struct{}
 	seenStrings      map[stringIdentity]struct{}
 	seenClasses      map[*ClassDef]struct{}
@@ -103,15 +108,16 @@ type memoryEstimator struct {
 // single-slot frozen cache is not journaled per-write; probe captures its
 // pre-probe value and rollback restores it directly.
 type estimatorJournal struct {
-	envs      []*Env
-	maps      []uintptr
-	hashData  []uintptr
-	slices    []uintptr
-	strings   []stringIdentity
-	classes   []*ClassDef
-	instances []*Instance
-	blocks    []*Block
-	builtins  []*Builtin
+	envs       []*Env
+	maps       []uintptr
+	hashData   []uintptr
+	objectData []uintptr
+	slices     []uintptr
+	strings    []stringIdentity
+	classes    []*ClassDef
+	instances  []*Instance
+	blocks     []*Block
+	builtins   []*Builtin
 
 	// limit, when positive, bounds how many insertions this journal records;
 	// entries counts them and overflowed reports that the limit was hit. A
@@ -156,7 +162,7 @@ func sessionJournalBudget(baseIdentities int) int {
 // relative to the base walk it protects.
 func (est *memoryEstimator) identityCount() int {
 	return est.seenEnvInlineLen + len(est.seenEnvs) + len(est.seenMaps) +
-		len(est.seenHashData) + len(est.seenSlices) + len(est.seenStrings) +
+		len(est.seenHashData) + len(est.seenObjectData) + len(est.seenSlices) + len(est.seenStrings) +
 		len(est.seenClasses) + len(est.seenInstances) + len(est.seenBlocks) +
 		len(est.seenBuiltins)
 }
@@ -190,6 +196,7 @@ func (est *memoryEstimator) reset() {
 	clear(est.seenEnvs)
 	clear(est.seenMaps)
 	clear(est.seenHashData)
+	clear(est.seenObjectData)
 	clear(est.seenSlices)
 	clear(est.seenStrings)
 	clear(est.seenClasses)
@@ -233,6 +240,9 @@ func (j *estimatorJournal) rollback(est *memoryEstimator, prevFrozen *Env) {
 	for _, id := range j.maps {
 		delete(est.seenMaps, id)
 	}
+	for _, id := range j.objectData {
+		delete(est.seenObjectData, id)
+	}
 	for _, id := range j.hashData {
 		delete(est.seenHashData, id)
 	}
@@ -270,6 +280,7 @@ func (j *estimatorJournal) clear() {
 	j.envs = j.envs[:0]
 	j.maps = j.maps[:0]
 	j.hashData = j.hashData[:0]
+	j.objectData = j.objectData[:0]
 	j.slices = j.slices[:0]
 	j.strings = j.strings[:0]
 	clear(j.classes)
@@ -2686,6 +2697,16 @@ func (est *memoryEstimator) value(val Value) int {
 		size += est.valuePayload(hashDefaultValue(val))
 		size += est.valuePayload(hashDefaultProc(val))
 	case KindObject:
+		size += est.objectWrapperBytes(val)
+		// A tagged bag's published rendering is retained by the wrapper and can
+		// outlive the entry it was taken from: a host may remove or replace
+		// to_s through the live map while the rendering stays. It goes through
+		// the estimator's string accounting so it still deduplicates while it
+		// does alias an entry.
+		if form, ok := val.ObjectStringForm(); ok {
+			size += estimatedStringHeaderBytes
+			size += est.stringPayloadSize(form)
+		}
 		size += est.hash(val.Hash())
 	case KindClass:
 		cl := valueClass(val)
@@ -2933,7 +2954,8 @@ func sliceBackingIdentity(values []Value) uintptr {
 // hashWrapperBytes charges the hashData wrapper a KindHash value allocates
 // around its entry map, plus any typed-key entry map retained by that wrapper.
 // It is deduplicated on the wrapper's identity so aliases count the extra hash
-// state once. It returns 0 for KindObject, which uses a bare map.
+// state once. KindObject allocates its own smaller wrapper, charged by
+// objectWrapperBytes.
 func (est *memoryEstimator) hashWrapperBytes(val Value) int {
 	if val.Kind() != KindHash {
 		return 0
@@ -3082,4 +3104,33 @@ func (r *retainedOutputScratch) release() {
 	}
 	r.exec.releaseLoopScratch(r.reserved)
 	r.reserved = 0
+}
+
+// objectWrapperBytes charges the objectData wrapper a KindObject value
+// allocates around its entry map. Like hashWrapperBytes it deduplicates on the
+// entry map's identity, so wrappers sharing one map count the extra state
+// once. Without it a workload holding many small objects -- a JSON array of
+// empty ones, say -- was undercounted by a wrapper apiece.
+func (est *memoryEstimator) objectWrapperBytes(val Value) int {
+	if val.Kind() != KindObject {
+		return 0
+	}
+	// Keyed on the wrapper, not the entry map: several wrappers can share one
+	// map -- a host passing an array of NewObject over the same entries makes
+	// exactly that -- and each is its own allocation.
+	id := value.ObjectIdentity(val)
+	if id == 0 {
+		return estimatedObjectDataBytes
+	}
+	if _, seen := est.seenObjectData[id]; seen {
+		return 0
+	}
+	if est.seenObjectData == nil {
+		est.seenObjectData = make(map[uintptr]struct{})
+	}
+	est.seenObjectData[id] = struct{}{}
+	if est.journal != nil && est.journal.record() {
+		est.journal.objectData = append(est.journal.objectData, id)
+	}
+	return estimatedObjectDataBytes
 }

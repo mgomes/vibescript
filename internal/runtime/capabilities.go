@@ -41,13 +41,16 @@ type CapabilityBinding struct {
 	Engine  *Engine
 }
 
+// cloneHash copies a capability's argument or option hash. This is boundary
+// isolation -- the runtime handing the adapter its own copy -- not the
+// script-visible dup, so a bag the runtime built keeps its provenance.
 func cloneHash(src map[string]Value) map[string]Value {
 	if len(src) == 0 {
 		return map[string]Value{}
 	}
 	out := make(map[string]Value, len(src))
 	for k, v := range src {
-		out[k] = deepCloneValue(v)
+		out[k] = deepCloneValueForContainment(v)
 	}
 	return out
 }
@@ -70,10 +73,27 @@ type deepCloneState struct {
 	arrayCount   int
 	hashCount    int
 	objectCount  int
+
+	// preserveTags carries an attribute bag's provenance into the clone. It is
+	// set only for the runtime's own containment clones, never for the
+	// script-visible dup and clone, which share this helper: a bag script code
+	// duplicates becomes an ordinary object, so the tag cannot be laundered
+	// onto content the script then edits.
+	preserveTags bool
 }
 
+// deepCloneValue is the script-visible duplication. A cloned attribute bag
+// loses its provenance tag and renders as an ordinary object.
 func deepCloneValue(val Value) Value {
 	var state deepCloneState
+	return deepCloneValueWithState(val, &state)
+}
+
+// deepCloneValueForContainment is the runtime copying a value to isolate it --
+// into a task, across a boundary. The copy stands for the same value, so a
+// recognized provenance tag survives.
+func deepCloneValueForContainment(val Value) Value {
+	state := deepCloneState{preserveTags: true}
 	return deepCloneValueWithState(val, &state)
 }
 
@@ -130,13 +150,17 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 		obj := val.Hash()
 		id := reflect.ValueOf(obj).Pointer()
 		if id != 0 {
-			if cloned, ok := state.clonedObject(id); ok {
-				return cloned
+			// A wrapper whose tag differs from the cached clone's gets its own
+			// copy: a tagged bag is immutable, and sharing entries with an
+			// untagged alias would let a write through the alias change what
+			// the tagged one renders.
+			if cloned, ok := state.clonedObject(state.objectCacheID(id, val)); ok {
+				return state.wrapCloned(val, cloned)
 			}
 		}
 		cloned := make(map[string]Value, len(obj))
-		clonedValue := NewObject(cloned)
-		state.rememberObject(id, clonedValue)
+		clonedValue := state.wrapCloned(val, NewObject(cloned))
+		state.rememberObject(state.objectCacheID(id, val), clonedValue)
 		for k, v := range obj {
 			cloned[k] = deepCloneValueWithState(v, state)
 		}
@@ -207,6 +231,44 @@ func (state *deepCloneState) rememberHash(id uintptr, cloned Value) {
 		state.hashes[entry.id] = entry.value
 	}
 	state.hashes[id] = cloned
+}
+
+// clonedTagFor is the tag wrapCloned would give this wrapper's clone, used to
+// decide whether the cached clone may be shared with it.
+func (state *deepCloneState) clonedTagFor(src Value) ObjectTag {
+	if !state.preserveTags {
+		return ObjectTagNone
+	}
+	return src.ObjectTag()
+}
+
+// wrapCloned gives the shared clone the provenance of the wrapper being
+// cloned. Without preserveTags every clone is an ordinary bag, which is the
+// script-visible dup behavior.
+func (state *deepCloneState) wrapCloned(src, cloned Value) Value {
+	if !state.preserveTags {
+		if cloned.ObjectTag() == ObjectTagNone {
+			return cloned
+		}
+		return NewObject(cloned.Hash())
+	}
+	if cloned.ObjectTag() == src.ObjectTag() {
+		return cloned
+	}
+	return retagClonedObject(src, cloned.Hash())
+}
+
+// objectCacheID folds the wrapper's provenance into the cache id, so a tagged
+// and an untagged wrapper over one entry map get independent clones and each
+// still terminates a cycle. Caching only the first wrapper left the other
+// uncached, and a cyclic map reachable through both recursed without end.
+func (state *deepCloneState) objectCacheID(id uintptr, src Value) uintptr {
+	if state.clonedTagFor(src) == ObjectTagNone {
+		return id
+	}
+	// A tag-qualified id must not collide with a plain one. Rotating keeps
+	// distinct maps distinct while separating the tagged view of each.
+	return id<<1 ^ uintptr(state.clonedTagFor(src))
 }
 
 func (state *deepCloneState) clonedObject(id uintptr) (Value, bool) {
@@ -323,6 +385,7 @@ type capabilityDataCloneScanner struct {
 	label          string
 	clonedArrays   map[uintptr]Value
 	clonedMaps     map[uintptr]Value
+	clonedObjects  map[objectCloneKey]Value
 	visitingArrays map[uintptr]struct{}
 	visitingMaps   map[uintptr]struct{}
 }
@@ -335,6 +398,7 @@ func cloneCapabilityDataOnlyValue(label string, val Value) (Value, error) {
 		label:          label,
 		clonedArrays:   make(map[uintptr]Value),
 		clonedMaps:     make(map[uintptr]Value),
+		clonedObjects:  make(map[objectCloneKey]Value),
 		visitingArrays: make(map[uintptr]struct{}),
 		visitingMaps:   make(map[uintptr]struct{}),
 	}
@@ -445,15 +509,20 @@ func (s *capabilityDataCloneScanner) cloneObject(val Value) (Value, error) {
 		if _, visiting := s.visitingMaps[ptr]; visiting {
 			return NewNil(), fmt.Errorf("%s must not contain cyclic references", s.label)
 		}
-		if cloned, ok := s.clonedMaps[ptr]; ok {
+		// Keyed by provenance as well as entry map: a host can return both a
+		// tagged bag and NewObject over its live Hash(), and sharing one clone
+		// would give the plain wrapper the tag or strip the tagged one's
+		// published rendering, depending on which was cloned first.
+		key := objectCloneKey{ptr: ptr, tag: val.ObjectTag()}
+		if cloned, ok := s.clonedObjects[key]; ok {
 			return cloned, nil
 		}
 		s.visitingMaps[ptr] = struct{}{}
 	}
 	clonedEntries := make(map[string]Value, len(entries))
-	cloned := NewObject(clonedEntries)
+	cloned := retagClonedObject(val, clonedEntries)
 	if ptr != 0 {
-		s.clonedMaps[ptr] = cloned
+		s.clonedObjects[objectCloneKey{ptr: ptr, tag: val.ObjectTag()}] = cloned
 	}
 	for key, item := range entries {
 		clonedItem, err := s.clone(item)

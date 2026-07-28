@@ -112,7 +112,7 @@ func (v Value) Hash() map[string]Value {
 		}
 		return hd.entries
 	case KindObject:
-		return v.data.(map[string]Value)
+		return v.data.(*objectData).entries
 	default:
 		return nil
 	}
@@ -129,7 +129,7 @@ func (v Value) HashStringMapIfMaterialized() (map[string]Value, bool) {
 		entries := v.data.(*hashData).entries
 		return entries, entries != nil
 	case KindObject:
-		return v.data.(map[string]Value), true
+		return v.data.(*objectData).entries, true
 	default:
 		return nil, false
 	}

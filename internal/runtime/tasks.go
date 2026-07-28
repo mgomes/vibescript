@@ -937,14 +937,14 @@ func (cloner *taskGlobalCloner) clone(val Value) Value {
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
 		if clone, seen := cloner.seenMaps[ptr]; seen {
-			return NewObject(clone)
+			return retagClonedObject(val, clone)
 		}
 		clonedEntries := make(map[string]Value, len(entries))
 		cloner.seenMaps[ptr] = clonedEntries
 		for key, item := range entries {
 			clonedEntries[key] = cloner.clone(item)
 		}
-		return NewObject(clonedEntries)
+		return retagClonedObject(val, clonedEntries)
 	case KindInstance:
 		inst := valueInstance(val)
 		if inst == nil {
@@ -1001,5 +1001,5 @@ func cloneTaskValue(label string, val Value) (Value, error) {
 	if err := validateCapabilityDataOnlyValue(label, val); err != nil {
 		return NewNil(), err
 	}
-	return deepCloneValue(val), nil
+	return deepCloneValueForContainment(val), nil
 }

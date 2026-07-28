@@ -487,7 +487,7 @@ func cloneBuiltinValueForCall(val Value) Value {
 	case KindHash:
 		return NewHash(cloneBuiltinMapForCall(val.Hash()))
 	case KindObject:
-		return NewObject(cloneBuiltinMapForCall(val.Hash()))
+		return retagClonedObject(val, cloneBuiltinMapForCall(val.Hash()))
 	default:
 		return val
 	}
@@ -537,7 +537,7 @@ func cloneBuiltinValue(val Value) Value {
 	case KindHash:
 		return NewHash(cloneBuiltinMap(val.Hash()))
 	case KindObject:
-		return NewObject(cloneBuiltinMap(val.Hash()))
+		return retagClonedObject(val, cloneBuiltinMap(val.Hash()))
 	default:
 		return val
 	}
