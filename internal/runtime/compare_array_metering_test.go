@@ -158,6 +158,46 @@ func TestSortPreservesSandboxErrors(t *testing.T) {
 	}
 }
 
+// Every ordering member routes its comparison failures through the same
+// translation, so a sandbox limit must survive all of them rather than being
+// relabelled as an incomparability on some paths.
+func TestEveryOrderingMemberPreservesSandboxErrors(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		"rows.sort.length",
+		"rows.sort_by { |r| r }.length",
+		"rows.sort!.length",
+		"rows.min.length",
+		"rows.max.length",
+		"rows.minmax.length",
+		"rows.min_by { |r| r }.length",
+		"rows.max_by { |r| r }.length",
+	} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: 400, MemoryQuotaBytes: 64 << 20},
+				"def run(rows)\n  begin\n    "+body+"\n  rescue => e\n    \"rescued\"\n  end\nend")
+			rows := make([]Value, 300)
+			for i := range rows {
+				inner := make([]Value, 200)
+				for j := range inner {
+					inner[j] = NewInt(1)
+				}
+				inner[len(inner)-1] = NewInt(int64(i))
+				rows[i] = NewArray(inner)
+			}
+			_, err := script.Call(context.Background(), "run", []Value{NewArray(rows)}, CallOptions{})
+			if err == nil {
+				t.Fatalf("%s: the step quota was caught by rescue: a sandbox limit must stay uncatchable", body)
+			}
+			if !strings.Contains(err.Error(), "step quota") {
+				t.Fatalf("%s: error = %v, want the step-quota error rather than an incomparability message", body, err)
+			}
+		})
+	}
+}
+
 // A genuine incomparability still reports as one.
 func TestSortStillReportsIncomparableValues(t *testing.T) {
 	t.Parallel()
@@ -175,37 +215,82 @@ func TestSortStillReportsIncomparableValues(t *testing.T) {
 	}
 }
 
-// The memo is a Go-local map, invisible to the periodic memory check, so
-// bounding the walk's CPU with it would otherwise trade unbounded time for
-// unbounded host memory: two equal structures with many distinct nested pairs
-// retain one entry each until the comparison finishes.
-func TestComparisonMemoIsChargedAgainstTheMemoryQuota(t *testing.T) {
+// The memo is a Go-local map the periodic memory check cannot see, so its
+// size is fixed up front and reserved in one charge. Growing it per entry was
+// the alternative and it needed a rollback on every dropped entry, a rule for
+// which error wins when a reservation fails mid-unwind, and a quota check that
+// walks the whole reachable heap -- O(N^2) unmetered work after an O(N)-step
+// descent, because these comparisons run inside builtin dispatch where the
+// base-walk cache is disabled.
+func TestComparisonMemoFootprintIsBounded(t *testing.T) {
 	t.Parallel()
-	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 220 * 1024}, `
-    def run(a, b)
-      (a <=> b).inspect
-    end
-    `)
-	// Many distinct nested pairs, so the memo grows one entry per pair.
+
+	// Far more distinct nested pairs than the memo can hold, so an unbounded
+	// memo would retain one entry each until the comparison finished.
 	build := func() Value {
-		rows := make([]Value, 4000)
+		rows := make([]Value, arrayCompareMemoMaxEntries*8)
 		for i := range rows {
 			rows[i] = NewArray([]Value{NewInt(int64(i)), NewInt(int64(i))})
 		}
 		return NewArray(rows)
 	}
-	if _, err := script.Call(context.Background(), "run", []Value{build(), build()}, CallOptions{}); err == nil {
-		t.Fatalf("expected the memo's growth to be visible to the memory quota")
+	a, b := build(), build()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 8 << 20}, `
+    def run(a, b)
+      (a <=> b).inspect
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", []Value{a, b}, CallOptions{})
+	if err != nil {
+		t.Fatalf("comparing many distinct pairs: %v", err)
+	}
+	if got.String() != "0" {
+		t.Fatalf("comparison = %s, want 0", got.String())
+	}
+}
+
+// A quota too small to hold the memo runs the comparison without one: correct,
+// slower on shared structures, and still bounded by the step quota. Failing
+// the whole comparison because a cache did not fit would be the wrong trade.
+func TestComparisonWithoutRoomForTheMemoStillAnswers(t *testing.T) {
+	t.Parallel()
+
+	build := func(last int64) Value {
+		rows := make([]Value, 50)
+		for i := range rows {
+			rows[i] = NewArray([]Value{NewInt(int64(i))})
+		}
+		rows[len(rows)-1] = NewArray([]Value{NewInt(last)})
+		return NewArray(rows)
+	}
+
+	// Below the memo's own footprint, so the reservation cannot be taken.
+	const quota = arrayCompareMemoMaxEntries * arrayCompareMemoEntryBytes / 2
+	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: quota}, `
+    def run(a, b)
+      (a <=> b).inspect
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", []Value{build(1), build(2)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("a comparison with no room for the memo was rejected: %v", err)
+	}
+	if got.String() != "-1" {
+		t.Fatalf("comparison = %s, want -1", got.String())
 	}
 }
 
 // The memo's reservation must not change the answer for an ordinary
-// comparison that fits comfortably.
+// comparison that fits comfortably, and must be released afterwards so a
+// later comparison has its full budget.
 func TestComparisonStaysCorrectWithTheMemoReservation(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 2 << 20}, `
     def run(a, b)
-      (a <=> b).inspect
+      first = (a <=> b).inspect
+      second = (a <=> b).inspect
+      "#{first}#{second}"
     end
     `)
 	build := func(last int64) Value {
@@ -218,49 +303,21 @@ func TestComparisonStaysCorrectWithTheMemoReservation(t *testing.T) {
 	}
 	got, err := script.Call(context.Background(), "run", []Value{build(1), build(2)}, CallOptions{})
 	if err != nil {
-		t.Fatalf("call: %v", err)
+		t.Fatalf("repeated comparisons exhausted the quota through a leaked reservation: %v", err)
 	}
-	if got.String() != "-1" {
-		t.Fatalf("comparison = %s, want -1", got.String())
-	}
-}
-
-// A memo entry that does not fit is dropped, and its reservation must be
-// rolled back: repeated failed insertions would otherwise accumulate phantom
-// scratch and shrink the budget for everything after them.
-func TestDroppedMemoEntriesLeaveNoReservation(t *testing.T) {
-	t.Parallel()
-	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 4 << 20}, `
-    def run(a, b, filler)
-      first = (a <=> b).inspect
-      # A second comparison must still have its full budget: the first one's
-      # dropped memo entries must not have consumed any.
-      second = (a <=> b).inspect
-      "#{first}#{second}"
-    end
-    `)
-	build := func() Value {
-		rows := make([]Value, 3000)
-		for i := range rows {
-			rows[i] = NewArray([]Value{NewInt(int64(i)), NewInt(int64(i))})
-		}
-		return NewArray(rows)
-	}
-	got, err := script.Call(context.Background(), "run", []Value{build(), build(), NewNil()}, CallOptions{})
-	if err != nil {
-		t.Fatalf("repeated comparisons exhausted the quota through leaked reservations: %v", err)
-	}
-	if got.String() != "00" {
-		t.Fatalf("comparisons = %s, want 00", got.String())
+	if got.String() != "-1-1" {
+		t.Fatalf("comparisons = %s, want -1-1", got.String())
 	}
 }
 
 // A deeply nested single-child comparison memoizes only during its final
-// unwind, after every step-driven check has already run, so the memo's growth
-// would escape the quota entirely without a check on the reservation path.
+// unwind. The bound applies there too: it stops caching rather than growing,
+// so the deep case costs no more host memory than any other. The depth is
+// well past arrayCompareMemoMaxEntries, so the unwind runs out of budget and
+// keeps going.
 func TestDeepUnwindMemoIsStillBounded(t *testing.T) {
 	t.Parallel()
-	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 300 * 1024}, `
+	script := compileScriptWithConfig(t, Config{StepQuota: 100_000_000, MemoryQuotaBytes: 8 << 20}, `
     def build(d)
       cur = [1]
       i = 0
@@ -271,12 +328,16 @@ func TestDeepUnwindMemoIsStillBounded(t *testing.T) {
       cur
     end
     def run()
-      a = build(20000)
-      b = build(20000)
+      a = build(2000)
+      b = build(2000)
       (a <=> b).inspect
     end
     `)
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("a 20000-deep comparison memoized past the quota during its unwind")
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("a 20000-deep comparison was rejected: %v", err)
+	}
+	if got.String() != "0" {
+		t.Fatalf("comparison = %s, want 0", got.String())
 	}
 }

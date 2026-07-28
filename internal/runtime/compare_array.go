@@ -53,15 +53,14 @@ type arrayCompareState struct {
 	// a shortcut fired depends on the enclosing cycle and is not reusable
 	// elsewhere, so only results whose subtree took none are memoized.
 	cycleShortcuts int
-	// memoReserved is the scratch currently reserved for the memo. The memo is
-	// a Go-local map, invisible to the periodic memory check, so bounding the
-	// walk's CPU with it would otherwise trade unbounded time for unbounded
-	// host memory: two equal structures with many distinct nested pairs retain
-	// one entry each until the whole comparison finishes.
+	// memoBudget is how many more pairs may be memoized. The memo is a
+	// Go-local map the periodic memory check cannot see, so its size is fixed
+	// up front and reserved in one charge rather than grown per entry. Once
+	// the budget is spent the walk stops memoizing and recomputes instead,
+	// which is slower but still bounded by the step quota.
+	memoBudget int
+	// memoReserved is the scratch held for the memo for the walk's duration.
 	memoReserved int
-	// memoSinceCheck counts reservations taken since the quota was last
-	// consulted.
-	memoSinceCheck int
 }
 
 // arrayCompareMemoEntryBytes is the charge for one memoized pair.
@@ -73,36 +72,38 @@ type arrayCompareState struct {
 // to cover the map's own footprint.
 const arrayCompareMemoEntryBytes = 128
 
-// reserveMemoEntry charges one more memo entry against the memory quota.
-//
-// It reserves without checking. The reservation raises reservedScratchBytes,
-// which the periodic check driven by the per-element step charge already
-// consults, so the memo's growth is accounted for without a check here.
-// Checking per entry would be far worse than the problem: these comparisons
-// run inside builtin dispatch, where the base-walk cache is deliberately
-// disabled, so every insertion would walk the whole reachable heap and turn a
-// linear memo into a quadratic one.
-// arrayCompareMemoCheckInterval is how many memo reservations may accumulate
-// before the quota is consulted. Checking every entry walks the whole
-// reachable heap, because these comparisons run inside builtin dispatch where
-// the base-walk cache is disabled; never checking lets a descent that
-// memoizes only during its final unwind escape entirely, since the
-// step-driven checks all ran before any entry existed. Checking periodically
-// bounds both the walk cost and the overshoot.
-const arrayCompareMemoCheckInterval = 64
+// arrayCompareMemoMaxEntries bounds the memo. It is generous enough for the
+// sharing the memo exists to collapse -- a shared DAG has one distinct pair
+// per level, so this covers nesting far deeper than any real structure --
+// while capping the host memory a comparison can hold at 128KB.
+const arrayCompareMemoMaxEntries = 1024
 
-func (state *arrayCompareState) reserveMemoEntry() error {
-	if state == nil || state.exec == nil {
-		return nil
+// newArrayCompareState reserves the memo's whole footprint once, up front.
+//
+// Reserving per entry was the alternative and it was worse in three ways: the
+// reservation had to be rolled back when an entry was dropped, a failure
+// partway through unwinding raced the comparison's own error, and the quota
+// check it needed walks the entire reachable heap, because these comparisons
+// run inside builtin dispatch where the base-walk cache is disabled -- so an
+// N-deep unwind did O(N^2) unmetered work after an O(N)-step descent.
+//
+// Charging once removes all three. If the reservation does not fit, the walk
+// runs without a memo: correct, slower on shared structures, and still
+// bounded by the step quota.
+func newArrayCompareState(exec *Execution) *arrayCompareState {
+	state := &arrayCompareState{exec: exec}
+	if exec == nil {
+		state.memoBudget = arrayCompareMemoMaxEntries
+		return state
 	}
-	state.exec.reserveLoopScratch(arrayCompareMemoEntryBytes)
-	state.memoReserved += arrayCompareMemoEntryBytes
-	state.memoSinceCheck++
-	if state.memoSinceCheck < arrayCompareMemoCheckInterval {
-		return nil
+	reserved := exec.reserveLoopScratch(arrayCompareMemoMaxEntries * arrayCompareMemoEntryBytes)
+	if err := exec.checkMemory(); err != nil {
+		exec.releaseLoopScratch(reserved)
+		return state
 	}
-	state.memoSinceCheck = 0
-	return state.exec.checkMemory()
+	state.memoReserved = reserved
+	state.memoBudget = arrayCompareMemoMaxEntries
+	return state
 }
 
 // release returns the memo's reservation once the comparison that built it is
@@ -181,15 +182,13 @@ func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int
 				state.done = map[arrayComparePair]arrayCompareResult{}
 			}
 			if _, already := state.done[pair]; !already {
-				if reserveErr := state.reserveMemoEntry(); reserveErr != nil {
-					// The memo cannot grow within the quota. Report it rather
-					// than memoizing past the limit; the comparison is
-					// abandoned like any other quota failure.
-					if err == nil {
-						order, ordered, err = 0, false, reserveErr
-					}
+				// The memo is full. Recomputing is correct and still metered,
+				// so the walk simply stops caching rather than growing past
+				// what was reserved for it.
+				if state.memoBudget <= 0 {
 					return
 				}
+				state.memoBudget--
 			}
 			state.done[pair] = arrayCompareResult{order: order, ordered: ordered, err: err}
 		}()
@@ -229,7 +228,7 @@ func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int
 // neither even though sort accepts them.
 func compareSpaceshipOrder(exec *Execution, left, right Value) (order int, ordered bool, err error) {
 	if left.Kind() == KindArray && right.Kind() == KindArray {
-		state := &arrayCompareState{exec: exec}
+		state := newArrayCompareState(exec)
 		defer state.release()
 		return compareArrayOrder(left.Array(), right.Array(), state)
 	}
