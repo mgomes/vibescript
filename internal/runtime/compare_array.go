@@ -129,6 +129,22 @@ func (state *arrayCompareState) ensureMemo() {
 	state.done = make(map[arrayComparePair]arrayCompareResult, arrayCompareMemoMaxEntries)
 }
 
+// resetMemo drops every cached result while keeping the map and its
+// reservation, so a driver that must not carry results across a boundary
+// still pays for the memo only once.
+//
+// min_by and max_by need this: their block runs between comparisons and can
+// mutate an array it already returned as a key, which would leave an entry --
+// keyed by backing address and length -- describing a value that no longer
+// holds.
+func (state *arrayCompareState) resetMemo() {
+	if state == nil || state.done == nil {
+		return
+	}
+	clear(state.done)
+	state.memoBudget = arrayCompareMemoMaxEntries
+}
+
 // release returns the memo's reservation once the comparison that built it is
 // finished with it.
 func (state *arrayCompareState) release() {

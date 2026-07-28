@@ -652,22 +652,20 @@ func arrayMemberMinMaxBy(name string, wantMax bool) Value {
 			return NewNil(), err
 		}
 		best := arr[0]
+		// One state for the pass, as elsewhere, but its results are cleared
+		// before each comparison: the block runs in between and can mutate an
+		// array it already returned as a key. Keeping the state means the
+		// memo and its reservation are still paid for once.
+		cmpState := newArrayCompareState(exec)
+		defer cmpState.release()
 		for _, item := range arr[1:] {
 			blockArg[0] = item
 			key, err := runner.call(blockArg[:])
 			if err != nil {
 				return NewNil(), err
 			}
-			// A fresh state per comparison, unlike the other ordering members.
-			// The block runs between comparisons and can mutate an array it
-			// already returned as a key, which leaves a memo entry -- keyed by
-			// backing address and length -- describing a value that no longer
-			// holds. Deciding min_by from a stale entry picked the wrong
-			// element. ensureMemo is lazy, so scalar keys still allocate
-			// nothing here.
-			cmpState := newArrayCompareState(exec)
+			cmpState.resetMemo()
 			cmp, err := arraySortCompareValuesWith(cmpState, key, bestKey)
-			cmpState.release()
 			if err != nil {
 				return NewNil(), sortComparisonError(err, fmt.Sprintf("%s block values are not comparable", name))
 			}
