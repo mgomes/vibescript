@@ -76,7 +76,7 @@ func newMatchData(text string, indices []int, names []string) Value {
 		"end": NewCapturingBuiltin("match_data.end", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return matchDataOffset("match_data.end", ends, args, kwargs, block)
 		}, endsVal),
-	}, ObjectTagMatchData)
+	}, ObjectTagMatchData, whole.String())
 }
 
 // newNamedCaptures pairs each named group with the text it matched. Ruby's

@@ -1285,8 +1285,8 @@ func (v Value) Identical(other Value) bool {
 		if v.ObjectTag() != other.ObjectTag() {
 			return false
 		}
-		left := v.data.(map[string]Value)
-		right := other.data.(map[string]Value)
+		left := v.data.(*objectData).entries
+		right := other.data.(*objectData).entries
 		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer()
 	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance:
 		// These runtime kinds already compare by backing-pointer identity in

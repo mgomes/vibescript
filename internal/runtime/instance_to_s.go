@@ -98,39 +98,17 @@ func objectStringEntry(val Value) (Value, bool) {
 	if val.Kind() != KindObject {
 		return NewNil(), false
 	}
-	entries := val.Hash()
-	rendered, ok := entries["to_s"]
-	if !ok || rendered.Kind() != KindString {
+	// The rendering comes from the form the bag published at construction,
+	// never from its entries. The entries are mutable and reachable through
+	// the public API -- Value.Hash() hands out the live map and a host builtin
+	// receives the value itself -- so a rendering read back out of them could
+	// be rewritten by anything holding the bag.
+	form, ok := val.ObjectStringForm()
+	if !ok {
 		return NewNil(), false
 	}
-	// KindObject also carries ordinary host data, so a to_s entry alone does
-	// not mean the bag is declaring its string form: a host object holding a
-	// string field of that name would have its payload rendered in place of
-	// the established <object> form, exposing it. Only the bags that
-	// deliberately publish a string form are rendered.
-	if !declaresStringForm(val) {
-		return NewNil(), false
-	}
+	rendered := NewString(form)
 	return rendered, true
-}
-
-// declaresStringForm reports whether an attribute bag is one of the two the
-// runtime builds to publish their string form under to_s: a rescued error,
-// whose to_s is its message, and match data, whose to_s is the matched text as
-// in Ruby's MatchData.
-//
-// This reads the bag's provenance rather than its field names. Recognizing
-// these bags by shape meant any bag carrying the same fields made the same
-// claim -- and those fields are public, host-settable data, so an ordinary
-// host object holding string message/class/type fields and an array backtrace
-// was read as a rescued error and had its to_s payload rendered in place of
-// the <object> form.
-func declaresStringForm(val Value) bool {
-	switch val.ObjectTag() {
-	case ObjectTagRescuedError, ObjectTagMatchData:
-		return true
-	}
-	return false
 }
 
 // objectTagMutationError reports an attempt to mutate a bag the runtime built

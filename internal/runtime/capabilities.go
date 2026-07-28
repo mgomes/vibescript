@@ -41,18 +41,16 @@ type CapabilityBinding struct {
 	Engine  *Engine
 }
 
-// cloneHash copies a capability's argument or option hash on its way to the
-// adapter. A capability adapter is host code, so provenance stops here for the
-// same reason it stops at Script.Call: the host can rewrite the entries and
-// hand the value back, and a tag it received would make those entries look
-// runtime-authored.
+// cloneHash copies a capability's argument or option hash. This is boundary
+// isolation -- the runtime handing the adapter its own copy -- not the
+// script-visible dup, so a bag the runtime built keeps its provenance.
 func cloneHash(src map[string]Value) map[string]Value {
 	if len(src) == 0 {
 		return map[string]Value{}
 	}
 	out := make(map[string]Value, len(src))
 	for k, v := range src {
-		out[k] = deepCloneValue(v)
+		out[k] = deepCloneValueForContainment(v)
 	}
 	return out
 }
@@ -515,9 +513,7 @@ func (s *capabilityDataCloneScanner) cloneObject(val Value) (Value, error) {
 		s.visitingMaps[ptr] = struct{}{}
 	}
 	clonedEntries := make(map[string]Value, len(entries))
-	// A capability result comes from host code, so it carries no provenance:
-	// the adapter could have rewritten these entries.
-	cloned := NewObject(clonedEntries)
+	cloned := retagClonedObject(val, clonedEntries)
 	if ptr != 0 {
 		s.clonedMaps[ptr] = cloned
 	}

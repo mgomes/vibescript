@@ -233,7 +233,24 @@ func NewObject(attrs map[string]Value) Value {
 	if attrs == nil {
 		attrs = map[string]Value{}
 	}
-	return Value{kind: KindObject, data: attrs}
+	return Value{kind: KindObject, data: &objectData{entries: attrs}}
+}
+
+// objectData is a KindObject payload: the entry map plus, for the few bags the
+// runtime builds to stand for something specific, the provenance and the
+// string form fixed at construction.
+//
+// The string form is stored rather than read back out of the entries because
+// the entries are mutable and reachable through the public API -- Value.Hash()
+// hands out the live map, and a host builtin receives the value itself. A
+// rendering derived from the entries could therefore be rewritten by anything
+// holding the bag, which is exactly the spoof the provenance exists to
+// prevent. Fixing it at construction makes the rendering immutable no matter
+// who mutates the map afterwards.
+type objectData struct {
+	entries    map[string]Value
+	tag        ObjectTag
+	stringForm string
 }
 
 // ObjectTag records what an attribute bag is, for the few bags the runtime
@@ -267,11 +284,11 @@ const (
 // It is intended for the interpreter's internal use; hosts should not call
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
-func NewTaggedObject(attrs map[string]Value, tag ObjectTag) Value {
+func NewTaggedObject(attrs map[string]Value, tag ObjectTag, stringForm string) Value {
 	if attrs == nil {
 		attrs = map[string]Value{}
 	}
-	return Value{kind: KindObject, data: attrs, scalar: uint64(tag)}
+	return Value{kind: KindObject, data: &objectData{entries: attrs, tag: tag, stringForm: stringForm}}
 }
 
 // ObjectTag reports the provenance of an attribute bag, or ObjectTagNone for
@@ -286,7 +303,25 @@ func (v Value) ObjectTag() ObjectTag {
 	if v.kind != KindObject {
 		return ObjectTagNone
 	}
-	return ObjectTag(v.scalar)
+	return v.data.(*objectData).tag
+}
+
+// ObjectStringForm returns the rendering a tagged bag published at
+// construction, and reports false for an ordinary bag. It is fixed then and
+// never read back out of the entries, so mutating them cannot change it.
+//
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) ObjectStringForm() (string, bool) {
+	if v.kind != KindObject {
+		return "", false
+	}
+	obj := v.data.(*objectData)
+	if obj.tag == ObjectTagNone {
+		return "", false
+	}
+	return obj.stringForm, true
 }
 
 // NewRange returns a range Value.

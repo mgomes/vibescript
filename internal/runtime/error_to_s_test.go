@@ -255,7 +255,7 @@ func TestObjectTagIsInvisibleToScript(t *testing.T) {
 func TestRebuiltBagLosesItsTag(t *testing.T) {
 	t.Parallel()
 
-	tagged := NewTaggedObject(map[string]Value{"to_s": NewString("real")}, ObjectTagRescuedError)
+	tagged := NewTaggedObject(map[string]Value{"to_s": NewString("real")}, ObjectTagRescuedError, "real")
 	if _, substituted := objectStringEntry(tagged); !substituted {
 		t.Fatalf("a tagged bag did not render its string form")
 	}
@@ -265,11 +265,11 @@ func TestRebuiltBagLosesItsTag(t *testing.T) {
 	}
 }
 
-// Provenance stops at the host boundary. Once the host holds a value it can
-// rewrite the entries through Value.HashSet or the live map from Value.Hash(),
-// and neither can clear a tag living in the Value's scalar word, so a tag
-// handed out would let host-authored entries come back authenticated.
-func TestObjectTagsDoNotCrossTheHostBoundary(t *testing.T) {
+// The rendering a tagged bag publishes is fixed at construction, so it
+// survives the host boundary intact: a match result or rescued error returned
+// by one call and passed into another still renders. What the host cannot do
+// is change it, which the mutation tests below cover.
+func TestObjectTagsSurviveTheHostBoundary(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def make_match()
@@ -286,24 +286,85 @@ def render(v)
   "#{v}"
 end`)
 
-	for _, builder := range []string{"make_match", "make_error"} {
-		t.Run(builder, func(t *testing.T) {
+	tests := []struct {
+		builder string
+		want    string
+	}{
+		{builder: "make_match", want: "world"},
+		{builder: "make_error", want: "boom"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.builder, func(t *testing.T) {
 			t.Parallel()
-			built, err := script.Call(context.Background(), builder, nil, CallOptions{})
+			built, err := script.Call(context.Background(), tc.builder, nil, CallOptions{})
 			if err != nil {
-				t.Fatalf("%s: %v", builder, err)
-			}
-			if built.ObjectTag() != ObjectTagNone {
-				t.Fatalf("%s handed the host a tagged bag, which the host could then rewrite", builder)
+				t.Fatalf("%s: %v", tc.builder, err)
 			}
 			got, err := script.Call(context.Background(), "render", []Value{built}, CallOptions{})
 			if err != nil {
 				t.Fatalf("render: %v", err)
 			}
-			if got.String() != "<object>" {
-				t.Fatalf("a host-held bag rendered %q, want the ordinary object form", got.String())
+			if got.String() != tc.want {
+				t.Fatalf("%s rendered %q after a round trip, want %q", tc.builder, got.String(), tc.want)
 			}
 		})
+	}
+}
+
+// A host holding the value can rewrite its entries -- Value.Hash() hands out
+// the live map, and a builtin registered through Engine.RegisterBuiltin
+// receives the value itself -- but the published rendering is fixed at
+// construction and is never read back out of them.
+func TestHostMutationCannotChangeThePublishedRendering(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	engine.RegisterBuiltin("host_touch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		args[0].Hash()["to_s"] = NewString("payload")
+		args[0].Hash()["message"] = NewString("payload")
+		return NewNil(), nil
+	})
+	script, err := engine.Compile("def run()\n  err = begin\n    raise \"boom\"\n  rescue => e\n    e\n  end\n  host_touch(err)\n  \"#{err}\"\nend")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "boom" {
+		t.Fatalf("a host builtin rewrote the rendering to %q", got.String())
+	}
+}
+
+// The same through Value.HashSet on a value the host received back.
+func TestHostHashSetCannotChangeThePublishedRendering(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def make()
+  begin
+    raise "boom"
+  rescue => e
+    e
+  end
+end
+def render(v)
+  "#{v}"
+end`)
+	built, err := script.Call(context.Background(), "make", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("make: %v", err)
+	}
+	if err := built.HashSet(NewString("to_s"), NewString("payload")); err != nil {
+		t.Fatalf("HashSet: %v", err)
+	}
+	got, err := script.Call(context.Background(), "render", []Value{built}, CallOptions{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got.String() != "boom" {
+		t.Fatalf("a host HashSet rewrote the rendering to %q", got.String())
 	}
 }
 
@@ -430,7 +491,7 @@ func TestSharedEntryMapsKeepPerWrapperTags(t *testing.T) {
 		"class": NewString("E"), "type": NewString("E"),
 		"backtrace": NewArray([]Value{}),
 	}
-	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+	tagged := NewTaggedObject(entries, ObjectTagRescuedError, "real")
 	// Same map, no tag: what a host rebuild produces.
 	plain := NewObject(entries)
 
@@ -461,7 +522,7 @@ func TestSharedEntryMapsAllLoseTagsOnScriptDuplication(t *testing.T) {
 	t.Parallel()
 
 	entries := map[string]Value{"to_s": NewString("real")}
-	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+	tagged := NewTaggedObject(entries, ObjectTagRescuedError, "real")
 	cloned := deepCloneValue(NewArray([]Value{tagged, NewObject(entries)}))
 	for i, elem := range cloned.Array() {
 		if elem.ObjectTag() != ObjectTagNone {
@@ -575,7 +636,7 @@ func TestTaggedWrappersDoNotShareEntriesWithUntaggedAliases(t *testing.T) {
 			"class": NewString("E"), "type": NewString("E"),
 			"backtrace": NewArray([]Value{}),
 		}
-		return NewTaggedObject(entries, ObjectTagRescuedError), NewObject(entries)
+		return NewTaggedObject(entries, ObjectTagRescuedError, "real"), NewObject(entries)
 	}
 
 	tests := []struct {
@@ -616,7 +677,7 @@ func TestCyclicTaggedAndUntaggedWrappersTerminate(t *testing.T) {
 
 	build := func() Value {
 		entries := map[string]Value{"to_s": NewString("real")}
-		tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+		tagged := NewTaggedObject(entries, ObjectTagRescuedError, "real")
 		// An untagged wrapper over the same map, reachable from inside it.
 		entries["self"] = NewObject(entries)
 		return tagged
@@ -650,11 +711,9 @@ func TestCyclicTaggedAndUntaggedWrappersTerminate(t *testing.T) {
 	})
 }
 
-// A capability adapter is host code, so provenance stops before it: the
-// adapter can rewrite the entries and hand the value back, and a tag it
-// received would make those entries look runtime-authored. This is the same
-// rule as the Script.Call boundary.
-func TestCapabilityBoundaryDropsTags(t *testing.T) {
+// Capability boundaries copy values to isolate them, and the copy stands for
+// the same value, so a bag the runtime built keeps its provenance across them.
+func TestCapabilityBoundaryPreservesTags(t *testing.T) {
 	t.Parallel()
 
 	entries := map[string]Value{
@@ -662,13 +721,13 @@ func TestCapabilityBoundaryDropsTags(t *testing.T) {
 		"class": NewString("RuntimeError"), "type": NewString("RuntimeError"),
 		"backtrace": NewArray([]Value{}),
 	}
-	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+	tagged := NewTaggedObject(entries, ObjectTagRescuedError, "boom")
 
 	t.Run("arguments into the adapter", func(t *testing.T) {
 		t.Parallel()
 		payload := cloneHash(map[string]Value{"error": tagged})
-		if got := payload["error"].ObjectTag(); got != ObjectTagNone {
-			t.Fatalf("a capability argument reached the adapter with tag %v", got)
+		if got := payload["error"].ObjectTag(); got != ObjectTagRescuedError {
+			t.Fatalf("a capability argument lost its tag (%v)", got)
 		}
 	})
 
@@ -678,8 +737,8 @@ func TestCapabilityBoundaryDropsTags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("clone: %v", err)
 		}
-		if got := cloned.ObjectTag(); got != ObjectTagNone {
-			t.Fatalf("a capability result came back with tag %v", got)
+		if got := cloned.ObjectTag(); got != ObjectTagRescuedError {
+			t.Fatalf("a capability result lost its tag (%v)", got)
 		}
 	})
 }
@@ -693,13 +752,13 @@ func TestObjectIdentityAccountsForTheTag(t *testing.T) {
 	t.Parallel()
 
 	entries := map[string]Value{"to_s": NewString("real")}
-	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+	tagged := NewTaggedObject(entries, ObjectTagRescuedError, "real")
 	plain := NewObject(entries)
 
 	if tagged.Identical(plain) {
 		t.Fatalf("a tagged bag is identical to an untagged wrapper over the same entries")
 	}
-	if !tagged.Identical(NewTaggedObject(entries, ObjectTagRescuedError)) {
+	if !tagged.Identical(NewTaggedObject(entries, ObjectTagRescuedError, "real")) {
 		t.Fatalf("two wrappers with the same entries and tag are not identical")
 	}
 	if !plain.Identical(NewObject(entries)) {
@@ -714,30 +773,5 @@ func TestObjectIdentityAccountsForTheTag(t *testing.T) {
 	}
 	if got.String() != "false" {
 		t.Fatalf("equal? inside the script = %s, want false as it is outside", got.String())
-	}
-}
-
-// A tagged bag is pure data, so nothing else would force the host clone -- but
-// the clone is what drops the tag, so a tagged bag must require one even when
-// it holds only strings and arrays. A rescued error is exactly that shape.
-func TestTaggedBagsRequireTheHostClone(t *testing.T) {
-	t.Parallel()
-
-	entries := map[string]Value{
-		"to_s": NewString("boom"), "message": NewString("boom"),
-		"class": NewString("RuntimeError"), "type": NewString("RuntimeError"),
-		"backtrace": NewArray([]Value{}),
-	}
-	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
-
-	if !valueNeedsHostClone(tagged) {
-		t.Fatalf("a tagged bag of pure data skipped the host clone, so its tag would reach the host")
-	}
-	if valueNeedsHostClone(NewObject(entries)) {
-		t.Fatalf("an untagged bag of pure data now requires a host clone it does not need")
-	}
-	// Nested inside a container it must still force the clone.
-	if !valueNeedsHostClone(NewArray([]Value{NewInt(1), tagged})) {
-		t.Fatalf("a tagged bag nested in an array skipped the host clone")
 	}
 }
