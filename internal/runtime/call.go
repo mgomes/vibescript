@@ -850,7 +850,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
 		if cloneMap, seen := r.seenMaps[ptr]; seen {
-			return NewObject(cloneMap)
+			return retagClonedObject(val, cloneMap)
 		}
 		clonedEntries := make(map[string]Value, len(entries))
 		if r.seenMaps == nil {
@@ -860,7 +860,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		for key, item := range entries {
 			clonedEntries[key] = r.rebindValue(item)
 		}
-		return NewObject(clonedEntries)
+		return retagClonedObject(val, clonedEntries)
 	default:
 		return val
 	}

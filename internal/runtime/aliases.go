@@ -697,7 +697,9 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 	case KindHash:
 		return cloneHostHashValue(val, state)
 	case KindObject:
-		return cloneHostMapValue(val, state, NewObject)
+		return cloneHostMapValue(val, state, func(entries map[string]Value) Value {
+			return retagClonedObject(val, entries)
+		})
 	case KindFunction:
 		return NewFunction(cloneFunctionForHostWithState(valueFunction(val), state))
 	case KindClass:
@@ -1334,4 +1336,21 @@ func init() {
 	value.RuntimeStringer = runtimeValueString
 	value.RuntimeEqualer = runtimeValueEqual
 	value.RuntimeIdenticaler = runtimeValueIdentical
+}
+
+// retagClonedObject preserves an attribute bag's provenance across an internal
+// containment clone.
+//
+// The clones the runtime makes to isolate a value -- across the host boundary,
+// into a task, when rebinding call arguments -- rebuild every KindObject with
+// NewObject, which drops the tag. A match result returned by one Script.Call
+// and passed into another therefore rendered as <object> instead of the
+// matched text. These clones are the runtime copying its own value, so the
+// provenance still holds; a bag that script code rebuilds goes through
+// NewObject and still loses it, which is the point of the tag.
+func retagClonedObject(src Value, entries map[string]Value) Value {
+	if tag := src.ObjectTag(); tag != ObjectTagNone {
+		return NewTaggedObject(entries, tag)
+	}
+	return NewObject(entries)
 }

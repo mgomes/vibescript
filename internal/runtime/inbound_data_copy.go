@@ -200,7 +200,7 @@ func copyInboundDataValue(val Value) Value {
 	case KindHash:
 		return NewHash(copyInboundDataEntries(val.Hash()))
 	case KindObject:
-		return NewObject(copyInboundDataEntries(val.Hash()))
+		return retagClonedObject(val, copyInboundDataEntries(val.Hash()))
 	default:
 		return val
 	}
@@ -279,7 +279,7 @@ func (r *callFunctionRebinder) copyAndRegisterInboundValue(val Value) Value {
 			}
 			r.seenMaps[reflect.ValueOf(entries).Pointer()] = clonedEntries
 		}
-		return NewObject(clonedEntries)
+		return retagClonedObject(val, clonedEntries)
 	default:
 		return val
 	}

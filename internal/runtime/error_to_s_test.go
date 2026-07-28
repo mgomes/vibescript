@@ -263,3 +263,76 @@ func TestRebuiltBagLosesItsTag(t *testing.T) {
 		t.Fatalf("a rebuilt bag kept its tag")
 	}
 }
+
+// The clones the runtime makes to isolate a value rebuild every KindObject,
+// which dropped the tag. A match result returned by one Script.Call and passed
+// into another therefore rendered as <object> instead of the matched text.
+func TestObjectTagsSurviveInternalClones(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def make_match()
+  "hello world".match(/w\w+/)
+end
+def make_error()
+  begin
+    raise "boom"
+  rescue => e
+    e
+  end
+end
+def render(v)
+  "#{v}"
+end
+def render_in_task(v)
+  "#{v}"
+end`)
+
+	tests := []struct {
+		name    string
+		builder string
+		want    string
+	}{
+		{name: "match data", builder: "make_match", want: "world"},
+		{name: "rescued error", builder: "make_error", want: "boom"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			built, err := script.Call(context.Background(), tc.builder, nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("%s: %v", tc.builder, err)
+			}
+			if built.ObjectTag() == ObjectTagNone {
+				t.Fatalf("%s lost its tag crossing the call boundary", tc.name)
+			}
+			got, err := script.Call(context.Background(), "render", []Value{built}, CallOptions{})
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("%s rendered %q after a round trip, want %q", tc.name, got.String(), tc.want)
+			}
+		})
+	}
+}
+
+// The tag is preserved only for the runtime's own containment clones. A bag
+// script code rebuilds still goes through NewObject and loses it, which is
+// what stops a host object from claiming the same treatment.
+func TestScriptRebuiltBagsStillLoseTheirTag(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  m = "hello world".match(/w\w+/)
+  rebuilt = m.merge({})
+  "#{rebuilt}"
+end`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() == "world" {
+		t.Fatalf("a script-rebuilt bag kept its tag")
+	}
+}
