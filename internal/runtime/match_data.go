@@ -87,10 +87,22 @@ func newNamedCaptures(names []string, values []Value) Value {
 	named := map[string]Value{}
 	// Index 0 is the whole match, which is never named.
 	for i := 1; i < len(names) && i < len(values); i++ {
-		if names[i] == "" {
+		name := names[i]
+		if name == "" {
 			continue
 		}
-		named[names[i]] = values[i]
+		// A pattern may reuse a group name, and only one of those groups
+		// participates in any given match. Assigning unconditionally let a
+		// later non-participating duplicate overwrite an earlier match with
+		// nil, so /(?<x>a)|(?<x>b)/ against "ab" reported nil rather than "a".
+		// Ruby keeps the last group that actually participated, which is the
+		// rule appendRubyNamedGroup already applies to replacement templates.
+		if values[i].IsNil() {
+			if _, taken := named[name]; taken {
+				continue
+			}
+		}
+		named[name] = values[i]
 	}
 	return NewHash(named)
 }
