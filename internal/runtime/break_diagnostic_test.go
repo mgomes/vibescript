@@ -141,3 +141,71 @@ func TestBreakMidIterationKeepsStepQuota(t *testing.T) {
 		t.Fatalf("expected the step quota to stop iteration that breaks only at the end")
 	}
 }
+
+// A break absorbed as a call's result becomes that call's *return* value, so
+// it has to satisfy the declared return type. The break escapes as an error,
+// so the normal ReturnTy normalization is skipped, and returning the value
+// directly let a string leave an `-> int` function unchecked.
+func TestAbsorbedBreakSatisfiesTheReturnType(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def visit() -> int
+      yield
+      0
+    end
+    def run()
+      visit { break "a string" }
+    end
+    `)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("a string escaped an -> int function through a break")
+	}
+	if !strings.Contains(err.Error(), "expected int, got string") {
+		t.Fatalf("error = %v, want the return type mismatch", err)
+	}
+}
+
+// A break value of the declared type still returns normally.
+func TestAbsorbedBreakOfTheDeclaredTypeIsReturned(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def visit() -> int
+      yield
+      0
+    end
+    def run()
+      visit { break 7 }
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "7" {
+		t.Fatalf("break value = %s, want 7", got.String())
+	}
+}
+
+// An untyped function is unaffected, so absorbing a break stays permissive
+// exactly where the language is.
+func TestAbsorbedBreakFromAnUntypedFunctionIsUnchecked(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def visit()
+      yield
+      0
+    end
+    def run()
+      visit { break "a string" }
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "a string" {
+		t.Fatalf("break value = %q, want the string", got.String())
+	}
+}
