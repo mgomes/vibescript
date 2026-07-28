@@ -107,3 +107,28 @@ func TestStringToIntegerChargesMemoryQuota(t *testing.T) {
 		t.Fatalf("expected the memory quota to stop a 200000-digit conversion")
 	}
 }
+
+// big.Int.SetString is superlinear, so a linear step charge can pass well
+// before the conversion finishes: a multi-million-digit argument fits the
+// default memory quota and spends only part of the step quota yet occupies a
+// worker for seconds. The parser caps integer literals at the same limit for
+// the same reason.
+func TestStringToIntegerCapsConversionDigits(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20},
+		"def run(s)\n  s.to_i\nend")
+	oversized := strings.Repeat("9", maxParsedIntegerDigits+1)
+	_, err := script.Call(context.Background(), "run", []Value{NewString(oversized)}, CallOptions{})
+	if err == nil {
+		t.Fatalf("a %d-digit conversion was accepted, want it capped", len(oversized))
+	}
+	if !strings.Contains(err.Error(), "digit conversion limit") {
+		t.Fatalf("error = %v, want the digit cap", err)
+	}
+	// A conversion at the limit still succeeds, so the cap is not narrower
+	// than advertised.
+	atLimit := strings.Repeat("9", maxParsedIntegerDigits)
+	if _, err := script.Call(context.Background(), "run", []Value{NewString(atLimit)}, CallOptions{}); err != nil {
+		t.Fatalf("a %d-digit conversion was rejected: %v", len(atLimit), err)
+	}
+}
