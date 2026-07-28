@@ -16597,6 +16597,10 @@ func binaryScalarOutcome(op TokenType, lk, rk TypeKind) (*TypeExpr, bool) {
 		switch {
 		case isNum(lk) && isNum(rk),
 			lk == TypeString && rk == TypeString,
+			// Symbol includes Comparable in Ruby, so the relational operators
+			// order symbols at runtime; the matrix has to agree or check
+			// rejects a script that runs.
+			lk == TypeSymbol && rk == TypeSymbol,
 			lk == TypeMoney && rk == TypeMoney,
 			lk == TypeDuration && rk == TypeDuration,
 			lk == TypeTime && rk == TypeTime:
