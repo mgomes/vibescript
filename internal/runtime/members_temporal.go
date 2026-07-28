@@ -419,7 +419,7 @@ func timeFormatResult(exec *Execution, t time.Time, layout Value) (Value, error)
 	if layout.Kind() != KindString {
 		return NewNil(), fmt.Errorf("format expects a Go layout string")
 	}
-	if err := checkFormatGivenStrftime(exec, t, layout.String()); err != nil {
+	if err := checkFormatGivenStrftime(layout.String()); err != nil {
 		return NewNil(), err
 	}
 	return NewString(t.Format(layout.String())), nil

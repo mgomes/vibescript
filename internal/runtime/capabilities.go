@@ -550,6 +550,13 @@ type capabilityContractScanner struct {
 	seenClasses   map[*ClassDef]struct{}
 	seenInstances map[*Instance]struct{}
 	seenEnvs      map[*Env]struct{}
+
+	// collectBounded marks a walk that must stop after collectBudget nodes.
+	// It is a separate flag rather than a sentinel budget value: treating zero
+	// as "unbounded" meant an exhausted walk silently became unbounded again
+	// on the very next node.
+	collectBounded bool
+	collectBudget  int
 	// ambientEnvs are environments whose bindings are pre-existing ambient
 	// globals (the execution root and its ancestors), NOT values a capability
 	// freshly exposed. When walking a closure's captured environment we skip
@@ -845,6 +852,57 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 // regression). The remaining ancestors are all ambient too, so the walk stops
 // entirely. seenEnvs gives cycle-safe termination for self- or mutually
 // referencing closure environments.
+// ambientCollectNodeBudget bounds the ambient snapshot's traversal. It is
+// generous next to any realistic set of globals while keeping the per-call
+// cost independent of how large a script's globals grow.
+const ambientCollectNodeBudget = 4096
+
+// collectExhausted reports that a bounded walk has spent its allowance.
+// Container loops consult it so traversal stops rather than making a no-op
+// recursive call for every remaining element -- which left the walk O(graph)
+// per call despite the cap.
+func (s *capabilityContractScanner) collectExhausted() bool {
+	return s.collectBounded && s.collectBudget <= 0
+}
+
+// collectAmbientBuiltins gathers the builtins bound directly in the ambient
+// environments -- the script's own globals and the engine scopes above them.
+//
+// Only each environment's own bindings are enumerated; the values then go
+// through the ordinary scanner, which still stops when a nested function or
+// block reaches an ambient environment. That keeps this from turning into a
+// recursive walk of every closure chain.
+//
+// The ordinary pre-call scan never reaches globals, so a block that breaks
+// with one would make it the call's result and the post-call scan would bind
+// the capability's contract to something the caller has owned all along.
+func (s *capabilityContractScanner) collectAmbientBuiltins(root *Env, out map[*Builtin]struct{}) {
+	// The walk charges no steps, so it is bounded rather than metered: a
+	// script could otherwise hold a large global structure and call a
+	// contracted capability with an empty block in a loop, buying O(global
+	// graph) host work per metered step. Truncating only means fewer
+	// exclusions, which costs precision on caller-owned break values and
+	// never lets a genuinely published builtin through.
+	s.collectBounded, s.collectBudget = true, ambientCollectNodeBudget
+	defer func() { s.collectBounded, s.collectBudget = false, 0 }()
+	for env := root; env != nil; env = env.parent {
+		if s.collectExhausted() {
+			return
+		}
+		env.rangeDynamicBindingsWhile(func(_ string, item Value) bool {
+			s.collectBuiltins(item, out)
+			return !s.collectExhausted()
+		})
+		if s.collectExhausted() {
+			return
+		}
+		env.rangeRawStaticBindingsWhile(func(_ string, item Value) bool {
+			s.collectBuiltins(item, out)
+			return !s.collectExhausted()
+		})
+	}
+}
+
 func (s *capabilityContractScanner) scanClosureEnv(env *Env, visit func(Value)) {
 	for ; env != nil; env = env.parent {
 		if _, ambient := s.ambientEnvs[env]; ambient {
@@ -853,12 +911,27 @@ func (s *capabilityContractScanner) scanClosureEnv(env *Env, visit func(Value)) 
 		if _, seen := s.seenEnvs[env]; seen {
 			return
 		}
+		// A bounded walk stops here too. A captured frame can hold many
+		// bindings, and a no-op visitor per binding still costs O(frame) --
+		// and O(ancestors) as the loop climbs -- which is exactly the
+		// unmetered work the budget exists to bound.
+		if s.collectExhausted() {
+			return
+		}
 		s.seenEnvs[env] = struct{}{}
-		env.rangeDynamicBindings(func(_ string, item Value) {
+		env.rangeDynamicBindingsWhile(func(_ string, item Value) bool {
 			visit(item)
+			return !s.collectExhausted()
 		})
-		for _, item := range env.statics {
+		if s.collectExhausted() {
+			return
+		}
+		env.rangeRawStaticBindingsWhile(func(_ string, item Value) bool {
 			visit(item)
+			return !s.collectExhausted()
+		})
+		if s.collectExhausted() {
+			return
 		}
 		if env.hasCallBlock {
 			visit(env.callBlock)
@@ -938,6 +1011,9 @@ func (s *capabilityContractScanner) bindContracts(
 		}
 		s.seenClasses[classDef] = struct{}{}
 		for _, item := range classDef.ClassVars {
+			if s.collectExhausted() {
+				return
+			}
 			s.bindContracts(item, scope, target, scopes)
 		}
 	case KindInstance:
@@ -950,6 +1026,9 @@ func (s *capabilityContractScanner) bindContracts(
 		}
 		s.seenInstances[instance] = struct{}{}
 		for _, item := range instance.Ivars {
+			if s.collectExhausted() {
+				return
+			}
 			s.bindContracts(item, scope, target, scopes)
 		}
 		if instance.Class != nil {
@@ -972,6 +1051,16 @@ func (s *capabilityContractScanner) bindContracts(
 }
 
 func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]struct{}) {
+	// collectBudget bounds an otherwise unmetered walk. It is only set for the
+	// ambient snapshot, whose size is the caller's globals rather than
+	// anything the call supplies; every other caller leaves it zero and is
+	// unaffected.
+	if s.collectExhausted() {
+		return
+	}
+	if s.collectBounded {
+		s.collectBudget--
+	}
 	switch val.Kind() {
 	case KindBuiltin:
 		out[valueBuiltin(val)] = struct{}{}
@@ -987,6 +1076,9 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		}
 		s.seenArrays[id] = struct{}{}
 		for _, item := range values {
+			if s.collectExhausted() {
+				return
+			}
 			s.collectBuiltins(item, out)
 		}
 	case KindHash, KindObject:
@@ -1003,6 +1095,9 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		}
 		s.seenMaps[ptr] = struct{}{}
 		for _, item := range entries {
+			if s.collectExhausted() {
+				return
+			}
 			s.collectBuiltins(item, out)
 		}
 		// A KindHash's default value/proc are reachable hash state, so any
@@ -1020,6 +1115,9 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		}
 		s.seenClasses[classDef] = struct{}{}
 		for _, item := range classDef.ClassVars {
+			if s.collectExhausted() {
+				return
+			}
 			s.collectBuiltins(item, out)
 		}
 	case KindInstance:
@@ -1032,6 +1130,9 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		}
 		s.seenInstances[instance] = struct{}{}
 		for _, item := range instance.Ivars {
+			if s.collectExhausted() {
+				return
+			}
 			s.collectBuiltins(item, out)
 		}
 		if instance.Class != nil {

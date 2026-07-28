@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/vibes/source"
@@ -1027,6 +1029,19 @@ type Builtin struct {
 	// wrappers around script functions (method, constructor, and function-call
 	// alias callers).
 	OptionsHashTarget *ScriptFunction
+
+	// ReturnTypeTarget is the script function whose declared return type
+	// governs this builtin's result. Only the wrappers that return their
+	// function's value set it, so an absorbed break can be validated against
+	// the right annotation.
+	//
+	// It is deliberately separate from OptionsHashTarget, which records the
+	// function an options hash collapses into and is also set on a
+	// constructor. A constructor runs initialize through
+	// callFunctionIgnoringReturn and returns the instance, so initialize's
+	// annotation is not the constructor's contract: reusing that field made
+	// `C.new { break 7 }` fail against `def initialize() -> nil`.
+	ReturnTypeTarget *ScriptFunction
 	// DirectCallAlias marks a builtin that invokes a function value directly,
 	// such as the `call` member exposed on function values. Direct-call aliases
 	// follow plain function-call semantics, so they collapse a parenthesized
@@ -1275,7 +1290,7 @@ func runtimeValueString(v Value) (string, bool) {
 		}
 	case KindEnumValue:
 		if member := valueEnumValue(v); member != nil && member.Enum != nil {
-			return fmt.Sprintf("%s::%s", member.Enum.Name, member.Name), true
+			return enumMemberText(member), true
 		}
 	case KindClass:
 		if cl := valueClass(v); cl != nil {
@@ -1334,8 +1349,94 @@ func runtimeValueIdentical(left, right Value) (bool, bool) {
 
 func init() {
 	value.RuntimeStringer = runtimeValueString
+	value.RuntimeStringLen = runtimeValueStringLen
+	value.RuntimeStringAppender = runtimeValueStringAppend
+	value.RuntimeStringRuneLen = runtimeValueStringRuneLen
 	value.RuntimeEqualer = runtimeValueEqual
 	value.RuntimeIdenticaler = runtimeValueIdentical
+}
+
+// enumMemberText renders an enum member's Enum::Member form into a buffer
+// grown once to the exact size, so the peak allocation is the returned string
+// and nothing else.
+//
+// fmt.Sprintf holds a formatting buffer alongside the string it returns, so
+// the true peak was roughly twice the text. A guard that charges the text
+// length alone therefore passed for a member whose rendering fit the quota
+// only narrowly, and the call exceeded it anyway. Both the explicit
+// conversions and interpolation render through here, so they cannot drift.
+func enumMemberText(member *EnumValueDef) string {
+	var sb strings.Builder
+	sb.Grow(enumValueRenderingBytes(member))
+	sb.WriteString(member.Enum.Name)
+	sb.WriteString("::")
+	sb.WriteString(member.Name)
+	return sb.String()
+}
+
+// runtimeValueStringLen reports an enum member's rendered byte length from the
+// two identifiers, so a projection can decide whether the rendering fits
+// without building it.
+func runtimeValueStringLen(v Value) (int, bool) {
+	if v.Kind() != KindEnumValue {
+		return 0, false
+	}
+	member := valueEnumValue(v)
+	if member == nil || member.Enum == nil {
+		return 0, false
+	}
+	return enumValueRenderingBytes(member), true
+}
+
+// runtimeValueStringAppend writes an enum member's text straight into buf, so
+// interpolating one holds no temporary alongside the destination the quota
+// charged, and a precision-qualified format writes only the bytes it keeps
+// rather than rendering the whole member to discard most of it.
+//
+// limit is the total byte budget for buf, as in appendBounded.
+func runtimeValueStringAppend(v Value, buf *strings.Builder, limit int) (truncated, handled bool) {
+	if v.Kind() != KindEnumValue {
+		return false, false
+	}
+	member := valueEnumValue(v)
+	if member == nil || member.Enum == nil {
+		return false, false
+	}
+	remaining := -1
+	if limit > 0 {
+		remaining = max(0, limit-buf.Len())
+	}
+	for _, part := range []string{member.Enum.Name, "::", member.Name} {
+		if remaining < 0 {
+			buf.WriteString(part)
+			continue
+		}
+		if len(part) > remaining {
+			buf.WriteString(part[:remaining])
+			return true, true
+		}
+		buf.WriteString(part)
+		remaining -= len(part)
+	}
+	return false, true
+}
+
+// runtimeValueStringRuneLen counts an enum member's rendered runes from the two
+// identifiers. Width-qualified formatting projects rune lengths before it
+// checks the quota, so counting through Value.String would allocate the very
+// rendering the check is meant to gate.
+func runtimeValueStringRuneLen(v Value) (int, bool) {
+	if v.Kind() != KindEnumValue {
+		return 0, false
+	}
+	member := valueEnumValue(v)
+	if member == nil || member.Enum == nil {
+		return 0, false
+	}
+	runes := utf8.RuneCountInString(member.Enum.Name)
+	runes += len("::")
+	runes += utf8.RuneCountInString(member.Name)
+	return runes, true
 }
 
 // retagClonedObject preserves an attribute bag's provenance across an internal

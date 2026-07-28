@@ -1094,7 +1094,7 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		// lexicographically under <=> but stay rejected by the relational
 		// operators above, as in Ruby, where Array defines <=> but does not
 		// include Comparable.
-		order, ordered, err := compareSpaceshipOrder(left, right)
+		order, ordered, err := compareSpaceshipOrder(exec, left, right)
 		if err != nil {
 			// Incomparable operand pairs (different kinds, or money in different
 			// currencies) make the spaceship operator return nil rather than
@@ -1115,9 +1115,26 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 	}
 
 	if err != nil {
+		// The relational operators raise on incomparable operands, and
+		// docs/language_reference.md specifies that as Ruby's ArgumentError.
+		// The sentinel carries no type, so the shared wrap classified it as
+		// the base RuntimeError and `rescue ArgumentError` could not catch it.
+		if isIncomparable(err) && isRelationalOperator(operator) {
+			return NewNil(), exec.argumentErrorAt(pos, "%s", err.Error())
+		}
 		return NewNil(), exec.wrapError(err, pos)
 	}
 	return result, nil
+}
+
+// isRelationalOperator reports whether op is one of the ordering comparisons
+// that raise on incomparable operands, as opposed to <=>, which answers nil.
+func isRelationalOperator(op TokenType) bool {
+	switch op {
+	case tokenLT, tokenLTE, tokenGT, tokenGTE:
+		return true
+	}
+	return false
 }
 
 // instanceOperatorMethod resolves a user-defined operator method (def +,
@@ -1456,6 +1473,20 @@ func blockPositionalArity(blk *Block) int {
 	if len(blk.Params) == 0 {
 		return implicitBlockParamArity(blk.ImplicitParams)
 	}
+	// A lone rest parameter collects the whole yielded argument list, so it
+	// receives the collapsed pair and reports arity 1: Ruby's
+	// `{a: 1}.map { |*args| args }` is `[[[:a, 1]]]`, not `[[:a, 1]]`. A rest
+	// alongside other parameters, such as |k, *rest| or |*a, k|, does
+	// auto-splat and stays on the opt-out path below.
+	//
+	// The grammar has no top-level rest parameter for blocks or lambdas today
+	// -- `{ |*args| }` and `->(*args) {}` are parse errors, and rest is only
+	// available inside a destructuring group -- so this is unreachable as
+	// written. It is here so the rule is already right if that changes;
+	// TestBlockRestParametersAreNotParseable pins the current grammar.
+	if len(blk.Params) == 1 && blk.Params[0].Kind == ParamRest {
+		return 1
+	}
 	positional := 0
 	for i := range blk.Params {
 		switch blk.Params[i].Kind {
@@ -1548,7 +1579,13 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	// reserving them here is O(1) per call, not a re-walk (issue #835).
 	if scratch := charge.ephemeralRootScratch(); scratch > 0 {
 		delta := exec.reserveLoopScratch(scratch)
-		defer exec.releaseLoopScratch(delta)
+		// The baseline already carries these bytes, so tell the charge not to
+		// count them again when it reads the live reservation.
+		charge.noteSelfReservation(delta)
+		defer func() {
+			charge.noteSelfReservation(0)
+			exec.releaseLoopScratch(delta)
+		}()
 	}
 	// A lambda binds its arguments strictly, like a method: it never
 	// auto-splats a single array argument across multiple parameters.

@@ -58,6 +58,11 @@ a script produces the same result on every host regardless of its `TZ`. Pass
 `Time.parse("2026-07-27", in: "Asia/Tokyo")`); an explicit `Z` or offset in the
 input is always honored as written.
 
+An input naming a zone *abbreviation* (`Mon, 27 Jul 2026 14:30:45 EDT`) is not
+zoneless, so it resolves against the host's zone database rather than the UTC
+default -- an abbreviation cannot be interpreted without one. Use an explicit
+offset (`-0400`) when the result must not depend on the host.
+
 ## Formatting
 
 `Time#format` uses Go layouts, built from the reference time `Mon Jan 2 15:04:05 MST 2006`:

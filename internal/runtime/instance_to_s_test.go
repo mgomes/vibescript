@@ -207,3 +207,64 @@ func TestInterpolatedToStringChargesStepQuota(t *testing.T) {
 		t.Fatalf("expected the step quota to stop a looping to_s")
 	}
 }
+
+// An implicit to_s is still a call boundary. callOperatorFunction normalizes
+// an escaping break or next but not retry, so a to_s running retry inside a
+// rescue handler restarted the caller's rescue -- while an explicit obj.to_s
+// in the same position reported, so the two disagreed.
+func TestImplicitToStringStopsRetryAtTheBoundary(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    class R
+      def to_s
+        retry
+      end
+    end
+    def run()
+      count = 0
+      begin
+        count = count + 1
+        raise "trigger"
+      rescue => e
+        "#{R.new()}"
+      end
+    end
+    `)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("retry inside an implicit to_s restarted the caller's rescue")
+	}
+	if !strings.Contains(err.Error(), "retry cannot cross call boundary") {
+		t.Fatalf("error = %v, want the call-boundary message an explicit to_s produces", err)
+	}
+}
+
+// break and next were already normalized and must stay so.
+func TestImplicitToStringStopsLoopControlAtTheBoundary(t *testing.T) {
+	t.Parallel()
+
+	for _, control := range []string{"break", "next"} {
+		t.Run(control, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+            class R
+              def to_s
+                `+control+`
+              end
+            end
+            def run()
+              for i in [1]
+                "#{R.new()}"
+              end
+            end
+            `)
+			_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err == nil {
+				t.Fatalf("%s inside an implicit to_s escaped the boundary", control)
+			}
+			if !strings.Contains(err.Error(), "cannot cross call boundary") {
+				t.Fatalf("%s error = %v, want the call-boundary message", control, err)
+			}
+		})
+	}
+}

@@ -471,6 +471,12 @@ func subsecondOverflowError() error {
 
 // ParseTimeString parses a time string, optionally using a caller-supplied
 // layout. When hasLayout is false the default layouts are tried in order.
+// layoutCarriesZoneName reports whether a layout reads a zone abbreviation
+// such as MST, whose meaning only a zone database can resolve.
+func layoutCarriesZoneName(layout string) bool {
+	return strings.Contains(layout, "MST")
+}
+
 func ParseTimeString(input, layout string, hasLayout bool, loc *time.Location) (time.Time, error) {
 	// A zoneless timestamp binds to UTC, not the host's zone. Scripts run in a
 	// sandbox whose quotas, capabilities, and memory bound all exist to make
@@ -478,7 +484,17 @@ func ParseTimeString(input, layout string, hasLayout bool, loc *time.Location) (
 	// capability gates: the same script and the same data produced a different
 	// day depending on where it ran. An explicit loc still wins, so a script
 	// that wants a zone asks for one.
+	//
+	// An input naming a zone is not zoneless, though, and resolving an
+	// abbreviation needs a zone database -- the host's is the only one there
+	// is. Forcing UTC there made Go fabricate the abbreviation at offset zero,
+	// so "Mon, 27 Jul 2026 14:30:45 EDT" silently shifted by four hours. Such
+	// layouts keep resolving against the host zone; the determinism this
+	// default exists for concerns timestamps that name no zone at all.
 	parseLoc := time.UTC
+	if hasLayout && layoutCarriesZoneName(layout) {
+		parseLoc = time.Local
+	}
 	if loc != nil {
 		parseLoc = loc
 	}
@@ -500,7 +516,11 @@ func ParseTimeString(input, layout string, hasLayout bool, loc *time.Location) (
 		case time.RFC3339, time.RFC3339Nano:
 			parsed, err = time.Parse(candidate, input)
 		default:
-			parsed, err = time.ParseInLocation(candidate, input, parseLoc)
+			candidateLoc := parseLoc
+			if loc == nil && layoutCarriesZoneName(candidate) {
+				candidateLoc = time.Local
+			}
+			parsed, err = time.ParseInLocation(candidate, input, candidateLoc)
 		}
 		if err == nil {
 			return resolveParsedTime(parsed, input, loc), nil

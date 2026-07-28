@@ -133,3 +133,45 @@ func TestReportedMembersAlsoFailAtRuntime(t *testing.T) {
 		})
 	}
 }
+
+// A hash serves stored entries for any name its member table does not own, so
+// ({answer: 42}).answer returns 42 at runtime. Treating the table as the
+// authoritative set therefore reported valid code -- a false positive, which
+// is the failure mode this check must not have.
+func TestHashLiteralStoredEntriesAreNotReported(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{
+		"def run()\n  ({answer: 42}).answer\nend",
+		"def run()\n  ({a: 1, b: 2}).b\nend",
+		"def f(h: hash)\n  h.whatever\nend",
+		"def f(h: { name: string })\n  h.name\nend",
+	} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, source)
+			for _, warning := range script.CheckWarnings() {
+				if strings.Contains(warning.Message, "unknown") && strings.Contains(warning.Message, "member") {
+					t.Fatalf("%s: reported a stored hash entry: %v", source, warning)
+				}
+			}
+		})
+	}
+}
+
+// A regex has no TypeKind, so without literal detection the regex entry in the
+// authoritative set was unreachable and an unknown regex member went
+// unreported even though the runtime rejects it.
+func TestRegexLiteralMembersAreChecked(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, "def run()\n  /x/.definitely_missing\nend")
+	requireCheckWarningContains(t, script, "unknown regex member definitely_missing")
+
+	valid := compileScript(t, "def run()\n  /x/.source\nend")
+	for _, warning := range valid.CheckWarnings() {
+		if strings.Contains(warning.Message, "unknown") && strings.Contains(warning.Message, "member") {
+			t.Fatalf("reported a real regex member: %v", warning)
+		}
+	}
+}

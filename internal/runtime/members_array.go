@@ -87,6 +87,10 @@ func arrayMemberGrouping(property string) (Value, error) {
 			out := make([]Value, len(arr))
 			copy(out, arr)
 			var comparatorArgs [2]Value
+			// One state for the whole pass, so the memo and its reservation
+			// are taken once rather than per comparison.
+			cmpState := newArrayCompareState(exec, receiver)
+			defer cmpState.release()
 			var sortErr error
 			sort.SliceStable(out, func(i, j int) bool {
 				if sortErr != nil {
@@ -111,9 +115,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 					}
 					return cmp < 0
 				}
-				cmp, err := arraySortCompareValues(out[i], out[j])
+				cmp, err := arraySortCompareValuesWith(cmpState, out[i], out[j])
 				if err != nil {
-					sortErr = fmt.Errorf("array.sort values are not comparable")
+					sortErr = sortComparisonError(err, "array.sort values are not comparable")
 					return false
 				}
 				return cmp < 0
@@ -171,6 +175,10 @@ func arrayMemberGrouping(property string) (Value, error) {
 					return NewNil(), err
 				}
 			}
+			// One state for the whole pass, so the memo and its reservation
+			// are taken once rather than per comparison.
+			cmpState := newArrayCompareState(exec, receiver)
+			defer cmpState.release()
 			var sortErr error
 			sort.SliceStable(withKeys, func(i, j int) bool {
 				if sortErr != nil {
@@ -180,9 +188,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 					sortErr = err
 					return false
 				}
-				cmp, err := arraySortCompareValues(withKeys[i].key, withKeys[j].key)
+				cmp, err := arraySortCompareValuesWith(cmpState, withKeys[i].key, withKeys[j].key)
 				if err != nil {
-					sortErr = fmt.Errorf("array.sort_by block values are not comparable")
+					sortErr = sortComparisonError(err, "array.sort_by block values are not comparable")
 					return false
 				}
 				if cmp == 0 {
@@ -559,17 +567,19 @@ func arrayMemberExtrema(property string) (Value, error) {
 			}
 			minVal := arr[0]
 			maxVal := arr[0]
+			cmpState := newArrayCompareState(exec, receiver)
+			defer cmpState.release()
 			for _, item := range arr[1:] {
-				cmpMin, err := arraySortCompareValues(item, minVal)
+				cmpMin, err := arraySortCompareValuesWith(cmpState, item, minVal)
 				if err != nil {
-					return NewNil(), fmt.Errorf("array.minmax values are not comparable")
+					return NewNil(), sortComparisonError(err, "array.minmax values are not comparable")
 				}
 				if cmpMin < 0 {
 					minVal = item
 				}
-				cmpMax, err := arraySortCompareValues(item, maxVal)
+				cmpMax, err := arraySortCompareValuesWith(cmpState, item, maxVal)
 				if err != nil {
-					return NewNil(), fmt.Errorf("array.minmax values are not comparable")
+					return NewNil(), sortComparisonError(err, "array.minmax values are not comparable")
 				}
 				if cmpMax > 0 {
 					maxVal = item
@@ -603,10 +613,12 @@ func arrayMemberMinMax(name string, wantMax bool) Value {
 			return NewNil(), nil
 		}
 		best := arr[0]
+		cmpState := newArrayCompareState(exec, receiver)
+		defer cmpState.release()
 		for _, item := range arr[1:] {
-			cmp, err := arraySortCompareValues(item, best)
+			cmp, err := arraySortCompareValuesWith(cmpState, item, best)
 			if err != nil {
-				return NewNil(), fmt.Errorf("%s values are not comparable", name)
+				return NewNil(), sortComparisonError(err, fmt.Sprintf("%s values are not comparable", name))
 			}
 			if (wantMax && cmp > 0) || (!wantMax && cmp < 0) {
 				best = item
@@ -640,15 +652,25 @@ func arrayMemberMinMaxBy(name string, wantMax bool) Value {
 			return NewNil(), err
 		}
 		best := arr[0]
+		// One state for the pass, as elsewhere, but its results are cleared
+		// before each comparison: the block runs in between and can mutate an
+		// array it already returned as a key. Keeping the state means the
+		// memo and its reservation are still paid for once.
+		cmpState := newArrayCompareState(exec, receiver)
+		defer cmpState.release()
 		for _, item := range arr[1:] {
 			blockArg[0] = item
 			key, err := runner.call(blockArg[:])
 			if err != nil {
 				return NewNil(), err
 			}
-			cmp, err := arraySortCompareValues(key, bestKey)
+			cmpState.resetMemo()
+			// The block just produced key, and bestKey is held here too; both
+			// live only on this frame, so admission must see them.
+			cmpState.withRoots(receiver, key, bestKey)
+			cmp, err := arraySortCompareValuesWith(cmpState, key, bestKey)
 			if err != nil {
-				return NewNil(), fmt.Errorf("%s block values are not comparable", name)
+				return NewNil(), sortComparisonError(err, fmt.Sprintf("%s block values are not comparable", name))
 			}
 			if (wantMax && cmp > 0) || (!wantMax && cmp < 0) {
 				best = item
@@ -4983,6 +5005,10 @@ func arraySortBang(exec *Execution, receiver Value, args []Value, kwargs map[str
 		}
 	}
 	var comparatorArgs [2]Value
+	// One state for the whole pass, so the memo and its reservation
+	// are taken once rather than per comparison.
+	cmpState := newArrayCompareState(exec, receiver)
+	defer cmpState.release()
 	var sortErr error
 	sort.SliceStable(out, func(i, j int) bool {
 		if sortErr != nil {
@@ -5007,9 +5033,9 @@ func arraySortBang(exec *Execution, receiver Value, args []Value, kwargs map[str
 			}
 			return cmp < 0
 		}
-		cmp, err := arraySortCompareValues(out[i], out[j])
+		cmp, err := arraySortCompareValuesWith(cmpState, out[i], out[j])
 		if err != nil {
-			sortErr = fmt.Errorf("array.sort! values are not comparable")
+			sortErr = sortComparisonError(err, "array.sort! values are not comparable")
 			return false
 		}
 		return cmp < 0

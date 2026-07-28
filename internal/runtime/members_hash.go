@@ -2671,14 +2671,42 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.map does not take keyword arguments")
 			}
+			// The accumulator is built first, so its baseline snapshots
+			// exec.reservedScratchBytes before the reservation below. That
+			// counter is part of the baseline, so reserving first would put
+			// the result backing in the baseline and then add it again through
+			// reserveSlots and every cap(out) projection, rejecting a build
+			// whose receiver, scratch, and one backing actually fit.
+			//
+			// map keeps an arbitrary block result per entry, so the growing
+			// result is charged incrementally rather than only after the call:
+			// a block returning an individually quota-sized value per entry
+			// could otherwise pile up past the quota before the post-call
+			// check ran. The baseline includes the live receiver and block,
+			// held on the Go stack during the call.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+
+			// The reservation is what makes the backing visible to checks that
+			// run inside the block body, which cannot see a Go-local slice. It
+			// is raised before the runner is constructed because the runner
+			// snapshots its bind baseline once, at construction.
+			retained := newRetainedOutputScratch(exec)
+			defer retained.release()
+			retained.reserve(arraySlotBackingBytes(hashEntryCount(receiver)))
+
 			runner, err := newBlockCallRunner(exec, block, "hash.map", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
 			defer exec.beginBlockIterationRegion().end()
+			// Ruby picks the yield shape from the block's positional arity: one
+			// parameter receives the [key, value] pair, two or more auto-splat
+			// into key and value. Numbered implicit parameters count toward
+			// that arity, so `{ _2 }` is an arity-2 block -- yielding the pair
+			// unconditionally bound `_1` to the whole pair and left `_2` nil.
+			collapsePair := blockWantsCollapsedPair(valueBlock(block))
 			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
-				acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 				if err := acc.reserveScratch(sortedHashEntryBufferBytes(count)); err != nil {
 					return NewNil(), err
 				}
@@ -2686,18 +2714,34 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out := make([]Value, 0, count)
+				// Reserve the preallocated backing before the first block call,
+				// not after it returns: the backing is live from the make above,
+				// so a block allocating its large temporary on the very first
+				// entry would otherwise be measured without it.
+				retained.reserve(acc.accumulatedBytes(cap(out)))
 				var blockArg [1]Value
+				var blockArgs [2]Value
 				var entryBuf [smallHashKeyBufferSize]HashEntry
 				for _, entry := range orderedTypedHashEntriesInto(receiver, entryBuf[:]) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					pair := NewArray([]Value{entry.Key, entry.Value})
-					if err := acc.checkTransient(pair, cap(out)); err != nil {
-						return NewNil(), err
+					var (
+						val Value
+						err error
+					)
+					if collapsePair {
+						pair := NewArray([]Value{entry.Key, entry.Value})
+						if err = acc.checkTransient(pair, cap(out)); err != nil {
+							return NewNil(), err
+						}
+						blockArg[0] = pair
+						val, err = runner.call(blockArg[:])
+					} else {
+						blockArgs[0] = entry.Key
+						blockArgs[1] = entry.Value
+						val, err = runner.call(blockArgs[:])
 					}
-					blockArg[0] = pair
-					val, err := runner.call(blockArg[:])
 					if err != nil {
 						return NewNil(), err
 					}
@@ -2708,6 +2752,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := acc.addConservative(val, cap(out)); err != nil {
 						return NewNil(), err
 					}
+					retained.reserve(acc.accumulatedBytes(cap(out)))
 				}
 				return NewArray(out), nil
 			}
@@ -2719,7 +2764,6 @@ func hashMemberTransforms(property string) (Value, error) {
 			// baseline includes the live receiver and block (held on the Go stack during
 			// the call), and reserveScratch folds in the sorted key list that stays live
 			// for the whole build so it is charged alongside the accumulating result.
-			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			if err := acc.reserveScratch(sortedKeyBufferBytes(len(entries))); err != nil {
 				return NewNil(), err
 			}
@@ -2735,7 +2779,11 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			out := make([]Value, 0, len(entries))
+			// Reserve the preallocated backing before the first block call; see
+			// the typed branch above.
+			retained.reserve(acc.accumulatedBytes(cap(out)))
 			var blockArg [1]Value
+			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				// Charge a step per entry so an empty block still consumes the step
@@ -2744,23 +2792,33 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
-				// Ruby yields the [key, value] pair, which a two-parameter block
-				// auto-splats into key and value and a one-parameter block receives
-				// whole. Entries follow the deterministic sorted key order every
+				// Entries follow the deterministic sorted key order every
 				// block-based hash iterator uses.
-				pair := NewArray([]Value{NewSymbol(key), entries[key]})
-				// Charge the fresh pair against the quota before yielding: it is live
-				// alongside the accumulating result for the block's duration, so without
-				// this a block whose result fits but whose live pair does not could run
-				// past the sandbox memory limit. Mirrors hash.each_with_index, which
-				// charges its yielded pair the same way. cap(out) is the result backing
-				// before this iteration's append, so the peak charges the pair on top of
-				// the result built so far.
-				if err := acc.checkTransient(pair, cap(out)); err != nil {
-					return NewNil(), err
+				var (
+					val Value
+					err error
+				)
+				if collapsePair {
+					pair := NewArray([]Value{NewSymbol(key), entries[key]})
+					// Charge the fresh pair against the quota before yielding: it is
+					// live alongside the accumulating result for the block's duration,
+					// so without this a block whose result fits but whose live pair does
+					// not could run past the sandbox memory limit. Mirrors
+					// hash.each_with_index, which charges its yielded pair the same way.
+					// cap(out) is the result backing before this iteration's append, so
+					// the peak charges the pair on top of the result built so far.
+					if err = acc.checkTransient(pair, cap(out)); err != nil {
+						return NewNil(), err
+					}
+					blockArg[0] = pair
+					val, err = runner.call(blockArg[:])
+				} else {
+					// A block taking key and value separately needs no pair, so none
+					// is built and none is charged.
+					blockArgs[0] = NewSymbol(key)
+					blockArgs[1] = entries[key]
+					val, err = runner.call(blockArgs[:])
 				}
-				blockArg[0] = pair
-				val, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -2771,6 +2829,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := acc.addConservative(val, cap(out)); err != nil {
 					return NewNil(), err
 				}
+				retained.reserve(acc.accumulatedBytes(cap(out)))
 			}
 			return NewArray(out), nil
 		}), nil
@@ -3387,4 +3446,13 @@ func hashMemberTransforms(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)
 	}
+}
+
+// hashEntryCount reports how many entries a hash receiver holds, for either
+// storage shape.
+func hashEntryCount(receiver Value) int {
+	if hashHasTypedEntries(receiver) {
+		return receiver.HashLen()
+	}
+	return len(receiver.Hash())
 }

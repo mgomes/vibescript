@@ -842,6 +842,44 @@ func (e *Env) rangeDynamicBindings(visit func(string, Value)) {
 	}
 }
 
+// rangeDynamicBindingsWhile visits bindings until visit returns false. A
+// bounded walk needs to stop iterating, not merely ignore what it is handed:
+// an environment with many bindings would otherwise cost one callback each
+// however little budget remains.
+func (e *Env) rangeDynamicBindingsWhile(visit func(string, Value) bool) {
+	e.assertNotPoisoned()
+	for i := range int(e.inlineLen) {
+		binding := e.inline[i]
+		if !visit(binding.name, binding.value) {
+			return
+		}
+	}
+	for name, val := range e.values {
+		if !visit(name, val) {
+			return
+		}
+	}
+}
+
+// rangeStaticBindingsWhile visits statics until visit returns false. Stopping
+// matters more here than for dynamic bindings, because materializing a static
+// is real work the caller would otherwise pay for on every remaining name.
+// rangeRawStaticBindingsWhile visits statics in their stored form, without
+// materializing them, until visit returns false.
+//
+// Materializing is real work -- a call carrying several script functions
+// stores them as lazy statics, and materializing one clones it -- so a scan
+// that only inspects values must not trigger it. Callers that need the
+// materialized value use rangeStaticBindings instead.
+func (e *Env) rangeRawStaticBindingsWhile(visit func(string, Value) bool) {
+	e.assertNotPoisoned()
+	for name, val := range e.statics {
+		if !visit(name, val) {
+			return
+		}
+	}
+}
+
 func (e *Env) rangeStaticBindings(visit func(string, Value)) {
 	e.assertNotPoisoned()
 	for name, val := range e.statics {

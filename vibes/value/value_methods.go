@@ -74,6 +74,38 @@ func (k ValueKind) String() string {
 // docs/embedding-api-stability.md).
 var RuntimeStringer func(v Value) (string, bool)
 
+// RuntimeStringLen reports the byte length Value.String would return for a
+// runtime-only kind, computed from the payload rather than by building the
+// string. A projection that answers through RuntimeStringer allocates the very
+// rendering it is meant to decide about, which defeats the guard.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+var RuntimeStringLen func(v Value) (int, bool)
+
+// RuntimeStringAppender writes the bytes Value.String would return for a
+// runtime-only kind straight into buf, so a rendering streamed into a caller's
+// charged buffer never also exists as a temporary alongside it.
+//
+// limit is the total byte budget for buf, matching appendBounded: a
+// non-positive limit writes everything, and otherwise the hook writes at most
+// limit-buf.Len() bytes and reports truncated when it had more to write. This
+// keeps precision-qualified formats -- format("%.1s", Huge::Member) -- from
+// materializing a whole rendering to throw nearly all of it away.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+var RuntimeStringAppender func(v Value, buf *strings.Builder, limit int) (truncated, handled bool)
+
+// RuntimeStringRuneLen reports the rune count Value.String would return for a
+// runtime-only kind, counted from the payload rather than from a materialized
+// rendering. Width-qualified formatting projects rune lengths, so this is the
+// same guard RuntimeStringLen provides for the byte-length paths.
+// It is intended for the interpreter's internal use; hosts should not rely
+// on it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+var RuntimeStringRuneLen func(v Value) (int, bool)
+
 // RuntimeEqualer is the hook used by Value.Equal to compare runtime-only
 // kinds whose payload types live in the vibes package. The vibes package
 // installs this hook during initialization. If unset, equality for those
@@ -201,6 +233,15 @@ func (v Value) StringBounded(limit int) (string, error) {
 		// empty because no digits were ever materialized.
 		if bigIntRenderExceedsLimit(v, limit) {
 			return "", ErrStringRenderTruncated
+		}
+		if RuntimeStringAppender != nil {
+			var buf strings.Builder
+			if truncated, handled := RuntimeStringAppender(v, &buf, limit); handled {
+				if truncated {
+					return buf.String(), ErrStringRenderTruncated
+				}
+				return buf.String(), nil
+			}
 		}
 		s := v.String()
 		if len(s) > limit {
@@ -344,6 +385,17 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		// the buffer before checking the limit. A big integer that provably
 		// cannot fit the remaining budget is refused before the (superlinear)
 		// base conversion ever runs.
+		// The hook streams straight into buf and honors the budget itself, so
+		// neither an unbounded write nor a truncated one materializes the
+		// whole rendering first.
+		if RuntimeStringAppender != nil {
+			if truncated, handled := RuntimeStringAppender(v, buf, limit); handled {
+				if truncated {
+					return ErrStringRenderTruncated
+				}
+				return nil
+			}
+		}
 		if limit > 0 && bigIntRenderExceedsLimit(v, limit-buf.Len()) {
 			return ErrStringRenderTruncated
 		}
@@ -446,6 +498,11 @@ func (v Value) StringByteLen() int {
 	case KindArray, KindHash:
 		return v.stringByteLenWithState(newValueStringState())
 	default:
+		if RuntimeStringLen != nil {
+			if n, ok := RuntimeStringLen(v); ok {
+				return n
+			}
+		}
 		return len(v.String())
 	}
 }
@@ -461,6 +518,11 @@ func (v Value) StringRuneLen() int {
 	case KindArray, KindHash:
 		return v.stringRuneLenWithState(newValueStringState())
 	default:
+		if RuntimeStringRuneLen != nil {
+			if n, ok := RuntimeStringRuneLen(v); ok {
+				return n
+			}
+		}
 		return utf8.RuneCountInString(v.String())
 	}
 }
@@ -513,6 +575,11 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 		}
 		return total
 	default:
+		if RuntimeStringLen != nil {
+			if n, ok := RuntimeStringLen(v); ok {
+				return n
+			}
+		}
 		return len(v.String())
 	}
 }
@@ -593,6 +660,11 @@ func (v Value) stringRuneLenWithState(state *valueStringState) int {
 		}
 		return total
 	default:
+		if RuntimeStringRuneLen != nil {
+			if n, ok := RuntimeStringRuneLen(v); ok {
+				return n
+			}
+		}
 		return utf8.RuneCountInString(v.String())
 	}
 }
@@ -663,6 +735,11 @@ func (v Value) StringByteLenBounded(step func() error) (int, error) {
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
 		}
+		if RuntimeStringLen != nil {
+			if n, ok := RuntimeStringLen(v); ok {
+				return n, nil
+			}
+		}
 		return len(v.String()), nil
 	}
 }
@@ -683,6 +760,11 @@ func (v Value) StringRuneLenBounded(step func() error) (int, error) {
 		}
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
+		}
+		if RuntimeStringRuneLen != nil {
+			if n, ok := RuntimeStringRuneLen(v); ok {
+				return n, nil
+			}
 		}
 		return utf8.RuneCountInString(v.String()), nil
 	}
@@ -765,6 +847,11 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 	default:
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
+		}
+		if RuntimeStringLen != nil {
+			if n, ok := RuntimeStringLen(v); ok {
+				return n, nil
+			}
 		}
 		return len(v.String()), nil
 	}
@@ -870,6 +957,11 @@ func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func(
 	default:
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
+		}
+		if RuntimeStringRuneLen != nil {
+			if n, ok := RuntimeStringRuneLen(v); ok {
+				return n, nil
+			}
 		}
 		return utf8.RuneCountInString(v.String()), nil
 	}
@@ -1004,6 +1096,12 @@ func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit 
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, false, err
 		}
+		if RuntimeStringLen != nil {
+			if n, ok := RuntimeStringLen(v); ok {
+				total, truncated := stringByteLenCappedAdd(0, n, limit)
+				return total, truncated, nil
+			}
+		}
 		total, truncated := stringByteLenCappedAdd(0, len(v.String()), limit)
 		return total, truncated, nil
 	}
@@ -1099,7 +1197,11 @@ func (v Value) Eql(other Value) bool {
 	if v.kind != other.kind {
 		return false
 	}
-	return v.Equal(other)
+	var ctx EqualityContext
+	if ctx.seen != nil {
+		clear(ctx.seen)
+	}
+	return valuesEqualWithKinds(v, other, &ctx.seen, true)
 }
 
 // Identical reports whether v and other refer to the same object, backing the
@@ -1273,12 +1375,30 @@ func numericCrossKindEqual(v, other Value) bool {
 }
 
 func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
+	return valuesEqualWithKinds(v, other, seen, false)
+}
+
+// valuesEqualWithKinds compares two values, optionally requiring their kinds
+// to match at every level.
+//
+// strictKinds is what separates eql? from ==. == compares an int against a
+// float numerically, and that has to hold wherever the pair appears, so a
+// nested [1] == [1.0] is true. eql? is the kind-strict predicate, and its
+// strictness has to hold just as recursively: checking only the outermost
+// kind made [1].eql?([1.0]) true, because the elements went through the
+// widened comparison.
+func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
 	if v.kind != other.kind {
-		// An int and a float compare numerically, so 1 == 1.0 holds. This is
-		// the distinction the documentation draws between == and eql?: Eql
-		// applies its own kind gate before delegating here and therefore stays
-		// strict, which is what hash keys use. It also matches <=>, which
-		// already reports 1 <=> 1.0 as 0.
+		// eql? is kind-strict at every level, not only at the outermost one:
+		// checking the kinds once and then delegating here made
+		// [1].eql?([1.0]) true, because the elements took the numeric path.
+		if strictKinds {
+			return false
+		}
+		// An int and a float compare numerically, so 1 == 1.0 holds, and that
+		// has to hold wherever the pair appears -- including nested, so
+		// [1] == [1.0] is true. It also matches <=>, which already reports
+		// 1 <=> 1.0 as 0.
 		return numericCrossKindEqual(v, other)
 	}
 	switch v.kind {
@@ -1349,7 +1469,7 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 			}
 		}
 		for i := range left {
-			if !valuesEqual(left[i], right[i], seen) {
+			if !valuesEqualWithKinds(left[i], right[i], seen, strictKinds) {
 				return false
 			}
 		}
@@ -1380,15 +1500,15 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 		leftTyped := v.HashHasTypedEntries()
 		rightTyped := other.HashHasTypedEntries()
 		if !leftTyped && !rightTyped {
-			return hashMapsEqual(v.Hash(), other.Hash(), seen)
+			return hashMapsEqual(v.Hash(), other.Hash(), seen, strictKinds)
 		}
 		left := v.HashEntries()
 		right := other.HashEntries()
 		if !leftTyped || !rightTyped {
-			return hashEntriesEqualByDisplayKey(left, right, seen)
+			return hashEntriesEqualByDisplayKey(left, right, seen, strictKinds)
 		}
 		if len(right) <= smallHashEqualityEntryLimit {
-			return hashEntriesEqualByLookupKeyLinear(left, right, seen)
+			return hashEntriesEqualByLookupKeyLinear(left, right, seen, strictKinds)
 		}
 		rightByKey, ok := hashEntriesByLookupKey(right)
 		if !ok {
@@ -1403,7 +1523,7 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 			if !ok {
 				return false
 			}
-			if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
 				return false
 			}
 		}
@@ -1436,7 +1556,7 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 			if !ok {
 				return false
 			}
-			if !valuesEqual(leftValue, rightValue, seen) {
+			if !valuesEqualWithKinds(leftValue, rightValue, seen, strictKinds) {
 				return false
 			}
 		}
@@ -1451,7 +1571,7 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 	}
 }
 
-func hashMapsEqual(left, right map[string]Value, seen *map[valueEqualityPair]struct{}) bool {
+func hashMapsEqual(left, right map[string]Value, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
 	if len(left) != len(right) {
 		return false
 	}
@@ -1460,7 +1580,7 @@ func hashMapsEqual(left, right map[string]Value, seen *map[valueEqualityPair]str
 		if !ok {
 			return false
 		}
-		if !valuesEqual(leftValue, rightValue, seen) {
+		if !valuesEqualWithKinds(leftValue, rightValue, seen, strictKinds) {
 			return false
 		}
 	}
@@ -1480,9 +1600,9 @@ func equalityPairSeen(seen *map[valueEqualityPair]struct{}, pair valueEqualityPa
 	return false
 }
 
-func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen *map[valueEqualityPair]struct{}) bool {
+func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
 	if len(right) <= smallHashEqualityEntryLimit {
-		return hashEntriesEqualByDisplayKeyLinear(left, right, seen)
+		return hashEntriesEqualByDisplayKeyLinear(left, right, seen, strictKinds)
 	}
 	leftByKey, ok := hashEntriesByDisplayKey(left)
 	if !ok {
@@ -1500,14 +1620,14 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen *map[valueEquali
 		if !ok {
 			return false
 		}
-		if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+		if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
 			return false
 		}
 	}
 	return true
 }
 
-func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}) bool {
+func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
 	if hashEntriesHaveDuplicateDisplayKey(left) || hashEntriesHaveDuplicateDisplayKey(right) {
 		return false
 	}
@@ -1518,7 +1638,7 @@ func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, seen *map[value
 			if HashDisplayKey(rightEntry.Key) != key {
 				continue
 			}
-			if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
 				return false
 			}
 			found = true
@@ -1543,7 +1663,7 @@ func hashEntriesHaveDuplicateDisplayKey(entries []HashEntry) bool {
 	return false
 }
 
-func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}) bool {
+func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
 	for _, leftEntry := range left {
 		leftKey, err := NewHashLookupKey(leftEntry.Key)
 		if err != nil {
@@ -1558,7 +1678,7 @@ func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueE
 			if rightKey != leftKey {
 				continue
 			}
-			if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
 				return false
 			}
 			found = true

@@ -1923,6 +1923,35 @@ type blockBindCharge struct {
 	// the environment deduplicated against the base walk at construction, so its
 	// marginal here is ~0 and env-rooted iteration is unaffected.
 	ephemeralRootBytes int
+
+	// reservedAtStart is exec.reservedScratchBytes when the charge was built,
+	// and selfReserved is what callBlock reserved for this call's ephemeral
+	// roots. liveBaseline adds the growth between them so a driver that raises
+	// its reservation while iterating -- an incremental result backing, say --
+	// is weighed by every later bind charge, not just by the ones built after
+	// it. Subtracting selfReserved keeps the ephemeral roots, which baseline
+	// already carries, from being counted twice.
+	reservedAtStart int
+	selfReserved    int
+}
+
+// liveBaseline is the construction-time baseline plus any scratch reserved
+// since, which is what the call is really being weighed against.
+func (c *blockBindCharge) liveBaseline() int {
+	growth := c.exec.reservedScratchBytes - c.reservedAtStart - c.selfReserved
+	if growth <= 0 {
+		return c.baseline
+	}
+	return saturatingAdd(c.baseline, growth)
+}
+
+// noteSelfReservation records the scratch callBlock reserved for this call's
+// ephemeral roots, which the baseline already includes.
+func (c *blockBindCharge) noteSelfReservation(bytes int) {
+	if c == nil {
+		return
+	}
+	c.selfReserved = bytes
 }
 
 // newBlockBindCharge snapshots the live call roots as the baseline for charging a
@@ -1966,6 +1995,7 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 		rootEst:            rootEst,
 		baseline:           baseline,
 		ephemeralRootBytes: baseline - base,
+		reservedAtStart:    exec.reservedScratchBytes,
 	}
 }
 
@@ -2009,7 +2039,7 @@ func (c *blockBindCharge) begin(args []Value, chargedRoots ...Value) error {
 	c.built = 0
 	for _, root := range chargedRoots {
 		c.built = saturatingAdd(c.built, c.rootEst.probe(root))
-		if saturatingAdd(c.baseline, c.built) > c.exec.memoryQuota {
+		if saturatingAdd(c.liveBaseline(), c.built) > c.exec.memoryQuota {
 			return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
 		}
 		c.est.value(root)
@@ -2031,7 +2061,7 @@ func (c *blockBindCharge) charge(value Value) error {
 		return nil
 	}
 	c.built = saturatingAdd(c.built, c.est.value(value))
-	if saturatingAdd(c.baseline, c.built) > c.exec.memoryQuota {
+	if saturatingAdd(c.liveBaseline(), c.built) > c.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
 	}
 	return nil
@@ -2059,7 +2089,7 @@ func (c *blockBindCharge) projectRestWindow(count int) error {
 		return nil
 	}
 	window := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
-	if saturatingAdd(saturatingAdd(c.baseline, c.built), window) > c.exec.memoryQuota {
+	if saturatingAdd(saturatingAdd(c.liveBaseline(), c.built), window) > c.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
 	}
 	return nil
@@ -3002,4 +3032,54 @@ func (est *memoryEstimator) hash(values map[string]Value) int {
 		size += est.valuePayload(val)
 	}
 	return size
+}
+
+// accumulatedBytes reports the payload the build has charged so far.
+//
+// A build accumulator records the growing result privately, so memory checks
+// performed inside a block call cannot see it: a block allocating a large
+// temporary is measured against a baseline that omits everything the loop has
+// already retained, and the two can pass separately even though they coexist.
+// Exposing the running total lets the loop reserve it as releasable scratch,
+// which is what makes the retained output visible to those checks.
+func (acc *arrayBuildAccumulator) accumulatedBytes(backingCap int) int {
+	if acc == nil {
+		return 0
+	}
+	// The element payload alone is not what stays live: the preallocated
+	// result backing and the scratch reserved for the walk do too, and for a
+	// block returning scalars the payload stays zero -- so reserving only that
+	// never grew the reservation at all while the backing could still fill the
+	// quota alongside an in-block temporary.
+	return saturatingAdd(acc.payload, arraySlotBackingBytes(backingCap))
+}
+
+// retainedOutputScratch keeps a loop's accumulated output reserved as scratch,
+// raising the reservation as the output grows and releasing all of it when the
+// loop ends.
+type retainedOutputScratch struct {
+	exec     *Execution
+	reserved int
+}
+
+func newRetainedOutputScratch(exec *Execution) *retainedOutputScratch {
+	return &retainedOutputScratch{exec: exec}
+}
+
+// reserve raises the reservation to total, charging only the increase.
+func (r *retainedOutputScratch) reserve(total int) {
+	if r == nil || r.exec == nil || total <= r.reserved {
+		return
+	}
+	r.exec.reserveLoopScratch(total - r.reserved)
+	r.reserved = total
+}
+
+// release returns the whole reservation once the loop is done with it.
+func (r *retainedOutputScratch) release() {
+	if r == nil || r.exec == nil {
+		return
+	}
+	r.exec.releaseLoopScratch(r.reserved)
+	r.reserved = 0
 }
