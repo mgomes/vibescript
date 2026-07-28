@@ -230,3 +230,57 @@ func TestEnvSettleArrayAppendResultUnregistersBuffer(t *testing.T) {
 		t.Fatalf("settle of an unrelated array dropped the registered buffer")
 	}
 }
+
+// A bounded walk needs to stop iterating, not merely ignore what it is handed.
+// rangeDynamicBindings and rangeStaticBindings visit every binding regardless
+// of what the callback does, and the static form materializes each one on the
+// way, so a caller that has run out of budget still paid per remaining name.
+func TestRangeBindingsWhileStopsOnFalse(t *testing.T) {
+	t.Parallel()
+
+	env := newEnv(nil)
+	const bindings = 500
+	for i := range bindings {
+		env.Define(fmt.Sprintf("g%03d", i), NewInt(int64(i)))
+	}
+
+	visited := 0
+	env.rangeDynamicBindingsWhile(func(string, Value) bool {
+		visited++
+		return visited < 3
+	})
+	if visited != 3 {
+		t.Fatalf("rangeDynamicBindingsWhile visited %d bindings after being told to stop at 3", visited)
+	}
+
+	// It still visits everything when the callback keeps going.
+	all := 0
+	env.rangeDynamicBindingsWhile(func(string, Value) bool {
+		all++
+		return true
+	})
+	if all != bindings {
+		t.Fatalf("rangeDynamicBindingsWhile visited %d of %d bindings", all, bindings)
+	}
+}
+
+// The static form must stop too, and stopping there also avoids materializing
+// the remaining lazy statics.
+func TestRangeStaticBindingsWhileStopsOnFalse(t *testing.T) {
+	t.Parallel()
+
+	env := newEnv(nil)
+	env.statics = map[string]Value{}
+	for i := range 100 {
+		env.statics[fmt.Sprintf("s%03d", i)] = NewInt(int64(i))
+	}
+
+	visited := 0
+	env.rangeStaticBindingsWhile(func(string, Value) bool {
+		visited++
+		return false
+	})
+	if visited != 1 {
+		t.Fatalf("rangeStaticBindingsWhile visited %d statics after the first said stop", visited)
+	}
+}

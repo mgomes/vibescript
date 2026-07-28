@@ -813,11 +813,16 @@ func (s *capabilityContractScanner) collectAmbientBuiltins(root *Env, out map[*B
 		if s.collectExhausted() {
 			return
 		}
-		env.rangeDynamicBindings(func(_ string, item Value) {
+		env.rangeDynamicBindingsWhile(func(_ string, item Value) bool {
 			s.collectBuiltins(item, out)
+			return !s.collectExhausted()
 		})
-		env.rangeStaticBindings(func(_ string, item Value) {
+		if s.collectExhausted() {
+			return
+		}
+		env.rangeStaticBindingsWhile(func(_ string, item Value) bool {
 			s.collectBuiltins(item, out)
+			return !s.collectExhausted()
 		})
 	}
 }
