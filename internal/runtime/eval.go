@@ -421,8 +421,36 @@ func (exec *Execution) evalArrayLiteralWithElementType(e *ArrayLiteral, env *Env
 	})
 }
 
+// A literal of at most one element charges its result once, through the
+// memoized check, rather than running an incremental build accumulator.
+//
+// The accumulator exists so a literal whose elements are fresh temporaries
+// cannot stack several copies past the quota before a later statement check
+// observes them. Its baseline is a full unmemoized reference walk of the
+// reachable graph (newArrayBuildAccumulator -> estimateMemoryUsageBase), so it
+// costs O(reachable) per literal however few slots that literal allocates.
+// Building a nested structure in a loop -- cur = [cur] -- therefore paid a
+// whole-graph walk every iteration to allocate a single slot, which was most of
+// the construction cost in #1124.
+//
+// One element is the largest exemption that gives up nothing. The accumulator's
+// guarantee is about the *second* and later temporaries: it rejects before the
+// next one is allocated. With a single element there is no next one, and the
+// element itself was allocated by evaluating its own sub-expression, which is
+// exactly the exposure `f(big)` already carries. The finished array is then
+// charged by checkMemoryValue through the memoized base walk -- O(1) when the
+// memo is current, and walking only the array's own marginal bytes, since the
+// element is already counted.
+//
+// A wider exemption would not be sound: at n elements a script could hold n
+// fresh temporaries before any check, which for a sandbox is n times the quota.
+const singleElementArrayLiteral = 1
+
 func (exec *Execution) evalArrayLiteralWithElementExpectation(e *ArrayLiteral, env *Env, elementExpectation func(int, int) expressionExpectation) (Value, error) {
-	acc := newArrayBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	var acc *arrayBuildAccumulator
+	if len(e.Elements) > singleElementArrayLiteral {
+		acc = newArrayBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	}
 	elems := make([]Value, 0, len(e.Elements))
 	for i, el := range e.Elements {
 		expectation := expressionExpectation{}
@@ -434,11 +462,20 @@ func (exec *Execution) evalArrayLiteralWithElementExpectation(e *ArrayLiteral, e
 			return NewNil(), err
 		}
 		elems = append(elems, val)
+		if acc == nil {
+			continue
+		}
 		if err := acc.add(val, cap(elems)); err != nil {
 			return NewNil(), err
 		}
 	}
-	return NewArray(elems), nil
+	result := NewArray(elems)
+	if acc == nil {
+		if err := exec.checkMemoryValue(result); err != nil {
+			return NewNil(), err
+		}
+	}
+	return result, nil
 }
 
 // evalHashLiteral evaluates a hash literal pair by pair, charging each new entry
