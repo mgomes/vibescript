@@ -61,16 +61,19 @@ type arrayCompareState struct {
 	memoBudget int
 	// memoReserved is the scratch held for the memo for the walk's duration.
 	memoReserved int
+	// memoTried records that the reservation has been attempted, so a walk
+	// that could not afford the memo does not retry on every pair.
+	memoTried bool
 }
 
 // arrayCompareMemoEntryBytes is the charge for one memoized pair.
 //
-// On 64-bit Go the key is 32 bytes (two pointers and two ints) and the result
-// another 32 (an int, a bool with its padding, and a 16-byte error interface),
-// and a map keeps buckets sized above the entries they hold. Charging the two
-// structs alone let a filled memo exceed the quota, so the charge doubles them
-// to cover the map's own footprint.
-const arrayCompareMemoEntryBytes = 128
+// The key and result structs are 32 bytes each on 64-bit Go, but the map also
+// carries control data, table and directory headers, and load-factor slack.
+// Measured: a 1024-entry map of these types occupies 151,168 bytes of heap
+// when preallocated, or 148 bytes per entry. The charge rounds that up so the
+// reservation stays above the real footprint rather than under it.
+const arrayCompareMemoEntryBytes = 192
 
 // arrayCompareMemoMaxEntries bounds the memo. It is generous enough for the
 // sharing the memo exists to collapse -- a shared DAG has one distinct pair
@@ -91,19 +94,39 @@ const arrayCompareMemoMaxEntries = 1024
 // runs without a memo: correct, slower on shared structures, and still
 // bounded by the step quota.
 func newArrayCompareState(exec *Execution) *arrayCompareState {
-	state := &arrayCompareState{exec: exec}
-	if exec == nil {
-		state.memoBudget = arrayCompareMemoMaxEntries
-		return state
+	return &arrayCompareState{exec: exec}
+}
+
+// ensureMemo takes the reservation and allocates the map, once, the first time
+// a pair of arrays is actually tracked.
+//
+// It is deliberately lazy. The ordering members compare scalars far more often
+// than arrays, and reserving up front made every one of those comparisons take
+// the reservation and run checkMemory -- a full reachable-graph walk, since
+// builtin dispatch disables the base-walk cache -- turning linear extrema over
+// a scalar array into quadratic work.
+//
+// The map is allocated at its full size so it never grows: a growing map holds
+// the old and new tables at once, and that transient peak is not what the
+// reservation covers.
+func (state *arrayCompareState) ensureMemo() {
+	if state.memoTried {
+		return
 	}
-	reserved := exec.reserveLoopScratch(arrayCompareMemoMaxEntries * arrayCompareMemoEntryBytes)
-	if err := exec.checkMemory(); err != nil {
-		exec.releaseLoopScratch(reserved)
-		return state
+	state.memoTried = true
+	if state.exec == nil {
+		state.memoBudget = arrayCompareMemoMaxEntries
+		state.done = make(map[arrayComparePair]arrayCompareResult, arrayCompareMemoMaxEntries)
+		return
+	}
+	reserved := state.exec.reserveLoopScratch(arrayCompareMemoMaxEntries * arrayCompareMemoEntryBytes)
+	if err := state.exec.checkMemory(); err != nil {
+		state.exec.releaseLoopScratch(reserved)
+		return
 	}
 	state.memoReserved = reserved
 	state.memoBudget = arrayCompareMemoMaxEntries
-	return state
+	state.done = make(map[arrayComparePair]arrayCompareResult, arrayCompareMemoMaxEntries)
 }
 
 // release returns the memo's reservation once the comparison that built it is
@@ -155,6 +178,7 @@ func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int
 	pair := arrayComparePair{leftPtr: leftPtr, rightPtr: rightPtr, leftLen: len(left), rightLen: len(right)}
 	tracked := pair.leftPtr != 0 || pair.rightPtr != 0
 	if tracked {
+		state.ensureMemo()
 		if cached, ok := state.done[pair]; ok {
 			return cached.order, cached.ordered, cached.err
 		}
@@ -178,14 +202,11 @@ func compareArrayOrder(left, right []Value, state *arrayCompareState) (order int
 			if state.cycleShortcuts != shortcutsBefore {
 				return
 			}
-			if state.done == nil {
-				state.done = map[arrayComparePair]arrayCompareResult{}
-			}
 			if _, already := state.done[pair]; !already {
 				// The memo is full. Recomputing is correct and still metered,
 				// so the walk simply stops caching rather than growing past
 				// what was reserved for it.
-				if state.memoBudget <= 0 {
+				if state.memoBudget <= 0 || state.done == nil {
 					return
 				}
 				state.memoBudget--

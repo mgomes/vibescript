@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -379,5 +380,97 @@ func TestOrderingMembersGetTheMemoToo(t *testing.T) {
 				t.Fatalf("%s did not finish: the ordering members' walk is exponential", body)
 			}
 		})
+	}
+}
+
+// The ordering members compare scalars far more often than arrays, so the memo
+// must not be set up for them. Reserving up front made every scalar comparison
+// take the reservation and run checkMemory -- a full reachable-graph walk,
+// since builtin dispatch disables the base-walk cache -- turning linear
+// extrema over a scalar array into quadratic work.
+func TestScalarComparisonsDoNotSetUpTheMemo(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		left, right Value
+		wantMemo    bool
+	}{
+		{name: "ints", left: NewInt(1), right: NewInt(2)},
+		{name: "strings", left: NewString("a"), right: NewString("b")},
+		{name: "floats", left: NewFloat(1.5), right: NewFloat(2.5)},
+		{name: "arrays", left: NewArray([]Value{NewInt(1)}), right: NewArray([]Value{NewInt(2)}), wantMemo: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			state := newArrayCompareState(nil)
+			if _, _, err := compareOrderForSort(tc.left, tc.right, state); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if state.memoTried != tc.wantMemo {
+				t.Fatalf("%s: memo set up = %v, want %v", tc.name, state.memoTried, tc.wantMemo)
+			}
+		})
+	}
+}
+
+// Scalar extrema must stay linear in the receiver size. The eager reservation
+// made this superlinear: 30ms, 61ms, and 174ms for 2000, 4000, and 8000
+// elements, against roughly zero once the setup became lazy.
+func TestScalarExtremaStayLinear(t *testing.T) {
+	t.Parallel()
+
+	items := make([]Value, 8000)
+	for i := range items {
+		items[i] = NewInt(int64(i))
+	}
+	receiver := NewArray(items)
+
+	for _, body := range []string{"a.min", "a.max", "a.minmax", "a.sort"} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20},
+				"def run(a)\n  "+body+"\nend")
+			done := make(chan error, 1)
+			go func() {
+				_, err := script.Call(context.Background(), "run", []Value{receiver}, CallOptions{})
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("%s: %v", body, err)
+				}
+			case <-time.After(20 * time.Second):
+				t.Fatalf("%s over 8000 scalars did not finish: the per-comparison setup is not linear", body)
+			}
+		})
+	}
+}
+
+// The reservation must stay above the map's real footprint. The key and result
+// structs are 32 bytes each, but the map also carries control data, table and
+// directory headers, and load-factor slack, so charging the structs alone let
+// a filled memo exceed the quota.
+func TestMemoChargeCoversTheMapFootprint(t *testing.T) {
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	memo := make(map[arrayComparePair]arrayCompareResult, arrayCompareMemoMaxEntries)
+	for i := range arrayCompareMemoMaxEntries {
+		memo[arrayComparePair{leftPtr: uintptr(i), rightPtr: uintptr(i * 3), leftLen: i, rightLen: i}] = arrayCompareResult{order: i}
+	}
+
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(memo)
+
+	actual := after.HeapAlloc - before.HeapAlloc
+	charged := uint64(arrayCompareMemoMaxEntries * arrayCompareMemoEntryBytes)
+	if charged < actual {
+		t.Fatalf("a full memo occupies %d bytes but only %d are charged", actual, charged)
 	}
 }
