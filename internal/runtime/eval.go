@@ -1115,9 +1115,26 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 	}
 
 	if err != nil {
+		// The relational operators raise on incomparable operands, and
+		// docs/language_reference.md specifies that as Ruby's ArgumentError.
+		// The sentinel carries no type, so the shared wrap classified it as
+		// the base RuntimeError and `rescue ArgumentError` could not catch it.
+		if isIncomparable(err) && isRelationalOperator(operator) {
+			return NewNil(), exec.argumentErrorAt(pos, "%s", err.Error())
+		}
 		return NewNil(), exec.wrapError(err, pos)
 	}
 	return result, nil
+}
+
+// isRelationalOperator reports whether op is one of the ordering comparisons
+// that raise on incomparable operands, as opposed to <=>, which answers nil.
+func isRelationalOperator(op TokenType) bool {
+	switch op {
+	case tokenLT, tokenLTE, tokenGT, tokenGTE:
+		return true
+	}
+	return false
 }
 
 // instanceOperatorMethod resolves a user-defined operator method (def +,

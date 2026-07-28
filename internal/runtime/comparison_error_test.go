@@ -121,3 +121,91 @@ func TestComparisonLimitErrorsStayUncatchable(t *testing.T) {
 		t.Fatalf("a step-quota exhaustion was caught by rescue, want it uncatchable")
 	}
 }
+
+// docs/language_reference.md specifies that the relational operators raise
+// Ruby's ArgumentError on incomparable operands, but the sentinel carried no
+// type so the shared wrap classified it as the base RuntimeError -- and
+// `rescue ArgumentError` could not catch it.
+func TestIncomparableComparisonIsAnArgumentError(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{`1 < "a"`, `"a" > 1`, `[1] <= [2]`, `nil >= nil`} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+            def run()
+              begin
+                `+expr+`
+                "not reached"
+              rescue ArgumentError => e
+                "argument"
+              rescue => e
+                "base"
+              end
+            end
+            `)
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("%s: %v", expr, err)
+			}
+			if got.String() != "argument" {
+				t.Fatalf("%s was caught as %s, want ArgumentError", expr, got.String())
+			}
+		})
+	}
+}
+
+// <=> answers nil rather than raising, so it is unaffected.
+func TestSpaceshipStillAnswersNil(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, "def run()\n  (1 <=> \"a\").inspect\nend")
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "nil" {
+		t.Fatalf("1 <=> \"a\" = %s, want nil", got.String())
+	}
+}
+
+// Other error types keep their classification, so the comparison branch does
+// not widen what ArgumentError catches.
+func TestOtherErrorTypesKeepTheirClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "zero division", body: "1 / 0", want: "zerodiv"},
+		{name: "explicit raise", body: `raise "x"`, want: "base"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+            def run()
+              begin
+                `+tc.body+`
+                "not reached"
+              rescue ZeroDivisionError => e
+                "zerodiv"
+              rescue ArgumentError => e
+                "argument"
+              rescue => e
+                "base"
+              end
+            end
+            `)
+			got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("%s caught as %s, want %s", tc.name, got.String(), tc.want)
+			}
+		})
+	}
+}
