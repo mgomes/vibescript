@@ -64,6 +64,14 @@ func (exec *Execution) instanceStringValue(val Value, pos Position) (Value, bool
 	}
 	rendered, err := exec.callOperatorFunction(fn, val, nil, pos)
 	if err != nil {
+		// callOperatorFunction normalizes an escaping break or next but not
+		// retry, so a to_s that runs retry inside a rescue handler would
+		// restart the caller's rescue instead of reporting -- while an
+		// explicit obj.to_s in the same position reports. The implicit call is
+		// still a call boundary and has to behave like one.
+		if handled, boundaryErr := exec.callBoundaryControlError(err, pos); handled {
+			return val, false, boundaryErr
+		}
 		return val, false, err
 	}
 	if rendered.Kind() != KindString {
