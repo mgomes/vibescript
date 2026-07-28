@@ -426,3 +426,56 @@ end`)
 		t.Fatalf("the original rendered %q after being duplicated, want boom", got.String())
 	}
 }
+
+// The clone cache is keyed by the entry map, but the tag belongs to the
+// wrapper. A host that rebuilds a tagged bag with NewObject(tagged.Hash())
+// produces two wrappers sharing one map with different tags; returning the
+// cached clone as it stands gave the second wrapper the first one's
+// provenance, in whichever order they were cloned.
+func TestSharedEntryMapsKeepPerWrapperTags(t *testing.T) {
+	t.Parallel()
+
+	entries := map[string]Value{
+		"to_s": NewString("real"), "message": NewString("real"),
+		"class": NewString("E"), "type": NewString("E"),
+		"backtrace": NewArray([]Value{}),
+	}
+	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+	// Same map, no tag: what a host rebuild produces.
+	plain := NewObject(entries)
+
+	tests := []struct {
+		name  string
+		input []Value
+	}{
+		{name: "tagged first", input: []Value{tagged, plain}},
+		{name: "plain first", input: []Value{plain, tagged}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cloned := deepCloneValueForContainment(NewArray(tc.input))
+			got := cloned.Array()
+			for i, want := range tc.input {
+				if got[i].ObjectTag() != want.ObjectTag() {
+					t.Fatalf("%s: element %d cloned with tag %v, want %v", tc.name, i, got[i].ObjectTag(), want.ObjectTag())
+				}
+			}
+		})
+	}
+}
+
+// Script-visible duplication drops the tag whichever wrapper is reached first.
+func TestSharedEntryMapsAllLoseTagsOnScriptDuplication(t *testing.T) {
+	t.Parallel()
+
+	entries := map[string]Value{"to_s": NewString("real")}
+	tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+	cloned := deepCloneValue(NewArray([]Value{tagged, NewObject(entries)}))
+	for i, elem := range cloned.Array() {
+		if elem.ObjectTag() != ObjectTagNone {
+			t.Fatalf("element %d kept tag %v through script duplication", i, elem.ObjectTag())
+		}
+	}
+}

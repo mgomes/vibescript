@@ -148,14 +148,18 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 		id := reflect.ValueOf(obj).Pointer()
 		if id != 0 {
 			if cloned, ok := state.clonedObject(id); ok {
-				return cloned
+				// The cache is keyed by the entry map, but the tag belongs to
+				// the wrapper. Two wrappers can share one map and carry
+				// different tags -- a host rebuilding a tagged bag with
+				// NewObject(tagged.Hash()) makes exactly that pair -- so the
+				// shared clone is rewrapped for this wrapper rather than
+				// returned as it stands, which would hand the second wrapper
+				// the first one's provenance.
+				return state.wrapCloned(val, cloned)
 			}
 		}
 		cloned := make(map[string]Value, len(obj))
-		clonedValue := NewObject(cloned)
-		if state.preserveTags {
-			clonedValue = retagClonedObject(val, cloned)
-		}
+		clonedValue := state.wrapCloned(val, NewObject(cloned))
 		state.rememberObject(id, clonedValue)
 		for k, v := range obj {
 			cloned[k] = deepCloneValueWithState(v, state)
@@ -227,6 +231,22 @@ func (state *deepCloneState) rememberHash(id uintptr, cloned Value) {
 		state.hashes[entry.id] = entry.value
 	}
 	state.hashes[id] = cloned
+}
+
+// wrapCloned gives the shared clone the provenance of the wrapper being
+// cloned. Without preserveTags every clone is an ordinary bag, which is the
+// script-visible dup behavior.
+func (state *deepCloneState) wrapCloned(src, cloned Value) Value {
+	if !state.preserveTags {
+		if cloned.ObjectTag() == ObjectTagNone {
+			return cloned
+		}
+		return NewObject(cloned.Hash())
+	}
+	if cloned.ObjectTag() == src.ObjectTag() {
+		return cloned
+	}
+	return retagClonedObject(src, cloned.Hash())
 }
 
 func (state *deepCloneState) clonedObject(id uintptr) (Value, bool) {
