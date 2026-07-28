@@ -4941,6 +4941,15 @@ func (c *scriptChecker) checkExpressionWithAutoInner(function string, expr Expre
 							if _, captured := argumentFacts[element]; !captured {
 								argumentFacts[element] = c.inferExpressionType(element)
 							}
+							// Every expanded element reaches
+							// checkInferredArgument, so each needs a presence
+							// entry for the same reason the wrapper does: an
+							// absent one falls back to re-inference, which
+							// could attribute a later argument's state to this
+							// already-evaluated read.
+							if _, captured := argumentHints[element]; !captured {
+								argumentHints[element] = c.unknownShapeKeyKindHint(element)
+							}
 							if elementValues, exact := c.staticValueExpressionAlternatives(element); exact {
 								argumentStaticValues[element] = append([]Expression(nil), elementValues...)
 								if choice, correlated := c.staticValueChoiceForExpression(element); correlated {
