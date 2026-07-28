@@ -129,7 +129,7 @@ func DeepCloneValue(val value.Value) value.Value {
 		for k, v := range obj {
 			cloned[k] = DeepCloneValue(v)
 		}
-		return value.NewObject(cloned)
+		return value.CloneObjectPreservingTag(val, cloned)
 	default:
 		return val
 	}
@@ -479,7 +479,9 @@ func cloneDataOnlyValue(val value.Value, visiting *seenSet, depth int) (value.Va
 	case value.KindHash:
 		return cloneDataOnlyHash(val, visiting, depth)
 	case value.KindObject:
-		return cloneDataOnlyMap(val.Hash(), visiting, value.NewObject, depth)
+		return cloneDataOnlyMap(val.Hash(), visiting, func(entries map[string]value.Value) value.Value {
+			return value.CloneObjectPreservingTag(val, entries)
+		}, depth)
 	default:
 		return val, dataOnlyOK
 	}

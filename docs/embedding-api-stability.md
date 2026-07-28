@@ -112,7 +112,7 @@ during the 2026-06/07 mutator, hash-order, and estimator-memoization work
 | Wrapper mutation | `SetArrayElems`, `SetHashDefaults`, `ReserveHashOrder`, `ReserveTypedHashOrder` | primitives behind Ruby-style in-place mutators and clone bookkeeping (#873, #895) |
 | Typed-hash plumbing | `HashKey`, `HashDisplayKey`, `HashLookupKey`, `NewHashLookupKey`, `TypedHashEntry`, `TypedHashEntriesInto`, `HashEntriesInto`, `HashHasTypedEntries`, `HashStringMapIfMaterialized` | Ruby-ordered typed-key storage introduced by #867 |
 | Rendering projections | `StringByteLen`, `StringRuneLen`, `StringByteLenBounded`, `StringRuneLenBounded`, `StringByteLenBoundedUpTo`, `InspectByteLenBounded`, `WriteStringTo`, `WriteInspectTo` | sandbox interpolation/inspect memory guards project output size before allocating |
-| Object provenance | `ObjectTag`, `ObjectTagNone`, `ObjectTagRescuedError`, `ObjectTagMatchData`, `NewTaggedObject`, `Value.ObjectTag` | mark the two bags the runtime builds to stand for something specific (a rescued error, match data) so their `to_s` renders without inferring it from field names |
+| Object provenance | `ObjectTag`, `ObjectTagNone`, `ObjectTagRescuedError`, `ObjectTagMatchData`, `NewTaggedObject`, `Value.ObjectTag`, `CloneObjectPreservingTag` | mark the two bags the runtime builds to stand for something specific (a rescued error, match data) so their `to_s` renders without inferring it from field names |
 | Big-integer plumbing | `AdoptBigInt`, `Value.CompactInt`, `BigIntPayload`, `BigIntDecimalLenUpperBound` | copy-free promotion in arithmetic, quota accounting, and rendering preflight for big-integer payloads (#919); hosts use `NewBigInt`/`BigInt`/`IsBigInt` |
 
 `HashDeleteKey` and `HashClearEntries` were exported in the same #895 batch
