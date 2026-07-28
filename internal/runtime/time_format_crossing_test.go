@@ -225,3 +225,57 @@ func TestGoLayoutWithLiteralPercentIsNotCrossed(t *testing.T) {
 		})
 	}
 }
+
+// The classifier must accept exactly what the renderer acts on. Recognizing a
+// directive by its letter alone diverged in both directions: sequences the
+// renderer emits verbatim were reported as crossed formats, and a padded
+// percent field it does render was let through as a Go layout.
+func TestCrossingDetectionMatchesRendererAcceptance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		format  string
+		crossed bool
+		why     string
+	}{
+		{format: "%::::z", crossed: false, why: "four colons exceed what %z reads, so it is literal text"},
+		{format: "%:::z", crossed: true, why: "three colons are the compact offset form"},
+		{format: "%:z", crossed: true, why: "one colon is the punctuated offset form"},
+		{format: "%:Y", crossed: false, why: "only %z reads colon modifiers"},
+		{format: "%:B", crossed: false, why: "only %z reads colon modifiers"},
+		{format: "%%", crossed: false, why: "a plain literal percent is not a field"},
+		{format: "100%% done", crossed: false, why: "a plain literal percent is not a field"},
+		{format: "%5%", crossed: true, why: "a width renders a padded percent field"},
+		{format: "%-%", crossed: true, why: "a flag renders a percent field"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.format, func(t *testing.T) {
+			t.Parallel()
+			_, err := runCrossingExpr(t, `t.format("`+tc.format+`")`)
+			gotCrossed := err != nil && strings.Contains(err.Error(), "is a strftime format")
+			if gotCrossed != tc.crossed {
+				t.Fatalf("format(%q) crossed = %v, want %v (%s); err = %v", tc.format, gotCrossed, tc.crossed, tc.why, err)
+			}
+		})
+	}
+}
+
+// The sequences the classifier now lets through must still render verbatim
+// through strftime, which is what makes them literal text rather than fields.
+func TestVerbatimSequencesStillRenderThemselves(t *testing.T) {
+	t.Parallel()
+
+	for _, format := range []string{"%::::z", "%:Y", "%:B"} {
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+			got, err := runCrossingExpr(t, `t.strftime("`+format+`")`)
+			if err != nil {
+				t.Fatalf("strftime(%q): %v", format, err)
+			}
+			if got.String() != format {
+				t.Fatalf("strftime(%q) = %q, want it emitted verbatim", format, got.String())
+			}
+		})
+	}
+}

@@ -107,12 +107,31 @@ func containsRecognizedStrftimeDirective(s string) bool {
 		if !ok {
 			return false
 		}
-		// A literal %% renders a percent sign rather than a field, so it does
-		// not make the string a strftime format on its own.
-		if token.directive != '%' && strings.IndexByte(strftimeDirectiveLetters, token.directive) >= 0 {
+		if renderedAsStrftimeField(token) {
 			return true
 		}
 		i += len(token.source) - 1
 	}
 	return false
+}
+
+// renderedAsStrftimeField reports whether the renderer would act on token as a
+// time field, mirroring renderDirective's own acceptance rules so that a
+// sequence it emits verbatim is not mistaken for a strftime format.
+func renderedAsStrftimeField(token strftimeToken) bool {
+	// Only %z reads colon modifiers, and at most three of them; anything else
+	// carrying a colon is emitted verbatim, so %::::z and %:Y are literal text.
+	if token.colons != 0 && (token.directive != 'z' || token.colons > 3) {
+		return false
+	}
+	if strings.IndexByte(strftimeDirectiveLetters, token.directive) < 0 {
+		return false
+	}
+	// A plain %% renders a percent sign rather than a field, so it does not make
+	// the string a strftime format on its own. A modified form such as %5% does
+	// render a padded field, and only the unmodified token is exempt.
+	if token.directive == '%' {
+		return token.source != "%%"
+	}
+	return true
 }
