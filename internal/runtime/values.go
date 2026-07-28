@@ -306,16 +306,22 @@ func sortComparisonResult(val Value) (int, error) {
 	}
 }
 
-// arraySortCompareValues orders two values for the sort and min/max members.
-// It is compareOrderForSort with the unordered case reported as an error,
-// because a sort cannot place a value it cannot order, whereas the spaceship
-// operator answers nil.
-// arraySortCompareValuesMetered orders two values for the sort and min/max
-// members, charging the execution for each element a recursive array
-// comparison visits.
-func arraySortCompareValuesMetered(exec *Execution, left, right Value) (int, error) {
-	state := newArrayCompareState(exec)
-	defer state.release()
+// arraySortCompareValuesWith orders two values for the sort and min/max
+// members. It is compareOrderForSort with the unordered case reported as an
+// error, because a sort cannot place a value it cannot order, whereas the
+// spaceship operator answers nil. It charges the execution for each element a
+// recursive array comparison visits.
+//
+// The state is the caller's, so one sort or extrema pass shares a single memo.
+//
+// A per-comparison state was the alternative and it made every comparator call
+// that saw two arrays allocate a fresh memo and take a fresh reservation --
+// whose check walks the whole reachable graph, since builtin dispatch disables
+// the base-walk cache. Sorting many small arrays turned into O(n^2 log n)
+// graph walking and gigabytes of churn for a memo holding one or two entries.
+// Sorting does not mutate its elements, so a pair's result stays valid for the
+// whole pass.
+func arraySortCompareValuesWith(state *arrayCompareState, left, right Value) (int, error) {
 	order, ordered, err := compareOrderForSort(left, right, state)
 	if err != nil {
 		return 0, err
