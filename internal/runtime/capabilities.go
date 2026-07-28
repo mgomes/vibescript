@@ -151,20 +151,13 @@ func deepCloneValueWithState(val Value, state *deepCloneState) Value {
 			// copy: a tagged bag is immutable, and sharing entries with an
 			// untagged alias would let a write through the alias change what
 			// the tagged one renders.
-			if cloned, ok := state.clonedObject(id); ok && cloned.ObjectTag() == state.clonedTagFor(val) {
-				// The cache is keyed by the entry map, but the tag belongs to
-				// the wrapper. Two wrappers can share one map and carry
-				// different tags -- a host rebuilding a tagged bag with
-				// NewObject(tagged.Hash()) makes exactly that pair -- so the
-				// shared clone is rewrapped for this wrapper rather than
-				// returned as it stands, which would hand the second wrapper
-				// the first one's provenance.
+			if cloned, ok := state.clonedObject(state.objectCacheID(id, val)); ok {
 				return state.wrapCloned(val, cloned)
 			}
 		}
 		cloned := make(map[string]Value, len(obj))
 		clonedValue := state.wrapCloned(val, NewObject(cloned))
-		state.rememberObject(id, clonedValue)
+		state.rememberObject(state.objectCacheID(id, val), clonedValue)
 		for k, v := range obj {
 			cloned[k] = deepCloneValueWithState(v, state)
 		}
@@ -260,6 +253,19 @@ func (state *deepCloneState) wrapCloned(src, cloned Value) Value {
 		return cloned
 	}
 	return retagClonedObject(src, cloned.Hash())
+}
+
+// objectCacheID folds the wrapper's provenance into the cache id, so a tagged
+// and an untagged wrapper over one entry map get independent clones and each
+// still terminates a cycle. Caching only the first wrapper left the other
+// uncached, and a cyclic map reachable through both recursed without end.
+func (state *deepCloneState) objectCacheID(id uintptr, src Value) uintptr {
+	if state.clonedTagFor(src) == ObjectTagNone {
+		return id
+	}
+	// A tag-qualified id must not collide with a plain one. Rotating keeps
+	// distinct maps distinct while separating the tagged view of each.
+	return id<<1 ^ uintptr(state.clonedTagFor(src))
 }
 
 func (state *deepCloneState) clonedObject(id uintptr) (Value, bool) {

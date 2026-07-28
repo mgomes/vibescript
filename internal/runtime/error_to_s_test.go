@@ -618,3 +618,45 @@ end`},
 		})
 	}
 }
+
+// A cyclic entry map reachable through wrappers with different tags must
+// terminate. Caching only the first wrapper left the other uncached, so
+// rebinding recursed between them until the Go stack ran out.
+func TestCyclicTaggedAndUntaggedWrappersTerminate(t *testing.T) {
+	t.Parallel()
+
+	build := func() Value {
+		entries := map[string]Value{"to_s": NewString("real")}
+		tagged := NewTaggedObject(entries, ObjectTagRescuedError)
+		// An untagged wrapper over the same map, reachable from inside it.
+		entries["self"] = NewObject(entries)
+		return tagged
+	}
+
+	t.Run("rebound as a call argument", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, "def run(v)\n  \"#{v}\"\nend")
+		got, err := script.Call(context.Background(), "run", []Value{build()}, CallOptions{})
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		if got.String() != "real" {
+			t.Fatalf("rendered %q, want real", got.String())
+		}
+	})
+
+	t.Run("cloned for containment", func(t *testing.T) {
+		t.Parallel()
+		cloned := deepCloneValueForContainment(build())
+		if cloned.ObjectTag() != ObjectTagRescuedError {
+			t.Fatalf("the containment clone lost its tag")
+		}
+		self, ok := cloned.Hash()["self"]
+		if !ok {
+			t.Fatalf("the cycle entry did not survive cloning")
+		}
+		if self.ObjectTag() != ObjectTagNone {
+			t.Fatalf("the untagged wrapper inside the cycle gained tag %v", self.ObjectTag())
+		}
+	})
+}

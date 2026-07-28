@@ -563,14 +563,22 @@ type callFunctionRebinder struct {
 	// two wrappers have distinct identities -- so the entry-map cache lets both
 	// rebound wrappers point at one cloned entry map and keep the aliasing.
 	seenHashEntries map[uintptr]map[string]Value
-	seenMaps        map[uintptr]map[string]Value
-	// seenMapTags records the provenance the cached clone was built for.
+	// seenMaps caches rebound object entry maps by source map and tag.
+	//
 	// Wrappers sharing one entry map normally rebind to one shared clone, so
 	// an in-place write through either stays visible through the other. That
 	// is wrong when their tags differ: a tagged bag is immutable, and sharing
 	// entries with an untagged alias would let a write through the alias
-	// change what the tagged one renders. Those get independent clones.
-	seenMapTags map[uintptr]ObjectTag
+	// change what the tagged one renders.
+	//
+	// The tag is part of the key rather than a filter on a single entry so
+	// that every distinct wrapper still terminates a cycle. Caching only the
+	// first wrapper left the other one uncached, and a cyclic map reachable
+	// through both recursed until the stack ran out.
+	seenMaps map[objectCloneKey]map[string]Value
+	// seenMapPtrs answers the coarser "has this entry map been cloned at all"
+	// question, for callers that hold only the pointer and cannot name a tag.
+	seenMapPtrs map[uintptr]struct{}
 	seenBlocks  map[*Block]Value
 	seenEnvs    map[*Env]*Env
 	// seenBoundBuiltins caches the rebound clone of a receiver-bound predicate
@@ -856,20 +864,17 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	case KindObject:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
-		if cloneMap, seen := r.seenMaps[ptr]; seen && r.seenMapTags[ptr] == val.ObjectTag() {
+		key := objectCloneKey{ptr: ptr, tag: val.ObjectTag()}
+		if cloneMap, seen := r.seenMaps[key]; seen {
 			return retagClonedObject(val, cloneMap)
 		}
 		clonedEntries := make(map[string]Value, len(entries))
 		if r.seenMaps == nil {
-			r.seenMaps = make(map[uintptr]map[string]Value)
-			r.seenMapTags = make(map[uintptr]ObjectTag)
+			r.seenMaps = make(map[objectCloneKey]map[string]Value)
+			r.seenMapPtrs = make(map[uintptr]struct{})
 		}
-		// Only the first wrapper for this map claims the shared clone; a
-		// wrapper with a different tag gets its own, unaliased copy.
-		if _, seen := r.seenMaps[ptr]; !seen {
-			r.seenMaps[ptr] = clonedEntries
-			r.seenMapTags[ptr] = val.ObjectTag()
-		}
+		r.seenMaps[key] = clonedEntries
+		r.seenMapPtrs[ptr] = struct{}{}
 		for key, item := range entries {
 			clonedEntries[key] = r.rebindValue(item)
 		}
@@ -1014,7 +1019,8 @@ func (r *callFunctionRebinder) inboundValueUnseen(val Value) bool {
 	case KindHash:
 		return r.inboundHashUnseen(val)
 	case KindObject:
-		_, seen := r.seenMaps[reflect.ValueOf(val.Hash()).Pointer()]
+		key := objectCloneKey{ptr: reflect.ValueOf(val.Hash()).Pointer(), tag: val.ObjectTag()}
+		_, seen := r.seenMaps[key]
 		return !seen
 	default:
 		return false
@@ -3619,4 +3625,12 @@ func (exec *Execution) bindFunctionParamValue(fn *ScriptFunction, env *Env, para
 		}
 	}
 	return nil
+}
+
+// objectCloneKey identifies a cloned attribute bag by its source entry map and
+// the provenance of the wrapper it was cloned for. Differently tagged wrappers
+// over one map get independent clones, and each still terminates cycles.
+type objectCloneKey struct {
+	ptr uintptr
+	tag ObjectTag
 }

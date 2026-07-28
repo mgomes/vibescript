@@ -55,7 +55,7 @@ func (s *inboundDataScanner) admit(id uintptr) bool {
 		if _, ok := r.seenHashEntries[id]; ok {
 			return false
 		}
-		if _, ok := r.seenMaps[id]; ok {
+		if _, ok := r.seenMapPtrs[id]; ok {
 			return false
 		}
 	}
@@ -274,10 +274,13 @@ func (r *callFunctionRebinder) copyAndRegisterInboundValue(val Value) Value {
 		entries := val.Hash()
 		clonedEntries := r.copyAndRegisterInboundEntries(entries)
 		if entries != nil {
+			ptr := reflect.ValueOf(entries).Pointer()
 			if r.seenMaps == nil {
-				r.seenMaps = make(map[uintptr]map[string]Value)
+				r.seenMaps = make(map[objectCloneKey]map[string]Value)
+				r.seenMapPtrs = make(map[uintptr]struct{})
 			}
-			r.seenMaps[reflect.ValueOf(entries).Pointer()] = clonedEntries
+			r.seenMaps[objectCloneKey{ptr: ptr, tag: val.ObjectTag()}] = clonedEntries
+			r.seenMapPtrs[ptr] = struct{}{}
 		}
 		return retagClonedObject(val, clonedEntries)
 	default:
