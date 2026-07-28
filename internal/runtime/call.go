@@ -171,7 +171,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		result, err := exec.callFunction(valueFunction(callee), receiver, args, kwargs, block, pos)
 		if err != nil {
 			if breakVal, absorbed := absorbBlockBreak(err, block); absorbed {
-				return breakVal, nil
+				return exec.validateAbsorbedBreak(valueFunction(callee), breakVal, pos)
 			}
 			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
 				return NewNil(), controlErr
@@ -296,16 +296,24 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			popValidatedArgs()
 		}
 		if err != nil {
-			if breakVal, absorbed := absorbBlockBreak(err, block); absorbed {
-				return breakVal, nil
+			breakVal, absorbed := absorbBlockBreak(err, block)
+			if !absorbed {
+				if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
+					return NewNil(), controlErr
+				}
+				if ctxErr := exec.checkContext(); ctxErr != nil {
+					return NewNil(), ctxErr
+				}
+				return NewNil(), exec.wrapError(err, pos)
 			}
-			if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
-				return NewNil(), controlErr
-			}
-			if ctxErr := exec.checkContext(); ctxErr != nil {
-				return NewNil(), ctxErr
-			}
-			return NewNil(), exec.wrapError(err, pos)
+			// The break becomes this call's result, so it continues down the
+			// normal return path rather than returning here. Returning
+			// immediately skipped the post-call capability scan below: a
+			// builtin that published another builtin and then invoked a block
+			// that broke left the published one reachable without its
+			// contract, so later calls bypassed the validation the scan exists
+			// to attach.
+			result = breakVal
 		}
 		if err := exec.checkContext(); err != nil {
 			return NewNil(), err
