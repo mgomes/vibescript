@@ -506,7 +506,10 @@ func TestTaggedBagsRejectInPlaceMutation(t *testing.T) {
 		{name: "merge!", body: fmt.Sprintf(rescued, `e.merge!({to_s: "payload"})`), want: "cannot modify a rescued error"},
 		{name: "delete", body: fmt.Sprintf(rescued, `e.delete(:to_s)`), want: "cannot modify a rescued error"},
 		{name: "clear", body: fmt.Sprintf(rescued, `e.clear()`), want: "cannot modify a rescued error"},
+		{name: "member assignment", body: fmt.Sprintf(rescued, `e.to_s = "payload"`), want: "cannot modify a rescued error"},
 		{name: "match data replace", body: `"hello world".match(/w\w+/).replace({to_s: "payload"})`, want: "cannot modify match data"},
+		{name: "match data member assignment", body: `m = "hello world".match(/w\w+/)
+  m.to_s = "payload"`, want: "cannot modify match data"},
 		{name: "match data index assignment", body: `m = "hello world".match(/w\w+/)
   m[:to_s] = "payload"`, want: "cannot modify match data"},
 	}

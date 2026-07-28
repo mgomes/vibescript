@@ -2241,6 +2241,9 @@ func classConstantAssignmentSelf(name string, env *Env) (Value, bool) {
 func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Value) error {
 	switch obj.Kind() {
 	case KindHash, KindObject:
+		if err := objectTagMutationError(obj, "member assignment"); err != nil {
+			return exec.errorAt(target.Pos(), "%s", err.Error())
+		}
 		key := NewString(target.Property)
 		if obj.Kind() == KindHash {
 			key = hashMemberAssignmentKey(obj, target.Property)
