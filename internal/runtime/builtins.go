@@ -499,6 +499,13 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects a string format", name)
 	}
+	// The pattern is scanned for verbs and its literal text copied into the
+	// result, so a host-supplied format string costs its own length even with no
+	// arguments at all. format(f) with a 512 KB pattern ran for over a minute
+	// inside the default step profile without the quota ever firing.
+	if err := exec.chargeStringScan(len(args[0].String())); err != nil {
+		return NewNil(), err
+	}
 	values, err := exec.formatStringConversionValues(args[1:])
 	if err != nil {
 		return NewNil(), err
@@ -990,6 +997,14 @@ func projectedFormatArgumentBytes(projection formatProjection, val Value, verb b
 		return projectedQuotedStringBytes(n), nil
 	case 'x', 'X':
 		if val.Kind() == KindString || val.Kind() == KindSymbol {
+			// This branch sizes the field itself rather than going through
+			// stringBytes, so it charges for the input it is about to hex-encode
+			// instead of inheriting that charge.
+			if projection.exec != nil {
+				if err := projection.exec.chargeStringScan(len(val.String())); err != nil {
+					return 0, err
+				}
+			}
 			bytesPerInput := 2
 			if flags.space {
 				bytesPerInput++

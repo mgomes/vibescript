@@ -12,3 +12,6 @@
   Rendering a value charges for the bytes it prints -- `inspect`,
   interpolation, `to_s`, `puts`, and `join` alike -- so converting a large
   string to a symbol stays free while printing that symbol's name does not.
+  `format` charges for its pattern as well as its arguments: a 512 KB pattern
+  with no arguments at all previously ran for over a minute inside the default
+  profile without the quota firing.
