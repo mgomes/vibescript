@@ -2900,7 +2900,7 @@ func (exec *Execution) evalDirectStringSplitCall(call *CallExpr, receiver Value,
 	// this path while the equivalent dispatched call still performs it. The
 	// charge itself is the one member dispatch applies, so both entrances to
 	// the method cost the same.
-	if err := exec.chargeStringCall(receiver, []Value{arg0, arg1}, false); err != nil {
+	if err := exec.chargeStringCall(receiver, []Value{arg0, arg1}, stringComparesArgumentsToReceiver("string.split")); err != nil {
 		return NewNil(), true, err
 	}
 	if err := exec.checkContext(); err != nil {
@@ -3001,7 +3001,7 @@ func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value,
 	// this path while the equivalent dispatched call still performs it. The
 	// charge itself is the one member dispatch applies, so both entrances to
 	// the method cost the same.
-	if err := exec.chargeStringCall(receiver, []Value{needle}, true); err != nil {
+	if err := exec.chargeStringCall(receiver, []Value{needle}, stringComparesArgumentsToReceiver("string.index")); err != nil {
 		return NewNil(), true, err
 	}
 	if err := exec.checkContext(); err != nil {
@@ -3050,7 +3050,7 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 	// this path while the equivalent dispatched call still performs it. The
 	// charge itself is the one member dispatch applies, so both entrances to
 	// the method cost the same.
-	if err := exec.chargeStringCall(receiver, []Value{needle}, true); err != nil {
+	if err := exec.chargeStringCall(receiver, []Value{needle}, stringComparesArgumentsToReceiver("string.rindex")); err != nil {
 		return NewNil(), true, err
 	}
 	// The default offset counts the receiver's runes, an O(n) scan of its own.
@@ -3112,7 +3112,7 @@ func (exec *Execution) evalDirectStringSliceCall(call *CallExpr, receiver Value,
 	// this path while the equivalent dispatched call still performs it. The
 	// charge itself is the one member dispatch applies, so both entrances to
 	// the method cost the same.
-	if err := exec.chargeStringCall(receiver, []Value{first, second}, true); err != nil {
+	if err := exec.chargeStringCall(receiver, []Value{first, second}, stringComparesArgumentsToReceiver("string.slice")); err != nil {
 		return NewNil(), true, err
 	}
 	if err := exec.checkContext(); err != nil {

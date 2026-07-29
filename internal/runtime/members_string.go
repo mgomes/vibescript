@@ -81,7 +81,7 @@ func stringComparesArgumentsToReceiver(name string) bool {
 	switch name {
 	case "string.start_with?", "string.end_with?", "string.include?",
 		"string.index", "string.rindex", "string.casecmp", "string.casecmp?",
-		"string.partition", "string.rpartition":
+		"string.partition", "string.rpartition", "string.slice":
 		return true
 	default:
 		return false

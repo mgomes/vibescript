@@ -873,13 +873,18 @@ func (p formatProjection) stringRunes(val Value) (int, error) {
 		if p.exec != nil {
 			// An aggregate walks a step per node, which no field width bounds:
 			// counting the runes of a large string nested in a one-element array
-			// costs one step. Charge the bytes the walk actually traverses, as
-			// the scalar branch above does.
+			// costs one step. Charge the walk, as the scalar branch above does.
+			//
+			// The walk visits bytes but reports runes, and the charge is
+			// byte-based, so the rune count is scaled to its widest possible
+			// encoding. That over-charges ASCII, but the alternative is a second
+			// full traversal to learn the byte length, and under-charging a scan
+			// is the failure this metering exists to prevent.
 			n, err := val.StringRuneLenBounded(p.exec.step)
 			if err != nil {
 				return 0, err
 			}
-			if err := p.exec.chargeStringScan(n); err != nil {
+			if err := p.exec.chargeStringScan(saturatingMul(n, utf8.UTFMax)); err != nil {
 				return 0, err
 			}
 			return n, nil

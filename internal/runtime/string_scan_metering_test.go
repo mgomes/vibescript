@@ -514,3 +514,44 @@ func TestPrecisionOnlyAggregateFormatStaysBounded(t *testing.T) {
 		})
 	}
 }
+
+// The aggregate rune walk visits bytes but reports runes, so charging the rune
+// count directly under-charged multibyte text by up to four times: the same
+// 64 KiB of four-byte characters traverses as many bytes as 64 KiB of ASCII
+// while counting a quarter as many runes. The count is scaled to its widest
+// encoding, which never charges fewer steps than the bytes traversed deserve.
+//
+// This over-charges ASCII on the same path, and that is the deliberate side of
+// the trade: the alternative is a second full traversal to learn the exact byte
+// length, and under-charging a scan is what this metering exists to prevent.
+func TestAggregateRuneWalkNeverUnderchargesMultibyte(t *testing.T) {
+	t.Parallel()
+
+	const bytes = 64 << 10
+	texts := map[string]string{
+		"ascii":     strings.Repeat("a", bytes),
+		"four-byte": strings.Repeat("\U0001F600", bytes/4),
+		"two-byte":  strings.Repeat("\u00e9", bytes/2),
+	}
+	for name, text := range texts {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			src := "def run(s)\n  format(\"%1.1s\", [s]).bytesize\nend"
+			lo, hi := 1, 1<<20
+			for lo < hi {
+				mid := (lo + hi) / 2
+				script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+				if _, err := script.Call(context.Background(), "run", []Value{NewString(text)}, CallOptions{}); err != nil {
+					lo = mid + 1
+				} else {
+					hi = mid
+				}
+			}
+			if floor := len(text) / stringScanBytesPerStep; lo < floor {
+				t.Errorf("%s text of %d bytes cost %d steps, below the %d its traversal "+
+					"deserves at one step per %d bytes; a rune count must not stand in for "+
+					"a byte count", name, len(text), lo, floor, stringScanBytesPerStep)
+			}
+		})
+	}
+}
