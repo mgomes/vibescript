@@ -264,3 +264,55 @@ func TestRindexDefaultOffsetScanRunsAfterCharging(t *testing.T) {
 			withExplicit, withDefault)
 	}
 }
+
+// A short receiver with a large argument moves just as many bytes as the
+// reverse, so the charge covers string arguments copied into the result, not
+// only the receiver.
+func TestStringArgumentsAreChargedToo(t *testing.T) {
+	t.Parallel()
+
+	// The receiver is a small literal; the host-supplied string is the argument.
+	ops := []string{
+		"\"\".concat(s).bytesize",
+		"\"\".prepend(s).bytesize",
+		"\"ab\".insert(1, s).bytesize",
+		"\"ab\".sub(\"a\", s).bytesize",
+	}
+	for _, expr := range ops {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps over an 8 KiB argument and %d over 64 KiB; "+
+					"bytes copied out of an argument must be charged like bytes copied "+
+					"out of the receiver", expr, atSmall, atLarge)
+			}
+		})
+	}
+}
+
+// The String % operator reaches the shared formatting path straight from the
+// evaluator, without passing through the format builtin. Charging the pattern
+// at the builtin alone left this entrance unmetered, so the charge belongs on
+// the shared path both of them reach.
+func TestFormatOperatorChargesLikeTheBuiltin(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"(s % []).bytesize",
+		"(\"%.65536s\" % [s]).bytesize",
+		"format(\"%.65536s\", s).bytesize",
+		"format(\"%.65536q\", s).bytesize",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps over 8 KiB and %d over 64 KiB; every entrance "+
+					"to formatting must charge for the bytes it scans", expr, atSmall, atLarge)
+			}
+		})
+	}
+}

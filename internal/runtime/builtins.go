@@ -499,13 +499,6 @@ func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Va
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects a string format", name)
 	}
-	// The pattern is scanned for verbs and its literal text copied into the
-	// result, so a host-supplied format string costs its own length even with no
-	// arguments at all. format(f) with a 512 KB pattern ran for over a minute
-	// inside the default step profile without the quota ever firing.
-	if err := exec.chargeStringScan(len(args[0].String())); err != nil {
-		return NewNil(), err
-	}
 	values, err := exec.formatStringConversionValues(args[1:])
 	if err != nil {
 		return NewNil(), err
@@ -557,6 +550,16 @@ func (exec *Execution) formatStringValues(pattern string, values []Value, receiv
 }
 
 func formatStringValuesChecked(exec *Execution, pattern string, values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	// Charged here rather than at the format builtin because this is the shared
+	// path: the String % operator reaches it directly from the evaluator, so a
+	// charge on the builtin alone left `pattern % []` unmetered. The pattern is
+	// scanned for verbs and its literal text copied on every call, so it costs
+	// its own length even with no arguments.
+	if exec != nil {
+		if err := exec.chargeStringScan(len(pattern)); err != nil {
+			return NewNil(), err
+		}
+	}
 	prepared, err := prepareFormatString(exec, pattern, values)
 	if err != nil {
 		return NewNil(), err
@@ -888,6 +891,14 @@ func (p formatProjection) stringPrecisionBytes(val Value, precision int) (int, e
 	}
 	switch val.Kind() {
 	case KindString, KindSymbol:
+		// formatStringPrecisionBytes walks the input to find the precision
+		// boundary, so it charges for what it traverses; the default branch
+		// below inherits its charge from stringBytesUpTo.
+		if p.exec != nil {
+			if err := p.exec.chargeStringScan(min(len(val.String()), saturatingMul(utf8.UTFMax, precision))); err != nil {
+				return 0, err
+			}
+		}
 		return formatStringPrecisionBytes(val.String(), precision), nil
 	default:
 		return p.stringBytesUpTo(val, saturatingMul(utf8.UTFMax, precision))

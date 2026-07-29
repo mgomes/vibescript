@@ -15,3 +15,6 @@
   `format` charges for its pattern as well as its arguments: a 512 KB pattern
   with no arguments at all previously ran for over a minute inside the default
   profile without the quota firing.
+  The charge covers string arguments copied into a result as well as the
+  receiver, so a short receiver with a large argument (`"".concat(s)`) costs
+  the same as the reverse.

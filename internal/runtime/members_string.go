@@ -74,7 +74,16 @@ func chargeStringScanBeforeCall(member Value) Value {
 	fn := inner.Fn
 	metered.Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if receiver.Kind() == KindString {
-			if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+			bytes := len(receiver.String())
+			// String arguments are copied into the result as well, so a short
+			// receiver with a large argument -- "".concat(s), "".prepend(s),
+			// "".insert(0, s) -- moves just as many bytes as the reverse.
+			for _, arg := range args {
+				if arg.Kind() == KindString {
+					bytes = saturatingAdd(bytes, len(arg.String()))
+				}
+			}
+			if err := exec.chargeStringScan(bytes); err != nil {
 				return NewNil(), err
 			}
 		}
