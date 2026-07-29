@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Regex is the payload of a KindRegex value: a compiled Ruby-style regex
@@ -121,6 +122,39 @@ func regexSourceNeedsEscaping(source string) bool {
 		}
 	}
 	return false
+}
+
+// StringRuneLen reports the rune count String would return without building it.
+//
+// Every escape the renderer emits is ASCII, so an escaped byte contributes as
+// many runes as the escape has characters; a byte that passes through
+// contributes as part of whatever rune it belongs to. Counting bytes will not do
+// here, because a source may hold multibyte runes that survive unescaped.
+func (r Regex) StringRuneLen() int {
+	runes := 0
+	backslashes := 0
+	for i := 0; i < len(r.Source); i++ {
+		c := r.Source[i]
+		switch {
+		case c == '/' && backslashes%2 == 0:
+			runes += len(`\/`)
+		case c == '\a', c == '\t', c == '\n', c == '\v', c == '\f', c == '\r':
+			runes += 2
+		case c < 0x20 || c == 0x7f:
+			runes += len(`\x{`) + len(strconv.FormatInt(int64(c), 16)) + len(`}`)
+		default:
+			// A continuation byte belongs to a rune already counted at its lead.
+			if c&0xC0 != 0x80 {
+				runes++
+			}
+		}
+		if c == '\\' {
+			backslashes++
+		} else {
+			backslashes = 0
+		}
+	}
+	return len("//") + runes + utf8.RuneCountInString(r.Flags)
 }
 
 // regexSourceStepBytes is the source bytes one sandbox step covers when a regex

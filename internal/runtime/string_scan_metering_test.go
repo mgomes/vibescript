@@ -1991,6 +1991,10 @@ func TestNestedRegexSizingIsChargedForItsSource(t *testing.T) {
 		"nested in hash":  "def run(s)\n  \"#{{k: /%s/}}\".bytesize\nend",
 		"inspect":         "def run(s)\n  /%s/.inspect.bytesize\nend",
 		"inspect nested":  "def run(s)\n  [/%s/].inspect.bytesize\nend",
+		// join reaches the public byte entry point rather than the recursive
+		// walker, and a width forces the rune walk rather than the byte one.
+		"join":         "def run(s)\n  [/%s/].join(\",\").bytesize\nend",
+		"format width": "def run(s)\n  format(\"%%1s\", /%s/).bytesize\nend",
 	}
 	names := make([]string, 0, len(shapes))
 	for name := range shapes {
