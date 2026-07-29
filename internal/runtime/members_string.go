@@ -3125,7 +3125,29 @@ func appendTemplateChunk(exec *Execution, b *strings.Builder, chunk string, rece
 	return nil
 }
 
-func stringTemplateRenderedLen(text string, context Value, strict bool) (bool, int, error) {
+// stringTemplateRenderedLen measures what the template will render, charging
+// each piece as it is produced.
+//
+// The charge cannot wait for the total: rendering a regex or a big integer into
+// a placeholder materializes it here, so a template holding one did that work
+// before any charge and the rendering loop then did it again. Charging as each
+// segment is produced bills the first conversion, which is the one that happens.
+func stringTemplateRenderedLen(exec *Execution, text string, context Value, strict bool) (bool, int, error) {
+	charged := 0
+	charge := func(total int) error {
+		if exec == nil {
+			return nil
+		}
+		steps := total / stringScanBytesPerStep
+		if steps <= charged {
+			return nil
+		}
+		if err := exec.stepN(steps - charged); err != nil {
+			return err
+		}
+		charged = steps
+		return nil
+	}
 	var cache stringTemplateSegmentCache
 	rendered := false
 	total := 0
@@ -3167,6 +3189,9 @@ func stringTemplateRenderedLen(text string, context Value, strict bool) (bool, i
 		}
 		cache.store(keyPath, segment)
 		total = saturatingAdd(total, len(segment))
+		if err := charge(total); err != nil {
+			return false, 0, err
+		}
 		last = end
 		search = end
 	}
@@ -3174,6 +3199,9 @@ func stringTemplateRenderedLen(text string, context Value, strict bool) (bool, i
 		return false, 0, nil
 	}
 	total = saturatingAdd(total, len(text[last:]))
+	if err := charge(total); err != nil {
+		return false, 0, err
+	}
 	return true, total, nil
 }
 
@@ -3182,7 +3210,7 @@ func stringTemplate(text string, context Value, strict bool) (string, error) {
 }
 
 func stringTemplateWithExecution(exec *Execution, text string, context Value, strict bool, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
-	rendered, renderedLen, err := stringTemplateRenderedLen(text, context, strict)
+	rendered, renderedLen, err := stringTemplateRenderedLen(exec, text, context, strict)
 	if err != nil {
 		return "", err
 	}
@@ -3191,13 +3219,6 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 	}
 	var b strings.Builder
 	if renderedLen > 0 {
-		// The payload arrives inside the context hash, not as a string argument,
-		// so the per-call charge never saw it: "{{v}}".template({v: host_string})
-		// copies the whole value for the cost of a tiny receiver. Charge what
-		// the render will write.
-		if err := exec.chargeStringScan(renderedLen); err != nil {
-			return "", err
-		}
 		if err := exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, renderedLen), receiver, args, kwargs, block); err != nil {
 			return "", err
 		}

@@ -1076,8 +1076,10 @@ func concatenatedOperandBytes(v Value) int {
 		// Regex.String escapes its source, so len(v.String()) would build the
 		// whole literal just to size it -- and addValues then builds it again,
 		// two renderings billed as one, with the first beyond the quota's reach.
-		// Escaping expands a control byte to four characters at most, which is
-		// the widest any byte grows.
+		// Escaping widens a control byte to \x{..}, six characters, which is the
+		// most any byte grows -- read from escapeRegexLiteralSource rather than
+		// assumed, having first guessed four from the shape of a \xNN escape it
+		// does not use.
 		re := v.Regex()
 		return saturatingAdd(len("//")+len(re.Flags), saturatingMul(regexEscapeWidestByte, len(re.Source)))
 	default:
@@ -1092,9 +1094,10 @@ func concatenatedOperandBytes(v Value) int {
 }
 
 // regexEscapeWidestByte is the most characters escapeRegexLiteralSource can
-// produce for one source byte: a control character becomes a four-character RE2
-// escape. Used to size a rendering without performing it.
-const regexEscapeWidestByte = 4
+// produce for one source byte: a control character outside the named escapes
+// becomes \x{ plus up to two hexadecimal digits plus }, so six. Used to size a
+// rendering without performing it.
+const regexEscapeWidestByte = 6
 
 // concatenatesToString reports whether addValues will join these operands into
 // a string, which is the only case where + copies a payload.

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // minStepsForStringOp binary-searches the smallest step quota at which one
@@ -1732,5 +1734,52 @@ func TestRegexConcatenationIsSizedWithoutRendering(t *testing.T) {
 	if _, err := script.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err == nil {
 		t.Error("concatenating a 256 KiB regex succeeded on a 64-step quota; its rendering " +
 			"must be charged before it is performed")
+	}
+}
+
+// regexEscapeWidestByte must actually bound what escaping produces. It was set
+// to four by reasoning about the shape of a \xNN escape the renderer does not
+// use: control characters outside the named escapes become \x{ plus up to two
+// hexadecimal digits plus }, which is six.
+func TestRegexEscapeWidestByteBoundsEveryByte(t *testing.T) {
+	t.Parallel()
+
+	for b := 0; b < 0x80; b++ {
+		rendered := value.Regex{Source: string(rune(b))}.String()
+		// Strip the delimiters the projection accounts for separately.
+		if grew := len(rendered) - len("//"); grew > regexEscapeWidestByte {
+			t.Errorf("byte %#02x escapes to %d characters, above the %d the projection "+
+				"assumes; a source of those bytes would be under-charged", b, grew,
+				regexEscapeWidestByte)
+		}
+	}
+}
+
+// Rendering a value into a placeholder materializes it during the projection,
+// so a template holding a big integer or a regex did that work before any
+// charge and the rendering loop then did it again. Charging each segment as it
+// is produced bills the conversion that actually happens.
+func TestTemplateChargesRenderedValuesAsProduced(t *testing.T) {
+	t.Parallel()
+
+	steps := func(exponent int) int {
+		src := fmt.Sprintf("def run(s)\n  \"{{v}}\".template({v: 2 ** %d}).bytesize\nend", exponent)
+		lo, hi := 1, 1<<22
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	small, large := steps(200000), steps(800000)
+	if large < small*2 {
+		t.Errorf("templating 2**200000 cost %d steps and 2**800000 cost %d; the value is "+
+			"rendered into the placeholder, so the charge follows its size", small, large)
 	}
 }
