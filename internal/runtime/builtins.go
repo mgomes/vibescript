@@ -1691,6 +1691,13 @@ func builtinJSONParse(exec *Execution, receiver Value, args []Value, kwargs map[
 	}
 
 	raw := args[0].String()
+	// Parsing reads every byte of its input, and the input arrives as a builtin
+	// argument rather than a string receiver, so nothing charged for it: 2,000
+	// parses of a 128 KiB document ran 13.9s inside the default profile without
+	// the quota firing. The payload limit bounds one call, not a loop of them.
+	if err := exec.chargeStringScan(len(raw)); err != nil {
+		return NewNil(), err
+	}
 	if len(raw) > maxJSONPayloadBytes {
 		return NewNil(), guardLimitErrorf("JSON.parse input exceeds limit %d bytes", maxJSONPayloadBytes)
 	}
@@ -1727,6 +1734,13 @@ func builtinJSONParseAs(exec *Execution, receiver Value, args []Value, kwargs ma
 	}
 
 	raw := args[0].String()
+	// Parsing reads every byte of its input, and the input arrives as a builtin
+	// argument rather than a string receiver, so nothing charged for it: 2,000
+	// parses of a 128 KiB document ran 13.9s inside the default profile without
+	// the quota firing. The payload limit bounds one call, not a loop of them.
+	if err := exec.chargeStringScan(len(raw)); err != nil {
+		return NewNil(), err
+	}
 	if len(raw) > maxJSONPayloadBytes {
 		return NewNil(), guardLimitErrorf("JSON.parse_as input exceeds limit %d bytes", maxJSONPayloadBytes)
 	}
@@ -1771,6 +1785,15 @@ func builtinJSONStringify(exec *Execution, receiver Value, args []Value, kwargs 
 	state := jsonStringifyState{exec: exec}
 	payload, err := appendJSONValue(make([]byte, 0, 256), args[0], &state)
 	if err != nil {
+		return NewNil(), err
+	}
+	// Settle the whole payload. Literals, delimiters and separators are appended
+	// without passing through checkOutputBytes, so an aggregate holding no
+	// strings -- an array of nil, say -- advanced the running charge not at all
+	// while it built up to the output cap. checkOutputBytes bills only the
+	// growth beyond what it has already charged, so this adds what the
+	// incremental path missed rather than charging it twice.
+	if err := state.checkOutputBytes(len(payload)); err != nil {
 		return NewNil(), err
 	}
 	if len(payload) > maxJSONPayloadBytes {

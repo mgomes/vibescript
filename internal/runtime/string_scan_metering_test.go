@@ -1046,3 +1046,84 @@ func TestStringComparisonMakesOnePass(t *testing.T) {
 		t.Errorf("compare(b, a) = %d, want 1", got)
 	}
 }
+
+// Literals, delimiters and separators are appended without passing through
+// checkOutputBytes, so an aggregate holding no strings advanced the running
+// charge not at all while building up to the output cap: 3,000 renders of a
+// 60,000-element array of nil ran 1.5s inside the default profile without the
+// quota firing. Settling the finished payload covers what the incremental path
+// never saw.
+func TestJSONChargesForOutputWithoutStrings(t *testing.T) {
+	t.Parallel()
+
+	// No strings anywhere in the value, so nothing reaches the escaping path.
+	nils := func(n int) Value {
+		elems := make([]Value, n)
+		for i := range elems {
+			elems[i] = NewNil()
+		}
+		return NewArray(elems)
+	}
+
+	minSteps := func(arg Value) int {
+		src := "def run(a)\n  JSON.stringify(a).bytesize\nend"
+		lo, hi := 1, 1<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{arg}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	atSmall, atLarge := minSteps(nils(2000)), minSteps(nils(16000))
+	if atLarge < atSmall*4 {
+		t.Errorf("stringifying 2,000 nils cost %d steps and 16,000 cost %d; a payload "+
+			"built entirely from literals and delimiters is rendered byte by byte just "+
+			"as a string is", atSmall, atLarge)
+	}
+}
+
+// Parsing reads every byte of its input, and that input arrives as a builtin
+// argument rather than a string receiver, so nothing charged for it: 2,000
+// parses of a 128 KiB document ran 13.9s inside the default profile without the
+// quota firing. The payload limit bounds one call, not a loop of them.
+func TestJSONParseChargesForItsInput(t *testing.T) {
+	t.Parallel()
+
+	document := func(elements int) Value {
+		return NewString("[" + strings.TrimSuffix(strings.Repeat("1,", elements), ",") + "]")
+	}
+	minSteps := func(src string, arg Value) int {
+		lo, hi := 1, 1<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{arg}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	for _, src := range []string{
+		"def run(s)\n  JSON.parse(s).length\nend",
+		"def run(s)\n  JSON.parse_as(s, array).length\nend",
+	} {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minSteps(src, document(2000))
+			atLarge := minSteps(src, document(16000))
+			if atLarge < atSmall*4 {
+				t.Errorf("parsing 2,000 elements cost %d steps and 16,000 cost %d; parsing "+
+					"reads every byte of its input", atSmall, atLarge)
+			}
+		})
+	}
+}

@@ -2681,6 +2681,11 @@ const stringScanBytesPerStep = 64
 // zero, and a scan short enough to round down to zero steps is already bounded
 // by the caller's own per-call charge.
 func (exec *Execution) chargeStringScan(n int) error {
+	// A nil execution has no quota to charge against: some builtins are
+	// reachable without one, and callers should not each have to remember that.
+	if exec == nil {
+		return nil
+	}
 	steps := n / stringScanBytesPerStep
 	if steps <= 0 {
 		return nil
