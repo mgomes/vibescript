@@ -122,3 +122,31 @@ func regexSourceNeedsEscaping(source string) bool {
 	}
 	return false
 }
+
+// regexSourceStepBytes is the source bytes one sandbox step covers when a regex
+// is sized or rendered. It matches the rate the runtime charges byte-oriented
+// string work at; the constant is duplicated because this package cannot import
+// the runtime, and TestRegexSourceStepBytesMatchesRuntime holds the two equal.
+const regexSourceStepBytes = 64
+
+// chargeRegexSourceSteps charges step once per regexSourceStepBytes of source,
+// for the walk StringLen performs. Sizing a regex without rendering it still
+// reads every source byte, and the step callback is the only accounting the
+// projection walkers have -- mirroring chargeBigIntRenderSteps, which charges
+// the same way for a base conversion.
+func chargeRegexSourceSteps(v Value, step func() error) error {
+	if v.kind != KindRegex {
+		return nil
+	}
+	for range len(v.data.(Regex).Source) / regexSourceStepBytes {
+		if err := step(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RegexSourceStepBytesForTest exposes regexSourceStepBytes so the runtime's test
+// suite can hold it equal to its own byte-work rate. The constant is duplicated
+// because this package cannot import the runtime.
+func RegexSourceStepBytesForTest() int { return regexSourceStepBytes }

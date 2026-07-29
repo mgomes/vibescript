@@ -582,6 +582,11 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 			total += val.stringByteLenWithState(state)
 		}
 		return total
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it. This walker takes
+		// no step callback, so the source walk is unbilled here -- it is the
+		// unmetered path, used where no quota is in force.
+		return v.data.(Regex).StringLen()
 	default:
 		if RuntimeStringLen != nil {
 			if n, ok := RuntimeStringLen(v); ok {
@@ -858,6 +863,13 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 			total += n
 		}
 		return total, nil
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it, and the source
+		// walk StringLen performs is charged before it runs.
+		if err := chargeRegexSourceSteps(v, step); err != nil {
+			return 0, err
+		}
+		return v.data.(Regex).StringLen(), nil
 	default:
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
@@ -1100,6 +1112,14 @@ func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit 
 			}
 		}
 		return total, false, nil
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it, and the source
+		// walk StringLen performs is charged before it runs.
+		if err := chargeRegexSourceSteps(v, step); err != nil {
+			return 0, false, err
+		}
+		total, truncated := stringByteLenCappedAdd(0, v.data.(Regex).StringLen(), limit)
+		return total, truncated, nil
 	default:
 		// A big integer that provably exceeds the limit reports truncation
 		// without paying for the base conversion; anything else is measured

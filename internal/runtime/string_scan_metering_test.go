@@ -1946,32 +1946,71 @@ func TestUnsupportedRegexConcatenationReportsItsOwnError(t *testing.T) {
 	}
 }
 
-// Sizing a regex must not render it at any depth. The per-site fixes covered a
-// regex that is the whole value; a regex inside an array or hash reaches the
-// same bounded walk through recursion, and inspect reaches it through a separate
-// walk. Handling it in the value package covers every caller and every nesting.
-func TestNestedRegexSizingDoesNotRender(t *testing.T) {
+// The rate the value package charges regex source walks at must match the rate
+// the runtime charges byte work at. The constant is duplicated because that
+// package cannot import the runtime, so nothing but a test keeps them equal.
+func TestRegexSourceStepBytesMatchesRuntime(t *testing.T) {
 	t.Parallel()
 
-	source := strings.Repeat("a", 15<<10)
-	for _, src := range []string{
-		fmt.Sprintf("def run(s)\n  \"#{[/%s/]}\".bytesize\nend", source),
-		fmt.Sprintf("def run(s)\n  \"#{{k: /%s/}}\".bytesize\nend", source),
-		fmt.Sprintf("def run(s)\n  /%s/.inspect.bytesize\nend", source),
-		fmt.Sprintf("def run(s)\n  [/%s/].inspect.bytesize\nend", source),
-	} {
-		t.Run(src[:30], func(t *testing.T) {
-			t.Parallel()
-			// Ample quota: the operation completes, so the sizing path is exercised.
-			ample := compileScriptWithConfig(t, Config{StepQuota: 1 << 20, MemoryQuotaBytes: Unlimited}, src)
-			if _, err := ample.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
-				t.Fatalf("with an ample quota: %v", err)
+	if got := value.RegexSourceStepBytesForTest(); got != stringScanBytesPerStep {
+		t.Errorf("the value package charges regex source at one step per %d bytes and the "+
+			"runtime charges byte work at one per %d; the duplicated constants have "+
+			"drifted", got, stringScanBytesPerStep)
+	}
+}
+
+// Sizing a regex must not render it at any depth, and the source walk it does
+// perform must be charged. The per-site fixes covered a regex that is the whole
+// value; a regex inside an array or hash recurses into the same walkers, and
+// inspect uses a separate one.
+//
+// The assertion is that the charge follows the source length. An earlier version
+// asserted only that a tight quota fails and an ample one succeeds, which holds
+// whether sizing renders or not -- it could not tell a nested regex was still
+// being rendered.
+func TestNestedRegexSizingIsChargedForItsSource(t *testing.T) {
+	t.Parallel()
+
+	minSteps := func(shape string, sourceLen int) int {
+		src := fmt.Sprintf(shape, strings.Repeat("a", sourceLen))
+		lo, hi := 1, 1<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
 			}
-			// A quota below the source length: sizing must not have rendered, so
-			// the charge trips rather than the render succeeding unbilled.
-			tight := compileScriptWithConfig(t, Config{StepQuota: 8, MemoryQuotaBytes: Unlimited}, src)
-			if _, err := tight.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err == nil {
-				t.Error("a 15 KiB regex rendered on an 8-step quota")
+		}
+		return lo
+	}
+
+	shapes := map[string]string{
+		"nested in array": "def run(s)\n  \"#{[/%s/]}\".bytesize\nend",
+		"nested in hash":  "def run(s)\n  \"#{{k: /%s/}}\".bytesize\nend",
+		"inspect":         "def run(s)\n  /%s/.inspect.bytesize\nend",
+		"inspect nested":  "def run(s)\n  [/%s/].inspect.bytesize\nend",
+	}
+	names := make([]string, 0, len(shapes))
+	for name := range shapes {
+		names = append(names, name)
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			// Two passes happen: sizing walks the source and rendering walks it
+			// again, so the charge is about twice one pass. Scaling alone does
+			// not discriminate -- charging only the rendered length also scales
+			// with the source -- so the assertion is on magnitude.
+			const sourceLen = 14 << 10
+			onePass := sourceLen / stringScanBytesPerStep
+			got := minSteps(shapes[name], sourceLen)
+			if got < onePass*3/2 {
+				t.Errorf("%s cost %d steps for a %d-byte source, under the %d that one "+
+					"pass alone costs by half again; sizing walks the source and rendering "+
+					"walks it again, and both must be charged", name, got, sourceLen,
+					onePass)
 			}
 		})
 	}
