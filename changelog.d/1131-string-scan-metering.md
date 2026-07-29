@@ -23,7 +23,10 @@
   since a few-byte receiver can produce megabytes.
   Serializing and templating charge for the strings they reach through a
   structure, so `JSON.stringify({v: big})` and `"{{v}}".template({v: big})`
-  cost what they copy rather than what their receiver holds.
+  cost what they copy rather than what their receiver holds. `template` also
+  checks its scratch against the memory quota as it builds it rather than once
+  it has finished, so a template it is going to reject no longer renders every
+  placeholder first.
   Operators, index syntax, and equality predicates charge too: `+`, the
   comparisons, `s[0]`, and `eql?` never pass through method dispatch, so each
   copied or scanned a whole string for a flat cost. Comparing two scalars
