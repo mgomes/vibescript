@@ -900,6 +900,12 @@ func TestStringOperatorsChargeForTheirOperands(t *testing.T) {
 		"(s > s).to_s.length",
 		"(s <=> s).to_s.length",
 		"s.eql?(s).to_s.length",
+		// Symbols compare by their name, and converting to one is exempt
+		// because it copies nothing, so charging only strings left a script
+		// able to convert two long values and compare the symbols for free.
+		"(s.to_sym == s.to_sym).to_s.length",
+		"(s.to_sym <=> s.to_sym).to_s.length",
+		"(s.to_sym < s.to_sym).to_s.length",
 	}
 	for _, expr := range ops {
 		t.Run(expr, func(t *testing.T) {
@@ -1335,5 +1341,52 @@ func TestOversizedJSONReportsItsLimitNotAQuotaError(t *testing.T) {
 					"scanned, so it must not be charged for one", err)
 			}
 		})
+	}
+}
+
+// chop and chomp inspect the receiver's final bytes and return a substring
+// view, so they cost the same however long it is -- charging the full receiver
+// made them exhaust quotas that their actual work never would.
+//
+// strip and its variants are the counter-example and are deliberately still
+// charged: they look constant on ordinary text, which is how they were first
+// misclassified, but scan the whole receiver when it is all whitespace. The
+// distinction is the worst case, not the common one.
+func TestSubstringViewTransformsAreNotChargedForTheReceiver(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{"s.chop.bytesize", "s.chomp.bytesize"} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 512<<10)
+			if atSmall != atLarge {
+				t.Errorf("%s cost %d steps over 8 KiB and %d over 512 KiB; it reads only "+
+					"the receiver's final bytes", expr, atSmall, atLarge)
+			}
+		})
+	}
+
+	// The worst case for strip is a receiver that is entirely whitespace, and
+	// there it genuinely scans, so it stays charged.
+	stripSteps := func(bytes int) int {
+		hay := NewString(strings.Repeat(" ", bytes))
+		src := "def run(s)\n  s.strip.bytesize\nend"
+		lo, hi := 1, bytes+10000
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{hay}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+	if small, large := stripSteps(8<<10), stripSteps(64<<10); large < small*4 {
+		t.Errorf("stripping 8 KiB of whitespace cost %d steps and 64 KiB cost %d; strip "+
+			"scans a receiver that is entirely whitespace and must stay charged for it",
+			small, large)
 	}
 }

@@ -57,6 +57,13 @@ var stringConstantCostMembers = map[string]struct{}{
 	// none of these touch the receiver's length. slice is charged rather than
 	// exempt because it indexes by rune, which scans to the offset.
 	"byteslice": {}, "to_sym": {}, "intern": {},
+	// chop and chomp inspect only the receiver's final bytes and return a
+	// substring view, so their cost does not follow its length even when every
+	// byte is a candidate: measured flat from 64 KiB to 2 MiB on an all-space
+	// receiver. strip, lstrip and rstrip are not here -- they look constant on
+	// ordinary text but scan the whole receiver when it is all whitespace,
+	// rising 27 to 32 times across that same range.
+	"chop": {}, "chop!": {}, "chomp": {}, "chomp!": {},
 	// replace ignores the receiver entirely and returns its argument.
 	"replace": {},
 }

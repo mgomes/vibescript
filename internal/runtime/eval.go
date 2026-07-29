@@ -1023,8 +1023,15 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 // Concatenation copies both operands. A comparison stops at the first differing
 // byte and answers immediately when the lengths differ, so it cannot read more
 // than the shorter operand holds.
+func stringLikeOperand(v Value) bool {
+	return v.Kind() == KindString || v.Kind() == KindSymbol
+}
+
 func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right Value) error {
-	if left.Kind() != KindString || right.Kind() != KindString {
+	// Symbols carry a string name and compare by it, and converting a string to
+	// a symbol is exempt because it copies nothing -- so charging only strings
+	// let a script convert two long values and compare the symbols for free.
+	if !stringLikeOperand(left) || !stringLikeOperand(right) {
 		return nil
 	}
 	switch operator {
