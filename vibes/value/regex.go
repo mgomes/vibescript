@@ -143,10 +143,15 @@ func (r Regex) StringRuneLen() int {
 		case c < 0x20 || c == 0x7f:
 			runes += len(`\x{`) + len(strconv.FormatInt(int64(c), 16)) + len(`}`)
 		default:
-			// A continuation byte belongs to a rune already counted at its lead.
-			if c&0xC0 != 0x80 {
-				runes++
-			}
+			// Decode rather than test for a continuation byte. A stray one is
+			// invalid UTF-8, which String preserves and RuneCountInString counts
+			// as a single RuneError -- skipping it undercounted a source of them
+			// by its whole length. DecodeRuneInString reports size 1 for that
+			// case and the true width otherwise, so advancing by size counts
+			// each rune exactly once.
+			_, size := utf8.DecodeRuneInString(r.Source[i:])
+			runes++
+			i += size - 1
 		}
 		if c == '\\' {
 			backslashes++

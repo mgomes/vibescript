@@ -788,7 +788,14 @@ func (v Value) StringRuneLenBounded(step func() error) (int, error) {
 		return v.stringRuneLenBoundedWithState(newValueStringState(), step)
 	case KindRegex:
 		// See StringByteLen: sizing a regex must not render it, and the source
-		// walk is charged before it runs.
+		// walk is charged before it runs. The per-node step comes first and
+		// unconditionally: a source under one step's worth of bytes charges
+		// nothing proportional, and without this an exhausted callback could not
+		// abort the projection and a regex would cost one step less than every
+		// other kind.
+		if err := step(); err != nil {
+			return 0, err
+		}
 		if err := chargeRegexSourceSteps(v, step); err != nil {
 			return 0, err
 		}
@@ -1002,7 +1009,14 @@ func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func(
 		return total, nil
 	case KindRegex:
 		// See StringByteLen: sizing a regex must not render it, and the source
-		// walk is charged before it runs.
+		// walk is charged before it runs. The per-node step comes first and
+		// unconditionally: a source under one step's worth of bytes charges
+		// nothing proportional, and without this an exhausted callback could not
+		// abort the projection and a regex would cost one step less than every
+		// other kind.
+		if err := step(); err != nil {
+			return 0, err
+		}
 		if err := chargeRegexSourceSteps(v, step); err != nil {
 			return 0, err
 		}
