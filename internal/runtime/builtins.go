@@ -849,6 +849,14 @@ func (p formatProjection) stringBytes(val Value) (int, error) {
 func (p formatProjection) stringRunes(val Value) (int, error) {
 	switch val.Kind() {
 	case KindString, KindSymbol:
+		// Counting runes walks the whole value however small the field that
+		// will hold them, so a precision or width cannot bound this: charge the
+		// traversal itself. Shared by every caller that needs a rune count.
+		if p.exec != nil {
+			if err := p.exec.chargeStringScan(len(val.String())); err != nil {
+				return 0, err
+			}
+		}
 		return utf8.RuneCountInString(val.String()), nil
 	default:
 		if p.exec != nil {

@@ -18,3 +18,6 @@
   The charge covers string arguments copied into a result as well as the
   receiver, so a short receiver with a large argument (`"".concat(s)`) costs
   the same as the reverse.
+  Operations whose output size comes from a number rather than their inputs --
+  `ljust`, `rjust`, `center`, and `String#*` -- charge for the bytes they write,
+  since a few-byte receiver can produce megabytes.

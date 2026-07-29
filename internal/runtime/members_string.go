@@ -4344,6 +4344,13 @@ func stringPad(exec *Execution, method string, side padSide, receiver Value, arg
 	// Saturating arithmetic keeps the projected size from overflowing on a huge
 	// width; the quota check below rejects anything that large regardless.
 	projected := saturatingAdd(len(text), saturatingAdd(padRuneBytes(pad, leftPad), padRuneBytes(pad, rightPad)))
+	// Padding is the one string operation whose cost comes from a number rather
+	// than from its inputs: "".ljust(8_000_000, "x") writes eight million bytes
+	// from two inputs of a handful of bytes each, so the receiver-and-arguments
+	// charge sees nothing. Charge what will actually be written.
+	if err := exec.chargeStringScan(projected); err != nil {
+		return NewNil(), err
+	}
 	if err := exec.checkProjectedStringBytes(projected); err != nil {
 		return NewNil(), err
 	}

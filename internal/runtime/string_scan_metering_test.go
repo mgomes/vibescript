@@ -316,3 +316,76 @@ func TestFormatOperatorChargesLikeTheBuiltin(t *testing.T) {
 		})
 	}
 }
+
+// minStepsForWidth binary-searches the smallest step quota at which a padding
+// call of the given width completes. Padding scales with a number rather than
+// with its inputs, so the size that has to vary is the width.
+func minStepsForWidth(t *testing.T, expr string, width int) int {
+	t.Helper()
+
+	src := fmt.Sprintf("def run(s)\n  %s\nend", fmt.Sprintf(expr, width))
+	lo, hi := 1, width/stringScanBytesPerStep+10000
+	for lo < hi {
+		mid := (lo + hi) / 2
+		script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+		if _, err := script.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+// Padding and repetition take their cost from a number rather than from their
+// inputs: "".ljust(8_000_000, "x") and "x" * 8_000_000 each write eight million
+// bytes from inputs of a few bytes, so a charge based on receiver and argument
+// lengths sees nothing at all. They ran for 8.5s and 7.6s inside the default
+// step profile, both completing without the quota ever firing.
+func TestPaddingChargesForTheBytesItWrites(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"\"\".ljust(%d, \"x\").bytesize",
+		"\"\".rjust(%d, \"x\").bytesize",
+		"\"\".center(%d, \"x\").bytesize",
+		// String#* is the same shape: a short receiver and a script-chosen
+		// count. It ran 7.6s inside the default profile and completed.
+		"(\"x\" * %d).bytesize",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			const small, large = 64 << 10, 512 << 10
+			atSmall := minStepsForWidth(t, expr, small)
+			atLarge := minStepsForWidth(t, expr, large)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps at width %d and %d at width %d; padding must "+
+					"charge for the bytes it writes, which its inputs do not bound",
+					expr, atSmall, small, atLarge, large)
+			}
+		})
+	}
+}
+
+// Counting runes walks the whole value however small the field that will hold
+// them, so a precision or width cannot bound it. format("%1.1s", s) charged for
+// precision 1 while scanning a multi-megabyte receiver in full.
+func TestPrecisionWidthFormattingChargesTheFullScan(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"format(\"%1.1s\", s).bytesize",
+		"format(\"%2.2s\", s).bytesize",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps over 8 KiB and %d over 64 KiB; a narrow field "+
+					"does not bound the rune count, so the traversal must be charged",
+					expr, atSmall, atLarge)
+			}
+		})
+	}
+}
