@@ -1266,9 +1266,12 @@ func TestInvalidUTF8SearchIsLinear(t *testing.T) {
 // charge stayed linear and said nothing about it.
 //
 // So this one runs under a finite quota, as the shipped profiles do.
+// Not parallel: estimatorVisitCounting and estimatorVisits are process-wide, so
+// a concurrent test's estimator walks would land in these measurements and the
+// ratio could pass or fail on which tests happened to overlap.
+// TestDeepNestingScalingIsQuadraticUnderQuota, which established this
+// instrumentation, is serial for the same reason.
 func TestSerializationStaysLinearUnderAMemoryQuota(t *testing.T) {
-	t.Parallel()
-
 	// Counted, not timed. The quantity in question is how many graph nodes the
 	// estimator visits, which these counters report exactly and which no clock
 	// resolves reliably -- a Windows runner measured one of these searches as
