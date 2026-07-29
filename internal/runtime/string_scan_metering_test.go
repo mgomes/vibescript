@@ -1686,3 +1686,51 @@ func TestUnusableNumericSelectorsAreNotCharged(t *testing.T) {
 		})
 	}
 }
+
+// An enum value renders as Enum::Member from two identifiers that can approach
+// the source-size limit, so it carries a payload its kind does not reveal and
+// was contributing nothing to the concatenation charge.
+func TestEnumConcatenationChargesItsRendering(t *testing.T) {
+	t.Parallel()
+
+	steps := func(nameLen int) int {
+		member := strings.Repeat("M", nameLen)
+		src := fmt.Sprintf("enum E\n  %s\nend\ndef run(s)\n  (\"\" + E::%s).bytesize\nend",
+			member, member)
+		lo, hi := 1, 1<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	small, large := steps(4<<10), steps(64<<10)
+	if large < small*4 {
+		t.Errorf("concatenating a 4 KiB enum member cost %d steps and a 64 KiB one cost "+
+			"%d; the rendering is built from the identifiers", small, large)
+	}
+}
+
+// Sizing a regex operand must not render it. Regex.String escapes the source,
+// so measuring by rendering built the whole literal before the charge -- which
+// addValues then built again, two renderings billed as one, the first beyond
+// the quota's reach.
+func TestRegexConcatenationIsSizedWithoutRendering(t *testing.T) {
+	t.Parallel()
+
+	// A quota far below the source length: the charge must trip before any
+	// rendering happens, so the error is the quota's rather than a success.
+	source := strings.Repeat("a", 256<<10)
+	src := fmt.Sprintf("def run(s)\n  (\"\" + /%s/).bytesize\nend", source)
+	script := compileScriptWithConfig(t, Config{StepQuota: 64, MemoryQuotaBytes: Unlimited}, src)
+	if _, err := script.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err == nil {
+		t.Error("concatenating a 256 KiB regex succeeded on a 64-step quota; its rendering " +
+			"must be charged before it is performed")
+	}
+}

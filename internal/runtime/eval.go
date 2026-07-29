@@ -1072,11 +1072,29 @@ func concatenatedOperandBytes(v Value) int {
 		}
 		return 0
 	case v.Kind() == KindRegex:
-		return len(v.String())
+		// Bounded from the payload rather than measured by rendering it.
+		// Regex.String escapes its source, so len(v.String()) would build the
+		// whole literal just to size it -- and addValues then builds it again,
+		// two renderings billed as one, with the first beyond the quota's reach.
+		// Escaping expands a control byte to four characters at most, which is
+		// the widest any byte grows.
+		re := v.Regex()
+		return saturatingAdd(len("//")+len(re.Flags), saturatingMul(regexEscapeWidestByte, len(re.Source)))
 	default:
+		// An enum value renders as Enum::Member from two identifiers that can
+		// approach the source-size limit, so it carries a payload its kind does
+		// not reveal.
+		if n, ok := runtimeValueStringLen(v); ok {
+			return n
+		}
 		return 0
 	}
 }
+
+// regexEscapeWidestByte is the most characters escapeRegexLiteralSource can
+// produce for one source byte: a control character becomes a four-character RE2
+// escape. Used to size a rendering without performing it.
+const regexEscapeWidestByte = 4
 
 // concatenatesToString reports whether addValues will join these operands into
 // a string, which is the only case where + copies a payload.
