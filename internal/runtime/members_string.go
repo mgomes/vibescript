@@ -2177,7 +2177,19 @@ func stringReplaceBlockYield(exec *Execution, runner *blockCallRunner) func(matc
 		if err != nil {
 			return "", err
 		}
-		return boundedReplacementString(result)
+		replacement, err := boundedReplacementString(result)
+		if err != nil {
+			return "", err
+		}
+		// Charged per replacement as it is accepted, not once on the way out.
+		// A block that raises on a later match still copied the replacements it
+		// already returned, and the error return skips any charge placed after
+		// the loop -- so a script could rescue that error and repeat the copying
+		// for nothing.
+		if err := exec.chargeStringScan(len(replacement)); err != nil {
+			return "", err
+		}
+		return replacement, nil
 	}
 }
 
@@ -2251,12 +2263,10 @@ func stringReplaceResult(
 		if err != nil {
 			return "", false, err
 		}
-		// The block form expands exactly as the replacement form does -- a block
-		// returning a large string writes it once per match -- so it takes the
-		// same charge rather than returning ahead of it.
-		if err := exec.chargeStringScan(len(blockOut)); err != nil {
-			return "", false, err
-		}
+		// No charge here: the replacements were charged as the block returned
+		// them (see stringReplaceBlockYield), which covers the paths that raise
+		// partway through, and the receiver's own bytes are charged by the call
+		// wrapper. Charging the assembled output again would bill them twice.
 		return blockOut, blockMatched, nil
 	}
 

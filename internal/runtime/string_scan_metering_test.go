@@ -782,3 +782,49 @@ func TestSerializationChargesForNestedStrings(t *testing.T) {
 		})
 	}
 }
+
+// A block that raises partway through has still copied the replacements it
+// already returned. Charging once after the loop skipped those, and the error
+// is rescuable, so a script could repeat the copying for nothing. The charge
+// lands as each replacement is accepted instead.
+func TestBlockSubstitutionChargesReplacementsBeforeARaise(t *testing.T) {
+	t.Parallel()
+
+	// Four matches; the block returns the host string for the first three and
+	// then raises, so the raise is reached only after three full copies.
+	src := "def run(s)\n" +
+		"  n = 0\n" +
+		"  \"aaaa\".gsub(\"a\") do |m|\n" +
+		"    n = n + 1\n" +
+		"    if n > 3\n" +
+		"      raise \"stop\"\n" +
+		"    end\n" +
+		"    s\n" +
+		"  end\n" +
+		"end"
+
+	// The call always raises, so measure the quota at which the raise is
+	// reached: below it the copying trips the quota first.
+	minToRaise := func(bytes int) int {
+		hay := NewString(strings.Repeat("x", bytes))
+		lo, hi := 1, 1<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+			_, err := script.Call(context.Background(), "run", []Value{hay}, CallOptions{})
+			if err != nil && strings.Contains(err.Error(), "quota") {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	atSmall, atLarge := minToRaise(8<<10), minToRaise(64<<10)
+	if atLarge < atSmall*4 {
+		t.Errorf("reaching the raise cost %d steps with an 8 KiB replacement and %d with "+
+			"64 KiB; replacements copied before a later raise must be charged, or the "+
+			"error can be rescued and the copying repeated for free", atSmall, atLarge)
+	}
+}
