@@ -2813,10 +2813,11 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		// A composite key is matched by scanning every distinct composite key
 		// already seen, so charge that scan; a per-element step alone would let
 		// n distinct composite keys cost n(n-1)/2 unmetered comparisons.
-		if err := exec.chargeSetProbes(seen.compositeProbeCount(key)); err != nil {
+		seenKey, probes := seen.containsCounted(key)
+		if err := exec.chargeSetProbes(probes); err != nil {
 			return NewNil(), false, err
 		}
-		if seen.contains(key) {
+		if seenKey {
 			changed = true
 			continue
 		}
@@ -2831,10 +2832,10 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 			return NewNil(), false, err
 		}
 		// add rescans the composites to find its insertion point.
-		if err := exec.chargeSetProbes(seen.compositeProbeCount(key)); err != nil {
+		_, addProbes := seen.addCounted(key, len(arr))
+		if err := exec.chargeSetProbes(addProbes); err != nil {
 			return NewNil(), false, err
 		}
-		seen.add(key, len(arr))
 		out = append(out, item)
 		if err := acc.add(item, cap(out)); err != nil {
 			return NewNil(), false, err

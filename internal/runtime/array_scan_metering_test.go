@@ -170,3 +170,42 @@ func TestUniqChargesStepsPerCompositeComparison(t *testing.T) {
 		}
 	})
 }
+
+// Matching a composite stops at the first equal candidate, so a duplicate that
+// matches near the front costs one probe, not a full scan. Charging the whole
+// set's size for every element would overcharge a duplicate-heavy receiver
+// enough to exhaust the quota on work it never did.
+func TestUniqChargesOnlyTheProbesTheScanPerforms(t *testing.T) {
+	t.Parallel()
+
+	const distinct, repeats = 50, 400
+
+	// A short distinct prefix followed by repetitions of its first element.
+	// Every repetition matches on the first probe.
+	duplicateTail := make([]Value, 0, distinct+repeats)
+	for i := range distinct {
+		duplicateTail = append(duplicateTail, NewArray([]Value{NewInt(int64(i))}))
+	}
+	for range repeats {
+		duplicateTail = append(duplicateTail, NewArray([]Value{NewInt(0)}))
+	}
+
+	allDistinct := make([]Value, distinct+repeats)
+	for i := range allDistinct {
+		allDistinct[i] = NewArray([]Value{NewInt(int64(i))})
+	}
+
+	size := distinct + repeats
+	withTail := minStepsToCompleteOver(t, "a.uniq.length", duplicateTail, size*size)
+	allMisses := minStepsToCompleteOver(t, "a.uniq.length", allDistinct, size*size)
+
+	// The tail probes once per element, so its cost is dominated by the short
+	// distinct prefix; the all-distinct receiver of the same length pays the
+	// full quadratic. An order of magnitude apart, so the bound holds without
+	// encoding either exact count.
+	if withTail*10 > allMisses {
+		t.Errorf("uniq over %d elements cost %d steps when %d of them were duplicates "+
+			"and %d when all were distinct; a duplicate matching on its first probe "+
+			"must not be charged for a full scan", size, withTail, repeats, allMisses)
+	}
+}
