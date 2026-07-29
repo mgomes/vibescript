@@ -110,13 +110,16 @@ func TestShortStringOpsPayNoScanCharge(t *testing.T) {
 	for _, expr := range []string{"s.upcase.length", "s.index(\"zzz\").inspect", "s.split(\"z\").length"} {
 		t.Run(expr, func(t *testing.T) {
 			t.Parallel()
+			// Sized so the receiver and its arguments together stay under the
+			// per-step budget: the charge covers both, so a receiver just below
+			// the budget plus a needle crosses it legitimately.
 			tiny := minStepsForStringOp(t, expr, 2)
-			nearBudget := minStepsForStringOp(t, expr, stringScanBytesPerStep-2)
+			nearBudget := minStepsForStringOp(t, expr, stringScanBytesPerStep/2)
 			if tiny != nearBudget {
-				t.Errorf("%s cost %d steps over 2 bytes and %d over %d; a receiver below "+
-					"the per-step byte budget must round down to no scan charge, so short "+
-					"strings are unaffected by the rate", expr, tiny, nearBudget,
-					stringScanBytesPerStep-2)
+				t.Errorf("%s cost %d steps over 2 bytes and %d over %d; a call whose "+
+					"receiver and arguments together fall below the per-step byte budget "+
+					"must round down to no scan charge, so short strings are unaffected "+
+					"by the rate", expr, tiny, nearBudget, stringScanBytesPerStep/2)
 			}
 		})
 	}
@@ -428,6 +431,56 @@ func TestComparisonArgumentsAreCappedByTheReceiver(t *testing.T) {
 			if atLarge < atSmall*4 {
 				t.Errorf("%s cost %d steps over 8 KiB and %d over 64 KiB; an argument "+
 					"copied into the result is not bounded by the receiver", expr, atSmall, atLarge)
+			}
+		})
+	}
+}
+
+// The receiver bounds only what a method compares against it. An argument the
+// method preprocesses on its own -- a character set count parses byte by byte,
+// a pattern match compiles the whole thing -- is not bounded by the receiver,
+// so capping those at its length let "".count(s) parse a large argument for
+// almost nothing. It ran 1.7s inside the default profile without the quota
+// firing.
+func TestPreprocessedArgumentsAreNotCappedByTheReceiver(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"\"\".count(s)",
+		"\"\".split(s).length",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps over 8 KiB and %d over 64 KiB; an argument the "+
+					"method preprocesses is not bounded by the receiver and must not be "+
+					"capped there", expr, atSmall, atLarge)
+			}
+		})
+	}
+}
+
+// A format argument that is not itself a string is walked one step per node,
+// which bounds its shape but not its size: a large string nested in a
+// one-element array is a single node. The rendered payload is what gets
+// materialized, so that is what must be charged.
+func TestAggregateFormatArgumentsChargeRenderedBytes(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"format(\"%s\", [s]).bytesize",
+		"format(\"%s\", {a: s}).bytesize",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps over 8 KiB and %d over 64 KiB; the bytes an "+
+					"aggregate renders to must be charged, not just its node count",
+					expr, atSmall, atLarge)
 			}
 		})
 	}

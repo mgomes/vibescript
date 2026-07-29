@@ -840,7 +840,18 @@ func (p formatProjection) stringBytes(val Value) (int, error) {
 		return len(val.String()), nil
 	default:
 		if p.exec != nil {
-			return val.StringByteLenBounded(p.exec.step)
+			// An aggregate is walked a step per node, which bounds its shape but
+			// not its size: a 512 KiB string nested in a one-element array is one
+			// node. The rendered payload is what gets materialized and copied, so
+			// charge that, as the other rendering sites do.
+			n, err := val.StringByteLenBounded(p.exec.step)
+			if err != nil {
+				return 0, err
+			}
+			if err := p.exec.chargeStringScan(n); err != nil {
+				return 0, err
+			}
+			return n, nil
 		}
 		return val.StringByteLen(), nil
 	}

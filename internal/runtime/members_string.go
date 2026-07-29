@@ -61,25 +61,60 @@ var stringConstantCostMembers = map[string]struct{}{
 	"replace": {},
 }
 
-// stringComparesArgumentsToReceiver names the string methods that only match
-// their string arguments against the receiver and never copy one into the
-// result. Their per-argument work is bounded by the receiver's length, so the
-// charge for an argument is capped there.
+// stringComparesArgumentsToReceiver names the string methods whose only use of
+// a string argument is matching its bytes against the receiver. A prefix,
+// suffix, or separator longer than the receiver fails on length alone, so those
+// methods cannot inspect more of an argument than the receiver holds and the
+// charge for one is capped there.
 //
-// Membership only ever lowers a charge to a bound that still covers the work,
-// so a method missing from this set is over-charged rather than unmetered --
-// the direction that fails safe on this boundary. A method that copies an
-// argument (concat, prepend, insert, sub) must stay out of it.
+// Membership must be earned, not assumed. An argument that is preprocessed
+// independently of the receiver is not bounded by it: count parses every byte
+// of its character set, and match, match? and scan compile a whole pattern, so
+// capping those let "".count(s) parse a large argument for almost nothing.
+// split is out because its separator handling was not verified. The cap lowers
+// a charge, so a wrong membership under-charges -- the failure this branch
+// exists to prevent -- while an omission only over-charges.
+//
+// A method that copies an argument into its result (concat, prepend, insert,
+// sub) must also stay out.
 func stringComparesArgumentsToReceiver(name string) bool {
 	switch name {
 	case "string.start_with?", "string.end_with?", "string.include?",
-		"string.index", "string.rindex", "string.count", "string.casecmp",
-		"string.casecmp?", "string.split", "string.partition",
-		"string.rpartition", "string.match", "string.match?", "string.scan":
+		"string.index", "string.rindex", "string.casecmp", "string.casecmp?",
+		"string.partition", "string.rpartition":
 		return true
 	default:
 		return false
 	}
+}
+
+// chargeStringCall charges the step quota for one call on a string receiver:
+// the receiver's bytes plus each string argument's.
+//
+// String arguments are copied into the result as well, so a short receiver with
+// a large argument -- "".concat(s), "".prepend(s), "".insert(0, s) -- moves just
+// as many bytes as the reverse. compareOnly caps each argument at the receiver's
+// length for the methods that only match arguments against it (see
+// stringComparesArgumentsToReceiver).
+//
+// Both entrances to a string method share this: the member dispatch wrapper and
+// the direct-call fast paths in evalDirectStringMemberCallExpr. They charged
+// different amounts while it lived only in the wrapper, so "".split(s) escaped
+// through the fast path with an unmetered separator.
+func (exec *Execution) chargeStringCall(receiver Value, args []Value, compareOnly bool) error {
+	text := len(receiver.String())
+	bytes := text
+	for _, arg := range args {
+		if arg.Kind() != KindString {
+			continue
+		}
+		n := len(arg.String())
+		if compareOnly {
+			n = min(n, text)
+		}
+		bytes = saturatingAdd(bytes, n)
+	}
+	return exec.chargeStringScan(bytes)
 }
 
 // chargeStringScanBeforeCall wraps a string builtin so it charges the step
@@ -96,28 +131,7 @@ func chargeStringScanBeforeCall(member Value) Value {
 	compareOnly := stringComparesArgumentsToReceiver(inner.Name)
 	metered.Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if receiver.Kind() == KindString {
-			text := len(receiver.String())
-			bytes := text
-			// String arguments are copied into the result as well, so a short
-			// receiver with a large argument -- "".concat(s), "".prepend(s),
-			// "".insert(0, s) -- moves just as many bytes as the reverse.
-			//
-			// A method that only matches its arguments against the receiver can
-			// never inspect more of one than the receiver holds: a prefix longer
-			// than the receiver fails on length alone. Capping there stops
-			// "a".start_with?("a", huge) paying for a string it never reads,
-			// while staying an upper bound on what the method can touch.
-			for _, arg := range args {
-				if arg.Kind() != KindString {
-					continue
-				}
-				n := len(arg.String())
-				if compareOnly {
-					n = min(n, text)
-				}
-				bytes = saturatingAdd(bytes, n)
-			}
-			if err := exec.chargeStringScan(bytes); err != nil {
+			if err := exec.chargeStringCall(receiver, args, compareOnly); err != nil {
 				return NewNil(), err
 			}
 		}

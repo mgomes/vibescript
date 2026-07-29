@@ -2897,8 +2897,10 @@ func (exec *Execution) evalDirectStringSplitCall(call *CallExpr, receiver Value,
 	// Charged after the arguments are evaluated, not before: member dispatch
 	// evaluates arguments and only then runs the metering wrapper, so charging
 	// earlier here would let a tight quota skip an argument's side effect on
-	// this path while the equivalent dispatched call still performs it.
-	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+	// this path while the equivalent dispatched call still performs it. The
+	// charge itself is the one member dispatch applies, so both entrances to
+	// the method cost the same.
+	if err := exec.chargeStringCall(receiver, []Value{arg0, arg1}, false); err != nil {
 		return NewNil(), true, err
 	}
 	if err := exec.checkContext(); err != nil {
@@ -2996,8 +2998,10 @@ func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value,
 	// Charged after the arguments are evaluated, not before: member dispatch
 	// evaluates arguments and only then runs the metering wrapper, so charging
 	// earlier here would let a tight quota skip an argument's side effect on
-	// this path while the equivalent dispatched call still performs it.
-	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+	// this path while the equivalent dispatched call still performs it. The
+	// charge itself is the one member dispatch applies, so both entrances to
+	// the method cost the same.
+	if err := exec.chargeStringCall(receiver, []Value{needle}, true); err != nil {
 		return NewNil(), true, err
 	}
 	if err := exec.checkContext(); err != nil {
@@ -3043,8 +3047,10 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 	// Charged after the arguments are evaluated, not before: member dispatch
 	// evaluates arguments and only then runs the metering wrapper, so charging
 	// earlier here would let a tight quota skip an argument's side effect on
-	// this path while the equivalent dispatched call still performs it.
-	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+	// this path while the equivalent dispatched call still performs it. The
+	// charge itself is the one member dispatch applies, so both entrances to
+	// the method cost the same.
+	if err := exec.chargeStringCall(receiver, []Value{needle}, true); err != nil {
 		return NewNil(), true, err
 	}
 	// The default offset counts the receiver's runes, an O(n) scan of its own.
@@ -3103,8 +3109,10 @@ func (exec *Execution) evalDirectStringSliceCall(call *CallExpr, receiver Value,
 	// Charged after the arguments are evaluated, not before: member dispatch
 	// evaluates arguments and only then runs the metering wrapper, so charging
 	// earlier here would let a tight quota skip an argument's side effect on
-	// this path while the equivalent dispatched call still performs it.
-	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+	// this path while the equivalent dispatched call still performs it. The
+	// charge itself is the one member dispatch applies, so both entrances to
+	// the method cost the same.
+	if err := exec.chargeStringCall(receiver, []Value{first, second}, true); err != nil {
 		return NewNil(), true, err
 	}
 	if err := exec.checkContext(); err != nil {
