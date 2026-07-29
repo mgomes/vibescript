@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -1869,16 +1870,22 @@ func TestRegexSizingWalkIsChargedBeforeItRuns(t *testing.T) {
 	for _, src := range []string{
 		fmt.Sprintf("def run(s)\n  (\"\" + /%s/).bytesize\nend", source),
 		fmt.Sprintf("def run(s)\n  \"#{/%s/}\".bytesize\nend", source),
+		// puts sizes through the same bounded walk, so it needs the same
+		// treatment; it also needs an output writer, without which the call
+		// fails for an unrelated reason and the tight-quota assertion would pass
+		// vacuously.
+		fmt.Sprintf("def run(s)\n  puts(/%s/)\n  0\nend", source),
 	} {
 		t.Run(src[:28], func(t *testing.T) {
 			t.Parallel()
 			// One step: not enough for the sizing walk, so nothing may render.
-			tight := compileScriptWithConfig(t, Config{StepQuota: 1, MemoryQuotaBytes: Unlimited}, src)
+			var tightOut, ampleOut bytes.Buffer
+			tight := compileScriptWithConfig(t, Config{StepQuota: 1, MemoryQuotaBytes: Unlimited, OutputWriter: &tightOut}, src)
 			if _, err := tight.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err == nil {
 				t.Error("a 15 KiB regex rendered on a one-step quota; the sizing walk reads " +
 					"the whole source and must be charged before it runs")
 			}
-			ample := compileScriptWithConfig(t, Config{StepQuota: 100000, MemoryQuotaBytes: Unlimited}, src)
+			ample := compileScriptWithConfig(t, Config{StepQuota: 100000, MemoryQuotaBytes: Unlimited, OutputWriter: &ampleOut}, src)
 			if _, err := ample.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
 				t.Errorf("a 15 KiB regex failed with an ample quota: %v", err)
 			}
@@ -1900,5 +1907,32 @@ func TestTemplateReservesItsRetainedSegments(t *testing.T) {
 	if got := cache.retainedBytes(); got < 12*1000 {
 		t.Errorf("retainedBytes = %d, want at least %d; every retained segment counts "+
 			"toward the peak, including those past the inline slots", got, 12*1000)
+	}
+}
+
+// An unsupported pairing renders neither operand, so the sizing walk must not
+// run for it: a regex plus nil or another regex is an unsupported-operands
+// error, and charging the walk first replaced that error with a quota error.
+func TestUnsupportedRegexConcatenationReportsItsOwnError(t *testing.T) {
+	t.Parallel()
+
+	source := strings.Repeat("a", 15<<10)
+	for _, expr := range []string{
+		fmt.Sprintf("/%s/ + nil", source),
+		fmt.Sprintf("/%s/ + /%s/", source, source),
+	} {
+		t.Run(expr[:20], func(t *testing.T) {
+			t.Parallel()
+			src := fmt.Sprintf("def run(s)\n  %s\nend", expr)
+			script := compileScriptWithConfig(t, Config{StepQuota: 8, MemoryQuotaBytes: Unlimited}, src)
+			_, err := script.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{})
+			if err == nil {
+				t.Fatal("an unsupported concatenation succeeded")
+			}
+			if strings.Contains(err.Error(), "quota") {
+				t.Errorf("an unsupported concatenation reported %q; neither source is "+
+					"rendered, so the sizing walk must not run", err)
+			}
+		})
 	}
 }

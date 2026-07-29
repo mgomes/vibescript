@@ -389,6 +389,12 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 	// same length by walking the source, allocating nothing.
 	payload := 0
 	if val.Kind() == KindRegex {
+		// StringLen walks the whole source, so that walk is charged before it
+		// runs; the rendered length is charged after, because rendering walks it
+		// again. Two passes happen and both are billed.
+		if err := exec.chargeStringScan(len(val.Regex().Source)); err != nil {
+			return err
+		}
 		payload = val.Regex().StringLen()
 		if err := exec.chargeStringScan(payload); err != nil {
 			return err
@@ -1070,14 +1076,11 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 // Concatenation copies both operands. A comparison stops at the first differing
 // byte and answers immediately when the lengths differ, so it cannot read more
 // than the shorter operand holds.
-// chargeRegexSourceWalk charges the source traversal Regex.StringLen performs,
-// for the operator that will go on to render a regex operand. Only concatenation
-// renders one: comparison requires matching kinds, so a regex never reaches the
-// comparison charge with a string on the other side.
-func (exec *Execution) chargeRegexSourceWalk(operator TokenType, left, right Value) error {
-	if operator != tokenPlus {
-		return nil
-	}
+// chargeRegexSourceWalk charges the source traversal Regex.StringLen performs.
+// Called only once the operation is known to be one addValues will carry out, so
+// an unsupported pairing reports its own error rather than exhausting the quota
+// on a walk that never happens.
+func (exec *Execution) chargeRegexSourceWalk(left, right Value) error {
 	for _, v := range [2]Value{left, right} {
 		if v.Kind() != KindRegex {
 			continue
@@ -1143,13 +1146,6 @@ func stringLikeOperand(v Value) bool {
 }
 
 func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right Value) error {
-	// A regex is sized by walking its source, so that walk is charged before it
-	// runs: sizing is one full pass and rendering is another, and a single
-	// charge covered one of two. An exhausted quota now stops the sizing pass
-	// rather than being billed for it afterwards.
-	if err := exec.chargeRegexSourceWalk(operator, left, right); err != nil {
-		return err
-	}
 	switch operator {
 	case tokenPlus:
 		// Concatenation copies whatever it is given, and addValues concatenates
@@ -1164,6 +1160,13 @@ func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right 
 		// failure.
 		if !concatenatesToString(left, right) {
 			return nil
+		}
+		// Charged only once the operation is one addValues will perform, and
+		// before StringLen walks anything: a regex plus nil or another regex
+		// renders neither source, and charging first replaced that
+		// unsupported-operands error with a quota error.
+		if err := exec.chargeRegexSourceWalk(left, right); err != nil {
+			return err
 		}
 		return exec.chargeStringScan(saturatingAdd(
 			concatenatedOperandBytes(left), concatenatedOperandBytes(right)))

@@ -157,7 +157,16 @@ func renderOutputValue(exec *Execution, method string, val Value, inspect bool) 
 			return "", err
 		}
 	}
-	if inspect {
+	if val.Kind() == KindRegex && !inspect {
+		// The bounded walk reaches len(v.String()) for a regex, escaping and
+		// allocating the whole literal to size it before any charge, and the
+		// render below builds it again. StringLen walks the source instead, so
+		// the walk is charged before it runs and the rendered length after.
+		if err := exec.chargeStringScan(len(val.Regex().Source)); err != nil {
+			return "", err
+		}
+		payload = val.Regex().StringLen()
+	} else if inspect {
 		payload, err = val.InspectByteLenBounded(exec.step)
 	} else {
 		payload, err = val.StringByteLenBounded(exec.step)
