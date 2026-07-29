@@ -1228,26 +1228,109 @@ func TestInvalidUTF8SearchIsLinear(t *testing.T) {
 		t.Errorf("fallback index of an absent needle = %d, want -1", got)
 	}
 
-	// Then cost: quadrupling the input must not multiply the work by sixteen.
+	// Then cost. Each size is searched many times inside the timed region:
+	// a single linear search of these sizes is tens of microseconds, which
+	// measures as zero on a coarse clock -- Windows reported 0s and a ratio of
+	// +Inf. Repeating puts both measurements in the milliseconds, where every
+	// platform's clock resolves them.
+	const repeats = 500
 	elapsed := func(n int) time.Duration {
 		hay := strings.Repeat("a", n) + "\xff"
 		needle := strings.Repeat("a", n/2) + "b"
 		best := time.Hour
 		for range 3 {
 			start := time.Now()
-			stringRuneIndexFallback(hay, needle, 0)
+			for range repeats {
+				stringRuneIndexFallback(hay, needle, 0)
+			}
 			if d := time.Since(start); d < best {
 				best = d
 			}
 		}
 		return best
 	}
-	small, large := elapsed(4096), elapsed(65536)
-	// Sixteen times the input. Linear allows well under a hundredfold; the
-	// position scan was around 265x.
-	if large > small*100 {
-		t.Errorf("searching 4 KiB took %v and 64 KiB took %v, a %.0fx rise for sixteen "+
-			"times the input; the fallback must not test every candidate position",
-			small, large, float64(large)/float64(small))
+	small, large := elapsed(2048), elapsed(8192)
+	// Four times the input: linear costs about four times as much, the position
+	// scan about sixteen. Eight sits between them with room for a loaded runner.
+	if large > small*8 {
+		t.Errorf("searching 2 KiB %d times took %v and 8 KiB took %v, a %.1fx rise for "+
+			"four times the input; the fallback must not test every candidate position",
+			repeats, small, large, float64(large)/float64(small))
+	}
+}
+
+// Every other test here runs with the memory quota unlimited, which hides an
+// entire class: projecting against the memory quota opens a base walk whose
+// memo is bypassed while a builtin is on the stack, so a per-value projection
+// makes serializing a wide container quadratic in its element count. The step
+// charge stayed linear and said nothing about it.
+//
+// So this one runs under a finite quota, as the shipped profiles do.
+func TestSerializationStaysLinearUnderAMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// Counted, not timed. The quantity in question is how many graph nodes the
+	// estimator visits, which these counters report exactly and which no clock
+	// resolves reliably -- a Windows runner measured one of these searches as
+	// zero and produced a ratio of +Inf.
+	visits := func(n int) uint64 {
+		elems := make([]Value, n)
+		for i := range elems {
+			elems[i] = NewNil()
+		}
+		arg := NewArray(elems)
+		src := "def run(a)\n  JSON.stringify(a).bytesize\nend"
+		script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 64 << 20}, src)
+		estimatorVisits.Store(0)
+		estimatorVisitCounting.Store(true)
+		defer estimatorVisitCounting.Store(false)
+		if _, err := script.Call(context.Background(), "run", []Value{arg}, CallOptions{}); err != nil {
+			t.Fatalf("stringify %d: %v", n, err)
+		}
+		return estimatorVisits.Load()
+	}
+
+	small, large := visits(1000), visits(8000)
+	// Eight times the elements. Projecting per value visited 1,013,036 nodes at
+	// 1,000 and 64,376,104 at 8,000 -- a 64x rise, the square. Charging steps
+	// without projecting visits 10,034 and 352,102, a 183x absolute reduction.
+	//
+	// That 35x rise is still superlinear, and honestly so: charging steps at all
+	// drives step()'s periodic memory check, and each of those walks the graph,
+	// which is the memory-quota quadratic #1129 is about. This bound catches a
+	// return to per-value projection; it does not claim serialization is linear
+	// under a memory quota, because it is not, and no charge placement in this
+	// file makes it so.
+	if large > small*48 {
+		t.Errorf("serializing 1,000 elements visited %d estimator nodes and 8,000 visited "+
+			"%d, a %.0fx rise for eight times the input; projecting against the memory "+
+			"quota per value walks the whole graph each time", small, large,
+			float64(large)/float64(small))
+	}
+}
+
+// An input the parser will never read must report the established limit error
+// rather than exhausting the quota on a scan that does not happen.
+func TestOversizedJSONReportsItsLimitNotAQuotaError(t *testing.T) {
+	t.Parallel()
+
+	oversized := NewString(strings.Repeat("1", maxJSONPayloadBytes+1))
+	for _, src := range []string{
+		"def run(s)\n  JSON.parse(s)\nend",
+		"def run(s)\n  JSON.parse_as(s, array)\nend",
+	} {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			// A quota far below len(input)/64: the size guard must answer first.
+			script := compileScriptWithConfig(t, Config{StepQuota: 64, MemoryQuotaBytes: Unlimited}, src)
+			_, err := script.Call(context.Background(), "run", []Value{oversized}, CallOptions{})
+			if err == nil {
+				t.Fatal("oversized input parsed successfully")
+			}
+			if !strings.Contains(err.Error(), "exceeds limit") {
+				t.Errorf("oversized input reported %q; an input rejected on size is never "+
+					"scanned, so it must not be charged for one", err)
+			}
+		})
 	}
 }

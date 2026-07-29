@@ -1691,15 +1691,15 @@ func builtinJSONParse(exec *Execution, receiver Value, args []Value, kwargs map[
 	}
 
 	raw := args[0].String()
-	// Parsing reads every byte of its input, and the input arrives as a builtin
-	// argument rather than a string receiver, so nothing charged for it: 2,000
-	// parses of a 128 KiB document ran 13.9s inside the default profile without
-	// the quota firing. The payload limit bounds one call, not a loop of them.
-	if err := exec.chargeStringScan(len(raw)); err != nil {
-		return NewNil(), err
-	}
 	if len(raw) > maxJSONPayloadBytes {
 		return NewNil(), guardLimitErrorf("JSON.parse input exceeds limit %d bytes", maxJSONPayloadBytes)
+	}
+	// Charged after the size guard, so an input the parser will never read
+	// reports the established limit error rather than exhausting the quota.
+	// Parsing reads every byte, and the input arrives as a builtin argument
+	// rather than a string receiver, so nothing charged for it.
+	if err := exec.chargeStringScan(len(raw)); err != nil {
+		return NewNil(), err
 	}
 
 	parser := jsonValueParser{raw: raw, exec: exec}
@@ -1734,15 +1734,12 @@ func builtinJSONParseAs(exec *Execution, receiver Value, args []Value, kwargs ma
 	}
 
 	raw := args[0].String()
-	// Parsing reads every byte of its input, and the input arrives as a builtin
-	// argument rather than a string receiver, so nothing charged for it: 2,000
-	// parses of a 128 KiB document ran 13.9s inside the default profile without
-	// the quota firing. The payload limit bounds one call, not a loop of them.
-	if err := exec.chargeStringScan(len(raw)); err != nil {
-		return NewNil(), err
-	}
 	if len(raw) > maxJSONPayloadBytes {
 		return NewNil(), guardLimitErrorf("JSON.parse_as input exceeds limit %d bytes", maxJSONPayloadBytes)
+	}
+	// Charged after the size guard, as JSON.parse is.
+	if err := exec.chargeStringScan(len(raw)); err != nil {
+		return NewNil(), err
 	}
 	parser := jsonValueParser{raw: raw, exec: exec}
 	parsed, err := parser.parse()

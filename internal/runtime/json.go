@@ -515,7 +515,7 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	if err := state.checkOutputBytes(len(out)); err != nil {
+	if err := state.settleOutput(len(out)); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -581,7 +581,7 @@ func appendJSONValueRendered(buf []byte, val Value, state *jsonStringifyState) (
 		// reaching the settlement in appendJSONValue, so every level's bracket
 		// went uncharged: 10,001 nested arrays emitted 10,000 of them for
 		// nothing, and the depth error is rescuable.
-		if err := state.checkOutputBytes(len(buf)); err != nil {
+		if err := state.settleOutput(len(buf)); err != nil {
 			return nil, err
 		}
 		for i, item := range arr {
@@ -622,7 +622,7 @@ func appendJSONValueRendered(buf []byte, val Value, state *jsonStringifyState) (
 		// reaching the settlement in appendJSONValue, so every level's bracket
 		// went uncharged: 10,001 nested arrays emitted 10,000 of them for
 		// nothing, and the depth error is rescuable.
-		if err := state.checkOutputBytes(len(buf)); err != nil {
+		if err := state.settleOutput(len(buf)); err != nil {
 			return nil, err
 		}
 		for i, entry := range entries {
@@ -900,6 +900,27 @@ func appendJSONString(buf []byte, s string, state *jsonStringifyState) ([]byte, 
 	}
 	buf = append(buf, s[start:]...)
 	return append(buf, '"'), nil
+}
+
+// settleOutput charges the step quota for output produced so far and enforces
+// the payload cap. It deliberately does not project against the memory quota:
+// that opens a base walk, whose memo is bypassed while a builtin is on the
+// stack, so calling it per value made serializing a wide container quadratic in
+// its element count. checkOutputBytes keeps the projection for the places that
+// had it before -- the string path and the finished payload.
+func (state *jsonStringifyState) settleOutput(size int) error {
+	if state.exec != nil {
+		if steps := size / stringScanBytesPerStep; steps > state.chargedSteps {
+			if err := state.exec.stepN(steps - state.chargedSteps); err != nil {
+				return err
+			}
+			state.chargedSteps = steps
+		}
+	}
+	if size > maxJSONPayloadBytes {
+		return guardLimitErrorf("JSON.stringify output exceeds limit %d bytes", maxJSONPayloadBytes)
+	}
+	return nil
 }
 
 func (state *jsonStringifyState) checkOutputBytes(size int) error {
