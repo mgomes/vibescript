@@ -61,6 +61,27 @@ var stringConstantCostMembers = map[string]struct{}{
 	"replace": {},
 }
 
+// stringComparesArgumentsToReceiver names the string methods that only match
+// their string arguments against the receiver and never copy one into the
+// result. Their per-argument work is bounded by the receiver's length, so the
+// charge for an argument is capped there.
+//
+// Membership only ever lowers a charge to a bound that still covers the work,
+// so a method missing from this set is over-charged rather than unmetered --
+// the direction that fails safe on this boundary. A method that copies an
+// argument (concat, prepend, insert, sub) must stay out of it.
+func stringComparesArgumentsToReceiver(name string) bool {
+	switch name {
+	case "string.start_with?", "string.end_with?", "string.include?",
+		"string.index", "string.rindex", "string.count", "string.casecmp",
+		"string.casecmp?", "string.split", "string.partition",
+		"string.rpartition", "string.match", "string.match?", "string.scan":
+		return true
+	default:
+		return false
+	}
+}
+
 // chargeStringScanBeforeCall wraps a string builtin so it charges the step
 // quota for the bytes it is about to scan. Wrapping at the single dispatch
 // point rather than inside each method keeps the metering uniform and means a
@@ -72,16 +93,29 @@ func chargeStringScanBeforeCall(member Value) Value {
 	}
 	metered := *inner
 	fn := inner.Fn
+	compareOnly := stringComparesArgumentsToReceiver(inner.Name)
 	metered.Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if receiver.Kind() == KindString {
-			bytes := len(receiver.String())
+			text := len(receiver.String())
+			bytes := text
 			// String arguments are copied into the result as well, so a short
 			// receiver with a large argument -- "".concat(s), "".prepend(s),
 			// "".insert(0, s) -- moves just as many bytes as the reverse.
+			//
+			// A method that only matches its arguments against the receiver can
+			// never inspect more of one than the receiver holds: a prefix longer
+			// than the receiver fails on length alone. Capping there stops
+			// "a".start_with?("a", huge) paying for a string it never reads,
+			// while staying an upper bound on what the method can touch.
 			for _, arg := range args {
-				if arg.Kind() == KindString {
-					bytes = saturatingAdd(bytes, len(arg.String()))
+				if arg.Kind() != KindString {
+					continue
 				}
+				n := len(arg.String())
+				if compareOnly {
+					n = min(n, text)
+				}
+				bytes = saturatingAdd(bytes, n)
 			}
 			if err := exec.chargeStringScan(bytes); err != nil {
 				return NewNil(), err

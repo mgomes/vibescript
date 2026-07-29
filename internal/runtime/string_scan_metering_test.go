@@ -389,3 +389,46 @@ func TestPrecisionWidthFormattingChargesTheFullScan(t *testing.T) {
 		})
 	}
 }
+
+// A method that only matches its arguments against the receiver cannot inspect
+// more of one than the receiver holds, so a large argument it never reads must
+// not exhaust the quota: "a".start_with?("a", huge) returns on the first
+// prefix. Charging every string argument in full made that call fail instead of
+// answering true.
+func TestComparisonArgumentsAreCappedByTheReceiver(t *testing.T) {
+	t.Parallel()
+
+	// The receiver is two bytes; the host-supplied string is a later argument
+	// the method never needs to read.
+	calls := []string{
+		"\"ab\".start_with?(\"ab\", s).inspect",
+		"\"ab\".end_with?(\"ab\", s).inspect",
+		"\"ab\".include?(s).inspect",
+		"\"ab\".index(s).inspect",
+	}
+	for _, expr := range calls {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 512<<10)
+			if atLarge != atSmall {
+				t.Errorf("%s cost %d steps with an 8 KiB argument and %d with 512 KiB; a "+
+					"two-byte receiver bounds what these can inspect, so a larger argument "+
+					"must not cost more", expr, atSmall, atLarge)
+			}
+		})
+	}
+
+	// The cap must not reach methods that copy an argument into the result.
+	for _, expr := range []string{"\"ab\".concat(s).bytesize", "\"ab\".sub(\"a\", s).bytesize"} {
+		t.Run("copies "+expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps over 8 KiB and %d over 64 KiB; an argument "+
+					"copied into the result is not bounded by the receiver", expr, atSmall, atLarge)
+			}
+		})
+	}
+}
