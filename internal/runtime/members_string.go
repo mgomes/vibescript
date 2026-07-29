@@ -3122,16 +3122,28 @@ func (c *stringTemplateSegmentCache) lookup(key string) (string, bool) {
 	return "", false
 }
 
-// retainedBytes reports the bytes the cache is holding that are new
-// allocations. Those stay live while the result builder is allocated, so the
-// peak is the builder plus these and the memory reservation must cover both.
+// A cached segment past the inline slots lives in a Go map, whose bucket and two
+// string headers are allocated whether the segment itself is fresh or an alias.
+// Counting only payloads left a template of aliased placeholders reserving
+// nothing at all while that map grew with the placeholder count.
+const estimatedTemplateOverflowEntryBytes = estimatedMapEntryBytes + 2*estimatedStringHeaderBytes
+
+// retainedBytes reports the bytes the cache is holding that it allocated itself.
+// Those stay live while the result builder is allocated, so the peak is the
+// builder plus these and the memory reservation must cover both.
 //
-// Only built segments count. A string, symbol or enum placeholder hands back its
-// existing backing and a key slices the template receiver, so counting those
-// projected a copy that does not exist and rejected templates a real peak would
-// have fitted.
+// Segment payloads count only when the render built them. A string, symbol or
+// enum placeholder hands back its existing backing and a key slices the template
+// receiver, so counting those projected a copy that does not exist and rejected
+// templates a real peak would have fitted. The overflow map's own storage counts
+// either way, because the cache allocates it either way.
 func (c *stringTemplateSegmentCache) retainedBytes() int {
-	return c.builtBytes
+	total := c.builtBytes
+	if c.overflow == nil {
+		return total
+	}
+	total = saturatingAdd(total, estimatedMapBaseBytes)
+	return saturatingAdd(total, saturatingMul(len(c.overflow), estimatedTemplateOverflowEntryBytes))
 }
 
 func (c *stringTemplateSegmentCache) store(key, value string, built bool) {
@@ -3172,8 +3184,28 @@ func appendTemplateChunk(exec *Execution, b *strings.Builder, chunk string, rece
 // a placeholder materializes it here, so a template holding one did that work
 // before any charge and the rendering loop then did it again. Charging as each
 // segment is produced bills the first conversion, which is the one that happens.
-func stringTemplateRenderedLen(exec *Execution, text string, context Value, strict bool) (bool, int, stringTemplateSegmentCache, error) {
+// templateScratchCheckBytes is how much the segment cache may grow between
+// memory checks during projection. The projection allocates as it walks, so
+// checking only once it has finished let a template with many placeholders --
+// or a few that render to megabytes -- allocate the whole scratch past a finite
+// quota before anything looked. Checking every placeholder instead would walk
+// the call roots once per placeholder, which is quadratic in the placeholder
+// count; a chunk bounds the overshoot to a fixed size and the number of checks
+// to the scratch's megabytes.
+const templateScratchCheckBytes = 64 << 10
+
+func stringTemplateRenderedLen(
+	exec *Execution,
+	text string,
+	context Value,
+	strict bool,
+	receiver Value,
+	args []Value,
+	kwargs map[string]Value,
+	block Value,
+) (bool, int, stringTemplateSegmentCache, error) {
 	charged := 0
+	checkedScratch := 0
 	charge := func(total int) error {
 		if exec == nil {
 			return nil
@@ -3232,6 +3264,15 @@ func stringTemplateRenderedLen(exec *Execution, text string, context Value, stri
 		if err := charge(total); err != nil {
 			return false, 0, cache, err
 		}
+		if retained := cache.retainedBytes(); retained-checkedScratch >= templateScratchCheckBytes {
+			if exec != nil {
+				if err := exec.checkProjectedStringBytesWithCallRoots(
+					retained, receiver, args, kwargs, block); err != nil {
+					return false, 0, cache, err
+				}
+			}
+			checkedScratch = retained
+		}
 		last = end
 		search = end
 	}
@@ -3254,7 +3295,8 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 	// render reuses them. Discarding it meant every placeholder value was
 	// converted twice -- once to size it and once to write it -- so a large
 	// regex or big integer did its conversion twice for one charge.
-	rendered, renderedLen, cache, err := stringTemplateRenderedLen(exec, text, context, strict)
+	rendered, renderedLen, cache, err := stringTemplateRenderedLen(
+		exec, text, context, strict, receiver, args, kwargs, block)
 	if err != nil {
 		return "", err
 	}

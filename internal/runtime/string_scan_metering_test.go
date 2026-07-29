@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -2068,5 +2069,130 @@ func TestTemplateReservationDoesNotCountAliasedPlaceholders(t *testing.T) {
 	if got := cache.retainedBytes(); got != 4096 {
 		t.Errorf("built segment reserved %d bytes, want 4096; a rendering the template "+
 			"allocated is live alongside the result and must be covered", got)
+	}
+}
+
+// The segment cache allocates as the projection walks, so the reservation has to
+// cover what it allocates and has to be checked before the allocation is
+// complete. Two ways that failed: counting only built payloads left a template
+// of aliased placeholders reserving nothing while the overflow map grew with the
+// placeholder count, and checking only after the projection returned let the
+// whole scratch be allocated past a finite quota before anything looked.
+func TestTemplateScratchIsReservedAsItGrows(t *testing.T) {
+	t.Parallel()
+
+	// Distinct string placeholders: every segment is an alias, so the payloads
+	// are already counted as call roots and the map storage is the whole cost.
+	// Well past the eight inline slots, so the overflow map carries it.
+	const placeholders = 600
+	var text, pairs strings.Builder
+	for i := range placeholders {
+		fmt.Fprintf(&text, "{{k%d}}", i)
+		if i > 0 {
+			pairs.WriteString(", ")
+		}
+		fmt.Fprintf(&pairs, "k%d: s", i)
+	}
+	src := fmt.Sprintf("def run(s, n)\n  \"%s\".template({%s}).bytesize\nend",
+		text.String(), pairs.String())
+
+	// Correctness first, so a later assertion cannot pass because the template
+	// failed for an unrelated reason.
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: Unlimited}, src)
+	got, err := script.Call(context.Background(), "run",
+		[]Value{NewString("abc"), NewInt(0)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("%d placeholders: %v", placeholders, err)
+	}
+	if got.Kind() != KindInt || got.Int() != placeholders*3 {
+		t.Fatalf("rendered length %v, want %d", got, placeholders*3)
+	}
+
+	// The map storage the cache allocates has to be reserved. Isolate it by
+	// holding the context constant: the same six hundred keys either way, so the
+	// context hash costs the same and cannot be what the difference measures.
+	// Referencing one of them caches one segment inline; referencing all six
+	// hundred fills the overflow map.
+	oneRef := fmt.Sprintf("def run(s, n)\n  \"{{k0}}\".template({%s}).bytesize\nend",
+		pairs.String())
+	sixHundredRefs := minMemoryQuotaToComplete(t, src, NewString("abc"), 0, 4<<20)
+	oneRefQuota := minMemoryQuotaToComplete(t, oneRef, NewString("abc"), 0, 4<<20)
+	if sixHundredRefs >= 4<<20 || oneRefQuota >= 4<<20 {
+		t.Fatalf("binary search hit its own bound (%d, %d); the comparison would read "+
+			"as cache-proportional whatever the reservation did", sixHundredRefs, oneRefQuota)
+	}
+	overflowCost := placeholders * estimatedTemplateOverflowEntryBytes
+	// The rendered result also grows, by three bytes per placeholder, which is a
+	// twentieth of the map cost and cannot account for the difference.
+	if got := sixHundredRefs - oneRefQuota; got < overflowCost/2 {
+		t.Errorf("caching %d segments raised the smallest completing quota by %d bytes; "+
+			"the overflow map alone costs about %d and the reservation must cover it",
+			placeholders, got, overflowCost)
+	}
+}
+
+// Checking the scratch only once the projection had finished still rejected an
+// oversized template, so the outcome cannot tell the two apart -- the projection
+// accumulates and frees nothing, so its peak is its end state. What differs is
+// how much the process allocates before the rejection: every placeholder is
+// rendered first and only then is anything checked, which is the opposite of
+// what a memory quota is for.
+//
+// Sixty placeholders rendering a 900,000-bit integer each. Building the context
+// costs the same either way, so the difference is the renderings the check
+// avoids once it fires.
+//
+// Not parallel: runtime.MemStats is process-wide, and a concurrent test's
+// allocations would land in the delta.
+func TestTemplateProjectionStopsAllocatingWhenItIsRejected(t *testing.T) {
+	const (
+		placeholders = 60
+		quota        = 8 << 20
+	)
+	var text, pairs strings.Builder
+	for i := range placeholders {
+		fmt.Fprintf(&text, "{{k%d}}", i)
+		if i > 0 {
+			pairs.WriteString(", ")
+		}
+		fmt.Fprintf(&pairs, "k%d: 2 ** %d", i, 900000+i)
+	}
+	src := fmt.Sprintf("def run(s, n)\n  \"%s\".template({%s}).bytesize\nend",
+		text.String(), pairs.String())
+
+	// Control: the context alone has to fit, or the rejection below would be the
+	// hash literal being too big and the allocation assertion would pass without
+	// the template ever running.
+	ctxOnly := fmt.Sprintf("def run(s, n)\n  {%s}.length\nend", pairs.String())
+	script := compileScriptWithConfig(t,
+		Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, ctxOnly)
+	if _, err := script.Call(context.Background(), "run",
+		[]Value{NewString(""), NewInt(0)}, CallOptions{}); err != nil {
+		t.Fatalf("the context alone does not fit the %d-byte quota (%v); the template "+
+			"is no longer what this measures", quota, err)
+	}
+
+	script = compileScriptWithConfig(t,
+		Config{StepQuota: Unlimited, MemoryQuotaBytes: quota}, src)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := script.Call(context.Background(), "run",
+		[]Value{NewString(""), NewInt(0)}, CallOptions{})
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatalf("%d multi-megabyte renderings completed under a %d-byte quota",
+			placeholders, quota)
+	}
+
+	// Measured at about 4x the quota when the check fires as the scratch grows
+	// and 14x when it runs only at the end, almost all of it renderings the
+	// projection had no business performing.
+	allocated := after.TotalAlloc - before.TotalAlloc
+	if allocated > 8*quota {
+		t.Errorf("rejecting the template allocated %.1f MiB against a %d MiB quota; the "+
+			"projection must check as the scratch grows, not render every placeholder "+
+			"and check once it has finished",
+			float64(allocated)/(1<<20), quota>>20)
 	}
 }
