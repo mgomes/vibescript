@@ -38,6 +38,14 @@ func newInspectBuiltin(typeName string) Value {
 		if err != nil {
 			return NewNil(), err
 		}
+		// Charge for the bytes about to be rendered. InspectByteLenBounded steps
+		// per element, which bounds a large container, but a scalar carrying a
+		// large payload is one element: a symbol built from a host-supplied
+		// string (s.to_sym) renders its whole name for a single step, and that
+		// is the same unmetered linear work the string scan charge closes.
+		if err := exec.chargeStringScan(payload); err != nil {
+			return NewNil(), err
+		}
 		// Render into a builder grown to exactly payload bytes so the realized
 		// backing array is the one the quota check accounts for. Builder.Grow
 		// reserves roundedAllocSize(payload) for that single reservation, whereas a

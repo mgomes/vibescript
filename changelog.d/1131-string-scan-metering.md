@@ -9,3 +9,6 @@
   `clear`, `byteslice`, `to_sym`, `intern`) stay exempt, and any receiver
   shorter than 64 bytes rounds down to no charge, so ordinary short strings are
   unaffected.
+  Rendering a value (`inspect`, interpolation) charges for the bytes it prints,
+  so converting a large string to a symbol stays free while printing that
+  symbol's name does not.

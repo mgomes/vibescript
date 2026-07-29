@@ -165,6 +165,11 @@ func renderOutputValue(exec *Execution, method string, val Value, inspect bool) 
 	if err != nil {
 		return "", err
 	}
+	// Charge for the bytes about to be rendered; see the inspect member for why
+	// a scalar with a large payload needs this beyond the per-element step.
+	if err := exec.chargeStringScan(payload); err != nil {
+		return "", err
+	}
 	if payload > maxOutputHelperBytes {
 		return "", guardLimitErrorf("%s output exceeds limit %d bytes", method, maxOutputHelperBytes)
 	}

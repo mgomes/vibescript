@@ -57,6 +57,8 @@ var stringConstantCostMembers = map[string]struct{}{
 	// none of these touch the receiver's length. slice is charged rather than
 	// exempt because it indexes by rune, which scans to the offset.
 	"byteslice": {}, "to_sym": {}, "intern": {},
+	// replace ignores the receiver entirely and returns its argument.
+	"replace": {},
 }
 
 // chargeStringScanBeforeCall wraps a string builtin so it charges the step

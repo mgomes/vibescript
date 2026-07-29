@@ -2878,9 +2878,6 @@ func (exec *Execution) evalDirectStringSplitCall(call *CallExpr, receiver Value,
 	if len(call.Args) > 2 {
 		return NewNil(), false, nil
 	}
-	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
-		return NewNil(), true, err
-	}
 	arg0 := NewNil()
 	arg1 := NewNil()
 	if len(call.Args) > 0 {
@@ -2896,6 +2893,13 @@ func (exec *Execution) evalDirectStringSplitCall(call *CallExpr, receiver Value,
 		if err != nil {
 			return NewNil(), true, err
 		}
+	}
+	// Charged after the arguments are evaluated, not before: member dispatch
+	// evaluates arguments and only then runs the metering wrapper, so charging
+	// earlier here would let a tight quota skip an argument's side effect on
+	// this path while the equivalent dispatched call still performs it.
+	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+		return NewNil(), true, err
 	}
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), true, err
@@ -2975,9 +2979,6 @@ func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value,
 	if len(call.Args) < 1 || len(call.Args) > 2 {
 		return NewNil(), false, nil
 	}
-	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
-		return NewNil(), true, err
-	}
 	needle, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {
 		return NewNil(), true, err
@@ -2991,6 +2992,13 @@ func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value,
 			return NewNil(), true, err
 		}
 		hasOffset = true
+	}
+	// Charged after the arguments are evaluated, not before: member dispatch
+	// evaluates arguments and only then runs the metering wrapper, so charging
+	// earlier here would let a tight quota skip an argument's side effect on
+	// this path while the equivalent dispatched call still performs it.
+	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+		return NewNil(), true, err
 	}
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), true, err
@@ -3019,9 +3027,6 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 	if len(call.Args) < 1 || len(call.Args) > 2 {
 		return NewNil(), false, nil
 	}
-	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
-		return NewNil(), true, err
-	}
 	needle, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {
 		return NewNil(), true, err
@@ -3035,6 +3040,13 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 			return NewNil(), true, err
 		}
 		hasOffset = true
+	}
+	// Charged after the arguments are evaluated, not before: member dispatch
+	// evaluates arguments and only then runs the metering wrapper, so charging
+	// earlier here would let a tight quota skip an argument's side effect on
+	// this path while the equivalent dispatched call still performs it.
+	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+		return NewNil(), true, err
 	}
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), true, err
@@ -3071,9 +3083,6 @@ func (exec *Execution) evalDirectStringSliceCall(call *CallExpr, receiver Value,
 	if len(call.Args) < 1 || len(call.Args) > 2 {
 		return NewNil(), false, nil
 	}
-	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
-		return NewNil(), true, err
-	}
 	first, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {
 		return NewNil(), true, err
@@ -3084,6 +3093,13 @@ func (exec *Execution) evalDirectStringSliceCall(call *CallExpr, receiver Value,
 		if err != nil {
 			return NewNil(), true, err
 		}
+	}
+	// Charged after the arguments are evaluated, not before: member dispatch
+	// evaluates arguments and only then runs the metering wrapper, so charging
+	// earlier here would let a tight quota skip an argument's side effect on
+	// this path while the equivalent dispatched call still performs it.
+	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+		return NewNil(), true, err
 	}
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), true, err
