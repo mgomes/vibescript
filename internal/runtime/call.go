@@ -3028,7 +3028,7 @@ func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value,
 		}
 		offset = i
 	}
-	result, err := stringIndexResult(receiver, needle, offset)
+	result, err := stringIndexResult(exec, receiver, needle, offset)
 	if err != nil {
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}
@@ -3092,7 +3092,7 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 		}
 		offset = effective
 	}
-	result, err := stringRIndexResult(receiver, needle, offset)
+	result, err := stringRIndexResult(exec, receiver, needle, offset)
 	if err != nil {
 		return NewNil(), true, exec.wrapError(err, call.Pos())
 	}

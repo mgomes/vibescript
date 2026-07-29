@@ -1028,21 +1028,39 @@ func stringLikeOperand(v Value) bool {
 }
 
 func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right Value) error {
-	// Symbols carry a string name and compare by it, and converting a string to
-	// a symbol is exempt because it copies nothing -- so charging only strings
-	// let a script convert two long values and compare the symbols for free.
-	//
-	// The kinds must match. A string against a symbol is rejected on kind
-	// before either name is read, and ordering calls the pair incomparable, so
-	// charging that pair billed a large receiver for a constant-time answer.
-	if left.Kind() != right.Kind() || !stringLikeOperand(left) {
-		return nil
-	}
 	switch operator {
 	case tokenPlus:
-		return exec.chargeStringScan(saturatingAdd(len(left.String()), len(right.String())))
+		// Concatenation copies whatever it is given, and addValues concatenates
+		// whenever either side is a string and the other can render into one --
+		// s + 1 and "" + s.to_sym both copy a large operand. So the kinds need
+		// not match here; requiring it left those unmetered.
+		if !stringLikeOperand(left) && !stringLikeOperand(right) {
+			return nil
+		}
+		bytes := 0
+		if stringLikeOperand(left) {
+			bytes = saturatingAdd(bytes, len(left.String()))
+		}
+		if stringLikeOperand(right) {
+			bytes = saturatingAdd(bytes, len(right.String()))
+		}
+		return exec.chargeStringScan(bytes)
 	case tokenEQ, tokenNotEQ, tokenCaseEQ, tokenLT, tokenLTE, tokenGT, tokenGTE,
 		tokenSpaceship:
+		// Comparison needs matching kinds: a string against a symbol is rejected
+		// on kind before either name is read, and ordering calls the pair
+		// incomparable, so charging it billed a constant-time answer.
+		if left.Kind() != right.Kind() || !stringLikeOperand(left) {
+			return nil
+		}
+		// Equality answers from a length mismatch without reading either
+		// payload, so only equal lengths are charged. Ordering still reads the
+		// common prefix whatever the lengths.
+		if operator == tokenEQ || operator == tokenNotEQ || operator == tokenCaseEQ {
+			if len(left.String()) != len(right.String()) {
+				return nil
+			}
+		}
 		return exec.chargeStringScan(min(len(left.String()), len(right.String())))
 	default:
 		return nil

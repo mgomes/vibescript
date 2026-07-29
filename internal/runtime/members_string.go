@@ -1169,7 +1169,7 @@ func stringEffectiveOffset(text string, offset int) (int, bool) {
 	return effective, true
 }
 
-func stringRuneIndex(text, needle string, offset int) int {
+func stringRuneIndex(exec *Execution, text, needle string, offset int) int {
 	if offset < 0 {
 		return -1
 	}
@@ -1203,7 +1203,7 @@ func stringRuneIndex(text, needle string, offset int) int {
 		return offset + index
 	}
 	if !utf8.ValidString(text) || !utf8.ValidString(needle) {
-		return stringRuneIndexFallback(text, needle, offset)
+		return stringRuneIndexFallback(exec, text, needle, offset)
 	}
 	startByte, ok := stringByteIndexForRuneOffset(text, offset)
 	if !ok {
@@ -1219,7 +1219,24 @@ func stringRuneIndex(text, needle string, offset int) int {
 	return offset + utf8.RuneCountInString(text[startByte:startByte+index])
 }
 
-func stringRuneIndexFallback(text, needle string, offset int) int {
+// reserveCanonicalSearchScratch checks the canonical copies the invalid-UTF-8
+// search builds against the memory quota. Every invalid byte widens to a
+// three-byte replacement rune, so the copies reach three times their operands.
+func reserveCanonicalSearchScratch(exec *Execution, text, needle string) bool {
+	if exec == nil {
+		return true
+	}
+	projected := saturatingMul(utf8.UTFMax-1, saturatingAdd(len(text), len(needle)))
+	return exec.checkProjectedStringBytes(projected) == nil
+}
+
+// stringRuneIndexFallback searches operands that are not valid UTF-8 by rune.
+//
+// It returns -1 when the canonical forms it needs would not fit the memory
+// quota. Those forms are transient -- built, searched, and released before the
+// caller's own check runs -- so nothing else accounts for them, and they reach
+// about three times the operands for invalid input.
+func stringRuneIndexFallback(exec *Execution, text, needle string, offset int) int {
 	hayRunes := []rune(text)
 	needleRunes := []rune(needle)
 	if offset > len(hayRunes) {
@@ -1239,6 +1256,9 @@ func stringRuneIndexFallback(text, needle string, offset int) int {
 	// positions with runesHavePrefix is quadratic -- a haystack of repeated
 	// bytes against a needle sharing a long prefix forced roughly n*m
 	// comparisons while the charge covered only n+m.
+	if !reserveCanonicalSearchScratch(exec, text, needle) {
+		return -1
+	}
 	hay := string(hayRunes[offset:])
 	at := strings.Index(hay, string(needleRunes))
 	if at < 0 {
@@ -1247,7 +1267,7 @@ func stringRuneIndexFallback(text, needle string, offset int) int {
 	return offset + utf8.RuneCountInString(hay[:at])
 }
 
-func stringRuneRIndex(text, needle string, offset int) int {
+func stringRuneRIndex(exec *Execution, text, needle string, offset int) int {
 	if offset < 0 {
 		return -1
 	}
@@ -1282,7 +1302,7 @@ func stringRuneRIndex(text, needle string, offset int) int {
 		return strings.LastIndex(text[:start+len(needle)], needle)
 	}
 	if !utf8.ValidString(text) || !utf8.ValidString(needle) {
-		return stringRuneRIndexFallback(text, needle, offset)
+		return stringRuneRIndexFallback(exec, text, needle, offset)
 	}
 	textLen := stringRuneLen(text)
 	if offset > textLen {
@@ -1307,7 +1327,9 @@ func stringRuneRIndex(text, needle string, offset int) int {
 	return utf8.RuneCountInString(text[:index])
 }
 
-func stringRuneRIndexFallback(text, needle string, offset int) int {
+// stringRuneRIndexFallback is stringRuneIndexFallback searching backwards; see
+// there for why the canonical scratch is reserved.
+func stringRuneRIndexFallback(exec *Execution, text, needle string, offset int) int {
 	hayRunes := []rune(text)
 	needleRunes := []rune(needle)
 	if offset > len(hayRunes) {
@@ -1322,6 +1344,9 @@ func stringRuneRIndexFallback(text, needle string, offset int) int {
 	start := min(offset, len(hayRunes)-len(needleRunes))
 	// Linear for the same reason as the forward fallback; searching backwards
 	// from every candidate position is quadratic.
+	if !reserveCanonicalSearchScratch(exec, text, needle) {
+		return -1
+	}
 	hay := string(hayRunes[:start+len(needleRunes)])
 	at := strings.LastIndex(hay, string(needleRunes))
 	if at < 0 {
@@ -3799,7 +3824,7 @@ func stringMemberQuery(property string) (Value, error) {
 				}
 				offset = i
 			}
-			return stringIndexResult(receiver, args[0], offset)
+			return stringIndexResult(exec, receiver, args[0], offset)
 		}), nil
 	case "rindex":
 		return NewAutoBuiltin("string.rindex", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -3818,7 +3843,7 @@ func stringMemberQuery(property string) (Value, error) {
 				}
 				offset = effective
 			}
-			return stringRIndexResult(receiver, args[0], offset)
+			return stringRIndexResult(exec, receiver, args[0], offset)
 		}), nil
 	case "slice":
 		return NewAutoBuiltin("string.slice", stringSlice), nil
@@ -3827,7 +3852,7 @@ func stringMemberQuery(property string) (Value, error) {
 	}
 }
 
-func stringIndexResult(receiver, needle Value, offset int) (Value, error) {
+func stringIndexResult(exec *Execution, receiver, needle Value, offset int) (Value, error) {
 	if needle.Kind() != KindString {
 		return NewNil(), fmt.Errorf("string.index substring must be string")
 	}
@@ -3835,18 +3860,18 @@ func stringIndexResult(receiver, needle Value, offset int) (Value, error) {
 	if !ok {
 		return NewNil(), nil
 	}
-	index := stringRuneIndex(receiver.String(), needle.String(), effective)
+	index := stringRuneIndex(exec, receiver.String(), needle.String(), effective)
 	if index < 0 {
 		return NewNil(), nil
 	}
 	return NewInt(int64(index)), nil
 }
 
-func stringRIndexResult(receiver, needle Value, offset int) (Value, error) {
+func stringRIndexResult(exec *Execution, receiver, needle Value, offset int) (Value, error) {
 	if needle.Kind() != KindString {
 		return NewNil(), fmt.Errorf("string.rindex substring must be string")
 	}
-	index := stringRuneRIndex(receiver.String(), needle.String(), offset)
+	index := stringRuneRIndex(exec, receiver.String(), needle.String(), offset)
 	if index < 0 {
 		return NewNil(), nil
 	}

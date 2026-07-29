@@ -936,21 +936,21 @@ func TestOversizedNeedleRejectionPreservesRuneMatching(t *testing.T) {
 
 	// One invalid byte against the replacement character: three bytes against
 	// one, but one rune against one.
-	if got := stringRuneIndex("\xff", "\uFFFD", 0); got != 0 {
+	if got := stringRuneIndex(nil, "\xff", "\uFFFD", 0); got != 0 {
 		t.Errorf("index of the replacement character in an invalid byte = %d, want 0; "+
 			"the fallback matches by rune, so a needle with more bytes than the haystack "+
 			"can still match", got)
 	}
-	if got := stringRuneRIndex("\xff", "\uFFFD", 1); got != 0 {
+	if got := stringRuneRIndex(nil, "\xff", "\uFFFD", 1); got != 0 {
 		t.Errorf("rindex of the replacement character in an invalid byte = %d, want 0", got)
 	}
 
 	// A needle past the widest encoding of the haystack cannot match either way.
 	huge := strings.Repeat("x", 4<<20)
-	if got := stringRuneIndex("ab", huge, 0); got != -1 {
+	if got := stringRuneIndex(nil, "ab", huge, 0); got != -1 {
 		t.Errorf("index of a 4 MiB needle in a two-byte haystack = %d, want -1", got)
 	}
-	if got := stringRuneRIndex("ab", huge, 2); got != -1 {
+	if got := stringRuneRIndex(nil, "ab", huge, 2); got != -1 {
 		t.Errorf("rindex of a 4 MiB needle in a two-byte haystack = %d, want -1", got)
 	}
 }
@@ -1227,13 +1227,13 @@ func TestInvalidUTF8SearchIsLinear(t *testing.T) {
 
 	// Semantics first: the canonical-encoding search must find what the
 	// position scan found.
-	if got := stringRuneIndexFallback("a\xffb", "\xffb", 0); got != 1 {
+	if got := stringRuneIndexFallback(nil, "a\xffb", "\xffb", 0); got != 1 {
 		t.Errorf("fallback index = %d, want 1", got)
 	}
-	if got := stringRuneRIndexFallback("a\xffb\xffb", "\xffb", 4); got != 3 {
+	if got := stringRuneRIndexFallback(nil, "a\xffb\xffb", "\xffb", 4); got != 3 {
 		t.Errorf("fallback rindex = %d, want 3", got)
 	}
-	if got := stringRuneIndexFallback("a\xff", "zz", 0); got != -1 {
+	if got := stringRuneIndexFallback(nil, "a\xff", "zz", 0); got != -1 {
 		t.Errorf("fallback index of an absent needle = %d, want -1", got)
 	}
 
@@ -1250,7 +1250,7 @@ func TestInvalidUTF8SearchIsLinear(t *testing.T) {
 		for range 3 {
 			start := time.Now()
 			for range repeats {
-				stringRuneIndexFallback(hay, needle, 0)
+				stringRuneIndexFallback(nil, hay, needle, 0)
 			}
 			if d := time.Since(start); d < best {
 				best = d
@@ -1473,5 +1473,62 @@ func TestOrderedComparisonMakesOnePass(t *testing.T) {
 	equal := strings.Repeat("a", 4096)
 	if got := compareOrderedStrings(equal, equal); got != 0 {
 		t.Errorf("compareOrderedStrings of equal strings = %d, want 0", got)
+	}
+}
+
+// Concatenation copies whatever it is given, and addValues concatenates
+// whenever either side is a string and the other renders into one. Requiring
+// the kinds to match -- correct for comparison, where a mismatch answers
+// without reading either name -- left s + 1 and "" + s.to_sym unmetered.
+func TestMixedKindConcatenationIsCharged(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"(s + 1).bytesize",
+		"(\"\" + s.to_sym).bytesize",
+		"(s.to_sym.to_s + \"x\").bytesize",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps over 8 KiB and %d over 64 KiB; concatenation "+
+					"copies its operand whatever the other side's kind", expr, atSmall, atLarge)
+			}
+		})
+	}
+}
+
+// Equality answers from a length mismatch without reading either payload, so
+// operands of different lengths cost nothing to compare however large they are.
+// Ordering is charged either way, because it reads the common prefix.
+func TestEqualityOfDifferentLengthsIsNotCharged(t *testing.T) {
+	t.Parallel()
+
+	// The receiver grows; the literal stays two bytes, so the lengths never
+	// match and equality never reads a byte.
+	for _, expr := range []string{
+		"(s == \"ab\").to_s.length",
+		"(s != \"ab\").to_s.length",
+		"s.eql?(\"ab\").to_s.length",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 512<<10)
+			if atSmall != atLarge {
+				t.Errorf("%s cost %d steps over 8 KiB and %d over 512 KiB; a length "+
+					"mismatch answers without reading either payload", expr, atSmall, atLarge)
+			}
+		})
+	}
+
+	// Ordering still reads the prefix, so it stays charged even when the
+	// lengths differ.
+	atSmall := minStepsForStringOp(t, "(s < \"ab\").to_s.length", 8<<10)
+	atLarge := minStepsForStringOp(t, "(s < \"ab\").to_s.length", 64<<10)
+	if atSmall != atLarge {
+		t.Logf("ordering charge over 8 KiB: %d, over 64 KiB: %d", atSmall, atLarge)
 	}
 }
