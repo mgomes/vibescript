@@ -1858,7 +1858,7 @@ func TestTemplateCacheRetainsEveryPlaceholder(t *testing.T) {
 	// Then that the cache holds them: a lookup for every key must succeed.
 	var cache stringTemplateSegmentCache
 	for i := range 12 {
-		cache.store(fmt.Sprintf("k%d", i), fmt.Sprintf("v%d", i))
+		cache.store(fmt.Sprintf("k%d", i), fmt.Sprintf("v%d", i), true)
 	}
 	for i := range 12 {
 		want := fmt.Sprintf("v%d", i)
@@ -1902,17 +1902,19 @@ func TestRegexSizingWalkIsChargedBeforeItRuns(t *testing.T) {
 	}
 }
 
-// The cache's segments stay live while the result builder is allocated, so the
-// memory peak is the builder plus them. Reserving only the builder let a finite
-// quota approve an operation whose real peak was about twice what was checked.
+// A segment the render built stays live while the result builder is allocated,
+// so the memory peak is the builder plus those. Reserving only the builder let a
+// finite quota approve an operation whose real peak was about twice what was
+// checked. (Aliased segments are the caller's own memory and are excluded --
+// TestTemplateReservationDoesNotCountAliasedPlaceholders covers that side.)
 func TestTemplateReservesItsRetainedSegments(t *testing.T) {
 	t.Parallel()
 
 	var cache stringTemplateSegmentCache
 	for i := range 12 {
-		cache.store(fmt.Sprintf("k%d", i), strings.Repeat("v", 1000))
+		cache.store(fmt.Sprintf("k%d", i), strings.Repeat("v", 1000), true)
 	}
-	// Twelve values of a thousand bytes, plus keys, all still held.
+	// Twelve built values of a thousand bytes, all still held.
 	if got := cache.retainedBytes(); got < 12*1000 {
 		t.Errorf("retainedBytes = %d, want at least %d; every retained segment counts "+
 			"toward the peak, including those past the inline slots", got, 12*1000)
@@ -2017,5 +2019,54 @@ func TestNestedRegexSizingIsChargedForItsSource(t *testing.T) {
 					onePass)
 			}
 		})
+	}
+}
+
+// The template reservation must cover what the render actually holds, and a
+// string or symbol placeholder is handed back by reference: the segment cache
+// aliases the caller's own payload rather than copying it. Counting those bytes
+// projected a copy that does not exist, so a template whose real peak was the
+// payload plus the result was charged for a third of it again and rejected under
+// a quota it fitted.
+//
+// Measure the slope rather than an absolute size: the smallest quota that
+// completes grows by two payloads per payload of input (the argument the caller
+// holds, and the result), and by three if the cached alias is counted as well.
+func TestTemplateReservationDoesNotCountAliasedPlaceholders(t *testing.T) {
+	t.Parallel()
+
+	const src = "def run(s, n)\n  \"{{v}}\".template({v: s}).bytesize\nend"
+	const payload = 64 << 10
+	const hi = 8 << 20
+
+	small := minMemoryQuotaToComplete(t, src, NewString(strings.Repeat("a", payload)), 0, hi)
+	large := minMemoryQuotaToComplete(t, src, NewString(strings.Repeat("a", 2*payload)), 0, hi)
+	if small >= hi || large >= hi {
+		t.Fatalf("binary search hit its own bound (%d, %d of %d); the measurement "+
+			"would read as size-proportional whatever the projection did", small, large, hi)
+	}
+
+	// Both runs render the placeholder, so the difference is entirely the extra
+	// payload: two copies of it live at the peak, not three.
+	slope := float64(large-small) / float64(payload)
+	if slope > 2.5 {
+		t.Errorf("smallest completing quota rose from %d to %d for one more payload "+
+			"of %d bytes, a slope of %.2f payloads; a string placeholder is aliased, "+
+			"so only the argument and the result are live and the slope must be near 2",
+			small, large, payload, slope)
+	}
+
+	// And the reservation still covers a placeholder that is materialized here:
+	// a big integer's digits are built by the render and are live beside the
+	// result, so those bytes must be counted.
+	var cache stringTemplateSegmentCache
+	cache.store("k", strings.Repeat("d", 4096), false)
+	if got := cache.retainedBytes(); got != 0 {
+		t.Errorf("aliased segment reserved %d bytes; it is the caller's own memory", got)
+	}
+	cache.store("j", strings.Repeat("d", 4096), true)
+	if got := cache.retainedBytes(); got != 4096 {
+		t.Errorf("built segment reserved %d bytes, want 4096; a rendering the template "+
+			"allocated is live alongside the result and must be covered", got)
 	}
 }

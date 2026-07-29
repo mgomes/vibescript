@@ -3071,18 +3071,27 @@ func stringTemplateLookup(context Value, keyPath string) (Value, bool) {
 	return current, true
 }
 
-func stringTemplateScalarValue(value Value, keyPath string) (string, error) {
+// stringTemplateScalarValue renders a placeholder value, reporting whether the
+// rendering is a new allocation.
+//
+// A string, symbol or enum member hands back its existing backing, so retaining
+// it costs nothing the caller's own roots do not already account for. Anything
+// else -- a big integer's base conversion, a regex's escaped literal, a
+// formatted time -- is built here, and that copy is live alongside the result.
+func stringTemplateScalarValue(value Value, keyPath string) (string, bool, error) {
 	switch value.Kind() {
-	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindTime, KindRegex:
-		return value.String(), nil
+	case KindString, KindSymbol:
+		return value.String(), false, nil
+	case KindNil, KindBool, KindInt, KindFloat, KindMoney, KindDuration, KindTime, KindRegex:
+		return value.String(), true, nil
 	case KindEnumValue:
 		member := valueEnumValue(value)
 		if member == nil {
-			return "", fmt.Errorf("string.template placeholder %s value must be scalar", keyPath)
+			return "", false, fmt.Errorf("string.template placeholder %s value must be scalar", keyPath)
 		}
-		return member.Symbol, nil
+		return member.Symbol, false, nil
 	default:
-		return "", fmt.Errorf("string.template placeholder %s value must be scalar", keyPath)
+		return "", false, fmt.Errorf("string.template placeholder %s value must be scalar", keyPath)
 	}
 }
 
@@ -3090,6 +3099,9 @@ type stringTemplateSegmentCache struct {
 	keys   [8]string
 	values [8]string
 	count  int
+	// builtBytes counts the segments that are new allocations rather than
+	// aliases of memory the caller already holds. See retainedBytes.
+	builtBytes int
 	// overflow holds entries past the inline slots. Dropping them silently made
 	// the ninth distinct placeholder onwards convert twice -- once to size the
 	// render and once to write it -- which is the cost this cache exists to
@@ -3110,21 +3122,22 @@ func (c *stringTemplateSegmentCache) lookup(key string) (string, bool) {
 	return "", false
 }
 
-// retainedBytes reports the bytes the cache is holding. Its segments stay live
-// while the result builder is allocated, so the peak is the builder plus these
-// and the memory reservation must cover both.
+// retainedBytes reports the bytes the cache is holding that are new
+// allocations. Those stay live while the result builder is allocated, so the
+// peak is the builder plus these and the memory reservation must cover both.
+//
+// Only built segments count. A string, symbol or enum placeholder hands back its
+// existing backing and a key slices the template receiver, so counting those
+// projected a copy that does not exist and rejected templates a real peak would
+// have fitted.
 func (c *stringTemplateSegmentCache) retainedBytes() int {
-	total := 0
-	for i := range c.count {
-		total = saturatingAdd(total, saturatingAdd(len(c.keys[i]), len(c.values[i])))
-	}
-	for key, value := range c.overflow {
-		total = saturatingAdd(total, saturatingAdd(len(key), len(value)))
-	}
-	return total
+	return c.builtBytes
 }
 
-func (c *stringTemplateSegmentCache) store(key, value string) {
+func (c *stringTemplateSegmentCache) store(key, value string, built bool) {
+	if built {
+		c.builtBytes = saturatingAdd(c.builtBytes, len(value))
+	}
 	if c.count < len(c.keys) {
 		c.keys[c.count] = key
 		c.values[c.count] = value
@@ -3210,11 +3223,11 @@ func stringTemplateRenderedLen(exec *Execution, text string, context Value, stri
 			search = end
 			continue
 		}
-		segment, err := stringTemplateScalarValue(value, keyPath)
+		segment, built, err := stringTemplateScalarValue(value, keyPath)
 		if err != nil {
 			return false, 0, cache, err
 		}
-		cache.store(keyPath, segment)
+		cache.store(keyPath, segment, built)
 		total = saturatingAdd(total, len(segment))
 		if err := charge(total); err != nil {
 			return false, 0, cache, err
@@ -3296,11 +3309,11 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 			search = end
 			continue
 		}
-		segment, err := stringTemplateScalarValue(value, keyPath)
+		segment, built, err := stringTemplateScalarValue(value, keyPath)
 		if err != nil {
 			return "", err
 		}
-		cache.store(keyPath, segment)
+		cache.store(keyPath, segment, built)
 		if err := appendTemplateChunk(exec, &b, segment, receiver, args, kwargs, block); err != nil {
 			return "", err
 		}
