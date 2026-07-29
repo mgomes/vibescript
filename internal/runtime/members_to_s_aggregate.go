@@ -40,6 +40,9 @@ func newAggregateToStringBuiltin(typeName, property string) Value {
 		if err != nil {
 			return NewNil(), err
 		}
+		if err := exec.chargeStringScan(payload); err != nil {
+			return NewNil(), err
+		}
 		var builder strings.Builder
 		// Charge the receiver alongside the rendered string: the receiver stays
 		// live while the result materializes, so the peak holds both.

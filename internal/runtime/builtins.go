@@ -821,6 +821,12 @@ type formatProjection struct {
 func (p formatProjection) stringBytes(val Value) (int, error) {
 	switch val.Kind() {
 	case KindString, KindSymbol:
+		// Scalars skip the bounded walk, so they charge here instead.
+		if p.exec != nil {
+			if err := p.exec.chargeStringScan(len(val.String())); err != nil {
+				return 0, err
+			}
+		}
 		return len(val.String()), nil
 	default:
 		if p.exec != nil {
@@ -848,6 +854,11 @@ func (p formatProjection) stringBytesUpTo(val Value, limit int) (int, error) {
 	}
 	switch val.Kind() {
 	case KindString, KindSymbol:
+		if p.exec != nil {
+			if err := p.exec.chargeStringScan(min(len(val.String()), limit)); err != nil {
+				return 0, err
+			}
+		}
 		return min(len(val.String()), limit), nil
 	default:
 		if p.exec != nil {

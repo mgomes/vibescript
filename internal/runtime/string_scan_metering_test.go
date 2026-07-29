@@ -130,7 +130,19 @@ func TestShortStringOpsPayNoScanCharge(t *testing.T) {
 func TestSymbolRenderingChargesForItsName(t *testing.T) {
 	t.Parallel()
 
-	for _, expr := range []string{"s.to_sym.inspect.bytesize", "s.intern.inspect.bytesize"} {
+	// Every way a value can be turned into text, not just the one that was
+	// reported: inspect, interpolation, to_s, puts, and join each render the
+	// name and each must charge for it. Fixing only the site in front of you is
+	// how the previous round left interpolation open.
+	renderings := []string{
+		"s.to_sym.inspect.bytesize",
+		"s.intern.inspect.bytesize",
+		"\"#{s.to_sym}\".bytesize",
+		"[s.to_sym].join(\",\").bytesize",
+		"[s.to_sym].to_s.bytesize",
+		"{a: s.to_sym}.to_s.bytesize",
+	}
+	for _, expr := range renderings {
 		t.Run(expr, func(t *testing.T) {
 			t.Parallel()
 			atSmall := minStepsForStringOp(t, expr, 8<<10)

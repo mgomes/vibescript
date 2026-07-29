@@ -384,6 +384,13 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 	if err != nil {
 		return err
 	}
+	// Charge for the bytes about to be rendered: the bounded walk steps once
+	// per node, which bounds a large aggregate, but a scalar is one node however
+	// many bytes it carries (a symbol built from a host-supplied string renders
+	// its whole name). See chargeStringScan.
+	if err := exec.chargeStringScan(payload); err != nil {
+		return err
+	}
 	if err := exec.checkProjectedValueRendering(val, projectedBuilderCap(sb, payload)); err != nil {
 		return err
 	}
