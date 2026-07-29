@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/internal/ast"
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 const (
@@ -779,12 +780,18 @@ func (exec *Execution) evalIndexSelectors(e *IndexExpr, obj Value, env *Env) ([]
 // will use to walk the receiver. A range or integer offsets scan; anything else
 // is rejected on shape or type without reading a byte.
 func stringIndexSelectorScans(indices []Value) bool {
-	numeric := func(v Value) bool { return v.Kind() == KindInt || v.Kind() == KindFloat }
+	// Convertibility, not kind: valueToInt rejects a big integer and a
+	// non-finite or out-of-range float, so s[2 ** 100] never reads the
+	// receiver and must not be charged as though it had.
+	usable := func(v Value) bool {
+		_, err := valueToInt(v)
+		return err == nil
+	}
 	switch len(indices) {
 	case 1:
-		return indices[0].Kind() == KindRange || numeric(indices[0])
+		return indices[0].Kind() == KindRange || usable(indices[0])
 	case 2:
-		return numeric(indices[0]) && numeric(indices[1])
+		return usable(indices[0]) && usable(indices[1])
 	default:
 		return false
 	}
@@ -1045,6 +1052,32 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 // Concatenation copies both operands. A comparison stops at the first differing
 // byte and answers immediately when the lengths differ, so it cannot read more
 // than the shorter operand holds.
+// concatenatedOperandBytes bounds what an operand contributes to a
+// concatenation, which is the size of its rendered form rather than of the
+// operand itself.
+//
+// A string or symbol renders as its own bytes. A big integer renders through a
+// base conversion whose output grows with the payload, and a regex renders its
+// source, so both carry a payload the operand's kind alone does not reveal --
+// billing only strings left `"" + big` and `"" + /re/` copying and converting
+// for nothing. Every other concatenable kind renders to a bounded handful of
+// bytes and contributes nothing worth charging.
+func concatenatedOperandBytes(v Value) int {
+	switch {
+	case stringLikeOperand(v):
+		return len(v.String())
+	case v.Kind() == KindInt:
+		if _, ok := value.BigIntPayload(v); ok {
+			return value.BigIntDecimalLenUpperBound(v)
+		}
+		return 0
+	case v.Kind() == KindRegex:
+		return len(v.String())
+	default:
+		return 0
+	}
+}
+
 // concatenatesToString reports whether addValues will join these operands into
 // a string, which is the only case where + copies a payload.
 func concatenatesToString(left, right Value) bool {
@@ -1077,14 +1110,8 @@ func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right 
 		if !concatenatesToString(left, right) {
 			return nil
 		}
-		bytes := 0
-		if stringLikeOperand(left) {
-			bytes = saturatingAdd(bytes, len(left.String()))
-		}
-		if stringLikeOperand(right) {
-			bytes = saturatingAdd(bytes, len(right.String()))
-		}
-		return exec.chargeStringScan(bytes)
+		return exec.chargeStringScan(saturatingAdd(
+			concatenatedOperandBytes(left), concatenatedOperandBytes(right)))
 	case tokenEQ, tokenNotEQ, tokenCaseEQ, tokenLT, tokenLTE, tokenGT, tokenGTE,
 		tokenSpaceship:
 		// Comparison needs matching kinds: a string against a symbol is rejected

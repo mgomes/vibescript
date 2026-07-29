@@ -1627,3 +1627,62 @@ func TestInvalidExpressionsReportTheirOwnError(t *testing.T) {
 		})
 	}
 }
+
+// An operand contributes its rendered size, not its own. A big integer renders
+// through a base conversion whose output grows with the payload and a regex
+// renders its source, so billing only strings left those concatenations copying
+// and converting for a flat cost.
+func TestConcatenationChargesRenderedOperands(t *testing.T) {
+	t.Parallel()
+
+	// 2 ** n has about n/3 decimal digits, so the rendering grows with n while
+	// the expression stays the same shape.
+	steps := func(exponent int) int {
+		src := fmt.Sprintf("def run(s)\n  (\"\" + 2 ** %d).bytesize\nend", exponent)
+		lo, hi := 1, 1<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	small, large := steps(20000), steps(160000)
+	if large < small*4 {
+		t.Errorf("concatenating 2**20000 cost %d steps and 2**160000 cost %d; a big "+
+			"integer renders through a base conversion that grows with its payload",
+			small, large)
+	}
+}
+
+// A numeric selector is only charged when it converts to an index. valueToInt
+// rejects a big integer and a non-finite or out-of-range float before
+// indexString reads anything, so those must report the conversion error rather
+// than a quota error.
+func TestUnusableNumericSelectorsAreNotCharged(t *testing.T) {
+	t.Parallel()
+
+	big := NewString(strings.Repeat("a", 512<<10))
+	for _, src := range []string{
+		"def run(s)\n  s[2 ** 100]\nend",
+		"def run(s)\n  s[0, 2 ** 100]\nend",
+	} {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: 64, MemoryQuotaBytes: Unlimited}, src)
+			_, err := script.Call(context.Background(), "run", []Value{big}, CallOptions{})
+			if err == nil {
+				t.Fatal("an out-of-range index succeeded")
+			}
+			if strings.Contains(err.Error(), "quota") {
+				t.Errorf("an out-of-range index reported %q; it is rejected before the "+
+					"receiver is read", err)
+			}
+		})
+	}
+}
