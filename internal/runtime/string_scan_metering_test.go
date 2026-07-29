@@ -686,3 +686,51 @@ func TestCasecmpPredicateChargesItsWholeArgument(t *testing.T) {
 			"charge", atSmall, atLarge)
 	}
 }
+
+// A substitution can expand well past its inputs: replacing every byte of a
+// fixed receiver with a growing replacement writes the product of the two, so
+// neither the receiver nor the replacement bounds the result. The receiver here
+// is a literal, so only the replacement grows.
+func TestSubstitutionChargesForTheResultItBuilds(t *testing.T) {
+	t.Parallel()
+
+	const receiver = "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
+	for _, expr := range []string{
+		receiver + ".gsub(\"a\", s).bytesize",
+		receiver + ".sub(\"a\", s).bytesize",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps with an 8 KiB replacement and %d with 64 KiB; "+
+					"a substitution must charge for what it writes, which its inputs do "+
+					"not bound", expr, atSmall, atLarge)
+			}
+		})
+	}
+}
+
+// A template's payload arrives inside its context hash rather than as a string
+// argument, so the per-call charge never saw it: the render copied the whole
+// value for the cost of a tiny receiver, and the quota never fired at all.
+func TestTemplateChargesForItsRenderedContext(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"\"{{v}}\".template({v: s}).bytesize",
+		"\"{{a}}{{b}}\".template({a: s, b: s}).bytesize",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps over an 8 KiB context value and %d over 64 KiB; "+
+					"a value reached through a context hash is copied just as a string "+
+					"argument is", expr, atSmall, atLarge)
+			}
+		})
+	}
+}

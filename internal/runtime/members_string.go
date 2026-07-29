@@ -2253,10 +2253,26 @@ func stringReplaceResult(
 	if args[1].Kind() != KindString {
 		return "", false, fmt.Errorf("%s replacement must be string", method)
 	}
+	var out string
+	var matched bool
 	if global {
-		return stringGSub(method, text, pattern, args[1].String(), regex, patternIsRegex)
+		out, matched, err = stringGSub(method, text, pattern, args[1].String(), regex, patternIsRegex)
+	} else {
+		out, matched, err = stringSub(method, text, pattern, args[1].String(), regex, patternIsRegex)
 	}
-	return stringSub(method, text, pattern, args[1].String(), regex, patternIsRegex)
+	if err != nil {
+		return "", false, err
+	}
+	// A substitution can expand: replacing every byte of a 16 KiB receiver with
+	// a 63-byte replacement writes a megabyte, which neither the receiver nor
+	// the replacement bounds. The result is only measurable once built, so the
+	// charge follows the work and one call may overshoot before the quota
+	// fires -- the same trade the set-probe charge makes, and the memory check
+	// on the way out bounds the overshoot's size.
+	if err := exec.chargeStringScan(len(out)); err != nil {
+		return "", false, err
+	}
+	return out, matched, nil
 }
 
 // stringReplaceBangResult builds the return value for String#sub! and
@@ -3049,6 +3065,13 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 	}
 	var b strings.Builder
 	if renderedLen > 0 {
+		// The payload arrives inside the context hash, not as a string argument,
+		// so the per-call charge never saw it: "{{v}}".template({v: host_string})
+		// copies the whole value for the cost of a tiny receiver. Charge what
+		// the render will write.
+		if err := exec.chargeStringScan(renderedLen); err != nil {
+			return "", err
+		}
 		if err := exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, renderedLen), receiver, args, kwargs, block); err != nil {
 			return "", err
 		}
