@@ -2829,6 +2829,12 @@ func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver V
 		if len(call.Args) > 0 {
 			return NewNil(), false, nil
 		}
+		// This fast path bypasses member dispatch, so it does not get the scan
+		// charge chargeStringScanBeforeCall applies there and must charge for
+		// itself. bytesize below reads a length field and stays exempt.
+		if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+			return NewNil(), true, err
+		}
 		if err := exec.checkContext(); err != nil {
 			return NewNil(), true, err
 		}
@@ -2871,6 +2877,9 @@ func (exec *Execution) evalDirectStringMemberCallExpr(call *CallExpr, receiver V
 func (exec *Execution) evalDirectStringSplitCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
 	if len(call.Args) > 2 {
 		return NewNil(), false, nil
+	}
+	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+		return NewNil(), true, err
 	}
 	arg0 := NewNil()
 	arg1 := NewNil()
@@ -2966,6 +2975,9 @@ func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value,
 	if len(call.Args) < 1 || len(call.Args) > 2 {
 		return NewNil(), false, nil
 	}
+	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+		return NewNil(), true, err
+	}
 	needle, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {
 		return NewNil(), true, err
@@ -3006,6 +3018,9 @@ func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value,
 func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
 	if len(call.Args) < 1 || len(call.Args) > 2 {
 		return NewNil(), false, nil
+	}
+	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+		return NewNil(), true, err
 	}
 	needle, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {
@@ -3055,6 +3070,9 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 func (exec *Execution) evalDirectStringSliceCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
 	if len(call.Args) < 1 || len(call.Args) > 2 {
 		return NewNil(), false, nil
+	}
+	if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+		return NewNil(), true, err
 	}
 	first, err := exec.evalCallArg(call.Args[0], env)
 	if err != nil {

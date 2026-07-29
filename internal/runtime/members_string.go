@@ -14,6 +14,8 @@ import (
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // stringMemberNames mirrors the names dispatched by stringMember and feeds
@@ -38,7 +40,54 @@ func stringMember(str Value, property string) (Value, error) {
 	return NewNil(), fmt.Errorf("unknown string method %s%s", property, didYouMean(property, stringMemberNames))
 }
 
+// stringConstantCostMembers names the string methods whose work does not grow
+// with the receiver, so they are exempt from the per-byte scan charge. Every
+// other string method was measured to scale with the receiver's length -- even
+// ones whose logic is O(1), such as chop and delete_suffix, because they copy
+// the string to build their result.
+//
+// The set is an exemption list rather than an inclusion list so the charge
+// fails closed: a method added later is metered until someone establishes it is
+// constant-cost, instead of silently joining the unmetered set.
+var stringConstantCostMembers = map[string]struct{}{
+	"bytesize": {}, "empty?": {}, "getbyte": {}, "ord": {}, "chr": {},
+	"to_s": {}, "string": {}, "clear": {},
+}
+
+// chargeStringScanBeforeCall wraps a string builtin so it charges the step
+// quota for the bytes it is about to scan. Wrapping at the single dispatch
+// point rather than inside each method keeps the metering uniform and means a
+// new string method is charged without anyone remembering to add a call.
+func chargeStringScanBeforeCall(member Value) Value {
+	inner := BuiltinOf(member)
+	if inner == nil {
+		return member
+	}
+	metered := *inner
+	fn := inner.Fn
+	metered.Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if receiver.Kind() == KindString {
+			if err := exec.chargeStringScan(len(receiver.String())); err != nil {
+				return NewNil(), err
+			}
+		}
+		return fn(exec, receiver, args, kwargs, block)
+	}
+	return value.NewValue(KindBuiltin, &metered)
+}
+
 func stringMemberBuiltin(property string) (Value, error) {
+	member, err := stringMemberBuiltinUnmetered(property)
+	if err != nil {
+		return member, err
+	}
+	if _, exempt := stringConstantCostMembers[property]; exempt {
+		return member, nil
+	}
+	return chargeStringScanBeforeCall(member), nil
+}
+
+func stringMemberBuiltinUnmetered(property string) (Value, error) {
 	switch property {
 	case "size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "prepend", "insert", "replace", "start_with?", "end_with?", "include?", "count", "casecmp", "casecmp?", "between?", "match", "match?", "scan", "index", "rindex", "slice":
 		return stringMemberQuery(property)
@@ -2459,6 +2508,34 @@ func reserveStringCharSetScratch(exec *Execution, receiver Value, args []Value, 
 		return nil, err
 	}
 	return release, nil
+}
+
+// stringScanBytesPerStep is the number of haystack bytes one sandbox step
+// covers when a string operation scans its receiver.
+//
+// A sequential string scan is O(n) in the receiver but dispatches as a single
+// method call, so charging it a flat handful of steps let a script scan a
+// host-supplied string of any size for a constant budget: 100k iterations of
+// s.count over an 800 KB string burned 12.6s inside the default 1M-step profile
+// before the quota fired (#1131). The rate matches bigIntStepWordsPerStep,
+// which covers 8 machine words -- the same 64 bytes -- so byte-oriented traffic
+// is charged consistently wherever it is metered. A byte comparison is far
+// cheaper than the Value comparison an array scan charges per element, which is
+// why this is amortized rather than one step per byte: charging per byte would
+// fail existing scripts that scan large strings inside a tuned quota, while
+// this bounds the work without changing the cost of ordinary short strings.
+const stringScanBytesPerStep = 64
+
+// chargeStringScan charges the step quota for a scan over n bytes of receiver.
+// Scanning nothing costs nothing; stepN charges a step even for a count of
+// zero, and a scan short enough to round down to zero steps is already bounded
+// by the caller's own per-call charge.
+func (exec *Execution) chargeStringScan(n int) error {
+	steps := n / stringScanBytesPerStep
+	if steps <= 0 {
+		return nil
+	}
+	return exec.stepN(steps)
 }
 
 func stringCountChars(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, error) {
