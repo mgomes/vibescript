@@ -14,6 +14,8 @@ import (
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // stringMemberNames mirrors the names dispatched by stringMember and feeds
@@ -38,7 +40,152 @@ func stringMember(str Value, property string) (Value, error) {
 	return NewNil(), fmt.Errorf("unknown string method %s%s", property, didYouMean(property, stringMemberNames))
 }
 
+// stringConstantCostMembers names the string methods whose work does not grow
+// with the receiver, so they are exempt from the per-byte scan charge. Every
+// other string method was measured to scale with the receiver's length -- even
+// ones whose logic is O(1), such as chop and delete_suffix, because they copy
+// the string to build their result.
+//
+// The set is an exemption list rather than an inclusion list so the charge
+// fails closed: a method added later is metered until someone establishes it is
+// constant-cost, instead of silently joining the unmetered set.
+var stringConstantCostMembers = map[string]struct{}{
+	"bytesize": {}, "empty?": {}, "getbyte": {}, "ord": {}, "chr": {},
+	"to_s": {}, "string": {}, "clear": {},
+	// byteslice indexes by byte and returns a substring view, and a symbol
+	// holds the receiver's string header without copying or hashing it, so
+	// none of these touch the receiver's length. slice is charged rather than
+	// exempt because it indexes by rune, which scans to the offset.
+	"byteslice": {}, "to_sym": {}, "intern": {},
+	// chop inspects only the receiver's final bytes and returns a substring
+	// view, so its cost does not follow the length even when every byte is a
+	// candidate: flat from 64 KiB to 2 MiB on an all-newline receiver. strip,
+	// lstrip and rstrip are not here -- they look constant on ordinary text but
+	// scan the whole receiver when it is all whitespace, rising 27 to 32 times
+	// across that same range. chomp is not here either: it is constant only
+	// with no argument, so stringCallChargesReceiver decides it per call.
+	"chop": {}, "chop!": {},
+	// replace ignores the receiver entirely and returns its argument.
+	"replace": {},
+}
+
+// stringArgumentCapFactor reports the multiple of the receiver's length that
+// bounds how much of a string argument a method can read, or zero when nothing
+// bounds it and the argument is charged in full.
+//
+// Membership must be earned by reading the implementation, not assumed from the
+// method's shape. An argument preprocessed independently of the receiver is not
+// bounded by it: count parses every byte of its character set, match, match?
+// and scan compile a whole pattern, and casecmp? validates its argument's UTF-8
+// before comparing, so capping any of them let a large argument through for
+// almost nothing. casecmp stays because asciiCaseCompare stops at the shorter
+// operand. split is out because its separator handling was not verified.
+//
+// The factor matters as much as membership. Most of these match bytes, so the
+// receiver's length bounds them directly. index and rindex match by rune when
+// either side is invalid UTF-8, and their oversized-needle guard admits a needle
+// up to utf8.UTFMax times the receiver for exactly that case -- so that is what
+// they can read, and that is what they must be billed for. A cap below what the
+// guard admits under-meters precisely the case the guard exists to preserve.
+//
+// The cap lowers a charge, so a wrong factor under-charges -- the failure this
+// branch exists to prevent -- while an omission only over-charges.
+// TestCappedArgumentsAreActuallyBoundedByTheReceiver exercises every member.
+func stringArgumentCapFactor(name string) int {
+	switch name {
+	case "string.start_with?", "string.end_with?", "string.include?",
+		"string.casecmp", "string.partition", "string.rpartition",
+		"string.slice", "string.between?":
+		return 1
+	case "string.index", "string.rindex":
+		return utf8.UTFMax
+	default:
+		return 0
+	}
+}
+
+// stringCallChargesReceiver reports whether this call must pay for its
+// receiver's length. It exists for methods whose cost depends on how they were
+// called rather than on which method they are.
+//
+// chomp with no argument removes one fixed line ending and is constant however
+// long the receiver. chomp("") removes every trailing newline, which scans the
+// whole receiver when it is all newlines -- 26 times the cost across a 32x
+// range -- and chomp(sep) compares a caller-supplied suffix. Exempting the name
+// covered all three and left the linear two unmetered.
+func stringCallChargesReceiver(name string, args []Value) bool {
+	switch name {
+	case "string.chomp", "string.chomp!":
+		return len(args) > 0
+	default:
+		return true
+	}
+}
+
+// chargeStringCall charges the step quota for one call on a string receiver:
+// the receiver's bytes plus each string argument's.
+//
+// String arguments are copied into the result as well, so a short receiver with
+// a large argument -- "".concat(s), "".prepend(s), "".insert(0, s) -- moves just
+// as many bytes as the reverse. compareOnly caps each argument at the receiver's
+// length for the methods that only match arguments against it (see
+// stringComparesArgumentsToReceiver).
+//
+// Both entrances to a string method share this: the member dispatch wrapper and
+// the direct-call fast paths in evalDirectStringMemberCallExpr. They charged
+// different amounts while it lived only in the wrapper, so "".split(s) escaped
+// through the fast path with an unmetered separator.
+func (exec *Execution) chargeStringCall(receiver Value, args []Value, capFactor int) error {
+	text := len(receiver.String())
+	bytes := text
+	for _, arg := range args {
+		if arg.Kind() != KindString {
+			continue
+		}
+		n := len(arg.String())
+		if capFactor > 0 {
+			n = min(n, saturatingMul(capFactor, text))
+		}
+		bytes = saturatingAdd(bytes, n)
+	}
+	return exec.chargeStringScan(bytes)
+}
+
+// chargeStringScanBeforeCall wraps a string builtin so it charges the step
+// quota for the bytes it is about to scan. Wrapping at the single dispatch
+// point rather than inside each method keeps the metering uniform and means a
+// new string method is charged without anyone remembering to add a call.
+func chargeStringScanBeforeCall(member Value) Value {
+	inner := BuiltinOf(member)
+	if inner == nil {
+		return member
+	}
+	metered := *inner
+	fn := inner.Fn
+	capFactor := stringArgumentCapFactor(inner.Name)
+	metered.Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if receiver.Kind() == KindString && stringCallChargesReceiver(inner.Name, args) {
+			if err := exec.chargeStringCall(receiver, args, capFactor); err != nil {
+				return NewNil(), err
+			}
+		}
+		return fn(exec, receiver, args, kwargs, block)
+	}
+	return value.NewValue(KindBuiltin, &metered)
+}
+
 func stringMemberBuiltin(property string) (Value, error) {
+	member, err := stringMemberBuiltinUnmetered(property)
+	if err != nil {
+		return member, err
+	}
+	if _, exempt := stringConstantCostMembers[property]; exempt {
+		return member, nil
+	}
+	return chargeStringScanBeforeCall(member), nil
+}
+
+func stringMemberBuiltinUnmetered(property string) (Value, error) {
 	switch property {
 	case "size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "prepend", "insert", "replace", "start_with?", "end_with?", "include?", "count", "casecmp", "casecmp?", "between?", "match", "match?", "scan", "index", "rindex", "slice":
 		return stringMemberQuery(property)
@@ -1022,136 +1169,197 @@ func stringEffectiveOffset(text string, offset int) (int, bool) {
 	return effective, true
 }
 
-func stringRuneIndex(text, needle string, offset int) int {
+func stringRuneIndex(exec *Execution, text, needle string, offset int) (int, error) {
 	if offset < 0 {
-		return -1
+		return -1, nil
+	}
+	// Reject on length before anything reads the needle. stringIsASCII scans
+	// whatever it is given, and && short-circuits on the receiver, so a short
+	// receiver let a large needle be scanned in full -- unmetered work that the
+	// receiver-bounded classification in stringComparesArgumentsToReceiver
+	// promises does not happen.
+	//
+	// The bound is the needle's bytes against the haystack's scaled by the
+	// widest encoding, not against them directly. Invalid UTF-8 matches by rune
+	// through the fallback below, where a one-byte invalid sequence and a
+	// three-byte replacement character are both a single RuneError and do match:
+	// comparing bytes alone would reject that pair. A needle longer than
+	// utf8.UTFMax times the haystack must hold more runes than it, whatever the
+	// encoding, so this rejects only what cannot match either way.
+	if len(needle) > saturatingMul(utf8.UTFMax, len(text)) {
+		return -1, nil
 	}
 	if stringIsASCII(text) && stringIsASCII(needle) {
 		if offset > len(text) {
-			return -1
+			return -1, nil
 		}
 		if needle == "" {
-			return offset
+			return offset, nil
 		}
 		index := strings.Index(text[offset:], needle)
 		if index < 0 {
-			return -1
+			return -1, nil
 		}
-		return offset + index
+		return offset + index, nil
 	}
 	if !utf8.ValidString(text) || !utf8.ValidString(needle) {
-		return stringRuneIndexFallback(text, needle, offset)
+		return stringRuneIndexFallback(exec, text, needle, offset)
 	}
 	startByte, ok := stringByteIndexForRuneOffset(text, offset)
 	if !ok {
-		return -1
+		return -1, nil
 	}
 	if needle == "" {
-		return offset
+		return offset, nil
 	}
 	index := strings.Index(text[startByte:], needle)
 	if index < 0 {
-		return -1
+		return -1, nil
 	}
-	return offset + utf8.RuneCountInString(text[startByte:startByte+index])
+	return offset + utf8.RuneCountInString(text[startByte:startByte+index]), nil
 }
 
-func stringRuneIndexFallback(text, needle string, offset int) int {
+// reserveFallbackSearchScratch checks everything the invalid-UTF-8 search
+// allocates against the memory quota, before any of it is allocated.
+//
+// The peak holds two things at once: the rune slices, at four bytes per input
+// byte, and the canonical strings built from them, where each invalid byte
+// widens to a three-byte replacement rune. Reserving only the canonical copies
+// undercounted, and reserving after the rune slices were already built checked
+// a peak that had partly happened.
+func reserveFallbackSearchScratch(exec *Execution, text, needle string) error {
+	if exec == nil {
+		return nil
+	}
+	operands := saturatingAdd(len(text), len(needle))
+	runes := saturatingMul(utf8.UTFMax, operands)
+	canonical := saturatingMul(utf8.UTFMax-1, operands)
+	return exec.checkProjectedStringBytes(saturatingAdd(runes, canonical))
+}
+
+// stringRuneIndexFallback searches operands that are not valid UTF-8 by rune.
+//
+// It reports the quota error rather than a miss when its scratch does not fit:
+// the scratch is transient, built and released before the caller's own check
+// runs, so nothing else accounts for it -- and answering "not found" would make
+// a needle that is present look absent because memory was tight.
+func stringRuneIndexFallback(exec *Execution, text, needle string, offset int) (int, error) {
+	if err := reserveFallbackSearchScratch(exec, text, needle); err != nil {
+		return -1, err
+	}
 	hayRunes := []rune(text)
 	needleRunes := []rune(needle)
 	if offset > len(hayRunes) {
-		return -1
+		return -1, nil
 	}
 	if len(needleRunes) == 0 {
-		return offset
+		return offset, nil
 	}
 	limit := len(hayRunes) - len(needleRunes)
 	if limit < offset {
-		return -1
+		return -1, nil
 	}
-	for i := offset; i <= limit; i++ {
-		if runesHavePrefix(hayRunes[i:], needleRunes) {
-			return i
-		}
+	// Search the canonical rune encoding rather than testing every candidate
+	// position. []rune already mapped each invalid byte to RuneError, so
+	// re-encoding gives byte strings whose substring matches correspond exactly
+	// to rune matches, and every index in them is a rune boundary. Scanning
+	// positions with runesHavePrefix is quadratic -- a haystack of repeated
+	// bytes against a needle sharing a long prefix forced roughly n*m
+	// comparisons while the charge covered only n+m.
+	hay := string(hayRunes[offset:])
+	at := strings.Index(hay, string(needleRunes))
+	if at < 0 {
+		return -1, nil
 	}
-	return -1
+	return offset + utf8.RuneCountInString(hay[:at]), nil
 }
 
-func stringRuneRIndex(text, needle string, offset int) int {
+func stringRuneRIndex(exec *Execution, text, needle string, offset int) (int, error) {
 	if offset < 0 {
-		return -1
+		return -1, nil
+	}
+	// Reject on length before anything reads the needle. stringIsASCII scans
+	// whatever it is given, and && short-circuits on the receiver, so a short
+	// receiver let a large needle be scanned in full -- unmetered work that the
+	// receiver-bounded classification in stringComparesArgumentsToReceiver
+	// promises does not happen.
+	//
+	// The bound is the needle's bytes against the haystack's scaled by the
+	// widest encoding, not against them directly. Invalid UTF-8 matches by rune
+	// through the fallback below, where a one-byte invalid sequence and a
+	// three-byte replacement character are both a single RuneError and do match:
+	// comparing bytes alone would reject that pair. A needle longer than
+	// utf8.UTFMax times the haystack must hold more runes than it, whatever the
+	// encoding, so this rejects only what cannot match either way.
+	if len(needle) > saturatingMul(utf8.UTFMax, len(text)) {
+		return -1, nil
 	}
 	if stringIsASCII(text) && stringIsASCII(needle) {
 		if offset > len(text) {
 			offset = len(text)
 		}
 		if needle == "" {
-			return offset
+			return offset, nil
 		}
 		maxStart := len(text) - len(needle)
 		if maxStart < 0 {
-			return -1
+			return -1, nil
 		}
 		start := min(offset, maxStart)
-		return strings.LastIndex(text[:start+len(needle)], needle)
+		return strings.LastIndex(text[:start+len(needle)], needle), nil
 	}
 	if !utf8.ValidString(text) || !utf8.ValidString(needle) {
-		return stringRuneRIndexFallback(text, needle, offset)
+		return stringRuneRIndexFallback(exec, text, needle, offset)
 	}
 	textLen := stringRuneLen(text)
 	if offset > textLen {
 		offset = textLen
 	}
 	if needle == "" {
-		return offset
+		return offset, nil
 	}
 	needleLen := stringRuneLen(needle)
 	if needleLen > textLen {
-		return -1
+		return -1, nil
 	}
 	start := min(offset, textLen-needleLen)
 	endByte, ok := stringByteIndexForRuneOffset(text, start+needleLen)
 	if !ok {
-		return -1
+		return -1, nil
 	}
 	index := strings.LastIndex(text[:endByte], needle)
 	if index < 0 {
-		return -1
+		return -1, nil
 	}
-	return utf8.RuneCountInString(text[:index])
+	return utf8.RuneCountInString(text[:index]), nil
 }
 
-func stringRuneRIndexFallback(text, needle string, offset int) int {
+// stringRuneRIndexFallback is stringRuneIndexFallback searching backwards; see
+// there for why the scratch is reserved and why a shortfall is an error.
+func stringRuneRIndexFallback(exec *Execution, text, needle string, offset int) (int, error) {
+	if err := reserveFallbackSearchScratch(exec, text, needle); err != nil {
+		return -1, err
+	}
 	hayRunes := []rune(text)
 	needleRunes := []rune(needle)
 	if offset > len(hayRunes) {
 		offset = len(hayRunes)
 	}
 	if len(needleRunes) == 0 {
-		return offset
+		return offset, nil
 	}
 	if len(needleRunes) > len(hayRunes) {
-		return -1
+		return -1, nil
 	}
 	start := min(offset, len(hayRunes)-len(needleRunes))
-	for i := start; i >= 0; i-- {
-		if runesHavePrefix(hayRunes[i:], needleRunes) {
-			return i
-		}
+	// Linear for the same reason as the forward fallback; searching backwards
+	// from every candidate position is quadratic.
+	hay := string(hayRunes[:start+len(needleRunes)])
+	at := strings.LastIndex(hay, string(needleRunes))
+	if at < 0 {
+		return -1, nil
 	}
-	return -1
-}
-
-func runesHavePrefix(text, prefix []rune) bool {
-	if len(prefix) > len(text) {
-		return false
-	}
-	for i, r := range prefix {
-		if text[i] != r {
-			return false
-		}
-	}
-	return true
+	return utf8.RuneCountInString(hay[:at]), nil
 }
 
 // stringRuneSlice extracts at most length runes starting at the rune offset
@@ -2032,10 +2240,17 @@ func stringGSubBlock(method, text, pattern string, regex, patternIsRegex bool, y
 // exceed maxRegexInputBytes and reports the truncation, which this surfaces as the
 // same "output exceeds limit" error the rest of the regex output guards raise, so
 // the block form refuses an over-cap replacement without first allocating it.
-func boundedReplacementString(result Value) (string, error) {
+func boundedReplacementString(exec *Execution, result Value) (string, error) {
 	replacement, err := result.StringBounded(maxRegexInputBytes)
 	if err != nil {
 		if errors.Is(err, errStringRenderTruncated) {
+			// The renderer copied up to the limit before giving up, and this
+			// error is rescuable, so a script could return an oversized
+			// aggregate every match and pay only the per-match step. Charge the
+			// bytes it rendered before reporting the limit.
+			if chargeErr := exec.chargeStringScan(maxRegexInputBytes); chargeErr != nil {
+				return "", chargeErr
+			}
 			return "", guardLimitErrorf("output exceeds limit %d bytes", maxRegexInputBytes)
 		}
 		return "", err
@@ -2060,7 +2275,19 @@ func stringReplaceBlockYield(exec *Execution, runner *blockCallRunner) func(matc
 		if err != nil {
 			return "", err
 		}
-		return boundedReplacementString(result)
+		replacement, err := boundedReplacementString(exec, result)
+		if err != nil {
+			return "", err
+		}
+		// Charged per replacement as it is accepted, not once on the way out.
+		// A block that raises on a later match still copied the replacements it
+		// already returned, and the error return skips any charge placed after
+		// the loop -- so a script could rescue that error and repeat the copying
+		// for nothing.
+		if err := exec.chargeStringScan(len(replacement)); err != nil {
+			return "", err
+		}
+		return replacement, nil
 	}
 }
 
@@ -2124,10 +2351,21 @@ func stringReplaceResult(
 			return "", false, err
 		}
 		yield := stringReplaceBlockYield(exec, runner)
+		var blockOut string
+		var blockMatched bool
 		if global {
-			return stringGSubBlock(method, text, pattern, regex, patternIsRegex, yield)
+			blockOut, blockMatched, err = stringGSubBlock(method, text, pattern, regex, patternIsRegex, yield)
+		} else {
+			blockOut, blockMatched, err = stringSubBlock(method, text, pattern, regex, patternIsRegex, yield)
 		}
-		return stringSubBlock(method, text, pattern, regex, patternIsRegex, yield)
+		if err != nil {
+			return "", false, err
+		}
+		// No charge here: the replacements were charged as the block returned
+		// them (see stringReplaceBlockYield), which covers the paths that raise
+		// partway through, and the receiver's own bytes are charged by the call
+		// wrapper. Charging the assembled output again would bill them twice.
+		return blockOut, blockMatched, nil
 	}
 
 	if len(args) != 2 {
@@ -2136,10 +2374,26 @@ func stringReplaceResult(
 	if args[1].Kind() != KindString {
 		return "", false, fmt.Errorf("%s replacement must be string", method)
 	}
+	var out string
+	var matched bool
 	if global {
-		return stringGSub(method, text, pattern, args[1].String(), regex, patternIsRegex)
+		out, matched, err = stringGSub(method, text, pattern, args[1].String(), regex, patternIsRegex)
+	} else {
+		out, matched, err = stringSub(method, text, pattern, args[1].String(), regex, patternIsRegex)
 	}
-	return stringSub(method, text, pattern, args[1].String(), regex, patternIsRegex)
+	if err != nil {
+		return "", false, err
+	}
+	// A substitution can expand: replacing every byte of a 16 KiB receiver with
+	// a 63-byte replacement writes a megabyte, which neither the receiver nor
+	// the replacement bounds. The result is only measurable once built, so the
+	// charge follows the work and one call may overshoot before the quota
+	// fires -- the same trade the set-probe charge makes, and the memory check
+	// on the way out bounds the overshoot's size.
+	if err := exec.chargeStringScan(len(out)); err != nil {
+		return "", false, err
+	}
+	return out, matched, nil
 }
 
 // stringReplaceBangResult builds the return value for String#sub! and
@@ -2459,6 +2713,39 @@ func reserveStringCharSetScratch(exec *Execution, receiver Value, args []Value, 
 		return nil, err
 	}
 	return release, nil
+}
+
+// stringScanBytesPerStep is the number of haystack bytes one sandbox step
+// covers when a string operation scans its receiver.
+//
+// A sequential string scan is O(n) in the receiver but dispatches as a single
+// method call, so charging it a flat handful of steps let a script scan a
+// host-supplied string of any size for a constant budget: 100k iterations of
+// s.count over an 800 KB string burned 12.6s inside the default 1M-step profile
+// before the quota fired (#1131). The rate matches bigIntStepWordsPerStep,
+// which covers 8 machine words -- the same 64 bytes -- so byte-oriented traffic
+// is charged consistently wherever it is metered. A byte comparison is far
+// cheaper than the Value comparison an array scan charges per element, which is
+// why this is amortized rather than one step per byte: charging per byte would
+// fail existing scripts that scan large strings inside a tuned quota, while
+// this bounds the work without changing the cost of ordinary short strings.
+const stringScanBytesPerStep = 64
+
+// chargeStringScan charges the step quota for a scan over n bytes of receiver.
+// Scanning nothing costs nothing; stepN charges a step even for a count of
+// zero, and a scan short enough to round down to zero steps is already bounded
+// by the caller's own per-call charge.
+func (exec *Execution) chargeStringScan(n int) error {
+	// A nil execution has no quota to charge against: some builtins are
+	// reachable without one, and callers should not each have to remember that.
+	if exec == nil {
+		return nil
+	}
+	steps := n / stringScanBytesPerStep
+	if steps <= 0 {
+		return nil
+	}
+	return exec.stepN(steps)
 }
 
 func stringCountChars(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, error) {
@@ -2784,18 +3071,27 @@ func stringTemplateLookup(context Value, keyPath string) (Value, bool) {
 	return current, true
 }
 
-func stringTemplateScalarValue(value Value, keyPath string) (string, error) {
+// stringTemplateScalarValue renders a placeholder value, reporting whether the
+// rendering is a new allocation.
+//
+// A string, symbol or enum member hands back its existing backing, so retaining
+// it costs nothing the caller's own roots do not already account for. Anything
+// else -- a big integer's base conversion, a regex's escaped literal, a
+// formatted time -- is built here, and that copy is live alongside the result.
+func stringTemplateScalarValue(value Value, keyPath string) (string, bool, error) {
 	switch value.Kind() {
-	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindTime, KindRegex:
-		return value.String(), nil
+	case KindString, KindSymbol:
+		return value.String(), false, nil
+	case KindNil, KindBool, KindInt, KindFloat, KindMoney, KindDuration, KindTime, KindRegex:
+		return value.String(), true, nil
 	case KindEnumValue:
 		member := valueEnumValue(value)
 		if member == nil {
-			return "", fmt.Errorf("string.template placeholder %s value must be scalar", keyPath)
+			return "", false, fmt.Errorf("string.template placeholder %s value must be scalar", keyPath)
 		}
-		return member.Symbol, nil
+		return member.Symbol, false, nil
 	default:
-		return "", fmt.Errorf("string.template placeholder %s value must be scalar", keyPath)
+		return "", false, fmt.Errorf("string.template placeholder %s value must be scalar", keyPath)
 	}
 }
 
@@ -2803,6 +3099,14 @@ type stringTemplateSegmentCache struct {
 	keys   [8]string
 	values [8]string
 	count  int
+	// builtBytes counts the segments that are new allocations rather than
+	// aliases of memory the caller already holds. See retainedBytes.
+	builtBytes int
+	// overflow holds entries past the inline slots. Dropping them silently made
+	// the ninth distinct placeholder onwards convert twice -- once to size the
+	// render and once to write it -- which is the cost this cache exists to
+	// avoid. Templates with eight or fewer distinct keys never allocate it.
+	overflow map[string]string
 }
 
 func (c *stringTemplateSegmentCache) lookup(key string) (string, bool) {
@@ -2811,16 +3115,51 @@ func (c *stringTemplateSegmentCache) lookup(key string) (string, bool) {
 			return c.values[i], true
 		}
 	}
+	if c.overflow != nil {
+		value, ok := c.overflow[key]
+		return value, ok
+	}
 	return "", false
 }
 
-func (c *stringTemplateSegmentCache) store(key, value string) {
-	if c.count >= len(c.keys) {
+// A cached segment past the inline slots lives in a Go map, whose bucket and two
+// string headers are allocated whether the segment itself is fresh or an alias.
+// Counting only payloads left a template of aliased placeholders reserving
+// nothing at all while that map grew with the placeholder count.
+const estimatedTemplateOverflowEntryBytes = estimatedMapEntryBytes + 2*estimatedStringHeaderBytes
+
+// retainedBytes reports the bytes the cache is holding that it allocated itself.
+// Those stay live while the result builder is allocated, so the peak is the
+// builder plus these and the memory reservation must cover both.
+//
+// Segment payloads count only when the render built them. A string, symbol or
+// enum placeholder hands back its existing backing and a key slices the template
+// receiver, so counting those projected a copy that does not exist and rejected
+// templates a real peak would have fitted. The overflow map's own storage counts
+// either way, because the cache allocates it either way.
+func (c *stringTemplateSegmentCache) retainedBytes() int {
+	total := c.builtBytes
+	if c.overflow == nil {
+		return total
+	}
+	total = saturatingAdd(total, estimatedMapBaseBytes)
+	return saturatingAdd(total, saturatingMul(len(c.overflow), estimatedTemplateOverflowEntryBytes))
+}
+
+func (c *stringTemplateSegmentCache) store(key, value string, built bool) {
+	if built {
+		c.builtBytes = saturatingAdd(c.builtBytes, len(value))
+	}
+	if c.count < len(c.keys) {
+		c.keys[c.count] = key
+		c.values[c.count] = value
+		c.count++
 		return
 	}
-	c.keys[c.count] = key
-	c.values[c.count] = value
-	c.count++
+	if c.overflow == nil {
+		c.overflow = make(map[string]string)
+	}
+	c.overflow[key] = value
 }
 
 func appendTemplateChunk(exec *Execution, b *strings.Builder, chunk string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
@@ -2838,7 +3177,49 @@ func appendTemplateChunk(exec *Execution, b *strings.Builder, chunk string, rece
 	return nil
 }
 
-func stringTemplateRenderedLen(text string, context Value, strict bool) (bool, int, error) {
+// stringTemplateRenderedLen measures what the template will render, charging
+// each piece as it is produced.
+//
+// The charge cannot wait for the total: rendering a regex or a big integer into
+// a placeholder materializes it here, so a template holding one did that work
+// before any charge and the rendering loop then did it again. Charging as each
+// segment is produced bills the first conversion, which is the one that happens.
+// templateScratchCheckBytes is how much the segment cache may grow between
+// memory checks during projection. The projection allocates as it walks, so
+// checking only once it has finished let a template with many placeholders --
+// or a few that render to megabytes -- allocate the whole scratch past a finite
+// quota before anything looked. Checking every placeholder instead would walk
+// the call roots once per placeholder, which is quadratic in the placeholder
+// count; a chunk bounds the overshoot to a fixed size and the number of checks
+// to the scratch's megabytes.
+const templateScratchCheckBytes = 64 << 10
+
+func stringTemplateRenderedLen(
+	exec *Execution,
+	text string,
+	context Value,
+	strict bool,
+	receiver Value,
+	args []Value,
+	kwargs map[string]Value,
+	block Value,
+) (bool, int, stringTemplateSegmentCache, error) {
+	charged := 0
+	checkedScratch := 0
+	charge := func(total int) error {
+		if exec == nil {
+			return nil
+		}
+		steps := total / stringScanBytesPerStep
+		if steps <= charged {
+			return nil
+		}
+		if err := exec.stepN(steps - charged); err != nil {
+			return err
+		}
+		charged = steps
+		return nil
+	}
 	var cache stringTemplateSegmentCache
 	rendered := false
 	total := 0
@@ -2867,27 +3248,42 @@ func stringTemplateRenderedLen(text string, context Value, strict bool) (bool, i
 		value, ok := stringTemplateLookup(context, keyPath)
 		if !ok {
 			if strict {
-				return false, 0, fmt.Errorf("string.template missing placeholder %s", keyPath)
+				return false, 0, cache, fmt.Errorf("string.template missing placeholder %s", keyPath)
 			}
 			total = saturatingAdd(total, len(placeholder))
 			last = end
 			search = end
 			continue
 		}
-		segment, err := stringTemplateScalarValue(value, keyPath)
+		segment, built, err := stringTemplateScalarValue(value, keyPath)
 		if err != nil {
-			return false, 0, err
+			return false, 0, cache, err
 		}
-		cache.store(keyPath, segment)
+		cache.store(keyPath, segment, built)
 		total = saturatingAdd(total, len(segment))
+		if err := charge(total); err != nil {
+			return false, 0, cache, err
+		}
+		if retained := cache.retainedBytes(); retained-checkedScratch >= templateScratchCheckBytes {
+			if exec != nil {
+				if err := exec.checkProjectedStringBytesWithCallRoots(
+					retained, receiver, args, kwargs, block); err != nil {
+					return false, 0, cache, err
+				}
+			}
+			checkedScratch = retained
+		}
 		last = end
 		search = end
 	}
 	if !rendered {
-		return false, 0, nil
+		return false, 0, cache, nil
 	}
 	total = saturatingAdd(total, len(text[last:]))
-	return true, total, nil
+	if err := charge(total); err != nil {
+		return false, 0, cache, err
+	}
+	return true, total, cache, nil
 }
 
 func stringTemplate(text string, context Value, strict bool) (string, error) {
@@ -2895,7 +3291,12 @@ func stringTemplate(text string, context Value, strict bool) (string, error) {
 }
 
 func stringTemplateWithExecution(exec *Execution, text string, context Value, strict bool, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
-	rendered, renderedLen, err := stringTemplateRenderedLen(text, context, strict)
+	// The projection's cache carries the segments it already built, and the
+	// render reuses them. Discarding it meant every placeholder value was
+	// converted twice -- once to size it and once to write it -- so a large
+	// regex or big integer did its conversion twice for one charge.
+	rendered, renderedLen, cache, err := stringTemplateRenderedLen(
+		exec, text, context, strict, receiver, args, kwargs, block)
 	if err != nil {
 		return "", err
 	}
@@ -2904,12 +3305,15 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 	}
 	var b strings.Builder
 	if renderedLen > 0 {
-		if err := exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, renderedLen), receiver, args, kwargs, block); err != nil {
+		// The cache's segments are still live here -- they are what the render
+		// reads instead of converting again -- so the peak is the builder plus
+		// them, not the builder alone.
+		projected := saturatingAdd(projectedBuilderCap(&b, renderedLen), cache.retainedBytes())
+		if err := exec.checkProjectedStringBytesWithCallRoots(projected, receiver, args, kwargs, block); err != nil {
 			return "", err
 		}
 		b.Grow(renderedLen)
 	}
-	var cache stringTemplateSegmentCache
 	last := 0
 	search := 0
 	for search < len(text) {
@@ -2947,11 +3351,11 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 			search = end
 			continue
 		}
-		segment, err := stringTemplateScalarValue(value, keyPath)
+		segment, built, err := stringTemplateScalarValue(value, keyPath)
 		if err != nil {
 			return "", err
 		}
-		cache.store(keyPath, segment)
+		cache.store(keyPath, segment, built)
 		if err := appendTemplateChunk(exec, &b, segment, receiver, args, kwargs, block); err != nil {
 			return "", err
 		}
@@ -3537,7 +3941,7 @@ func stringMemberQuery(property string) (Value, error) {
 				}
 				offset = i
 			}
-			return stringIndexResult(receiver, args[0], offset)
+			return stringIndexResult(exec, receiver, args[0], offset)
 		}), nil
 	case "rindex":
 		return NewAutoBuiltin("string.rindex", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -3556,7 +3960,7 @@ func stringMemberQuery(property string) (Value, error) {
 				}
 				offset = effective
 			}
-			return stringRIndexResult(receiver, args[0], offset)
+			return stringRIndexResult(exec, receiver, args[0], offset)
 		}), nil
 	case "slice":
 		return NewAutoBuiltin("string.slice", stringSlice), nil
@@ -3565,7 +3969,7 @@ func stringMemberQuery(property string) (Value, error) {
 	}
 }
 
-func stringIndexResult(receiver, needle Value, offset int) (Value, error) {
+func stringIndexResult(exec *Execution, receiver, needle Value, offset int) (Value, error) {
 	if needle.Kind() != KindString {
 		return NewNil(), fmt.Errorf("string.index substring must be string")
 	}
@@ -3573,18 +3977,24 @@ func stringIndexResult(receiver, needle Value, offset int) (Value, error) {
 	if !ok {
 		return NewNil(), nil
 	}
-	index := stringRuneIndex(receiver.String(), needle.String(), effective)
+	index, err := stringRuneIndex(exec, receiver.String(), needle.String(), effective)
+	if err != nil {
+		return NewNil(), err
+	}
 	if index < 0 {
 		return NewNil(), nil
 	}
 	return NewInt(int64(index)), nil
 }
 
-func stringRIndexResult(receiver, needle Value, offset int) (Value, error) {
+func stringRIndexResult(exec *Execution, receiver, needle Value, offset int) (Value, error) {
 	if needle.Kind() != KindString {
 		return NewNil(), fmt.Errorf("string.rindex substring must be string")
 	}
-	index := stringRuneRIndex(receiver.String(), needle.String(), offset)
+	index, err := stringRuneRIndex(exec, receiver.String(), needle.String(), offset)
+	if err != nil {
+		return NewNil(), err
+	}
 	if index < 0 {
 		return NewNil(), nil
 	}
@@ -4251,6 +4661,13 @@ func stringPad(exec *Execution, method string, side padSide, receiver Value, arg
 	// Saturating arithmetic keeps the projected size from overflowing on a huge
 	// width; the quota check below rejects anything that large regardless.
 	projected := saturatingAdd(len(text), saturatingAdd(padRuneBytes(pad, leftPad), padRuneBytes(pad, rightPad)))
+	// Padding is the one string operation whose cost comes from a number rather
+	// than from its inputs: "".ljust(8_000_000, "x") writes eight million bytes
+	// from two inputs of a handful of bytes each, so the receiver-and-arguments
+	// charge sees nothing. Charge what will actually be written.
+	if err := exec.chargeStringScan(projected); err != nil {
+		return NewNil(), err
+	}
 	if err := exec.checkProjectedStringBytes(projected); err != nil {
 		return NewNil(), err
 	}

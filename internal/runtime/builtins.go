@@ -157,12 +157,26 @@ func renderOutputValue(exec *Execution, method string, val Value, inspect bool) 
 			return "", err
 		}
 	}
-	if inspect {
+	if val.Kind() == KindRegex && !inspect {
+		// The bounded walk reaches len(v.String()) for a regex, escaping and
+		// allocating the whole literal to size it before any charge, and the
+		// render below builds it again. StringLen walks the source instead, so
+		// the walk is charged before it runs and the rendered length after.
+		if err := exec.chargeStringScan(len(val.Regex().Source)); err != nil {
+			return "", err
+		}
+		payload = val.Regex().StringLen()
+	} else if inspect {
 		payload, err = val.InspectByteLenBounded(exec.step)
 	} else {
 		payload, err = val.StringByteLenBounded(exec.step)
 	}
 	if err != nil {
+		return "", err
+	}
+	// Charge for the bytes about to be rendered; see the inspect member for why
+	// a scalar with a large payload needs this beyond the per-element step.
+	if err := exec.chargeStringScan(payload); err != nil {
 		return "", err
 	}
 	if payload > maxOutputHelperBytes {
@@ -545,11 +559,29 @@ func (exec *Execution) formatStringValues(pattern string, values []Value, receiv
 }
 
 func formatStringValuesChecked(exec *Execution, pattern string, values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	// Charged here rather than at the format builtin because this is the shared
+	// path: the String % operator reaches it directly from the evaluator, so a
+	// charge on the builtin alone left `pattern % []` unmetered. The pattern is
+	// scanned for verbs and its literal text copied on every call, so it costs
+	// its own length even with no arguments.
+	if exec != nil {
+		if err := exec.chargeStringScan(len(pattern)); err != nil {
+			return NewNil(), err
+		}
+	}
 	prepared, err := prepareFormatString(exec, pattern, values)
 	if err != nil {
 		return NewNil(), err
 	}
 	if exec != nil {
+		// A width writes bytes the pattern and arguments do not account for:
+		// format("%1000000s", "") produces a megabyte from a handful of input
+		// bytes, and the per-call output cap bounds one call, not a loop of
+		// them. Charge what will be written, as the padding members and
+		// String#* do.
+		if err := exec.chargeStringScan(prepared.projectedBytes); err != nil {
+			return NewNil(), err
+		}
 		if err := exec.checkProjectedStringBytesAndScratchWithCallRoots(prepared.projectedBytes, prepared.scratchBytes, receiver, args, kwargs, block); err != nil {
 			return NewNil(), err
 		}
@@ -816,10 +848,27 @@ type formatProjection struct {
 func (p formatProjection) stringBytes(val Value) (int, error) {
 	switch val.Kind() {
 	case KindString, KindSymbol:
+		// Scalars skip the bounded walk, so they charge here instead.
+		if p.exec != nil {
+			if err := p.exec.chargeStringScan(len(val.String())); err != nil {
+				return 0, err
+			}
+		}
 		return len(val.String()), nil
 	default:
 		if p.exec != nil {
-			return val.StringByteLenBounded(p.exec.step)
+			// An aggregate is walked a step per node, which bounds its shape but
+			// not its size: a 512 KiB string nested in a one-element array is one
+			// node. The rendered payload is what gets materialized and copied, so
+			// charge that, as the other rendering sites do.
+			n, err := val.StringByteLenBounded(p.exec.step)
+			if err != nil {
+				return 0, err
+			}
+			if err := p.exec.chargeStringScan(n); err != nil {
+				return 0, err
+			}
+			return n, nil
 		}
 		return val.StringByteLen(), nil
 	}
@@ -828,10 +877,34 @@ func (p formatProjection) stringBytes(val Value) (int, error) {
 func (p formatProjection) stringRunes(val Value) (int, error) {
 	switch val.Kind() {
 	case KindString, KindSymbol:
+		// Counting runes walks the whole value however small the field that
+		// will hold them, so a precision or width cannot bound this: charge the
+		// traversal itself. Shared by every caller that needs a rune count.
+		if p.exec != nil {
+			if err := p.exec.chargeStringScan(len(val.String())); err != nil {
+				return 0, err
+			}
+		}
 		return utf8.RuneCountInString(val.String()), nil
 	default:
 		if p.exec != nil {
-			return val.StringRuneLenBounded(p.exec.step)
+			// An aggregate walks a step per node, which no field width bounds:
+			// counting the runes of a large string nested in a one-element array
+			// costs one step. Charge the walk, as the scalar branch above does.
+			//
+			// The walk visits bytes but reports runes, and the charge is
+			// byte-based, so the rune count is scaled to its widest possible
+			// encoding. That over-charges ASCII, but the alternative is a second
+			// full traversal to learn the byte length, and under-charging a scan
+			// is the failure this metering exists to prevent.
+			n, err := val.StringRuneLenBounded(p.exec.step)
+			if err != nil {
+				return 0, err
+			}
+			if err := p.exec.chargeStringScan(saturatingMul(n, utf8.UTFMax)); err != nil {
+				return 0, err
+			}
+			return n, nil
 		}
 		return val.StringRuneLen(), nil
 	}
@@ -843,6 +916,11 @@ func (p formatProjection) stringBytesUpTo(val Value, limit int) (int, error) {
 	}
 	switch val.Kind() {
 	case KindString, KindSymbol:
+		if p.exec != nil {
+			if err := p.exec.chargeStringScan(min(len(val.String()), limit)); err != nil {
+				return 0, err
+			}
+		}
 		return min(len(val.String()), limit), nil
 	default:
 		if p.exec != nil {
@@ -851,7 +929,10 @@ func (p formatProjection) stringBytesUpTo(val Value, limit int) (int, error) {
 				return 0, err
 			}
 			if truncated {
-				return limit, nil
+				n = limit
+			}
+			if err := p.exec.chargeStringScan(n); err != nil {
+				return 0, err
 			}
 			return n, nil
 		}
@@ -865,6 +946,14 @@ func (p formatProjection) stringPrecisionBytes(val Value, precision int) (int, e
 	}
 	switch val.Kind() {
 	case KindString, KindSymbol:
+		// formatStringPrecisionBytes walks the input to find the precision
+		// boundary, so it charges for what it traverses; the default branch
+		// below inherits its charge from stringBytesUpTo.
+		if p.exec != nil {
+			if err := p.exec.chargeStringScan(min(len(val.String()), saturatingMul(utf8.UTFMax, precision))); err != nil {
+				return 0, err
+			}
+		}
 		return formatStringPrecisionBytes(val.String(), precision), nil
 	default:
 		return p.stringBytesUpTo(val, saturatingMul(utf8.UTFMax, precision))
@@ -974,6 +1063,14 @@ func projectedFormatArgumentBytes(projection formatProjection, val Value, verb b
 		return projectedQuotedStringBytes(n), nil
 	case 'x', 'X':
 		if val.Kind() == KindString || val.Kind() == KindSymbol {
+			// This branch sizes the field itself rather than going through
+			// stringBytes, so it charges for the input it is about to hex-encode
+			// instead of inheriting that charge.
+			if projection.exec != nil {
+				if err := projection.exec.chargeStringScan(len(val.String())); err != nil {
+					return 0, err
+				}
+			}
 			bytesPerInput := 2
 			if flags.space {
 				bytesPerInput++
@@ -1606,6 +1703,13 @@ func builtinJSONParse(exec *Execution, receiver Value, args []Value, kwargs map[
 	if len(raw) > maxJSONPayloadBytes {
 		return NewNil(), guardLimitErrorf("JSON.parse input exceeds limit %d bytes", maxJSONPayloadBytes)
 	}
+	// Charged after the size guard, so an input the parser will never read
+	// reports the established limit error rather than exhausting the quota.
+	// Parsing reads every byte, and the input arrives as a builtin argument
+	// rather than a string receiver, so nothing charged for it.
+	if err := exec.chargeStringScan(len(raw)); err != nil {
+		return NewNil(), err
+	}
 
 	parser := jsonValueParser{raw: raw, exec: exec}
 	value, err := parser.parse()
@@ -1641,6 +1745,10 @@ func builtinJSONParseAs(exec *Execution, receiver Value, args []Value, kwargs ma
 	raw := args[0].String()
 	if len(raw) > maxJSONPayloadBytes {
 		return NewNil(), guardLimitErrorf("JSON.parse_as input exceeds limit %d bytes", maxJSONPayloadBytes)
+	}
+	// Charged after the size guard, as JSON.parse is.
+	if err := exec.chargeStringScan(len(raw)); err != nil {
+		return NewNil(), err
 	}
 	parser := jsonValueParser{raw: raw, exec: exec}
 	parsed, err := parser.parse()
@@ -1683,6 +1791,15 @@ func builtinJSONStringify(exec *Execution, receiver Value, args []Value, kwargs 
 	state := jsonStringifyState{exec: exec}
 	payload, err := appendJSONValue(make([]byte, 0, 256), args[0], &state)
 	if err != nil {
+		return NewNil(), err
+	}
+	// Settle the whole payload. Literals, delimiters and separators are appended
+	// without passing through checkOutputBytes, so an aggregate holding no
+	// strings -- an array of nil, say -- advanced the running charge not at all
+	// while it built up to the output cap. checkOutputBytes bills only the
+	// growth beyond what it has already charged, so this adds what the
+	// incremental path missed rather than charging it twice.
+	if err := state.checkOutputBytes(len(payload)); err != nil {
 		return NewNil(), err
 	}
 	if len(payload) > maxJSONPayloadBytes {

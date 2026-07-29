@@ -292,6 +292,15 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 		return quotedStringByteLen(v.data.(string)), nil
 	case KindSymbol:
 		return inspectSymbolByteLen(v.data.(string)), nil
+	case KindRegex:
+		// See Value.StringByteLen: sizing a regex must not render it, and
+		// inspect renders one exactly as String does. The source walk StringLen
+		// performs is charged before it runs -- the single per-node step above
+		// does not cover a scan proportional to the source.
+		if err := chargeRegexSourceSteps(v, step); err != nil {
+			return 0, err
+		}
+		return v.data.(Regex).StringLen(), nil
 	case KindNil:
 		return len("nil"), nil
 	case KindArray:

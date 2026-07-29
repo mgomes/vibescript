@@ -39,6 +39,13 @@ func (exec *Execution) repeatStringValue(left, right Value) (Value, error) {
 	// Saturating arithmetic keeps the projection from overflowing on a huge
 	// count; the quota check rejects anything that large regardless.
 	projected := saturatingMul(len(text), count)
+	// Charge the bytes that will be written, not the receiver: the count comes
+	// from the script, so a few-byte receiver produces megabytes and an
+	// input-proportional charge sees almost nothing. Same reason the padding
+	// members charge their projection.
+	if err := exec.chargeStringScan(projected); err != nil {
+		return NewNil(), err
+	}
 	if err := exec.checkProjectedStringBytes(projected); err != nil {
 		return NewNil(), err
 	}

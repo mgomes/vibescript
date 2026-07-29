@@ -24,6 +24,12 @@ type jsonStringifyState struct {
 	seenHashLen     int
 	depth           int
 	exec            *Execution
+	// chargedSteps is the number of steps already billed for the output. It
+	// counts steps rather than bytes because escaping calls checkOutputBytes
+	// once per escaped character: a six-byte delta divides to zero steps, so
+	// billing each delta separately charged nothing at all however long the
+	// output grew.
+	chargedSteps int
 }
 
 type jsonValueParser struct {
@@ -496,7 +502,26 @@ func jsonHexValue(c byte) (byte, bool) {
 	}
 }
 
+// appendJSONValue renders val and settles the output produced so far.
+//
+// Literals, delimiters and separators never reach checkOutputBytes on their
+// own, so a value that fails after a long prefix -- tens of thousands of nils
+// followed by an unsupported value -- left that whole prefix charged to
+// nothing, and the serialization error is rescuable. Settling per appended
+// value bills each one as it is accepted, so a failure partway through keeps
+// what was already produced, and the output cap applies to it too.
 func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, error) {
+	out, err := appendJSONValueRendered(buf, val, state)
+	if err != nil {
+		return nil, err
+	}
+	if err := state.settleOutput(len(out)); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func appendJSONValueRendered(buf []byte, val Value, state *jsonStringifyState) ([]byte, error) {
 	switch val.Kind() {
 	case KindNil:
 		return append(buf, "null"...), nil
@@ -551,6 +576,14 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 		defer state.popSeenArray(arraySlot)
 
 		buf = append(buf, '[')
+		// Settle the delimiter before descending. A container that fails below
+		// this point -- nesting depth, an unsupported value -- returns without
+		// reaching the settlement in appendJSONValue, so every level's bracket
+		// went uncharged: 10,001 nested arrays emitted 10,000 of them for
+		// nothing, and the depth error is rescuable.
+		if err := state.settleOutput(len(buf)); err != nil {
+			return nil, err
+		}
 		for i, item := range arr {
 			if i > 0 {
 				buf = append(buf, ',')
@@ -584,6 +617,14 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 		}
 
 		buf = append(buf, '{')
+		// Settle the delimiter before descending. A container that fails below
+		// this point -- nesting depth, an unsupported value -- returns without
+		// reaching the settlement in appendJSONValue, so every level's bracket
+		// went uncharged: 10,001 nested arrays emitted 10,000 of them for
+		// nothing, and the depth error is rescuable.
+		if err := state.settleOutput(len(buf)); err != nil {
+			return nil, err
+		}
 		for i, entry := range entries {
 			if i > 0 {
 				buf = append(buf, ',')
@@ -861,7 +902,42 @@ func appendJSONString(buf []byte, s string, state *jsonStringifyState) ([]byte, 
 	return append(buf, '"'), nil
 }
 
+// settleOutput charges the step quota for output produced so far and enforces
+// the payload cap. It deliberately does not project against the memory quota:
+// that opens a base walk, whose memo is bypassed while a builtin is on the
+// stack, so calling it per value made serializing a wide container quadratic in
+// its element count. checkOutputBytes keeps the projection for the places that
+// had it before -- the string path and the finished payload.
+func (state *jsonStringifyState) settleOutput(size int) error {
+	if state.exec != nil {
+		if steps := size / stringScanBytesPerStep; steps > state.chargedSteps {
+			if err := state.exec.stepN(steps - state.chargedSteps); err != nil {
+				return err
+			}
+			state.chargedSteps = steps
+		}
+	}
+	if size > maxJSONPayloadBytes {
+		return guardLimitErrorf("JSON.stringify output exceeds limit %d bytes", maxJSONPayloadBytes)
+	}
+	return nil
+}
+
 func (state *jsonStringifyState) checkOutputBytes(size int) error {
+	if state.exec != nil {
+		// Charged before the limit is reported, and by output rather than input:
+		// escaping emits up to six bytes for one control character, so billing
+		// the string's length under-charged an escape-heavy value several times
+		// over. Every JSON byte comes through here, so this covers the whole
+		// rendering rather than the string case alone, and JSON never emits
+		// fewer bytes than it read.
+		if steps := size / stringScanBytesPerStep; steps > state.chargedSteps {
+			if err := state.exec.stepN(steps - state.chargedSteps); err != nil {
+				return err
+			}
+			state.chargedSteps = steps
+		}
+	}
 	if size > maxJSONPayloadBytes {
 		return guardLimitErrorf("JSON.stringify output exceeds limit %d bytes", maxJSONPayloadBytes)
 	}

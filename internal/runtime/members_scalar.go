@@ -100,6 +100,9 @@ func newToStringBuiltin(typeName, property string) Value {
 			if err != nil {
 				return NewNil(), err
 			}
+			if err := exec.chargeStringScan(payload); err != nil {
+				return NewNil(), err
+			}
 			if err := exec.checkProjectedValueRendering(receiver, payload); err != nil {
 				return NewNil(), err
 			}

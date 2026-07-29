@@ -542,7 +542,8 @@ func TestBoundedReplacementStringCapsCompositeRendering(t *testing.T) {
 		t.Fatalf("fixture renders %d bytes, want > cap %d", overCap.StringByteLen(), maxRegexInputBytes)
 	}
 
-	if _, err := boundedReplacementString(overCap); err == nil {
+	exec, _ := newEstimatorCacheExec()
+	if _, err := boundedReplacementString(exec, overCap); err == nil {
 		t.Fatal("boundedReplacementString over cap = nil error, want output-limit error")
 	} else if !strings.Contains(err.Error(), "output exceeds limit") {
 		t.Fatalf("boundedReplacementString over cap error = %v, want output-limit error", err)
@@ -552,7 +553,7 @@ func TestBoundedReplacementStringCapsCompositeRendering(t *testing.T) {
 	// cap never rejects a result that fits. This pins that StringBounded matches the
 	// unbounded form byte for byte under the cap.
 	small := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
-	got, err := boundedReplacementString(small)
+	got, err := boundedReplacementString(exec, small)
 	if err != nil {
 		t.Fatalf("boundedReplacementString under cap = %v, want success", err)
 	}

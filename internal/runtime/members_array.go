@@ -2401,7 +2401,14 @@ func arrayJoinPayload(exec *Execution, receiver Value, sep string) (int, error) 
 	// the projected-string check that follows it still charges the full
 	// payload before the result is built.
 	defer exec.beginAccumulatorMeteredSection()()
-	return arrayJoinByteLenBounded(arr, sep, exec.step)
+	payload, err := arrayJoinByteLenBounded(arr, sep, exec.step)
+	if err != nil {
+		return 0, err
+	}
+	if err := exec.chargeStringScan(payload); err != nil {
+		return 0, err
+	}
+	return payload, nil
 }
 
 func arrayJoinResult(receiver Value, sep string, payload int, b *strings.Builder) (Value, error) {

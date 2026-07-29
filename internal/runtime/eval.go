@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/internal/ast"
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 const (
@@ -380,10 +381,41 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 	// depth. Charging steps during that walk (rather than only once per
 	// interpolation part) trips the quota or honors a canceled context instead
 	// of burning unbounded CPU before the memory check runs.
-	payload, err := val.StringByteLenBounded(exec.step)
-	if err != nil {
-		return err
+	// A regex is sized from its source, and StringByteLenBounded is skipped
+	// entirely for one. That walk reaches len(v.String()), which escapes and
+	// allocates the whole literal to size it -- so the measurement performs the
+	// rendering, ahead of the charge and beyond the quota's reach, and
+	// WriteStringTo performs it again afterwards. Regex.StringLen computes the
+	// same length by walking the source, allocating nothing.
+	payload := 0
+	if val.Kind() == KindRegex {
+		// StringLen walks the whole source, so that walk is charged before it
+		// runs; the rendered length is charged after, because rendering walks it
+		// again. Two passes happen and both are billed.
+		if err := exec.chargeStringScan(len(val.Regex().Source)); err != nil {
+			return err
+		}
+		payload = val.Regex().StringLen()
+		if err := exec.chargeStringScan(payload); err != nil {
+			return err
+		}
+	} else {
+		var err error
+		payload, err = val.StringByteLenBounded(exec.step)
+		if err != nil {
+			return err
+		}
 	}
+	// Charge for the bytes about to be rendered: the bounded walk steps once
+	// per node, which bounds a large aggregate, but a scalar is one node however
+	// many bytes it carries (a symbol built from a host-supplied string renders
+	// its whole name). See chargeStringScan.
+	if val.Kind() != KindRegex {
+		if err := exec.chargeStringScan(payload); err != nil {
+			return err
+		}
+	}
+
 	if err := exec.checkProjectedValueRendering(val, projectedBuilderCap(sb, payload)); err != nil {
 		return err
 	}
@@ -768,9 +800,44 @@ func (exec *Execution) evalIndexSelectors(e *IndexExpr, obj Value, env *Env) ([]
 // indexing), start/length, and range forms; an out-of-range single index yields
 // nil rather than raising, matching Array#[] and String#[]. Hashes and objects
 // take exactly one key.
+// stringIndexSelectorScans reports whether these selectors are ones indexString
+// will use to walk the receiver. A range or integer offsets scan; anything else
+// is rejected on shape or type without reading a byte.
+func stringIndexSelectorScans(indices []Value) bool {
+	// Convertibility, not kind: valueToInt rejects a big integer and a
+	// non-finite or out-of-range float, so s[2 ** 100] never reads the
+	// receiver and must not be charged as though it had.
+	usable := func(v Value) bool {
+		_, err := valueToInt(v)
+		return err == nil
+	}
+	switch len(indices) {
+	case 1:
+		return indices[0].Kind() == KindRange || usable(indices[0])
+	case 2:
+		return usable(indices[0]) && usable(indices[1])
+	default:
+		return false
+	}
+}
+
 func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) (Value, error) {
 	switch obj.Kind() {
 	case KindString:
+		// Index syntax does not go through member dispatch, so it never took the
+		// string call charge. Indexing is by rune, which means walking the
+		// receiver to find the offset -- s[0] on a 512 KiB string cost 362us and
+		// was bounded by nothing.
+		//
+		// Charged only once the selector is one indexString will act on. A
+		// malformed one -- s[nil], s[0, 1, 2] -- is rejected without touching
+		// the receiver, and charging first replaced that error with a quota
+		// error on a large string.
+		if stringIndexSelectorScans(indices) {
+			if err := exec.chargeStringScan(len(obj.String())); err != nil {
+				return NewNil(), exec.wrapError(err, e.Position)
+			}
+		}
 		return exec.indexString(e, obj.String(), indices)
 	case KindArray:
 		return exec.indexArray(e, obj, indices)
@@ -998,11 +1065,141 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 	return result, nil
 }
 
+// chargeStringOperandBytes charges the step quota for an operator that copies or
+// scans its string operands.
+//
+// Operators never reach the string member wrapper, so + copied a whole
+// host-supplied string per evaluation and the comparisons scanned one, both for
+// the flat evaluator cost. Discarding the result keeps the memory quota out of
+// it too, so a loop over `s + "x"` was bounded by nothing.
+//
+// Concatenation copies both operands. A comparison stops at the first differing
+// byte and answers immediately when the lengths differ, so it cannot read more
+// than the shorter operand holds.
+// chargeRegexSourceWalk charges the source traversal Regex.StringLen performs.
+// Called only once the operation is known to be one addValues will carry out, so
+// an unsupported pairing reports its own error rather than exhausting the quota
+// on a walk that never happens.
+func (exec *Execution) chargeRegexSourceWalk(left, right Value) error {
+	for _, v := range [2]Value{left, right} {
+		if v.Kind() != KindRegex {
+			continue
+		}
+		if err := exec.chargeStringScan(len(v.Regex().Source)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// concatenatedOperandBytes bounds what an operand contributes to a
+// concatenation, which is the size of its rendered form rather than of the
+// operand itself.
+//
+// A string or symbol renders as its own bytes. A big integer renders through a
+// base conversion whose output grows with the payload, and a regex renders its
+// source, so both carry a payload the operand's kind alone does not reveal --
+// billing only strings left `"" + big` and `"" + /re/` copying and converting
+// for nothing. Every other concatenable kind renders to a bounded handful of
+// bytes and contributes nothing worth charging.
+func concatenatedOperandBytes(v Value) int {
+	switch {
+	case stringLikeOperand(v):
+		return len(v.String())
+	case v.Kind() == KindInt:
+		if _, ok := value.BigIntPayload(v); ok {
+			return value.BigIntDecimalLenUpperBound(v)
+		}
+		return 0
+	case v.Kind() == KindRegex:
+		// Computed from the source rather than measured by rendering it.
+		// Regex.String escapes its source, so len(v.String()) would build the
+		// whole literal just to size it -- and addValues then builds it again,
+		// two renderings billed as one, with the first beyond the quota's reach.
+		// StringLen walks the source and allocates nothing.
+		return v.Regex().StringLen()
+	default:
+		// An enum value renders as Enum::Member from two identifiers that can
+		// approach the source-size limit, so it carries a payload its kind does
+		// not reveal.
+		if n, ok := runtimeValueStringLen(v); ok {
+			return n
+		}
+		return 0
+	}
+}
+
+// concatenatesToString reports whether addValues will join these operands into
+// a string, which is the only case where + copies a payload.
+func concatenatesToString(left, right Value) bool {
+	if left.Kind() == KindString {
+		return concatenableWithString(right)
+	}
+	if right.Kind() == KindString {
+		return concatenableWithString(left)
+	}
+	return false
+}
+
+func stringLikeOperand(v Value) bool {
+	return v.Kind() == KindString || v.Kind() == KindSymbol
+}
+
+func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right Value) error {
+	switch operator {
+	case tokenPlus:
+		// Concatenation copies whatever it is given, and addValues concatenates
+		// whenever one side is a string and the other renders into one -- s + 1
+		// and "" + s.to_sym both copy a large operand. The kinds need not match
+		// here; requiring it left those unmetered.
+		//
+		// One side must actually be a string and the other must be something
+		// addValues will join to it. Two symbols, or a string with nil, an
+		// array or a hash, are unsupported-operands errors that read neither
+		// payload, so charging them turned a constant-time failure into a quota
+		// failure.
+		if !concatenatesToString(left, right) {
+			return nil
+		}
+		// Charged only once the operation is one addValues will perform, and
+		// before StringLen walks anything: a regex plus nil or another regex
+		// renders neither source, and charging first replaced that
+		// unsupported-operands error with a quota error.
+		if err := exec.chargeRegexSourceWalk(left, right); err != nil {
+			return err
+		}
+		return exec.chargeStringScan(saturatingAdd(
+			concatenatedOperandBytes(left), concatenatedOperandBytes(right)))
+	case tokenEQ, tokenNotEQ, tokenCaseEQ, tokenLT, tokenLTE, tokenGT, tokenGTE,
+		tokenSpaceship:
+		// Comparison needs matching kinds: a string against a symbol is rejected
+		// on kind before either name is read, and ordering calls the pair
+		// incomparable, so charging it billed a constant-time answer.
+		if left.Kind() != right.Kind() || !stringLikeOperand(left) {
+			return nil
+		}
+		// Equality answers from a length mismatch without reading either
+		// payload, so only equal lengths are charged. Ordering still reads the
+		// common prefix whatever the lengths.
+		if operator == tokenEQ || operator == tokenNotEQ || operator == tokenCaseEQ {
+			if len(left.String()) != len(right.String()) {
+				return nil
+			}
+		}
+		return exec.chargeStringScan(min(len(left.String()), len(right.String())))
+	default:
+		return nil
+	}
+}
+
 func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value, pos Position) (Value, error) {
 	if left.Kind() == KindInstance {
 		if result, handled, err := exec.evalInstanceOperator(operator, left, right, pos); handled {
 			return result, err
 		}
+	}
+	if err := exec.chargeStringOperandBytes(operator, left, right); err != nil {
+		return NewNil(), exec.wrapError(err, pos)
 	}
 	var result Value
 	var err error

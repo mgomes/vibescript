@@ -376,9 +376,21 @@ func bindEqualityPredicate(property string, receiver Value, compare func(Value, 
 // the host clone and inbound rebind walks use to deduplicate recursive aliases.
 func newBoundEqualityPredicate(property string, cell *boundReceiver, compare func(Value, Value) bool) Value {
 	name := fmt.Sprintf("%s.%s", cell.value.Kind(), property)
-	val := NewCapturingBuiltin(name, func(_ *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	val := NewCapturingBuiltin(name, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if err := requireEqualityPredicateCall(name, args, kwargs, block); err != nil {
 			return NewNil(), err
+		}
+		// Comparing two strings reads their bytes, and this predicate is not a
+		// string member, so it never passed through the string call charge.
+		// Symbols compare by their name and converting to one is exempt, so
+		// they belong here as much as strings do. Equality answers from a
+		// length mismatch without reading either payload, so only operands of
+		// the same kind and the same length are charged.
+		if exec != nil && cell.value.Kind() == args[0].Kind() && stringLikeOperand(cell.value) &&
+			len(cell.value.String()) == len(args[0].String()) {
+			if err := exec.chargeStringScan(len(cell.value.String())); err != nil {
+				return NewNil(), err
+			}
 		}
 		return NewBool(compare(cell.value, args[0])), nil
 	}, cell.value)

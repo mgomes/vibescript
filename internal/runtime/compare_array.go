@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 )
 
 // Arrays compare lexicographically, as in Ruby: the first element pair that
@@ -360,15 +361,12 @@ func compareOrderForSort(left, right Value, state *arrayCompareState) (order int
 
 // compareOrderedStrings reports the relative order of two strings as -1, 0,
 // or 1.
+// compareOrderedStrings orders two strings in a single pass. Comparing with <
+// and then > scans their common prefix twice, so the operand charge -- which
+// bills the shorter one once -- covered half the work. Shared by symbol
+// ordering and array element ordering, so both are one pass.
 func compareOrderedStrings(left, right string) int {
-	switch {
-	case left < right:
-		return -1
-	case left > right:
-		return 1
-	default:
-		return 0
-	}
+	return strings.Compare(left, right)
 }
 
 // sliceAddress returns the backing-array address of a slice, or 0 when the

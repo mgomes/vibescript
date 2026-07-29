@@ -497,6 +497,14 @@ func (v Value) StringByteLen() int {
 	switch v.kind {
 	case KindArray, KindHash:
 		return v.stringByteLenWithState(newValueStringState())
+	case KindRegex:
+		// Sizing a regex must not render it: Regex.String escapes the source and
+		// allocates the literal, so measuring performs the work being measured --
+		// ahead of any charge the caller applies, and again when the value is
+		// really rendered. StringLen walks the source instead. Handled here
+		// rather than at each call site so a regex nested in an array or hash is
+		// sized the same way.
+		return v.data.(Regex).StringLen()
 	default:
 		if RuntimeStringLen != nil {
 			if n, ok := RuntimeStringLen(v); ok {
@@ -517,6 +525,10 @@ func (v Value) StringRuneLen() int {
 	switch v.kind {
 	case KindArray, KindHash:
 		return v.stringRuneLenWithState(newValueStringState())
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it. No step callback
+		// here, so the source walk is unbilled -- the unmetered path.
+		return v.data.(Regex).StringRuneLen()
 	default:
 		if RuntimeStringRuneLen != nil {
 			if n, ok := RuntimeStringRuneLen(v); ok {
@@ -574,6 +586,11 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 			total += val.stringByteLenWithState(state)
 		}
 		return total
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it. This walker takes
+		// no step callback, so the source walk is unbilled here -- it is the
+		// unmetered path, used where no quota is in force.
+		return v.data.(Regex).StringLen()
 	default:
 		if RuntimeStringLen != nil {
 			if n, ok := RuntimeStringLen(v); ok {
@@ -659,6 +676,10 @@ func (v Value) stringRuneLenWithState(state *valueStringState) int {
 			total += val.stringRuneLenWithState(state)
 		}
 		return total
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it. No step callback
+		// here, so the source walk is unbilled -- the unmetered path.
+		return v.data.(Regex).StringRuneLen()
 	default:
 		if RuntimeStringRuneLen != nil {
 			if n, ok := RuntimeStringRuneLen(v); ok {
@@ -725,6 +746,17 @@ func (v Value) StringByteLenBounded(step func() error) (int, error) {
 	switch v.kind {
 	case KindArray, KindHash:
 		return v.stringByteLenBoundedWithState(newValueStringState(), step)
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it, and the source
+		// walk is charged before it runs. array.join reaches this public entry
+		// point rather than the recursive walker, so the charge belongs on both.
+		if err := step(); err != nil {
+			return 0, err
+		}
+		if err := chargeRegexSourceSteps(v, step); err != nil {
+			return 0, err
+		}
+		return v.data.(Regex).StringLen(), nil
 	default:
 		if err := step(); err != nil {
 			return 0, err
@@ -754,6 +786,20 @@ func (v Value) StringRuneLenBounded(step func() error) (int, error) {
 	switch v.kind {
 	case KindArray, KindHash:
 		return v.stringRuneLenBoundedWithState(newValueStringState(), step)
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it, and the source
+		// walk is charged before it runs. The per-node step comes first and
+		// unconditionally: a source under one step's worth of bytes charges
+		// nothing proportional, and without this an exhausted callback could not
+		// abort the projection and a regex would cost one step less than every
+		// other kind.
+		if err := step(); err != nil {
+			return 0, err
+		}
+		if err := chargeRegexSourceSteps(v, step); err != nil {
+			return 0, err
+		}
+		return v.data.(Regex).StringRuneLen(), nil
 	default:
 		if err := step(); err != nil {
 			return 0, err
@@ -844,6 +890,13 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 			total += n
 		}
 		return total, nil
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it, and the source
+		// walk StringLen performs is charged before it runs.
+		if err := chargeRegexSourceSteps(v, step); err != nil {
+			return 0, err
+		}
+		return v.data.(Regex).StringLen(), nil
 	default:
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
@@ -954,6 +1007,16 @@ func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func(
 			total += n
 		}
 		return total, nil
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it, and the source
+		// walk is charged before it runs. No per-node step here: this walker
+		// already charged one at its entry, and adding another billed the same
+		// node twice, making a nested regex cost a step more than a nested
+		// scalar. The public entry points do need their own, having none.
+		if err := chargeRegexSourceSteps(v, step); err != nil {
+			return 0, err
+		}
+		return v.data.(Regex).StringRuneLen(), nil
 	default:
 		if err := chargeBigIntRenderSteps(v, step); err != nil {
 			return 0, err
@@ -1086,6 +1149,14 @@ func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit 
 			}
 		}
 		return total, false, nil
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it, and the source
+		// walk StringLen performs is charged before it runs.
+		if err := chargeRegexSourceSteps(v, step); err != nil {
+			return 0, false, err
+		}
+		total, truncated := stringByteLenCappedAdd(0, v.data.(Regex).StringLen(), limit)
+		return total, truncated, nil
 	default:
 		// A big integer that provably exceeds the limit reports truncation
 		// without paying for the base conversion; anything else is measured
