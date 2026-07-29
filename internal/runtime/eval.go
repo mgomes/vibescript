@@ -1031,10 +1031,14 @@ func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right 
 	switch operator {
 	case tokenPlus:
 		// Concatenation copies whatever it is given, and addValues concatenates
-		// whenever either side is a string and the other can render into one --
-		// s + 1 and "" + s.to_sym both copy a large operand. So the kinds need
-		// not match here; requiring it left those unmetered.
-		if !stringLikeOperand(left) && !stringLikeOperand(right) {
+		// whenever one side is a string and the other renders into one -- s + 1
+		// and "" + s.to_sym both copy a large operand. The kinds need not match
+		// here; requiring it left those unmetered.
+		//
+		// One side must actually be a string, though. Two symbols are an
+		// unsupported-operands error that never reads either name, so charging
+		// them turned a constant-time failure into a quota failure.
+		if left.Kind() != KindString && right.Kind() != KindString {
 			return nil
 		}
 		bytes := 0

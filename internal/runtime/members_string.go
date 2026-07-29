@@ -1169,9 +1169,9 @@ func stringEffectiveOffset(text string, offset int) (int, bool) {
 	return effective, true
 }
 
-func stringRuneIndex(exec *Execution, text, needle string, offset int) int {
+func stringRuneIndex(exec *Execution, text, needle string, offset int) (int, error) {
 	if offset < 0 {
-		return -1
+		return -1, nil
 	}
 	// Reject on length before anything reads the needle. stringIsASCII scans
 	// whatever it is given, and && short-circuits on the receiver, so a short
@@ -1187,67 +1187,77 @@ func stringRuneIndex(exec *Execution, text, needle string, offset int) int {
 	// utf8.UTFMax times the haystack must hold more runes than it, whatever the
 	// encoding, so this rejects only what cannot match either way.
 	if len(needle) > saturatingMul(utf8.UTFMax, len(text)) {
-		return -1
+		return -1, nil
 	}
 	if stringIsASCII(text) && stringIsASCII(needle) {
 		if offset > len(text) {
-			return -1
+			return -1, nil
 		}
 		if needle == "" {
-			return offset
+			return offset, nil
 		}
 		index := strings.Index(text[offset:], needle)
 		if index < 0 {
-			return -1
+			return -1, nil
 		}
-		return offset + index
+		return offset + index, nil
 	}
 	if !utf8.ValidString(text) || !utf8.ValidString(needle) {
 		return stringRuneIndexFallback(exec, text, needle, offset)
 	}
 	startByte, ok := stringByteIndexForRuneOffset(text, offset)
 	if !ok {
-		return -1
+		return -1, nil
 	}
 	if needle == "" {
-		return offset
+		return offset, nil
 	}
 	index := strings.Index(text[startByte:], needle)
 	if index < 0 {
-		return -1
+		return -1, nil
 	}
-	return offset + utf8.RuneCountInString(text[startByte:startByte+index])
+	return offset + utf8.RuneCountInString(text[startByte:startByte+index]), nil
 }
 
-// reserveCanonicalSearchScratch checks the canonical copies the invalid-UTF-8
-// search builds against the memory quota. Every invalid byte widens to a
-// three-byte replacement rune, so the copies reach three times their operands.
-func reserveCanonicalSearchScratch(exec *Execution, text, needle string) bool {
+// reserveFallbackSearchScratch checks everything the invalid-UTF-8 search
+// allocates against the memory quota, before any of it is allocated.
+//
+// The peak holds two things at once: the rune slices, at four bytes per input
+// byte, and the canonical strings built from them, where each invalid byte
+// widens to a three-byte replacement rune. Reserving only the canonical copies
+// undercounted, and reserving after the rune slices were already built checked
+// a peak that had partly happened.
+func reserveFallbackSearchScratch(exec *Execution, text, needle string) error {
 	if exec == nil {
-		return true
+		return nil
 	}
-	projected := saturatingMul(utf8.UTFMax-1, saturatingAdd(len(text), len(needle)))
-	return exec.checkProjectedStringBytes(projected) == nil
+	operands := saturatingAdd(len(text), len(needle))
+	runes := saturatingMul(utf8.UTFMax, operands)
+	canonical := saturatingMul(utf8.UTFMax-1, operands)
+	return exec.checkProjectedStringBytes(saturatingAdd(runes, canonical))
 }
 
 // stringRuneIndexFallback searches operands that are not valid UTF-8 by rune.
 //
-// It returns -1 when the canonical forms it needs would not fit the memory
-// quota. Those forms are transient -- built, searched, and released before the
-// caller's own check runs -- so nothing else accounts for them, and they reach
-// about three times the operands for invalid input.
-func stringRuneIndexFallback(exec *Execution, text, needle string, offset int) int {
+// It reports the quota error rather than a miss when its scratch does not fit:
+// the scratch is transient, built and released before the caller's own check
+// runs, so nothing else accounts for it -- and answering "not found" would make
+// a needle that is present look absent because memory was tight.
+func stringRuneIndexFallback(exec *Execution, text, needle string, offset int) (int, error) {
+	if err := reserveFallbackSearchScratch(exec, text, needle); err != nil {
+		return -1, err
+	}
 	hayRunes := []rune(text)
 	needleRunes := []rune(needle)
 	if offset > len(hayRunes) {
-		return -1
+		return -1, nil
 	}
 	if len(needleRunes) == 0 {
-		return offset
+		return offset, nil
 	}
 	limit := len(hayRunes) - len(needleRunes)
 	if limit < offset {
-		return -1
+		return -1, nil
 	}
 	// Search the canonical rune encoding rather than testing every candidate
 	// position. []rune already mapped each invalid byte to RuneError, so
@@ -1256,20 +1266,17 @@ func stringRuneIndexFallback(exec *Execution, text, needle string, offset int) i
 	// positions with runesHavePrefix is quadratic -- a haystack of repeated
 	// bytes against a needle sharing a long prefix forced roughly n*m
 	// comparisons while the charge covered only n+m.
-	if !reserveCanonicalSearchScratch(exec, text, needle) {
-		return -1
-	}
 	hay := string(hayRunes[offset:])
 	at := strings.Index(hay, string(needleRunes))
 	if at < 0 {
-		return -1
+		return -1, nil
 	}
-	return offset + utf8.RuneCountInString(hay[:at])
+	return offset + utf8.RuneCountInString(hay[:at]), nil
 }
 
-func stringRuneRIndex(exec *Execution, text, needle string, offset int) int {
+func stringRuneRIndex(exec *Execution, text, needle string, offset int) (int, error) {
 	if offset < 0 {
-		return -1
+		return -1, nil
 	}
 	// Reject on length before anything reads the needle. stringIsASCII scans
 	// whatever it is given, and && short-circuits on the receiver, so a short
@@ -1285,21 +1292,21 @@ func stringRuneRIndex(exec *Execution, text, needle string, offset int) int {
 	// utf8.UTFMax times the haystack must hold more runes than it, whatever the
 	// encoding, so this rejects only what cannot match either way.
 	if len(needle) > saturatingMul(utf8.UTFMax, len(text)) {
-		return -1
+		return -1, nil
 	}
 	if stringIsASCII(text) && stringIsASCII(needle) {
 		if offset > len(text) {
 			offset = len(text)
 		}
 		if needle == "" {
-			return offset
+			return offset, nil
 		}
 		maxStart := len(text) - len(needle)
 		if maxStart < 0 {
-			return -1
+			return -1, nil
 		}
 		start := min(offset, maxStart)
-		return strings.LastIndex(text[:start+len(needle)], needle)
+		return strings.LastIndex(text[:start+len(needle)], needle), nil
 	}
 	if !utf8.ValidString(text) || !utf8.ValidString(needle) {
 		return stringRuneRIndexFallback(exec, text, needle, offset)
@@ -1309,50 +1316,50 @@ func stringRuneRIndex(exec *Execution, text, needle string, offset int) int {
 		offset = textLen
 	}
 	if needle == "" {
-		return offset
+		return offset, nil
 	}
 	needleLen := stringRuneLen(needle)
 	if needleLen > textLen {
-		return -1
+		return -1, nil
 	}
 	start := min(offset, textLen-needleLen)
 	endByte, ok := stringByteIndexForRuneOffset(text, start+needleLen)
 	if !ok {
-		return -1
+		return -1, nil
 	}
 	index := strings.LastIndex(text[:endByte], needle)
 	if index < 0 {
-		return -1
+		return -1, nil
 	}
-	return utf8.RuneCountInString(text[:index])
+	return utf8.RuneCountInString(text[:index]), nil
 }
 
 // stringRuneRIndexFallback is stringRuneIndexFallback searching backwards; see
-// there for why the canonical scratch is reserved.
-func stringRuneRIndexFallback(exec *Execution, text, needle string, offset int) int {
+// there for why the scratch is reserved and why a shortfall is an error.
+func stringRuneRIndexFallback(exec *Execution, text, needle string, offset int) (int, error) {
+	if err := reserveFallbackSearchScratch(exec, text, needle); err != nil {
+		return -1, err
+	}
 	hayRunes := []rune(text)
 	needleRunes := []rune(needle)
 	if offset > len(hayRunes) {
 		offset = len(hayRunes)
 	}
 	if len(needleRunes) == 0 {
-		return offset
+		return offset, nil
 	}
 	if len(needleRunes) > len(hayRunes) {
-		return -1
+		return -1, nil
 	}
 	start := min(offset, len(hayRunes)-len(needleRunes))
 	// Linear for the same reason as the forward fallback; searching backwards
 	// from every candidate position is quadratic.
-	if !reserveCanonicalSearchScratch(exec, text, needle) {
-		return -1
-	}
 	hay := string(hayRunes[:start+len(needleRunes)])
 	at := strings.LastIndex(hay, string(needleRunes))
 	if at < 0 {
-		return -1
+		return -1, nil
 	}
-	return utf8.RuneCountInString(hay[:at])
+	return utf8.RuneCountInString(hay[:at]), nil
 }
 
 // stringRuneSlice extracts at most length runes starting at the rune offset
@@ -3860,7 +3867,10 @@ func stringIndexResult(exec *Execution, receiver, needle Value, offset int) (Val
 	if !ok {
 		return NewNil(), nil
 	}
-	index := stringRuneIndex(exec, receiver.String(), needle.String(), effective)
+	index, err := stringRuneIndex(exec, receiver.String(), needle.String(), effective)
+	if err != nil {
+		return NewNil(), err
+	}
 	if index < 0 {
 		return NewNil(), nil
 	}
@@ -3871,7 +3881,10 @@ func stringRIndexResult(exec *Execution, receiver, needle Value, offset int) (Va
 	if needle.Kind() != KindString {
 		return NewNil(), fmt.Errorf("string.rindex substring must be string")
 	}
-	index := stringRuneRIndex(exec, receiver.String(), needle.String(), offset)
+	index, err := stringRuneRIndex(exec, receiver.String(), needle.String(), offset)
+	if err != nil {
+		return NewNil(), err
+	}
 	if index < 0 {
 		return NewNil(), nil
 	}

@@ -936,21 +936,21 @@ func TestOversizedNeedleRejectionPreservesRuneMatching(t *testing.T) {
 
 	// One invalid byte against the replacement character: three bytes against
 	// one, but one rune against one.
-	if got := stringRuneIndex(nil, "\xff", "\uFFFD", 0); got != 0 {
+	if got, _ := stringRuneIndex(nil, "\xff", "\uFFFD", 0); got != 0 {
 		t.Errorf("index of the replacement character in an invalid byte = %d, want 0; "+
 			"the fallback matches by rune, so a needle with more bytes than the haystack "+
 			"can still match", got)
 	}
-	if got := stringRuneRIndex(nil, "\xff", "\uFFFD", 1); got != 0 {
+	if got, _ := stringRuneRIndex(nil, "\xff", "\uFFFD", 1); got != 0 {
 		t.Errorf("rindex of the replacement character in an invalid byte = %d, want 0", got)
 	}
 
 	// A needle past the widest encoding of the haystack cannot match either way.
 	huge := strings.Repeat("x", 4<<20)
-	if got := stringRuneIndex(nil, "ab", huge, 0); got != -1 {
+	if got, _ := stringRuneIndex(nil, "ab", huge, 0); got != -1 {
 		t.Errorf("index of a 4 MiB needle in a two-byte haystack = %d, want -1", got)
 	}
-	if got := stringRuneRIndex(nil, "ab", huge, 2); got != -1 {
+	if got, _ := stringRuneRIndex(nil, "ab", huge, 2); got != -1 {
 		t.Errorf("rindex of a 4 MiB needle in a two-byte haystack = %d, want -1", got)
 	}
 }
@@ -1227,13 +1227,13 @@ func TestInvalidUTF8SearchIsLinear(t *testing.T) {
 
 	// Semantics first: the canonical-encoding search must find what the
 	// position scan found.
-	if got := stringRuneIndexFallback(nil, "a\xffb", "\xffb", 0); got != 1 {
+	if got, _ := stringRuneIndexFallback(nil, "a\xffb", "\xffb", 0); got != 1 {
 		t.Errorf("fallback index = %d, want 1", got)
 	}
-	if got := stringRuneRIndexFallback(nil, "a\xffb\xffb", "\xffb", 4); got != 3 {
+	if got, _ := stringRuneRIndexFallback(nil, "a\xffb\xffb", "\xffb", 4); got != 3 {
 		t.Errorf("fallback rindex = %d, want 3", got)
 	}
-	if got := stringRuneIndexFallback(nil, "a\xff", "zz", 0); got != -1 {
+	if got, _ := stringRuneIndexFallback(nil, "a\xff", "zz", 0); got != -1 {
 		t.Errorf("fallback index of an absent needle = %d, want -1", got)
 	}
 
@@ -1250,7 +1250,7 @@ func TestInvalidUTF8SearchIsLinear(t *testing.T) {
 		for range 3 {
 			start := time.Now()
 			for range repeats {
-				stringRuneIndexFallback(nil, hay, needle, 0)
+				_, _ = stringRuneIndexFallback(nil, hay, needle, 0)
 			}
 			if d := time.Since(start); d < best {
 				best = d
@@ -1530,5 +1530,62 @@ func TestEqualityOfDifferentLengthsIsNotCharged(t *testing.T) {
 	atLarge := minStepsForStringOp(t, "(s < \"ab\").to_s.length", 64<<10)
 	if atSmall != atLarge {
 		t.Logf("ordering charge over 8 KiB: %d, over 64 KiB: %d", atSmall, atLarge)
+	}
+}
+
+// A scratch shortfall must be an error, not a miss. The invalid-UTF-8 search
+// builds rune slices and canonical strings that are released before the
+// caller's own memory check, so a tight quota used to make a needle that is
+// present report as absent -- a wrong answer rather than a refusal.
+func TestFallbackScratchShortfallIsAnError(t *testing.T) {
+	t.Parallel()
+
+	// Invalid UTF-8 on both sides forces the fallback, and the needle is
+	// genuinely present.
+	hay := NewString(strings.Repeat("\xff", 64<<10) + "ab")
+	needle := NewString("\xff\xffab")
+	src := "def run(s, n)\n  s.index(n).inspect\nend"
+
+	// Enough memory: the needle is found.
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 256 << 20}, src)
+	found, err := script.Call(context.Background(), "run", []Value{hay, needle}, CallOptions{})
+	if err != nil {
+		t.Fatalf("search with ample memory: %v", err)
+	}
+	if found.Kind() == KindString && strings.Contains(found.String(), "nil") {
+		t.Fatalf("needle reported absent with ample memory: %v", found.String())
+	}
+
+	// Too little for the scratch: a quota error, never a silent miss.
+	tight := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: 128 << 10}, src)
+	got, err := tight.Call(context.Background(), "run", []Value{hay, needle}, CallOptions{})
+	if err == nil {
+		t.Errorf("search under a tight memory quota returned %v; a scratch shortfall must "+
+			"report the quota rather than answer that the needle is absent", got)
+	}
+}
+
+// Two symbols are an unsupported-operands error that never reads either name,
+// so charging them turned a constant-time failure into a quota failure.
+//
+// The observable is which error surfaces, not a step count: the expression
+// never succeeds, so a minimum-quota search would only ever report its own
+// upper bound.
+func TestSymbolConcatenationIsNotCharged(t *testing.T) {
+	t.Parallel()
+
+	big := NewString(strings.Repeat("a", 512<<10))
+	src := "def run(s)\n  s.to_sym + s.to_sym\nend"
+
+	// A quota far below the operands' length: the unsupported-operands error
+	// must still be what surfaces.
+	script := compileScriptWithConfig(t, Config{StepQuota: 64, MemoryQuotaBytes: Unlimited}, src)
+	_, err := script.Call(context.Background(), "run", []Value{big}, CallOptions{})
+	if err == nil {
+		t.Fatal("adding two symbols succeeded")
+	}
+	if strings.Contains(err.Error(), "quota") {
+		t.Errorf("adding two symbols reported %q; it is an unsupported-operands error "+
+			"that reads neither name, so it must not be charged for their length", err)
 	}
 }
