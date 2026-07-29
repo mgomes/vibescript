@@ -78,7 +78,13 @@ func TestStringOpsChargeStepsPerByte(t *testing.T) {
 func TestConstantCostStringOpsStayUncharged(t *testing.T) {
 	t.Parallel()
 
-	for _, expr := range []string{"s.bytesize", "s.empty?.inspect", "s.getbyte(0).inspect"} {
+	exempt := []string{
+		"s.bytesize", "s.empty?.inspect", "s.getbyte(0).inspect",
+		// A byte-indexed slice returns a substring view and a symbol holds the
+		// receiver's string header, so neither reads the receiver's length.
+		"s.byteslice(0, 1).bytesize", "s.to_sym.inspect.bytesize", "s.intern.inspect.bytesize",
+	}
+	for _, expr := range exempt {
 		t.Run(expr, func(t *testing.T) {
 			t.Parallel()
 			atSmall := minStepsForStringOp(t, expr, 8<<10)

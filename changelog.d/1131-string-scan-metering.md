@@ -6,5 +6,6 @@
   the quota fired. String methods now charge one step per 64 bytes of receiver,
   the same rate big-integer operands are charged at. Methods whose cost does not
   grow with the receiver (`bytesize`, `empty?`, `getbyte`, `ord`, `chr`, `to_s`,
-  `clear`) stay exempt, and any receiver shorter than 64 bytes rounds down to no
-  charge, so ordinary short strings are unaffected.
+  `clear`, `byteslice`, `to_sym`, `intern`) stay exempt, and any receiver
+  shorter than 64 bytes rounds down to no charge, so ordinary short strings are
+  unaffected.

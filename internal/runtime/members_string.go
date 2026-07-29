@@ -52,6 +52,11 @@ func stringMember(str Value, property string) (Value, error) {
 var stringConstantCostMembers = map[string]struct{}{
 	"bytesize": {}, "empty?": {}, "getbyte": {}, "ord": {}, "chr": {},
 	"to_s": {}, "string": {}, "clear": {},
+	// byteslice indexes by byte and returns a substring view, and a symbol
+	// holds the receiver's string header without copying or hashing it, so
+	// none of these touch the receiver's length. slice is charged rather than
+	// exempt because it indexes by rune, which scans to the offset.
+	"byteslice": {}, "to_sym": {}, "intern": {},
 }
 
 // chargeStringScanBeforeCall wraps a string builtin so it charges the step
