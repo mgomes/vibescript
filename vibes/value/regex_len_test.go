@@ -47,3 +47,65 @@ func TestRegexLenMatchesRendering(t *testing.T) {
 		}
 	}
 }
+
+// Every kind costs one step per node in a bounded sizing walk, plus whatever is
+// proportional to the work its own rendering needs. A regex charges for its
+// source, and that charge is on top of the per-node step -- not instead of one,
+// and not in addition to a second.
+//
+// The recursive walkers take their per-node step at entry, so the regex case
+// must not take another: doing so billed a nested regex one step more than a
+// nested string of the same size, on a path where the whole point of the case is
+// that the regex is cheaper to size than to render.
+func TestRegexSizingChargesOneStepPerNode(t *testing.T) {
+	counted := func(v Value, walk func(Value, func() error) (int, error)) int {
+		steps := 0
+		if _, err := walk(v, func() error { steps++; return nil }); err != nil {
+			t.Fatalf("sizing %v: %v", v.Kind(), err)
+		}
+		return steps
+	}
+	recursive := map[string]func(Value, func() error) (int, error){
+		"rune walk": func(v Value, step func() error) (int, error) {
+			return v.stringRuneLenBoundedWithState(newValueStringState(), step)
+		},
+		"byte walk": func(v Value, step func() error) (int, error) {
+			return v.stringByteLenBoundedWithState(newValueStringState(), step)
+		},
+	}
+	public := map[string]func(Value, func() error) (int, error){
+		"StringRuneLenBounded": Value.StringRuneLenBounded,
+		"StringByteLenBounded": Value.StringByteLenBounded,
+	}
+
+	// A source under one step's worth of bytes charges nothing proportional, so
+	// the total is the per-node step alone -- exactly what a plain string costs.
+	tiny := NewRegex(Regex{Source: "a"})
+	plain := NewString("a")
+	for name, walk := range recursive {
+		if got, want := counted(tiny, walk), counted(plain, walk); got != want {
+			t.Errorf("%s: a one-byte regex source cost %d steps and a one-byte string "+
+				"cost %d; sizing a regex reads its source without rendering it, so a "+
+				"node of either kind is one step", name, got, want)
+		}
+	}
+	for name, walk := range public {
+		if got, want := counted(tiny, walk), counted(plain, walk); got != want {
+			t.Errorf("%s: a one-byte regex source cost %d steps and a one-byte string "+
+				"cost %d; the public entry takes no step of its own, so each kind "+
+				"charges exactly one here too", name, got, want)
+		}
+	}
+
+	// Over that threshold the charge is the node plus the source walk. Checked
+	// against the string of the same length, which is charged by its caller
+	// rather than here, to keep this about the regex's own increment.
+	chunks := 4
+	big := NewRegex(Regex{Source: strings.Repeat("a", chunks*RegexSourceStepBytesForTest())})
+	for name, walk := range recursive {
+		if got, want := counted(big, walk), 1+chunks; got != want {
+			t.Errorf("%s: a %d-chunk regex source cost %d steps, want %d (one node plus "+
+				"one per chunk of source read)", name, chunks, got, want)
+		}
+	}
+}
