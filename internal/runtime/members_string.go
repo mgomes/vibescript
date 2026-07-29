@@ -1144,13 +1144,20 @@ func stringRuneIndex(text, needle string, offset int) int {
 	if offset < 0 {
 		return -1
 	}
-	// A needle longer than the haystack cannot be a substring of it, so reject
-	// on length before anything reads the needle. stringIsASCII scans whatever
-	// it is given, and && short-circuits on the receiver, so a short receiver
-	// let a large needle be scanned in full -- unmetered work that the
+	// Reject on length before anything reads the needle. stringIsASCII scans
+	// whatever it is given, and && short-circuits on the receiver, so a short
+	// receiver let a large needle be scanned in full -- unmetered work that the
 	// receiver-bounded classification in stringComparesArgumentsToReceiver
 	// promises does not happen.
-	if len(needle) > len(text) {
+	//
+	// The bound is the needle's bytes against the haystack's scaled by the
+	// widest encoding, not against them directly. Invalid UTF-8 matches by rune
+	// through the fallback below, where a one-byte invalid sequence and a
+	// three-byte replacement character are both a single RuneError and do match:
+	// comparing bytes alone would reject that pair. A needle longer than
+	// utf8.UTFMax times the haystack must hold more runes than it, whatever the
+	// encoding, so this rejects only what cannot match either way.
+	if len(needle) > saturatingMul(utf8.UTFMax, len(text)) {
 		return -1
 	}
 	if stringIsASCII(text) && stringIsASCII(needle) {
@@ -1208,13 +1215,20 @@ func stringRuneRIndex(text, needle string, offset int) int {
 	if offset < 0 {
 		return -1
 	}
-	// A needle longer than the haystack cannot be a substring of it, so reject
-	// on length before anything reads the needle. stringIsASCII scans whatever
-	// it is given, and && short-circuits on the receiver, so a short receiver
-	// let a large needle be scanned in full -- unmetered work that the
+	// Reject on length before anything reads the needle. stringIsASCII scans
+	// whatever it is given, and && short-circuits on the receiver, so a short
+	// receiver let a large needle be scanned in full -- unmetered work that the
 	// receiver-bounded classification in stringComparesArgumentsToReceiver
 	// promises does not happen.
-	if len(needle) > len(text) {
+	//
+	// The bound is the needle's bytes against the haystack's scaled by the
+	// widest encoding, not against them directly. Invalid UTF-8 matches by rune
+	// through the fallback below, where a one-byte invalid sequence and a
+	// three-byte replacement character are both a single RuneError and do match:
+	// comparing bytes alone would reject that pair. A needle longer than
+	// utf8.UTFMax times the haystack must hold more runes than it, whatever the
+	// encoding, so this rejects only what cannot match either way.
+	if len(needle) > saturatingMul(utf8.UTFMax, len(text)) {
 		return -1
 	}
 	if stringIsASCII(text) && stringIsASCII(needle) {

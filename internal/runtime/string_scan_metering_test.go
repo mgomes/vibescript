@@ -913,3 +913,34 @@ func TestStringOperatorsChargeForTheirOperands(t *testing.T) {
 		})
 	}
 }
+
+// The length rejection that keeps index and rindex from scanning an oversized
+// needle must not change what they match. Invalid UTF-8 matches by rune through
+// their fallback, where a one-byte invalid sequence and the three-byte
+// replacement character are both a single RuneError and do match -- comparing
+// bytes alone rejected that pair and silently changed the result.
+//
+// Nothing covered this pairing, which is why the regression reached review.
+func TestOversizedNeedleRejectionPreservesRuneMatching(t *testing.T) {
+	t.Parallel()
+
+	// One invalid byte against the replacement character: three bytes against
+	// one, but one rune against one.
+	if got := stringRuneIndex("\xff", "\uFFFD", 0); got != 0 {
+		t.Errorf("index of the replacement character in an invalid byte = %d, want 0; "+
+			"the fallback matches by rune, so a needle with more bytes than the haystack "+
+			"can still match", got)
+	}
+	if got := stringRuneRIndex("\xff", "\uFFFD", 1); got != 0 {
+		t.Errorf("rindex of the replacement character in an invalid byte = %d, want 0", got)
+	}
+
+	// A needle past the widest encoding of the haystack cannot match either way.
+	huge := strings.Repeat("x", 4<<20)
+	if got := stringRuneIndex("ab", huge, 0); got != -1 {
+		t.Errorf("index of a 4 MiB needle in a two-byte haystack = %d, want -1", got)
+	}
+	if got := stringRuneRIndex("ab", huge, 2); got != -1 {
+		t.Errorf("rindex of a 4 MiB needle in a two-byte haystack = %d, want -1", got)
+	}
+}
