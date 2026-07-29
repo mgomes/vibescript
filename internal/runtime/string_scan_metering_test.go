@@ -555,3 +555,73 @@ func TestAggregateRuneWalkNeverUnderchargesMultibyte(t *testing.T) {
 		})
 	}
 }
+
+// A width writes bytes that neither the pattern nor the arguments account for:
+// format("%1000000s", "") produces a megabyte from a few input bytes. The
+// per-call output cap bounds one call, not a loop of them, so the projected
+// output has to be charged the way padding and repetition are.
+func TestFormatChargesForTheOutputItWrites(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"format(\"%%%ds\", \"\").bytesize",
+		"format(\"%%-%ds\", \"\").bytesize",
+		"(\"%%%ds\" %% [\"\"]).bytesize",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			const small, large = 8 << 10, 64 << 10
+			atSmall := minStepsForWidth(t, expr, small)
+			atLarge := minStepsForWidth(t, expr, large)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps at width %d and %d at width %d; a width writes "+
+					"bytes the inputs do not bound, so the projected output must be charged",
+					expr, atSmall, small, atLarge, large)
+			}
+		})
+	}
+}
+
+// Both entrances to a direct-call method must meter the same arguments. The
+// fast path metered only the needle while dispatch metered every argument, so
+// the two drifted by the size of the offset argument.
+//
+// The splatted form costs a few steps more for building its own argument array,
+// so the assertion is that the gap does not grow with the offset: a metering
+// difference scales with it, a construction difference does not.
+func TestDirectStringCallsMeterEveryArgument(t *testing.T) {
+	t.Parallel()
+
+	hay := NewString(strings.Repeat("ab", (64<<10)/2))
+	direct := "def run(s, bad)\n  s.index(\"x\", bad)\nend"
+	splat := "def run(s, bad)\n  s.index(*[\"x\", bad])\nend"
+
+	// A string in the offset position is invalid; reaching that error means
+	// metering let the call through.
+	minFor := func(source string, bad Value) int {
+		lo, hi := 1, 1<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, source)
+			_, err := script.Call(context.Background(), "run", []Value{hay, bad}, CallOptions{})
+			if err != nil && strings.Contains(err.Error(), "quota") {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	gapFor := func(size int) int {
+		bad := NewString(strings.Repeat("z", size))
+		return minFor(splat, bad) - minFor(direct, bad)
+	}
+
+	small, large := gapFor(8<<10), gapFor(256<<10)
+	if small != large {
+		t.Errorf("the splatted form cost %d steps more than the direct one with an 8 KiB "+
+			"offset and %d more with 256 KiB; a gap that grows with the argument means "+
+			"the two entrances meter different things", small, large)
+	}
+}

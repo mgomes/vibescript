@@ -565,6 +565,14 @@ func formatStringValuesChecked(exec *Execution, pattern string, values []Value, 
 		return NewNil(), err
 	}
 	if exec != nil {
+		// A width writes bytes the pattern and arguments do not account for:
+		// format("%1000000s", "") produces a megabyte from a handful of input
+		// bytes, and the per-call output cap bounds one call, not a loop of
+		// them. Charge what will be written, as the padding members and
+		// String#* do.
+		if err := exec.chargeStringScan(prepared.projectedBytes); err != nil {
+			return NewNil(), err
+		}
 		if err := exec.checkProjectedStringBytesAndScratchWithCallRoots(prepared.projectedBytes, prepared.scratchBytes, receiver, args, kwargs, block); err != nil {
 			return NewNil(), err
 		}

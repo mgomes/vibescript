@@ -2977,6 +2977,17 @@ func (exec *Execution) evalDirectArrayMemberCallExpr(call *CallExpr, receiver Va
 	return result, true, nil
 }
 
+// directStringCallArgs collects the arguments a direct string call evaluated,
+// so its metering sees exactly what member dispatch would. An offset that is
+// not an integer is still an argument the dispatched form charges for, and
+// leaving it out made the two entrances disagree for s.index("x", bad).
+func directStringCallArgs(needle, offset Value, hasOffset bool) []Value {
+	if !hasOffset {
+		return []Value{needle}
+	}
+	return []Value{needle, offset}
+}
+
 func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value, env *Env) (Value, bool, error) {
 	if len(call.Args) < 1 || len(call.Args) > 2 {
 		return NewNil(), false, nil
@@ -3001,7 +3012,7 @@ func (exec *Execution) evalDirectStringIndexCall(call *CallExpr, receiver Value,
 	// this path while the equivalent dispatched call still performs it. The
 	// charge itself is the one member dispatch applies, so both entrances to
 	// the method cost the same.
-	if err := exec.chargeStringCall(receiver, []Value{needle}, stringComparesArgumentsToReceiver("string.index")); err != nil {
+	if err := exec.chargeStringCall(receiver, directStringCallArgs(needle, offsetVal, hasOffset), stringComparesArgumentsToReceiver("string.index")); err != nil {
 		return NewNil(), true, err
 	}
 	if err := exec.checkContext(); err != nil {
@@ -3050,7 +3061,7 @@ func (exec *Execution) evalDirectStringRIndexCall(call *CallExpr, receiver Value
 	// this path while the equivalent dispatched call still performs it. The
 	// charge itself is the one member dispatch applies, so both entrances to
 	// the method cost the same.
-	if err := exec.chargeStringCall(receiver, []Value{needle}, stringComparesArgumentsToReceiver("string.rindex")); err != nil {
+	if err := exec.chargeStringCall(receiver, directStringCallArgs(needle, offsetVal, hasOffset), stringComparesArgumentsToReceiver("string.rindex")); err != nil {
 		return NewNil(), true, err
 	}
 	// The default offset counts the receiver's runes, an O(n) scan of its own.
