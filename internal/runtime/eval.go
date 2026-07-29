@@ -381,6 +381,16 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 	// depth. Charging steps during that walk (rather than only once per
 	// interpolation part) trips the quota or honors a canceled context instead
 	// of burning unbounded CPU before the memory check runs.
+	// A regex is sized from its payload before anything measures it.
+	// StringByteLenBounded reaches len(v.String()) for one, which escapes and
+	// allocates the whole literal to size it -- so the measurement performs the
+	// rendering, ahead of the charge and beyond the quota's reach, and
+	// WriteStringTo then performs it again.
+	if val.Kind() == KindRegex {
+		if err := exec.chargeStringScan(concatenatedOperandBytes(val)); err != nil {
+			return err
+		}
+	}
 	payload, err := val.StringByteLenBounded(exec.step)
 	if err != nil {
 		return err
@@ -389,8 +399,10 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 	// per node, which bounds a large aggregate, but a scalar is one node however
 	// many bytes it carries (a symbol built from a host-supplied string renders
 	// its whole name). See chargeStringScan.
-	if err := exec.chargeStringScan(payload); err != nil {
-		return err
+	if val.Kind() != KindRegex {
+		if err := exec.chargeStringScan(payload); err != nil {
+			return err
+		}
 	}
 	if err := exec.checkProjectedValueRendering(val, projectedBuilderCap(sb, payload)); err != nil {
 		return err

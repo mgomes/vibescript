@@ -3132,7 +3132,7 @@ func appendTemplateChunk(exec *Execution, b *strings.Builder, chunk string, rece
 // a placeholder materializes it here, so a template holding one did that work
 // before any charge and the rendering loop then did it again. Charging as each
 // segment is produced bills the first conversion, which is the one that happens.
-func stringTemplateRenderedLen(exec *Execution, text string, context Value, strict bool) (bool, int, error) {
+func stringTemplateRenderedLen(exec *Execution, text string, context Value, strict bool) (bool, int, stringTemplateSegmentCache, error) {
 	charged := 0
 	charge := func(total int) error {
 		if exec == nil {
@@ -3176,7 +3176,7 @@ func stringTemplateRenderedLen(exec *Execution, text string, context Value, stri
 		value, ok := stringTemplateLookup(context, keyPath)
 		if !ok {
 			if strict {
-				return false, 0, fmt.Errorf("string.template missing placeholder %s", keyPath)
+				return false, 0, cache, fmt.Errorf("string.template missing placeholder %s", keyPath)
 			}
 			total = saturatingAdd(total, len(placeholder))
 			last = end
@@ -3185,24 +3185,24 @@ func stringTemplateRenderedLen(exec *Execution, text string, context Value, stri
 		}
 		segment, err := stringTemplateScalarValue(value, keyPath)
 		if err != nil {
-			return false, 0, err
+			return false, 0, cache, err
 		}
 		cache.store(keyPath, segment)
 		total = saturatingAdd(total, len(segment))
 		if err := charge(total); err != nil {
-			return false, 0, err
+			return false, 0, cache, err
 		}
 		last = end
 		search = end
 	}
 	if !rendered {
-		return false, 0, nil
+		return false, 0, cache, nil
 	}
 	total = saturatingAdd(total, len(text[last:]))
 	if err := charge(total); err != nil {
-		return false, 0, err
+		return false, 0, cache, err
 	}
-	return true, total, nil
+	return true, total, cache, nil
 }
 
 func stringTemplate(text string, context Value, strict bool) (string, error) {
@@ -3210,7 +3210,11 @@ func stringTemplate(text string, context Value, strict bool) (string, error) {
 }
 
 func stringTemplateWithExecution(exec *Execution, text string, context Value, strict bool, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
-	rendered, renderedLen, err := stringTemplateRenderedLen(exec, text, context, strict)
+	// The projection's cache carries the segments it already built, and the
+	// render reuses them. Discarding it meant every placeholder value was
+	// converted twice -- once to size it and once to write it -- so a large
+	// regex or big integer did its conversion twice for one charge.
+	rendered, renderedLen, cache, err := stringTemplateRenderedLen(exec, text, context, strict)
 	if err != nil {
 		return "", err
 	}
@@ -3224,7 +3228,6 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 		}
 		b.Grow(renderedLen)
 	}
-	var cache stringTemplateSegmentCache
 	last := 0
 	search := 0
 	for search < len(text) {

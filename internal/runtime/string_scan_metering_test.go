@@ -1783,3 +1783,26 @@ func TestTemplateChargesRenderedValuesAsProduced(t *testing.T) {
 			"rendered into the placeholder, so the charge follows its size", small, large)
 	}
 }
+
+// Interpolating a regex must be charged before anything renders it.
+// StringByteLenBounded reaches len(v.String()) for a regex, which escapes and
+// allocates the whole literal to size it, so the measurement performed the
+// rendering ahead of the charge and WriteStringTo then performed it again.
+func TestRegexInterpolationIsChargedBeforeRendering(t *testing.T) {
+	t.Parallel()
+
+	source := strings.Repeat("a", 15<<10)
+	src := fmt.Sprintf("def run(s)\n  \"#{/%s/}\".bytesize\nend", source)
+
+	// Far below the source length: the charge must trip before the rendering.
+	tight := compileScriptWithConfig(t, Config{StepQuota: 8, MemoryQuotaBytes: Unlimited}, src)
+	if _, err := tight.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err == nil {
+		t.Error("interpolating a 15 KiB regex succeeded on an 8-step quota; its rendering " +
+			"must be charged before it is performed")
+	}
+	// Ample quota: the interpolation completes.
+	ample := compileScriptWithConfig(t, Config{StepQuota: 100000, MemoryQuotaBytes: Unlimited}, src)
+	if _, err := ample.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
+		t.Errorf("interpolating a 15 KiB regex failed with an ample quota: %v", err)
+	}
+}
