@@ -1589,3 +1589,41 @@ func TestSymbolConcatenationIsNotCharged(t *testing.T) {
 			"that reads neither name, so it must not be charged for their length", err)
 	}
 }
+
+// An expression that fails on its operands or its shape never reads the
+// receiver, so it must report that failure rather than a quota error. Charging
+// before validating replaced the established diagnostic with an unrelated one
+// on any sufficiently large string.
+func TestInvalidExpressionsReportTheirOwnError(t *testing.T) {
+	t.Parallel()
+
+	big := NewString(strings.Repeat("a", 512<<10))
+	cases := map[string]string{
+		// addValues rejects these operand pairs without reading either payload.
+		"string plus nil":   "def run(s)\n  s + nil\nend",
+		"string plus array": "def run(s)\n  s + []\nend",
+		"string plus hash":  "def run(s)\n  s + {}\nend",
+		// indexString rejects these selectors on shape or type.
+		"nil selector":    "def run(s)\n  s[nil]\nend",
+		"three selectors": "def run(s)\n  s[0, 1, 2]\nend",
+		"string selector": "def run(s)\n  s[\"x\"]\nend",
+	}
+	names := make([]string, 0, len(cases))
+	for name := range cases {
+		names = append(names, name)
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: 64, MemoryQuotaBytes: Unlimited}, cases[name])
+			_, err := script.Call(context.Background(), "run", []Value{big}, CallOptions{})
+			if err == nil {
+				t.Fatalf("%s succeeded", name)
+			}
+			if strings.Contains(err.Error(), "quota") {
+				t.Errorf("%s reported %q; it is rejected without reading the receiver, so "+
+					"it must report that rejection rather than a quota error", name, err)
+			}
+		})
+	}
+}

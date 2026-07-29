@@ -775,6 +775,21 @@ func (exec *Execution) evalIndexSelectors(e *IndexExpr, obj Value, env *Env) ([]
 // indexing), start/length, and range forms; an out-of-range single index yields
 // nil rather than raising, matching Array#[] and String#[]. Hashes and objects
 // take exactly one key.
+// stringIndexSelectorScans reports whether these selectors are ones indexString
+// will use to walk the receiver. A range or integer offsets scan; anything else
+// is rejected on shape or type without reading a byte.
+func stringIndexSelectorScans(indices []Value) bool {
+	numeric := func(v Value) bool { return v.Kind() == KindInt || v.Kind() == KindFloat }
+	switch len(indices) {
+	case 1:
+		return indices[0].Kind() == KindRange || numeric(indices[0])
+	case 2:
+		return numeric(indices[0]) && numeric(indices[1])
+	default:
+		return false
+	}
+}
+
 func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) (Value, error) {
 	switch obj.Kind() {
 	case KindString:
@@ -782,8 +797,15 @@ func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) 
 		// string call charge. Indexing is by rune, which means walking the
 		// receiver to find the offset -- s[0] on a 512 KiB string cost 362us and
 		// was bounded by nothing.
-		if err := exec.chargeStringScan(len(obj.String())); err != nil {
-			return NewNil(), exec.wrapError(err, e.Position)
+		//
+		// Charged only once the selector is one indexString will act on. A
+		// malformed one -- s[nil], s[0, 1, 2] -- is rejected without touching
+		// the receiver, and charging first replaced that error with a quota
+		// error on a large string.
+		if stringIndexSelectorScans(indices) {
+			if err := exec.chargeStringScan(len(obj.String())); err != nil {
+				return NewNil(), exec.wrapError(err, e.Position)
+			}
 		}
 		return exec.indexString(e, obj.String(), indices)
 	case KindArray:
@@ -1023,6 +1045,18 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 // Concatenation copies both operands. A comparison stops at the first differing
 // byte and answers immediately when the lengths differ, so it cannot read more
 // than the shorter operand holds.
+// concatenatesToString reports whether addValues will join these operands into
+// a string, which is the only case where + copies a payload.
+func concatenatesToString(left, right Value) bool {
+	if left.Kind() == KindString {
+		return concatenableWithString(right)
+	}
+	if right.Kind() == KindString {
+		return concatenableWithString(left)
+	}
+	return false
+}
+
 func stringLikeOperand(v Value) bool {
 	return v.Kind() == KindString || v.Kind() == KindSymbol
 }
@@ -1035,10 +1069,12 @@ func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right 
 		// and "" + s.to_sym both copy a large operand. The kinds need not match
 		// here; requiring it left those unmetered.
 		//
-		// One side must actually be a string, though. Two symbols are an
-		// unsupported-operands error that never reads either name, so charging
-		// them turned a constant-time failure into a quota failure.
-		if left.Kind() != KindString && right.Kind() != KindString {
+		// One side must actually be a string and the other must be something
+		// addValues will join to it. Two symbols, or a string with nil, an
+		// array or a hash, are unsupported-operands errors that read neither
+		// payload, so charging them turned a constant-time failure into a quota
+		// failure.
+		if !concatenatesToString(left, right) {
 			return nil
 		}
 		bytes := 0
