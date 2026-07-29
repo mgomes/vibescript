@@ -1245,7 +1245,17 @@ func TestInvalidUTF8SearchIsLinear(t *testing.T) {
 	// measures as zero on a coarse clock -- Windows reported 0s and a ratio of
 	// +Inf. Repeating puts both measurements in the milliseconds, where every
 	// platform's clock resolves them.
-	const repeats = 500
+	// A wide size ratio, so the linear and quadratic expectations are far apart
+	// and the threshold tolerates a loaded runner. Sixteen times the input costs
+	// about sixteen times as much linearly and about 256 times as much when
+	// every candidate position is tested; an earlier version compared a four
+	// times ratio against a threshold of eight and failed under -race at 8.3x,
+	// where linear noise and quadratic signal overlap.
+	// Sizes chosen so a regression fails quickly rather than hanging: at 32 KiB
+	// the position scan would run for a quarter of an hour and the test would
+	// time out instead of reporting. At 16 KiB it finishes in about two seconds
+	// and still sits far above linear.
+	const repeats = 100
 	elapsed := func(n int) time.Duration {
 		hay := strings.Repeat("a", n) + "\xff"
 		needle := strings.Repeat("a", n/2) + "b"
@@ -1261,13 +1271,12 @@ func TestInvalidUTF8SearchIsLinear(t *testing.T) {
 		}
 		return best
 	}
-	small, large := elapsed(2048), elapsed(8192)
-	// Four times the input: linear costs about four times as much, the position
-	// scan about sixteen. Eight sits between them with room for a loaded runner.
-	if large > small*8 {
-		t.Errorf("searching 2 KiB %d times took %v and 8 KiB took %v, a %.1fx rise for "+
-			"four times the input; the fallback must not test every candidate position",
-			repeats, small, large, float64(large)/float64(small))
+	small, large := elapsed(1024), elapsed(16384)
+	if large > small*64 {
+		t.Errorf("searching 1 KiB %d times took %v and 16 KiB took %v, a %.1fx rise for "+
+			"sixteen times the input; linear is about 16x and testing every candidate "+
+			"position about 256x, so this is the position scan", repeats, small, large,
+			float64(large)/float64(small))
 	}
 }
 
@@ -1932,6 +1941,37 @@ func TestUnsupportedRegexConcatenationReportsItsOwnError(t *testing.T) {
 			if strings.Contains(err.Error(), "quota") {
 				t.Errorf("an unsupported concatenation reported %q; neither source is "+
 					"rendered, so the sizing walk must not run", err)
+			}
+		})
+	}
+}
+
+// Sizing a regex must not render it at any depth. The per-site fixes covered a
+// regex that is the whole value; a regex inside an array or hash reaches the
+// same bounded walk through recursion, and inspect reaches it through a separate
+// walk. Handling it in the value package covers every caller and every nesting.
+func TestNestedRegexSizingDoesNotRender(t *testing.T) {
+	t.Parallel()
+
+	source := strings.Repeat("a", 15<<10)
+	for _, src := range []string{
+		fmt.Sprintf("def run(s)\n  \"#{[/%s/]}\".bytesize\nend", source),
+		fmt.Sprintf("def run(s)\n  \"#{{k: /%s/}}\".bytesize\nend", source),
+		fmt.Sprintf("def run(s)\n  /%s/.inspect.bytesize\nend", source),
+		fmt.Sprintf("def run(s)\n  [/%s/].inspect.bytesize\nend", source),
+	} {
+		t.Run(src[:30], func(t *testing.T) {
+			t.Parallel()
+			// Ample quota: the operation completes, so the sizing path is exercised.
+			ample := compileScriptWithConfig(t, Config{StepQuota: 1 << 20, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := ample.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
+				t.Fatalf("with an ample quota: %v", err)
+			}
+			// A quota below the source length: sizing must not have rendered, so
+			// the charge trips rather than the render succeeding unbilled.
+			tight := compileScriptWithConfig(t, Config{StepQuota: 8, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := tight.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err == nil {
+				t.Error("a 15 KiB regex rendered on an 8-step quota")
 			}
 		})
 	}

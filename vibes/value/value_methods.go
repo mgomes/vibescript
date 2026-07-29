@@ -497,6 +497,14 @@ func (v Value) StringByteLen() int {
 	switch v.kind {
 	case KindArray, KindHash:
 		return v.stringByteLenWithState(newValueStringState())
+	case KindRegex:
+		// Sizing a regex must not render it: Regex.String escapes the source and
+		// allocates the literal, so measuring performs the work being measured --
+		// ahead of any charge the caller applies, and again when the value is
+		// really rendered. StringLen walks the source instead. Handled here
+		// rather than at each call site so a regex nested in an array or hash is
+		// sized the same way.
+		return v.data.(Regex).StringLen()
 	default:
 		if RuntimeStringLen != nil {
 			if n, ok := RuntimeStringLen(v); ok {
@@ -725,6 +733,12 @@ func (v Value) StringByteLenBounded(step func() error) (int, error) {
 	switch v.kind {
 	case KindArray, KindHash:
 		return v.stringByteLenBoundedWithState(newValueStringState(), step)
+	case KindRegex:
+		// See StringByteLen: sizing a regex must not render it.
+		if err := step(); err != nil {
+			return 0, err
+		}
+		return v.data.(Regex).StringLen(), nil
 	default:
 		if err := step(); err != nil {
 			return 0, err
