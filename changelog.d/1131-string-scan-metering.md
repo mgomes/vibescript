@@ -26,4 +26,10 @@
   cost what they copy rather than what their receiver holds.
   Operators, index syntax, and equality predicates charge too: `+`, the
   comparisons, `s[0]`, and `eql?` never pass through method dispatch, so each
-  copied or scanned a whole string for a flat cost.
+  copied or scanned a whole string for a flat cost. Comparing two scalars
+  charges for the bytes a comparison can read -- nothing when equality can
+  answer from a length mismatch, the shorter operand when it cannot; scalars
+  compared through a surrounding array or hash are still unmetered.
+  A regex operand is sized from its source rather than by rendering it, so
+  measuring what a regex will print no longer costs a full escape pass on top of
+  the one that prints it.
