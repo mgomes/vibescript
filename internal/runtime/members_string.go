@@ -61,11 +61,9 @@ var stringConstantCostMembers = map[string]struct{}{
 	"replace": {},
 }
 
-// stringComparesArgumentsToReceiver names the string methods whose only use of
-// a string argument is matching its bytes against the receiver. A prefix,
-// suffix, or separator longer than the receiver fails on length alone, so those
-// methods cannot inspect more of an argument than the receiver holds and the
-// charge for one is capped there.
+// stringArgumentCapFactor reports the multiple of the receiver's length that
+// bounds how much of a string argument a method can read, or zero when nothing
+// bounds it and the argument is charged in full.
 //
 // Membership must be earned by reading the implementation, not assumed from the
 // method's shape. An argument preprocessed independently of the receiver is not
@@ -75,21 +73,26 @@ var stringConstantCostMembers = map[string]struct{}{
 // almost nothing. casecmp stays because asciiCaseCompare stops at the shorter
 // operand. split is out because its separator handling was not verified.
 //
-// The cap lowers a charge, so a wrong membership under-charges -- the failure
-// this branch exists to prevent -- while an omission only over-charges.
-// TestCappedArgumentsAreActuallyBoundedByTheReceiver exercises every member.
+// The factor matters as much as membership. Most of these match bytes, so the
+// receiver's length bounds them directly. index and rindex match by rune when
+// either side is invalid UTF-8, and their oversized-needle guard admits a needle
+// up to utf8.UTFMax times the receiver for exactly that case -- so that is what
+// they can read, and that is what they must be billed for. A cap below what the
+// guard admits under-meters precisely the case the guard exists to preserve.
 //
-// A method that copies an argument into its result (concat, prepend, insert,
-// sub) must also stay out.
-func stringComparesArgumentsToReceiver(name string) bool {
+// The cap lowers a charge, so a wrong factor under-charges -- the failure this
+// branch exists to prevent -- while an omission only over-charges.
+// TestCappedArgumentsAreActuallyBoundedByTheReceiver exercises every member.
+func stringArgumentCapFactor(name string) int {
 	switch name {
 	case "string.start_with?", "string.end_with?", "string.include?",
-		"string.index", "string.rindex", "string.casecmp",
-		"string.partition", "string.rpartition", "string.slice",
-		"string.between?":
-		return true
+		"string.casecmp", "string.partition", "string.rpartition",
+		"string.slice", "string.between?":
+		return 1
+	case "string.index", "string.rindex":
+		return utf8.UTFMax
 	default:
-		return false
+		return 0
 	}
 }
 
@@ -106,7 +109,7 @@ func stringComparesArgumentsToReceiver(name string) bool {
 // the direct-call fast paths in evalDirectStringMemberCallExpr. They charged
 // different amounts while it lived only in the wrapper, so "".split(s) escaped
 // through the fast path with an unmetered separator.
-func (exec *Execution) chargeStringCall(receiver Value, args []Value, compareOnly bool) error {
+func (exec *Execution) chargeStringCall(receiver Value, args []Value, capFactor int) error {
 	text := len(receiver.String())
 	bytes := text
 	for _, arg := range args {
@@ -114,8 +117,8 @@ func (exec *Execution) chargeStringCall(receiver Value, args []Value, compareOnl
 			continue
 		}
 		n := len(arg.String())
-		if compareOnly {
-			n = min(n, text)
+		if capFactor > 0 {
+			n = min(n, saturatingMul(capFactor, text))
 		}
 		bytes = saturatingAdd(bytes, n)
 	}
@@ -133,10 +136,10 @@ func chargeStringScanBeforeCall(member Value) Value {
 	}
 	metered := *inner
 	fn := inner.Fn
-	compareOnly := stringComparesArgumentsToReceiver(inner.Name)
+	capFactor := stringArgumentCapFactor(inner.Name)
 	metered.Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if receiver.Kind() == KindString {
-			if err := exec.chargeStringCall(receiver, args, compareOnly); err != nil {
+			if err := exec.chargeStringCall(receiver, args, capFactor); err != nil {
 				return NewNil(), err
 			}
 		}

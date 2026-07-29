@@ -944,3 +944,49 @@ func TestOversizedNeedleRejectionPreservesRuneMatching(t *testing.T) {
 		t.Errorf("rindex of a 4 MiB needle in a two-byte haystack = %d, want -1", got)
 	}
 }
+
+// The cap on a method's argument and the guard on what it will read must agree.
+// index and rindex admit a needle up to utf8.UTFMax times the receiver, because
+// invalid UTF-8 matches by rune and a three-byte replacement character can match
+// a one-byte invalid sequence -- then they scan that needle. Billing only the
+// receiver's length under-metered exactly the case the guard exists to preserve.
+func TestNeedleCapMatchesWhatTheGuardAdmits(t *testing.T) {
+	t.Parallel()
+
+	// A needle inside the guard's bound is read, so its bytes must be charged:
+	// growing it up to that bound must cost more.
+	const receiver = "\"aaaaaaaaaaaaaaaa\"" // 16 bytes, so the guard admits 64
+	stepsFor := func(needleBytes int) int {
+		needle := strings.Repeat("b", needleBytes)
+		src := fmt.Sprintf("def run(s)\n  %s.index(%q).inspect\nend", receiver, needle)
+		lo, hi := 1, 10000
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	// 16 bytes against 64: both inside the guard's bound, so both are read and
+	// the larger must cost more. A cap of one times the receiver would bill them
+	// the same.
+	atBound, atReceiver := stepsFor(64), stepsFor(16)
+	if atBound <= atReceiver {
+		t.Errorf("a 64-byte needle cost %d steps and a 16-byte one %d against a 16-byte "+
+			"receiver; the guard admits needles up to four times the receiver and scans "+
+			"them, so the charge must follow to the same bound", atBound, atReceiver)
+	}
+
+	// Past the guard's bound nothing is read, so the charge stops growing.
+	beyond, farBeyond := stepsFor(256), stepsFor(4096)
+	if beyond != farBeyond {
+		t.Errorf("a 256-byte needle cost %d steps and a 4096-byte one %d; past the guard's "+
+			"bound the needle is rejected unread, so the charge must not follow it",
+			beyond, farBeyond)
+	}
+}
