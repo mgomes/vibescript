@@ -778,6 +778,13 @@ func (exec *Execution) evalIndexSelectors(e *IndexExpr, obj Value, env *Env) ([]
 func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) (Value, error) {
 	switch obj.Kind() {
 	case KindString:
+		// Index syntax does not go through member dispatch, so it never took the
+		// string call charge. Indexing is by rune, which means walking the
+		// receiver to find the offset -- s[0] on a 512 KiB string cost 362us and
+		// was bounded by nothing.
+		if err := exec.chargeStringScan(len(obj.String())); err != nil {
+			return NewNil(), exec.wrapError(err, e.Position)
+		}
 		return exec.indexString(e, obj.String(), indices)
 	case KindArray:
 		return exec.indexArray(e, obj, indices)
@@ -1005,11 +1012,40 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 	return result, nil
 }
 
+// chargeStringOperandBytes charges the step quota for an operator that copies or
+// scans its string operands.
+//
+// Operators never reach the string member wrapper, so + copied a whole
+// host-supplied string per evaluation and the comparisons scanned one, both for
+// the flat evaluator cost. Discarding the result keeps the memory quota out of
+// it too, so a loop over `s + "x"` was bounded by nothing.
+//
+// Concatenation copies both operands. A comparison stops at the first differing
+// byte and answers immediately when the lengths differ, so it cannot read more
+// than the shorter operand holds.
+func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right Value) error {
+	if left.Kind() != KindString || right.Kind() != KindString {
+		return nil
+	}
+	switch operator {
+	case tokenPlus:
+		return exec.chargeStringScan(saturatingAdd(len(left.String()), len(right.String())))
+	case tokenEQ, tokenNotEQ, tokenCaseEQ, tokenLT, tokenLTE, tokenGT, tokenGTE,
+		tokenSpaceship:
+		return exec.chargeStringScan(min(len(left.String()), len(right.String())))
+	default:
+		return nil
+	}
+}
+
 func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value, pos Position) (Value, error) {
 	if left.Kind() == KindInstance {
 		if result, handled, err := exec.evalInstanceOperator(operator, left, right, pos); handled {
 			return result, err
 		}
+	}
+	if err := exec.chargeStringOperandBytes(operator, left, right); err != nil {
+		return NewNil(), exec.wrapError(err, pos)
 	}
 	var result Value
 	var err error

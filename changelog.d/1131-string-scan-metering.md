@@ -24,3 +24,6 @@
   Serializing and templating charge for the strings they reach through a
   structure, so `JSON.stringify({v: big})` and `"{{v}}".template({v: big})`
   cost what they copy rather than what their receiver holds.
+  Operators, index syntax, and equality predicates charge too: `+`, the
+  comparisons, `s[0]`, and `eql?` never pass through method dispatch, so each
+  copied or scanned a whole string for a flat cost.

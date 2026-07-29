@@ -865,3 +865,43 @@ func TestTruncatedBlockRenderChargesWhatItRendered(t *testing.T) {
 			"the charge must not exceed the bytes actually rendered")
 	}
 }
+
+// Operators never reach the string member wrapper, so every one that copies or
+// scans its operands had to be charged separately. Concatenation copied a whole
+// host-supplied string per evaluation and the comparisons scanned one, both for
+// the flat evaluator cost -- and discarding the result kept the memory quota out
+// of it, so a loop was bounded by nothing at all.
+//
+// eql? is in here too: it is a universal member rather than a string one, so it
+// bypassed the wrapper the same way an operator does.
+func TestStringOperatorsChargeForTheirOperands(t *testing.T) {
+	t.Parallel()
+
+	// Both operands are the host string, so the cost must follow its size.
+	// Index syntax is here for the same reason an operator is: it never reaches
+	// member dispatch, and indexing by rune walks the receiver to find the
+	// offset.
+	ops := []string{
+		"s[0].bytesize",
+		"s[0, 4].bytesize",
+		"(s + s).bytesize",
+		"(s == s).to_s.length",
+		"(s != s).to_s.length",
+		"(s < s).to_s.length",
+		"(s > s).to_s.length",
+		"(s <=> s).to_s.length",
+		"s.eql?(s).to_s.length",
+	}
+	for _, expr := range ops {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps over 8 KiB operands and %d over 64 KiB; an "+
+					"operator copies or scans its operands just as a method does, and it "+
+					"never passes through the member wrapper", expr, atSmall, atLarge)
+			}
+		})
+	}
+}
