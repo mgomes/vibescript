@@ -96,29 +96,70 @@ type valueSet struct {
 // duplicate-collapsing helpers (union, uniq) but not to membership-only callers
 // where that scan would make insertion quadratic.
 func (s *valueSet) add(v Value, hint int) bool {
+	added, _ := s.addCounted(v, hint)
+	return added
+}
+
+// addCounted is add, additionally reporting how many equality probes the
+// composite scan performed so a caller can charge the step quota for them.
+//
+// The count comes back from the scan rather than being predicted from the set's
+// size for two reasons. The scan stops at the first match, so a duplicate that
+// matches near the front costs one probe, not the whole set -- predicting a
+// miss would overcharge a duplicate-heavy tail badly enough to exhaust the
+// quota on work never done. And classifying a value as scalar means building
+// its key, which for a big integer is a base-16 conversion of the whole
+// payload; doing that here rather than in a separate predicate keeps it to the
+// one conversion per element the caller already budgets for.
+func (s *valueSet) addCounted(v Value, hint int) (bool, int) {
 	if key, ok := scalarValueKey(v); ok {
 		if s.scalars == nil {
 			s.scalars = make(map[scalarValueSetKey]struct{}, boundedSetCap(hint))
 		}
 		if _, found := s.scalars[key]; found {
-			return false
+			return false, 0
 		}
 		s.scalars[key] = struct{}{}
-		return true
+		return true, 0
 	}
-	if containsEqualValue(s.composite, v) {
-		return false
+	probes, found := indexOfEqualValue(s.composite, v)
+	if found {
+		return false, probes + 1
 	}
 	s.composite = append(s.composite, v)
-	return true
+	return true, probes
 }
 
-func (s *valueSet) contains(v Value) bool {
+// chargeScanSteps charges the step quota for n units of scanning work: the
+// elements a pass will visit, or the equality probes a valueSet operation
+// performed. Scanning nothing must cost nothing, and stepN charges one step
+// even for a count of zero, which would make an empty receiver pay for a scan
+// it never ran and would triple the per-element cost of deduplicating scalars.
+//
+// A probe charge necessarily follows the work, since only the completed scan
+// knows its length. A single operation can therefore overshoot the quota before
+// it fires, by at most the number of distinct composites already held -- one
+// element's worth, which the element before it just paid nearly in full.
+func (exec *Execution) chargeScanSteps(n int) error {
+	if n <= 0 {
+		return nil
+	}
+	return exec.stepN(n)
+}
+
+// containsCounted reports whether the set holds a value equal to v, along with
+// the equality probes the composite scan performed. See addCounted for why the
+// count is measured rather than predicted.
+func (s *valueSet) containsCounted(v Value) (bool, int) {
 	if key, ok := scalarValueKey(v); ok {
 		_, found := s.scalars[key]
-		return found
+		return found, 0
 	}
-	return containsEqualValue(s.composite, v)
+	probes, found := indexOfEqualValue(s.composite, v)
+	if found {
+		return true, probes + 1
+	}
+	return false, probes
 }
 
 // membershipSet answers contains queries with value equality but, unlike
@@ -179,11 +220,21 @@ func (s *membershipSet) addSource(values []Value, hint int) {
 }
 
 func uniqueValues(values []Value) []Value {
-	unique, _ := uniqueValuesChecked(values, nil)
+	unique, _ := uniqueValuesMetered(values, nil, nil)
 	return unique
 }
 
-func uniqueValuesChecked(values []Value, check func() error) ([]Value, error) {
+// uniqueValuesMetered deduplicates values, calling check periodically so a
+// long run stays cancellable and charging for the work each add is about to do.
+// Both callbacks are optional.
+//
+// A scalar canonicalizes into a map and costs O(1), but a composite is matched
+// by scanning every distinct composite already seen, so n distinct composites
+// cost n(n-1)/2 equality probes. Charging one step per element covers only the
+// scalar case; without charging the scan, an array of composites that fits the
+// memory quota could spend billions of comparisons inside the step budget.
+// charge receives the number of probes the next add will perform.
+func uniqueValuesMetered(values []Value, check func() error, charge func(int) error) ([]Value, error) {
 	var seen valueSet
 	unique := make([]Value, 0, boundedSetCap(len(values)))
 	for i, item := range values {
@@ -192,7 +243,13 @@ func uniqueValuesChecked(values []Value, check func() error) ([]Value, error) {
 				return nil, err
 			}
 		}
-		if seen.add(item, len(values)) {
+		added, probes := seen.addCounted(item, len(values))
+		if charge != nil {
+			if err := charge(probes); err != nil {
+				return nil, err
+			}
+		}
+		if added {
 			unique = append(unique, item)
 		}
 	}
@@ -293,11 +350,21 @@ func subtractArrayValues(left, right []Value) []Value {
 }
 
 func containsEqualValue(values []Value, target Value) bool {
+	_, found := indexOfEqualValue(values, target)
+	return found
+}
+
+// indexOfEqualValue finds target by value equality, reporting the index it
+// matched at. On a miss it reports len(values). Either way the result is the
+// number of equality probes performed, which is what the step quota charges:
+// only the scan knows where it stopped, and a match near the front costs far
+// less than the full set.
+func indexOfEqualValue(values []Value, target Value) (int, bool) {
 	var equality EqualityContext
-	for _, candidate := range values {
+	for i, candidate := range values {
 		if equality.Equal(target, candidate) {
-			return true
+			return i, true
 		}
 	}
-	return false
+	return len(values), false
 }

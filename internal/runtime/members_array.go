@@ -570,6 +570,9 @@ func arrayMemberExtrema(property string) (Value, error) {
 			cmpState := newArrayCompareState(exec, receiver)
 			defer cmpState.release()
 			for _, item := range arr[1:] {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				cmpMin, err := arraySortCompareValuesWith(cmpState, item, minVal)
 				if err != nil {
 					return NewNil(), sortComparisonError(err, "array.minmax values are not comparable")
@@ -616,6 +619,9 @@ func arrayMemberMinMax(name string, wantMax bool) Value {
 		cmpState := newArrayCompareState(exec, receiver)
 		defer cmpState.release()
 		for _, item := range arr[1:] {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
 			cmp, err := arraySortCompareValuesWith(cmpState, item, best)
 			if err != nil {
 				return NewNil(), sortComparisonError(err, fmt.Sprintf("%s values are not comparable", name))
@@ -1620,6 +1626,9 @@ func arrayMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.include? expects exactly one value")
 			}
 			for _, item := range receiver.Array() {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				if item.Equal(args[0]) {
 					return NewBool(true), nil
 				}
@@ -2118,6 +2127,9 @@ func arrayForwardIndex(exec *Execution, receiver Value, args []Value, block Valu
 	}
 	arr := receiver.Array()
 	for idx := offset; idx < len(arr); idx++ {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
 		if arr[idx].Equal(args[0]) {
 			return NewInt(int64(idx)), nil
 		}
@@ -2178,6 +2190,9 @@ func arrayReverseIndex(exec *Execution, receiver Value, args []Value, block Valu
 		offset = len(arr) - 1
 	}
 	for idx := offset; idx >= 0; idx-- {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
 		if arr[idx].Equal(args[0]) {
 			return NewInt(int64(idx)), nil
 		}
@@ -2753,12 +2768,26 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	}
 	arr := receiver.Array()
 	if valueBlock(block) == nil {
+		// Charge the receiver before anything touches it. The big-integer key
+		// charge below sizes itself by walking every element, and for a
+		// scalar-only array it finds no words and returns having charged
+		// nothing, so an oversized receiver would be traversed in full before
+		// any quota check saw it.
+		//
+		// The blockless path has no early exit, so the whole receiver is the
+		// right charge, plus the equality probes each composite element costs
+		// as it is matched against the distinct composites already seen. The
+		// block form below steps per element instead, which lets a block that
+		// raises stop paying for the elements it never reached.
+		if err := exec.chargeScanSteps(len(arr)); err != nil {
+			return NewNil(), false, err
+		}
 		// Deduplication canonicalizes every element as a set key; charge big
 		// elements' words before the build.
 		if err := exec.chargeBigIntElementKeySteps(arr); err != nil {
 			return NewNil(), false, err
 		}
-		unique, err := uniqueValuesChecked(arr, exec.checkContext)
+		unique, err := uniqueValuesMetered(arr, exec.checkContext, exec.chargeScanSteps)
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2787,7 +2816,14 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		if err != nil {
 			return NewNil(), false, err
 		}
-		if seen.contains(key) {
+		// A composite key is matched by scanning every distinct composite key
+		// already seen, so charge that scan; a per-element step alone would let
+		// n distinct composite keys cost n(n-1)/2 unmetered comparisons.
+		seenKey, probes := seen.containsCounted(key)
+		if err := exec.chargeScanSteps(probes); err != nil {
+			return NewNil(), false, err
+		}
+		if seenKey {
 			changed = true
 			continue
 		}
@@ -2801,7 +2837,11 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		if err := acc.addToReservedBacking(key); err != nil {
 			return NewNil(), false, err
 		}
-		seen.add(key, len(arr))
+		// add rescans the composites to find its insertion point.
+		_, addProbes := seen.addCounted(key, len(arr))
+		if err := exec.chargeScanSteps(addProbes); err != nil {
+			return NewNil(), false, err
+		}
 		out = append(out, item)
 		if err := acc.add(item, cap(out)); err != nil {
 			return NewNil(), false, err
