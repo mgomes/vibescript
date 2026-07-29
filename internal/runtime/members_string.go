@@ -85,7 +85,8 @@ func stringComparesArgumentsToReceiver(name string) bool {
 	switch name {
 	case "string.start_with?", "string.end_with?", "string.include?",
 		"string.index", "string.rindex", "string.casecmp",
-		"string.partition", "string.rpartition", "string.slice":
+		"string.partition", "string.rpartition", "string.slice",
+		"string.between?":
 		return true
 	default:
 		return false
@@ -2149,10 +2150,17 @@ func stringGSubBlock(method, text, pattern string, regex, patternIsRegex bool, y
 // exceed maxRegexInputBytes and reports the truncation, which this surfaces as the
 // same "output exceeds limit" error the rest of the regex output guards raise, so
 // the block form refuses an over-cap replacement without first allocating it.
-func boundedReplacementString(result Value) (string, error) {
+func boundedReplacementString(exec *Execution, result Value) (string, error) {
 	replacement, err := result.StringBounded(maxRegexInputBytes)
 	if err != nil {
 		if errors.Is(err, errStringRenderTruncated) {
+			// The renderer copied up to the limit before giving up, and this
+			// error is rescuable, so a script could return an oversized
+			// aggregate every match and pay only the per-match step. Charge the
+			// bytes it rendered before reporting the limit.
+			if chargeErr := exec.chargeStringScan(maxRegexInputBytes); chargeErr != nil {
+				return "", chargeErr
+			}
 			return "", guardLimitErrorf("output exceeds limit %d bytes", maxRegexInputBytes)
 		}
 		return "", err
@@ -2177,7 +2185,7 @@ func stringReplaceBlockYield(exec *Execution, runner *blockCallRunner) func(matc
 		if err != nil {
 			return "", err
 		}
-		replacement, err := boundedReplacementString(result)
+		replacement, err := boundedReplacementString(exec, result)
 		if err != nil {
 			return "", err
 		}

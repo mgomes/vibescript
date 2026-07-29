@@ -651,6 +651,7 @@ func TestCappedArgumentsAreActuallyBoundedByTheReceiver(t *testing.T) {
 		"partition":   "\"ab\".partition(s).length",
 		"rpartition":  "\"ab\".rpartition(s).length",
 		"slice":       "\"ab\".slice(s).inspect",
+		"between?":    "\"ab\".between?(\"aa\", s).inspect",
 	}
 	names := make([]string, 0, len(capped))
 	for name := range capped {
@@ -826,5 +827,41 @@ func TestBlockSubstitutionChargesReplacementsBeforeARaise(t *testing.T) {
 		t.Errorf("reaching the raise cost %d steps with an 8 KiB replacement and %d with "+
 			"64 KiB; replacements copied before a later raise must be charged, or the "+
 			"error can be rescued and the copying repeated for free", atSmall, atLarge)
+	}
+}
+
+// Rendering a block result that overflows the output limit copies up to the
+// limit before reporting it, and that error is rescuable: a script could return
+// an oversized aggregate on every match and pay only the per-match step.
+//
+// The observable is which error surfaces. Once the render is charged, a quota
+// below its cost fails on the quota and only a quota above it reaches the
+// output-limit error; uncharged, the limit error arrives however small the
+// quota. A rescuing loop cannot pin this, because a bare rescue swallows the
+// quota error along with the limit error.
+func TestTruncatedBlockRenderChargesWhatItRendered(t *testing.T) {
+	t.Parallel()
+
+	// Eight 512 KiB values render well past the 1 MiB output limit, so the
+	// render always truncates.
+	hay := NewString(strings.Repeat("x", 512<<10))
+	src := "def run(s)\n  \"a\".gsub(\"a\") { [s, s, s, s, s, s, s, s] }.bytesize\nend"
+
+	limitErrorAt := func(quota int) bool {
+		script := compileScriptWithConfig(t, Config{StepQuota: quota, MemoryQuotaBytes: Unlimited}, src)
+		_, err := script.Call(context.Background(), "run", []Value{hay}, CallOptions{})
+		return err != nil && strings.Contains(err.Error(), "output exceeds limit")
+	}
+
+	// Far below the render's cost: the quota must stop it first.
+	if limitErrorAt(64) {
+		t.Error("a 64-step quota reached the output-limit error; the bytes rendered before " +
+			"the limit was reported were not charged, so a rescued loop could repeat the " +
+			"rendering indefinitely")
+	}
+	// Comfortably above it: the render completes and reports its own limit.
+	if !limitErrorAt(maxRegexInputBytes/stringScanBytesPerStep + 10000) {
+		t.Error("a quota above the render's charge did not reach the output-limit error; " +
+			"the charge must not exceed the bytes actually rendered")
 	}
 }
