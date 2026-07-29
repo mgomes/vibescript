@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // minStepsForStringOp binary-searches the smallest step quota at which one
@@ -1169,5 +1170,84 @@ func TestJSONChargesTheOutputBuiltBeforeAnError(t *testing.T) {
 	if got := errorAt(100000); got != "serialize" {
 		t.Errorf("a 100,000-step quota produced a %s error, want the serialization "+
 			"failure; the charge must not exceed the bytes actually produced", got)
+	}
+}
+
+// A container that fails below its own delimiter -- nesting depth, an
+// unsupported value -- returns without reaching the per-value settlement, so
+// every level's bracket went uncharged: 10,001 nested arrays emitted 10,000 of
+// them for nothing, and the depth error is rescuable. Settling the delimiter
+// before descending charges each level as it is entered.
+func TestJSONChargesDelimitersOfFailedContainers(t *testing.T) {
+	t.Parallel()
+
+	nested := NewArray([]Value{NewInt(1)})
+	for range 10001 {
+		nested = NewArray([]Value{nested})
+	}
+	src := "def run(a)\n  JSON.stringify(a)\nend"
+
+	errorAt := func(quota int) string {
+		script := compileScriptWithConfig(t, Config{StepQuota: quota, MemoryQuotaBytes: Unlimited}, src)
+		_, err := script.Call(context.Background(), "run", []Value{nested}, CallOptions{})
+		if err == nil {
+			return "none"
+		}
+		if strings.Contains(err.Error(), "quota") {
+			return "quota"
+		}
+		return "depth"
+	}
+
+	if got := errorAt(100); got != "quota" {
+		t.Errorf("a 100-step quota produced a %s error; the brackets emitted on the way "+
+			"down must be charged, or the depth error can be rescued and the descent "+
+			"repeated for free", got)
+	}
+	if got := errorAt(100000); got != "depth" {
+		t.Errorf("a 100,000-step quota produced a %s error, want the depth limit", got)
+	}
+}
+
+// Searching invalid UTF-8 falls back to rune matching, which tested every
+// candidate position: a haystack of repeated bytes against a needle sharing a
+// long prefix forced roughly n*m comparisons while the charge covered n+m.
+// 271ms at 64 KiB became 455us by searching the canonical rune encoding.
+func TestInvalidUTF8SearchIsLinear(t *testing.T) {
+	t.Parallel()
+
+	// Semantics first: the canonical-encoding search must find what the
+	// position scan found.
+	if got := stringRuneIndexFallback("a\xffb", "\xffb", 0); got != 1 {
+		t.Errorf("fallback index = %d, want 1", got)
+	}
+	if got := stringRuneRIndexFallback("a\xffb\xffb", "\xffb", 4); got != 3 {
+		t.Errorf("fallback rindex = %d, want 3", got)
+	}
+	if got := stringRuneIndexFallback("a\xff", "zz", 0); got != -1 {
+		t.Errorf("fallback index of an absent needle = %d, want -1", got)
+	}
+
+	// Then cost: quadrupling the input must not multiply the work by sixteen.
+	elapsed := func(n int) time.Duration {
+		hay := strings.Repeat("a", n) + "\xff"
+		needle := strings.Repeat("a", n/2) + "b"
+		best := time.Hour
+		for range 3 {
+			start := time.Now()
+			stringRuneIndexFallback(hay, needle, 0)
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+	small, large := elapsed(4096), elapsed(65536)
+	// Sixteen times the input. Linear allows well under a hundredfold; the
+	// position scan was around 265x.
+	if large > small*100 {
+		t.Errorf("searching 4 KiB took %v and 64 KiB took %v, a %.0fx rise for sixteen "+
+			"times the input; the fallback must not test every candidate position",
+			small, large, float64(large)/float64(small))
 	}
 }

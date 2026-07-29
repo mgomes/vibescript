@@ -576,6 +576,14 @@ func appendJSONValueRendered(buf []byte, val Value, state *jsonStringifyState) (
 		defer state.popSeenArray(arraySlot)
 
 		buf = append(buf, '[')
+		// Settle the delimiter before descending. A container that fails below
+		// this point -- nesting depth, an unsupported value -- returns without
+		// reaching the settlement in appendJSONValue, so every level's bracket
+		// went uncharged: 10,001 nested arrays emitted 10,000 of them for
+		// nothing, and the depth error is rescuable.
+		if err := state.checkOutputBytes(len(buf)); err != nil {
+			return nil, err
+		}
 		for i, item := range arr {
 			if i > 0 {
 				buf = append(buf, ',')
@@ -609,6 +617,14 @@ func appendJSONValueRendered(buf []byte, val Value, state *jsonStringifyState) (
 		}
 
 		buf = append(buf, '{')
+		// Settle the delimiter before descending. A container that fails below
+		// this point -- nesting depth, an unsupported value -- returns without
+		// reaching the settlement in appendJSONValue, so every level's bracket
+		// went uncharged: 10,001 nested arrays emitted 10,000 of them for
+		// nothing, and the depth error is rescuable.
+		if err := state.checkOutputBytes(len(buf)); err != nil {
+			return nil, err
+		}
 		for i, entry := range entries {
 			if i > 0 {
 				buf = append(buf, ',')

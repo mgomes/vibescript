@@ -1206,12 +1206,19 @@ func stringRuneIndexFallback(text, needle string, offset int) int {
 	if limit < offset {
 		return -1
 	}
-	for i := offset; i <= limit; i++ {
-		if runesHavePrefix(hayRunes[i:], needleRunes) {
-			return i
-		}
+	// Search the canonical rune encoding rather than testing every candidate
+	// position. []rune already mapped each invalid byte to RuneError, so
+	// re-encoding gives byte strings whose substring matches correspond exactly
+	// to rune matches, and every index in them is a rune boundary. Scanning
+	// positions with runesHavePrefix is quadratic -- a haystack of repeated
+	// bytes against a needle sharing a long prefix forced roughly n*m
+	// comparisons while the charge covered only n+m.
+	hay := string(hayRunes[offset:])
+	at := strings.Index(hay, string(needleRunes))
+	if at < 0 {
+		return -1
 	}
-	return -1
+	return offset + utf8.RuneCountInString(hay[:at])
 }
 
 func stringRuneRIndex(text, needle string, offset int) int {
@@ -1287,24 +1294,14 @@ func stringRuneRIndexFallback(text, needle string, offset int) int {
 		return -1
 	}
 	start := min(offset, len(hayRunes)-len(needleRunes))
-	for i := start; i >= 0; i-- {
-		if runesHavePrefix(hayRunes[i:], needleRunes) {
-			return i
-		}
+	// Linear for the same reason as the forward fallback; searching backwards
+	// from every candidate position is quadratic.
+	hay := string(hayRunes[:start+len(needleRunes)])
+	at := strings.LastIndex(hay, string(needleRunes))
+	if at < 0 {
+		return -1
 	}
-	return -1
-}
-
-func runesHavePrefix(text, prefix []rune) bool {
-	if len(prefix) > len(text) {
-		return false
-	}
-	for i, r := range prefix {
-		if text[i] != r {
-			return false
-		}
-	}
-	return true
+	return utf8.RuneCountInString(hay[:at])
 }
 
 // stringRuneSlice extracts at most length runes starting at the rune offset
