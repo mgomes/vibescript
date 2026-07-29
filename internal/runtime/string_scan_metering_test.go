@@ -1737,20 +1737,29 @@ func TestRegexConcatenationIsSizedWithoutRendering(t *testing.T) {
 	}
 }
 
-// regexEscapeWidestByte must actually bound what escaping produces. It was set
-// to four by reasoning about the shape of a \xNN escape the renderer does not
-// use: control characters outside the named escapes become \x{ plus up to two
-// hexadecimal digits plus }, which is six.
-func TestRegexEscapeWidestByteBoundsEveryByte(t *testing.T) {
+// Regex.StringLen must equal what String actually produces, for every byte the
+// escaper treats specially. Sizing a regex by rendering it performs the work
+// being measured, so the length is computed from the source instead -- and that
+// computation mirrors the escaper case for case, which is exactly the kind of
+// duplication that drifts. This holds the two together.
+//
+// An earlier version of this used an upper bound of four characters per byte,
+// guessed from the shape of a \xNN escape the renderer does not use; the real
+// worst case is \x{..} at six. An exact length removes the guess entirely.
+func TestRegexStringLenMatchesString(t *testing.T) {
 	t.Parallel()
 
+	sources := []string{"", "abc", "a/b", `a\/b`, `\\`, "a\nb", "a\tb"}
 	for b := 0; b < 0x80; b++ {
-		rendered := value.Regex{Source: string(rune(b))}.String()
-		// Strip the delimiters the projection accounts for separately.
-		if grew := len(rendered) - len("//"); grew > regexEscapeWidestByte {
-			t.Errorf("byte %#02x escapes to %d characters, above the %d the projection "+
-				"assumes; a source of those bytes would be under-charged", b, grew,
-				regexEscapeWidestByte)
+		sources = append(sources, string(rune(b)), "a"+string(rune(b))+"z")
+	}
+	for _, flags := range []string{"", "i", "im"} {
+		for _, source := range sources {
+			re := value.Regex{Source: source, Flags: flags}
+			if got, want := re.StringLen(), len(re.String()); got != want {
+				t.Errorf("StringLen for source %q flags %q = %d, want %d; the computed "+
+					"length has drifted from what the escaper produces", source, flags, got, want)
+			}
 		}
 	}
 }
@@ -1804,5 +1813,48 @@ func TestRegexInterpolationIsChargedBeforeRendering(t *testing.T) {
 	ample := compileScriptWithConfig(t, Config{StepQuota: 100000, MemoryQuotaBytes: Unlimited}, src)
 	if _, err := ample.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
 		t.Errorf("interpolating a 15 KiB regex failed with an ample quota: %v", err)
+	}
+}
+
+// The segment cache must retain every projected value, not the first eight.
+// Its inline slots silently dropped later entries, so the ninth distinct
+// placeholder onwards was converted twice -- once to size the render and once to
+// write it -- which is the cost the cache exists to avoid.
+func TestTemplateCacheRetainsEveryPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	// Twelve distinct placeholders, past the eight inline slots, each holding a
+	// big integer whose rendering is proportional to its payload.
+	var text, pairs strings.Builder
+	for i := range 12 {
+		fmt.Fprintf(&text, "{{k%d}}", i)
+		if i > 0 {
+			pairs.WriteString(", ")
+		}
+		fmt.Fprintf(&pairs, "k%d: 2 ** %d", i, 100000+i)
+	}
+	src := fmt.Sprintf("def run(s)\n  \"%s\".template({%s}).bytesize\nend", text.String(), pairs.String())
+
+	// Correctness first: every placeholder renders.
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: Unlimited}, src)
+	got, err := script.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{})
+	if err != nil {
+		t.Fatalf("twelve placeholders: %v", err)
+	}
+	if got.Kind() != KindInt || got.Int() < 12*30000 {
+		t.Fatalf("rendered length %v looks short for twelve big integers", got)
+	}
+
+	// Then that the cache holds them: a lookup for every key must succeed.
+	var cache stringTemplateSegmentCache
+	for i := range 12 {
+		cache.store(fmt.Sprintf("k%d", i), fmt.Sprintf("v%d", i))
+	}
+	for i := range 12 {
+		want := fmt.Sprintf("v%d", i)
+		if value, ok := cache.lookup(fmt.Sprintf("k%d", i)); !ok || value != want {
+			t.Errorf("cache lost key k%d (got %q, present=%v); entries past the inline "+
+				"slots must still be retained", i, value, ok)
+		}
 	}
 }

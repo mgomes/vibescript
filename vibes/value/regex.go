@@ -34,6 +34,37 @@ func (r Regex) String() string {
 	return "/" + escapeRegexLiteralSource(r.Source) + "/" + r.Flags
 }
 
+// StringLen reports the length String would return without building it.
+//
+// Sizing a regex by measuring String() performs the escaping and allocation
+// being measured, which a quota cannot then prevent and a caller that renders
+// afterwards pays for twice. This walks the source instead, mirroring
+// escapeRegexLiteralSource case for case; TestRegexStringLenMatchesString holds
+// the two together.
+func (r Regex) StringLen() int {
+	escaped := 0
+	backslashes := 0
+	for i := 0; i < len(r.Source); i++ {
+		c := r.Source[i]
+		switch {
+		case c == '/' && backslashes%2 == 0:
+			escaped += len(`\/`)
+		case c == '\a', c == '\t', c == '\n', c == '\v', c == '\f', c == '\r':
+			escaped += 2
+		case c < 0x20 || c == 0x7f:
+			escaped += len(`\x{`) + len(strconv.FormatInt(int64(c), 16)) + len(`}`)
+		default:
+			escaped++
+		}
+		if c == '\\' {
+			backslashes++
+		} else {
+			backslashes = 0
+		}
+	}
+	return len("//") + escaped + len(r.Flags)
+}
+
 // escapeRegexLiteralSource returns source rendered so that wrapping it in `/`
 // delimiters yields a valid, round-trippable regex literal. An unescaped forward
 // slash is backslash-escaped (a slash after an odd run of backslashes is already

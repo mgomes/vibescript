@@ -3090,6 +3090,11 @@ type stringTemplateSegmentCache struct {
 	keys   [8]string
 	values [8]string
 	count  int
+	// overflow holds entries past the inline slots. Dropping them silently made
+	// the ninth distinct placeholder onwards convert twice -- once to size the
+	// render and once to write it -- which is the cost this cache exists to
+	// avoid. Templates with eight or fewer distinct keys never allocate it.
+	overflow map[string]string
 }
 
 func (c *stringTemplateSegmentCache) lookup(key string) (string, bool) {
@@ -3098,16 +3103,24 @@ func (c *stringTemplateSegmentCache) lookup(key string) (string, bool) {
 			return c.values[i], true
 		}
 	}
+	if c.overflow != nil {
+		value, ok := c.overflow[key]
+		return value, ok
+	}
 	return "", false
 }
 
 func (c *stringTemplateSegmentCache) store(key, value string) {
-	if c.count >= len(c.keys) {
+	if c.count < len(c.keys) {
+		c.keys[c.count] = key
+		c.values[c.count] = value
+		c.count++
 		return
 	}
-	c.keys[c.count] = key
-	c.values[c.count] = value
-	c.count++
+	if c.overflow == nil {
+		c.overflow = make(map[string]string)
+	}
+	c.overflow[key] = value
 }
 
 func appendTemplateChunk(exec *Execution, b *strings.Builder, chunk string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {

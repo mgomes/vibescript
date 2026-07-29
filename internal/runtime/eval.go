@@ -381,19 +381,24 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 	// depth. Charging steps during that walk (rather than only once per
 	// interpolation part) trips the quota or honors a canceled context instead
 	// of burning unbounded CPU before the memory check runs.
-	// A regex is sized from its payload before anything measures it.
-	// StringByteLenBounded reaches len(v.String()) for one, which escapes and
+	// A regex is sized from its source, and StringByteLenBounded is skipped
+	// entirely for one. That walk reaches len(v.String()), which escapes and
 	// allocates the whole literal to size it -- so the measurement performs the
 	// rendering, ahead of the charge and beyond the quota's reach, and
-	// WriteStringTo then performs it again.
+	// WriteStringTo performs it again afterwards. Regex.StringLen computes the
+	// same length by walking the source, allocating nothing.
+	payload := 0
 	if val.Kind() == KindRegex {
-		if err := exec.chargeStringScan(concatenatedOperandBytes(val)); err != nil {
+		payload = val.Regex().StringLen()
+		if err := exec.chargeStringScan(payload); err != nil {
 			return err
 		}
-	}
-	payload, err := val.StringByteLenBounded(exec.step)
-	if err != nil {
-		return err
+	} else {
+		var err error
+		payload, err = val.StringByteLenBounded(exec.step)
+		if err != nil {
+			return err
+		}
 	}
 	// Charge for the bytes about to be rendered: the bounded walk steps once
 	// per node, which bounds a large aggregate, but a scalar is one node however
@@ -404,6 +409,7 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 			return err
 		}
 	}
+
 	if err := exec.checkProjectedValueRendering(val, projectedBuilderCap(sb, payload)); err != nil {
 		return err
 	}
@@ -1084,16 +1090,12 @@ func concatenatedOperandBytes(v Value) int {
 		}
 		return 0
 	case v.Kind() == KindRegex:
-		// Bounded from the payload rather than measured by rendering it.
+		// Computed from the source rather than measured by rendering it.
 		// Regex.String escapes its source, so len(v.String()) would build the
 		// whole literal just to size it -- and addValues then builds it again,
 		// two renderings billed as one, with the first beyond the quota's reach.
-		// Escaping widens a control byte to \x{..}, six characters, which is the
-		// most any byte grows -- read from escapeRegexLiteralSource rather than
-		// assumed, having first guessed four from the shape of a \xNN escape it
-		// does not use.
-		re := v.Regex()
-		return saturatingAdd(len("//")+len(re.Flags), saturatingMul(regexEscapeWidestByte, len(re.Source)))
+		// StringLen walks the source and allocates nothing.
+		return v.Regex().StringLen()
 	default:
 		// An enum value renders as Enum::Member from two identifiers that can
 		// approach the source-size limit, so it carries a payload its kind does
@@ -1104,12 +1106,6 @@ func concatenatedOperandBytes(v Value) int {
 		return 0
 	}
 }
-
-// regexEscapeWidestByte is the most characters escapeRegexLiteralSource can
-// produce for one source byte: a control character outside the named escapes
-// becomes \x{ plus up to two hexadecimal digits plus }, so six. Used to size a
-// rendering without performing it.
-const regexEscapeWidestByte = 6
 
 // concatenatesToString reports whether addValues will join these operands into
 // a string, which is the only case where + copies a payload.
