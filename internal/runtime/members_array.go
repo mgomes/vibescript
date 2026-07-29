@@ -570,6 +570,9 @@ func arrayMemberExtrema(property string) (Value, error) {
 			cmpState := newArrayCompareState(exec, receiver)
 			defer cmpState.release()
 			for _, item := range arr[1:] {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				cmpMin, err := arraySortCompareValuesWith(cmpState, item, minVal)
 				if err != nil {
 					return NewNil(), sortComparisonError(err, "array.minmax values are not comparable")
@@ -616,6 +619,9 @@ func arrayMemberMinMax(name string, wantMax bool) Value {
 		cmpState := newArrayCompareState(exec, receiver)
 		defer cmpState.release()
 		for _, item := range arr[1:] {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
 			cmp, err := arraySortCompareValuesWith(cmpState, item, best)
 			if err != nil {
 				return NewNil(), sortComparisonError(err, fmt.Sprintf("%s values are not comparable", name))
@@ -1620,6 +1626,9 @@ func arrayMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.include? expects exactly one value")
 			}
 			for _, item := range receiver.Array() {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				if item.Equal(args[0]) {
 					return NewBool(true), nil
 				}
@@ -2118,6 +2127,9 @@ func arrayForwardIndex(exec *Execution, receiver Value, args []Value, block Valu
 	}
 	arr := receiver.Array()
 	for idx := offset; idx < len(arr); idx++ {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
 		if arr[idx].Equal(args[0]) {
 			return NewInt(int64(idx)), nil
 		}
@@ -2178,6 +2190,9 @@ func arrayReverseIndex(exec *Execution, receiver Value, args []Value, block Valu
 		offset = len(arr) - 1
 	}
 	for idx := offset; idx >= 0; idx-- {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
 		if arr[idx].Equal(args[0]) {
 			return NewInt(int64(idx)), nil
 		}
@@ -2756,6 +2771,13 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		// Deduplication canonicalizes every element as a set key; charge big
 		// elements' words before the build.
 		if err := exec.chargeBigIntElementKeySteps(arr); err != nil {
+			return NewNil(), false, err
+		}
+		// The blockless path canonicalizes every element in one pass with no
+		// early exit, so it charges the whole receiver up front. The block form
+		// below steps per element instead, which lets a block that raises stop
+		// paying for the elements it never reached.
+		if err := exec.stepN(len(arr)); err != nil {
 			return NewNil(), false, err
 		}
 		unique, err := uniqueValuesChecked(arr, exec.checkContext)
