@@ -502,7 +502,26 @@ func jsonHexValue(c byte) (byte, bool) {
 	}
 }
 
+// appendJSONValue renders val and settles the output produced so far.
+//
+// Literals, delimiters and separators never reach checkOutputBytes on their
+// own, so a value that fails after a long prefix -- tens of thousands of nils
+// followed by an unsupported value -- left that whole prefix charged to
+// nothing, and the serialization error is rescuable. Settling per appended
+// value bills each one as it is accepted, so a failure partway through keeps
+// what was already produced, and the output cap applies to it too.
 func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, error) {
+	out, err := appendJSONValueRendered(buf, val, state)
+	if err != nil {
+		return nil, err
+	}
+	if err := state.checkOutputBytes(len(out)); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func appendJSONValueRendered(buf []byte, val Value, state *jsonStringifyState) ([]byte, error) {
 	switch val.Kind() {
 	case KindNil:
 		return append(buf, "null"...), nil

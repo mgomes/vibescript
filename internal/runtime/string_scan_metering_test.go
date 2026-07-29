@@ -1127,3 +1127,47 @@ func TestJSONParseChargesForItsInput(t *testing.T) {
 		})
 	}
 }
+
+// A value that fails to serialize after a long prefix still built that prefix.
+// Literals and separators never reach checkOutputBytes on their own and the
+// top-level settlement is skipped on error, so 60,000 nils rendered for eight
+// steps -- and the serialization error is rescuable, so a script could repeat
+// it. The observable is which error surfaces: once the prefix is charged, a
+// small quota stops the render before it reaches the value that fails.
+func TestJSONChargesTheOutputBuiltBeforeAnError(t *testing.T) {
+	t.Parallel()
+
+	// Many nils followed by something JSON cannot represent.
+	elems := make([]Value, 60000)
+	for i := range elems {
+		elems[i] = NewNil()
+	}
+	elems[len(elems)-1] = NewBuiltin("unserializable",
+		func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) { return NewNil(), nil })
+	arg := NewArray(elems)
+	src := "def run(a)\n  JSON.stringify(a)\nend"
+
+	errorAt := func(quota int) string {
+		script := compileScriptWithConfig(t, Config{StepQuota: quota, MemoryQuotaBytes: Unlimited}, src)
+		_, err := script.Call(context.Background(), "run", []Value{arg}, CallOptions{})
+		if err == nil {
+			return "none"
+		}
+		if strings.Contains(err.Error(), "quota") {
+			return "quota"
+		}
+		return "serialize"
+	}
+
+	// Far below the prefix's cost the quota must stop it.
+	if got := errorAt(900); got != "quota" {
+		t.Errorf("a 900-step quota produced a %s error; the 60,000 literals rendered "+
+			"before the failing value must be charged, or the error can be rescued and "+
+			"the rendering repeated for free", got)
+	}
+	// Well above it the render reaches the value it cannot represent.
+	if got := errorAt(100000); got != "serialize" {
+		t.Errorf("a 100,000-step quota produced a %s error, want the serialization "+
+			"failure; the charge must not exceed the bytes actually produced", got)
+	}
+}
