@@ -871,7 +871,18 @@ func (p formatProjection) stringRunes(val Value) (int, error) {
 		return utf8.RuneCountInString(val.String()), nil
 	default:
 		if p.exec != nil {
-			return val.StringRuneLenBounded(p.exec.step)
+			// An aggregate walks a step per node, which no field width bounds:
+			// counting the runes of a large string nested in a one-element array
+			// costs one step. Charge the bytes the walk actually traverses, as
+			// the scalar branch above does.
+			n, err := val.StringRuneLenBounded(p.exec.step)
+			if err != nil {
+				return 0, err
+			}
+			if err := p.exec.chargeStringScan(n); err != nil {
+				return 0, err
+			}
+			return n, nil
 		}
 		return val.StringRuneLen(), nil
 	}
@@ -896,7 +907,10 @@ func (p formatProjection) stringBytesUpTo(val Value, limit int) (int, error) {
 				return 0, err
 			}
 			if truncated {
-				return limit, nil
+				n = limit
+			}
+			if err := p.exec.chargeStringScan(n); err != nil {
+				return 0, err
 			}
 			return n, nil
 		}

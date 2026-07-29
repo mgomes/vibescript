@@ -472,6 +472,10 @@ func TestAggregateFormatArgumentsChargeRenderedBytes(t *testing.T) {
 	for _, expr := range []string{
 		"format(\"%s\", [s]).bytesize",
 		"format(\"%s\", {a: s}).bytesize",
+		// A width alongside a precision needs the value's rune count, which
+		// traverses the whole nested string however narrow the field.
+		"format(\"%1.1s\", [s]).bytesize",
+		"format(\"%2.2s\", {a: s}).bytesize",
 	} {
 		t.Run(expr, func(t *testing.T) {
 			t.Parallel()
@@ -481,6 +485,31 @@ func TestAggregateFormatArgumentsChargeRenderedBytes(t *testing.T) {
 				t.Errorf("%s cost %d steps over 8 KiB and %d over 64 KiB; the bytes an "+
 					"aggregate renders to must be charged, not just its node count",
 					expr, atSmall, atLarge)
+			}
+		})
+	}
+}
+
+// A precision with no width is the case that genuinely does not scan: the
+// projection walks the value only up to the precision's byte limit and stops,
+// so the cost is bounded by the field rather than by the argument. Pinned as a
+// control, so the charges above are not mistaken for a rule that every
+// aggregate format must scale.
+func TestPrecisionOnlyAggregateFormatStaysBounded(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"format(\"%.4s\", [s]).bytesize",
+		"format(\"%.4s\", {a: s}).bytesize",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge != atSmall {
+				t.Errorf("%s cost %d steps over 8 KiB and %d over 64 KiB; a precision "+
+					"without a width stops the walk at its own limit, so the argument's "+
+					"size must not matter", expr, atSmall, atLarge)
 			}
 		})
 	}
