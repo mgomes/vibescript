@@ -67,20 +67,24 @@ var stringConstantCostMembers = map[string]struct{}{
 // methods cannot inspect more of an argument than the receiver holds and the
 // charge for one is capped there.
 //
-// Membership must be earned, not assumed. An argument that is preprocessed
-// independently of the receiver is not bounded by it: count parses every byte
-// of its character set, and match, match? and scan compile a whole pattern, so
-// capping those let "".count(s) parse a large argument for almost nothing.
-// split is out because its separator handling was not verified. The cap lowers
-// a charge, so a wrong membership under-charges -- the failure this branch
-// exists to prevent -- while an omission only over-charges.
+// Membership must be earned by reading the implementation, not assumed from the
+// method's shape. An argument preprocessed independently of the receiver is not
+// bounded by it: count parses every byte of its character set, match, match?
+// and scan compile a whole pattern, and casecmp? validates its argument's UTF-8
+// before comparing, so capping any of them let a large argument through for
+// almost nothing. casecmp stays because asciiCaseCompare stops at the shorter
+// operand. split is out because its separator handling was not verified.
+//
+// The cap lowers a charge, so a wrong membership under-charges -- the failure
+// this branch exists to prevent -- while an omission only over-charges.
+// TestCappedArgumentsAreActuallyBoundedByTheReceiver exercises every member.
 //
 // A method that copies an argument into its result (concat, prepend, insert,
 // sub) must also stay out.
 func stringComparesArgumentsToReceiver(name string) bool {
 	switch name {
 	case "string.start_with?", "string.end_with?", "string.include?",
-		"string.index", "string.rindex", "string.casecmp", "string.casecmp?",
+		"string.index", "string.rindex", "string.casecmp",
 		"string.partition", "string.rpartition", "string.slice":
 		return true
 	default:

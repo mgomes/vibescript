@@ -625,3 +625,64 @@ func TestDirectStringCallsMeterEveryArgument(t *testing.T) {
 			"the two entrances meter different things", small, large)
 	}
 }
+
+// Every member of the capped set, exercised. Membership asserts that a method
+// cannot inspect more of an argument than the receiver holds, and that is a
+// claim about its implementation rather than its shape: count parses its
+// character set byte by byte, casecmp? validates its argument's UTF-8 before
+// comparing, and both looked like comparisons from the outside. Each was capped
+// on that resemblance and each under-charged until it was reported.
+//
+// So the whole set is tested rather than the members someone happened to
+// question: a two-byte receiver with a growing argument must cost the same at
+// every size.
+func TestCappedArgumentsAreActuallyBoundedByTheReceiver(t *testing.T) {
+	t.Parallel()
+
+	// One call per capped method, each passing the host string where the method
+	// takes one.
+	capped := map[string]string{
+		"start_with?": "\"ab\".start_with?(s).inspect",
+		"end_with?":   "\"ab\".end_with?(s).inspect",
+		"include?":    "\"ab\".include?(s).inspect",
+		"index":       "\"ab\".index(s).inspect",
+		"rindex":      "\"ab\".rindex(s).inspect",
+		"casecmp":     "\"ab\".casecmp(s).inspect",
+		"partition":   "\"ab\".partition(s).length",
+		"rpartition":  "\"ab\".rpartition(s).length",
+		"slice":       "\"ab\".slice(s).inspect",
+	}
+	names := make([]string, 0, len(capped))
+	for name := range capped {
+		names = append(names, name)
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, capped[name], 8<<10)
+			atLarge := minStepsForStringOp(t, capped[name], 512<<10)
+			if atSmall != atLarge {
+				t.Errorf("%s cost %d steps with an 8 KiB argument and %d with 512 KiB; a "+
+					"method is only in the capped set if the receiver bounds what it can "+
+					"inspect, so its cost must not follow the argument", capped[name],
+					atSmall, atLarge)
+			}
+		})
+	}
+}
+
+// casecmp? validates its argument's UTF-8 in full before comparing, so the
+// receiver bounds nothing. It resembles casecmp, which stops at the shorter
+// operand and stays capped -- the distinction is in the implementation, not the
+// name.
+func TestCasecmpPredicateChargesItsWholeArgument(t *testing.T) {
+	t.Parallel()
+
+	atSmall := minStepsForStringOp(t, "\"ab\".casecmp?(s).inspect", 8<<10)
+	atLarge := minStepsForStringOp(t, "\"ab\".casecmp?(s).inspect", 64<<10)
+	if atLarge < atSmall*4 {
+		t.Errorf("casecmp? cost %d steps over an 8 KiB argument and %d over 64 KiB; it "+
+			"scans the whole argument to validate it, so the receiver cannot cap the "+
+			"charge", atSmall, atLarge)
+	}
+}
