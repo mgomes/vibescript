@@ -130,20 +130,21 @@ func (s *valueSet) addCounted(v Value, hint int) (bool, int) {
 	return true, probes
 }
 
-// chargeSetProbes charges the step quota for equality probes a valueSet
-// operation performed. Charging nothing must cost nothing, and stepN charges
-// one step for a count of zero, which would otherwise triple the per-element
-// cost of deduplicating scalars.
+// chargeScanSteps charges the step quota for n units of scanning work: the
+// elements a pass will visit, or the equality probes a valueSet operation
+// performed. Scanning nothing must cost nothing, and stepN charges one step
+// even for a count of zero, which would make an empty receiver pay for a scan
+// it never ran and would triple the per-element cost of deduplicating scalars.
 //
-// The charge necessarily follows the work, since only the completed scan knows
-// its length. A single operation can therefore overshoot the quota before it
-// fires, by at most the number of distinct composites already held -- one
+// A probe charge necessarily follows the work, since only the completed scan
+// knows its length. A single operation can therefore overshoot the quota before
+// it fires, by at most the number of distinct composites already held -- one
 // element's worth, which the element before it just paid nearly in full.
-func (exec *Execution) chargeSetProbes(probes int) error {
-	if probes <= 0 {
+func (exec *Execution) chargeScanSteps(n int) error {
+	if n <= 0 {
 		return nil
 	}
-	return exec.stepN(probes)
+	return exec.stepN(n)
 }
 
 // containsCounted reports whether the set holds a value equal to v, along with

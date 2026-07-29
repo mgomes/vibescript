@@ -209,3 +209,27 @@ func TestUniqChargesOnlyTheProbesTheScanPerforms(t *testing.T) {
 			"must not be charged for a full scan", size, withTail, repeats, allMisses)
 	}
 }
+
+// A scan charge must be proportional to the elements actually scanned, so an
+// empty receiver costs strictly less than a one-element one. stepN charges a
+// step even for a count of zero, so a charge of len(arr) written without a
+// guard made [].uniq cost exactly what [x].uniq cost -- a scan it never ran,
+// which an exact step quota would notice. include? and index step inside their
+// loops and so were never affected; they are controls on the same assertion.
+func TestEmptyReceiverPaysNoScanCharge(t *testing.T) {
+	t.Parallel()
+
+	exprs := []string{"a.uniq.length", "a.include?(-1).inspect", "a.index(-1).inspect"}
+	for _, expr := range exprs {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			empty := minStepsToCompleteOver(t, expr, nil, 1000)
+			single := minStepsToCompleteOver(t, expr, []Value{NewInt(9)}, 1000)
+			if empty >= single {
+				t.Errorf("%s cost %d steps over an empty receiver and %d over a "+
+					"one-element one; a scan over no elements must not be charged "+
+					"for one", expr, empty, single)
+			}
+		})
+	}
+}
