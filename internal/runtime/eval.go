@@ -1070,6 +1070,25 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 // Concatenation copies both operands. A comparison stops at the first differing
 // byte and answers immediately when the lengths differ, so it cannot read more
 // than the shorter operand holds.
+// chargeRegexSourceWalk charges the source traversal Regex.StringLen performs,
+// for the operator that will go on to render a regex operand. Only concatenation
+// renders one: comparison requires matching kinds, so a regex never reaches the
+// comparison charge with a string on the other side.
+func (exec *Execution) chargeRegexSourceWalk(operator TokenType, left, right Value) error {
+	if operator != tokenPlus {
+		return nil
+	}
+	for _, v := range [2]Value{left, right} {
+		if v.Kind() != KindRegex {
+			continue
+		}
+		if err := exec.chargeStringScan(len(v.Regex().Source)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // concatenatedOperandBytes bounds what an operand contributes to a
 // concatenation, which is the size of its rendered form rather than of the
 // operand itself.
@@ -1124,6 +1143,13 @@ func stringLikeOperand(v Value) bool {
 }
 
 func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right Value) error {
+	// A regex is sized by walking its source, so that walk is charged before it
+	// runs: sizing is one full pass and rendering is another, and a single
+	// charge covered one of two. An exhausted quota now stops the sizing pass
+	// rather than being billed for it afterwards.
+	if err := exec.chargeRegexSourceWalk(operator, left, right); err != nil {
+		return err
+	}
 	switch operator {
 	case tokenPlus:
 		// Concatenation copies whatever it is given, and addValues concatenates

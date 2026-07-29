@@ -1858,3 +1858,47 @@ func TestTemplateCacheRetainsEveryPlaceholder(t *testing.T) {
 		}
 	}
 }
+
+// Sizing a regex walks its source and rendering walks it again, so both passes
+// are charged and the sizing pass is charged before it runs. A single charge
+// covered one of two, and an exhausted quota could not stop the first.
+func TestRegexSizingWalkIsChargedBeforeItRuns(t *testing.T) {
+	t.Parallel()
+
+	source := strings.Repeat("a", 15<<10)
+	for _, src := range []string{
+		fmt.Sprintf("def run(s)\n  (\"\" + /%s/).bytesize\nend", source),
+		fmt.Sprintf("def run(s)\n  \"#{/%s/}\".bytesize\nend", source),
+	} {
+		t.Run(src[:28], func(t *testing.T) {
+			t.Parallel()
+			// One step: not enough for the sizing walk, so nothing may render.
+			tight := compileScriptWithConfig(t, Config{StepQuota: 1, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := tight.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err == nil {
+				t.Error("a 15 KiB regex rendered on a one-step quota; the sizing walk reads " +
+					"the whole source and must be charged before it runs")
+			}
+			ample := compileScriptWithConfig(t, Config{StepQuota: 100000, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := ample.Call(context.Background(), "run", []Value{NewString("")}, CallOptions{}); err != nil {
+				t.Errorf("a 15 KiB regex failed with an ample quota: %v", err)
+			}
+		})
+	}
+}
+
+// The cache's segments stay live while the result builder is allocated, so the
+// memory peak is the builder plus them. Reserving only the builder let a finite
+// quota approve an operation whose real peak was about twice what was checked.
+func TestTemplateReservesItsRetainedSegments(t *testing.T) {
+	t.Parallel()
+
+	var cache stringTemplateSegmentCache
+	for i := range 12 {
+		cache.store(fmt.Sprintf("k%d", i), strings.Repeat("v", 1000))
+	}
+	// Twelve values of a thousand bytes, plus keys, all still held.
+	if got := cache.retainedBytes(); got < 12*1000 {
+		t.Errorf("retainedBytes = %d, want at least %d; every retained segment counts "+
+			"toward the peak, including those past the inline slots", got, 12*1000)
+	}
+}

@@ -3110,6 +3110,20 @@ func (c *stringTemplateSegmentCache) lookup(key string) (string, bool) {
 	return "", false
 }
 
+// retainedBytes reports the bytes the cache is holding. Its segments stay live
+// while the result builder is allocated, so the peak is the builder plus these
+// and the memory reservation must cover both.
+func (c *stringTemplateSegmentCache) retainedBytes() int {
+	total := 0
+	for i := range c.count {
+		total = saturatingAdd(total, saturatingAdd(len(c.keys[i]), len(c.values[i])))
+	}
+	for key, value := range c.overflow {
+		total = saturatingAdd(total, saturatingAdd(len(key), len(value)))
+	}
+	return total
+}
+
 func (c *stringTemplateSegmentCache) store(key, value string) {
 	if c.count < len(c.keys) {
 		c.keys[c.count] = key
@@ -3236,7 +3250,11 @@ func stringTemplateWithExecution(exec *Execution, text string, context Value, st
 	}
 	var b strings.Builder
 	if renderedLen > 0 {
-		if err := exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, renderedLen), receiver, args, kwargs, block); err != nil {
+		// The cache's segments are still live here -- they are what the render
+		// reads instead of converting again -- so the peak is the builder plus
+		// them, not the builder alone.
+		projected := saturatingAdd(projectedBuilderCap(&b, renderedLen), cache.retainedBytes())
+		if err := exec.checkProjectedStringBytesWithCallRoots(projected, receiver, args, kwargs, block); err != nil {
 			return "", err
 		}
 		b.Grow(renderedLen)
