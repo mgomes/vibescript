@@ -906,6 +906,9 @@ func TestStringOperatorsChargeForTheirOperands(t *testing.T) {
 		"(s.to_sym == s.to_sym).to_s.length",
 		"(s.to_sym <=> s.to_sym).to_s.length",
 		"(s.to_sym < s.to_sym).to_s.length",
+		// eql? and equal? are universal members, not string ones, so they take
+		// the same bypass an operator does -- and symbols compare by name.
+		"s.to_sym.eql?(s.to_sym).to_s.length",
 	}
 	for _, expr := range ops {
 		t.Run(expr, func(t *testing.T) {
@@ -1388,5 +1391,44 @@ func TestSubstringViewTransformsAreNotChargedForTheReceiver(t *testing.T) {
 		t.Errorf("stripping 8 KiB of whitespace cost %d steps and 64 KiB cost %d; strip "+
 			"scans a receiver that is entirely whitespace and must stay charged for it",
 			small, large)
+	}
+}
+
+// chomp is constant only when called with no argument. chomp("") removes every
+// trailing newline, so it scans a receiver that is all newlines, and chomp(sep)
+// compares a caller-supplied suffix. Exempting the method by name covered all
+// three forms and left the linear two unmetered -- the cost here depends on how
+// the method was called, not on which method it is.
+func TestChompIsExemptOnlyWithoutAnArgument(t *testing.T) {
+	t.Parallel()
+
+	newlines := func(n int) Value { return NewString(strings.Repeat("\n", n)) }
+	steps := func(src string, arg Value) int {
+		lo, hi := 1, 1<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{arg}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	// No argument: flat, however long the receiver.
+	bare := "def run(s)\n  s.chomp.bytesize\nend"
+	if small, large := steps(bare, newlines(8<<10)), steps(bare, newlines(64<<10)); small != large {
+		t.Errorf("chomp with no argument cost %d steps over 8 KiB of newlines and %d over "+
+			"64 KiB; it removes one line ending whatever the receiver holds", small, large)
+	}
+
+	// With an empty separator it trims every trailing newline, so it scans.
+	trimAll := "def run(s)\n  s.chomp(\"\").bytesize\nend"
+	small, large := steps(trimAll, newlines(8<<10)), steps(trimAll, newlines(64<<10))
+	if large < small*4 {
+		t.Errorf(`chomp("") cost %d steps over 8 KiB of newlines and %d over 64 KiB; it `+
+			"removes every trailing newline, so it reads the whole receiver", small, large)
 	}
 }

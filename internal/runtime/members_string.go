@@ -57,13 +57,14 @@ var stringConstantCostMembers = map[string]struct{}{
 	// none of these touch the receiver's length. slice is charged rather than
 	// exempt because it indexes by rune, which scans to the offset.
 	"byteslice": {}, "to_sym": {}, "intern": {},
-	// chop and chomp inspect only the receiver's final bytes and return a
-	// substring view, so their cost does not follow its length even when every
-	// byte is a candidate: measured flat from 64 KiB to 2 MiB on an all-space
-	// receiver. strip, lstrip and rstrip are not here -- they look constant on
-	// ordinary text but scan the whole receiver when it is all whitespace,
-	// rising 27 to 32 times across that same range.
-	"chop": {}, "chop!": {}, "chomp": {}, "chomp!": {},
+	// chop inspects only the receiver's final bytes and returns a substring
+	// view, so its cost does not follow the length even when every byte is a
+	// candidate: flat from 64 KiB to 2 MiB on an all-newline receiver. strip,
+	// lstrip and rstrip are not here -- they look constant on ordinary text but
+	// scan the whole receiver when it is all whitespace, rising 27 to 32 times
+	// across that same range. chomp is not here either: it is constant only
+	// with no argument, so stringCallChargesReceiver decides it per call.
+	"chop": {}, "chop!": {},
 	// replace ignores the receiver entirely and returns its argument.
 	"replace": {},
 }
@@ -100,6 +101,24 @@ func stringArgumentCapFactor(name string) int {
 		return utf8.UTFMax
 	default:
 		return 0
+	}
+}
+
+// stringCallChargesReceiver reports whether this call must pay for its
+// receiver's length. It exists for methods whose cost depends on how they were
+// called rather than on which method they are.
+//
+// chomp with no argument removes one fixed line ending and is constant however
+// long the receiver. chomp("") removes every trailing newline, which scans the
+// whole receiver when it is all newlines -- 26 times the cost across a 32x
+// range -- and chomp(sep) compares a caller-supplied suffix. Exempting the name
+// covered all three and left the linear two unmetered.
+func stringCallChargesReceiver(name string, args []Value) bool {
+	switch name {
+	case "string.chomp", "string.chomp!":
+		return len(args) > 0
+	default:
+		return true
 	}
 }
 
@@ -145,7 +164,7 @@ func chargeStringScanBeforeCall(member Value) Value {
 	fn := inner.Fn
 	capFactor := stringArgumentCapFactor(inner.Name)
 	metered.Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		if receiver.Kind() == KindString {
+		if receiver.Kind() == KindString && stringCallChargesReceiver(inner.Name, args) {
 			if err := exec.chargeStringCall(receiver, args, capFactor); err != nil {
 				return NewNil(), err
 			}

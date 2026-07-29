@@ -381,10 +381,12 @@ func newBoundEqualityPredicate(property string, cell *boundReceiver, compare fun
 			return NewNil(), err
 		}
 		// Comparing two strings reads their bytes, and this predicate is not a
-		// string member, so it never passed through the string call charge. A
+		// string member, so it never passed through the string call charge.
+		// Symbols compare by their name and converting to one is exempt, so
+		// they belong here as much as strings do. A
 		// comparison answers immediately when the lengths differ and otherwise
 		// stops at the first difference, so the shorter operand bounds it.
-		if exec != nil && cell.value.Kind() == KindString && args[0].Kind() == KindString {
+		if exec != nil && stringLikeOperand(cell.value) && stringLikeOperand(args[0]) {
 			if err := exec.chargeStringScan(min(len(cell.value.String()), len(args[0].String()))); err != nil {
 				return NewNil(), err
 			}
