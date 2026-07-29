@@ -1432,3 +1432,46 @@ func TestChompIsExemptOnlyWithoutAnArgument(t *testing.T) {
 			"removes every trailing newline, so it reads the whole receiver", small, large)
 	}
 }
+
+// A string compared with a symbol is rejected on kind before either name is
+// read, and ordering calls the pair incomparable, so the answer is constant
+// however long they are. Charging string-like operands without requiring the
+// kinds to match billed a large receiver for that constant-time answer.
+func TestMixedStringAndSymbolComparisonIsNotCharged(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"(s == s.to_sym).to_s.length",
+		"(s != s.to_sym).to_s.length",
+		"s.eql?(s.to_sym).to_s.length",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 512<<10)
+			if atSmall != atLarge {
+				t.Errorf("%s cost %d steps over 8 KiB and %d over 512 KiB; a kind mismatch "+
+					"answers without reading either name", expr, atSmall, atLarge)
+			}
+		})
+	}
+}
+
+// Ordering two strings or two symbols scans their common prefix once. The
+// shared helper compared with < and then >, so symbol ordering -- and array
+// element ordering, which uses the same helper -- did twice the work the charge
+// covered.
+func TestOrderedComparisonMakesOnePass(t *testing.T) {
+	t.Parallel()
+
+	if got := compareOrderedStrings("a", "b"); got != -1 {
+		t.Errorf("compareOrderedStrings(a, b) = %d, want -1", got)
+	}
+	if got := compareOrderedStrings("b", "a"); got != 1 {
+		t.Errorf("compareOrderedStrings(b, a) = %d, want 1", got)
+	}
+	equal := strings.Repeat("a", 4096)
+	if got := compareOrderedStrings(equal, equal); got != 0 {
+		t.Errorf("compareOrderedStrings of equal strings = %d, want 0", got)
+	}
+}

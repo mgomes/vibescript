@@ -386,7 +386,7 @@ func newBoundEqualityPredicate(property string, cell *boundReceiver, compare fun
 		// they belong here as much as strings do. A
 		// comparison answers immediately when the lengths differ and otherwise
 		// stops at the first difference, so the shorter operand bounds it.
-		if exec != nil && stringLikeOperand(cell.value) && stringLikeOperand(args[0]) {
+		if exec != nil && cell.value.Kind() == args[0].Kind() && stringLikeOperand(cell.value) {
 			if err := exec.chargeStringScan(min(len(cell.value.String()), len(args[0].String()))); err != nil {
 				return NewNil(), err
 			}

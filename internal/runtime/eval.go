@@ -1031,7 +1031,11 @@ func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right 
 	// Symbols carry a string name and compare by it, and converting a string to
 	// a symbol is exempt because it copies nothing -- so charging only strings
 	// let a script convert two long values and compare the symbols for free.
-	if !stringLikeOperand(left) || !stringLikeOperand(right) {
+	//
+	// The kinds must match. A string against a symbol is rejected on kind
+	// before either name is read, and ordering calls the pair incomparable, so
+	// charging that pair billed a large receiver for a constant-time answer.
+	if left.Kind() != right.Kind() || !stringLikeOperand(left) {
 		return nil
 	}
 	switch operator {
