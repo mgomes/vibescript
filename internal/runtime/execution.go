@@ -383,11 +383,39 @@ func (exec *Execution) pushEnv(env *Env) {
 		exec.envStack = append(exec.envStack, env)
 		return
 	}
-	exec.baseTopoVersion++
+	if !exec.pushingDuplicateTop(env) {
+		exec.baseTopoVersion++
+	}
 	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
 		exec.nonBaseParentDepth++
 	}
 	exec.envStack = append(exec.envStack, env)
+}
+
+// pushingDuplicateTop reports whether env is already the top of the env stack,
+// so pushing it adds a second slot for a scope the stack already holds.
+//
+// A statement list evaluates in the scope it is handed rather than a fresh one,
+// so a loop body re-pushes the enclosing scope on every iteration. That is a
+// duplicate slot, not a new scope: the estimator charges each env once by
+// identity (see memoryEstimator.env), so the reachable set and its byte total
+// are the same before and after. Bumping the topology version for it invalidated
+// the base-walk memo twice per iteration -- once on the push, once on the pop --
+// and each miss re-walks the whole reachable graph, which is what made a loop
+// under a memory quota quadratic in its own body's iteration count (#1130).
+//
+// popEnv applies the mirrored test, so the two stay balanced: a push that
+// skipped the bump is popped by a pop that skips it too.
+func (exec *Execution) pushingDuplicateTop(env *Env) bool {
+	return env != nil && len(exec.envStack) > 0 && exec.envStack[len(exec.envStack)-1] == env
+}
+
+// poppingDuplicateTop reports whether the slot about to be popped holds the same
+// scope as the slot beneath it, leaving the reachable set unchanged. It is the
+// mirror of pushingDuplicateTop; see there for why the topology bump is skipped.
+func (exec *Execution) poppingDuplicateTop() bool {
+	n := len(exec.envStack)
+	return n >= 2 && exec.envStack[n-1] != nil && exec.envStack[n-1] == exec.envStack[n-2]
 }
 
 func (exec *Execution) currentEnv() *Env {
@@ -424,7 +452,9 @@ func (exec *Execution) popEnv() {
 		exec.envStack = exec.envStack[:len(exec.envStack)-1]
 		return
 	}
-	exec.baseTopoVersion++
+	if !exec.poppingDuplicateTop() {
+		exec.baseTopoVersion++
+	}
 	if exec.memoryQuota > 0 && env != nil && !exec.isBaseEnv(env.parent) {
 		if estimatorVerify && exec.nonBaseParentDepth <= 0 {
 			// This decrement must pair with an increment from the same scope's
