@@ -2241,10 +2241,23 @@ func stringReplaceResult(
 			return "", false, err
 		}
 		yield := stringReplaceBlockYield(exec, runner)
+		var blockOut string
+		var blockMatched bool
 		if global {
-			return stringGSubBlock(method, text, pattern, regex, patternIsRegex, yield)
+			blockOut, blockMatched, err = stringGSubBlock(method, text, pattern, regex, patternIsRegex, yield)
+		} else {
+			blockOut, blockMatched, err = stringSubBlock(method, text, pattern, regex, patternIsRegex, yield)
 		}
-		return stringSubBlock(method, text, pattern, regex, patternIsRegex, yield)
+		if err != nil {
+			return "", false, err
+		}
+		// The block form expands exactly as the replacement form does -- a block
+		// returning a large string writes it once per match -- so it takes the
+		// same charge rather than returning ahead of it.
+		if err := exec.chargeStringScan(len(blockOut)); err != nil {
+			return "", false, err
+		}
+		return blockOut, blockMatched, nil
 	}
 
 	if len(args) != 2 {

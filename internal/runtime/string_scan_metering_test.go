@@ -734,3 +734,51 @@ func TestTemplateChargesForItsRenderedContext(t *testing.T) {
 		})
 	}
 }
+
+// The block form of a substitution expands exactly as the replacement form
+// does -- a block returning a large string writes it once per match -- but it
+// returned ahead of the output charge, so the quota never fired.
+func TestBlockSubstitutionChargesForItsOutput(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"\"aaaa\".gsub(\"a\") { s }.bytesize",
+		"\"aaaa\".sub(\"a\") { s }.bytesize",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps with an 8 KiB block result and %d with 64 KiB; "+
+					"the block form writes what it returns just as the replacement form "+
+					"does", expr, atSmall, atLarge)
+			}
+		})
+	}
+}
+
+// Serializing descends into a structure and scans, escapes and copies every
+// string it finds. Those strings are not arguments to the call, so the
+// per-call charge never saw them: stringifying a hash holding a 512 KiB value
+// ran for 1.8 seconds with the quota never firing.
+func TestSerializationChargesForNestedStrings(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"JSON.stringify({v: s}).bytesize",
+		"JSON.stringify([s]).bytesize",
+		"JSON.stringify({a: {b: [s]}}).bytesize",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%s cost %d steps over an 8 KiB nested string and %d over 64 KiB; "+
+					"a string reached through a structure is scanned and copied like any "+
+					"other", expr, atSmall, atLarge)
+			}
+		})
+	}
+}

@@ -794,6 +794,15 @@ func (state *jsonStringifyState) popSeenHash(slot jsonSeenSlot) {
 func appendJSONString(buf []byte, s string, state *jsonStringifyState) ([]byte, error) {
 	const hexDigits = "0123456789abcdef"
 
+	// Every byte here is scanned for characters needing escapes and then copied.
+	// A string reached through a hash or array is not a string argument to
+	// stringify, so the per-call charge never saw it: the output and memory
+	// limits bound one call's size, not the work of a loop of them.
+	if state.exec != nil {
+		if err := state.exec.chargeStringScan(len(s)); err != nil {
+			return nil, err
+		}
+	}
 	if err := state.checkOutputBytes(len(buf) + 1); err != nil {
 		return nil, err
 	}

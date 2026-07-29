@@ -21,3 +21,6 @@
   Operations whose output size comes from a number rather than their inputs --
   `ljust`, `rjust`, `center`, and `String#*` -- charge for the bytes they write,
   since a few-byte receiver can produce megabytes.
+  Serializing and templating charge for the strings they reach through a
+  structure, so `JSON.stringify({v: big})` and `"{{v}}".template({v: big})`
+  cost what they copy rather than what their receiver holds.
