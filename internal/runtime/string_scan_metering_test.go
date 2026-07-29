@@ -636,6 +636,14 @@ func TestDirectStringCallsMeterEveryArgument(t *testing.T) {
 // So the whole set is tested rather than the members someone happened to
 // question: a two-byte receiver with a growing argument must cost the same at
 // every size.
+//
+// Note what this does and does not prove. It shows the *charge* does not follow
+// the argument, which is the property the cap claims. It cannot show the *work*
+// does not, because unmetered work costs no steps by definition -- index and
+// rindex passed this test while scanning whole needles through stringIsASCII,
+// and only wall-clock revealed it. The other half of the claim rests on each
+// implementation rejecting an oversized argument before reading it, which is
+// reviewed per method rather than enforced here.
 func TestCappedArgumentsAreActuallyBoundedByTheReceiver(t *testing.T) {
 	t.Parallel()
 

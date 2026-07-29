@@ -1144,6 +1144,15 @@ func stringRuneIndex(text, needle string, offset int) int {
 	if offset < 0 {
 		return -1
 	}
+	// A needle longer than the haystack cannot be a substring of it, so reject
+	// on length before anything reads the needle. stringIsASCII scans whatever
+	// it is given, and && short-circuits on the receiver, so a short receiver
+	// let a large needle be scanned in full -- unmetered work that the
+	// receiver-bounded classification in stringComparesArgumentsToReceiver
+	// promises does not happen.
+	if len(needle) > len(text) {
+		return -1
+	}
 	if stringIsASCII(text) && stringIsASCII(needle) {
 		if offset > len(text) {
 			return -1
@@ -1197,6 +1206,15 @@ func stringRuneIndexFallback(text, needle string, offset int) int {
 
 func stringRuneRIndex(text, needle string, offset int) int {
 	if offset < 0 {
+		return -1
+	}
+	// A needle longer than the haystack cannot be a substring of it, so reject
+	// on length before anything reads the needle. stringIsASCII scans whatever
+	// it is given, and && short-circuits on the receiver, so a short receiver
+	// let a large needle be scanned in full -- unmetered work that the
+	// receiver-bounded classification in stringComparesArgumentsToReceiver
+	// promises does not happen.
+	if len(needle) > len(text) {
 		return -1
 	}
 	if stringIsASCII(text) && stringIsASCII(needle) {
