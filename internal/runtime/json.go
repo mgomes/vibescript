@@ -24,6 +24,12 @@ type jsonStringifyState struct {
 	seenHashLen     int
 	depth           int
 	exec            *Execution
+	// chargedSteps is the number of steps already billed for the output. It
+	// counts steps rather than bytes because escaping calls checkOutputBytes
+	// once per escaped character: a six-byte delta divides to zero steps, so
+	// billing each delta separately charged nothing at all however long the
+	// output grew.
+	chargedSteps int
 }
 
 type jsonValueParser struct {
@@ -794,15 +800,6 @@ func (state *jsonStringifyState) popSeenHash(slot jsonSeenSlot) {
 func appendJSONString(buf []byte, s string, state *jsonStringifyState) ([]byte, error) {
 	const hexDigits = "0123456789abcdef"
 
-	// Every byte here is scanned for characters needing escapes and then copied.
-	// A string reached through a hash or array is not a string argument to
-	// stringify, so the per-call charge never saw it: the output and memory
-	// limits bound one call's size, not the work of a loop of them.
-	if state.exec != nil {
-		if err := state.exec.chargeStringScan(len(s)); err != nil {
-			return nil, err
-		}
-	}
 	if err := state.checkOutputBytes(len(buf) + 1); err != nil {
 		return nil, err
 	}
@@ -871,6 +868,20 @@ func appendJSONString(buf []byte, s string, state *jsonStringifyState) ([]byte, 
 }
 
 func (state *jsonStringifyState) checkOutputBytes(size int) error {
+	if state.exec != nil {
+		// Charged before the limit is reported, and by output rather than input:
+		// escaping emits up to six bytes for one control character, so billing
+		// the string's length under-charged an escape-heavy value several times
+		// over. Every JSON byte comes through here, so this covers the whole
+		// rendering rather than the string case alone, and JSON never emits
+		// fewer bytes than it read.
+		if steps := size / stringScanBytesPerStep; steps > state.chargedSteps {
+			if err := state.exec.stepN(steps - state.chargedSteps); err != nil {
+				return err
+			}
+			state.chargedSteps = steps
+		}
+	}
 	if size > maxJSONPayloadBytes {
 		return guardLimitErrorf("JSON.stringify output exceeds limit %d bytes", maxJSONPayloadBytes)
 	}

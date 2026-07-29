@@ -1298,14 +1298,10 @@ func compareValueOrder(left, right Value) (order int, ordered bool, err error) {
 			return 0, true, nil
 		}
 	case left.Kind() == KindString && right.Kind() == KindString:
-		switch {
-		case left.String() < right.String():
-			return -1, true, nil
-		case left.String() > right.String():
-			return 1, true, nil
-		default:
-			return 0, true, nil
-		}
+		// One pass, not two. Comparing with < and then > scans the common prefix
+		// twice, so the operator charge (which bills the shorter operand once)
+		// covered half the work actually done.
+		return strings.Compare(left.String(), right.String()), true, nil
 	// Symbol includes Comparable in Ruby, so both <=> and the relational
 	// operators order symbols. sort already did; the operators reported the
 	// pair as incomparable, so <=> misdescribed what the language can do.

@@ -990,3 +990,59 @@ func TestNeedleCapMatchesWhatTheGuardAdmits(t *testing.T) {
 			beyond, farBeyond)
 	}
 }
+
+// Escaping emits up to six bytes for one control character, so billing a
+// string's input length under-charged an escape-heavy value several times over.
+// Two inputs of the same length, one of which escapes, must not cost the same.
+//
+// The charge counts steps rather than bytes for a reason worth keeping: the
+// escape path calls checkOutputBytes once per escaped character, and a six-byte
+// delta divides to zero steps, so billing each delta separately charged nothing
+// at all however long the output grew.
+func TestJSONEscapingChargesForEmittedBytes(t *testing.T) {
+	t.Parallel()
+
+	const size = 16 << 10
+	minSteps := func(text string) int {
+		src := "def run(s)\n  JSON.stringify({v: s}).bytesize\nend"
+		lo, hi := 1, 1<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{NewString(text)}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	plain := minSteps(strings.Repeat("a", size))
+	escaped := minSteps(strings.Repeat("\x01", size))
+	if escaped < plain*4 {
+		t.Errorf("%d bytes of plain text cost %d steps and the same length of control "+
+			"characters cost %d; escaping emits about six bytes per input byte, so it "+
+			"cannot cost the same as text that emits one", size, plain, escaped)
+	}
+}
+
+// Comparing two strings scans their common prefix once, not twice. The operator
+// charge bills the shorter operand once, so a two-pass comparison did double the
+// work its charge represented.
+func TestStringComparisonMakesOnePass(t *testing.T) {
+	t.Parallel()
+
+	// Equal strings are the worst case: every byte is examined.
+	equal := strings.Repeat("a", 64<<10)
+	if got, ordered, err := compareValueOrder(NewString(equal), NewString(equal)); err != nil || !ordered || got != 0 {
+		t.Fatalf("comparing equal strings = (%d, %v, %v), want (0, true, nil)", got, ordered, err)
+	}
+	// Ordering is unchanged either side of equality.
+	if got, _, _ := compareValueOrder(NewString("a"), NewString("b")); got != -1 {
+		t.Errorf("compare(a, b) = %d, want -1", got)
+	}
+	if got, _, _ := compareValueOrder(NewString("b"), NewString("a")); got != 1 {
+		t.Errorf("compare(b, a) = %d, want 1", got)
+	}
+}
