@@ -113,6 +113,27 @@ func (s *valueSet) add(v Value, hint int) bool {
 	return true
 }
 
+// compositeProbeCount reports how many equality probes add would perform for v.
+// A scalar is a map lookup and costs none; a composite is compared against every
+// distinct composite already held.
+func (s *valueSet) compositeProbeCount(v Value) int {
+	if _, ok := scalarValueKey(v); ok {
+		return 0
+	}
+	return len(s.composite)
+}
+
+// chargeSetProbes charges the step quota for equality probes a valueSet
+// operation is about to perform. Charging nothing must cost nothing, and stepN
+// charges one step for a count of zero, which would otherwise triple the
+// per-element cost of deduplicating scalars.
+func (exec *Execution) chargeSetProbes(probes int) error {
+	if probes <= 0 {
+		return nil
+	}
+	return exec.stepN(probes)
+}
+
 func (s *valueSet) contains(v Value) bool {
 	if key, ok := scalarValueKey(v); ok {
 		_, found := s.scalars[key]
@@ -179,16 +200,31 @@ func (s *membershipSet) addSource(values []Value, hint int) {
 }
 
 func uniqueValues(values []Value) []Value {
-	unique, _ := uniqueValuesChecked(values, nil)
+	unique, _ := uniqueValuesMetered(values, nil, nil)
 	return unique
 }
 
-func uniqueValuesChecked(values []Value, check func() error) ([]Value, error) {
+// uniqueValuesMetered deduplicates values, calling check periodically so a
+// long run stays cancellable and charging for the work each add is about to do.
+// Both callbacks are optional.
+//
+// A scalar canonicalizes into a map and costs O(1), but a composite is matched
+// by scanning every distinct composite already seen, so n distinct composites
+// cost n(n-1)/2 equality probes. Charging one step per element covers only the
+// scalar case; without charging the scan, an array of composites that fits the
+// memory quota could spend billions of comparisons inside the step budget.
+// charge receives the number of probes the next add will perform.
+func uniqueValuesMetered(values []Value, check func() error, charge func(int) error) ([]Value, error) {
 	var seen valueSet
 	unique := make([]Value, 0, boundedSetCap(len(values)))
 	for i, item := range values {
 		if check != nil && i%setOpCheckInterval == 0 {
 			if err := check(); err != nil {
+				return nil, err
+			}
+		}
+		if charge != nil {
+			if err := charge(seen.compositeProbeCount(item)); err != nil {
 				return nil, err
 			}
 		}

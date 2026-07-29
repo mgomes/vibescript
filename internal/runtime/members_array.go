@@ -2773,14 +2773,15 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		if err := exec.chargeBigIntElementKeySteps(arr); err != nil {
 			return NewNil(), false, err
 		}
-		// The blockless path canonicalizes every element in one pass with no
-		// early exit, so it charges the whole receiver up front. The block form
-		// below steps per element instead, which lets a block that raises stop
-		// paying for the elements it never reached.
+		// The blockless path has no early exit, so it charges the whole
+		// receiver up front, plus the equality probes each composite element
+		// costs as it is matched against the distinct composites already seen.
+		// The block form below steps per element instead, which lets a block
+		// that raises stop paying for the elements it never reached.
 		if err := exec.stepN(len(arr)); err != nil {
 			return NewNil(), false, err
 		}
-		unique, err := uniqueValuesChecked(arr, exec.checkContext)
+		unique, err := uniqueValuesMetered(arr, exec.checkContext, exec.chargeSetProbes)
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2809,6 +2810,12 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		if err != nil {
 			return NewNil(), false, err
 		}
+		// A composite key is matched by scanning every distinct composite key
+		// already seen, so charge that scan; a per-element step alone would let
+		// n distinct composite keys cost n(n-1)/2 unmetered comparisons.
+		if err := exec.chargeSetProbes(seen.compositeProbeCount(key)); err != nil {
+			return NewNil(), false, err
+		}
 		if seen.contains(key) {
 			changed = true
 			continue
@@ -2821,6 +2828,10 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 			keyScratchReserved = projectedKeyScratch
 		}
 		if err := acc.addToReservedBacking(key); err != nil {
+			return NewNil(), false, err
+		}
+		// add rescans the composites to find its insertion point.
+		if err := exec.chargeSetProbes(seen.compositeProbeCount(key)); err != nil {
 			return NewNil(), false, err
 		}
 		seen.add(key, len(arr))

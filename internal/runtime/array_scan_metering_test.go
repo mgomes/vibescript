@@ -7,7 +7,7 @@ import (
 )
 
 // minStepsToComplete binary-searches the smallest step quota at which one
-// expression over an n-element array completes.
+// expression over an n-element array of integers completes.
 func minStepsToComplete(t *testing.T, expr string, size int) int {
 	t.Helper()
 
@@ -15,10 +15,18 @@ func minStepsToComplete(t *testing.T, expr string, size int) int {
 	for i := range elems {
 		elems[i] = NewInt(int64(i))
 	}
+	return minStepsToCompleteOver(t, expr, elems, 4*size+1000)
+}
+
+// minStepsToCompleteOver is minStepsToComplete over a caller-built receiver.
+// hi bounds the search and must exceed the expression's true cost.
+func minStepsToCompleteOver(t *testing.T, expr string, elems []Value, hi int) int {
+	t.Helper()
+
 	receiver := NewArray(elems)
 	src := fmt.Sprintf("def run(a)\n  %s\nend", expr)
 
-	lo, hi := 1, 4*size+1000
+	lo := 1
 	for lo < hi {
 		mid := (lo + hi) / 2
 		script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
@@ -87,4 +95,78 @@ func TestArrayScansStillExitEarly(t *testing.T) {
 			}
 		})
 	}
+}
+
+// uniq deduplicates a composite by comparing it against every distinct
+// composite already seen, so n distinct composites cost n(n-1)/2 equality
+// probes. Charging one step per element covered only the scalar case, where
+// canonicalization is a map insert: a host-supplied array of composites sized
+// to fit the quota could still burn billions of comparisons inside it (#1131).
+// The probes are charged, so the quota bounds them and the cost of the scan
+// grows with the square of the receiver, not linearly.
+func TestUniqChargesStepsPerCompositeComparison(t *testing.T) {
+	t.Parallel()
+
+	distinctComposites := func(n int) []Value {
+		elems := make([]Value, n)
+		for i := range elems {
+			elems[i] = NewArray([]Value{NewInt(int64(i))})
+		}
+		return elems
+	}
+
+	const small, large = 200, 400
+
+	// The blockless form deduplicates the elements themselves; the block form
+	// deduplicates the keys the block returns. Both match a composite by
+	// scanning the distinct composites already seen, so both must charge it.
+	forms := []struct {
+		name  string
+		expr  string
+		elems func(int) []Value
+	}{
+		{name: "blockless", expr: "a.uniq.length", elems: distinctComposites},
+		{
+			name: "block key",
+			expr: "a.uniq { |x| [x] }.length",
+			elems: func(n int) []Value {
+				elems := make([]Value, n)
+				for i := range elems {
+					elems[i] = NewInt(int64(i))
+				}
+				return elems
+			},
+		},
+	}
+
+	for _, form := range forms {
+		t.Run(form.name, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsToCompleteOver(t, form.expr, form.elems(small), small*small)
+			atLarge := minStepsToCompleteOver(t, form.expr, form.elems(large), large*large)
+
+			// n(n-1)/2 probes means doubling the receiver quadruples the charge.
+			// Assert only that it grows faster than linearly, which a flat or
+			// per-element charge cannot do, so the bound does not encode the
+			// exact probe count.
+			if atLarge < atSmall*3 {
+				t.Errorf("uniq over %d composites cost %d steps and over %d cost %d; "+
+					"doubling the receiver should more than double the charge, so the "+
+					"per-comparison work is unmetered", small, atSmall, large, atLarge)
+			}
+		})
+	}
+
+	// Deduplicating scalars stays a linear map insert -- the probe charge must
+	// not turn the common case quadratic, nor cost anything when there is
+	// nothing to probe.
+	t.Run("scalars stay linear", func(t *testing.T) {
+		t.Parallel()
+		scalarSmall := minStepsToComplete(t, "a.uniq.length", small)
+		scalarLarge := minStepsToComplete(t, "a.uniq.length", large)
+		if scalarLarge > scalarSmall*3 {
+			t.Errorf("uniq over %d scalars cost %d steps and over %d cost %d; "+
+				"scalar deduplication should stay linear", small, scalarSmall, large, scalarLarge)
+		}
+	})
 }
