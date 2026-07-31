@@ -239,7 +239,6 @@ func TestForRangeLoops(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, nil)
@@ -362,7 +361,6 @@ func TestForHashLoops(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, nil)
@@ -413,7 +411,6 @@ end`,
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			script := compileScriptWithConfig(t, Config{StepQuota: 10}, tc.body)
@@ -456,7 +453,6 @@ end`,
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -545,7 +541,6 @@ func TestUnlessConditionals(t *testing.T) {
 		{name: "modifier_expression_true_returns_nil", fn: "modifier_expression", arg: NewBool(true), want: NewNil()},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, []Value{tc.arg})
@@ -588,7 +583,6 @@ func TestThenControlFlowSeparators(t *testing.T) {
 		{name: "unless_true", fn: "unless_then", args: []Value{NewBool(true)}, want: NewString("closed")},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, tc.args)
@@ -903,7 +897,6 @@ func TestCaseWhenExpressions(t *testing.T) {
 		{name: "predicate_case_unmatched_returns_nil", fn: "predicate_unmatched", arg: NewInt(1), want: NewNil()},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, []Value{tc.arg})
@@ -1741,7 +1734,6 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 		{name: "next_from_setter_boundary", fn: "next_from_setter_boundary", want: "next cannot cross call boundary"},
 	}
 	for _, tc := range boundaryCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, nil, CallOptions{}, tc.want)

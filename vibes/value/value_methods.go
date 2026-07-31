@@ -471,10 +471,7 @@ func appendBounded(buf *strings.Builder, s string, limit int) error {
 		buf.WriteString(s)
 		return nil
 	}
-	remaining := limit - buf.Len()
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining := max(limit-buf.Len(), 0)
 	if len(s) > remaining {
 		buf.WriteString(s[:remaining])
 		return ErrStringRenderTruncated

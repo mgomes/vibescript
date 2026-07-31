@@ -19,13 +19,14 @@ import (
 func TestRegexLenMatchesRendering(t *testing.T) {
 	t.Parallel()
 
-	sources := []string{
+	sources := make([]string, 0, 16+2*0x100+13)
+	sources = append(sources,
 		"", "abc", "a/b", `a\/b`, `\\`, `\\/`, "a\nb", "a\tb", "a\ab", "a\vb", "a\fb", "a\rb",
 		"héllo", "日本語", "\x01\x1f\x7f", "\x00",
-	}
+	)
 	// Every single byte, in isolation and embedded: lone continuation bytes and
 	// invalid leads included.
-	for b := 0; b < 0x100; b++ {
+	for b := range 0x100 {
 		sources = append(sources, string([]byte{byte(b)}), "a"+string([]byte{byte(b)})+"z")
 	}
 	// Runs of stray continuation bytes, and truncated multibyte sequences.

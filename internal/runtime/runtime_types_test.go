@@ -86,7 +86,6 @@ func TestTypedBlockSignatures(t *testing.T) {
 		},
 	}
 	for _, tc := range errorCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, tc.args, CallOptions{}, tc.want)
@@ -299,7 +298,6 @@ func TestTypedFunctions(t *testing.T) {
 		{name: "range_echo", fn: "range_echo", args: []Value{NewRange(Range{Start: 1, End: 3})}, want: NewRange(Range{Start: 1, End: 3})},
 	}
 	for _, tc := range successCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, tc.args)
@@ -327,7 +325,6 @@ func TestTypedFunctions(t *testing.T) {
 		},
 	}
 	for _, tc := range containerCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, tc.args)
@@ -388,7 +385,6 @@ func TestTypedFunctions(t *testing.T) {
 		},
 	}
 	for _, tc := range errorCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, tc.args, tc.opts, tc.want)
@@ -457,7 +453,6 @@ end
 		},
 	}
 	for _, tc := range successCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, []Value{tc.arg})
@@ -509,7 +504,6 @@ end
 		},
 	}
 	for _, tc := range errorCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, []Value{tc.arg}, CallOptions{}, tc.want)
@@ -573,7 +567,6 @@ end
 		},
 	}
 	for _, tc := range successCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, []Value{tc.arg})
@@ -619,7 +612,6 @@ end
 		},
 	}
 	for _, tc := range errorCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, []Value{tc.arg}, CallOptions{}, tc.want)

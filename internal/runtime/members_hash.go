@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 )
 
@@ -53,12 +54,7 @@ func hashMemberSuggestionCandidates(entries map[string]Value) []string {
 }
 
 func anyTypedHash(values []Value) bool {
-	for _, value := range values {
-		if hashHasTypedEntries(value) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(values, hashHasTypedEntries)
 }
 
 func hashMemberBuiltin(property string) (Value, error) {

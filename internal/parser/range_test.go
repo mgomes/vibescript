@@ -64,7 +64,6 @@ func TestParserBeginlessRange(t *testing.T) {
 		expr      string
 		exclusive bool
 	}{{"..5", false}, {"...5", true}} {
-		tc := tc
 		t.Run(tc.expr, func(t *testing.T) {
 			t.Parallel()
 
@@ -96,7 +95,6 @@ func TestParserEndlessRange(t *testing.T) {
 		expr      string
 		exclusive bool
 	}{{"1..", false}, {"1...", true}} {
-		tc := tc
 		t.Run(tc.expr, func(t *testing.T) {
 			t.Parallel()
 

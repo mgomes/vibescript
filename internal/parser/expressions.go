@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -374,7 +375,7 @@ func (p *parser) parseRegexLiteral() ast.Expression {
 	pattern := raw[1:close]
 	rawFlags := raw[close+1:]
 	seen := map[byte]bool{}
-	for i := 0; i < len(rawFlags); i++ {
+	for i := range len(rawFlags) {
 		flag := rawFlags[i]
 		switch flag {
 		case 'i', 'm':
@@ -1086,8 +1087,7 @@ func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position
 }
 
 func parseErrorMessage(err error) string {
-	var parseErr *parseError
-	if errors.As(err, &parseErr) {
+	if parseErr, ok := errors.AsType[*parseError](err); ok {
 		return parseErr.Message()
 	}
 	return err.Error()
@@ -1677,12 +1677,7 @@ func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 // condition. Range dots followed by such a token cannot continue into a
 // bounded endpoint, so the range is endless.
 func (p *parser) peekIsActiveExpressionStop() bool {
-	for _, stop := range p.lineLimitedStops {
-		if p.peekToken.Type == stop {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.lineLimitedStops, p.peekToken.Type)
 }
 
 // atWhenValueGroupDepth reports whether range dots sit directly in a when

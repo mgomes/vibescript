@@ -1296,7 +1296,6 @@ func TestParamLabelOptionalKeyword(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := paramLabel(tt.param); got != tt.want {
@@ -3104,8 +3103,8 @@ func TestMemberDocsMatchRuntimeMembers(t *testing.T) {
 		seen := make(map[string]bool)
 		for _, section := range sections {
 			body := section
-			if idx := strings.Index(section, "\n\n"); idx >= 0 {
-				body = section[idx+2:]
+			if _, after, ok := strings.Cut(section, "\n\n"); ok {
+				body = after
 			}
 			if seen[body] {
 				t.Errorf("memberDocMarkdown(%q) repeats identical section bodies:\n%s", name, md)

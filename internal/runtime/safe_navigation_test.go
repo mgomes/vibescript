@@ -102,7 +102,6 @@ func TestSafeNavigation(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := callFunc(t, script, tt.fn, nil); !got.Equal(tt.want) {
@@ -137,7 +136,6 @@ func TestSafeNavigationSkipsArgumentsAndBlock(t *testing.T) {
   `)
 
 	for _, fn := range []string{"skips_arguments", "skips_block"} {
-		fn := fn
 		t.Run(fn, func(t *testing.T) {
 			t.Parallel()
 			if got := callFunc(t, script, fn, nil); got.Kind() != KindNil {

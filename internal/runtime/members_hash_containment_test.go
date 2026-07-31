@@ -2245,10 +2245,7 @@ func TestHashTransformKeysChargesRetainedTypedKeyValues(t *testing.T) {
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
 	buffers := typedHashTransformBufferBytes(count, sortedKeyBufferBytes(count))
 	transientKeyPayload := maxTypedKeyCharge
-	payloadHeadroom := displayOnlyPayload
-	if transientKeyPayload > payloadHeadroom {
-		payloadHeadroom = transientKeyPayload
-	}
+	payloadHeadroom := max(transientKeyPayload, displayOnlyPayload)
 	if typedPayload <= payloadHeadroom {
 		t.Fatalf("test setup expects retained typed keys (%d) to exceed payload headroom (%d)", typedPayload, payloadHeadroom)
 	}
@@ -2586,7 +2583,6 @@ end`,
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

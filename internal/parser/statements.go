@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mgomes/vibescript/internal/ast"
@@ -219,12 +220,7 @@ func (p *parser) parseBlock(stop ...ast.TokenType) []ast.Statement {
 }
 
 func isBlockStopToken(token ast.TokenType, stop []ast.TokenType) bool {
-	for _, candidate := range stop {
-		if token == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(stop, token)
 }
 
 func (p *parser) parseIfStatement() ast.Statement {
@@ -1509,10 +1505,8 @@ func restCaptureTypeAcceptsArray(ty *ast.TypeExpr) bool {
 	case ast.TypeAny, ast.TypeArray:
 		return true
 	case ast.TypeUnion:
-		for _, option := range ty.Union {
-			if restCaptureTypeAcceptsArray(option) {
-				return true
-			}
+		if slices.ContainsFunc(ty.Union, restCaptureTypeAcceptsArray) {
+			return true
 		}
 	}
 	return false
@@ -1526,10 +1520,8 @@ func keywordRestCaptureTypeAcceptsHash(ty *ast.TypeExpr) bool {
 	case ast.TypeAny, ast.TypeHash, ast.TypeShape:
 		return true
 	case ast.TypeUnion:
-		for _, option := range ty.Union {
-			if keywordRestCaptureTypeAcceptsHash(option) {
-				return true
-			}
+		if slices.ContainsFunc(ty.Union, keywordRestCaptureTypeAcceptsHash) {
+			return true
 		}
 	}
 	return false
@@ -2244,10 +2236,8 @@ func (p *parser) parseDestructureElement(allowType bool, extraAnonymousRestTermi
 // anonymous when the next token closes the target list (an assignment operator),
 // continues it (a comma), or closes a nested target group (")" or "]").
 func isAnonymousRestTerminator(tt ast.TokenType, extra ...ast.TokenType) bool {
-	for _, terminator := range extra {
-		if tt == terminator {
-			return true
-		}
+	if slices.Contains(extra, tt) {
+		return true
 	}
 	switch tt {
 	case ast.TokenComma, ast.TokenRParen, ast.TokenRBracket:

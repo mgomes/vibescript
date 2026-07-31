@@ -216,8 +216,7 @@ func TestCapabilityAdaptersStopAfterHostCancellationBeforeReturnValidation(t *te
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("%s error = %v, want context.Canceled", tc.name, err)
 			}
-			var runtimeErr *RuntimeError
-			if errors.As(err, &runtimeErr) {
+			if _, ok := errors.AsType[*RuntimeError](err); ok {
 				t.Fatalf("%s error = %v, want raw context cancellation before runtime wrapping", tc.name, err)
 			}
 		})

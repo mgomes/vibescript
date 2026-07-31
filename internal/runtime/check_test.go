@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,9 +13,7 @@ type checkOptionGlobalsCapability map[string]Value
 
 func (c checkOptionGlobalsCapability) Bind(CapabilityBinding) (map[string]Value, error) {
 	globals := make(map[string]Value, len(c))
-	for name, val := range c {
-		globals[name] = val
-	}
+	maps.Copy(globals, c)
 	return globals, nil
 }
 

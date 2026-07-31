@@ -2,6 +2,7 @@ package value
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"sort"
@@ -661,9 +662,7 @@ func (v Value) ReserveTypedHashOrder(n int) {
 	if n > hd.typedEntryCapacity {
 		BumpMutationEpoch()
 		grown := make(map[HashLookupKey]HashEntry, n)
-		for lookupKey, entry := range hd.typedEntries {
-			grown[lookupKey] = entry
-		}
+		maps.Copy(grown, hd.typedEntries)
 		hd.typedEntries = grown
 		hd.typedEntryCapacity = n
 	}

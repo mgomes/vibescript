@@ -45,7 +45,7 @@ func (r Regex) String() string {
 func (r Regex) StringLen() int {
 	escaped := 0
 	backslashes := 0
-	for i := 0; i < len(r.Source); i++ {
+	for i := range len(r.Source) {
 		c := r.Source[i]
 		switch {
 		case c == '/' && backslashes%2 == 0:
@@ -79,7 +79,7 @@ func escapeRegexLiteralSource(source string) string {
 	var b strings.Builder
 	b.Grow(len(source) + 8)
 	backslashes := 0
-	for i := 0; i < len(source); i++ {
+	for i := range len(source) {
 		c := source[i]
 		switch {
 		case c == '/' && backslashes%2 == 0:
@@ -116,7 +116,7 @@ func escapeRegexLiteralSource(source string) string {
 // escapeRegexLiteralSource would rewrite: a forward slash or a control
 // character. Patterns without any (the common case) render without allocating.
 func regexSourceNeedsEscaping(source string) bool {
-	for i := 0; i < len(source); i++ {
+	for i := range len(source) {
 		if c := source[i]; c == '/' || c < 0x20 || c == 0x7f {
 			return true
 		}
