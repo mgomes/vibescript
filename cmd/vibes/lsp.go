@@ -731,7 +731,7 @@ func buildCompletionItems(catalog builtinCatalog) []map[string]any {
 	labels := make([]string, 0, len(lspKeywords)+len(catalog.topLevelNames))
 	labels = append(labels, lspKeywords...)
 	labels = append(labels, catalog.topLevelNames...)
-	sort.Strings(labels)
+	slices.Sort(labels)
 
 	keywordSet := make(map[string]struct{}, len(lspKeywords))
 	for _, keyword := range lspKeywords {
@@ -1087,12 +1087,12 @@ func buildMemberCompletionItems() []map[string]any {
 	for name := range byName {
 		labels = append(labels, name)
 	}
-	sort.Strings(labels)
+	slices.Sort(labels)
 
 	items := make([]map[string]any, 0, len(labels))
 	for _, label := range labels {
 		receivers := byName[label]
-		sort.Strings(receivers)
+		slices.Sort(receivers)
 		item := map[string]any{
 			"label":  label,
 			"kind":   2, // Method

@@ -5,6 +5,7 @@ import (
 	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -581,7 +582,7 @@ func (c *scriptChecker) checkCallSplatSourceForLocal(
 	for identityName := range names {
 		ordered = append(ordered, identityName)
 	}
-	sort.Strings(ordered)
+	slices.Sort(ordered)
 	identity := make([]capturedContainerRoot, 0, len(ordered))
 	for _, identityName := range ordered {
 		identity = append(identity, capturedContainerRoot{
@@ -3803,7 +3804,7 @@ func (c *scriptChecker) directCoreHashDefaultReceiverAliasNames(
 	for name := range aliases {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
@@ -5568,7 +5569,7 @@ func normalizeCheckClassNames(names []string) []string {
 		return nil
 	}
 	normalized := append([]string(nil), names...)
-	sort.Strings(normalized)
+	slices.Sort(normalized)
 	out := normalized[:0]
 	for _, name := range normalized {
 		if len(out) == 0 || out[len(out)-1] != name {
@@ -6424,7 +6425,7 @@ func (c *scriptChecker) containerAliasRoots(expr Expression) []string {
 	for name := range seen {
 		roots = append(roots, name)
 	}
-	sort.Strings(roots)
+	slices.Sort(roots)
 	return roots
 }
 
@@ -7089,7 +7090,7 @@ func (c *scriptChecker) captureEvaluatedDestructureFactWithAuto(
 			for name := range names {
 				ordered = append(ordered, name)
 			}
-			sort.Strings(ordered)
+			slices.Sort(ordered)
 			for _, name := range ordered {
 				fact.identityRoots = append(fact.identityRoots, capturedContainerRoot{
 					name:       name,
@@ -13694,7 +13695,7 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(
 				for field := range written.Shape {
 					fields = append(fields, field)
 				}
-				sort.Strings(fields)
+				slices.Sort(fields)
 				for _, key := range fields {
 					// Optional fields may be absent, so they do not witness a
 					// merge entry that is guaranteed to land.
@@ -13811,7 +13812,7 @@ func (c *scriptChecker) checkShapeReplacementLiteral(
 		}
 		fields = append(fields, field)
 	}
-	sort.Strings(fields)
+	slices.Sort(fields)
 	for _, field := range fields {
 		if _, present := supplied[field]; present {
 			continue
@@ -16851,7 +16852,7 @@ func appendTypeFactKey(b *strings.Builder, ty *TypeExpr, depth int) {
 		for field := range ty.Shape {
 			fields = append(fields, field)
 		}
-		sort.Strings(fields)
+		slices.Sort(fields)
 		b.WriteString("{")
 		for _, field := range fields {
 			b.WriteString(field)
@@ -17066,7 +17067,7 @@ func boundaryShapeUnionCoverage(
 	for field := range inferred.Shape {
 		fields = append(fields, field)
 	}
-	sort.Strings(fields)
+	slices.Sort(fields)
 
 	groups := make([]boundaryShapeFieldGroup, 0, len(fields))
 	groupBySource := make(map[checkValueSource]int, len(fields))

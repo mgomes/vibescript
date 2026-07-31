@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/mgomes/vibescript/vibes"
@@ -142,7 +142,7 @@ func discoverTestFiles(roots []string) ([]string, error) {
 			return nil, fmt.Errorf("vibes test: walk %q: %w", root, walkErr)
 		}
 	}
-	sort.Strings(files)
+	slices.Sort(files)
 	return files, nil
 }
 

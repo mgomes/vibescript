@@ -8,6 +8,7 @@ package analyze
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/mgomes/vibescript/internal/ast"
@@ -58,7 +59,7 @@ func sortedFunctionsByName(functions map[string]*runtime.ScriptFunction) []*runt
 	for name := range functions {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	sorted := make([]*runtime.ScriptFunction, 0, len(names))
 	for _, name := range names {
 		sorted = append(sorted, functions[name])

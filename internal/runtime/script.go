@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 )
 
 func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallOptions) (Value, error) {
@@ -254,7 +254,7 @@ func (s *Script) Functions() []*ScriptFunction {
 	for name := range s.functions {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	out := make([]*ScriptFunction, 0, len(names))
 	for _, name := range names {
 		out = append(out, cloneFunctionForSnapshot(s.functions[name]))
@@ -268,7 +268,7 @@ func (s *Script) Classes() []*ClassDef {
 	for name := range s.classes {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	out := make([]*ClassDef, 0, len(names))
 	for _, name := range names {
 		out = append(out, cloneClassForSnapshot(s.classes[name]))
@@ -282,7 +282,7 @@ func (s *Script) Enums() []*EnumDef {
 	for name := range s.enums {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	out := make([]*EnumDef, 0, len(names))
 	for _, name := range names {
 		out = append(out, cloneEnumForSnapshot(s.enums[name]))
