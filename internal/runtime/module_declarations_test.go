@@ -136,7 +136,7 @@ def bump_twice
 end
 `)
 
-	for call := 0; call < 2; call++ {
+	for call := range 2 {
 		if got := callFunc(t, script, "bump_twice", nil); !got.Equal(NewInt(2)) {
 			t.Fatalf("call %d: bump_twice = %v, want 2 (module state leaked across calls)", call, got)
 		}

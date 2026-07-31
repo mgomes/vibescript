@@ -64,7 +64,7 @@ func NewTypedBuiltin(name string, fn BuiltinFunc, sig Signature) (Value, error) 
 			if isHostControlSignal(err) || isNormalizationLimitError(err) {
 				return NewNil(), err
 			}
-			return NewNil(), fmt.Errorf("%s", formatReturnTypeMismatch(name, err))
+			return NewNil(), errors.New(formatReturnTypeMismatch(name, err))
 		}
 		return validated, nil
 	}
@@ -195,8 +195,7 @@ func signatureNormalize(exec *Execution, val Value, ty *TypeExpr) (Value, error)
 	if err == nil {
 		return out, nil
 	}
-	var mismatch *typeMismatchError
-	if errors.As(err, &mismatch) && signatureInstanceMatchesNamed(exec, val, ty) {
+	if _, ok := errors.AsType[*typeMismatchError](err); ok && signatureInstanceMatchesNamed(exec, val, ty) {
 		return val, nil
 	}
 	return out, err

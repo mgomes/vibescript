@@ -232,10 +232,7 @@ func drawRapidCompoundProgram(rt *rapid.T) rapidCompoundProgram {
 	case 0:
 		input := int64(rapid.IntRange(-20, 20).Draw(rt, "if input"))
 		threshold := int64(rapid.IntRange(-20, 20).Draw(rt, "if threshold"))
-		want := threshold
-		if input > threshold {
-			want = input
-		}
+		want := max(input, threshold)
 		source := fmt.Sprintf(`def %s(n)
   if n > %d
     return n

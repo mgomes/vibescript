@@ -319,9 +319,7 @@ func cloneCheckTypeFrame(frame checkTypeFrame) checkTypeFrame {
 		return nil
 	}
 	clone := make(checkTypeFrame, len(frame))
-	for name, ty := range frame {
-		clone[name] = ty
-	}
+	maps.Copy(clone, frame)
 	return clone
 }
 
@@ -1768,9 +1766,7 @@ func intersectContainerSelections(states []checkScopeState) map[string]checkCont
 		return nil
 	}
 	intersection := make(map[string]checkContainerSelection, len(states[0].containerSelection))
-	for name, selection := range states[0].containerSelection {
-		intersection[name] = selection
-	}
+	maps.Copy(intersection, states[0].containerSelection)
 	for _, state := range states[1:] {
 		for name, selection := range intersection {
 			other, exists := state.containerSelection[name]
@@ -4599,12 +4595,7 @@ func blockLiteralTypeAcceptsAny(ty *TypeExpr) bool {
 	if ty.Kind != TypeUnion {
 		return false
 	}
-	for _, option := range ty.Union {
-		if blockLiteralTypeAcceptsAny(option) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(ty.Union, blockLiteralTypeAcceptsAny)
 }
 
 func (c *scriptChecker) blockLiteralNormalizedType(
@@ -5588,13 +5579,7 @@ func normalizeCheckExpressionIdentities(expressions []Expression) []Expression {
 		if candidate == nil {
 			continue
 		}
-		duplicate := false
-		for _, existing := range normalized {
-			if existing == candidate {
-				duplicate = true
-				break
-			}
-		}
+		duplicate := slices.Contains(normalized, candidate)
 		if !duplicate {
 			normalized = append(normalized, candidate)
 		}
@@ -7488,13 +7473,7 @@ func mergeCapturedContainerRoots(
 ) []capturedContainerRoot {
 	for _, group := range groups {
 		for _, candidate := range group {
-			duplicate := false
-			for _, root := range roots {
-				if root == candidate {
-					duplicate = true
-					break
-				}
-			}
+			duplicate := slices.Contains(roots, candidate)
 			if !duplicate {
 				roots = append(roots, candidate)
 			}
@@ -8814,10 +8793,8 @@ func (c *scriptChecker) staticScopedClassArgument(scoped *ScopeExpr) (*ClassDef,
 	if !ok || classDef == nil {
 		return nil, false
 	}
-	for _, nested := range namespace.NestedModules {
-		if nested == scoped.Property {
-			return classDef, true
-		}
+	if slices.Contains(namespace.NestedModules, scoped.Property) {
+		return classDef, true
 	}
 	return nil, false
 }
@@ -8841,10 +8818,8 @@ func (c *scriptChecker) stableAssignedClassConstant(
 	if _, bound := owner.ClassVars[name]; bound {
 		return nil, false
 	}
-	for _, nested := range owner.NestedModules {
-		if nested == name {
-			return nil, false
-		}
+	if slices.Contains(owner.NestedModules, name) {
+		return nil, false
 	}
 	for _, included := range owner.IncludedModules {
 		moduleDef := c.script.classes[included]
@@ -8895,10 +8870,8 @@ func (c *scriptChecker) nestedClassConstantMayChange(classDef *ClassDef, name st
 		if _, ok := moduleDef.ClassVars[name]; ok {
 			return true
 		}
-		for _, nested := range moduleDef.NestedModules {
-			if nested == name {
-				return true
-			}
+		if slices.Contains(moduleDef.NestedModules, name) {
+			return true
 		}
 		if classDefNamespaceAssignsName(moduleDef, name) ||
 			classDefInstanceMethodsAssignName(moduleDef, classDef, name) {
@@ -8919,10 +8892,8 @@ func (c *scriptChecker) selfClassMayBindConstant(cl *ClassDef, name string) bool
 	if _, ok := cl.ClassVars[name]; ok {
 		return true
 	}
-	for _, nested := range cl.NestedModules {
-		if nested == name {
-			return true
-		}
+	if slices.Contains(cl.NestedModules, name) {
+		return true
 	}
 	if classDefAssignsName(cl, name) {
 		return true
@@ -8937,10 +8908,8 @@ func (c *scriptChecker) selfClassMayBindConstant(cl *ClassDef, name string) bool
 		if _, ok := moduleDef.ClassVars[name]; ok {
 			return true
 		}
-		for _, nested := range moduleDef.NestedModules {
-			if nested == name {
-				return true
-			}
+		if slices.Contains(moduleDef.NestedModules, name) {
+			return true
 		}
 		if classDefNamespaceAssignsName(moduleDef, name) ||
 			classDefInstanceMethodsAssignName(moduleDef, cl, name) {
@@ -9517,10 +9486,8 @@ func typeExprMayIncludeCallable(ty *TypeExpr) bool {
 	case TypeAny, TypeUnknown, TypeFunction:
 		return true
 	case TypeUnion:
-		for _, option := range ty.Union {
-			if typeExprMayIncludeCallable(option) {
-				return true
-			}
+		if slices.ContainsFunc(ty.Union, typeExprMayIncludeCallable) {
+			return true
 		}
 	}
 	return false
@@ -12134,12 +12101,7 @@ func (c *scriptChecker) arrayFillFormMayComplete(selectors []Expression) bool {
 		return true
 	}
 	if countExact {
-		for _, count := range countValues {
-			if staticArrayFillCountMayComplete(count) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(countValues, staticArrayFillCountMayComplete)
 	}
 	return arrayFillSelectorFactMayComplete(c.callArgumentFacts[selectors[1]], false)
 }
@@ -13506,10 +13468,8 @@ func (c *scriptChecker) mergeArgumentsProvablyAbort(call *CallExpr, argumentFact
 				literalArrayElementsWitnessed(written) &&
 				len(written.TypeArgs) == 1 {
 				if arms, ok := typeExprArms(written.TypeArgs[0], 0); ok {
-					for _, arm := range arms {
-						if typeExprProvablyNotHash(arm) {
-							return true
-						}
+					if slices.ContainsFunc(arms, typeExprProvablyNotHash) {
+						return true
 					}
 				}
 			}
@@ -13932,9 +13892,7 @@ func cloneArrayMutatorExpansionChoices(choices map[int]int) map[int]int {
 		return nil
 	}
 	clone := make(map[int]int, len(choices))
-	for source, choice := range choices {
-		clone[source] = choice
-	}
+	maps.Copy(clone, choices)
 	return clone
 }
 
@@ -17352,8 +17310,8 @@ func boundaryShapeHashRelation(
 	if len(required.TypeArgs) != 2 {
 		return boundaryRelationGradual
 	}
-	if strings.HasPrefix(inferred.Name, shapeKeysMixedPrefix) {
-		flags := strings.TrimPrefix(inferred.Name, shapeKeysMixedPrefix)
+	if after, ok := strings.CutPrefix(inferred.Name, shapeKeysMixedPrefix); ok {
+		flags := after
 		if strings.Contains(flags, "o") &&
 			typeExprArmsAll(required.TypeArgs[0], func(arm *TypeExpr) bool {
 				return arm.Kind == TypeString || arm.Kind == TypeSymbol

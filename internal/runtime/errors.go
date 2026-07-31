@@ -88,8 +88,8 @@ func privateMemberAccess(err error) error {
 // isPrivateMemberError reports whether err signals a member blocked by privacy,
 // as opposed to a member that does not exist on the receiver at all.
 func isPrivateMemberError(err error) bool {
-	var private *privateMemberError
-	return errors.As(err, &private)
+	_, ok := errors.AsType[*privateMemberError](err)
+	return ok
 }
 
 const (
@@ -140,8 +140,7 @@ func newLoopBreakValue(value Value) error {
 }
 
 func loopBreakValue(err error) (Value, bool) {
-	var breakErr *loopBreakError
-	if errors.As(err, &breakErr) {
+	if breakErr, ok := errors.AsType[*loopBreakError](err); ok {
 		return breakErr.value, true
 	}
 	return NewNil(), false
@@ -160,8 +159,7 @@ func newLoopNextValue(value Value) error {
 }
 
 func loopNextValue(err error) (Value, bool) {
-	var nextErr *loopNextError
-	if errors.As(err, &nextErr) {
+	if nextErr, ok := errors.AsType[*loopNextError](err); ok {
 		return nextErr.value, true
 	}
 	return NewNil(), false
@@ -179,8 +177,7 @@ func functionReturnValue(err error) (Value, bool) {
 	if err == nil {
 		return NewNil(), false
 	}
-	var returnErr *functionReturnError
-	if errors.As(err, &returnErr) {
+	if returnErr, ok := errors.AsType[*functionReturnError](err); ok {
 		return returnErr.value, true
 	}
 	return NewNil(), false
@@ -236,22 +233,21 @@ func classifyRuntimeErrorType(err error) string {
 	if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) || errors.Is(err, errOutputLimitExceeded) {
 		return runtimeErrorTypeLimit
 	}
+	// errors.As rather than AsType: the target is a method-set interface that
+	// does not itself satisfy error, which AsType's constraint requires.
 	var limitErr interface{ LimitError() bool }
 	if errors.As(err, &limitErr) && limitErr.LimitError() {
 		return runtimeErrorTypeLimit
 	}
-	var assertionErr *assertionFailureError
-	if errors.As(err, &assertionErr) {
+	if _, ok := errors.AsType[*assertionFailureError](err); ok {
 		return runtimeErrorTypeAssertion
 	}
-	var typedErr *typedRuntimeError
-	if errors.As(err, &typedErr) {
+	if typedErr, ok := errors.AsType[*typedRuntimeError](err); ok {
 		if kind, known := ast.CanonicalRuntimeErrorType(typedErr.kind); known {
 			return kind
 		}
 	}
-	var runtimeErr *RuntimeError
-	if errors.As(err, &runtimeErr) {
+	if runtimeErr, ok := errors.AsType[*RuntimeError](err); ok {
 		if kind, known := ast.CanonicalRuntimeErrorType(runtimeErr.Type); known {
 			return kind
 		}
@@ -420,8 +416,7 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 		// rescuable on the way.
 		return err
 	}
-	var runtimeErr *RuntimeError
-	if errors.As(err, &runtimeErr) {
+	if _, ok := errors.AsType[*RuntimeError](err); ok {
 		return err
 	}
 	return exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)

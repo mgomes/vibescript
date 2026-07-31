@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -187,9 +188,7 @@ func (ctx typeContext) normalizedMap(source Value, entries map[string]Value) (ma
 		return nil, err
 	}
 	out := make(map[string]Value, len(entries))
-	for key, item := range entries {
-		out[key] = item
-	}
+	maps.Copy(out, entries)
 	return out, nil
 }
 

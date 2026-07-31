@@ -120,8 +120,7 @@ func (exec *Execution) positionMemberResult(pos Position, val Value, err error) 
 	if err == nil {
 		return val, nil
 	}
-	var runtimeErr *RuntimeError
-	if errors.As(err, &runtimeErr) {
+	if _, ok := errors.AsType[*RuntimeError](err); ok {
 		return val, err
 	}
 	if isLoopControlSignal(err) || isRescueRetrySignal(err) || isHostControlSignal(err) ||

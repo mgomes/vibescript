@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 
@@ -615,9 +616,7 @@ def run()
   sink.size
 end`, payloadA, regionPeak, regionPeak),
 	}
-	for name, source := range regionScripts {
-		scripts[name] = source
-	}
+	maps.Copy(scripts, regionScripts)
 	return scripts
 }()
 

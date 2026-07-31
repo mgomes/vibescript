@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -2044,12 +2045,7 @@ func functionCanReuseCallEnv(fn *ScriptFunction) bool {
 }
 
 func statementsCaptureCurrentEnv(stmts []Statement) bool {
-	for _, stmt := range stmts {
-		if statementCapturesCurrentEnv(stmt) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(stmts, statementCapturesCurrentEnv)
 }
 
 func statementCapturesCurrentEnv(stmt Statement) bool {
@@ -2111,12 +2107,7 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *RegexLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		return false
 	case *ArrayLiteral:
-		for _, elem := range e.Elements {
-			if expressionCapturesCurrentEnv(elem) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(e.Elements, expressionCapturesCurrentEnv)
 	case *HashLiteral:
 		for _, pair := range e.Pairs {
 			if expressionCapturesCurrentEnv(pair.Key) || expressionCapturesCurrentEnv(pair.Value) {
@@ -2128,10 +2119,8 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		if expressionCapturesCurrentEnv(e.Callee) || e.Block != nil {
 			return true
 		}
-		for _, arg := range e.Args {
-			if expressionCapturesCurrentEnv(arg) {
-				return true
-			}
+		if slices.ContainsFunc(e.Args, expressionCapturesCurrentEnv) {
+			return true
 		}
 		for _, kw := range e.KwArgs {
 			if expressionCapturesCurrentEnv(kw.Value) {
@@ -2154,12 +2143,7 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		if expressionCapturesCurrentEnv(e.Object) {
 			return true
 		}
-		for _, index := range e.Indices {
-			if expressionCapturesCurrentEnv(index) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(e.Indices, expressionCapturesCurrentEnv)
 	case *DestructureTarget:
 		for _, elem := range e.Elements {
 			if expressionCapturesCurrentEnv(elem.Target) {
@@ -2208,12 +2192,7 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		}
 		return false
 	case *YieldExpr:
-		for _, arg := range e.Args {
-			if expressionCapturesCurrentEnv(arg) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(e.Args, expressionCapturesCurrentEnv)
 	case *InterpolatedString:
 		return stringPartsCaptureCurrentEnv(e.Parts)
 	case *InterpolatedSymbol:
@@ -2819,12 +2798,7 @@ func destructureElementReads(element DestructureElement) bool {
 		return false
 	}
 	if nested, ok := element.Target.(*DestructureTarget); ok {
-		for _, inner := range nested.Elements {
-			if destructureElementReads(inner) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(nested.Elements, destructureElementReads)
 	}
 	return true
 }
@@ -4972,8 +4946,7 @@ func rescuedErrorValue(err error) Value {
 	codeFrame := ""
 	var backtrace []Value
 
-	var runtimeErr *RuntimeError
-	if errors.As(err, &runtimeErr) {
+	if runtimeErr, ok := errors.AsType[*RuntimeError](err); ok {
 		errType = classifyRuntimeErrorType(runtimeErr)
 		message = runtimeErr.Message
 		codeFrame = runtimeErr.CodeFrame
@@ -5050,8 +5023,8 @@ func canRescueRuntimeError(err error, rescueTy *TypeExpr) bool {
 
 func runtimeErrorMatchesRescueType(err error, rescueTy *TypeExpr) bool {
 	if rescueTy == nil {
-		var runtimeErr *RuntimeError
-		return errors.As(err, &runtimeErr) && classifyRuntimeErrorType(runtimeErr) != runtimeErrorTypeLimit
+		runtimeErr, ok := errors.AsType[*RuntimeError](err)
+		return ok && classifyRuntimeErrorType(runtimeErr) != runtimeErrorTypeLimit
 	}
 	errKind := classifyRuntimeErrorType(err)
 	return rescueTypeMatchesErrorKind(rescueTy, errKind)

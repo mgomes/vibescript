@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -1291,9 +1292,7 @@ func (exec *Execution) adoptIncludedModuleConstants(classDef *ClassDef, env *Env
 			continue
 		}
 		bumpMutationEpoch()
-		for name, val := range valueClass(moduleVal).ClassVars {
-			classDef.ClassVars[name] = val
-		}
+		maps.Copy(classDef.ClassVars, valueClass(moduleVal).ClassVars)
 	}
 }
 
@@ -2236,10 +2235,8 @@ func hashLiteralTypeHasValueSlots(ty *TypeExpr) bool {
 	case TypeHash, TypeShape:
 		return true
 	case TypeUnion:
-		for _, option := range ty.Union {
-			if hashLiteralTypeHasValueSlots(option) {
-				return true
-			}
+		if slices.ContainsFunc(ty.Union, hashLiteralTypeHasValueSlots) {
+			return true
 		}
 	}
 	return false
@@ -2296,10 +2293,8 @@ func typeExprIncludesCallable(ty *TypeExpr) bool {
 	case TypeFunction:
 		return true
 	case TypeUnion:
-		for _, option := range ty.Union {
-			if typeExprIncludesCallable(option) {
-				return true
-			}
+		if slices.ContainsFunc(ty.Union, typeExprIncludesCallable) {
+			return true
 		}
 	}
 	return false
@@ -2353,9 +2348,7 @@ func resolveKeywordOptionsHash(call *CallExpr, callee Value, resolution calleeRe
 		return args, kwargs
 	}
 	hash := make(map[string]Value, len(kwargs))
-	for name, val := range kwargs {
-		hash[name] = val
-	}
+	maps.Copy(hash, kwargs)
 	return append(args, NewHash(hash)), nil
 }
 
