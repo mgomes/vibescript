@@ -498,10 +498,7 @@ func formatTimeISO8601(t time.Time, ndigits int) string {
 	if ndigits <= 0 {
 		return t.Format(time.RFC3339)
 	}
-	digits := ndigits
-	if digits > maxTimePrecisionDigits {
-		digits = maxTimePrecisionDigits
-	}
+	digits := min(ndigits, maxTimePrecisionDigits)
 	out := t.Format("2006-01-02T15:04:05." + strings.Repeat("0", digits) + "Z07:00")
 	if ndigits <= maxTimePrecisionDigits {
 		return out

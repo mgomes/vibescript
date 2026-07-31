@@ -835,10 +835,7 @@ func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (V
 	// MemoryQuotaBytes paired with a small StepQuota could still trigger a huge
 	// up-front allocation. Bounding the initial capacity keeps the actual
 	// allocation proportional to the elements the quotas allow.
-	initialCap := limit
-	if initialCap > rangeMaterializeInitialCap {
-		initialCap = rangeMaterializeInitialCap
-	}
+	initialCap := min(limit, rangeMaterializeInitialCap)
 	out := make([]Value, 0, int(initialCap))
 	for i := int64(0); i < limit; i++ {
 		if err := exec.step(); err != nil {

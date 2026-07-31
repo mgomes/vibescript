@@ -95,10 +95,7 @@ func (m snippetSourceMap) remapPosition(pos source.Position, snippet string) sou
 		return pos
 	}
 
-	line := pos.Line - m.lineOffset
-	if line < 1 {
-		line = 1
-	}
+	line := max(pos.Line-m.lineOffset, 1)
 	lineCount := snippetLineCount(snippet)
 	if line > lineCount {
 		return snippetEOFPosition(snippet)

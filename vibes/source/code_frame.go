@@ -71,10 +71,7 @@ func codeFrameLineWindow(lineText string, column int) (string, int, int) {
 		return lineText, column, column
 	}
 	caretIndex := column - 1
-	start := caretIndex - maxCodeFrameLineRunes/2
-	if start < 0 {
-		start = 0
-	}
+	start := max(caretIndex-maxCodeFrameLineRunes/2, 0)
 	if start+maxCodeFrameLineRunes > lineRunes {
 		start = lineRunes - maxCodeFrameLineRunes
 	}
