@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/vibes/value"
@@ -22,16 +23,16 @@ var regexBuiltinMembers = newMemberTable(regexMemberNames)
 // string-pattern helper compiles, so a regex value passed where a pattern
 // string is accepted hits the same cache entry as its literal.
 func regexDecoratedPattern(r value.Regex) string {
-	prefix := ""
+	var prefix strings.Builder
 	for _, flag := range r.Flags {
 		switch flag {
 		case 'i':
-			prefix += "(?i)"
+			prefix.WriteString("(?i)")
 		case 'm':
-			prefix += "(?s)"
+			prefix.WriteString("(?s)")
 		}
 	}
-	return prefix + r.Source
+	return prefix.String() + r.Source
 }
 
 // compileRegexValue compiles source with flags applied and returns the regex

@@ -480,7 +480,6 @@ func TestParserColonQuoteSeparatorValues(t *testing.T) {
 			"def run\n  greet(name:\"Ada\")\nend",
 			"def run\n  greet(name :\"Ada\")\nend",
 		} {
-			source := source
 			t.Run(source, func(t *testing.T) {
 				t.Parallel()
 				got, errs := parseSource(t, source)
@@ -529,7 +528,6 @@ func TestParserColonQuoteSeparatorValues(t *testing.T) {
 			"def run\n  flag ? emit first: 1, name:\"Ada\" :\"no\"\nend",
 			"def run\n  flag ? emit first: 1, name :\"Ada\" :\"no\"\nend",
 		} {
-			source := source
 			t.Run(source, func(t *testing.T) {
 				t.Parallel()
 				got, errs := parseSource(t, source)

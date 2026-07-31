@@ -347,11 +347,11 @@ func stringLines(text string) []string {
 // whole string is returned as the head with two empty trailing segments. An
 // empty separator matches at the very start, yielding ("", "", text).
 func stringPartition(text, sep string) (head, separator, tail string) {
-	index := strings.Index(text, sep)
-	if index < 0 {
+	before, after, ok := strings.Cut(text, sep)
+	if !ok {
 		return text, "", ""
 	}
-	return text[:index], sep, text[index+len(sep):]
+	return before, sep, after
 }
 
 // stringRPartition splits text around the last occurrence of sep, mirroring

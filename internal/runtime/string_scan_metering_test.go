@@ -1761,7 +1761,7 @@ func TestRegexStringLenMatchesString(t *testing.T) {
 	t.Parallel()
 
 	sources := []string{"", "abc", "a/b", `a\/b`, `\\`, "a\nb", "a\tb"}
-	for b := 0; b < 0x80; b++ {
+	for b := range 0x80 {
 		sources = append(sources, string(rune(b)), "a"+string(rune(b))+"z")
 	}
 	for _, flags := range []string{"", "i", "im"} {

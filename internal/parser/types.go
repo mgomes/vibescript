@@ -157,8 +157,8 @@ func (p *parser) parseNamedTypeAtom() *ast.TypeExpr {
 			return nil
 		}
 		member := p.curToken.Literal
-		if strings.HasSuffix(member, "?") {
-			member = strings.TrimSuffix(member, "?")
+		if before, ok := strings.CutSuffix(member, "?"); ok {
+			member = before
 			ty.Nullable = true
 		}
 		ty.Name += "." + member

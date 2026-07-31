@@ -375,7 +375,7 @@ func (p *parser) parseRegexLiteral() ast.Expression {
 	pattern := raw[1:close]
 	rawFlags := raw[close+1:]
 	seen := map[byte]bool{}
-	for i := 0; i < len(rawFlags); i++ {
+	for i := range len(rawFlags) {
 		flag := rawFlags[i]
 		switch flag {
 		case 'i', 'm':

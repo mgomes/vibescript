@@ -25,7 +25,7 @@ func TestRegexLenMatchesRendering(t *testing.T) {
 	}
 	// Every single byte, in isolation and embedded: lone continuation bytes and
 	// invalid leads included.
-	for b := 0; b < 0x100; b++ {
+	for b := range 0x100 {
 		sources = append(sources, string([]byte{byte(b)}), "a"+string([]byte{byte(b)})+"z")
 	}
 	// Runs of stray continuation bytes, and truncated multibyte sequences.

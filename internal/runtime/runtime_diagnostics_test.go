@@ -515,7 +515,6 @@ end`,
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, tt.script)
@@ -607,7 +606,6 @@ func TestFloatRoundingBeyondInt64Promotes(t *testing.T) {
 		{"float.ceil int64 boundary", `def run() 9223372036854775808.0.ceil end`, "9223372036854775808"},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, tt.script)
