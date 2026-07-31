@@ -64,7 +64,7 @@ func NewTypedBuiltin(name string, fn BuiltinFunc, sig Signature) (Value, error) 
 			if isHostControlSignal(err) || isNormalizationLimitError(err) {
 				return NewNil(), err
 			}
-			return NewNil(), fmt.Errorf("%s", formatReturnTypeMismatch(name, err))
+			return NewNil(), errors.New(formatReturnTypeMismatch(name, err))
 		}
 		return validated, nil
 	}
