@@ -130,6 +130,10 @@ const (
 	TokenTrue
 	TokenFalse
 	TokenNil
+
+	// tokenTypeCount counts the token types; keep it last. The spelling-table
+	// test uses it to prove every constant above has an entry.
+	tokenTypeCount
 )
 
 var tokenTypeStrings = [...]string{
