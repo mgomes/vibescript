@@ -1,7 +1,7 @@
 package main
 
 import (
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/mgomes/vibescript/internal/ast"
@@ -161,7 +161,7 @@ func typeExprReceiverKind(ty *ast.TypeExpr) (string, bool) {
 func memberCompletionItemsForReceiver(receiver string, names []string) []map[string]any {
 	sorted := make([]string, len(names))
 	copy(sorted, names)
-	sort.Strings(sorted)
+	slices.Sort(sorted)
 
 	contracts := memberContractsByName()
 	items := make([]map[string]any, 0, len(sorted))

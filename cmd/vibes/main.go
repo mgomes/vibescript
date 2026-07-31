@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,7 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	vibesruntime "github.com/mgomes/vibescript/internal/runtime"
@@ -269,14 +270,12 @@ func checkSnippetScript(script *vibes.Script) error {
 	if len(warnings) == 0 {
 		return nil
 	}
-	sort.SliceStable(warnings, func(i, j int) bool {
-		if warnings[i].Pos.Line != warnings[j].Pos.Line {
-			return warnings[i].Pos.Line < warnings[j].Pos.Line
-		}
-		if warnings[i].Pos.Column != warnings[j].Pos.Column {
-			return warnings[i].Pos.Column < warnings[j].Pos.Column
-		}
-		return warnings[i].Function < warnings[j].Function
+	slices.SortStableFunc(warnings, func(a, b vibesruntime.CheckWarning) int {
+		return cmp.Or(
+			cmp.Compare(a.Pos.Line, b.Pos.Line),
+			cmp.Compare(a.Pos.Column, b.Pos.Column),
+			cmp.Compare(a.Function, b.Function),
+		)
 	})
 	return formatCheckWarnings(warnings)
 }

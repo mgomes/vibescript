@@ -1,12 +1,12 @@
 package runtime
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"math"
 	"reflect"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -580,7 +580,7 @@ func (c *scriptChecker) checkCallSplatSourceForLocal(
 	for identityName := range names {
 		ordered = append(ordered, identityName)
 	}
-	sort.Strings(ordered)
+	slices.Sort(ordered)
 	identity := make([]capturedContainerRoot, 0, len(ordered))
 	for _, identityName := range ordered {
 		identity = append(identity, capturedContainerRoot{
@@ -3800,7 +3800,7 @@ func (c *scriptChecker) directCoreHashDefaultReceiverAliasNames(
 	for name := range aliases {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
@@ -5560,7 +5560,7 @@ func normalizeCheckClassNames(names []string) []string {
 		return nil
 	}
 	normalized := append([]string(nil), names...)
-	sort.Strings(normalized)
+	slices.Sort(normalized)
 	out := normalized[:0]
 	for _, name := range normalized {
 		if len(out) == 0 || out[len(out)-1] != name {
@@ -5642,8 +5642,8 @@ func normalizeCheckCallables(fns []*ScriptFunction) []*ScriptFunction {
 		return nil
 	}
 	normalized := append([]*ScriptFunction(nil), fns...)
-	sort.Slice(normalized, func(i, j int) bool {
-		return reflect.ValueOf(normalized[i]).Pointer() < reflect.ValueOf(normalized[j]).Pointer()
+	slices.SortFunc(normalized, func(a, b *ScriptFunction) int {
+		return cmp.Compare(reflect.ValueOf(a).Pointer(), reflect.ValueOf(b).Pointer())
 	})
 	out := normalized[:0]
 	for _, fn := range normalized {
@@ -5659,13 +5659,18 @@ func normalizeCheckBlockLiterals(blocks []checkBlockLiteralValue) []checkBlockLi
 		return nil
 	}
 	normalized := append([]checkBlockLiteralValue(nil), blocks...)
-	sort.Slice(normalized, func(i, j int) bool {
-		left := reflect.ValueOf(normalized[i].block).Pointer()
-		right := reflect.ValueOf(normalized[j].block).Pointer()
-		if left != right {
-			return left < right
+	slices.SortFunc(normalized, func(a, b checkBlockLiteralValue) int {
+		if c := cmp.Compare(reflect.ValueOf(a.block).Pointer(), reflect.ValueOf(b.block).Pointer()); c != 0 {
+			return c
 		}
-		return !normalized[i].lambda && normalized[j].lambda
+		switch {
+		case a.lambda == b.lambda:
+			return 0
+		case b.lambda:
+			return -1
+		default:
+			return 1
+		}
 	})
 	out := normalized[:0]
 	for _, block := range normalized {
@@ -6410,7 +6415,7 @@ func (c *scriptChecker) containerAliasRoots(expr Expression) []string {
 	for name := range seen {
 		roots = append(roots, name)
 	}
-	sort.Strings(roots)
+	slices.Sort(roots)
 	return roots
 }
 
@@ -7075,7 +7080,7 @@ func (c *scriptChecker) captureEvaluatedDestructureFactWithAuto(
 			for name := range names {
 				ordered = append(ordered, name)
 			}
-			sort.Strings(ordered)
+			slices.Sort(ordered)
 			for _, name := range ordered {
 				fact.identityRoots = append(fact.identityRoots, capturedContainerRoot{
 					name:       name,
@@ -13655,7 +13660,7 @@ func (c *scriptChecker) applyShapeMutatorCallFacts(
 				for field := range written.Shape {
 					fields = append(fields, field)
 				}
-				sort.Strings(fields)
+				slices.Sort(fields)
 				for _, key := range fields {
 					// Optional fields may be absent, so they do not witness a
 					// merge entry that is guaranteed to land.
@@ -13772,7 +13777,7 @@ func (c *scriptChecker) checkShapeReplacementLiteral(
 		}
 		fields = append(fields, field)
 	}
-	sort.Strings(fields)
+	slices.Sort(fields)
 	for _, field := range fields {
 		if _, present := supplied[field]; present {
 			continue
@@ -14975,17 +14980,11 @@ func (c *scriptChecker) captureRetainedContainerAliases(
 		}
 	}
 	collect(value, written)
-	sort.Slice(capture.roots, func(i, j int) bool {
-		if capture.roots[i].name != capture.roots[j].name {
-			return capture.roots[i].name < capture.roots[j].name
-		}
-		return capture.roots[i].generation < capture.roots[j].generation
+	slices.SortFunc(capture.roots, func(a, b capturedContainerRoot) int {
+		return cmp.Or(cmp.Compare(a.name, b.name), cmp.Compare(a.generation, b.generation))
 	})
-	sort.Slice(capture.identityRoots, func(i, j int) bool {
-		if capture.identityRoots[i].name != capture.identityRoots[j].name {
-			return capture.identityRoots[i].name < capture.identityRoots[j].name
-		}
-		return capture.identityRoots[i].generation < capture.identityRoots[j].generation
+	slices.SortFunc(capture.identityRoots, func(a, b capturedContainerRoot) int {
+		return cmp.Or(cmp.Compare(a.name, b.name), cmp.Compare(a.generation, b.generation))
 	})
 	return capture
 }
@@ -16810,7 +16809,7 @@ func appendTypeFactKey(b *strings.Builder, ty *TypeExpr, depth int) {
 		for field := range ty.Shape {
 			fields = append(fields, field)
 		}
-		sort.Strings(fields)
+		slices.Sort(fields)
 		b.WriteString("{")
 		for _, field := range fields {
 			b.WriteString(field)
@@ -17025,7 +17024,7 @@ func boundaryShapeUnionCoverage(
 	for field := range inferred.Shape {
 		fields = append(fields, field)
 	}
-	sort.Strings(fields)
+	slices.Sort(fields)
 
 	groups := make([]boundaryShapeFieldGroup, 0, len(fields))
 	groupBySource := make(map[checkValueSource]int, len(fields))

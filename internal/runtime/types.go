@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/mgomes/vibescript/internal/ast"
@@ -545,7 +545,7 @@ func (s *valueTypeFormatState) formatHash(values map[string]Value, depth int) st
 		for field := range values {
 			fields = append(fields, field)
 		}
-		sort.Strings(fields)
+		slices.Sort(fields)
 		parts := make([]string, len(fields))
 		for i, field := range fields {
 			parts[i] = fmt.Sprintf("%s: %s", field, s.format(values[field], depth+1))
@@ -569,14 +569,14 @@ func boundedSortedHashFields(values map[string]Value, limit int) []string {
 	for field := range values {
 		if len(fields) < limit {
 			fields = append(fields, field)
-			sort.Strings(fields)
+			slices.Sort(fields)
 			continue
 		}
 		if field >= fields[len(fields)-1] {
 			continue
 		}
 		fields[len(fields)-1] = field
-		sort.Strings(fields)
+		slices.Sort(fields)
 	}
 	return fields
 }
@@ -592,7 +592,7 @@ func joinSortedTypes(typeSet map[string]struct{}, truncated bool) string {
 	for typeName := range typeSet {
 		parts = append(parts, typeName)
 	}
-	sort.Strings(parts)
+	slices.Sort(parts)
 	if truncated {
 		parts = append(parts, "...")
 	}

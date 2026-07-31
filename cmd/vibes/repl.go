@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -408,7 +408,7 @@ func (m replModel) handleAutocomplete() replModel {
 	for name := range matches {
 		completions = append(completions, name)
 	}
-	sort.Strings(completions)
+	slices.Sort(completions)
 
 	if len(completions) == 1 {
 		// Single match - complete it
@@ -540,7 +540,7 @@ func sortedEnvKeys(env map[string]value.Value) []string {
 	for key := range env {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
 
@@ -563,7 +563,7 @@ func functionsSnapshot(builtins builtinCatalog, env map[string]value.Value) stri
 			names = append(names, name)
 		}
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return strings.Join(names, "\n")
 }
 

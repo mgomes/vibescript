@@ -7,7 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/urfave/cli/v3"
@@ -139,7 +139,7 @@ func collectVibeFiles(targets []string) ([]string, error) {
 		}
 	}
 
-	sort.Strings(files)
+	slices.Sort(files)
 	return files, nil
 }
 

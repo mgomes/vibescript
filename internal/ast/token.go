@@ -1,7 +1,7 @@
 package ast
 
 import (
-	"sort"
+	"slices"
 	"strconv"
 	"unicode"
 
@@ -305,7 +305,7 @@ func Keywords() []string {
 	for keyword := range keywordTokenTypes {
 		keywords = append(keywords, keyword)
 	}
-	sort.Strings(keywords)
+	slices.Sort(keywords)
 	return keywords
 }
 
