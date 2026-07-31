@@ -19,10 +19,11 @@ import (
 func TestRegexLenMatchesRendering(t *testing.T) {
 	t.Parallel()
 
-	sources := []string{
+	sources := make([]string, 0, 16+2*0x100+13)
+	sources = append(sources,
 		"", "abc", "a/b", `a\/b`, `\\`, `\\/`, "a\nb", "a\tb", "a\ab", "a\vb", "a\fb", "a\rb",
 		"héllo", "日本語", "\x01\x1f\x7f", "\x00",
-	}
+	)
 	// Every single byte, in isolation and embedded: lone continuation bytes and
 	// invalid leads included.
 	for b := range 0x100 {

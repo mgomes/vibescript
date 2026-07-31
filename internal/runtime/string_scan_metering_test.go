@@ -1760,7 +1760,8 @@ func TestRegexConcatenationIsSizedWithoutRendering(t *testing.T) {
 func TestRegexStringLenMatchesString(t *testing.T) {
 	t.Parallel()
 
-	sources := []string{"", "abc", "a/b", `a\/b`, `\\`, "a\nb", "a\tb"}
+	sources := make([]string, 0, 7+2*0x80)
+	sources = append(sources, "", "abc", "a/b", `a\/b`, `\\`, "a\nb", "a\tb")
 	for b := range 0x80 {
 		sources = append(sources, string(rune(b)), "a"+string(rune(b))+"z")
 	}
