@@ -4972,8 +4972,7 @@ func rescuedErrorValue(err error) Value {
 	codeFrame := ""
 	var backtrace []Value
 
-	var runtimeErr *RuntimeError
-	if errors.As(err, &runtimeErr) {
+	if runtimeErr, ok := errors.AsType[*RuntimeError](err); ok {
 		errType = classifyRuntimeErrorType(runtimeErr)
 		message = runtimeErr.Message
 		codeFrame = runtimeErr.CodeFrame
@@ -5050,8 +5049,8 @@ func canRescueRuntimeError(err error, rescueTy *TypeExpr) bool {
 
 func runtimeErrorMatchesRescueType(err error, rescueTy *TypeExpr) bool {
 	if rescueTy == nil {
-		var runtimeErr *RuntimeError
-		return errors.As(err, &runtimeErr) && classifyRuntimeErrorType(runtimeErr) != runtimeErrorTypeLimit
+		runtimeErr, ok := errors.AsType[*RuntimeError](err)
+		return ok && classifyRuntimeErrorType(runtimeErr) != runtimeErrorTypeLimit
 	}
 	errKind := classifyRuntimeErrorType(err)
 	return rescueTypeMatchesErrorKind(rescueTy, errKind)

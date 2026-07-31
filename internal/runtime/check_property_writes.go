@@ -597,8 +597,7 @@ func (c *scriptChecker) bindingFactMustNormalizeType(
 // addIvarWriteWarning reports a direct-write contradiction in the standard
 // write-to shape, unwrapping the normalization mismatch when present.
 func (c *scriptChecker) addIvarWriteWarning(function string, pos Position, name string, err error) {
-	var mismatch *typeMismatchError
-	if errors.As(err, &mismatch) {
+	if mismatch, ok := errors.AsType[*typeMismatchError](err); ok {
 		c.add(function, pos, "write to @%s expected %s, got %s", name, mismatch.Expected, mismatch.Actual)
 		return
 	}

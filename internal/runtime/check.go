@@ -9405,8 +9405,7 @@ func (c *scriptChecker) addLiteralBlockParamMismatch(function string, param Para
 	if err == nil {
 		return false
 	}
-	var mismatch *typeMismatchError
-	if errors.As(err, &mismatch) {
+	if mismatch, ok := errors.AsType[*typeMismatchError](err); ok {
 		c.addOrderIndependent(function, param.Type.Position, "argument %s expected %s, got %s", param.Name, mismatch.Expected, mismatch.Actual)
 	} else {
 		c.addOrderIndependent(function, param.Type.Position, "argument %s type check failed: %s", param.Name, err)
@@ -11071,8 +11070,7 @@ func (c *scriptChecker) checkRuntimeValueAgainstType(function string, pos Positi
 }
 
 func (c *scriptChecker) addValueTypeWarning(function string, pos Position, subject string, err error) {
-	var mismatch *typeMismatchError
-	if errors.As(err, &mismatch) {
+	if mismatch, ok := errors.AsType[*typeMismatchError](err); ok {
 		c.add(function, pos, "%s expected %s, got %s", subject, mismatch.Expected, mismatch.Actual)
 		return
 	}
@@ -16356,8 +16354,7 @@ func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Positi
 		if len(args) > 0 {
 			warningPos = args[0].Pos()
 		}
-		var mismatch *typeMismatchError
-		if errors.As(err, &mismatch) {
+		if mismatch, ok := errors.AsType[*typeMismatchError](err); ok {
 			c.add(function, warningPos, "call to %s argument %s expected %s, got %s", callName, paramName, mismatch.Expected, mismatch.Actual)
 			return
 		}
@@ -16637,8 +16634,7 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 		warningPos = pos
 	}
 	if err := c.checkRuntimeStaticValueType(NewHash(values), ty); err != nil {
-		var mismatch *typeMismatchError
-		if errors.As(err, &mismatch) {
+		if mismatch, ok := errors.AsType[*typeMismatchError](err); ok {
 			c.add(function, warningPos, "call to %s argument %s expected %s, got %s", callName, paramName, mismatch.Expected, mismatch.Actual)
 			return
 		}
@@ -16698,8 +16694,7 @@ func (c *scriptChecker) checkBlockArgumentValue(function string, pos Position, b
 }
 
 func (c *scriptChecker) addArgumentValueWarning(function string, pos Position, callName, paramName string, err error) {
-	var mismatch *typeMismatchError
-	if errors.As(err, &mismatch) {
+	if mismatch, ok := errors.AsType[*typeMismatchError](err); ok {
 		c.add(function, pos, "call to %s argument %s expected %s, got %s", callName, paramName, mismatch.Expected, mismatch.Actual)
 		return
 	}

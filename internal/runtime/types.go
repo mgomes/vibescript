@@ -120,24 +120,21 @@ func (e *typeMismatchError) Error() string {
 }
 
 func formatArgumentTypeMismatch(name string, err error) string {
-	var mismatch *typeMismatchError
-	if errors.As(err, &mismatch) {
+	if mismatch, ok := errors.AsType[*typeMismatchError](err); ok {
 		return fmt.Sprintf("argument %s expected %s, got %s", name, mismatch.Expected, mismatch.Actual)
 	}
 	return fmt.Sprintf("argument %s type check failed: %s", name, err.Error())
 }
 
 func formatIvarTypeMismatch(name string, err error) string {
-	var mismatch *typeMismatchError
-	if errors.As(err, &mismatch) {
+	if mismatch, ok := errors.AsType[*typeMismatchError](err); ok {
 		return fmt.Sprintf("instance variable @%s expected %s, got %s", name, mismatch.Expected, mismatch.Actual)
 	}
 	return fmt.Sprintf("instance variable @%s type check failed: %s", name, err.Error())
 }
 
 func formatReturnTypeMismatch(fnName string, err error) string {
-	var mismatch *typeMismatchError
-	if errors.As(err, &mismatch) {
+	if mismatch, ok := errors.AsType[*typeMismatchError](err); ok {
 		return fmt.Sprintf("return value for %s expected %s, got %s", fnName, mismatch.Expected, mismatch.Actual)
 	}
 	return fmt.Sprintf("return type check failed for %s: %s", fnName, err.Error())

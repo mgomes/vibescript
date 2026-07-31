@@ -358,8 +358,7 @@ func validateCapabilityTypedValue(label string, val Value, ty *TypeExpr) error {
 		return err
 	}
 	if err := checkValueType(val, ty); err != nil {
-		var mismatch *typeMismatchError
-		if errors.As(err, &mismatch) {
+		if mismatch, ok := errors.AsType[*typeMismatchError](err); ok {
 			return fmt.Errorf("%s expected %s, got %s", label, mismatch.Expected, mismatch.Actual)
 		}
 		return err

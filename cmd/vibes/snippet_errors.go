@@ -58,8 +58,8 @@ func remapSnippetCompileError(err error, snippet string, sourceMap snippetSource
 }
 
 func remapSnippetRuntimeError(err error, snippet string, sourceMap snippetSourceMap) error {
-	var runtimeErr *vibes.RuntimeError
-	if !errors.As(err, &runtimeErr) {
+	runtimeErr, ok := errors.AsType[*vibes.RuntimeError](err)
+	if !ok {
 		return err
 	}
 

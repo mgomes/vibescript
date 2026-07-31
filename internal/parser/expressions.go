@@ -1086,8 +1086,7 @@ func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position
 }
 
 func parseErrorMessage(err error) string {
-	var parseErr *parseError
-	if errors.As(err, &parseErr) {
+	if parseErr, ok := errors.AsType[*parseError](err); ok {
 		return parseErr.Message()
 	}
 	return err.Error()
