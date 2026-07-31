@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -1676,12 +1677,7 @@ func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 // condition. Range dots followed by such a token cannot continue into a
 // bounded endpoint, so the range is endless.
 func (p *parser) peekIsActiveExpressionStop() bool {
-	for _, stop := range p.lineLimitedStops {
-		if p.peekToken.Type == stop {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.lineLimitedStops, p.peekToken.Type)
 }
 
 // atWhenValueGroupDepth reports whether range dots sit directly in a when

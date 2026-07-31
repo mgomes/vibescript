@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"reflect"
@@ -473,14 +474,10 @@ func checkOptionGlobals(ctx context.Context, script *Script, opts CallOptions) (
 				bindErr = err
 				break
 			}
-			for name, val := range bound {
-				globals[name] = val
-			}
+			maps.Copy(globals, bound)
 		}
 	}
-	for name, val := range opts.Globals {
-		globals[name] = val
-	}
+	maps.Copy(globals, opts.Globals)
 	if len(globals) == 0 {
 		return nil, bindErr
 	}
@@ -9183,12 +9180,7 @@ func (c *scriptChecker) checkLiteralArrayBlockParamTypes(function string, call *
 // proving that statically is not worth risking a false positive, so any
 // occurrence restricts the literal-receiver check to the first yield.
 func blockBodyMayEscapeIteration(statements []Statement) bool {
-	for _, stmt := range statements {
-		if statementMayEscapeIteration(stmt) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(statements, statementMayEscapeIteration)
 }
 
 func statementMayEscapeIteration(stmt Statement) bool {
@@ -9277,10 +9269,8 @@ func expressionMayEscapeIteration(expr Expression) bool {
 		if expressionMayEscapeIteration(typed.Callee) {
 			return true
 		}
-		for _, arg := range typed.Args {
-			if expressionMayEscapeIteration(arg) {
-				return true
-			}
+		if slices.ContainsFunc(typed.Args, expressionMayEscapeIteration) {
+			return true
 		}
 		for _, kwarg := range typed.KwArgs {
 			if expressionMayEscapeIteration(kwarg.Value) {
@@ -9318,12 +9308,7 @@ func expressionMayEscapeIteration(expr Expression) bool {
 	case *RangeExpr:
 		return expressionMayEscapeIteration(typed.Start) || expressionMayEscapeIteration(typed.End)
 	case *ArrayLiteral:
-		for _, elem := range typed.Elements {
-			if expressionMayEscapeIteration(elem) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(typed.Elements, expressionMayEscapeIteration)
 	case *HashLiteral:
 		for _, pair := range typed.Pairs {
 			if expressionMayEscapeIteration(pair.Key) || expressionMayEscapeIteration(pair.Value) {
@@ -9335,12 +9320,7 @@ func expressionMayEscapeIteration(expr Expression) bool {
 		if expressionMayEscapeIteration(typed.Object) {
 			return true
 		}
-		for _, index := range typed.Indices {
-			if expressionMayEscapeIteration(index) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(typed.Indices, expressionMayEscapeIteration)
 	case *MemberExpr:
 		return expressionMayEscapeIteration(typed.Object)
 	case *ScopeExpr:
@@ -9361,12 +9341,7 @@ func expressionMayEscapeIteration(expr Expression) bool {
 		}
 		return expressionMayEscapeIteration(typed.ElseExpr)
 	case *YieldExpr:
-		for _, arg := range typed.Args {
-			if expressionMayEscapeIteration(arg) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(typed.Args, expressionMayEscapeIteration)
 	case *InterpolatedString:
 		return stringPartsMayEscapeIteration(typed.Parts)
 	case *InterpolatedSymbol:
@@ -11608,12 +11583,7 @@ func statementAlwaysExits(stmt Statement) bool {
 // recursion at every nesting level and made deeply nested conditionals take
 // exponential time to check.
 func blockAlwaysExits(statements []Statement) bool {
-	for _, stmt := range statements {
-		if statementAlwaysExits(stmt) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(statements, statementAlwaysExits)
 }
 
 func effectiveFinalStatement(statements []Statement) Statement {
@@ -11677,12 +11647,7 @@ func typeAllowsNilReturn(ty *TypeExpr) bool {
 	if ty.Kind != TypeUnion {
 		return false
 	}
-	for _, option := range ty.Union {
-		if typeAllowsNilReturn(option) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(ty.Union, typeAllowsNilReturn)
 }
 
 type staticCallable struct {
@@ -18171,21 +18136,11 @@ func (c *scriptChecker) withCapturedDestructureArgumentFacts(
 		map[Expression]checkStaticChoiceFact,
 		len(previousStaticChoices),
 	)
-	for expr, fact := range previousFacts {
-		c.callArgumentFacts[expr] = fact
-	}
-	for expr, classNames := range previousClassValues {
-		c.callArgumentClassValues[expr] = classNames
-	}
-	for expr, callables := range previousCallables {
-		c.callArgumentCallables[expr] = callables
-	}
-	for expr, binding := range previousSelfBindings {
-		c.callArgumentSelfBindings[expr] = binding
-	}
-	for expr, values := range previousStaticValues {
-		c.callArgumentStaticValues[expr] = values
-	}
+	maps.Copy(c.callArgumentFacts, previousFacts)
+	maps.Copy(c.callArgumentClassValues, previousClassValues)
+	maps.Copy(c.callArgumentCallables, previousCallables)
+	maps.Copy(c.callArgumentSelfBindings, previousSelfBindings)
+	maps.Copy(c.callArgumentStaticValues, previousStaticValues)
 	for expr, choice := range previousStaticChoices {
 		c.callArgumentStaticChoices[expr] = cloneCheckStaticChoiceFact(choice)
 	}
@@ -18473,14 +18428,11 @@ func (s *namespaceMutationScan) callableParamSelfBindings(
 			if !exact {
 				continue
 			}
-			for _, fn := range functions {
-				if s.functionMayRunOnEffectSelf(fn) {
-					if bindings.ambiguous == nil {
-						bindings.ambiguous = make(map[string]struct{})
-					}
-					bindings.ambiguous[name] = struct{}{}
-					break
+			if slices.ContainsFunc(functions, s.functionMayRunOnEffectSelf) {
+				if bindings.ambiguous == nil {
+					bindings.ambiguous = make(map[string]struct{})
 				}
+				bindings.ambiguous[name] = struct{}{}
 			}
 		}
 	}
@@ -18583,10 +18535,8 @@ func (s *namespaceMutationScan) exactCallableSelfBinding(
 		}
 		return checkCallableSelfBinding{}, false
 	}
-	for _, fn := range functions {
-		if s.functionMayRunOnEffectSelf(fn) {
-			return checkCallableSelfBinding{ambiguous: true}, true
-		}
+	if slices.ContainsFunc(functions, s.functionMayRunOnEffectSelf) {
+		return checkCallableSelfBinding{ambiguous: true}, true
 	}
 	return checkCallableSelfBinding{}, true
 }
@@ -18709,12 +18659,7 @@ func (s *namespaceMutationScan) scanExactLambdaCall(
 }
 
 func functionInSet(fn *ScriptFunction, functions []*ScriptFunction) bool {
-	for _, candidate := range functions {
-		if candidate == fn {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(functions, fn)
 }
 
 func (s *namespaceMutationScan) selfReference(name string) {
@@ -19222,9 +19167,7 @@ func (s *namespaceMutationScan) withNominalReceiverParams(params []Param, inheri
 	previous := s.nominalReceivers
 	receivers := make(map[string]*ClassDef, len(params))
 	if inherit {
-		for name, classDef := range previous {
-			receivers[name] = classDef
-		}
+		maps.Copy(receivers, previous)
 	}
 	for _, param := range params {
 		if param.Name == "" {

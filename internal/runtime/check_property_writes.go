@@ -7,6 +7,8 @@ package runtime
 // accessor-backed ivar, a write whose known value is provably incompatible
 // with the contract warns, and unknown values pass to the runtime guard.
 
+import "maps"
+
 import "errors"
 
 // ivarFactKey names the local-inference fact slot for an instance variable.
@@ -268,9 +270,7 @@ func (c *scriptChecker) mergeConstructorIvarFacts(
 
 func cloneIvarFacts(facts map[string]*TypeExpr) map[string]*TypeExpr {
 	clone := make(map[string]*TypeExpr, len(facts))
-	for name, fact := range facts {
-		clone[name] = fact
-	}
+	maps.Copy(clone, facts)
 	return clone
 }
 
