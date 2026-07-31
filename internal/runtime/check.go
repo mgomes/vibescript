@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"math/big"
 	"reflect"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -97,14 +97,12 @@ func (s *Script) checkWarningsWithGlobals(optionGlobals map[string]Value, opts C
 	} else {
 		checker.checkFunctionExecution(target)
 	}
-	sort.SliceStable(checker.warnings, func(i, j int) bool {
-		if checker.warnings[i].Pos.Line != checker.warnings[j].Pos.Line {
-			return checker.warnings[i].Pos.Line < checker.warnings[j].Pos.Line
-		}
-		if checker.warnings[i].Pos.Column != checker.warnings[j].Pos.Column {
-			return checker.warnings[i].Pos.Column < checker.warnings[j].Pos.Column
-		}
-		return checker.warnings[i].Function < checker.warnings[j].Function
+	slices.SortStableFunc(checker.warnings, func(a, b CheckWarning) int {
+		return cmp.Or(
+			cmp.Compare(a.Pos.Line, b.Pos.Line),
+			cmp.Compare(a.Pos.Column, b.Pos.Column),
+			cmp.Compare(a.Function, b.Function),
+		)
 	})
 	return dedupeCheckWarnings(checker.warnings)
 }
@@ -1400,7 +1398,7 @@ func sortedRequiredModuleExportedFunctions(functions map[string]*ScriptFunction)
 		}
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	out := make([]*ScriptFunction, 0, len(names))
 	for _, name := range names {
 		out = append(out, functions[name])
@@ -1441,7 +1439,7 @@ func moduleCheckContextKey(root *Env) string {
 		scope.rangeStaticBindings(func(name string, val Value) {
 			bindings = append(bindings, "s:"+name+"="+moduleCheckValueKey(val))
 		})
-		sort.Strings(bindings)
+		slices.Sort(bindings)
 		scopes = append(scopes, strings.Join(bindings, ","))
 	}
 	return strings.Join(scopes, "|")
@@ -2134,7 +2132,7 @@ func (c *scriptChecker) runtimeCheckContextKey() string {
 	for member := range memberSet {
 		members = append(members, member)
 	}
-	sort.Strings(members)
+	slices.Sort(members)
 	return fmt.Sprintf(
 		"%s\x00%t\x00%s",
 		moduleCheckContextKey(root),
@@ -2243,7 +2241,7 @@ func reachableParamFactsKey(facts map[string]checkReachableParamFact) string {
 	for name := range facts {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	var key strings.Builder
 	for _, name := range names {
 		key.WriteString(name)
@@ -2903,7 +2901,7 @@ func (c *scriptChecker) sortedScriptFunctions() []*ScriptFunction {
 	for name := range c.script.functions {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	out := make([]*ScriptFunction, 0, len(names))
 	for _, name := range names {
 		out = append(out, c.script.functions[name])
@@ -2916,7 +2914,7 @@ func (c *scriptChecker) sortedClasses() []*ClassDef {
 	for name := range c.script.classes {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	out := make([]*ClassDef, 0, len(names))
 	for _, name := range names {
 		out = append(out, c.script.classes[name])
@@ -2929,7 +2927,7 @@ func sortedCheckFunctions(functions map[string]*ScriptFunction) []*ScriptFunctio
 	for name := range functions {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	out := make([]*ScriptFunction, 0, len(names))
 	for _, name := range names {
 		out = append(out, functions[name])
@@ -16098,7 +16096,7 @@ func sortedValueKeywordNames(kwargs map[string]Value) []string {
 	for name := range kwargs {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
@@ -16583,7 +16581,7 @@ func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos
 					}
 					fields = append(fields, field)
 				}
-				sort.Strings(fields)
+				slices.Sort(fields)
 				for _, field := range fields {
 					if _, ok := supplied[field]; !ok {
 						c.add(function, missingPos, "call to %s argument %s expected %s, missing keyword %s",

@@ -1,11 +1,12 @@
 package value
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"math"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -426,8 +427,8 @@ func (v Value) HashSet(key, val Value) error {
 				hd.typedEntries[canonical] = HashEntry{Key: entryKey, Value: entryVal}
 				hd.order = append(hd.order, canonical)
 			}
-			sort.Slice(hd.order, func(i, j int) bool {
-				return hd.order[i].text < hd.order[j].text
+			slices.SortFunc(hd.order, func(a, b HashLookupKey) int {
+				return cmp.Compare(a.text, b.text)
 			})
 		}
 		canonical, err := NewHashLookupKey(key)

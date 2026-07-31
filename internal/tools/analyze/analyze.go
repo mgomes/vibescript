@@ -7,8 +7,9 @@
 package analyze
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/internal/runtime"
@@ -40,14 +41,12 @@ func Script(script *runtime.Script) []Warning {
 		}
 	}
 
-	sort.SliceStable(warnings, func(i, j int) bool {
-		if warnings[i].Pos.Line != warnings[j].Pos.Line {
-			return warnings[i].Pos.Line < warnings[j].Pos.Line
-		}
-		if warnings[i].Pos.Column != warnings[j].Pos.Column {
-			return warnings[i].Pos.Column < warnings[j].Pos.Column
-		}
-		return warnings[i].Function < warnings[j].Function
+	slices.SortStableFunc(warnings, func(a, b Warning) int {
+		return cmp.Or(
+			cmp.Compare(a.Pos.Line, b.Pos.Line),
+			cmp.Compare(a.Pos.Column, b.Pos.Column),
+			cmp.Compare(a.Function, b.Function),
+		)
 	})
 
 	return warnings
@@ -58,7 +57,7 @@ func sortedFunctionsByName(functions map[string]*runtime.ScriptFunction) []*runt
 	for name := range functions {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	sorted := make([]*runtime.ScriptFunction, 0, len(names))
 	for _, name := range names {
 		sorted = append(sorted, functions[name])

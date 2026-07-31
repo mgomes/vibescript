@@ -2,7 +2,7 @@ package ast
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -141,7 +141,7 @@ func formatShapeType(ty *TypeExpr) string {
 	for field := range ty.Shape {
 		fields = append(fields, field)
 	}
-	sort.Strings(fields)
+	slices.Sort(fields)
 	parts := make([]string, len(fields))
 	for i, field := range fields {
 		fieldType := ty.Shape[field]

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"sort"
+	"slices"
 
 	"github.com/mgomes/vibescript/vibes/value"
 )
@@ -45,9 +45,9 @@ func newBuiltinCatalog(builtins map[string]value.Value) builtinCatalog {
 			}
 		}
 	}
-	sort.Strings(catalog.topLevelNames)
-	sort.Strings(catalog.functionNames)
-	sort.Strings(catalog.documentedNames)
+	slices.Sort(catalog.topLevelNames)
+	slices.Sort(catalog.functionNames)
+	slices.Sort(catalog.documentedNames)
 	return catalog
 }
 

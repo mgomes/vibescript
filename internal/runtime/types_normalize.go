@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"unsafe"
 )
@@ -1059,18 +1059,18 @@ func resolveNamedTypeFoldMatch(name string, match namedTypeMatch, enumMatches, c
 }
 
 func ambiguousClassTypeError(name string, matches []string) error {
-	sort.Strings(matches)
+	slices.Sort(matches)
 	return fmt.Errorf("ambiguous class type %s matches %s", name, strings.Join(matches, ", "))
 }
 
 func ambiguousEnumTypeError(name string, matches []string) error {
-	sort.Strings(matches)
+	slices.Sort(matches)
 	return fmt.Errorf("ambiguous enum type %s matches %s", name, strings.Join(matches, ", "))
 }
 
 func ambiguousNamedTypeError(name string, enumMatches, classMatches []string) error {
-	sort.Strings(enumMatches)
-	sort.Strings(classMatches)
+	slices.Sort(enumMatches)
+	slices.Sort(classMatches)
 	matches := make([]string, 0, len(enumMatches)+len(classMatches))
 	for _, enumName := range enumMatches {
 		matches = append(matches, "enum "+enumName)

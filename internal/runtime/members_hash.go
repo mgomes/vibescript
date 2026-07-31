@@ -1,11 +1,11 @@
 package runtime
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"reflect"
 	"slices"
-	"sort"
 )
 
 // hashMemberNames mirrors the names dispatched by hashMember and feeds
@@ -134,7 +134,7 @@ func sortedHashKeysInto(entries map[string]Value, buf []string) []string {
 	for key := range entries {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
 
@@ -187,8 +187,8 @@ func deterministicHashEntriesInto(receiver Value, buf []HashEntry) []HashEntry {
 	for key, val := range m {
 		entries = append(entries, HashEntry{Key: NewString(key), Value: val})
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Key.String() < entries[j].Key.String()
+	slices.SortFunc(entries, func(a, b HashEntry) int {
+		return cmp.Compare(a.Key.String(), b.Key.String())
 	})
 	return entries
 }
