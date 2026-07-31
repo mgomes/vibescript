@@ -477,6 +477,10 @@ func layoutCarriesZoneName(layout string) bool {
 	return strings.Contains(layout, "MST")
 }
 
+// ParseTimeString parses input into a time using layout when hasLayout is
+// set, or the runtime's accepted timestamp forms otherwise. A nil loc keeps
+// the zone rules described below; a non-nil loc resolves zoneless inputs in
+// that location.
 func ParseTimeString(input, layout string, hasLayout bool, loc *time.Location) (time.Time, error) {
 	// A zoneless timestamp binds to UTC, not the host's zone. Scripts run in a
 	// sandbox whose quotas, capabilities, and memory bound all exist to make
