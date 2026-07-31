@@ -60,7 +60,6 @@ func TestLogicalOperatorsShortCircuit(t *testing.T) {
 		{name: "and_returns_left_when_left_falsy", fn: "and_value", args: []Value{NewNil(), NewString("b")}, want: NewNil()},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, tc.args)
@@ -273,7 +272,6 @@ func TestIntegerArithmeticOverflowErrors(t *testing.T) {
 		{name: "exponentiation_overflow", fn: "exponent", args: []Value{NewInt(math.MaxInt64), NewInt(2)}, want: "85070591730234615847396907784232501249"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, tc.args)
@@ -310,7 +308,6 @@ func TestExponentOperatorErrors(t *testing.T) {
 		{name: "float_overflow", args: []Value{NewFloat(10), NewFloat(1000)}, want: "float exponentiation result is not finite"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, "exponent", tc.args, CallOptions{}, tc.want)
@@ -383,7 +380,6 @@ func TestNumericConversionBuiltins(t *testing.T) {
 		{name: "to_float_inf", fn: "bad_float_inf", want: "to_float expects a finite numeric string"},
 	}
 	for _, tc := range badCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, nil, CallOptions{}, tc.want)
@@ -547,7 +543,6 @@ func TestTimeNumericSecondArithmetic(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, tc.args)
@@ -642,7 +637,6 @@ func TestTimeNumericArithmeticErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, tc.args, CallOptions{}, tc.want)
@@ -704,7 +698,6 @@ func TestDurationAndTimeArithmeticOverflowErrors(t *testing.T) {
 		{name: "time_subtract_duration_overflow", fn: "time_subtract", args: []Value{epoch, tooLargeForTime}},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, tc.args, CallOptions{}, "out of int64 range")

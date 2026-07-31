@@ -281,7 +281,6 @@ func TestDurationMethods(t *testing.T) {
 		{name: "duration_modulo", fn: "duration_modulo", want: 2},
 	}
 	for _, tc := range intCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, tc.fn, nil)
@@ -1277,7 +1276,6 @@ func TestJSONStringifyEscaping(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, "stringify_value", []Value{tc.value})
@@ -1310,7 +1308,6 @@ func TestJSONStringifyFloatFormattingMatchesJSON(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := callFunc(t, script, "stringify_value", []Value{tc.value})
@@ -1484,7 +1481,6 @@ func TestJSONAndRegexMalformedInputs(t *testing.T) {
 		{name: "regex_replace_all", fn: "bad_regex_replace_all", want: "Regex.replace_all invalid regex"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, nil, CallOptions{}, tc.want)
@@ -1704,7 +1700,6 @@ func TestRandomIdentifierBuiltins(t *testing.T) {
 		{name: "bad_uuid_args", fn: "bad_uuid_args", want: "uuid does not take arguments"},
 	}
 	for _, tc := range errorCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, nil, CallOptions{}, tc.want)

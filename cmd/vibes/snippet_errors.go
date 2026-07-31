@@ -58,8 +58,8 @@ func remapSnippetCompileError(err error, snippet string, sourceMap snippetSource
 }
 
 func remapSnippetRuntimeError(err error, snippet string, sourceMap snippetSourceMap) error {
-	var runtimeErr *vibes.RuntimeError
-	if !errors.As(err, &runtimeErr) {
+	runtimeErr, ok := errors.AsType[*vibes.RuntimeError](err)
+	if !ok {
 		return err
 	}
 
@@ -95,10 +95,7 @@ func (m snippetSourceMap) remapPosition(pos source.Position, snippet string) sou
 		return pos
 	}
 
-	line := pos.Line - m.lineOffset
-	if line < 1 {
-		line = 1
-	}
+	line := max(pos.Line-m.lineOffset, 1)
 	lineCount := snippetLineCount(snippet)
 	if line > lineCount {
 		return snippetEOFPosition(snippet)

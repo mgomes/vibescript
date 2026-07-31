@@ -1719,10 +1719,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			// memory check below are what bound the actual allocation; bounding the
 			// initial capacity keeps it proportional to what the quotas allow,
 			// mirroring rangeMaterialize.
-			initialCap := len(args)
-			if initialCap > arrayValuesAtInitialCap {
-				initialCap = arrayValuesAtInitialCap
-			}
+			initialCap := min(len(args), arrayValuesAtInitialCap)
 			// Reject the build before reserving the backing slice when that capacity
 			// alone already overflows the quota. Charging it through the accumulator
 			// uses the same call-root baseline emit charges each slot against, mirroring
@@ -2888,10 +2885,7 @@ func valueSetScalarScratchSlots(seen valueSet, hint int) int {
 	if seen.scalars == nil {
 		return 0
 	}
-	slots := boundedSetCap(hint)
-	if slots < len(seen.scalars) {
-		slots = len(seen.scalars)
-	}
+	slots := max(boundedSetCap(hint), len(seen.scalars))
 	return slots
 }
 
@@ -3404,10 +3398,7 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	// loop could abort. Bounding the initial capacity and re-checking the
 	// backing array's growth per element keeps the actual allocation
 	// proportional to what the quotas allow, mirroring rangeMaterialize.
-	initialCap := span.finalLength
-	if initialCap > arrayFillInitialCap {
-		initialCap = arrayFillInitialCap
-	}
+	initialCap := min(span.finalLength, arrayFillInitialCap)
 	out := make([]Value, 0, initialCap)
 
 	// Track accumulated payloads incrementally rather than re-estimating the whole
@@ -3573,10 +3564,7 @@ func arrayFillSpanFromStart(begin, length, count int) (arrayFillSpan, error) {
 		// begin + count overflowed int; such a window cannot be materialized.
 		return arrayFillSpan{}, guardLimitErrorf("array.fill window is too large")
 	}
-	finalLength := length
-	if end > finalLength {
-		finalLength = end
-	}
+	finalLength := max(end, length)
 	return arrayFillSpan{begin: begin, end: end, finalLength: finalLength}, nil
 }
 
@@ -3622,10 +3610,7 @@ func arrayFillRangeSpan(rng Range, length int) (arrayFillSpan, error) {
 	if begin > math.MaxInt || end > math.MaxInt {
 		return arrayFillSpan{}, guardLimitErrorf("array.fill window is too large")
 	}
-	finalLength := length
-	if int(end) > finalLength {
-		finalLength = int(end)
-	}
+	finalLength := max(int(end), length)
 	return arrayFillSpan{begin: int(begin), end: int(end), finalLength: finalLength}, nil
 }
 
@@ -4322,10 +4307,7 @@ func arrayInsertBuildResult(exec *Execution, receiver Value, args []Value, kwarg
 		return NewNil(), err
 	}
 
-	initialCap := finalLength
-	if initialCap > arrayInsertInitialCap {
-		initialCap = arrayInsertInitialCap
-	}
+	initialCap := min(finalLength, arrayInsertInitialCap)
 	out := make([]Value, 0, initialCap)
 	for i := range finalLength {
 		if err := exec.step(); err != nil {
@@ -4354,10 +4336,7 @@ func arrayReserveInPlaceGrowth(exec *Execution, receiver Value, args []Value, kw
 	if newLen <= cap(base) {
 		return nil
 	}
-	grownCap := saturatingMul(cap(base), 2)
-	if grownCap < newLen {
-		grownCap = newLen
-	}
+	grownCap := max(saturatingMul(cap(base), 2), newLen)
 	return newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(grownCap)
 }
 

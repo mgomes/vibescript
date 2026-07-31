@@ -307,7 +307,6 @@ end`)
 		{name: "member", fn: "run_member"},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancelFunc := context.WithCancel(context.Background())
 			cancel = cancelFunc
@@ -446,7 +445,6 @@ end`)
 		{name: "int_times", fn: "run_times"},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancelFunc := context.WithCancel(context.Background())
 			cancel = cancelFunc

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -437,9 +438,7 @@ func mutateRapidFirstContainer(value Value) bool {
 
 func cloneRapidHash(values map[string]Value) map[string]Value {
 	cloned := make(map[string]Value, len(values))
-	for key, value := range values {
-		cloned[key] = value
-	}
+	maps.Copy(cloned, values)
 	return cloned
 }
 

@@ -1,5 +1,7 @@
 package runtime
 
+import "slices"
+
 import "fmt"
 
 // Universal object introspection predicates, available on every value kind the
@@ -117,12 +119,7 @@ func newClassPredicateBuiltin(name string) Value {
 // qualified name. Names are compared rather than definition pointers because
 // each call works on its own clones of both definitions.
 func classIncludesModule(cl *ClassDef, moduleName string) bool {
-	for _, included := range cl.IncludedModules {
-		if included == moduleName {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(cl.IncludedModules, moduleName)
 }
 
 // methodNameArg extracts a method name from a respond_to? argument. Ruby accepts

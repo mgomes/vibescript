@@ -44,8 +44,7 @@ func asNonLocalReturnSignal(err error) *nonLocalReturnSignal {
 	if sig, ok := err.(*nonLocalReturnSignal); ok { //nolint:errorlint // fast path for the common unwrapped signal; the errors.As fallback below covers a wrapped one
 		return sig
 	}
-	var sig *nonLocalReturnSignal
-	if errors.As(err, &sig) {
+	if sig, ok := errors.AsType[*nonLocalReturnSignal](err); ok {
 		return sig
 	}
 	return nil

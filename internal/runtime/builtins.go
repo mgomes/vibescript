@@ -1714,8 +1714,7 @@ func builtinJSONParse(exec *Execution, receiver Value, args []Value, kwargs map[
 	parser := jsonValueParser{raw: raw, exec: exec}
 	value, err := parser.parse()
 	if err != nil {
-		var invalidNumber jsonInvalidNumberError
-		if errors.As(err, &invalidNumber) {
+		if _, ok := errors.AsType[jsonInvalidNumberError](err); ok {
 			return NewNil(), err
 		}
 		return NewNil(), fmt.Errorf("JSON.parse invalid JSON: %w", err)
@@ -1753,8 +1752,7 @@ func builtinJSONParseAs(exec *Execution, receiver Value, args []Value, kwargs ma
 	parser := jsonValueParser{raw: raw, exec: exec}
 	parsed, err := parser.parse()
 	if err != nil {
-		var invalidNumber jsonInvalidNumberError
-		if errors.As(err, &invalidNumber) {
+		if invalidNumber, ok := errors.AsType[jsonInvalidNumberError](err); ok {
 			// The parser's error spells JSON.parse; rewrap under this
 			// builtin's name.
 			return NewNil(), fmt.Errorf("JSON.parse_as invalid number %q", string(invalidNumber))
@@ -1768,8 +1766,7 @@ func builtinJSONParseAs(exec *Execution, receiver Value, args []Value, kwargs ma
 		exec:     exec,
 	})
 	if err != nil {
-		var mismatch *typeMismatchError
-		if errors.As(err, &mismatch) {
+		if mismatch, ok := errors.AsType[*typeMismatchError](err); ok {
 			return NewNil(), fmt.Errorf("JSON.parse_as value expected %s, got %s", mismatch.Expected, mismatch.Actual)
 		}
 		return NewNil(), err

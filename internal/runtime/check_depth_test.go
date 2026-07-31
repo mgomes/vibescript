@@ -14,11 +14,11 @@ import (
 func nestedIfSource(depth int) string {
 	var b strings.Builder
 	b.WriteString("def main(n)\n  acc = 0\n")
-	for i := 0; i < depth; i++ {
+	for i := range depth {
 		fmt.Fprintf(&b, "  if n > %d\n", i)
 	}
 	b.WriteString("  acc = acc + 1\n")
-	for i := 0; i < depth; i++ {
+	for range depth {
 		b.WriteString("  end\n")
 	}
 	b.WriteString("  acc\nend\n")
