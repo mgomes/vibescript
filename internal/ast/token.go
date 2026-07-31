@@ -240,7 +240,7 @@ var tokenTypeStrings = [...]string{
 // punctuation, and its diagnostic name for literal classes, exactly as the
 // previous string-typed constants read.
 func (t TokenType) String() string {
-	if int(t) < len(tokenTypeStrings) {
+	if t >= 0 && int(t) < len(tokenTypeStrings) {
 		return tokenTypeStrings[t]
 	}
 	return "token(" + strconv.Itoa(int(t)) + ")"

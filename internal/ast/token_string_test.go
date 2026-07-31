@@ -23,8 +23,12 @@ func TestEveryTokenTypeHasASpelling(t *testing.T) {
 	if got := TokenNone.String(); got != "" {
 		t.Errorf("TokenNone renders as %q, want the empty string the zero token type has always rendered as", got)
 	}
-	// The fallback must identify an out-of-range value rather than panic.
-	if got := TokenType(255).String(); !strings.HasPrefix(got, "token(") {
-		t.Errorf("out-of-range TokenType renders as %q", got)
+	// The fallback must identify an out-of-range value rather than panic --
+	// in both directions, since the underlying type is a signed int and a
+	// negative value passes the upper-bound check alone.
+	for _, tt := range []TokenType{255, -1} {
+		if got := tt.String(); !strings.HasPrefix(got, "token(") {
+			t.Errorf("out-of-range TokenType %d renders as %q", int(tt), got)
+		}
 	}
 }
