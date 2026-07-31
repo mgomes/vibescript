@@ -2,6 +2,7 @@ package ast
 
 import (
 	"slices"
+	"strconv"
 	"unicode"
 
 	"github.com/mgomes/vibescript/vibes/source"
@@ -20,111 +21,230 @@ func IsIdentifierRune(r rune) bool {
 }
 
 // TokenType identifies the lexical category of a token.
-type TokenType string
+type TokenType int
 
 const (
-	TokenIllegal TokenType = "ILLEGAL"
-	TokenEOF     TokenType = "EOF"
+	// TokenNone is the zero TokenType: no token. A zero-valued Token carries
+	// it, and AST nodes whose operator slot is empty (a plain assignment's
+	// Operator, for example) hold it where the string-typed representation
+	// held "". It is never produced by the lexer.
+	TokenNone TokenType = iota
+	TokenIllegal
+	TokenEOF
 
-	TokenIdent              TokenType = "IDENT"
-	TokenInt                TokenType = "INT"
-	TokenFloat              TokenType = "FLOAT"
-	TokenString             TokenType = "STRING"
-	TokenInterpolatedString TokenType = "INTERPOLATED_STRING"
-	TokenSymbol             TokenType = "SYMBOL"
-	TokenWords              TokenType = "WORDS"
-	TokenSymbols            TokenType = "SYMBOLS"
-	TokenInterpWords        TokenType = "INTERP_WORDS"
-	TokenInterpSymbols      TokenType = "INTERP_SYMBOLS"
-	TokenRegex              TokenType = "REGEX"
+	TokenIdent
+	TokenInt
+	TokenFloat
+	TokenString
+	TokenInterpolatedString
+	TokenSymbol
+	TokenWords
+	TokenSymbols
+	TokenInterpWords
+	TokenInterpSymbols
+	TokenRegex
 
-	TokenAssign         TokenType = "="
-	TokenPlusAssign     TokenType = "+="
-	TokenMinusAssign    TokenType = "-="
-	TokenAsteriskAssign TokenType = "*="
-	TokenPowerAssign    TokenType = "**="
-	TokenSlashAssign    TokenType = "/="
-	TokenPercentAssign  TokenType = "%="
-	TokenAndAssign      TokenType = "&&="
-	TokenOrAssign       TokenType = "||="
-	TokenPlus           TokenType = "+"
-	TokenMinus          TokenType = "-"
-	TokenBang           TokenType = "!"
-	TokenAsterisk       TokenType = "*"
-	TokenPower          TokenType = "**"
-	TokenSlash          TokenType = "/"
-	TokenPercent        TokenType = "%"
-	TokenLT             TokenType = "<"
-	TokenShovel         TokenType = "<<"
-	TokenGT             TokenType = ">"
-	TokenLTE            TokenType = "<="
-	TokenGTE            TokenType = ">="
-	TokenSpaceship      TokenType = "<=>"
-	TokenEQ             TokenType = "=="
-	TokenCaseEQ         TokenType = "==="
-	TokenNotEQ          TokenType = "!="
-	TokenMatch          TokenType = "=~"
-	TokenNotMatch       TokenType = "!~"
-	TokenAnd            TokenType = "&&"
-	TokenOr             TokenType = "||"
-	TokenAmpersand      TokenType = "&"
-	TokenQuestion       TokenType = "?"
+	TokenAssign
+	TokenPlusAssign
+	TokenMinusAssign
+	TokenAsteriskAssign
+	TokenPowerAssign
+	TokenSlashAssign
+	TokenPercentAssign
+	TokenAndAssign
+	TokenOrAssign
+	TokenPlus
+	TokenMinus
+	TokenBang
+	TokenAsterisk
+	TokenPower
+	TokenSlash
+	TokenPercent
+	TokenLT
+	TokenShovel
+	TokenGT
+	TokenLTE
+	TokenGTE
+	TokenSpaceship
+	TokenEQ
+	TokenCaseEQ
+	TokenNotEQ
+	TokenMatch
+	TokenNotMatch
+	TokenAnd
+	TokenOr
+	TokenAmpersand
+	TokenQuestion
 
-	TokenComma     TokenType = ","
-	TokenSemicolon TokenType = ";"
-	TokenColon     TokenType = ":"
-	TokenScope     TokenType = "::"
-	TokenDot       TokenType = "."
-	TokenSafeNav   TokenType = "&."
-	TokenRange     TokenType = ".."
-	TokenRangeExcl TokenType = "..."
-	TokenLParen    TokenType = "("
-	TokenRParen    TokenType = ")"
-	TokenLBrace    TokenType = "{"
-	TokenRBrace    TokenType = "}"
-	TokenLBracket  TokenType = "["
-	TokenRBracket  TokenType = "]"
-	TokenPipe      TokenType = "|"
-	TokenArrow     TokenType = "=>"
-	TokenThinArrow TokenType = "->"
-	TokenIvar      TokenType = "IVAR"
-	TokenClassVar  TokenType = "CLASSVAR"
+	TokenComma
+	TokenSemicolon
+	TokenColon
+	TokenScope
+	TokenDot
+	TokenSafeNav
+	TokenRange
+	TokenRangeExcl
+	TokenLParen
+	TokenRParen
+	TokenLBrace
+	TokenRBrace
+	TokenLBracket
+	TokenRBracket
+	TokenPipe
+	TokenArrow
+	TokenThinArrow
+	TokenIvar
+	TokenClassVar
 
-	TokenDef      TokenType = "DEF"
-	TokenClass    TokenType = "CLASS"
-	TokenEnum     TokenType = "ENUM"
-	TokenExport   TokenType = "EXPORT"
-	TokenSelf     TokenType = "SELF"
-	TokenPrivate  TokenType = "PRIVATE"
-	TokenProperty TokenType = "PROPERTY"
-	TokenGetter   TokenType = "GETTER"
-	TokenSetter   TokenType = "SETTER"
-	TokenBegin    TokenType = "BEGIN"
-	TokenRescue   TokenType = "RESCUE"
-	TokenEnsure   TokenType = "ENSURE"
-	TokenRaise    TokenType = "RAISE"
-	TokenEnd      TokenType = "END"
-	TokenReturn   TokenType = "RETURN"
-	TokenYield    TokenType = "YIELD"
-	TokenDo       TokenType = "DO"
-	TokenThen     TokenType = "THEN"
-	TokenFor      TokenType = "FOR"
-	TokenWhile    TokenType = "WHILE"
-	TokenUntil    TokenType = "UNTIL"
-	TokenBreak    TokenType = "BREAK"
-	TokenNext     TokenType = "NEXT"
-	TokenRetry    TokenType = "RETRY"
-	TokenIn       TokenType = "IN"
-	TokenIf       TokenType = "IF"
-	TokenUnless   TokenType = "UNLESS"
-	TokenCase     TokenType = "CASE"
-	TokenWhen     TokenType = "WHEN"
-	TokenElsif    TokenType = "ELSIF"
-	TokenElse     TokenType = "ELSE"
-	TokenTrue     TokenType = "TRUE"
-	TokenFalse    TokenType = "FALSE"
-	TokenNil      TokenType = "NIL"
+	TokenDef
+	TokenClass
+	TokenEnum
+	TokenExport
+	TokenSelf
+	TokenPrivate
+	TokenProperty
+	TokenGetter
+	TokenSetter
+	TokenBegin
+	TokenRescue
+	TokenEnsure
+	TokenRaise
+	TokenEnd
+	TokenReturn
+	TokenYield
+	TokenDo
+	TokenThen
+	TokenFor
+	TokenWhile
+	TokenUntil
+	TokenBreak
+	TokenNext
+	TokenRetry
+	TokenIn
+	TokenIf
+	TokenUnless
+	TokenCase
+	TokenWhen
+	TokenElsif
+	TokenElse
+	TokenTrue
+	TokenFalse
+	TokenNil
+
+	// tokenTypeCount counts the token types; keep it last. The spelling-table
+	// test uses it to prove every constant above has an entry.
+	tokenTypeCount
 )
+
+var tokenTypeStrings = [...]string{
+	TokenIllegal:            "ILLEGAL",
+	TokenEOF:                "EOF",
+	TokenIdent:              "IDENT",
+	TokenInt:                "INT",
+	TokenFloat:              "FLOAT",
+	TokenString:             "STRING",
+	TokenInterpolatedString: "INTERPOLATED_STRING",
+	TokenSymbol:             "SYMBOL",
+	TokenWords:              "WORDS",
+	TokenSymbols:            "SYMBOLS",
+	TokenInterpWords:        "INTERP_WORDS",
+	TokenInterpSymbols:      "INTERP_SYMBOLS",
+	TokenRegex:              "REGEX",
+	TokenAssign:             "=",
+	TokenPlusAssign:         "+=",
+	TokenMinusAssign:        "-=",
+	TokenAsteriskAssign:     "*=",
+	TokenPowerAssign:        "**=",
+	TokenSlashAssign:        "/=",
+	TokenPercentAssign:      "%=",
+	TokenAndAssign:          "&&=",
+	TokenOrAssign:           "||=",
+	TokenPlus:               "+",
+	TokenMinus:              "-",
+	TokenBang:               "!",
+	TokenAsterisk:           "*",
+	TokenPower:              "**",
+	TokenSlash:              "/",
+	TokenPercent:            "%",
+	TokenLT:                 "<",
+	TokenShovel:             "<<",
+	TokenGT:                 ">",
+	TokenLTE:                "<=",
+	TokenGTE:                ">=",
+	TokenSpaceship:          "<=>",
+	TokenEQ:                 "==",
+	TokenCaseEQ:             "===",
+	TokenNotEQ:              "!=",
+	TokenMatch:              "=~",
+	TokenNotMatch:           "!~",
+	TokenAnd:                "&&",
+	TokenOr:                 "||",
+	TokenAmpersand:          "&",
+	TokenQuestion:           "?",
+	TokenComma:              ",",
+	TokenSemicolon:          ";",
+	TokenColon:              ":",
+	TokenScope:              "::",
+	TokenDot:                ".",
+	TokenSafeNav:            "&.",
+	TokenRange:              "..",
+	TokenRangeExcl:          "...",
+	TokenLParen:             "(",
+	TokenRParen:             ")",
+	TokenLBrace:             "{",
+	TokenRBrace:             "}",
+	TokenLBracket:           "[",
+	TokenRBracket:           "]",
+	TokenPipe:               "|",
+	TokenArrow:              "=>",
+	TokenThinArrow:          "->",
+	TokenIvar:               "IVAR",
+	TokenClassVar:           "CLASSVAR",
+	TokenDef:                "DEF",
+	TokenClass:              "CLASS",
+	TokenEnum:               "ENUM",
+	TokenExport:             "EXPORT",
+	TokenSelf:               "SELF",
+	TokenPrivate:            "PRIVATE",
+	TokenProperty:           "PROPERTY",
+	TokenGetter:             "GETTER",
+	TokenSetter:             "SETTER",
+	TokenBegin:              "BEGIN",
+	TokenRescue:             "RESCUE",
+	TokenEnsure:             "ENSURE",
+	TokenRaise:              "RAISE",
+	TokenEnd:                "END",
+	TokenReturn:             "RETURN",
+	TokenYield:              "YIELD",
+	TokenDo:                 "DO",
+	TokenThen:               "THEN",
+	TokenFor:                "FOR",
+	TokenWhile:              "WHILE",
+	TokenUntil:              "UNTIL",
+	TokenBreak:              "BREAK",
+	TokenNext:               "NEXT",
+	TokenRetry:              "RETRY",
+	TokenIn:                 "IN",
+	TokenIf:                 "IF",
+	TokenUnless:             "UNLESS",
+	TokenCase:               "CASE",
+	TokenWhen:               "WHEN",
+	TokenElsif:              "ELSIF",
+	TokenElse:               "ELSE",
+	TokenTrue:               "TRUE",
+	TokenFalse:              "FALSE",
+	TokenNil:                "NIL",
+}
+
+// String returns the token type's source spelling for operators and
+// punctuation, and its diagnostic name for literal classes, exactly as the
+// previous string-typed constants read.
+func (t TokenType) String() string {
+	if t >= 0 && int(t) < len(tokenTypeStrings) {
+		return tokenTypeStrings[t]
+	}
+	return "token(" + strconv.Itoa(int(t)) + ")"
+}
 
 // Token captures lexical information for the parser.
 type Token struct {

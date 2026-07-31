@@ -644,7 +644,7 @@ func (c *scriptChecker) inferIvarAssignStatementTypes(
 			return
 		}
 		c.checkIvarWrite(function, stmt.Pos(), target.Name, stmt.Value)
-	case "":
+	case tokenNone:
 		c.checkIvarWrite(function, stmt.Pos(), target.Name, stmt.Value)
 	default:
 		// Arithmetic compounds derive their stored value from both operands

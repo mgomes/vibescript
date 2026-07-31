@@ -103,7 +103,7 @@ func (p *parser) parseStatementModifier(stmt ast.Statement) ast.Statement {
 		p.nextToken()
 		p.nextToken()
 		_ = p.parseLineExpression(lowestPrec)
-		p.addParseError(modifier.Pos, fmt.Sprintf("modifier %s is only supported after expression or assignment statements, or leaf control-flow statements", strings.ToLower(string(modifier.Type))))
+		p.addParseError(modifier.Pos, fmt.Sprintf("modifier %s is only supported after expression or assignment statements, or leaf control-flow statements", strings.ToLower(modifier.Type.String())))
 		return stmt
 	}
 
@@ -1976,7 +1976,7 @@ func parameterNameExpectation(kind ast.ParamKind) string {
 }
 
 func (p *parser) parsePropertyDecl(kind ast.TokenType) ast.PropertyDecl {
-	decl := ast.PropertyDecl{Kind: strings.ToLower(string(kind)), Position: p.curToken.Pos}
+	decl := ast.PropertyDecl{Kind: strings.ToLower(kind.String()), Position: p.curToken.Pos}
 	p.nextToken()
 	name, ok := p.parsePropertyName()
 	if !ok {
@@ -2122,7 +2122,7 @@ func (p *parser) recoverAssignmentRemainder() {
 }
 
 func isAssignmentOperator(tt ast.TokenType) bool {
-	return tt == ast.TokenAssign || compoundAssignmentOperator(tt) != ""
+	return tt == ast.TokenAssign || compoundAssignmentOperator(tt) != ast.TokenNone
 }
 
 func compoundAssignmentOperator(tt ast.TokenType) ast.TokenType {
@@ -2144,7 +2144,7 @@ func compoundAssignmentOperator(tt ast.TokenType) ast.TokenType {
 	case ast.TokenOrAssign:
 		return ast.TokenOrAssign
 	default:
-		return ""
+		return ast.TokenNone
 	}
 }
 

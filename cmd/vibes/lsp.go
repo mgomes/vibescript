@@ -2003,7 +2003,7 @@ func moduleConstantDecls(st *ast.ClassStmt) []moduleConstantDecl {
 	var constants []moduleConstantDecl
 	for _, stmt := range st.Body {
 		assign, ok := stmt.(*ast.AssignStmt)
-		if !ok || assign.Operator != "" {
+		if !ok || assign.Operator != ast.TokenNone {
 			continue
 		}
 		ident, ok := assign.Target.(*ast.Identifier)

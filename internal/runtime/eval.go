@@ -1392,11 +1392,11 @@ func (exec *Execution) evalInstanceOperator(operator TokenType, left, right Valu
 	switch operator {
 	case tokenPlus, tokenMinus, tokenAsterisk, tokenSlash, tokenPercent, tokenPower,
 		tokenShovel, tokenAmpersand, tokenLT, tokenLTE, tokenGT, tokenGTE, tokenSpaceship:
-		fn, ok := instanceOperatorMethod(left, string(operator))
+		fn, ok := instanceOperatorMethod(left, operator.String())
 		if !ok {
 			return NewNil(), false, nil
 		}
-		val, err := exec.callInstanceOperatorMethod(fn, string(operator), left, right, pos)
+		val, err := exec.callInstanceOperatorMethod(fn, operator.String(), left, right, pos)
 		return val, true, err
 	case tokenEQ:
 		fn, ok := instanceOperatorMethod(left, "==")
@@ -4601,7 +4601,7 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	case *RaiseStmt:
 		return exec.evalRaiseStatement(s, env)
 	case *AssignStmt:
-		if s.Operator != "" {
+		if s.Operator != tokenNone {
 			val, err := exec.evalCompoundAssignment(s, env)
 			if returnVal, ok := functionReturnValue(err); ok {
 				return returnVal, true, nil
