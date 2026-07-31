@@ -1,10 +1,11 @@
 package runtime
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 	"unsafe"
 
@@ -92,35 +93,35 @@ func arrayMemberGrouping(property string) (Value, error) {
 			cmpState := newArrayCompareState(exec, receiver)
 			defer cmpState.release()
 			var sortErr error
-			sort.SliceStable(out, func(i, j int) bool {
+			slices.SortStableFunc(out, func(a, b Value) int {
 				if sortErr != nil {
-					return false
+					return 0
 				}
 				if err := exec.step(); err != nil {
 					sortErr = err
-					return false
+					return 0
 				}
 				if runner != nil {
-					comparatorArgs[0] = out[i]
-					comparatorArgs[1] = out[j]
+					comparatorArgs[0] = a
+					comparatorArgs[1] = b
 					cmpValue, err := runner.call(comparatorArgs[:])
 					if err != nil {
 						sortErr = err
-						return false
+						return 0
 					}
-					cmp, err := sortComparisonResult(cmpValue)
+					order, err := sortComparisonResult(cmpValue)
 					if err != nil {
 						sortErr = fmt.Errorf("array.sort block must return numeric comparator")
-						return false
+						return 0
 					}
-					return cmp < 0
+					return order
 				}
-				cmp, err := arraySortCompareValuesWith(cmpState, out[i], out[j])
+				order, err := arraySortCompareValuesWith(cmpState, a, b)
 				if err != nil {
 					sortErr = sortComparisonError(err, "array.sort values are not comparable")
-					return false
+					return 0
 				}
-				return cmp < 0
+				return order
 			})
 			if sortErr != nil {
 				return NewNil(), sortErr
@@ -180,23 +181,23 @@ func arrayMemberGrouping(property string) (Value, error) {
 			cmpState := newArrayCompareState(exec, receiver)
 			defer cmpState.release()
 			var sortErr error
-			sort.SliceStable(withKeys, func(i, j int) bool {
+			slices.SortStableFunc(withKeys, func(a, b arraySortByItem) int {
 				if sortErr != nil {
-					return false
+					return 0
 				}
 				if err := exec.step(); err != nil {
 					sortErr = err
-					return false
+					return 0
 				}
-				cmp, err := arraySortCompareValuesWith(cmpState, withKeys[i].key, withKeys[j].key)
+				order, err := arraySortCompareValuesWith(cmpState, a.key, b.key)
 				if err != nil {
 					sortErr = sortComparisonError(err, "array.sort_by block values are not comparable")
-					return false
+					return 0
 				}
-				if cmp == 0 {
-					return withKeys[i].index < withKeys[j].index
+				if order == 0 {
+					return cmp.Compare(a.index, b.index)
 				}
-				return cmp < 0
+				return order
 			})
 			if sortErr != nil {
 				return NewNil(), sortErr
@@ -5057,35 +5058,35 @@ func arraySortBang(exec *Execution, receiver Value, args []Value, kwargs map[str
 	cmpState := newArrayCompareState(exec, receiver)
 	defer cmpState.release()
 	var sortErr error
-	sort.SliceStable(out, func(i, j int) bool {
+	slices.SortStableFunc(out, func(a, b Value) int {
 		if sortErr != nil {
-			return false
+			return 0
 		}
 		if err := exec.step(); err != nil {
 			sortErr = err
-			return false
+			return 0
 		}
 		if runner != nil {
-			comparatorArgs[0] = out[i]
-			comparatorArgs[1] = out[j]
+			comparatorArgs[0] = a
+			comparatorArgs[1] = b
 			cmpValue, err := runner.call(comparatorArgs[:])
 			if err != nil {
 				sortErr = err
-				return false
+				return 0
 			}
-			cmp, err := sortComparisonResult(cmpValue)
+			order, err := sortComparisonResult(cmpValue)
 			if err != nil {
 				sortErr = fmt.Errorf("array.sort! block must return numeric comparator")
-				return false
+				return 0
 			}
-			return cmp < 0
+			return order
 		}
-		cmp, err := arraySortCompareValuesWith(cmpState, out[i], out[j])
+		order, err := arraySortCompareValuesWith(cmpState, a, b)
 		if err != nil {
 			sortErr = sortComparisonError(err, "array.sort! values are not comparable")
-			return false
+			return 0
 		}
-		return cmp < 0
+		return order
 	})
 	if sortErr != nil {
 		return NewNil(), sortErr

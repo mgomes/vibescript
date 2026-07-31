@@ -2,13 +2,13 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -1340,8 +1340,8 @@ func mergedCompletionItems(parts ...[]map[string]any) []map[string]any {
 }
 
 func sortCompletionItems(items []map[string]any) {
-	sort.Slice(items, func(i, j int) bool {
-		return items[i]["label"].(string) < items[j]["label"].(string)
+	slices.SortFunc(items, func(a, b map[string]any) int {
+		return cmp.Compare(a["label"].(string), b["label"].(string))
 	})
 }
 

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,7 +9,6 @@ import (
 	"math/big"
 	"reflect"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -96,14 +96,12 @@ func (s *Script) checkWarningsWithGlobals(optionGlobals map[string]Value, opts C
 	} else {
 		checker.checkFunctionExecution(target)
 	}
-	sort.SliceStable(checker.warnings, func(i, j int) bool {
-		if checker.warnings[i].Pos.Line != checker.warnings[j].Pos.Line {
-			return checker.warnings[i].Pos.Line < checker.warnings[j].Pos.Line
-		}
-		if checker.warnings[i].Pos.Column != checker.warnings[j].Pos.Column {
-			return checker.warnings[i].Pos.Column < checker.warnings[j].Pos.Column
-		}
-		return checker.warnings[i].Function < checker.warnings[j].Function
+	slices.SortStableFunc(checker.warnings, func(a, b CheckWarning) int {
+		return cmp.Or(
+			cmp.Compare(a.Pos.Line, b.Pos.Line),
+			cmp.Compare(a.Pos.Column, b.Pos.Column),
+			cmp.Compare(a.Function, b.Function),
+		)
 	})
 	return dedupeCheckWarnings(checker.warnings)
 }

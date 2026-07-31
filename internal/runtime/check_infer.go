@@ -1,12 +1,12 @@
 package runtime
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"math"
 	"reflect"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -5657,8 +5657,8 @@ func normalizeCheckCallables(fns []*ScriptFunction) []*ScriptFunction {
 		return nil
 	}
 	normalized := append([]*ScriptFunction(nil), fns...)
-	sort.Slice(normalized, func(i, j int) bool {
-		return reflect.ValueOf(normalized[i]).Pointer() < reflect.ValueOf(normalized[j]).Pointer()
+	slices.SortFunc(normalized, func(a, b *ScriptFunction) int {
+		return cmp.Compare(reflect.ValueOf(a).Pointer(), reflect.ValueOf(b).Pointer())
 	})
 	out := normalized[:0]
 	for _, fn := range normalized {
@@ -5674,13 +5674,18 @@ func normalizeCheckBlockLiterals(blocks []checkBlockLiteralValue) []checkBlockLi
 		return nil
 	}
 	normalized := append([]checkBlockLiteralValue(nil), blocks...)
-	sort.Slice(normalized, func(i, j int) bool {
-		left := reflect.ValueOf(normalized[i].block).Pointer()
-		right := reflect.ValueOf(normalized[j].block).Pointer()
-		if left != right {
-			return left < right
+	slices.SortFunc(normalized, func(a, b checkBlockLiteralValue) int {
+		if c := cmp.Compare(reflect.ValueOf(a.block).Pointer(), reflect.ValueOf(b.block).Pointer()); c != 0 {
+			return c
 		}
-		return !normalized[i].lambda && normalized[j].lambda
+		switch {
+		case a.lambda == b.lambda:
+			return 0
+		case b.lambda:
+			return -1
+		default:
+			return 1
+		}
 	})
 	out := normalized[:0]
 	for _, block := range normalized {
@@ -15017,17 +15022,11 @@ func (c *scriptChecker) captureRetainedContainerAliases(
 		}
 	}
 	collect(value, written)
-	sort.Slice(capture.roots, func(i, j int) bool {
-		if capture.roots[i].name != capture.roots[j].name {
-			return capture.roots[i].name < capture.roots[j].name
-		}
-		return capture.roots[i].generation < capture.roots[j].generation
+	slices.SortFunc(capture.roots, func(a, b capturedContainerRoot) int {
+		return cmp.Or(cmp.Compare(a.name, b.name), cmp.Compare(a.generation, b.generation))
 	})
-	sort.Slice(capture.identityRoots, func(i, j int) bool {
-		if capture.identityRoots[i].name != capture.identityRoots[j].name {
-			return capture.identityRoots[i].name < capture.identityRoots[j].name
-		}
-		return capture.identityRoots[i].generation < capture.identityRoots[j].generation
+	slices.SortFunc(capture.identityRoots, func(a, b capturedContainerRoot) int {
+		return cmp.Or(cmp.Compare(a.name, b.name), cmp.Compare(a.generation, b.generation))
 	})
 	return capture
 }

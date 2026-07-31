@@ -1,12 +1,13 @@
 package runtime
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math"
 	"math/big"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -655,20 +656,6 @@ type jsonObjectEntry struct {
 	value   Value
 }
 
-type jsonObjectEntriesBySortKey []jsonObjectEntry
-
-func (entries jsonObjectEntriesBySortKey) Len() int {
-	return len(entries)
-}
-
-func (entries jsonObjectEntriesBySortKey) Less(i, j int) bool {
-	return entries[i].sortKey < entries[j].sortKey
-}
-
-func (entries jsonObjectEntriesBySortKey) Swap(i, j int) {
-	entries[i], entries[j] = entries[j], entries[i]
-}
-
 func jsonObjectIdentity(val Value) uintptr {
 	if val.Kind() == KindHash {
 		if id := hashIdentity(val); id != 0 {
@@ -700,7 +687,9 @@ func jsonObjectEntries(val Value) ([]jsonObjectEntry, error) {
 	for key, item := range hash {
 		entries = append(entries, jsonObjectEntry{key: key, sortKey: key, value: item})
 	}
-	sort.Sort(jsonObjectEntriesBySortKey(entries))
+	slices.SortFunc(entries, func(a, b jsonObjectEntry) int {
+		return cmp.Compare(a.sortKey, b.sortKey)
+	})
 	return entries, nil
 }
 
