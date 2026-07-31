@@ -585,9 +585,10 @@ func tokenLabel(tt ast.TokenType) string {
 	case ast.TokenNil:
 		return "'nil'"
 	default:
-		if len(tt) == 1 || strings.HasPrefix(string(tt), "<") || strings.HasPrefix(string(tt), ">") {
-			return fmt.Sprintf("%q", string(tt))
+		text := tt.String()
+		if len(text) == 1 || strings.HasPrefix(text, "<") || strings.HasPrefix(text, ">") {
+			return fmt.Sprintf("%q", text)
 		}
-		return fmt.Sprintf("%q", strings.ToLower(string(tt)))
+		return fmt.Sprintf("%q", strings.ToLower(text))
 	}
 }

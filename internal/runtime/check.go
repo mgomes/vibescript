@@ -3304,7 +3304,7 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		targetMayWrite := true
 		inferWrite := true
 		switch typed.Operator {
-		case "":
+		case tokenNone:
 			// Plain assignment evaluates its value before the target receiver and
 			// selectors, and it dispatches only the setter (never [] or a getter).
 			expectation := c.assignmentValueExpectation(typed.Target, typed.Value)
@@ -6670,7 +6670,7 @@ func binaryDispatchMethodNames(operator TokenType) []string {
 	case tokenPlus, tokenMinus, tokenAsterisk, tokenSlash, tokenPercent, tokenPower,
 		tokenShovel, tokenAmpersand, tokenLT, tokenLTE, tokenGT, tokenGTE, tokenSpaceship,
 		tokenEQ:
-		return []string{string(operator)}
+		return []string{operator.String()}
 	case tokenNotEQ:
 		return []string{"!=", "=="}
 	default:
@@ -9781,7 +9781,7 @@ func (c *scriptChecker) statementMayCompleteForBinding(stmt Statement) bool {
 	case *ExprStmt:
 		return c.expressionMayCompleteForBinding(typed.Expr)
 	case *AssignStmt:
-		if typed.Operator == "" {
+		if typed.Operator == tokenNone {
 			return c.expressionMayCompleteForBinding(typed.Value) &&
 				c.plainAssignmentTargetMayCompleteForBinding(typed.Target, typed.Value)
 		}
@@ -10469,7 +10469,7 @@ func (c *scriptChecker) statementMayEvaluateCallBlock(stmt Statement, seen map[*
 		// this statement or any statement that follows it.
 		c.recordBindingTarget(typed.Target)
 		expectation := c.assignmentValueExpectation(typed.Target, typed.Value)
-		if typed.Operator == "" {
+		if typed.Operator == tokenNone {
 			if c.expressionMayEvaluateCallBlock(typed.Value, seen) {
 				return true
 			}
@@ -11146,7 +11146,7 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 		}
 	case *AssignStmt:
 		result := typed.Value
-		if typed.Operator != "" {
+		if typed.Operator != tokenNone {
 			result = typed.Target
 		}
 		warningsBefore := len(c.warnings)
@@ -19349,9 +19349,9 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 		return true
 	case *AssignStmt:
 		destructure, preciseDestructure := typed.Target.(*DestructureTarget)
-		preciseDestructure = preciseDestructure && typed.Operator == ""
+		preciseDestructure = preciseDestructure && typed.Operator == tokenNone
 		plainIvar, preciseIvar := typed.Target.(*IvarExpr)
-		preciseIvar = preciseIvar && typed.Operator == ""
+		preciseIvar = preciseIvar && typed.Operator == tokenNone
 		if preciseDestructure || preciseIvar {
 			captureBoundary = false
 			s.restoreFailureScopeCheckpoint(failureCheckpoint)
@@ -19366,7 +19366,7 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 		var logicalBaseScopeState checkScopeState
 		logicalUnknown := false
 		switch typed.Operator {
-		case "":
+		case tokenNone:
 			rhsFailureCheckpoint := s.failureScopeCheckpoint()
 			expectation := s.checker.assignmentValueExpectation(typed.Target, typed.Value)
 			if !s.callArgumentExpression(typed.Value, expectation) {
@@ -19609,7 +19609,7 @@ func (s *namespaceMutationScan) statement(stmt Statement) bool {
 				s.checker.inferAssignStatementTypes("", typed, nil, logicalTargetFact)
 			})
 		}
-		if setterReachable && typed.Operator == "" {
+		if setterReachable && typed.Operator == tokenNone {
 			s.recordCallableAlias(typed.Target, assignedValue)
 		}
 		if setterReachable && !setterAssignment {

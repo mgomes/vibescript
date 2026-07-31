@@ -2655,7 +2655,7 @@ func repeatedRegionStatementsProvenNonRaising(statements []Statement) bool {
 				return false
 			}
 		case *AssignStmt:
-			if typed.Operator != "" {
+			if typed.Operator != tokenNone {
 				return false
 			}
 			if _, local := typed.Target.(*Identifier); !local ||
@@ -2700,7 +2700,7 @@ func (c *scriptChecker) collectRepeatedRegionAssignmentIvarEffects(
 		defer func() { c.evaluatedDestructureFacts = previousEvaluatedFacts }()
 	}
 	switch stmt.Operator {
-	case "":
+	case tokenNone:
 		expectation := c.assignmentValueExpectation(stmt.Target, stmt.Value)
 		c.collectRepeatedRegionIvarEffectsFromExpressionWithExpectation(
 			stmt.Value,
@@ -5304,7 +5304,7 @@ func (c *scriptChecker) straightLineBlockIvarFacts(
 	facts := make(map[string]*TypeExpr)
 	for _, stmt := range block.Body {
 		assign, ok := stmt.(*AssignStmt)
-		if !ok || assign.Operator != "" || !expressionProvenNonRaising(assign.Value) {
+		if !ok || assign.Operator != tokenNone || !expressionProvenNonRaising(assign.Value) {
 			return nil, false
 		}
 		target, ok := assign.Target.(*IvarExpr)
@@ -5802,7 +5802,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 	case *Identifier:
 		var aliasTransfer checkContainerAliasTransfer
 		var valueAliasTransfer map[string]struct{}
-		if stmt.Operator == "" {
+		if stmt.Operator == tokenNone {
 			aliasTransfer = c.captureContainerAliasTransfer(stmt.Value)
 			valueAliasTransfer = c.captureValueAliasTransfer(stmt.Value)
 		}
@@ -5883,7 +5883,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 			}
 			return
 		}
-		if stmt.Operator != "" {
+		if stmt.Operator != tokenNone {
 			outcome := c.binaryOperationOutcome(stmt.Operator, current, next)
 			if outcome.invalid {
 				c.add(function, stmt.Pos(), "unsupported %s operands %s and %s",
@@ -5926,7 +5926,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 			logicalUnknown := false
 			if stmt.Operator == tokenOrAssign || stmt.Operator == tokenAndAssign {
 				copy := *stmt
-				copy.Operator = ""
+				copy.Operator = tokenNone
 				writeStmt = &copy
 				logicalUnknown = logicalTargetFact == nil || !logicalTargetFact.known
 			}
@@ -5981,7 +5981,7 @@ func (c *scriptChecker) inferAssignStatementTypes(
 				return
 			}
 			staticUpdated := false
-			if writeStmt.Operator == "" && !logicalUnknown {
+			if writeStmt.Operator == tokenNone && !logicalUnknown {
 				staticUpdated = c.applyExactStaticArrayIndexWrite(
 					name,
 					target,
@@ -6074,7 +6074,7 @@ func (c *scriptChecker) applyMemberWriteFacts(
 
 	current, getterMayResolve := c.memberWriteCurrentType(target, contentFact)
 	switch stmt.Operator {
-	case "":
+	case tokenNone:
 		written = c.inferExpressionType(stmt.Value)
 	case tokenOrAssign, tokenAndAssign:
 		if !getterMayResolve {
@@ -8855,7 +8855,7 @@ func (c *scriptChecker) stableAssignedClassConstant(
 		return nil, false
 	}
 	first, ok := owner.Body[0].(*AssignStmt)
-	if !ok || first.Operator != "" {
+	if !ok || first.Operator != tokenNone {
 		return nil, false
 	}
 	target, ok := first.Target.(*Identifier)
@@ -11115,7 +11115,7 @@ func (c *scriptChecker) applyIndexedWriteFacts(
 	target *IndexExpr,
 	receiverFact *TypeExpr,
 ) (preserved, abortsBeforeWrite bool) {
-	if stmt.Operator != "" {
+	if stmt.Operator != tokenNone {
 		return false, false
 	}
 	ident, ok := target.Object.(*Identifier)
@@ -11347,7 +11347,7 @@ func (c *scriptChecker) applyIndexedElementWriteFacts(
 	target *IndexExpr,
 	receiverFact *TypeExpr,
 ) (preserved bool, written *TypeExpr, mayWrite, abortsBeforeWrite bool) {
-	if stmt.Operator != "" {
+	if stmt.Operator != tokenNone {
 		return false, nil, false, false
 	}
 	ident, ok := target.Object.(*Identifier)

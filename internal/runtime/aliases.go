@@ -131,6 +131,7 @@ const (
 	tokenString    = ast.TokenString
 	tokenSymbol    = ast.TokenSymbol
 	tokenAssign    = ast.TokenAssign
+	tokenNone      = ast.TokenNone
 	tokenPlus      = ast.TokenPlus
 	tokenMinus     = ast.TokenMinus
 	tokenBang      = ast.TokenBang

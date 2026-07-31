@@ -847,7 +847,7 @@ func (c *scriptChecker) collectImplicitResultStatementFacts(stmt Statement) {
 	case *ExprStmt:
 		c.recordImplicitLeafFact(typed, typed.Expr)
 	case *AssignStmt:
-		if typed.Operator == "" {
+		if typed.Operator == tokenNone {
 			c.recordImplicitLeafFact(typed, typed.Value)
 		} else {
 			// A compound or logical assignment yields its combined result
