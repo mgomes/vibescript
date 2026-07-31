@@ -1,6 +1,0 @@
-def connect(host:, port: 8080, scheme: "https", timeout: port * 2)
-  "#{scheme}://#{host}:#{port}"
-end
-
-connect(host: "example.com")            # uses port 8080, scheme "https"
-connect(host: "example.com", port: 443) # overrides port

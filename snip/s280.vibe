@@ -1,3 +1,0 @@
-"ada".tap { |name| name.upcase }        # "ada" (block result discarded)
-"ada".yield_self { |name| name.upcase } # "ADA"
-3.yield_self { |n| n * 100 }            # 300

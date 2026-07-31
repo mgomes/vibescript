@@ -1,2 +1,0 @@
-payload = JSON.parse("{\"id\":\"p-1\",\"score\":10}")
-payload["score"] # 10

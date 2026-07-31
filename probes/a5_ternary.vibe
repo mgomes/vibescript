@@ -1,8 +1,0 @@
-def f(x)
-  x
-end
-def g(x)
-  x
-end
-x = true
-puts x ? f [1] : g [2]

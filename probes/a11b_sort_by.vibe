@@ -1,4 +1,0 @@
-def f(x)
-  yield x
-end
-f [1].map { |v| v + 1 }

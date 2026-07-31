@@ -1,4 +1,0 @@
-"abc".casecmp?("ABC")     # true
-"héllo".casecmp?("HÉLLO") # true
-"abc".casecmp?("ABD")     # false
-"abc".casecmp?(1)         # nil

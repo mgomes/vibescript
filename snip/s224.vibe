@@ -1,3 +1,0 @@
-def score_users(users)
-  Tasks.map(users, max: 2, with: :score_user)
-end

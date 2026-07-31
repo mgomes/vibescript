@@ -1,6 +1,0 @@
-items = [1, 2, 3, 4, 5]
-items.pop       # 5    (items is now [1, 2, 3, 4])
-items.pop(2)    # [3, 4]
-items.shift     # 1
-items.shift(2)  # [2] (clamped to the remaining length)
-[1, 2, 2].delete(2) # 2

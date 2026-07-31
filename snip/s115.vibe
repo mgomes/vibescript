@@ -1,3 +1,0 @@
-"  a b c  ".split(nil, 2)  # ["a", "b c  "]
-"  a b c  ".split(nil, -1) # ["a", "b", "c", ""]
-"abc".split("", -1)        # ["a", "b", "c", ""]

@@ -1,7 +1,0 @@
-def score_user(user)
-  user[:score] * user[:weight]
-end
-
-def score_users(users)
-  Tasks.map(users, with: :score_user)
-end

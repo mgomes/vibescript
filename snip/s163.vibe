@@ -1,3 +1,0 @@
-sizes = { size: "XL" }
-sizes.size   # 1
-sizes[:size] # "XL"

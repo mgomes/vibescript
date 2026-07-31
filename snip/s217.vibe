@@ -1,7 +1,0 @@
-def normalize_id(id)
-  if id == nil
-    "unknown"
-  else
-    id.string
-  end
-end

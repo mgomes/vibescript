@@ -1,5 +1,0 @@
-"héllo hello".index("llo")    # 2
-"héllo hello".index("llo", 6) # 8
-"héllo hello".index("zzz")    # nil
-"hello".index("l", -3)        # 2
-"hello".index("l", -9)        # nil

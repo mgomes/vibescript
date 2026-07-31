@@ -1,9 +1,0 @@
-def extents(scores, words)
-  {
-    lowest: scores.min,
-    highest: scores.max,
-    bounds: scores.minmax,
-    shortest: words.min_by { |w| w.length },
-    longest: words.max_by { |w| w.length }
-  }
-end

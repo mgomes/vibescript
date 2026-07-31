@@ -1,2 +1,0 @@
-r = [[9]].map { |row| it [0] }
-puts r

@@ -1,7 +1,0 @@
-def sum_first_five
-  total = 0
-  for n in 1..5 do
-    total = total + n
-  end
-  total
-end

@@ -1,6 +1,0 @@
-def labels(values)
-  values.map do |v|
-    return "big" if v > 9   # old: value for this element; 1.0: returns from labels
-    "small"
-  end
-end

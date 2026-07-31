@@ -1,9 +1,0 @@
-def collect_slices(values, size)
-  slices = []
-  values.each_slice(size) do |slice|
-    slices.push(slice)
-  end
-  slices
-end
-
-collect_slices([1, 2, 3, 4, 5], 2)  # [[1, 2], [3, 4], [5]]

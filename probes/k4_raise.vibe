@@ -1,4 +1,0 @@
-def run
-  raise "boom", [1]
-end
-run

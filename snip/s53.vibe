@@ -1,4 +1,0 @@
-"Aé".getbyte(0)   # 65
-"Aé".getbyte(1)   # 195 (first byte of é)
-"Aé".getbyte(-1)  # 169 (last byte of é)
-"Aé".getbyte(3)   # nil

@@ -1,6 +1,0 @@
-Tasks.run(max: 8) do |tasks|
-  profile = tasks.spawn(:load_profile, user_id)
-  orders = tasks.spawn(:load_orders, user_id)
-
-  render(profile.value, orders.value)
-end

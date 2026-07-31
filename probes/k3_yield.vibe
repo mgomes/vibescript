@@ -1,4 +1,0 @@
-def g
-  yield [1]
-end
-g { |v| puts v }

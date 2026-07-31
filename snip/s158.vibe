@@ -1,3 +1,0 @@
-name = "Ada"
-role = "engineer"
-{ name:, role: } # { name: "Ada", role: "engineer" }

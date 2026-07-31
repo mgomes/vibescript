@@ -1,3 +1,0 @@
-total = money("100.50 USD")
-fee = money("2.50 USD")
-net = total - fee  # money("98.00 USD")

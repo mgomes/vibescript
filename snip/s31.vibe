@@ -1,5 +1,0 @@
-def total
-  10
-end
-
-total *2    # old: 20; 1.0: splat call — raises "splat argument must be an array"

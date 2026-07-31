@@ -1,3 +1,0 @@
-counter = Counter.new(10)
-counter.increment
-counter.value

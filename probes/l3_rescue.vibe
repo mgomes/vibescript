@@ -1,5 +1,0 @@
-begin
-  raise "boom"
-rescue e
-  puts e [0]
-end

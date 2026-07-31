@@ -1,4 +1,0 @@
-values = [1, 2, 3]
-result = values.pop
-result[:array]    # old: [1, 2]
-result[:popped]   # old: 3

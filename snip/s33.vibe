@@ -1,6 +1,0 @@
-def add(a, b)
-  a + b
-end
-
-args = [1, 2]
-add *args   # => 3

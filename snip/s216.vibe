@@ -1,5 +1,0 @@
-def calculate_total(items: array<{ amount: int }>) -> int
-  items.reduce(0) do |acc: int, item: { amount: int }|
-    acc + item[:amount]
-  end
-end

@@ -1,4 +1,0 @@
-"héllo hello".rindex("llo")    # 8
-"héllo hello".rindex("llo", 4) # 2
-"hello".rindex("l", -2)        # 3
-"hello".rindex("l", -9)        # nil

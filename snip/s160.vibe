@@ -1,2 +1,0 @@
-result = { begin: 0, rescue: "retry", ensure: true, raise: false, return: 1 }
-result[:rescue] # "retry"

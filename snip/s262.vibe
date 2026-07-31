@@ -1,5 +1,0 @@
-case score
-when 100 then "perfect"
-when 90, 95 then "great"
-else "ok"
-end

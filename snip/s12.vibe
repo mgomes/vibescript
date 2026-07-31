@@ -1,2 +1,0 @@
-fees = require("fees")
-fees.apply_fee(amount)

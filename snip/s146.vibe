@@ -1,2 +1,0 @@
-accept_options retry: true, limit: 3
-accept_options(retry: true, limit: 3)

@@ -1,9 +1,0 @@
-class C
-  def initialize
-    @items = [10, 20]
-  end
-  def m
-    @items [0]
-  end
-end
-puts C.new.m

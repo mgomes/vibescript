@@ -1,2 +1,0 @@
-helpers = require("public/helpers", as: "helpers")
-helpers.normalize(input)

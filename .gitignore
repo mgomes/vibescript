@@ -32,3 +32,12 @@ coverage.out
 
 # Local worktrees
 /wt-*
+
+# Local A/B benchmark binaries and differential-testing scratch
+/vibes-base
+/vibes-branch
+/vibes-cli
+/wt-*/
+/probes/
+/snip/
+/fz/

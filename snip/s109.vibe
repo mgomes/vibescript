@@ -1,1 +1,0 @@
-"a b".split  # ["a b"] (non-breaking space is preserved)

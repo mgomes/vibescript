@@ -1,5 +1,0 @@
-def f(*xs)
-  xs
-end
-rest = [3, 4]
-puts f [1], *rest

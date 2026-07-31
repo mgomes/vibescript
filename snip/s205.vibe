@@ -1,7 +1,0 @@
-rows.map do |(head, *)|
-  head
-end
-
-rows.map do |(head, *, tail)|
-  [head, tail]
-end

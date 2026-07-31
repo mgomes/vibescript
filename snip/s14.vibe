@@ -1,5 +1,0 @@
-assertion failed: amount must be positive
-  at validate_amount (3:7)
-  at validate_amount (8:3)
-  at process_payment (8:3)
-  at process_payment (12:5)

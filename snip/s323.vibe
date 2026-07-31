@@ -1,5 +1,0 @@
-def quote_total(amount)
-  require("billing/fees", as: "fees")
-  require("billing/taxes", as: "taxes")
-  taxes.apply(fees.apply(amount))
-end

@@ -1,7 +1,0 @@
-values = [1, 2]
-
-puts(values.map do |v|
-  v * 2
-end)
-
-puts values.map { |v| v * 2 }

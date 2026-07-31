@@ -1,9 +1,0 @@
-class Cart
-  def helper
-    [10]
-  end
-  def m
-    helper [0]
-  end
-end
-Cart.new.m

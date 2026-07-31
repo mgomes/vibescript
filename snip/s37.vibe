@@ -1,2 +1,0 @@
-text = "ID-42"
-text.match /ID-[0-9]+/

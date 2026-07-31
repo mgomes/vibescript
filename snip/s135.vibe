@@ -1,3 +1,0 @@
-total += amount
-items[0] *= 2
-record[:score] **= 2

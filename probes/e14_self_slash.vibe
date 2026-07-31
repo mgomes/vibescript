@@ -1,9 +1,0 @@
-class Num
-  def /(other)
-    42
-  end
-  def m
-    self /2
-  end
-end
-puts Num.new.m

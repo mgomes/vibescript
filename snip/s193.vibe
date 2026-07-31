@@ -1,7 +1,0 @@
-class Secret
-  def hidden
-    "hidden"
-  end
-
-  private :hidden
-end

@@ -1,9 +1,0 @@
-class Helper
-  private def self.build_secret
-    42
-  end
-
-  def self.build
-    build_secret
-  end
-end

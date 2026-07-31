@@ -1,6 +1,0 @@
-def first_even(values)
-  values.each do |v|
-    return v if v % 2 == 0
-  end
-  nil
-end

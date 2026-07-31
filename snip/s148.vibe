@@ -1,2 +1,0 @@
-user&.name           # nil when user is nil, otherwise user.name
-user&.profile("public")

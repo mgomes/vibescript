@@ -1,5 +1,0 @@
-def render_scores(scores: array<int>) -> array<int>
-  scores.map do |s: int|
-    s + 1
-  end
-end

@@ -1,4 +1,0 @@
-def f(x)
-  x
-end
-puts "got #{f [1]}"

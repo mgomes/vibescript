@@ -1,9 +1,0 @@
-def active_names(players)
-  players
-    .select do |player|
-      player[:active]
-    end
-    .map do |player|
-      player[:name]
-    end
-end
