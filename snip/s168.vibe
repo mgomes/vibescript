@@ -1,3 +1,0 @@
-base = Hash.new(0)
-base.merge({ a: 1 })[:b]        # 0   (default preserved)
-base.select { |k, v| true }[:b] # nil (default dropped)

@@ -1,3 +1,0 @@
-for x in [[3, 4]]
-  puts x [1]
-end

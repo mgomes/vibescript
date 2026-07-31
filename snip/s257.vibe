@@ -1,7 +1,0 @@
-def five_minutes_ago
-  5.minutes.ago(Time.now)
-end
-
-def in_two_hours
-  2.hours.after(Time.now)
-end

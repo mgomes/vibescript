@@ -1,4 +1,0 @@
-m = money("100.50 USD")
-m.cents    # 10050
-m.currency # "USD"
-m.amount   # "100.50 USD"

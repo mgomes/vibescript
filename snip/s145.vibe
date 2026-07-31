@@ -1,5 +1,0 @@
-fees.apply amount
-normalize input
-add 1, 2
-require "billing/rules", as: "rules"
-render status: "ok"

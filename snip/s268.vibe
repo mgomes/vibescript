@@ -1,5 +1,0 @@
-enum Status
-  Draft
-  Published
-  Archived
-end

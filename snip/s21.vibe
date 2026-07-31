@@ -1,5 +1,0 @@
-config = { mode: "fast" }
-config[:missing]                      # => nil
-config.fetch(:mode)                   # => "fast"
-config.fetch(:missing, "default")     # => "default"
-config.fetch(:missing) { |key| "no #{key}" }

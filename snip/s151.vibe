@@ -1,5 +1,0 @@
-for item in items
-  if item == nil
-    next
-  end
-end

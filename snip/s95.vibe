@@ -1,3 +1,0 @@
-"bananas".gsub("na", "NA") # "baNANAs"
-"ID-12 ID-34".gsub("ID-[0-9]+", "X", regex: true) # "X X"
-"a1b2".gsub("([a-z])([0-9])", "\\2\\1", regex: true) # "1a2b"

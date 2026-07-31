@@ -1,2 +1,0 @@
-{ a: 1, b: "x" }.inspect    # => "{a: 1, b: \"x\"}"
-{ "with space": 1 }.inspect # => "{\"with space\": 1}"

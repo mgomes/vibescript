@@ -1,3 +1,0 @@
-elapsed = Time.utc(2024, 1, 2) - Time.utc(2024, 1, 1)
-elapsed              # => 86400.0
-elapsed / 3600.0     # hours as a float

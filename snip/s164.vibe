@@ -1,8 +1,0 @@
-counts = Hash.new(0)
-counts[:misses]   # 0   (the default value)
-counts.size       # 0   (a value default never inserts)
-
-cache = Hash.new { |hash, key| hash[key] = "made-" + key }
-cache["a"]        # "made-a"  (the proc runs and stores)
-cache.size        # 1         (the proc inserted the entry)
-cache["a"]        # "made-a"  (now present, the proc does not run again)

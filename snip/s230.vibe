@@ -1,7 +1,0 @@
-def total_by_multiplier(values, multiplier)
-  values
-    .map do |value|
-      value * multiplier
-    end
-    .sum
-end

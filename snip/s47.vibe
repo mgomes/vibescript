@@ -1,2 +1,0 @@
-name = "Ada"
-"Hello #{name}" # "Hello Ada"

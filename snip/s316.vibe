@@ -1,4 +1,0 @@
-Tasks.run do |tasks|
-  tasks.spawn(:send_email, user)
-  tasks.spawn(:record_metric, user)
-end

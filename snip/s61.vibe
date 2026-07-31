@@ -1,2 +1,0 @@
-"id".to_s   # "id"
-"id".string # "id"

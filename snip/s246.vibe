@@ -1,2 +1,0 @@
-[1, "x", nil].inspect # => "[1, \"x\", nil]"
-[:a, :b].inspect      # => "[:a, :b]"

@@ -1,4 +1,0 @@
-1.hour.eql?(60.minutes)            # true
-1.hour.eql?(2.hours)               # false
-1.hour.eql?(1)                     # false (wrong type)
-1.hour.eql?(Time.utc(2024, 1, 1))  # false (wrong type)

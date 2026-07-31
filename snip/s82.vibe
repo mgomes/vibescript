@@ -1,3 +1,0 @@
-"hello".match("l", 3)  # ["l"]
-"hello".match("l", 4)  # nil
-"hello".match("o*", 6) # [""] (clamped to the end; zero-width pattern matches)

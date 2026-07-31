@@ -1,7 +1,0 @@
-"17".oct     # 15
-"0b101".oct  # 5
-"0o17".oct   # 15
-"0xff".oct   # 255
-"0d99".oct   # 99
-"-17".oct    # -15
-"garbage".oct # 0

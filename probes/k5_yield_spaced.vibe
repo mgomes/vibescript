@@ -1,4 +1,0 @@
-def g
-  yield [1], [2]
-end
-g { |a, b| puts a + b }

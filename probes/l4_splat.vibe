@@ -1,4 +1,0 @@
-def f(a, *rest)
-  rest [0]
-end
-puts f(1, 2, 3)

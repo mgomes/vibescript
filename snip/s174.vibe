@@ -1,9 +1,0 @@
-{ a: 1, b: 2 }.values_at(:b, :c, :a)           # [2, nil, 1]
-{ a: 1, b: 2 }.fetch(:b)                        # 2
-{ a: 1 }.fetch(:missing)                        # raises "key not found: :missing"
-{ a: 1 }.fetch(:missing, 99)                    # 99
-{ a: 1 }.fetch(:missing) { |k| k }             # :missing
-{ a: 1 }.fetch(:missing, 99) { |k| k }         # :missing (block supersedes default)
-{ a: 1, b: 2 }.fetch_values(:a, :b)            # [1, 2]
-{ a: 1 }.fetch_values(:a, :missing)            # raises "key not found: :missing"
-{ a: 1 }.fetch_values(:a, :missing) { |k| k }  # [1, :missing]

@@ -1,5 +1,0 @@
-"abc".match?("b")           # true
-"abc".match?("z")           # false
-"abc".match?("ID-[0-9]+")   # false
-"abc".match?("b", 1)        # true
-"abc".match?("b", 2)        # false

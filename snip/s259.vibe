@@ -1,7 +1,0 @@
-def first_four
-  out = []
-  for n in 1...5
-    out = out + [n]
-  end
-  out
-end

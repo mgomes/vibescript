@@ -1,5 +1,0 @@
-def f(x)
-  x
-end
-blk = ->(v) { v }
-f &blk, [1]

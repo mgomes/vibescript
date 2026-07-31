@@ -1,2 +1,0 @@
-"a1".match("([a-z])([0-9])") do |m| m[1] end # "a"
-"xyz".match("([a-z])([0-9])") do |m| m[1] end # nil (block not called)

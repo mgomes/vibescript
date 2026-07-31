@@ -1,2 +1,0 @@
-player[[1, 2]] = "array key"
-player[[1, 2]] # "array key"

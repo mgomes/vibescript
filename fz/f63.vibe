@@ -1,2 +1,0 @@
-s = "abcdef"
-s	[[0]].to_s

@@ -1,2 +1,0 @@
-"hi".rjust(5, ".") # "...hi"
-"hi".rjust(7, "ab") # "ababahi"

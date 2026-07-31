@@ -1,3 +1,0 @@
-"#{name || "guest"}"        # "guest" when name is nil
-"#{["a", "b"].join(", ")}"  # "a, b"
-"#{"hi #{inner}"}"          # nested interpolation

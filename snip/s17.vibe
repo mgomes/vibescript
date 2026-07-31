@@ -1,5 +1,0 @@
-values = [1, 2, 3]
-popped = values.pop    # => 3
-values                 # => [1, 2]
-
-removed = { a: 1 }.delete(:a)   # => 1

@@ -1,3 +1,0 @@
-Hash.new(0).fetch(:missing, 99) # 99 (fetch's own default, not the hash default)
-Hash.new(0).dig(:missing)       # 0  (the default value)
-Hash.new(0).values_at(:a, :b)   # [0, 0]

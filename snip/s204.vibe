@@ -1,3 +1,0 @@
-pairs.map do |(left, right)|
-  left + right
-end

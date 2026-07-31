@@ -1,2 +1,0 @@
-limit = 1..
-  10        # old: 1..10; 1.0: endless range, then a stray statement

@@ -1,9 +1,0 @@
-def labels(values)
-  values.map do |v|
-    if v > 9
-      "big"
-    else
-      "small"
-    end
-  end
-end

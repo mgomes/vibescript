@@ -1,4 +1,0 @@
-pick_second(1, 2)
-pick_second(n: 1, m: 2)
-pick_second(1, m: 2)
-pick_second 1, m: 2

@@ -1,3 +1,0 @@
-"vibescript".end_with?("script")        # true
-"vibescript".end_with?("x", "script")   # true
-"vibescript".end_with?("x", "vibe")     # false

@@ -1,2 +1,0 @@
-"name".to_sym == :name   # true
-"name".to_sym == "name"  # false

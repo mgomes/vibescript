@@ -1,8 +1,0 @@
-def total
-  10
-end
-
-n = 2
-total() * n   # explicit call
-(total) * n   # parenthesized callee
-total * n     # operator spaced on both sides

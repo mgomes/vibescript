@@ -1,2 +1,0 @@
-LIMIT = [7, 8]
-puts LIMIT [0]

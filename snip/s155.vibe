@@ -1,9 +1,0 @@
-def run
-  begin
-    risky
-  rescue RuntimeError => err
-    err.message
-  ensure
-    cleanup
-  end
-end

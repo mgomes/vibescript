@@ -1,3 +1,0 @@
-out = []
-"héllo".each_char { |c| out = out + [c] }
-out # ["h", "é", "l", "l", "o"]

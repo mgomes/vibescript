@@ -1,2 +1,0 @@
-count = to_int("42")
-ratio = to_float("1.25")

@@ -1,3 +1,0 @@
-{ a: 1 }.key?(:a)       # true
-{ a: 1 }.key?("a")      # false
-{ 1 => "one" }.key?(1)  # true

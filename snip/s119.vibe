@@ -1,2 +1,0 @@
-"no-sep".rpartition("=") # ["", "", "no-sep"]
-"abc".rpartition("")     # ["abc", "", ""]

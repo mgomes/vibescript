@@ -1,9 +1,0 @@
-def f(x)
-  x
-end
-case [1]
-when f [1]
-  puts "hit"
-else
-  puts "miss"
-end

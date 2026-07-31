@@ -1,4 +1,0 @@
-[].equal?([])   # => false: two distinct objects
-[] == []        # => true: same contents
-a = []
-a.equal?(a)     # => true: same object

@@ -1,3 +1,0 @@
-computed = Hash.new { |hash, key| "computed-" + key }
-computed["x"]     # "computed-x"
-computed.size     # 0   (the proc did not store)

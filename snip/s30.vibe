@@ -1,7 +1,0 @@
-class Report
-  def helper
-    1
-  end
-
-  private :helper
-end

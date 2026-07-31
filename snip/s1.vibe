@@ -1,2 +1,0 @@
-(2.minutes).seconds  # 120
-(1.hour).seconds     # 3600

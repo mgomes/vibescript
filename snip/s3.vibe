@@ -1,2 +1,0 @@
-(7200.seconds).hours  # 2
-(90.minutes).hours    # 1 (truncated from 1.5)

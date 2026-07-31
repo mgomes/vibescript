@@ -1,3 +1,0 @@
-"a\nb".lines   # ["a\n", "b"]
-"a\nb\n".lines # ["a\n", "b\n"]
-"".lines       # []

@@ -1,8 +1,0 @@
-def log_event(name)
-  {
-    event: name,
-    timestamp: now
-  }
-end
-
-# Returns: { event: "user_signup", timestamp: "2025-01-15T10:30:45Z" }

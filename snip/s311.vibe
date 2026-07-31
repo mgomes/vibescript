@@ -1,5 +1,0 @@
-"ID-12" =~ /id-([0-9]+)/i     # 0 (character index of the match, nil when none)
-"ID-12" !~ /x/                # true
-/id-([0-9]+)/i.match("ID-12") # match data: m[0] "ID-12", m[1] "12"
-"ID-12 ID-34".gsub(/ID-/, "") # "12 34"
-"ID-12".match /id-([0-9]+)/i  # parenless command argument, same as match(...)
