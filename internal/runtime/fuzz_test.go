@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/big"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -354,6 +354,8 @@ func FuzzScalarInputParsersAndConversions(f *testing.F) {
 	f.Add("PT1H30M", "", float64(-3))
 	f.Add("2024-01-02T03:04:05Z", time.RFC3339, float64(1.25))
 	f.Add("-92233720368547758.08 USD", "", float64(math.NaN()))
+	f.Add("9223372036854775808", "", float64(0))
+	f.Add("-9223372036854775809", "", float64(0))
 
 	f.Fuzz(func(t *testing.T, text, layout string, floatInput float64) {
 		text = limitFuzzString(text, 512)
@@ -401,12 +403,15 @@ func FuzzScalarInputParsersAndConversions(f *testing.F) {
 		}
 
 		if got, err := builtinToInt(nil, NewNil(), []Value{NewString(text)}, nil, NewNil()); err == nil {
-			want, parseErr := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
-			if parseErr != nil {
-				t.Fatalf("to_int(%q) succeeded with %s, but strconv.ParseInt failed: %v", text, got.String(), parseErr)
+			want, ok := new(big.Int).SetString(strings.TrimSpace(text), 10)
+			if !ok {
+				t.Fatalf("to_int(%q) succeeded with %s, but math/big rejected it", text, got.String())
 			}
-			if got.Kind() != KindInt || got.Int() != want {
-				t.Fatalf("to_int(%q) = %s, want %d", text, got.String(), want)
+			if got.Kind() != KindInt {
+				t.Fatalf("to_int(%q) kind = %s, want int", text, got.Kind())
+			}
+			if got.BigInt().Cmp(want) != 0 {
+				t.Fatalf("to_int(%q) = %s, want %s", text, got.String(), want)
 			}
 		}
 		if got, err := builtinToFloat(nil, NewNil(), []Value{NewString(text)}, nil, NewNil()); err == nil {
