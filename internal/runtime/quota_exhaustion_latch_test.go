@@ -429,7 +429,7 @@ func (echoingStepCapability) Bind(CapabilityBinding) (map[string]Value, error) {
 						last = err
 					}
 				}
-				return NewNil(), fmt.Errorf("cleanup failed after %v", last)
+				return NewNil(), fmt.Errorf("cleanup failed after %v", last) //nolint:errorlint // deliberately non-wrapping: the test pins that message text alone cannot stand in for the latch
 			}),
 		}),
 	}, nil
