@@ -230,6 +230,32 @@ func TestEqualityChargeBillsStringKeys(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeBillsArrayKeys pins the recursive key charge: the
+// typed-hash equality paths canonicalize an array key through
+// NewHashLookupKey, copying its nested strings, so those bytes must be
+// billed like a direct string key's.
+func TestEqualityChargeBillsArrayKeys(t *testing.T) {
+	t.Parallel()
+
+	nested := strings.Repeat("k", 4096)
+	build := func() value.Value {
+		h := value.NewTypedHash(1)
+		key := value.NewArray([]value.Value{value.NewString(nested)})
+		if err := h.HashSet(key, value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet: %v", err)
+		}
+		return h
+	}
+
+	ctx, total := meteredContext()
+	if !ctx.Equal(build(), build()) {
+		t.Fatal("hashes with array keys must compare equal")
+	}
+	if *total < 4096 {
+		t.Fatalf("charged %d bytes, want at least the nested key's %d", *total, 4096)
+	}
+}
+
 // TestEqualityNilHookUnchanged pins that the zero context and the plain
 // Value.Equal / Value.Eql entry points stay byte-identical in behavior with
 // no hook installed.

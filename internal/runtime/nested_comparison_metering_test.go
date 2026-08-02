@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -62,6 +63,7 @@ func TestCompositeAndYieldedKeysChargeForTheirPayloads(t *testing.T) {
 
 	exprs := []string{
 		"h = {}\n  h[[s]] = 1\n  h.length",
+		"h = {}\n  h[[[s], [s]]] = 1\n  h.length",
 		"[1, 2].uniq { |x| s }.length",
 	}
 	for _, expr := range exprs {
@@ -74,6 +76,26 @@ func TestCompositeAndYieldedKeysChargeForTheirPayloads(t *testing.T) {
 					"canonicalization must charge the payload it reads", expr, atSmall, atLarge)
 			}
 		})
+	}
+}
+
+// HashKey canonicalizes a shared subtree once per occurrence — [a, a] copies
+// a twice — so the key charge must scale with the occurrence count, not the
+// distinct-backing count: a permanent visited set billed a shared DAG once
+// while canonicalization copied it exponentially.
+func TestSharedDAGHashKeyChargesPerOccurrence(t *testing.T) {
+	t.Parallel()
+
+	keyAtDepth := func(depth int) string {
+		return "k = [s]\n  j = 0\n  while j < " + fmt.Sprint(depth) + "\n    k = [k, k]\n    j = j + 1\n  end\n  h = {}\n  h[k] = 1\n  h.length"
+	}
+	atShallow := minStepsForStringOp(t, keyAtDepth(4), 8<<10)
+	atDeep := minStepsForStringOp(t, keyAtDepth(6), 8<<10)
+	// Depth 6 holds four times the leaf occurrences of depth 4, so the charge
+	// must grow by at least 3x; a distinct-backing charge stays flat.
+	if atDeep < atShallow*3 {
+		t.Errorf("shared-DAG key cost %d steps at depth 4 and %d at depth 6; "+
+			"canonicalization copies each occurrence, so the charge must too", atShallow, atDeep)
 	}
 }
 

@@ -1488,18 +1488,72 @@ func valuesEqual(v, other Value, state *equalityState) bool {
 	return valuesEqualWithKinds(v, other, state, false)
 }
 
-// chargeEqualityKeyText bills the text of a string-like hash key that an
-// equality walk is about to hash or compare, reporting whether the walk may
-// continue. Non-string keys and unmetered walks are free.
+// chargeEqualityKeyText bills the text a hash key contributes to an equality
+// walk, reporting whether the walk may continue. A string-like key bills its
+// payload. An array key recurses: the typed-hash equality paths canonicalize
+// it through NewHashLookupKey, which copies every nested string once per
+// occurrence — shared subtrees included — so the charge follows the same
+// traversal with a stack-scoped cycle guard, and carries a node budget so
+// computing the charge cannot itself become the unbounded work (past the
+// budget the cost saturates, tripping any bounded quota). Other kinds and
+// unmetered walks are free.
 func chargeEqualityKeyText(state *equalityState, key Value) bool {
-	if state.charge == nil || (key.kind != KindString && key.kind != KindSymbol) {
+	if state.charge == nil {
 		return true
 	}
-	if err := state.charge(len(key.data.(string))); err != nil {
+	budget := equalityKeyCostNodeBudget
+	bytes := equalityKeyTextBytes(key, nil, &budget)
+	if bytes == 0 {
+		return true
+	}
+	if err := state.charge(bytes); err != nil {
 		state.err = err
 		return false
 	}
 	return true
+}
+
+// equalityKeyCostNodeBudget bounds the key-cost walk; see chargeEqualityKeyText.
+const equalityKeyCostNodeBudget = 1 << 16
+
+func equalityKeyTextBytes(key Value, onPath map[uintptr]struct{}, budget *int) int {
+	if *budget <= 0 {
+		return math.MaxInt / 2
+	}
+	*budget--
+	switch key.kind {
+	case KindString, KindSymbol:
+		return len(key.data.(string))
+	case KindArray:
+		elems := key.Array()
+		var id uintptr
+		if cap(elems) > 0 {
+			id = reflect.ValueOf(elems).Pointer()
+		}
+		if id != 0 {
+			if _, ok := onPath[id]; ok {
+				return 0
+			}
+			if onPath == nil {
+				onPath = make(map[uintptr]struct{})
+			}
+			onPath[id] = struct{}{}
+		}
+		bytes := 0
+		for _, elem := range elems {
+			b := equalityKeyTextBytes(elem, onPath, budget)
+			if bytes += b; bytes < 0 {
+				bytes = math.MaxInt / 2
+				break
+			}
+		}
+		if id != 0 {
+			delete(onPath, id)
+		}
+		return bytes
+	default:
+		return 0
+	}
 }
 
 // valuesEqualWithKinds compares two values, optionally requiring their kinds

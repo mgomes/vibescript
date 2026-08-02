@@ -354,12 +354,17 @@ func bigIntDecimalDigitsUpperBound(bi *big.Int) int {
 // string-scan rate: building the canonical form copies the text, and the map
 // insert or lookup hashes all of it, work that was unmetered before #1135.
 // An array key recurses the way HashKey's canonicalization does — its nested
-// strings and big integers are copied into the canonical form too — with the
-// same slice-identity cycle guard, so a cyclic key charges its distinct
-// backings once and canonicalization itself reports the cycle. Compact
-// scalar keys are a no-op.
+// strings and big integers are copied into the canonical form once per
+// occurrence, shared subtrees included, so the charge follows the same
+// traversal with the same stack-scoped cycle guard rather than a permanent
+// visited set (which billed a shared DAG once while canonicalization copied
+// it exponentially). The walk carries a node budget so computing the charge
+// cannot itself become the unbounded work: past the budget the remaining
+// cost saturates, which trips any bounded step quota. Compact scalar keys
+// are a no-op.
 func (exec *Execution) chargeValueKeySteps(key Value) error {
-	words, bytes := valueKeyCanonicalizationCost(key, nil)
+	budget := valueKeyCostNodeBudget
+	words, bytes := valueKeyCanonicalizationCost(key, nil, &budget)
 	if words > 0 {
 		if err := exec.stepN(1 + words/bigIntStepWordsPerStep); err != nil {
 			return err
@@ -368,11 +373,23 @@ func (exec *Execution) chargeValueKeySteps(key Value) error {
 	return exec.chargeStringScan(bytes)
 }
 
+// valueKeyCostNodeBudget bounds the canonicalization-cost walk. A shared DAG
+// is charged per occurrence like HashKey copies it, so the walk is
+// exponential in principle; once the budget is spent the cost saturates
+// instead of being computed exactly.
+const valueKeyCostNodeBudget = 1 << 16
+
 // valueKeyCanonicalizationCost sums the big-integer words and string-like
-// bytes canonicalizing key will read, recursing through array keys. seen
-// carries the visited slice backings across the recursion; the caller passes
-// nil.
-func valueKeyCanonicalizationCost(key Value, seen map[uintptr]struct{}) (int, int) {
+// bytes canonicalizing key will read, recursing through array keys per
+// occurrence. onPath carries the slice backings of the active recursion path
+// only (the caller passes nil): an identity is removed on unwind so shared
+// aliases are charged each time they are canonicalized, while a cycle —
+// which canonicalization itself rejects — terminates uncharged.
+func valueKeyCanonicalizationCost(key Value, onPath map[uintptr]struct{}, budget *int) (int, int) {
+	if *budget <= 0 {
+		return 0, math.MaxInt / 2
+	}
+	*budget--
 	if bi, ok := value.BigIntPayload(key); ok {
 		return len(bi.Bits()), 0
 	}
@@ -383,20 +400,24 @@ func valueKeyCanonicalizationCost(key Value, seen map[uintptr]struct{}) (int, in
 		return 0, 0
 	}
 	elems := key.Array()
-	if id := sliceBackingIdentity(elems); id != 0 {
-		if _, ok := seen[id]; ok {
+	id := sliceBackingIdentity(elems)
+	if id != 0 {
+		if _, ok := onPath[id]; ok {
 			return 0, 0
 		}
-		if seen == nil {
-			seen = make(map[uintptr]struct{})
+		if onPath == nil {
+			onPath = make(map[uintptr]struct{})
 		}
-		seen[id] = struct{}{}
+		onPath[id] = struct{}{}
 	}
 	words, bytes := 0, 0
 	for _, elem := range elems {
-		w, b := valueKeyCanonicalizationCost(elem, seen)
-		words += w
+		w, b := valueKeyCanonicalizationCost(elem, onPath, budget)
+		words = saturatingAdd(words, w)
 		bytes = saturatingAdd(bytes, b)
+	}
+	if id != 0 {
+		delete(onPath, id)
 	}
 	return words, bytes
 }
