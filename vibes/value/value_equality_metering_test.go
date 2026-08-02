@@ -462,6 +462,39 @@ func TestEqualityChargeBillsRegexSources(t *testing.T) {
 	}
 }
 
+// TestEqualityReservesHashEntryCopies pins the entry-slice reservation: a
+// typed or mixed comparison materializes a fresh HashEntries copy per side,
+// live for the whole walk, so a metered walk must validate both copies
+// before they exist — unreserved, operands that fit the quota could exceed
+// it by the two copies.
+func TestEqualityReservesHashEntryCopies(t *testing.T) {
+	t.Parallel()
+
+	build := func() value.Value {
+		h := value.NewTypedHash(12)
+		for i := range 12 {
+			if err := h.HashSet(value.NewSymbol(strings.Repeat("k", i+1)), value.NewInt(int64(i))); err != nil {
+				t.Fatalf("HashSet: %v", err)
+			}
+		}
+		return h
+	}
+
+	var ctx value.EqualityContext
+	ctx.SetCharge(func(int) error { return nil })
+	maxSeen := 0
+	ctx.SetScratchReserver(func(bytes int, _, _ value.Value) error {
+		maxSeen = max(maxSeen, bytes)
+		return nil
+	})
+	if !ctx.Equal(build(), build()) {
+		t.Fatal("typed hashes must compare equal")
+	}
+	if want := 2 * 12 * 64; maxSeen < want {
+		t.Fatalf("reserver saw %d bytes, want at least the two entry copies' %d", maxSeen, want)
+	}
+}
+
 // TestEqualityScratchReserverSeesOperands pins the widened reserver
 // contract: every scratch validation carries the active comparison's
 // top-level operands, so a caller can charge the unrooted temporary graphs

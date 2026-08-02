@@ -1885,6 +1885,18 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 		if !leftTyped && !rightTyped {
 			return hashMapsEqual(v.Hash(), other.Hash(), state, strictKinds)
 		}
+		// HashEntries materializes a fresh entry slice per side, live for
+		// the whole comparison; on a metered walk both copies are validated
+		// before they exist, like every other scratch the walk allocates.
+		if state.charge != nil && state.reserveScratch != nil {
+			entryCopies := (v.HashLen() + other.HashLen()) * hashEntrySliceEntryBytes
+			state.scratchHeld += entryCopies
+			defer releaseScratchBytes(state, entryCopies)
+			if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
+				state.err = err
+				return false
+			}
+		}
 		left := v.HashEntries()
 		right := other.HashEntries()
 		if !leftTyped || !rightTyped {
@@ -2172,6 +2184,11 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState,
 // flag, and the HashEntry copy), with slack for alignment. Rendered display
 // strings are reserved separately at their realized capacity.
 const sortedEntryScratchBytes = 128
+
+// hashEntrySliceEntryBytes approximates one slot of the entry slices
+// HashEntries materializes for a typed or mixed comparison: two Value
+// structs per HashEntry.
+const hashEntrySliceEntryBytes = 64
 
 // releaseScratchBytes retires n bytes of walk scratch accounting.
 func releaseScratchBytes(state *equalityState, n int) {
