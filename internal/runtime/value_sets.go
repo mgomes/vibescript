@@ -351,6 +351,7 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 	}
 	var removal membershipSet
 	removal.equality.SetCharge(exec.stringScanChargeFunc())
+	removal.equality.SetScratchReserver(exec.equalityScratchValidatorFunc())
 	for _, other := range others {
 		removal.addSource(other, removalTotal)
 	}
