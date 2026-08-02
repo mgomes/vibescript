@@ -18,30 +18,20 @@ func registerTaskBuiltins(engine *Engine) {
 	})
 }
 
-// latchTaskExhaustion transfers a task worker's authenticated exhaustion into
-// this (parent) execution's latch as the error crosses the task boundary on
-// the parent goroutine. Rescue already refuses such errors by their
-// credential, but only while they are propagating: a capability adapter that
-// swallowed one — cap.swallow { Tasks.map(...) } — let the call succeed past
-// a genuine kill until the latch carried the verdict too. Errors without the
-// credential (cancellation, script raises, recursion caps) pass through
-// untouched, and each worker still gets its own fresh budget.
-func (exec *Execution) latchTaskExhaustion(err error) error {
-	if err != nil && errorCarriesGenuineExhaustion(err) {
-		_ = exec.latchExhaustion(err)
-	}
-	return err
-}
-
-// latchGroupTaskExhaustion is latchTaskExhaustion plus the group's separately
-// retained exhaustion: firstErr keeps first-failure reporting, but a
-// concurrent worker's quota kill recorded after an ordinary failure must
-// still reach the parent latch.
+// latchGroupTaskExhaustion transfers a worker's exhaustion into this
+// (parent) execution's latch as errors cross the task boundary on the parent
+// goroutine. The group learns of worker exhaustion through a trusted
+// out-of-band channel — the worker execution's own latch, observed by the
+// task machinery when the worker call returns — never by inspecting error
+// values, which a stateful adapter could forge or replay. Without the
+// transfer, an adapter that discarded the task error (cap.swallow {
+// Tasks.map(...) }) let the call succeed past a genuine kill; with firstErr
+// alone, an ordinary failure arriving first shadowed a concurrent kill.
 func (exec *Execution) latchGroupTaskExhaustion(group *taskGroup, err error) error {
 	if ex := group.exhaustion(); ex != nil {
 		_ = exec.latchExhaustion(ex)
 	}
-	return exec.latchTaskExhaustion(err)
+	return err
 }
 
 func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -67,7 +57,7 @@ func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[s
 	if blockErr != nil {
 		group.cancel()
 		_ = exec.latchGroupTaskExhaustion(group, group.closeAndWait())
-		return NewNil(), exec.latchTaskExhaustion(blockErr)
+		return NewNil(), blockErr
 	}
 	if err := exec.latchGroupTaskExhaustion(group, group.closeAndWait()); err != nil {
 		return NewNil(), err
@@ -116,7 +106,7 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 		if err != nil {
 			group.cancel()
 			_ = exec.latchGroupTaskExhaustion(group, group.closeAndWait())
-			return NewNil(), exec.latchTaskExhaustion(err)
+			return NewNil(), err
 		}
 		handles[i] = handle
 	}
@@ -129,7 +119,7 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 	for i, handle := range handles {
 		result, err := handle.result()
 		if err != nil {
-			return NewNil(), exec.latchTaskExhaustion(err)
+			return NewNil(), err
 		}
 		results[i] = result
 	}
@@ -392,7 +382,9 @@ func (group *taskGroup) runJob(job *taskJob) {
 	}
 
 	opts := group.callOptionsForJob(job)
-	result, err := group.script.callWithLazyTaskGlobals(group.ctx, job.functionName, job.callArgs(), opts, group.lazyGlobalsForJob())
+	var workerExhaustion error
+	result, err := group.script.callWithLazyTaskGlobals(group.ctx, job.functionName, job.callArgs(), opts, group.lazyGlobalsForJob(), &workerExhaustion)
+	group.recordExhaustion(workerExhaustion)
 	if err != nil {
 		taskErr := fmt.Errorf("task %s failed: %w", job.functionName, err)
 		group.recordErr(taskErr)
@@ -470,8 +462,20 @@ func (group *taskGroup) recordErr(err error) {
 		group.firstErr = err
 		group.cancel()
 	}
-	if group.firstExhaustion == nil && errorCarriesGenuineExhaustion(err) {
-		group.firstExhaustion = err
+	group.mu.Unlock()
+}
+
+// recordExhaustion retains the first worker exhaustion reported through the
+// trusted out-of-band channel (the worker execution's own latch, observed by
+// runJob when the worker call returns). Error values are never inspected for
+// credentials: a stateful adapter inside a worker could replay a stale one.
+func (group *taskGroup) recordExhaustion(exhausted error) {
+	if exhausted == nil {
+		return
+	}
+	group.mu.Lock()
+	if group.firstExhaustion == nil {
+		group.firstExhaustion = exhausted
 	}
 	group.mu.Unlock()
 }

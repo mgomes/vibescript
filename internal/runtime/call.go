@@ -306,13 +306,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// come from the latch and only the block statement's advisory
 		// location data is retained from the propagated object.
 		if exec.exhausted != nil {
-			if re := authenticatedExhaustionFrames(err); re != nil {
+			if re := exec.authenticatedExhaustionFrames(err); re != nil {
 				err = &RuntimeError{
-					Type:              classifyRuntimeErrorType(exec.exhausted),
-					Message:           canonicalExhaustionMessage(exec.exhausted),
-					CodeFrame:         re.CodeFrame,
-					Frames:            re.Frames,
-					latchedExhaustion: true,
+					Type:        classifyRuntimeErrorType(exec.exhausted),
+					Message:     canonicalExhaustionMessage(exec.exhausted),
+					CodeFrame:   re.CodeFrame,
+					Frames:      re.Frames,
+					exhaustedBy: exec,
 				}
 			} else {
 				// Everything else — a swallowed success, an unrelated

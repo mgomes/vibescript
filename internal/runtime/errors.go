@@ -27,11 +27,12 @@ type RuntimeError struct {
 	CodeFrame string
 	Frames    []StackFrame
 
-	// latchedExhaustion marks an error wrapped from the execution's genuine
-	// budget exhaustion (see Execution.exhausted). It is unexported so
-	// adapters constructing RuntimeErrors cannot forge it; only wrapError
-	// sets it, and only when the error it wraps carries the latched value.
-	latchedExhaustion bool
+	// exhaustedBy records the execution whose genuine budget exhaustion this
+	// error was wrapped from (see Execution.exhausted). It is unexported so
+	// adapters cannot forge it, and it binds the credential to one execution:
+	// a stateful adapter replaying a marked error saved from an earlier call
+	// fails the identity comparison in the new call. Only wrapError sets it.
+	exhaustedBy *Execution
 }
 
 type assertionFailureError struct {
@@ -449,22 +450,24 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	wrapped := exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
 	if exec.exhausted != nil && errors.Is(err, exec.exhausted) {
 		if re, ok := errors.AsType[*RuntimeError](wrapped); ok {
-			re.latchedExhaustion = true
+			re.exhaustedBy = exec
 		}
 	}
 	return wrapped
 }
 
 // authenticatedExhaustionFrames returns the RuntimeError whose credential
-// ties err to the execution's latched exhaustion, or nil. It walks the whole
+// ties err to THIS execution's latched exhaustion, or nil. It walks the whole
 // unwrap tree — including errors.Join and multi-%w aggregates, where an
 // unrelated RuntimeError can sit on an earlier branch than the marked one —
-// rather than taking the first RuntimeError errors.As would. The caller must
-// treat only its location data (CodeFrame, Frames) as usable: the exported
-// fields of a RuntimeError are mutable by any holder of the pointer and
-// survive a shallow copy together with the unexported marker, so the
-// authoritative class and message are always rebuilt from the latch itself.
-func authenticatedExhaustionFrames(err error) *RuntimeError {
+// rather than taking the first RuntimeError errors.As would, and it compares
+// the stamp against the current execution so a credential saved from an
+// earlier call cannot be replayed. The caller must treat only its location
+// data (CodeFrame, Frames) as usable: the exported fields of a RuntimeError
+// are mutable by any holder of the pointer and survive a shallow copy
+// together with the unexported stamp, so the authoritative class and message
+// are always rebuilt from the latch itself.
+func (exec *Execution) authenticatedExhaustionFrames(err error) *RuntimeError {
 	queue := []error{err}
 	for len(queue) > 0 {
 		e := queue[0]
@@ -473,7 +476,7 @@ func authenticatedExhaustionFrames(err error) *RuntimeError {
 			continue
 		}
 		if re, ok := e.(*RuntimeError); ok { //nolint:errorlint // deliberate node-by-node tree walk: errors.As stops at the first RuntimeError, which may be an unrelated branch of an aggregate
-			if re.latchedExhaustion {
+			if re.exhaustedBy == exec {
 				return re
 			}
 			// RuntimeError.Unwrap returns nil by design; nothing below it.
@@ -499,22 +502,4 @@ func canonicalExhaustionMessage(exhausted error) string {
 		return re.Message
 	}
 	return exhausted.Error()
-}
-
-// errorCarriesGenuineExhaustion reports whether err carries an authenticated
-// budget exhaustion from any execution: the raw quota sentinels, or a
-// RuntimeError that wrapError marked while wrapping one. Task workers run
-// under their own executions with their own latches, so a worker's genuine
-// kill reaches the parent as a wrapped error rather than through the parent's
-// latch — the rescue gate refuses it by this credential instead. Recursion
-// caps, stdlib guards, and script-raised LimitErrors carry neither the
-// sentinels nor the marker, so they stay rescuable.
-func errorCarriesGenuineExhaustion(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) || errors.Is(err, errOutputLimitExceeded) {
-		return true
-	}
-	return authenticatedExhaustionFrames(err) != nil
 }

@@ -604,8 +604,8 @@ func TestAdapterCannotTamperAuthenticatedExhaustion(t *testing.T) {
 // exhaustion retention with the arrival order a script cannot produce
 // deterministically (the first failure cancels the group, racing the
 // spinner's kill): an ordinary failure wins the first-error slot, a worker's
-// authenticated exhaustion arrives second, and the parent must still latch
-// so rescue refuses everything.
+// exhaustion arrives second through the trusted channel, and the parent must
+// still latch so rescue refuses everything.
 func TestGroupRetainsExhaustionBehindFirstError(t *testing.T) {
 	t.Parallel()
 
@@ -617,9 +617,10 @@ func TestGroupRetainsExhaustionBehindFirstError(t *testing.T) {
 	quotaErr := worker.step()
 	requireErrorIs(t, quotaErr, errStepQuotaExceeded)
 	group.recordErr(fmt.Errorf("task worker failed: %w", quotaErr))
+	group.recordExhaustion(worker.exhausted)
 
 	if group.exhaustion() == nil {
-		t.Fatal("the group discarded a worker exhaustion recorded after an ordinary failure")
+		t.Fatal("the group discarded a worker exhaustion reported after an ordinary failure")
 	}
 	requireErrorContains(t, group.err(), "ordinary failure")
 
@@ -630,6 +631,73 @@ func TestGroupRetainsExhaustionBehindFirstError(t *testing.T) {
 	}
 	if parent.canRescueRuntimeError(errors.New("ordinary failure"), nil) {
 		t.Fatal("a latched parent must refuse every rescue")
+	}
+}
+
+// replayingCapability saves whatever error its block produces on the first
+// call and returns the saved error on the second — the stale-credential
+// replay a stateful adapter could attempt across Script.Calls.
+type replayingCapability struct {
+	saved *error
+}
+
+func (c replayingCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"replay": NewBuiltin("cap.replay", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, block Value) (Value, error) {
+				if *c.saved != nil {
+					return NewNil(), *c.saved
+				}
+				_, err := exec.CallBlock(block, nil)
+				*c.saved = err
+				return NewNil(), err
+			}),
+		}),
+	}, nil
+}
+
+// TestStaleExhaustionCredentialIsRescuable pins the credential's execution
+// binding: a marked error saved from an earlier call's genuine kill and
+// replayed in a fresh call — whose budget is intact — authenticates against
+// nothing, stays rescuable, and cannot manufacture a termination.
+func TestStaleExhaustionCredentialIsRescuable(t *testing.T) {
+	t.Parallel()
+
+	var saved error
+	cap := replayingCapability{saved: &saved}
+	script := compileScriptWithConfig(t, Config{StepQuota: 5_000, MemoryQuotaBytes: Unlimited}, `
+    def run()
+      begin
+        cap.replay() { while true do end }
+      rescue(LimitError)
+        "rescued"
+      end
+    end
+    `)
+
+	// First call: the block genuinely exhausts; the kill must reach the host.
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{cap},
+	})
+	if err == nil {
+		t.Fatal("the first call's genuine exhaustion returned success")
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+	if saved == nil {
+		t.Fatal("the adapter failed to capture the propagated error")
+	}
+
+	// Second call: the adapter replays the stale credential without running
+	// the block. The fresh execution's budget is intact, so the error is an
+	// ordinary rescuable failure.
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{cap},
+	})
+	if err != nil {
+		t.Fatalf("a replayed stale credential terminated a healthy call: %v", err)
+	}
+	if got.String() != "rescued" {
+		t.Fatalf("run() = %q, want %q", got.String(), "rescued")
 	}
 }
 
