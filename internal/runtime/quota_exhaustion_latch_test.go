@@ -884,6 +884,50 @@ func TestEnsureTriggeredExhaustionReplacesTheOriginal(t *testing.T) {
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "step quota exceeded")
 }
 
+// cancelingStepCapability burns the quota through the exported Step surface,
+// cancels the execution context, and reports success — the adapter that
+// tries to downgrade its quota kill into a cancellation.
+type cancelingStepCapability struct {
+	cancelCall context.CancelFunc
+}
+
+func (c cancelingStepCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"burnAndCancel": NewBuiltin("cap.burnAndCancel", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+				for range 10_000 {
+					_ = exec.Step()
+				}
+				c.cancelCall()
+				return NewString("ok"), nil
+			}),
+		}),
+	}, nil
+}
+
+// TestAdapterCannotDowngradeExhaustionToCancellation pins the ordering of the
+// entry-call backstop: latched exhaustion is surfaced before the context
+// check, so an adapter that also canceled the context still delivers the
+// promised quota termination rather than context.Canceled.
+func TestAdapterCannotDowngradeExhaustionToCancellation(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: Unlimited}, `
+    def run()
+      cap.burnAndCancel()
+    end
+    `)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := script.Call(ctx, "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{cancelingStepCapability{cancelCall: cancel}},
+	})
+	if err == nil {
+		t.Fatal("a canceled-and-swallowed exhaustion returned success")
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+}
+
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —
 // here the comparison memo reservation, which falls back to memo-less
 // comparison when the memo does not fit — never latch the execution: the

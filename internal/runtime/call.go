@@ -345,8 +345,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 				if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
 					return NewNil(), controlErr
 				}
-				if ctxErr := exec.checkContext(); ctxErr != nil {
-					return NewNil(), ctxErr
+				// A latched exhaustion outranks a cancellation the same
+				// adapter may also have caused: the host was promised the
+				// quota termination.
+				if exec.exhausted == nil {
+					if ctxErr := exec.checkContext(); ctxErr != nil {
+						return NewNil(), ctxErr
+					}
 				}
 				return NewNil(), exec.wrapError(err, pos)
 			}
@@ -360,8 +365,10 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			result = breakVal
 			absorbedBreak = true
 		}
-		if err := exec.checkContext(); err != nil {
-			return NewNil(), err
+		if exec.exhausted == nil {
+			if err := exec.checkContext(); err != nil {
+				return NewNil(), err
+			}
 		}
 		// A bound method preserved as a callable reaches its script function
 		// through the auto-builtin instanceMember and classMember build, so a
@@ -3511,15 +3518,17 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env, t
 		return NewNil(), err
 	}
 	val = callEnv.settleArrayAppendResult(val)
-	if err := exec.checkContext(); err != nil {
-		return NewNil(), err
-	}
 	// Backstop for the host-visible termination guarantee: if anything
 	// absorbed the latched exhaustion error on the way here — a capability
 	// adapter swallowing the raw error is the known path — the call must
-	// still fail with it rather than return a result.
+	// still fail with it rather than return a result. It runs before the
+	// context check so an adapter that also canceled the context cannot
+	// downgrade the promised quota termination into context.Canceled.
 	if exec.exhausted != nil {
 		return NewNil(), exec.wrapError(exec.exhausted, fn.Pos)
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
 	}
 	val, err = finishFunctionForCall(exec, fn, val)
 	if err != nil {
