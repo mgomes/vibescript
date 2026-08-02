@@ -45,6 +45,12 @@ func hashSet(container, key, val Value) error {
 	return container.HashSet(key, val)
 }
 
+// hashSetUnpublished writes into a hash still reachable from no execution
+// root without bumping the mutation epoch; see value.HashSetUnpublished.
+func hashSetUnpublished(container, key, val Value) error {
+	return container.HashSetUnpublished(key, val)
+}
+
 func hashDeleteKey(container, key Value) (Value, bool, error) {
 	return container.HashDeleteKey(key)
 }

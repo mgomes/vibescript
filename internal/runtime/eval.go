@@ -524,10 +524,17 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 	return exec.evalHashLiteralWithValueTypes(e, env, nil)
 }
 
+// singlePairHashLiteral is the largest hash literal built without an
+// accumulator. The accumulator's guarantee is about the second temporary: with
+// one pair there is no partially built map holding an earlier entry while the
+// next evaluates, so the finished hash is charged once through the memoized
+// check instead — the same exemption single-element array literals take.
+const singlePairHashLiteral = 1
+
 func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, valueTypeForKey func(Value) *TypeExpr) (Value, error) {
 	var acc *hashLiteralBuildAccumulator
-	if exec.memoryQuota > 0 {
-		acc = newHashLiteralBuildAccumulator(exec)
+	if exec.memoryQuota > 0 && len(e.Pairs) > singlePairHashLiteral {
+		acc = newHashLiteralBuildAccumulator(exec, len(e.Pairs))
 		if err := acc.reserveBacking(len(e.Pairs)); err != nil {
 			return NewNil(), err
 		}
@@ -535,8 +542,12 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 	hash := NewHash(make(map[string]Value, len(e.Pairs)))
 	// Pre-size the insertion-order backing to the pair count (the same bound
 	// reserveBacking charges) so HashSet's appends do not grow it past the order
-	// slots the memory projection accounts for.
-	hash.ReserveHashOrder(len(e.Pairs))
+	// slots the memory projection accounts for. The unpublished variants skip
+	// the mutation-epoch bump: this hash is reachable from no root until the
+	// finished literal is bound or stored (which bumps), so the writes cannot
+	// stale the base-walk memo, and bumping anyway invalidated it three times
+	// per literal — one driver of #1129's quadratic build loops.
+	hash.ReserveHashOrderUnpublished(len(e.Pairs))
 	entries := make(map[string]hashLiteralEntry, len(e.Pairs))
 	for _, pair := range e.Pairs {
 		keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
@@ -570,10 +581,15 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 				return NewNil(), err
 			}
 		}
-		if err := hashSet(hash, keyVal, val); err != nil {
+		if err := hashSetUnpublished(hash, keyVal, val); err != nil {
 			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
 		}
 		entries[key] = hashLiteralEntry{key: keyVal, lookupKey: lookupKey, value: val}
+	}
+	if acc == nil {
+		if err := exec.checkMemoryValue(hash); err != nil {
+			return NewNil(), err
+		}
 	}
 	return hash, nil
 }
@@ -910,10 +926,7 @@ func (exec *Execution) indexArray(e *IndexExpr, receiver Value, indices []Value)
 }
 
 func (exec *Execution) reserveArraySliceSlots(receiver Value, indices []Value, slotCount int) error {
-	if exec.memoryQuota <= 0 {
-		return nil
-	}
-	return newArrayBuildAccumulator(exec, receiver, indices, nil, NewNil()).reserveSlots(slotCount)
+	return exec.checkSlotReservationWithCallRoots(slotCount, receiver, indices, nil, NewNil())
 }
 
 // indexString implements str[...] reads as rune (character) operations. The
@@ -1279,9 +1292,20 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 			result, err = moduloValues(left, right)
 		}
 	case tokenShovel:
-		// The array shovel appends to the receiver in place; charge the backing
-		// reallocation the append may perform before it happens.
+		// The array shovel appends to the receiver in place. The charged
+		// append commits the element into the base-walk memo and skips the
+		// epoch bump, keeping loop-grown arrays linear under the quota
+		// (#1129); when it is not eligible, charge the backing reallocation
+		// up front and take the ordinary epoch-bumping path.
 		if left.Kind() == KindArray {
+			handled, appendErr := exec.appendArrayCharged(left, right)
+			if appendErr != nil {
+				return NewNil(), exec.wrapError(appendErr, pos)
+			}
+			if handled {
+				result = left
+				break
+			}
 			if err := arrayReserveInPlaceGrowth(exec, left, []Value{right}, nil, NewNil(), 1); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
 			}
@@ -2543,6 +2567,16 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		}
 		if err := objectTagMutationError(obj, "index assignment"); err != nil {
 			return exec.errorAt(target.Position, "%s", err.Error())
+		}
+		// The charged store commits an added entry into the base-walk memo
+		// and skips the epoch bump, keeping hash-filling loops linear under
+		// the quota (#1129); replacements and every other ineligible write
+		// take the ordinary bumping path.
+		if handled, storeErr := exec.hashStoreCharged(obj, indices[0], value); handled {
+			if storeErr != nil {
+				return exec.wrapError(storeErr, target.IndexPos(0))
+			}
+			return nil
 		}
 		if err := hashSet(obj, indices[0], value); err != nil {
 			return exec.errorAt(target.IndexPos(0), "%s", err.Error())

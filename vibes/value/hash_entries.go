@@ -393,10 +393,30 @@ func (v Value) HashGet(key Value) (Value, bool, error) {
 // Ruby-style insertion order: a new key is appended to the recorded order and
 // an existing key keeps its original position while taking the new value.
 func (v Value) HashSet(key, val Value) error {
+	return v.hashSetInternal(key, val, true)
+}
+
+// HashSetUnpublished is HashSet without the mutation-epoch bump. The epoch
+// exists solely to invalidate memoized reachable-graph walks, and a write
+// into a container reachable from no execution root cannot stale one, so the
+// interpreter's literal builder uses this while assembling a hash that
+// nothing references yet. The caller must guarantee the hash is unreachable
+// from every root until a publishing write (an env bind, a container store,
+// an ivar store) bumps the epoch — exactly the discipline array literals
+// already follow, since building a Go-local slice never bumps at all. It is
+// intended for the interpreter's internal use; hosts should not call it, and
+// it carries no compatibility promise (see docs/embedding-api-stability.md).
+func (v Value) HashSetUnpublished(key, val Value) error {
+	return v.hashSetInternal(key, val, false)
+}
+
+func (v Value) hashSetInternal(key, val Value, bump bool) error {
 	switch v.kind {
 	case KindHash:
 		hd := v.data.(*hashData)
-		BumpMutationEpoch()
+		if bump {
+			BumpMutationEpoch()
+		}
 		if hd.typedEntries == nil {
 			if hd.entries == nil {
 				hd.entries = make(map[string]Value)
@@ -621,6 +641,17 @@ func HashTypedEntryCapacity(v Value) int {
 // it, and it carries no compatibility promise (see
 // docs/embedding-api-stability.md).
 func (v Value) ReserveHashOrder(n int) {
+	v.reserveHashOrderInternal(n, true)
+}
+
+// ReserveHashOrderUnpublished is ReserveHashOrder without the mutation-epoch
+// bump, for a hash still reachable from no execution root. See
+// HashSetUnpublished for the invariant the caller owes.
+func (v Value) ReserveHashOrderUnpublished(n int) {
+	v.reserveHashOrderInternal(n, false)
+}
+
+func (v Value) reserveHashOrderInternal(n int, bump bool) {
 	if v.kind != KindHash || n <= 0 {
 		return
 	}
@@ -628,7 +659,9 @@ func (v Value) ReserveHashOrder(n int) {
 	if !ok || cap(hd.order) >= n {
 		return
 	}
-	BumpMutationEpoch()
+	if bump {
+		BumpMutationEpoch()
+	}
 	grown := make([]HashLookupKey, len(hd.order), n)
 	copy(grown, hd.order)
 	hd.order = grown
