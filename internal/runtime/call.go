@@ -295,6 +295,14 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		exec.builtinDepth++
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		exec.builtinDepth--
+		// A capability adapter that ignored a quota error from the exported
+		// Step/CallBlock surface and returned a value must not have that
+		// result accepted: consult the latch before trusting either outcome,
+		// so exhaustion surfaces here instead of resting on the next charge —
+		// which a final-expression adapter call would never reach.
+		if exec.exhausted != nil {
+			err = exec.exhausted
+		}
 		returnProof := exec.capabilityReturnProof
 		if returnProof.recorded || savedReturnProof.recorded {
 			exec.capabilityReturnProof = savedReturnProof
@@ -3478,6 +3486,13 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env, t
 	val = callEnv.settleArrayAppendResult(val)
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
+	}
+	// Backstop for the host-visible termination guarantee: if anything
+	// absorbed the latched exhaustion error on the way here — a capability
+	// adapter swallowing the raw error is the known path — the call must
+	// still fail with it rather than return a result.
+	if exec.exhausted != nil {
+		return NewNil(), exec.wrapError(exec.exhausted, fn.Pos)
 	}
 	val, err = finishFunctionForCall(exec, fn, val)
 	if err != nil {

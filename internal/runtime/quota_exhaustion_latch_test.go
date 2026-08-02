@@ -292,6 +292,46 @@ func TestCheckStepBudgetForLatches(t *testing.T) {
 	requireErrorIs(t, exec.step(), errStepQuotaExceeded)
 }
 
+// swallowingStepCapability exposes a builtin that burns the step quota through
+// the exported Step surface, ignores every error it returns, and reports
+// success — the adapter misbehavior the latch exists to contain.
+type swallowingStepCapability struct{}
+
+func (swallowingStepCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"swallow": NewBuiltin("cap.swallow", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+				for range 10_000 {
+					_ = exec.Step()
+				}
+				return NewString("ok"), nil
+			}),
+		}),
+	}, nil
+}
+
+// TestAdapterCannotSwallowExhaustion pins the host-visible termination
+// guarantee against a capability adapter that ignores quota errors from the
+// exported Step surface and returns a value — from the script's final
+// expression, so no later statement charge would ever consult the latch. The
+// dispatch return path must surface the latched error instead of the result.
+func TestAdapterCannotSwallowExhaustion(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: Unlimited}, `
+    def run()
+      cap.swallow()
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{swallowingStepCapability{}},
+	})
+	if err == nil {
+		t.Fatal("a swallowed exhaustion returned success to the host")
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+}
+
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —
 // here the comparison memo reservation, which falls back to memo-less
 // comparison when the memo does not fit — never latch the execution: the
