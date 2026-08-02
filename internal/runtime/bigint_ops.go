@@ -388,7 +388,7 @@ const valueKeyCostNodeBudget = 1 << 16
 // unsupported element, a NaN float, or a cycle stops HashKey immediately, so
 // the walk stops there too and only the prefix already read is charged. A
 // spent node budget also stops the walk, with the remaining cost saturated.
-func valueKeyCanonicalizationCost(key Value, onPath map[uintptr]struct{}, budget *int) (words, bytes int, walkable bool) {
+func valueKeyCanonicalizationCost(key Value, onPath map[value.SliceIdentity]struct{}, budget *int) (words, bytes int, walkable bool) {
 	if *budget <= 0 {
 		return 0, math.MaxInt / 2, false
 	}
@@ -410,14 +410,19 @@ func valueKeyCanonicalizationCost(key Value, onPath map[uintptr]struct{}, budget
 		return 0, 0, false
 	}
 	elems := key.Array()
-	id := sliceBackingIdentity(elems)
-	if id != 0 {
+	// The guard keys on the full slice header — pointer, length, and
+	// capacity — exactly as HashKey's does: overlapping reslices share a
+	// starting pointer but are distinct keys canonicalization copies in
+	// full, and a pointer-only guard misread them as cycles and stopped
+	// charging.
+	id := value.SliceIdentity{Ptr: sliceBackingIdentity(elems), Len: len(elems), Cap: cap(elems)}
+	if id.Ptr != 0 {
 		if _, ok := onPath[id]; ok {
 			// A cyclic key is rejected at the revisit.
 			return 0, 0, false
 		}
 		if onPath == nil {
-			onPath = make(map[uintptr]struct{})
+			onPath = make(map[value.SliceIdentity]struct{})
 		}
 		onPath[id] = struct{}{}
 	}
@@ -431,7 +436,7 @@ func valueKeyCanonicalizationCost(key Value, onPath map[uintptr]struct{}, budget
 			break
 		}
 	}
-	if id != 0 {
+	if id.Ptr != 0 {
 		delete(onPath, id)
 	}
 	return words, bytes, walkable

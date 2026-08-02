@@ -304,6 +304,34 @@ func TestEqualityChargeBillsDisplayKeyCandidates(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeBillsOverlappingResliceKeys pins the equality-side twin:
+// the key-cost guard uses full slice-header identity, so a nested reslice of
+// the parent's backing is billed like the distinct key it is rather than
+// misread as a cycle.
+func TestEqualityChargeBillsOverlappingResliceKeys(t *testing.T) {
+	t.Parallel()
+
+	payload := strings.Repeat("k", 32768)
+	build := func() value.Value {
+		elems := make([]value.Value, 2)
+		elems[0] = value.NewString(payload)
+		elems[1] = value.NewArray(elems[:1])
+		h := value.NewTypedHash(1)
+		if err := h.HashSet(value.NewArray(elems), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet: %v", err)
+		}
+		return h
+	}
+
+	ctx, total := meteredContext()
+	if !ctx.Equal(build(), build()) {
+		t.Fatal("hashes with reslice keys must compare equal")
+	}
+	if *total < 2*len(payload) {
+		t.Fatalf("charged %d bytes, want at least %d (both occurrences of the shared payload)", *total, 2*len(payload))
+	}
+}
+
 // TestEqualityNilHookUnchanged pins that the zero context and the plain
 // Value.Equal / Value.Eql entry points stay byte-identical in behavior with
 // no hook installed.

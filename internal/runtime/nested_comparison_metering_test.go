@@ -122,6 +122,30 @@ func TestUnsupportedArrayKeyKeepsItsError(t *testing.T) {
 	requireErrorContains(t, err, "unsupported hash key type")
 }
 
+// A nested reslice shares its parent's starting pointer but is a distinct
+// key canonicalization copies in full; a pointer-only cycle guard misread it
+// as a cycle and stopped charging. The guard keys on the full slice header,
+// so the shared payload is billed once per occurrence.
+func TestOverlappingResliceKeyIsChargedPerOccurrence(t *testing.T) {
+	t.Parallel()
+
+	payload := strings.Repeat("ab", 32<<10)
+	elems := make([]Value, 2)
+	elems[0] = NewString(payload)
+	elems[1] = NewArray(elems[:1])
+	key := NewArray(elems)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	if err := exec.chargeValueKeySteps(key); err != nil {
+		t.Fatalf("chargeValueKeySteps: %v", err)
+	}
+	// The payload appears once directly and once through the reslice; both
+	// occurrences must be billed at the scan rate.
+	if want := 2 * len(payload) / 64; exec.steps < want {
+		t.Fatalf("charged %d steps, want at least %d (both occurrences of the shared payload)", exec.steps, want)
+	}
+}
+
 // HashKey canonicalizes a shared subtree once per occurrence — [a, a] copies
 // a twice — so the key charge must scale with the occurrence count, not the
 // distinct-backing count: a permanent visited set billed a shared DAG once

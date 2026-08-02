@@ -1521,7 +1521,7 @@ const equalityKeyCostNodeBudget = 1 << 16
 // element, a NaN float, or a cycle stops it immediately, so only the prefix
 // already read is billed. A spent node budget stops the walk with the cost
 // saturated.
-func equalityKeyTextBytes(key Value, onPath map[uintptr]struct{}, budget *int) (int, bool) {
+func equalityKeyTextBytes(key Value, onPath map[SliceIdentity]struct{}, budget *int) (int, bool) {
 	if *budget <= 0 {
 		return math.MaxInt / 2, false
 	}
@@ -1535,16 +1535,19 @@ func equalityKeyTextBytes(key Value, onPath map[uintptr]struct{}, budget *int) (
 		return 0, !math.IsNaN(key.Float())
 	case KindArray:
 		elems := key.Array()
-		var id uintptr
+		// Full slice-header identity, as HashKey's cycle guard uses:
+		// overlapping reslices share a pointer but are distinct keys read in
+		// full, so a pointer-only guard misread them as cycles.
+		var id SliceIdentity
 		if cap(elems) > 0 {
-			id = reflect.ValueOf(elems).Pointer()
+			id = SliceIdentity{Ptr: reflect.ValueOf(elems).Pointer(), Len: len(elems), Cap: cap(elems)}
 		}
-		if id != 0 {
+		if id.Ptr != 0 {
 			if _, ok := onPath[id]; ok {
 				return 0, false
 			}
 			if onPath == nil {
-				onPath = make(map[uintptr]struct{})
+				onPath = make(map[SliceIdentity]struct{})
 			}
 			onPath[id] = struct{}{}
 		}
@@ -1560,7 +1563,7 @@ func equalityKeyTextBytes(key Value, onPath map[uintptr]struct{}, budget *int) (
 				break
 			}
 		}
-		if id != 0 {
+		if id.Ptr != 0 {
 			delete(onPath, id)
 		}
 		return bytes, walkable
