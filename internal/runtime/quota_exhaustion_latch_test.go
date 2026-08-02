@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -328,6 +329,46 @@ func TestAdapterCannotSwallowExhaustion(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("a swallowed exhaustion returned success to the host")
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+}
+
+// maskingStepCapability burns the step quota through the exported Step
+// surface, discards the quota error, and reports its own unrelated failure —
+// an adapter must not be able to downgrade a quota termination into a
+// generic error.
+type maskingStepCapability struct{}
+
+func (maskingStepCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"mask": NewBuiltin("cap.mask", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+				for range 10_000 {
+					_ = exec.Step()
+				}
+				return NewNil(), fmt.Errorf("adapter broke")
+			}),
+		}),
+	}, nil
+}
+
+// TestAdapterCannotMaskExhaustionWithAnotherError pins the other half of the
+// dispatch latch check: an adapter that swallows the quota error and returns
+// an unrelated error of its own must still surface the exhaustion, because
+// rescue is disabled by the latch and the host was promised a LimitError.
+func TestAdapterCannotMaskExhaustionWithAnotherError(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: Unlimited}, `
+    def run()
+      cap.mask()
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{maskingStepCapability{}},
+	})
+	if err == nil {
+		t.Fatal("a masked exhaustion returned success to the host")
 	}
 	requireErrorContains(t, err, "step quota exceeded")
 }
