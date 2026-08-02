@@ -33,6 +33,17 @@ func (exec *Execution) latchTaskExhaustion(err error) error {
 	return err
 }
 
+// latchGroupTaskExhaustion is latchTaskExhaustion plus the group's separately
+// retained exhaustion: firstErr keeps first-failure reporting, but a
+// concurrent worker's quota kill recorded after an ordinary failure must
+// still reach the parent latch.
+func (exec *Execution) latchGroupTaskExhaustion(group *taskGroup, err error) error {
+	if ex := group.exhaustion(); ex != nil {
+		_ = exec.latchExhaustion(ex)
+	}
+	return exec.latchTaskExhaustion(err)
+}
+
 func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) != 0 {
 		return NewNil(), fmt.Errorf("Tasks.run does not take positional arguments")
@@ -55,10 +66,10 @@ func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[s
 	result, blockErr := exec.CallBlock(block, []Value{group.managerValue()})
 	if blockErr != nil {
 		group.cancel()
-		_ = exec.latchTaskExhaustion(group.closeAndWait())
+		_ = exec.latchGroupTaskExhaustion(group, group.closeAndWait())
 		return NewNil(), exec.latchTaskExhaustion(blockErr)
 	}
-	if err := exec.latchTaskExhaustion(group.closeAndWait()); err != nil {
+	if err := exec.latchGroupTaskExhaustion(group, group.closeAndWait()); err != nil {
 		return NewNil(), err
 	}
 	if err := exec.checkMemoryValue(result); err != nil {
@@ -104,13 +115,13 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 		handle, err := group.spawnUnary(exec, functionName, item)
 		if err != nil {
 			group.cancel()
-			_ = exec.latchTaskExhaustion(group.closeAndWait())
+			_ = exec.latchGroupTaskExhaustion(group, group.closeAndWait())
 			return NewNil(), exec.latchTaskExhaustion(err)
 		}
 		handles[i] = handle
 	}
 
-	if err := exec.latchTaskExhaustion(group.closeAndWait()); err != nil {
+	if err := exec.latchGroupTaskExhaustion(group, group.closeAndWait()); err != nil {
 		return NewNil(), err
 	}
 
@@ -145,6 +156,12 @@ type taskGroup struct {
 	mu       sync.Mutex
 	closed   bool
 	firstErr error
+	// firstExhaustion separately retains the first authenticated budget
+	// exhaustion any worker reported. firstErr keeps first-failure
+	// reporting semantics, but an ordinary failure recorded just before a
+	// concurrent worker's quota kill must not discard the kill: the parent
+	// latches from here regardless of arrival order.
+	firstExhaustion error
 
 	retainedResults map[*taskHandle]Value
 	jobPayloads     map[*taskJob]struct{}
@@ -271,7 +288,7 @@ func (group *taskGroup) builtinWait(exec *Execution, receiver Value, args []Valu
 	if group.isClosed() {
 		return NewNil(), fmt.Errorf("task manager cannot be used after task scope exits")
 	}
-	if err := exec.latchTaskExhaustion(group.wait()); err != nil {
+	if err := exec.latchGroupTaskExhaustion(group, group.wait()); err != nil {
 		return NewNil(), err
 	}
 	return NewNil(), nil
@@ -281,7 +298,7 @@ func (group *taskGroup) spawn(exec *Execution, functionName string, args []Value
 	if group.isClosed() {
 		return nil, fmt.Errorf("task manager cannot be used after task scope exits")
 	}
-	if err := exec.latchTaskExhaustion(group.err()); err != nil {
+	if err := exec.latchGroupTaskExhaustion(group, group.err()); err != nil {
 		return nil, err
 	}
 	taskArgs, err := cloneTaskArgs("tasks.spawn", args)
@@ -300,7 +317,7 @@ func (group *taskGroup) spawnUnary(exec *Execution, functionName string, arg Val
 	if group.isClosed() {
 		return nil, fmt.Errorf("task manager cannot be used after task scope exits")
 	}
-	if err := exec.latchTaskExhaustion(group.err()); err != nil {
+	if err := exec.latchGroupTaskExhaustion(group, group.err()); err != nil {
 		return nil, err
 	}
 
@@ -349,7 +366,7 @@ func (group *taskGroup) enqueue(exec *Execution, functionName string, taskArgs [
 		}
 		handle.complete(NewNil(), err)
 		group.tasks.Done()
-		return nil, exec.latchTaskExhaustion(err)
+		return nil, exec.latchGroupTaskExhaustion(group, err)
 	case <-ctx.Done():
 		group.releaseJobPayload(job)
 		handle.complete(NewNil(), ctx.Err())
@@ -453,7 +470,18 @@ func (group *taskGroup) recordErr(err error) {
 		group.firstErr = err
 		group.cancel()
 	}
+	if group.firstExhaustion == nil && errorCarriesGenuineExhaustion(err) {
+		group.firstExhaustion = err
+	}
 	group.mu.Unlock()
+}
+
+// exhaustion returns the first authenticated worker exhaustion the group
+// recorded, independent of which failure won firstErr.
+func (group *taskGroup) exhaustion() error {
+	group.mu.Lock()
+	defer group.mu.Unlock()
+	return group.firstExhaustion
 }
 
 func (group *taskGroup) err() error {
@@ -556,7 +584,7 @@ func (handle *taskHandle) builtinValue(exec *Execution, receiver Value, args []V
 		return NewNil(), fmt.Errorf("task handle cannot be used after task scope exits")
 	}
 	result, err := handle.wait(exec.Context())
-	return result, exec.latchTaskExhaustion(handle.substituteRootCause(err))
+	return result, exec.latchGroupTaskExhaustion(handle.group, handle.substituteRootCause(err))
 }
 
 // substituteRootCause replaces a handle's own cancellation with the failure

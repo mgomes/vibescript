@@ -309,7 +309,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			if re := authenticatedExhaustionFrames(err); re != nil {
 				err = &RuntimeError{
 					Type:              classifyRuntimeErrorType(exec.exhausted),
-					Message:           exec.exhausted.Error(),
+					Message:           canonicalExhaustionMessage(exec.exhausted),
 					CodeFrame:         re.CodeFrame,
 					Frames:            re.Frames,
 					latchedExhaustion: true,

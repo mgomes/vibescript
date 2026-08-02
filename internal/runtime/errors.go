@@ -488,6 +488,18 @@ func authenticatedExhaustionFrames(err error) *RuntimeError {
 	return nil
 }
 
+// canonicalExhaustionMessage extracts the underlying quota message from a
+// latched exhaustion error. A task-boundary latch holds a wrapper whose
+// Error() renders the worker's code frame and stack; surfacing that rendering
+// as a RuntimeError Message — beside separately copied frames — printed every
+// frame twice and made the programmatic message multiline.
+func canonicalExhaustionMessage(exhausted error) string {
+	if re, ok := errors.AsType[*RuntimeError](exhausted); ok {
+		return re.Message
+	}
+	return exhausted.Error()
+}
+
 // errorCarriesGenuineExhaustion reports whether err carries an authenticated
 // budget exhaustion from any execution: the raw quota sentinels, or a
 // RuntimeError that wrapError marked while wrapping one. Task workers run

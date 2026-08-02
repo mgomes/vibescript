@@ -600,6 +600,71 @@ func TestAdapterCannotTamperAuthenticatedExhaustion(t *testing.T) {
 	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
 }
 
+// TestGroupRetainsExhaustionBehindFirstError pins the group's separate
+// exhaustion retention with the arrival order a script cannot produce
+// deterministically (the first failure cancels the group, racing the
+// spinner's kill): an ordinary failure wins the first-error slot, a worker's
+// authenticated exhaustion arrives second, and the parent must still latch
+// so rescue refuses everything.
+func TestGroupRetainsExhaustionBehindFirstError(t *testing.T) {
+	t.Parallel()
+
+	group := &taskGroup{cancel: func() {}}
+	group.recordErr(errors.New("ordinary failure"))
+
+	worker := &Execution{ctx: context.Background(), quota: 1}
+	worker.steps = 1
+	quotaErr := worker.step()
+	requireErrorIs(t, quotaErr, errStepQuotaExceeded)
+	group.recordErr(fmt.Errorf("task worker failed: %w", quotaErr))
+
+	if group.exhaustion() == nil {
+		t.Fatal("the group discarded a worker exhaustion recorded after an ordinary failure")
+	}
+	requireErrorContains(t, group.err(), "ordinary failure")
+
+	parent := &Execution{ctx: context.Background()}
+	requireErrorContains(t, parent.latchGroupTaskExhaustion(group, group.err()), "ordinary failure")
+	if parent.exhausted == nil {
+		t.Fatal("the parent latch was not set from the group's retained exhaustion")
+	}
+	if parent.canRescueRuntimeError(errors.New("ordinary failure"), nil) {
+		t.Fatal("a latched parent must refuse every rescue")
+	}
+}
+
+// TestRebuiltExhaustionMessageStaysCanonical pins the rebuilt error's shape:
+// the programmatic Message must be the single-line quota message, not the
+// task wrapper's rendering with the worker's frames embedded beside the
+// separately copied frame fields.
+func TestRebuiltExhaustionMessageStaysCanonical(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 5_000, MemoryQuotaBytes: Unlimited}, `
+    def spin(x)
+      while true
+      end
+    end
+
+    def run()
+      cap.swallow() { Tasks.map([1], with: :spin) }
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{swallowingBlockCapability{}},
+	})
+	if err == nil {
+		t.Fatal("a swallowed task exhaustion returned success to the host")
+	}
+	var re *RuntimeError
+	if errors.As(err, &re) {
+		if strings.Contains(re.Message, "\n  at ") {
+			t.Fatalf("Message embeds rendered frames: %q", re.Message)
+		}
+	}
+	requireErrorContains(t, err, "quota exceeded")
+}
+
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —
 // here the comparison memo reservation, which falls back to memo-less
 // comparison when the memo does not fit — never latch the execution: the
