@@ -253,7 +253,7 @@ func uniqueValues(values []Value) []Value {
 // charge receives the number of probes the next add will perform.
 // chargeBytes additionally bills the string bytes composite probes read, so
 // nested payloads are bounded like the probe count is (#1135).
-func uniqueValuesMetered(values []Value, check func() error, charge func(int) error, chargeBytes func(int) error) ([]Value, error) {
+func uniqueValuesMetered(values []Value, check func() error, charge, chargeBytes func(int) error) ([]Value, error) {
 	var seen valueSet
 	seen.bindByteCharge(chargeBytes)
 	unique := make([]Value, 0, boundedSetCap(len(values)))

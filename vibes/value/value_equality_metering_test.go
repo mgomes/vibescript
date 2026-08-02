@@ -41,8 +41,12 @@ func TestEqualityChargeBillsScalarPayloads(t *testing.T) {
 		{"string_pair", func() value.Value { return s }, func() value.Value { return value.NewString(strings.Repeat("x", 1024)) }, 1024},
 		{"symbol_pair", func() value.Value { return sym }, func() value.Value { return value.NewSymbol(strings.Repeat("x", 1024)) }, 1024},
 		{"inside_array", func() value.Value { return value.NewArray([]value.Value{s}) }, func() value.Value { return value.NewArray([]value.Value{value.NewString(strings.Repeat("x", 1024))}) }, 1024},
-		{"inside_untyped_hash", func() value.Value { return value.NewHash(map[string]value.Value{"k": s}) }, func() value.Value { return value.NewHash(map[string]value.Value{"k": value.NewString(strings.Repeat("x", 1024))}) }, 1024 + 1},
-		{"inside_object", func() value.Value { return value.NewObject(map[string]value.Value{"k": s}) }, func() value.Value { return value.NewObject(map[string]value.Value{"k": value.NewString(strings.Repeat("x", 1024))}) }, 1024},
+		{"inside_untyped_hash", func() value.Value { return value.NewHash(map[string]value.Value{"k": s}) }, func() value.Value {
+			return value.NewHash(map[string]value.Value{"k": value.NewString(strings.Repeat("x", 1024))})
+		}, 1024 + 1},
+		{"inside_object", func() value.Value { return value.NewObject(map[string]value.Value{"k": s}) }, func() value.Value {
+			return value.NewObject(map[string]value.Value{"k": value.NewString(strings.Repeat("x", 1024))})
+		}, 1024},
 	}
 
 	for _, tc := range cases {
