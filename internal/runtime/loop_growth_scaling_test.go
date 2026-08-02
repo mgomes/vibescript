@@ -143,6 +143,14 @@ func TestGrowthLoopEstimateMatchesUncachedWalk(t *testing.T) {
 			arg:  func(int) Value { return NewNil() },
 		},
 		{
+			// A single store that grows the order backing right after a
+			// literal: the charged path must not impose a realloc peak the
+			// epoch-bumping fallback never charges.
+			name: "single store after literal",
+			src:  "def run(a, n)\n  h = {a: 1}\n  h[1] = 1\n  h.length\nend",
+			arg:  func(int) Value { return NewNil() },
+		},
+		{
 			name: "literal inside block region",
 			src:  "def run(a, n)\n  out = a.map { |x| {id: x, name: \"x\"} }\n  out.length\nend",
 			arg:  loopMemoArray,

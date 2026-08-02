@@ -169,15 +169,15 @@ func (exec *Execution) hashStoreCharged(target, key, val Value) (handled bool, e
 		marginal = saturatingAdd(marginal, est.valuePayload(val))
 	}
 
+	// No transient peak is charged for the order backing's growth: the
+	// ordinary epoch-bumping path performs no equivalent reservation for a
+	// hash store (unlike the array shovel, whose fallback prices its
+	// realloc), so admitting here on the same terms the fallback's post-store
+	// walk uses keeps the smallest admitting quota identical whichever path a
+	// store happens to take. The realized growth is committed after the
+	// write below.
 	orderCapBefore := value.HashOrderCapacity(target)
-	orderGrows := entryCount+1 > orderCapBefore
 	used := saturatingAdd(exec.estimateScalarBase(), saturatingAdd(c.graphBytes, marginal))
-	if orderGrows {
-		// The order backing reallocates like a slice: old and new coexist at
-		// the copy's peak, and the old stays inside graphBytes.
-		grownCap := max(saturatingMul(orderCapBefore, 2), entryCount+1)
-		used = saturatingAdd(used, saturatingAdd(estimatedSliceBaseBytes, saturatingMul(grownCap, estimatedHashLookupKeyBytes)))
-	}
 	if used > exec.memoryQuota {
 		c.valid = false
 		return true, fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
