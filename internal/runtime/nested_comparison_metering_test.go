@@ -106,6 +106,41 @@ func minStepsForKeyOp(t *testing.T, expr string, bytes int) int {
 	return lo
 }
 
+// A typed receiver copy — except's retained entries, remap_keys' unmapped
+// keys, and the keep-everything transforms — canonicalizes each receiver key
+// into the result hash, so the key payload must be charged like a direct
+// insertion. The insertion that builds the hash charges the payload too, so
+// each operation's own cost is isolated by differencing against the
+// build-only baseline; uncharged, `h.except` copied arbitrarily large array
+// keys under a flat per-entry step.
+func TestTypedReceiverCopiesChargeKeyPayloads(t *testing.T) {
+	t.Parallel()
+
+	const build = "h = {}\n  h[[s]] = 1\n  "
+	ops := []string{
+		"h.except.length",
+		"h.remap_keys({}).length",
+		"h.select { |k, v| true }.length",
+		"h.reject { |k, v| false }.length",
+		"h.transform_values { |v| v }.length",
+		"h.compact.length",
+	}
+	baseSmall := minStepsForKeyOp(t, build+"h.length", 8<<10)
+	baseLarge := minStepsForKeyOp(t, build+"h.length", 64<<10)
+	for _, op := range ops {
+		t.Run(op, func(t *testing.T) {
+			t.Parallel()
+			deltaSmall := minStepsForKeyOp(t, build+op, 8<<10) - baseSmall
+			deltaLarge := minStepsForKeyOp(t, build+op, 64<<10) - baseLarge
+			if deltaLarge < deltaSmall*4 {
+				t.Errorf("%q cost %d extra steps over 8 KiB and %d over 64 KiB beyond "+
+					"the build baseline; the receiver copy must charge each key's "+
+					"canonicalization", op, deltaSmall, deltaLarge)
+			}
+		})
+	}
+}
+
 // HashKey copies the complete child encoding into every ancestor's canonical
 // string, so a depth-d single-child chain around one string costs Θ(d·len);
 // a leaf-only charge let deep linear keys do unbounded copying under a flat

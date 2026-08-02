@@ -2461,6 +2461,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
+					// The exclusion probe and the retained copy both canonicalize
+					// the receiver key; bill its payload before the first walk.
+					if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+						return NewNil(), err
+					}
 					key, err := hashLookupKey(entry.Key)
 					if err != nil {
 						return NewNil(), err
@@ -2576,6 +2581,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					}
 					if include.Truthy() {
 						if !deferBuild {
+							// Copying a kept entry canonicalizes its key; bill
+							// the payload before the walk.
+							if err := exec.chargeValueKeySteps(ordered[i].Key); err != nil {
+								return NewNil(), err
+							}
 							if err := hashSet(out, ordered[i].Key, ordered[i].Value); err != nil {
 								return NewNil(), err
 							}
@@ -2587,6 +2597,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				if deferBuild {
 					for _, entry := range ordered[:kept] {
+						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+							return NewNil(), err
+						}
 						if err := hashSet(out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
@@ -2690,6 +2703,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					}
 					if !exclude.Truthy() {
 						if !deferBuild {
+							// Copying a kept entry canonicalizes its key; bill
+							// the payload before the walk.
+							if err := exec.chargeValueKeySteps(ordered[i].Key); err != nil {
+								return NewNil(), err
+							}
 							if err := hashSet(out, ordered[i].Key, ordered[i].Value); err != nil {
 								return NewNil(), err
 							}
@@ -2701,6 +2719,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				if deferBuild {
 					for _, entry := range ordered[:kept] {
+						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+							return NewNil(), err
+						}
 						if err := hashSet(out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
@@ -3307,6 +3328,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
+					// The mapping lookup and the fallback copy both canonicalize
+					// the original key; bill its payload before the first walk.
+					if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+						return NewNil(), err
+					}
 					if mapped, ok, err := hashGet(args[0], entry.Key); err != nil {
 						return NewNil(), fmt.Errorf("hash.remap_keys mapping key is unsupported hash key: %w", err)
 					} else if ok {
@@ -3415,6 +3441,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					}
 					ordered[i].Value = nextValue
 					if !deferBuild {
+						// Copying the entry canonicalizes its key; bill the
+						// payload before the walk.
+						if err := exec.chargeValueKeySteps(ordered[i].Key); err != nil {
+							return NewNil(), err
+						}
 						if err := hashSet(out, ordered[i].Key, nextValue); err != nil {
 							return NewNil(), err
 						}
@@ -3425,6 +3456,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				if deferBuild {
 					for _, entry := range ordered {
+						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+							return NewNil(), err
+						}
 						if err := hashSet(out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
@@ -3515,6 +3549,11 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					if entry.Value.Kind() != KindNil {
+						// Copying a kept entry canonicalizes its key; bill the
+						// payload before the walk.
+						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+							return NewNil(), err
+						}
 						if err := hashSet(out, entry.Key, entry.Value); err != nil {
 							return NewNil(), err
 						}
