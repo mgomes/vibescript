@@ -384,6 +384,9 @@ func (group *taskGroup) runJob(job *taskJob) {
 	opts := group.callOptionsForJob(job)
 	var workerExhaustion error
 	result, err := group.script.callWithLazyTaskGlobals(group.ctx, job.functionName, job.callArgs(), opts, group.lazyGlobalsForJob(), &workerExhaustion)
+	if workerExhaustion != nil {
+		workerExhaustion = fmt.Errorf("task %s failed: %w", job.functionName, workerExhaustion)
+	}
 	group.recordExhaustion(workerExhaustion)
 	if err != nil {
 		taskErr := fmt.Errorf("task %s failed: %w", job.functionName, err)

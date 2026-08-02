@@ -85,7 +85,12 @@ type Execution struct {
 	exhausted error
 	// exhaustToken is this execution's credential identity for
 	// exhaustion-marked errors; see exhaustionIdentity.
-	exhaustToken              *exhaustionToken
+	exhaustToken *exhaustionToken
+	// exhaustedWrapped snapshots the first RuntimeError wrapError built from
+	// the latched exhaustion, deep-copied before any adapter can hold its
+	// pointer, so the task machinery's trusted channel can carry the
+	// worker's code frame and stack alongside the raw sentinel.
+	exhaustedWrapped          *RuntimeError
 	callStack                 []callFrame
 	root                      *Env
 	modules                   map[string]Value

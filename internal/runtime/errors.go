@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mgomes/vibescript/internal/ast"
@@ -455,9 +456,30 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	if exec.exhausted != nil && errors.Is(err, exec.exhausted) {
 		if re, ok := errors.AsType[*RuntimeError](wrapped); ok {
 			re.exhaustedBy = exec.exhaustionIdentity()
+			if exec.exhaustedWrapped == nil {
+				// Snapshot the diagnostics before any adapter can mutate the
+				// propagating object; the trusted observation channel
+				// exports this copy.
+				snapshot := *re
+				snapshot.Frames = slices.Clone(re.Frames)
+				exec.exhaustedWrapped = &snapshot
+			}
 		}
 	}
 	return wrapped
+}
+
+// observedExhaustion is what the trusted out-of-band channel exports: the
+// latched exhaustion enriched with the code frame and stack wrapError
+// captured, when evaluation got far enough to wrap it.
+func (exec *Execution) observedExhaustion() error {
+	if exec.exhausted == nil {
+		return nil
+	}
+	if exec.exhaustedWrapped != nil {
+		return exec.exhaustedWrapped
+	}
+	return exec.exhausted
 }
 
 // exhaustionToken is an execution's credential identity: a distinct tiny

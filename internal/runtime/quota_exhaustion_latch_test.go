@@ -483,6 +483,11 @@ func TestTaskWorkerExhaustionIsNotRescuable(t *testing.T) {
     `)
 
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "step quota exceeded")
+	// The trusted channel carries the worker's diagnostics: the host error
+	// must name the worker function and the task context, not only the
+	// Tasks.map call site.
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "task spin failed")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "at spin")
 }
 
 // TestTaskWorkerForgedLimitErrorRemainsRescuable pins the boundary of the

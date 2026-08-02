@@ -163,7 +163,7 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 
 	exec := newExecutionForCall(s, ctx, root, opts)
 	if observeExhaustion != nil {
-		defer func() { *observeExhaustion = exec.exhausted }()
+		defer func() { *observeExhaustion = exec.observedExhaustion() }()
 	}
 	defer exec.releaseBaseWalkCache()
 
