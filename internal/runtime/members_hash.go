@@ -1846,6 +1846,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
+					// The copy canonicalizes each receiver key into the output
+					// hash; charge it exactly as the argument-entry loop does.
+					if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+						return NewNil(), err
+					}
 					if err := hashSet(out, entry.Key, entry.Value); err != nil {
 						return NewNil(), err
 					}

@@ -64,6 +64,7 @@ func TestCompositeAndYieldedKeysChargeForTheirPayloads(t *testing.T) {
 	exprs := []string{
 		"h = {}\n  h[[s]] = 1\n  h.length",
 		"h = {}\n  h[[[s], [s]]] = 1\n  h.length",
+		"h = {}\n  h[[s]] = 1\n  h.merge({a: 1}).length",
 		"[1, 2].uniq { |x| s }.length",
 		"[[s, s], [s]].reduce(:&).length",
 		"[[s, s], [s]].reduce(:-).length",

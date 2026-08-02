@@ -2875,6 +2875,9 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		}
 		// add rescans the composites to find its insertion point.
 		_, addProbes := seen.addCounted(key, len(arr))
+		if err := seen.chargeErr(); err != nil {
+			return NewNil(), false, err
+		}
 		if err := exec.chargeScanSteps(addProbes); err != nil {
 			return NewNil(), false, err
 		}
