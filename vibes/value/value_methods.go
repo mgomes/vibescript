@@ -2086,13 +2086,25 @@ func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (sorte
 		if !chargeEqualityKeyText(state, entry.Key) {
 			return nil, held, false
 		}
-		display := HashDisplayKey(entry.Key)
-		// An array key's rendering can be arbitrarily large; validate each
-		// one at its realized size before rendering the next.
-		if !reserve(len(display)) {
-			return nil, held, false
+		switch entry.Key.Kind() {
+		case KindString, KindSymbol:
+			// HashDisplayKey aliases the key's own payload, which the
+			// memory estimator already counts; only the string header is
+			// new, covered by the structural share.
+		default:
+			// A composite key renders through Inspect, which can be
+			// arbitrarily large; preflight the size and reserve before the
+			// rendering is built, not after.
+			projected, err := entry.Key.InspectByteLenBounded(func() error { return nil })
+			if err != nil {
+				state.err = err
+				return nil, held, false
+			}
+			if !reserve(projected) {
+				return nil, held, false
+			}
 		}
-		keyed[i] = keyedEntry{display, entry}
+		keyed[i] = keyedEntry{HashDisplayKey(entry.Key), entry}
 	}
 	const sortChargeBatchBytes = 4096
 	pending := 0
