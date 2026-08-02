@@ -230,6 +230,18 @@ func (state *arrayCompareState) step() error {
 	return state.exec.step()
 }
 
+// chargeStringOrder bills the bytes an ordered string pair can read: the
+// shorter operand, at the string-scan rate, matching the operator-level
+// charge for a top-level `s <=> t`. Ordering reads the common prefix whatever
+// the lengths, so unlike equality there is no length-mismatch exemption. A
+// nil state or execution (host-side comparison) is unmetered, as step is.
+func (state *arrayCompareState) chargeStringOrder(left, right string) error {
+	if state == nil || state.exec == nil {
+		return nil
+	}
+	return state.exec.chargeStringScan(min(len(left), len(right)))
+}
+
 // compareArrayOrder compares two arrays lexicographically.
 //
 // ordered is false when some element pair is unordered (a NaN), which makes
@@ -353,8 +365,20 @@ func compareOrderForSort(left, right Value, state *arrayCompareState) (order int
 			return 0, true, nil
 		}
 	case left.Kind() == KindSymbol && right.Kind() == KindSymbol:
+		if err := state.chargeStringOrder(left.String(), right.String()); err != nil {
+			return 0, false, err
+		}
 		return compareOrderedStrings(left.String(), right.String()), true, nil
 	default:
+		// String pairs are the one scalar case whose cost scales with the
+		// payload; charging here makes the step quota bound comparisons that
+		// reach big strings through an aggregate (#1135). The other scalars
+		// fall through to compareValueOrder's constant-time arms unmetered.
+		if left.Kind() == KindString && right.Kind() == KindString {
+			if err := state.chargeStringOrder(left.String(), right.String()); err != nil {
+				return 0, false, err
+			}
+		}
 		return compareValueOrder(left, right)
 	}
 }
