@@ -210,6 +210,17 @@ func TestEnsureCannotMaskMemoryExhaustion(t *testing.T) {
     `)
 
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "memory quota exceeded")
+
+	// The diagnostics must keep pointing at the allocation that exhausted
+	// the quota (line 3), not at the ensure statement the latch prevented
+	// from running.
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatal("expected the exhaustion to surface")
+	}
+	if strings.Contains(err.Error(), "raise \"masking\"") {
+		t.Fatalf("error diagnostics point at the unexecuted ensure statement: %v", err)
+	}
 }
 
 // TestRetryCannotRerunAfterExhaustion pins that retry gives no re-entry after
