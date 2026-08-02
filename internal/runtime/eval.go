@@ -535,8 +535,12 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 	hash := NewHash(make(map[string]Value, len(e.Pairs)))
 	// Pre-size the insertion-order backing to the pair count (the same bound
 	// reserveBacking charges) so HashSet's appends do not grow it past the order
-	// slots the memory projection accounts for.
-	hash.ReserveHashOrder(len(e.Pairs))
+	// slots the memory projection accounts for. The unpublished variants skip
+	// the mutation-epoch bump: this hash is reachable from no root until the
+	// finished literal is bound or stored (which bumps), so the writes cannot
+	// stale the base-walk memo, and bumping anyway invalidated it three times
+	// per literal — one driver of #1129's quadratic build loops.
+	hash.ReserveHashOrderUnpublished(len(e.Pairs))
 	entries := make(map[string]hashLiteralEntry, len(e.Pairs))
 	for _, pair := range e.Pairs {
 		keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
@@ -570,7 +574,7 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 				return NewNil(), err
 			}
 		}
-		if err := hashSet(hash, keyVal, val); err != nil {
+		if err := hashSetUnpublished(hash, keyVal, val); err != nil {
 			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
 		}
 		entries[key] = hashLiteralEntry{key: keyVal, lookupKey: lookupKey, value: val}
