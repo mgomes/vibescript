@@ -1610,6 +1610,15 @@ func equalityKeyTextBytes(key Value, onPath map[SliceIdentity]struct{}, budget *
 		if id.Ptr != 0 {
 			delete(onPath, id)
 		}
+		if !walkable {
+			// Canonicalization stops at the failing element, so this level's
+			// string is never built: the prefix work already charged stands,
+			// but no copy happens here and no encoding reaches an ancestor.
+			// Propagating the partial encoding would grow the charge with
+			// nesting depth for work never performed, turning the ordinary
+			// unequal answer into a spurious quota error.
+			return charge, 0, false
+		}
 		// This level's canonical string copies every child encoding again.
 		if charge += childEnc; charge < 0 {
 			charge = math.MaxInt / 2

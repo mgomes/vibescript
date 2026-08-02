@@ -565,6 +565,53 @@ func TestEqualityNilHookUnchanged(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeStopsAtFailedKeyCanonicalization pins the failure
+// contract for a retained key that became unsupported after insertion (an
+// inner key array mutated to hold an object): canonicalization stops at the
+// failing element, so no ancestor copies the partial encoding and the charge
+// must not grow with nesting depth — inflated ancestor copies turned the
+// ordinary unequal answer into a spurious quota error.
+func TestEqualityChargeStopsAtFailedKeyCanonicalization(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("k", 8*1024)
+	build := func(depth int) value.Value {
+		inner := value.NewArray([]value.Value{value.NewString(long)})
+		key := inner
+		for range depth {
+			key = value.NewArray([]value.Value{key})
+		}
+		h := value.NewTypedHash(1)
+		if err := h.HashSet(key, value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet: %v", err)
+		}
+		// The key becomes unsupported only after it is retained.
+		inner.SetArrayElems(append(inner.Array(), value.NewObject(nil)))
+		return h
+	}
+
+	charged := func(depth int) int {
+		ctx, total := meteredContext()
+		if ctx.Equal(build(depth), build(depth)) {
+			t.Fatal("hashes with unsupported retained keys must compare unequal")
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("Err() = %v, want nil (unequal is the normal answer)", err)
+		}
+		return *total
+	}
+
+	atShallow := charged(6)
+	atDeep := charged(18)
+	if atShallow < len(long) {
+		t.Fatalf("charged %d bytes, want at least the read prefix's %d", atShallow, len(long))
+	}
+	if atDeep >= atShallow*2 {
+		t.Fatalf("charged %d bytes at depth 6 and %d at depth 18; ancestors never "+
+			"copy a failed child encoding, so the charge must not scale with depth", atShallow, atDeep)
+	}
+}
+
 // TestEqualityReservesRealizedDisplayKeyCapacity pins the composite-key
 // rendering reservation on the mixed legacy/typed paths: the builder holding
 // a rendered display key realizes the allocator's rounded capacity, not the
