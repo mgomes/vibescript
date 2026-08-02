@@ -129,7 +129,7 @@ Semantics:
 - Genuine sandbox exhaustion — a tripped step quota, a tripped memory quota, or `string.scan`'s output cap — is never rescuable, by any clause type. The exhaustion latches the execution, so `ensure` bodies and `retry` cannot run work past it either. `rescue LimitError` still matches recursion-limit terminations, stdlib per-operation guards (an oversized `random_id` length or a `format` rendering past its fixed output cap, for example), and script-raised `raise LimitError` errors: those describe one rejected operation, not a spent budget.
 - `rescue => err` and `rescue RuntimeError => err` bind an object for the handler body with `type`, `message`, and `code_frame` fields.
 - `else` runs only when the `begin` body finishes without a rescued error.
-- `ensure` always runs (success, rescue path, or failure path).
+- `ensure` runs on success, on the rescue path, and on ordinary failure paths. After latched exhaustion the `ensure` body is entered but its first charged statement re-raises the quota error, so cleanup work cannot rely on running past a genuine budget kill.
 - Without `rescue`, original runtime errors still propagate after `ensure` executes.
 - Unmatched typed rescues do not swallow the original error.
 - `raise` inside `rescue` re-raises the original error and preserves its stack frames.
