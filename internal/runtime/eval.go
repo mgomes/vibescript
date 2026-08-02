@@ -4891,15 +4891,17 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 		predeclareLocalBindingsFromStatements(stmt.Else, env)
 
 		if len(stmt.Ensure) > 0 {
+			latchedBeforeEnsure := exec.exhausted != nil
 			ensureVal, ensureReturned, ensureErr := exec.evalStatements(stmt.Ensure, env)
 			if ensureErr != nil {
-				// A latched execution cannot run its ensure body — the first
-				// statement charge re-raises the latch — and letting that
-				// re-raise replace the propagating error pointed CodeFrame
-				// and the leading stack frame at an unexecuted ensure
-				// statement. Keep the original failure's diagnostics; for
-				// every other ensure failure the replacement semantics stand.
-				if exec.exhausted != nil && err != nil {
+				// An execution latched BEFORE the ensure body cannot run it —
+				// the first statement charge re-raises the latch — and
+				// letting that re-raise replace the propagating error pointed
+				// diagnostics at an unexecuted ensure statement, so the
+				// original failure stands. Exhaustion first triggered inside
+				// the ensure body is the opposite case: the quota kill must
+				// replace the body's ordinary error, like any ensure failure.
+				if latchedBeforeEnsure && err != nil {
 					return NewNil(), false, err
 				}
 				return NewNil(), false, ensureErr

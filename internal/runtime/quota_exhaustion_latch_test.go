@@ -864,6 +864,26 @@ func TestSwallowedBuiltinExhaustionKeepsItsSite(t *testing.T) {
 	requireErrorContains(t, err, "s.scan")
 }
 
+// TestEnsureTriggeredExhaustionReplacesTheOriginal pins the other direction
+// of the ensure rule: when the protected body fails with an ordinary error
+// and the ensure body is where the quota first exhausts, the kill must reach
+// the host rather than hiding behind the body's error.
+func TestEnsureTriggeredExhaustionReplacesTheOriginal(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 500, MemoryQuotaBytes: Unlimited}, `
+    def run()
+      begin
+        raise "original"
+      ensure
+        while true
+        end
+      end
+    end
+    `)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "step quota exceeded")
+}
+
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —
 // here the comparison memo reservation, which falls back to memo-less
 // comparison when the memo does not fit — never latch the execution: the
