@@ -86,6 +86,20 @@ func scalarValueKey(v Value) (scalarValueSetKey, bool) {
 type valueSet struct {
 	scalars   map[scalarValueSetKey]struct{}
 	composite []Value
+	// equality carries the optional byte charge for composite probes (see
+	// bindByteCharge); its sticky error is surfaced via chargeErr.
+	equality EqualityContext
+}
+
+// bindByteCharge makes the set's composite equality probes bill the string
+// bytes they read. Callers must consult chargeErr after operations that probe.
+func (s *valueSet) bindByteCharge(charge func(int) error) {
+	s.equality.SetCharge(charge)
+}
+
+// chargeErr reports the first byte-charge failure a probe recorded, if any.
+func (s *valueSet) chargeErr() error {
+	return s.equality.Err()
 }
 
 // add inserts v into the set if absent and reports whether it was newly added.
@@ -122,7 +136,7 @@ func (s *valueSet) addCounted(v Value, hint int) (bool, int) {
 		s.scalars[key] = struct{}{}
 		return true, 0
 	}
-	probes, found := indexOfEqualValue(s.composite, v)
+	probes, found := indexOfEqualValue(s.composite, v, &s.equality)
 	if found {
 		return false, probes + 1
 	}
@@ -155,7 +169,7 @@ func (s *valueSet) containsCounted(v Value) (bool, int) {
 		_, found := s.scalars[key]
 		return found, 0
 	}
-	probes, found := indexOfEqualValue(s.composite, v)
+	probes, found := indexOfEqualValue(s.composite, v, &s.equality)
 	if found {
 		return true, probes + 1
 	}
@@ -174,6 +188,9 @@ func (s *valueSet) containsCounted(v Value) (bool, int) {
 // still avoiding any scan on insertion.
 type membershipSet struct {
 	scalars map[scalarValueSetKey]struct{}
+	// equality carries the optional byte charge for composite probes; see
+	// valueSet.bindByteCharge.
+	equality EqualityContext
 	// composite holds references to the source slices that contain at least one
 	// composite value. contains scans these directly; scalar elements within
 	// them are skipped cheaply because Value.Equal short-circuits on a kind
@@ -188,7 +205,7 @@ func (s *membershipSet) contains(v Value) bool {
 		return found
 	}
 	for _, source := range s.composite {
-		if containsEqualValue(source, v) {
+		if containsEqualValue(source, v, &s.equality) {
 			return true
 		}
 	}
@@ -220,7 +237,7 @@ func (s *membershipSet) addSource(values []Value, hint int) {
 }
 
 func uniqueValues(values []Value) []Value {
-	unique, _ := uniqueValuesMetered(values, nil, nil)
+	unique, _ := uniqueValuesMetered(values, nil, nil, nil)
 	return unique
 }
 
@@ -234,8 +251,11 @@ func uniqueValues(values []Value) []Value {
 // scalar case; without charging the scan, an array of composites that fits the
 // memory quota could spend billions of comparisons inside the step budget.
 // charge receives the number of probes the next add will perform.
-func uniqueValuesMetered(values []Value, check func() error, charge func(int) error) ([]Value, error) {
+// chargeBytes additionally bills the string bytes composite probes read, so
+// nested payloads are bounded like the probe count is (#1135).
+func uniqueValuesMetered(values []Value, check func() error, charge func(int) error, chargeBytes func(int) error) ([]Value, error) {
 	var seen valueSet
+	seen.bindByteCharge(chargeBytes)
 	unique := make([]Value, 0, boundedSetCap(len(values)))
 	for i, item := range values {
 		if check != nil && i%setOpCheckInterval == 0 {
@@ -244,6 +264,9 @@ func uniqueValuesMetered(values []Value, check func() error, charge func(int) er
 			}
 		}
 		added, probes := seen.addCounted(item, len(values))
+		if err := seen.chargeErr(); err != nil {
+			return nil, err
+		}
 		if charge != nil {
 			if err := charge(probes); err != nil {
 				return nil, err
@@ -261,16 +284,20 @@ func uniqueValuesMetered(values []Value, check func() error, charge func(int) er
 // Array#union(*others). The receiver's own duplicates are collapsed too, so the
 // result is always free of repeats. The unique result is built directly while
 // iterating the inputs, so no intermediate concatenated slice is materialized.
-func unionArrayValues(left []Value, others [][]Value) []Value {
+func unionArrayValues(exec *Execution, left []Value, others [][]Value) ([]Value, error) {
 	total := len(left)
 	for _, other := range others {
 		total += len(other)
 	}
 	var seen valueSet
+	seen.bindByteCharge(exec.stringScanChargeFunc())
 	unique := make([]Value, 0, boundedSetCap(total))
 	for _, item := range left {
 		if seen.add(item, total) {
 			unique = append(unique, item)
+		}
+		if err := seen.chargeErr(); err != nil {
+			return nil, err
 		}
 	}
 	for _, other := range others {
@@ -278,9 +305,12 @@ func unionArrayValues(left []Value, others [][]Value) []Value {
 			if seen.add(item, total) {
 				unique = append(unique, item)
 			}
+			if err := seen.chargeErr(); err != nil {
+				return nil, err
+			}
 		}
 	}
-	return unique
+	return unique, nil
 }
 
 // differenceArrayValues returns the elements of left that do not appear in any
@@ -290,28 +320,32 @@ func unionArrayValues(left []Value, others [][]Value) []Value {
 // and retains references to their composite-bearing slices, so no flattened copy
 // of the arguments is materialized and the extra memory stays proportional to
 // the number of argument slices rather than their total length.
-func differenceArrayValues(left []Value, others [][]Value) []Value {
+func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]Value, error) {
 	if len(others) == 0 {
 		out := make([]Value, len(left))
 		copy(out, left)
-		return out
+		return out, nil
 	}
 	removalTotal := 0
 	for _, other := range others {
 		removalTotal += len(other)
 	}
 	var removal membershipSet
+	removal.equality.SetCharge(exec.stringScanChargeFunc())
 	for _, other := range others {
 		removal.addSource(other, removalTotal)
 	}
 	out := make([]Value, 0, boundedSetCap(len(left)))
 	for _, item := range left {
-		if removal.contains(item) {
-			continue
+		keep := !removal.contains(item)
+		if err := removal.equality.Err(); err != nil {
+			return nil, err
 		}
-		out = append(out, item)
+		if keep {
+			out = append(out, item)
+		}
 	}
-	return out
+	return out, nil
 }
 
 // intersectArrayValues returns the elements of left that also appear in right,
@@ -349,8 +383,8 @@ func subtractArrayValues(left, right []Value) []Value {
 	return out
 }
 
-func containsEqualValue(values []Value, target Value) bool {
-	_, found := indexOfEqualValue(values, target)
+func containsEqualValue(values []Value, target Value, equality *EqualityContext) bool {
+	_, found := indexOfEqualValue(values, target, equality)
 	return found
 }
 
@@ -359,8 +393,11 @@ func containsEqualValue(values []Value, target Value) bool {
 // number of equality probes performed, which is what the step quota charges:
 // only the scan knows where it stopped, and a match near the front costs far
 // less than the full set.
-func indexOfEqualValue(values []Value, target Value) (int, bool) {
-	var equality EqualityContext
+// A nil equality context compares unmetered with a local scratch.
+func indexOfEqualValue(values []Value, target Value, equality *EqualityContext) (int, bool) {
+	if equality == nil {
+		equality = &EqualityContext{}
+	}
 	for i, candidate := range values {
 		if equality.Equal(target, candidate) {
 			return i, true

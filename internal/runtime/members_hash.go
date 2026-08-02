@@ -699,19 +699,34 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("hash.%s expects exactly one value", name)
 			}
 			// Ruby compares the candidate against each stored value with ==.
-			// Vibescript mirrors this with Value.Equal so deep collection and
-			// scalar equality match Ruby's hash value membership semantics.
+			// Vibescript mirrors this with metered equality so deep collection
+			// and scalar equality match Ruby's hash value membership semantics
+			// while each probe charges a step and its string bytes — the scan
+			// used to be free, so the quota never bounded it (#1135).
+			equality := exec.meteredEquality()
 			if hashHasTypedEntries(receiver) {
 				for _, entry := range receiver.HashEntries() {
-					if entry.Value.Equal(args[0]) {
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					if equality.Equal(entry.Value, args[0]) {
 						return NewBool(true), nil
+					}
+					if err := equality.Err(); err != nil {
+						return NewNil(), err
 					}
 				}
 				return NewBool(false), nil
 			}
 			for _, stored := range receiver.Hash() {
-				if stored.Equal(args[0]) {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				if equality.Equal(stored, args[0]) {
 					return NewBool(true), nil
+				}
+				if err := equality.Err(); err != nil {
+					return NewNil(), err
 				}
 			}
 			return NewBool(false), nil

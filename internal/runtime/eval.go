@@ -1171,22 +1171,17 @@ func (exec *Execution) chargeStringOperandBytes(operator TokenType, left, right 
 		}
 		return exec.chargeStringScan(saturatingAdd(
 			concatenatedOperandBytes(left), concatenatedOperandBytes(right)))
-	case tokenEQ, tokenNotEQ, tokenCaseEQ, tokenLT, tokenLTE, tokenGT, tokenGTE,
-		tokenSpaceship:
+	case tokenLT, tokenLTE, tokenGT, tokenGTE, tokenSpaceship:
 		// Comparison needs matching kinds: a string against a symbol is rejected
 		// on kind before either name is read, and ordering calls the pair
-		// incomparable, so charging it billed a constant-time answer.
+		// incomparable, so charging it billed a constant-time answer. The
+		// equality operators are absent here: their charge lands at the
+		// scalar leaf inside the equality walk (see equalValues), which bills
+		// nested payloads the same way and must not double-bill the top level.
 		if left.Kind() != right.Kind() || !stringLikeOperand(left) {
 			return nil
 		}
-		// Equality answers from a length mismatch without reading either
-		// payload, so only equal lengths are charged. Ordering still reads the
-		// common prefix whatever the lengths.
-		if operator == tokenEQ || operator == tokenNotEQ || operator == tokenCaseEQ {
-			if len(left.String()) != len(right.String()) {
-				return nil
-			}
-		}
+		// Ordering reads the common prefix whatever the lengths.
 		return exec.chargeStringScan(min(len(left.String()), len(right.String())))
 	default:
 		return nil
@@ -1297,19 +1292,27 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		}
 		result, err = intersectValues(left, right)
 	case tokenEQ:
-		return NewBool(left.Equal(right)), nil
+		eq, eqErr := exec.equalValues(left, right)
+		if eqErr != nil {
+			return NewNil(), exec.wrapError(eqErr, pos)
+		}
+		return NewBool(eq), nil
 	case tokenCaseEQ:
 		// Ruby's case equality operator: the left operand acts as the matcher and
 		// the right operand is the value being tested. Ranges check membership;
 		// every other value falls back to `==`. This mirrors `when` clause
 		// matching, where the clause value is the matcher.
-		matched, err := caseCandidateMatches(right, left)
+		matched, err := caseCandidateMatches(exec, right, left)
 		if err != nil {
 			return NewNil(), exec.wrapError(err, pos)
 		}
 		return NewBool(matched), nil
 	case tokenNotEQ:
-		return NewBool(!left.Equal(right)), nil
+		eq, eqErr := exec.equalValues(left, right)
+		if eqErr != nil {
+			return NewNil(), exec.wrapError(eqErr, pos)
+		}
+		return NewBool(!eq), nil
 	case tokenMatch, tokenNotMatch:
 		return exec.evalRegexMatchOperator(operator, left, right, pos)
 	// The relational operators assign rather than return so an incomparable
@@ -3024,7 +3027,7 @@ func (exec *Execution) evalCaseExprWithExpectation(expr *CaseExpr, env *Env, exp
 
 func (exec *Execution) caseWhenValueMatches(hasTarget bool, target, candidate Value, splat bool, pos Position) (bool, error) {
 	if !splat {
-		matched, err := caseWhenMatches(hasTarget, target, candidate)
+		matched, err := caseWhenMatches(exec, hasTarget, target, candidate)
 		if err != nil {
 			return false, exec.wrapError(err, pos)
 		}
@@ -3040,7 +3043,7 @@ func (exec *Execution) caseWhenValueMatches(hasTarget bool, target, candidate Va
 		if err := exec.checkMemoryValue(item); err != nil {
 			return false, err
 		}
-		matched, err := caseWhenMatches(hasTarget, target, item)
+		matched, err := caseWhenMatches(exec, hasTarget, target, item)
 		if err != nil {
 			return false, exec.wrapError(err, pos)
 		}
@@ -3051,21 +3054,23 @@ func (exec *Execution) caseWhenValueMatches(hasTarget bool, target, candidate Va
 	return false, nil
 }
 
-func caseWhenMatches(hasTarget bool, target, candidate Value) (bool, error) {
+func caseWhenMatches(exec *Execution, hasTarget bool, target, candidate Value) (bool, error) {
 	if !hasTarget {
 		return candidate.Truthy(), nil
 	}
-	return caseCandidateMatches(target, candidate)
+	return caseCandidateMatches(exec, target, candidate)
 }
 
-func caseCandidateMatches(target, candidate Value) (bool, error) {
+// caseCandidateMatches accepts a nil exec (the static checker folds literal
+// when clauses at compile time); a nil exec compares unmetered.
+func caseCandidateMatches(exec *Execution, target, candidate Value) (bool, error) {
 	// A regex matcher tests the candidate pattern against a string target,
 	// mirroring Ruby's Regexp#=== and `when /re/` clause matching.
 	if candidate.Kind() == KindRegex {
 		return regexCandidateMatches(target, candidate)
 	}
 	if candidate.Kind() != KindRange {
-		return target.Equal(candidate), nil
+		return exec.equalValues(target, candidate)
 	}
 
 	switch target.Kind() {
@@ -3077,7 +3082,7 @@ func caseCandidateMatches(target, candidate Value) (bool, error) {
 	case KindFloat:
 		return rangeContainsFloat(candidate.Range(), target.Float()), nil
 	default:
-		return target.Equal(candidate), nil
+		return exec.equalValues(target, candidate)
 	}
 }
 

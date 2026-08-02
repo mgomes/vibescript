@@ -93,6 +93,11 @@ type Execution struct {
 	memoryEst                 memoryEstimator
 	reservedScratchBytes      int
 
+	// stringScanCharge caches chargeStringScan as a bound function for the
+	// equality byte charge (see stringScanChargeFunc), so metered comparisons
+	// do not allocate a method value each. Lazily initialized.
+	stringScanCharge func(int) error
+
 	// baseWalkCache memoizes the reachable-graph portion of the memory
 	// estimator's base walk (see beginBaseWalk). It is allocated lazily on the
 	// first memoizable check, so executions that never reach one — no memory

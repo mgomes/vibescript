@@ -1626,12 +1626,16 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("array.include? expects exactly one value")
 			}
+			equality := exec.meteredEquality()
 			for _, item := range receiver.Array() {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
-				if item.Equal(args[0]) {
+				if equality.Equal(item, args[0]) {
 					return NewBool(true), nil
+				}
+				if err := equality.Err(); err != nil {
+					return NewNil(), err
 				}
 			}
 			return NewBool(false), nil
@@ -1791,10 +1795,19 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) == 1 {
 				// A value argument takes precedence and any attached block is
 				// ignored, matching Ruby's Array#count(value) { ... }.
+				// Each probe charges a step and its string bytes: the scan
+				// used to be free, so the quota never bounded it (#1135).
+				equality := exec.meteredEquality()
 				total := int64(0)
 				for _, item := range arr {
-					if item.Equal(args[0]) {
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					if equality.Equal(item, args[0]) {
 						total++
+					}
+					if err := equality.Err(); err != nil {
+						return NewNil(), err
 					}
 				}
 				return NewInt(total), nil
@@ -2015,7 +2028,7 @@ func arrayPredicate(exec *Execution, receiver Value, args []Value, kwargs map[st
 	if len(args) == 1 {
 		pattern := args[0]
 		return arrayPredicateResult(kind, arr, func(item Value) (bool, error) {
-			return caseCandidateMatches(item, pattern)
+			return caseCandidateMatches(exec, item, pattern)
 		})
 	}
 	if valueBlock(block) != nil {
@@ -2124,12 +2137,16 @@ func arrayForwardIndex(exec *Execution, receiver Value, args []Value, block Valu
 		offset = n
 	}
 	arr := receiver.Array()
+	equality := exec.meteredEquality()
 	for idx := offset; idx < len(arr); idx++ {
 		if err := exec.step(); err != nil {
 			return NewNil(), err
 		}
-		if arr[idx].Equal(args[0]) {
+		if equality.Equal(arr[idx], args[0]) {
 			return NewInt(int64(idx)), nil
+		}
+		if err := equality.Err(); err != nil {
+			return NewNil(), err
 		}
 	}
 	return NewNil(), nil
@@ -2187,12 +2204,16 @@ func arrayReverseIndex(exec *Execution, receiver Value, args []Value, block Valu
 	if offset < 0 || offset >= len(arr) {
 		offset = len(arr) - 1
 	}
+	equality := exec.meteredEquality()
 	for idx := offset; idx >= 0; idx-- {
 		if err := exec.step(); err != nil {
 			return NewNil(), err
 		}
-		if arr[idx].Equal(args[0]) {
+		if equality.Equal(arr[idx], args[0]) {
 			return NewInt(int64(idx)), nil
+		}
+		if err := equality.Err(); err != nil {
+			return NewNil(), err
 		}
 	}
 	return NewNil(), nil
@@ -2735,7 +2756,7 @@ func arrayMemberGrep(property string) (Value, error) {
 		out := make([]Value, 0, len(arr))
 		var blockArg [1]Value
 		for _, item := range arr {
-			matched, err := caseCandidateMatches(item, pattern)
+			matched, err := caseCandidateMatches(exec, item, pattern)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2792,7 +2813,7 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		if err := exec.chargeBigIntElementKeySteps(arr); err != nil {
 			return NewNil(), false, err
 		}
-		unique, err := uniqueValuesMetered(arr, exec.checkContext, exec.chargeScanSteps)
+		unique, err := uniqueValuesMetered(arr, exec.checkContext, exec.chargeScanSteps, exec.stringScanChargeFunc())
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2810,6 +2831,7 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	}
 	out := make([]Value, 0, initialCap)
 	var seen valueSet
+	seen.bindByteCharge(exec.stringScanChargeFunc())
 	var blockArg [1]Value
 	changed := false
 	for _, item := range arr {
@@ -2825,6 +2847,9 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		// already seen, so charge that scan; a per-element step alone would let
 		// n distinct composite keys cost n(n-1)/2 unmetered comparisons.
 		seenKey, probes := seen.containsCounted(key)
+		if err := seen.chargeErr(); err != nil {
+			return NewNil(), false, err
+		}
 		if err := exec.chargeScanSteps(probes); err != nil {
 			return NewNil(), false, err
 		}
@@ -3050,6 +3075,7 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	}
 	var blockArg [1]Value
 	var currentKey Value
+	chunkEquality := exec.meteredEquality()
 	active := false
 	start := 0
 	emit := func(key Value, begin, end int) error {
@@ -3111,7 +3137,11 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 			active = true
 			continue
 		}
-		if !key.Equal(currentKey) {
+		sameGroup := chunkEquality.Equal(key, currentKey)
+		if err := chunkEquality.Err(); err != nil {
+			return NewNil(), err
+		}
+		if !sameGroup {
 			if err := emit(currentKey, start, i); err != nil {
 				return NewNil(), err
 			}
@@ -3758,7 +3788,11 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err := exec.chargeBigIntElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
 				return NewNil(), err
 			}
-			return NewArray(unionArrayValues(receiver.Array(), others)), nil
+			unique, err := unionArrayValues(exec, receiver.Array(), others)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewArray(unique), nil
 		}), nil
 	case "difference":
 		return NewAutoBuiltin("array.difference", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -3769,7 +3803,11 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err := exec.chargeBigIntElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
 				return NewNil(), err
 			}
-			return NewArray(differenceArrayValues(receiver.Array(), others)), nil
+			out, err := differenceArrayValues(exec, receiver.Array(), others)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewArray(out), nil
 		}), nil
 	case "sample":
 		return NewAutoBuiltin("array.sample", arraySample), nil
@@ -4204,11 +4242,16 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	out := make([]Value, 0)
 	found := false
 	var matched Value
+	equality := exec.meteredEquality()
 	for _, item := range arr {
 		if err := exec.step(); err != nil {
 			return NewNil(), err
 		}
-		if item.Equal(target) {
+		isMatch := equality.Equal(item, target)
+		if err := equality.Err(); err != nil {
+			return NewNil(), err
+		}
+		if isMatch {
 			found = true
 			// Track the matched element itself so the result reports the stored
 			// object rather than the caller's search argument. Ruby's Array#delete

@@ -424,7 +424,10 @@ func TestUnionArrayValuesAvoidsTransientConcatenation(t *testing.T) {
 	var before, after goruntime.MemStats
 	goruntime.GC()
 	goruntime.ReadMemStats(&before)
-	got := unionArrayValues(input, others)
+	got, err := unionArrayValues(nil, input, others)
+	if err != nil {
+		t.Fatalf("unionArrayValues: %v", err)
+	}
 	goruntime.ReadMemStats(&after)
 
 	if diff := valueDiff(NewArray(want), NewArray(got)); diff != "" {
@@ -459,7 +462,10 @@ func TestDifferenceArrayValuesAvoidsTransientFlattening(t *testing.T) {
 	var before, after goruntime.MemStats
 	goruntime.GC()
 	goruntime.ReadMemStats(&before)
-	got := differenceArrayValues(left, others)
+	got, err := differenceArrayValues(nil, left, others)
+	if err != nil {
+		t.Fatalf("differenceArrayValues: %v", err)
+	}
 	goruntime.ReadMemStats(&after)
 
 	want := NewArray([]Value{NewInt(int64(setOpDistinct))})
@@ -512,7 +518,10 @@ func TestDifferenceArrayValuesRetainsCompositeSources(t *testing.T) {
 	var before, after goruntime.MemStats
 	goruntime.GC()
 	goruntime.ReadMemStats(&before)
-	got := differenceArrayValues(left, others)
+	got, err := differenceArrayValues(nil, left, others)
+	if err != nil {
+		t.Fatalf("differenceArrayValues: %v", err)
+	}
 	goruntime.ReadMemStats(&after)
 
 	want := NewArray([]Value{NewInt(1)})
@@ -563,7 +572,7 @@ func TestDifferenceArrayValuesRemovalIsNotQuadratic(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		_ = differenceArrayValues(left, others)
+		_, _ = differenceArrayValues(nil, left, others)
 		close(done)
 	}()
 
