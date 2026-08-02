@@ -332,6 +332,41 @@ func TestEqualityChargeBillsOverlappingResliceKeys(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeIsDeterministic pins the traversal order: with Go's
+// randomized map iteration, identical unequal hashes under the same quota
+// alternated between answering false and exhausting the byte budget on the
+// long equal entry. Sorted traversal makes both the total billed and the
+// outcome identical on every run.
+func TestEqualityChargeIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("x", 4096)
+	build := func(short string) value.Value {
+		return value.NewHash(map[string]value.Value{
+			"a": value.NewString(long),
+			"b": value.NewString(short),
+		})
+	}
+
+	var firstTotal int
+	for i := range 50 {
+		ctx, total := meteredContext()
+		if ctx.Equal(build("one"), build("two")) {
+			t.Fatal("hashes with a differing entry must compare unequal")
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("Err() = %v, want nil", ctx.Err())
+		}
+		if i == 0 {
+			firstTotal = *total
+			continue
+		}
+		if *total != firstTotal {
+			t.Fatalf("run %d charged %d bytes, run 0 charged %d; metered equality must be deterministic", i, *total, firstTotal)
+		}
+	}
+}
+
 // TestEqualityNilHookUnchanged pins that the zero context and the plain
 // Value.Equal / Value.Eql entry points stay byte-identical in behavior with
 // no hook installed.

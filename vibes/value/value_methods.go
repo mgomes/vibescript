@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1756,9 +1757,10 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 				return true
 			}
 		}
-		for key, leftValue := range left {
+		for _, key := range meteredMapKeys(left) {
 			// The map lookup hashes the attribute name in full, exactly as
-			// hashMapsEqual's does; charge it the same way.
+			// hashMapsEqual's does; charge it the same way, in the same
+			// deterministic order.
 			if state.charge != nil {
 				if err := state.charge(len(key)); err != nil {
 					state.err = err
@@ -1769,7 +1771,7 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 			if !ok {
 				return false
 			}
-			if !valuesEqualWithKinds(leftValue, rightValue, state, strictKinds) {
+			if !valuesEqualWithKinds(left[key], rightValue, state, strictKinds) {
 				return false
 			}
 		}
@@ -1784,11 +1786,25 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 	}
 }
 
+// meteredMapKeys returns a map's keys in sorted order. Metered equality must
+// traverse deterministically: with Go's randomized map iteration, identical
+// unequal inputs under the same quota alternated between answering false (the
+// mismatch visited first) and raising a limit error (a long equal entry
+// charged first).
+func meteredMapKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
 func hashMapsEqual(left, right map[string]Value, state *equalityState, strictKinds bool) bool {
 	if len(left) != len(right) {
 		return false
 	}
-	for key, leftValue := range left {
+	for _, key := range meteredMapKeys(left) {
 		if state.charge != nil {
 			if err := state.charge(len(key)); err != nil {
 				state.err = err
@@ -1799,7 +1815,7 @@ func hashMapsEqual(left, right map[string]Value, state *equalityState, strictKin
 		if !ok {
 			return false
 		}
-		if !valuesEqualWithKinds(leftValue, rightValue, state, strictKinds) {
+		if !valuesEqualWithKinds(left[key], rightValue, state, strictKinds) {
 			return false
 		}
 	}
@@ -1834,12 +1850,12 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState,
 	if len(leftByKey) != len(rightByKey) {
 		return false
 	}
-	for key, leftEntry := range leftByKey {
+	for _, key := range meteredMapKeys(leftByKey) {
 		rightEntry, ok := rightByKey[key]
 		if !ok {
 			return false
 		}
-		if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
+		if !valuesEqualWithKinds(leftByKey[key].Value, rightEntry.Value, state, strictKinds) {
 			return false
 		}
 	}

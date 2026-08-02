@@ -91,6 +91,9 @@ func TestKeyChargeStopsWhereCanonicalizationStops(t *testing.T) {
 	exprs := []string{
 		"h = {}\n  r = begin\n    h[[{a: 1}, s]] = 1\n  rescue => e\n    1\n  end\n  r",
 		"[s].difference.length",
+		"[s].difference([]).length",
+		"([s] & []).length",
+		"([s] - []).length",
 	}
 	for _, expr := range exprs {
 		t.Run(expr, func(t *testing.T) {

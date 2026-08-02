@@ -849,7 +849,12 @@ func intersectValues(exec *Execution, left, right Value) (Value, error) {
 		return NewNil(), fmt.Errorf("unsupported intersection operands")
 	}
 	// The scalar element precharge lives here rather than at the operator
-	// site so reduce(:&) and symbol-proc forwarding pay it too.
+	// site so reduce(:&) and symbol-proc forwarding pay it too. An empty
+	// side means no element is ever canonicalized or probed — the result is
+	// empty without building a set — so nothing is billed.
+	if len(left.Array()) == 0 || len(right.Array()) == 0 {
+		return NewArray(nil), nil
+	}
 	if exec != nil {
 		if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
 			return NewNil(), err
@@ -911,7 +916,14 @@ func subtractValues(exec *Execution, left, right Value) (Value, error) {
 		return NewDuration(durationFromSeconds(diff)), nil
 	case left.Kind() == KindArray && right.Kind() == KindArray:
 		// The scalar element precharge lives here rather than at the operator
-		// site so reduce(:-) and symbol-proc forwarding pay it too.
+		// site so reduce(:-) and symbol-proc forwarding pay it too. An empty
+		// removal side only shallow-copies the receiver: no element is
+		// canonicalized or probed, so nothing is billed.
+		if len(right.Array()) == 0 {
+			out := make([]Value, len(left.Array()))
+			copy(out, left.Array())
+			return NewArray(out), nil
+		}
 		if exec != nil {
 			if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
 				return NewNil(), err
