@@ -368,7 +368,7 @@ func (exec *Execution) checkProjectedTypedHashTransformBytes(outputEntries, scra
 	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
 	used = saturatingAdd(used, typedHashTransformBufferBytes(outputEntries, scratchBytes))
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }

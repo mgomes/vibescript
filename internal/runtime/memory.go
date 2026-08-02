@@ -537,6 +537,13 @@ func (s *baseWalkSession) close() {
 	c.journal.clear()
 }
 
+// memoryQuotaExceededError builds the canonical memory-quota failure for this
+// execution. Every memory-quota rejection funnels through here so the message
+// stays uniform and the exhaustion bookkeeping has one home.
+func (exec *Execution) memoryQuotaExceededError() error {
+	return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+}
+
 func (exec *Execution) checkMemory() error {
 	if exec.memoryQuota <= 0 {
 		return nil
@@ -560,7 +567,7 @@ func (exec *Execution) checkMemoryValue(val Value) error {
 func (exec *Execution) checkMemoryMetered() error {
 	used := exec.estimateMemoryUsage()
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -572,7 +579,7 @@ func (exec *Execution) checkMemoryWith(extras ...Value) error {
 
 	used := exec.estimateMemoryUsage(extras...)
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -584,7 +591,7 @@ func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []V
 
 	used := exec.estimateMemoryUsageForCallRoots(callee, receiver, args, kwargs, block)
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -596,7 +603,7 @@ func (exec *Execution) checkMemoryWithPositionalCallRoots(receiver, arg0, arg1 V
 
 	used := exec.estimateMemoryUsageForPositionalCallRoots(NewNil(), receiver, arg0, arg1, argCount, NewNil())
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -654,7 +661,7 @@ func (exec *Execution) checkAccumulatorWithCallRoots(accumulator, receiver Value
 	s.close()
 
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -677,7 +684,7 @@ func (exec *Execution) checkProjectedStringBytes(payloadBytes int) error {
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -691,7 +698,7 @@ func (exec *Execution) checkProjectedStringBytesWithCallRoots(payloadBytes int, 
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -705,7 +712,7 @@ func (exec *Execution) checkProjectedStringBytesWithPositionalCallRoots(payloadB
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -720,7 +727,7 @@ func (exec *Execution) checkProjectedStringBytesAndScratchWithCallRoots(payloadB
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -742,7 +749,7 @@ func (exec *Execution) checkProjectedBigIntBytes(words int) error {
 	used = saturatingAdd(used, estimatedValueBytes+estimatedBigIntStructBytes)
 	used = saturatingAdd(used, saturatingMul(words, estimatedBigIntWordBytes))
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -781,7 +788,7 @@ func (exec *Execution) checkProjectedValueRendering(val Value, payloadBytes int)
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -837,7 +844,7 @@ func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int,
 	used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
 	used = saturatingAdd(used, saturatingMul(count, estimatedValueBytes))
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -853,7 +860,7 @@ func (exec *Execution) checkProjectedArrayBytesWithCallRoots(slotCount, payloadB
 	used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
 	used = saturatingAdd(used, payloadBytes)
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -867,7 +874,7 @@ func (exec *Execution) checkProjectedArrayBytesWithPositionalCallRoots(slotCount
 	used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
 	used = saturatingAdd(used, payloadBytes)
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -925,7 +932,7 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 	used = saturatingAdd(used, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
 	used = saturatingAdd(used, scratchBytes)
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -974,7 +981,7 @@ func (exec *Execution) checkProjectedHashWalkBytes(receiver Value, args []Value,
 	}
 
 	if used := exec.hashCallRootBytes(receiver, args, kwargs, block); used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -989,7 +996,7 @@ func (exec *Execution) checkReservedLoopScratch(receiver Value, args []Value, kw
 	}
 
 	if used := exec.hashCallRootBytes(receiver, args, kwargs, block); used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1083,7 +1090,7 @@ func (exec *Execution) checkCollapsedPairBytesWithLiveBase(receiver, block Value
 	used = saturatingAdd(used, maxCollapsedPairBytesWithEstimator(receiver, s.est))
 	s.close()
 	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1245,7 +1252,7 @@ func (acc *arrayBuildAccumulator) reserveScratch(scratchBytes int) error {
 	}
 	acc.base = saturatingAdd(acc.base, scratchBytes)
 	if acc.base > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1270,7 +1277,7 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
 
 	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1286,7 +1293,7 @@ func (acc *arrayBuildAccumulator) addToReservedBacking(val Value) error {
 
 	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
 	if used := saturatingAdd(acc.base, acc.payload); used > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1306,7 +1313,7 @@ func (acc *arrayBuildAccumulator) addConservative(val Value, backingCap int) err
 	acc.payload = saturatingAdd(acc.payload, acc.result.valuePayload(val))
 
 	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1321,7 +1328,7 @@ func (acc *arrayBuildAccumulator) addConservativeToReservedBacking(val Value) er
 	}
 	acc.payload = saturatingAdd(acc.payload, acc.result.valuePayload(val))
 	if used := saturatingAdd(acc.base, acc.payload); used > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1364,7 +1371,7 @@ func (acc *arrayBuildAccumulator) checkTransient(transient Value, backingCap int
 
 	transientBytes := s.est.value(transient)
 	if used := saturatingAdd(acc.projected(backingCap), transientBytes); used > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1387,7 +1394,7 @@ func (acc *arrayBuildAccumulator) checkRetainedPayloadBytes(slotCount, payloadBy
 	}
 	used := saturatingAdd(acc.projected(slotCount), payloadBytes)
 	if used > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1411,7 +1418,7 @@ func (acc *arrayBuildAccumulator) checkSlotArrays(slotCounts ...int) error {
 		used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
 	}
 	if used > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1643,7 +1650,7 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 	keyPayload, valuePayload := acc.entryPayloads(lookupKey, key, val)
 	incoming := saturatingAdd(keyPayload, valuePayload)
 	if used := saturatingAdd(saturatingAdd(acc.base, acc.retained), incoming); used > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 
 	prior := saturatingAdd(acc.keyPayloads[canonical], acc.valuePayloads[canonical])
@@ -1706,7 +1713,7 @@ func hashLiteralKeyPayload(est *memoryEstimator, lookupKey HashLookupKey, key Va
 func (acc *hashLiteralBuildAccumulator) checkQuota() error {
 	used := saturatingAdd(acc.base, acc.retained)
 	if used > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1866,7 +1873,7 @@ func (acc *hashBuildAccumulator) checkTransient(transient Value) error {
 
 	used := saturatingAdd(saturatingAdd(acc.base, acc.built), s.est.value(transient))
 	if used > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -1876,7 +1883,7 @@ func (acc *hashBuildAccumulator) checkTransient(transient Value) error {
 func (acc *hashBuildAccumulator) checkQuota() error {
 	used := saturatingAdd(acc.base, acc.built)
 	if used > acc.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		return acc.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -2062,7 +2069,7 @@ func (c *blockBindCharge) begin(args []Value, chargedRoots ...Value) error {
 	for _, root := range chargedRoots {
 		c.built = saturatingAdd(c.built, c.rootEst.probe(root))
 		if saturatingAdd(c.liveBaseline(), c.built) > c.exec.memoryQuota {
-			return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
+			return c.exec.memoryQuotaExceededError()
 		}
 		c.est.value(root)
 	}
@@ -2084,7 +2091,7 @@ func (c *blockBindCharge) charge(value Value) error {
 	}
 	c.built = saturatingAdd(c.built, c.est.value(value))
 	if saturatingAdd(c.liveBaseline(), c.built) > c.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
+		return c.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -2112,7 +2119,7 @@ func (c *blockBindCharge) projectRestWindow(count int) error {
 	}
 	window := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
 	if saturatingAdd(saturatingAdd(c.liveBaseline(), c.built), window) > c.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
+		return c.exec.memoryQuotaExceededError()
 	}
 	return nil
 }
@@ -2336,7 +2343,7 @@ func newLoopScratchReservation(exec *Execution, receiver Value, args []Value, kw
 	}
 	reservation.baseline = exec.hashCallRootBytes(receiver, args, kwargs, block)
 	if reservation.baseline > exec.memoryQuota {
-		return loopScratchReservation{}, fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return loopScratchReservation{}, exec.memoryQuotaExceededError()
 	}
 	return reservation, nil
 }
@@ -2360,7 +2367,7 @@ func (r *loopScratchReservation) reserve(scratchBytes int) error {
 	if r.reserveIfFits(scratchBytes) {
 		return nil
 	}
-	return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, r.exec.memoryQuota)
+	return r.exec.memoryQuotaExceededError()
 }
 
 func (r *loopScratchReservation) release() {
