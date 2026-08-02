@@ -354,33 +354,48 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 // element is a constant-time scalar lookup (or an equality scan for composite
 // elements), and a second set tracks which results were already emitted so the
 // output never repeats a value.
-func intersectArrayValues(left, right []Value) []Value {
+func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var inRight membershipSet
+	inRight.equality.SetCharge(exec.stringScanChargeFunc())
 	inRight.addSource(right, len(right))
 	var emitted valueSet
+	emitted.bindByteCharge(exec.stringScanChargeFunc())
 	out := make([]Value, 0, boundedSetCap(min(len(left), len(right))))
 	for _, item := range left {
-		if !inRight.contains(item) {
+		hit := inRight.contains(item)
+		if err := inRight.equality.Err(); err != nil {
+			return nil, err
+		}
+		if !hit {
 			continue
 		}
-		if emitted.add(item, len(left)) {
+		added := emitted.add(item, len(left))
+		if err := emitted.chargeErr(); err != nil {
+			return nil, err
+		}
+		if added {
 			out = append(out, item)
 		}
 	}
-	return out
+	return out, nil
 }
 
-func subtractArrayValues(left, right []Value) []Value {
+func subtractArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var removal membershipSet
+	removal.equality.SetCharge(exec.stringScanChargeFunc())
 	removal.addSource(right, len(right))
 	out := make([]Value, 0, boundedSetCap(len(left)))
 	for _, item := range left {
-		if removal.contains(item) {
+		hit := removal.contains(item)
+		if err := removal.equality.Err(); err != nil {
+			return nil, err
+		}
+		if hit {
 			continue
 		}
 		out = append(out, item)
 	}
-	return out
+	return out, nil
 }
 
 func containsEqualValue(values []Value, target Value, equality *EqualityContext) bool {

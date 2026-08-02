@@ -842,15 +842,20 @@ func shovelValues(left, right Value) (Value, error) {
 
 // intersectValues implements the array intersection operator `array & other`,
 // returning the elements common to both arrays with duplicates removed and the
-// left array's order preserved, mirroring Ruby's Array#&.
-func intersectValues(left, right Value) (Value, error) {
+// left array's order preserved, mirroring Ruby's Array#&. exec meters the
+// composite membership probes; nil compares unmetered.
+func intersectValues(exec *Execution, left, right Value) (Value, error) {
 	if left.Kind() != KindArray || right.Kind() != KindArray {
 		return NewNil(), fmt.Errorf("unsupported intersection operands")
 	}
-	return NewArray(intersectArrayValues(left.Array(), right.Array())), nil
+	out, err := intersectArrayValues(exec, left.Array(), right.Array())
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewArray(out), nil
 }
 
-func subtractValues(left, right Value) (Value, error) {
+func subtractValues(exec *Execution, left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
 		if l, lok := left.CompactInt(); lok {
@@ -898,9 +903,11 @@ func subtractValues(left, right Value) (Value, error) {
 		}
 		return NewDuration(durationFromSeconds(diff)), nil
 	case left.Kind() == KindArray && right.Kind() == KindArray:
-		lArr := left.Array()
-		rArr := right.Array()
-		return NewArray(subtractArrayValues(lArr, rArr)), nil
+		out, err := subtractArrayValues(exec, left.Array(), right.Array())
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewArray(out), nil
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
 		diff, err := left.Money().Sub(right.Money())
 		if err != nil {

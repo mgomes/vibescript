@@ -353,8 +353,60 @@ func bigIntDecimalDigitsUpperBound(bi *big.Int) int {
 // linear in words. A string or symbol key charges its bytes at the
 // string-scan rate: building the canonical form copies the text, and the map
 // insert or lookup hashes all of it, work that was unmetered before #1135.
-// Compact scalar keys are a no-op.
+// An array key recurses the way HashKey's canonicalization does — its nested
+// strings and big integers are copied into the canonical form too — with the
+// same slice-identity cycle guard, so a cyclic key charges its distinct
+// backings once and canonicalization itself reports the cycle. Compact
+// scalar keys are a no-op.
 func (exec *Execution) chargeValueKeySteps(key Value) error {
+	words, bytes := valueKeyCanonicalizationCost(key, nil)
+	if words > 0 {
+		if err := exec.stepN(1 + words/bigIntStepWordsPerStep); err != nil {
+			return err
+		}
+	}
+	return exec.chargeStringScan(bytes)
+}
+
+// valueKeyCanonicalizationCost sums the big-integer words and string-like
+// bytes canonicalizing key will read, recursing through array keys. seen
+// carries the visited slice backings across the recursion; the caller passes
+// nil.
+func valueKeyCanonicalizationCost(key Value, seen map[uintptr]struct{}) (int, int) {
+	if bi, ok := value.BigIntPayload(key); ok {
+		return len(bi.Bits()), 0
+	}
+	if stringLikeOperand(key) {
+		return 0, len(key.String())
+	}
+	if key.Kind() != KindArray {
+		return 0, 0
+	}
+	elems := key.Array()
+	if id := sliceBackingIdentity(elems); id != 0 {
+		if _, ok := seen[id]; ok {
+			return 0, 0
+		}
+		if seen == nil {
+			seen = make(map[uintptr]struct{})
+		}
+		seen[id] = struct{}{}
+	}
+	words, bytes := 0, 0
+	for _, elem := range elems {
+		w, b := valueKeyCanonicalizationCost(elem, seen)
+		words += w
+		bytes = saturatingAdd(bytes, b)
+	}
+	return words, bytes
+}
+
+// chargeScalarSetKeySteps bills a scalar set key's payload before it is
+// hashed into a Go map (the whole payload, twice on a miss): big-integer
+// words at the arithmetic rate and string-like bytes at the scan rate.
+// Composite keys are free here — the sets probe them through metered
+// equality instead, so charging their contents would double-bill.
+func (exec *Execution) chargeScalarSetKeySteps(key Value) error {
 	if bi, ok := value.BigIntPayload(key); ok {
 		return exec.stepN(1 + len(bi.Bits())/bigIntStepWordsPerStep)
 	}

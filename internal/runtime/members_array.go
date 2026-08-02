@@ -2680,14 +2680,14 @@ func reduceOperationName(v Value) (string, bool) {
 // as methods on its numeric and collection types; Vibescript implements them as
 // operators, so the symbol shorthand routes through the same helpers the `+`,
 // `-`, `*`, `/`, `%`, and `**` operators use.
-var reduceArithmeticOps = map[string]func(left, right Value) (Value, error){
-	"+":  addValues,
+var reduceArithmeticOps = map[string]func(exec *Execution, left, right Value) (Value, error){
+	"+":  func(_ *Execution, l, r Value) (Value, error) { return addValues(l, r) },
 	"-":  subtractValues,
-	"*":  multiplyValues,
-	"/":  divideValues,
-	"%":  moduloValues,
-	"**": powerValues,
-	"<<": shovelValues,
+	"*":  func(_ *Execution, l, r Value) (Value, error) { return multiplyValues(l, r) },
+	"/":  func(_ *Execution, l, r Value) (Value, error) { return divideValues(l, r) },
+	"%":  func(_ *Execution, l, r Value) (Value, error) { return moduloValues(l, r) },
+	"**": func(_ *Execution, l, r Value) (Value, error) { return powerValues(l, r) },
+	"<<": func(_ *Execution, l, r Value) (Value, error) { return shovelValues(l, r) },
 	"&":  intersectValues,
 }
 
@@ -2718,7 +2718,7 @@ func (exec *Execution) reduceSendOperation(accumulator Value, operation string, 
 				}
 			}
 		}
-		return op(accumulator, item)
+		return op(exec, accumulator, item)
 	}
 	member, err := exec.getPublicMember(accumulator, operation, Position{})
 	if err != nil {
@@ -2841,6 +2841,12 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		blockArg[0] = item
 		key, err := runner.call(blockArg[:])
 		if err != nil {
+			return NewNil(), false, err
+		}
+		// A scalar key is hashed into the set's Go map in full — twice on a
+		// miss — so its payload is charged first, like every other
+		// key-canonicalization site.
+		if err := exec.chargeScalarSetKeySteps(key); err != nil {
 			return NewNil(), false, err
 		}
 		// A composite key is matched by scanning every distinct composite key

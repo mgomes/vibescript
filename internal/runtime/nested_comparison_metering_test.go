@@ -37,6 +37,8 @@ func TestNestedStringComparisonsChargeForTheirPayloads(t *testing.T) {
 		"[s].difference([s]).length",
 		"([s] & [s]).length",
 		"([s] - [s]).length",
+		"([[s]] & [[s]]).length",
+		"([[s]] - [[s]]).length",
 		"{a: 1}[s].to_s.length",
 	}
 	for _, expr := range exprs {
@@ -47,6 +49,29 @@ func TestNestedStringComparisonsChargeForTheirPayloads(t *testing.T) {
 			if atLarge < atSmall*4 {
 				t.Errorf("%s cost %d steps over 8 KiB and %d over 64 KiB; the nested "+
 					"payload must be charged like the top-level comparison", expr, atSmall, atLarge)
+			}
+		})
+	}
+}
+
+// An array hash key canonicalizes recursively — its nested strings are copied
+// and hashed in full — and a scalar key a uniq block yields is hashed into
+// the set's Go map, so both must charge like a direct string key.
+func TestCompositeAndYieldedKeysChargeForTheirPayloads(t *testing.T) {
+	t.Parallel()
+
+	exprs := []string{
+		"h = {}\n  h[[s]] = 1\n  h.length",
+		"[1, 2].uniq { |x| s }.length",
+	}
+	for _, expr := range exprs {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 64<<10)
+			if atLarge < atSmall*4 {
+				t.Errorf("%q cost %d steps over 8 KiB and %d over 64 KiB; key "+
+					"canonicalization must charge the payload it reads", expr, atSmall, atLarge)
 			}
 		})
 	}

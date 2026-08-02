@@ -1231,7 +1231,7 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 				return NewNil(), exec.wrapError(err, pos)
 			}
 		}
-		result, err = subtractValues(left, right)
+		result, err = subtractValues(exec, left, right)
 	case tokenAsterisk:
 		if left.Kind() == KindString {
 			// String repetition allocates a script-sized result, so it needs
@@ -1296,7 +1296,7 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 				return NewNil(), exec.wrapError(err, pos)
 			}
 		}
-		result, err = intersectValues(left, right)
+		result, err = intersectValues(exec, left, right)
 	case tokenEQ:
 		eq, eqErr := exec.equalValues(left, right)
 		if eqErr != nil {
