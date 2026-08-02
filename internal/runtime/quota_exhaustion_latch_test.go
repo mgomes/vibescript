@@ -100,6 +100,38 @@ func TestTypedRescueDoesNotCatchGenuineExhaustion(t *testing.T) {
 	})
 }
 
+// TestFormatOutputCapRemainsRescuable pins the documented boundary between
+// latched exhaustion and per-operation guards: format's fixed output cap
+// describes one rejected rendering, not a spent budget, so rescue catches it
+// and the function keeps working — unrescuability is promised only for the
+// step quota, the memory quota, and string.scan's output cap.
+func TestFormatOutputCapRemainsRescuable(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: Unlimited, MemoryQuotaBytes: Unlimited}, `
+    def run()
+      result = begin
+        format("%2000000s", "x")
+        "rendered"
+      rescue(LimitError)
+        "rescued"
+      end
+      i = 0
+      while i < 100
+        i = i + 1
+      end
+      result + "-" + i.to_s
+    end
+    `)
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "rescued-100" {
+		t.Fatalf("run() = %q, want %q", got.String(), "rescued-100")
+	}
+}
+
 // TestForgedLimitErrorRemainsRescuable pins the boundary of the latch: a
 // script-raised LimitError describes nothing about the budget, so it stays
 // rescuable and the function keeps working afterwards — proof that no latch

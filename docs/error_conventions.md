@@ -173,12 +173,13 @@ buggy scripts should branch on `RuntimeError.Type`, not message text
 and not `errors.Is`; `RuntimeError.Unwrap` intentionally returns nil.
 
 Within the `LimitError` bucket, scripts and hosts see different
-guarantees: genuine budget exhaustion (step quota, memory quota, output
-limit) latches the execution and is unrescuable from script code, so a
-quota-killed script always terminates and the host always receives the
-error. Recursion-limit terminations, stdlib input guards, and
-script-raised `LimitError`s remain rescuable in-script; hosts see them
-only when no handler caught them.
+guarantees: genuine budget exhaustion (step quota, memory quota, and
+`string.scan`'s output cap) latches the execution and is unrescuable
+from script code, so a quota-killed script always terminates and the
+host always receives the error. Recursion-limit terminations, stdlib
+per-operation guards — input limits and fixed output caps such as
+`format`'s — and script-raised `LimitError`s remain rescuable
+in-script; hosts see them only when no handler caught them.
 
 Parse-error codes are likewise not needed now: hosts display parse
 errors rather than branch on them, and `ParseIssue` can grow an
