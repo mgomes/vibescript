@@ -1396,6 +1396,13 @@ type equalityState struct {
 	// charge bills the bytes a scalar comparison is about to read. nil means
 	// unmetered: hosts, tests, and Value.Equal keep their existing behavior.
 	charge func(bytes int) error
+	// reserveScratch validates the walk's cumulative transient scratch — the
+	// key slices deterministic traversal sorts — against the caller's memory
+	// budget before each allocation. nil means unvalidated.
+	reserveScratch func(bytes int) error
+	// scratchHeld accumulates the scratch bytes this walk has allocated, so
+	// nested map traversals validate their combined footprint.
+	scratchHeld int
 	// err records the first charge failure. It is sticky: every comparison
 	// after it returns false immediately, so a caller looping over many Equal
 	// calls does O(1) work per call once the quota is gone and surfaces the
@@ -1425,6 +1432,15 @@ func (c *EqualityContext) Eql(v, other Value) bool {
 		clear(c.state.seen)
 	}
 	return valuesEqualWithKinds(v, other, &c.state, true)
+}
+
+// SetScratchReserver installs a validator for the walk's transient scratch
+// allocations (the key slices deterministic map traversal sorts): it is
+// invoked with the walk's cumulative scratch bytes before each allocation,
+// and an error aborts the comparison like a charge failure. A nil reserver
+// leaves allocations unvalidated.
+func (c *EqualityContext) SetScratchReserver(reserve func(bytes int) error) {
+	c.state.reserveScratch = reserve
 }
 
 // SetCharge installs a byte charge invoked for the string and symbol payloads
@@ -1796,19 +1812,31 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 	}
 }
 
-// sortedMapKeys returns a map's keys in sorted order. Metered equality must
-// traverse deterministically: with Go's randomized map iteration, identical
-// unequal inputs under the same quota alternated between answering false (the
+// keySortScratchEntryBytes approximates one entry of the key-sorting scratch
+// slice: a string header plus slice-slot overhead.
+const keySortScratchEntryBytes = 24
+
+// sortedMapKeys returns a map's keys in sorted order, validating the scratch
+// slice against the caller's budget first. Metered equality must traverse
+// deterministically: with Go's randomized map iteration, identical unequal
+// inputs under the same quota alternated between answering false (the
 // mismatch visited first) and raising a limit error (a long equal entry
 // charged first). Callers whose keys are not yet billed use meteredMapKeys,
-// which charges every key's bytes before the sort reads them.
-func sortedMapKeys[V any](m map[string]V) []string {
+// which additionally charges every key's bytes before the sort reads them.
+func sortedMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool) {
+	if state.reserveScratch != nil {
+		state.scratchHeld += len(m) * keySortScratchEntryBytes
+		if err := state.reserveScratch(state.scratchHeld); err != nil {
+			state.err = err
+			return nil, false
+		}
+	}
 	keys := make([]string, 0, len(m))
 	for key := range m {
 		keys = append(keys, key)
 	}
 	slices.Sort(keys)
-	return keys
+	return keys, true
 }
 
 // meteredMapKeys is sortedMapKeys with the keys' total bytes billed up front:
@@ -1826,7 +1854,7 @@ func meteredMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool
 			return nil, false
 		}
 	}
-	return sortedMapKeys(m), true
+	return sortedMapKeys(m, state)
 }
 
 func hashMapsEqual(left, right map[string]Value, state *equalityState, strictKinds bool) bool {
@@ -1879,7 +1907,11 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState,
 	}
 	// The display keys were billed while the maps were built; the sort
 	// re-reads already-charged payloads only.
-	for _, key := range sortedMapKeys(leftByKey) {
+	displayKeys, chargeOK := sortedMapKeys(leftByKey, state)
+	if !chargeOK {
+		return false
+	}
+	for _, key := range displayKeys {
 		rightEntry, ok := rightByKey[key]
 		if !ok {
 			return false

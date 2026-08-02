@@ -1501,6 +1501,10 @@ func mergedKeyCount(exec *Execution, base map[string]Value, args []Value, limit 
 				if err := exec.step(); err != nil {
 					return count, err
 				}
+				// The base probe hashes the whole key text.
+				if err := exec.chargeStringScan(len(key)); err != nil {
+					return count, err
+				}
 				if _, inBase := base[key]; inBase {
 					continue
 				}
@@ -1516,6 +1520,9 @@ func mergedKeyCount(exec *Execution, base map[string]Value, args []Value, limit 
 	for _, arg := range args {
 		for key := range arg.Hash() {
 			if err := exec.step(); err != nil {
+				return count, err
+			}
+			if err := exec.chargeStringScan(len(key)); err != nil {
 				return count, err
 			}
 			if _, inBase := base[key]; inBase {
@@ -1557,6 +1564,11 @@ func typedMergedKeyCount(exec *Execution, receiver Value, args []Value, limit in
 		if err := exec.step(); err != nil {
 			return count, err
 		}
+		// The exact-union preflight canonicalizes every key; charge before
+		// the copy, like every other canonicalization site.
+		if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+			return count, err
+		}
 		key, err := canonicalHashKey(entry.Key)
 		if err != nil {
 			return count, err
@@ -1566,6 +1578,9 @@ func typedMergedKeyCount(exec *Execution, receiver Value, args []Value, limit in
 	for _, arg := range args {
 		for _, entry := range arg.HashEntries() {
 			if err := exec.step(); err != nil {
+				return count, err
+			}
+			if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 				return count, err
 			}
 			key, err := canonicalHashKey(entry.Key)

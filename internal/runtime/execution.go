@@ -97,6 +97,9 @@ type Execution struct {
 	// equality byte charge (see stringScanChargeFunc), so metered comparisons
 	// do not allocate a method value each. Lazily initialized.
 	stringScanCharge func(int) error
+	// equalityScratchCheck caches the equality scratch validator closure
+	// (see equalityScratchValidatorFunc). Lazily initialized.
+	equalityScratchCheck func(int) error
 
 	// baseWalkCache memoizes the reachable-graph portion of the memory
 	// estimator's base walk (see beginBaseWalk). It is allocated lazily on the

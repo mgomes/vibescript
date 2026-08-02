@@ -396,6 +396,45 @@ func TestEqualityChargeBillsDeepArrayKeysPerLevel(t *testing.T) {
 	}
 }
 
+// TestEqualityScratchReserverValidatesSortAllocations pins the scratch hook:
+// deterministic traversal allocates a key slice per map, the reserver sees
+// the cumulative footprint before each allocation, and a reserver failure
+// aborts the comparison through Err like a charge failure.
+func TestEqualityScratchReserverValidatesSortAllocations(t *testing.T) {
+	t.Parallel()
+
+	build := func() value.Value {
+		entries := make(map[string]value.Value, 12)
+		for i := range 12 {
+			entries[strings.Repeat("k", i+1)] = value.NewInt(int64(i))
+		}
+		return value.NewHash(entries)
+	}
+
+	var ctx value.EqualityContext
+	seen := 0
+	ctx.SetScratchReserver(func(bytes int) error {
+		seen = bytes
+		return nil
+	})
+	if !ctx.Equal(build(), build()) {
+		t.Fatal("hashes must compare equal")
+	}
+	if seen < 12*24 {
+		t.Fatalf("reserver saw %d bytes, want at least the key slice's %d", seen, 12*24)
+	}
+
+	var failing value.EqualityContext
+	boom := errors.New("no scratch headroom")
+	failing.SetScratchReserver(func(int) error { return boom })
+	if failing.Equal(build(), build()) {
+		t.Fatal("a failed scratch reservation must answer false")
+	}
+	if !errors.Is(failing.Err(), boom) {
+		t.Fatalf("Err() = %v, want %v", failing.Err(), boom)
+	}
+}
+
 // TestEqualityNilHookUnchanged pins that the zero context and the plain
 // Value.Equal / Value.Eql entry points stay byte-identical in behavior with
 // no hook installed.
