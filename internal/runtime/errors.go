@@ -26,6 +26,12 @@ type RuntimeError struct {
 	Message   string
 	CodeFrame string
 	Frames    []StackFrame
+
+	// latchedExhaustion marks an error wrapped from the execution's genuine
+	// budget exhaustion (see Execution.exhausted). It is unexported so
+	// adapters constructing RuntimeErrors cannot forge it; only wrapError
+	// sets it, and only when the error it wraps carries the latched value.
+	latchedExhaustion bool
 }
 
 type assertionFailureError struct {
@@ -440,5 +446,28 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	if _, ok := errors.AsType[*RuntimeError](err); ok {
 		return err
 	}
-	return exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
+	wrapped := exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
+	if exec.exhausted != nil && errors.Is(err, exec.exhausted) {
+		if re, ok := errors.AsType[*RuntimeError](wrapped); ok {
+			re.latchedExhaustion = true
+		}
+	}
+	return wrapped
+}
+
+// errorCarriesLatchedExhaustion reports whether err is, wraps, or was wrapped
+// from the execution's latched exhaustion error — the unforgeable test the
+// builtin dispatch uses to decide whether a propagated error may stand in for
+// the latch. Message text and the public LimitError classification are both
+// forgeable; the raw error's identity and wrapError's unexported marker are
+// not.
+func errorCarriesLatchedExhaustion(err, exhausted error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, exhausted) {
+		return true
+	}
+	re, ok := errors.AsType[*RuntimeError](err)
+	return ok && re.latchedExhaustion
 }

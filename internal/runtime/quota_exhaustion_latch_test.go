@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -411,6 +412,51 @@ func TestAdapterCannotForgeLimitErrorOverExhaustion(t *testing.T) {
 		t.Fatal("a forged limit error returned success to the host")
 	}
 	requireErrorContains(t, err, "step quota exceeded")
+}
+
+// echoingStepCapability burns the step quota and returns a fresh error whose
+// text happens to embed the quota message — message matching must not be the
+// thing that lets an error stand in for the latch.
+type echoingStepCapability struct{}
+
+func (echoingStepCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"echo": NewBuiltin("cap.echo", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+				var last error
+				for range 10_000 {
+					if err := exec.Step(); err != nil {
+						last = err
+					}
+				}
+				return NewNil(), fmt.Errorf("cleanup failed after %v", last)
+			}),
+		}),
+	}, nil
+}
+
+// TestAdapterErrorEchoingQuotaMessageIsOverridden pins that an unrelated
+// error whose text merely contains the quota message does not survive the
+// dispatch check: the host receives the latched error itself, not the
+// adapter's wrapper narrative.
+func TestAdapterErrorEchoingQuotaMessageIsOverridden(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: Unlimited}, `
+    def run()
+      cap.echo()
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{echoingStepCapability{}},
+	})
+	if err == nil {
+		t.Fatal("an echoed exhaustion returned success to the host")
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+	if strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("error = %v, want the latched exhaustion rather than the adapter's wrapper", err)
+	}
 }
 
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —
