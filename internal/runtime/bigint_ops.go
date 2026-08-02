@@ -346,35 +346,48 @@ func bigIntDecimalDigitsUpperBound(bi *big.Int) int {
 	return digits
 }
 
-// chargeBigIntKeySteps scales the step cost of canonicalizing one hash key
-// with the key's word count when it carries a big payload (hash set/get/
-// delete, membership probes, aggregation keys), matching the arithmetic
-// convention of 1 + words/8. The canonical hex conversion is linear in words,
-// so the charge bounds its CPU under the step quota; compact keys are a no-op.
-func (exec *Execution) chargeBigIntKeySteps(key Value) error {
-	bi, ok := value.BigIntPayload(key)
-	if !ok {
-		return nil
+// chargeValueKeySteps scales the step cost of canonicalizing one hash key
+// with the payload the conversion reads (hash set/get/delete, membership
+// probes, aggregation keys). A big-integer key charges its word count at the
+// arithmetic convention of 1 + words/8: the canonical hex conversion is
+// linear in words. A string or symbol key charges its bytes at the
+// string-scan rate: building the canonical form copies the text, and the map
+// insert or lookup hashes all of it, work that was unmetered before #1135.
+// Compact scalar keys are a no-op.
+func (exec *Execution) chargeValueKeySteps(key Value) error {
+	if bi, ok := value.BigIntPayload(key); ok {
+		return exec.stepN(1 + len(bi.Bits())/bigIntStepWordsPerStep)
 	}
-	return exec.stepN(1 + len(bi.Bits())/bigIntStepWordsPerStep)
+	if stringLikeOperand(key) {
+		return exec.chargeStringScan(len(key.String()))
+	}
+	return nil
 }
 
-// chargeBigIntElementKeySteps charges up front for canonicalizing every
-// big-integer element of the given slices. The set-building helpers (uniq,
+// chargeValueElementKeySteps charges up front for canonicalizing every
+// element of the given slices as a set key. The set-building helpers (uniq,
 // union, difference, & and array -) canonicalize each element at least once,
-// so their entry points charge the summed word count before any conversion
-// runs; slices of compact values charge nothing beyond the scan.
-func (exec *Execution) chargeBigIntElementKeySteps(slices ...[]Value) error {
+// so their entry points charge the summed big-integer word count and
+// string-like byte count before any conversion runs; slices of compact
+// values charge nothing beyond the scan.
+func (exec *Execution) chargeValueElementKeySteps(slices ...[]Value) error {
 	words := 0
+	bytes := 0
 	for _, values := range slices {
 		for _, v := range values {
 			if bi, ok := value.BigIntPayload(v); ok {
 				words += len(bi.Bits())
+				continue
+			}
+			if stringLikeOperand(v) {
+				bytes = saturatingAdd(bytes, len(v.String()))
 			}
 		}
 	}
-	if words == 0 {
-		return nil
+	if words > 0 {
+		if err := exec.stepN(1 + words/bigIntStepWordsPerStep); err != nil {
+			return err
+		}
 	}
-	return exec.stepN(1 + words/bigIntStepWordsPerStep)
+	return exec.chargeStringScan(bytes)
 }

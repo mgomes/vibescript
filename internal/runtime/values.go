@@ -117,7 +117,7 @@ func (exec *Execution) digPath(name string, current Value, args []Value) (Value,
 	for _, arg := range args {
 		switch current.Kind() {
 		case KindHash, KindObject:
-			if err := exec.chargeBigIntKeySteps(arg); err != nil {
+			if err := exec.chargeValueKeySteps(arg); err != nil {
 				return NewNil(), err
 			}
 			next, ok, err := hashGet(current, arg)

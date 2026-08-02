@@ -479,7 +479,7 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 					exec.releaseLoopScratch(prefixDelta)
 					return NewNil(), err
 				}
-				if err := exec.chargeBigIntKeySteps(nextKeyValue); err != nil {
+				if err := exec.chargeValueKeySteps(nextKeyValue); err != nil {
 					exec.releaseLoopScratch(prefixDelta)
 					return NewNil(), err
 				}
@@ -549,7 +549,7 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 				exec.releaseLoopScratch(prefixDelta)
 				return NewNil(), err
 			}
-			if err := exec.chargeBigIntKeySteps(nextKeyValue); err != nil {
+			if err := exec.chargeValueKeySteps(nextKeyValue); err != nil {
 				exec.releaseLoopScratch(prefixDelta)
 				return NewNil(), err
 			}
@@ -656,7 +656,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("hash.%s expects exactly one key", name)
 			}
-			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+			if err := exec.chargeValueKeySteps(args[0]); err != nil {
 				return NewNil(), err
 			}
 			_, ok, err := hashGet(receiver, args[0])
@@ -850,7 +850,7 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			out := make([]Value, len(args))
 			for i, arg := range args {
-				if err := exec.chargeBigIntKeySteps(arg); err != nil {
+				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
 				}
 				value, ok, err := hashGet(receiver, arg)
@@ -879,7 +879,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("hash.fetch expects key and optional default")
 			}
-			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+			if err := exec.chargeValueKeySteps(args[0]); err != nil {
 				return NewNil(), err
 			}
 			value, ok, err := hashGet(receiver, args[0])
@@ -905,7 +905,7 @@ func hashMemberQuery(property string) (Value, error) {
 		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			out := make([]Value, len(args))
 			for i, arg := range args {
-				if err := exec.chargeBigIntKeySteps(arg); err != nil {
+				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
 				}
 				value, ok, err := hashGet(receiver, arg)
@@ -1716,7 +1716,7 @@ func hashMergeInPlace(exec *Execution, receiver Value, args []Value, kwargs map[
 			if err := exec.step(); err != nil {
 				return NewNil(), err
 			}
-			if err := exec.chargeBigIntKeySteps(entry.Key); err != nil {
+			if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 				return NewNil(), err
 			}
 			val := entry.Value
@@ -1862,7 +1862,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						if err := exec.step(); err != nil {
 							return NewNil(), err
 						}
-						if err := exec.chargeBigIntKeySteps(entry.Key); err != nil {
+						if err := exec.chargeValueKeySteps(entry.Key); err != nil {
 							return NewNil(), err
 						}
 						oldValue, conflict, err := hashGet(out, entry.Key)
@@ -2179,7 +2179,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) != 2 {
 				return NewNil(), fmt.Errorf("hash.store expects a key and a value")
 			}
-			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+			if err := exec.chargeValueKeySteps(args[0]); err != nil {
 				return NewNil(), err
 			}
 			if _, err := canonicalHashKey(args[0]); err != nil {
@@ -2211,7 +2211,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("hash.delete expects a key")
 			}
-			if err := exec.chargeBigIntKeySteps(args[0]); err != nil {
+			if err := exec.chargeValueKeySteps(args[0]); err != nil {
 				return NewNil(), err
 			}
 			if _, err := canonicalHashKey(args[0]); err != nil {
@@ -2273,7 +2273,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					if err := exec.chargeBigIntKeySteps(arg); err != nil {
+					if err := exec.chargeValueKeySteps(arg); err != nil {
 						return NewNil(), err
 					}
 					value, ok, err := hashGet(receiver, arg)
@@ -2342,7 +2342,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
 					}
-					if err := exec.chargeBigIntKeySteps(arg); err != nil {
+					if err := exec.chargeValueKeySteps(arg); err != nil {
 						return NewNil(), err
 					}
 					if _, ok, err := hashGet(receiver, arg); err != nil || !ok {
@@ -3006,7 +3006,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err := exec.checkContext(); err != nil {
 						return NewNil(), err
 					}
-					if err := exec.chargeBigIntKeySteps(nextKey); err != nil {
+					if err := exec.chargeValueKeySteps(nextKey); err != nil {
 						return NewNil(), err
 					}
 					// Validation stays inline so an unsupported key still fails at the
@@ -3152,7 +3152,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.checkContext(); err != nil {
 					return NewNil(), err
 				}
-				if err := exec.chargeBigIntKeySteps(nextKey); err != nil {
+				if err := exec.chargeValueKeySteps(nextKey); err != nil {
 					return NewNil(), err
 				}
 				// Validation stays inline so an unsupported key still fails at the
@@ -3223,7 +3223,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					if mapped, ok, err := hashGet(args[0], entry.Key); err != nil {
 						return NewNil(), fmt.Errorf("hash.remap_keys mapping key is unsupported hash key: %w", err)
 					} else if ok {
-						if err := exec.chargeBigIntKeySteps(mapped); err != nil {
+						if err := exec.chargeValueKeySteps(mapped); err != nil {
 							return NewNil(), err
 						}
 						if _, err := valueToHashKey(mapped); err != nil {
@@ -3258,7 +3258,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				value := entries[key]
 				if mapped, ok := mapping[key]; ok {
-					if err := exec.chargeBigIntKeySteps(mapped); err != nil {
+					if err := exec.chargeValueKeySteps(mapped); err != nil {
 						return NewNil(), err
 					}
 					if _, err := valueToHashKey(mapped); err != nil {

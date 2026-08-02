@@ -313,7 +313,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				if err := exec.chargeBigIntKeySteps(groupValue); err != nil {
+				if err := exec.chargeValueKeySteps(groupValue); err != nil {
 					return NewNil(), err
 				}
 				key, err := newHashAggregationKey(groupValue)
@@ -402,7 +402,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				if err := exec.chargeBigIntKeySteps(groupValue); err != nil {
+				if err := exec.chargeValueKeySteps(groupValue); err != nil {
 					return NewNil(), err
 				}
 				key, err := newHashAggregationKey(groupValue)
@@ -503,7 +503,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 					}
 					keyValue = mapped
 				}
-				if err := exec.chargeBigIntKeySteps(keyValue); err != nil {
+				if err := exec.chargeValueKeySteps(keyValue); err != nil {
 					return NewNil(), err
 				}
 				key, err := newHashAggregationKey(keyValue)
@@ -2810,7 +2810,7 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		}
 		// Deduplication canonicalizes every element as a set key; charge big
 		// elements' words before the build.
-		if err := exec.chargeBigIntElementKeySteps(arr); err != nil {
+		if err := exec.chargeValueElementKeySteps(arr); err != nil {
 			return NewNil(), false, err
 		}
 		unique, err := uniqueValuesMetered(arr, exec.checkContext, exec.chargeScanSteps, exec.stringScanChargeFunc())
@@ -3317,7 +3317,7 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		if len(elements) != 2 {
 			return NewNil(), fmt.Errorf("array.to_h pair must have exactly two elements")
 		}
-		if err := exec.chargeBigIntKeySteps(elements[0]); err != nil {
+		if err := exec.chargeValueKeySteps(elements[0]); err != nil {
 			return NewNil(), err
 		}
 		key, err := canonicalHashKey(elements[0])
@@ -3785,7 +3785,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := exec.chargeBigIntElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
+			if err := exec.chargeValueElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
 				return NewNil(), err
 			}
 			unique, err := unionArrayValues(exec, receiver.Array(), others)
@@ -3800,7 +3800,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := exec.chargeBigIntElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
+			if err := exec.chargeValueElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
 				return NewNil(), err
 			}
 			out, err := differenceArrayValues(exec, receiver.Array(), others)

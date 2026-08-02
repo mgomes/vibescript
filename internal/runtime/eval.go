@@ -543,6 +543,12 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 		if err != nil {
 			return NewNil(), err
 		}
+		// The canonical form copies a string-like key's whole text and the
+		// entry maps hash it in full, so the key's bytes are charged before
+		// the conversions run, like every other key-canonicalization site.
+		if err := exec.chargeValueKeySteps(keyVal); err != nil {
+			return NewNil(), exec.wrapError(err, pair.Key.Pos())
+		}
 		key, err := canonicalHashKey(keyVal)
 		if err != nil {
 			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
@@ -965,7 +971,7 @@ func (exec *Execution) indexHash(e *IndexExpr, obj Value, indices []Value) (Valu
 	idx := indices[0]
 	// Canonicalizing a big-integer key is linear in its words; charge before
 	// the lookup so key-heavy loops stay inside the step quota.
-	if err := exec.chargeBigIntKeySteps(idx); err != nil {
+	if err := exec.chargeValueKeySteps(idx); err != nil {
 		return NewNil(), err
 	}
 	if obj.Kind() == KindObject {
@@ -1221,7 +1227,7 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		if left.Kind() == KindArray && right.Kind() == KindArray {
 			// Array difference canonicalizes every element as a set key;
 			// charge big elements' words before the build.
-			if err := exec.chargeBigIntElementKeySteps(left.Array(), right.Array()); err != nil {
+			if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
 			}
 		}
@@ -1286,7 +1292,7 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		if left.Kind() == KindArray && right.Kind() == KindArray {
 			// Array intersection canonicalizes every element as a set key;
 			// charge big elements' words before the build.
-			if err := exec.chargeBigIntElementKeySteps(left.Array(), right.Array()); err != nil {
+			if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
 			}
 		}
@@ -2541,7 +2547,7 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		}
 		// Canonicalizing a big-integer key is linear in its words; charge
 		// before the write so key-heavy loops stay inside the step quota.
-		if err := exec.chargeBigIntKeySteps(indices[0]); err != nil {
+		if err := exec.chargeValueKeySteps(indices[0]); err != nil {
 			return err
 		}
 		if err := objectTagMutationError(obj, "index assignment"); err != nil {
