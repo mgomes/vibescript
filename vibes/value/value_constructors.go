@@ -56,6 +56,23 @@ func (v Value) SetArrayElems(elems []Value) {
 	}
 }
 
+// AppendArrayElemNoEpoch appends elem to an array in place without bumping
+// the mutation epoch. The epoch exists to invalidate memoized reachable-graph
+// walks; the interpreter's charged-append path commits the element's bytes
+// into that memo itself before appending, so the bump would only throw away
+// accounting that is already correct. Callers that do not maintain the memo
+// must use SetArrayElems. It is intended for the interpreter's internal use;
+// hosts should not call it, and it carries no compatibility promise (see
+// docs/embedding-api-stability.md).
+func (v Value) AppendArrayElemNoEpoch(elem Value) {
+	if v.kind != KindArray {
+		return
+	}
+	if ad, ok := v.data.(*arrayData); ok {
+		ad.elems = append(ad.elems, elem)
+	}
+}
+
 // ArrayIdentity returns an identity for an array wrapper, or 0 when v is not
 // an array. It identifies the shared mutable wrapper itself rather than the
 // current element backing, so identity survives in-place growth that reallocates

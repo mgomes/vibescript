@@ -1292,9 +1292,20 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 			result, err = moduloValues(left, right)
 		}
 	case tokenShovel:
-		// The array shovel appends to the receiver in place; charge the backing
-		// reallocation the append may perform before it happens.
+		// The array shovel appends to the receiver in place. The charged
+		// append commits the element into the base-walk memo and skips the
+		// epoch bump, keeping loop-grown arrays linear under the quota
+		// (#1129); when it is not eligible, charge the backing reallocation
+		// up front and take the ordinary epoch-bumping path.
 		if left.Kind() == KindArray {
+			handled, appendErr := exec.appendArrayCharged(left, right)
+			if appendErr != nil {
+				return NewNil(), exec.wrapError(appendErr, pos)
+			}
+			if handled {
+				result = left
+				break
+			}
 			if err := arrayReserveInPlaceGrowth(exec, left, []Value{right}, nil, NewNil(), 1); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
 			}
