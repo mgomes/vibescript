@@ -738,7 +738,34 @@ func hashMemberQuery(property string) (Value, error) {
 			if err := exec.chargeStringScan(keyBytes); err != nil {
 				return NewNil(), err
 			}
-			slices.Sort(keys)
+			// The sort rereads common prefixes past the linear charge above;
+			// measure the exact bytes each comparison reads and bill them
+			// after, as the equality sorter does.
+			sortRead := 0
+			slices.SortFunc(keys, func(a, b string) int {
+				n := min(len(a), len(b))
+				i := 0
+				for i < n && a[i] == b[i] {
+					i++
+				}
+				read := i + 1
+				if read > n {
+					read = n
+				}
+				if sortRead += read; sortRead < 0 {
+					sortRead = math.MaxInt / 2
+				}
+				if i < n {
+					if a[i] < b[i] {
+						return -1
+					}
+					return 1
+				}
+				return len(a) - len(b)
+			})
+			if err := exec.chargeStringScan(sortRead); err != nil {
+				return NewNil(), err
+			}
 			for _, k := range keys {
 				if err := exec.step(); err != nil {
 					return NewNil(), err

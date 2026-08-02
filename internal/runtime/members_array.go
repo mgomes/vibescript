@@ -2813,7 +2813,7 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		if err := exec.chargeValueElementKeySteps(arr); err != nil {
 			return NewNil(), false, err
 		}
-		unique, err := uniqueValuesMetered(arr, exec.checkContext, exec.chargeScanSteps, exec.stringScanChargeFunc())
+		unique, err := uniqueValuesMetered(arr, exec.checkContext, exec.chargeScanSteps, exec)
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2831,7 +2831,7 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	}
 	out := make([]Value, 0, initialCap)
 	var seen valueSet
-	seen.bindByteCharge(exec.stringScanChargeFunc())
+	seen.bindMetering(exec)
 	var blockArg [1]Value
 	changed := false
 	for _, item := range arr {

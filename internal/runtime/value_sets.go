@@ -87,14 +87,17 @@ type valueSet struct {
 	scalars   map[scalarValueSetKey]struct{}
 	composite []Value
 	// equality carries the optional byte charge for composite probes (see
-	// bindByteCharge); its sticky error is surfaced via chargeErr.
+	// bindMetering); its sticky error is surfaced via chargeErr.
 	equality EqualityContext
 }
 
-// bindByteCharge makes the set's composite equality probes bill the string
-// bytes they read. Callers must consult chargeErr after operations that probe.
-func (s *valueSet) bindByteCharge(charge func(int) error) {
-	s.equality.SetCharge(charge)
+// bindMetering makes the set's composite equality probes bill the string
+// bytes they read and validate their sort scratch against the memory quota.
+// Callers must consult chargeErr after operations that probe. A nil exec
+// leaves the set unmetered.
+func (s *valueSet) bindMetering(exec *Execution) {
+	s.equality.SetCharge(exec.stringScanChargeFunc())
+	s.equality.SetScratchReserver(exec.equalityScratchValidatorFunc())
 }
 
 // chargeErr reports the first byte-charge failure a probe recorded, if any.
@@ -204,7 +207,7 @@ func (s *valueSet) containsCounted(v Value) (bool, int) {
 type membershipSet struct {
 	scalars map[scalarValueSetKey]struct{}
 	// equality carries the optional byte charge for composite probes; see
-	// valueSet.bindByteCharge.
+	// valueSet.bindMetering.
 	equality EqualityContext
 	// composite holds references to the source slices that contain at least one
 	// composite value. contains scans these directly; scalar elements within
@@ -266,11 +269,12 @@ func uniqueValues(values []Value) []Value {
 // scalar case; without charging the scan, an array of composites that fits the
 // memory quota could spend billions of comparisons inside the step budget.
 // charge receives the number of probes the next add will perform.
-// chargeBytes additionally bills the string bytes composite probes read, so
-// nested payloads are bounded like the probe count is (#1135).
-func uniqueValuesMetered(values []Value, check func() error, charge, chargeBytes func(int) error) ([]Value, error) {
+// meterExec, when non-nil, makes composite probes bill the string bytes they
+// read and validate their sort scratch, so nested payloads are bounded like
+// the probe count is (#1135).
+func uniqueValuesMetered(values []Value, check func() error, charge func(int) error, meterExec *Execution) ([]Value, error) {
 	var seen valueSet
-	seen.bindByteCharge(chargeBytes)
+	seen.bindMetering(meterExec)
 	unique := make([]Value, 0, boundedSetCap(len(values)))
 	for i, item := range values {
 		if check != nil && i%setOpCheckInterval == 0 {
@@ -305,7 +309,7 @@ func unionArrayValues(exec *Execution, left []Value, others [][]Value) ([]Value,
 		total += len(other)
 	}
 	var seen valueSet
-	seen.bindByteCharge(exec.stringScanChargeFunc())
+	seen.bindMetering(exec)
 	unique := make([]Value, 0, boundedSetCap(total))
 	for _, item := range left {
 		if seen.add(item, total) {
@@ -372,9 +376,10 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var inRight membershipSet
 	inRight.equality.SetCharge(exec.stringScanChargeFunc())
+	inRight.equality.SetScratchReserver(exec.equalityScratchValidatorFunc())
 	inRight.addSource(right, len(right))
 	var emitted valueSet
-	emitted.bindByteCharge(exec.stringScanChargeFunc())
+	emitted.bindMetering(exec)
 	out := make([]Value, 0, boundedSetCap(min(len(left), len(right))))
 	for _, item := range left {
 		hit := inRight.contains(item)
@@ -398,6 +403,7 @@ func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error)
 func subtractArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var removal membershipSet
 	removal.equality.SetCharge(exec.stringScanChargeFunc())
+	removal.equality.SetScratchReserver(exec.equalityScratchValidatorFunc())
 	removal.addSource(right, len(right))
 	out := make([]Value, 0, boundedSetCap(len(left)))
 	for _, item := range left {
