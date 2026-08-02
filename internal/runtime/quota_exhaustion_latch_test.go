@@ -665,6 +665,49 @@ func TestRebuiltExhaustionMessageStaysCanonical(t *testing.T) {
 	requireErrorContains(t, err, "quota exceeded")
 }
 
+// aggregatingStepCapability lets its block exhaust the quota and returns the
+// propagated error joined behind an unrelated RuntimeError, the shape that
+// used to make the first-match walk pick the unmarked branch and preserve
+// the aggregate's synthetic metadata.
+type aggregatingStepCapability struct{}
+
+func (aggregatingStepCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"aggregate": NewBuiltin("cap.aggregate", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, block Value) (Value, error) {
+				_, err := exec.CallBlock(block, nil)
+				synthetic := &RuntimeError{Type: "TypeError", Message: "synthetic aggregate"}
+				return NewNil(), errors.Join(synthetic, err)
+			}),
+		}),
+	}, nil
+}
+
+// TestAdapterCannotAggregateAwayExhaustion pins the aggregate case: the
+// marked RuntimeError sits on a later branch than an unrelated one, and the
+// host must still receive the canonical quota termination rather than the
+// aggregate's synthetic metadata.
+func TestAdapterCannotAggregateAwayExhaustion(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 200, MemoryQuotaBytes: Unlimited}, `
+    def run()
+      cap.aggregate() { while true do end }
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{aggregatingStepCapability{}},
+	})
+	if err == nil {
+		t.Fatal("an aggregated exhaustion returned success to the host")
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+	if strings.Contains(err.Error(), "synthetic aggregate") {
+		t.Fatalf("error = %v, want the canonical termination rather than the aggregate", err)
+	}
+}
+
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —
 // here the comparison memo reservation, which falls back to memo-less
 // comparison when the memo does not fit — never latch the execution: the

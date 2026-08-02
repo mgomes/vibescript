@@ -314,7 +314,11 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 					Frames:            re.Frames,
 					latchedExhaustion: true,
 				}
-			} else if !errorCarriesLatchedExhaustion(err, exec.exhausted) {
+			} else {
+				// Everything else — a swallowed success, an unrelated
+				// failure, or an aggregate whose first RuntimeError branch
+				// is not the marked one and would survive wrapError with its
+				// synthetic metadata — is replaced by the latch itself.
 				err = exec.exhausted
 			}
 		}

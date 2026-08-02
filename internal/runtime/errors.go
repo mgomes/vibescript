@@ -455,35 +455,36 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	return wrapped
 }
 
-// errorCarriesLatchedExhaustion reports whether err is, wraps, or was wrapped
-// from the execution's latched exhaustion error — the unforgeable test the
-// builtin dispatch uses to decide whether a propagated error may stand in for
-// the latch. Message text and the public LimitError classification are both
-// forgeable; the raw error's identity and wrapError's unexported marker are
-// not.
-func errorCarriesLatchedExhaustion(err, exhausted error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, exhausted) {
-		return true
-	}
-	re, ok := errors.AsType[*RuntimeError](err)
-	return ok && re.latchedExhaustion
-}
-
 // authenticatedExhaustionFrames returns the RuntimeError whose credential
-// ties err to the execution's latched exhaustion, or nil. The caller must
+// ties err to the execution's latched exhaustion, or nil. It walks the whole
+// unwrap tree — including errors.Join and multi-%w aggregates, where an
+// unrelated RuntimeError can sit on an earlier branch than the marked one —
+// rather than taking the first RuntimeError errors.As would. The caller must
 // treat only its location data (CodeFrame, Frames) as usable: the exported
 // fields of a RuntimeError are mutable by any holder of the pointer and
 // survive a shallow copy together with the unexported marker, so the
 // authoritative class and message are always rebuilt from the latch itself.
 func authenticatedExhaustionFrames(err error) *RuntimeError {
-	if err == nil {
-		return nil
-	}
-	if re, ok := errors.AsType[*RuntimeError](err); ok && re.latchedExhaustion {
-		return re
+	queue := []error{err}
+	for len(queue) > 0 {
+		e := queue[0]
+		queue = queue[1:]
+		if e == nil {
+			continue
+		}
+		if re, ok := e.(*RuntimeError); ok {
+			if re.latchedExhaustion {
+				return re
+			}
+			// RuntimeError.Unwrap returns nil by design; nothing below it.
+			continue
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() error }:
+			queue = append(queue, u.Unwrap())
+		case interface{ Unwrap() []error }:
+			queue = append(queue, u.Unwrap()...)
+		}
 	}
 	return nil
 }
@@ -515,6 +516,5 @@ func errorCarriesGenuineExhaustion(err error) bool {
 	if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) || errors.Is(err, errOutputLimitExceeded) {
 		return true
 	}
-	re, ok := errors.AsType[*RuntimeError](err)
-	return ok && re.latchedExhaustion
+	return authenticatedExhaustionFrames(err) != nil
 }
