@@ -1729,6 +1729,32 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
+	if acc.sessions {
+		// Sessions mode keeps its identity-based accounting through
+		// replacements: the replay set becomes the literal's
+		// post-replacement entries and every payload is re-measured against
+		// the live base by checkQuota, so neither the replaced value nor a
+		// payload the base has started counting is retained. A frozen
+		// per-key byte total went stale as soon as a later value expression
+		// published a shared payload into a root.
+		entries := make([]hashLiteralEntry, 0, len(current)+1)
+		replacedExisting := false
+		for c, entry := range current {
+			if c == canonical {
+				entries = append(entries, hashLiteralEntry{key: key, lookupKey: lookupKey, value: val})
+				replacedExisting = true
+				continue
+			}
+			entries = append(entries, entry)
+		}
+		if !replacedExisting {
+			entries = append(entries, hashLiteralEntry{key: key, lookupKey: lookupKey, value: val})
+			acc.retained = saturatingAdd(acc.retained, acc.typedEntryStructuralBytes())
+		}
+		acc.sessionEntries = entries
+		acc.replacing = true
+		return acc.checkQuota()
+	}
 	if !acc.replacing {
 		acc.rebuildRetainedEntries(current)
 	}
@@ -1755,9 +1781,6 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 }
 
 func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[string]hashLiteralEntry) {
-	// Replacing mode returns to per-key retained totals; the session replay
-	// list is dropped so sessionUsedBytes measures retained arithmetic only.
-	acc.sessionEntries = nil
 	acc.retained = 0
 	acc.keyPayloads = make(map[string]int, len(current))
 	acc.valuePayloads = make(map[string]int, len(current))

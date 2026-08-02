@@ -180,6 +180,17 @@ func TestGrowthLoopEstimateMatchesUncachedWalk(t *testing.T) {
 			arg: loopMemoArray,
 		},
 		{
+			// A duplicate key switches the accumulator into replacement mode
+			// before the last entry's value expression publishes the shared
+			// payload into a reachable root; the replacement-mode accounting
+			// must keep re-deduplicating against the live base.
+			name: "literal with duplicate key before a publishing entry",
+			src: "def w()\n  \"wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww\"\nend\n\n" +
+				"def retain(a)\n  a[0] = w()\n  1\nend\n\n" +
+				"def run(a, n)\n  h = {x: w(), d: 0, d: 1, y: retain(a)}\n  h.length\nend",
+			arg: loopMemoArray,
+		},
+		{
 			name: "literal inside block region",
 			src:  "def run(a, n)\n  out = a.map { |x| {id: x, name: \"x\"} }\n  out.length\nend",
 			arg:  loopMemoArray,
