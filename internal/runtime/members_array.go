@@ -4338,7 +4338,7 @@ func arrayReserveInPlaceGrowth(exec *Execution, receiver Value, args []Value, kw
 		return nil
 	}
 	grownCap := max(saturatingMul(cap(base), 2), newLen)
-	return newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(grownCap)
+	return exec.checkSlotReservationWithCallRoots(grownCap, receiver, args, kwargs, block)
 }
 
 func arraySample(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
