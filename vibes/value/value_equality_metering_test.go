@@ -418,7 +418,7 @@ func TestEqualityScratchReserverValidatesSortAllocations(t *testing.T) {
 	var ctx value.EqualityContext
 	ctx.SetCharge(func(int) error { return nil })
 	seen := 0
-	ctx.SetScratchReserver(func(bytes int) error {
+	ctx.SetScratchReserver(func(bytes int, _, _ value.Value) error {
 		seen = bytes
 		return nil
 	})
@@ -432,7 +432,7 @@ func TestEqualityScratchReserverValidatesSortAllocations(t *testing.T) {
 	var failing value.EqualityContext
 	failing.SetCharge(func(int) error { return nil })
 	boom := errors.New("no scratch headroom")
-	failing.SetScratchReserver(func(int) error { return boom })
+	failing.SetScratchReserver(func(int, value.Value, value.Value) error { return boom })
 	if failing.Equal(build(), build()) {
 		t.Fatal("a failed scratch reservation must answer false")
 	}
@@ -462,6 +462,39 @@ func TestEqualityChargeBillsRegexSources(t *testing.T) {
 	}
 }
 
+// TestEqualityScratchReserverSeesOperands pins the widened reserver
+// contract: every scratch validation carries the active comparison's
+// top-level operands, so a caller can charge the unrooted temporary graphs
+// that coexist with the scratch — omitting them let operands that
+// individually fit the quota combine with the scratch to exceed it.
+func TestEqualityScratchReserverSeesOperands(t *testing.T) {
+	t.Parallel()
+
+	build := func() value.Value {
+		entries := make(map[string]value.Value, 12)
+		for i := range 12 {
+			entries[strings.Repeat("k", i+1)] = value.NewInt(int64(i))
+		}
+		return value.NewHash(entries)
+	}
+
+	var ctx value.EqualityContext
+	ctx.SetCharge(func(int) error { return nil })
+	sawOperands := 0
+	ctx.SetScratchReserver(func(bytes int, left, right value.Value) error {
+		if left.Kind() == value.KindHash && right.Kind() == value.KindHash {
+			sawOperands++
+		}
+		return nil
+	})
+	if !ctx.Equal(build(), build()) {
+		t.Fatal("hashes must compare equal")
+	}
+	if sawOperands == 0 {
+		t.Fatal("the reserver never received the compared operands")
+	}
+}
+
 // TestEqualityScratchReleasesBetweenSiblings pins the live-scratch
 // accounting: sibling maps in one walk allocate their key slices one after
 // another, and the validator must see only the slices alive at each point —
@@ -483,7 +516,7 @@ func TestEqualityScratchReleasesBetweenSiblings(t *testing.T) {
 	var ctx value.EqualityContext
 	ctx.SetCharge(func(int) error { return nil })
 	maxSeen := 0
-	ctx.SetScratchReserver(func(bytes int) error {
+	ctx.SetScratchReserver(func(bytes int, _, _ value.Value) error {
 		maxSeen = max(maxSeen, bytes)
 		return nil
 	})
@@ -774,7 +807,7 @@ func TestEqualityReservesRealizedDisplayKeyCapacity(t *testing.T) {
 		var ctx value.EqualityContext
 		ctx.SetCharge(func(int) error { return nil })
 		maxSeen := new(int)
-		ctx.SetScratchReserver(func(bytes int) error {
+		ctx.SetScratchReserver(func(bytes int, _, _ value.Value) error {
 			*maxSeen = max(*maxSeen, bytes)
 			return nil
 		})
@@ -845,7 +878,7 @@ func TestEqualityReservesRealizedDisplayKeyCapacity(t *testing.T) {
 	boom := errors.New("no scratch headroom")
 	var failing value.EqualityContext
 	failing.SetCharge(func(int) error { return nil })
-	failing.SetScratchReserver(func(bytes int) error {
+	failing.SetScratchReserver(func(bytes int, _, _ value.Value) error {
 		if bytes >= realized {
 			return boom
 		}

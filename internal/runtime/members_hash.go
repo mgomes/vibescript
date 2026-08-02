@@ -726,13 +726,13 @@ func hashMemberQuery(property string) (Value, error) {
 			// The key slice is a transient the estimator never sees; reserve
 			// it for the scan's whole duration — nested equality validators
 			// include held reservations through the scalar base — and check
-			// the quota before allocating.
+			// the quota before allocating, with the builtin's call roots: a
+			// host-returned receiver or argument lives only in Go locals,
+			// invisible to the base walk, yet coexists with the slice.
 			outerDelta := exec.reserveLoopScratch(len(entries) * hashKeySortScratchEntryBytes)
 			defer exec.releaseLoopScratch(outerDelta)
-			if exec.memoryQuota > 0 {
-				if err := exec.checkMemory(); err != nil {
-					return NewNil(), err
-				}
+			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			keyBytes := 0
 			keys := make([]string, 0, len(entries))

@@ -51,18 +51,21 @@ const hashKeySortScratchEntryBytes = 24
 // a reservation only for the duration of one memory check, because the
 // walk's Go-local slices are invisible to the estimator and freed before any
 // later full walk runs — the point is rejecting an allocation that would
-// carry the transient footprint past the quota.
-func (exec *Execution) equalityScratchValidatorFunc() func(int) error {
+// carry the transient footprint past the quota. The compared operands ride
+// along as extra roots: they can be temporaries (a host capability's return,
+// a set probe's stored element) that no execution root reaches, yet both
+// graphs coexist with the scratch at its peak.
+func (exec *Execution) equalityScratchValidatorFunc() func(int, Value, Value) error {
 	if exec == nil {
 		return nil
 	}
 	if exec.equalityScratchCheck == nil {
-		exec.equalityScratchCheck = func(bytes int) error {
+		exec.equalityScratchCheck = func(bytes int, left, right Value) error {
 			if exec.memoryQuota <= 0 {
 				return nil
 			}
 			delta := exec.reserveLoopScratch(bytes)
-			err := exec.checkMemory()
+			err := exec.checkMemoryWith(left, right)
 			exec.releaseLoopScratch(delta)
 			return err
 		}

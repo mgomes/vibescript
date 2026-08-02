@@ -1404,9 +1404,16 @@ type equalityState struct {
 	// unmetered: hosts, tests, and Value.Equal keep their existing behavior.
 	charge func(bytes int) error
 	// reserveScratch validates the walk's cumulative transient scratch — the
-	// key slices deterministic traversal sorts — against the caller's memory
-	// budget before each allocation. nil means unvalidated.
-	reserveScratch func(bytes int) error
+	// key slices deterministic traversal sorts and the display renderings —
+	// against the caller's memory budget before each allocation, together
+	// with the top-level operands of the active comparison: the operands can
+	// be temporaries no other root reaches, and the scratch coexists with
+	// both compared graphs at its peak. nil means unvalidated.
+	reserveScratch func(bytes int, left, right Value) error
+	// rootLeft and rootRight are the active comparison's top-level operands,
+	// handed to reserveScratch with every validation.
+	rootLeft  Value
+	rootRight Value
 	// roundScratchAlloc maps a requested scratch allocation to the capacity
 	// the allocator actually reserves for it (size-class rounding), so a
 	// rendered display key is validated at its realized backing size. nil
@@ -1442,6 +1449,7 @@ func (c *EqualityContext) Equal(v, other Value) bool {
 	// Scratch from prior walks on a reused context is dead; the validator
 	// must see each walk's own footprint, not a scan's lifetime total.
 	c.state.scratchHeld = 0
+	c.state.rootLeft, c.state.rootRight = v, other
 	eq := valuesEqual(v, other, &c.state)
 	flushEqualityCharge(&c.state)
 	if c.state.err != nil {
@@ -1458,6 +1466,7 @@ func (c *EqualityContext) Eql(v, other Value) bool {
 		clear(c.state.seen)
 	}
 	c.state.scratchHeld = 0
+	c.state.rootLeft, c.state.rootRight = v, other
 	eq := valuesEqualWithKinds(v, other, &c.state, true)
 	flushEqualityCharge(&c.state)
 	if c.state.err != nil {
@@ -1467,11 +1476,14 @@ func (c *EqualityContext) Eql(v, other Value) bool {
 }
 
 // SetScratchReserver installs a validator for the walk's transient scratch
-// allocations (the key slices deterministic map traversal sorts): it is
-// invoked with the walk's cumulative scratch bytes before each allocation,
-// and an error aborts the comparison like a charge failure. A nil reserver
-// leaves allocations unvalidated.
-func (c *EqualityContext) SetScratchReserver(reserve func(bytes int) error) {
+// allocations (the key slices deterministic map traversal sorts and the
+// rendered display keys): it is invoked with the walk's cumulative scratch
+// bytes and the active comparison's top-level operands before each
+// allocation, and an error aborts the comparison like a charge failure. The
+// operands accompany every validation because they can be temporaries no
+// other root reaches, and the scratch coexists with both compared graphs at
+// its peak. A nil reserver leaves allocations unvalidated.
+func (c *EqualityContext) SetScratchReserver(reserve func(bytes int, left, right Value) error) {
 	c.state.reserveScratch = reserve
 }
 
@@ -1987,7 +1999,7 @@ func releaseKeySortScratch(state *equalityState, entries int) {
 func sortedMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool) {
 	if state.reserveScratch != nil {
 		state.scratchHeld += len(m) * keySortScratchEntryBytes
-		if err := state.reserveScratch(state.scratchHeld); err != nil {
+		if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
 			state.err = err
 			return nil, false
 		}
@@ -2234,7 +2246,7 @@ func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (keyed
 		}
 		state.scratchHeld += delta
 		held += delta
-		if err := state.reserveScratch(state.scratchHeld); err != nil {
+		if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
 			state.err = err
 			return false
 		}
@@ -2428,7 +2440,7 @@ func hashEntriesByDisplayKey(entries []HashEntry, state *equalityState) (byKey m
 		}
 		state.scratchHeld += delta
 		held += delta
-		if err := state.reserveScratch(state.scratchHeld); err != nil {
+		if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
 			state.err = err
 			return false
 		}
