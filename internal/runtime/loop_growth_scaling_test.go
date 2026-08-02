@@ -170,6 +170,16 @@ func TestGrowthLoopEstimateMatchesUncachedWalk(t *testing.T) {
 			arg: loopMemoArray,
 		},
 		{
+			// The second entry's value expression publishes the first
+			// entry's shared payload into a reachable root mid-literal; the
+			// retained side must stop counting it once the base does.
+			name: "literal whose entry publishes an earlier payload",
+			src: "def w()\n  \"wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww\"\nend\n\n" +
+				"def retain(a)\n  a[0] = w()\n  1\nend\n\n" +
+				"def run(a, n)\n  h = {x: w(), y: retain(a)}\n  h.length\nend",
+			arg: loopMemoArray,
+		},
+		{
 			name: "literal inside block region",
 			src:  "def run(a, n)\n  out = a.map { |x| {id: x, name: \"x\"} }\n  out.length\nend",
 			arg:  loopMemoArray,

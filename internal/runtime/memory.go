@@ -1696,29 +1696,15 @@ func (acc *hashLiteralBuildAccumulator) addDistinctEntry(lookupKey HashLookupKey
 	}
 
 	if acc.sessions {
-		s := acc.exec.beginBaseWalk()
-		// Replay the earlier entries' identities into the journaled session
-		// seen-state, discarding their byte results, so this entry's walk
-		// deduplicates against the union the reference walk sees: the
-		// reachable base plus everything the literal already retains. A
-		// payload aliasing either side — or both at once, like a value whose
-		// parts split between a reachable binding and an earlier entry —
-		// then contributes exactly its marginal bytes. The replay is cheap:
-		// an already-seen backing short-circuits its subtree, and the
-		// journal rollback at close (or a journal overflow, which discards
-		// the memo conservatively) leaves the committed state untouched.
-		for _, prior := range acc.sessionEntries {
-			hashLiteralKeyPayload(s.est, prior.lookupKey, prior.key)
-			s.est.valuePayload(prior.value)
-		}
-		payload := saturatingAdd(hashLiteralKeyPayload(s.est, lookupKey, key), s.est.valuePayload(val))
-		entry := saturatingAdd(acc.typedEntryStructuralBytes(), payload)
-		used := saturatingAdd(saturatingAdd(s.base, acc.base), saturatingAdd(acc.retained, entry))
-		s.close()
+		entryStructural := acc.typedEntryStructuralBytes()
+		used := acc.sessionUsedBytes(func(est *memoryEstimator) int {
+			payload := saturatingAdd(hashLiteralKeyPayload(est, lookupKey, key), est.valuePayload(val))
+			return saturatingAdd(entryStructural, payload)
+		})
 		if used > acc.exec.memoryQuota {
 			return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 		}
-		acc.retained = saturatingAdd(acc.retained, entry)
+		acc.retained = saturatingAdd(acc.retained, entryStructural)
 		acc.sessionEntries = append(acc.sessionEntries, hashLiteralEntry{key: key, lookupKey: lookupKey, value: val})
 		return nil
 	}
@@ -1769,6 +1755,9 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 }
 
 func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[string]hashLiteralEntry) {
+	// Replacing mode returns to per-key retained totals; the session replay
+	// list is dropped so sessionUsedBytes measures retained arithmetic only.
+	acc.sessionEntries = nil
 	acc.retained = 0
 	acc.keyPayloads = make(map[string]int, len(current))
 	acc.valuePayloads = make(map[string]int, len(current))
@@ -1810,6 +1799,30 @@ func (acc *hashLiteralBuildAccumulator) entryPayloads(lookupKey HashLookupKey, k
 	return keyPayload, valuePayload
 }
 
+// sessionUsedBytes measures the literal's retained set against the live base
+// inside one session. The prior entries' payloads are re-measured in
+// insertion order rather than carried as a running total: each walk
+// deduplicates against the current reachable graph and the earlier entries,
+// so a payload that a later value expression published into a root — making
+// the base start counting it — stops being counted in the retained side too,
+// exactly as the reference walk's union dedup behaves. measure, when
+// non-nil, prices the candidate entry against the same union. In sessions
+// mode acc.retained holds only the arithmetic structural bytes.
+func (acc *hashLiteralBuildAccumulator) sessionUsedBytes(measure func(est *memoryEstimator) int) int {
+	s := acc.exec.beginBaseWalk()
+	defer s.close()
+	retained := 0
+	for _, prior := range acc.sessionEntries {
+		retained = saturatingAdd(retained, hashLiteralKeyPayload(s.est, prior.lookupKey, prior.key))
+		retained = saturatingAdd(retained, s.est.valuePayload(prior.value))
+	}
+	extra := 0
+	if measure != nil {
+		extra = measure(s.est)
+	}
+	return saturatingAdd(saturatingAdd(s.base, acc.base), saturatingAdd(acc.retained, saturatingAdd(retained, extra)))
+}
+
 // liveBase returns the reachable-graph base the next quota comparison should
 // use: the memoized base in sessions mode (the construction snapshot in base
 // already covers it otherwise), so checks track the graph as it actually is
@@ -1832,6 +1845,9 @@ func hashLiteralKeyPayload(est *memoryEstimator, lookupKey HashLookupKey, key Va
 
 func (acc *hashLiteralBuildAccumulator) checkQuota() error {
 	used := saturatingAdd(acc.liveBase(), acc.retained)
+	if acc.sessions {
+		used = acc.sessionUsedBytes(nil)
+	}
 	if used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
