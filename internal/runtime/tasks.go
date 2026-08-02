@@ -27,9 +27,21 @@ func registerTaskBuiltins(engine *Engine) {
 // transfer, an adapter that discarded the task error (cap.swallow {
 // Tasks.map(...) }) let the call succeed past a genuine kill; with firstErr
 // alone, an ordinary failure arriving first shadowed a concurrent kill.
+//
+// An observed exhaustion also becomes the returned error when err is nil.
+// A worker publishes its exhaustion and its group error under separate lock
+// windows, so a concurrent spawn can read a nil group error while the
+// exhaustion is already visible; returning nil there would let the spawn
+// keep cloning and enqueuing jobs — each with a fresh worker budget — after
+// the quota kill. The same rule makes a group whose only failure was
+// swallowed inside the worker (leaving firstErr nil) still surface the
+// termination instead of completing normally against a latched parent.
 func (exec *Execution) latchGroupTaskExhaustion(group *taskGroup, err error) error {
 	if ex := group.exhaustion(); ex != nil {
 		_ = exec.latchExhaustion(ex)
+		if err == nil {
+			err = ex
+		}
 	}
 	return err
 }

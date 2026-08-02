@@ -650,6 +650,34 @@ func TestGroupRetainsExhaustionBehindFirstError(t *testing.T) {
 	}
 }
 
+// TestObservedExhaustionStopsSpawnsBeforeGroupError pins the publish window a
+// worker leaves between recordExhaustion and recordErr: a spawn that reads a
+// nil group error while the exhaustion is already visible must be refused,
+// not allowed to keep cloning and enqueuing jobs — each with a fresh worker
+// budget — after the quota kill.
+func TestObservedExhaustionStopsSpawnsBeforeGroupError(t *testing.T) {
+	t.Parallel()
+
+	group := &taskGroup{cancel: func() {}}
+	worker := &Execution{ctx: context.Background(), quota: 1}
+	worker.steps = 1
+	quotaErr := worker.step()
+	requireErrorIs(t, quotaErr, errStepQuotaExceeded)
+	// The worker has published its exhaustion but not yet its group error —
+	// the window between runJob's two lock acquisitions.
+	group.recordExhaustion(fmt.Errorf("task work failed: %w", worker.exhausted))
+
+	parent := &Execution{ctx: context.Background()}
+	err := parent.latchGroupTaskExhaustion(group, group.err())
+	if err == nil {
+		t.Fatal("a spawn observing the exhaustion behind a nil group error must be refused")
+	}
+	requireErrorContains(t, err, "task work failed")
+	if parent.exhausted == nil {
+		t.Fatal("the parent latch was not set from the observed exhaustion")
+	}
+}
+
 // replayingCapability saves whatever error its block produces on the first
 // call and returns the saved error on the second — the stale-credential
 // replay a stateful adapter could attempt across Script.Calls.
