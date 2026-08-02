@@ -287,7 +287,9 @@ if err != nil {
 
 Branch on `rtErr.Type` for stable programmatic handling. `LimitError`
 identifies step quota, memory quota, and recursion-limit terminations without
-scraping message text.
+scraping message text. Step- and memory-quota exhaustion cannot be rescued by
+script code, so a quota-killed script is guaranteed to surface here rather
+than looping inside a `rescue`.
 
 Example error output:
 
