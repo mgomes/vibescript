@@ -851,11 +851,12 @@ func intersectValues(exec *Execution, left, right Value) (Value, error) {
 	// The scalar element precharge lives here rather than at the operator
 	// site so reduce(:&) and symbol-proc forwarding pay it too. An empty
 	// side means no element is ever canonicalized or probed — the result is
-	// empty without building a set — so nothing is billed.
+	// empty without building a set — so nothing is billed, and a lookup side
+	// without scalar keys never hashes the other side's scalars either.
 	if len(left.Array()) == 0 || len(right.Array()) == 0 {
 		return NewArray(nil), nil
 	}
-	if exec != nil {
+	if exec != nil && anyScalarSetKey(right.Array()) {
 		if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
 			return NewNil(), err
 		}
@@ -918,13 +919,14 @@ func subtractValues(exec *Execution, left, right Value) (Value, error) {
 		// The scalar element precharge lives here rather than at the operator
 		// site so reduce(:-) and symbol-proc forwarding pay it too. An empty
 		// removal side only shallow-copies the receiver: no element is
-		// canonicalized or probed, so nothing is billed.
+		// canonicalized or probed, so nothing is billed, and a removal side
+		// without scalar keys never hashes the receiver's scalars either.
 		if len(right.Array()) == 0 {
 			out := make([]Value, len(left.Array()))
 			copy(out, left.Array())
 			return NewArray(out), nil
 		}
-		if exec != nil {
+		if exec != nil && anyScalarSetKey(right.Array()) {
 			if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
 				return NewNil(), err
 			}

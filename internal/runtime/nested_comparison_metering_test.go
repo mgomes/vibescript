@@ -137,6 +137,9 @@ func TestKeyChargeStopsWhereCanonicalizationStops(t *testing.T) {
 		"[s].difference([]).length",
 		"([s] & []).length",
 		"([s] - []).length",
+		"([s] & [[0]]).length",
+		"([s] - [[0]]).length",
+		"[s].difference([[0]]).length",
 	}
 	for _, expr := range exprs {
 		t.Run(expr, func(t *testing.T) {

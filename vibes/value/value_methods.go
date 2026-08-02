@@ -1421,6 +1421,9 @@ func (c *EqualityContext) Equal(v, other Value) bool {
 	if c.state.seen != nil {
 		clear(c.state.seen)
 	}
+	// Scratch from prior walks on a reused context is dead; the validator
+	// must see each walk's own footprint, not a scan's lifetime total.
+	c.state.scratchHeld = 0
 	return valuesEqual(v, other, &c.state)
 }
 
@@ -1431,6 +1434,7 @@ func (c *EqualityContext) Eql(v, other Value) bool {
 	if c.state.seen != nil {
 		clear(c.state.seen)
 	}
+	c.state.scratchHeld = 0
 	return valuesEqualWithKinds(v, other, &c.state, true)
 }
 
@@ -1835,7 +1839,40 @@ func sortedMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool)
 	for key := range m {
 		keys = append(keys, key)
 	}
-	slices.Sort(keys)
+	if state.charge == nil {
+		slices.Sort(keys)
+		return keys, true
+	}
+	// The sort rereads common prefixes Θ(log n) times per key, past what the
+	// single linear key charge covers; measure the exact bytes each
+	// comparison reads and bill them after the sort — the charge follows the
+	// work by at most one sort, the same convention the set probes use.
+	sortRead := 0
+	slices.SortFunc(keys, func(a, b string) int {
+		n := min(len(a), len(b))
+		i := 0
+		for i < n && a[i] == b[i] {
+			i++
+		}
+		read := i + 1
+		if read > n {
+			read = n
+		}
+		if sortRead += read; sortRead < 0 {
+			sortRead = math.MaxInt / 2
+		}
+		if i < n {
+			if a[i] < b[i] {
+				return -1
+			}
+			return 1
+		}
+		return len(a) - len(b)
+	})
+	if err := state.charge(sortRead); err != nil {
+		state.err = err
+		return nil, false
+	}
 	return keys, true
 }
 

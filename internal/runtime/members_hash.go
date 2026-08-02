@@ -723,6 +723,12 @@ func hashMemberQuery(property string) (Value, error) {
 			// between a result and an error on identical inputs. Sorting
 			// reads the keys, so their bytes are billed first.
 			entries := receiver.Hash()
+			// The key slice is a transient the estimator never sees;
+			// validate it against the memory quota before allocating, like
+			// the equality sort helper does.
+			if err := exec.equalityScratchValidatorFunc()(len(entries) * hashKeySortScratchEntryBytes); err != nil {
+				return NewNil(), err
+			}
 			keyBytes := 0
 			keys := make([]string, 0, len(entries))
 			for k := range entries {

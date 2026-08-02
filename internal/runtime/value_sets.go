@@ -144,6 +144,21 @@ func (s *valueSet) addCounted(v Value, hint int) (bool, int) {
 	return true, probes
 }
 
+// anyScalarSetKey reports whether values holds at least one element the
+// scalar set indexes (see scalarValueKey), using kind tests only — probing
+// with scalarValueKey itself would perform the big-integer conversion the
+// callers charge for. With no scalar on the lookup side, the other side's
+// scalars are never hashed: the nil scalar map rejects before hashing.
+func anyScalarSetKey(values []Value) bool {
+	for _, v := range values {
+		switch v.Kind() {
+		case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindRange:
+			return true
+		}
+	}
+	return false
+}
+
 // chargeScanSteps charges the step quota for n units of scanning work: the
 // elements a pass will visit, or the equality probes a valueSet operation
 // performed. Scanning nothing must cost nothing, and stepN charges one step

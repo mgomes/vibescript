@@ -3809,14 +3809,18 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			// With no removal elements the helper shallow-copies the
-			// receiver and never hashes or compares an element, so there is
-			// nothing to precharge.
-			removalElems := 0
+			// With no scalar removal keys the receiver's scalars are never
+			// hashed — an empty removal side only shallow-copies, and an
+			// all-composite one probes through metered equality instead —
+			// so there is nothing to precharge.
+			removalHasScalars := false
 			for _, other := range others {
-				removalElems += len(other)
+				if anyScalarSetKey(other) {
+					removalHasScalars = true
+					break
+				}
 			}
-			if removalElems > 0 {
+			if removalHasScalars {
 				if err := exec.chargeValueElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
 					return NewNil(), err
 				}

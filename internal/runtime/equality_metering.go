@@ -31,6 +31,10 @@ func (exec *Execution) meteredEquality() EqualityContext {
 	return ctx
 }
 
+// hashKeySortScratchEntryBytes approximates one entry of a key-sorting
+// scratch slice: a string header plus slice-slot overhead.
+const hashKeySortScratchEntryBytes = 24
+
 // equalityScratchValidatorFunc returns the cached scratch validator: it holds
 // a reservation only for the duration of one memory check, because the
 // walk's Go-local slices are invisible to the estimator and freed before any
