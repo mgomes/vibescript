@@ -52,6 +52,17 @@ func (exec *Execution) appendArrayCharged(left, right Value) (handled bool, err 
 		// commits nothing into the seen-state.
 		return false, nil
 	}
+	// An in-capacity append writes the backing's spare slot, which a longer
+	// host-held view over the same backing can expose as a live element
+	// (backing[:3:4] beside backing[:4:4]): overwriting a counted payload
+	// would leave the memo carrying bytes the graph no longer holds. A spare
+	// slot holding nil carries no payload — an interpreter-grown backing's
+	// spare slots are always zeroed — so the marginal model stays exact;
+	// anything else declines to the epoch-bumping path, whose re-walk prices
+	// the overwrite.
+	if spare := elems[:len(elems)+1]; !spare[len(elems)].IsNil() {
+		return false, nil
+	}
 	id := sliceBackingIdentity(elems)
 	if id == 0 {
 		return false, nil
