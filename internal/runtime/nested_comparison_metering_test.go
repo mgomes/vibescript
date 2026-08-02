@@ -141,6 +141,34 @@ func TestTypedReceiverCopiesChargeKeyPayloads(t *testing.T) {
 	}
 }
 
+// A key that fails canonicalization partway — a long string followed by an
+// unsupported element — stops HashKey at the failure, so no ancestor copies
+// the partial child encoding. The charge for the completed prefix must not
+// grow with nesting depth, or a quota sized for the actual work would
+// replace the expected miss with a quota error. slice treats the failing
+// candidate as a miss, so the probe completes and isolates the charge: the
+// fixed-depth ratio pins that the prefix is charged at all, and the depth
+// ratio pins that the failed encoding never reaches an ancestor.
+func TestFailedKeyCanonicalizationChargesOnlyThePrefix(t *testing.T) {
+	t.Parallel()
+
+	keyAtDepth := func(depth int) string {
+		return "k = [s, {}]\n  j = 0\n  while j < " + fmt.Sprint(depth) + "\n    k = [k]\n    j = j + 1\n  end\n  h = {a: 1}\n  h.slice(k).length"
+	}
+	atSmall := minStepsForKeyOp(t, keyAtDepth(6), 8<<10)
+	atLarge := minStepsForKeyOp(t, keyAtDepth(6), 64<<10)
+	if atLarge < atSmall*4 {
+		t.Errorf("failing candidate cost %d steps over 8 KiB and %d over 64 KiB; the "+
+			"prefix HashKey reads must be charged", atSmall, atLarge)
+	}
+	atDeep := minStepsForKeyOp(t, keyAtDepth(18), 64<<10)
+	if atDeep >= atLarge*2 {
+		t.Errorf("failing candidate cost %d steps at depth 6 and %d at depth 18; "+
+			"ancestors never copy a failed child encoding, so the charge must not "+
+			"scale with depth", atLarge, atDeep)
+	}
+}
+
 // HashKey copies the complete child encoding into every ancestor's canonical
 // string, so a depth-d single-child chain around one string costs Θ(d·len);
 // a leaf-only charge let deep linear keys do unbounded copying under a flat

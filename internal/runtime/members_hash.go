@@ -2392,6 +2392,11 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
+				// The candidate probe canonicalizes the argument even when it
+				// can never match; bill its payload like the typed path does.
+				if err := exec.chargeValueKeySteps(arg); err != nil {
+					return NewNil(), err
+				}
 				// Vibescript hash keys are only symbols or strings, so an
 				// unsupported argument can never match an entry. Ruby's
 				// Hash#slice omits candidate keys that are absent, so we
@@ -2506,6 +2511,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			var excluded map[string]struct{}
 			for _, arg := range args {
 				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				// The candidate probe canonicalizes the argument even when it
+				// can never match; bill its payload like the typed path does.
+				if err := exec.chargeValueKeySteps(arg); err != nil {
 					return NewNil(), err
 				}
 				// Vibescript hash keys are only symbols or strings, so an

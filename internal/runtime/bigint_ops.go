@@ -443,6 +443,15 @@ func valueKeyCanonicalizationCost(key Value, onPath map[value.SliceIdentity]stru
 	if id.Ptr != 0 {
 		delete(onPath, id)
 	}
+	if !walkable {
+		// HashKey stops at the failing element, so this level's canonical
+		// string is never built: the prefix work already charged stands, but
+		// no copy happens here and no encoding reaches an ancestor. Billing
+		// the partial encoding up the chain would grow the charge with
+		// nesting depth for work never performed, letting a quota sized for
+		// the real cost replace the expected unsupported-key error.
+		return words, charge, 0, false
+	}
 	// This level's canonical string copies every child encoding once more.
 	charge = saturatingAdd(charge, childEnc)
 	return words, charge, saturatingAdd(childEnc, 16), walkable
