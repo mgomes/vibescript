@@ -1410,6 +1410,39 @@ func (acc *arrayBuildAccumulator) checkRetainedPayloadBytes(slotCount, payloadBy
 
 // reserveSlotArrays rejects a build when several result arrays will be live
 // together, such as Array#pop returning both the remaining and removed arrays.
+// checkSlotReservationWithCallRoots rejects a slot-array reservation whose
+// backing, on top of the reachable base and the caller's Go-frame roots, would
+// overflow the quota. It prices exactly what a fresh build accumulator's
+// reserveSlotArrays prices — base + call roots + slot backing — but resumes
+// the memoized base walk when one is available instead of snapshotting a
+// reference walk, so an amortized growth check inside a loop does not re-walk
+// the whole graph at every capacity doubling (#1129).
+func (exec *Execution) checkSlotReservationWithCallRoots(slotCount int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	s := exec.beginBaseWalk()
+	used := s.base
+	if receiver.Kind() != KindNil {
+		used = saturatingAdd(used, s.est.value(receiver))
+	}
+	for _, arg := range args {
+		used = saturatingAdd(used, s.est.value(arg))
+	}
+	for _, kwarg := range kwargs {
+		used = saturatingAdd(used, s.est.value(kwarg))
+	}
+	if !block.IsNil() {
+		used = saturatingAdd(used, s.est.value(block))
+	}
+	s.close()
+	used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 func (acc *arrayBuildAccumulator) reserveSlotArrays(slotCounts ...int) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil

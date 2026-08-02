@@ -926,10 +926,7 @@ func (exec *Execution) indexArray(e *IndexExpr, receiver Value, indices []Value)
 }
 
 func (exec *Execution) reserveArraySliceSlots(receiver Value, indices []Value, slotCount int) error {
-	if exec.memoryQuota <= 0 {
-		return nil
-	}
-	return newArrayBuildAccumulator(exec, receiver, indices, nil, NewNil()).reserveSlots(slotCount)
+	return exec.checkSlotReservationWithCallRoots(slotCount, receiver, indices, nil, NewNil())
 }
 
 // indexString implements str[...] reads as rune (character) operations. The
