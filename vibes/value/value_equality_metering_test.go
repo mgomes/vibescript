@@ -435,6 +435,27 @@ func TestEqualityScratchReserverValidatesSortAllocations(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeBillsRegexSources pins the regex leaf: comparing two
+// independently backed equal-length pattern sources reads them in full, so
+// the bytes must be billed like a string leaf's, with the same length
+// screen.
+func TestEqualityChargeBillsRegexSources(t *testing.T) {
+	t.Parallel()
+
+	source := strings.Repeat("a", 4096)
+	build := func() value.Value {
+		return value.NewRegex(value.Regex{Source: strings.Clone(source)})
+	}
+
+	ctx, total := meteredContext()
+	if !ctx.Equal(value.NewArray([]value.Value{build()}), value.NewArray([]value.Value{build()})) {
+		t.Fatal("equal regexes must compare equal")
+	}
+	if *total < 4096 {
+		t.Fatalf("charged %d bytes, want at least the source's %d", *total, 4096)
+	}
+}
+
 // TestEqualityNilHookUnchanged pins that the zero context and the plain
 // Value.Equal / Value.Eql entry points stay byte-identical in behavior with
 // no hook installed.

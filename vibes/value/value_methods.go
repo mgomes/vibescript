@@ -1672,8 +1672,16 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 		// Two regex values are equal when they were written the same way:
 		// same pattern source and same flags, mirroring Ruby's Regexp#==.
 		// The compiled program is derived from those and does not participate.
+		// The source comparison reads its bytes like a string leaf, with the
+		// same length screen.
 		left := v.data.(Regex)
 		right := other.data.(Regex)
+		if len(left.Source) == len(right.Source) && state.charge != nil {
+			if err := state.charge(len(left.Source)); err != nil {
+				state.err = err
+				return false
+			}
+		}
 		return left.Source == right.Source && left.Flags == right.Flags
 	case KindArray:
 		left := v.Array()

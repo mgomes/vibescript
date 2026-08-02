@@ -393,10 +393,20 @@ func meteredEqlCompare(exec *Execution, left, right Value) (bool, error) {
 // answers from a length mismatch without reading either payload, so only
 // operands of the same kind and the same length are charged.
 func identicalCompare(exec *Execution, left, right Value) (bool, error) {
-	if exec != nil && left.Kind() == right.Kind() && stringLikeOperand(left) &&
-		len(left.String()) == len(right.String()) {
-		if err := exec.chargeStringScan(len(left.String())); err != nil {
-			return false, err
+	if exec != nil && left.Kind() == right.Kind() {
+		switch {
+		case stringLikeOperand(left) && len(left.String()) == len(right.String()):
+			if err := exec.chargeStringScan(len(left.String())); err != nil {
+				return false, err
+			}
+		case left.Kind() == KindRegex:
+			// Regex identity falls back to source equality, which reads the
+			// pattern bytes under the same length screen.
+			if lr, rr := left.Regex(), right.Regex(); len(lr.Source) == len(rr.Source) {
+				if err := exec.chargeStringScan(len(lr.Source)); err != nil {
+					return false, err
+				}
+			}
 		}
 	}
 	return left.Identical(right), nil
