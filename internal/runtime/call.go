@@ -313,12 +313,21 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 					Frames:    slices.Clone(snapshot.Frames),
 				}
 			} else {
-				// Nothing has passed through wrapError yet — the adapter
-				// exhausted through the exported Step surface — so build the
-				// error at the capability call site, exactly as wrapError
-				// would have; a later wrap refuses to touch an existing
-				// RuntimeError, and a frameless one helped nobody.
-				err = exec.newRuntimeErrorWithType(classifyRuntimeErrorType(exec.exhausted), canonicalExhaustionMessage(exec.exhausted), pos)
+				// Nothing has passed through wrapError yet — the exhaustion
+				// originated inside this builtin or through the exported
+				// Step surface — so build the error at this call site,
+				// exactly as wrapError would have; a later wrap refuses to
+				// touch an existing RuntimeError, and a frameless one helped
+				// nobody. The construction is also snapshotted: if an outer
+				// adapter swallows this error, the outer dispatch's rebuild
+				// must report this innermost site, not its own.
+				built := exec.newRuntimeErrorWithType(classifyRuntimeErrorType(exec.exhausted), canonicalExhaustionMessage(exec.exhausted), pos)
+				if re, ok := errors.AsType[*RuntimeError](built); ok {
+					snapshot := *re
+					snapshot.Frames = slices.Clone(re.Frames)
+					exec.exhaustedWrapped = &snapshot
+				}
+				err = built
 			}
 		}
 		returnProof := exec.capabilityReturnProof

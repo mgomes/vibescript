@@ -840,6 +840,30 @@ func TestStepExhaustionKeepsCallSiteFrames(t *testing.T) {
 	}
 }
 
+// TestSwallowedBuiltinExhaustionKeepsItsSite pins the nested-dispatch case:
+// exhaustion originating inside a builtin the adapter's block invoked must
+// keep pointing at that builtin's call site even when the adapter swallows
+// the error and the outer dispatch rebuilds — the innermost fallback's
+// constructed diagnostics are snapshotted for it.
+func TestSwallowedBuiltinExhaustionKeepsItsSite(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: Unlimited}, `
+    def run(s)
+      cap.swallow() { s.scan("a") }
+    end
+    `)
+
+	payload := NewString(strings.Repeat("ab", 1<<12))
+	_, err := script.Call(context.Background(), "run", []Value{payload}, CallOptions{
+		Capabilities: []CapabilityAdapter{swallowingBlockCapability{}},
+	})
+	if err == nil {
+		t.Fatal("a swallowed builtin exhaustion returned success")
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+	requireErrorContains(t, err, "s.scan")
+}
+
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —
 // here the comparison memo reservation, which falls back to memo-less
 // comparison when the memo does not fit — never latch the execution: the
