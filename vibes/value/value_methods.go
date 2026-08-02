@@ -1266,10 +1266,7 @@ func (v Value) Eql(other Value) bool {
 		return false
 	}
 	var ctx EqualityContext
-	if ctx.seen != nil {
-		clear(ctx.seen)
-	}
-	return valuesEqualWithKinds(v, other, &ctx.seen, true)
+	return ctx.Eql(v, other)
 }
 
 // Identical reports whether v and other refer to the same object, backing the
@@ -1378,13 +1375,31 @@ func (v Value) Identical(other Value) bool {
 	}
 }
 
-// EqualityContext reuses the cycle-detection scratch used by Value equality.
-// The zero value is ready to use. It is not safe for concurrent use.
-// It is intended for the interpreter's internal use; hosts should not rely
-// on it, and it carries no compatibility promise (see
-// docs/embedding-api-stability.md).
+// EqualityContext reuses the cycle-detection scratch used by Value equality
+// and optionally carries a byte charge for the string payloads a comparison
+// reads (see SetCharge). The zero value is ready to use and compares
+// unmetered. It is not safe for concurrent use. It is intended for the
+// interpreter's internal use; hosts should not rely on it, and it carries no
+// compatibility promise (see docs/embedding-api-stability.md).
 type EqualityContext struct {
+	state equalityState
+}
+
+// equalityState threads the cycle-detection scratch, the optional byte
+// charge, and the first charge failure through a recursive equality walk.
+// The seen set inserts and never deletes within one comparison, so each
+// distinct composite pair is walked — and its scalar payloads charged — once,
+// which keeps shared DAGs linear with or without metering.
+type equalityState struct {
 	seen map[valueEqualityPair]struct{}
+	// charge bills the bytes a scalar comparison is about to read. nil means
+	// unmetered: hosts, tests, and Value.Equal keep their existing behavior.
+	charge func(bytes int) error
+	// err records the first charge failure. It is sticky: every comparison
+	// after it returns false immediately, so a caller looping over many Equal
+	// calls does O(1) work per call once the quota is gone and surfaces the
+	// error via Err.
+	err error
 }
 
 // Equal reports whether v and other hold the same kind and value.
@@ -1395,10 +1410,37 @@ func (v Value) Equal(other Value) bool {
 
 // Equal reports whether v and other hold the same kind and value.
 func (c *EqualityContext) Equal(v, other Value) bool {
-	if c.seen != nil {
-		clear(c.seen)
+	if c.state.seen != nil {
+		clear(c.state.seen)
 	}
-	return valuesEqual(v, other, &c.seen)
+	return valuesEqual(v, other, &c.state)
+}
+
+// Eql reports whether v and other are equal under hash-key semantics: kinds
+// must match at every level (see Value.Eql). It shares the context's scratch,
+// charge hook, and sticky error with Equal.
+func (c *EqualityContext) Eql(v, other Value) bool {
+	if c.state.seen != nil {
+		clear(c.state.seen)
+	}
+	return valuesEqualWithKinds(v, other, &c.state, true)
+}
+
+// SetCharge installs a byte charge invoked for the string and symbol payloads
+// a comparison reads: scalar leaves that pass the length screen, and
+// string-like hash keys whose text is hashed or compared. A charge failure
+// makes the current and every subsequent comparison on this context answer
+// false; callers observe the failure through Err. A nil charge restores
+// unmetered comparison.
+func (c *EqualityContext) SetCharge(charge func(bytes int) error) {
+	c.state.charge = charge
+}
+
+// Err returns the first charge failure recorded on this context, or nil. Once
+// non-nil, comparison answers from this context are meaningless and the
+// caller must surface the error instead.
+func (c *EqualityContext) Err() error {
+	return c.state.err
 }
 
 type valueEqualityPair struct {
@@ -1442,8 +1484,22 @@ func numericCrossKindEqual(v, other Value) bool {
 	return new(big.Float).SetInt64(intVal.Int()).Cmp(exactFloat) == 0
 }
 
-func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
-	return valuesEqualWithKinds(v, other, seen, false)
+func valuesEqual(v, other Value, state *equalityState) bool {
+	return valuesEqualWithKinds(v, other, state, false)
+}
+
+// chargeEqualityKeyText bills the text of a string-like hash key that an
+// equality walk is about to hash or compare, reporting whether the walk may
+// continue. Non-string keys and unmetered walks are free.
+func chargeEqualityKeyText(state *equalityState, key Value) bool {
+	if state.charge == nil || (key.kind != KindString && key.kind != KindSymbol) {
+		return true
+	}
+	if err := state.charge(len(key.data.(string))); err != nil {
+		state.err = err
+		return false
+	}
+	return true
 }
 
 // valuesEqualWithKinds compares two values, optionally requiring their kinds
@@ -1455,7 +1511,10 @@ func valuesEqual(v, other Value, seen *map[valueEqualityPair]struct{}) bool {
 // strictness has to hold just as recursively: checking only the outermost
 // kind made [1].eql?([1.0]) true, because the elements went through the
 // widened comparison.
-func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
+func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool) bool {
+	if state.err != nil {
+		return false
+	}
 	if v.kind != other.kind {
 		// eql? is kind-strict at every level, not only at the outermost one:
 		// checking the kinds once and then delegating here made
@@ -1489,7 +1548,21 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 	case KindFloat:
 		return v.Float() == other.Float()
 	case KindString, KindSymbol:
-		return v.data.(string) == other.data.(string)
+		left := v.data.(string)
+		right := other.data.(string)
+		// A length mismatch answers without reading either payload, so only
+		// equal-length pairs are charged — the same rule the operator-level
+		// charge applies, and the same work Go's == performs.
+		if len(left) != len(right) {
+			return false
+		}
+		if state.charge != nil {
+			if err := state.charge(len(left)); err != nil {
+				state.err = err
+				return false
+			}
+		}
+		return left == right
 	case KindMoney:
 		return v.data.(Money) == other.data.(Money)
 	case KindDuration:
@@ -1532,12 +1605,12 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 			rightLen: len(right),
 		}
 		if pair.leftPtr != 0 || pair.rightPtr != 0 {
-			if equalityPairSeen(seen, pair) {
+			if equalityPairSeen(state, pair) {
 				return true
 			}
 		}
 		for i := range left {
-			if !valuesEqualWithKinds(left[i], right[i], seen, strictKinds) {
+			if !valuesEqualWithKinds(left[i], right[i], state, strictKinds) {
 				return false
 			}
 		}
@@ -1561,28 +1634,31 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 			rightLen: rightLen,
 		}
 		if pair.leftPtr != 0 || pair.rightPtr != 0 {
-			if equalityPairSeen(seen, pair) {
+			if equalityPairSeen(state, pair) {
 				return true
 			}
 		}
 		leftTyped := v.HashHasTypedEntries()
 		rightTyped := other.HashHasTypedEntries()
 		if !leftTyped && !rightTyped {
-			return hashMapsEqual(v.Hash(), other.Hash(), seen, strictKinds)
+			return hashMapsEqual(v.Hash(), other.Hash(), state, strictKinds)
 		}
 		left := v.HashEntries()
 		right := other.HashEntries()
 		if !leftTyped || !rightTyped {
-			return hashEntriesEqualByDisplayKey(left, right, seen, strictKinds)
+			return hashEntriesEqualByDisplayKey(left, right, state, strictKinds)
 		}
 		if len(right) <= smallHashEqualityEntryLimit {
-			return hashEntriesEqualByLookupKeyLinear(left, right, seen, strictKinds)
+			return hashEntriesEqualByLookupKeyLinear(left, right, state, strictKinds)
 		}
-		rightByKey, ok := hashEntriesByLookupKey(right)
+		rightByKey, ok := hashEntriesByLookupKey(right, state)
 		if !ok {
 			return false
 		}
 		for _, leftEntry := range left {
+			if !chargeEqualityKeyText(state, leftEntry.Key) {
+				return false
+			}
 			key, err := NewHashLookupKey(leftEntry.Key)
 			if err != nil {
 				return false
@@ -1591,7 +1667,7 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 			if !ok {
 				return false
 			}
-			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
 				return false
 			}
 		}
@@ -1615,7 +1691,7 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 			rightLen: len(right),
 		}
 		if pair.leftPtr != 0 || pair.rightPtr != 0 {
-			if equalityPairSeen(seen, pair) {
+			if equalityPairSeen(state, pair) {
 				return true
 			}
 		}
@@ -1624,7 +1700,7 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 			if !ok {
 				return false
 			}
-			if !valuesEqualWithKinds(leftValue, rightValue, seen, strictKinds) {
+			if !valuesEqualWithKinds(leftValue, rightValue, state, strictKinds) {
 				return false
 			}
 		}
@@ -1639,16 +1715,22 @@ func valuesEqualWithKinds(v, other Value, seen *map[valueEqualityPair]struct{}, 
 	}
 }
 
-func hashMapsEqual(left, right map[string]Value, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
+func hashMapsEqual(left, right map[string]Value, state *equalityState, strictKinds bool) bool {
 	if len(left) != len(right) {
 		return false
 	}
 	for key, leftValue := range left {
+		if state.charge != nil {
+			if err := state.charge(len(key)); err != nil {
+				state.err = err
+				return false
+			}
+		}
 		rightValue, ok := right[key]
 		if !ok {
 			return false
 		}
-		if !valuesEqualWithKinds(leftValue, rightValue, seen, strictKinds) {
+		if !valuesEqualWithKinds(leftValue, rightValue, state, strictKinds) {
 			return false
 		}
 	}
@@ -1657,26 +1739,26 @@ func hashMapsEqual(left, right map[string]Value, seen *map[valueEqualityPair]str
 
 const smallHashEqualityEntryLimit = 8
 
-func equalityPairSeen(seen *map[valueEqualityPair]struct{}, pair valueEqualityPair) bool {
-	if *seen == nil {
-		*seen = make(map[valueEqualityPair]struct{})
+func equalityPairSeen(state *equalityState, pair valueEqualityPair) bool {
+	if state.seen == nil {
+		state.seen = make(map[valueEqualityPair]struct{})
 	}
-	if _, ok := (*seen)[pair]; ok {
+	if _, ok := state.seen[pair]; ok {
 		return true
 	}
-	(*seen)[pair] = struct{}{}
+	state.seen[pair] = struct{}{}
 	return false
 }
 
-func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
+func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
 	if len(right) <= smallHashEqualityEntryLimit {
-		return hashEntriesEqualByDisplayKeyLinear(left, right, seen, strictKinds)
+		return hashEntriesEqualByDisplayKeyLinear(left, right, state, strictKinds)
 	}
-	leftByKey, ok := hashEntriesByDisplayKey(left)
+	leftByKey, ok := hashEntriesByDisplayKey(left, state)
 	if !ok {
 		return false
 	}
-	rightByKey, ok := hashEntriesByDisplayKey(right)
+	rightByKey, ok := hashEntriesByDisplayKey(right, state)
 	if !ok {
 		return false
 	}
@@ -1688,25 +1770,31 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen *map[valueEquali
 		if !ok {
 			return false
 		}
-		if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
+		if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
 			return false
 		}
 	}
 	return true
 }
 
-func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
-	if hashEntriesHaveDuplicateDisplayKey(left) || hashEntriesHaveDuplicateDisplayKey(right) {
+func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
+	if hashEntriesHaveDuplicateDisplayKey(left, state) || hashEntriesHaveDuplicateDisplayKey(right, state) {
 		return false
 	}
 	for _, leftEntry := range left {
+		if !chargeEqualityKeyText(state, leftEntry.Key) {
+			return false
+		}
 		key := HashDisplayKey(leftEntry.Key)
 		found := false
 		for _, rightEntry := range right {
+			if !chargeEqualityKeyText(state, rightEntry.Key) {
+				return false
+			}
 			if HashDisplayKey(rightEntry.Key) != key {
 				continue
 			}
-			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
 				return false
 			}
 			found = true
@@ -1719,8 +1807,11 @@ func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, seen *map[value
 	return true
 }
 
-func hashEntriesHaveDuplicateDisplayKey(entries []HashEntry) bool {
+func hashEntriesHaveDuplicateDisplayKey(entries []HashEntry, state *equalityState) bool {
 	for i, entry := range entries {
+		if !chargeEqualityKeyText(state, entry.Key) {
+			return false
+		}
 		key := HashDisplayKey(entry.Key)
 		for _, other := range entries[i+1:] {
 			if HashDisplayKey(other.Key) == key {
@@ -1731,14 +1822,20 @@ func hashEntriesHaveDuplicateDisplayKey(entries []HashEntry) bool {
 	return false
 }
 
-func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueEqualityPair]struct{}, strictKinds bool) bool {
+func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
 	for _, leftEntry := range left {
+		if !chargeEqualityKeyText(state, leftEntry.Key) {
+			return false
+		}
 		leftKey, err := NewHashLookupKey(leftEntry.Key)
 		if err != nil {
 			return false
 		}
 		found := false
 		for _, rightEntry := range right {
+			if !chargeEqualityKeyText(state, rightEntry.Key) {
+				return false
+			}
 			rightKey, err := NewHashLookupKey(rightEntry.Key)
 			if err != nil {
 				return false
@@ -1746,7 +1843,7 @@ func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueE
 			if rightKey != leftKey {
 				continue
 			}
-			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, seen, strictKinds) {
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
 				return false
 			}
 			found = true
@@ -1759,9 +1856,12 @@ func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, seen *map[valueE
 	return true
 }
 
-func hashEntriesByDisplayKey(entries []HashEntry) (map[string]HashEntry, bool) {
+func hashEntriesByDisplayKey(entries []HashEntry, state *equalityState) (map[string]HashEntry, bool) {
 	byKey := make(map[string]HashEntry, len(entries))
 	for _, entry := range entries {
+		if !chargeEqualityKeyText(state, entry.Key) {
+			return nil, false
+		}
 		key := HashDisplayKey(entry.Key)
 		if _, exists := byKey[key]; exists {
 			return nil, false
@@ -1771,9 +1871,12 @@ func hashEntriesByDisplayKey(entries []HashEntry) (map[string]HashEntry, bool) {
 	return byKey, true
 }
 
-func hashEntriesByLookupKey(entries []HashEntry) (map[HashLookupKey]HashEntry, bool) {
+func hashEntriesByLookupKey(entries []HashEntry, state *equalityState) (map[HashLookupKey]HashEntry, bool) {
 	byKey := make(map[HashLookupKey]HashEntry, len(entries))
 	for _, entry := range entries {
+		if !chargeEqualityKeyText(state, entry.Key) {
+			return nil, false
+		}
 		key, err := NewHashLookupKey(entry.Key)
 		if err != nil {
 			return nil, false
