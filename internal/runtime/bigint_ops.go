@@ -364,7 +364,7 @@ func bigIntDecimalDigitsUpperBound(bi *big.Int) int {
 // are a no-op.
 func (exec *Execution) chargeValueKeySteps(key Value) error {
 	budget := valueKeyCostNodeBudget
-	words, bytes := valueKeyCanonicalizationCost(key, nil, &budget)
+	words, bytes, _ := valueKeyCanonicalizationCost(key, nil, &budget)
 	if words > 0 {
 		if err := exec.stepN(1 + words/bigIntStepWordsPerStep); err != nil {
 			return err
@@ -381,52 +381,60 @@ const valueKeyCostNodeBudget = 1 << 16
 
 // valueKeyCanonicalizationCost sums the big-integer words and string-like
 // bytes canonicalizing key will read, recursing through array keys per
-// occurrence. onPath carries the slice backings of the active recursion path
-// only (the caller passes nil): an identity is removed on unwind so shared
-// aliases are charged each time they are canonicalized, while a cycle —
-// which canonicalization itself rejects — terminates uncharged.
-func valueKeyCanonicalizationCost(key Value, onPath map[uintptr]struct{}, budget *int) (int, int) {
+// occurrence in element order. onPath carries the slice backings of the
+// active recursion path only (the caller passes nil): an identity is removed
+// on unwind so shared aliases are charged each time they are canonicalized.
+// walkable reports whether canonicalization would read past this node: an
+// unsupported element, a NaN float, or a cycle stops HashKey immediately, so
+// the walk stops there too and only the prefix already read is charged. A
+// spent node budget also stops the walk, with the remaining cost saturated.
+func valueKeyCanonicalizationCost(key Value, onPath map[uintptr]struct{}, budget *int) (words, bytes int, walkable bool) {
 	if *budget <= 0 {
-		return 0, math.MaxInt / 2
+		return 0, math.MaxInt / 2, false
 	}
 	*budget--
 	if bi, ok := value.BigIntPayload(key); ok {
-		return len(bi.Bits()), 0
+		return len(bi.Bits()), 0, true
 	}
 	if stringLikeOperand(key) {
-		return 0, len(key.String())
+		return 0, len(key.String()), true
 	}
-	if key.Kind() != KindArray {
-		return 0, 0
+	switch key.Kind() {
+	case KindNil, KindBool, KindInt, KindRange:
+		return 0, 0, true
+	case KindFloat:
+		// A NaN key is rejected before anything after it is read.
+		return 0, 0, !math.IsNaN(key.Float())
+	case KindArray:
+	default:
+		return 0, 0, false
 	}
 	elems := key.Array()
 	id := sliceBackingIdentity(elems)
 	if id != 0 {
 		if _, ok := onPath[id]; ok {
-			return 0, 0
+			// A cyclic key is rejected at the revisit.
+			return 0, 0, false
 		}
 		if onPath == nil {
 			onPath = make(map[uintptr]struct{})
 		}
 		onPath[id] = struct{}{}
 	}
-	words, bytes := 0, 0
+	walkable = true
 	for _, elem := range elems {
-		w, b := valueKeyCanonicalizationCost(elem, onPath, budget)
+		w, b, ok := valueKeyCanonicalizationCost(elem, onPath, budget)
 		words = saturatingAdd(words, w)
 		bytes = saturatingAdd(bytes, b)
-		// A spent budget means the cost is already saturated; visiting the
-		// remaining elements would be exactly the proportional work the
-		// budget exists to avoid.
-		if *budget <= 0 {
-			bytes = saturatingAdd(bytes, math.MaxInt/2)
+		if !ok {
+			walkable = false
 			break
 		}
 	}
 	if id != 0 {
 		delete(onPath, id)
 	}
-	return words, bytes
+	return words, bytes, walkable
 }
 
 // chargeScalarSetKeySteps bills a scalar set key's payload before it is

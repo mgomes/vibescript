@@ -3806,8 +3806,13 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := exec.chargeValueElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
-				return NewNil(), err
+			// With no removal arguments the helper shallow-copies the
+			// receiver and never hashes or compares an element, so there is
+			// nothing to precharge.
+			if len(others) > 0 {
+				if err := exec.chargeValueElementKeySteps(append([][]Value{receiver.Array()}, others...)...); err != nil {
+					return NewNil(), err
+				}
 			}
 			out, err := differenceArrayValues(exec, receiver.Array(), others)
 			if err != nil {

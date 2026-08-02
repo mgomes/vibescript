@@ -1502,7 +1502,7 @@ func chargeEqualityKeyText(state *equalityState, key Value) bool {
 		return true
 	}
 	budget := equalityKeyCostNodeBudget
-	bytes := equalityKeyTextBytes(key, nil, &budget)
+	bytes, _ := equalityKeyTextBytes(key, nil, &budget)
 	if bytes == 0 {
 		return true
 	}
@@ -1516,14 +1516,23 @@ func chargeEqualityKeyText(state *equalityState, key Value) bool {
 // equalityKeyCostNodeBudget bounds the key-cost walk; see chargeEqualityKeyText.
 const equalityKeyCostNodeBudget = 1 << 16
 
-func equalityKeyTextBytes(key Value, onPath map[uintptr]struct{}, budget *int) int {
+// equalityKeyTextBytes walks key in canonicalization order. walkable reports
+// whether NewHashLookupKey would read past this node: an unsupported
+// element, a NaN float, or a cycle stops it immediately, so only the prefix
+// already read is billed. A spent node budget stops the walk with the cost
+// saturated.
+func equalityKeyTextBytes(key Value, onPath map[uintptr]struct{}, budget *int) (int, bool) {
 	if *budget <= 0 {
-		return math.MaxInt / 2
+		return math.MaxInt / 2, false
 	}
 	*budget--
 	switch key.kind {
 	case KindString, KindSymbol:
-		return len(key.data.(string))
+		return len(key.data.(string)), true
+	case KindNil, KindBool, KindInt, KindRange:
+		return 0, true
+	case KindFloat:
+		return 0, !math.IsNaN(key.Float())
 	case KindArray:
 		elems := key.Array()
 		var id uintptr
@@ -1532,7 +1541,7 @@ func equalityKeyTextBytes(key Value, onPath map[uintptr]struct{}, budget *int) i
 		}
 		if id != 0 {
 			if _, ok := onPath[id]; ok {
-				return 0
+				return 0, false
 			}
 			if onPath == nil {
 				onPath = make(map[uintptr]struct{})
@@ -1540,37 +1549,26 @@ func equalityKeyTextBytes(key Value, onPath map[uintptr]struct{}, budget *int) i
 			onPath[id] = struct{}{}
 		}
 		bytes := 0
+		walkable := true
 		for _, elem := range elems {
-			b := equalityKeyTextBytes(elem, onPath, budget)
+			b, ok := equalityKeyTextBytes(elem, onPath, budget)
 			if bytes += b; bytes < 0 {
 				bytes = math.MaxInt / 2
-				break
 			}
-			// A spent budget means the cost is already saturated; stop
-			// rather than visit every remaining element for free.
-			if *budget <= 0 {
-				bytes = math.MaxInt / 2
+			if !ok {
+				walkable = false
 				break
 			}
 		}
 		if id != 0 {
 			delete(onPath, id)
 		}
-		return bytes
+		return bytes, walkable
 	default:
-		return 0
+		return 0, false
 	}
 }
 
-// valuesEqualWithKinds compares two values, optionally requiring their kinds
-// to match at every level.
-//
-// strictKinds is what separates eql? from ==. == compares an int against a
-// float numerically, and that has to hold wherever the pair appears, so a
-// nested [1] == [1.0] is true. eql? is the kind-strict predicate, and its
-// strictness has to hold just as recursively: checking only the outermost
-// kind made [1].eql?([1.0]) true, because the elements went through the
-// widened comparison.
 func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool) bool {
 	if state.err != nil {
 		return false

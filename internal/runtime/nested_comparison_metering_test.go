@@ -81,6 +81,47 @@ func TestCompositeAndYieldedKeysChargeForTheirPayloads(t *testing.T) {
 	}
 }
 
+// Canonicalization stops at the first unsupported element, never reading
+// what follows, and an argumentless difference only shallow-copies — both
+// must stay flat-cost however large the string after them is.
+func TestKeyChargeStopsWhereCanonicalizationStops(t *testing.T) {
+	t.Parallel()
+
+	exprs := []string{
+		"h = {}\n  r = begin\n    h[[{a: 1}, s]] = 1\n  rescue => e\n    1\n  end\n  r",
+		"[s].difference.length",
+	}
+	for _, expr := range exprs {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			atSmall := minStepsForStringOp(t, expr, 8<<10)
+			atLarge := minStepsForStringOp(t, expr, 512<<10)
+			if atSmall != atLarge {
+				t.Errorf("%q cost %d steps over 8 KiB and %d over 512 KiB; work that "+
+					"never reads the payload must not be charged for it", expr, atSmall, atLarge)
+			}
+		})
+	}
+}
+
+// An unsupported array key must still fail with the canonicalization error,
+// not a quota error manufactured by the charge walking past it.
+func TestUnsupportedArrayKeyKeepsItsError(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 500, MemoryQuotaBytes: Unlimited}, `
+    def run(s)
+      h = {}
+      h[[{a: 1}, s]] = 1
+    end
+    `)
+	hay := NewString(strings.Repeat("ab", 1<<19))
+	_, err := script.Call(context.Background(), "run", []Value{hay}, CallOptions{})
+	if err == nil {
+		t.Fatal("an unsupported hash key must error")
+	}
+	requireErrorContains(t, err, "unsupported hash key type")
+}
+
 // HashKey canonicalizes a shared subtree once per occurrence — [a, a] copies
 // a twice — so the key charge must scale with the occurrence count, not the
 // distinct-backing count: a permanent visited set billed a shared DAG once
