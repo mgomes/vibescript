@@ -1503,7 +1503,7 @@ func chargeEqualityKeyText(state *equalityState, key Value) bool {
 		return true
 	}
 	budget := equalityKeyCostNodeBudget
-	bytes, _ := equalityKeyTextBytes(key, nil, &budget)
+	bytes, _, _ := equalityKeyTextBytes(key, nil, &budget)
 	if bytes == 0 {
 		return true
 	}
@@ -1517,23 +1517,27 @@ func chargeEqualityKeyText(state *equalityState, key Value) bool {
 // equalityKeyCostNodeBudget bounds the key-cost walk; see chargeEqualityKeyText.
 const equalityKeyCostNodeBudget = 1 << 16
 
-// equalityKeyTextBytes walks key in canonicalization order. walkable reports
-// whether NewHashLookupKey would read past this node: an unsupported
-// element, a NaN float, or a cycle stops it immediately, so only the prefix
-// already read is billed. A spent node budget stops the walk with the cost
+// equalityKeyTextBytes models the bytes NewHashLookupKey's canonicalization
+// reads for key, in element order: each array level copies every child's
+// complete encoding into its own canonical string, so a depth-d chain around
+// one string costs Θ(d·len). It returns the bytes to charge and the
+// subtree's encoding size; walkable reports whether canonicalization would
+// read past this node (an unsupported element, a NaN float, or a cycle stops
+// it immediately), and a spent node budget stops the walk with the cost
 // saturated.
-func equalityKeyTextBytes(key Value, onPath map[SliceIdentity]struct{}, budget *int) (int, bool) {
+func equalityKeyTextBytes(key Value, onPath map[SliceIdentity]struct{}, budget *int) (int, int, bool) {
 	if *budget <= 0 {
-		return math.MaxInt / 2, false
+		return math.MaxInt / 2, math.MaxInt / 2, false
 	}
 	*budget--
 	switch key.kind {
 	case KindString, KindSymbol:
-		return len(key.data.(string)), true
+		n := len(key.data.(string))
+		return n, n, true
 	case KindNil, KindBool, KindInt, KindRange:
-		return 0, true
+		return 0, 16, true
 	case KindFloat:
-		return 0, !math.IsNaN(key.Float())
+		return 0, 16, !math.IsNaN(key.Float())
 	case KindArray:
 		elems := key.Array()
 		// Full slice-header identity, as HashKey's cycle guard uses:
@@ -1545,19 +1549,22 @@ func equalityKeyTextBytes(key Value, onPath map[SliceIdentity]struct{}, budget *
 		}
 		if id.Ptr != 0 {
 			if _, ok := onPath[id]; ok {
-				return 0, false
+				return 0, 0, false
 			}
 			if onPath == nil {
 				onPath = make(map[SliceIdentity]struct{})
 			}
 			onPath[id] = struct{}{}
 		}
-		bytes := 0
+		charge, childEnc := 0, 0
 		walkable := true
 		for _, elem := range elems {
-			b, ok := equalityKeyTextBytes(elem, onPath, budget)
-			if bytes += b; bytes < 0 {
-				bytes = math.MaxInt / 2
+			c, e, ok := equalityKeyTextBytes(elem, onPath, budget)
+			if charge += c; charge < 0 {
+				charge = math.MaxInt / 2
+			}
+			if childEnc += e; childEnc < 0 {
+				childEnc = math.MaxInt / 2
 			}
 			if !ok {
 				walkable = false
@@ -1567,9 +1574,17 @@ func equalityKeyTextBytes(key Value, onPath map[SliceIdentity]struct{}, budget *
 		if id.Ptr != 0 {
 			delete(onPath, id)
 		}
-		return bytes, walkable
+		// This level's canonical string copies every child encoding again.
+		if charge += childEnc; charge < 0 {
+			charge = math.MaxInt / 2
+		}
+		enc := childEnc + 16
+		if enc < 0 {
+			enc = math.MaxInt / 2
+		}
+		return charge, enc, walkable
 	default:
-		return 0, false
+		return 0, 0, false
 	}
 }
 

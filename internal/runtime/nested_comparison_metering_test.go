@@ -82,6 +82,48 @@ func TestCompositeAndYieldedKeysChargeForTheirPayloads(t *testing.T) {
 	}
 }
 
+// minStepsForKeyOp is minStepsForStringOp with a search ceiling sized for
+// key-canonicalization costs, which scale past the payload by the ancestor
+// copies each nesting level performs.
+func minStepsForKeyOp(t *testing.T, expr string, bytes int) int {
+	t.Helper()
+
+	hay := NewString(strings.Repeat("ab", bytes/2))
+	src := fmt.Sprintf("def run(s)\n  %s\nend", expr)
+
+	lo, hi := 1, 1<<21
+	for lo < hi {
+		mid := (lo + hi) / 2
+		script := compileScriptWithConfig(t, Config{StepQuota: mid, MemoryQuotaBytes: Unlimited}, src)
+		if _, err := script.Call(context.Background(), "run", []Value{hay}, CallOptions{}); err != nil {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}
+
+// HashKey copies the complete child encoding into every ancestor's canonical
+// string, so a depth-d single-child chain around one string costs Θ(d·len);
+// a leaf-only charge let deep linear keys do unbounded copying under a flat
+// budget.
+func TestDeepArrayKeyChargesPerLevel(t *testing.T) {
+	t.Parallel()
+
+	keyAtDepth := func(depth int) string {
+		return "k = [s]\n  j = 0\n  while j < " + fmt.Sprint(depth) + "\n    k = [k]\n    j = j + 1\n  end\n  h = {}\n  h[k] = 1\n  h.length"
+	}
+	atShallow := minStepsForKeyOp(t, keyAtDepth(6), 8<<10)
+	atDeep := minStepsForKeyOp(t, keyAtDepth(18), 8<<10)
+	// Tripling the depth roughly triples the ancestor copies; require 2x to
+	// track the class with headroom.
+	if atDeep < atShallow*2 {
+		t.Errorf("deep key cost %d steps at depth 6 and %d at depth 18; every "+
+			"ancestor copies the child encoding, so the charge must scale with depth", atShallow, atDeep)
+	}
+}
+
 // Canonicalization stops at the first unsupported element, never reading
 // what follows, and an argumentless difference only shallow-copies — both
 // must stay flat-cost however large the string after them is.
@@ -160,8 +202,10 @@ func TestSharedDAGHashKeyChargesPerOccurrence(t *testing.T) {
 	keyAtDepth := func(depth int) string {
 		return "k = [s]\n  j = 0\n  while j < " + fmt.Sprint(depth) + "\n    k = [k, k]\n    j = j + 1\n  end\n  h = {}\n  h[k] = 1\n  h.length"
 	}
-	atShallow := minStepsForStringOp(t, keyAtDepth(4), 8<<10)
-	atDeep := minStepsForStringOp(t, keyAtDepth(6), 8<<10)
+	// The per-level encoding copies push the true cost well past
+	// minStepsForStringOp's payload-sized search ceiling, so search wider.
+	atShallow := minStepsForKeyOp(t, keyAtDepth(4), 8<<10)
+	atDeep := minStepsForKeyOp(t, keyAtDepth(6), 8<<10)
 	// Depth 6 holds four times the leaf occurrences of depth 4, so the charge
 	// must grow by at least 3x; a distinct-backing charge stays flat.
 	if atDeep < atShallow*3 {

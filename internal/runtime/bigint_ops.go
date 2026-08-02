@@ -364,13 +364,13 @@ func bigIntDecimalDigitsUpperBound(bi *big.Int) int {
 // are a no-op.
 func (exec *Execution) chargeValueKeySteps(key Value) error {
 	budget := valueKeyCostNodeBudget
-	words, bytes, _ := valueKeyCanonicalizationCost(key, nil, &budget)
+	words, charge, _, _ := valueKeyCanonicalizationCost(key, nil, &budget)
 	if words > 0 {
 		if err := exec.stepN(1 + words/bigIntStepWordsPerStep); err != nil {
 			return err
 		}
 	}
-	return exec.chargeStringScan(bytes)
+	return exec.chargeStringScan(charge)
 }
 
 // valueKeyCostNodeBudget bounds the canonicalization-cost walk. A shared DAG
@@ -379,47 +379,49 @@ func (exec *Execution) chargeValueKeySteps(key Value) error {
 // instead of being computed exactly.
 const valueKeyCostNodeBudget = 1 << 16
 
-// valueKeyCanonicalizationCost sums the big-integer words and string-like
-// bytes canonicalizing key will read, recursing through array keys per
-// occurrence in element order. onPath carries the slice backings of the
-// active recursion path only (the caller passes nil): an identity is removed
-// on unwind so shared aliases are charged each time they are canonicalized.
-// walkable reports whether canonicalization would read past this node: an
-// unsupported element, a NaN float, or a cycle stops HashKey immediately, so
-// the walk stops there too and only the prefix already read is charged. A
-// spent node budget also stops the walk, with the remaining cost saturated.
-func valueKeyCanonicalizationCost(key Value, onPath map[value.SliceIdentity]struct{}, budget *int) (words, bytes int, walkable bool) {
+// valueKeyCanonicalizationCost models the work HashKey performs for key,
+// per occurrence and in element order. Each array level builds its own
+// canonical string by copying every child's complete encoding, so a depth-d
+// chain around one string costs Θ(d·len): the walk returns both the bytes
+// charged so far and the subtree's encoding size, and every array node
+// re-charges its children's encodings for the copy it performs. onPath
+// carries the slice headers of the active recursion path with HashKey's own
+// identity (pointer, length, capacity), removed on unwind so shared aliases
+// are charged each time they are canonicalized. walkable reports whether
+// canonicalization would read past this node — an unsupported element, a NaN
+// float, or a cycle stops HashKey immediately, so only the prefix already
+// read is charged — and a spent node budget stops the walk with the cost
+// saturated.
+func valueKeyCanonicalizationCost(key Value, onPath map[value.SliceIdentity]struct{}, budget *int) (words, charge, enc int, walkable bool) {
 	if *budget <= 0 {
-		return 0, math.MaxInt / 2, false
+		return 0, math.MaxInt / 2, math.MaxInt / 2, false
 	}
 	*budget--
 	if bi, ok := value.BigIntPayload(key); ok {
-		return len(bi.Bits()), 0, true
+		// The hex encoding ancestors will copy runs ~16 characters per
+		// 64-bit word; the conversion itself is charged in words.
+		return len(bi.Bits()), 0, saturatingMul(len(bi.Bits()), 16), true
 	}
 	if stringLikeOperand(key) {
-		return 0, len(key.String()), true
+		n := len(key.String())
+		return 0, n, n, true
 	}
 	switch key.Kind() {
 	case KindNil, KindBool, KindInt, KindRange:
-		return 0, 0, true
+		return 0, 0, 16, true
 	case KindFloat:
 		// A NaN key is rejected before anything after it is read.
-		return 0, 0, !math.IsNaN(key.Float())
+		return 0, 0, 16, !math.IsNaN(key.Float())
 	case KindArray:
 	default:
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	elems := key.Array()
-	// The guard keys on the full slice header — pointer, length, and
-	// capacity — exactly as HashKey's does: overlapping reslices share a
-	// starting pointer but are distinct keys canonicalization copies in
-	// full, and a pointer-only guard misread them as cycles and stopped
-	// charging.
 	id := value.SliceIdentity{Ptr: sliceBackingIdentity(elems), Len: len(elems), Cap: cap(elems)}
 	if id.Ptr != 0 {
 		if _, ok := onPath[id]; ok {
 			// A cyclic key is rejected at the revisit.
-			return 0, 0, false
+			return 0, 0, 0, false
 		}
 		if onPath == nil {
 			onPath = make(map[value.SliceIdentity]struct{})
@@ -427,10 +429,12 @@ func valueKeyCanonicalizationCost(key Value, onPath map[value.SliceIdentity]stru
 		onPath[id] = struct{}{}
 	}
 	walkable = true
+	childEnc := 0
 	for _, elem := range elems {
-		w, b, ok := valueKeyCanonicalizationCost(elem, onPath, budget)
+		w, c, e, ok := valueKeyCanonicalizationCost(elem, onPath, budget)
 		words = saturatingAdd(words, w)
-		bytes = saturatingAdd(bytes, b)
+		charge = saturatingAdd(charge, c)
+		childEnc = saturatingAdd(childEnc, e)
 		if !ok {
 			walkable = false
 			break
@@ -439,7 +443,9 @@ func valueKeyCanonicalizationCost(key Value, onPath map[value.SliceIdentity]stru
 	if id.Ptr != 0 {
 		delete(onPath, id)
 	}
-	return words, bytes, walkable
+	// This level's canonical string copies every child encoding once more.
+	charge = saturatingAdd(charge, childEnc)
+	return words, charge, saturatingAdd(childEnc, 16), walkable
 }
 
 // chargeScalarSetKeySteps bills a scalar set key's payload before it is

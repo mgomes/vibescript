@@ -367,6 +367,35 @@ func TestEqualityChargeIsDeterministic(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeBillsDeepArrayKeysPerLevel pins the equality twin of the
+// per-level encoding charge: NewHashLookupKey's canonicalization copies the
+// child encoding at every ancestor, so a depth-d chain must bill ~d times the
+// leaf.
+func TestEqualityChargeBillsDeepArrayKeysPerLevel(t *testing.T) {
+	t.Parallel()
+
+	payload := strings.Repeat("k", 4096)
+	build := func(depth int) value.Value {
+		key := value.NewArray([]value.Value{value.NewString(payload)})
+		for range depth {
+			key = value.NewArray([]value.Value{key})
+		}
+		h := value.NewTypedHash(1)
+		if err := h.HashSet(key, value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet: %v", err)
+		}
+		return h
+	}
+
+	ctx, total := meteredContext()
+	if !ctx.Equal(build(15), build(15)) {
+		t.Fatal("hashes with deep keys must compare equal")
+	}
+	if want := 10 * len(payload); *total < want {
+		t.Fatalf("charged %d bytes for a depth-16 chain, want at least %d (per-level copies)", *total, want)
+	}
+}
+
 // TestEqualityNilHookUnchanged pins that the zero context and the plain
 // Value.Equal / Value.Eql entry points stay byte-identical in behavior with
 // no hook installed.
