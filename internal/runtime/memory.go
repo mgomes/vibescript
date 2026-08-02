@@ -439,6 +439,22 @@ type baseWalkSession struct {
 // the walk; and under the test-only kill switch. Bypass walks run on the same
 // shared estimator, so they invalidate the memo (valid = false) rather than
 // leave stamps pointing at a clobbered seen-state.
+// baseWalkSessionsAreCheap reports whether beginBaseWalk would resume a
+// memoized or region-prefix walk rather than re-walk the reachable graph, so
+// an incremental accounting caller can afford one session per increment
+// instead of snapshotting a reference walk up front.
+func (exec *Execution) baseWalkSessionsAreCheap() bool {
+	if exec.baseWalkOpen {
+		return false
+	}
+	globals := taskLazyGlobalsFromContext(exec.Context())
+	if exec.blockRegionBaseWalkEngaged(globals) {
+		return true
+	}
+	return exec.builtinDepth == 0 && len(exec.activeTaskGroups) == 0 && globals == nil &&
+		!baseWalkCacheDisabled.Load()
+}
+
 func (exec *Execution) beginBaseWalk() baseWalkSession {
 	if exec.baseWalkOpen {
 		// Sessions never nest (estimator walks do not re-enter evaluation); if
@@ -1570,10 +1586,22 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 }
 
 type hashLiteralBuildAccumulator struct {
-	exec          *Execution
-	est           *memoryEstimator
-	base          int
-	retained      int
+	exec *Execution
+	// est is the snapshot mode's private estimator, seeded with a reference
+	// walk at construction; nil in sessions mode.
+	est *memoryEstimator
+	// base holds the structural constants (wrapper, map base, backing slots)
+	// in sessions mode, plus the construction-time reference walk in snapshot
+	// mode.
+	base     int
+	retained int
+	// sessions selects per-check base-walk sessions over the construction
+	// snapshot: each check resumes the memoized base and measures only this
+	// entry, so a literal built in a loop costs its own size rather than a
+	// whole-graph walk (#1129). Snapshot mode remains for contexts where a
+	// session cannot resume a memo (builtin depth, task groups, lazy globals)
+	// and would otherwise re-walk the graph once per entry.
+	sessions      bool
 	replacing     bool
 	keyPayloads   map[string]int
 	valuePayloads map[string]int
@@ -1597,9 +1625,13 @@ func newHashLiteralBuildAccumulator(exec *Execution) *hashLiteralBuildAccumulato
 		return acc
 	}
 
+	acc.base = estimatedValueBytes + estimatedMapBaseBytes + estimatedHashDataBytes
+	if exec.baseWalkSessionsAreCheap() {
+		acc.sessions = true
+		return acc
+	}
 	acc.est = newMemoryEstimator()
-	acc.base = exec.estimateMemoryUsageBase(acc.est)
-	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
+	acc.base = saturatingAdd(exec.estimateMemoryUsageBase(acc.est), acc.base)
 	return acc
 }
 
@@ -1613,6 +1645,20 @@ func (acc *hashLiteralBuildAccumulator) reserveBacking(capacity int) error {
 
 func (acc *hashLiteralBuildAccumulator) addDistinctEntry(lookupKey HashLookupKey, key, val Value) error {
 	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	if acc.sessions {
+		s := acc.exec.beginBaseWalk()
+		entry := acc.typedEntryStructuralBytes()
+		entry = saturatingAdd(entry, hashLiteralKeyPayload(s.est, lookupKey, key))
+		entry = saturatingAdd(entry, s.est.valuePayload(val))
+		used := saturatingAdd(saturatingAdd(s.base, acc.base), saturatingAdd(acc.retained, entry))
+		s.close()
+		if used > acc.exec.memoryQuota {
+			return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		}
+		acc.retained = saturatingAdd(acc.retained, entry)
 		return nil
 	}
 
@@ -1642,7 +1688,7 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 
 	keyPayload, valuePayload := acc.entryPayloads(lookupKey, key, val)
 	incoming := saturatingAdd(keyPayload, valuePayload)
-	if used := saturatingAdd(saturatingAdd(acc.base, acc.retained), incoming); used > acc.exec.memoryQuota {
+	if used := saturatingAdd(saturatingAdd(acc.liveBase(), acc.retained), incoming); used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 
@@ -1689,11 +1735,31 @@ func (acc *hashLiteralBuildAccumulator) typedEntryStructuralBytes() int {
 }
 
 func (acc *hashLiteralBuildAccumulator) entryPayloads(lookupKey HashLookupKey, key, val Value) (int, int) {
+	if acc.sessions {
+		s := acc.exec.beginBaseWalk()
+		defer s.close()
+		valuePayload := s.est.valuePayload(val)
+		keyPayload := hashLiteralKeyPayload(s.est, lookupKey, key)
+		return keyPayload, valuePayload
+	}
 	est := newMemoryEstimator()
 	acc.exec.estimateMemoryUsageBase(est)
 	valuePayload := est.valuePayload(val)
 	keyPayload := hashLiteralKeyPayload(est, lookupKey, key)
 	return keyPayload, valuePayload
+}
+
+// liveBase returns the reachable-graph base the next quota comparison should
+// use: the memoized base in sessions mode (the construction snapshot in base
+// already covers it otherwise), so checks track the graph as it actually is
+// mid-literal rather than as it was at construction.
+func (acc *hashLiteralBuildAccumulator) liveBase() int {
+	if !acc.sessions {
+		return acc.base
+	}
+	s := acc.exec.beginBaseWalk()
+	defer s.close()
+	return saturatingAdd(s.base, acc.base)
 }
 
 func hashLiteralKeyPayload(est *memoryEstimator, lookupKey HashLookupKey, key Value) int {
@@ -1704,7 +1770,7 @@ func hashLiteralKeyPayload(est *memoryEstimator, lookupKey HashLookupKey, key Va
 }
 
 func (acc *hashLiteralBuildAccumulator) checkQuota() error {
-	used := saturatingAdd(acc.base, acc.retained)
+	used := saturatingAdd(acc.liveBase(), acc.retained)
 	if used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}

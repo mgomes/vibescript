@@ -524,9 +524,16 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 	return exec.evalHashLiteralWithValueTypes(e, env, nil)
 }
 
+// singlePairHashLiteral is the largest hash literal built without an
+// accumulator. The accumulator's guarantee is about the second temporary: with
+// one pair there is no partially built map holding an earlier entry while the
+// next evaluates, so the finished hash is charged once through the memoized
+// check instead — the same exemption single-element array literals take.
+const singlePairHashLiteral = 1
+
 func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, valueTypeForKey func(Value) *TypeExpr) (Value, error) {
 	var acc *hashLiteralBuildAccumulator
-	if exec.memoryQuota > 0 {
+	if exec.memoryQuota > 0 && len(e.Pairs) > singlePairHashLiteral {
 		acc = newHashLiteralBuildAccumulator(exec)
 		if err := acc.reserveBacking(len(e.Pairs)); err != nil {
 			return NewNil(), err
@@ -578,6 +585,11 @@ func (exec *Execution) evalHashLiteralWithValueTypes(e *HashLiteral, env *Env, v
 			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
 		}
 		entries[key] = hashLiteralEntry{key: keyVal, lookupKey: lookupKey, value: val}
+	}
+	if acc == nil {
+		if err := exec.checkMemoryValue(hash); err != nil {
+			return NewNil(), err
+		}
 	}
 	return hash, nil
 }
