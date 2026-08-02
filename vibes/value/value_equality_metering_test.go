@@ -276,6 +276,34 @@ func TestEqualityChargeBillsObjectKeys(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeBillsDisplayKeyCandidates pins the duplicate-display-key
+// scan: a candidate key after the current entry renders through Inspect, so
+// its payload must be charged before the rendering, even when it is not the
+// outer entry — the mixed typed/untyped path reaches every later candidate
+// per outer iteration.
+func TestEqualityChargeBillsDisplayKeyCandidates(t *testing.T) {
+	t.Parallel()
+
+	nested := strings.Repeat("k", 8192)
+	typed := value.NewTypedHash(2)
+	if err := typed.HashSet(value.NewInt(1), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet: %v", err)
+	}
+	if err := typed.HashSet(value.NewArray([]value.Value{value.NewString(nested)}), value.NewInt(2)); err != nil {
+		t.Fatalf("HashSet: %v", err)
+	}
+	legacy := value.NewHash(map[string]value.Value{"a": value.NewInt(1), "b": value.NewInt(2)})
+
+	ctx, total := meteredContext()
+	ctx.Equal(typed, legacy)
+	if ctx.Err() != nil {
+		t.Fatalf("Err() = %v, want nil", ctx.Err())
+	}
+	if *total < 8192 {
+		t.Fatalf("charged %d bytes, want at least the candidate key's %d", *total, 8192)
+	}
+}
+
 // TestEqualityNilHookUnchanged pins that the zero context and the plain
 // Value.Equal / Value.Eql entry points stay byte-identical in behavior with
 // no hook installed.

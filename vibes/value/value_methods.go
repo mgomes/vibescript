@@ -1880,6 +1880,12 @@ func hashEntriesHaveDuplicateDisplayKey(entries []HashEntry, state *equalityStat
 		}
 		key := HashDisplayKey(entry.Key)
 		for _, other := range entries[i+1:] {
+			// A non-string candidate renders its display key through
+			// Inspect, which reads it in full; charge before rendering, as
+			// the outer entry is.
+			if !chargeEqualityKeyText(state, other.Key) {
+				return false
+			}
 			if HashDisplayKey(other.Key) == key {
 				return true
 			}
