@@ -1621,10 +1621,13 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 type hashLiteralBuildAccumulator struct {
 	exec *Execution
 	// est is the snapshot mode's private estimator, seeded with a reference
-	// walk at construction. In sessions mode it is instead a lazily built
-	// entry-local estimator holding only the payloads earlier entries
-	// retained, the second bound of addDistinctEntry's dual walk.
+	// walk at construction; nil in sessions mode.
 	est *memoryEstimator
+	// sessionEntries records the entries retained so far in sessions mode;
+	// addDistinctEntry replays their identities into each session walk so a
+	// new entry deduplicates against the union of the reachable base and the
+	// literal's own earlier payloads.
+	sessionEntries []hashLiteralEntry
 	// base holds the structural constants (wrapper, map base, backing slots)
 	// in sessions mode, plus the construction-time reference walk in snapshot
 	// mode.
@@ -1685,27 +1688,29 @@ func (acc *hashLiteralBuildAccumulator) addDistinctEntry(lookupKey HashLookupKey
 
 	if acc.sessions {
 		s := acc.exec.beginBaseWalk()
-		sessionPayload := saturatingAdd(hashLiteralKeyPayload(s.est, lookupKey, key), s.est.valuePayload(val))
-		liveBase := s.base
-		s.close()
-		// The session dedups this entry against the reachable base but rolls
-		// its identities back, so a payload repeated across entries — a
-		// helper returning the same immutable string for several values —
-		// would be charged once per entry while the reference walk counts it
-		// once. A persistent entry-local estimator provides the second
-		// bound: it dedups against the payloads earlier entries already
-		// retained. Each walk over-approximates the true marginal (which
-		// dedups against the union), so the smaller of the two is charged.
-		if acc.est == nil {
-			acc.est = newMemoryEstimator()
+		// Replay the earlier entries' identities into the journaled session
+		// seen-state, discarding their byte results, so this entry's walk
+		// deduplicates against the union the reference walk sees: the
+		// reachable base plus everything the literal already retains. A
+		// payload aliasing either side — or both at once, like a value whose
+		// parts split between a reachable binding and an earlier entry —
+		// then contributes exactly its marginal bytes. The replay is cheap:
+		// an already-seen backing short-circuits its subtree, and the
+		// journal rollback at close (or a journal overflow, which discards
+		// the memo conservatively) leaves the committed state untouched.
+		for _, prior := range acc.sessionEntries {
+			hashLiteralKeyPayload(s.est, prior.lookupKey, prior.key)
+			s.est.valuePayload(prior.value)
 		}
-		localPayload := saturatingAdd(hashLiteralKeyPayload(acc.est, lookupKey, key), acc.est.valuePayload(val))
-		entry := saturatingAdd(acc.typedEntryStructuralBytes(), min(sessionPayload, localPayload))
-		used := saturatingAdd(saturatingAdd(liveBase, acc.base), saturatingAdd(acc.retained, entry))
+		payload := saturatingAdd(hashLiteralKeyPayload(s.est, lookupKey, key), s.est.valuePayload(val))
+		entry := saturatingAdd(acc.typedEntryStructuralBytes(), payload)
+		used := saturatingAdd(saturatingAdd(s.base, acc.base), saturatingAdd(acc.retained, entry))
+		s.close()
 		if used > acc.exec.memoryQuota {
 			return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 		}
 		acc.retained = saturatingAdd(acc.retained, entry)
+		acc.sessionEntries = append(acc.sessionEntries, hashLiteralEntry{key: key, lookupKey: lookupKey, value: val})
 		return nil
 	}
 

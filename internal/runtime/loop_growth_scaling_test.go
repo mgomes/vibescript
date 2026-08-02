@@ -161,6 +161,15 @@ func TestGrowthLoopEstimateMatchesUncachedWalk(t *testing.T) {
 			arg: func(int) Value { return NewNil() },
 		},
 		{
+			// A value whose aliases split between the reachable base and an
+			// earlier entry: w() is shared with entry x, a is reachable, so
+			// the union dedup must cover both at once.
+			name: "literal with mixed base and entry aliases",
+			src: "def w()\n  \"wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww\"\nend\n\n" +
+				"def run(a, n)\n  h = {x: w(), y: [a, w()]}\n  h.length\nend",
+			arg: loopMemoArray,
+		},
+		{
 			name: "literal inside block region",
 			src:  "def run(a, n)\n  out = a.map { |x| {id: x, name: \"x\"} }\n  out.length\nend",
 			arg:  loopMemoArray,
