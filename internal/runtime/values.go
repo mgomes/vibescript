@@ -848,6 +848,13 @@ func intersectValues(exec *Execution, left, right Value) (Value, error) {
 	if left.Kind() != KindArray || right.Kind() != KindArray {
 		return NewNil(), fmt.Errorf("unsupported intersection operands")
 	}
+	// The scalar element precharge lives here rather than at the operator
+	// site so reduce(:&) and symbol-proc forwarding pay it too.
+	if exec != nil {
+		if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
+			return NewNil(), err
+		}
+	}
 	out, err := intersectArrayValues(exec, left.Array(), right.Array())
 	if err != nil {
 		return NewNil(), err
@@ -903,6 +910,13 @@ func subtractValues(exec *Execution, left, right Value) (Value, error) {
 		}
 		return NewDuration(durationFromSeconds(diff)), nil
 	case left.Kind() == KindArray && right.Kind() == KindArray:
+		// The scalar element precharge lives here rather than at the operator
+		// site so reduce(:-) and symbol-proc forwarding pay it too.
+		if exec != nil {
+			if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
+				return NewNil(), err
+			}
+		}
 		out, err := subtractArrayValues(exec, left.Array(), right.Array())
 		if err != nil {
 			return NewNil(), err

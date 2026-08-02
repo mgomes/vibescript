@@ -1224,13 +1224,6 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 				return NewNil(), exec.wrapError(err, pos)
 			}
 		}
-		if left.Kind() == KindArray && right.Kind() == KindArray {
-			// Array difference canonicalizes every element as a set key;
-			// charge big elements' words before the build.
-			if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
-				return NewNil(), exec.wrapError(err, pos)
-			}
-		}
 		result, err = subtractValues(exec, left, right)
 	case tokenAsterisk:
 		if left.Kind() == KindString {
@@ -1289,13 +1282,6 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		}
 		result, err = shovelValues(left, right)
 	case tokenAmpersand:
-		if left.Kind() == KindArray && right.Kind() == KindArray {
-			// Array intersection canonicalizes every element as a set key;
-			// charge big elements' words before the build.
-			if err := exec.chargeValueElementKeySteps(left.Array(), right.Array()); err != nil {
-				return NewNil(), exec.wrapError(err, pos)
-			}
-		}
 		result, err = intersectValues(exec, left, right)
 	case tokenEQ:
 		eq, eqErr := exec.equalValues(left, right)
