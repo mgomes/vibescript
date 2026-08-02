@@ -96,8 +96,7 @@ type valueSet struct {
 // Callers must consult chargeErr after operations that probe. A nil exec
 // leaves the set unmetered.
 func (s *valueSet) bindMetering(exec *Execution) {
-	s.equality.SetCharge(exec.stringScanChargeFunc())
-	s.equality.SetScratchReserver(exec.equalityScratchValidatorFunc())
+	exec.bindEqualityMetering(&s.equality)
 }
 
 // chargeErr reports the first byte-charge failure a probe recorded, if any.
@@ -370,8 +369,7 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 		removalTotal += len(other)
 	}
 	var removal membershipSet
-	removal.equality.SetCharge(exec.stringScanChargeFunc())
-	removal.equality.SetScratchReserver(exec.equalityScratchValidatorFunc())
+	exec.bindEqualityMetering(&removal.equality)
 	for _, other := range others {
 		removal.addSource(other, removalTotal)
 	}
@@ -396,8 +394,7 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 // output never repeats a value.
 func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var inRight membershipSet
-	inRight.equality.SetCharge(exec.stringScanChargeFunc())
-	inRight.equality.SetScratchReserver(exec.equalityScratchValidatorFunc())
+	exec.bindEqualityMetering(&inRight.equality)
 	inRight.addSource(right, len(right))
 	var emitted valueSet
 	emitted.bindMetering(exec)
@@ -423,8 +420,7 @@ func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error)
 
 func subtractArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var removal membershipSet
-	removal.equality.SetCharge(exec.stringScanChargeFunc())
-	removal.equality.SetScratchReserver(exec.equalityScratchValidatorFunc())
+	exec.bindEqualityMetering(&removal.equality)
 	removal.addSource(right, len(right))
 	out := make([]Value, 0, boundedSetCap(len(left)))
 	for _, item := range left {

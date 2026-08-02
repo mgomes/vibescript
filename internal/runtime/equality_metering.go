@@ -19,6 +19,19 @@ func (exec *Execution) stringScanChargeFunc() func(int) error {
 	return exec.stringScanCharge
 }
 
+// bindEqualityMetering installs the execution's byte charge, scratch
+// validator, and allocator rounder on ctx, so equality contexts embedded in
+// longer-lived structures (the set helpers) meter exactly like
+// meteredEquality's. The rounder makes rendered display keys reserve the
+// capacity the allocator realizes for the pregrown builder, not the
+// projected length; see projectedBuilderCap for why the size-class gap
+// matters.
+func (exec *Execution) bindEqualityMetering(ctx *EqualityContext) {
+	ctx.SetCharge(exec.stringScanChargeFunc())
+	ctx.SetScratchReserver(exec.equalityScratchValidatorFunc())
+	ctx.SetScratchAllocRounder(roundedAllocSize)
+}
+
 // meteredEquality returns an EqualityContext that bills the string payloads a
 // comparison reads at the string-scan rate and validates the walk's transient
 // scratch against the memory quota. Loops that probe many candidates build
@@ -26,12 +39,7 @@ func (exec *Execution) stringScanChargeFunc() func(int) error {
 // negative answer.
 func (exec *Execution) meteredEquality() EqualityContext {
 	var ctx EqualityContext
-	ctx.SetCharge(exec.stringScanChargeFunc())
-	ctx.SetScratchReserver(exec.equalityScratchValidatorFunc())
-	// Rendered display keys are reserved at the capacity the allocator
-	// realizes for the pregrown builder, not the projected length; see
-	// projectedBuilderCap for why the size-class gap matters.
-	ctx.SetScratchAllocRounder(roundedAllocSize)
+	exec.bindEqualityMetering(&ctx)
 	return ctx
 }
 
