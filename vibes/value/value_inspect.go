@@ -289,14 +289,31 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 	}
 	switch v.kind {
 	case KindString:
-		return quotedStringByteLen(v.data.(string)), nil
+		str := v.data.(string)
+		if state.chargeBytes != nil {
+			if err := state.chargeBytes(len(str)); err != nil {
+				return 0, err
+			}
+		}
+		return quotedStringByteLen(str), nil
 	case KindSymbol:
-		return inspectSymbolByteLen(v.data.(string)), nil
+		sym := v.data.(string)
+		if state.chargeBytes != nil {
+			if err := state.chargeBytes(len(sym)); err != nil {
+				return 0, err
+			}
+		}
+		return inspectSymbolByteLen(sym), nil
 	case KindRegex:
 		// See Value.StringByteLen: sizing a regex must not render it, and
 		// inspect renders one exactly as String does. The source walk StringLen
 		// performs is charged before it runs -- the single per-node step above
 		// does not cover a scan proportional to the source.
+		if state.chargeBytes != nil {
+			if err := state.chargeBytes(len(v.data.(Regex).Source)); err != nil {
+				return 0, err
+			}
+		}
 		if err := chargeRegexSourceSteps(v, step); err != nil {
 			return 0, err
 		}
@@ -362,6 +379,11 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 		total := len(hashOpen) + len(hashClose)
 		total += separatorBytes(len(entries))
 		for k, val := range entries {
+			if state.chargeBytes != nil {
+				if err := state.chargeBytes(len(k)); err != nil {
+					return 0, err
+				}
+			}
 			total += inspectHashKeyByteLen(k) + len(keyValueSeparator)
 			n, err := val.inspectByteLenBoundedWithState(state, step)
 			if err != nil {

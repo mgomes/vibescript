@@ -565,6 +565,52 @@ func TestEqualityNilHookUnchanged(t *testing.T) {
 	}
 }
 
+// TestDisplayKeySizingIsCharged pins the sizing pass itself: computing a
+// composite key's rendered length scans every string payload for escape
+// counting, so those bytes are billed from inside the walk — before the
+// post-sizing render charge — and the comparison's total covers both the
+// sizing scan and the rendering. Billed only afterwards, a low budget could
+// not interrupt the sizing of an arbitrarily large payload.
+func TestDisplayKeySizingIsCharged(t *testing.T) {
+	t.Parallel()
+
+	payload := 64 * 1024
+	long := strings.Repeat("k", payload)
+	buildTyped := func() value.Value {
+		h := value.NewTypedHash(9)
+		for i := range 8 {
+			if err := h.HashSet(value.NewString(fmt.Sprintf("k%d", i)), value.NewInt(int64(i))); err != nil {
+				t.Fatalf("HashSet: %v", err)
+			}
+		}
+		if err := h.HashSet(value.NewArray([]value.Value{value.NewString(long)}), value.NewInt(99)); err != nil {
+			t.Fatalf("HashSet: %v", err)
+		}
+		return h
+	}
+	buildLegacy := func() value.Value {
+		entries := make(map[string]value.Value, 9)
+		for i := range 9 {
+			entries[fmt.Sprintf("k%d", i)] = value.NewInt(int64(i))
+		}
+		return value.NewHash(entries)
+	}
+
+	ctx, total := meteredContext()
+	if ctx.Equal(buildLegacy(), buildTyped()) {
+		t.Fatal("hashes with differing keys must compare unequal")
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	// The map path reads the payload twice — the sizing scan and the
+	// rendering — and only the rendering was billed before the sizing
+	// charge landed.
+	if want := payload * 3 / 2; *total < want {
+		t.Fatalf("charged %d bytes, want at least %d (sizing scan + rendering)", *total, want)
+	}
+}
+
 // TestMixedHashChargeBillsDisplayWork pins the mixed-path cost model: a
 // composite key wrapped in deeply nested singleton arrays renders through
 // Inspect, which writes the payload once, so the charge must track the
@@ -767,6 +813,20 @@ func TestEqualityReservesRealizedDisplayKeyCapacity(t *testing.T) {
 	}
 	if *maxSeen < realized {
 		t.Fatalf("linear path reserved %d bytes, want at least the realized rendering capacity %d", *maxSeen, realized)
+	}
+
+	// A singleton skips only the sort, never the metered rendering: leaving
+	// its key unrendered let the duplicate screen render it later with no
+	// charge or reservation.
+	ctx, maxSeen = newContext()
+	if ctx.Equal(buildLegacy(0), buildTyped(0)) {
+		t.Fatal("hashes with differing keys must compare unequal")
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if *maxSeen < realized {
+		t.Fatalf("singleton path reserved %d bytes, want at least the realized rendering capacity %d", *maxSeen, realized)
 	}
 
 	// Nine entries per side exceed the limit: the map path retains the

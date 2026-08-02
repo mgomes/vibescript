@@ -255,6 +255,13 @@ func (v Value) StringBounded(limit int) (string, error) {
 type valueStringState struct {
 	arrays map[SliceIdentity]struct{}
 	maps   map[uintptr]struct{}
+	// chargeBytes, when set, is invoked with each scalar payload's byte
+	// length before the sizing walk scans it (escape counting reads the
+	// whole payload), so a caller's byte budget can interrupt the sizing
+	// pass instead of only being billed after it completes. nil leaves
+	// sizing unmetered, as the rendering guards that charge separately
+	// expect.
+	chargeBytes func(bytes int) error
 }
 
 func newValueStringState() *valueStringState {
@@ -1610,13 +1617,45 @@ const equalityKeyCostNodeBudget = 1 << 16
 // canonical model here overcharged deeply nested singleton keys —
 // Θ(depth·payload) for Θ(rendered) work — into spurious quota errors.
 func chargeDisplayKeyRender(state *equalityState, key Value) (projected int, ok bool) {
-	projected, err := key.InspectByteLenBounded(func() error { return nil })
+	// The sizing pass itself scans every scalar payload (escape counting)
+	// and visits every node, so it is billed from inside the walk: leaf
+	// bytes through the sizing state's charge hook and a small structural
+	// constant per node, letting a spent budget interrupt the sizing
+	// instead of only being billed after it completes. The rendering pass
+	// that follows re-reads everything it writes, billed as the projection
+	// below.
+	sizing := newValueStringState()
+	sizing.chargeBytes = func(n int) error {
+		if state.err != nil {
+			return state.err
+		}
+		if !chargeEqualityBytes(state, n) {
+			return state.err
+		}
+		return nil
+	}
+	projected, err := key.inspectByteLenBoundedWithState(sizing, func() error {
+		if state.err != nil {
+			return state.err
+		}
+		if !chargeEqualityBytes(state, displayKeyNodeBytes) {
+			return state.err
+		}
+		return nil
+	})
 	if err != nil {
-		state.err = err
+		if state.err == nil {
+			state.err = err
+		}
 		return 0, false
 	}
 	return projected, chargeEqualityBytes(state, projected)
 }
+
+// displayKeyNodeBytes is the structural charge per node the display-key
+// sizing walk visits, so composites of many payload-free nodes stay bounded
+// by the byte budget too.
+const displayKeyNodeBytes = 2
 
 // equalityKeyTextBytes models the bytes NewHashLookupKey's canonicalization
 // reads for key, in element order: each array level copies every child's
@@ -2182,7 +2221,7 @@ func (k *keyedHashEntry) displayKey() string {
 // renderings and slice stay live that long. The unmetered path returns the
 // entries unsorted and unrendered.
 func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (keyed []keyedHashEntry, held int, ok bool) {
-	if state.charge == nil || len(entries) < 2 {
+	if state.charge == nil {
 		keyed = make([]keyedHashEntry, len(entries))
 		for i, entry := range entries {
 			keyed[i].entry = entry
