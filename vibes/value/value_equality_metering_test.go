@@ -2,6 +2,7 @@ package value_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -561,5 +562,112 @@ func TestEqualityNilHookUnchanged(t *testing.T) {
 	}
 	if ctx.Err() != nil {
 		t.Fatalf("Err() = %v, want nil for unmetered context", ctx.Err())
+	}
+}
+
+// TestEqualityReservesRealizedDisplayKeyCapacity pins the composite-key
+// rendering reservation on the mixed legacy/typed paths: the builder holding
+// a rendered display key realizes the allocator's rounded capacity, not the
+// projected length, so the reservation must cover the rounded size on both
+// the sorted linear path (small hashes) and the map path, and a refused
+// reservation must abort the comparison through Err.
+func TestEqualityReservesRealizedDisplayKeyCapacity(t *testing.T) {
+	t.Parallel()
+
+	// 20 KiB of payload puts the rendering in a size-class range where the
+	// realized capacity measurably exceeds the projected length, so reserving
+	// the raw projection would under-account the retained builder.
+	payload := strings.Repeat("k", 20*1024)
+	compositeKey := func() value.Value {
+		return value.NewArray([]value.Value{value.NewString(payload)})
+	}
+	projected := len(compositeKey().Inspect())
+	var probe strings.Builder
+	probe.Grow(projected)
+	realized := probe.Cap()
+	if realized <= projected {
+		t.Fatalf("probe capacity %d must exceed the projection %d for the test to be meaningful", realized, projected)
+	}
+	// The rounder mirrors what the runtime installs: the capacity a builder
+	// pregrown to the request actually realizes.
+	liveRounder := func(n int) int {
+		var b strings.Builder
+		b.Grow(n)
+		return b.Cap()
+	}
+
+	newContext := func() (*value.EqualityContext, *int) {
+		var ctx value.EqualityContext
+		ctx.SetCharge(func(int) error { return nil })
+		maxSeen := new(int)
+		ctx.SetScratchReserver(func(bytes int) error {
+			*maxSeen = max(*maxSeen, bytes)
+			return nil
+		})
+		ctx.SetScratchAllocRounder(liveRounder)
+		return &ctx, maxSeen
+	}
+
+	buildTyped := func(stringKeys int) value.Value {
+		h := value.NewTypedHash(stringKeys + 1)
+		for i := range stringKeys {
+			if err := h.HashSet(value.NewString(fmt.Sprintf("k%d", i)), value.NewInt(int64(i))); err != nil {
+				t.Fatalf("HashSet: %v", err)
+			}
+		}
+		if err := h.HashSet(compositeKey(), value.NewInt(99)); err != nil {
+			t.Fatalf("HashSet: %v", err)
+		}
+		return h
+	}
+	buildLegacy := func(stringKeys int) value.Value {
+		entries := make(map[string]value.Value, stringKeys+1)
+		for i := range stringKeys + 1 {
+			entries[fmt.Sprintf("k%d", i)] = value.NewInt(int64(i))
+		}
+		return value.NewHash(entries)
+	}
+
+	// Two entries per side stay under the small-hash limit: the sorted
+	// linear path renders the composite key.
+	ctx, maxSeen := newContext()
+	if ctx.Equal(buildLegacy(1), buildTyped(1)) {
+		t.Fatal("hashes with differing keys must compare unequal")
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if *maxSeen < realized {
+		t.Fatalf("linear path reserved %d bytes, want at least the realized rendering capacity %d", *maxSeen, realized)
+	}
+
+	// Nine entries per side exceed the limit: the map path retains the
+	// rendering for the whole comparison and must reserve it too.
+	ctx, maxSeen = newContext()
+	if ctx.Equal(buildLegacy(8), buildTyped(8)) {
+		t.Fatal("hashes with differing keys must compare unequal")
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if *maxSeen < realized {
+		t.Fatalf("map path reserved %d bytes, want at least the realized rendering capacity %d", *maxSeen, realized)
+	}
+
+	boom := errors.New("no scratch headroom")
+	var failing value.EqualityContext
+	failing.SetCharge(func(int) error { return nil })
+	failing.SetScratchReserver(func(bytes int) error {
+		if bytes >= realized {
+			return boom
+		}
+		return nil
+	})
+	failing.SetScratchAllocRounder(liveRounder)
+	if failing.Equal(buildLegacy(8), buildTyped(8)) {
+		t.Fatal("a refused rendering reservation must answer false")
+	}
+	if !errors.Is(failing.Err(), boom) {
+		t.Fatalf("Err() = %v, want %v", failing.Err(), boom)
 	}
 }

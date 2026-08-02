@@ -1400,6 +1400,11 @@ type equalityState struct {
 	// key slices deterministic traversal sorts — against the caller's memory
 	// budget before each allocation. nil means unvalidated.
 	reserveScratch func(bytes int) error
+	// roundScratchAlloc maps a requested scratch allocation to the capacity
+	// the allocator actually reserves for it (size-class rounding), so a
+	// rendered display key is validated at its realized backing size. nil
+	// reserves requests at their exact size.
+	roundScratchAlloc func(bytes int) int
 	// scratchHeld accumulates the scratch bytes this walk has allocated, so
 	// nested map traversals validate their combined footprint.
 	scratchHeld int
@@ -1445,6 +1450,17 @@ func (c *EqualityContext) Eql(v, other Value) bool {
 // leaves allocations unvalidated.
 func (c *EqualityContext) SetScratchReserver(reserve func(bytes int) error) {
 	c.state.reserveScratch = reserve
+}
+
+// SetScratchAllocRounder installs the allocator projection applied when the
+// walk reserves an allocation of known size — the rendered display key of a
+// composite hash key: round receives the requested byte size and returns the
+// capacity the allocator will actually reserve for it. Reserving the
+// unrounded request would let a budget that sits between the request and the
+// realized size-class capacity admit an allocation exceeding it. A nil
+// rounder reserves requests at their exact size.
+func (c *EqualityContext) SetScratchAllocRounder(round func(bytes int) int) {
+	c.state.roundScratchAlloc = round
 }
 
 // SetCharge installs a byte charge invoked for the string and symbol payloads
@@ -1992,11 +2008,13 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState,
 	if len(right) <= smallHashEqualityEntryLimit {
 		return hashEntriesEqualByDisplayKeyLinear(left, right, state, strictKinds)
 	}
-	leftByKey, ok := hashEntriesByDisplayKey(left, state)
+	leftByKey, heldLeft, ok := hashEntriesByDisplayKey(left, state)
+	defer releaseScratchBytes(state, heldLeft)
 	if !ok {
 		return false
 	}
-	rightByKey, ok := hashEntriesByDisplayKey(right, state)
+	rightByKey, heldRight, ok := hashEntriesByDisplayKey(right, state)
+	defer releaseScratchBytes(state, heldRight)
 	if !ok {
 		return false
 	}
@@ -2035,9 +2053,9 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState,
 }
 
 // sortedEntryScratchBytes approximates one entry's structural share of the
-// mixed-path sort scratch: a keyedEntry (string header plus HashEntry) and
-// the returned sorted slice's slot. Rendered display strings are reserved
-// separately at their actual size.
+// mixed-path sort scratch: a keyedHashEntry slot (string header, rendered
+// flag, and the HashEntry copy), with slack for alignment. Rendered display
+// strings are reserved separately at their realized capacity.
 const sortedEntryScratchBytes = 128
 
 // releaseScratchBytes retires n bytes of walk scratch accounting.
@@ -2048,19 +2066,81 @@ func releaseScratchBytes(state *equalityState, n int) {
 	}
 }
 
-// sortEntriesForMeteredWalk returns entries ordered by display key when the
-// walk is metered: a legacy hash materializes its entries in randomized map
-// order, and a charged linear walk must not let iteration order decide
-// between an answer and a quota error. Keys are billed as they render, the
-// full live footprint — the pair slice, each actual rendering, and the
-// returned sorted slice — is validated as scratch, and the sort's
-// comparisons charge in batches like the key sorter's. held reports the
-// scratch bytes still accounted; the caller releases them when its walk over
-// the returned slice finishes, since the renderings and slice stay live that
-// long.
-func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (sorted []HashEntry, held int, ok bool) {
+// scratchAllocCapacity projects the bytes the allocator will actually
+// reserve for a scratch allocation of the requested size. Without an
+// installed rounder the request itself is the projection.
+func (s *equalityState) scratchAllocCapacity(bytes int) int {
+	if s.roundScratchAlloc == nil {
+		return bytes
+	}
+	return s.roundScratchAlloc(bytes)
+}
+
+// reserveRenderedKeyScratch preflights a composite key's Inspect length,
+// reserves the capacity the rendering's backing array will realize, and
+// reports the projected length. The reservation happens before the rendering
+// is built, so a budget the realized capacity would exceed rejects the
+// allocation instead of discovering the overrun afterwards.
+func reserveRenderedKeyScratch(key Value, state *equalityState, reserve func(delta int) bool) (projected int, ok bool) {
+	projected, err := key.InspectByteLenBounded(func() error { return nil })
+	if err != nil {
+		state.err = err
+		return 0, false
+	}
+	if !reserve(state.scratchAllocCapacity(projected)) {
+		return 0, false
+	}
+	return projected, true
+}
+
+// renderDisplayKeyPregrown renders key's Inspect form into a builder pregrown
+// to the projected length, so the rendering takes exactly one allocation of
+// the capacity the caller reserved instead of a doubling growth that retains
+// — and transiently allocates — more than was validated. projected must come
+// from InspectByteLenBounded.
+func renderDisplayKeyPregrown(key Value, projected int) string {
+	var rendered strings.Builder
+	rendered.Grow(projected)
+	key.WriteInspectTo(&rendered)
+	return rendered.String()
+}
+
+// keyedHashEntry pairs a hash entry with its rendered display key. The
+// metered mixed-hash walk renders every key up front — under reservation —
+// and reuses the rendering for the duplicate screen and each comparison; the
+// unmetered walk leaves entries unrendered and renders on first use.
+type keyedHashEntry struct {
+	display  string
+	rendered bool
+	entry    HashEntry
+}
+
+func (k *keyedHashEntry) displayKey() string {
+	if !k.rendered {
+		k.display = HashDisplayKey(k.entry.Key)
+		k.rendered = true
+	}
+	return k.display
+}
+
+// sortEntriesForMeteredWalk returns entries paired with their rendered
+// display keys, ordered by that key when the walk is metered: a legacy hash
+// materializes its entries in randomized map order, and a charged linear
+// walk must not let iteration order decide between an answer and a quota
+// error. Keys are billed as they render, the full live footprint — the pair
+// slice and each rendering at its realized backing capacity — is validated
+// as scratch, and the sort's comparisons charge in batches like the key
+// sorter's. held reports the scratch bytes still accounted; the caller
+// releases them when its walk over the returned slice finishes, since the
+// renderings and slice stay live that long. The unmetered path returns the
+// entries unsorted and unrendered.
+func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (keyed []keyedHashEntry, held int, ok bool) {
 	if state.charge == nil || len(entries) < 2 {
-		return entries, 0, true
+		keyed = make([]keyedHashEntry, len(entries))
+		for i, entry := range entries {
+			keyed[i].entry = entry
+		}
+		return keyed, 0, true
 	}
 	reserve := func(delta int) bool {
 		if state.reserveScratch == nil {
@@ -2077,38 +2157,34 @@ func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (sorte
 	if !reserve(len(entries) * sortedEntryScratchBytes) {
 		return nil, held, false
 	}
-	type keyedEntry struct {
-		display string
-		entry   HashEntry
-	}
-	keyed := make([]keyedEntry, len(entries))
+	keyed = make([]keyedHashEntry, len(entries))
 	for i, entry := range entries {
 		if !chargeEqualityKeyText(state, entry.Key) {
 			return nil, held, false
 		}
+		display := ""
 		switch entry.Key.Kind() {
 		case KindString, KindSymbol:
 			// HashDisplayKey aliases the key's own payload, which the
 			// memory estimator already counts; only the string header is
 			// new, covered by the structural share.
+			display = HashDisplayKey(entry.Key)
 		default:
 			// A composite key renders through Inspect, which can be
-			// arbitrarily large; preflight the size and reserve before the
-			// rendering is built, not after.
-			projected, err := entry.Key.InspectByteLenBounded(func() error { return nil })
-			if err != nil {
-				state.err = err
+			// arbitrarily large; preflight the size and reserve the
+			// rendering's realized capacity before it is built, not
+			// after.
+			projected, ok := reserveRenderedKeyScratch(entry.Key, state, reserve)
+			if !ok {
 				return nil, held, false
 			}
-			if !reserve(projected) {
-				return nil, held, false
-			}
+			display = renderDisplayKeyPregrown(entry.Key, projected)
 		}
-		keyed[i] = keyedEntry{HashDisplayKey(entry.Key), entry}
+		keyed[i] = keyedHashEntry{display: display, rendered: true, entry: entry}
 	}
 	const sortChargeBatchBytes = 4096
 	pending := 0
-	slices.SortFunc(keyed, func(a, b keyedEntry) int {
+	slices.SortFunc(keyed, func(a, b keyedHashEntry) int {
 		if state.err != nil {
 			return len(a.display) - len(b.display)
 		}
@@ -2144,11 +2220,7 @@ func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (sorte
 			return nil, held, false
 		}
 	}
-	sorted = make([]HashEntry, len(entries))
-	for i, k := range keyed {
-		sorted[i] = k.entry
-	}
-	return sorted, held, true
+	return keyed, held, true
 }
 
 func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
@@ -2165,24 +2237,26 @@ func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, state *equality
 	return hashEntriesEqualByDisplayKeyLinearOrdered(sortedLeft, sortedRight, state, strictKinds)
 }
 
-func hashEntriesEqualByDisplayKeyLinearOrdered(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
+func hashEntriesEqualByDisplayKeyLinearOrdered(left, right []keyedHashEntry, state *equalityState, strictKinds bool) bool {
 	if hashEntriesHaveDuplicateDisplayKey(left, state) || hashEntriesHaveDuplicateDisplayKey(right, state) {
 		return false
 	}
-	for _, leftEntry := range left {
-		if !chargeEqualityKeyText(state, leftEntry.Key) {
+	for l := range left {
+		leftEntry := &left[l]
+		if !chargeEqualityKeyText(state, leftEntry.entry.Key) {
 			return false
 		}
-		key := HashDisplayKey(leftEntry.Key)
+		key := leftEntry.displayKey()
 		found := false
-		for _, rightEntry := range right {
-			if !chargeEqualityKeyText(state, rightEntry.Key) {
+		for r := range right {
+			rightEntry := &right[r]
+			if !chargeEqualityKeyText(state, rightEntry.entry.Key) {
 				return false
 			}
-			if HashDisplayKey(rightEntry.Key) != key {
+			if rightEntry.displayKey() != key {
 				continue
 			}
-			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
+			if !valuesEqualWithKinds(leftEntry.entry.Value, rightEntry.entry.Value, state, strictKinds) {
 				return false
 			}
 			found = true
@@ -2195,20 +2269,20 @@ func hashEntriesEqualByDisplayKeyLinearOrdered(left, right []HashEntry, state *e
 	return true
 }
 
-func hashEntriesHaveDuplicateDisplayKey(entries []HashEntry, state *equalityState) bool {
-	for i, entry := range entries {
-		if !chargeEqualityKeyText(state, entry.Key) {
+func hashEntriesHaveDuplicateDisplayKey(entries []keyedHashEntry, state *equalityState) bool {
+	for i := range entries {
+		if !chargeEqualityKeyText(state, entries[i].entry.Key) {
 			return false
 		}
-		key := HashDisplayKey(entry.Key)
-		for _, other := range entries[i+1:] {
-			// A non-string candidate renders its display key through
-			// Inspect, which reads it in full; charge before rendering, as
-			// the outer entry is.
-			if !chargeEqualityKeyText(state, other.Key) {
+		key := entries[i].displayKey()
+		for j := i + 1; j < len(entries); j++ {
+			// The metered walk rendered every display key under reservation
+			// before the entries arrived here; the charge still bills each
+			// occurrence's key-text read, as the outer entry's does.
+			if !chargeEqualityKeyText(state, entries[j].entry.Key) {
 				return false
 			}
-			if HashDisplayKey(other.Key) == key {
+			if entries[j].displayKey() == key {
 				return true
 			}
 		}
@@ -2250,19 +2324,45 @@ func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, state *equalityS
 	return true
 }
 
-func hashEntriesByDisplayKey(entries []HashEntry, state *equalityState) (map[string]HashEntry, bool) {
-	byKey := make(map[string]HashEntry, len(entries))
+// hashEntriesByDisplayKey indexes entries by rendered display key. On a
+// metered walk each composite key's rendering is reserved at its realized
+// capacity before it is built, since the map retains the renderings for the
+// caller's whole comparison; held reports the bytes still accounted, which
+// the caller releases when it drops the map.
+func hashEntriesByDisplayKey(entries []HashEntry, state *equalityState) (byKey map[string]HashEntry, held int, ok bool) {
+	byKey = make(map[string]HashEntry, len(entries))
+	reserve := func(delta int) bool {
+		if state.reserveScratch == nil {
+			return true
+		}
+		state.scratchHeld += delta
+		held += delta
+		if err := state.reserveScratch(state.scratchHeld); err != nil {
+			state.err = err
+			return false
+		}
+		return true
+	}
 	for _, entry := range entries {
 		if !chargeEqualityKeyText(state, entry.Key) {
-			return nil, false
+			return nil, held, false
 		}
-		key := HashDisplayKey(entry.Key)
+		key := ""
+		if state.charge == nil || entry.Key.Kind() == KindString || entry.Key.Kind() == KindSymbol {
+			key = HashDisplayKey(entry.Key)
+		} else {
+			projected, ok := reserveRenderedKeyScratch(entry.Key, state, reserve)
+			if !ok {
+				return nil, held, false
+			}
+			key = renderDisplayKeyPregrown(entry.Key, projected)
+		}
 		if _, exists := byKey[key]; exists {
-			return nil, false
+			return nil, held, false
 		}
 		byKey[key] = entry
 	}
-	return byKey, true
+	return byKey, held, true
 }
 
 func hashEntriesByLookupKey(entries []HashEntry, state *equalityState) (map[HashLookupKey]HashEntry, bool) {

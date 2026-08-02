@@ -28,6 +28,10 @@ func (exec *Execution) meteredEquality() EqualityContext {
 	var ctx EqualityContext
 	ctx.SetCharge(exec.stringScanChargeFunc())
 	ctx.SetScratchReserver(exec.equalityScratchValidatorFunc())
+	// Rendered display keys are reserved at the capacity the allocator
+	// realizes for the pregrown builder, not the projected length; see
+	// projectedBuilderCap for why the size-class gap matters.
+	ctx.SetScratchAllocRounder(roundedAllocSize)
 	return ctx
 }
 
