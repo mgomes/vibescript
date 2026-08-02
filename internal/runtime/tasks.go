@@ -332,6 +332,15 @@ func (group *taskGroup) spawnUnary(exec *Execution, functionName string, arg Val
 }
 
 func (group *taskGroup) enqueue(exec *Execution, functionName string, taskArgs []Value, inlineArg Value, hasInlineArg bool, taskKwargs map[string]Value) (*taskHandle, error) {
+	// The spawn entry check predates the payload clone, and a worker can
+	// publish its exhaustion — or an ordinary failure — while the clone
+	// runs. Re-observe before admission, so at most one clone's worth of
+	// work races the publication and no job is enqueued after an observed
+	// kill; a job that slips past a concurrent cancellation instead dies in
+	// runJob's context check before any worker budget is spent.
+	if err := exec.latchGroupTaskExhaustion(group, group.err()); err != nil {
+		return nil, err
+	}
 	ctx := exec.Context()
 
 	handle := &taskHandle{

@@ -682,6 +682,34 @@ func TestGroupRetainsExhaustionBehindFirstError(t *testing.T) {
 	}
 }
 
+// TestEnqueueReobservesExhaustionAfterClone pins the admission-side gap: the
+// spawn entry check predates the payload clone, so a worker exhaustion
+// published during the clone must be re-observed before the job is admitted
+// to the queue — otherwise the enqueue spends a fresh worker budget after
+// the kill.
+func TestEnqueueReobservesExhaustionAfterClone(t *testing.T) {
+	t.Parallel()
+
+	group := &taskGroup{cancel: func() {}, jobs: make(chan *taskJob, 1)}
+	worker := &Execution{ctx: context.Background(), quota: 1}
+	worker.steps = 1
+	requireErrorIs(t, worker.step(), errStepQuotaExceeded)
+	group.recordExhaustion(fmt.Errorf("task work failed: %w", worker.exhausted))
+
+	parent := &Execution{ctx: context.Background()}
+	handle, err := group.enqueue(parent, "f", nil, NewInt(1), true, nil)
+	if err == nil || handle != nil {
+		t.Fatalf("enqueue = (%v, %v), want a refused admission after an observed exhaustion", handle, err)
+	}
+	requireErrorContains(t, err, "task work failed")
+	if len(group.jobs) != 0 {
+		t.Fatal("a refused admission must not enqueue a job")
+	}
+	if parent.exhausted == nil {
+		t.Fatal("the parent latch was not set by the re-observation")
+	}
+}
+
 // TestObservedExhaustionStopsSpawnsBeforeGroupError pins the publish window a
 // worker leaves between recordExhaustion and recordErr: a spawn that reads a
 // nil group error while the exhaustion is already visible must be refused,
