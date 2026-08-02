@@ -472,14 +472,14 @@ func authenticatedExhaustionFrames(err error) *RuntimeError {
 		if e == nil {
 			continue
 		}
-		if re, ok := e.(*RuntimeError); ok {
+		if re, ok := e.(*RuntimeError); ok { //nolint:errorlint // deliberate node-by-node tree walk: errors.As stops at the first RuntimeError, which may be an unrelated branch of an aggregate
 			if re.latchedExhaustion {
 				return re
 			}
 			// RuntimeError.Unwrap returns nil by design; nothing below it.
 			continue
 		}
-		switch u := e.(type) {
+		switch u := e.(type) { //nolint:errorlint // deliberate manual unwrap of both single and multi wrappers for the same reason
 		case interface{ Unwrap() error }:
 			queue = append(queue, u.Unwrap())
 		case interface{ Unwrap() []error }:
