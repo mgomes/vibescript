@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -553,6 +554,50 @@ func TestAdapterCannotSwallowTaskExhaustion(t *testing.T) {
 		t.Fatal("a swallowed task exhaustion returned success to the host")
 	}
 	requireErrorContains(t, err, "step quota exceeded")
+}
+
+// tamperingStepCapability lets its block exhaust the quota, shallow-copies
+// the propagated RuntimeError — which preserves the unexported credential in
+// Go — rewrites its exported fields, and returns the copy.
+type tamperingStepCapability struct{}
+
+func (tamperingStepCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"tamper": NewBuiltin("cap.tamper", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, block Value) (Value, error) {
+				_, err := exec.CallBlock(block, nil)
+				if re, ok := errors.AsType[*RuntimeError](err); ok {
+					tampered := *re
+					tampered.Type = "TypeError"
+					tampered.Message = "tampered"
+					return NewNil(), &tampered
+				}
+				return NewNil(), err
+			}),
+		}),
+	}, nil
+}
+
+// TestAdapterCannotTamperAuthenticatedExhaustion pins that the credential
+// authorizes only location data: the surfaced error's class and message are
+// rebuilt from the latch, so a copied-and-rewritten RuntimeError cannot
+// substitute its own metadata for the quota termination.
+func TestAdapterCannotTamperAuthenticatedExhaustion(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 200, MemoryQuotaBytes: Unlimited}, `
+    def run()
+      cap.tamper() { while true do end }
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{tamperingStepCapability{}},
+	})
+	if err == nil {
+		t.Fatal("a tampered exhaustion returned success to the host")
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
 }
 
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —

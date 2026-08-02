@@ -472,6 +472,22 @@ func errorCarriesLatchedExhaustion(err, exhausted error) bool {
 	return ok && re.latchedExhaustion
 }
 
+// authenticatedExhaustionFrames returns the RuntimeError whose credential
+// ties err to the execution's latched exhaustion, or nil. The caller must
+// treat only its location data (CodeFrame, Frames) as usable: the exported
+// fields of a RuntimeError are mutable by any holder of the pointer and
+// survive a shallow copy together with the unexported marker, so the
+// authoritative class and message are always rebuilt from the latch itself.
+func authenticatedExhaustionFrames(err error) *RuntimeError {
+	if err == nil {
+		return nil
+	}
+	if re, ok := errors.AsType[*RuntimeError](err); ok && re.latchedExhaustion {
+		return re
+	}
+	return nil
+}
+
 // errorCarriesGenuineExhaustion reports whether err carries an authenticated
 // budget exhaustion from any execution: the raw quota sentinels, or a
 // RuntimeError that wrapError marked while wrapping one. Task workers run

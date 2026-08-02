@@ -299,14 +299,24 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// Step/CallBlock surface must not decide this call's outcome: a
 		// returned value is rejected (a final-expression adapter call would
 		// never reach another charge), and a replacement error is overridden
-		// so the host receives the genuine quota termination. An error is
-		// kept only when it demonstrably carries this execution's exhaustion
-		// — the raw latched value, a wrap of it, or a RuntimeError that
-		// wrapError marked while wrapping it — so a properly propagated
-		// quota error keeps the block statement's position and frames while
-		// neither message text nor a synthetic LimitError can stand in.
-		if exec.exhausted != nil && !errorCarriesLatchedExhaustion(err, exec.exhausted) {
-			err = exec.exhausted
+		// so the host receives the genuine quota termination. When the
+		// propagating error carries the credential, the surfaced error is
+		// rebuilt rather than trusted: its exported fields are mutable (and a
+		// shallow copy keeps the unexported marker), so the class and message
+		// come from the latch and only the block statement's advisory
+		// location data is retained from the propagated object.
+		if exec.exhausted != nil {
+			if re := authenticatedExhaustionFrames(err); re != nil {
+				err = &RuntimeError{
+					Type:              classifyRuntimeErrorType(exec.exhausted),
+					Message:           exec.exhausted.Error(),
+					CodeFrame:         re.CodeFrame,
+					Frames:            re.Frames,
+					latchedExhaustion: true,
+				}
+			} else if !errorCarriesLatchedExhaustion(err, exec.exhausted) {
+				err = exec.exhausted
+			}
 		}
 		returnProof := exec.capabilityReturnProof
 		if returnProof.recorded || savedReturnProof.recorded {
