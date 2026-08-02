@@ -151,6 +151,16 @@ func TestGrowthLoopEstimateMatchesUncachedWalk(t *testing.T) {
 			arg:  func(int) Value { return NewNil() },
 		},
 		{
+			// Every value is the same immutable string (a literal's backing
+			// is a shared Go constant), so the reference walk counts it once
+			// while per-entry sessions would bill it per pair without the
+			// entry-local dedup bound.
+			name: "literal with repeated immutable values",
+			src: "def w()\n  \"wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww\"\nend\n\n" +
+				"def run(a, n)\n  h = {a: w(), b: w(), c: w(), d: w(), e: w(), f: w(), g: w(), h: w()}\n  h.length\nend",
+			arg: func(int) Value { return NewNil() },
+		},
+		{
 			name: "literal inside block region",
 			src:  "def run(a, n)\n  out = a.map { |x| {id: x, name: \"x\"} }\n  out.length\nend",
 			arg:  loopMemoArray,

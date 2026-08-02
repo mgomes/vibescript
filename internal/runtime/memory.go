@@ -1621,7 +1621,9 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 type hashLiteralBuildAccumulator struct {
 	exec *Execution
 	// est is the snapshot mode's private estimator, seeded with a reference
-	// walk at construction; nil in sessions mode.
+	// walk at construction. In sessions mode it is instead a lazily built
+	// entry-local estimator holding only the payloads earlier entries
+	// retained, the second bound of addDistinctEntry's dual walk.
 	est *memoryEstimator
 	// base holds the structural constants (wrapper, map base, backing slots)
 	// in sessions mode, plus the construction-time reference walk in snapshot
@@ -1683,11 +1685,23 @@ func (acc *hashLiteralBuildAccumulator) addDistinctEntry(lookupKey HashLookupKey
 
 	if acc.sessions {
 		s := acc.exec.beginBaseWalk()
-		entry := acc.typedEntryStructuralBytes()
-		entry = saturatingAdd(entry, hashLiteralKeyPayload(s.est, lookupKey, key))
-		entry = saturatingAdd(entry, s.est.valuePayload(val))
-		used := saturatingAdd(saturatingAdd(s.base, acc.base), saturatingAdd(acc.retained, entry))
+		sessionPayload := saturatingAdd(hashLiteralKeyPayload(s.est, lookupKey, key), s.est.valuePayload(val))
+		liveBase := s.base
 		s.close()
+		// The session dedups this entry against the reachable base but rolls
+		// its identities back, so a payload repeated across entries — a
+		// helper returning the same immutable string for several values —
+		// would be charged once per entry while the reference walk counts it
+		// once. A persistent entry-local estimator provides the second
+		// bound: it dedups against the payloads earlier entries already
+		// retained. Each walk over-approximates the true marginal (which
+		// dedups against the union), so the smaller of the two is charged.
+		if acc.est == nil {
+			acc.est = newMemoryEstimator()
+		}
+		localPayload := saturatingAdd(hashLiteralKeyPayload(acc.est, lookupKey, key), acc.est.valuePayload(val))
+		entry := saturatingAdd(acc.typedEntryStructuralBytes(), min(sessionPayload, localPayload))
+		used := saturatingAdd(saturatingAdd(liveBase, acc.base), saturatingAdd(acc.retained, entry))
 		if used > acc.exec.memoryQuota {
 			return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 		}
