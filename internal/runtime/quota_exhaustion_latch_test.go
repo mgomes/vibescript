@@ -459,6 +459,59 @@ func TestAdapterErrorEchoingQuotaMessageIsOverridden(t *testing.T) {
 	}
 }
 
+// TestTaskWorkerExhaustionIsNotRescuable pins the task boundary: a worker
+// runs under its own execution, so its genuine quota kill reaches the parent
+// as a wrapped error rather than through the parent's latch — and the rescue
+// gate must refuse it by its unforgeable credential, or a surrounding
+// rescue(LimitError) absorbs a genuine termination.
+func TestTaskWorkerExhaustionIsNotRescuable(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 5_000, MemoryQuotaBytes: Unlimited}, `
+    def spin(x)
+      while true
+      end
+    end
+
+    def run()
+      begin
+        Tasks.map([1], with: :spin)
+      rescue(LimitError)
+        "rescued"
+      end
+    end
+    `)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "step quota exceeded")
+}
+
+// TestTaskWorkerForgedLimitErrorRemainsRescuable pins the boundary of the
+// task credential: a worker that raises LimitError itself was not quota
+// killed, so the parent may still rescue it.
+func TestTaskWorkerForgedLimitErrorRemainsRescuable(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100_000, MemoryQuotaBytes: Unlimited}, `
+    def fail(x)
+      raise LimitError, "synthetic"
+    end
+
+    def run()
+      begin
+        Tasks.map([1], with: :fail)
+      rescue(LimitError)
+        "rescued"
+      end
+    end
+    `)
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got.String() != "rescued" {
+		t.Fatalf("run() = %q, want %q", got.String(), "rescued")
+	}
+}
+
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —
 // here the comparison memo reservation, which falls back to memo-less
 // comparison when the memo does not fit — never latch the execution: the

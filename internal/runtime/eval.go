@@ -5018,8 +5018,12 @@ func (exec *Execution) canRescueRuntimeError(err error, rescueTy *TypeExpr) bool
 	// matter which error value is propagating or how the clause is typed. The
 	// latch, not the error's identity, carries the verdict because wrapError
 	// flattens the quota sentinels into ordinary LimitError-classified
-	// RuntimeErrors that a forged raise LimitError could imitate.
+	// RuntimeErrors that a forged raise LimitError could imitate. An error
+	// that itself carries an authenticated exhaustion is refused too: a task
+	// worker's quota kill arrives from a separate execution whose latch the
+	// parent cannot see, and rescuing it would absorb a genuine termination.
 	return exec.exhausted == nil &&
+		!errorCarriesGenuineExhaustion(err) &&
 		!isLoopControlSignal(err) &&
 		!isRescueRetrySignal(err) &&
 		!isHostControlSignal(err) &&

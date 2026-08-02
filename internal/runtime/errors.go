@@ -471,3 +471,22 @@ func errorCarriesLatchedExhaustion(err, exhausted error) bool {
 	re, ok := errors.AsType[*RuntimeError](err)
 	return ok && re.latchedExhaustion
 }
+
+// errorCarriesGenuineExhaustion reports whether err carries an authenticated
+// budget exhaustion from any execution: the raw quota sentinels, or a
+// RuntimeError that wrapError marked while wrapping one. Task workers run
+// under their own executions with their own latches, so a worker's genuine
+// kill reaches the parent as a wrapped error rather than through the parent's
+// latch — the rescue gate refuses it by this credential instead. Recursion
+// caps, stdlib guards, and script-raised LimitErrors carry neither the
+// sentinels nor the marker, so they stay rescuable.
+func errorCarriesGenuineExhaustion(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) || errors.Is(err, errOutputLimitExceeded) {
+		return true
+	}
+	re, ok := errors.AsType[*RuntimeError](err)
+	return ok && re.latchedExhaustion
+}
