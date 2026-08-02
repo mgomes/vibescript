@@ -1657,14 +1657,23 @@ type hashLiteralEntry struct {
 // that may mutate baseline containers in place, so an alias such as
 // `big = ...; {a: big}` should be charged like the final hash: the new map
 // structure and key bytes are fresh, while big's backing remains counted once.
-func newHashLiteralBuildAccumulator(exec *Execution) *hashLiteralBuildAccumulator {
+// sessionHashLiteralMaxPairs caps sessions mode by literal width. Each
+// session replays the earlier entries' identities to deduplicate against the
+// union, so a k-pair literal does O(k²) replay probes; for the small literals
+// loops build that is a handful of map hits, while a generated thousand-pair
+// literal would burn quadratic CPU the step quota never sees. Wide literals
+// take the snapshot mode instead — one reference walk per literal, master's
+// behavior, linear in the literal's own size.
+const sessionHashLiteralMaxPairs = 64
+
+func newHashLiteralBuildAccumulator(exec *Execution, pairs int) *hashLiteralBuildAccumulator {
 	acc := &hashLiteralBuildAccumulator{exec: exec}
 	if exec.memoryQuota <= 0 {
 		return acc
 	}
 
 	acc.base = estimatedValueBytes + estimatedMapBaseBytes + estimatedHashDataBytes
-	if exec.baseWalkSessionsAreCheap() {
+	if pairs <= sessionHashLiteralMaxPairs && exec.baseWalkSessionsAreCheap() {
 		acc.sessions = true
 		return acc
 	}
