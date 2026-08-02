@@ -125,6 +125,34 @@ func TestDeepArrayKeyChargesPerLevel(t *testing.T) {
 	}
 }
 
+// The tally capacity sampler canonicalizes the leading elements of a large
+// blockless receiver; its key charge must land before that work and surface
+// quota errors as quota errors, not as unsupported-key failures.
+func TestTallySamplerChargesBeforeCanonicalizing(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 40, MemoryQuotaBytes: Unlimited}, `
+    def run(s)
+      a = [[s]]
+      j = 0
+      while j < 300
+        a << 1
+        j = j + 1
+      end
+      a.tally.length
+    end
+    `)
+	hay := NewString(strings.Repeat("ab", 1<<15))
+	_, err := script.Call(context.Background(), "run", []Value{hay}, CallOptions{})
+	if err == nil {
+		t.Fatal("expected the sampling charge to trip the quota")
+	}
+	requireErrorContains(t, err, "quota exceeded")
+	if strings.Contains(err.Error(), "unsupported hash key") {
+		t.Fatalf("quota error mislabeled as unsupported key: %v", err)
+	}
+}
+
 // Canonicalization stops at the first unsupported element, never reading
 // what follows, and an argumentless difference only shallow-copies — both
 // must stay flat-cost however large the string after them is.

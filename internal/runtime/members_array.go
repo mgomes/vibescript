@@ -452,8 +452,13 @@ func arrayMemberGrouping(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			hasBlock := valueBlock(block) != nil
-			initialCapacity, err := arrayTallyInitialCapacity(arr, hasBlock)
+			initialCapacity, precharged, err := arrayTallyInitialCapacity(exec, arr, hasBlock)
 			if err != nil {
+				// Sampling's key charge surfaces quota errors as themselves;
+				// only canonicalization failures take the unsupported-key label.
+				if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) {
+					return NewNil(), err
+				}
 				return NewNil(), fmt.Errorf("array.tally value is unsupported hash key: %w", err)
 			}
 			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
@@ -503,8 +508,12 @@ func arrayMemberGrouping(property string) (Value, error) {
 					}
 					keyValue = mapped
 				}
-				if err := exec.chargeValueKeySteps(keyValue); err != nil {
-					return NewNil(), err
+				// The capacity sampler already billed the leading elements it
+				// canonicalized.
+				if i >= precharged || hasBlock {
+					if err := exec.chargeValueKeySteps(keyValue); err != nil {
+						return NewNil(), err
+					}
 				}
 				key, err := newHashAggregationKey(keyValue)
 				if err != nil {
@@ -908,13 +917,17 @@ func newHashAggregationKey(val Value) (hashAggregationKey, error) {
 	}
 }
 
-func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
+// arrayTallyInitialCapacity sizes the tally's maps, sampling the first
+// elements of a large blockless receiver. precharged reports how many leading
+// elements had their key cost billed during sampling, so the main loop does
+// not charge them again.
+func arrayTallyInitialCapacity(exec *Execution, arr []Value, hasBlock bool) (capacity, precharged int, err error) {
 	length := len(arr)
 	if length <= 256 {
-		return length, nil
+		return length, 0, nil
 	}
 	if hasBlock {
-		return 256, nil
+		return 256, 0, nil
 	}
 
 	// Sample direct values only; blocks may be expensive or effectful, so
@@ -923,9 +936,14 @@ func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
 	var keys [sampleLimit]hashAggregationKey
 	distinct := 0
 	for _, item := range arr[:sampleLimit] {
+		// Sampling canonicalizes the key exactly as the main loop will;
+		// charge before that work, not after.
+		if err := exec.chargeValueKeySteps(item); err != nil {
+			return 0, 0, err
+		}
 		key, err := newHashAggregationKey(item)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		found := false
 		for i := range distinct {
@@ -940,12 +958,12 @@ func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
 		}
 	}
 	if distinct == sampleLimit {
-		return length, nil
+		return length, sampleLimit, nil
 	}
 	if distinct <= 8 {
-		return 16, nil
+		return 16, sampleLimit, nil
 	}
-	return 256, nil
+	return 256, sampleLimit, nil
 }
 
 // arrayPositiveSliceSize validates the single argument shared by each_slice as a

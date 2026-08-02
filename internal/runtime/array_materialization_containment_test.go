@@ -394,7 +394,7 @@ func TestArrayTallyReservesCountMapDuringBlockCalls(t *testing.T) {
 	block := keyIdentityBlock()
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
-	initialCapacity, err := arrayTallyInitialCapacity(receiver.Array(), true)
+	initialCapacity, _, err := arrayTallyInitialCapacity(probe, receiver.Array(), true)
 	if err != nil {
 		t.Fatalf("arrayTallyInitialCapacity(block) error = %v", err)
 	}
@@ -430,7 +430,7 @@ func TestArrayTallyDoesNotRechargeReceiverOwnedKeyPayload(t *testing.T) {
 	block := NewNil()
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
-	initialCapacity, err := arrayTallyInitialCapacity(receiver.Array(), false)
+	initialCapacity, _, err := arrayTallyInitialCapacity(probe, receiver.Array(), false)
 	if err != nil {
 		t.Fatalf("arrayTallyInitialCapacity(blockless) error = %v", err)
 	}
