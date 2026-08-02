@@ -297,10 +297,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		exec.builtinDepth--
 		// A capability adapter that ignored a quota error from the exported
 		// Step/CallBlock surface and returned a value must not have that
-		// result accepted: consult the latch before trusting either outcome,
-		// so exhaustion surfaces here instead of resting on the next charge —
-		// which a final-expression adapter call would never reach.
-		if exec.exhausted != nil {
+		// result accepted: consult the latch before trusting a success, so
+		// exhaustion surfaces here instead of resting on the next charge —
+		// which a final-expression adapter call would never reach. An error
+		// the adapter did propagate is kept as-is: it already carries the
+		// block statement's position and frames, which the raw latched error
+		// lacks, and the latch guarantees it cannot be rescued downstream.
+		if err == nil && exec.exhausted != nil {
 			err = exec.exhausted
 		}
 		returnProof := exec.capabilityReturnProof
