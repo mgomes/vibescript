@@ -1996,7 +1996,92 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState,
 	return true
 }
 
+// sortEntriesForMeteredWalk returns entries ordered by display key when the
+// walk is metered: a legacy hash materializes its entries in randomized map
+// order, and a charged linear walk must not let iteration order decide
+// between an answer and a quota error. Keys are billed as they render, the
+// pair slice is validated as scratch, and the sort's comparisons — over
+// already-billed display strings — charge in batches like the key sorter's.
+func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) ([]HashEntry, bool) {
+	if state.charge == nil || len(entries) < 2 {
+		return entries, true
+	}
+	if state.reserveScratch != nil {
+		state.scratchHeld += len(entries) * 2 * keySortScratchEntryBytes
+		if err := state.reserveScratch(state.scratchHeld); err != nil {
+			state.err = err
+			return nil, false
+		}
+		defer releaseKeySortScratch(state, len(entries)*2)
+	}
+	type keyedEntry struct {
+		display string
+		entry   HashEntry
+	}
+	keyed := make([]keyedEntry, len(entries))
+	for i, entry := range entries {
+		if !chargeEqualityKeyText(state, entry.Key) {
+			return nil, false
+		}
+		keyed[i] = keyedEntry{HashDisplayKey(entry.Key), entry}
+	}
+	const sortChargeBatchBytes = 4096
+	pending := 0
+	slices.SortFunc(keyed, func(a, b keyedEntry) int {
+		if state.err != nil {
+			return len(a.display) - len(b.display)
+		}
+		n := min(len(a.display), len(b.display))
+		i := 0
+		for i < n && a.display[i] == b.display[i] {
+			i++
+		}
+		read := i + 1
+		if read > n {
+			read = n
+		}
+		if pending += read; pending >= sortChargeBatchBytes {
+			if err := state.charge(pending); err != nil {
+				state.err = err
+			}
+			pending = 0
+		}
+		if i < n {
+			if a.display[i] < b.display[i] {
+				return -1
+			}
+			return 1
+		}
+		return len(a.display) - len(b.display)
+	})
+	if state.err != nil {
+		return nil, false
+	}
+	if pending > 0 {
+		if err := state.charge(pending); err != nil {
+			state.err = err
+			return nil, false
+		}
+	}
+	sorted := make([]HashEntry, len(entries))
+	for i, k := range keyed {
+		sorted[i] = k.entry
+	}
+	return sorted, true
+}
+
 func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
+	var ok bool
+	if left, ok = sortEntriesForMeteredWalk(left, state); !ok {
+		return false
+	}
+	if right, ok = sortEntriesForMeteredWalk(right, state); !ok {
+		return false
+	}
+	return hashEntriesEqualByDisplayKeyLinearOrdered(left, right, state, strictKinds)
+}
+
+func hashEntriesEqualByDisplayKeyLinearOrdered(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
 	if hashEntriesHaveDuplicateDisplayKey(left, state) || hashEntriesHaveDuplicateDisplayKey(right, state) {
 		return false
 	}

@@ -489,6 +489,50 @@ func TestEqualityScratchReleasesBetweenSiblings(t *testing.T) {
 	}
 }
 
+// TestMixedHashEqualityIsDeterministic pins the mixed legacy/typed path: a
+// legacy hash's entries materialize in randomized map order, and under a
+// quota covering one long comparison but not two, the same comparison must
+// not alternate between false and a charge failure across runs.
+func TestMixedHashEqualityIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("x", 4096)
+	buildLegacy := func() value.Value {
+		return value.NewHash(map[string]value.Value{
+			"a": value.NewString(long),
+			"b": value.NewString("short-one"),
+		})
+	}
+	buildTyped := func() value.Value {
+		h := value.NewTypedHash(2)
+		if err := h.HashSet(value.NewString("a"), value.NewString(long)); err != nil {
+			t.Fatalf("HashSet: %v", err)
+		}
+		if err := h.HashSet(value.NewString("b"), value.NewString("short-two")); err != nil {
+			t.Fatalf("HashSet: %v", err)
+		}
+		return h
+	}
+
+	var firstTotal int
+	for i := range 50 {
+		ctx, total := meteredContext()
+		if ctx.Equal(buildLegacy(), buildTyped()) {
+			t.Fatal("hashes with a differing entry must compare unequal")
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("Err() = %v, want nil", ctx.Err())
+		}
+		if i == 0 {
+			firstTotal = *total
+			continue
+		}
+		if *total != firstTotal {
+			t.Fatalf("run %d charged %d bytes, run 0 charged %d; mixed equality must be deterministic", i, *total, firstTotal)
+		}
+	}
+}
+
 // TestEqualityNilHookUnchanged pins that the zero context and the plain
 // Value.Equal / Value.Eql entry points stay byte-identical in behavior with
 // no hook installed.
