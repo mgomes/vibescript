@@ -415,6 +415,13 @@ func valueKeyCanonicalizationCost(key Value, onPath map[uintptr]struct{}, budget
 		w, b := valueKeyCanonicalizationCost(elem, onPath, budget)
 		words = saturatingAdd(words, w)
 		bytes = saturatingAdd(bytes, b)
+		// A spent budget means the cost is already saturated; visiting the
+		// remaining elements would be exactly the proportional work the
+		// budget exists to avoid.
+		if *budget <= 0 {
+			bytes = saturatingAdd(bytes, math.MaxInt/2)
+			break
+		}
 	}
 	if id != 0 {
 		delete(onPath, id)

@@ -1546,6 +1546,12 @@ func equalityKeyTextBytes(key Value, onPath map[uintptr]struct{}, budget *int) i
 				bytes = math.MaxInt / 2
 				break
 			}
+			// A spent budget means the cost is already saturated; stop
+			// rather than visit every remaining element for free.
+			if *budget <= 0 {
+				bytes = math.MaxInt / 2
+				break
+			}
 		}
 		if id != 0 {
 			delete(onPath, id)
@@ -1750,6 +1756,14 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 			}
 		}
 		for key, leftValue := range left {
+			// The map lookup hashes the attribute name in full, exactly as
+			// hashMapsEqual's does; charge it the same way.
+			if state.charge != nil {
+				if err := state.charge(len(key)); err != nil {
+					state.err = err
+					return false
+				}
+			}
 			rightValue, ok := right[key]
 			if !ok {
 				return false

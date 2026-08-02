@@ -256,6 +256,26 @@ func TestEqualityChargeBillsArrayKeys(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeBillsObjectKeys pins that object attribute names are
+// billed like untyped hash keys: the comparison's map probe hashes the whole
+// name, so two objects sharing a long attribute name must charge its bytes.
+func TestEqualityChargeBillsObjectKeys(t *testing.T) {
+	t.Parallel()
+
+	name := strings.Repeat("k", 4096)
+	build := func() value.Value {
+		return value.NewObject(map[string]value.Value{name: value.NewInt(1)})
+	}
+
+	ctx, total := meteredContext()
+	if !ctx.Equal(build(), build()) {
+		t.Fatal("objects must compare equal")
+	}
+	if *total < 4096 {
+		t.Fatalf("charged %d bytes, want at least the attribute name's %d", *total, 4096)
+	}
+}
+
 // TestEqualityNilHookUnchanged pins that the zero context and the plain
 // Value.Equal / Value.Eql entry points stay byte-identical in behavior with
 // no hook installed.
