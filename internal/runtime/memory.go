@@ -1733,27 +1733,39 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(
 		// Sessions mode keeps its identity-based accounting through
 		// replacements: the replay set becomes the literal's
 		// post-replacement entries and every payload is re-measured against
-		// the live base by checkQuota, so neither the replaced value nor a
+		// the live base per check, so neither the replaced value nor a
 		// payload the base has started counting is retained. A frozen
 		// per-key byte total went stale as soon as a later value expression
-		// published a shared payload into a root.
+		// published a shared payload into a root. Admission runs first,
+		// against the PRE-replacement set plus the candidate: the old value
+		// stays in the unpublished hash until the write lands, so the
+		// transient peak holds both allocations.
+		candidate := hashLiteralEntry{key: key, lookupKey: lookupKey, value: val}
+		used := acc.sessionUsedBytes(func(est *memoryEstimator) int {
+			return saturatingAdd(hashLiteralKeyPayload(est, candidate.lookupKey, candidate.key), est.valuePayload(candidate.value))
+		})
+		if used > acc.exec.memoryQuota {
+			return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+		}
 		entries := make([]hashLiteralEntry, 0, len(current)+1)
 		replacedExisting := false
 		for c, entry := range current {
 			if c == canonical {
-				entries = append(entries, hashLiteralEntry{key: key, lookupKey: lookupKey, value: val})
+				entries = append(entries, candidate)
 				replacedExisting = true
 				continue
 			}
 			entries = append(entries, entry)
 		}
 		if !replacedExisting {
-			entries = append(entries, hashLiteralEntry{key: key, lookupKey: lookupKey, value: val})
+			entries = append(entries, candidate)
 			acc.retained = saturatingAdd(acc.retained, acc.typedEntryStructuralBytes())
 		}
+		// The post-replacement set never exceeds the admitted peak, so no
+		// second check is needed here; later entries re-measure it anyway.
 		acc.sessionEntries = entries
 		acc.replacing = true
-		return acc.checkQuota()
+		return nil
 	}
 	if !acc.replacing {
 		acc.rebuildRetainedEntries(current)

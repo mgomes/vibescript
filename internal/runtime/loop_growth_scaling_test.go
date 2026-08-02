@@ -191,6 +191,13 @@ func TestGrowthLoopEstimateMatchesUncachedWalk(t *testing.T) {
 			arg: loopMemoArray,
 		},
 		{
+			// Replacing a large value: the old allocation stays in the
+			// unpublished hash until the write, so admission must hold both.
+			name: "literal replacing a large value",
+			src:  "def run(a, n)\n  h = {x: \"a\" * 2000, x: \"b\" * 2000}\n  h.length\nend",
+			arg:  func(int) Value { return NewNil() },
+		},
+		{
 			name: "literal inside block region",
 			src:  "def run(a, n)\n  out = a.map { |x| {id: x, name: \"x\"} }\n  out.length\nend",
 			arg:  loopMemoArray,
