@@ -2568,6 +2568,16 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		if err := objectTagMutationError(obj, "index assignment"); err != nil {
 			return exec.errorAt(target.Position, "%s", err.Error())
 		}
+		// The charged store commits an added entry into the base-walk memo
+		// and skips the epoch bump, keeping hash-filling loops linear under
+		// the quota (#1129); replacements and every other ineligible write
+		// take the ordinary bumping path.
+		if handled, storeErr := exec.hashStoreCharged(obj, indices[0], value); handled {
+			if storeErr != nil {
+				return exec.wrapError(storeErr, target.IndexPos(0))
+			}
+			return nil
+		}
 		if err := hashSet(obj, indices[0], value); err != nil {
 			return exec.errorAt(target.IndexPos(0), "%s", err.Error())
 		}

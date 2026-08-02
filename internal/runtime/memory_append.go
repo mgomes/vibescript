@@ -87,13 +87,131 @@ func (exec *Execution) appendArrayCharged(left, right Value) (handled bool, err 
 	}
 	c.graphBytes = saturatingAdd(c.graphBytes, marginal)
 	c.journalBudget = sessionJournalBudget(est.identityCount())
-	if estimatorVerify {
-		// Differential oracle: the committed total must be byte-identical to
-		// a from-scratch reference walk, or the incremental commit is wrong.
-		verify := newMemoryEstimator()
-		if reference := exec.estimateGraphBase(verify, nil); reference != c.graphBytes {
-			panic(fmt.Sprintf("charged append diverged: memo holds %d bytes, reference walk %d", c.graphBytes, reference))
+	exec.verifyChargedCommit("append")
+	return true, nil
+}
+
+// hashStoreCharged implements `target[key] = val` for a root-reachable typed
+// hash adding a new key, the same way appendArrayCharged handles the shovel:
+// the entry's marginal bytes are committed into the base-walk memo and the
+// write skips the epoch bump, so a loop that fills a hash stays linear under
+// the quota (#1129). Replacements fall back — subtracting a replaced value
+// from a deduplicated union is not sound — as does anything the append path
+// would decline.
+func (exec *Execution) hashStoreCharged(target, key, val Value) (handled bool, err error) {
+	if exec.memoryQuota <= 0 || exec.baseWalkOpen || exec.builtinDepth > 0 ||
+		len(exec.activeTaskGroups) > 0 || exec.blockRegionActive || baseWalkCacheDisabled.Load() {
+		return false, nil
+	}
+	if target.Kind() != KindHash || !hashHasTypedEntries(target) {
+		return false, nil
+	}
+	if taskLazyGlobalsFromContext(exec.Context()) != nil {
+		return false, nil
+	}
+	c := exec.baseWalkCache
+	if c == nil || !c.valid || c.epoch != value.MutationEpoch() ||
+		c.topo != exec.baseTopoVersion || c.regionBoundary != noBlockRegion {
+		return false, nil
+	}
+	id := hashIdentity(target)
+	if id == 0 {
+		return false, nil
+	}
+	if _, committed := exec.memoryEst.seenHashData[id]; !committed {
+		return false, nil
+	}
+	lookupKey, keyErr := hashLookupKey(key)
+	if keyErr != nil {
+		// The ordinary path owns unhashable-key errors.
+		return false, nil
+	}
+	if _, exists, getErr := target.HashGet(key); getErr != nil || exists {
+		return false, nil
+	}
+	legacyEntries, legacyMirrored := hashStringMapIfMaterialized(target)
+	if legacyMirrored {
+		// A kind-strict add can still collide in the legacy display-key
+		// mirror (an int 1 and a string "1" both display as "1"), turning
+		// the mirror write into a replacement whose delta cannot be added
+		// arithmetically. Leave those to the ordinary path.
+		if _, collides := legacyEntries[hashDisplayKey(key)]; collides {
+			return false, nil
 		}
 	}
+
+	// See appendArrayCharged: the walk commits directly, success keeps the
+	// memo exact, overflow discards it.
+	est := &exec.memoryEst
+	est.journal = nil
+	est.dormant = exec.currentDormantSet()
+	marginal := est.valuePayload(key)
+	marginal = saturatingAdd(marginal, est.valuePayload(val))
+	marginal = saturatingAdd(marginal, lookupKey.ExtraPayloadBytes())
+
+	// An add past the typed capacity high-water mark realizes one more entry
+	// slot; an add below it consumes a slot the walk already prices.
+	entryCount := target.HashLen()
+	if entryCount+1 > value.HashTypedEntryCapacity(target) {
+		marginal = saturatingAdd(marginal, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
+	}
+	// A literal-built hash keeps its legacy string map materialized; HashSet
+	// mirrors every write into it, and mapStructuralBytes prices each entry as
+	// a bucket, a Value slot, and the display key's header and bytes. The
+	// reference walk also visits the mirrored value twice — once through the
+	// legacy map's loop and once through the typed entries — and the second
+	// visit charges whatever does not deduplicate (a string's header, a
+	// regex's source length). Walking the value again over the just-committed
+	// state reproduces that residue exactly.
+	if legacyMirrored {
+		displayKey := hashDisplayKey(key)
+		marginal = saturatingAdd(marginal, estimatedMapEntryBytes+estimatedValueBytes+estimatedStringHeaderBytes+len(displayKey))
+		marginal = saturatingAdd(marginal, est.valuePayload(val))
+	}
+
+	orderCapBefore := value.HashOrderCapacity(target)
+	orderGrows := entryCount+1 > orderCapBefore
+	used := saturatingAdd(exec.estimateScalarBase(), saturatingAdd(c.graphBytes, marginal))
+	if orderGrows {
+		// The order backing reallocates like a slice: old and new coexist at
+		// the copy's peak, and the old stays inside graphBytes.
+		grownCap := max(saturatingMul(orderCapBefore, 2), entryCount+1)
+		used = saturatingAdd(used, saturatingAdd(estimatedSliceBaseBytes, saturatingMul(grownCap, estimatedHashLookupKeyBytes)))
+	}
+	if used > exec.memoryQuota {
+		c.valid = false
+		return true, fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+
+	if setErr := target.HashSetUnpublished(key, val); setErr != nil {
+		// The write itself failed after the walk committed the entry's
+		// identities; the memo no longer matches the graph.
+		c.valid = false
+		return true, setErr
+	}
+	if orderCapAfter := value.HashOrderCapacity(target); orderCapAfter != orderCapBefore {
+		growth := saturatingMul(orderCapAfter-orderCapBefore, estimatedHashLookupKeyBytes)
+		if orderCapBefore == 0 {
+			growth = saturatingAdd(growth, estimatedSliceBaseBytes)
+		}
+		marginal = saturatingAdd(marginal, growth)
+	}
+	c.graphBytes = saturatingAdd(c.graphBytes, marginal)
+	c.journalBudget = sessionJournalBudget(est.identityCount())
+	exec.verifyChargedCommit("hash store")
 	return true, nil
+}
+
+// verifyChargedCommit is the differential oracle for the charged-commit
+// paths: under VIBES_ESTIMATOR_VERIFY the memoized total must be
+// byte-identical to a from-scratch reference walk after every commit.
+func (exec *Execution) verifyChargedCommit(op string) {
+	if !estimatorVerify {
+		return
+	}
+	c := exec.baseWalkCache
+	verify := newMemoryEstimator()
+	if reference := exec.estimateGraphBase(verify, nil); reference != c.graphBytes {
+		panic(fmt.Sprintf("charged %s diverged: memo holds %d bytes, reference walk %d", op, c.graphBytes, reference))
+	}
 }

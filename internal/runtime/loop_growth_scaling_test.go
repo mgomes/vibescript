@@ -29,6 +29,15 @@ func TestGrowthLoopsKeepBaseWalkMemo(t *testing.T) {
 			name: "array of hashes build",
 			src:  "def run(a, n)\n  out = []\n  j = 0\n  while j < n\n    out << {id: j, name: \"x\"}\n    j = j + 1\n  end\n  out.length\nend",
 		},
+		{
+			// Integer keys, deliberately: a builtin call in the loop body (a
+			// j.to_s key, for example) runs bypass memory checks at builtin
+			// depth that discard the memo, which is the documented remaining
+			// contributor — the charged store keeps builtin-free store loops
+			// linear.
+			name: "hash store loop",
+			src:  "def run(a, n)\n  h = {}\n  j = 0\n  while j < n\n    h[j] = j\n    j = j + 1\n  end\n  h.length\nend",
+		},
 	}
 
 	if estimatorVerify {
@@ -116,6 +125,21 @@ func TestGrowthLoopEstimateMatchesUncachedWalk(t *testing.T) {
 		{
 			name: "nested hash literals",
 			src:  "def run(a, n)\n  out = []\n  j = 0\n  while j < n\n    out << {id: j, inner: {name: \"x\", tags: [j, j]}}\n    j = j + 1\n  end\n  out.length\nend",
+			arg:  func(int) Value { return NewNil() },
+		},
+		{
+			name: "hash store loop",
+			src:  "def run(a, n)\n  h = {}\n  j = 0\n  while j < n\n    h[j.to_s] = j\n    j = j + 1\n  end\n  h.length\nend",
+			arg:  func(int) Value { return NewNil() },
+		},
+		{
+			name: "hash store of strings",
+			src:  "def run(a, n)\n  h = {}\n  j = 0\n  while j < n\n    h[j.to_s] = \"payload-\" + j.to_s\n    j = j + 1\n  end\n  h.length\nend",
+			arg:  func(int) Value { return NewNil() },
+		},
+		{
+			name: "hash store replacements",
+			src:  "def run(a, n)\n  h = {}\n  j = 0\n  while j < n\n    h[(j % 7).to_s] = j\n    j = j + 1\n  end\n  h.length\nend",
 			arg:  func(int) Value { return NewNil() },
 		},
 		{
