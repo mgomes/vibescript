@@ -565,6 +565,39 @@ func TestEqualityNilHookUnchanged(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeBatchesSubGranularityLeaves pins the accumulator: a
+// runtime-style charge that rounds each invocation down to whole 64-byte
+// steps must still bill the aggregate payload when a walk compares many
+// short, independently backed strings — charged leaf-by-leaf, thousands of
+// 63-byte reads rounded to zero steps each and scanned for free.
+func TestEqualityChargeBatchesSubGranularityLeaves(t *testing.T) {
+	t.Parallel()
+
+	build := func() value.Value {
+		elems := make([]value.Value, 512)
+		for i := range elems {
+			elems[i] = value.NewString(strings.Repeat("x", 63))
+		}
+		return value.NewArray(elems)
+	}
+
+	steps := 0
+	var ctx value.EqualityContext
+	ctx.SetCharge(func(bytes int) error {
+		steps += bytes / 64
+		return nil
+	})
+	if !ctx.Equal(build(), build()) {
+		t.Fatal("equal arrays must compare equal")
+	}
+	scanned := 512 * 63
+	want := scanned / 64
+	if steps < want-64 {
+		t.Fatalf("a whole-step rounding charge saw %d steps for a %d-byte scan, "+
+			"want about %d; sub-granularity leaf reads must batch", steps, scanned, want)
+	}
+}
+
 // TestEqualityChargeStopsAtFailedKeyCanonicalization pins the failure
 // contract for a retained key that became unsupported after insertion (an
 // inner key array mutated to hold an object): canonicalization stops at the

@@ -1408,6 +1408,12 @@ type equalityState struct {
 	// scratchHeld accumulates the scratch bytes this walk has allocated, so
 	// nested map traversals validate their combined footprint.
 	scratchHeld int
+	// pendingCharge accumulates leaf bytes not yet handed to charge. The
+	// walk flushes in batches and Equal/Eql settle the tail, so a caller
+	// whose charge function rounds each invocation down (the runtime bills
+	// whole 64-byte steps) cannot be walked past with many sub-granularity
+	// reads: the aggregate is billed even when every leaf alone is free.
+	pendingCharge int
 	// err records the first charge failure. It is sticky: every comparison
 	// after it returns false immediately, so a caller looping over many Equal
 	// calls does O(1) work per call once the quota is gone and surfaces the
@@ -1429,7 +1435,12 @@ func (c *EqualityContext) Equal(v, other Value) bool {
 	// Scratch from prior walks on a reused context is dead; the validator
 	// must see each walk's own footprint, not a scan's lifetime total.
 	c.state.scratchHeld = 0
-	return valuesEqual(v, other, &c.state)
+	eq := valuesEqual(v, other, &c.state)
+	flushEqualityCharge(&c.state)
+	if c.state.err != nil {
+		return false
+	}
+	return eq
 }
 
 // Eql reports whether v and other are equal under hash-key semantics: kinds
@@ -1440,7 +1451,12 @@ func (c *EqualityContext) Eql(v, other Value) bool {
 		clear(c.state.seen)
 	}
 	c.state.scratchHeld = 0
-	return valuesEqualWithKinds(v, other, &c.state, true)
+	eq := valuesEqualWithKinds(v, other, &c.state, true)
+	flushEqualityCharge(&c.state)
+	if c.state.err != nil {
+		return false
+	}
+	return eq
 }
 
 // SetScratchReserver installs a validator for the walk's transient scratch
@@ -1525,6 +1541,47 @@ func valuesEqual(v, other Value, state *equalityState) bool {
 	return valuesEqualWithKinds(v, other, state, false)
 }
 
+// equalityChargeBatchBytes is the flush threshold for accumulated leaf
+// charges: large enough to amortize the charge call, small enough that a
+// spent quota stops the walk within one batch.
+const equalityChargeBatchBytes = 4096
+
+// chargeEqualityBytes accumulates n bytes of read work and invokes the
+// installed charge in batches. Charging each leaf separately let a
+// per-invocation rounding in the charge function (the runtime bills whole
+// 64-byte steps) scan arbitrarily many short payloads for free; batching
+// preserves the sub-granularity remainders across the walk. A failure is
+// sticky, like a direct charge's.
+func chargeEqualityBytes(state *equalityState, n int) bool {
+	if state.charge == nil || n <= 0 {
+		return true
+	}
+	state.pendingCharge += n
+	if state.pendingCharge < equalityChargeBatchBytes {
+		return true
+	}
+	pending := state.pendingCharge
+	state.pendingCharge = 0
+	if err := state.charge(pending); err != nil {
+		state.err = err
+		return false
+	}
+	return true
+}
+
+// flushEqualityCharge settles the pending tail at the end of a top-level
+// comparison, so every call's charged total is byte-exact.
+func flushEqualityCharge(state *equalityState) {
+	pending := state.pendingCharge
+	state.pendingCharge = 0
+	if state.charge == nil || pending <= 0 || state.err != nil {
+		return
+	}
+	if err := state.charge(pending); err != nil {
+		state.err = err
+	}
+}
+
 // chargeEqualityKeyText bills the text a hash key contributes to an equality
 // walk, reporting whether the walk may continue. A string-like key bills its
 // payload. An array key recurses: the typed-hash equality paths canonicalize
@@ -1540,14 +1597,7 @@ func chargeEqualityKeyText(state *equalityState, key Value) bool {
 	}
 	budget := equalityKeyCostNodeBudget
 	bytes, _, _ := equalityKeyTextBytes(key, nil, &budget)
-	if bytes == 0 {
-		return true
-	}
-	if err := state.charge(bytes); err != nil {
-		state.err = err
-		return false
-	}
-	return true
+	return chargeEqualityBytes(state, bytes)
 }
 
 // equalityKeyCostNodeBudget bounds the key-cost walk; see chargeEqualityKeyText.
@@ -1678,11 +1728,8 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 		if len(left) != len(right) {
 			return false
 		}
-		if state.charge != nil {
-			if err := state.charge(len(left)); err != nil {
-				state.err = err
-				return false
-			}
+		if !chargeEqualityBytes(state, len(left)) {
+			return false
 		}
 		return left == right
 	case KindMoney:
@@ -1701,9 +1748,8 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 		// same length screen.
 		left := v.data.(Regex)
 		right := other.data.(Regex)
-		if len(left.Source) == len(right.Source) && state.charge != nil {
-			if err := state.charge(len(left.Source)); err != nil {
-				state.err = err
+		if len(left.Source) == len(right.Source) {
+			if !chargeEqualityBytes(state, len(left.Source)) {
 				return false
 			}
 		}
@@ -1922,9 +1968,7 @@ func sortedMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool)
 			read = n
 		}
 		if pending += read; pending >= sortChargeBatchBytes {
-			if err := state.charge(pending); err != nil {
-				state.err = err
-			}
+			chargeEqualityBytes(state, pending)
 			pending = 0
 		}
 		if i < n {
@@ -1939,8 +1983,7 @@ func sortedMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool)
 		return nil, false
 	}
 	if pending > 0 {
-		if err := state.charge(pending); err != nil {
-			state.err = err
+		if !chargeEqualityBytes(state, pending) {
 			return nil, false
 		}
 	}
@@ -1956,11 +1999,8 @@ func meteredMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool
 	for key := range m {
 		total += len(key)
 	}
-	if state.charge != nil && total > 0 {
-		if err := state.charge(total); err != nil {
-			state.err = err
-			return nil, false
-		}
+	if !chargeEqualityBytes(state, total) {
+		return nil, false
 	}
 	return sortedMapKeys(m, state)
 }
@@ -2207,9 +2247,7 @@ func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (keyed
 			read = n
 		}
 		if pending += read; pending >= sortChargeBatchBytes {
-			if err := state.charge(pending); err != nil {
-				state.err = err
-			}
+			chargeEqualityBytes(state, pending)
 			pending = 0
 		}
 		if i < n {
@@ -2224,8 +2262,7 @@ func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (keyed
 		return nil, held, false
 	}
 	if pending > 0 {
-		if err := state.charge(pending); err != nil {
-			state.err = err
+		if !chargeEqualityBytes(state, pending) {
 			return nil, held, false
 		}
 	}
