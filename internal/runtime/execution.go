@@ -83,13 +83,10 @@ type Execution struct {
 	// guards, and script-raised LimitErrors never latch: those describe one
 	// rejected operation, not an exhausted sandbox.
 	exhausted error
-	// exhaustToken is this execution's credential identity for
-	// exhaustion-marked errors; see exhaustionIdentity.
-	exhaustToken *exhaustionToken
 	// exhaustedWrapped snapshots the first RuntimeError wrapError built from
 	// the latched exhaustion, deep-copied before any adapter can hold its
-	// pointer, so the task machinery's trusted channel can carry the
-	// worker's code frame and stack alongside the raw sentinel.
+	// pointer; the dispatch rebuild and the task machinery's trusted
+	// channel use only this copy for diagnostics.
 	exhaustedWrapped          *RuntimeError
 	callStack                 []callFrame
 	root                      *Env

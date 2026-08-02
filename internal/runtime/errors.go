@@ -27,17 +27,6 @@ type RuntimeError struct {
 	Message   string
 	CodeFrame string
 	Frames    []StackFrame
-
-	// exhaustedBy records the credential token of the execution whose
-	// genuine budget exhaustion this error was wrapped from (see
-	// Execution.exhausted). It is unexported so adapters cannot forge it,
-	// and it binds the credential to one execution: a stateful adapter
-	// replaying a marked error saved from an earlier call fails the identity
-	// comparison in the new call. The token is a tiny allocation rather than
-	// the execution itself, so an error a host retains — a collector, a
-	// retry record — does not keep the whole call graph alive. Only
-	// wrapError sets it.
-	exhaustedBy *exhaustionToken
 }
 
 type assertionFailureError struct {
@@ -453,17 +442,14 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 		return err
 	}
 	wrapped := exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
-	if exec.exhausted != nil && errors.Is(err, exec.exhausted) {
+	if exec.exhausted != nil && errors.Is(err, exec.exhausted) && exec.exhaustedWrapped == nil {
 		if re, ok := errors.AsType[*RuntimeError](wrapped); ok {
-			re.exhaustedBy = exec.exhaustionIdentity()
-			if exec.exhaustedWrapped == nil {
-				// Snapshot the diagnostics before any adapter can mutate the
-				// propagating object; the trusted observation channel
-				// exports this copy.
-				snapshot := *re
-				snapshot.Frames = slices.Clone(re.Frames)
-				exec.exhaustedWrapped = &snapshot
-			}
+			// Snapshot the diagnostics before any adapter can mutate the
+			// propagating object; the dispatch rebuild and the trusted
+			// observation channel use only this copy.
+			snapshot := *re
+			snapshot.Frames = slices.Clone(re.Frames)
+			exec.exhaustedWrapped = &snapshot
 		}
 	}
 	return wrapped
@@ -482,64 +468,34 @@ func (exec *Execution) observedExhaustion() error {
 	return exec.exhausted
 }
 
-// exhaustionToken is an execution's credential identity: a distinct tiny
-// allocation whose pointer stands in for the execution in exhaustion-marked
-// errors, so retaining such an error retains nothing else.
-type exhaustionToken struct{ _ byte }
-
-// exhaustionIdentity returns this execution's credential token, allocating it
-// on first use.
-func (exec *Execution) exhaustionIdentity() *exhaustionToken {
-	if exec.exhaustToken == nil {
-		exec.exhaustToken = new(exhaustionToken)
-	}
-	return exec.exhaustToken
-}
-
-// authenticatedExhaustionFrames returns the RuntimeError whose credential
-// ties err to THIS execution's latched exhaustion, or nil. It walks the whole
-// unwrap tree — including errors.Join and multi-%w aggregates, where an
-// unrelated RuntimeError can sit on an earlier branch than the marked one —
-// rather than taking the first RuntimeError errors.As would, and it compares
-// the stamp against the current execution so a credential saved from an
-// earlier call cannot be replayed. The caller must treat only its location
-// data (CodeFrame, Frames) as usable: the exported fields of a RuntimeError
-// are mutable by any holder of the pointer and survive a shallow copy
-// together with the unexported stamp, so the authoritative class and message
-// are always rebuilt from the latch itself.
-func (exec *Execution) authenticatedExhaustionFrames(err error) *RuntimeError {
-	queue := []error{err}
-	for len(queue) > 0 {
-		e := queue[0]
-		queue = queue[1:]
-		if e == nil {
-			continue
-		}
-		if re, ok := e.(*RuntimeError); ok { //nolint:errorlint // deliberate node-by-node tree walk: errors.As stops at the first RuntimeError, which may be an unrelated branch of an aggregate
-			if exec.exhaustToken != nil && re.exhaustedBy == exec.exhaustToken {
-				return re
-			}
-			// RuntimeError.Unwrap returns nil by design; nothing below it.
-			continue
-		}
-		switch u := e.(type) { //nolint:errorlint // deliberate manual unwrap of both single and multi wrappers for the same reason
-		case interface{ Unwrap() error }:
-			queue = append(queue, u.Unwrap())
-		case interface{ Unwrap() []error }:
-			queue = append(queue, u.Unwrap()...)
-		}
-	}
-	return nil
-}
-
 // canonicalExhaustionMessage extracts the underlying quota message from a
 // latched exhaustion error. A task-boundary latch holds a wrapper whose
 // Error() renders the worker's code frame and stack; surfacing that rendering
 // as a RuntimeError Message — beside separately copied frames — printed every
-// frame twice and made the programmatic message multiline.
+// frame twice and made the programmatic message multiline. Wrapper context
+// like the task name survives: only the inner error's rendering collapses to
+// its single-line message.
 func canonicalExhaustionMessage(exhausted error) string {
-	if re, ok := errors.AsType[*RuntimeError](exhausted); ok {
+	re, ok := errors.AsType[*RuntimeError](exhausted)
+	if !ok {
+		return exhausted.Error()
+	}
+	full := exhausted.Error()
+	rendered := re.Error()
+	if full == rendered {
 		return re.Message
 	}
-	return exhausted.Error()
+	return strings.Replace(full, rendered, re.Message, 1)
+}
+
+// exhaustionDiagnostics returns the trusted RuntimeError carrying the
+// exhaustion's location data: the execution's own snapshot when its wrapError
+// captured one, else a RuntimeError inside the latch chain — for a task
+// latch, the worker's snapshot, which crossed the boundary through runtime
+// code only. Adapters never held either pointer.
+func (exec *Execution) exhaustionDiagnostics() *RuntimeError {
+	if re, ok := errors.AsType[*RuntimeError](exec.exhausted); ok {
+		return re
+	}
+	return exec.exhaustedWrapped
 }

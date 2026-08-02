@@ -298,29 +298,22 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// A capability adapter that ignored a quota error from the exported
 		// Step/CallBlock surface must not decide this call's outcome: a
 		// returned value is rejected (a final-expression adapter call would
-		// never reach another charge), and a replacement error is overridden
-		// so the host receives the genuine quota termination. When the
-		// propagating error carries the credential, the surfaced error is
-		// rebuilt rather than trusted: its exported fields are mutable (and a
-		// shallow copy keeps the unexported marker), so the class and message
-		// come from the latch and only the block statement's advisory
-		// location data is retained from the propagated object.
+		// never reach another charge), and whatever error it returned —
+		// swallowed, replaced, aggregated, copied, or tampered — is replaced
+		// by an error rebuilt entirely from execution-held state: the class
+		// and message from the latch, the location data from the snapshot
+		// wrapError captured before any adapter could hold a pointer.
+		// Nothing from the propagated object is trusted.
 		if exec.exhausted != nil {
-			if re := exec.authenticatedExhaustionFrames(err); re != nil {
-				err = &RuntimeError{
-					Type:        classifyRuntimeErrorType(exec.exhausted),
-					Message:     canonicalExhaustionMessage(exec.exhausted),
-					CodeFrame:   re.CodeFrame,
-					Frames:      re.Frames,
-					exhaustedBy: exec.exhaustionIdentity(),
-				}
-			} else {
-				// Everything else — a swallowed success, an unrelated
-				// failure, or an aggregate whose first RuntimeError branch
-				// is not the marked one and would survive wrapError with its
-				// synthetic metadata — is replaced by the latch itself.
-				err = exec.exhausted
+			rebuilt := &RuntimeError{
+				Type:    classifyRuntimeErrorType(exec.exhausted),
+				Message: canonicalExhaustionMessage(exec.exhausted),
 			}
+			if snapshot := exec.exhaustionDiagnostics(); snapshot != nil {
+				rebuilt.CodeFrame = snapshot.CodeFrame
+				rebuilt.Frames = slices.Clone(snapshot.Frames)
+			}
+			err = rebuilt
 		}
 		returnProof := exec.capabilityReturnProof
 		if returnProof.recorded || savedReturnProof.recorded {
