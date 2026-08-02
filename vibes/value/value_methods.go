@@ -1804,6 +1804,7 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 		if !chargeOK {
 			return false
 		}
+		defer releaseKeySortScratch(state, len(keys))
 		for _, key := range keys {
 			rightValue, ok := right[key]
 			if !ok {
@@ -1827,6 +1828,17 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 // keySortScratchEntryBytes approximates one entry of the key-sorting scratch
 // slice: a string header plus slice-slot overhead.
 const keySortScratchEntryBytes = 24
+
+// releaseKeySortScratch retires a completed map traversal's contribution to
+// the walk's live scratch accounting: a sibling map compared later must be
+// validated against the slices actually alive, not every slice the walk ever
+// allocated.
+func releaseKeySortScratch(state *equalityState, entries int) {
+	state.scratchHeld -= entries * keySortScratchEntryBytes
+	if state.scratchHeld < 0 {
+		state.scratchHeld = 0
+	}
+}
 
 // sortedMapKeys returns a map's keys in sorted order, validating the scratch
 // slice against the caller's budget first. Metered equality must traverse
@@ -1910,6 +1922,7 @@ func hashMapsEqual(left, right map[string]Value, state *equalityState, strictKin
 	if !ok {
 		return false
 	}
+	defer releaseKeySortScratch(state, len(keys))
 	for _, key := range keys {
 		rightValue, ok := right[key]
 		if !ok {
@@ -1956,6 +1969,7 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState,
 	if !chargeOK {
 		return false
 	}
+	defer releaseKeySortScratch(state, len(displayKeys))
 	for _, key := range displayKeys {
 		rightEntry, ok := rightByKey[key]
 		if !ok {

@@ -456,6 +456,39 @@ func TestEqualityChargeBillsRegexSources(t *testing.T) {
 	}
 }
 
+// TestEqualityScratchReleasesBetweenSiblings pins the live-scratch
+// accounting: sibling maps in one walk allocate their key slices one after
+// another, and the validator must see only the slices alive at each point —
+// not the walk's lifetime total.
+func TestEqualityScratchReleasesBetweenSiblings(t *testing.T) {
+	t.Parallel()
+
+	buildMap := func() value.Value {
+		entries := make(map[string]value.Value, 8)
+		for i := range 8 {
+			entries[strings.Repeat("k", i+1)] = value.NewInt(int64(i))
+		}
+		return value.NewHash(entries)
+	}
+	build := func() value.Value {
+		return value.NewArray([]value.Value{buildMap(), buildMap(), buildMap()})
+	}
+
+	var ctx value.EqualityContext
+	maxSeen := 0
+	ctx.SetScratchReserver(func(bytes int) error {
+		maxSeen = max(maxSeen, bytes)
+		return nil
+	})
+	if !ctx.Equal(build(), build()) {
+		t.Fatal("arrays of sibling maps must compare equal")
+	}
+	perMap := 8 * 24
+	if maxSeen > perMap {
+		t.Fatalf("validator saw %d bytes, want at most one sibling's %d (dead slices must be released)", maxSeen, perMap)
+	}
+}
+
 // TestEqualityNilHookUnchanged pins that the zero context and the plain
 // Value.Equal / Value.Eql entry points stay byte-identical in behavior with
 // no hook installed.
