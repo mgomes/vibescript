@@ -28,7 +28,7 @@ func registerTaskBuiltins(engine *Engine) {
 // untouched, and each worker still gets its own fresh budget.
 func (exec *Execution) latchTaskExhaustion(err error) error {
 	if err != nil && errorCarriesGenuineExhaustion(err) {
-		exec.latchExhaustion(err)
+		_ = exec.latchExhaustion(err)
 	}
 	return err
 }
