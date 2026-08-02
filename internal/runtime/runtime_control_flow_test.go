@@ -491,7 +491,7 @@ end
 	}
 
 	lazyGlobals := newTaskLazyGlobals(map[string]Value{"payload": NewString("unused")}, false, false)
-	_, err = script.callWithLazyTaskGlobals(ctx, "missing_run", nil, CallOptions{}, lazyGlobals)
+	_, err = script.callWithLazyTaskGlobals(ctx, "missing_run", nil, CallOptions{}, lazyGlobals, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("callWithLazyTaskGlobals missing function under canceled context = %v, want context.Canceled", err)
 	}

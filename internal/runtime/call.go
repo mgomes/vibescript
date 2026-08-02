@@ -295,6 +295,41 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		exec.builtinDepth++
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		exec.builtinDepth--
+		// A capability adapter that ignored a quota error from the exported
+		// Step/CallBlock surface must not decide this call's outcome: a
+		// returned value is rejected (a final-expression adapter call would
+		// never reach another charge), and whatever error it returned —
+		// swallowed, replaced, aggregated, copied, or tampered — is replaced
+		// by an error rebuilt entirely from execution-held state: the class
+		// and message from the latch, the location data from the snapshot
+		// wrapError captured before any adapter could hold a pointer.
+		// Nothing from the propagated object is trusted.
+		if exec.exhausted != nil {
+			if snapshot := exec.exhaustionDiagnostics(); snapshot != nil {
+				err = &RuntimeError{
+					Type:      classifyRuntimeErrorType(exec.exhausted),
+					Message:   canonicalExhaustionMessage(exec.exhausted),
+					CodeFrame: snapshot.CodeFrame,
+					Frames:    slices.Clone(snapshot.Frames),
+				}
+			} else {
+				// Nothing has passed through wrapError yet — the exhaustion
+				// originated inside this builtin or through the exported
+				// Step surface — so build the error at this call site,
+				// exactly as wrapError would have; a later wrap refuses to
+				// touch an existing RuntimeError, and a frameless one helped
+				// nobody. The construction is also snapshotted: if an outer
+				// adapter swallows this error, the outer dispatch's rebuild
+				// must report this innermost site, not its own.
+				built := exec.newRuntimeErrorWithType(classifyRuntimeErrorType(exec.exhausted), canonicalExhaustionMessage(exec.exhausted), pos)
+				if re, ok := errors.AsType[*RuntimeError](built); ok {
+					snapshot := *re
+					snapshot.Frames = slices.Clone(re.Frames)
+					exec.exhaustedWrapped = &snapshot
+				}
+				err = built
+			}
+		}
 		returnProof := exec.capabilityReturnProof
 		if returnProof.recorded || savedReturnProof.recorded {
 			exec.capabilityReturnProof = savedReturnProof
@@ -310,8 +345,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 				if ok, controlErr := exec.callBoundaryControlError(err, pos); ok {
 					return NewNil(), controlErr
 				}
-				if ctxErr := exec.checkContext(); ctxErr != nil {
-					return NewNil(), ctxErr
+				// A latched exhaustion outranks a cancellation the same
+				// adapter may also have caused: the host was promised the
+				// quota termination.
+				if exec.exhausted == nil {
+					if ctxErr := exec.checkContext(); ctxErr != nil {
+						return NewNil(), ctxErr
+					}
 				}
 				return NewNil(), exec.wrapError(err, pos)
 			}
@@ -325,8 +365,10 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			result = breakVal
 			absorbedBreak = true
 		}
-		if err := exec.checkContext(); err != nil {
-			return NewNil(), err
+		if exec.exhausted == nil {
+			if err := exec.checkContext(); err != nil {
+				return NewNil(), err
+			}
 		}
 		// A bound method preserved as a callable reaches its script function
 		// through the auto-builtin instanceMember and classMember build, so a
@@ -3476,6 +3518,15 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env, t
 		return NewNil(), err
 	}
 	val = callEnv.settleArrayAppendResult(val)
+	// Backstop for the host-visible termination guarantee: if anything
+	// absorbed the latched exhaustion error on the way here — a capability
+	// adapter swallowing the raw error is the known path — the call must
+	// still fail with it rather than return a result. It runs before the
+	// context check so an adapter that also canceled the context cannot
+	// downgrade the promised quota termination into context.Canceled.
+	if exec.exhausted != nil {
+		return NewNil(), exec.wrapError(exec.exhausted, fn.Pos)
+	}
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}

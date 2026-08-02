@@ -319,6 +319,42 @@ func TestScriptCallLimitErrorType(t *testing.T) {
 	}
 }
 
+// TestScriptCallLimitErrorTypeSurvivesRescue pins the host contract across the
+// exhaustion latch: a script that wraps its quota kill in rescue(LimitError)
+// cannot absorb it, and the host still receives the same *vibes.RuntimeError
+// with Type "LimitError" it gets from an unrescued kill.
+func TestScriptCallLimitErrorTypeSurvivesRescue(t *testing.T) {
+	t.Parallel()
+
+	engine := vibes.MustNewEngine(vibes.Config{StepQuota: 60})
+	script, err := engine.Compile(`
+def run()
+  begin
+    while true
+    end
+  rescue(LimitError)
+    "rescued"
+  end
+end
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, vibes.CallOptions{})
+	if err == nil {
+		t.Fatal("Call(run): expected limit error, got nil")
+	}
+
+	var runtimeErr *vibes.RuntimeError
+	if !errors.As(err, &runtimeErr) {
+		t.Fatalf("Call(run) error type = %T, want *vibes.RuntimeError", err)
+	}
+	if runtimeErr.Type != "LimitError" {
+		t.Errorf("RuntimeError.Type = %q, want %q", runtimeErr.Type, "LimitError")
+	}
+}
+
 func TestEngineExecute(t *testing.T) {
 	t.Parallel()
 

@@ -84,7 +84,7 @@ func (exec *Execution) appendArrayCharged(left, right Value) (handled bool, err 
 	used := saturatingAdd(exec.estimateScalarBase(), saturatingAdd(c.graphBytes, marginal))
 	if used > exec.memoryQuota {
 		c.valid = false
-		return true, fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return true, exec.memoryQuotaExceededError()
 	}
 
 	left.AppendArrayElemNoEpoch(right)
@@ -189,7 +189,7 @@ func (exec *Execution) hashStoreCharged(target, key, val Value) (handled bool, e
 	used := saturatingAdd(exec.estimateScalarBase(), saturatingAdd(c.graphBytes, marginal))
 	if used > exec.memoryQuota {
 		c.valid = false
-		return true, fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+		return true, exec.memoryQuotaExceededError()
 	}
 
 	if setErr := target.HashSetUnpublished(key, val); setErr != nil {

@@ -13,7 +13,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	// variant that already pays that cost, keeping the common no-globals /
 	// scalar-globals path allocation-free at this layer.
 	if globalsBindLazily(opts.Globals) {
-		return s.callWithLazyTaskGlobals(ctx, name, args, opts, nil)
+		return s.callWithLazyTaskGlobals(ctx, name, args, opts, nil, nil)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -113,7 +113,10 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 // lazy globals and lazily bound composite host globals — off the public Call
 // hot path, so the per-call rebinder stays stack-allocated for calls that
 // bind no deferred globals.
-func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args []Value, opts CallOptions, lazyTaskGlobals *taskLazyGlobals) (Value, error) {
+// observeExhaustion, when non-nil, receives the execution's latched
+// exhaustion as the call returns — the trusted channel the task machinery
+// uses instead of inspecting forgeable error values.
+func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args []Value, opts CallOptions, lazyTaskGlobals *taskLazyGlobals, observeExhaustion *error) (Value, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -159,6 +162,9 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	rebinder.inboundDataFast = scanInboundCallValues(args, opts.Keywords)
 
 	exec := newExecutionForCall(s, ctx, root, opts)
+	if observeExhaustion != nil {
+		defer func() { *observeExhaustion = exec.observedExhaustion() }()
+	}
 	defer exec.releaseBaseWalkCache()
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {

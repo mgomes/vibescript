@@ -361,16 +361,24 @@ func (exec *Execution) checkProjectedTypedHashBytes(count int, receiver Value, a
 }
 
 func (exec *Execution) checkProjectedTypedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if !exec.projectedTypedHashTransformFits(outputEntries, scratchBytes, receiver, args, kwargs, block) {
+		return exec.memoryQuotaExceededError()
+	}
+	return nil
+}
+
+// projectedTypedHashTransformFits is checkProjectedTypedHashTransformBytes's
+// quota test without the error: the typed merge projection probes a loose
+// upper bound with it and falls back to the exact union count when the bound
+// does not fit, so the probe must not latch the execution as exhausted.
+func (exec *Execution) projectedTypedHashTransformFits(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) bool {
 	if exec.memoryQuota <= 0 {
-		return nil
+		return true
 	}
 
 	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
 	used = saturatingAdd(used, typedHashTransformBufferBytes(outputEntries, scratchBytes))
-	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
-	}
-	return nil
+	return used <= exec.memoryQuota
 }
 
 func (exec *Execution) maxProjectedTypedHashEntries(scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
@@ -1798,7 +1806,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					// up-front admission check. Try it first (non-allocating); only
 					// when it exceeds the quota does overlap matter, so compute the
 					// exact union (capped at the entry budget) before rejecting.
-					if exec.checkProjectedTypedHashTransformBytes(looseEntries, scratchBytes, receiver, args, kwargs, block) != nil {
+					if !exec.projectedTypedHashTransformFits(looseEntries, scratchBytes, receiver, args, kwargs, block) {
 						limit := exec.maxProjectedTypedHashEntries(scratchBytes, receiver, args, kwargs, block)
 						projected, err := typedMergedKeyCount(exec, receiver, args, limit)
 						if err != nil {
@@ -1930,7 +1938,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				// table before being rejected. (With no memory quota the loose check
 				// passes immediately and the exact union is never walked.)
 				projectedEntries = looseMergedKeyUpperBound(base, args)
-				if exec.checkProjectedHashTransformBytes(projectedEntries, scratchBytes, receiver, args, kwargs, block) != nil {
+				if !exec.projectedHashTransformFits(projectedEntries, scratchBytes, receiver, args, kwargs, block) {
 					limit := exec.maxProjectedHashEntries(scratchBytes, receiver, args, kwargs, block)
 					projected, err := mergedKeyCount(exec, base, args, limit)
 					if err != nil {

@@ -1031,7 +1031,7 @@ end`)
 			}),
 		}),
 	}, false, false)
-	_, err := script.callWithLazyTaskGlobals(context.Background(), "run", nil, CallOptions{}, lazyGlobals)
+	_, err := script.callWithLazyTaskGlobals(context.Background(), "run", nil, CallOptions{}, lazyGlobals, nil)
 	requireErrorContains(t, err, "strict effects: global db must be data-only")
 	if called {
 		t.Fatalf("callable lazy global should not execute when strict validation fails")

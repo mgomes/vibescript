@@ -4080,7 +4080,7 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	if valueBlock(block) != nil {
 		return stringScanBlock(exec, text, groups, allMatches, receiver, args, kwargs, block)
 	}
-	if err := guardStringScanOutputFootprint(allMatches, groups); err != nil {
+	if err := exec.guardStringScanOutputFootprint(allMatches, groups); err != nil {
 		return NewNil(), err
 	}
 
@@ -4307,7 +4307,7 @@ func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
 	return saturatingMul(matchCount, bytesPerMatch)
 }
 
-func guardStringScanOutputFootprint(allMatches [][]int, groups int) error {
+func (exec *Execution) guardStringScanOutputFootprint(allMatches [][]int, groups int) error {
 	outputBytes := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(len(allMatches), estimatedValueBytes))
 	for _, loc := range allMatches {
 		if groups == 0 {
@@ -4325,7 +4325,7 @@ func guardStringScanOutputFootprint(allMatches [][]int, groups int) error {
 			}
 		}
 		if outputBytes > maxRegexInputBytes {
-			return fmt.Errorf("%w: string.scan output exceeds limit %d bytes", errOutputLimitExceeded, maxRegexInputBytes)
+			return exec.latchExhaustion(fmt.Errorf("%w: string.scan output exceeds limit %d bytes", errOutputLimitExceeded, maxRegexInputBytes))
 		}
 	}
 	return nil

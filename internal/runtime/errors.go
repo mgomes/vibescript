@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mgomes/vibescript/internal/ast"
@@ -274,10 +275,25 @@ func zeroDivisionErrorf(format string, args ...any) error {
 	return newTypedRuntimeError(runtimeErrorTypeZeroDiv, fmt.Errorf(format, args...))
 }
 
+// latchExhaustion records a genuine budget-exhaustion error on the execution.
+// The first error wins; step() re-raises it on every subsequent charge and
+// rescue refuses to match anything while it is set (see canRescueRuntimeError),
+// so quota exhaustion terminates the script no matter what absorbs the
+// original error value.
+func (exec *Execution) latchExhaustion(err error) error {
+	if exec.exhausted == nil {
+		exec.exhausted = err
+	}
+	return err
+}
+
 func (exec *Execution) step() error {
+	if exec.exhausted != nil {
+		return exec.exhausted
+	}
 	exec.steps++
 	if exec.quota > 0 && exec.steps > exec.quota {
-		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
+		return exec.latchExhaustion(fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota))
 	}
 	onSlowPath := (exec.steps & stepSlowPathMask) == 0
 	if onSlowPath {
@@ -337,11 +353,17 @@ func (exec *Execution) stepN(n int) error {
 // the per-element charge still observes the quota and cancellation, so this is
 // purely an early-out and never accepts a build the loop would reject.
 func (exec *Execution) checkStepBudgetFor(n int) error {
+	if exec.exhausted != nil {
+		return exec.exhausted
+	}
 	if n < 0 {
 		n = 0
 	}
 	if n > 0 && exec.quota > 0 && exec.quota-exec.steps < n {
-		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
+		// The pre-flight latches like the per-element loop it stands in for:
+		// it fires exactly when that loop was guaranteed to grind the quota
+		// to zero, so the budget is as spent as if the loop had run.
+		return exec.latchExhaustion(fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota))
 	}
 	return exec.checkContext()
 }
@@ -419,5 +441,61 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	if _, ok := errors.AsType[*RuntimeError](err); ok {
 		return err
 	}
-	return exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
+	wrapped := exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
+	if exec.exhausted != nil && errors.Is(err, exec.exhausted) && exec.exhaustedWrapped == nil {
+		if re, ok := errors.AsType[*RuntimeError](wrapped); ok {
+			// Snapshot the diagnostics before any adapter can mutate the
+			// propagating object; the dispatch rebuild and the trusted
+			// observation channel use only this copy.
+			snapshot := *re
+			snapshot.Frames = slices.Clone(re.Frames)
+			exec.exhaustedWrapped = &snapshot
+		}
+	}
+	return wrapped
+}
+
+// observedExhaustion is what the trusted out-of-band channel exports: the
+// latched exhaustion enriched with the code frame and stack wrapError
+// captured, when evaluation got far enough to wrap it.
+func (exec *Execution) observedExhaustion() error {
+	if exec.exhausted == nil {
+		return nil
+	}
+	if exec.exhaustedWrapped != nil {
+		return exec.exhaustedWrapped
+	}
+	return exec.exhausted
+}
+
+// canonicalExhaustionMessage extracts the underlying quota message from a
+// latched exhaustion error. A task-boundary latch holds a wrapper whose
+// Error() renders the worker's code frame and stack; surfacing that rendering
+// as a RuntimeError Message — beside separately copied frames — printed every
+// frame twice and made the programmatic message multiline. Wrapper context
+// like the task name survives: only the inner error's rendering collapses to
+// its single-line message.
+func canonicalExhaustionMessage(exhausted error) string {
+	re, ok := errors.AsType[*RuntimeError](exhausted)
+	if !ok {
+		return exhausted.Error()
+	}
+	full := exhausted.Error()
+	rendered := re.Error()
+	if full == rendered {
+		return re.Message
+	}
+	return strings.Replace(full, rendered, re.Message, 1)
+}
+
+// exhaustionDiagnostics returns the trusted RuntimeError carrying the
+// exhaustion's location data: the execution's own snapshot when its wrapError
+// captured one, else a RuntimeError inside the latch chain — for a task
+// latch, the worker's snapshot, which crossed the boundary through runtime
+// code only. Adapters never held either pointer.
+func (exec *Execution) exhaustionDiagnostics() *RuntimeError {
+	if re, ok := errors.AsType[*RuntimeError](exec.exhausted); ok {
+		return re
+	}
+	return exec.exhaustedWrapped
 }

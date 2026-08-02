@@ -216,7 +216,9 @@ func TestInspectChargesReceiverFootprint(t *testing.T) {
 	// Raising the quota to cover both the receiver footprint and the builder's
 	// rounded backing capacity (Grow reserves roundedAllocSize(payload), not the
 	// raw payload) lets the same call succeed, proving the rejection above was the
-	// receiver charge and not an unrelated over-count.
+	// receiver charge and not an unrelated over-count. The rejection latched
+	// the exec as exhausted; clear it so the raised quota is observable.
+	exec.exhausted = nil
 	exec.memoryQuota = base + receiverFootprint + estimatedValueBytes + estimatedStringHeaderBytes + roundedAllocSize(payload)
 	if _, err := builtin.Fn(exec, receiver, nil, nil, NewNil()); err != nil {
 		t.Fatalf("inspect at receiver-aware quota error = %v, want nil", err)
@@ -279,7 +281,10 @@ func TestInspectChargesBuilderRoundedCapacity(t *testing.T) {
 
 	// Raising the quota to cover the rounded backing capacity lets the same call
 	// succeed, proving the rejection above was the rounding gap and not an
-	// unrelated over-count. The result is the full quoted rendering.
+	// unrelated over-count. The result is the full quoted rendering. The
+	// rejection latched the exec as exhausted; clear it so the raised quota is
+	// observable.
+	exec.exhausted = nil
 	exec.memoryQuota = base + receiverFootprint + estimatedValueBytes + estimatedStringHeaderBytes + rounded
 	got, err := builtin.Fn(exec, receiver, nil, nil, NewNil())
 	if err != nil {

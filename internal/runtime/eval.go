@@ -1510,7 +1510,7 @@ func (exec *Execution) evalRescueExpr(expr *RescueExpr, env *Env, autoCall bool)
 			}
 			return result, nil
 		}
-		if !canRescueRuntimeError(err, nil) {
+		if !exec.canRescueRuntimeError(err, nil) {
 			return NewNil(), err
 		}
 
@@ -4868,7 +4868,7 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 			// but it still consumes the match.
 			for i := range stmt.Rescues {
 				clause := &stmt.Rescues[i]
-				if !canRescueRuntimeError(err, clause.Ty) {
+				if !exec.canRescueRuntimeError(err, clause.Ty) {
 					// A skipped clause's body locals must exist (as nil) before a
 					// later handler runs: the parser treated its assignments as
 					// surrounding-scope locals, so a matching clause reading such a
@@ -4925,8 +4925,19 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 		predeclareLocalBindingsFromStatements(stmt.Else, env)
 
 		if len(stmt.Ensure) > 0 {
+			latchedBeforeEnsure := exec.exhausted != nil
 			ensureVal, ensureReturned, ensureErr := exec.evalStatements(stmt.Ensure, env)
 			if ensureErr != nil {
+				// An execution latched BEFORE the ensure body cannot run it —
+				// the first statement charge re-raises the latch — and
+				// letting that re-raise replace the propagating error pointed
+				// diagnostics at an unexecuted ensure statement, so the
+				// original failure stands. Exhaustion first triggered inside
+				// the ensure body is the opposite case: the quota kill must
+				// replace the body's ordinary error, like any ensure failure.
+				if latchedBeforeEnsure && err != nil {
+					return NewNil(), false, err
+				}
 				return NewNil(), false, ensureErr
 			}
 			if ensureReturned {
@@ -5046,8 +5057,18 @@ func isHostControlSignal(err error) bool {
 		errors.Is(err, context.DeadlineExceeded)
 }
 
-func canRescueRuntimeError(err error, rescueTy *TypeExpr) bool {
-	return !isLoopControlSignal(err) &&
+func (exec *Execution) canRescueRuntimeError(err error, rescueTy *TypeExpr) bool {
+	// A latched execution matches no rescue clause at all: once the budget is
+	// genuinely exhausted the script must not absorb its own termination, no
+	// matter which error value is propagating or how the clause is typed. The
+	// latch, not the error's identity, carries the verdict because wrapError
+	// flattens the quota sentinels into ordinary LimitError-classified
+	// RuntimeErrors that a forged raise LimitError could imitate — and a task
+	// worker's kill reaches the parent latch through the group's trusted
+	// channel before its error can meet a rescue clause, so error-value
+	// credentials play no part here (a stale one could be replayed).
+	return exec.exhausted == nil &&
+		!isLoopControlSignal(err) &&
 		!isRescueRetrySignal(err) &&
 		!isHostControlSignal(err) &&
 		!isNonLocalReturnSignal(err) &&

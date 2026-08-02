@@ -143,7 +143,9 @@ func (state *arrayCompareState) ensureMemo() {
 		return
 	}
 	reserved := state.exec.reserveLoopScratch(arrayCompareMemoMaxEntries * (arrayCompareMemoEntryBytes + arrayCompareMemoRingEntryBytes))
-	if err := state.exec.checkMemoryWith(state.callRoots...); err != nil {
+	if !state.exec.memoryFitsWith(state.callRoots...) {
+		// Comparison proceeds without the memo; no room for it is a capacity
+		// answer, not exhaustion, so no quota error is built here.
 		state.exec.releaseLoopScratch(reserved)
 		return
 	}
