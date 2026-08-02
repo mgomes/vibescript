@@ -411,7 +411,11 @@ func TestEqualityScratchReserverValidatesSortAllocations(t *testing.T) {
 		return value.NewHash(entries)
 	}
 
+	// Deterministic sorting — and with it the scratch validation — engages
+	// only on metered walks, so the contexts install both hooks, as the
+	// runtime's do.
 	var ctx value.EqualityContext
+	ctx.SetCharge(func(int) error { return nil })
 	seen := 0
 	ctx.SetScratchReserver(func(bytes int) error {
 		seen = bytes
@@ -425,6 +429,7 @@ func TestEqualityScratchReserverValidatesSortAllocations(t *testing.T) {
 	}
 
 	var failing value.EqualityContext
+	failing.SetCharge(func(int) error { return nil })
 	boom := errors.New("no scratch headroom")
 	failing.SetScratchReserver(func(int) error { return boom })
 	if failing.Equal(build(), build()) {
@@ -475,6 +480,7 @@ func TestEqualityScratchReleasesBetweenSiblings(t *testing.T) {
 	}
 
 	var ctx value.EqualityContext
+	ctx.SetCharge(func(int) error { return nil })
 	maxSeen := 0
 	ctx.SetScratchReserver(func(bytes int) error {
 		maxSeen = max(maxSeen, bytes)

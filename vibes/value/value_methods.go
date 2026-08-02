@@ -1800,6 +1800,18 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 				return true
 			}
 		}
+		if state.charge == nil {
+			for key, leftValue := range left {
+				rightValue, ok := right[key]
+				if !ok {
+					return false
+				}
+				if !valuesEqualWithKinds(leftValue, rightValue, state, strictKinds) {
+					return false
+				}
+			}
+			return true
+		}
 		keys, chargeOK := meteredMapKeys(left, state)
 		if !chargeOK {
 			return false
@@ -1932,6 +1944,20 @@ func hashMapsEqual(left, right map[string]Value, state *equalityState, strictKin
 	if len(left) != len(right) {
 		return false
 	}
+	// Unmetered comparison keeps the host API's allocation-free direct scan:
+	// with no charges in play, traversal order cannot change the outcome.
+	if state.charge == nil {
+		for key, leftValue := range left {
+			rightValue, ok := right[key]
+			if !ok {
+				return false
+			}
+			if !valuesEqualWithKinds(leftValue, rightValue, state, strictKinds) {
+				return false
+			}
+		}
+		return true
+	}
 	keys, ok := meteredMapKeys(left, state)
 	if !ok {
 		return false
@@ -1976,6 +2002,18 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState,
 	}
 	if len(leftByKey) != len(rightByKey) {
 		return false
+	}
+	if state.charge == nil {
+		for key, leftEntry := range leftByKey {
+			rightEntry, ok := rightByKey[key]
+			if !ok {
+				return false
+			}
+			if !valuesEqualWithKinds(leftEntry.Value, rightEntry.Value, state, strictKinds) {
+				return false
+			}
+		}
+		return true
 	}
 	// The display keys were billed while the maps were built; the sort
 	// re-reads already-charged payloads only.
