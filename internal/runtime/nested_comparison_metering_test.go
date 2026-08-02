@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"strings"
 	"testing"
 )
@@ -150,6 +151,29 @@ func TestTallySamplerChargesBeforeCanonicalizing(t *testing.T) {
 	requireErrorContains(t, err, "quota exceeded")
 	if strings.Contains(err.Error(), "unsupported hash key") {
 		t.Fatalf("quota error mislabeled as unsupported key: %v", err)
+	}
+}
+
+// A composite-only lookup side means no scalar probe can ever match, so a
+// big-integer receiver element must not be canonicalized — its hexadecimal
+// conversion is the work the charge exists to bound — and the operation
+// completes under a tiny quota.
+func TestCompositeOnlyLookupSkipsBigIntCanonicalization(t *testing.T) {
+	t.Parallel()
+
+	huge := new(big.Int).Exp(big.NewInt(10), big.NewInt(20000), nil)
+	arr := NewArray([]Value{newBigIntValue(huge)})
+	script := compileScriptWithConfig(t, Config{StepQuota: 200, MemoryQuotaBytes: Unlimited}, `
+    def run(a)
+      (a & [[0]]).length
+    end
+    `)
+	got, err := script.Call(context.Background(), "run", []Value{arr}, CallOptions{})
+	if err != nil {
+		t.Fatalf("a composite-only intersection canonicalized the untouched bigint: %v", err)
+	}
+	if got.Int() != 0 {
+		t.Fatalf("intersection = %d, want 0", got.Int())
 	}
 }
 

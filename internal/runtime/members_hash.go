@@ -723,11 +723,16 @@ func hashMemberQuery(property string) (Value, error) {
 			// between a result and an error on identical inputs. Sorting
 			// reads the keys, so their bytes are billed first.
 			entries := receiver.Hash()
-			// The key slice is a transient the estimator never sees;
-			// validate it against the memory quota before allocating, like
-			// the equality sort helper does.
-			if err := exec.equalityScratchValidatorFunc()(len(entries) * hashKeySortScratchEntryBytes); err != nil {
-				return NewNil(), err
+			// The key slice is a transient the estimator never sees; reserve
+			// it for the scan's whole duration — nested equality validators
+			// include held reservations through the scalar base — and check
+			// the quota before allocating.
+			outerDelta := exec.reserveLoopScratch(len(entries) * hashKeySortScratchEntryBytes)
+			defer exec.releaseLoopScratch(outerDelta)
+			if exec.memoryQuota > 0 {
+				if err := exec.checkMemory(); err != nil {
+					return NewNil(), err
+				}
 			}
 			keyBytes := 0
 			keys := make([]string, 0, len(entries))

@@ -147,15 +147,24 @@ func (s *valueSet) addCounted(v Value, hint int) (bool, int) {
 	return true, probes
 }
 
+// scalarSetEligible reports whether the scalar set indexes v's kind (see
+// scalarValueKey), without building the key — the build itself performs the
+// big-integer canonicalization the callers charge for.
+func scalarSetEligible(v Value) bool {
+	switch v.Kind() {
+	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindRange:
+		return true
+	default:
+		return false
+	}
+}
+
 // anyScalarSetKey reports whether values holds at least one element the
-// scalar set indexes (see scalarValueKey), using kind tests only — probing
-// with scalarValueKey itself would perform the big-integer conversion the
-// callers charge for. With no scalar on the lookup side, the other side's
-// scalars are never hashed: the nil scalar map rejects before hashing.
+// scalar set indexes, using kind tests only. With no scalar on the lookup
+// side, the other side's scalars are never hashed or canonicalized.
 func anyScalarSetKey(values []Value) bool {
 	for _, v := range values {
-		switch v.Kind() {
-		case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindRange:
+		if scalarSetEligible(v) {
 			return true
 		}
 	}
@@ -183,7 +192,11 @@ func (exec *Execution) chargeScanSteps(n int) error {
 // the equality probes the composite scan performed. See addCounted for why the
 // count is measured rather than predicted.
 func (s *valueSet) containsCounted(v Value) (bool, int) {
-	if key, ok := scalarValueKey(v); ok {
+	if s.scalars == nil {
+		if scalarSetEligible(v) {
+			return false, 0
+		}
+	} else if key, ok := scalarValueKey(v); ok {
 		_, found := s.scalars[key]
 		return found, 0
 	}
@@ -218,7 +231,14 @@ type membershipSet struct {
 
 // contains reports whether the set holds a value equal to v.
 func (s *membershipSet) contains(v Value) bool {
-	if key, ok := scalarValueKey(v); ok {
+	if s.scalars == nil {
+		// No scalar was ever added, so a scalar probe cannot match; building
+		// its key anyway would run the big-integer canonicalization for
+		// nothing.
+		if scalarSetEligible(v) {
+			return false
+		}
+	} else if key, ok := scalarValueKey(v); ok {
 		_, found := s.scalars[key]
 		return found
 	}
