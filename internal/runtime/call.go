@@ -305,15 +305,21 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// wrapError captured before any adapter could hold a pointer.
 		// Nothing from the propagated object is trusted.
 		if exec.exhausted != nil {
-			rebuilt := &RuntimeError{
-				Type:    classifyRuntimeErrorType(exec.exhausted),
-				Message: canonicalExhaustionMessage(exec.exhausted),
-			}
 			if snapshot := exec.exhaustionDiagnostics(); snapshot != nil {
-				rebuilt.CodeFrame = snapshot.CodeFrame
-				rebuilt.Frames = slices.Clone(snapshot.Frames)
+				err = &RuntimeError{
+					Type:      classifyRuntimeErrorType(exec.exhausted),
+					Message:   canonicalExhaustionMessage(exec.exhausted),
+					CodeFrame: snapshot.CodeFrame,
+					Frames:    slices.Clone(snapshot.Frames),
+				}
+			} else {
+				// Nothing has passed through wrapError yet — the adapter
+				// exhausted through the exported Step surface — so build the
+				// error at the capability call site, exactly as wrapError
+				// would have; a later wrap refuses to touch an existing
+				// RuntimeError, and a frameless one helped nobody.
+				err = exec.newRuntimeErrorWithType(classifyRuntimeErrorType(exec.exhausted), canonicalExhaustionMessage(exec.exhausted), pos)
 			}
-			err = rebuilt
 		}
 		returnProof := exec.capabilityReturnProof
 		if returnProof.recorded || savedReturnProof.recorded {

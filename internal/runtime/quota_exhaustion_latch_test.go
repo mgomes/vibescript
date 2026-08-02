@@ -792,6 +792,54 @@ func TestAdapterCannotAggregateAwayExhaustion(t *testing.T) {
 	}
 }
 
+// propagatingStepCapability burns the quota through the exported Step
+// surface and propagates the raw error it received — the well-behaved
+// adapter, whose kill must still carry call-site diagnostics even though no
+// wrapError ran before dispatch saw it.
+type propagatingStepCapability struct{}
+
+func (propagatingStepCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"burn": NewBuiltin("cap.burn", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+				for range 10_000 {
+					if err := exec.Step(); err != nil {
+						return NewNil(), err
+					}
+				}
+				return NewString("ok"), nil
+			}),
+		}),
+	}, nil
+}
+
+// TestStepExhaustionKeepsCallSiteFrames pins that a raw Step exhaustion —
+// which never passed through wrapError — is rebuilt with the capability call
+// site's frames rather than surfacing frameless.
+func TestStepExhaustionKeepsCallSiteFrames(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: Unlimited}, `
+    def run()
+      cap.burn()
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{propagatingStepCapability{}},
+	})
+	if err == nil {
+		t.Fatal("a propagated step exhaustion returned success")
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+	var re *RuntimeError
+	if !errors.As(err, &re) {
+		t.Fatalf("error type = %T, want *RuntimeError", err)
+	}
+	if len(re.Frames) == 0 && re.CodeFrame == "" {
+		t.Fatalf("rebuilt exhaustion carries no diagnostics: %+v", re)
+	}
+}
+
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —
 // here the comparison memo reservation, which falls back to memo-less
 // comparison when the memo does not fit — never latch the execution: the
