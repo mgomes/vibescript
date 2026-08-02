@@ -2034,23 +2034,48 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState,
 	return true
 }
 
+// sortedEntryScratchBytes approximates one entry's structural share of the
+// mixed-path sort scratch: a keyedEntry (string header plus HashEntry) and
+// the returned sorted slice's slot. Rendered display strings are reserved
+// separately at their actual size.
+const sortedEntryScratchBytes = 128
+
+// releaseScratchBytes retires n bytes of walk scratch accounting.
+func releaseScratchBytes(state *equalityState, n int) {
+	state.scratchHeld -= n
+	if state.scratchHeld < 0 {
+		state.scratchHeld = 0
+	}
+}
+
 // sortEntriesForMeteredWalk returns entries ordered by display key when the
 // walk is metered: a legacy hash materializes its entries in randomized map
 // order, and a charged linear walk must not let iteration order decide
 // between an answer and a quota error. Keys are billed as they render, the
-// pair slice is validated as scratch, and the sort's comparisons — over
-// already-billed display strings — charge in batches like the key sorter's.
-func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) ([]HashEntry, bool) {
+// full live footprint — the pair slice, each actual rendering, and the
+// returned sorted slice — is validated as scratch, and the sort's
+// comparisons charge in batches like the key sorter's. held reports the
+// scratch bytes still accounted; the caller releases them when its walk over
+// the returned slice finishes, since the renderings and slice stay live that
+// long.
+func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (sorted []HashEntry, held int, ok bool) {
 	if state.charge == nil || len(entries) < 2 {
-		return entries, true
+		return entries, 0, true
 	}
-	if state.reserveScratch != nil {
-		state.scratchHeld += len(entries) * 2 * keySortScratchEntryBytes
+	reserve := func(delta int) bool {
+		if state.reserveScratch == nil {
+			return true
+		}
+		state.scratchHeld += delta
+		held += delta
 		if err := state.reserveScratch(state.scratchHeld); err != nil {
 			state.err = err
-			return nil, false
+			return false
 		}
-		defer releaseKeySortScratch(state, len(entries)*2)
+		return true
+	}
+	if !reserve(len(entries) * sortedEntryScratchBytes) {
+		return nil, held, false
 	}
 	type keyedEntry struct {
 		display string
@@ -2059,9 +2084,15 @@ func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) ([]Has
 	keyed := make([]keyedEntry, len(entries))
 	for i, entry := range entries {
 		if !chargeEqualityKeyText(state, entry.Key) {
-			return nil, false
+			return nil, held, false
 		}
-		keyed[i] = keyedEntry{HashDisplayKey(entry.Key), entry}
+		display := HashDisplayKey(entry.Key)
+		// An array key's rendering can be arbitrarily large; validate each
+		// one at its realized size before rendering the next.
+		if !reserve(len(display)) {
+			return nil, held, false
+		}
+		keyed[i] = keyedEntry{display, entry}
 	}
 	const sortChargeBatchBytes = 4096
 	pending := 0
@@ -2093,30 +2124,33 @@ func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) ([]Has
 		return len(a.display) - len(b.display)
 	})
 	if state.err != nil {
-		return nil, false
+		return nil, held, false
 	}
 	if pending > 0 {
 		if err := state.charge(pending); err != nil {
 			state.err = err
-			return nil, false
+			return nil, held, false
 		}
 	}
-	sorted := make([]HashEntry, len(entries))
+	sorted = make([]HashEntry, len(entries))
 	for i, k := range keyed {
 		sorted[i] = k.entry
 	}
-	return sorted, true
+	return sorted, held, true
 }
 
 func hashEntriesEqualByDisplayKeyLinear(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
-	var ok bool
-	if left, ok = sortEntriesForMeteredWalk(left, state); !ok {
+	sortedLeft, heldLeft, ok := sortEntriesForMeteredWalk(left, state)
+	defer releaseScratchBytes(state, heldLeft)
+	if !ok {
 		return false
 	}
-	if right, ok = sortEntriesForMeteredWalk(right, state); !ok {
+	sortedRight, heldRight, ok := sortEntriesForMeteredWalk(right, state)
+	defer releaseScratchBytes(state, heldRight)
+	if !ok {
 		return false
 	}
-	return hashEntriesEqualByDisplayKeyLinearOrdered(left, right, state, strictKinds)
+	return hashEntriesEqualByDisplayKeyLinearOrdered(sortedLeft, sortedRight, state, strictKinds)
 }
 
 func hashEntriesEqualByDisplayKeyLinearOrdered(left, right []HashEntry, state *equalityState, strictKinds bool) bool {
