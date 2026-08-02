@@ -718,11 +718,26 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 				return NewBool(false), nil
 			}
-			for _, stored := range receiver.Hash() {
+			// Deterministic traversal: with randomized map iteration a quota
+			// that covers one metered comparison but not two alternated
+			// between a result and an error on identical inputs. Sorting
+			// reads the keys, so their bytes are billed first.
+			entries := receiver.Hash()
+			keyBytes := 0
+			keys := make([]string, 0, len(entries))
+			for k := range entries {
+				keys = append(keys, k)
+				keyBytes += len(k)
+			}
+			if err := exec.chargeStringScan(keyBytes); err != nil {
+				return NewNil(), err
+			}
+			slices.Sort(keys)
+			for _, k := range keys {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
-				if equality.Equal(stored, args[0]) {
+				if equality.Equal(entries[k], args[0]) {
 					return NewBool(true), nil
 				}
 				if err := equality.Err(); err != nil {

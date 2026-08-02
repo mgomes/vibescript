@@ -1757,16 +1757,11 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 				return true
 			}
 		}
-		for _, key := range meteredMapKeys(left) {
-			// The map lookup hashes the attribute name in full, exactly as
-			// hashMapsEqual's does; charge it the same way, in the same
-			// deterministic order.
-			if state.charge != nil {
-				if err := state.charge(len(key)); err != nil {
-					state.err = err
-					return false
-				}
-			}
+		keys, chargeOK := meteredMapKeys(left, state)
+		if !chargeOK {
+			return false
+		}
+		for _, key := range keys {
 			rightValue, ok := right[key]
 			if !ok {
 				return false
@@ -1786,12 +1781,13 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 	}
 }
 
-// meteredMapKeys returns a map's keys in sorted order. Metered equality must
+// sortedMapKeys returns a map's keys in sorted order. Metered equality must
 // traverse deterministically: with Go's randomized map iteration, identical
 // unequal inputs under the same quota alternated between answering false (the
 // mismatch visited first) and raising a limit error (a long equal entry
-// charged first).
-func meteredMapKeys[V any](m map[string]V) []string {
+// charged first). Callers whose keys are not yet billed use meteredMapKeys,
+// which charges every key's bytes before the sort reads them.
+func sortedMapKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for key := range m {
 		keys = append(keys, key)
@@ -1800,17 +1796,33 @@ func meteredMapKeys[V any](m map[string]V) []string {
 	return keys
 }
 
+// meteredMapKeys is sortedMapKeys with the keys' total bytes billed up front:
+// the lexicographic sort scans common prefixes repeatedly and the walk's
+// later map probes hash the same payloads, so one total, charged before any
+// of that work runs, covers the traversal proportionally.
+func meteredMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool) {
+	total := 0
+	for key := range m {
+		total += len(key)
+	}
+	if state.charge != nil && total > 0 {
+		if err := state.charge(total); err != nil {
+			state.err = err
+			return nil, false
+		}
+	}
+	return sortedMapKeys(m), true
+}
+
 func hashMapsEqual(left, right map[string]Value, state *equalityState, strictKinds bool) bool {
 	if len(left) != len(right) {
 		return false
 	}
-	for _, key := range meteredMapKeys(left) {
-		if state.charge != nil {
-			if err := state.charge(len(key)); err != nil {
-				state.err = err
-				return false
-			}
-		}
+	keys, ok := meteredMapKeys(left, state)
+	if !ok {
+		return false
+	}
+	for _, key := range keys {
 		rightValue, ok := right[key]
 		if !ok {
 			return false
@@ -1850,7 +1862,9 @@ func hashEntriesEqualByDisplayKey(left, right []HashEntry, state *equalityState,
 	if len(leftByKey) != len(rightByKey) {
 		return false
 	}
-	for _, key := range meteredMapKeys(leftByKey) {
+	// The display keys were billed while the maps were built; the sort
+	// re-reads already-charged payloads only.
+	for _, key := range sortedMapKeys(leftByKey) {
 		rightEntry, ok := rightByKey[key]
 		if !ok {
 			return false

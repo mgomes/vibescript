@@ -245,6 +245,42 @@ func TestSharedDAGEqualityWithChargingStaysLinear(t *testing.T) {
 	}
 }
 
+// A metered legacy value? scan must be deterministic: under a quota covering
+// one long comparison but not two, randomized map iteration alternated
+// between a result and a quota error on identical inputs.
+func TestLegacyHashValueScanIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("x", 8192)
+	almost := strings.Repeat("x", 8191) + "y"
+	receiver := NewHash(map[string]Value{
+		"a": NewString(long),
+		"b": NewString(almost),
+	})
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 200, MemoryQuotaBytes: Unlimited}, `
+    def run(h, needle)
+      h.value?(needle)
+    end
+    `)
+
+	var firstOutcome string
+	for i := range 50 {
+		_, err := script.Call(context.Background(), "run", []Value{receiver, NewString(long)}, CallOptions{})
+		outcome := "ok"
+		if err != nil {
+			outcome = "err"
+		}
+		if i == 0 {
+			firstOutcome = outcome
+			continue
+		}
+		if outcome != firstOutcome {
+			t.Fatalf("run %d produced %q, run 0 produced %q; identical inputs under one quota must not alternate", i, outcome, firstOutcome)
+		}
+	}
+}
+
 // The new byte charge raises the same step-quota error the per-element charge
 // does, and the ordering members must keep routing it through their sandbox
 // translation rather than relabelling it "values are not comparable".
