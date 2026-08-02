@@ -27,12 +27,16 @@ type RuntimeError struct {
 	CodeFrame string
 	Frames    []StackFrame
 
-	// exhaustedBy records the execution whose genuine budget exhaustion this
-	// error was wrapped from (see Execution.exhausted). It is unexported so
-	// adapters cannot forge it, and it binds the credential to one execution:
-	// a stateful adapter replaying a marked error saved from an earlier call
-	// fails the identity comparison in the new call. Only wrapError sets it.
-	exhaustedBy *Execution
+	// exhaustedBy records the credential token of the execution whose
+	// genuine budget exhaustion this error was wrapped from (see
+	// Execution.exhausted). It is unexported so adapters cannot forge it,
+	// and it binds the credential to one execution: a stateful adapter
+	// replaying a marked error saved from an earlier call fails the identity
+	// comparison in the new call. The token is a tiny allocation rather than
+	// the execution itself, so an error a host retains — a collector, a
+	// retry record — does not keep the whole call graph alive. Only
+	// wrapError sets it.
+	exhaustedBy *exhaustionToken
 }
 
 type assertionFailureError struct {
@@ -450,10 +454,24 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	wrapped := exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
 	if exec.exhausted != nil && errors.Is(err, exec.exhausted) {
 		if re, ok := errors.AsType[*RuntimeError](wrapped); ok {
-			re.exhaustedBy = exec
+			re.exhaustedBy = exec.exhaustionIdentity()
 		}
 	}
 	return wrapped
+}
+
+// exhaustionToken is an execution's credential identity: a distinct tiny
+// allocation whose pointer stands in for the execution in exhaustion-marked
+// errors, so retaining such an error retains nothing else.
+type exhaustionToken struct{ _ byte }
+
+// exhaustionIdentity returns this execution's credential token, allocating it
+// on first use.
+func (exec *Execution) exhaustionIdentity() *exhaustionToken {
+	if exec.exhaustToken == nil {
+		exec.exhaustToken = new(exhaustionToken)
+	}
+	return exec.exhaustToken
 }
 
 // authenticatedExhaustionFrames returns the RuntimeError whose credential
@@ -476,7 +494,7 @@ func (exec *Execution) authenticatedExhaustionFrames(err error) *RuntimeError {
 			continue
 		}
 		if re, ok := e.(*RuntimeError); ok { //nolint:errorlint // deliberate node-by-node tree walk: errors.As stops at the first RuntimeError, which may be an unrelated branch of an aggregate
-			if re.exhaustedBy == exec {
+			if exec.exhaustToken != nil && re.exhaustedBy == exec.exhaustToken {
 				return re
 			}
 			// RuntimeError.Unwrap returns nil by design; nothing below it.

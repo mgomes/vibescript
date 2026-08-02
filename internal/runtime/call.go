@@ -312,7 +312,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 					Message:     canonicalExhaustionMessage(exec.exhausted),
 					CodeFrame:   re.CodeFrame,
 					Frames:      re.Frames,
-					exhaustedBy: exec,
+					exhaustedBy: exec.exhaustionIdentity(),
 				}
 			} else {
 				// Everything else — a swallowed success, an unrelated

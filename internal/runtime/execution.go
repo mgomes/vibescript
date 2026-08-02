@@ -82,7 +82,10 @@ type Execution struct {
 	// nil value means the budget is live. Recursion-cap errors, stdlib input
 	// guards, and script-raised LimitErrors never latch: those describe one
 	// rejected operation, not an exhausted sandbox.
-	exhausted                 error
+	exhausted error
+	// exhaustToken is this execution's credential identity for
+	// exhaustion-marked errors; see exhaustionIdentity.
+	exhaustToken              *exhaustionToken
 	callStack                 []callFrame
 	root                      *Env
 	modules                   map[string]Value
