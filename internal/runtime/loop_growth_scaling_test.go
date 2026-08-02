@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // The #1129 build-loop shapes: each appends one element per iteration with
@@ -221,6 +224,88 @@ func TestGrowthLoopEstimateMatchesUncachedWalk(t *testing.T) {
 					"must not change the estimate", memoized, uncached)
 			}
 		})
+	}
+}
+
+// The charged append must decline a capacity-full receiver before its
+// element walk touches the committed seen-state: a reallocation abandons the
+// old backing only when nothing else aliases it, which the memo cannot know
+// (a host builtin or capability can retain an overlapping view that keeps
+// the old backing reachable), so the ordinary epoch-bumping path must price
+// the growth instead.
+func TestChargedAppendDeclinesAtCapacity(t *testing.T) {
+	t.Parallel()
+
+	backing := make([]Value, 3)
+	for i := range backing {
+		backing[i] = NewInt(int64(i))
+	}
+	arr := NewArray(backing)
+	exec := &Execution{ctx: context.Background(), memoryQuota: 1 << 20}
+	id := sliceBackingIdentity(backing)
+	exec.memoryEst.seenSlices = map[uintptr]struct{}{id: {}}
+	exec.baseWalkCache = &baseWalkCache{
+		valid:          true,
+		epoch:          value.MutationEpoch(),
+		topo:           exec.baseTopoVersion,
+		regionBoundary: noBlockRegion,
+	}
+
+	handled, err := exec.appendArrayCharged(arr, NewInt(9))
+	if handled || err != nil {
+		t.Fatalf("appendArrayCharged = (%v, %v), want a declined (false, nil) append for a capacity-full receiver", handled, err)
+	}
+	if got := len(arr.Array()); got != 3 {
+		t.Fatalf("a declined append must not mutate the receiver; length = %d", got)
+	}
+	if len(exec.memoryEst.seenSlices) != 1 {
+		t.Fatalf("a declined append must not touch the committed seen-state; %d identities recorded", len(exec.memoryEst.seenSlices))
+	}
+	if _, ok := exec.memoryEst.seenSlices[id]; !ok {
+		t.Fatal("the receiver's committed backing identity was retired by a declined append")
+	}
+}
+
+// A host value can hold overlapping views of one backing: appending to the
+// capacity-clipped view reallocates while the wider view keeps the old
+// backing reachable, so retiring the old identity and charging only the
+// capacity delta would leave the memo missing the surviving backing. The
+// charged append declines reallocations instead; the smallest admitting
+// quota must agree with the reference walk's. Fresh views are built per run
+// because the loop mutates them.
+//
+// Not parallel: baseWalkCacheDisabled is process-wide.
+func TestChargedAppendDeclinesReallocOverAliasedBacking(t *testing.T) {
+	const src = "def run(a, n)\n  clipped = a[1]\n  j = 0\n  while j < n\n    clipped << j\n    j = j + 1\n  end\n  clipped.length\nend"
+	aliasedViews := func() Value {
+		backing := make([]Value, 4)
+		for i := range backing {
+			backing[i] = NewString(strings.Repeat("x", 64))
+		}
+		return NewArray([]Value{NewArray(backing[:4:4]), NewArray(backing[:3:3])})
+	}
+	minQuota := func() int {
+		lo, hi := 1, 8<<20
+		for lo < hi {
+			mid := (lo + hi) / 2
+			script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: mid, StepQuota: Unlimited}, src)
+			if _, err := script.Call(context.Background(), "run", []Value{aliasedViews(), NewInt(64)}, CallOptions{}); err != nil {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo
+	}
+
+	baseWalkCacheDisabled.Store(true)
+	uncached := minQuota()
+	baseWalkCacheDisabled.Store(false)
+	memoized := minQuota()
+	if memoized != uncached {
+		t.Errorf("smallest quota that fits is %d with the charged append and %d with "+
+			"the reference walk; a reallocation over an aliased backing must not "+
+			"leave the memo missing the surviving old backing", memoized, uncached)
 	}
 }
 

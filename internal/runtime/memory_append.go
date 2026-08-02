@@ -39,6 +39,19 @@ func (exec *Execution) appendArrayCharged(left, right Value) (handled bool, err 
 		return false, nil
 	}
 	elems := left.Array()
+	if len(elems)+1 > cap(elems) {
+		// A reallocation abandons the old backing only if nothing else
+		// aliases it, which the seen-state cannot know: a host builtin or
+		// capability can hold an overlapping view that keeps the old backing
+		// reachable after the copy, so neither deleting its identity nor
+		// charging only the capacity delta describes the graph. Reallocating
+		// appends take the ordinary reserve-and-shovel path, whose epoch bump
+		// re-walks and re-counts every backing; a growth loop reallocates
+		// O(log n) times, so the charged fast path keeps its linear win. The
+		// check runs before the element walk below so a declined append
+		// commits nothing into the seen-state.
+		return false, nil
+	}
 	id := sliceBackingIdentity(elems)
 	if id == 0 {
 		return false, nil
@@ -57,33 +70,18 @@ func (exec *Execution) appendArrayCharged(left, right Value) (handled bool, err 
 	est.dormant = exec.currentDormantSet()
 	marginal := est.value(right)
 
-	newLen := len(elems) + 1
-	realloc := newLen > cap(elems)
 	used := saturatingAdd(exec.estimateScalarBase(), saturatingAdd(c.graphBytes, marginal))
-	if realloc {
-		// Old and new backings coexist while append copies; the old is inside
-		// graphBytes, so the peak adds the grown backing in full plus the
-		// receiver's call-root Value slot — the identical projection
-		// arrayReserveInPlaceGrowth charges on the fallback path, so the
-		// smallest admitting quota does not depend on which path ran.
-		grownCap := max(saturatingMul(cap(elems), 2), newLen)
-		used = saturatingAdd(used, saturatingAdd(arraySlotBackingBytes(grownCap), estimatedValueBytes))
-	}
 	if used > exec.memoryQuota {
 		c.valid = false
 		return true, fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
 
 	left.AppendArrayElemNoEpoch(right)
-	grown := left.Array()
-	if newID := sliceBackingIdentity(grown); newID != id {
-		// The append reallocated. Retire the old backing identity so a freed
-		// address later reused by a different slice can never be falsely
-		// deduplicated, commit the new one, and account the capacity growth
-		// the new backing realized.
-		delete(est.seenSlices, id)
-		est.seenSlices[newID] = struct{}{}
-		marginal = saturatingAdd(marginal, saturatingMul(cap(grown)-cap(elems), estimatedValueBytes))
+	if sliceBackingIdentity(left.Array()) != id {
+		// Unreachable for an in-capacity append; if the backing ever moved
+		// anyway, the delta model no longer describes the graph.
+		c.valid = false
+		return true, nil
 	}
 	c.graphBytes = saturatingAdd(c.graphBytes, marginal)
 	c.journalBudget = sessionJournalBudget(est.identityCount())
