@@ -538,10 +538,12 @@ func (s *baseWalkSession) close() {
 }
 
 // memoryQuotaExceededError builds the canonical memory-quota failure for this
-// execution. Every memory-quota rejection funnels through here so the message
-// stays uniform and the exhaustion bookkeeping has one home.
+// execution and latches it: unlike the step quota, the memory measurement is a
+// live reachable-graph walk that would legitimately recover once the offending
+// value goes out of scope, so without the latch a rescuing loop could exceed
+// the quota forever one allocation at a time.
 func (exec *Execution) memoryQuotaExceededError() error {
-	return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	return exec.latchExhaustion(fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota))
 }
 
 func (exec *Execution) checkMemory() error {
@@ -573,15 +575,22 @@ func (exec *Execution) checkMemoryMetered() error {
 }
 
 func (exec *Execution) checkMemoryWith(extras ...Value) error {
-	if exec.memoryQuota <= 0 {
-		return nil
-	}
-
-	used := exec.estimateMemoryUsage(extras...)
-	if used > exec.memoryQuota {
+	if !exec.memoryFitsWith(extras...) {
 		return exec.memoryQuotaExceededError()
 	}
 	return nil
+}
+
+// memoryFitsWith reports whether current usage plus extras stays within the
+// quota without building (and latching) a quota error. Soft probes that have a
+// cheaper fallback — the comparison memo, the merge projections — ask this
+// instead of a check function: not fitting is a capacity answer for them, not
+// budget exhaustion.
+func (exec *Execution) memoryFitsWith(extras ...Value) bool {
+	if exec.memoryQuota <= 0 {
+		return true
+	}
+	return exec.estimateMemoryUsage(extras...) <= exec.memoryQuota
 }
 
 func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
@@ -924,17 +933,25 @@ func (exec *Execution) checkProjectedHashBytes(count int, receiver Value, args [
 // the output-map projection -- could allocate past the quota on a large receiver
 // before any later check observed it.
 func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if !exec.projectedHashTransformFits(outputEntries, scratchBytes, receiver, args, kwargs, block) {
+		return exec.memoryQuotaExceededError()
+	}
+	return nil
+}
+
+// projectedHashTransformFits is checkProjectedHashTransformBytes's quota test
+// without the error: the merge projection probes a loose upper bound with it
+// and falls back to the exact union count when the bound does not fit, so the
+// probe must not latch the execution as exhausted.
+func (exec *Execution) projectedHashTransformFits(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) bool {
 	if exec.memoryQuota <= 0 {
-		return nil
+		return true
 	}
 
 	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
 	used = saturatingAdd(used, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
 	used = saturatingAdd(used, scratchBytes)
-	if used > exec.memoryQuota {
-		return exec.memoryQuotaExceededError()
-	}
-	return nil
+	return used <= exec.memoryQuota
 }
 
 // hashTransformBufferBytes returns the Go-local heap footprint a block-driven hash

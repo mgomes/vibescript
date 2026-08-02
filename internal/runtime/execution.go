@@ -67,13 +67,22 @@ type CallOptions struct {
 
 // Execution holds the runtime state for a single script evaluation.
 type Execution struct {
-	engine                    *Engine
-	script                    *Script
-	ctx                       context.Context
-	quota                     int
-	memoryQuota               int
-	recursionCap              int
-	steps                     int
+	engine       *Engine
+	script       *Script
+	ctx          context.Context
+	quota        int
+	memoryQuota  int
+	recursionCap int
+	steps        int
+	// exhausted latches the first genuine budget-exhaustion error (step
+	// quota, memory quota, or output limit) raised on this execution. Once
+	// set, step() fails immediately with it and no rescue clause matches any
+	// error, so a script cannot absorb the signal that its budget is gone —
+	// not even through a capability adapter that swallows the raw error. A
+	// nil value means the budget is live. Recursion-cap errors, stdlib input
+	// guards, and script-raised LimitErrors never latch: those describe one
+	// rejected operation, not an exhausted sandbox.
+	exhausted                 error
 	callStack                 []callFrame
 	root                      *Env
 	modules                   map[string]Value

@@ -274,10 +274,25 @@ func zeroDivisionErrorf(format string, args ...any) error {
 	return newTypedRuntimeError(runtimeErrorTypeZeroDiv, fmt.Errorf(format, args...))
 }
 
+// latchExhaustion records a genuine budget-exhaustion error on the execution.
+// The first error wins; step() re-raises it on every subsequent charge and
+// rescue refuses to match anything while it is set (see canRescueRuntimeError),
+// so quota exhaustion terminates the script no matter what absorbs the
+// original error value.
+func (exec *Execution) latchExhaustion(err error) error {
+	if exec.exhausted == nil {
+		exec.exhausted = err
+	}
+	return err
+}
+
 func (exec *Execution) step() error {
+	if exec.exhausted != nil {
+		return exec.exhausted
+	}
 	exec.steps++
 	if exec.quota > 0 && exec.steps > exec.quota {
-		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
+		return exec.latchExhaustion(fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota))
 	}
 	onSlowPath := (exec.steps & stepSlowPathMask) == 0
 	if onSlowPath {
@@ -337,11 +352,17 @@ func (exec *Execution) stepN(n int) error {
 // the per-element charge still observes the quota and cancellation, so this is
 // purely an early-out and never accepts a build the loop would reject.
 func (exec *Execution) checkStepBudgetFor(n int) error {
+	if exec.exhausted != nil {
+		return exec.exhausted
+	}
 	if n < 0 {
 		n = 0
 	}
 	if n > 0 && exec.quota > 0 && exec.quota-exec.steps < n {
-		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
+		// The pre-flight latches like the per-element loop it stands in for:
+		// it fires exactly when that loop was guaranteed to grind the quota
+		// to zero, so the budget is as spent as if the loop had run.
+		return exec.latchExhaustion(fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota))
 	}
 	return exec.checkContext()
 }

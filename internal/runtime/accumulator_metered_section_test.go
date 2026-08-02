@@ -17,9 +17,14 @@ func TestAccumulatorMeteredSectionSkipsPeriodicWalk(t *testing.T) {
 	if err := exec.checkMemory(); err == nil {
 		t.Fatal("sanity: a 1-byte quota must fail a direct memory check")
 	}
+	// The tripped checks above latch the execution as exhausted; clear the
+	// latch so the rest of the test observes the walk-gating mechanic rather
+	// than the latch's fail-fast.
+	exec.exhausted = nil
 
 	exec.steps = 15
 	requireErrorIs(t, exec.step(), errMemoryQuotaExceeded)
+	exec.exhausted = nil
 
 	end := exec.beginAccumulatorMeteredSection()
 	exec.steps = 31

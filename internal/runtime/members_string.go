@@ -4325,7 +4325,7 @@ func (exec *Execution) guardStringScanOutputFootprint(allMatches [][]int, groups
 			}
 		}
 		if outputBytes > maxRegexInputBytes {
-			return fmt.Errorf("%w: string.scan output exceeds limit %d bytes", errOutputLimitExceeded, maxRegexInputBytes)
+			return exec.latchExhaustion(fmt.Errorf("%w: string.scan output exceeds limit %d bytes", errOutputLimitExceeded, maxRegexInputBytes))
 		}
 	}
 	return nil
