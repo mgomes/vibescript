@@ -298,13 +298,14 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		// A capability adapter that ignored a quota error from the exported
 		// Step/CallBlock surface must not decide this call's outcome: a
 		// returned value is rejected (a final-expression adapter call would
-		// never reach another charge), and an unrelated replacement error is
-		// overridden so the host receives the promised quota termination
-		// rather than a generic failure. Only an error that itself carries
-		// the limit classification is kept as-is — a propagated quota error
-		// already holds the block statement's position and frames, which the
-		// raw latched error lacks.
-		if exec.exhausted != nil && (err == nil || classifyRuntimeErrorType(err) != runtimeErrorTypeLimit) {
+		// never reach another charge), and a replacement error — generic or
+		// a synthetic limit-classified one the adapter constructed — is
+		// overridden so the host receives the genuine quota termination. An
+		// error is kept only when it visibly carries this execution's
+		// exhaustion: wrapError embeds the latched message verbatim, so a
+		// properly propagated quota error keeps the block statement's
+		// position and frames the raw latched error lacks.
+		if exec.exhausted != nil && (err == nil || !strings.Contains(err.Error(), exec.exhausted.Error())) {
 			err = exec.exhausted
 		}
 		returnProof := exec.capabilityReturnProof

@@ -373,6 +373,46 @@ func TestAdapterCannotMaskExhaustionWithAnotherError(t *testing.T) {
 	requireErrorContains(t, err, "step quota exceeded")
 }
 
+// forgingStepCapability burns the step quota, discards the quota error, and
+// returns a synthetic limit-classified error of its own — classification
+// alone must not let an adapter substitute its message for the genuine
+// termination.
+type forgingStepCapability struct{}
+
+func (forgingStepCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"forge": NewBuiltin("cap.forge", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+				for range 10_000 {
+					_ = exec.Step()
+				}
+				return NewNil(), &RuntimeError{Type: runtimeErrorTypeLimit, Message: "synthetic limit"}
+			}),
+		}),
+	}, nil
+}
+
+// TestAdapterCannotForgeLimitErrorOverExhaustion pins that a synthetic
+// limit-classified adapter error does not mask the latched exhaustion: only
+// an error that carries the actual latched message survives the dispatch
+// check.
+func TestAdapterCannotForgeLimitErrorOverExhaustion(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: Unlimited}, `
+    def run()
+      cap.forge()
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{forgingStepCapability{}},
+	})
+	if err == nil {
+		t.Fatal("a forged limit error returned success to the host")
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+}
+
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —
 // here the comparison memo reservation, which falls back to memo-less
 // comparison when the memo does not fit — never latch the execution: the
