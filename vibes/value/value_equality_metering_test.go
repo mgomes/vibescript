@@ -565,6 +565,54 @@ func TestEqualityNilHookUnchanged(t *testing.T) {
 	}
 }
 
+// TestMixedHashChargeBillsDisplayWork pins the mixed-path cost model: a
+// composite key wrapped in deeply nested singleton arrays renders through
+// Inspect, which writes the payload once, so the charge must track the
+// rendered length rather than lookup-key canonicalization's per-level
+// copies — the canonical model raised spurious quota errors for mixed
+// comparisons whose display work fit the quota.
+func TestMixedHashChargeBillsDisplayWork(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("k", 8*1024)
+	buildTyped := func(depth int) value.Value {
+		key := value.NewArray([]value.Value{value.NewString(long)})
+		for range depth {
+			key = value.NewArray([]value.Value{key})
+		}
+		h := value.NewTypedHash(1)
+		if err := h.HashSet(key, value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet: %v", err)
+		}
+		return h
+	}
+	legacy := func() value.Value {
+		return value.NewHash(map[string]value.Value{"a": value.NewInt(1)})
+	}
+
+	charged := func(depth int) int {
+		ctx, total := meteredContext()
+		if ctx.Equal(legacy(), buildTyped(depth)) {
+			t.Fatal("hashes with different keys must compare unequal")
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("Err() = %v, want nil", err)
+		}
+		return *total
+	}
+
+	atShallow := charged(6)
+	atDeep := charged(18)
+	if atShallow < len(long) {
+		t.Fatalf("charged %d bytes, want at least the rendered payload's %d", atShallow, len(long))
+	}
+	if atDeep >= atShallow*2 {
+		t.Fatalf("charged %d bytes at depth 6 and %d at depth 18; the display "+
+			"rendering writes the payload once, so the charge must not scale "+
+			"with wrapper depth", atShallow, atDeep)
+	}
+}
+
 // TestEqualityChargeBatchesSubGranularityLeaves pins the accumulator: a
 // runtime-style charge that rounds each invocation down to whole 64-byte
 // steps must still bill the aggregate payload when a walk compares many

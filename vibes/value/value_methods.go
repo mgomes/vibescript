@@ -1603,6 +1603,21 @@ func chargeEqualityKeyText(state *equalityState, key Value) bool {
 // equalityKeyCostNodeBudget bounds the key-cost walk; see chargeEqualityKeyText.
 const equalityKeyCostNodeBudget = 1 << 16
 
+// chargeDisplayKeyRender bills a composite key's rendered Inspect length,
+// reporting the projected byte count for the caller's reservation and
+// pregrown render. The display path writes each descendant payload once,
+// unlike lookup-key canonicalization's per-level copies, so billing the
+// canonical model here overcharged deeply nested singleton keys —
+// Θ(depth·payload) for Θ(rendered) work — into spurious quota errors.
+func chargeDisplayKeyRender(state *equalityState, key Value) (projected int, ok bool) {
+	projected, err := key.InspectByteLenBounded(func() error { return nil })
+	if err != nil {
+		state.err = err
+		return 0, false
+	}
+	return projected, chargeEqualityBytes(state, projected)
+}
+
 // equalityKeyTextBytes models the bytes NewHashLookupKey's canonicalization
 // reads for key, in element order: each array level copies every child's
 // complete encoding into its own canonical string, so a depth-d chain around
@@ -2125,23 +2140,6 @@ func (s *equalityState) scratchAllocCapacity(bytes int) int {
 	return s.roundScratchAlloc(bytes)
 }
 
-// reserveRenderedKeyScratch preflights a composite key's Inspect length,
-// reserves the capacity the rendering's backing array will realize, and
-// reports the projected length. The reservation happens before the rendering
-// is built, so a budget the realized capacity would exceed rejects the
-// allocation instead of discovering the overrun afterwards.
-func reserveRenderedKeyScratch(key Value, state *equalityState, reserve func(delta int) bool) (projected int, ok bool) {
-	projected, err := key.InspectByteLenBounded(func() error { return nil })
-	if err != nil {
-		state.err = err
-		return 0, false
-	}
-	if !reserve(state.scratchAllocCapacity(projected)) {
-		return 0, false
-	}
-	return projected, true
-}
-
 // renderDisplayKeyPregrown renders key's Inspect form into a builder pregrown
 // to the projected length, so the rendering takes exactly one allocation of
 // the capacity the caller reserved instead of a doubling growth that retains
@@ -2208,23 +2206,28 @@ func sortEntriesForMeteredWalk(entries []HashEntry, state *equalityState) (keyed
 	}
 	keyed = make([]keyedHashEntry, len(entries))
 	for i, entry := range entries {
-		if !chargeEqualityKeyText(state, entry.Key) {
-			return nil, held, false
-		}
 		display := ""
 		switch entry.Key.Kind() {
 		case KindString, KindSymbol:
 			// HashDisplayKey aliases the key's own payload, which the
 			// memory estimator already counts; only the string header is
-			// new, covered by the structural share.
+			// new, covered by the structural share. The sort and probes
+			// read the text, so its bytes are billed.
 			display = HashDisplayKey(entry.Key)
+			if !chargeEqualityBytes(state, len(display)) {
+				return nil, held, false
+			}
 		default:
 			// A composite key renders through Inspect, which can be
-			// arbitrarily large; preflight the size and reserve the
+			// arbitrarily large; preflight the size, bill the rendered
+			// length (see chargeDisplayKeyRender), and reserve the
 			// rendering's realized capacity before it is built, not
 			// after.
-			projected, ok := reserveRenderedKeyScratch(entry.Key, state, reserve)
+			projected, ok := chargeDisplayKeyRender(state, entry.Key)
 			if !ok {
+				return nil, held, false
+			}
+			if !reserve(state.scratchAllocCapacity(projected)) {
 				return nil, held, false
 			}
 			display = renderDisplayKeyPregrown(entry.Key, projected)
@@ -2289,14 +2292,17 @@ func hashEntriesEqualByDisplayKeyLinearOrdered(left, right []keyedHashEntry, sta
 	}
 	for l := range left {
 		leftEntry := &left[l]
-		if !chargeEqualityKeyText(state, leftEntry.entry.Key) {
+		key := leftEntry.displayKey()
+		if !chargeEqualityBytes(state, len(key)) {
 			return false
 		}
-		key := leftEntry.displayKey()
 		found := false
 		for r := range right {
 			rightEntry := &right[r]
-			if !chargeEqualityKeyText(state, rightEntry.entry.Key) {
+			// Each probe compares rendered display strings; bill the probed
+			// key's text. The metered walk pre-rendered every display key,
+			// so reading its length performs no new work.
+			if !chargeEqualityBytes(state, len(rightEntry.displayKey())) {
 				return false
 			}
 			if rightEntry.displayKey() != key {
@@ -2317,15 +2323,15 @@ func hashEntriesEqualByDisplayKeyLinearOrdered(left, right []keyedHashEntry, sta
 
 func hashEntriesHaveDuplicateDisplayKey(entries []keyedHashEntry, state *equalityState) bool {
 	for i := range entries {
-		if !chargeEqualityKeyText(state, entries[i].entry.Key) {
+		key := entries[i].displayKey()
+		if !chargeEqualityBytes(state, len(key)) {
 			return false
 		}
-		key := entries[i].displayKey()
 		for j := i + 1; j < len(entries); j++ {
 			// The metered walk rendered every display key under reservation
-			// before the entries arrived here; the charge still bills each
-			// occurrence's key-text read, as the outer entry's does.
-			if !chargeEqualityKeyText(state, entries[j].entry.Key) {
+			// before the entries arrived here; each pairwise probe reads the
+			// rendered text, so its length is billed.
+			if !chargeEqualityBytes(state, len(entries[j].displayKey())) {
 				return false
 			}
 			if entries[j].displayKey() == key {
@@ -2390,15 +2396,19 @@ func hashEntriesByDisplayKey(entries []HashEntry, state *equalityState) (byKey m
 		return true
 	}
 	for _, entry := range entries {
-		if !chargeEqualityKeyText(state, entry.Key) {
-			return nil, held, false
-		}
 		key := ""
 		if state.charge == nil || entry.Key.Kind() == KindString || entry.Key.Kind() == KindSymbol {
 			key = HashDisplayKey(entry.Key)
+			// Building the map hashes the key text; bill its bytes.
+			if !chargeEqualityBytes(state, len(key)) {
+				return nil, held, false
+			}
 		} else {
-			projected, ok := reserveRenderedKeyScratch(entry.Key, state, reserve)
+			projected, ok := chargeDisplayKeyRender(state, entry.Key)
 			if !ok {
+				return nil, held, false
+			}
+			if !reserve(state.scratchAllocCapacity(projected)) {
 				return nil, held, false
 			}
 			key = renderDisplayKeyPregrown(entry.Key, projected)
