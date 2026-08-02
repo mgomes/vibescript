@@ -2,11 +2,38 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
 	"testing"
 )
+
+// TestEqualityScanStopsAfterStickyError pins the scan abort: once a probe
+// records a sticky charge failure, the remaining candidates must not be
+// visited — every later probe answers false in O(1), so finishing the scan
+// is arbitrarily much post-quota work.
+func TestEqualityScanStopsAfterStickyError(t *testing.T) {
+	t.Parallel()
+
+	values := make([]Value, 100)
+	for i := range values {
+		values[i] = NewArray([]Value{NewString(strings.Repeat("x", 128))})
+	}
+	var equality EqualityContext
+	boom := errors.New("quota spent")
+	equality.SetCharge(func(int) error { return boom })
+	probes, found := indexOfEqualValue(values, NewArray([]Value{NewString(strings.Repeat("x", 128))}), &equality)
+	if found {
+		t.Fatal("a failed charge must not report a match")
+	}
+	if probes != 1 {
+		t.Fatalf("scan performed %d probes after the sticky error, want 1", probes)
+	}
+	if !errors.Is(equality.Err(), boom) {
+		t.Fatalf("Err() = %v, want %v", equality.Err(), boom)
+	}
+}
 
 // The #1131 charge stopped at the operator boundary: it fired only when both
 // top-level operands were string-like, so a string reached through an array or

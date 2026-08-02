@@ -455,6 +455,12 @@ func indexOfEqualValue(values []Value, target Value, equality *EqualityContext) 
 		if equality.Equal(target, candidate) {
 			return i, true
 		}
+		if equality.Err() != nil {
+			// A sticky charge failure makes every later probe answer false
+			// in O(1), and the caller surfaces the error, so scanning the
+			// rest of the source is pure post-quota work.
+			return i + 1, false
+		}
 	}
 	return len(values), false
 }
