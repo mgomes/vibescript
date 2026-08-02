@@ -739,10 +739,16 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			// The sort rereads common prefixes past the linear charge above;
-			// measure the exact bytes each comparison reads and bill them
-			// after, as the equality sorter does.
-			sortRead := 0
+			// measure the exact bytes each comparison reads and bill them in
+			// batches from inside the comparator, as the equality sorter
+			// does, so a spent quota stops the scan within one batch.
+			const sortChargeBatchBytes = 4096
+			pending := 0
+			var sortChargeErr error
 			slices.SortFunc(keys, func(a, b string) int {
+				if sortChargeErr != nil {
+					return len(a) - len(b)
+				}
 				n := min(len(a), len(b))
 				i := 0
 				for i < n && a[i] == b[i] {
@@ -752,8 +758,11 @@ func hashMemberQuery(property string) (Value, error) {
 				if read > n {
 					read = n
 				}
-				if sortRead += read; sortRead < 0 {
-					sortRead = math.MaxInt / 2
+				if pending += read; pending >= sortChargeBatchBytes {
+					if err := exec.chargeStringScan(pending); err != nil {
+						sortChargeErr = err
+					}
+					pending = 0
 				}
 				if i < n {
 					if a[i] < b[i] {
@@ -763,8 +772,13 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 				return len(a) - len(b)
 			})
-			if err := exec.chargeStringScan(sortRead); err != nil {
-				return NewNil(), err
+			if sortChargeErr != nil {
+				return NewNil(), sortChargeErr
+			}
+			if pending > 0 {
+				if err := exec.chargeStringScan(pending); err != nil {
+					return NewNil(), err
+				}
 			}
 			for _, k := range keys {
 				if err := exec.step(); err != nil {

@@ -1865,10 +1865,16 @@ func sortedMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool)
 	}
 	// The sort rereads common prefixes Θ(log n) times per key, past what the
 	// single linear key charge covers; measure the exact bytes each
-	// comparison reads and bill them after the sort — the charge follows the
-	// work by at most one sort, the same convention the set probes use.
-	sortRead := 0
+	// comparison reads and bill them in batches from inside the comparator,
+	// so a spent quota stops the scan within one batch of work — after a
+	// charge failure the remaining comparisons decide on lengths alone, and
+	// the garbage order is discarded with the error.
+	const sortChargeBatchBytes = 4096
+	pending := 0
 	slices.SortFunc(keys, func(a, b string) int {
+		if state.err != nil {
+			return len(a) - len(b)
+		}
 		n := min(len(a), len(b))
 		i := 0
 		for i < n && a[i] == b[i] {
@@ -1878,8 +1884,11 @@ func sortedMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool)
 		if read > n {
 			read = n
 		}
-		if sortRead += read; sortRead < 0 {
-			sortRead = math.MaxInt / 2
+		if pending += read; pending >= sortChargeBatchBytes {
+			if err := state.charge(pending); err != nil {
+				state.err = err
+			}
+			pending = 0
 		}
 		if i < n {
 			if a[i] < b[i] {
@@ -1889,9 +1898,14 @@ func sortedMapKeys[V any](m map[string]V, state *equalityState) ([]string, bool)
 		}
 		return len(a) - len(b)
 	})
-	if err := state.charge(sortRead); err != nil {
-		state.err = err
+	if state.err != nil {
 		return nil, false
+	}
+	if pending > 0 {
+		if err := state.charge(pending); err != nil {
+			state.err = err
+			return nil, false
+		}
 	}
 	return keys, true
 }
