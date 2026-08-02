@@ -124,6 +124,7 @@ func TestTypedReceiverCopiesChargeKeyPayloads(t *testing.T) {
 		"h.reject { |k, v| false }.length",
 		"h.transform_values { |v| v }.length",
 		"h.compact.length",
+		"x = {}\n  x.replace(h).length",
 	}
 	baseSmall := minStepsForKeyOp(t, build+"h.length", 8<<10)
 	baseLarge := minStepsForKeyOp(t, build+"h.length", 64<<10)

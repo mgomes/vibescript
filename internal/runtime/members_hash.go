@@ -2221,6 +2221,11 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
+				// Adopting an entry canonicalizes its key; bill the payload
+				// before the walk.
+				if err := exec.chargeValueKeySteps(entry.Key); err != nil {
+					return NewNil(), err
+				}
 				if err := hashSet(receiver, entry.Key, entry.Value); err != nil {
 					return NewNil(), err
 				}
