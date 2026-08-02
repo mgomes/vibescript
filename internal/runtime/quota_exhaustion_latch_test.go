@@ -512,6 +512,49 @@ func TestTaskWorkerForgedLimitErrorRemainsRescuable(t *testing.T) {
 	}
 }
 
+// swallowingBlockCapability drives its block through CallBlock and reports
+// success no matter what the block returned — the composition of the adapter
+// and task attack surfaces.
+type swallowingBlockCapability struct{}
+
+func (swallowingBlockCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"swallow": NewBuiltin("cap.swallow", func(exec *Execution, _ Value, _ []Value, _ map[string]Value, block Value) (Value, error) {
+				_, _ = exec.CallBlock(block, nil)
+				return NewString("ok"), nil
+			}),
+		}),
+	}, nil
+}
+
+// TestAdapterCannotSwallowTaskExhaustion pins the composed case: a task
+// worker exhausts inside an adapter-driven block, and the adapter discards
+// the CallBlock error. The parent latch must have been set when the worker's
+// authenticated exhaustion crossed the task boundary, so the dispatch check
+// still surfaces it.
+func TestAdapterCannotSwallowTaskExhaustion(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 5_000, MemoryQuotaBytes: Unlimited}, `
+    def spin(x)
+      while true
+      end
+    end
+
+    def run()
+      cap.swallow() { Tasks.map([1], with: :spin) }
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{swallowingBlockCapability{}},
+	})
+	if err == nil {
+		t.Fatal("a swallowed task exhaustion returned success to the host")
+	}
+	requireErrorContains(t, err, "step quota exceeded")
+}
+
 // TestSoftCapacityProbesDoNotLatch pins that the internal fits-style probes —
 // here the comparison memo reservation, which falls back to memo-less
 // comparison when the memo does not fit — never latch the execution: the

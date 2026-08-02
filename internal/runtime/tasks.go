@@ -18,6 +18,21 @@ func registerTaskBuiltins(engine *Engine) {
 	})
 }
 
+// latchTaskExhaustion transfers a task worker's authenticated exhaustion into
+// this (parent) execution's latch as the error crosses the task boundary on
+// the parent goroutine. Rescue already refuses such errors by their
+// credential, but only while they are propagating: a capability adapter that
+// swallowed one — cap.swallow { Tasks.map(...) } — let the call succeed past
+// a genuine kill until the latch carried the verdict too. Errors without the
+// credential (cancellation, script raises, recursion caps) pass through
+// untouched, and each worker still gets its own fresh budget.
+func (exec *Execution) latchTaskExhaustion(err error) error {
+	if err != nil && errorCarriesGenuineExhaustion(err) {
+		exec.latchExhaustion(err)
+	}
+	return err
+}
+
 func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) != 0 {
 		return NewNil(), fmt.Errorf("Tasks.run does not take positional arguments")
@@ -40,10 +55,10 @@ func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[s
 	result, blockErr := exec.CallBlock(block, []Value{group.managerValue()})
 	if blockErr != nil {
 		group.cancel()
-		_ = group.closeAndWait()
-		return NewNil(), blockErr
+		_ = exec.latchTaskExhaustion(group.closeAndWait())
+		return NewNil(), exec.latchTaskExhaustion(blockErr)
 	}
-	if err := group.closeAndWait(); err != nil {
+	if err := exec.latchTaskExhaustion(group.closeAndWait()); err != nil {
 		return NewNil(), err
 	}
 	if err := exec.checkMemoryValue(result); err != nil {
@@ -89,13 +104,13 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 		handle, err := group.spawnUnary(exec, functionName, item)
 		if err != nil {
 			group.cancel()
-			_ = group.closeAndWait()
-			return NewNil(), err
+			_ = exec.latchTaskExhaustion(group.closeAndWait())
+			return NewNil(), exec.latchTaskExhaustion(err)
 		}
 		handles[i] = handle
 	}
 
-	if err := group.closeAndWait(); err != nil {
+	if err := exec.latchTaskExhaustion(group.closeAndWait()); err != nil {
 		return NewNil(), err
 	}
 
@@ -103,7 +118,7 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 	for i, handle := range handles {
 		result, err := handle.result()
 		if err != nil {
-			return NewNil(), err
+			return NewNil(), exec.latchTaskExhaustion(err)
 		}
 		results[i] = result
 	}
@@ -256,7 +271,7 @@ func (group *taskGroup) builtinWait(exec *Execution, receiver Value, args []Valu
 	if group.isClosed() {
 		return NewNil(), fmt.Errorf("task manager cannot be used after task scope exits")
 	}
-	if err := group.wait(); err != nil {
+	if err := exec.latchTaskExhaustion(group.wait()); err != nil {
 		return NewNil(), err
 	}
 	return NewNil(), nil
@@ -266,7 +281,7 @@ func (group *taskGroup) spawn(exec *Execution, functionName string, args []Value
 	if group.isClosed() {
 		return nil, fmt.Errorf("task manager cannot be used after task scope exits")
 	}
-	if err := group.err(); err != nil {
+	if err := exec.latchTaskExhaustion(group.err()); err != nil {
 		return nil, err
 	}
 	taskArgs, err := cloneTaskArgs("tasks.spawn", args)
@@ -285,7 +300,7 @@ func (group *taskGroup) spawnUnary(exec *Execution, functionName string, arg Val
 	if group.isClosed() {
 		return nil, fmt.Errorf("task manager cannot be used after task scope exits")
 	}
-	if err := group.err(); err != nil {
+	if err := exec.latchTaskExhaustion(group.err()); err != nil {
 		return nil, err
 	}
 
@@ -334,7 +349,7 @@ func (group *taskGroup) enqueue(exec *Execution, functionName string, taskArgs [
 		}
 		handle.complete(NewNil(), err)
 		group.tasks.Done()
-		return nil, err
+		return nil, exec.latchTaskExhaustion(err)
 	case <-ctx.Done():
 		group.releaseJobPayload(job)
 		handle.complete(NewNil(), ctx.Err())
@@ -541,7 +556,7 @@ func (handle *taskHandle) builtinValue(exec *Execution, receiver Value, args []V
 		return NewNil(), fmt.Errorf("task handle cannot be used after task scope exits")
 	}
 	result, err := handle.wait(exec.Context())
-	return result, handle.substituteRootCause(err)
+	return result, exec.latchTaskExhaustion(handle.substituteRootCause(err))
 }
 
 // substituteRootCause replaces a handle's own cancellation with the failure
