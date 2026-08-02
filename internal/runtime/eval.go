@@ -1486,7 +1486,7 @@ func (exec *Execution) evalRescueExpr(expr *RescueExpr, env *Env, autoCall bool)
 			}
 			return result, nil
 		}
-		if !canRescueRuntimeError(err, nil) {
+		if !exec.canRescueRuntimeError(err, nil) {
 			return NewNil(), err
 		}
 
@@ -4834,7 +4834,7 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 			// but it still consumes the match.
 			for i := range stmt.Rescues {
 				clause := &stmt.Rescues[i]
-				if !canRescueRuntimeError(err, clause.Ty) {
+				if !exec.canRescueRuntimeError(err, clause.Ty) {
 					// A skipped clause's body locals must exist (as nil) before a
 					// later handler runs: the parser treated its assignments as
 					// surrounding-scope locals, so a matching clause reading such a
@@ -5012,8 +5012,15 @@ func isHostControlSignal(err error) bool {
 		errors.Is(err, context.DeadlineExceeded)
 }
 
-func canRescueRuntimeError(err error, rescueTy *TypeExpr) bool {
-	return !isLoopControlSignal(err) &&
+func (exec *Execution) canRescueRuntimeError(err error, rescueTy *TypeExpr) bool {
+	// A latched execution matches no rescue clause at all: once the budget is
+	// genuinely exhausted the script must not absorb its own termination, no
+	// matter which error value is propagating or how the clause is typed. The
+	// latch, not the error's identity, carries the verdict because wrapError
+	// flattens the quota sentinels into ordinary LimitError-classified
+	// RuntimeErrors that a forged raise LimitError could imitate.
+	return exec.exhausted == nil &&
+		!isLoopControlSignal(err) &&
 		!isRescueRetrySignal(err) &&
 		!isHostControlSignal(err) &&
 		!isNonLocalReturnSignal(err) &&
