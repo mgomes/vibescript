@@ -75,6 +75,24 @@ func TestSetOpsReserveTheirBuffers(t *testing.T) {
 	}
 }
 
+// TestSetOpsValidateBuffersWithOperands pins the roots side of the buffer
+// reservation: the operands can be host-returned arrays live only in Go
+// locals, so a quota that admits the buffers against the execution roots
+// alone must still reject the operation when the operands' own graphs push
+// the true peak past it.
+func TestSetOpsValidateBuffersWithOperands(t *testing.T) {
+	t.Parallel()
+
+	heavy := func() []Value {
+		return []Value{NewArray([]Value{NewString(strings.Repeat("x", 4096))})}
+	}
+	// The buffers alone fit comfortably; the two 4 KiB operand graphs do not.
+	exec := &Execution{ctx: context.Background(), memoryQuota: 2048}
+	if _, err := unionArrayValues(exec, heavy(), [][]Value{heavy()}); err == nil {
+		t.Fatal("union must validate its buffers together with the operand graphs")
+	}
+}
+
 // TestEqualityScanStopsAfterStickyError pins the scan abort: once a probe
 // records a sticky charge failure, the remaining candidates must not be
 // visited — every later probe answers false in O(1), so finishing the scan

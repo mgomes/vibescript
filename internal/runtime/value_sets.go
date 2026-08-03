@@ -43,10 +43,31 @@ const estimatedScalarSetEntryBytes = 160
 // granularity; everything is released when the operation returns. A nil
 // exec or an unlimited quota makes every method a no-op.
 type setOpScratch struct {
-	exec         *Execution
+	exec *Execution
+	// roots wrap the operation's input slices: they can be host-returned
+	// values live only as builtin call roots, invisible to the base walk,
+	// yet they coexist with every buffer this scratch reserves.
+	roots        []Value
 	held         int
 	resultCap    int
 	compositeCap int
+}
+
+// newSetOpScratch builds the reservation tracker for a set operation over
+// the given input slices. The inputs are wrapped as extra roots for every
+// validation; the wrappers alias the callers' backings, so an input that is
+// also reachable from an execution root deduplicates rather than
+// double-counting.
+func newSetOpScratch(exec *Execution, sources ...[]Value) setOpScratch {
+	s := setOpScratch{exec: exec}
+	if exec == nil || exec.memoryQuota <= 0 {
+		return s
+	}
+	s.roots = make([]Value, 0, len(sources))
+	for _, src := range sources {
+		s.roots = append(s.roots, NewArray(src))
+	}
+	return s
 }
 
 func (s *setOpScratch) reserve(extra int) error {
@@ -54,7 +75,7 @@ func (s *setOpScratch) reserve(extra int) error {
 		return nil
 	}
 	s.held += s.exec.reserveLoopScratch(extra)
-	return s.exec.checkMemory()
+	return s.exec.checkMemoryWith(s.roots...)
 }
 
 // reserveResultCap reserves the result slice's initial backing.
@@ -400,7 +421,7 @@ func uniqueValues(values []Value) []Value {
 func uniqueValuesMetered(values []Value, check func() error, charge func(int) error, meterExec *Execution) ([]Value, error) {
 	var seen valueSet
 	seen.bindMetering(meterExec)
-	scratch := setOpScratch{exec: meterExec}
+	scratch := newSetOpScratch(meterExec, values)
 	defer scratch.release()
 	seen.scratch = &scratch
 	initial := boundedSetCap(len(values))
@@ -445,7 +466,10 @@ func unionArrayValues(exec *Execution, left []Value, others [][]Value) ([]Value,
 	}
 	var seen valueSet
 	seen.bindMetering(exec)
-	scratch := setOpScratch{exec: exec}
+	sources := make([][]Value, 0, len(others)+1)
+	sources = append(sources, left)
+	sources = append(sources, others...)
+	scratch := newSetOpScratch(exec, sources...)
 	defer scratch.release()
 	seen.scratch = &scratch
 	initial := boundedSetCap(total)
@@ -506,7 +530,10 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 	}
 	var removal membershipSet
 	exec.bindEqualityMetering(&removal.equality)
-	scratch := setOpScratch{exec: exec}
+	sources := make([][]Value, 0, len(others)+1)
+	sources = append(sources, left)
+	sources = append(sources, others...)
+	scratch := newSetOpScratch(exec, sources...)
 	defer scratch.release()
 	removal.scratch = &scratch
 	for _, other := range others {
@@ -544,7 +571,7 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var inRight membershipSet
 	exec.bindEqualityMetering(&inRight.equality)
-	scratch := setOpScratch{exec: exec}
+	scratch := newSetOpScratch(exec, left, right)
 	defer scratch.release()
 	inRight.scratch = &scratch
 	inRight.addSource(right, len(right))
@@ -584,7 +611,7 @@ func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error)
 func subtractArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var removal membershipSet
 	exec.bindEqualityMetering(&removal.equality)
-	scratch := setOpScratch{exec: exec}
+	scratch := newSetOpScratch(exec, left, right)
 	defer scratch.release()
 	removal.scratch = &scratch
 	removal.addSource(right, len(right))
