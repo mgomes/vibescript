@@ -327,7 +327,7 @@ func (c *scriptChecker) reachableOriginIvarFact(originName, name string) (*TypeE
 // container contracts become unknown because their stable post-write shape is
 // not tracked.
 func (c *scriptChecker) widenUnsetInstanceIvarFacts() {
-	if c.selfClass == nil || c.selfClassContext {
+	if c.selfClass == nil || c.selfClassContext || !c.instanceIvarFactsDirty {
 		return
 	}
 	for _, method := range c.selfClass.Methods {
@@ -336,6 +336,10 @@ func (c *scriptChecker) widenUnsetInstanceIvarFacts() {
 		}
 		c.widenUnsetInstanceIvarFact(method.AccessorName)
 	}
+	// No ivar fact can need another full-class widening until an ivar fact is
+	// rebound. bindLocalType and bindLocalTypeInCurrentFrame mark that event,
+	// keeping repeated calls between writes constant-time.
+	c.instanceIvarFactsDirty = false
 }
 
 // widenUnsetInstanceIvarFact drops narrow certainty for one ivar a repeated

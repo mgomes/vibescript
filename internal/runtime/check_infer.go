@@ -924,6 +924,9 @@ func (c *scriptChecker) bindLocalType(name string, ty *TypeExpr) {
 	for i := len(c.localTypes) - 1; i >= 0; i-- {
 		if _, ok := c.localTypes[i][name]; ok {
 			c.localTypes[i][name] = ty
+			if strings.HasPrefix(name, "@") {
+				c.instanceIvarFactsDirty = true
+			}
 			return
 		}
 	}
@@ -943,6 +946,9 @@ func (c *scriptChecker) bindLocalTypeInCurrentFrame(name string, ty *TypeExpr) {
 		c.localTypes[len(c.localTypes)-1] = frame
 	}
 	frame[name] = ty
+	if strings.HasPrefix(name, "@") {
+		c.instanceIvarFactsDirty = true
+	}
 }
 
 func (c *scriptChecker) advanceLocalBindingGeneration(name string) {
@@ -1855,6 +1861,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	previousPinnedOrigins := c.pinnedInstanceOrigins
 	previousConstructors := c.constructorInstanceFacts
 	previousWidenedIvars := c.widenedIvarFacts
+	previousInstanceIvarsDirty := c.instanceIvarFactsDirty
 	previousIfClassFacts := c.evaluatedIfClassFacts
 	previousBlockValues := c.evaluatedBlockValues
 	previousHashDefaults := c.evaluatedHashDefaults
@@ -1872,6 +1879,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 	c.pinnedInstanceOrigins = nil
 	c.constructorInstanceFacts = nil
 	c.widenedIvarFacts = nil
+	c.instanceIvarFactsDirty = false
 	c.evaluatedIfClassFacts = nil
 	c.evaluatedBlockValues = nil
 	c.evaluatedHashDefaults = nil
@@ -1890,6 +1898,7 @@ func (c *scriptChecker) withFreshLocalInferenceScope() func() {
 		c.pinnedInstanceOrigins = previousPinnedOrigins
 		c.constructorInstanceFacts = previousConstructors
 		c.widenedIvarFacts = previousWidenedIvars
+		c.instanceIvarFactsDirty = previousInstanceIvarsDirty
 		c.evaluatedIfClassFacts = previousIfClassFacts
 		c.evaluatedBlockValues = previousBlockValues
 		c.evaluatedHashDefaults = previousHashDefaults

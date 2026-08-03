@@ -183,6 +183,7 @@ type scriptChecker struct {
 	constructorInstanceFacts   map[Expression]checkInstanceClassFact
 	constructorIvarFacts       map[Expression]map[string]*TypeExpr
 	widenedIvarFacts           map[string]struct{}
+	instanceIvarFactsDirty     bool
 	assignmentReceiverCapture  *checkAssignmentReceiverCapture
 	requiredModules            map[string]struct{}
 	runtimeModules             map[string]struct{}
@@ -2454,6 +2455,7 @@ type checkScopeState struct {
 	valueAlias         checkNameRelations
 	containerSelection map[string]checkContainerSelection
 	degradedContainers map[string]struct{}
+	instanceIvarsDirty bool
 }
 
 type checkNameRelations map[string]map[string]struct{}
@@ -2815,6 +2817,7 @@ func (c *scriptChecker) snapshotScopeState() checkScopeState {
 		valueAlias:         c.snapshotBindingRelations(c.valueAliases),
 		containerSelection: c.snapshotContainerSelections(),
 		degradedContainers: cloneCheckStringSet(c.degradedContainerBindings),
+		instanceIvarsDirty: c.instanceIvarFactsDirty,
 	}
 	if len(c.scopes) > 0 {
 		state.defined = make([]map[string]struct{}, len(c.scopes))
@@ -2842,6 +2845,10 @@ func (c *scriptChecker) restoreScopeState(state checkScopeState) {
 	c.restoreContainerIdentityRelations(state.containerIdentity)
 	c.restoreContainerSelections(state.containerSelection)
 	c.degradedContainerBindings = cloneCheckStringSet(state.degradedContainers)
+	// Restoring can replace facts widened while walking another path with
+	// narrower facts from this snapshot. Conservatively revisit ivars at the
+	// next unknown call even when the snapshot itself was previously clean.
+	c.instanceIvarFactsDirty = state.instanceIvarsDirty || c.selfClass != nil
 }
 
 func cloneCheckScope(scope map[string]struct{}) map[string]struct{} {

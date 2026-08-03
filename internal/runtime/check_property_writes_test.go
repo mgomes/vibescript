@@ -7,6 +7,28 @@ import (
 	"testing"
 )
 
+func TestWidenUnsetInstanceIvarFactsSkipsCleanState(t *testing.T) {
+	t.Parallel()
+
+	checker := &scriptChecker{
+		selfClass:  &ClassDef{},
+		localTypes: []checkTypeFrame{{}},
+	}
+	checker.bindLocalTypeInCurrentFrame(ivarFactKey("name"), checkTypeNil)
+	if !checker.instanceIvarFactsDirty {
+		t.Fatal("binding an ivar fact did not mark widening state dirty")
+	}
+
+	checker.widenUnsetInstanceIvarFacts()
+	if checker.instanceIvarFactsDirty {
+		t.Fatal("full-class widening did not mark ivar facts clean")
+	}
+	checker.widenUnsetInstanceIvarFacts()
+	if checker.instanceIvarFactsDirty {
+		t.Fatal("repeated widening changed clean ivar state")
+	}
+}
+
 // The checker seeds instance-method analysis with the contracts of typed
 // accessor-backed instance variables and rejects direct writes whose known
 // value is provably incompatible; unknown values pass and rely on the
