@@ -528,6 +528,27 @@ func TestEqualityScratchReserverSeesOperands(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeBillsRegexFlags pins the flags leg of the regex leaf:
+// Flags is an exported, unrestricted string, so comparing two regexes with
+// equal sources and independently backed equal-length flags reads the flags
+// in full and must bill them like the source.
+func TestEqualityChargeBillsRegexFlags(t *testing.T) {
+	t.Parallel()
+
+	flags := strings.Repeat("f", 4096)
+	build := func() value.Value {
+		return value.NewRegex(value.Regex{Source: "abc", Flags: strings.Clone(flags)})
+	}
+
+	ctx, total := meteredContext()
+	if !ctx.Equal(value.NewArray([]value.Value{build()}), value.NewArray([]value.Value{build()})) {
+		t.Fatal("equal regexes must compare equal")
+	}
+	if *total < 4096 {
+		t.Fatalf("charged %d bytes, want at least the flags' %d", *total, 4096)
+	}
+}
+
 // TestEqualityScratchReleasesBetweenSiblings pins the live-scratch
 // accounting: sibling maps in one walk allocate their key slices one after
 // another, and the validator must see only the slices alive at each point —

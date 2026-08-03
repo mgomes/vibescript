@@ -400,10 +400,17 @@ func identicalCompare(exec *Execution, left, right Value) (bool, error) {
 				return false, err
 			}
 		case left.Kind() == KindRegex:
-			// Regex identity falls back to source equality, which reads the
-			// pattern bytes under the same length screen.
-			if lr, rr := left.Regex(), right.Regex(); len(lr.Source) == len(rr.Source) {
+			// Regex identity falls back to source and flag equality, which
+			// reads both strings under the same length screen; Flags is an
+			// exported, unrestricted string a host can size at will.
+			lr, rr := left.Regex(), right.Regex()
+			if len(lr.Source) == len(rr.Source) {
 				if err := exec.chargeStringScan(len(lr.Source)); err != nil {
+					return false, err
+				}
+			}
+			if len(lr.Flags) == len(rr.Flags) {
+				if err := exec.chargeStringScan(len(lr.Flags)); err != nil {
 					return false, err
 				}
 			}

@@ -1814,12 +1814,25 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 		// same length screen.
 		left := v.data.(Regex)
 		right := other.data.(Regex)
-		if len(left.Source) == len(right.Source) {
-			if !chargeEqualityBytes(state, len(left.Source)) {
-				return false
-			}
+		if len(left.Source) != len(right.Source) {
+			return false
 		}
-		return left.Source == right.Source && left.Flags == right.Flags
+		if !chargeEqualityBytes(state, len(left.Source)) {
+			return false
+		}
+		if left.Source != right.Source {
+			return false
+		}
+		// Flags is an exported, unrestricted string a host can size at
+		// will; its comparison reads it like the source, under the same
+		// length screen.
+		if len(left.Flags) != len(right.Flags) {
+			return false
+		}
+		if !chargeEqualityBytes(state, len(left.Flags)) {
+			return false
+		}
+		return left.Flags == right.Flags
 	case KindArray:
 		left := v.Array()
 		right := other.Array()
