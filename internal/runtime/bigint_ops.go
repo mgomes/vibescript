@@ -403,8 +403,12 @@ func valueKeyCanonicalizationCost(key Value, onPath map[value.SliceIdentity]stru
 		return len(bi.Bits()), 0, saturatingMul(len(bi.Bits()), 16), true
 	}
 	if stringLikeOperand(key) {
+		// The canonical encoding wraps the payload in kind-and-length
+		// framing ("string:0:" for an empty string), which ancestors copy
+		// and hash like payload bytes; without it, a key holding thousands
+		// of empty strings canonicalized substantial framing for free.
 		n := len(key.String())
-		return 0, n, n, true
+		return 0, n, saturatingAdd(n, 16), true
 	}
 	switch key.Kind() {
 	case KindNil, KindBool, KindInt, KindRange:

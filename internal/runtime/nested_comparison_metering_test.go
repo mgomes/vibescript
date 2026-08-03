@@ -9,6 +9,30 @@ import (
 	"testing"
 )
 
+// TestEmptyStringKeyFramingIsCharged pins the framing term of the key cost
+// model: HashKey encodes an empty string as nonempty kind-and-length framing
+// that the parent copies and hashes, so an array key holding thousands of
+// empty strings must not canonicalize for free.
+func TestEmptyStringKeyFramingIsCharged(t *testing.T) {
+	t.Parallel()
+
+	elems := make([]Value, 2048)
+	for i := range elems {
+		elems[i] = NewString("")
+	}
+	budget := valueKeyCostNodeBudget
+	_, charge, enc, ok := valueKeyCanonicalizationCost(NewArray(elems), nil, &budget)
+	if !ok {
+		t.Fatal("an array of empty strings must be walkable")
+	}
+	if want := 2048 * 16; charge < want {
+		t.Fatalf("charge = %d, want at least the copied framing's %d", charge, want)
+	}
+	if want := 2048 * 16; enc < want {
+		t.Fatalf("enc = %d, want at least the framing's %d", enc, want)
+	}
+}
+
 // TestEqualityScanStopsAfterStickyError pins the scan abort: once a probe
 // records a sticky charge failure, the remaining candidates must not be
 // visited — every later probe answers false in O(1), so finishing the scan

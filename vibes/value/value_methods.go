@@ -1684,8 +1684,16 @@ func equalityKeyTextBytes(key Value, onPath map[SliceIdentity]struct{}, budget *
 	*budget--
 	switch key.kind {
 	case KindString, KindSymbol:
+		// The canonical encoding wraps the payload in kind-and-length
+		// framing, which ancestors copy like payload bytes; see the
+		// runtime-side cost model for why empty strings must not encode
+		// to zero.
 		n := len(key.data.(string))
-		return n, n, true
+		enc := n + 16
+		if enc < 0 {
+			enc = math.MaxInt / 2
+		}
+		return n, enc, true
 	case KindNil, KindBool, KindInt, KindRange:
 		return 0, 16, true
 	case KindFloat:

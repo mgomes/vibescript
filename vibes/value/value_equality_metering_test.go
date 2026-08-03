@@ -528,6 +528,37 @@ func TestEqualityScratchReserverSeesOperands(t *testing.T) {
 	}
 }
 
+// TestEqualityChargeBillsEmptyStringKeyFraming pins the framing term on the
+// equality-side key model: an array key of thousands of empty strings still
+// canonicalizes nonempty per-leaf framing that every occurrence copies, so
+// the comparison must not bill zero.
+func TestEqualityChargeBillsEmptyStringKeyFraming(t *testing.T) {
+	t.Parallel()
+
+	build := func() value.Value {
+		elems := make([]value.Value, 2048)
+		for i := range elems {
+			elems[i] = value.NewString("")
+		}
+		h := value.NewTypedHash(1)
+		if err := h.HashSet(value.NewArray(elems), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet: %v", err)
+		}
+		return h
+	}
+
+	ctx, total := meteredContext()
+	if !ctx.Equal(build(), build()) {
+		t.Fatal("hashes with equal keys must compare equal")
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if want := 2048 * 16; *total < want {
+		t.Fatalf("charged %d bytes, want at least the copied framing's %d", *total, want)
+	}
+}
+
 // TestEqualityChargeBillsRegexFlags pins the flags leg of the regex leaf:
 // Flags is an exported, unrestricted string, so comparing two regexes with
 // equal sources and independently backed equal-length flags reads the flags
