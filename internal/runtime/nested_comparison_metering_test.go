@@ -7,6 +7,8 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // TestEmptyStringKeyFramingIsCharged pins the framing term of the key cost
@@ -30,6 +32,23 @@ func TestEmptyStringKeyFramingIsCharged(t *testing.T) {
 	}
 	if want := 2048 * 16; enc < want {
 		t.Fatalf("enc = %d, want at least the framing's %d", enc, want)
+	}
+}
+
+// TestEqualSkipsFlagChargeOnSourceMismatch pins the order of the regex
+// identity charges: a source-length mismatch answers false without either
+// flag string being read, so huge host-provided flags must not turn the
+// constant-time answer into a quota error.
+func TestEqualSkipsFlagChargeOnSourceMismatch(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 200, MemoryQuotaBytes: Unlimited},
+		"def run(a, b)\n  a.equal?(b).to_s.length\nend")
+	flags := strings.Repeat("f", 1<<20)
+	a := NewRegex(value.Regex{Source: "ab", Flags: flags})
+	b := NewRegex(value.Regex{Source: "abc", Flags: strings.Clone(flags)})
+	if _, err := script.Call(context.Background(), "run", []Value{a, b}, CallOptions{}); err != nil {
+		t.Fatalf("a source-length mismatch must answer without reading the flags: %v", err)
 	}
 }
 
