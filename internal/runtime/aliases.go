@@ -1061,10 +1061,10 @@ type Builtin struct {
 	// outside the runtime memory quota. Builtins that close over no runtime values
 	// leave this nil and stay free, as before.
 	CapturedValues []Value
-	// BoundReceiver, when non-nil, marks the builtin a receiver-bound predicate (a
-	// bound eql?/equal?) and exposes a two-phase clone. The universal predicates
-	// read the value they were resolved from through a mutable cell, so a plain
-	// clone of the Fn keeps comparing against the pre-clone receiver. When
+	// BoundReceiver, when non-nil, marks a receiver-bound builtin (such as a bound
+	// script method or eql?/equal? predicate) and exposes a two-phase clone. These
+	// builtins read the value they were resolved from through a mutable cell, so a
+	// plain clone of the Fn keeps using the pre-clone receiver. When
 	// Script.Call host-clones a returned graph (or re-roots an inbound one) that
 	// holds both a receiver and a predicate bound to it, the clone walk reserves an
 	// empty clone, registers it, recurses to clone the receiver, then installs the
