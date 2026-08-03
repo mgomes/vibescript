@@ -33,6 +33,48 @@ func TestEmptyStringKeyFramingIsCharged(t *testing.T) {
 	}
 }
 
+// TestSetOpsReserveTheirBuffers pins the loop-scratch reservation for the
+// set helpers' Go-local buffers: the result slice, distinct-composite slice,
+// and scalar maps grow with the input yet are invisible to the estimator's
+// base walk, so an operation under a quota too small for them must fail its
+// reservation instead of allocating unmetered.
+func TestSetOpsReserveTheirBuffers(t *testing.T) {
+	t.Parallel()
+
+	composite := func() Value { return NewArray([]Value{NewString("payload")}) }
+	ops := map[string]func(exec *Execution) error{
+		"union": func(exec *Execution) error {
+			_, err := unionArrayValues(exec, []Value{composite()}, [][]Value{{composite()}})
+			return err
+		},
+		"difference": func(exec *Execution) error {
+			_, err := differenceArrayValues(exec, []Value{composite()}, [][]Value{{composite()}})
+			return err
+		},
+		"intersect": func(exec *Execution) error {
+			_, err := intersectArrayValues(exec, []Value{composite()}, []Value{composite()})
+			return err
+		},
+		"subtract": func(exec *Execution) error {
+			_, err := subtractArrayValues(exec, []Value{composite()}, []Value{composite()})
+			return err
+		},
+		"unique": func(exec *Execution) error {
+			_, err := uniqueValuesMetered([]Value{composite(), composite()}, nil, nil, exec)
+			return err
+		},
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background(), memoryQuota: 1}
+			if err := op(exec); err == nil {
+				t.Fatal("a set operation under a 1-byte quota must fail its buffer reservation")
+			}
+		})
+	}
+}
+
 // TestEqualityScanStopsAfterStickyError pins the scan abort: once a probe
 // records a sticky charge failure, the remaining candidates must not be
 // visited — every later probe answers false in O(1), so finishing the scan

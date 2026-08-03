@@ -28,6 +28,72 @@ func boundedSetCap(n int) int {
 	return n
 }
 
+// estimatedScalarSetEntryBytes approximates one scalar-map entry: the key
+// struct (whose string fields alias existing payloads), a bucket share, and
+// map overhead.
+const estimatedScalarSetEntryBytes = 160
+
+// setOpScratch keeps a set operation's Go-local buffers — the result slice,
+// the distinct-composite slice, and the scalar maps — reserved in loop
+// scratch for the operation's lifetime. The buffers grow with the input yet
+// live only in Go locals, invisible to the estimator's base walk, so
+// without the reservation a later check (a metered probe's scratch
+// validation, a periodic walk) would admit an allocation whose true peak
+// includes them. Slice reservations are incremental at append-doubling
+// granularity; everything is released when the operation returns. A nil
+// exec or an unlimited quota makes every method a no-op.
+type setOpScratch struct {
+	exec         *Execution
+	held         int
+	resultCap    int
+	compositeCap int
+}
+
+func (s *setOpScratch) reserve(extra int) error {
+	if s.exec == nil || s.exec.memoryQuota <= 0 || extra <= 0 {
+		return nil
+	}
+	s.held += s.exec.reserveLoopScratch(extra)
+	return s.exec.checkMemory()
+}
+
+// reserveResultCap reserves the result slice's initial backing.
+func (s *setOpScratch) reserveResultCap(capacity int) error {
+	if capacity <= s.resultCap {
+		return nil
+	}
+	extra := valueSliceScratchBytes(capacity) - valueSliceScratchBytes(s.resultCap)
+	s.resultCap = capacity
+	return s.reserve(extra)
+}
+
+// reserveResultSlot reserves the growth an append at the given length
+// realizes, once per doubling.
+func (s *setOpScratch) reserveResultSlot(length int) error {
+	return s.reserveResultCap(projectedAppendCap(length, s.resultCap))
+}
+
+func (s *setOpScratch) reserveCompositeSlot(length int) error {
+	nextCap := projectedAppendCap(length, s.compositeCap)
+	if nextCap <= s.compositeCap {
+		return nil
+	}
+	extra := valueSliceScratchBytes(nextCap) - valueSliceScratchBytes(s.compositeCap)
+	s.compositeCap = nextCap
+	return s.reserve(extra)
+}
+
+func (s *setOpScratch) reserveScalarEntry() error {
+	return s.reserve(estimatedScalarSetEntryBytes)
+}
+
+func (s *setOpScratch) release() {
+	if s.exec != nil {
+		s.exec.releaseLoopScratch(s.held)
+	}
+	s.held = 0
+}
+
 type scalarValueSetKey struct {
 	kind     ValueKind
 	boolVal  bool
@@ -89,6 +155,11 @@ type valueSet struct {
 	// equality carries the optional byte charge for composite probes (see
 	// bindMetering); its sticky error is surfaced via chargeErr.
 	equality EqualityContext
+	// scratch, when set, keeps the composite slice and scalar map reserved
+	// in loop scratch as they grow; a reservation failure is sticky in
+	// scratchErr and surfaced via chargeErr.
+	scratch    *setOpScratch
+	scratchErr error
 }
 
 // bindMetering makes the set's composite equality probes bill the string
@@ -99,8 +170,12 @@ func (s *valueSet) bindMetering(exec *Execution) {
 	exec.bindEqualityMetering(&s.equality)
 }
 
-// chargeErr reports the first byte-charge failure a probe recorded, if any.
+// chargeErr reports the first byte-charge or scratch-reservation failure an
+// operation recorded, if any.
 func (s *valueSet) chargeErr() error {
+	if s.scratchErr != nil {
+		return s.scratchErr
+	}
 	return s.equality.Err()
 }
 
@@ -128,6 +203,9 @@ func (s *valueSet) add(v Value, hint int) bool {
 // payload; doing that here rather than in a separate predicate keeps it to the
 // one conversion per element the caller already budgets for.
 func (s *valueSet) addCounted(v Value, hint int) (bool, int) {
+	if s.scratchErr != nil {
+		return false, 0
+	}
 	if key, ok := scalarValueKey(v); ok {
 		if s.scalars == nil {
 			s.scalars = make(map[scalarValueSetKey]struct{}, boundedSetCap(hint))
@@ -135,12 +213,24 @@ func (s *valueSet) addCounted(v Value, hint int) (bool, int) {
 		if _, found := s.scalars[key]; found {
 			return false, 0
 		}
+		if s.scratch != nil {
+			if err := s.scratch.reserveScalarEntry(); err != nil {
+				s.scratchErr = err
+				return false, 0
+			}
+		}
 		s.scalars[key] = struct{}{}
 		return true, 0
 	}
 	probes, found := indexOfEqualValue(s.composite, v, &s.equality)
 	if found {
 		return false, probes + 1
+	}
+	if s.scratch != nil {
+		if err := s.scratch.reserveCompositeSlot(len(s.composite)); err != nil {
+			s.scratchErr = err
+			return false, probes
+		}
 	}
 	s.composite = append(s.composite, v)
 	return true, probes
@@ -221,6 +311,10 @@ type membershipSet struct {
 	// equality carries the optional byte charge for composite probes; see
 	// valueSet.bindMetering.
 	equality EqualityContext
+	// scratch, when set, keeps the scalar map reserved in loop scratch as
+	// it grows; a reservation failure is sticky in scratchErr.
+	scratch    *setOpScratch
+	scratchErr error
 	// composite holds references to the source slices that contain at least one
 	// composite value. contains scans these directly; scalar elements within
 	// them are skipped cheaply because Value.Equal short-circuits on a kind
@@ -258,6 +352,9 @@ func (s *membershipSet) contains(v Value) bool {
 func (s *membershipSet) addSource(values []Value, hint int) {
 	retained := false
 	for _, v := range values {
+		if s.scratchErr != nil {
+			return
+		}
 		key, ok := scalarValueKey(v)
 		if !ok {
 			if !retained {
@@ -268,6 +365,15 @@ func (s *membershipSet) addSource(values []Value, hint int) {
 		}
 		if s.scalars == nil {
 			s.scalars = make(map[scalarValueSetKey]struct{}, boundedSetCap(hint))
+		}
+		if _, found := s.scalars[key]; found {
+			continue
+		}
+		if s.scratch != nil {
+			if err := s.scratch.reserveScalarEntry(); err != nil {
+				s.scratchErr = err
+				return
+			}
 		}
 		s.scalars[key] = struct{}{}
 	}
@@ -294,7 +400,14 @@ func uniqueValues(values []Value) []Value {
 func uniqueValuesMetered(values []Value, check func() error, charge func(int) error, meterExec *Execution) ([]Value, error) {
 	var seen valueSet
 	seen.bindMetering(meterExec)
-	unique := make([]Value, 0, boundedSetCap(len(values)))
+	scratch := setOpScratch{exec: meterExec}
+	defer scratch.release()
+	seen.scratch = &scratch
+	initial := boundedSetCap(len(values))
+	if err := scratch.reserveResultCap(initial); err != nil {
+		return nil, err
+	}
+	unique := make([]Value, 0, initial)
 	for i, item := range values {
 		if check != nil && i%setOpCheckInterval == 0 {
 			if err := check(); err != nil {
@@ -311,6 +424,9 @@ func uniqueValuesMetered(values []Value, check func() error, charge func(int) er
 			}
 		}
 		if added {
+			if err := scratch.reserveResultSlot(len(unique)); err != nil {
+				return nil, err
+			}
 			unique = append(unique, item)
 		}
 	}
@@ -329,22 +445,42 @@ func unionArrayValues(exec *Execution, left []Value, others [][]Value) ([]Value,
 	}
 	var seen valueSet
 	seen.bindMetering(exec)
-	unique := make([]Value, 0, boundedSetCap(total))
-	for _, item := range left {
-		if seen.add(item, total) {
-			unique = append(unique, item)
+	scratch := setOpScratch{exec: exec}
+	defer scratch.release()
+	seen.scratch = &scratch
+	initial := boundedSetCap(total)
+	if err := scratch.reserveResultCap(initial); err != nil {
+		return nil, err
+	}
+	unique := make([]Value, 0, initial)
+	appendUnique := func(item Value) error {
+		if err := scratch.reserveResultSlot(len(unique)); err != nil {
+			return err
 		}
+		unique = append(unique, item)
+		return nil
+	}
+	for _, item := range left {
+		added := seen.add(item, total)
 		if err := seen.chargeErr(); err != nil {
 			return nil, err
+		}
+		if added {
+			if err := appendUnique(item); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for _, other := range others {
 		for _, item := range other {
-			if seen.add(item, total) {
-				unique = append(unique, item)
-			}
+			added := seen.add(item, total)
 			if err := seen.chargeErr(); err != nil {
 				return nil, err
+			}
+			if added {
+				if err := appendUnique(item); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -370,16 +506,29 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 	}
 	var removal membershipSet
 	exec.bindEqualityMetering(&removal.equality)
+	scratch := setOpScratch{exec: exec}
+	defer scratch.release()
+	removal.scratch = &scratch
 	for _, other := range others {
 		removal.addSource(other, removalTotal)
+		if removal.scratchErr != nil {
+			return nil, removal.scratchErr
+		}
 	}
-	out := make([]Value, 0, boundedSetCap(len(left)))
+	initial := boundedSetCap(len(left))
+	if err := scratch.reserveResultCap(initial); err != nil {
+		return nil, err
+	}
+	out := make([]Value, 0, initial)
 	for _, item := range left {
 		keep := !removal.contains(item)
 		if err := removal.equality.Err(); err != nil {
 			return nil, err
 		}
 		if keep {
+			if err := scratch.reserveResultSlot(len(out)); err != nil {
+				return nil, err
+			}
 			out = append(out, item)
 		}
 	}
@@ -395,10 +544,21 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var inRight membershipSet
 	exec.bindEqualityMetering(&inRight.equality)
+	scratch := setOpScratch{exec: exec}
+	defer scratch.release()
+	inRight.scratch = &scratch
 	inRight.addSource(right, len(right))
+	if inRight.scratchErr != nil {
+		return nil, inRight.scratchErr
+	}
 	var emitted valueSet
 	emitted.bindMetering(exec)
-	out := make([]Value, 0, boundedSetCap(min(len(left), len(right))))
+	emitted.scratch = &scratch
+	initial := boundedSetCap(min(len(left), len(right)))
+	if err := scratch.reserveResultCap(initial); err != nil {
+		return nil, err
+	}
+	out := make([]Value, 0, initial)
 	for _, item := range left {
 		hit := inRight.contains(item)
 		if err := inRight.equality.Err(); err != nil {
@@ -412,6 +572,9 @@ func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error)
 			return nil, err
 		}
 		if added {
+			if err := scratch.reserveResultSlot(len(out)); err != nil {
+				return nil, err
+			}
 			out = append(out, item)
 		}
 	}
@@ -421,8 +584,18 @@ func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error)
 func subtractArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var removal membershipSet
 	exec.bindEqualityMetering(&removal.equality)
+	scratch := setOpScratch{exec: exec}
+	defer scratch.release()
+	removal.scratch = &scratch
 	removal.addSource(right, len(right))
-	out := make([]Value, 0, boundedSetCap(len(left)))
+	if removal.scratchErr != nil {
+		return nil, removal.scratchErr
+	}
+	initial := boundedSetCap(len(left))
+	if err := scratch.reserveResultCap(initial); err != nil {
+		return nil, err
+	}
+	out := make([]Value, 0, initial)
 	for _, item := range left {
 		hit := removal.contains(item)
 		if err := removal.equality.Err(); err != nil {
@@ -430,6 +603,9 @@ func subtractArrayValues(exec *Execution, left, right []Value) ([]Value, error) 
 		}
 		if hit {
 			continue
+		}
+		if err := scratch.reserveResultSlot(len(out)); err != nil {
+			return nil, err
 		}
 		out = append(out, item)
 	}
