@@ -372,12 +372,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 		if err := exec.classMethodAccessError(fn, cl, property, pos, callerIsReceiver); err != nil {
 			return NewNil(), err
 		}
-		method := NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return exec.callFunction(fn, obj, args, kwargs, block, pos)
-		})
-		valueBuiltin(method).OptionsHashTarget = fn
-		valueBuiltin(method).ReturnTypeTarget = fn
-		return method, nil
+		return newBoundScriptMethod(cl.Name+"."+property, property, fn, obj, pos, true), nil
 	}
 	// A stored class var keyed by a data-safe helper (itself/nil?/eql?/equal? or an
 	// introspection predicate respond_to?/is_a?/kind_of?/instance_of?) is data,
@@ -418,12 +413,7 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 		if err := exec.instanceMethodAccessError(fn, inst.Class, property, pos, callerIsReceiver); err != nil {
 			return NewNil(), err
 		}
-		method := NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return exec.callFunction(fn, obj, args, kwargs, block, pos)
-		})
-		valueBuiltin(method).OptionsHashTarget = fn
-		valueBuiltin(method).ReturnTypeTarget = fn
-		return method, nil
+		return newBoundScriptMethod(inst.Class.Name+"#"+property, property, fn, obj, pos, false), nil
 	}
 	// A stored ivar keyed by a data-safe helper (itself/nil?/eql?/equal? or an
 	// introspection predicate respond_to?/is_a?/kind_of?/instance_of?) is data,
@@ -445,6 +435,27 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 	candidates = slices.AppendSeq(candidates, maps.Keys(inst.Ivars))
 	candidates = append(candidates, universalMemberNames...)
 	return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, candidates))
+}
+
+type boundScriptMethod struct {
+	receiver    Value
+	property    string
+	pos         Position
+	classMethod bool
+}
+
+func newBoundScriptMethod(name, property string, fn *ScriptFunction, receiver Value, pos Position, classMethod bool) Value {
+	method := NewAutoBuiltin(name, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return exec.callFunction(fn, receiver, args, kwargs, block, pos)
+	})
+	builtin := valueBuiltin(method)
+	builtin.OptionsHashTarget = fn
+	builtin.ReturnTypeTarget = fn
+	builtin.CapturedValues = []Value{receiver}
+	builtin.BoundScriptMethod = &boundScriptMethod{
+		receiver: receiver, property: property, pos: pos, classMethod: classMethod,
+	}
+	return method
 }
 
 func (exec *Execution) getScopedMember(obj Value, property string, pos Position) (Value, error) {

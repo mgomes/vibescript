@@ -526,6 +526,7 @@ func cloneBuiltinValue(val Value) Value {
 		// receiver, and a later two-phase clone rebuilds a fresh predicate around
 		// that cell's current value.
 		clonedBuiltin.BoundReceiver = builtin.BoundReceiver
+		clonedBuiltin.BoundScriptMethod = builtin.BoundScriptMethod
 		return cloned
 	case KindArray:
 		arr := val.Array()

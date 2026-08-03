@@ -660,6 +660,9 @@ type callFunctionRebinder struct {
 	// caching the clone keeps aliases of one bound predicate identical across the
 	// host boundary.
 	seenBoundBuiltins map[*Builtin]Value
+	// seenBoundScriptMethods keeps aliases of one escaped bound script method
+	// identical while rebuilding its receiver and function for this call.
+	seenBoundScriptMethods map[*Builtin]Value
 	// seenDirectCallAliases caches rebuilt function.call/block.call aliases keyed
 	// on the source builtin pointer, so an escaped alias reachable through
 	// several inbound paths keeps builtin identity after rebinding.
@@ -723,6 +726,30 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			r.seenBoundBuiltins[builtin] = clone
 			reboundReceiver := r.rebindValue(builtin.BoundReceiver.receiver.value)
 			setBoundReceiver(valueBuiltin(clone), clonedCell, reboundReceiver)
+			return clone
+		}
+		if builtin.BoundScriptMethod != nil {
+			if clone, ok := r.seenBoundScriptMethods[builtin]; ok {
+				return clone
+			}
+			bound := builtin.BoundScriptMethod
+			receiver := r.rebindValue(bound.receiver)
+			var fn *ScriptFunction
+			if bound.classMethod {
+				if class := valueClass(receiver); class != nil {
+					fn = class.ClassMethods[bound.property]
+				}
+			} else if instance := valueInstance(receiver); instance != nil && instance.Class != nil {
+				fn = instance.Class.Methods[bound.property]
+			}
+			if fn == nil {
+				return val
+			}
+			clone := newBoundScriptMethod(builtin.Name, bound.property, fn, receiver, bound.pos, bound.classMethod)
+			if r.seenBoundScriptMethods == nil {
+				r.seenBoundScriptMethods = make(map[*Builtin]Value)
+			}
+			r.seenBoundScriptMethods[builtin] = clone
 			return clone
 		}
 		if clone, ok := r.rebindDirectCallAlias(builtin); ok {

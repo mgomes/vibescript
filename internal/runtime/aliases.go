@@ -784,6 +784,27 @@ func cloneBuiltinForHost(val Value, state hostValueCloneState) Value {
 	if builtin == nil {
 		return cloneBuiltinValue(val)
 	}
+	if bound := builtin.BoundScriptMethod; bound != nil {
+		if clone, ok := state.plainBuiltins[builtin]; ok {
+			return clone
+		}
+		receiver := cloneValueForHostWithState(bound.receiver, state)
+		var fn *ScriptFunction
+		if bound.classMethod {
+			if class := valueClass(receiver); class != nil {
+				fn = class.ClassMethods[bound.property]
+			}
+		} else if instance := valueInstance(receiver); instance != nil && instance.Class != nil {
+			fn = instance.Class.Methods[bound.property]
+		}
+		if fn != nil {
+			clone := newBoundScriptMethod(builtin.Name, bound.property, fn, receiver, bound.pos, bound.classMethod)
+			if state.plainBuiltins != nil {
+				state.plainBuiltins[builtin] = clone
+			}
+			return clone
+		}
+	}
 	if builtin.BoundReceiver == nil {
 		if clone, ok := state.plainBuiltins[builtin]; ok {
 			return clone
@@ -1074,6 +1095,10 @@ type Builtin struct {
 	// `probe(clonedReceiver)` still reports identity. Builtins with no bound
 	// receiver leave this nil.
 	BoundReceiver *boundReceiverClone
+	// BoundScriptMethod describes the receiver and method selected by a script
+	// method wrapper. Unlike an ordinary builtin, this wrapper closes over
+	// call-scoped script state and must be rebuilt when it crosses Script.Call.
+	BoundScriptMethod *boundScriptMethod
 	// Capability marks a builtin a capability adapter exposed for a single
 	// Script.Call. Capability grants are per call: when a closure that captured
 	// one (for example a `Hash.new { ... }` default proc copying a capability
