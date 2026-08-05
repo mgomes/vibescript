@@ -495,6 +495,81 @@ func TestEqualityReservesHashEntryCopies(t *testing.T) {
 	}
 }
 
+// TestEqualityReservesLookupKeyIndexMap pins the lookup-map reservation on
+// the large typed-hash path: the index map's backing and the canonical text
+// array keys retain stay live until the left-side scan finishes, so both must
+// be validated before they are materialized.
+func TestEqualityReservesLookupKeyIndexMap(t *testing.T) {
+	t.Parallel()
+
+	const keyText = 256
+	build := func() value.Value {
+		h := value.NewTypedHash(12)
+		for i := range 12 {
+			key := value.NewArray([]value.Value{value.NewString(strings.Repeat("k", keyText) + fmt.Sprint(i))})
+			if err := h.HashSet(key, value.NewInt(int64(i))); err != nil {
+				t.Fatalf("HashSet: %v", err)
+			}
+		}
+		return h
+	}
+
+	var ctx value.EqualityContext
+	ctx.SetCharge(func(int) error { return nil })
+	maxSeen := 0
+	ctx.SetScratchReserver(func(bytes int, _, _ value.Value) error {
+		maxSeen = max(maxSeen, bytes)
+		return nil
+	})
+	if !ctx.Equal(build(), build()) {
+		t.Fatal("typed hashes must compare equal")
+	}
+	// The entry copies, the 12-slot index map, and the retained canonical key
+	// text (at least the raw payload per key) must all be validated together.
+	if want := 2*12*64 + 12*160 + 12*keyText; maxSeen < want {
+		t.Fatalf("reserver saw %d bytes, want at least the index map's %d", maxSeen, want)
+	}
+}
+
+// TestEqualityReservesDisplayKeyIndexMaps pins the display-map reservation on
+// the large mixed legacy/typed path: both sides' index maps retain their
+// entry copies for the whole comparison, so their backings must be validated
+// before allocation.
+func TestEqualityReservesDisplayKeyIndexMaps(t *testing.T) {
+	t.Parallel()
+
+	buildTyped := func() value.Value {
+		h := value.NewTypedHash(12)
+		for i := range 12 {
+			if err := h.HashSet(value.NewSymbol(strings.Repeat("k", i+1)), value.NewInt(int64(i))); err != nil {
+				t.Fatalf("HashSet: %v", err)
+			}
+		}
+		return h
+	}
+	buildLegacy := func() value.Value {
+		entries := make(map[string]value.Value, 12)
+		for i := range 12 {
+			entries[strings.Repeat("k", i+1)] = value.NewInt(int64(i))
+		}
+		return value.NewHash(entries)
+	}
+
+	var ctx value.EqualityContext
+	ctx.SetCharge(func(int) error { return nil })
+	maxSeen := 0
+	ctx.SetScratchReserver(func(bytes int, _, _ value.Value) error {
+		maxSeen = max(maxSeen, bytes)
+		return nil
+	})
+	if !ctx.Equal(buildTyped(), buildLegacy()) {
+		t.Fatal("mixed hashes must compare equal")
+	}
+	if want := 2*12*64 + 2*12*128; maxSeen < want {
+		t.Fatalf("reserver saw %d bytes, want at least both index maps' %d", maxSeen, want)
+	}
+}
+
 // TestEqualityScratchReserverSeesOperands pins the widened reserver
 // contract: every scratch validation carries the active comparison's
 // top-level operands, so a caller can charge the unrooted temporary graphs

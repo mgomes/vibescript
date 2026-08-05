@@ -1926,7 +1926,8 @@ func valuesEqualWithKinds(v, other Value, state *equalityState, strictKinds bool
 		if len(right) <= smallHashEqualityEntryLimit {
 			return hashEntriesEqualByLookupKeyLinear(left, right, state, strictKinds)
 		}
-		rightByKey, ok := hashEntriesByLookupKey(right, state)
+		rightByKey, heldRight, ok := hashEntriesByLookupKey(right, state)
+		defer releaseScratchBytes(state, heldRight)
 		if !ok {
 			return false
 		}
@@ -2465,25 +2466,47 @@ func hashEntriesEqualByLookupKeyLinear(left, right []HashEntry, state *equalityS
 	return true
 }
 
-// hashEntriesByDisplayKey indexes entries by rendered display key. On a
-// metered walk each composite key's rendering is reserved at its realized
-// capacity before it is built, since the map retains the renderings for the
-// caller's whole comparison; held reports the bytes still accounted, which
-// the caller releases when it drops the map.
-func hashEntriesByDisplayKey(entries []HashEntry, state *equalityState) (byKey map[string]HashEntry, held int, ok bool) {
-	byKey = make(map[string]HashEntry, len(entries))
-	reserve := func(delta int) bool {
-		if state.reserveScratch == nil {
-			return true
-		}
-		state.scratchHeld += delta
-		held += delta
-		if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
-			state.err = err
-			return false
-		}
+// displayKeyIndexEntryBytes approximates one slot of a display-key index
+// map: the string-header key, the HashEntry copy, and a bucket share.
+// Rendered composite key strings are reserved separately at their realized
+// capacity.
+const displayKeyIndexEntryBytes = 128
+
+// lookupKeyIndexEntryBytes approximates one slot of a lookup-key index map:
+// the HashLookupKey struct, the HashEntry copy, and a bucket share. Canonical
+// key text retained by array and big-integer keys is reserved separately.
+const lookupKeyIndexEntryBytes = 160
+
+// reserveHeldEqualityScratch adds delta to the walk's cumulative scratch and
+// validates it, accumulating into held so the caller can release the bytes
+// when it drops the structure they back.
+func reserveHeldEqualityScratch(state *equalityState, held *int, delta int) bool {
+	if state.reserveScratch == nil {
 		return true
 	}
+	state.scratchHeld += delta
+	*held += delta
+	if err := state.reserveScratch(state.scratchHeld, state.rootLeft, state.rootRight); err != nil {
+		state.err = err
+		return false
+	}
+	return true
+}
+
+// hashEntriesByDisplayKey indexes entries by rendered display key. On a
+// metered walk the map's own backing is reserved before it is allocated and
+// each composite key's rendering is reserved at its realized capacity before
+// it is built, since the map retains both for the caller's whole comparison;
+// held reports the bytes still accounted, which the caller releases when it
+// drops the map.
+func hashEntriesByDisplayKey(entries []HashEntry, state *equalityState) (byKey map[string]HashEntry, held int, ok bool) {
+	reserve := func(delta int) bool {
+		return reserveHeldEqualityScratch(state, &held, delta)
+	}
+	if !reserve(len(entries) * displayKeyIndexEntryBytes) {
+		return nil, held, false
+	}
+	byKey = make(map[string]HashEntry, len(entries))
 	for _, entry := range entries {
 		key := ""
 		if state.charge == nil || entry.Key.Kind() == KindString || entry.Key.Kind() == KindSymbol {
@@ -2510,17 +2533,28 @@ func hashEntriesByDisplayKey(entries []HashEntry, state *equalityState) (byKey m
 	return byKey, held, true
 }
 
-func hashEntriesByLookupKey(entries []HashEntry, state *equalityState) (map[HashLookupKey]HashEntry, bool) {
-	byKey := make(map[HashLookupKey]HashEntry, len(entries))
+// hashEntriesByLookupKey indexes entries by canonical lookup key. On a
+// metered walk the map's backing and the canonical key text array and
+// big-integer keys retain are reserved before they are materialized, since
+// both stay live until the caller's scan finishes; held reports the bytes
+// still accounted, which the caller releases when it drops the map.
+func hashEntriesByLookupKey(entries []HashEntry, state *equalityState) (byKey map[HashLookupKey]HashEntry, held int, ok bool) {
+	if !reserveHeldEqualityScratch(state, &held, len(entries)*lookupKeyIndexEntryBytes) {
+		return nil, held, false
+	}
+	byKey = make(map[HashLookupKey]HashEntry, len(entries))
 	for _, entry := range entries {
 		if !chargeEqualityKeyText(state, entry.Key) {
-			return nil, false
+			return nil, held, false
 		}
 		key, err := NewHashLookupKey(entry.Key)
 		if err != nil {
-			return nil, false
+			return nil, held, false
+		}
+		if !reserveHeldEqualityScratch(state, &held, key.ExtraPayloadBytes()) {
+			return nil, held, false
 		}
 		byKey[key] = entry
 	}
-	return byKey, true
+	return byKey, held, true
 }
