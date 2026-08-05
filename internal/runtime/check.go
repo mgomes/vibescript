@@ -8931,7 +8931,15 @@ func (c *scriptChecker) checkBlockLiteralWithIvarWidening(
 		blockEntryDegradedBindings = cloneCheckStringSet(c.degradedContainerBindings)
 	}
 	typesState := c.snapshotLocalTypes()
-	defer c.restoreLocalTypes(typesState)
+	// The ivar dirty marker describes the snapshot being restored: a widening
+	// inside the body clears it for the body's facts, which the restore
+	// discards, so leaving it cleared would let the next unknown call skip
+	// widening the restored pre-block facts.
+	previousInstanceIvarsDirty := c.instanceIvarFactsDirty
+	defer func() {
+		c.restoreLocalTypes(typesState)
+		c.instanceIvarFactsDirty = previousInstanceIvarsDirty
+	}()
 	classValuesState := c.snapshotLocalClassValues()
 	defer c.restoreLocalClassValues(classValuesState)
 

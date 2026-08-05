@@ -29,6 +29,32 @@ func TestWidenUnsetInstanceIvarFactsSkipsCleanState(t *testing.T) {
 	}
 }
 
+// TestWidenUnsetInstanceIvarFactsSurviveLambdaBodyWalks pins the dirty
+// marker across a lambda body's speculative walk: a widening inside the body
+// clears the marker for facts the walk then rolls back, so without restoring
+// it the outer unknown call would skip widening the restored pre-lambda
+// facts and @b's unset fact would survive to the final write.
+func TestWidenUnsetInstanceIvarFactsSurviveLambdaBodyWalks(t *testing.T) {
+	t.Parallel()
+
+	requireNoCheckWarnings(t, compileScriptDefault(t, `
+class User
+  property a: int
+  property b: int
+
+  def initialize
+    callback = -> { send(:seed) }
+    send(:seed)
+    @a = @b
+  end
+
+  def seed
+    @b = 1
+  end
+end
+`))
+}
+
 // The checker seeds instance-method analysis with the contracts of typed
 // accessor-backed instance variables and rejects direct writes whose known
 // value is provably incompatible; unknown values pass and rely on the
