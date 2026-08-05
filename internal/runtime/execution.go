@@ -103,6 +103,10 @@ type Execution struct {
 	// equalityScratchCheck caches the equality scratch validator closure
 	// (see equalityScratchValidatorFunc). Lazily initialized.
 	equalityScratchCheck func(int, Value, Value) error
+	// equalityCtx pools the metered comparison context behind `==` (see
+	// equalValues). Lazily initialized; nil while a comparison is running or
+	// after one failed.
+	equalityCtx *EqualityContext
 
 	// baseWalkCache memoizes the reachable-graph portion of the memory
 	// estimator's base walk (see beginBaseWalk). It is allocated lazily on the

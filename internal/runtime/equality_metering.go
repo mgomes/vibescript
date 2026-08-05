@@ -95,11 +95,28 @@ func (exec *Execution) equalityScratchValidatorFunc() func(int, Value, Value) er
 
 // equalValues is the one-shot metered comparison behind `==`, `!=`, and case
 // equality: the boolean answer is only meaningful when the error is nil.
+// The context is pooled on the execution: the walk's traversal closures leak
+// the context's state, so a stack-scoped context would heap-allocate on every
+// comparison. Taking the context out of the pool for the walk keeps any
+// re-entrant comparison on a fresh context, and a context that surfaced an
+// error is dropped rather than repooled because its charge failure is sticky.
 func (exec *Execution) equalValues(left, right Value) (bool, error) {
-	ctx := exec.meteredEquality()
+	var ctx *EqualityContext
+	if exec != nil && exec.equalityCtx != nil {
+		ctx = exec.equalityCtx
+		exec.equalityCtx = nil
+	} else {
+		// A nil execution (the static checker's speculative comparisons)
+		// compares unmetered on a throwaway context.
+		fresh := exec.meteredEquality()
+		ctx = &fresh
+	}
 	eq := ctx.Equal(left, right)
 	if err := ctx.Err(); err != nil {
 		return false, err
+	}
+	if exec != nil {
+		exec.equalityCtx = ctx
 	}
 	return eq, nil
 }
