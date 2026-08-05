@@ -57,17 +57,22 @@ type setOpScratch struct {
 // the given input slices. The inputs are wrapped as extra roots for every
 // validation; the wrappers alias the callers' backings, so an input that is
 // also reachable from an execution root deduplicates rather than
-// double-counting.
-func newSetOpScratch(exec *Execution, sources ...[]Value) setOpScratch {
+// double-counting. The wrapper slice is itself a Go-local buffer that grows
+// with the operation's arity, so its backing joins held scratch before it is
+// materialized and is validated immediately: a caller may never reserve
+// anything else (a high-arity union of empty arrays), leaving this the only
+// check that sees the backing.
+func newSetOpScratch(exec *Execution, sources ...[]Value) (setOpScratch, error) {
 	s := setOpScratch{exec: exec}
 	if exec == nil || exec.memoryQuota <= 0 {
-		return s
+		return s, nil
 	}
+	s.held += exec.reserveLoopScratch(valueSliceScratchBytes(len(sources)))
 	s.roots = make([]Value, 0, len(sources))
 	for _, src := range sources {
 		s.roots = append(s.roots, NewArray(src))
 	}
-	return s
+	return s, exec.checkMemoryWith(s.roots...)
 }
 
 func (s *setOpScratch) reserve(extra int) error {
@@ -421,8 +426,11 @@ func uniqueValues(values []Value) []Value {
 func uniqueValuesMetered(values []Value, check func() error, charge func(int) error, meterExec *Execution) ([]Value, error) {
 	var seen valueSet
 	seen.bindMetering(meterExec)
-	scratch := newSetOpScratch(meterExec, values)
+	scratch, err := newSetOpScratch(meterExec, values)
 	defer scratch.release()
+	if err != nil {
+		return nil, err
+	}
 	seen.scratch = &scratch
 	initial := boundedSetCap(len(values))
 	if err := scratch.reserveResultCap(initial); err != nil {
@@ -469,8 +477,11 @@ func unionArrayValues(exec *Execution, left []Value, others [][]Value) ([]Value,
 	sources := make([][]Value, 0, len(others)+1)
 	sources = append(sources, left)
 	sources = append(sources, others...)
-	scratch := newSetOpScratch(exec, sources...)
+	scratch, err := newSetOpScratch(exec, sources...)
 	defer scratch.release()
+	if err != nil {
+		return nil, err
+	}
 	seen.scratch = &scratch
 	initial := boundedSetCap(total)
 	if err := scratch.reserveResultCap(initial); err != nil {
@@ -533,8 +544,11 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 	sources := make([][]Value, 0, len(others)+1)
 	sources = append(sources, left)
 	sources = append(sources, others...)
-	scratch := newSetOpScratch(exec, sources...)
+	scratch, err := newSetOpScratch(exec, sources...)
 	defer scratch.release()
+	if err != nil {
+		return nil, err
+	}
 	removal.scratch = &scratch
 	for _, other := range others {
 		removal.addSource(other, removalTotal)
@@ -571,8 +585,11 @@ func differenceArrayValues(exec *Execution, left []Value, others [][]Value) ([]V
 func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var inRight membershipSet
 	exec.bindEqualityMetering(&inRight.equality)
-	scratch := newSetOpScratch(exec, left, right)
+	scratch, err := newSetOpScratch(exec, left, right)
 	defer scratch.release()
+	if err != nil {
+		return nil, err
+	}
 	inRight.scratch = &scratch
 	inRight.addSource(right, len(right))
 	if inRight.scratchErr != nil {
@@ -611,8 +628,11 @@ func intersectArrayValues(exec *Execution, left, right []Value) ([]Value, error)
 func subtractArrayValues(exec *Execution, left, right []Value) ([]Value, error) {
 	var removal membershipSet
 	exec.bindEqualityMetering(&removal.equality)
-	scratch := newSetOpScratch(exec, left, right)
+	scratch, err := newSetOpScratch(exec, left, right)
 	defer scratch.release()
+	if err != nil {
+		return nil, err
+	}
 	removal.scratch = &scratch
 	removal.addSource(right, len(right))
 	if removal.scratchErr != nil {

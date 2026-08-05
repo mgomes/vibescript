@@ -160,6 +160,24 @@ func TestSetProbeTailsAccumulateAcrossCandidates(t *testing.T) {
 	}
 }
 
+// TestSetOpsReserveTheRootWrapperSlice pins the roots-side scratch: the
+// wrapper slice newSetOpScratch materializes grows with the operation's
+// arity, and a high-arity call over empty sources never reserves anything
+// else, so the constructor's own validation is the only check that can see
+// the backing before it allocates unmetered.
+func TestSetOpsReserveTheRootWrapperSlice(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), memoryQuota: 4096}
+	sources := make([][]Value, 1<<14)
+	if _, err := unionArrayValues(exec, nil, sources); err == nil {
+		t.Fatal("a high-arity union must fail the root wrapper reservation")
+	}
+	if _, err := differenceArrayValues(exec, nil, sources); err == nil {
+		t.Fatal("a high-arity difference must fail the root wrapper reservation")
+	}
+}
+
 // TestEqualityScanStopsAfterStickyError pins the scan abort: once a probe
 // records a sticky charge failure, the remaining candidates must not be
 // visited — every later probe answers false in O(1), so finishing the scan
