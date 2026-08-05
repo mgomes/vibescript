@@ -350,6 +350,63 @@ end
 	}
 }
 
+// TestForwardingBlockRebindsBoundScriptMethod pins that a script method used
+// as an ampersand argument does not retain the function clone, globals, or
+// capabilities of the call that produced it.
+func TestForwardingBlockRebindsBoundScriptMethod(t *testing.T) {
+	t.Parallel()
+
+	stub := &jobQueueStub{}
+	script := compileScriptDefault(t, `
+class Reporter
+  def report(key)
+    tenant + ":" + key
+  end
+
+  def enqueue(key)
+    jobs.enqueue("demo", { key: key })
+  end
+end
+
+def id(&b)
+  b
+end
+
+def make_reporter()
+  id(&Reporter.new.report)
+end
+
+def make_enqueue()
+  id(&Reporter.new.enqueue)
+end
+
+def use(b, key)
+  b.call(key)
+end
+`)
+
+	reporter := callScript(t, context.Background(), script, "make_reporter", nil,
+		CallOptions{Globals: map[string]Value{"tenant": NewString("first")}},
+	)
+	got := callScript(t, context.Background(), script, "use",
+		[]Value{reporter, NewString("key")},
+		CallOptions{Globals: map[string]Value{"tenant": NewString("second")}},
+	)
+	if got.Kind() != KindString || got.String() != "second:key" {
+		t.Fatalf("forwarded bound method = %#v, want current-call global %q", got, "second:key")
+	}
+
+	enqueue := callScript(t, context.Background(), script, "make_enqueue", nil,
+		callOptionsWithCapabilities(MustNewJobQueueCapability("jobs", stub)),
+	)
+	err := callScriptErr(t, context.Background(), script, "use",
+		[]Value{enqueue, NewString("key")}, CallOptions{})
+	requireErrorContains(t, err, "unknown member jobs")
+	if len(stub.enqueueCalls) != 0 {
+		t.Fatalf("bound method retained capability and invoked it %d time(s)", len(stub.enqueueCalls))
+	}
+}
+
 // TestSymbolToProcBlockReentry pins that an escaped `&:name` forwarding block
 // stays callable when passed back into a later call: its symbol dispatch
 // captures nothing call-scoped, so the inbound rebind is a no-op for it.
