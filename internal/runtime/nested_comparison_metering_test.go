@@ -112,6 +112,54 @@ func TestSetOpsValidateBuffersWithOperands(t *testing.T) {
 	}
 }
 
+// TestEqualityByteChargeCarriesSubStepRemainder pins the remainder carry in
+// the equality byte charge: rounding each invocation down separately let a
+// probe loop flush a sub-step tail per candidate and never bill the
+// aggregate, so a set operation could compare hundreds of small composites
+// in quadratic time for zero steps.
+func TestEqualityByteChargeCarriesSubStepRemainder(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1000}
+	charge := exec.stringScanChargeFunc()
+	for range 8 {
+		if err := charge(63); err != nil {
+			t.Fatalf("charge failed inside the quota: %v", err)
+		}
+	}
+	// 8 tails of 63 bytes accumulate to 504 bytes: 7 whole steps with 56
+	// bytes carried forward. Per-invocation rounding would have billed none.
+	if exec.steps != 7 {
+		t.Fatalf("steps = %d, want 7 from the carried remainder", exec.steps)
+	}
+}
+
+// TestSetProbeTailsAccumulateAcrossCandidates pins the end-to-end effect: a
+// uniq over distinct one-element arrays holding equal-length sub-step strings
+// performs a quadratic scan whose per-probe byte tails each round to free, so
+// only the carried remainder makes the aggregate reachable by the step quota.
+func TestSetProbeTailsAccumulateAcrossCandidates(t *testing.T) {
+	t.Parallel()
+
+	values := make([]Value, 64)
+	for i := range values {
+		values[i] = NewArray([]Value{NewString(fmt.Sprintf("%063d", i))})
+	}
+	src := "def run(values)\n  values.uniq.length\nend"
+	// 64 distinct composites cost 2016 probe steps; the probes read 63 bytes
+	// per candidate pair, which is roughly another 1984 steps only when the
+	// sub-step tails accumulate. The low quota covers the probe steps but not
+	// the carried byte charges; the high quota comfortably covers both.
+	script := compileScriptWithConfig(t, Config{StepQuota: 2800, MemoryQuotaBytes: Unlimited}, src)
+	if _, err := script.Call(context.Background(), "run", []Value{NewArray(values)}, CallOptions{}); err == nil {
+		t.Fatal("sub-step probe tails must accumulate into billed steps")
+	}
+	script = compileScriptWithConfig(t, Config{StepQuota: 22400, MemoryQuotaBytes: Unlimited}, src)
+	if _, err := script.Call(context.Background(), "run", []Value{NewArray(values)}, CallOptions{}); err != nil {
+		t.Fatalf("eight times the quota must cover the accumulated tails: %v", err)
+	}
+}
+
 // TestEqualityScanStopsAfterStickyError pins the scan abort: once a probe
 // records a sticky charge failure, the remaining candidates must not be
 // visited — every later probe answers false in O(1), so finishing the scan

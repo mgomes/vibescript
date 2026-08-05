@@ -93,10 +93,13 @@ type Execution struct {
 	memoryEst                 memoryEstimator
 	reservedScratchBytes      int
 
-	// stringScanCharge caches chargeStringScan as a bound function for the
-	// equality byte charge (see stringScanChargeFunc), so metered comparisons
-	// do not allocate a method value each. Lazily initialized.
+	// stringScanCharge caches chargeEqualityScanBytes as a bound function for
+	// the equality byte charge (see stringScanChargeFunc), so metered
+	// comparisons do not allocate a method value each. Lazily initialized.
 	stringScanCharge func(int) error
+	// equalityScanResidue carries the sub-step remainder of equality byte
+	// charges across comparisons (see chargeEqualityScanBytes).
+	equalityScanResidue int
 	// equalityScratchCheck caches the equality scratch validator closure
 	// (see equalityScratchValidatorFunc). Lazily initialized.
 	equalityScratchCheck func(int, Value, Value) error

@@ -5,18 +5,38 @@ package runtime
 // that reach string payloads through arrays and hashes are bounded the same
 // way a top-level `s == t` is (#1135).
 
-// stringScanChargeFunc returns the execution's byte charge bound as a plain
-// function, cached on the execution so the hot `==` path does not allocate a
-// method value per comparison. A nil execution returns nil, which the
-// equality context treats as unmetered.
+// stringScanChargeFunc returns the execution's equality byte charge bound as
+// a plain function, cached on the execution so the hot `==` path does not
+// allocate a method value per comparison. A nil execution returns nil, which
+// the equality context treats as unmetered.
 func (exec *Execution) stringScanChargeFunc() func(int) error {
 	if exec == nil {
 		return nil
 	}
 	if exec.stringScanCharge == nil {
-		exec.stringScanCharge = exec.chargeStringScan
+		exec.stringScanCharge = exec.chargeEqualityScanBytes
 	}
 	return exec.stringScanCharge
+}
+
+// chargeEqualityScanBytes bills equality-walk bytes at the string-scan rate,
+// carrying the sub-step remainder on the execution. Rounding each invocation
+// down let a probe loop flush a sub-step tail per candidate and never bill
+// the aggregate — a set operation could compare hundreds of distinct small
+// composites in quadratic time for zero steps. Carrying the remainder settles
+// whole steps as tails accumulate, so the unbilled residue stays under one
+// step per execution rather than one per probe.
+func (exec *Execution) chargeEqualityScanBytes(n int) error {
+	if n <= 0 {
+		return nil
+	}
+	exec.equalityScanResidue += n
+	steps := exec.equalityScanResidue / stringScanBytesPerStep
+	if steps <= 0 {
+		return nil
+	}
+	exec.equalityScanResidue -= steps * stringScanBytesPerStep
+	return exec.stepN(steps)
 }
 
 // bindEqualityMetering installs the execution's byte charge, scratch
