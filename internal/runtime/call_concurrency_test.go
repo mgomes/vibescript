@@ -250,36 +250,48 @@ end`)
 }
 
 func TestScriptCallRebindsEscapedBoundMethodsToCurrentCallEnv(t *testing.T) {
-	tests := map[string]string{
-		"instance method": `class Reader
+	// The export goes through ampersand forwarding: an untyped return
+	// position auto-invokes a bound method, so forwarding is the way a
+	// method value actually escapes a call.
+	tests := map[string]struct {
+		definition string
+		wantErr    string
+	}{
+		"instance method": {
+			definition: `class Reader
   def read
     tenant
   end
 end
 
 def export_method
-  identity(Reader.new.read)
+  id(&Reader.new.read)
 end`,
-		"class method": `class Reader
+			wantErr: "unknown member tenant",
+		},
+		"class method": {
+			definition: `class Reader
   def self.read
     tenant
   end
 end
 
 def export_method
-  identity(Reader.read)
+  id(&Reader.read)
 end`,
+			wantErr: "unknown class member tenant",
+		},
 	}
-	for name, definition := range tests {
+	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			script := compileScriptDefault(t, definition+`
+			script := compileScriptDefault(t, tc.definition+`
 
-def identity(fn: function)
-  fn
+def id(&b)
+  b
 end
 
-def run_with(fn)
-  fn()
+def run_with(b)
+  b.call()
 end`)
 
 			exported, err := script.Call(context.Background(), "export_method", nil, CallOptions{
@@ -303,7 +315,7 @@ end`)
 			if err == nil {
 				t.Fatal("escaped bound method retained a global from its exporting call")
 			}
-			requireErrorContains(t, err, "undefined variable tenant")
+			requireErrorContains(t, err, tc.wantErr)
 		})
 	}
 }
