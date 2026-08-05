@@ -249,6 +249,77 @@ end`)
 	}
 }
 
+func TestScriptCallRebindsEscapedBoundMethodsToCurrentCallEnv(t *testing.T) {
+	// The export goes through ampersand forwarding: an untyped return
+	// position auto-invokes a bound method, so forwarding is the way a
+	// method value actually escapes a call.
+	tests := map[string]struct {
+		definition string
+		wantErr    string
+	}{
+		"instance method": {
+			definition: `class Reader
+  def read
+    tenant
+  end
+end
+
+def export_method
+  id(&Reader.new.read)
+end`,
+			wantErr: "unknown member tenant",
+		},
+		"class method": {
+			definition: `class Reader
+  def self.read
+    tenant
+  end
+end
+
+def export_method
+  id(&Reader.read)
+end`,
+			wantErr: "unknown class member tenant",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			script := compileScriptDefault(t, tc.definition+`
+
+def id(&b)
+  b
+end
+
+def run_with(b)
+  b.call()
+end`)
+
+			exported, err := script.Call(context.Background(), "export_method", nil, CallOptions{
+				Globals: map[string]Value{"tenant": NewString("first")},
+			})
+			if err != nil {
+				t.Fatalf("export_method failed: %v", err)
+			}
+
+			result, err := script.Call(context.Background(), "run_with", []Value{exported}, CallOptions{
+				Globals: map[string]Value{"tenant": NewString("second")},
+			})
+			if err != nil {
+				t.Fatalf("run_with failed: %v", err)
+			}
+			if result.Kind() != KindString || result.String() != "second" {
+				t.Fatalf("escaped bound method used stale call env: %#v", result)
+			}
+
+			_, err = script.Call(context.Background(), "run_with", []Value{exported}, CallOptions{})
+			if err == nil {
+				t.Fatal("escaped bound method retained a global from its exporting call")
+			}
+			requireErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
 func TestScriptCallRebindingDoesNotMutateSharedArgMaps(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		script := compileScriptDefault(t, `def format_tenant(value)

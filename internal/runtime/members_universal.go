@@ -411,14 +411,15 @@ func newBoundEqualityPredicate(property string, cell *boundReceiver, compare fun
 	return val
 }
 
-// boundReceiverClone supports the two-phase clone of a bound equality predicate.
+// boundReceiverClone supports the two-phase clone of a receiver-bound builtin.
 // reserve builds an empty clone the caller registers before recursing into the
 // receiver; the returned cell receives the cloned receiver once it is resolved.
 // receiver is the source predicate's cell, read by the clone walks to find the
-// value to clone.
+// value to clone. retarget updates any receiver-derived callable metadata.
 type boundReceiverClone struct {
 	reserve  func() (Value, *boundReceiver)
 	receiver *boundReceiver
+	retarget func(*Builtin, Value)
 }
 
 // setBoundReceiver installs the resolved (cloned or rebound) receiver into a
@@ -429,6 +430,9 @@ func setBoundReceiver(builtin *Builtin, cell *boundReceiver, receiver Value) {
 	cell.value = receiver
 	if len(builtin.CapturedValues) > 0 {
 		builtin.CapturedValues[0] = receiver
+	}
+	if builtin.BoundReceiver != nil && builtin.BoundReceiver.retarget != nil {
+		builtin.BoundReceiver.retarget(builtin, receiver)
 	}
 }
 

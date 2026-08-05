@@ -372,12 +372,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 		if err := exec.classMethodAccessError(fn, cl, property, pos, callerIsReceiver); err != nil {
 			return NewNil(), err
 		}
-		method := NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return exec.callFunction(fn, obj, args, kwargs, block, pos)
-		})
-		valueBuiltin(method).OptionsHashTarget = fn
-		valueBuiltin(method).ReturnTypeTarget = fn
-		return method, nil
+		return newBoundScriptMethod(obj, property, pos, true), nil
 	}
 	// A stored class var keyed by a data-safe helper (itself/nil?/eql?/equal? or an
 	// introspection predicate respond_to?/is_a?/kind_of?/instance_of?) is data,
@@ -418,12 +413,7 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 		if err := exec.instanceMethodAccessError(fn, inst.Class, property, pos, callerIsReceiver); err != nil {
 			return NewNil(), err
 		}
-		method := NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return exec.callFunction(fn, obj, args, kwargs, block, pos)
-		})
-		valueBuiltin(method).OptionsHashTarget = fn
-		valueBuiltin(method).ReturnTypeTarget = fn
-		return method, nil
+		return newBoundScriptMethod(obj, property, pos, false), nil
 	}
 	// A stored ivar keyed by a data-safe helper (itself/nil?/eql?/equal? or an
 	// introspection predicate respond_to?/is_a?/kind_of?/instance_of?) is data,
@@ -445,6 +435,57 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 	candidates = slices.AppendSeq(candidates, maps.Keys(inst.Ivars))
 	candidates = append(candidates, universalMemberNames...)
 	return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, candidates))
+}
+
+// newBoundScriptMethod records a method receiver as cloneable runtime state
+// instead of closing over the per-call function and receiver directly. Host
+// cloning and inbound rebinding can therefore replace the receiver (including
+// its class and function environments) before an escaped method is invoked in
+// another Script.Call.
+func newBoundScriptMethod(receiver Value, property string, pos Position, classMethod bool) Value {
+	cell := &boundReceiver{value: receiver}
+	var build func(*boundReceiver) Value
+	build = func(cell *boundReceiver) Value {
+		fn := boundScriptMethodFunction(cell.value, property, classMethod)
+		var className, separator string
+		if classMethod {
+			className = valueClass(cell.value).Name
+			separator = "."
+		} else {
+			className = valueInstance(cell.value).Class.Name
+			separator = "#"
+		}
+		name := className + separator + property
+		method := NewCapturingBuiltin(name, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			liveFn := boundScriptMethodFunction(cell.value, property, classMethod)
+			return exec.callFunction(liveFn, cell.value, args, kwargs, block, pos)
+		}, cell.value)
+		builtin := valueBuiltin(method)
+		builtin.AutoInvoke = true
+		builtin.OptionsHashTarget = fn
+		builtin.ReturnTypeTarget = fn
+		builtin.BoundReceiver = &boundReceiverClone{
+			reserve: func() (Value, *boundReceiver) {
+				clonedCell := &boundReceiver{value: cell.value}
+				return build(clonedCell), clonedCell
+			},
+			receiver: cell,
+			retarget: func(builtin *Builtin, receiver Value) {
+				liveFn := boundScriptMethodFunction(receiver, property, classMethod)
+				builtin.OptionsHashTarget = liveFn
+				builtin.ReturnTypeTarget = liveFn
+			},
+		}
+		return method
+	}
+	return build(cell)
+}
+
+func boundScriptMethodFunction(receiver Value, property string, classMethod bool) *ScriptFunction {
+	if classMethod {
+		return valueClass(receiver).ClassMethods[property]
+	}
+	return valueInstance(receiver).Class.Methods[property]
 }
 
 func (exec *Execution) getScopedMember(obj Value, property string, pos Position) (Value, error) {
