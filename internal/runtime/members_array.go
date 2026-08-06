@@ -28,7 +28,7 @@ var arrayMemberNames = []string{
 	"inspect", "to_s", "string",
 }
 
-var arrayBuiltinMembers = newMemberTable(arrayMemberNames)
+var arrayBuiltinMembers = newTypedMemberTable(arrayMemberNames, KindArray)
 
 func arrayMember(array Value, property string) (Value, error) {
 	if member, ok := arrayBuiltinMembers.lookup(property, arrayMemberBuiltin); ok {

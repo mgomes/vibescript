@@ -18,7 +18,7 @@ var hashMemberNames = []string{
 	"inspect",
 }
 
-var hashBuiltinMembers = newMemberTable(hashMemberNames)
+var hashBuiltinMembers = newTypedMemberTable(hashMemberNames, KindHash, KindObject)
 
 // Most script hashes are small records/options; larger maps fall back to heap.
 const smallHashKeyBufferSize = 8

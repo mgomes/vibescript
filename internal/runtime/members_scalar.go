@@ -12,10 +12,10 @@ import "fmt"
 // members_symbol.go because symbols also expose Ruby's name-conversion helpers.
 var (
 	nilMemberNames    = []string{"inspect", "to_s", "string"}
-	nilBuiltinMembers = newMemberTable(nilMemberNames)
+	nilBuiltinMembers = newTypedMemberTable(nilMemberNames, KindNil)
 
 	boolMemberNames    = []string{"inspect", "to_s", "string"}
-	boolBuiltinMembers = newMemberTable(boolMemberNames)
+	boolBuiltinMembers = newTypedMemberTable(boolMemberNames, KindBool)
 )
 
 func (exec *Execution) nilMember(obj Value, property string, pos Position) (Value, error) {
