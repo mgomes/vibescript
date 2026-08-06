@@ -10,14 +10,8 @@ type memberTable struct {
 	names []string
 	table map[string]Value
 	// receiverKinds lists the value kinds this table's members may be invoked
-	// against. Empty means unrestricted.
+	// against.
 	receiverKinds []ValueKind
-}
-
-func newMemberTable(names []string) *memberTable {
-	return &memberTable{
-		names: names,
-	}
 }
 
 // newTypedMemberTable builds a member table whose members reach into a
@@ -53,9 +47,7 @@ func (t *memberTable) buildAll(build func(string) (Value, error)) {
 		if err != nil {
 			panic(err)
 		}
-		if len(t.receiverKinds) > 0 {
-			guardMemberReceiver(member, t.receiverKinds)
-		}
+		guardMemberReceiver(member, t.receiverKinds)
 		table[name] = member
 	}
 	t.table = table
