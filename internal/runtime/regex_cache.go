@@ -131,14 +131,27 @@ func estimateRegexProgramSize(re *syntax.Regexp, budget int) int {
 	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
 		return clampRegexCost(saturatingAdd(1, estimateRegexProgramSize(re.Sub0[0], budget)), budget)
 	case syntax.OpRepeat:
-		// The expansion repeats the subtree once per bound; an open upper
-		// bound adds a star tail over one more copy.
+		// Simplification discards a {0} repeat body and all, so costing the
+		// child would reject valid patterns over a body that never compiles.
+		if re.Max == 0 {
+			return clampRegexCost(1, budget)
+		}
+		// The expansion repeats the subtree once per bound. Copies past the
+		// required minimum are optional, and each one compiles a branch
+		// instruction alongside its copy; omitting those under-counted a
+		// bounded range like a{0,1000} by nearly half. An open upper bound
+		// instead adds a star tail over one more copy.
 		inner := estimateRegexProgramSize(re.Sub0[0], budget)
 		reps := re.Max
+		optional := 0
 		if reps < 0 {
 			reps = re.Min + 1
+		} else {
+			optional = reps - re.Min
 		}
-		return clampRegexCost(saturatingAdd(1, saturatingMul(inner, max(reps, 1))), budget)
+		total := saturatingMul(inner, max(reps, 1))
+		total = saturatingAdd(total, optional)
+		return clampRegexCost(saturatingAdd(1, total), budget)
 	default:
 		// Character classes, anchors, empty and no-match nodes are all a
 		// single instruction.

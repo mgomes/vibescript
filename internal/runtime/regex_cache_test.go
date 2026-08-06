@@ -200,3 +200,57 @@ func TestRegexCostTracksCompiledSize(t *testing.T) {
 		}
 	}
 }
+
+// TestRegexCostHandlesRepeatBounds pins the two repeat shapes the estimate
+// originally got wrong in opposite directions. A bounded range compiles a
+// branch alongside each optional copy, so ignoring those under-counted
+// a{0,1000} chains by nearly half and let a program twice the cap through. A
+// {0} repeat is discarded body and all by simplification, so costing its child
+// saturated the estimate and rejected a valid pattern over a body that never
+// compiles.
+func TestRegexCostHandlesRepeatBounds(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		pattern      string
+		wantRejected bool
+	}{
+		"bounded range charges its branches": {
+			pattern:      strings.Repeat("a{0,1000}", 99),
+			wantRejected: true,
+		},
+		"discarded zero repeat stays cheap": {
+			pattern:      "(?:" + strings.Repeat("a{1000}", 101) + "){0}",
+			wantRejected: false,
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := syntax.Parse(tc.pattern, syntax.Perl)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			prog, err := syntax.Compile(parsed.Simplify())
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			actual := len(prog.Inst)
+
+			estimated, err := compiledRegexCost(tc.pattern)
+			if err != nil {
+				t.Fatalf("size: %v", err)
+			}
+			rejected := estimated > maxCompiledRegexInstructions
+			if rejected != tc.wantRejected {
+				t.Fatalf("estimate %d (actual %d) rejected=%v, want rejected=%v",
+					estimated, actual, rejected, tc.wantRejected)
+			}
+			// Whichever way it goes, the estimate must not understate a
+			// program by a large factor.
+			if !rejected && estimated < actual/2 {
+				t.Fatalf("estimate %d under-predicts the actual %d by more than half", estimated, actual)
+			}
+		})
+	}
+}
