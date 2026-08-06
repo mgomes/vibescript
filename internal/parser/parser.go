@@ -335,8 +335,30 @@ func (p *parser) parseProgram() (*ast.Program, []error) {
 		p.nextToken()
 	}
 
+	p.addPercentScanExhaustedError()
 	p.addOmittedParseError()
 	return program, p.errors
+}
+
+// addPercentScanExhaustedError reports a source that used up its speculative
+// percent-array-literal allowance (see percentScanBudget). Past that point the
+// parser stops second-guessing whether a `%` the lexer read as modulo opens a
+// %w/%i/%W/%I literal, so a later `foo %w[a b]` binds as `foo % w[a, b]`.
+//
+// That is a change of meaning rather than a slower parse, so the source is
+// rejected instead of being handed back with a silently different program in
+// it. Reaching the allowance at all takes four times the source length spent on
+// candidates that led nowhere, which no ordinary source comes close to.
+func (p *parser) addPercentScanExhaustedError() {
+	if !p.l.percentScan.spent() {
+		return
+	}
+	pos := p.l.percentScan.declinedAt
+	if pos == (ast.Position{}) {
+		pos = p.curToken.Pos
+	}
+	p.addParseError(pos, "too many ambiguous \"%\" operators to tell percent-array literals from modulo;"+
+		" parenthesize the intended literals, as in foo(%w[a b])")
 }
 
 const (
