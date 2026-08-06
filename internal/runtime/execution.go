@@ -122,6 +122,12 @@ type Execution struct {
 	// after one failed.
 	equalityCtx *EqualityContext
 
+	// capabilityYields records the values a contracted capability builtin
+	// hands to script blocks while it runs, so dispatch can bind contracts to
+	// exactly what the capability published (see capabilityYieldFrame). nil
+	// outside such a call.
+	capabilityYields *capabilityYieldFrame
+
 	// baseWalkCache memoizes the reachable-graph portion of the memory
 	// estimator's base walk (see beginBaseWalk). It is allocated lazily on the
 	// first memoizable check, so executions that never reach one — no memory

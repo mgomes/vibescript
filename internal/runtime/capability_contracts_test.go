@@ -1462,3 +1462,90 @@ end`)
 		t.Fatalf("contract counted %d uncontracted calls", uncontracted)
 	}
 }
+
+// foreignFactoryCapability exposes a factory whose freshly created builtin is
+// named like yieldFactoryCapability's contracted method. It stands in for an
+// unrelated capability or host global that a block can call while a
+// contracted capability drives it.
+type foreignFactoryCapability struct {
+	calls *int
+}
+
+func (c foreignFactoryCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	calls := c.calls
+	return map[string]Value{
+		"other": NewObject(map[string]Value{
+			"make": NewBuiltin("other.make", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				return NewBuiltin("cap.made", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+					*calls = *calls + 1
+					return NewString("foreign"), nil
+				}), nil
+			}),
+		}),
+	}, nil
+}
+
+// TestCapabilityContractsBindYieldsWhenBlockRaises pins that a value the
+// capability yielded keeps its contract even when the block raises an
+// ordinary rescuable error: dispatch returns before the post-call sweeps, so
+// a script could otherwise rescue its own error and keep an uncontracted
+// reference to what was yielded.
+func TestCapabilityContractsBindYieldsWhenBlockRaises(t *testing.T) {
+	t.Parallel()
+
+	uncontracted := 0
+	script := compileScriptDefault(t, `def run()
+  leaked = nil
+  begin
+    cap.factory do |fn|
+      leaked = fn
+      raise "boom"
+    end
+  rescue
+    nil
+  end
+  leaked(42)
+end`)
+	_, err := script.Call(context.Background(), "run", nil,
+		callOptionsWithCapabilities(yieldFactoryCapability{uncontractedCalls: &uncontracted}))
+	requireErrorContains(t, err, "cap.made expects a single string argument")
+	if uncontracted != 0 {
+		t.Fatalf("retained builtin ran without its contract %d time(s)", uncontracted)
+	}
+}
+
+// TestCapabilityContractsDoNotClaimForeignBuiltinsCreatedInBlocks pins that
+// binding tracks what the capability actually yielded. A builtin another
+// capability creates while the block runs shares a contracted name but was
+// never published here, so this capability's validator must not be attached
+// to it — doing so would reject valid calls and take scope ownership that
+// prevents the correct binding later.
+func TestCapabilityContractsDoNotClaimForeignBuiltinsCreatedInBlocks(t *testing.T) {
+	t.Parallel()
+
+	uncontracted := 0
+	foreignCalls := 0
+	script := compileScriptDefault(t, `def run()
+  stolen = nil
+  cap.factory do |fn|
+    stolen = other.make()
+    "fine"
+  end
+  stolen(42)
+end`)
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			yieldFactoryCapability{uncontractedCalls: &uncontracted},
+			foreignFactoryCapability{calls: &foreignCalls},
+		},
+	})
+	if err != nil {
+		t.Fatalf("a foreign builtin must not inherit this capability's contract: %v", err)
+	}
+	if result.Kind() != KindString || result.String() != "foreign" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if foreignCalls != 1 {
+		t.Fatalf("foreign builtin ran %d time(s), want 1", foreignCalls)
+	}
+}

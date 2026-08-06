@@ -292,9 +292,24 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if savedReturnProof.recorded {
 			exec.capabilityReturnProof = capabilityReturnProof{}
 		}
+		yieldFrame := exec.pushCapabilityYieldFrame(scope, exec.builtinDepth+1)
 		exec.builtinDepth++
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		exec.builtinDepth--
+		exec.popCapabilityYieldFrame(yieldFrame)
+		// Bind before any exit below branches. A value the capability yielded
+		// is published the moment the block can see it, so it must carry its
+		// contract however this call ends -- including the error returns
+		// further down, which a script can rescue while keeping whatever the
+		// block retained.
+		if yieldFrame != nil && len(yieldFrame.values) > 0 {
+			yieldScanner := newCapabilityContractScanner()
+			yieldScanner.excluded = preCallKnownBuiltins
+			yieldScanner.ambientEnvs = callAmbientEnvs
+			for _, yielded := range yieldFrame.values {
+				yieldScanner.bindContracts(yielded, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+			}
+		}
 		// A capability adapter that ignored a quota error from the exported
 		// Step/CallBlock surface must not decide this call's outcome: a
 		// returned value is rejected (a final-expression adapter call would
@@ -428,21 +443,8 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			if deferredErr == nil {
 				postCallScanner.bindContracts(result, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
-			// A capability publishes into the script-supplied block every
-			// value it yields, and the block can retain one in an enclosing
-			// local — `cap.factory { |fn| leaked = fn }` — reaching it long
-			// after this call. That local lives in the block's captured
-			// environment, which none of the other sweeps reach: the result
-			// is a different value (and is skipped entirely when the return
-			// is rejected, so rescuing the error kept the retained builtin
-			// uncontracted), and the receiver, roots, and arguments never
-			// held it. Scanning the block closes that path. Over-binding is
-			// bounded by preCallKnownBuiltins, which snapshots what the block
-			// and the ambient globals already held before dispatch, so only
-			// builtins this call actually published are bound here.
-			if valueCanContainBuiltins(block) {
-				postCallScanner.bindContracts(block, scope, exec.capabilityContracts, exec.capabilityContractScopes)
-			}
+			// Values this call yielded into the block were already bound
+			// above, before any exit path could branch.
 			if receiver.Kind() != KindNil {
 				postCallScanner.bindContracts(receiver, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}

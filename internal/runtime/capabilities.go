@@ -588,6 +588,63 @@ func ambientEnvSet(root *Env) map[*Env]struct{} {
 	return set
 }
 
+// capabilityYieldFrame collects the values one contracted capability call
+// hands to script blocks. A capability publishes into the block every value it
+// yields, and the block can retain one in an enclosing local
+// (`cap.factory { |fn| leaked = fn }`) that outlives the call. That local lives
+// in the block's captured environment, which no post-call sweep reaches: the
+// result is a different value, and the receiver, roots, and arguments never
+// held it.
+//
+// Recording the yields — rather than sweeping the block afterwards — binds
+// exactly what this capability published. A sweep would also claim unrelated
+// builtins the block happened to create meanwhile (a global factory's return
+// whose name collides with one of this capability's contracts), attaching the
+// wrong validator and taking scope ownership that blocks the right binding
+// later.
+//
+// depth pins the builtin nesting level of the capability's own Fn, so blocks
+// driven by nested builtins the script calls from inside the yield (an
+// array.map in the block body) record against their own frame or none at all.
+type capabilityYieldFrame struct {
+	depth  int
+	values []Value
+	prev   *capabilityYieldFrame
+}
+
+// pushCapabilityYieldFrame starts recording the yields of a contracted
+// capability call whose Fn runs at the given builtin depth. It returns nil
+// when there is nothing to record for.
+func (exec *Execution) pushCapabilityYieldFrame(scope *capabilityContractScope, depth int) *capabilityYieldFrame {
+	if scope == nil || len(scope.contracts) == 0 {
+		return nil
+	}
+	frame := &capabilityYieldFrame{depth: depth, prev: exec.capabilityYields}
+	exec.capabilityYields = frame
+	return frame
+}
+
+func (exec *Execution) popCapabilityYieldFrame(frame *capabilityYieldFrame) {
+	if frame != nil {
+		exec.capabilityYields = frame.prev
+	}
+}
+
+// recordCapabilityYield notes values a capability is handing to a script
+// block. Only yields made directly by the capability's own Fn are recorded;
+// deeper builtin dispatch runs at a different depth.
+func (exec *Execution) recordCapabilityYield(args []Value) {
+	frame := exec.capabilityYields
+	if frame == nil || frame.depth != exec.builtinDepth || len(args) == 0 {
+		return
+	}
+	for _, arg := range args {
+		if valueCanContainBuiltins(arg) {
+			frame.values = append(frame.values, arg)
+		}
+	}
+}
+
 func validateCapabilityDataOnlyValue(label string, val Value) error {
 	if err := validateCapabilityTraversalDepth(label, val); err != nil {
 		return err

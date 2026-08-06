@@ -1775,6 +1775,7 @@ func (exec *Execution) callBlockValue(block Value, args []Value, pos Position) (
 	if err := ensureBlock(block, ""); err != nil {
 		return NewNil(), err
 	}
+	exec.recordCapabilityYield(args)
 	blk := valueBlock(block)
 	// Capability adapters drive blocks with host-supplied arguments and no
 	// receiver. Those arguments live only on the Go call stack for the duration of
