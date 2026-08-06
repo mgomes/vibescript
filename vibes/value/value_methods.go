@@ -1441,6 +1441,23 @@ func (v Value) Equal(other Value) bool {
 	return ctx.Equal(v, other)
 }
 
+// equalitySeenRetainEntries bounds the traversal-map capacity a context keeps
+// between comparisons. The map is cleared per comparison, but clearing keeps
+// its buckets: a context that outlives one walk (the runtime pools one per
+// execution and embeds them in set helpers) would otherwise retain an
+// arbitrarily large backing from a single deep comparison, invisible to any
+// memory accounting.
+const equalitySeenRetainEntries = 64
+
+// releaseOversizedSeen drops the cycle-detection map when the walk that just
+// finished grew it past the pooling threshold, so a reused context retains at
+// most a few kilobytes of traversal scratch.
+func releaseOversizedSeen(state *equalityState) {
+	if len(state.seen) > equalitySeenRetainEntries {
+		state.seen = nil
+	}
+}
+
 // Equal reports whether v and other hold the same kind and value.
 func (c *EqualityContext) Equal(v, other Value) bool {
 	if c.state.seen != nil {
@@ -1457,6 +1474,7 @@ func (c *EqualityContext) Equal(v, other Value) bool {
 	// per execution and embeds them in set helpers) must not keep the
 	// compared graphs reachable past its answer.
 	c.state.rootLeft, c.state.rootRight = Value{}, Value{}
+	releaseOversizedSeen(&c.state)
 	if c.state.err != nil {
 		return false
 	}
@@ -1476,6 +1494,7 @@ func (c *EqualityContext) Eql(v, other Value) bool {
 	flushEqualityCharge(&c.state)
 	// See Equal: reused contexts must not retain the compared graphs.
 	c.state.rootLeft, c.state.rootRight = Value{}, Value{}
+	releaseOversizedSeen(&c.state)
 	if c.state.err != nil {
 		return false
 	}
